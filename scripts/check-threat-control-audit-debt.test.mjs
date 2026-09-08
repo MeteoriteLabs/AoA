@@ -42,6 +42,38 @@ function crossing(input, id) {
   return found;
 }
 
+/**
+ * W20B — MINT AN `unaudited` CROSSING RATHER THAN BORROW ONE.
+ *
+ * Four tests below used to reach into the real tree for "whichever crossing is still
+ * `unaudited`". That worked while sixteen were, and it silently became UNRUNNABLE the moment
+ * W20B recorded the last of them and drove the pin to zero — the tests threw on `undefined`
+ * rather than failing on a mutation, which is the same "a check that nothing runs" shape this
+ * whole guard exists to catch. The repair is NOT to delete them (deleting a test subtracts a
+ * failure) and NOT to keep a crossing unaudited so they have something to chew on. It is to
+ * make each test construct the state it is about.
+ *
+ * The synthetic row is a real Critical with an on-disk ownerTicket, so it satisfies
+ * OWNER-EXISTS and leaves the input GREEN once the pin is raised to match — which is what
+ * makes the subsequent mutation the ONLY cause of any error the test then asserts.
+ */
+function mintUnaudited(input, id) {
+  assert.ok(!input.crossings.some((c) => c.id === id), `${id} must not already exist`);
+  input.crossings.push({
+    id,
+    severity: "Critical",
+    deliveryStatus: "unaudited",
+    deliveryEvidence: "unaudited: synthetic fixture row minted by the guard's own self-test.",
+    ownerTickets: ["FND-005"],
+  });
+  input.debt.ceilings.unauditedCriticalHigh += 1;
+  input.debt.auditedFloor = input.debt.auditedFloor ?? { ids: [] };
+  // Deliberately NOT added to auditedFloor: an unaudited row must not be on that floor.
+  const { errors } = evaluateAuditDebt(input);
+  assert.deepEqual(errors, [], `minting ${id} must leave the input green:\n${report(errors)}`);
+  return input.crossings.at(-1);
+}
+
 function hasError(errors, needle) {
   return errors.some((e) => e.includes(needle));
 }
@@ -56,12 +88,27 @@ test("POSITIVE CONTROL: the shipped tree passes with zero errors", () => {
   assert.ok(notes.some((n) => n.includes("still \"unaudited\" (pinned)")), notes.join("\n"));
 });
 
-test("POSITIVE CONTROL: the pin is not vacuous — it counts a real, non-zero debt", () => {
+// W20B REPLACEMENT, and a strictly stronger claim than the one it replaces. This test used
+// to assert `pin > 0`, on the theory that a pin of zero would make the over-arm unreachable.
+// That theory was wrong: at pin zero the over-arm is reached by the FIRST unaudited row to
+// appear, which is the tightest the ratchet has ever been. So rather than assert a number,
+// this now EXHIBITS the over-arm firing at whatever the real pin is — including zero.
+test("POSITIVE CONTROL: the pin is not vacuous — the over-arm fires at the tree's real pin", () => {
   const input = baseInput();
-  assert.ok(
-    input.debt.ceilings.unauditedCriticalHigh > 0,
-    "a pin of 0 would make RATCHET-PIN's over-arm unreachable for the current tree",
-  );
+  const before = evaluateAuditDebt(input);
+  assert.deepEqual(before.errors, [], `the committed tree must be green first:\n${report(before.errors)}`);
+
+  // One unaudited Critical appears and the pin is NOT raised to cover it.
+  input.crossings.push({
+    id: "DE-9001",
+    severity: "Critical",
+    deliveryStatus: "unaudited",
+    deliveryEvidence: "unaudited: synthetic over-arm probe.",
+    ownerTickets: ["FND-005"],
+  });
+  const { errors } = evaluateAuditDebt(input);
+  assert.ok(hasError(errors, "The pin may only go DOWN"), report(errors));
+  assert.ok(hasError(errors, "DE-9001"), report(errors));
 });
 
 // --- RATCHET-PIN ------------------------------------------------------------------------
@@ -88,9 +135,8 @@ test("M2 RATCHET-PIN over: an audited crossing regressing to unaudited reds", ()
 
 test("M3 RATCHET-PIN under: auditing a crossing without lowering the pin reds (self-cleaning)", () => {
   const input = baseInput();
-  const target = input.crossings.find((c) => c.deliveryStatus === "unaudited");
-  assert.ok(target, "fixture drift: no unaudited crossing left to audit");
-  target.deliveryStatus = "partial";
+  const target = mintUnaudited(input, "DE-9002"); // green at pin+1
+  target.deliveryStatus = "partial"; // audited — and the pin is left alone
   const { errors } = evaluateAuditDebt(input);
   assert.ok(hasError(errors, "Lower ceilings.unauditedCriticalHigh to"), report(errors));
 });
@@ -215,29 +261,46 @@ test("M15 FINDING-VISIBLE: the DE-11 shape — an unaudited crossing a committed
 
 test("M16 FINDING-VISIBLE: an epic register naming an unaudited crossing reds too (not only top-level docs)", () => {
   const input = baseInput();
-  const stillUnaudited = input.crossings.find((c) => c.deliveryStatus === "unaudited");
-  assert.ok(stillUnaudited, "fixture drift: no unaudited crossing left");
+  const target = mintUnaudited(input, "DE-9003"); // green at pin+1
   input.findingDocuments.push({
     path: "docs/replatform/epics/E0-foundation/findings.md",
-    text: `## E0-F999 — a measured absence on ${stillUnaudited.id}`,
+    text: `## E0-F999 — a measured absence on ${target.id}`,
   });
   const { errors } = evaluateAuditDebt(input);
-  assert.ok(hasError(errors, `crossing ${stillUnaudited.id} is "unaudited"`), report(errors));
+  assert.ok(hasError(errors, `crossing ${target.id} is "unaudited"`), report(errors));
 });
 
 test("NEGATIVE CONTROL: a RANGE SPAN names a set, not its endpoints, and must not red", () => {
   // `E0-F008` really does contain "the DE-01...DE-30 register ID set". Without the strip,
   // one sentence implicated two crossings it says nothing about — a false positive of
   // exactly the kind that gets a guard switched off.
+  //
+  // W20B: this used to anchor on "whichever crossing is still unaudited", which after the
+  // last sixteen audits is NONE — and once every real endpoint is audited, FINDING-VISIBLE
+  // cannot fire on DE-01 or DE-30 whether the strip works or not, so the test would have
+  // gone quietly vacuous rather than red. It now mints BOTH span endpoints as unaudited, so
+  // a missing strip has something to implicate, and it carries its own positive control.
   const input = baseInput();
-  const stillUnaudited = input.crossings.find((c) => c.deliveryStatus === "unaudited");
+  const lo = mintUnaudited(input, "DE-9010");
+  const hi = mintUnaudited(input, "DE-9020");
+
   input.findingDocuments.push({
     path: "docs/replatform/epics/E0-foundation/findings.md",
-    text: "the DE-01...DE-30 register ID set, and the DE-01 - DE-30 span, and DE-01 to DE-30",
+    text: `the ${lo.id}...${hi.id} register ID set, and the ${lo.id} - ${hi.id} span, and ${lo.id} to ${hi.id}`,
   });
-  const { errors } = evaluateAuditDebt(input);
-  assert.ok(!hasError(errors, `crossing ${stillUnaudited.id} is "unaudited"`), report(errors));
-  assert.deepEqual(errors, [], report(errors));
+  const spans = evaluateAuditDebt(input);
+  assert.ok(!hasError(spans.errors, `crossing ${lo.id} is "unaudited"`), report(spans.errors));
+  assert.ok(!hasError(spans.errors, `crossing ${hi.id} is "unaudited"`), report(spans.errors));
+  assert.deepEqual(spans.errors, [], report(spans.errors));
+
+  // POSITIVE CONTROL — without this the assertions above pass on a document nobody read.
+  // A separate, NON-span mention of the same id must still red.
+  input.findingDocuments.push({
+    path: "docs/replatform/epics/E0-foundation/findings.md",
+    text: `## E0-F998 — ${lo.id} specifically, measured absent`,
+  });
+  const named = evaluateAuditDebt(input);
+  assert.ok(hasError(named.errors, `crossing ${lo.id} is "unaudited"`), report(named.errors));
 });
 
 test("crossingIdsNamedBy: ranges stripped, genuine mentions kept", () => {

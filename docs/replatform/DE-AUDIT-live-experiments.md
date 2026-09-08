@@ -1,8 +1,12 @@
 # DE-AUDIT — the experiments that need live access
 
-**What this is.** W20 audited twelve of the thirty trust crossings in
+**What this is.** All thirty trust crossings in
 [`docs/architecture/distributed-execution-threat-controls.json`](../architecture/distributed-execution-threat-controls.json)
-and recorded every verdict against source, at file:line, in each row's `deliveryEvidence`.
+have now been audited — twelve by W20, sixteen (DE-15…DE-30) by W20B, and DE-02/DE-08 earlier —
+with every verdict recorded against source, at file:line, in each row's `deliveryEvidence`.
+★ **That is not good news.** One crossing of thirty came back whole; twenty-five are `partial`
+and four are `not-delivered`. A zero in the "unaudited" column means nothing is unmeasured,
+not that anything holds.
 Some questions could not be settled from a repository checkout. This document turns each of
 those into a **work item somebody can actually run**: the access required, the exact steps,
 and — stated in advance, so the result cannot be reinterpreted afterwards — what outcome
@@ -39,6 +43,22 @@ in the system's own echo of the thing you asked for.
 | [DE-12](#de-12) | **Nothing.** | No — see the entry for why this is a finding, not a gap in this document. |
 | [DE-13](#de-13) | Does one noisy Organization starve another? | Yes — this is REL-002's acceptance and it has never been run. |
 | [DE-14](#de-14) | **Nothing.** Settled by executing the assertion. | No. |
+| [DE-15](#de-15) | Does `check-d1-compose` pass a mutable, unsigned, non-allowlisted worker tag? Does the kill-switch drain hold on real PostgreSQL? | Yes — a green exit 0 in step 4 lowers three clauses from `partial` toward `not-delivered`. |
+| [DE-16](#de-16) | Do stale `ready` plugin rows actually reconcile to blocked metadata-only on a cloud_auth boot? | Yes, for the `revocation` clause, which is currently **unmeasured** rather than absent. |
+| [DE-17](#de-17) | Does a fence-lost-but-unexpired capability still execute? Is a fence-lost orphan ever reclaimed? | Yes, in both directions — experiment 1 could refute the escalation finding. |
+| [DE-18](#de-18) | Does a governed op replay as `target_revoked` over real HTTP after a generation bump? Does anything ever converge the revocation? | Confirms the deny; the convergence leg confirms the dead-fanout finding. |
+| [DE-19](#de-19) | Does a sandbox token still read company memory after its run has ended? | Yes — a 200 would confirm the revocation clause is absent in deployment, not just in source. |
+| [DE-20](#de-20) | Does flipping the rollout dial off cancel an in-flight distributed run? | Yes — the wall-clock gap **is** the RTO the "atomically" clause denies exists. |
+| [DE-21](#de-21) | Does a company-A key open a company-B event socket on the second replica? | Confirms the primary deny arm, which no test currently exercises over real HTTP. |
+| [DE-22](#de-22) | Can `aoa_app` UPDATE and DELETE `job_events` rows directly? | Yes — a successful UPDATE confirms append-only is code discipline, not a grant. |
+| [DE-23](#de-23) | **Nothing can raise it.** The chartered DR rehearsal is nonetheless owed. | No — a fully green rehearsal leaves DE-23 at `partial` **at best**. |
+| [DE-24](#de-24) | Does a host refuse a replayed, revoked or unhealthy update and leave the pointer unmoved? | Yes — but it is blocked on code, not on access. |
+| [DE-25](#de-25) | **Nothing.** Caller counts are static facts. | No — a live run would only re-demonstrate that the resolver is never entered. |
+| [DE-26](#de-26) | Does the real E2B provider leak cross-tenant on `list`? What does the certified suite score against the real transport? | Yes — B turns `not-delivered` into a measured `partial` with a named residue. |
+| [DE-27](#de-27) | Does replica B fail closed when partitioned from PostgreSQL — not from its clients? | Yes — it turns "fail-closed by construction" into a measurement. |
+| [DE-28](#de-28) | Is a quarantined object actually unreachable at the **store**, or only at the key? | Yes, downward: a successful anonymous GET drops the confidentiality clause. |
+| [DE-29](#de-29) | Is the legitimate owner of a minted handle refused? Does any sink record a wrong-owner denial? | Yes — a successful resolve would refute the owner-principal finding. |
+| [DE-30](#de-30) | Is a worker never offered a lease for a capability its ratified ceiling omits? | Confirms the mechanism end-to-end; blocked on REL-001. |
 
 ---
 
@@ -425,13 +445,529 @@ is settled in source: the module imports no logger and contains no logging call 
 
 ---
 
+## DE-15 — Image registry ↔ worker runtime (Critical)
+
+Two enforcement points exist and **neither is at this boundary**. Nothing verifies a signature
+or a digest before a container runs.
+
+### Experiment A — demonstrate the absence of runtime image admission end to end
+
+**Access:** Docker and a local registry. No paid resource; about ten minutes.
+
+1. `bash docker/images/build.sh` (produces `docker/images/digests.env`; note CI never proceeds
+   past this step). Do **not** run `sign.sh`; confirm `docker/images/allowlist.json` still has
+   `"entries": []`.
+2. Set `AOA_D1_WORKER_IMAGE=aoa-worker:some-floating-tag` — a **mutable tag, not a digest** — in
+   `docker/d1/.env`.
+3. `node scripts/check-d1-compose.mjs`.
+
+**Delivered** would be a non-zero exit naming the unsigned, non-allowlisted tag.
+**Not delivered** is **exit 0**, which `scripts/lib/d1-compose-invariants.mjs:437-451`
+guarantees, because that validator substring-matches the env-var *name* in the `image:` field
+and never inspects its value. Then `docker compose -f docker-compose.d1.yml up` and confirm the
+worker starts: nothing consults `evaluateAdmission`, and no process reads `allowlist.json`.
+A green step 3 **lowers** the authentication/authorization/integrity clauses from `partial`.
+
+### Experiment B — the kill-switch drain on real PostgreSQL
+
+**Access:** a Linux box (embedded-postgres cannot start under a deep Windows path).
+`pnpm -C server exec vitest run src/__tests__/execution-kill-switch-poll.integration.test.ts`.
+**Delivered** for the revocation clause: with `instance_settings.kill_switches` naming the
+target's provider, `poll()` returns `outcome:"drain"` with `retryAfterMs === 30000` **and the
+`leases` table gains no row**, while `ack` and `renew` still succeed.
+
+★ **Nothing can settle this row as chartered until a prior decision is taken:** "image" is not a
+kill-switch dimension today, and no experiment can prove a control that has no axis.
+
+---
+
+## DE-16 — Hosted parent process ↔ plugin worker and runtime surfaces (Critical)
+
+The code-execution boundary is **settled and strong** — six typed sinks, a composition-root
+split, and a 14-mutant corpus in required CI. One clause is genuinely unmeasured.
+
+**Access:** a PostgreSQL database plus a server booted with `deploymentMode=cloud_auth`.
+
+1. Seed the `plugins` table with rows in each non-terminal status — `ready`, `installed`, and
+   `error` with a **non-cloud** `statusReasonCode` — plus one `uninstalled` control row.
+2. Boot with `cloud_auth`, so the cloud reconcile branch runs.
+3. Assert `reconcileCloudBlockedPlugins` returns the count of non-uninstalled rows and that each
+   now reads `status='error'`, `status_reason_code='PLUGIN_WORKER_BLOCKED_IN_CLOUD'`, while the
+   `uninstalled` control row is **untouched**.
+4. Idempotency: boot a second time and assert the return count is `0`.
+
+**NEGATIVE CONTROL, without which this proves nothing:** boot the same seeded database with
+`deploymentMode=local_trusted` and assert the function returns `0` and mutates no row.
+
+**Delivered** for the `revocation` clause = steps 3, 4 and the negative control all hold.
+**Not delivered** = any non-terminal row survives, or the `local_trusted` boot mutates anything.
+This is a DB-write proof, not a code-execution proof; the execution boundary does not depend on it.
+The row's `audit` clause needs **code, not access** — a durable record, since today's block is a
+`logger.warn` plus process-memory counters that reset on restart.
+
+---
+
+## DE-17 — Provider manager ↔ expired/replaced resource (Critical)
+
+### Experiment 1 — does a fence-lost but unexpired capability still execute?
+
+**Access:** the `docker-compose.staging.yml` stack with a real `AOA_STAGING_E2B_API_KEY` and
+template, the mounted control-plane keypair (verify first with `pnpm verify:cp-am-keypair`), and
+DB access to the lease table. **Cost:** one real E2B sandbox for the run's length.
+
+1. Start a distributed run; capture the `OwnedLabelsCapability` minted in the sandbox-local
+   resolve reply and note its `expiresAt`.
+2. Kill the lease server-side — mark it lost/replaced — **while `expiresAt` is still in the
+   future** (the 5-minute default TTL gives ample window).
+3. From outside the worker, `POST /op/execute` to the adapter-manager with that same capability.
+
+**Not delivered** (and predicted from source): HTTP 200 with an `executed` envelope — effect
+authority exercised under a dead fence, because the capability type has no operation or scope
+field. **Any other result means a revocation path exists that the audit missed**, and the
+sub-verdict must be re-measured. Record the exact response body either way.
+
+### Experiment 2 — is a fence-lost orphan actually reclaimed?
+
+Same stack, plus the E2B dashboard or `list` against the provider-control credential.
+
+1. Start a run whose lease deadline is shorter than the run, so the supervisor records an orphan.
+2. With `AOA_ADAPTER_MANAGER_REAPER_ENABLED` **unset** (the staging default), wait past
+   `DEFAULT_REAPER_INTERVAL_MS` (30s) and confirm the sandbox is **still alive and still billing**.
+3. Restart with `AOA_ADAPTER_MANAGER_REAPER_ENABLED=1` **and** `AOA_ADAPTER_MANAGER_CONTROL_PLANE_URL`
+   set, repeat, and confirm the AM `/metrics` reaper counter increments and the sandbox is reclaimed.
+
+**Delivered** = (2) leaks and (3) reclaims. ★ (3) would be the **first time the reaper loop has
+ever run against a real control plane** — treat its first sweep as unproven and watch for
+mass-kill, because the real provider's `list` ignores the ownership selector.
+
+**Not worth an experiment:** the dead deadline and the missing denial audit are settled by caller
+counts and empty greps. No live run can make a function with no callers fire.
+
+---
+
+## DE-18 — Placement/target registry ↔ worker admission (Critical)
+
+**Access:** a Linux box with Docker and the `docker-compose.d1.yml` stack up, plus `AOA_D1_LIVE=1`.
+Write it as a new `tests/d1/e6f-15-target-generation-replacement.test.mjs` on the existing harness.
+
+1. Enrol worker-b, poll to an offer, ack to an **active** lease; record `{leaseId, fenceToken, jobId, attempt}`.
+2. **POSITIVE CONTROL:** with that fence, POST one governed op and assert HTTP 200.
+3. Out of band, `UPDATE execution_targets SET device_generation = device_generation + 1 WHERE id = <targetId>`.
+4. Replay the **identical** governed op with the same fence; assert the wire error is `target_revoked`.
+5. Replay the poll with the pre-bump session token; assert `target_revoked` — this exercises
+   `server/src/middleware/worker-session-auth.ts:166` over real HTTP, which no current test does.
+6. Assert no new `leases` row was created after step 3.
+
+**Delivered** for the fence = step 2 is 200 **and** steps 4/5 are `target_revoked`.
+
+### The convergence leg (the unwired half)
+
+After step 3, wait past one intended fanout interval and query the lease and revocation rows.
+**Predicted from source:** the lease stays `offered`/`active` **forever** and the revocation row
+stays `pending`, because nothing calls `createExecutionTargetRevocationFanout` — leaving the
+attached job stranded non-terminal with its organization concurrency slot still held. A holding
+prediction is a live confirmation of `E0-F014` item 1. If the revocation is issued through the
+`POST …/execution-targets/:id/revoke` route instead, additionally assert that **no**
+`execution_target_revocations` row is created at all — the second, undocumented revoke path.
+
+---
+
+## DE-19 — Worker/sandbox ↔ control-plane memory/context API (Critical)
+
+★ **Read the boundary first.** The distributed worker lane is **not instantiated**, so there is
+nothing to deny there. Everything below is about the sandbox → MCP-broker lane.
+
+### Experiment A — does the env allowlist hold in a REAL sandbox?
+
+**Access:** a `cloud_auth` deployment with a real E2B key and a company provider key (a paid run).
+Dispatch one crew task to an `aoa` agent whose environment resolves driver `sandbox`; inside the
+VM run `env | sort` and `cat ~/.claude.json` (or `$CODEX_HOME/config.toml`).
+**Delivered:** no `DATABASE_URL`, no `postgres://`, no `AOA_AGENT_JWT_SECRET`, no `GITHUB_PAT`,
+and the `aoa` MCP entry is `type:"http"` pointing at `$AOA_API_URL/companies/<cid>/mcp`.
+**Not delivered:** any of those present. This is the only way to prove
+`packages/adapter-utils/src/execution-target.ts:680` is the sole env source in the **deployed
+image**, rather than only in the code path CI exercises.
+
+### Experiment B — stale-run replay (settles `revocation` by measurement, not by absence)
+
+Same deployment, no new code. Capture the `AOA_API_KEY` the sandbox holds (from A), let the run
+finish and the lease release, then **from outside the sandbox** POST to
+`/companies/<cid>/mcp` with that bearer and `memory.search`.
+**Not delivered** (predicted): HTTP 200 with real memory items, for up to
+`AOA_AGENT_JWT_TTL_SECONDS` (default 172800s = 48h) after the run ended.
+**Delivered:** 401/403 — which would mean a revocation exists that the source read missed, and
+the sub-control must be re-audited.
+
+### Experiment C — worker-write reach (settles `integrity` with a live denial)
+
+Same token and endpoint: call `memory.write` from an org agent whose heartbeat tool allowlist
+contains only `query_memory`. **Not delivered** (predicted): 200 with a created row at status
+`pending`, proving the outbound fallthrough bypasses the per-agent allowlist. Then repeat with
+`memory.retain` + `scopeToSelf:true, layer:"working"` and check the row's status (predicted:
+`approved`). **Clean up both rows afterwards.**
+
+---
+
+## DE-20 — Legacy execution path ↔ distributed owner (Critical)
+
+**Access:** the `docker-compose.staging.yml` stack (control-plane replica + migrate + one enrolled
+worker), operator shell on the control-plane container, `psql` as `aoa_operator`, and a **real**
+sandbox provider — ★ a fake provider cannot settle this, because a keyless lane is ungated.
+
+### Experiment 1 — does the legacy executor actually stop?
+
+Create one Organization and one task on a `claude_local` agent; set
+`AOA_DISTRIBUTED_EXECUTION_ROLLOUT` to canary that org (no restart needed — the source re-reads
+per call); enrol a worker and turn dispatch on. ★ `scripts/lib/staging-manifest-invariants.mjs:522-545`
+**forbids** the worker dispatch/provider variables on any staging worker, so this needs a
+deliberate, attributable compose diff. Wake the task.
+**Delivered:** the log shows `[CLI-006] canary execution owner = DISTRIBUTED`,
+`heartbeat_runs.execution_owner='distributed'`, `job_attempts.placement_lease_eligible=true`, the
+worker leases and runs it, **and the legacy adapter never spawns** (zero adapter/stdout
+`heartbeat_run_events` rows and no CLI process on the host for that run id).
+**Not delivered:** both executors produce output.
+
+### Experiment 2 — rollback (the clause rated absent)
+
+With that run still in flight, delete the org key from the rollout dial.
+**Predicted from source:** the in-flight distributed run **continues to completion and no code
+path cancels it**, because `createDistributedExecutionDrain` has no invoker; only the *next* wake
+resolves `rollout_not_canary`. **Measure the wall-clock gap between the dial flip and the attempt
+reaching a terminal — that gap is the true RTO the row's word "atomically" denies exists.**
+
+### Experiment 3 — audit
+
+`SELECT event_type, payload FROM heartbeat_run_events WHERE run_id = $1`. Confirm (as source
+predicts) exactly one `distributed_execution_handoff` row for the distributed run, **no durable
+row at all** for a legacy-selected run, and nothing in `activity_log` for either.
+
+⚠ **Do not run any of this against an Organization whose spend must be capped:** a handed-off run
+writes no `cost_events` row, so every budget control is blind to it.
+
+---
+
+## DE-21 — Realtime broker ↔ tenant subscribers (High)
+
+Both experiments run on the existing two-replica `docker-compose.d1.yml` stack. No paid resource.
+Neither is needed to accept `partial`; the `audit` sub-control needs a **writer**, not an experiment.
+
+### Experiment A — close the untested primary deny arm
+
+Seed two companies in **different** organizations; mint an agent API key for company A. Open
+`ws://<control-plane-b>/api/companies/<companyB-id>/events/ws` with company A's bearer.
+**Delivered:** HTTP 403 `forbidden` on the upgrade. Then reconnect with `?sinceSeq=0` against
+company A's own id while company B has appended rows, and assert every received frame carries a
+company-A `companyId`. `MIG-003-result.md` already names this as the missing leg, so it belongs in
+a new `tests/d1/e6f-15-*.test.mjs`.
+
+### Experiment B — characterise the company-level predicate within one organization
+
+Seed **two companies under the same organization**. Under `aoa_app` with `aoa.organization_id` set
+to that org, `SELECT count(*) FROM live_event_log WHERE company_id = '<companyB>'` from a session
+doing company-A work. **Expect the rows to be visible to the role** — that is the point: it
+documents that the application `WHERE company_id = …` is the **only** company-level boundary, so
+any future caller that forgets it leaks within the organization. A characterisation test, not a bug hunt.
+
+---
+
+## DE-22 — Execution telemetry ↔ append-only evidence store (High)
+
+The docs-ledger half is settled (and already broken in this repository's history), and the runtime
+half is settled against real embedded PostgreSQL. One residual is live-only.
+
+**The residual:** no deny on the runtime path has ever been observed in a **deployed** system.
+`POST /worker-control/events` mounts only behind the distributed-execution flag, which has zero
+deployment hits. All deny evidence is CI.
+
+**Access:** a live control plane, one enrolled worker, and a paid/managed provider run.
+
+1. Boot with `AOA_DISTRIBUTED_EXECUTION_ENABLED=1`, distinct `aoa_app`/`aoa_operator` pools, and a
+   ≥32-byte `AOA_WORKER_SESSION_SIGNING_KEY`.
+2. Enrol a worker, lease one job, POST events at seq 1 and 2; confirm `status:"accepted"`,
+   `acceptedThroughSeq: 2`, and two `job_events` rows.
+3. **OVERWRITE ATTEMPT:** re-POST seq 1 with a fresh eventId and a self-consistent digest over a
+   *different* payload. **Delivered:** ack `status:"hash_mismatch"`, `acceptedThroughSeq: 2`, and
+   the seq-1 row **byte-identical** (compare `event_digest`).
+4. **NEGATIVE CONTROL for `revocation`:** as `aoa_app` with the run's org GUC set, issue
+   `UPDATE job_events SET event = '{}'::jsonb WHERE sequence = 1;` then
+   `DELETE FROM job_events WHERE sequence = 2;`. **Both are expected to SUCCEED.** If they do, the
+   append-only property is confirmed to be **code discipline only**, and the fix is a migration
+   narrowing the grant to `SELECT, INSERT`.
+
+**The docs-ledger half needs no live access at all:** wire `checkEvidenceImmutability` to a caller
+(a CI step that materialises the merge-base tree via `git worktree add` / `git archive` and calls
+it with `(base, HEAD)`), then re-run it over commit pair `6fc46988a` → `4379a2c53` as a **positive
+control**. If that pair does not red, the wiring is wrong.
+
+---
+
+## DE-23 — Backup/restore pipeline ↔ tenant data (Critical)
+
+★ **Nothing here can raise the verdict, and an operator should read that before spending on it.**
+The absence of any tenant parameter, deny line or production caller is settled statically, and no
+live run can make an absent control deny. **Even a fully green rehearsal leaves DE-23 at `partial`
+at best** — it exercises integrity-after-restore only. The steps that would settle the other four
+arms do not exist to run: there is no scoped restore identity to authenticate, no tenant-scoped
+restore to reject, no encryption to verify keys for, no restore grant to expire, and no audit row
+to read back. Those need **code first**.
+
+The crossing's own chartered verification is nonetheless an **owed operator leg**.
+
+**Access:** the D5 staging topology (2 control-plane replicas, ≥4 workers across 2 failure domains,
+external PostgreSQL, external object store, managed secret store), operator-held DB URL and
+object-store keys, and spend authorization. Follow `REL-003-dr-rehearsal-runbook.md` exactly:
+
+1. Baseline the `job_artifacts status='committed'` manifest.
+2. Run the CM-015 pre-0188 preflight with `AOA_0188_CUTOVER_OPT_IN=1`; capture `snapshot_ref` and
+   `snapshot_checksum`.
+3. `aoa db:backup --json` plus an object-store snapshot at a recorded `T_fault`.
+4. Restore via the E11-F002 interim invocation.
+5. Migrate forward to the candidate.
+6. Hand-wire `runManifestReconciliation` with `rows` = the committed `job_artifacts` set and
+   `headObject` = the live `StorageProvider.headObject`; assert verdict `recovered`.
+7. Inject the DR04 fault (delete one authoritative object, flip a byte in another) and assert
+   verdict `failed`, with those two in `quarantined`/`missing` and **neither in `promoted`**.
+8. Rolling-deploy at parallelism 1; re-enrol one worker, revoke one, and **hand-tick** the
+   revocation fanout — no production scheduler exists.
+9. Timed rollback, asserting that **marker-row deletion alone is not a rollback**.
+
+Record RPO ≤ 15min and RTO ≤ 4h against D5-DR02/DR03.
+
+---
+
+## DE-24 — Desktop installer/updater ↔ enrolled desktop host (Critical)
+
+★ **This row is blocked on code, not on access.** The residue that needs live/paid resources is
+only the operator half — production code-signing certificates and Apple notarization credentials,
+macOS hardware for the advertised-OS matrix, and the D6 production-beta campaign (14 consecutive
+days across ≥3 external design-partner Organizations) — **and none of it can be attempted until
+the code gap closes.**
+
+**The work that actually moves DE-24, in order, all local and free:**
+
+1. Build a link-free staging root (a bundler or a link-dereferencing copy step) so
+   `node scripts/build-desktop-staging.mjs --root <root> --version 0.1.0 --platform win32` exits 0.
+2. Wire a host-side updater that **calls** `evaluateUpdateAdmission` and feeds its verdict into
+   `planUpdateSwap`'s `admitted`, plus a real health poller against the `GET /healthz` DSK-003
+   ships, plus a real `installedVersions` enumeration of the versions directory.
+3. Wire `runDrainBeforeSwap` into that updater.
+4. Add the audit emission for install/update/drain/rollback, which today has **no sink at all**.
+5. Put `check-release-admission.mjs` on the actual publish path in `docker.yml`, with release roots
+   and a recorded allowlist.
+
+**THE ACCEPTANCE TEST that would flip DE-24 to `delivered`** — runnable on **one Windows box with
+no paid resource**, once (2) exists: install version A, present version B signed for a *different*
+from-version (a replayed transition), and show the host **refuses** with `signature_invalid` and
+the pointer file still names A. Repeat with B on the deny-list (expect `version_revoked`) and with
+a valid B whose health check fails (expect the pointer unmoved, `health_unconfirmed`).
+**Until a host binary can be handed a tampered update and observed refusing it, no amount of
+unit-green changes this row.**
+
+---
+
+## DE-25 — Desktop worker ↔ local folder grants (High)
+
+★ **Nothing live is needed or would help.** Caller counts are static facts, and the absence of a
+`revoked_at` writer, an expiry column, an offline-policy consumer and any audit emission are all
+whole-repo scans. No control plane, sandbox or paid run changes any of it; a live run would merely
+re-demonstrate that the folder-grant resolver is never entered.
+
+**If an operator nonetheless wants a positive control before this row is ever moved toward
+`delivered`, the minimum is:**
+
+1. Wire a production caller of `createFolderGrantService().admitCapture` into whatever staging
+   path is built.
+2. Add an anti-orphan directory-walk test in the style of `scripts/check-guard-inventory.mjs`
+   asserting that `createFolderGrantService`, `bindGrantToDevice` and `admitCapturedPaths` each
+   have ≥ 1 **non-test** caller — **this is the check that would have caught it.**
+3. Run a desktop worker enrolled as target A, present a grant issued to target B, and assert the
+   capture is refused with `wrong_target` **and that the refusal is persisted somewhere
+   queryable** — which requires building the audit sink that does not exist.
+4. Revoke the grant through a revoke path that must first be written, and re-run to assert
+   `grant_absent`.
+
+---
+
+## DE-26 — Managed provider sandbox ↔ tenant workload, real provider (Critical)
+
+★ **Both experiments are settleable this week from a GitHub runner** — no staging fleet, no
+deployed control plane, no local key.
+
+**Access:** the existing repo secret `E2B_API_KEY`, and
+`gh workflow run keyed-e2b-conformance.yml --ref <branch>`.
+
+### Experiment A — is `ownershipSelector` inert on real E2B?
+
+Add a keyed case to `packages/sandbox-e2b-provider/src/__tests__/keyed-real-e2b.test.ts` that
+(1) creates sandbox X with `resourceLabels.organizationId = "org-A"` and sandbox Y with `"org-B"`
+(distinct `leaseId`/`jobId` too); (2) calls `provider.list({ownershipSelector: {organizationId:"org-A", …}, pageSize: 100}, ctx)`;
+(3) asserts **Y is absent**.
+**Predicted: the assertion FAILS and Y is present**, because `e2b-provider.ts:414` drops the
+selector. **A failing run is the measurement**, and it converts the `reconcile-reaper.ts:104-106`
+comment from an assertion into evidence. On the same page, assert X's parsed
+`resourceLabels.leaseId` round-trips non-empty — if it comes back `{}`, the reaper's structural
+pre-filter skips every real sandbox and Option-A reclamation is dead on arrival.
+
+### Experiment B — the actual DE-26 control
+
+Add a keyed case that runs the **certified suite against the real transport**:
+`runSandboxIsolationConformance` over `perOpToInvokeDriver(new E2bSandboxProvider({transport: new RealE2bTransport(), templateId: TEMPLATE}), …)`,
+then `assertIsolationReport(report)`, and **record which of the 8 checks pass, fail, or are
+unsupported**. Expect the transport-fault-dependent checks (destroy-failure ceiling, egress
+classification, crash/outage) to fail or be unsupported, because they ride synthetic fault
+directives the real transport ignores. **That per-check breakdown IS the missing artifact**, and
+it is what turns DE-26 from `not-delivered` into a measured `partial` with a named residue.
+
+⚠ **REQUIRED IN BOTH CASES:** add the skip-detection step to `keyed-e2b-conformance.yml` (copy the
+pattern from `keyed-e2b-w7u1-output-probe.yml:223-230`) **before trusting any green from that
+lane**, and record the run URL.
+
+**Not settleable this way** (genuinely needs the fleet and real spend): the D2 gate itself — three
+consecutive passing runs on one release candidate, ≥120 jobs across six classes, the
+cancellation/cleanup percentiles, and the verified E2B limit matrix.
+
+---
+
+## DE-27 — Control-plane replica ↔ shared admission state (High)
+
+### Experiment A — the only one that turns "fail-closed by construction" into a measurement
+
+★ The existing E6F-11 gate cuts the **worker → control-plane-b** link, i.e. the *client* side. It
+never cuts **replica-B → PostgreSQL**, which is the partition the `revocation` clause is about.
+
+**Access:** the existing `docker-compose.d1.yml` stack. No new infrastructure, no paid resource —
+it already routes through toxiproxy. Add a `control-plane-b-to-postgres` proxy mirroring the
+existing `worker-to-control-plane-b` one, then, in a new gate in `tests/d1/e6f-11-two-replica.test.mjs`:
+
+1. Seed one org and one job, enrol a worker, prove **poll@B offers** (baseline reachability).
+2. `setProxyEnabled({proxy:"control-plane-b-to-postgres", enabled:false})`.
+3. `POST /api/worker-control/poll` at replica B. **Delivered:** 429 `throttled` or 503
+   `internal_unavailable` — and specifically **not** a 200 `offer`.
+4. Assert via the owner-DB probe that **no** new lease row was created while B was partitioned.
+5. Submit a job through replica B and assert it does not commit, proving the capacity claim could
+   not be smuggled.
+6. Restore the proxy in a `finally` and assert B recovers.
+
+### Experiment B — runtime cross-tenant denial for the admission table (cheap, local, unwritten)
+
+Extend `server/src/__tests__/worker-admission-rate-limit.integration.test.ts`: admit under ORG_A,
+then open `runInTenant(appDb, ORG_B, …)` and assert (i) a SELECT over
+`worker_admission_rate_limits` returns **zero** rows for ORG_A's window, and (ii) an INSERT
+carrying ORG_A's `organization_id` under ORG_B's GUC is rejected by the `WITH CHECK`. Today only
+the catalog **shape** is verified at boot; the policy's runtime refusal on this table is unexhibited.
+
+### Experiment C — verificationLane D5 as written
+
+Needs real staging: ≥2 replicas behind a production load balancer, ≥4 workers across two failure
+domains, external managed PostgreSQL and object store, shared broker and admission store, managed
+secret store, production-equivalent TLS/telemetry/backup/image policy. The DE-27 assertions are
+**D5-HA01** (kill one replica mid-flight under sustained submit+poll load: zero accepted-write
+loss, zero double execution — for every `jobId`, exactly one lease row and exactly one terminal
+event), **D5-HA02** (failover RTO ≤ 60s, accepted-mutation RPO = 0) and **D5-L06**. This cannot be
+simulated on D1 and is blocked on REL-002, which has zero files.
+
+---
+
+## DE-28 — Quarantined late output ↔ authoritative result/checkpoint (Critical)
+
+### Experiment A — settle confidentiality at the STORE rather than at the key
+
+**Access:** a flag-on stack against a real object store (MinIO for D1, or the deployed bucket), the
+stack's `AOA_WORKER_SESSION_SIGNING_KEY`, an enrolled device key, and network reach to the bucket.
+
+Mint a quarantine PUT grant via `POST /api/worker-control/quarantine/grant` with a valid device
+proof, then attempt (i) an **anonymous GET** of the resulting
+`quarantine/organizations/<org>/jobs/<job>/attempts/<n>/<name>` key with no presign, and (ii) an
+ordinary `artifact_transfer` **download** grant naming that same key.
+**Delivered:** (i) 403 from the store, (ii) `rejected{malformed}` from the transfer-grant path.
+**If (i) succeeds, the "isolated under the quarantine prefix" clause is prefix-naming only and
+DE-28 drops further.**
+
+### Experiment B — can late output ever be routed? (not a live experiment)
+
+★ This **cannot be tested live today, because no shipped code produces it.** The experiment is a
+code change, not an access request: inject `quarantineCandidates` from a durable enumeration and
+construct a reconciler in `bin/worker-daemon.ts`. **Until then, any live D1 run will show zero
+quarantine traffic, and an operator must not read that silence as the control working.**
+
+---
+
+## DE-29 — Secret/OAuth broker ↔ tenant owner credentials (Critical)
+
+### Experiment 1 — the dead lever against a running system
+
+**Access:** a dev/staging control plane. **No paid resource.** Boot with
+`AOA_DISTRIBUTED_EXECUTION_ENABLED=1`, the `aoa_app`/`aoa_operator` pools and
+`AOA_WORKER_SESSION_SIGNING_KEY` (the app hard-fails without them). Submit one real cloud-mode
+agent-backed job so a handle is minted, then:
+
+`SELECT handle, ref_kind, owner_principal_kind, owner_principal_id, status FROM job_secret_handles WHERE job_id = $JOB;`
+— the prediction is `owner_principal_kind IN ('worker','sandbox')`. Then have the daemon redeem it
+via `POST /api/worker-control/execution-secrets/resolve` with a live fence and device proof.
+**Predicted:** `{"outcome":"denied","reason":"malformed"}` with `resolve_count` still 0 and
+`last_resolved_at` still NULL — i.e. **the legitimate owner is refused.**
+**If instead it resolves, the dead-lever finding is wrong**, and the next question is which
+membership row exists: `SELECT principal_type, count(*) FROM company_memberships GROUP BY 1;`.
+
+### Experiment 2 — settle the audit gap
+
+On the same instance, issue a deliberately misrouted resolve (a handle minted under job A,
+redeemed under job B's live fence). Then check **every** candidate sink for anything naming the
+wrong owner: the `job_secret_handles` row (predicted: unchanged — the transaction rolled back),
+the activity log, and `secret_access_events` (predicted: no row; the broker is never reached).
+**The only artefact should be one anonymous `secretRead{outcome:"denied"}` counter tick**, which
+confirms that a wrong-owner denial is forensically indistinguishable from a stale fence.
+
+---
+
+## DE-30 — Requester/worker capability claim ↔ admission (Critical)
+
+### (a) Close the unmeasured requester-side revocation clause — no live access, ~30 min
+
+In `server/src/__tests__/job-submission.integration.test.ts`, after a successful `asUser()`
+submission, run
+`UPDATE organization_memberships SET status='suspended' WHERE organization_id=$ORG_A AND user_id=$USER_A`
+and assert the next `POST …/jobs` returns 403 with `{jobs:0, attempts:0, outbox:0}`; repeat with
+`company_memberships.status`. **Then anti-regress it:** delete
+`eq(organizationMemberships.status, "active")` from
+`packages/db/src/repositories/tenant/job-control.ts:1453` and confirm the new test goes **red**.
+Today nothing on the submission lane does.
+
+### (b) Decide the commander branch — a founder decision, not an experiment
+
+Either re-derive the commander requester through `admittedUserRequester` (making revocation
+immediate and dropping the `principalRole` token claim from the trust decision), **or** amend
+DE-30's `revocation` clause to read *"immediately for user/mcp/worker principals; bounded by the
+commander run-JWT TTL (default 600s, `AOA_COMMANDER_JWT_TTL_SECONDS`) for the commander
+principal."* ★ **Do not leave the field asserting "immediately" while the code does not.**
+
+### (c) The end-to-end claim rather than the mechanism claim
+
+**Access:** a live control plane with `AOA_DISTRIBUTED_EXECUTION_ENABLED=1`, at least one really
+enrolled worker device holding an Ed25519 key, and two tenant organizations. Enrol worker W into
+org A; ratify a placement profile whose `capabilityCeiling` omits `browser.chromium`; submit a
+`browser_request` job in org A; assert **W is never offered the lease** and that a
+`worker_lease_rejections` row with `reasonCode='static_requirements_mismatch'` is written. Then,
+from W's live session, `POST /api/execution-targets/self/hello` with `reportedCapabilities`
+containing `browser.chromium` and assert `unauthorized` with
+`worker_hello_refresh_capability_not_granted` in the operator log.
+This is DE-30's `releaseTest` REL-001, currently deferred on unshipped BRW-006/SVC-007, so it
+cannot be scheduled as written today.
+
+---
+
 ## What this document does NOT cover
 
-**Sixteen of the thirty crossings — DE-15 through DE-30 — were not audited at all**, and none of
-them appears above. They remain `deliveryStatus: "unaudited"`, which means *unknown*, never
-*holds*. Twelve of the sixteen are Critical. Their pinned count is the ceiling in
-[`distributed-execution-audit-debt.json`](../architecture/distributed-execution-audit-debt.json),
-and `scripts/check-threat-control-audit-debt.mjs` will red if it grows. **The ratchet stops the
-debt increasing; it does not imply the remaining sixteen are healthy, and it must not be read
-that way.** Each still needs the same treatment the twelve got: find the enforcement point,
-count its callers, and exhibit it denying.
+**It establishes nothing.** Every entry above is a *plan for a measurement*, not a measurement.
+Nothing here reads a test, runs a control, or makes any register row move: rows move only on a
+recorded result, written back into `deliveryEvidence` with the same provenance discipline the
+existing rows carry.
+
+**And the register is now fully audited, which is the worse-looking half of the news.** All thirty
+crossings carry a recorded verdict; twenty-nine of them say some control they charter is not there.
+The audit-debt pin in
+[`distributed-execution-audit-debt.json`](../architecture/distributed-execution-audit-debt.json)
+is therefore **zero**, and `scripts/check-threat-control-audit-debt.mjs`'s remaining live work is
+its other two arms: **no crossing may return to `unaudited`**, and **DE-02 may not stop being
+`delivered`**. ★ **A zero pin is not health.** It means nothing is unmeasured. It does not mean
+anything holds, and it must never be cited as though it did.

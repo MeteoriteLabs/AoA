@@ -117,25 +117,48 @@ is that distinction, and the foundation checker requires it on every crossing:
 **Scope limit — do not over-read a `delivered` value.** The refusal that backs
 `delivered` fires only for a crossing whose id appears as a literal token (`DE-nn`) in
 the `reason` or `successor` free text of an open finding in
-`scripts/finding-ownership.json`. Today that is **one crossing out of thirty**; for the
-other twenty-nine the refusal is vacuous and `delivered` is gated only by the presence
-of author-written `deliveryEvidence` prose, which nothing grades. The coupling is also
-editorial rather than structural: rewording a finding so its prose no longer contains
-the crossing id releases the refusal, without changing that finding's status, severity
-or ownership. A `delivered` value is therefore a human claim with a human citation —
-audit the citation; do not infer that the control is implemented, tested or safe from
-the fact that the checker passed.
+`scripts/finding-ownership.json`. When that limit was first written it bound **one
+crossing out of thirty**; after W20 and W20B it binds **twenty-nine of thirty**, and the
+one crossing it does not bind is DE-02 — the only `delivered` row in the register. Read
+that precisely: the refusal is no longer vacuous, but it is now vacuous exactly where a
+`delivered` claim lives, because a crossing an open finding names *cannot* be
+`delivered`. So the clause has become a strong ratchet against flipping a measured-absent
+row to `delivered`, and it still says nothing whatever about whether DE-02 holds. The
+coupling also remains editorial rather than structural: rewording a finding so its prose
+no longer contains the crossing id releases the refusal, without changing that finding's
+status, severity or ownership. A `delivered` value is therefore a human claim with a
+human citation — audit the citation; do not infer that the control is implemented,
+tested or safe from the fact that the checker passed.
 
-**The tally today: 1 `delivered`, 12 `partial`, 1 `not-delivered`, 16 `unaudited`** — of
-30 crossings, all of them Critical (22) or High (8). Read that plainly: **more than half
-the crossings in this register have never been audited at all, and of the fourteen that
-have, exactly one came back whole.** The sixteen unaudited rows are not a backlog of
-paperwork; each is a control nobody has established either way.
+**The tally today: 1 `delivered`, 25 `partial`, 4 `not-delivered`, 0 `unaudited`** — of
+30 crossings, all of them Critical (22) or High (8). Read that plainly, and read it as the
+bad news it is: **every crossing in this register has now been audited, and exactly one of
+thirty came back whole.** ★ **A zero in the `unaudited` column is not health.** Going from
+twenty-eight unaudited to none moved this register from *unknown* to *known-bad*: nothing
+here got safer, and twenty-nine rows now carry a measured statement that some control they
+charter is not there. That is a better state to be in and a worse-looking one, and the
+worse-looking number is the true one.
 
 The field was introduced by a register-repair change that audited two crossings (DE-02 and
 DE-08). W20 audited twelve more — DE-01, DE-03, DE-04, DE-05, DE-06, DE-07, DE-09, DE-10,
 DE-11, DE-12, DE-13 and DE-14 — and **every one of the twelve came back `partial`**: an
 enforcement half with a named deny line whose refusal is exercised, and an absent half.
+W20B then recorded the remaining sixteen — DE-15 through DE-30 — of which thirteen are
+`partial` and three (DE-23, DE-25, DE-26) are `not-delivered`.
+
+★ **Why those sixteen landed a commit late, recorded here because the failure is the wave's
+own subject.** All twenty-eight audits completed. The orchestrator passed them to the
+recording unit as one inline JSON string truncated with `.slice(0, 90000)` — **a silent cap,
+in the wave built to find silent caps.** DE-15 through DE-30 never arrived and DE-14 arrived
+half-formed. The recording unit noticed the gap and **refused to write rows it had not been
+given**, which is why the twelve it did record can be trusted; W20B recovered the other
+sixteen from disk, re-verified every load-bearing citation at `file:line` against tip, and
+completed DE-14. **Seven of the sixteen recovered records cited at least one line number that
+is wrong at tip**, and two carry a substantive correction: DE-21's auditor stated that no
+audit writer exists in the realtime module, which is false — the module logs at eight sites,
+and the real (worse) finding is that the *deny* path is the one path that never reaches one;
+and DE-16's audit clause, which the auditor left unsettled, was measured here. Every row
+names its own corrections in its evidence.
 
 **Read each row's own `★ PROVENANCE OF THIS ROW` clause before citing it.** The static
 measurements — deny lines, caller and write-chokepoint censuses, the greps behind each
@@ -145,21 +168,54 @@ that the file exists, that its sole skip predicate is win32-without-`AOA_RUN_WIN
 and that the required `verify` gate runs the whole suite. DE-14 is the one exception: its deny
 was executed directly by the landing unit over a seven-case matrix.
 
-The absent halves cluster into three classes, each filed as a finding rather than left in prose:
+The same partition holds for W20B's sixteen, and the two things it *did* execute beyond the
+static measurements are named so nobody has to guess. It ran `gh run view 34199424265`, which
+confirms the two-replica D1 campaign was `success` on `3814b90f3` (one commit before tip) —
+but it did **not** read that run's logs, so DE-27's six named gate results remain the
+auditor's. And it re-ran DE-22's decisive measurement itself, in git: `git log --follow` over
+the E5 exit-gate QA record returns two commits, the second of which rewrote a supposedly
+write-once record in place while its `Supersedes` field still says there was nothing to
+supersede. Everything else — every vitest, `node --test` and keyed-E2B run cited anywhere in
+those sixteen rows — belongs to the auditors. ★ This partition is the same discipline that
+caught eight W20 rows opening "ENFORCED, and exhibited denying" over suites the *auditors* had
+run: provenance slippage one step removed from the read-back that fooled DE-08.
+
+The absent halves cluster into a small number of classes, each filed as a finding rather
+than left in prose. W20 named three; W20B's sixteen fell into the same three (as siblings,
+so each finding's count stays true to the cohort it measured) plus one more:
 
 - **`E0-F010`** — eight crossings assert that denials are *audited*; on all eight the deny
   path returns before anything durable is written.
+- **`E0-F013`** — the same class, second cohort: **nine more** crossings, of which five
+  record nothing at all and four record the *success* path and not the refusal. ★ DE-27's
+  clause is not merely unwritten but **unwritable**: it says "cross-replica", and the tree
+  has no replica identity of any kind.
 - **`E0-F011`** — four crossings are defended by a control whose **arming path is dead**:
   two with zero production callers, one enabled by an environment variable set in no
   manifest, one gated on a database column with no writer.
+- **`E0-F014`** — the same class, second cohort: **five more**, including the rollback DE-20
+  calls "atomic" (zero callers) and the immutability check for the QA/handoff evidence
+  ledger — whose rule this repository has already broken three times, CI-green.
 - **`E0-F012`** — three crossings name a mechanism **no code attempts** (a capability
   restriction never passed to the provider, a fair-share scheduler with no tenant term, a
   "scoped service identity" that is one bucket-wide credential).
+- **`E0-F015`** — the three `not-delivered` rows W20B measured: DE-23 (no tenant parameter
+  anywhere in the backup/restore path), DE-25 (every deny line behind a zero-caller
+  factory), DE-26 (a conformance suite never run against the provider it certifies, which
+  is already measured dropping a required isolation input).
+- **`E0-F016`** — two crossings assert a property their code does not have: DE-30's
+  capabilities narrow "immediately" except for the one principal whose role rides a
+  ten-minute token, and DE-19's "context authority ends with the lease" over a lane where
+  no line reads run status at all.
 - **`E8-F011`** — DE-11 specifically: all four of its named controls are absent.
 
-An unaudited crossing gets an explicit deferral rather than a fabricated delivery claim,
-and `scripts/check-threat-control-audit-debt.mjs` now pins the unaudited count as a
-**ceiling that can only fall**. Today exactly one crossing is `not-delivered`:
+`scripts/check-threat-control-audit-debt.mjs` pins the unaudited count as a **ceiling that
+can only fall**, and that pin is now **zero** — so the ratchet's live work is its other two
+arms: no crossing may return to `unaudited`, and DE-02 may not stop being `delivered`.
+Today **four** crossings are `not-delivered`. Three were measured by W20B and are carried by
+`E0-F015` above — **DE-23** (cross-tenant backup or restore, Critical), **DE-25**
+(out-of-grant local folder mutation, High) and **DE-26** (real-provider isolation failure,
+Critical). The fourth is the original:
 
 - **DE-08 (Metadata/control-plane SSRF, Critical) is NOT DELIVERED.** Default-deny
   egress and blocked metadata/control-plane ranges are **required and absent**, not
@@ -200,5 +256,6 @@ residual risk carried forward to a later epic; none may be silently enabled.
 - **Cloud plugins.** Hosted cloud plugins remain disabled (DE-16) pending a separately isolated plugin-worker architecture and its release evidence; FND-006/FND-008 enforce the exclusion.
 - **Unvalidated gVisor bridge egress.** The deferred gVisor pool is not implemented; unvalidated gVisor bridge egress is excluded until its isolation and egress controls are validated.
 - **Active-active multi-region writes.** DE-27 covers a two-replica shared-admission configuration only; active-active multi-region writes are excluded, and no AoA database is a peer replica of another.
-- **Unattended orphan-output application.** Late, replaced, or orphaned output is quarantined (DE-05, DE-28); unattended orphan-output application into authoritative state is excluded and never automatic.
+- **Unattended orphan-output application.** Late, replaced, or orphaned output must never reach authoritative state: unattended orphan-output application into authoritative state is excluded and never automatic — that half is structural, since no promotion or checkpoint-selection operation exists anywhere in the frozen protocol to invoke. ★ **Corrected 2026-09-08:** the clause "late, replaced, or orphaned output *is quarantined*" was true of the receiver and false of the system. No shipped path can write a quarantined artifact row at all: `runOrphanQuarantine` sits three layers behind the zero-production-caller `createStartupReconciler` (`E0-F011` item 1, `E0-F014` item 5). A late result is therefore **dropped, not quarantined**, and a live deployment showing zero quarantine traffic is showing an unwired producer rather than a working control. See `deliveryStatus: partial` on DE-05 and DE-28.
+- **Cross-tenant backup or restore (DE-23), out-of-grant local folder mutation (DE-25), and real-provider isolation conformance (DE-26).** Like DE-08 and unlike the entries above, these are **not deliberate scope exclusions**: all three are chartered controls with owner tickets on disk, and all three were measured **`not-delivered`** by W20B on 2026-09-08 (finding `E0-F015`). DE-23's backup and restore code path has no organization or tenant parameter of any kind, so a restore overwriting every tenant with a whole-instance snapshot is its normal behaviour rather than its failure mode. DE-25's grant, base-containment and secret-floor refusals are real, well-tested and reachable only through a factory with zero production callers. DE-26's certified conformance suite has two call sites, both keyless doubles, and the real provider is already measured silently dropping the `ownershipSelector` the double honours. Listing them here is the point: the preamble above says these are residual risks and **not** mitigated controls, and before this entry existed the register's charter language placed all three on the mitigated side. Nothing in this document closes any of them.
 - **Sandbox egress to cloud metadata and the control plane (DE-08).** This is a residual risk, **not** a mitigated control, and its absence from this list until 2026-09-06 placed it on the mitigated side by the preamble above. Default-deny egress and blocked metadata/control-plane ranges are **required and absent**: finding `E8-F003` measured, against real E2B sandboxes with a positive control and an apparatus control that both held, that the declared egress allowlist is inert and that `169.254.169.254` answers from inside the guest. Unlike the other entries here, DE-08 is not a deliberate scope exclusion — it is a Critical control that was chartered, whose sole owner ticket (DAT-005) is complete, and that no layer enforces. See `deliveryStatus: not-delivered` on DE-08 and "Required vs delivered" above. Nothing in this document closes it.

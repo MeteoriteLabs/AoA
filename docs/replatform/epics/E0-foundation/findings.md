@@ -165,7 +165,7 @@ with **no row, no metric and no log line** recording that a security control fir
 | DE-13 (High) | "admission, throttle, and quota-breach events are audited" | `server/src/services/org-concurrency.ts:248` (capacity) and `server/src/services/worker-admission-rate-limit.ts:139` (`over_cap`). | **Nothing for the throttle.** `server/src/routes/worker-control.ts:414-416` returns the 429 through the same silent `sendWorkerOperationProtocolError`. The capacity 429 (`server/src/services/job-submission.ts:353`) surfaces only a generic `job_submission_rejected` reason code carrying neither cap nor usage. |
 | DE-14 (Critical) | "the startup safety-assertion outcome is logged" | `server/src/config/distributed-execution.ts:72` — measured throwing (see the DE-14 register evidence). | **Nothing, in either direction.** `server/src/config/distributed-execution.ts` imports no logger and contains no `logger`/`console` call at all — its only import is `import type { DeploymentMode }` at `:1`. The failure surfaces as an unhandled module-eval crash trace; the success outcome is never recorded. |
 
-**Why this is HIGH and not cosmetic.** Six of the seven crossings are the ones an operator would
+**Why this is HIGH and not cosmetic.** Seven of the eight crossings are the ones an operator would
 have to reconstruct an incident from. A cross-tenant read denied by RLS produces no error at all —
 it returns zero rows — so without an audit record there is no difference, anywhere in the system's
 own memory, between "an attacker probed thirty organizations and was refused thirty times" and
@@ -340,3 +340,250 @@ tenant-scoped, i.e. the blast radius the clause exists to bound is unbounded.
   re-measured, or — for (1) especially — the clause is AMENDED to state what the provider can
   actually enforce. Amendment is a founder decision and is not taken here. Resolve = flip this
   Status and delete the `E0-F012` key in `scripts/finding-ownership.json` in the SAME commit.
+
+## E0-F013 — The audit class, second cohort: nine more crossings assert that denials are audited, and on none of them is the denial recorded durably — on five of the nine nothing is recorded at all, and on the other four the success path is recorded and the refusal is not
+
+- **Status:** open
+- **Severity:** HIGH
+- **Filed:** 2026-09-08, by W20B (the recovered-audit landing unit). Every citation below was
+  measured at tip `4d5507a80` by the landing unit itself, not inherited from the auditor.
+- **Blocks gate:** No — a detection gap, not an enforcement gap. Every crossing named here does deny.
+
+**Why a sibling and not an edit to `E0-F010`.** `E0-F010` measured eight crossings and its count is
+correct for the cohort it audited. These are eight *different* crossings, from the sixteen an
+orchestration bug dropped out of W20's landing commit. Folding them in would have required
+rewriting that finding's title, table and count in a wave whose whole subject is counts that stop
+matching their data. The class is identical; the cohort is not.
+
+| Crossing | `audit` clause, verbatim | The line that denies | What records it |
+|---|---|---|---|
+| DE-15 (Critical) | "image admission, scan, and kill events are audited" | `server/src/services/job-leasing.ts:731-740` — the kill-switch drain return. | **Nothing.** The block constructs and returns the poll response and exits the transaction: no repository call, no `activity_log` row, no metric. The `metrics` object in scope records certificate scans, not kill verdicts. |
+| DE-16 (Critical) | "blocked plugin routes, dispatch, and reconciliations are audited" | `server/src/services/cloud-plugin-execution.ts:254`; the 503 helper at `server/src/routes/plugins.ts:381`. | **Partly — and unlike the rest of this table there IS a log line.** `recordCloudPluginBlock` (`cloud-plugin-execution.ts:225-247`) emits `logger.warn` with `event:"plugin.worker.cloud_blocked"`, `pluginId`, `companyId`, `activationSource`, `sink` and `reasonCode`. What is absent is durability: the counters it increments are module-level process memory that resets on restart, and no row is written anywhere. Nobody can answer "how often was this company's plugin dispatch refused last week" from the system's own memory. |
+| DE-17 (Critical) | "post-fence cleanup and denied escalations are audited" | `packages/adapter-manager/src/owned-op-gate.ts:154-156`; `packages/worker-daemon/src/supervisor/cleanup-authority.ts:127-144,162-165`. | **Nothing.** `owned-op-gate.ts` and `create-gate.ts` contain zero matches for `logger|console.|audit|metric`; the only such matches in `adapter-manager/src/server.ts` are the reaper sweep counter. A whole-tree sweep shows **nothing anywhere catches or logs `CleanupAuthorityDeniedError`** — every reference is a throw site, a class declaration, a barrel re-export or a conformance assertion. |
+| DE-18 (Critical) | "placement decisions and generation changes are audited" | `packages/db/src/repositories/tenant/job-control.ts:1177` / `:1167`. | **Partly.** A generation bump does write one durable `execution_target_revocations` row. Every *denial* the fence then produces returns as a protocol error with no row, no metric and no log line. |
+| DE-19 (Critical) | "context retrieval and denials are recorded in the retrieval audit" | `server/src/mcp/tools/read-tools.ts:289-290` and `:294-296`. | **Half.** Retrieval *is* recorded — `recordMemoryRetrievals` runs after the gate. **Both deny returns sit before it**, so a refused memory read writes nothing. The clause is delivered for the success path and absent for the path it exists to cover. |
+| DE-20 (Critical) | "cutover selection and rollback transitions are audited" | `server/src/services/heartbeat.ts:5399` → `:5451`. | **Half, and the other half cannot exist.** A distributed selection writes one `distributed_execution_handoff` run event; a legacy selection writes no durable row. There is no rollback transition to audit because there is no rollback (see `E0-F014`). |
+| DE-21 (High) | "subscribe, replay, and denial events are audited" | `server/src/realtime/live-events-ws.ts:1077-1079`. | **Nothing, with a positive control sitting beside it in the same file.** The 403 calls `rejectUpgrade`, whose entire body (`:106-112`) writes an HTTP status line to the socket and destroys it. The file *does* import `logger` (`:15`) and call it at eight sites — including `logger.error` at `:1090`, which fires only when the authorization function **threw**. So an internal fault is loud and a cross-tenant probe is silent. |
+| DE-27 (High) | "cross-replica admission and partition events are audited" | `server/src/services/worker-admission-rate-limit.ts:138-140`; `server/src/services/org-concurrency.ts:247-249`. | **Nothing, and the clause is unsatisfiable as written.** The `over_cap` deny returns through `sendWorkerOperationProtocolError`, whose whole body is a status-and-json write (`worker-protocol-http.ts:83-93`); `org-concurrency.ts` emits nothing at all. ★ A whole-tree sweep of `server/src` for `replicaId\|replica_id\|AOA_CONTROL_PLANE_REPLICA\|controlPlaneId` returns **zero hits** — the system has no replica identity, so no admission record could name a replica even if one were written, and there is no partition detector to produce a partition event. |
+| DE-29 (Critical) | "grant routing and wrong-owner denials are audited" | `packages/db/src/repositories/tenant/job-control.ts:3122`. | **Nothing, by ordering.** The audit UPDATE is `job-control.ts:3139` — *after* the throw at `:3122` — so on a denial it never runs and the transaction rolls back. The only trace is an anonymous `secretRead{outcome,count}` metric tick carrying no handle, owner, company or reason, which makes a **wrong-owner denial forensically indistinguishable from a stale fence**. |
+
+*(Nine rows; DE-24's audit clause is absent too, but for a different reason — there is no host-side
+event to record because there is no host-side updater. It is carried by `E0-F014`.)*
+
+**Why HIGH.** Two of these are worse than the `E0-F010` cohort rather than merely more of it.
+DE-27's clause names a fact about the system — "cross-replica" — **that the system has no vocabulary
+to express**: it is not unwritten, it is unwritable, and it cannot be closed by adding a logger call.
+DE-21 ships the counter-example to its own gap in one file: the code knows how to log, and the one
+path it does not log is the security refusal.
+
+**What it is NOT.** It is not a claim that any of these controls fail to deny. Every crossing here
+is recorded `partial` precisely because its enforcement half was measured holding.
+
+- **Affected crossings:** DE-15, DE-16, DE-17, DE-18, DE-19, DE-20, DE-21, DE-27, DE-29.
+- **Disposition:** `unowned`, for the reason `E0-F010` gives — no ticket on disk owns "record a
+  denial", and DE-27's case additionally needs a replica identity that does not exist. NOT
+  `accepted`: HIGH may never be accepted.
+- **Resolution condition:** each row's `audit` clause is either delivered against a named record
+  point with a production caller, or AMENDED to state what the programme intends (DE-27's is the
+  one most likely to need amending). Resolve = flip this Status and delete the `E0-F013` key in
+  `scripts/finding-ownership.json` in the SAME commit.
+
+## E0-F014 — The dead-arming-path class, second cohort: five more crossings are defended by a lever with zero production callers, including the rollback the cutover row calls "atomic" and the immutability check for the evidence ledger whose rule this repository has already broken three times
+
+- **Status:** open
+- **Severity:** HIGH
+- **Filed:** 2026-09-08, by W20B (the recovered-audit landing unit). Caller counts below were taken
+  by the landing unit as whole-tree sweeps excluding `node_modules` and `dist`.
+- **Blocks gate:** No — but it is the reason five register rows are `partial` rather than
+  `delivered`, and each of the five looks delivered from the register.
+
+**The class, as `E0-F011` states it.** The receiving half of the control is built, tested and
+correct, and the half that would ever arm it does not run in any deployment.
+
+1. **DE-18 (Critical) — the revocation fanout has no caller.** The fence denies correctly
+   (`job-control.ts:1177`), but `createExecutionTargetRevocationFanout`
+   (`server/src/services/execution-target-revocation-fanout.ts:43`) has **zero production callers**:
+   the whole tree holds its own declaration, `server/src/__tests__/worker-revocation.integration.test.ts:18,53`,
+   and a comment naming it in `scripts/lib/gate-clause-wiring.mjs:10`. Consequence: after a
+   revocation the lease stays `offered`/`active` and the `execution_target_revocations` row stays
+   `pending` forever, so the job attached to it is **stranded non-terminal with its organization
+   concurrency slot still held**.
+2. **DE-20 (Critical) — the rollback lever cannot be pulled, and the row's own word is "atomically".**
+   `createDistributedExecutionDrain` (`server/src/services/job-distributed-drain.ts:114`) has **zero
+   production callers** — declaration, two test files, and the same `gate-clause-wiring.mjs:10`
+   comment. Removing an organization from the rollout dial therefore does not cancel an in-flight
+   distributed run; it only changes what the *next* wake resolves. The `revocation` clause describes
+   a transition no code performs.
+3. **DE-22 (High) — the evidence ledger's immutability check has never run, and the rule it would
+   enforce is already broken in this repository's history.** `checkEvidenceImmutability`
+   (`scripts/check-distributed-execution-foundation.mjs:2633`, denies at `:2639` and `:2641`) has
+   **zero production callers**: its declaration, a comment at `:2199`, and five call sites inside
+   its own test file. ★ The landing unit measured the consequence rather than asserting it:
+   `docs/replatform/artifact-policy.md:54,67` makes a QA record "write-once from its first commit",
+   and `git log --follow` over
+   `docs/replatform/epics/E5-workspaces-secrets/qa/2026-08-24-d0-e5-exit-gate-audit-a1.md` returns
+   **two** commits — `6fc46988a` created it and `4379a2c53` rewrote it in place (+24/−4), inserting
+   a paragraph that begins *"This record originally said […]. That is wrong."* while the record's
+   own `Supersedes` field at tip still reads `— (E5 has no prior QA record; this is the first)`.
+   The correction bypassed the Supersedes mechanism entirely, on a branch that merged CI-green,
+   months after the deny function landed. Two further pairs were found by the auditor.
+4. **DE-24 (Critical) — the update admission that would run on a host is not connected to one.**
+   `evaluateUpdateAdmission` (`scripts/lib/update-admission.mjs:79-119`) is fail-closed and
+   well-tested, and its only non-test reference is the *promotion-time* verifier map at
+   `scripts/lib/release-manifest.mjs:66`. The host-side function that would refuse a tampered update
+   before apply, `planUpdateSwap` (`packages/worker-keystore/src/install-layout.ts:236-251`),
+   **verifies nothing** — `admitted`, `compatible` and `healthConfirmed` are injected booleans on its
+   input type (`:210-216`) — and has **zero non-test callers**, as does `runDrainBeforeSwap`
+   (`packages/worker-daemon/src/update/drain-before-swap.ts:102`). There is no code path by which an
+   enrolled desktop host refuses a tampered update, and no host-side event to audit.
+5. **DE-28 (Critical) — quarantine has no producer, so a live deployment shows zero quarantine
+   traffic.** This is `E0-F011` item 1 reached from the other side: the *receiver* denies correctly
+   (`job-control.ts:3741-3743`, `:3701-3708`; `quarantine-grant.ts:91`), and no shipped path can
+   write a quarantined artifact row, because `runOrphanQuarantine` sits three layers behind the
+   zero-production-caller `createStartupReconciler`. ★ **An operator must not read that silence as
+   the control working.**
+
+**Why HIGH.** (1) strands jobs and holds concurrency slots. (2) means the cutover row's stated
+rollback guarantee is prose. (3) means the programme's own evidence discipline is unenforced and has
+already failed silently, which is the exact `checks-that-nothing-runs` shape this repository keeps
+paying for. (4) means the desktop supply-chain control stops at the release directory.
+
+**What it is NOT.** None of the five is a wrong implementation, and (3) is not an accusation of bad
+faith — the in-place correction it names was made in good faith and improved the record. The defect
+is that nothing could tell the difference.
+
+- **Affected crossings:** DE-18, DE-20, DE-22, DE-24, DE-28.
+- **Disposition:** `unowned`, and unevenly. (3) is the cheapest — wire `checkEvidenceImmutability` to
+  a CI step that materialises the merge-base tree and calls it with `(base, HEAD)`, then re-run it
+  over the three commits above as a positive control. (1), (2) and (5) need composition-root wiring
+  no ticket on disk carries. (4) needs a host binary that does not exist. NOT `accepted`: HIGH may
+  never be accepted.
+- **Resolution condition:** each lever gets a production caller and a test that goes red when the
+  caller is removed, or the clause it arms is AMENDED. Resolve = flip this Status and delete the
+  `E0-F014` key in `scripts/finding-ownership.json` in the SAME commit.
+
+## E0-F015 — Three crossings are `not-delivered` on measurement: one has no tenant parameter anywhere in its code path, one has every deny line behind a zero-caller factory, and one has a conformance suite that has never been run against the thing it certifies
+
+- **Status:** open
+- **Severity:** HIGH
+- **Filed:** 2026-09-08, by W20B (the recovered-audit landing unit).
+- **Blocks gate:** No, but read the severities: two of the three crossings are Critical.
+
+**Why these are `not-delivered` and not `partial`.** `partial` requires at least one clause enforced
+by a named line that was exhibited denying **on a path that ships**. These three have none.
+
+1. **DE-23 (Critical) — the backup/restore crossing has no tenant dimension at all.** This is not a
+   missing check; it is a missing *parameter*. `runDatabaseRestore` (`packages/db/src/backup-lib.ts:1056`)
+   takes `{connectionString, backupFile, connectTimeoutSeconds}` (`:37-41`) and is therefore
+   **structurally incapable** of a tenant decision; it pipes the whole dump into psql or, on the
+   fallback, executes every statement unconditionally (`:1073-1075`). The backup is instance-wide:
+   the default `auto` engine short-circuits at `:613` into `runPgDumpBackup` (`:618`), which runs
+   `pg_dump` with `--clean --if-exists --no-owner --no-privileges` over the full DSN (`:388-393`) —
+   no `-n`, no `--table`, no organization filter — and `RunDatabaseBackupOptions` has no
+   organization field. ★ So the row's `failureMode`, *"a restore exposes or reintroduces another
+   tenant's data"*, is **the default behaviour of the only documented invocation**. The one line the
+   owning design nominates as the guard, `manifest-reconciliation.ts:103-105`, returns the string
+   `"wrong_prefix"` inside a result struct — a classification, not a denial — runs *after* the
+   restore has written the object, and sits in functions with zero production callers.
+2. **DE-25 (High) — every folder-grant deny is behind a factory nothing calls.** The refusals are
+   real and well-tested (`folder-grant-binding.ts:81,83,86,89`; `folder-grant.ts:148,151`) and every
+   one is reached only through `createFolderGrantService` (`folder-grant.ts:66`), whose whole-tree
+   caller census is its own declaration plus two test files. The module says so about itself at
+   `:7-8`: it *"is INERT until a capture/reconcile path reads it"*. Daemon-side is worse than inert:
+   `buildWorkspaceManifest` (`snapshot/build-manifest.ts:308`) is also zero-production-caller **and**
+   does not confine its walk to a granted base. The `integrity` clause has no line at all —
+   `detectIsolationMechanism` (`enrollment/isolation-capabilities.ts:86`) is never called in
+   production and the single production site hardcodes `isolation: "none"`
+   (`bin/worker-daemon.ts:536`), for which `capabilitiesForIsolation` returns `[]` (`:50`).
+   `folder_grants` declares `revoked_at` (`packages/db/src/schema/folder_grants.ts:39`) and **no
+   expiry column**, and `offlinePolicy: "cancel"` is written into every assignment
+   (`job-leasing.ts:391`) and read by nothing.
+3. **DE-26 (Critical) — the real-provider conformance run has never happened, and the mock it was
+   run against is already known to diverge in exactly the way the row names.**
+   `runSandboxIsolationConformance` (`packages/sandbox-provider-contract/src/isolation-contract.ts:89`)
+   has exactly **two call sites, both keyless doubles** — the hostile fake, and
+   `sandbox-e2b-provider/src/__tests__/conformance.test.ts:46` over a `MockE2bTransport`, whose own
+   header says it runs *"with NO key and NO network"*. The one lane that touches real E2B
+   (`.github/workflows/keyed-e2b-conformance.yml:79`) runs a file that never imports the suite, is
+   `workflow_dispatch`-only, and is not in `ci-required`. ★ And the divergence is not hypothetical:
+   `ListInput.ownershipSelector` is a **required** port field
+   (`packages/worker-daemon/src/supervisor/provider.ts:288`); the fake honours it; the real provider
+   forwards only `{pageSize, pageToken}` to the transport
+   (`packages/sandbox-e2b-provider/src/e2b-provider.ts:412-414`) and returns **every sandbox in the
+   E2B account**. The codebase already says so twice in its own comments
+   (`packages/adapter-manager/src/reconcile-reaper.ts:104-106`; `owned-op-gate.ts:201-206`).
+   **This is the `E8-F003` shape verbatim** — a field accepted, typed, required, honoured by the
+   double, and inert in the real implementation — and it is the strongest available argument that a
+   conformance suite run only against doubles cannot close a real-provider crossing.
+
+**Why HIGH.** (1) is a Critical crossing whose stated failure mode is the code's normal behaviour.
+(3) is a Critical crossing whose entire verification story is a suite that has never met its subject,
+against a provider already measured dropping a required isolation input.
+
+- **Affected crossings:** DE-23, DE-25, DE-26.
+- **Disposition:** `unowned`. (1)'s successor is scoped but unbuilt (`DBR-001-design.md`, status
+  "scoping"); (2)'s owner tickets shipped the pure functions and no caller; (3)'s owner `DEP-008`
+  **explicitly scopes the real-provider half out** in its own design and repeats it in its result's
+  residual risk, and `REL-004` names no `DE-` id at all — so DE-26's exit is chartered by two written
+  tickets neither of which owns the control. Existence is not chartering. NOT `accepted`: HIGH may
+  never be accepted.
+- **Resolution condition:** (1) a restore entrypoint that takes a tenant and refuses a cross-tenant
+  apply; (2) a production caller plus an anti-orphan directory-walk test in the style of
+  `scripts/check-guard-inventory.mjs`; (3) one keyed run of the certified suite against the real
+  transport, recorded per-check — the experiment is cheap, needs only the existing repo secret, and
+  is written out in `docs/replatform/DE-AUDIT-live-experiments.md`. Resolve = flip this Status and
+  delete the `E0-F015` key in `scripts/finding-ownership.json` in the SAME commit.
+
+## E0-F016 — Two crossings assert a revocation or authority property their code does not have: capabilities that narrow "immediately" except for the one principal whose role rides a ten-minute token, and a context authority declared to end with a lease that is never consulted
+
+- **Status:** open
+- **Severity:** HIGH
+- **Filed:** 2026-09-08, by W20B (the recovered-audit landing unit).
+- **Blocks gate:** No.
+
+**The class.** Not a missing mechanism (`E0-F012`) and not a dead lever (`E0-F011`/`E0-F014`), but a
+clause whose *wording* is stronger than the code — where the honest remedies are "build it" **or**
+"amend the sentence", and amending is a founder decision.
+
+1. **DE-30 (Critical), `revocation`: "membership or enrollment changes IMMEDIATELY narrow
+   capabilities."** For user, mcp and worker principals this holds, and holds well:
+   `admittedUserRequester` (`packages/db/src/repositories/tenant/job-control.ts:1441-1467`) re-reads
+   the organization membership with `status = 'active'` (`:1453`) and the company membership
+   (`:1462`) inside the submission transaction, and the gate tests the **server-derived** kind
+   (`server/src/services/job-submission.ts:164`, refusing at `:166`), never the client's claim.
+   **The commander principal does not go through it.** The branch at `job-control.ts:1570-1577`
+   accepts `input.principalRole` — a claim carried on the run JWT — provided the
+   Organization→Company edge exists, and that JWT's TTL defaults to **600 seconds**
+   (`server/src/agent-auth-jwt.ts:180`). A commander whose role is narrowed keeps the old scope for
+   up to ten minutes. The clause says "immediately".
+   *Secondary, and cheap:* nothing on the submission lane tests the requester-side revocation at
+   all — deleting the `status='active'` predicate at `:1453` turns nothing red today.
+2. **DE-19 (Critical), `authentication` and `revocation`: "a worker session with tenant/job/lease/fence
+   authorization" and "context authority ends with the lease and fence."** Neither exists on the lane
+   that ships. The distributed worker lane is **not instantiated** — `packages/worker-protocol`
+   carries no memory or context field, and `worker-daemon`/`worker-networked-host` hold zero
+   references to `AOA_API_KEY`, `AOA_API_URL` or `/mcp` — so the sandbox→MCP-broker lane is the only
+   measurable one, and there the bearer is an agent JWT with a TTL and **no line anywhere checks run
+   status on a memory read**. The token therefore outlives the run it was issued for. The
+   `integrity` clause ("workers cannot write memory") is likewise unenforced: the outbound MCP
+   fallthrough is not gated by the per-agent tool allowlist. There is also **no database backstop** —
+   migration `0211` ENABLEs and FORCEs RLS on eight distributed-kernel tables and `memory_items` is
+   not among them, so "never direct memory-table access" rests entirely on application code.
+
+**Why HIGH.** (1) is a Critical crossing whose whole subject is that server-derived scope beats
+self-asserted claims, and the one principal that still carries a role in a token is the one with the
+broadest reach. (2) means a captured sandbox credential remains a valid reader of company memory for
+its full token lifetime after the run that justified it has ended.
+
+- **Affected crossings:** DE-19, DE-30.
+- **Disposition:** `unowned`. (1) has two honest resolutions and they are different decisions:
+  re-derive the commander requester through `admittedUserRequester` (dropping the `principalRole`
+  token claim from the trust decision), or amend the clause to read "immediately for user/mcp/worker
+  principals; bounded by the commander run-JWT TTL for the commander principal". (2) is `DAT-007`'s
+  deferred half — its result document is explicit that the remote-reach core is blocked — and
+  `REL-001`, the ticket that would close it at release level, has zero files. NOT `accepted`: HIGH
+  may never be accepted.
+- **Resolution condition:** each clause is either delivered against a named line or AMENDED to state
+  the bound the code actually provides. **Do not leave a field asserting "immediately" while the code
+  does not.** Resolve = flip this Status and delete the `E0-F016` key in
+  `scripts/finding-ownership.json` in the SAME commit.

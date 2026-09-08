@@ -208,7 +208,10 @@ const THREAT_CROSSING_REQUIRED_FIELDS = [
 //                   to claim delivery would have reproduced, at scale, exactly the
 //                   misrepresentation this field exists to end.
 // `partial` — added by W20, when twelve crossings were audited at once and every one of
-//             them came back split: some asserted clauses enforced by a named line that
+//             them came back split (W20B then recorded sixteen more, of which thirteen are
+//             also `partial` — so do NOT read "twelve" here as the register's current count;
+//             it is the cohort that occasioned the value):
+//             some asserted clauses enforced by a named line that
 //             was exhibited denying, others absent. Neither of the two existing verdicts
 //             could say that. Recording such a row `delivered` would assert controls that
 //             are not there; recording it `not-delivered` would erase enforcement that was
@@ -1112,10 +1115,15 @@ async function loadFindingRegister(root, errors) {
  *      OPEN finding in scripts/finding-ownership.json.
  *
  * SCOPE LIMIT OF CLAUSE 4 — read this before trusting any "delivered" value. Clause 4
- * constrains ONLY those crossings some open finding's prose happens to name; at the
- * time of writing that is 1 crossing out of 30. For the other 29 it is vacuous, and
- * "delivered" is then gated by clause 2 alone — i.e. by the presence of author-written
- * prose. Two consequences follow, both demonstrated by the review of PR #364:
+ * constrains ONLY those crossings some open finding's prose happens to name. When this
+ * comment was first written that was 1 crossing out of 30; after the W20 and W20B audits
+ * it is 29 of 30, and the ONE crossing it does not name is DE-02 — the register's only
+ * "delivered" row. So the clause is now a strong ratchet against flipping a
+ * measured-absent row to "delivered", and it remains exactly as vacuous as before for
+ * the one row that actually claims delivery, which is the row a reader most wants
+ * checked. Where it is vacuous, "delivered" is gated by clause 2 alone — i.e. by the
+ * presence of author-written prose. Two consequences follow, both demonstrated by the
+ * review of PR #364:
  *   - a crossing no finding names can be flipped to "delivered" by writing any
  *     non-empty evidence string; this checker will pass it.
  *   - the coupling is EDITORIAL, not structural: rewording a finding so its prose no

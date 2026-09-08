@@ -2513,9 +2513,16 @@ test("W4U2 M4: not-delivered without deliveryEvidence is refused", async (t) => 
 // DE-15 (not DE-01) because W20 audited DE-01 and moved it to `partial`. The test needs a
 // crossing that is still genuinely `unaudited`; picking one that has since been audited is
 // how a mutation test quietly stops testing the arm it names.
+// W20B: this fixture used to borrow whichever crossing happened to be `unaudited` in the
+// real register, and DE-15 was one. After W20B recorded the last sixteen audits NO crossing
+// is `unaudited` any more, so the fixture must now MINT the state it is testing rather than
+// assume the tree still supplies it. The mutation is unchanged and still real — an unaudited
+// crossing with no `deliveryEvidence` must be refused — but it is now stated explicitly
+// instead of riding on a tree property that has (rightly) gone away.
 test("W4U2 M5: an unaudited deferral without a reason is refused (no silent deferral)", async (t) => {
   const root = makeFixture(t, ({ threatControlsPath }) => {
     setCrossing(threatControlsPath, "DE-15", (c) => {
+      c.deliveryStatus = "unaudited";
       delete c.deliveryEvidence;
     });
   });
@@ -2574,7 +2581,11 @@ test("W20 M14: partial citing a finding that is not in the register is refused",
   assertDe02Unaffected(errors);
 });
 
-test("W20 M15: the shipped register's twelve partial rows all satisfy the citation rule (positive control)", async (t) => {
+// W20B: the title used to say "twelve", which was true when W20 wrote it and stopped being
+// true the moment the remaining sixteen audits landed. The assertion never read a count —
+// it checks EVERY partial row — so the number was decoration that could only go stale.
+// Named for what it does instead.
+test("W20 M15: every partial row in the shipped register satisfies the citation rule (positive control)", async (t) => {
   const root = makeFixture(t, () => {});
   const { errors } = await runCheck(root);
   const offenders = errors.filter((e) => /deliveryStatus "partial"/.test(e) || /cites finding .* which is not in/.test(e));
