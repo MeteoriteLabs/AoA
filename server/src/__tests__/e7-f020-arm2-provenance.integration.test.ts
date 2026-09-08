@@ -44,11 +44,16 @@ import {
   type JobControlFixture,
 } from "./helpers/job-control-fixture.js";
 import { runInTenantReadOnly } from "../db/tenant-context.js";
-import { jobOutputBridge, type BridgeActor } from "../services/job-output-bridge.js";
+import {
+  jobOutputBridge,
+  type BridgeActor,
+  type BridgeOutputInput,
+} from "../services/job-output-bridge.js";
 import { emitRuntimeServiceTaskOutput } from "../services/task-output-emitters.js";
 import { createDrizzleE7RunVerifierStore } from "../services/e7-distributed-run-verifier-store.js";
 import {
   createE7DistributedRunVerifier,
+  detectHardLeakClasses,
   type E7ProducedOutputCounts,
   type E7ScanSurface,
   type E7VerifyResult,
@@ -61,6 +66,7 @@ const ISSUE = "a8000000-0000-4000-8000-0000000000f1";
 const RUN = "a8000000-0000-4000-8000-0000000000c1";
 const SERVICE = "a8000000-0000-4000-8000-0000000000d1";
 const DIGEST = "c".repeat(64);
+const PATCH_ARTIFACT = "a8000000-0000-4000-8000-0000000000e9";
 // A recognizable leak-class value for clause 4's `provider_key` matcher
 // (/\bsk-(?:ant-)?[A-Za-z0-9_-]{12,}\b/). NOT a credential — the same synthetic shape the
 // pure verifier suite already plants (`e7-distributed-run-verifier.test.ts:39`).
@@ -140,6 +146,34 @@ async function scanForJob(
     const result = await createE7DistributedRunVerifier({ store }).verify({ runId: RUN });
     return { surfaces, result };
   });
+}
+
+/**
+ * A COMMITTED `workspace_patch` row for one attempt of a job — arm 1's evidence.
+ *
+ * Planted with admin SQL rather than driven through `commitArtifactVersion`, which would need
+ * a grant, an object upload and a byte-verified sha256 for a row this test only ever SELECTs.
+ * The column set is copied from that sole committed-row writer
+ * (`repositories/tenant/job-control.ts` `commitArtifactVersion`), including the `attempt`
+ * NUMBER it always stamps — the shape assertion below is what keeps this honest.
+ */
+async function plantCommittedWorkspacePatch(
+  jobId: string,
+  attemptNumber: number,
+  artifactId: string,
+): Promise<void> {
+  await fixture!.admin`INSERT INTO job_artifacts
+    (id, organization_id, job_id, identifier, object_key, sha256, size_bytes, content_type,
+     kind, sensitivity, retention, attempt, version_number, status, committed_at)
+    VALUES (${artifactId}, ${ORG}, ${jobId}, ${`patch-a${attemptNumber}`},
+      ${`artifacts/${jobId}/${attemptNumber}/patch`}, ${"7".repeat(64)}, 512, 'application/octet-stream',
+      'workspace_patch', 'customer_content', 'job_lifetime', ${attemptNumber}, 1, 'committed',
+      clock_timestamp())`;
+  const [row] = await fixture!.admin`SELECT attempt, status, kind FROM job_artifacts WHERE id = ${artifactId}`;
+  const planted = row as { attempt: number; status: string; kind: string };
+  if (planted.attempt !== attemptNumber || planted.status !== "committed" || planted.kind !== "workspace_patch") {
+    throw new Error("planted workspace_patch does not have the committed-writer shape");
+  }
 }
 
 /** The clause-4 hard failures naming a specific `task_outputs` row. SHAPE only — the reason
@@ -392,5 +426,236 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(clause4HitsFor(result, outputId)).toHaveLength(1);
       expect(result.observed.producedArtifacts.taskOutputs).toBe(1);
     });
+  },
+);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// E7-F031 — the RETRY/ATTEMPT axis. `countProducedOutputs` bound to the JOB, not the ATTEMPT.
+//
+// ★ THE DEFECT. A job carries `max_attempts` (default 3) and EVERY attempt shares the
+// `job_id`, while a heartbeat run is bound to exactly ONE attempt (`distributed_attempt_id`,
+// written once by `buildHandoffRunPatch`; the projector's `findRunForAttempt` looks the run up
+// by that exact pair). Both arms of the capability counter filtered on `job_id` alone, so an
+// output projected by attempt 2 — or a workspace_patch committed by attempt 2 — printed
+// `capability: PROVEN` for a run bound to attempt 1 THAT PRODUCED NOTHING. Same false-PROVEN
+// class as E7-F020, on a new axis: W21 replaced a column-provenance bug with a granularity bug.
+//
+// ★ WHY BINDING TO THE ATTEMPT IS NOT AN OVER-NARROWING. On a retried job nothing ever
+// re-points `heartbeat_runs.distributed_attempt_id` at the new attempt (grep: the column has
+// exactly one writer, at handoff). So the control plane ITSELF does not attribute attempt 2 to
+// this run — `findRunForAttempt` finds no run for attempt 2's terminal and never finalizes it,
+// and clause 3 refuses the run for want of a durable terminal. Counting attempt 2's output for
+// attempt 1's run was the anomaly; excluding it agrees with every other consumer in the file.
+//
+// ★ THE SCANNER IS NOT TOUCHED, AND MUST NOT BE — see the `[sibling-scan]` arm.
+// ═══════════════════════════════════════════════════════════════════════════════
+describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")(
+  "E7-F031 — the capability counter binds to the run's ATTEMPT, not its job",
+  () => {
+    // THE DEFECT (arm 2) ----------------------------------------------------
+    // RED at f171d0dad: the receipt is on attempt 2, the run is bound to attempt 1, and the
+    // job-granular predicate counted it — a false PROVEN over an output-free run.
+    it("[sibling arm2] an output projected by a SIBLING attempt of the same job is NOT counted", async () => {
+      guard();
+      const { seeded } = await fixture!.activateLease(9);
+      const sibling = await fixture!.activateSiblingLease(seeded, 2, 9);
+      const projected = await jobOutputBridge(fixture!.app.db, { env: ENABLED_ENV }).projectAcceptedOutput({
+        source: TASK_SOURCE,
+        actor,
+        fence: sibling.identity,
+        acceptedEventId: randomUUID(),
+        eventDigest: DIGEST,
+        issueId: ISSUE,
+        output: { type: "external_link", title: "W21C retry output", url: "https://example.test/w21c-retry" },
+      });
+      expect(projected.status).toBe("recorded");
+      // Anti-vacuity: the receipt really is bound to the OTHER attempt of the SAME job.
+      const [receipt] = await fixture!.admin`SELECT job_id, attempt_id FROM job_projection_receipts
+        WHERE projection_kind = 'output_projection'`;
+      const bound = receipt as { job_id: string; attempt_id: string };
+      expect(bound.job_id).toBe(seeded.jobId);
+      expect(bound.attempt_id).toBe(sibling.attemptId);
+      expect(bound.attempt_id).not.toBe(seeded.attemptId);
+
+      // The run under verification is bound to attempt 1 and produced nothing of its own.
+      const counts = await countsForJob(seeded.jobId, seeded.attemptId);
+      expect(counts.taskOutputs).toBe(0);
+    });
+
+    // POSITIVE CONTROL — the arm that reds on an over-narrow predicate or a `return 0`.
+    it("[own arm2] the SAME receipt counts for the run bound to the attempt that produced it", async () => {
+      guard();
+      const { seeded } = await fixture!.activateLease(10);
+      const sibling = await fixture!.activateSiblingLease(seeded, 2, 10);
+      await jobOutputBridge(fixture!.app.db, { env: ENABLED_ENV }).projectAcceptedOutput({
+        source: TASK_SOURCE,
+        actor,
+        fence: sibling.identity,
+        acceptedEventId: randomUUID(),
+        eventDigest: DIGEST,
+        issueId: ISSUE,
+        output: { type: "external_link", title: "W21C own-attempt output", url: "https://example.test/w21c-own" },
+      });
+      const counts = await countsForJob(seeded.jobId, sibling.attemptId);
+      expect(counts.taskOutputs).toBe(1);
+    });
+
+    // THE DEFECT (arm 1) ----------------------------------------------------
+    // The census (D) turned this up: arm 1 is the same job-granular predicate in the same
+    // PRECISION direction, and it is the OTHER half of one `arm1 < 1 && arm2 < 1` gate — so
+    // fixing only arm 2 would leave the gate falsely openable by exactly the closed mechanism.
+    it("[sibling arm1] a workspace_patch committed by a SIBLING attempt is NOT counted", async () => {
+      guard();
+      const { seeded } = await fixture!.activateLease(11);
+      await fixture!.activateSiblingLease(seeded, 2, 11);
+      await plantCommittedWorkspacePatch(seeded.jobId, 2, PATCH_ARTIFACT);
+      const counts = await countsForJob(seeded.jobId, seeded.attemptId);
+      expect(counts.workspacePatchArtifacts).toBe(0);
+      expect(counts.taskOutputs).toBe(0);
+    });
+
+    // POSITIVE CONTROL for arm 1 — arm 1 must still be passable on its own attempt.
+    it("[own arm1] a workspace_patch committed by the run's OWN attempt IS counted", async () => {
+      guard();
+      const { seeded } = await fixture!.activateLease(12);
+      await plantCommittedWorkspacePatch(seeded.jobId, 1, PATCH_ARTIFACT);
+      const counts = await countsForJob(seeded.jobId, seeded.attemptId);
+      expect(counts.workspacePatchArtifacts).toBe(1);
+    });
+
+    // THE NULL CASE — stated, chosen, and pinned rather than left to fall through.
+    it("[null attempt] a run with a job id but NO attempt id counts nothing on either arm", async () => {
+      guard();
+      const { seeded, identity: fence } = await fixture!.activateLease(13);
+      await jobOutputBridge(fixture!.app.db, { env: ENABLED_ENV }).projectAcceptedOutput({
+        source: TASK_SOURCE,
+        actor,
+        fence,
+        acceptedEventId: randomUUID(),
+        eventDigest: DIGEST,
+        issueId: ISSUE,
+        output: { type: "external_link", title: "W21C null-attempt", url: "https://example.test/w21c-null" },
+      });
+      await plantCommittedWorkspacePatch(seeded.jobId, 1, PATCH_ARTIFACT);
+      // Both arms would count on a job-granular predicate; with no attempt to attribute the
+      // work to, a PRECISION consumer must refuse rather than widen back to job scope.
+      const counts = await countsForJob(seeded.jobId, null);
+      expect(counts.taskOutputs).toBe(0);
+      expect(counts.workspacePatchArtifacts).toBe(0);
+      // Anti-vacuity: with the attempt id present the very same rows DO count, so the zero
+      // above is the null-case decision and not a broken fixture.
+      const bound = await countsForJob(seeded.jobId, seeded.attemptId);
+      expect(bound.taskOutputs).toBe(1);
+      expect(bound.workspacePatchArtifacts).toBe(1);
+    });
+
+    // ★★★ THE ASYMMETRY PIN, on the ATTEMPT axis. GREEN before and after this change.
+    // Reds the moment someone "makes the scanner consistent" by copying the counter's new
+    // attempt predicate into `listRunSecretScanSurfaces` — which would stop scanning a
+    // sibling attempt's output and let a secret in attempt 2's summary go unseen while
+    // verifying attempt 1. That is the mirror defect, and it is the SECOND time collapsing
+    // these two consumers onto one predicate has been proposed.
+    it("[sibling-scan] the SECRET SCANNER still sees a sibling attempt's output — recall is job-wide", async () => {
+      guard();
+      const { seeded } = await fixture!.activateLease(14);
+      const sibling = await fixture!.activateSiblingLease(seeded, 2, 14);
+      const projected = await jobOutputBridge(fixture!.app.db, { env: ENABLED_ENV }).projectAcceptedOutput({
+        source: TASK_SOURCE,
+        actor,
+        fence: sibling.identity,
+        acceptedEventId: randomUUID(),
+        eventDigest: DIGEST,
+        issueId: ISSUE,
+        output: {
+          type: "external_link",
+          title: "W21C sibling-scan output",
+          url: "https://example.test/w21c-sibling-scan",
+          summary: `retry transcript tail: ${PLANTED_PROVIDER_KEY}`,
+        },
+      });
+      const outputId = projected.outputId as string;
+      const { surfaces, result } = await scanForJob(seeded.jobId, seeded.attemptId);
+      expect(surfaces.some((s) => s.surface === "task_outputs" && s.fieldOrEventId === outputId)).toBe(true);
+      expect(clause4HitsFor(result, outputId)).toHaveLength(1);
+      // …and the counter, on the very same row, refuses. The divergence is asserted, not
+      // merely tolerated: one row, scanned by clause 4 and NOT counted by clause 6.
+      expect(result.observed.producedArtifacts.taskOutputs).toBe(0);
+    });
+  },
+);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// E7-F030 (residual) — the COLUMN-set recall gap in `listRunSecretScanSurfaces` (2).
+//
+// The row-set gap was fixed at f171d0dad and the column-set gap was RECORDED rather than
+// fixed. An adversarial checker then measured it: a key planted in `title` reaches a row that
+// IS surfaced, and is NOT scanned, so `detectHardLeakClasses` returns nothing. `title` (NOT
+// NULL) and `url` — plus `provider`, `external_id` and `health_status` — are all caller-
+// authored free text that `BridgeOutputInput` passes straight through to the row.
+// ═══════════════════════════════════════════════════════════════════════════════
+describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")(
+  "E7-F030 residual — every caller-authored task_outputs column is scanned",
+  () => {
+    // RED at f171d0dad, every arm: the scan text was `summary + metadata` only.
+    const LEAKY_OUTPUTS: ReadonlyArray<{ column: string; output: BridgeOutputInput }> = [
+      {
+        column: "title",
+        output: { type: "external_link", title: `W21C ${PLANTED_PROVIDER_KEY}`, url: "https://example.test/w21c-col" },
+      },
+      {
+        column: "url",
+        output: {
+          type: "external_link",
+          title: "W21C url-scan output",
+          url: `https://example.test/w21c-col?token=${PLANTED_PROVIDER_KEY}`,
+        },
+      },
+      {
+        column: "provider",
+        output: { type: "external_link", title: "W21C provider-scan", url: null, provider: PLANTED_PROVIDER_KEY },
+      },
+      {
+        column: "externalId",
+        output: { type: "external_link", title: "W21C external-id-scan", url: null, externalId: PLANTED_PROVIDER_KEY },
+      },
+      {
+        column: "healthStatus",
+        output: { type: "external_link", title: "W21C health-scan", url: null, healthStatus: PLANTED_PROVIDER_KEY },
+      },
+    ];
+    for (const { column, output } of LEAKY_OUTPUTS) {
+      it(`[column] a key planted in \`${column}\` on a bridge-projected row reaches clause 4`, async () => {
+        guard();
+        const { seeded, identity: fence } = await fixture!.activateLease(15);
+        const projected = await jobOutputBridge(fixture!.app.db, { env: ENABLED_ENV }).projectAcceptedOutput({
+          source: TASK_SOURCE,
+          actor,
+          fence,
+          acceptedEventId: randomUUID(),
+          eventDigest: DIGEST,
+          issueId: ISSUE,
+          // The leak is in THIS column and nowhere else — no summary, no metadata — so a
+          // hit can only come from the column under test.
+          output,
+        });
+        expect(projected.status).toBe("recorded");
+        const outputId = projected.outputId as string;
+
+        // Anti-vacuity: the value really landed in that column, and summary/metadata are empty.
+        const [stored] = await fixture!.admin`SELECT summary, metadata FROM task_outputs WHERE id = ${outputId}`;
+        const row = stored as { summary: string | null; metadata: unknown };
+        expect(row.summary).toBeNull();
+        expect(row.metadata).toBeNull();
+
+        const { surfaces, result } = await scanForJob(seeded.jobId, seeded.attemptId);
+        const surface = surfaces.find((s) => s.surface === "task_outputs" && s.fieldOrEventId === outputId);
+        expect(surface).toBeDefined();
+        expect(detectHardLeakClasses(surface!.text)).toContain("provider_key");
+        const hits = clause4HitsFor(result, outputId);
+        expect(hits).toHaveLength(1);
+        expect(hits[0]).toContain("provider_key");
+        expect(hits[0]).not.toContain(PLANTED_PROVIDER_KEY);
+      });
+    }
   },
 );

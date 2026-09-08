@@ -28,36 +28,62 @@
 // secrets (E7-F030, found in review of PR #385). The two consumers had drifted because
 // the notion was never written down in one place. It is written down here.
 //
+// W21C then found that the census itself had a blind spot: it reasoned about WHICH LINKAGE
+// each consumer used and never about AT WHAT GRANULARITY. Both arms of the capability counter
+// were bound to the JOB while a run is bound to one ATTEMPT of it, so a retry attempt's work
+// printed `capability: PROVEN` for a run that produced nothing (E7-F031). The census below
+// therefore carries the attempt axis explicitly for every row.
+//
 // ★ THE NOTION IS NOT CENTRALISABLE INTO ONE PREDICATE, and that is the point. Each
 // consumer's correct predicate is chosen by its ERROR DIRECTION:
 //
 //   PRECISION consumers (a wrong row → a false PASS / false PROVEN → must EXCLUDE when unsure)
 //   RECALL    consumers (a missed row → a missed secret / missed refusal → must INCLUDE when unsure)
 //
-// | # | consumer                                | linkage used                                    | direction | right? |
-// |---|-----------------------------------------|-------------------------------------------------|-----------|--------|
-// | 1 | getRun                                  | heartbeat_runs.id = runId (PK)                  | exact     | yes    |
-// | 2 | getAttempt                              | job_attempts.id = run.distributed_attempt_id    | precision | yes — the service re-checks company_id and job_id against the run (clause 5), so a dangling/mismatched id REFUSES |
-// | 3 | listLeases                              | leases.attempt_id                               | precision | yes — clause 5 counts corroboration; a foreign lease would be a false PASS. Tenant-filtered in the service |
-// | 4 | listJobEvents                           | job_events.attempt_id                           | BOTH      | yes — serves clause 5 (counts, tenant-filtered) AND clause 4 (payload scan, unfiltered). attempt_id is the only linkage the table has, and it is exact, so the two directions do not conflict here |
-// | 5 | getAttemptTerminalReceipt               | job_projection_receipts.attempt_id + kind       | precision | yes |
-// | 6 | listRunSecretScanSurfaces (1) heartbeat | heartbeat_runs.id (PK)                          | exact     | yes    |
-// | 7 | listRunSecretScanSurfaces (2) outputs   | ★ UNION: applied output_projection receipt on   | RECALL    | yes, AS OF THIS CHANGE. It was `created_by_run_id` alone — E7-F030 |
-// |   |                                         |   run.distributed_job_id  OR  created_by_run_id |           |        |
-// | 8 | listRunSecretScanSurfaces (3) artifacts | job_artifacts.job_id = run.distributed_job_id   | recall    | yes — job_id is the ONLY linkage the table has (no run column), so the union is a singleton |
-// | 9 | countProducedOutputs arm 1              | job_artifacts.job_id + kind + status            | precision | yes (its open question is E7-F019 — `kind` is the caller's declaration — not its linkage) |
-// |10 | countProducedOutputs arm 2              | applied output_projection receipt on job_id     | PRECISION | yes — E7-F020's narrowing. DO NOT widen it to #7's union |
+// ★★ THE CENSUS HAS THREE AXES, because it has now been wrong on two of them. The ROW-LINKAGE
+// axis ("which linkage column") was the only one the first census reasoned about, and it missed
+// both of the others:
 //
-// #7 and #10 read the same table for opposite purposes and MUST stay divergent. The
-// divergence is the correct state; what was missing was a written reason, which is now
-// at the #7 call site.
+//   ROW LINKAGE  — receipt join vs `created_by_run_id` vs a PK.            (E7-F030, fixed)
+//   GRANULARITY  — JOB-wide vs this run's ATTEMPT. A job carries
+//                  `max_attempts` (default 3) and every attempt shares the
+//                  job_id, while a run is bound to exactly ONE attempt.    (E7-F031, fixed)
+//   COLUMN SET   — which of a row's columns actually reach the scan text.  (E7-F030, fixed)
 //
-// ★ A MEASURED RESIDUAL IN #7, reported rather than silently widened: it scans only
-// `summary` + `metadata`. `title` (NOT NULL) and `url` are also agent-authored on a
-// bridge-projected row and are NOT scanned. That is a COLUMN-set recall gap, a different
-// axis from the ROW-set gap fixed here, and widening it changes what trips clause 4 for
-// every legacy row too — so it wants its own pinning test and its own review. Recorded in
-// E7-F030 rather than fixed here.
+// The granularity axis is NOT cosmetic and it flips direction with the consumer, exactly as
+// the row axis does: for a PRECISION consumer, job-wide means another attempt's work is
+// credited to this run (a false PROVEN); for a RECALL consumer, attempt-narrow means another
+// attempt's leak goes unscanned (a missed hard-fail). Same fact, opposite verdicts.
+//
+// | # | consumer                                | linkage used                                    | direction | granularity | right? |
+// |---|-----------------------------------------|-------------------------------------------------|-----------|-------------|--------|
+// | 1 | getRun                                  | heartbeat_runs.id = runId (PK)                  | exact     | RUN (= one attempt) | yes — it IS the subject |
+// | 2 | getAttempt                              | job_attempts.id = run.distributed_attempt_id    | precision | attempt | yes — the service re-checks company_id and job_id against the run (clause 5), so a dangling/mismatched id REFUSES |
+// | 3 | listLeases                              | leases.attempt_id                               | precision | attempt | yes — clause 5 counts corroboration; a sibling attempt's lease would be a false PASS ("this attempt was leased"). Tenant-filtered in the service |
+// | 4 | listJobEvents                           | job_events.attempt_id                           | BOTH      | attempt | SPLIT — right for clause 5 (precision: a sibling attempt's `attempt_started` must not corroborate THIS attempt), WRONG for clause 4 (recall: on a retried job, attempt 2's event payloads are never scanned while verifying attempt 1). Filed as E7-F032, NOT fixed here — see the note below |
+// | 5 | getAttemptTerminalReceipt               | job_projection_receipts.attempt_id + kind       | precision | attempt | yes |
+// | 6 | listRunSecretScanSurfaces (1) heartbeat | heartbeat_runs.id (PK)                          | exact     | RUN (= one attempt) | yes — the run's own columns are the run's own |
+// | 7 | listRunSecretScanSurfaces (2) outputs   | ★ UNION: applied output_projection receipt on   | RECALL    | JOB-wide (2a) + run (2b) | yes — and the JOB-wide half is DELIBERATE on the attempt axis too: a sibling attempt's output is still scanned. It was `created_by_run_id` alone — E7-F030 |
+// |   |                                         |   run.distributed_job_id  OR  created_by_run_id |           |         |        |
+// | 8 | listRunSecretScanSurfaces (3) artifacts | job_artifacts.job_id = run.distributed_job_id   | recall    | JOB-wide | yes — job_id is the ONLY linkage the table has (no run column), and job-wide is the correct recall breadth; the `attempt` column is deliberately NOT filtered |
+// | 9 | countProducedOutputs arm 1              | committed workspace_patch job_artifact on       | PRECISION | attempt | yes, AS OF E7-F031. It was job-wide: a patch committed by attempt 2 proved capability for a run bound to attempt 1 |
+// |   |                                         |   job_id, joined to the run's attempt NUMBER    |           |         |        |
+// |10 | countProducedOutputs arm 2              | applied output_projection receipt on job_id     | PRECISION | attempt | yes, AS OF E7-F031. E7-F020 fixed its linkage and left it job-granular. DO NOT widen it to #7's union, and DO NOT copy its attempt conjunct into #7 |
+// |   |                                         |   AND attempt_id = run.distributed_attempt_id   |           |         |        |
+//
+// #7 and #10 read the same table for opposite purposes and MUST stay divergent ON BOTH AXES:
+// #10 is receipt-linked AND attempt-bound; #7 is union-linked AND job-wide. The divergence is
+// the correct state; what was missing was a written reason, which is now at the #7 call site.
+//
+// ★ THE ONE MISMATCH THIS CENSUS PASS FOUND AND DID NOT FIX — row 4, filed as E7-F032. Row 4's
+// old cell claimed "attempt_id is the only linkage the table has, and it is exact, so the two
+// directions do not conflict here". That is true on the row axis and FALSE on the attempt axis:
+// clause 5 wants this attempt's events and clause 4 wants the whole job's. Not fixed here
+// because separating them needs a SECOND store method and widens what can hard-fail clause 4
+// for every run, which wants its own pinning test and its own review — the same reason the
+// column-set residual was deferred out of W21B rather than smuggled in. The sentence that
+// claimed no conflict is corrected above, which is the load-bearing half: a census that
+// asserts a coverage it does not have is worse than one that admits the gap.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import { and, eq } from "drizzle-orm";
@@ -90,6 +116,26 @@ function textOf(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+/** The caller-authored columns of one `task_outputs` row, as clause 4 reads them. */
+interface TaskOutputScanRow {
+  readonly title: string | null;
+  readonly url: string | null;
+  readonly provider: string | null;
+  readonly externalId: string | null;
+  readonly healthStatus: string | null;
+  readonly summary: string | null;
+  readonly metadata: unknown;
+}
+
+/** One scan string per row. Space-joined so a matcher can never span two columns and
+ * manufacture a hit out of two innocuous halves. */
+function taskOutputScanText(row: TaskOutputScanRow): string {
+  return [row.title, row.url, row.provider, row.externalId, row.healthStatus, row.summary, row.metadata]
+    .map(textOf)
+    .join(" ")
+    .trim();
 }
 
 export function createDrizzleE7RunVerifierStore(db: Db): E7RunVerifierStore {
@@ -239,13 +285,43 @@ export function createDrizzleE7RunVerifierStore(db: Db): E7RunVerifierStore {
       // cross-tenant row is a redundant scan whose worst case is an over-strict refusal,
       // while for the counter it would be an over-count. (RLS makes it moot in practice —
       // the CLI opens the DB in the run's tenant context — but the asymmetry is intentional.)
-      const scanRows = new Map<string, { summary: string | null; metadata: unknown }>();
+      // ★ NO ATTEMPT CONJUNCT ON (2a) EITHER, and this is now a THIRD asymmetry to preserve.
+      // `countProducedOutputs` binds to `run.distributed_attempt_id` (E7-F031); this scanner
+      // deliberately stays JOB-wide, so a secret in a SIBLING retry attempt's output is still
+      // seen while verifying attempt 1. Narrowing it to the run's attempt is the same mirror
+      // defect one axis over: the counter must not credit another attempt's work, and the
+      // scanner must not miss another attempt's leak. `[sibling-scan]` in
+      // `e7-f020-arm2-provenance.integration.test.ts` reds if this is "made consistent".
+      const scanRows = new Map<string, TaskOutputScanRow>();
+
+      // ★ THE SCANNED COLUMN SET IS EVERY CALLER-AUTHORED COLUMN, not just summary+metadata
+      // (E7-F030's measured residual, fixed here). `BridgeOutputInput`
+      // (`job-output-bridge.ts:68-87`) passes `title` (NOT NULL), `url`, `provider`,
+      // `externalId` and `healthStatus` straight through to the row alongside `summary` and
+      // `metadata` — all of them free text an agent's output event can set. A key planted in
+      // `title` reached a row that was fetched and then contributed NO scan text at all,
+      // because the concatenation only read the two columns. `type`, `status`, `reviewState`
+      // and `isPrimary` are NOT included: they are closed enums / a boolean
+      // (`validators/task-output.ts`) and cannot carry a value. Recall direction — the cost of
+      // a wider column set is redundant regex passes over short enum-ish strings, and the hard
+      // matchers (provider-key / e2b / connection-string / PEM) cannot be tripped by 'aoa' or
+      // 'unknown'.
+      const scanColumns = {
+        id: taskOutputs.id,
+        title: taskOutputs.title,
+        url: taskOutputs.url,
+        provider: taskOutputs.provider,
+        externalId: taskOutputs.externalId,
+        healthStatus: taskOutputs.healthStatus,
+        summary: taskOutputs.summary,
+        metadata: taskOutputs.metadata,
+      } as const;
 
       // (2a) RECEIPT provenance — the rows arm 2 counts. Present here so a distributed
       // output is scanned whatever its `created_by_run_id` says (including NULL).
       if (run.distributedJobId) {
         const projected = await db
-          .select({ id: taskOutputs.id, summary: taskOutputs.summary, metadata: taskOutputs.metadata })
+          .select(scanColumns)
           .from(taskOutputs)
           .innerJoin(jobProjectionReceipts, eq(jobProjectionReceipts.targetAggregateId, taskOutputs.id))
           .where(
@@ -256,20 +332,20 @@ export function createDrizzleE7RunVerifierStore(db: Db): E7RunVerifierStore {
               eq(jobProjectionReceipts.status, "applied"),
             ),
           );
-        for (const o of projected) scanRows.set(o.id, { summary: o.summary, metadata: o.metadata });
+        for (const o of projected) scanRows.set(o.id, o);
       }
 
       // (2b) COLUMN provenance — every legacy platform writer that stamps this run's id
       // (`emitRuntimeServiceTaskOutput`, `POST /api/issues/:issueId/outputs`, …). Arm 2
       // deliberately stopped counting these; clause 4 must NOT stop scanning them.
       const columnLinked = await db
-        .select({ id: taskOutputs.id, summary: taskOutputs.summary, metadata: taskOutputs.metadata })
+        .select(scanColumns)
         .from(taskOutputs)
         .where(eq(taskOutputs.createdByRunId, run.id));
-      for (const o of columnLinked) scanRows.set(o.id, { summary: o.summary, metadata: o.metadata });
+      for (const o of columnLinked) scanRows.set(o.id, o);
 
       for (const [id, o] of scanRows) {
-        const text = `${textOf(o.summary)} ${textOf(o.metadata)}`.trim();
+        const text = taskOutputScanText(o);
         if (text) surfaces.push({ surface: "task_outputs", fieldOrEventId: id, text });
       }
 
@@ -301,19 +377,71 @@ export function createDrizzleE7RunVerifierStore(db: Db): E7RunVerifierStore {
     },
 
     countProducedOutputs: async (run: E7RunRow): Promise<E7ProducedOutputCounts> => {
+      // ═══════════════════════════════════════════════════════════════════════════
+      // ★★★ BOTH ARMS BIND TO THE RUN'S ATTEMPT, NOT ITS JOB (E7-F031).
+      //
+      // A job carries `max_attempts` (jobs.ts — NOT NULL, default 3) and EVERY attempt of it
+      // shares the `job_id`. A heartbeat run is bound to exactly ONE attempt: `heartbeat_runs
+      // .distributed_attempt_id`, written once by `buildHandoffRunPatch` and read as an exact
+      // pair by the projector's `findRunForAttempt` (`heartbeat.ts:7061-7068`). The lifecycle
+      // contract says the same thing in words — "the run is one attempt, not the source of
+      // truth" (docs/architecture/distributed-execution-lifecycles.md, legacy concept mapping).
+      //
+      // Both arms filtered on `job_id` alone, so a workspace_patch committed by attempt 2, or
+      // an output projected by attempt 2, printed `capability: PROVEN` for a run bound to
+      // attempt 1 THAT PRODUCED NOTHING. That is the E7-F020 false-PROVEN class again on the
+      // RETRY axis: W21 replaced a column-provenance bug with a granularity bug.
+      //
+      // ★ THIS IS NOT AN OVER-NARROWING, and the reason is measurable rather than aesthetic.
+      // Nothing re-points `distributed_attempt_id` at a retry attempt — the column has exactly
+      // ONE writer in the tree and it runs at handoff. So on a retried job the control plane
+      // itself does not attribute attempt 2 to this run: `findRunForAttempt` finds no run for
+      // attempt 2's terminal, the run is never finalized from it, and clause 3 refuses the run
+      // for want of a durable terminal. Counting attempt 2's work for attempt 1's run was the
+      // anomaly. And the arm stays PASSABLE: the `[own arm2]` / `[own arm1]` positive controls
+      // in `e7-f020-arm2-provenance.integration.test.ts` count a real receipt and a real
+      // committed patch on the run's own attempt.
+      //
+      // ★ THE NULL CASE FAILS CLOSED, deliberately. A run with a `distributed_job_id` and NO
+      // `distributed_attempt_id` counts 0 on both arms instead of widening back to job scope.
+      // Reachable only on a partially-written row (the sole writer sets both atomically), and
+      // clause 2 already REFUSES such a row for incomplete evidence binding — so printing
+      // PROVEN beside that refusal, on work no attempt of this run can be shown to have done,
+      // is precisely the false-PROVEN this closes. A precision consumer excludes when unsure.
+      //
+      // ★ THE SECRET SCANNER IS NOT CHANGED AND MUST NOT BE. External review asked for this
+      // predicate on `listRunSecretScanSurfaces` too; that would be a REGRESSION. See the
+      // census (#7/#8) and the "DO NOT MAKE THIS CONSISTENT" block at that call site.
+      // ═══════════════════════════════════════════════════════════════════════════
+      const attemptId = run.distributedAttemptId;
       let workspacePatchArtifacts = 0;
-      if (run.distributedJobId) {
+      if (run.distributedJobId && attemptId) {
+        // `job_artifacts.attempt` is the attempt NUMBER, not an id, so the binding goes
+        // through `job_attempts`. Every `status='committed'` row carries it: the sole writer
+        // of that status (`commitArtifactVersion`) always stamps `attempt: input.attemptNumber`
+        // from the fence, and the `job_artifacts_committed_identity_uidx` partial-unique is
+        // keyed on it. The thin `authorizeArtifactCommit` rows that leave it NULL also leave
+        // `status` NULL, so they were never counted here in the first place.
         const artifactRows = await db
           .select({ id: jobArtifacts.id })
           .from(jobArtifacts)
+          .innerJoin(
+            jobAttempts,
+            and(
+              eq(jobAttempts.jobId, jobArtifacts.jobId),
+              eq(jobAttempts.attemptNumber, jobArtifacts.attempt),
+            ),
+          )
           .where(
             and(
               eq(jobArtifacts.jobId, run.distributedJobId),
               eq(jobArtifacts.kind, "workspace_patch"),
               eq(jobArtifacts.status, "committed"),
+              eq(jobAttempts.id, attemptId),
+              eq(jobAttempts.companyId, run.companyId),
             ),
           );
-        workspacePatchArtifacts = artifactRows.length;
+        workspacePatchArtifacts = new Set(artifactRows.map((r) => r.id)).size;
       }
       // ARM 2 — task_outputs of DISTRIBUTED PROVENANCE, and nothing else (E7-F020).
       //
@@ -352,11 +480,12 @@ export function createDrizzleE7RunVerifierStore(db: Db): E7RunVerifierStore {
       // insert is fence-guarded on a live distributed attempt, which a pre-handoff
       // heartbeat emitter and an HTTP route do not have.
       //
-      // ★ FAIL-CLOSED IN BOTH DIRECTIONS, deliberately. A run with no `distributed_job_id`
-      // counts 0 without issuing a query — no distributed job, no distributed output —
-      // which also closes E7-F020's weaker form (pointing the verifier at an ORDINARY
-      // heartbeat run used to print `capability: PROVEN`). The company conjuncts mean a
-      // tenant mismatch UNDER-counts rather than over-counts.
+      // ★ FAIL-CLOSED IN BOTH DIRECTIONS, deliberately. A run missing EITHER distributed id
+      // counts 0 without issuing a query — no distributed job, no distributed output; no
+      // attempt, nothing to attribute an output to (E7-F031's null case) — which also closes
+      // E7-F020's weaker form (pointing the verifier at an ORDINARY heartbeat run used to
+      // print `capability: PROVEN`). The company conjuncts mean a tenant mismatch UNDER-counts
+      // rather than over-counts.
       //
       // ★ TWO BOUNDED NOTES, stated rather than hidden. (a) One output row can carry more
       // than one receipt — `upsertTaskOutputForIssue` UPDATES in place on
@@ -374,7 +503,7 @@ export function createDrizzleE7RunVerifierStore(db: Db): E7RunVerifierStore {
       // working, and `capabilityProven` still gates nothing (no workflow or script reads
       // it). Do not read a change here as progress toward a green campaign.
       let distributedTaskOutputs = 0;
-      if (run.distributedJobId) {
+      if (run.distributedJobId && attemptId) {
         const outputRows = await db
           .select({ id: taskOutputs.id })
           .from(taskOutputs)
@@ -385,6 +514,13 @@ export function createDrizzleE7RunVerifierStore(db: Db): E7RunVerifierStore {
           .where(
             and(
               eq(jobProjectionReceipts.jobId, run.distributedJobId),
+              // E7-F031 — the attempt conjunct. `attempt_id` is NOT NULL on every receipt and
+              // comes from the control plane's LIVE fence (`recordGovernedProjection` runs
+              // `guardActiveFence` first), so it is a server-verified fact about WHICH attempt
+              // produced the output, never a caller's assertion. The job conjunct is kept
+              // beside it: the pair is the receipt's composite tenant FK to the attempt, and
+              // keeping both means a mismatched pair selects nothing rather than trusting one.
+              eq(jobProjectionReceipts.attemptId, attemptId),
               eq(jobProjectionReceipts.projectionKind, "output_projection"),
               eq(jobProjectionReceipts.aggregateKind, "task_outputs"),
               eq(jobProjectionReceipts.status, "applied"),

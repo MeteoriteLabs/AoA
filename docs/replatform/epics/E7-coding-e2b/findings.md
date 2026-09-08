@@ -2955,10 +2955,11 @@ calls a function that writes to `GITHUB_STEP_SUMMARY`.
 
 ## E7-F030 — W21 moved ONE consumer of run-provenance and left its sibling behind, so a counted output was never scanned for secrets
 
-**Status:** open · **Owner:** CLI-008 · **Severity:** MEDIUM · **Filed:** 2026-09-08 (W21B), measured
-at `f433c8391`. **Introduced by W21 (PR #385), found by external review (Codex P2), not inherited** —
-the row-set gap did not exist before the arm-2 narrowing. The ROW-set half is FIXED in this same
-commit; the finding stays open on a measured COLUMN-set residual stated at the bottom.
+**Status:** resolved · **Owner:** CLI-008 · **Severity:** MEDIUM · **Filed:** 2026-09-08 (W21B),
+measured at `f433c8391`. **Introduced by W21 (PR #385), found by external review (Codex P2), not
+inherited** — the row-set gap did not exist before the arm-2 narrowing. The ROW-set half was fixed
+at `f171d0dad` (W21B); the COLUMN-set residual it stayed open on is fixed in W21C — see
+**Resolved** below.
 
 ---
 
@@ -3045,16 +3046,196 @@ was a written reason.
 direction parameter and would read as one notion with a flag, which is precisely the framing that
 produced the bug. Two explicit predicates with a census that names both is the safer artefact.
 
-**WHAT SURVIVES — a MEASURED COLUMN-set residual, reported rather than silently widened.** The scan
-reads only `summary` and `metadata`. On a bridge-projected row, `title` (NOT NULL) and `url` are also
-caller/agent-authored (`BridgeOutputInput`, `server/src/services/job-output-bridge.ts:68-87`) and are
-**not scanned**, so a recognizable secret in either still reaches a clean verdict. That is a different
-axis from the ROW-set gap fixed here — widening it changes what trips clause 4 for **every** legacy
-row too, so it wants its own pinning test and its own review rather than a drive-by line in this
-commit. It is the reason this finding stays **open**.
+**WHAT SURVIVED at `f171d0dad` — a MEASURED COLUMN-set residual, reported rather than silently
+widened.** The scan read only `summary` and `metadata`. On a bridge-projected row, `title` (NOT NULL)
+and `url` are also caller/agent-authored (`BridgeOutputInput`,
+`server/src/services/job-output-bridge.ts:68-87`) and were **not scanned**, so a recognizable secret
+in either still reached a clean verdict. That is a different axis from the ROW-set gap fixed there —
+widening it changes what trips clause 4 for **every** legacy row too, so it wanted its own pinning
+test and its own review rather than a drive-by line in that commit.
+
+---
+
+**Resolved (W21C, 2026-09-08) — the column-set residual is closed, and it was WORSE than the
+residual note said.** An adversarial checker measured it and the reproduction is sharper than the
+original wording: with the leak in `title` and `summary`/`metadata` both NULL, the row does not merely
+go under-scanned — it contributes **no scan surface at all**, because
+`listRunSecretScanSurfaces` builds `summary + metadata`, gets the empty string, and the
+`if (text)` guard drops the row. So the verifier printed a clean clause-4 verdict over a row it had
+already fetched and already counted as capability evidence.
+
+**The fix scans every caller-authored column, not just the two the reviewer named.** The scanned set
+is now `title`, `url`, `provider`, `external_id`, `health_status`, `summary`, `metadata` — the full
+free-text surface `BridgeOutputInput` passes straight through. `type`, `status`, `review_state` and
+`is_primary` are deliberately excluded: they are closed enums and a boolean
+(`packages/shared/src/validators/task-output.ts`) and cannot carry a value. The columns are joined
+with a space so a matcher can never span two columns and manufacture a hit from two innocuous halves.
+
+**Five arms, one per column, each planting the key in that column ALONE** (with an anti-vacuity
+assertion that `summary` and `metadata` really are NULL, so the hit can only come from the column
+under test) — `e7-f020-arm2-provenance.integration.test.ts`, `E7-F030 residual`. All five observed
+RED at `f171d0dad` with `expected undefined to be defined` (no surface at all, per above).
+**Mutation-checked:** dropping `title` from the concatenation reds exactly one arm, `[column] title`,
+and nothing else — so each column is individually load-bearing rather than covered by a sibling.
+
+**THE OTHER TWO SCAN SOURCES WERE AUDITED FOR THE SAME QUESTION — the class does NOT generalise, and
+that is a measurement, not an assumption.**
+
+| source | scanned columns | verdict |
+|---|---|---|
+| (1) `heartbeat_runs` | `stdout_excerpt`, `stderr_excerpt`, `error`, `prompt_snapshot`, `detected_outputs`, `result_json`, `context_snapshot`, `usage_json` | **complete.** Every remaining text column is a platform vocabulary (`invocation_source`, `status`, `error_code`, `signal`, `liveness_state`, `liveness_reason`, `last_output_stream`, `scheduled_retry_reason`), an id-suffixed literal (`next_action` — always `work_question:<id>` / `runtime_decision:<id>`), an opaque adapter session id (`session_id_before/after`), a platform storage handle (`log_store`/`log_ref`/`log_sha256`, written from `handle.logRef`), or dead (`external_run_id` has no writer in `server/src`). The one caller-supplied free-text column is `trigger_detail` (`routes/agents.ts:2009`, `req.body.triggerDetail`) — a BOARD-supplied wakeup label, not agent output, so outside the notion this scanner serves. Named here rather than left unstated. |
+| (3) `job_artifacts` | `identifier`, `object_key` | **complete.** Everything else is a digest (`sha256`, `base_manifest_hash`, `result_manifest_hash`), a size, a timestamp, or a closed enum (`kind`, `sensitivity`, `retention`, `status`, `apply_status`, `orphan_disposition`, `quarantine_reason`). `fence_token` / `observed_fence_token` are deliberately NOT scanned: they are platform-minted lease secrets, and pulling them into scan text would import credential material into the verifier's own working set to no benefit. |
+
+**Why `task_outputs` was the only one with a gap, structurally:** it is the only scan source whose
+row is assembled from a **caller-supplied product record** with many free-text fields. The other two
+are kernel rows whose free text is one or two worker-declared strings. So the answer to "does a recall
+gap on one source suggest the class?" is: the *question* generalises and was worth asking on all
+three, the *defect* did not.
 
 **Not widened.** E7-F015 and E7-F018 are untouched. Arm 2's predicate, `ok`, the clause set, and
 `capabilityProven`'s separation from `ok` are all unchanged — this changes only which rows clause 4
 reads. **What a fixed scan does NOT buy:** E7-F018 still holds (nothing checked in makes any run a
 distributed run; `projectAcceptedOutput` has zero production callers), so the union's receipt half
 selects nothing on any real run today. It is correct rather than exercised.
+
+---
+
+## E7-F031 — the capability counter bound to the JOB, so a RETRY attempt's work printed `capability: PROVEN` for a run that produced nothing
+
+**Status:** resolved · **Owner:** CLI-008 · **Severity:** MEDIUM · **Filed:** 2026-09-08 (W21C),
+measured at `f171d0dad`. **Introduced by W21 (PR #385), found by external review (Codex P2), not
+inherited.** Fixed in the commit that files it.
+
+---
+
+**What.** `countProducedOutputs` in `server/src/services/e7-distributed-run-verifier-store.ts`
+filtered **both** of its arms on `job_id` alone:
+
+| arm | predicate at `f171d0dad` |
+|---|---|
+| 1 (committed workspace patch) | `job_artifacts.job_id = run.distributed_job_id AND kind='workspace_patch' AND status='committed'` |
+| 2 (projected task output) | an APPLIED `output_projection` receipt on `job_id` + `aggregate_kind` + two company conjuncts — **no `attempt_id`** |
+
+`jobs.max_attempts` is NOT NULL default 3 (`packages/db/src/schema/jobs.ts:70`) and **every attempt
+of a job shares its `job_id`**, while a heartbeat run is bound to exactly **one** attempt:
+`heartbeat_runs.distributed_attempt_id`, written once by `buildHandoffRunPatch` and read as an exact
+`(job_id, attempt_id)` pair by the projector's `findRunForAttempt` (`heartbeat.ts:7061-7068`). The
+lifecycle contract says the same thing in words — *"the run is one attempt, not the source of truth"*
+(`docs/architecture/distributed-execution-lifecycles.md`, legacy concept mapping).
+
+So an `output_projection` receipt from attempt N+1, or a `workspace_patch` committed by attempt N+1,
+was counted while verifying a run bound to attempt N. **An output-free run could report
+`capabilityProven: true` off another attempt's work.** That is the same false-PROVEN class E7-F020
+closed, one axis over: W21 replaced a column-provenance bug with a **granularity** bug.
+
+★ **THE ASYMMETRY, AGAIN, AND FOR THE SECOND TIME THE REVIEWER'S NEXT STEP WAS WRONG.** The review
+asked for the attempt predicate on *"both this counter and the receipt-linked secret-scan query"*.
+**Applying it to the scanner would be a regression** — it wants RECALL, so narrowing it to one attempt
+would stop scanning sibling attempts' outputs and let a secret in attempt 2's output go unseen while
+verifying attempt 1. That is the mirror defect E7-F030's `[legacy]` arm already exists to catch, one
+axis over. **The scanner needed no widening either: its `(2a)` half was ALREADY job-wide**, which is
+the correct breadth on this axis, so the right action for the scanner was *nothing*. This is the
+second time collapsing these two consumers onto one predicate has been proposed and the second time
+the asymmetry is right; the "DO NOT MAKE THIS CONSISTENT" block at the scanner's call site now covers
+the ATTEMPT axis explicitly, not only the row-linkage axis.
+
+**Why attempt-binding is not an over-narrowing — measured, not asserted.** Nothing ever re-points
+`distributed_attempt_id` at a retry attempt: the column has exactly ONE writer in the tree
+(`buildHandoffRunPatch`, at handoff; `canary-run-projector.ts:196` writes the id into `usage_json`,
+not the column). So on a retried job the control plane **itself** does not attribute attempt 2 to this
+run — `findRunForAttempt` finds no run for attempt 2's terminal, the run is never finalized from it,
+and clause 3 refuses it for want of a durable terminal. Counting attempt 2's work for attempt 1's run
+was the anomaly; excluding it now agrees with rows 2–5 of the census. **The arm remains structurally
+passable**, which was the explicit honesty check: `attempt_id` is NOT NULL on every receipt and comes
+from the control plane's live fence (`recordGovernedProjection` runs `guardActiveFence` first), and
+every `status='committed'` `job_artifacts` row carries the attempt NUMBER its fence stamped
+(`commitArtifactVersion` is the sole writer of that status). A gate nobody can pass gets deleted; this
+one is passed by the `[own arm2]` and `[own arm1]` positive controls.
+
+**The null case is a decision, stated: FAIL CLOSED.** A run with a `distributed_job_id` and no
+`distributed_attempt_id` counts 0 on both arms rather than widening back to job scope. It is reachable
+only on a partially-written row, and **clause 2 already REFUSES such a row** for incomplete evidence
+binding — so printing PROVEN beside that refusal, over work no attempt of this run can be shown to
+have done, is exactly the false-PROVEN this closes. Pinned by `[null attempt]`, which also asserts the
+anti-vacuity direction: with the attempt id restored the very same rows DO count.
+
+**Arm 1 was found by the census, not by the review, and fixing only arm 2 would have been a false
+claim of enforcement.** The two arms are ORed into one gate (`arm1 < 1 && arm2 < 1`), so leaving arm 1
+job-granular would have left the gate openable by precisely the mechanism arm 2's fix closes.
+`job_artifacts.attempt` is an attempt NUMBER, so arm 1 binds through `job_attempts`
+(`attempt_number = job_artifacts.attempt AND job_attempts.id = run.distributed_attempt_id`), plus a
+company conjunct. The thin `authorizeArtifactCommit` rows that leave `attempt` NULL also leave
+`status` NULL and so were never counted here anyway.
+
+**Fail-first, with real output at `f171d0dad`** (`e7-f020-arm2-provenance.integration.test.ts`,
+`E7-F031`). The fixture gained `activateSiblingLease`, which places a **real** second attempt on an
+already-seeded job and polls + ACKs it through the real leasing service, so the sibling receipt is
+written under a genuine live fence rather than forged with admin SQL:
+
+| arm | at `f171d0dad` | after |
+|---|---|---|
+| `[sibling arm2]` receipt on attempt 2, run bound to attempt 1 | **RED** — `expected 1 to be +0` | green |
+| `[sibling arm1]` committed patch on attempt 2, run bound to attempt 1 | **RED** — `expected 1 to be +0` | green |
+| `[null attempt]` job id set, attempt id NULL | **RED** — `expected 1 to be +0` | green |
+| `[sibling-scan]` counter half of the asymmetry pin | **RED** — `expected 1 to be +0` | green |
+| `[own arm2]` receipt on the run's OWN attempt | green | green — **positive control**, reds on an over-narrow predicate or a `return 0` |
+| `[own arm1]` patch committed by the run's OWN attempt | green | green — same |
+| `[sibling-scan]` **scanner** half | green | green — **the asymmetry pin.** Reds if the counter's attempt conjunct is copied into the scanner |
+
+`[sibling-scan]` is the important one: one row, **scanned** by clause 4 and **not counted** by clause
+6, asserted in a single test. The divergence is pinned rather than merely tolerated.
+
+★★ **THE CLASS — a census can be complete on the axis it was written for and blind on another.** The
+ten-row census in the store's module header is the remedy E7-F030 installed, and it MISSED this: it
+reasoned about WHICH LINKAGE each consumer used and never about AT WHAT GRANULARITY. An adversarial
+checker even noticed the retry axis — it flagged that attempt 2's `job_events` go unscanned on a
+retried job — and filed it as a non-blocking prose nit, because it looked at the RECALL direction
+while the same structural fact was a FALSE PROVEN in the counter. **The same fact reads as a nit or as
+a defect depending on which consumer you are standing in**, which is precisely why the census is
+per-consumer. **Remedy applied:** the census now carries a `granularity` column for all ten rows and
+names its three axes (row linkage / granularity / column set) at the top, so the next reader is asked
+the question on each. The pass that added it found one further mismatch — filed as **E7-F032**.
+
+---
+
+## E7-F032 — clause 4 does not scan a sibling attempt's `job_events`, so a retried job's leak can reach a clean verdict
+
+**Status:** open · **Owner:** CLI-008 · **Severity:** LOW · **Filed:** 2026-09-08 (W21C), by
+re-applying the provenance census to the retry/attempt axis (E7-F031's remedy). Independently noticed
+by an adversarial checker during W21B review and filed there as a non-blocking prose nit; recorded
+here as a finding because the census pass measured what it costs.
+
+---
+
+**What.** `listJobEvents(attemptId)` is row 4 of the census, and it is the ONE consumer that serves
+**both** directions from a single query: clause 5 counts `attempt_started` / `terminal` events
+(PRECISION), and clause 4 scans every event payload for leak classes (RECALL). Its linkage is
+`job_events.attempt_id`, which is exact and is the only linkage the table has — so on the ROW axis the
+old census cell was right to say the two directions do not conflict.
+
+**On the ATTEMPT axis they do.** Clause 5 wants THIS attempt's events (a sibling attempt's
+`attempt_started` must not corroborate this attempt — that would be a false PASS). Clause 4 wants the
+whole job's, for the same reason source (2a) of `listRunSecretScanSurfaces` is job-wide. Because one
+query serves both, clause 4 inherits clause 5's narrowness: **on a retried job, attempt 2's event
+payloads are never scanned while verifying attempt 1**, so a recognizable provider key / E2B key /
+connection string / PEM header in a sibling attempt's event payload reaches a clean clause-4 verdict.
+
+**Why it is LOW rather than the severity E7-F031 carries.** The direction is the difference. A recall
+gap is a MISSED hard-fail — the verifier fails to refuse something it should have refused. A precision
+gap is a FALSE PROVEN — the verifier asserts something untrue. Both matter; only one manufactures a
+claim. And E7-F018 still bounds the blast radius: no checked-in configuration makes any run a
+distributed run, so no real run has a sibling attempt today.
+
+**Why it is NOT fixed in W21C.** Separating the directions needs a SECOND store method
+(`listJobEventsForJob`, or an added job-scoped scan source) and widens what can HARD-fail clause 4 for
+every run that ever retries — a behaviour change to the refusal surface, on the same reasoning that
+kept E7-F030's column-set residual out of W21B rather than smuggling it in. It wants its own pinning
+test (a leak in a sibling attempt's event payload must reach clause 4 while clause 5's counts stay
+attempt-scoped) and its own review.
+
+**What WAS done here, and it is the load-bearing half.** Row 4's census cell used to assert *"attempt_id
+is the only linkage the table has, and it is exact, so the two directions do not conflict here"*. That
+sentence is now corrected to name the split and cite this finding. **A census that asserts a coverage
+it does not have is worse than one that admits the gap** — the false claim converts an open question
+into a settled one for every later reader, which is the same failure mode
+`scripts/lib/finding-ownership.mjs` exists to prevent one register over.

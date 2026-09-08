@@ -591,9 +591,11 @@ export function createE7DistributedRunVerifier(deps: {
           clause: 6,
           reason:
             "nothing the agent produced reached AoA: no committed workspace_patch job_artifact and no " +
-            "output_projection-receipted task_output for this run's distributed job (W21 — arm 2's provenance " +
+            "output_projection-receipted task_output for THIS RUN'S DISTRIBUTED ATTEMPT (W21 — arm 2's provenance " +
             "predicate; the pre-W21 wording said 'no task_output for this run', which counted platform-written " +
-            "rows). Output capture is UNBUILT (CLI-008 Unit F) — the E2B driver passes no stream handlers, " +
+            "rows. W21C then bound BOTH arms to the run's attempt rather than its job: a job carries max_attempts " +
+            "and every attempt shares the job id, so a retry attempt's output used to prove capability for a run " +
+            "that produced nothing — E7-F031). Output capture is UNBUILT (CLI-008 Unit F) — the E2B driver passes no stream handlers, " +
             "stdoutRef/stderrRef are fabricated literals rather than references to stored bytes, observeRun is " +
             "uncomposed, and buildWorkspacePatch/createResultCommitter have zero production callers. So this run " +
             "cannot be distinguished from a context-free one (E7-F003), whatever the agent actually did.",
