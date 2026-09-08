@@ -1,14 +1,38 @@
 # Distributed Execution Threat Model
 
-This record locks the trust boundaries, mandatory controls, verification gates,
+**Measured state, 2026-09-08 — read this before the tables below.** This register
+covers **30 crossings**, all of them Critical (22) or High (8). Every one has now
+been audited for delivery, and the tally is **1 `delivered`, 25 `partial`, 4
+`not-delivered`, 0 `unaudited`**: **exactly one of thirty came back whole.**
+`partial` is not a softer `delivered` — it means the crossing was audited and its
+clauses split, with at least one control enforced by a named line exhibited
+*denying* and **at least one control that is not there**. ★ **The zero in the
+`unaudited` column is not good news.** It means nothing here is unknown any more,
+not that anything here got safer.
+
+**What this record locks, and what it does not.** It locks the trust boundaries and
+the **required** controls — the charter — together with the verification gates,
 residual risks, and owning backlog tickets for the Decision #121 fenced outbound
-worker protocol. It is the rendered, explained view of the authoritative
+worker protocol. It does **not** establish that those controls exist: the
+`Required control` column of the register below is a charter, not a report. Only
+`deliveryStatus` and `deliveryEvidence` on each crossing speak to what was built,
+and "Required vs delivered" below is how to read them.
+
+Read that in both directions. Several rows carry real, measured enforcement — the
+audit exhibited DE-01's tenant RLS *denying* across 4,460 adversarial operations,
+with PostgreSQL's refusal text read back verbatim. Four rows carry a measured
+absence: DE-08, DE-23, DE-25 and DE-26 are chartered Critical/High controls
+recorded `not-delivered`. The remaining twenty-five hold in part and are each
+missing something named. Read a row's own evidence before relying on its control.
+
+This document is the rendered, explained view of the authoritative
 machine-readable record
 [`distributed-execution-threat-controls.json`](distributed-execution-threat-controls.json):
 every control ID (`DE-NN`), severity, control, verification, and owner in the
 register below is derived from that JSON, and the structural checker
 (`scripts/check-distributed-execution-foundation.mjs`) fails on any drift between
-the two in either direction.
+the two in either direction — including the tally above, which it recomputes from
+the JSON on every run.
 
 It consumes the lifecycle record
 ([`distributed-execution-lifecycles.md`](distributed-execution-lifecycles.md))

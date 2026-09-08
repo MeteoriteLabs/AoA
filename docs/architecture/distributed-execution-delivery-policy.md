@@ -10,7 +10,7 @@ Related authority:
 
 - [`distributed-execution-lifecycles.md`](distributed-execution-lifecycles.md) — workload/job/attempt/lease lifecycles.
 - [`distributed-execution-authority.md`](distributed-execution-authority.md) — single-writer authority + late-output quarantine.
-- [`distributed-execution-threat-model.md`](distributed-execution-threat-model.md) — trust boundaries, controls, residual release exclusions.
+- [`distributed-execution-threat-model.md`](distributed-execution-threat-model.md) — trust boundaries, **required** controls, residual release exclusions. Its head carries the measured delivery state; the controls it names are chartered, not shown to exist.
 - [`../replatform/test-gates.md`](../replatform/test-gates.md) — the D0–D6 lanes, HARD/REQUIRED/INITIAL/OBSERVED invariants, and the `E6-D1-FOUNDATION` partial gate.
 
 ## Custodian roles

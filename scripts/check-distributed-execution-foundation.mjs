@@ -1287,6 +1287,117 @@ function validateThreatCrossings(crossings, validTicketIds, written, deferred, f
   return jsonIds;
 }
 
+// W20C: the delivery tally, rendered in prose, is drift the ID/severity/owner
+// parity checks above cannot see. A crossing flipped from `partial` to
+// `delivered` in the JSON leaves every per-row check green while the document's
+// summary sentence silently becomes a lie — and a summary that overstates is the
+// exact defect this register exists to record. So the tally is derived from the
+// JSON here and required to appear, verbatim, in the document HEAD (the text
+// before the first `## ` heading), where a cold reader meets it before the
+// boundary table and the register. Two clauses, deliberately:
+//   (a) the head must state the current tally and the current crossing count;
+//   (b) NO tally-shaped sentence anywhere in the document may disagree with it,
+//       so a second, stale copy further down cannot survive an update to the head.
+const THREAT_TALLY_STATUSES = ["delivered", "partial", "not-delivered", "unaudited"];
+const THREAT_TALLY_SHAPE =
+  /\d+ `delivered`, \d+ `partial`, \d+ `not-delivered`, \d+ `unaudited`/g;
+// The threat model is not the only rendered view any more: a reader arrives from the
+// orchestration handoff, the decision, the epic README and the delivery policy, and each
+// of those may quote the tally. None is REQUIRED to quote it — but any that does must
+// quote the current one, or the drift simply moves one document over. A file that is not
+// present states no tally and is skipped; there is nothing there to be stale.
+const THREAT_TALLY_SECONDARY_MD = [
+  "docs/replatform/GO-BOOK.md",
+  "docs/replatform/HANDOFF-orchestration.md",
+  "docs/architecture/decisions.md",
+  "docs/architecture/distributed-execution-delivery-policy.md",
+  "docs/replatform/epics/E0-foundation/README.md",
+];
+
+/** The canonical delivery tally fragment for a crossing array. */
+function threatTallyFragment(crossings) {
+  return THREAT_TALLY_STATUSES.map((status) => {
+    const n = crossings.filter(
+      (c) => c != null && typeof c === "object" && c.deliveryStatus === status,
+    ).length;
+    return `${n} \`${status}\``;
+  }).join(", ");
+}
+
+/** Everything before the first `## ` heading: what a cold reader meets first. */
+function markdownHead(md) {
+  const lines = md.split(/\r?\n/);
+  const end = lines.findIndex((l) => /^##\s/.test(l));
+  return (end === -1 ? lines : lines.slice(0, end)).join("\n");
+}
+
+/**
+ * Collapse whitespace runs so a required fragment matches across a hard-wrapped
+ * paragraph. Without this the check would enforce a line-break position, not a
+ * sentence, and would red on a pure re-wrap.
+ */
+function flattenProse(text) {
+  return text.replace(/\s+/g, " ");
+}
+
+/**
+ * W20C: require the document head to state the measured delivery tally and the
+ * crossing count, both recomputed from the JSON, and require every other
+ * tally-shaped sentence in the document to agree with it.
+ */
+async function validateThreatModelHeadTally(root, md, crossings, errors) {
+  const tally = threatTallyFragment(crossings);
+  const count = `${crossings.length} crossings`;
+  const severities = crossings.filter((c) => c != null && typeof c === "object");
+  const critical = severities.filter((c) => c.severity === "Critical").length;
+  const high = severities.filter((c) => c.severity === "High").length;
+  const head = flattenProse(markdownHead(md));
+
+  if (!head.includes(tally)) {
+    errors.push(
+      `${THREAT_MODEL_MD}: the document head (before the first "## " heading) must state the ` +
+        `measured delivery tally exactly as ${JSON.stringify(tally)} — a reader meets the head ` +
+        `before the register, and the tally is derived from ${THREAT_CONTROLS_JSON}`,
+    );
+  }
+  if (!head.includes(count)) {
+    errors.push(
+      `${THREAT_MODEL_MD}: the document head must state the crossing count as ${JSON.stringify(count)}`,
+    );
+  }
+  if (!head.includes(`Critical (${critical})`) || !head.includes(`High (${high})`)) {
+    errors.push(
+      `${THREAT_MODEL_MD}: the document head must state the severity split as ` +
+        `${JSON.stringify(`Critical (${critical})`)} and ${JSON.stringify(`High (${high})`)}`,
+    );
+  }
+
+  const scan = (relPath, text) => {
+    for (const found of flattenProse(text).match(THREAT_TALLY_SHAPE) ?? []) {
+      if (found !== tally) {
+        errors.push(
+          `${relPath}: stale delivery tally ${JSON.stringify(found)} — every tally-shaped ` +
+            `sentence in a rendered view must read ${JSON.stringify(tally)}`,
+        );
+      }
+    }
+  };
+
+  scan(THREAT_MODEL_MD, md);
+  for (const relPath of THREAT_TALLY_SECONDARY_MD) {
+    let text = null;
+    try {
+      text = await readFile(path.join(root, relPath), "utf8");
+    } catch {
+      // Absent here means this root does not carry that view at all — it states no
+      // tally, so there is nothing to be stale. Not a fail-open: the tally the
+      // reader actually meets first is required, above, on a file that must exist.
+      continue;
+    }
+    scan(relPath, text);
+  }
+}
+
 /**
  * Compare the complete JSON crossing ID set and every rendered field to the
  * Markdown register table (exact set parity in both directions, including
@@ -1434,6 +1545,11 @@ async function validateThreatModel(root, errors) {
 
   if (md != null && crossings != null && jsonIds != null) {
     validateThreatRegisterParity(md, crossings, jsonIds, errors);
+  }
+
+  // W20C: the head must lead with the measured state, recomputed from the JSON.
+  if (md != null && crossings != null) {
+    await validateThreatModelHeadTally(root, md, crossings, errors);
   }
 
   // Residual-risk release exclusions.
