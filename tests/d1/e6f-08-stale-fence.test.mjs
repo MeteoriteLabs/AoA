@@ -18,6 +18,17 @@
 // (modulo per-request correlationId/serverTime). A positive control (the worker's
 // OWN valid ack → 200) proves the denials are real fence enforcement, not a dead
 // lease.
+//
+// ── WHY THE GATE TITLE SAYS "CONTROL-PLANE gate" (W18, 2026-09-08) ──────────
+// The suite's own title now names what it tests. This is a TRUTH FIX and nothing
+// more: no assertion, threshold or pass condition changed with it. What runs here
+// is the CONTROL PLANE under a harness that plays the worker itself —
+// tests/d1/lib/e6f-harness.mjs:8-9 states it outright: "There is NO live
+// worker-daemon loop: enroll/poll/ack are ordinary authenticated HTTP calls the
+// harness makes itself." So a green run is evidence about the control plane's
+// fenced routes, and is NOT evidence that any worker daemon, device or machine
+// ran anything. Naming the half that has NOT run follows the precedent already in
+// this tree: scripts/gate-clause-wiring.json's E5-2-fenced-object-commit-worker-half.
 // -----------------------------------------------------------------------------
 
 import { test } from "node:test";
@@ -78,7 +89,7 @@ function sortedKeys(body) {
 }
 
 test(
-  "E6F-08 stale-fence non-disclosure: a stale fence on a real lease is denied IDENTICALLY to a nonexistent lease",
+  "E6F-08 CONTROL-PLANE gate (harness-driven; no worker daemon, no device) stale-fence non-disclosure: a stale fence on a real lease is denied IDENTICALLY to a nonexistent lease",
   { skip: SKIP },
   () => {
     const A = newScenarioIds();

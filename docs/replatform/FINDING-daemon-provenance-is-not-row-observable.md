@@ -273,3 +273,56 @@ the fixture identity — a deterministic UUIDv5-shaped digest of three public va
 precisely why a synthetic can reproduce it.
 
 All four source mutations were reverted; `git status` shows only the new files.
+
+---
+
+## 8. The DESKTOP host is covered by this result too — one shared hello producer (W18, 2026-09-08)
+
+This section adds an instance, not a claim. It was written when a documentation review proposed a
+release-acceptance clause requiring that an operator *"enroll two distinct owner-desktop devices"*,
+and the question arose whether §1–§7's verdict — measured on the **container** daemon — says
+anything about a **desktop** one.
+
+**It does, and the reason is one shared producer.** Traced at `13caa3227`:
+
+```
+packages/worker-keystore/src/bin/desktop-host.ts:26,120   imports + calls bootstrapWorkerDaemon
+  -> packages/worker-daemon/src/bin/worker-daemon.ts:215   export async function bootstrapWorkerDaemon
+    -> :332                                                const runEnrollment = deps.enrollOnceFn ?? enrollOnce
+      -> packages/worker-daemon/src/enrollment/enroll-once.ts:265   buildDesktopHello({...})
+```
+
+The container daemon reaches `buildDesktopHello` through the same `bootstrapWorkerDaemon`. There is
+**one** enrolment-hello producer in the repository, and both hosts are its callers. Since §1–§4
+measured that every enrolment-committed fact is a function of the hello plus a key the enroller
+holds, and since the desktop host produces the *same* hello through the *same* function, a desktop
+host's committed rows are indistinguishable from a harness-enrolled synthetic device for exactly the
+reasons already given. **No new measurement is required for the desktop case; it is the container
+case with a different `bin`.**
+
+**★ AND THE DESKTOP CASE IS STRICTLY WEAKER.** §6 says a container daemon's stdout is the best
+available evidence. For desktop there is not even a distributed artefact whose boot could be
+attested:
+
+- **No installer package is produced.** `docs/deploy/distribution.md` still records that there is
+  no desktop installer, and that is not a documentation accident — it is CI-enforced.
+- **CI guards the ABSENCE of a desktop distribution surface.**
+  `scripts/check-desktop-surface-disabled.mjs` implements DSK-00 clauses 6 and 7: the distribution
+  doc must keep saying *"no desktop installer"* and *"docker + npm only"* (`REQUIRED_DOC_PHRASES`,
+  `:41`), and a sweep of `server/src/routes` must find no route serving a desktop
+  `package|update|manifest|installer|download|release|artifact` (`:54-59`). Its own header states
+  why a script and not a grep step: *"you cannot import a route that does not exist."*
+
+So a "desktop device" in this tree today is a process someone started from a source checkout. It has
+no signed artefact, no installed identity, and — per §4 and per `workerHelloV1Schema`'s `.strict()`
+ten fields (`packages/worker-protocol/src/capabilities.ts:366-379`) — no machine-identifying fact in
+the enrolment protocol at all. Two desktop enrolments prove **two keystores**, never two machines,
+because `loadOrCreateKey` (`packages/worker-daemon/src/enrollment/enroll.ts:131-137`) mints per
+keystore.
+
+**Scope of this section.** It extends §6's "what this kills" list by one entry — *any unit whose
+evidence is "two desktop devices enrolled, and here are the rows that prove they were two machines"*
+— and it changes nothing in §1–§7. The **release-gate consequence** is filed separately, and
+declared in `scripts/finding-ownership.json`, as `E11-F005` in
+`docs/replatform/epics/E11-hardening-release/findings.md`; this document remains the home of the
+mechanism so the premise lives in exactly one place.

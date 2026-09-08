@@ -40,6 +40,17 @@
 // headObject-based integrity check fails closed. `putPresignedBytes` computes that
 // checksum from the exact bytes it sends; the manifest carries the SAME digest in
 // hex (s3-provider converts the store's base64 checksum back to hex to compare).
+//
+// ── WHY THE GATE TITLE SAYS "CONTROL-PLANE gate" (W18, 2026-09-08) ──────────
+// The suite's own title now names what it tests. This is a TRUTH FIX and nothing
+// more: no assertion, threshold or pass condition changed with it. What runs here
+// is the CONTROL PLANE under a harness that plays the worker itself —
+// tests/d1/lib/e6f-harness.mjs:8-9 states it outright: "There is NO live
+// worker-daemon loop: enroll/poll/ack are ordinary authenticated HTTP calls the
+// harness makes itself." So a green run is evidence about the control plane's
+// fenced routes, and is NOT evidence that any worker daemon, device or machine
+// ran anything. Naming the half that has NOT run follows the precedent already in
+// this tree: scripts/gate-clause-wiring.json's E5-2-fenced-object-commit-worker-half.
 // -----------------------------------------------------------------------------
 
 import { test } from "node:test";
@@ -84,7 +95,7 @@ function stepResult(res, label) {
   return res.result;
 }
 
-test("E6F-05 live MinIO: grant(upload) -> PUT -> commit -> grant(download) -> GET round-trip", { skip: SKIP }, () => {
+test("E6F-05 CONTROL-PLANE gate (harness-driven; no worker daemon, no device) live MinIO: grant(upload) -> PUT -> commit -> grant(download) -> GET round-trip", { skip: SKIP }, () => {
   const ids = newScenarioIds();
   const deviceKey = generateDeviceKey();
   const code = newEnrollmentCode();
@@ -281,7 +292,7 @@ test("E6F-05 live MinIO: grant(upload) -> PUT -> commit -> grant(download) -> GE
 const PROXY = "worker-to-minio";
 const TOXIC_NAME = "e6f05-truncate-upload";
 
-test("E6F-05 live MinIO: toxiproxy-truncated upload never commits (fail-closed on hash/size)", { skip: SKIP }, () => {
+test("E6F-05 CONTROL-PLANE gate (harness-driven; no worker daemon, no device) live MinIO: toxiproxy-truncated upload never commits (fail-closed on hash/size)", { skip: SKIP }, () => {
   const ids = newScenarioIds();
   const deviceKey = generateDeviceKey();
   const code = newEnrollmentCode();

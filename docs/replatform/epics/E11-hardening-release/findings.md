@@ -152,3 +152,241 @@ see the resolution note at the top of this entry. W16A additionally measured one
 did not record: `killedProviders` returns only entries carrying `reclaim: true`
 (`execution-kill-switches.ts:213-222`), so the reaper is not a consumer of the kill VERDICT under
 any polarity, not merely a differently-polarised one.
+
+## E11-F004 — the review's "enable one managed E2B execution target for one organization" names an object no code path can create, and is ambiguous with an object that is not an execution target
+
+**Status:** `open` · Severity: **HIGH** · Filed 2026-09-08 by W18 (provability wave, gate-naming unit).
+
+**What was proposed.** An independent documentation review proposed promoting to mandatory
+release acceptance a clause reading, in part: *for one organization, enable one managed E2B
+execution target*. The 5-agent provability wave rated this **CRITICAL**. This entry files it
+**HIGH** — see "Why HIGH and not CRITICAL" below — and records the measurement, which was
+re-derived at tip rather than inherited.
+
+**The chain, re-verified link by link at `13caa3227`.** Each link is necessary; together they
+make the named object unconstructible.
+
+1. `server/src/services/execution-target-resolver.ts:52-56` — `TARGET_KIND_BY_CLASS` maps
+   `managed_cloud → {pooled_gvisor, e2b}`. `e2b` appears in **no other** class, so a
+   placement-eligible `e2b` row is `managed_cloud` or it is nothing.
+2. `packages/worker-protocol/src/job.ts:88-94` — `PLACEMENT_MATRIX.managed_cloud` pins
+   `targetScope: "platform"`, and `registeredTargetProfileV1Schema`'s refiner
+   (`packages/worker-protocol/src/capabilities.ts:325-327`) rejects any profile whose `scope`
+   is not the class's matrix scope.
+3. `packages/worker-protocol/src/capabilities.ts:300-303` — `platform` scope **requires a null
+   organization**: *"platform scope requires a null organization"*. (`:304-306` likewise
+   requires a null owner.)
+4. `server/src/routes/execution-targets.ts:176-186` — the org create route hard-codes
+   `organizationId: orgId`, which is non-null by construction (`uuidParam.parse(req.params.orgId)`).
+
+So *"for one organization"* and *"a managed E2B execution target"* are mutually exclusive by
+schema. There is no configuration, flag or migration that satisfies both.
+
+**Three further refusals the wave's four-link chain did not name, found by grepping the claim
+rather than accepting the list.** My count against the brief's: **4 links given, 7 measured.**
+
+5. The same create route (`:174`) computes `const scope = input.ownerUserId ? "owner" : "organization";`
+   — it can produce **only** `owner` or `organization`, never `platform`. So the route is barred
+   twice over, and removing the hard-coded `organizationId` would not unbar it.
+6. `server/src/services/execution-targets.ts:124` — `ratifyTenantExecutionTargetPlacementProfile`
+   explicitly refuses `target.scope === "platform"`, so the org-scoped ratification route cannot
+   attach a placement profile to a platform row even if one existed. Without a ratified
+   `registeredProfile` + `providerConstraintProfile`, `normalizePlacementRegistryTarget`
+   (`execution-target-resolver.ts:131-133`) returns `null` and the row never enters placement at all.
+7. **Corroboration by absence — there is no production creator of a `kind = "e2b"` row anywhere.**
+   `grep -rn "insert(executionTargets)" --include=*.ts` returns exactly **two** non-test sites:
+   `server/src/routes/execution-targets.ts:181` (the org route above) and
+   `server/src/services/execution-targets.ts:433` `ensureControlPlaneExecutionTarget`, which is the
+   only null-org/`scope: "platform"` writer in the tree and **hard-codes `kind: "local_host"`**.
+   The UI has no create at all: `ui/src/api/execution-targets.ts` exposes `list`, `rotateToken`
+   and `revoke` only. So the platform-scoped half of the object has no creator either — the clause
+   is not merely mis-scoped, it names a row shape nothing in the repository can write.
+
+**And the adapter path refuses it too.** `executionTargetToAdapterConfig`
+(`execution-target-resolver.ts:322-327`) throws for **both** `desktop` and `e2b`:
+*"has no control-plane adapter configuration … running it here would execute on the
+control-plane host."* That is a deliberate fail-closed (DSK-001 Lane C / F28), and it means even
+a hand-inserted row cannot execute through the legacy path.
+
+**★ THE AMBIGUITY THE WAVE RESOLVED, AND BOTH READINGS FAIL.** The clause is ambiguous, and the
+review does not say which it means:
+
+- **Reading 1 — an `execution_targets` row of `kind = "e2b"`.** Structurally inexpressible for
+  an organization (links 1–4), and uncreatable even at platform scope (links 5–7).
+- **Reading 2 — the E2B that actually runs today.** That is a **different mechanism entirely**:
+  an `environments` row named `"Platform default (E2B)"` with `metadata: { platformDefault: true }`
+  (`server/src/services/platform-default-environment.ts:57,68`), `driver: "sandbox"`,
+  `config.provider: "e2b"`. It carries **`executionTargetId: null`** (`:71`) and is resolved by
+  `environment-run-orchestrator.ts:174`, never by `normalizePlacementRegistryTarget`. It is
+  therefore **not an execution target and never enters job placement.**
+
+So the clause is ambiguous between *an object that cannot exist* and *an object that is not an
+execution target at all*. Neither reading yields a checkable acceptance condition. **Both are
+stated here deliberately**, because resolving the ambiguity one way does not rescue the clause.
+
+**Why HIGH and not CRITICAL.** Under `scripts/lib/finding-ownership.mjs`,
+`CRITICAL` and `HIGH` are *identically* blocking (`SEVERITY_VOCABULARY`: both `blocking: true`;
+both derived into `NOT_ACCEPTABLE`, so neither may ever be `accepted`), so the choice changes no
+machine behaviour and no waiver right. It changes only the signal. This corpus has used
+`CRITICAL` **zero** times across 149 findings — the measured distribution in that library's own
+header is P1/HIGH/MEDIUM/LOW/MED/MINOR/P2/P0 — so minting the first one is a precedent, and the
+direction of failure here is fail-closed: nothing mis-executes, an object simply cannot be
+constructed. The wave's CRITICAL view is recorded above and is not being argued away; the
+difference is a label, and both labels forbid acceptance.
+
+**What would close it.** Either (i) the review's clause is withdrawn or rewritten against a
+mechanism that exists (see the NOT-ADOPTED substitute in
+`docs/replatform/epics/E11-hardening-release/decisions.md` → `E11-D01`), or (ii) a production
+creator for a platform-scoped `kind = "e2b"` execution target ships **and** the org-binding
+contradiction is resolved by a successor decision to `PLACEMENT_MATRIX`. Neither is owned by any
+ticket on disk today, which is why this is `unowned` and not `owned`.
+
+## E11-F005 — nothing in the enrolment protocol identifies a machine, so "two distinct owner-desktop devices" is unverifiable from any surface, projected or not
+
+**Status:** `open` · Severity: **HIGH** · Filed 2026-09-08 by W18 (provability wave, gate-naming unit).
+
+**The surface.** `listDesktopDevices` (`server/src/services/execution-targets.ts:531-554`) is the
+**only** surface in the tree that reports enrolled desktops: `grep -rn listDesktopDevices` returns
+the definition, its single route (`server/src/routes/desktop-devices.ts:50`) and tests, and nothing
+else joins `workers` to a `kind = "desktop"` execution target. It projects exactly **seven**
+fields — `deviceId`, `targetSlug`, `label`, `status`, `deviceGeneration`, `enrolledAt`, `lastSeenAt`
+— through the `projectDesktopDevice` allowlist. **None of the seven discriminates a machine from a
+process.** `deviceThumbprint` is on the deliberate omission list
+(`server/src/services/desktop-device-projection.ts:83`), reasoned there as *"derived from credential
+material; not needed to answer any question this listing exists to answer."*
+
+*(One neighbouring surface, checked so the "only" is not overstated: `listExecutionTargets`
+(`execution-targets.ts:556-566`) returns the org's `execution_targets` rows, which can include a
+`kind = "desktop"` row. It does not join `workers`, so it reports the TARGET, never an enrolment,
+and cannot say whether zero or five devices enrolled against it.)*
+
+**★ THE OMITTED FIELD WOULD NOT HAVE ANSWERED IT EITHER, AND THAT IS THE REAL FINDING.** It would
+be easy to read this as a projection problem with a one-line fix. Measured, it is not:
+
+- `deviceThumbprint` is `sha256(SPKI DER)` of a key minted **per keystore**, by `loadOrCreateKey`
+  (`packages/worker-daemon/src/enrollment/enroll.ts:131-137`). Two daemon *processes* on one
+  machine with two keystore paths mint two keys and present two distinct thumbprints. Two
+  thumbprints therefore prove two **enrolments**, never two **machines**.
+- The enrolment hello itself carries no machine-identifying fact. `workerHelloV1Schema`
+  (`packages/worker-protocol/src/capabilities.ts:366-379`) is `.strict()` with exactly ten fields —
+  `protocolVersion`, `workerId`, `targetId`, `deviceGeneration`, `agentVersion`,
+  `supportedProtocol`, `platform`, `reportedCapabilities`, `capacity`, `policyHash` — and
+  `platform` is `{os, arch, runtime}`. No hostname, no MAC, no machine GUID, no board or disk
+  serial. `buildDesktopHello` (`packages/worker-daemon/src/enrollment/desktop-hello.ts:109-155`)
+  takes **no clock, no random and no `process`** by design, so it could not probe one without
+  breaking the replay-identity property that prevents double-mint.
+
+So *device distinctness is not omitted from a projection; it is absent from the protocol.* A
+release clause requiring "two **distinct devices**" has no evidence source anywhere in the system,
+and widening the allowlist would not create one.
+
+**★ AND IT IS ABOUT US, NOT ONLY ABOUT THE REVIEW — the desktop host shares ONE hello producer with
+the container daemon.** Traced: `packages/worker-keystore/src/bin/desktop-host.ts:26,120` calls
+`bootstrapWorkerDaemon` → `packages/worker-daemon/src/bin/worker-daemon.ts:215` → `enrollOnce`
+(`:332`) → `buildDesktopHello` (`enrollment/enroll-once.ts:265`). The container daemon reaches the
+same producer. **Therefore U1-PROVENANCE's result already covers the desktop**:
+`docs/replatform/FINDING-daemon-provenance-is-not-row-observable.md` measured that every
+enrolment-committed fact a real daemon writes is byte-reproducible by a test runner holding an
+enrolment code; with one shared producer, a desktop host writes the same facts and inherits the
+same verdict. That document's new §8 records the trace.
+
+**Desktop is STRICTLY WEAKER than the container case**, in the direction that matters: there is no
+installer package for anyone to have run, and CI actively guards that absence.
+`scripts/check-desktop-surface-disabled.mjs` enforces DSK-00 clauses 6 and 7 — the distribution
+doc must still say *"no desktop installer"* / *"docker + npm only"* (`REQUIRED_DOC_PHRASES`, `:41`),
+and no route may serve a desktop package, update, manifest or installer (`:54-59`). So a desktop
+"device" today is a process someone started from a source checkout, which is precisely the object
+the seven projected fields cannot distinguish from any other process.
+
+**Why this EXTENDS U1 rather than being a separate provenance finding.** The desktop claim is a
+strict corollary of U1's own measured chain (one shared producer ⇒ identical committed rows ⇒
+identical indistinguishability), and duplicating that premise in a second register is how two
+copies drift apart — the failure this programme has filed repeatedly. So the *mechanism* is
+recorded as a new section in U1's document, where its chain already lives, and the *release-gate
+consequence* is recorded here, where the ownership guard can see it. U1's document is a top-level
+`FINDING-*.md` with no register entry and no ownership declaration, so an extension there alone
+would have been invisible to `check-finding-ownership`; this entry is the declared half.
+
+**What would close it.** Either the acceptance clause stops asserting device distinctness (the
+NOT-ADOPTED substitute in `E11-D01` replaces "devices" with *independently-keyed enrolments*,
+which the system CAN evidence), or the enrolment protocol grows a machine-binding attestation —
+a `WorkerHelloV1` field change against a FROZEN v1 schema, i.e. a protocol decision, not a ticket
+line. No ticket on disk owns either, hence `unowned`.
+
+## E11-F006 — the D6-04 evidence contract has no device column, so two owner-desktop devices collapse into one matrix row
+
+**Status:** `open` · Severity: **HIGH** · Filed 2026-09-08 by W18 (provability wave, gate-naming unit).
+
+**Measured against the actual contract**, `docs/replatform/test-gates.md` D6-04, quoted verbatim:
+
+> Each immutable row has a stable row ID and names Organization, workload, target class, provider,
+> OS/version or `not_applicable`, credential-binding mode, locality mode, allowed fallback, and
+> mobility mode.
+
+That is the complete column list — **nine dimensions and no device**. Two owner-desktop devices
+belonging to the same Organization, running the same workload on the same target class, provider,
+OS/version, credential-binding mode, locality mode, fallback and mobility mode are therefore
+**one row**, not two, and every quantity D6-04 attaches to a row (≥200 normal scheduled probes,
+availability ≥99.5%, ≥3 deliberate fail-closed samples) is computed over that single row.
+
+**Consequence for the proposed clause.** A release condition of the form "enroll two distinct
+owner-desktop devices … jobs placed and executed across all three" cannot be *expressed* in the
+frozen support matrix that D6-04 requires be committed before the canary starts. There is nowhere
+to write the second device down, and D6-04's own closing sentence — *"aggregation across rows
+cannot hide an untested or unreliable combination"* — is the rule that would be violated by
+recording two devices as one row. This is independent of E11-F005: even if the system could prove
+device distinctness, the evidence contract could not record it.
+
+**Not a proposal to add a column.** Adding a tenth dimension to D6-04 changes what every advertised
+row must carry and how many rows every partner must staff — a gate criteria change, which is a
+founder decision. This entry records the gap only; no D6-04 text was edited by the unit that filed it.
+The NOT-ADOPTED substitute in `E11-D01` avoids the gap by not claiming per-device coverage at all.
+
+**What would close it.** A founder decision either (i) adding a device/enrolment dimension to D6-04
+with its own probe and denial floors, or (ii) recording that per-device coverage is deliberately
+out of the matrix's scope. Neither is owned by a ticket on disk, hence `unowned`.
+
+## E11-F007 — cross-target handoff has no mechanism in either direction, and re-placement is declared out of scope in the source
+
+**Status:** `open` · Severity: **HIGH** · Filed 2026-09-08 by W18 (provability wave, gate-naming unit).
+
+The review's clause (i) asks for *desktop-to-cloud and cloud-to-desktop handoff*. **Both directions
+were checked; neither exists.**
+
+**The vocabulary is absent from the entire source tree.**
+`grep -rni "fenced_restart\|mobility" --include=*.ts --include=*.tsx server/ packages/ ui/` returns
+**zero** hits. D6-05 defines mobility as `disabled` or `fenced_restart`; neither token appears in
+any TypeScript file, so there is no flag, no route, no state and no branch to exercise.
+
+**Re-placement is refused in the source, in a comment on the line that would do it.**
+`packages/db/src/repositories/tenant/job-control.ts:1375-1376`, on the retry-attempt insert:
+
+> `// Copy the reaped attempt's immutable placement snapshot verbatim so N+1 is`
+> `// dispatchable to the same target (re-placement is JOB-009, out of scope).`
+
+The following 14 lines copy `placementTargetId`, `placementTargetClass`, `placementTargetScope`,
+`placementTargetGeneration`, `placementProfileHash`, `placementProviderConstraintHash` and the rest
+verbatim. So attempt N+1 is **pinned to the same target by construction** — the one place a job
+could change targets is the place that deliberately does not.
+
+*(Citation correction: the brief located this at `job-control.ts:1374`. Ten files match
+`job-control*.ts`; the one carrying this comment is
+`packages/db/src/repositories/tenant/job-control.ts`, at `:1375-1376`. Recorded so the next reader
+does not grep the wrong file.)*
+
+**`markRunHandedOffToDistributed` is not the forward direction, and there is no reverse one.**
+`server/src/services/heartbeat.ts:6921-6946` marks a legacy `heartbeat_runs` row as handed off to a
+distributed attempt (`buildHandoffRunPatch` + a `distributed_execution_handoff` lifecycle event).
+That is **monolith → distributed control**, a CLI-006 canary seam — not a move between execution
+targets, and it happens *before* any target is chosen. `grep -rni "handoff|handed_off|handedOff"`
+over `server/src` and `packages/*/src`, excluding tests, returns no distributed → legacy inverse and
+no target-to-target transfer of any kind; the other hits are the DAT-004 `DeviceLocalHandoff` secret
+broker, task/scope context handoffs, and deployment-mode board-claim handoff — none of them job
+mobility.
+
+**What would close it.** MIG-004 (the conditional handoff ticket named by D6-05 and the E11 README)
+shipping a real directed handoff, in at least the direction a gate advertises. Until then the only
+honest D6-05 posture is `disabled` with negative evidence, which is what the gate already permits.
+**MIG-004 has NO file on disk** — `find docs/replatform/epics -name "MIG-004*"` returns zero, so it
+is not a `findTicketIds` ticket and declaring it as owner would red `owner_ticket_missing`. Hence
+`unowned`. (MIG-001, also named by the E11 README as a desktop precondition, is likewise zero files.)
