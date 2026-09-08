@@ -135,8 +135,17 @@ paperwork; each is a control nobody has established either way.
 The field was introduced by a register-repair change that audited two crossings (DE-02 and
 DE-08). W20 audited twelve more — DE-01, DE-03, DE-04, DE-05, DE-06, DE-07, DE-09, DE-10,
 DE-11, DE-12, DE-13 and DE-14 — and **every one of the twelve came back `partial`**: an
-enforcement half that was exhibited denying, and an absent half. The absent halves cluster
-into three classes, each filed as a finding rather than left in prose:
+enforcement half with a named deny line whose refusal is exercised, and an absent half.
+
+**Read each row's own `★ PROVENANCE OF THIS ROW` clause before citing it.** The static
+measurements — deny lines, caller and write-chokepoint censuses, the greps behind each
+absence claim — were executed by the landing unit at tip. The integration, property and
+vector suite *runs* were the reachability auditors'; for those the landing unit verified only
+that the file exists, that its sole skip predicate is win32-without-`AOA_RUN_WIN_INTEGRATION`,
+and that the required `verify` gate runs the whole suite. DE-14 is the one exception: its deny
+was executed directly by the landing unit over a seven-case matrix.
+
+The absent halves cluster into three classes, each filed as a finding rather than left in prose:
 
 - **`E0-F010`** — eight crossings assert that denials are *audited*; on all eight the deny
   path returns before anything durable is written.
