@@ -1,5 +1,20 @@
 # E7 — Coding/CLI on E2B — findings
 
+> ★★ **READING NOTE ADDED 2026-09-08 (W21D) — `e7-distributed-run-verifier-store.ts:NNN`
+> citations in this file are DATED MEASUREMENTS, not navigation.** W21B and W21C moved every
+> anchor in that file down 180-290 lines (`countProducedOutputs` 198 → 387, arm 1's
+> `workspace_patch` conjunct 207 → 473, arm 2 213-216 → 514+), so **every line pin below now
+> resolves to unrelated code** — `:207`, for instance, is a `getAttemptTerminalReceipt`
+> parameter today. They are deliberately left as written: they record what was measured on a
+> given day, and rewriting them to the current layout would falsify the measurement rather
+> than repair the citation. **To navigate, use the SYMBOL anchors** listed in that file's own
+> header block ("CITE THIS FILE BY SYMBOL, NOT BY LINE") — `countProducedOutputs` arm 1 / arm
+> 2, `listRunSecretScanSurfaces`, `scanColumns`. The LIVE registers
+> (`scripts/gate-clause-wiring.json`, `scripts/finding-ownership.json`) and the PRODUCTION
+> comments that carried the same rotted pins WERE converted, because a reader acts on those.
+> No positional guard was added: `scripts/lib/gate-clause-wiring.mjs` already records why one
+> would be switched off, and that reasoning was not relitigated.
+
 ## E7-F001 — The canary mints no execution-secret handle, so the canary sandbox receives no provider credential
 
 **Status:** resolved · **Owner:** CLI-007 (`epics/E7-coding-e2b/tickets/CLI-007-design.md`, result `CLI-007-result.md`)
@@ -1228,8 +1243,28 @@ toward.
 for a handed-off run. Both were wrong in the FAIL-OPEN direction, and the correction changes what
 arm 2 IS rather than whether this finding stands:
 
+★★★ **CROSS-NOTE 2026-09-08 (W21) — which sentences below W21 invalidated, and which stand.** W21 gave
+arm 2 a provenance predicate (see E7-F020). **INVALIDATED HERE:** every sentence describing arm 2's
+query as *unconditional* and as `eq(taskOutputs.createdByRunId, run.id)` — it is now a join to an
+APPLIED `output_projection` receipt on the run's `distributed_job_id` **and its
+`distributed_attempt_id`**, and it short-circuits to 0 with no `distributed_job_id` **or no
+`distributed_attempt_id`**; and "arm 2 is REACHABLE WITHOUT PROVING ANYTHING", which described the
+pre-W21 predicate. **UNCHANGED, and re-measured by hand at `360d0b0ed`:** measurement 1 (nothing
+checked in arms the rollout dial — two hits today, both register `reason` strings quoting the command;
+zero excluding both registers), measurement 2 (arm 1), and measurement 3 facts 1-3 — in particular
+`projectAcceptedOutput` still has ZERO production callers, which is now the reason arm 2 reads 0. This
+★ **W21D ADDENDUM — this cross-note, whose whole job is enumerating what went stale, went stale
+itself.** W21C (`b0944397b`, E7-F031) re-predicated BOTH arms onto the run's ATTEMPT and updated two
+of seven narration sites; this cross-note was one of the five it missed, and kept the job-only wording
+above until W21D corrected it in place. Same class as the defect the note documents, one layer up.
+
+finding's **status, severity and UNOWNED ownership do not move**: the shared blocker is an operator
+decision and nothing in W21 touched it. What changed is that arm 2 is now 0 for an HONEST reason
+instead of being satisfiable by the platform.
+
 - **Arm 1 is unreachable.** Unchanged, and the strongest of the two: it issues no query at all.
-- **Arm 2 is not "unreachable" — it is REACHABLE WITHOUT PROVING ANYTHING.** No *producer* can move
+- **Arm 2 is not "unreachable" — it is REACHABLE WITHOUT PROVING ANYTHING** *(pre-W21; see the
+  cross-note above)*. No *producer* can move
   it (measurement 3, facts 1-3, all intact). But an ordinary internal path already writes
   `task_outputs.created_by_run_id = run.id` before the handoff — `ensureRuntimeServicesForRun`
   (`heartbeat.ts:4524`) — so once the dial is armed, arm 2 can read non-zero for a run whose agent
@@ -1547,11 +1582,111 @@ question this finding deliberately does not answer — it belongs with whoever s
 it is recorded here so that it is asked rather than rediscovered. No code unit owns this today, and
 inventing one would be a false ownership claim.
 
-## E7-F020 — Arm 2 of `capabilityProven` reads non-zero from an ordinary heartbeat code path, with no agent output, no forgery and no authenticated caller
+## E7-F020 — Arm 2 of `capabilityProven` reads non-zero from an ordinary heartbeat code path, with no agent output, no forgery and no authenticated caller (NARROWED W21 — platform-write path closed at the predicate; residual below)
 
 **Status:** open · **Owner:** CLI-008 · **Severity:** HIGH · **Filed:** 2026-09-06 (W4U3-R3), measured
 at `75920ef9a`. Found by an auditor re-deriving E7-F018's arm-2 analysis; every line number below was
 re-read by hand in this worktree before filing.
+
+---
+
+### ★★★ NARROWED 2026-09-08 (W21) — the platform-write path is CLOSED at the predicate; a residual survives, so this stays OPEN
+
+**What changed.** Arm 2's predicate is no longer `eq(taskOutputs.createdByRunId, run.id)`. It is now a
+join to `job_projection_receipts`: a `task_outputs` row counts only when an **APPLIED
+`output_projection` receipt** names it (`aggregate_kind = 'task_outputs'`,
+`target_aggregate_id` = the row, `job_id` = the run's `distributed_job_id` **and `attempt_id` = its
+`distributed_attempt_id`**, company-scoped), and arm 2 short-circuits to 0 for a run with no
+`distributed_job_id` **or no `distributed_attempt_id`**.
+
+> **Re-predicated 2026-09-08 (W21C, E7-F031); narration corrected 2026-09-08 (W21D).** As filed at
+> W21 the receipt match was `job_id` **alone**. A job carries `max_attempts` (default 3) and every
+> attempt shares the job id, so a RETRY attempt's output printed `capability: PROVEN` for a run bound
+> to attempt 1 that produced nothing. Both arms are attempt-bound now. This paragraph kept the
+> job-only wording for one commit; W21D swept it and the four other stale sites.
+
+**Why that predicate and not a `type`/`provider` heuristic — derived from the writer census, not from
+taste.** The census below (fact (4) of E7-F018, re-verified at `360d0b0ed` before this change) closes
+on the callers of `upsertTaskOutputForIssue`, the sole INSERT into the table. The receipt is the one
+thing NO legacy caller can produce:
+
+- **ADMITS exactly one writer** — `jobOutputBridge.projectAcceptedOutput`
+  (`server/src/services/job-output-bridge.ts:303`), the distributed output projection. It is the only
+  code in the tree that writes `projection_kind = 'output_projection'` with
+  `aggregate_kind = "task_outputs"` (`:306-315`), it writes it in the SAME tenant transaction as the
+  row, and `recordGovernedProjection` (`packages/db/src/repositories/tenant/job-control.ts:3794`) runs
+  `guardActiveFence` FIRST, so `job_id`/`attempt_id` are the control plane's LIVE fence rather than a
+  caller's assertion.
+- **EXCLUDES all ten legacy callers**, including both writers that can fire for a handed-off run:
+  `emitRuntimeServiceTaskOutput` (`task-output-emitters.ts:113` — **this finding**) and
+  `POST /api/issues/:issueId/outputs` (`routes/task-outputs.ts:54` — E7-F015). Neither writes a
+  receipt, and neither can: the receipt insert is fence-guarded on a live distributed attempt, which a
+  pre-handoff heartbeat emitter and an HTTP route do not have. **The exclusion is structural, not a
+  filter on caller-controlled content** — which is the bar this finding set.
+- **The weaker form is closed too.** Pointing the verifier at an ordinary non-distributed heartbeat run
+  no longer prints `capability: PROVEN`: no `distributed_job_id`, no query, count 0.
+
+★★★ **THIS NARROWING SHIPPED WITH A DEFECT OF ITS OWN, AND W21 INTRODUCED IT.** The change moved
+ONE consumer of "which `task_outputs` rows belong to this run" and left its sibling — clause 4's
+secret-scan surface in `listRunSecretScanSurfaces` — on `created_by_run_id`. A row projected through
+the bridge with a NULL run id therefore counted as capability evidence and was **never scanned for
+secrets**, so the verifier could report a clean mechanism/capability verdict over a leaked key. Found
+by external review (Codex P2 on PR #385), byte-verified, and filed as **E7-F030** with its own fix and
+pins in the same suite. It is recorded here, in this block, because it was created by this narrowing —
+not inherited. It does not change anything stated above about arm 2's predicate, which is unchanged
+and remains correct for its error direction.
+
+**Proof, both arms, observed RED before the fix.**
+`server/src/__tests__/e7-f020-arm2-provenance.integration.test.ts` (embedded PG, real lease fence, real
+bridge, real emitter). Against the pre-fix predicate: `[negative]` 1≠0, `[mixed]` 2≠1, `[cross-job]`
+1≠0, `[no job]` 1≠0 and the **second `[positive]` arm** ("NO run id") 0≠1 all FAILED, while the first
+`[positive]` arm ("on this run's job") passed. Post-fix 6/6 pass.
+The **positive controls are load-bearing**: mutating the count to `return 0` reds **both `[positive]`
+arms** and `[mixed]` while `[negative]` stays green — i.e. deleting the feature is
+distinguishable from fixing it.
+
+**WHAT SURVIVES — the residual, and why this stays OPEN.** `upsertTaskOutputForIssue`
+(`services/task-outputs.ts:135-178`) is an UPSERT on `(company_id, issue_id, provider, external_id)`:
+when a projected output collides with an existing row it **UPDATES that row in place** and the receipt
+links it. So a future producer that reuses a platform-minted `external_id` (e.g.
+`runtime-service:<id>`, `task-output-emitters.ts:98`) would get a **platform-minted row counted** —
+E7-F020's own class, one layer down. It is bounded (it needs a real fenced accepted-output event, so
+nobody-does-anything no longer reaches it) and **unexercised** (`projectAcceptedOutput` has zero
+production callers), but it is the one remaining way a row the platform wrote reaches this counter,
+and it belongs with whoever ships the producer.
+
+**WHAT THIS DOES NOT BUY — verified at `360d0b0ed`, both E7-F018 claims re-measured by hand.**
+1. `grep -rn AOA_DISTRIBUTED_EXECUTION_ROLLOUT --include=*.yml --include=*.yaml --include=*.json --include=Dockerfile* .`
+   returns **two** hits at this tip, `scripts/finding-ownership.json` and
+   `scripts/gate-clause-wiring.json` — **both register `reason` strings quoting the command back at
+   the reader** (E7-F018 documents the first self-match; the second appeared later and is recorded
+   here rather than quietly dropped). Excluding both registers: **zero hits, exit 1, repo-wide.** No
+   compose file, Dockerfile, workflow or manifest arms the dial.
+2. `grep -rn "capabilityProven\|require-capability\|verify:e7-1" .github` → **zero hits**. The flag is
+   off by default (`server/src/cli/verify-e7-1-distributed-run.ts`, `requireCapability: false`) and the
+   `verify:e7-1-distributed-run` package script is invoked by no workflow.
+
+So **arm 2 now reads 0 on every real run**, and the gate is **correctly CLOSED where it was falsely
+open**. That is strictly better than a false PROVEN and it is **not the capability gate working**.
+What remains blocked, and by what: the campaign still needs (a) an operator arming the rollout dial —
+which `scripts/lib/staging-manifest-invariants.mjs:516-541` FORBIDS on every staging worker — and (b) a
+production caller for `projectAcceptedOutput` (arm 2) / a committed `workspace_patch` producer (arm 1).
+Both are E7-F018's, still UNOWNED, and neither moved.
+
+**Not widened.** E7-F015's own route hardening is untouched and its entry is not edited here; the
+receipt predicate does mean that route can no longer move arm 2, which is an observation for that
+finding's owner to verify, not a closure claimed by this unit. Arm 1, the `ok` computation, and
+`capabilityProven`'s separation from `ok` were not touched.
+
+**Text kept in sync.** `E7_CAPABILITY_LIMITATIONS` said arm 2 "carries NO provenance filter"; that is
+now false, so the block was rewritten to state the predicate AND the residual, and its anti-drift tests
+were repointed (not relaxed — the deny-list is kept verbatim and extended with "now works"/"gate
+works"/"capability is proven"/"ready to gate").
+
+**Everything below this line is the finding AS FILED, and describes the PRE-W21 predicate.** It is kept
+verbatim because it is the measurement that sized the fix.
+
+---
 
 **What.** `countProducedOutputs` applies **no provenance filter** to arm 2: it counts every
 `task_outputs` row whose `created_by_run_id` equals the run id
@@ -2846,3 +2981,384 @@ at; the claim is the code shape, and it is marked as such rather than borrowed f
 observation. Fixed identically (redirect + a new assertion on the redirected file). **Measured scope
 of the class: two sites, both `emitDurableRecord`-shaped packs; no third.** No other test in the repo
 calls a function that writes to `GITHUB_STEP_SUMMARY`.
+
+## E7-F030 — W21 moved ONE consumer of run-provenance and left its sibling behind, so a counted output was never scanned for secrets
+
+**Status:** resolved · **Owner:** CLI-008 · **Severity:** MEDIUM · **Filed:** 2026-09-08 (W21B),
+measured at `f433c8391`. **Introduced by W21 (PR #385), found by external review (Codex P2), not
+inherited** — the row-set gap did not exist before the arm-2 narrowing. The ROW-set half was fixed
+at `f171d0dad` (W21B); the COLUMN-set residual it stayed open on is fixed in W21C — see
+**Resolved** below.
+
+---
+
+**What.** `server/src/services/e7-distributed-run-verifier-store.ts` has **two** consumers of the
+question *"which `task_outputs` rows belong to this run?"*, and W21 changed one of them:
+
+| consumer | at `f433c8391` |
+|---|---|
+| `countProducedOutputs` arm 2 (clause 6 CAPABILITY) | an APPLIED `output_projection` receipt join — **does not read `created_by_run_id` at all** |
+| `listRunSecretScanSurfaces` source (2) (clause 4 SECRET SCAN) | `eq(taskOutputs.createdByRunId, run.id)` — **unchanged, still the column** |
+
+So a `task_outputs` row that counts as capability evidence *via the receipt*, but whose
+`created_by_run_id` is NULL or names another run, **is never scanned for secrets**. A recognizable
+provider key / E2B key / connection string / PEM header in its `summary` or `metadata` never reaches
+clause 4, and the verifier prints a clean mechanism **and** capability verdict over it.
+
+★ **THE PR ITSELF PROVED THE GAP WAS REACHABLE, WHICH IS WHY THIS IS NOT HYPOTHETICAL.** W21 shipped a
+PASSING test asserting exactly the divergent row shape is supported:
+`server/src/__tests__/e7-f020-arm2-provenance.integration.test.ts`, the SECOND `[positive]` arm — *"it
+is counted even when the bridge caller supplied NO run id — provenance is the receipt, not the
+column"* (W21D: prose elsewhere calls the two positive arms `[positive A]`/`[positive B]`; **neither
+tag exists in the file** — both are literally `[positive]`, so quote the `it()` title, not the tag) — with
+`SELECT count(*) FROM task_outputs WHERE created_by_run_id IS NULL` asserted to be 1.
+
+**Reproduction, and the RED that sized it.** Three arms added to that same suite (embedded PG, real
+lease fence, real bridge, real emitter). Against the store **as it stands at `f433c8391`**, with the
+new tests present and nothing else changed:
+
+```
+pnpm --filter @armyofagents/server exec vitest run \
+  src/__tests__/e7-f020-arm2-provenance.integration.test.ts -t "E7-F030"     # AOA_RUN_WIN_INTEGRATION=1 on Windows
+
+  × [union]  a bridge-projected output with NO caller run id is SCANNED — its planted key reaches clause 4
+      → AssertionError: expected false to be true            (the row is not in the scan surface at all)
+  ✓ [legacy] a platform row linked ONLY by created_by_run_id is STILL scanned
+  ✓ [dedupe] a row satisfying BOTH notions is scanned exactly once
+  Tests  1 failed | 2 passed | 6 skipped (9)
+```
+
+Post-fix: **9/9 green** in that file *as it stood at `f171d0dad`*.
+
+> **Count corrected 2026-09-08 (W21D).** That "9/9" is a snapshot, not a standing claim, and it was
+> left reading as one. The file has grown since — W21C added the attempt arms, and W21D added the
+> `[precision]`, `[credential]` and `[boundary]` arms — so it now has **20 `it()` blocks expanding to
+> 30 runtime cases**, all green. Do not read a stale total as current coverage; run the file.
+
+★★★ **THE FIX IS THE UNION, NOT "MAKE THE TWO PREDICATES CONSISTENT" — and that distinction is the
+whole finding.** The reviewer's suggested repair (reuse arm 2's receipt predicate in the scanner)
+introduces the MIRROR defect: every legacy platform writer — including
+`emitRuntimeServiceTaskOutput`, the one that needs nobody to do anything — would silently stop being
+scanned. **The two consumers want OPPOSITE error directions:**
+
+- the **COUNTER** wants **PRECISION**. Over-counting = a false `capability: PROVEN`. That is E7-F020,
+  and it is exactly why arm 2 was narrowed to the fenced receipt.
+- the **SCANNER** wants **RECALL**. Under-scanning = a leaked secret reported clean. Over-scanning a
+  row that turns out not to belong to this run costs one redundant regex pass, and if it *did* trip a
+  matcher it fails CLOSED (refuse to bless) — never a false PASS.
+
+So the scan surface is the **UNION**, de-duplicated by row id: rows named by an applied
+`output_projection` receipt for this run's distributed job, **OR** rows with
+`created_by_run_id = run.id`. **Two queries plus a merge into a `Map`**, deliberately, not one clever
+`OR`: the single-statement form needs a LEFT JOIN with a four-conjunct `ON`, `OR r.id IS NOT NULL`, a
+`DISTINCT` over a `jsonb` column, and correct degradation when the run has no `distributed_job_id`.
+The reasoning is written at the call site so the next "consistency" edit trips over it.
+
+**Both mutation directions are pinned, and the POSITIVE CONTROL is the more important one.**
+
+| mutation | reds |
+|---|---|
+| drop the receipt half (i.e. the state at `f433c8391`) | `[union]` only |
+| drop the column half (i.e. the same-predicate "consistency" fix) | `[legacy]` only — **observed**, by replacing the merge loop with `void columnLinked` |
+| `return []` / drop both | `[union]` + `[legacy]` |
+
+`[legacy]` is green before AND after the fix. A test that passes both before and after pins nothing
+*about the defect*; it is here to pin the **error direction**, which is the thing a future edit is
+most likely to get wrong. The tests live in the arm-2 file on purpose — splitting them would let the
+next edit to arm 2 happen without the scanner's pins in view, which is how the drift happened.
+
+★★ **THE CLASS, which is why this is a finding and not a line in a commit message.** Two consumers of
+one provenance notion drifted apart because the notion was never written down in one place, and
+nothing in CI could tell. Compare **E7-F010** — growing the non-frozen port left every
+frozen-DERIVED structure behind. Same shape: a change is made at one site of a relation that has
+several, the sites are not enumerated, and the untouched sites keep the old meaning silently.
+**Remedy applied:** a per-consumer provenance census is now a table in the store's module header
+(all ten consumers, each with its linkage, its error direction, and whether the linkage is right for
+that direction), together with the explicit statement that the notion **must not** be centralised
+into one predicate — the divergence between #7 and #10 is the correct state, and what was missing
+was a written reason.
+
+★ **NOT CENTRALISED, deliberately.** A shared `rowsBelongingToRun()` helper would have to take a
+direction parameter and would read as one notion with a flag, which is precisely the framing that
+produced the bug. Two explicit predicates with a census that names both is the safer artefact.
+
+**WHAT SURVIVED at `f171d0dad` — a MEASURED COLUMN-set residual, reported rather than silently
+widened.** The scan read only `summary` and `metadata`. On a bridge-projected row, `title` (NOT NULL)
+and `url` are also caller/agent-authored (`BridgeOutputInput`,
+`server/src/services/job-output-bridge.ts:68-87`) and were **not scanned**, so a recognizable secret
+in either still reached a clean verdict. That is a different axis from the ROW-set gap fixed there —
+widening it changes what trips clause 4 for **every** legacy row too, so it wanted its own pinning
+test and its own review rather than a drive-by line in that commit.
+
+---
+
+**Resolved (W21C, 2026-09-08) — the column-set residual is closed, and it was WORSE than the
+residual note said.** An adversarial checker measured it and the reproduction is sharper than the
+original wording: with the leak in `title` and `summary`/`metadata` both NULL, the row does not merely
+go under-scanned — it contributes **no scan surface at all**, because
+`listRunSecretScanSurfaces` builds `summary + metadata`, gets the empty string, and the
+`if (text)` guard drops the row. So the verifier printed a clean clause-4 verdict over a row it had
+already fetched and already counted as capability evidence.
+
+**The fix scans every caller-authored column, not just the two the reviewer named.** The scanned set
+is now `title`, `url`, `provider`, `external_id`, `health_status`, `summary`, `metadata` — the full
+free-text surface `BridgeOutputInput` passes straight through. `type`, `status`, `review_state` and
+`is_primary` are deliberately excluded: they are closed enums and a boolean
+(`packages/shared/src/validators/task-output.ts`) and cannot carry a value. The columns are joined
+with a space so a matcher can never span two columns and manufacture a hit from two innocuous halves.
+
+**Five arms, one per column, each planting the key in that column ALONE** (with an anti-vacuity
+assertion that `summary` and `metadata` really are NULL, so the hit can only come from the column
+under test) — `e7-f020-arm2-provenance.integration.test.ts`, `E7-F030 residual`. All five observed
+RED at `f171d0dad` with `expected undefined to be defined` (no surface at all, per above).
+**Mutation-checked:** dropping `title` from the concatenation reds exactly one arm, `[column] title`,
+and nothing else — so each column is individually load-bearing rather than covered by a sibling.
+
+**THE OTHER TWO SCAN SOURCES WERE AUDITED FOR THE SAME QUESTION — the class does NOT generalise, and
+that is a measurement, not an assumption.**
+
+| source | scanned columns | verdict |
+|---|---|---|
+| (1) `heartbeat_runs` | `stdout_excerpt`, `stderr_excerpt`, `error`, `prompt_snapshot`, `detected_outputs`, `result_json`, `context_snapshot`, `usage_json` | **complete.** Every remaining text column is a platform vocabulary (`invocation_source`, `status`, `error_code`, `signal`, `liveness_state`, `liveness_reason`, `last_output_stream`, `scheduled_retry_reason`), an id-suffixed literal (`next_action` — always `work_question:<id>` / `runtime_decision:<id>`), an opaque adapter session id (`session_id_before/after`), a platform storage handle (`log_store`/`log_ref`/`log_sha256`, written from `handle.logRef`), or dead (`external_run_id` has no writer in `server/src`). The one caller-supplied free-text column is `trigger_detail` (`routes/agents.ts:2009`, `req.body.triggerDetail`) — a BOARD-supplied wakeup label, not agent output, so outside the notion this scanner serves. Named here rather than left unstated. |
+| (3) `job_artifacts` | `identifier`, `object_key` | **complete.** Everything else is a digest (`sha256`, `base_manifest_hash`, `result_manifest_hash`), a size, a timestamp, or a closed enum (`kind`, `sensitivity`, `retention`, `status`, `apply_status`, `orphan_disposition`, `quarantine_reason`). `fence_token` / `observed_fence_token` are deliberately NOT scanned: they are platform-minted lease secrets, and pulling them into scan text would import credential material into the verifier's own working set to no benefit. |
+
+**Why `task_outputs` was the only one with a gap, structurally:** it is the only scan source whose
+row is assembled from a **caller-supplied product record** with many free-text fields. The other two
+are kernel rows whose free text is one or two worker-declared strings. So the answer to "does a recall
+gap on one source suggest the class?" is: the *question* generalises and was worth asking on all
+three, the *defect* did not.
+
+**Not widened.** E7-F015 and E7-F018 are untouched. Arm 2's predicate, `ok`, the clause set, and
+`capabilityProven`'s separation from `ok` are all unchanged — this changes only which rows clause 4
+reads. **What a fixed scan does NOT buy:** E7-F018 still holds (nothing checked in makes any run a
+distributed run; `projectAcceptedOutput` has zero production callers), so the union's receipt half
+selects nothing on any real run today. It is correct rather than exercised.
+
+---
+
+## E7-F031 — the capability counter bound to the JOB, so a RETRY attempt's work printed `capability: PROVEN` for a run that produced nothing
+
+**Status:** resolved · **Owner:** CLI-008 · **Severity:** MEDIUM · **Filed:** 2026-09-08 (W21C),
+measured at `f171d0dad`. **Introduced by W21 (PR #385), found by external review (Codex P2), not
+inherited.** Fixed in the commit that files it.
+
+---
+
+**What.** `countProducedOutputs` in `server/src/services/e7-distributed-run-verifier-store.ts`
+filtered **both** of its arms on `job_id` alone:
+
+| arm | predicate at `f171d0dad` |
+|---|---|
+| 1 (committed workspace patch) | `job_artifacts.job_id = run.distributed_job_id AND kind='workspace_patch' AND status='committed'` |
+| 2 (projected task output) | an APPLIED `output_projection` receipt on `job_id` + `aggregate_kind` + two company conjuncts — **no `attempt_id`** |
+
+`jobs.max_attempts` is NOT NULL default 3 (`packages/db/src/schema/jobs.ts:70`) and **every attempt
+of a job shares its `job_id`**, while a heartbeat run is bound to exactly **one** attempt:
+`heartbeat_runs.distributed_attempt_id`, written once by `buildHandoffRunPatch` and read as an exact
+`(job_id, attempt_id)` pair by the projector's `findRunForAttempt` (`heartbeat.ts:7061-7068`). The
+lifecycle contract says the same thing in words — *"the run is one attempt, not the source of truth"*
+(`docs/architecture/distributed-execution-lifecycles.md`, legacy concept mapping).
+
+So an `output_projection` receipt from attempt N+1, or a `workspace_patch` committed by attempt N+1,
+was counted while verifying a run bound to attempt N. **An output-free run could report
+`capabilityProven: true` off another attempt's work.** That is the same false-PROVEN class E7-F020
+closed, one axis over: W21 replaced a column-provenance bug with a **granularity** bug.
+
+★ **THE ASYMMETRY, AGAIN, AND FOR THE SECOND TIME THE REVIEWER'S NEXT STEP WAS WRONG.** The review
+asked for the attempt predicate on *"both this counter and the receipt-linked secret-scan query"*.
+**Applying it to the scanner would be a regression** — it wants RECALL, so narrowing it to one attempt
+would stop scanning sibling attempts' outputs and let a secret in attempt 2's output go unseen while
+verifying attempt 1. That is the mirror defect E7-F030's `[legacy]` arm already exists to catch, one
+axis over. **The scanner needed no widening either: its `(2a)` half was ALREADY job-wide**, which is
+the correct breadth on this axis, so the right action for the scanner was *nothing*. This is the
+second time collapsing these two consumers onto one predicate has been proposed and the second time
+the asymmetry is right; the "DO NOT MAKE THIS CONSISTENT" block at the scanner's call site now covers
+the ATTEMPT axis explicitly, not only the row-linkage axis.
+
+**Why attempt-binding is not an over-narrowing — measured, not asserted.** Nothing ever re-points
+`distributed_attempt_id` at a retry attempt: the column has exactly ONE writer in the tree
+(`buildHandoffRunPatch`, at handoff; `canary-run-projector.ts:196` writes the id into `usage_json`,
+not the column). So on a retried job the control plane **itself** does not attribute attempt 2 to this
+run — `findRunForAttempt` finds no run for attempt 2's terminal, the run is never finalized from it,
+and clause 3 refuses it for want of a durable terminal. Counting attempt 2's work for attempt 1's run
+was the anomaly; excluding it now agrees with rows 2–5 of the census. **The arm remains structurally
+passable**, which was the explicit honesty check: `attempt_id` is NOT NULL on every receipt and comes
+from the control plane's live fence (`recordGovernedProjection` runs `guardActiveFence` first), and
+every `status='committed'` `job_artifacts` row carries the attempt NUMBER its fence stamped
+(`commitArtifactVersion` is the sole writer of that status). A gate nobody can pass gets deleted; this
+one is passed by the `[own arm2]` and `[own arm1]` positive controls.
+
+**The null case is a decision, stated: FAIL CLOSED.** A run with a `distributed_job_id` and no
+`distributed_attempt_id` counts 0 on both arms rather than widening back to job scope. It is reachable
+only on a partially-written row, and **clause 2 already REFUSES such a row** for incomplete evidence
+binding — so printing PROVEN beside that refusal, over work no attempt of this run can be shown to
+have done, is exactly the false-PROVEN this closes. Pinned by `[null attempt]`, which also asserts the
+anti-vacuity direction: with the attempt id restored the very same rows DO count.
+
+**Arm 1 was found by the census, not by the review, and fixing only arm 2 would have been a false
+claim of enforcement.** The two arms are ORed into one gate (`arm1 < 1 && arm2 < 1`), so leaving arm 1
+job-granular would have left the gate openable by precisely the mechanism arm 2's fix closes.
+`job_artifacts.attempt` is an attempt NUMBER, so arm 1 binds through `job_attempts`
+(`attempt_number = job_artifacts.attempt AND job_attempts.id = run.distributed_attempt_id`), plus a
+company conjunct. The thin `authorizeArtifactCommit` rows that leave `attempt` NULL also leave
+`status` NULL and so were never counted here anyway.
+
+**Fail-first, with real output at `f171d0dad`** (`e7-f020-arm2-provenance.integration.test.ts`,
+`E7-F031`). The fixture gained `activateSiblingLease`, which places a **real** second attempt on an
+already-seeded job and polls + ACKs it through the real leasing service, so the sibling receipt is
+written under a genuine live fence rather than forged with admin SQL:
+
+| arm | at `f171d0dad` | after |
+|---|---|---|
+| `[sibling arm2]` receipt on attempt 2, run bound to attempt 1 | **RED** — `expected 1 to be +0` | green |
+| `[sibling arm1]` committed patch on attempt 2, run bound to attempt 1 | **RED** — `expected 1 to be +0` | green |
+| `[null attempt]` job id set, attempt id NULL | **RED** — `expected 1 to be +0` | green |
+| `[sibling-scan]` counter half of the asymmetry pin | **RED** — `expected 1 to be +0` | green |
+| `[own arm2]` receipt on the run's OWN attempt | green | green — **positive control**, reds on an over-narrow predicate or a `return 0` |
+| `[own arm1]` patch committed by the run's OWN attempt | green | green — same |
+| `[sibling-scan]` **scanner** half | green | green — **the asymmetry pin.** Reds if the counter's attempt conjunct is copied into the scanner |
+
+`[sibling-scan]` is the important one: one row, **scanned** by clause 4 and **not counted** by clause
+6, asserted in a single test. The divergence is pinned rather than merely tolerated.
+
+**THE OPERATOR-FACING CAVEAT WOULD HAVE GONE FALSE SILENTLY — for the second time.**
+`E7_CAPABILITY_LIMITATIONS` is printed beside every verdict, and it stated the receipt match as
+*"`job_id` = this run's `distributed_job_id`"* and declared *"arm 2 ONLY … arm 1 … was not touched"*.
+E7-F031 falsified both. Its own doc comment already records that W21 had to rewrite it for the same
+reason, so this is a recurring shape: **a caveat printed beside a verdict is a claim about the code
+and goes stale exactly like a comment, except it is read by operators who cannot see the predicate.**
+Corrected, plus a new assertion (`e7-distributed-run-verifier.test.ts`, W7U2 SECOND CONTROL) pinning
+`attempt_id`, `distributed_attempt_id`, `max_attempts`, `E7-F031`, and the scanner's exemption.
+
+★ **AND THE GUARD THAT CAUGHT IT WAS ITSELF WIDENED RATHER THAN ROUTED AROUND.** The existing
+assertion was a flat `expect(text).not.toContain("both arms")` — a proxy for "do not attribute
+E7-F020 to arm 1". E7-F031 made a cross-arm sentence TRUE, so the flat ban forbade an accurate
+statement, and the tempting fix is to reword around the banned string: **a guard defeated by a
+synonym is a guard that has stopped guarding.** It now says what it always meant — a cross-arm claim
+is allowed only inside the paragraph citing the finding that licenses it, and never in a sentence
+making the E7-F020 provenance claim. **Mutation-verified:** appending "covers both arms" to the
+`Scope:` tail reds it (`expected 2281 to be less than 1948`), so the structural rule is not vacuous.
+
+★★ **THE CLASS — a census can be complete on the axis it was written for and blind on another.** The
+ten-row census in the store's module header is the remedy E7-F030 installed, and it MISSED this: it
+reasoned about WHICH LINKAGE each consumer used and never about AT WHAT GRANULARITY. An adversarial
+checker even noticed the retry axis — it flagged that attempt 2's `job_events` go unscanned on a
+retried job — and filed it as a non-blocking prose nit, because it looked at the RECALL direction
+while the same structural fact was a FALSE PROVEN in the counter. **The same fact reads as a nit or as
+a defect depending on which consumer you are standing in**, which is precisely why the census is
+per-consumer. **Remedy applied:** the census now carries a `granularity` column for all ten rows and
+names its three axes (row linkage / granularity / column set) at the top, so the next reader is asked
+the question on each. The pass that added it found one further mismatch — filed as **E7-F032**.
+
+---
+
+## E7-F032 — clause 4 does not scan a sibling attempt's `job_events`, so a retried job's leak can reach a clean verdict
+
+**Status:** open · **Owner:** CLI-008 · **Severity:** LOW · **Filed:** 2026-09-08 (W21C), by
+re-applying the provenance census to the retry/attempt axis (E7-F031's remedy). Independently noticed
+by an adversarial checker during W21B review and filed there as a non-blocking prose nit; recorded
+here as a finding because the census pass measured what it costs.
+
+---
+
+**What.** `listJobEvents(attemptId)` is row 4 of the census, and it is the ONE consumer that serves
+**both** directions from a single query: clause 5 counts `attempt_started` / `terminal` events
+(PRECISION), and clause 4 scans every event payload for leak classes (RECALL). Its linkage is
+`job_events.attempt_id`, which is exact and is the only linkage the table has — so on the ROW axis the
+old census cell was right to say the two directions do not conflict.
+
+**On the ATTEMPT axis they do.** Clause 5 wants THIS attempt's events (a sibling attempt's
+`attempt_started` must not corroborate this attempt — that would be a false PASS). Clause 4 wants the
+whole job's, for the same reason source (2a) of `listRunSecretScanSurfaces` is job-wide. Because one
+query serves both, clause 4 inherits clause 5's narrowness: **on a retried job, attempt 2's event
+payloads are never scanned while verifying attempt 1**, so a recognizable provider key / E2B key /
+connection string / PEM header in a sibling attempt's event payload reaches a clean clause-4 verdict.
+
+**Why it is LOW rather than the severity E7-F031 carries.** The direction is the difference. A recall
+gap is a MISSED hard-fail — the verifier fails to refuse something it should have refused. A precision
+gap is a FALSE PROVEN — the verifier asserts something untrue. Both matter; only one manufactures a
+claim. And E7-F018 still bounds the blast radius: no checked-in configuration makes any run a
+distributed run, so no real run has a sibling attempt today.
+
+**Why it is NOT fixed in W21C.** Separating the directions needs a SECOND store method
+(`listJobEventsForJob`, or an added job-scoped scan source) and widens what can HARD-fail clause 4 for
+every run that ever retries — a behaviour change to the refusal surface, on the same reasoning that
+kept E7-F030's column-set residual out of W21B rather than smuggling it in. It wants its own pinning
+test (a leak in a sibling attempt's event payload must reach clause 4 while clause 5's counts stay
+attempt-scoped) and its own review.
+
+**What WAS done here, and it is the load-bearing half.** Row 4's census cell used to assert *"attempt_id
+is the only linkage the table has, and it is exact, so the two directions do not conflict here"*. That
+sentence is now corrected to name the split and cite this finding. **A census that asserts a coverage
+it does not have is worse than one that admits the gap** — the false claim converts an open question
+into a settled one for every later reader, which is the same failure mode
+`scripts/lib/finding-ownership.mjs` exists to prevent one register over.
+
+---
+
+## E7-F033 — the widened secret scanner hard-fails a clean run: a credential-free `postgres://localhost` dev-service URL trips `connection_string`
+
+**Status:** open · **Owner:** CLI-008 · **Severity:** HIGH · **Filed:** 2026-09-08 (W21D), by a blind
+review panel and confirmed by writing the precision test FIRST and running it at `4c7327b33` with
+production code untouched. **Fixed at the predicate in the same unit**; the entry stays open for the
+standing obligation it puts on the suite, not for an outstanding repair.
+
+---
+
+**What.** W21B widened `listRunSecretScanSurfaces` to scan five more caller-authored `task_outputs`
+columns. One of them is `url`. Those columns feed `HARD_LEAK_MATCHERS`, whose `connection_string` arm
+was copied verbatim from `redaction.ts` `SECRET_VALUE_PATTERNS[0]` and matched **any** URI of scheme
+`postgres`/`mysql`/`mongodb`/`redis`/`amqp`/`kafka`/`nats`/`mssql`/`sqlserver`. An ordinary declared
+dev service is a normal `workspaceRuntime.services[]` entry, and `emitRuntimeServiceTaskOutput` copies
+`row.url` straight through (`task-output-emitters.ts:100`). So a run whose service URL is
+`postgres://localhost:5432/dev` — loopback host, **no credential, no secret** — hard-failed clause 4
+as a leaked connection string.
+
+**This is the mirror of E7-F020: a false FAIL, not a false PROVEN**, and it lands on exactly the runs
+the campaign will try first.
+
+**Why the suite could not see it.** All five `[column]` arms plant a key and assert a HIT. They proved
+**recall five times and precision zero times**. A scanner tested only for recall drifts into a denial
+of service on its own users, and nobody notices until the campaign runs.
+
+**Measured, not argued.** The precision arms were written first and run at `4c7327b33`:
+
+```
+× [precision] a legitimate `url` value on a bridge-projected row does NOT trip clause 4
+    → AssertionError: expected [ 'connection_string' ] to deeply equal []
+× [precision] a wholly legitimate runtime-service row leaves clause 4 clean
+    → AssertionError: expected [ 'connection_string' ] to deeply equal []
+✓ [precision] title  ✓ [precision] provider  ✓ [precision] externalId  ✓ [precision] healthStatus
+```
+
+**The fix, and why this shape.** What makes a connection string a secret is the **credential** in it,
+not the scheme. `postgres://localhost:5432/dev` is a hostname and a port. The matcher is narrowed to
+the two shapes that carry credential material:
+
+- **(a)** URI userinfo with a **password** component — `scheme://user:pass@host`, including the
+  password-only `scheme://:pass@host`. A bare `scheme://user@host` is deliberately **not** matched: a
+  username alone is not a credential. (Pinned by a `[boundary]` arm so a reader knows it was chosen.)
+- **(b)** a credential-bearing **query parameter** — `?password=` / `?token=` / `?api_key=` / … libpq
+  and friends accept this form, so narrowing to (a) alone **would have lost a real leak**. This is the
+  recall the narrowing deliberately keeps.
+
+It no longer mirrors `redaction.ts`, and that divergence is the point: the redactor over-matches on
+purpose because a redundant `***REDACTED***` costs nothing, whereas a **hard** matcher that
+over-matches refuses a clean run — and a gate that fails runs which leaked nothing gets overridden and
+then deleted. The verifier's own header already says this about the broad heuristic; the
+connection-string arm had been exempted from its own rule.
+
+**Not a suppression — proved in both directions.** `[credential]` arms for `user:pass@`, `:pass@` and
+`?password=` red if the narrowing drifts further (mutation run: deleting the query-param alternative
+**REDS** the `?password=` arm). The `[precision]` arms red if it widens back (observed RED at
+`4c7327b33`). Post-fix the file is 20 `it()` blocks / 30 runtime cases, all green.
+
+**Standing obligation.** The suite must from now on prove **precision AND recall for every scanned
+column**. Adding a column with only a recall arm re-opens this class.
+
+**Residual, stated and NOT fixed.** Two other hard matchers can over-match on benign text:
+`provider_key` (`/\bsk-(?:ant-)?[A-Za-z0-9_-]{12,}\b/`) would fire on a branch name like
+`sk-antenna-refactor`, and `e2b_api_key_assignment` (`/E2B_API_KEY\s*[=:]/`) fires on a documentation
+mention such as `E2B_API_KEY: (unset)`. Both are contrived rather than observed on a real surface, and
+re-deriving every matcher's error direction was outside this unit; recorded so the next scanner change
+asks the question instead of rediscovering it.

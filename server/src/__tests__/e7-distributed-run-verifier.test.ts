@@ -625,7 +625,9 @@ describe("W7U2 — the capability verdict states its own limit (E7-F020)", () =>
     // MUTATION: delete the capabilityLimitations block from formatVerifyResult and this reds,
     // while every pre-existing capability test and the positive control below stay green.
     expect(printed).toContain("E7-F020");
-    expect(printed).toContain("task_outputs arm");
+    // ★ W21: was "task_outputs arm" — the block now leads with the predicate, so the arm is
+    // named as "Arm 2 (task_outputs)". Same property: the arm is identified, not "the check".
+    expect(printed).toContain("Arm 2 (task_outputs)");
     expect(printed).toContain("limit of this verdict");
   });
 
@@ -671,14 +673,69 @@ describe("W7U2 SECOND CONTROL — the caveat says something FALSIFIABLE", () => 
   it("names the arm and the exact column, not 'the capability check'", () => {
     // A caveat that says "this verdict has limitations" passes a naive contains-check while
     // disclosing nothing. These are the load-bearing nouns.
-    expect(text).toContain("arm 2");
-    expect(text).toContain("task_outputs");
+    // ★ W21D — this used to read `toContain("arm 2")`, which could never red: "arm 2" is a
+    // substring of "arm 2 ONLY", asserted on the SAME `text` in the Scope test below, so a
+    // caveat that had lost every other mention of the arm still passed here. Pin the arm-2
+    // sentence's own opening instead — no sibling assertion supplies it.
+    // The sentence pin already carries the column name, so a separate bare
+    // `toContain("task_outputs")` would be the same vacuous-sibling defect one line down —
+    // it was removed rather than kept for appearances.
+    expect(text).toContain("Arm 2 (task_outputs) counts ONLY rows");
     expect(text).toContain("created_by_run_id");
-    expect(text).toContain("e7-distributed-run-verifier-store.ts:213-216");
+    // ★ W21: the literal line range `:213-216` was dropped when the predicate moved. The FILE
+    // is still named; a line range that drifts on the next edit is a citation that rots.
+    expect(text).toContain("e7-distributed-run-verifier-store.ts");
+  });
+
+  // ★ W21 — THE NEW REQUIRED HALF. The block used to be pure disclosure; arm 2 now applies a
+  // provenance predicate, and the text has to NAME it, or a reader cannot check whether the
+  // rule described is the rule enforced. These are the load-bearing nouns of the new predicate.
+  it("names the provenance predicate arm 2 actually applies", () => {
+    expect(text).toContain("output_projection");
+    expect(text).toContain("job_projection_receipts");
+    expect(text).toContain("projectAcceptedOutput");
   });
 
   it("cites E7-F020 so a reader can find the measurement", () => {
     expect(text).toContain("E7-F020");
+  });
+
+  // ★ W21C — THE SECOND TIME THIS BLOCK WOULD HAVE GONE FALSE SILENTLY. It stated the receipt
+  // match as `job_id` alone and declared arm 1 untouched; E7-F031 made both arms attempt-bound,
+  // so both sentences became false claims printed beside every verdict. These nouns pin the
+  // corrected version — a future edit that re-widens either arm to job scope, or that narrows
+  // the SCANNER to the attempt, leaves a text that no longer describes the code and reds here.
+  it("names the ATTEMPT granularity both arms now enforce, and the scanner's exemption", () => {
+    // ★★★ W21D — THE ASSERTION THAT COULD NEVER RED, AND THE PROOF THAT IT COULD NOT.
+    // This line used to read `toContain("attempt_id")`. "attempt_id" is a SUBSTRING of the
+    // "distributed_attempt_id" asserted on the very next line: measured offsets of
+    // "attempt_id" in the joined text were [170, 832], and 832 falls inside the
+    // "distributed_attempt_id" occurrence starting at 820. So while line 2 was green,
+    // line 1 was mathematically incapable of failing.
+    //
+    // MEASURED CONSEQUENCE, not a worry: reverting the arm-2 sentence to its pre-W21C
+    // job-only wording ("for THIS run's distributed job") left this ENTIRE describe block
+    // green — all of its toContain assertions, both deny-lists and the positional window —
+    // while the caveat printed beside every verdict said both "matched on job_id" and
+    // "Both are now attempt-bound", contradicting itself. This is the SECOND time an
+    // assertion satisfied by its own siblings has shipped on this branch pair; the first
+    // hid the invisible-byte defect on PR #383.
+    //
+    // The fix pins the SENTENCE. Reverting the caveat now reds here, which is the point.
+    expect(text).toContain("matched on job_id AND attempt_id");
+    expect(text).toContain("not job_id alone");
+    expect(text).toContain("distributed_attempt_id");
+    expect(text).toContain("max_attempts");
+    expect(text).toContain("E7-F031");
+    // The asymmetry is the part a "consistency" edit destroys, so it is asserted, not implied.
+    // ★ W21D made this precise. The text used to say flatly "the scanner is deliberately NOT
+    // attempt-bound", which is false of ONE of its four surfaces: `listJobEvents` is keyed on
+    // `attempt_id`, so a sibling attempt's event payloads are never scanned — the gap the same
+    // commit filed as E7-F032. The pin now covers BOTH halves, so a future edit cannot drop
+    // the disclosure and keep the reassuring half.
+    expect(text).toContain("task_outputs and job_artifacts surfaces are deliberately NOT attempt-bound");
+    expect(text).toContain("job_events surface IS attempt-narrow");
+    expect(text).toContain("E7-F032");
   });
 
   it("names the writer path that makes it true, so the claim can be checked", () => {
@@ -694,9 +751,20 @@ describe("W7U2 SECOND CONTROL — the caveat says something FALSIFIABLE", () => 
   // here makes the caveat semantically correct — a human reader still owes that. They are cheap
   // regression tripwires on the exact wordings this unit reviewed, and that is their whole claim.
   // Do not read a green here as "the caveat has been checked for honesty".
-  it("says it is a DISCLOSURE, not a control — it must not read as 'now handled'", () => {
-    expect(text).toContain("DISCLOSURE, not a control");
+  // ★★★ W21 REPOINTED, NOT RELAXED. The required phrase used to be "DISCLOSURE, not a control",
+  // which stopped being true the moment W21 gave arm 2 a predicate — a caveat that describes
+  // itself wrongly is the drift this guard exists to catch, so the guard had to move with the
+  // text rather than be deleted. What replaces it is STRICTLY MORE: the deny-list is kept
+  // verbatim AND extended with the overclaim this particular change invites ("the capability
+  // gate now works"), and the block must still say what a green does not establish.
+  it("states the residual and must not read as 'the gate now works'", () => {
+    expect(text).toContain("WHAT A GREEN STILL DOES NOT ESTABLISH");
+    expect(text).toContain("E7-F018");
+    expect(text).toContain("gates nothing");
     for (const claim of ["now handled", "is fixed", "no longer", "mitigated", "prevents"]) {
+      expect(text.toLowerCase()).not.toContain(claim);
+    }
+    for (const claim of ["now works", "gate works", "capability is proven", "ready to gate"]) {
       expect(text.toLowerCase()).not.toContain(claim);
     }
   });
@@ -711,11 +779,56 @@ describe("W7U2 SECOND CONTROL — the caveat says something FALSIFIABLE", () => 
 
   it("scopes itself to arm 2 and does NOT attribute E7-F020 to arm 1", () => {
     // Arm 1 (workspace_patch job_artifacts) has a DIFFERENT open question (E7-F019) and is
-    // short-circuited by `if (run.distributedJobId)`. Blurring them would make the text
-    // unfalsifiable, and E7-F018/F019/F020 exist precisely because the arms differ.
+    // short-circuited by `if (run.distributedJobId && attemptId)`. Blurring them would make the
+    // text unfalsifiable, and E7-F018/F019/F020 exist precisely because the arms differ.
     expect(text).toContain("arm 2 ONLY");
     expect(text).toContain("E7-F019");
-    expect(text).not.toContain("both arms");
+
+    // ★★★ W21C WIDENED THIS FROM A STRING BAN TO A STRUCTURAL ONE, AND THE REASON MATTERS.
+    // The check used to be a flat `not.toContain("both arms")`. E7-F031 then made a cross-arm
+    // statement TRUE — the attempt binding really does cover arm 1 and arm 2 — so the flat ban
+    // forbade an accurate sentence. The tempting move at that point is to reword around the
+    // banned string, which keeps the guard green while saying the same thing in other words:
+    // a guard defeated by a synonym is a guard that has stopped guarding.
+    //
+    // So the rule now says what it always MEANT: a cross-arm claim is allowed, but only inside
+    // the paragraph that cites the finding licensing it, and NEVER attached to the E7-F020
+    // provenance claim, which is arm-2-only and must stay that way.
+    // ★★★ W21D — THE GUARD WAS LOOSER THAN THE RULE IT STATES, AND ONLY ONE BOUND WAS PROVEN.
+    // It used `Scope:` as the upper bound, which is not where the licensing paragraph ends: the
+    // window ran [630, 2323] — 1693 characters spanning THREE paragraphs, because "WHAT A GREEN
+    // STILL DOES NOT ESTABLISH" starts at 1610 and the E7-F020 residual at 1976 both sat inside
+    // it. Measured: inserting "— this holds for both arms —" into the WHAT-A-GREEN paragraph
+    // left this test GREEN. The recorded mutation had only ever exercised the UPPER bound.
+    //
+    // The upper bound is now the START OF THE NEXT SECTION, computed rather than named, so the
+    // window tracks the text instead of a landmark two paragraphs away. Both bounds are pinned.
+    const attemptParagraph = text.indexOf("ATTEMPT GRANULARITY (E7-F031)");
+    expect(attemptParagraph).toBeGreaterThan(-1);
+    const laterSections = ["WHAT A GREEN STILL DOES NOT ESTABLISH", "E7-F020 stays OPEN", "Scope:"]
+      .map((marker) => text.indexOf(marker))
+      .filter((at) => at > attemptParagraph);
+    expect(laterSections.length).toBeGreaterThan(0);
+    const attemptParagraphEnd = Math.min(...laterSections);
+
+    // ANTI-VACUITY: with zero occurrences the loop below asserts nothing at all, and a text that
+    // had quietly lost its cross-arm sentence would pass a guard whose whole subject is that
+    // sentence. The count is asserted, so the loop is never empty.
+    const crossArm = [...text.matchAll(/both arms/gi)];
+    expect(crossArm.length).toBeGreaterThan(0);
+    for (const match of crossArm) {
+      const at = match.index ?? -1;
+      expect(at).toBeGreaterThan(attemptParagraph);
+      expect(at).toBeLessThan(attemptParagraphEnd);
+    }
+
+    // And no sentence making the E7-F020 provenance claim may reach for arm 1 — the original
+    // intent, now checked per sentence instead of over the whole blob.
+    for (const sentence of text.split(/(?<=\.)\s+/)) {
+      if (!sentence.includes("E7-F020")) continue;
+      expect(sentence.toLowerCase()).not.toContain("arm 1");
+      expect(sentence.toLowerCase()).not.toContain("both arms");
+    }
   });
 });
 
@@ -821,7 +934,10 @@ describe("W7U2-FIX — the PROVEN headline does not claim agent provenance", () 
     // The pointer must not dangle: the phrase the headline sends the reader to has to exist in
     // the SAME rendered report. A caveat reference to a block that got renamed is a dead end.
     expect(resultLine).toContain("limit of this verdict");
-    expect(printed).toContain("limit of this verdict (a DISCLOSURE");
+    // ★ W21: the parenthetical changed from "(a DISCLOSURE — nothing below is enforced)" because
+    // that stopped being true — arm 2's first sentences now describe an ENFORCED predicate. The
+    // dangling-pointer property this assertion exists for is unchanged.
+    expect(printed).toContain("limit of this verdict (what a green here does NOT establish)");
   });
 
   it("the NOT-PROVEN branch is untouched — the two branches stay distinct", async () => {

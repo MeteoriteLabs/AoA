@@ -161,6 +161,21 @@ export interface JobControlFixture {
     offer: LeaseOfferV1;
     identity: ActiveFenceRequest;
   }>;
+  /**
+   * A SECOND (retry) attempt on an ALREADY-SEEDED job, leased for real: a fresh
+   * `job_attempts` row is placed exactly as `seedPlacedJob` places attempt 1, then polled
+   * and ACKed through the real leasing service, so the returned fence is a LIVE control-plane
+   * fence and anything projected under it writes a genuine `job_projection_receipts` row
+   * bound to THIS attempt. Deliberately does NOT call `resetRuntimeRows` — attempt 1 and its
+   * lease/receipts must survive, since a sibling-attempt test is exactly about both existing
+   * at once. Safe because `activateLeaseAck` leaves `jobs.status = 'queued'` and the seeded
+   * worker carries two batch slots.
+   */
+  activateSiblingLease(
+    seeded: { jobId: string; attemptId: string },
+    attemptNumber: number,
+    ordinal: number,
+  ): Promise<{ attemptId: string; offer: LeaseOfferV1; identity: ActiveFenceRequest }>;
   fenceIdentity(seeded: { jobId: string; attemptId: string }, offer: LeaseOfferV1): ActiveFenceRequest;
   teardown(): Promise<void>;
 }
@@ -232,14 +247,36 @@ export async function setupJobControlFixture(prefix: string): Promise<JobControl
       last_seen_at = clock_timestamp() WHERE id = ${WORKER}`;
   }
 
+  /** The placed-`job_attempts` INSERT, shared by attempt 1 and any sibling retry attempt so
+   * the two rows are placed identically and a sibling differs ONLY in id + attempt_number. */
+  async function insertPlacedAttempt(input: {
+    jobId: string;
+    attemptId: string;
+    attemptNumber: number;
+    availableAt: Date;
+  }): Promise<void> {
+    const provider = providerProfile();
+    const profile = registeredProfile(provider);
+    const profileHash = sha256(canonicalizeJsonV1(profile));
+    await admin`INSERT INTO job_attempts
+      (id, organization_id, company_id, job_id, attempt_number, status,
+       placement_disposition, placement_owner, placement_target_id, placement_target_class,
+       placement_target_scope, placement_target_generation, placement_profile_hash,
+       placement_provider_constraint_hash, placement_fallback_disposition, placement_reason_code,
+       placement_mode, placement_lease_eligible, placement_input_digest, placement_policy_digest,
+       placement_decided_at, created_at, updated_at)
+      VALUES (${input.attemptId}, ${ORG}, ${COMPANY}, ${input.jobId}, ${input.attemptNumber}, 'pending',
+        'selected', 'organization_dedicated', ${TARGET}, 'organization_dedicated',
+        'organization', 1, ${profileHash}, ${provider.digest}, 'primary', 'target_selected',
+        'active', true, ${"6".repeat(64)}, ${"6".repeat(64)}, clock_timestamp(),
+        ${input.availableAt}, ${input.availableAt})`;
+  }
+
   async function seedPlacedJob(ordinal: number, options?: { maxAttempts?: number }): Promise<{ jobId: string; attemptId: string }> {
     const suffix = ordinal.toString().padStart(12, "0");
     const jobId = `a6100000-0000-4000-8000-${suffix}`;
     const attemptId = `a6200000-0000-4000-8000-${suffix}`;
     const outboxId = `a6300000-0000-4000-8000-${suffix}`;
-    const provider = providerProfile();
-    const profile = registeredProfile(provider);
-    const profileHash = sha256(canonicalizeJsonV1(profile));
     const availableAt = new Date(Date.now() - 60_000 + ordinal);
     const maxAttempts = options?.maxAttempts ?? 3;
     const workload = { command: "codex", args: ["exec", "--json"], stdinArtifactId: null, maxRuntimeSeconds: 600 };
@@ -255,18 +292,7 @@ export async function setupJobControlFixture(prefix: string): Promise<JobControl
          ${{ workloadType: "batch", requiredCapabilities: ["sandbox.process_isolated"] }},
         ${{ policyId: "job-submission-default", policyVersion: 1, requestedTarget: TARGET }},
         ${availableAt}, 50, 'queued', ${maxAttempts}, ${availableAt}, ${availableAt})`;
-    await admin`INSERT INTO job_attempts
-      (id, organization_id, company_id, job_id, attempt_number, status,
-       placement_disposition, placement_owner, placement_target_id, placement_target_class,
-       placement_target_scope, placement_target_generation, placement_profile_hash,
-       placement_provider_constraint_hash, placement_fallback_disposition, placement_reason_code,
-       placement_mode, placement_lease_eligible, placement_input_digest, placement_policy_digest,
-       placement_decided_at, created_at, updated_at)
-      VALUES (${attemptId}, ${ORG}, ${COMPANY}, ${jobId}, 1, 'pending',
-        'selected', 'organization_dedicated', ${TARGET}, 'organization_dedicated',
-        'organization', 1, ${profileHash}, ${provider.digest}, 'primary', 'target_selected',
-        'active', true, ${"6".repeat(64)}, ${"6".repeat(64)}, clock_timestamp(),
-        ${availableAt}, ${availableAt})`;
+    await insertPlacedAttempt({ jobId, attemptId, attemptNumber: 1, availableAt });
     await admin`INSERT INTO job_outbox
       (id, organization_id, company_id, job_id, attempt_id, kind, status, payload, available_at)
       VALUES (${outboxId}, ${ORG}, ${COMPANY}, ${jobId}, ${attemptId}, 'attempt_ready', 'pending',
@@ -304,6 +330,33 @@ export async function setupJobControlFixture(prefix: string): Promise<JobControl
     return { seeded, offer, identity: fenceIdentity(seeded, offer) };
   }
 
+  async function activateSiblingLease(
+    seeded: { jobId: string; attemptId: string },
+    attemptNumber: number,
+    ordinal: number,
+  ) {
+    const suffix = `${ordinal}${attemptNumber}`.padStart(12, "0");
+    const attemptId = `a6400000-0000-4000-8000-${suffix}`;
+    await insertPlacedAttempt({
+      jobId: seeded.jobId,
+      attemptId,
+      attemptNumber,
+      availableAt: new Date(Date.now() - 30_000 + ordinal),
+    });
+    const tag = `sib-${ordinal}-${attemptNumber}`;
+    const polled = await leasing.poll({ auth: auth(`poll-${tag}`), request: pollRequest(`poll-${tag}`) });
+    if (polled.outcome !== "offer") throw new Error(`expected sibling offer, got ${polled.outcome}`);
+    const offer = polled.body;
+    // The candidate lock could in principle have re-offered attempt 1; assert we got the
+    // sibling, or the test built on this would silently be a same-attempt test.
+    if (offer.job.attempt !== attemptNumber) {
+      throw new Error(`expected an offer for attempt ${attemptNumber}, got ${offer.job.attempt}`);
+    }
+    const acked = await leasing.ack({ auth: auth(`ack-${tag}`), request: ackRequest(offer) });
+    if (acked.outcome !== "acknowledged") throw new Error("expected sibling ack");
+    return { attemptId, offer, identity: fenceIdentity({ jobId: seeded.jobId, attemptId }, offer) };
+  }
+
   async function teardown(): Promise<void> {
     await operator.close({ timeoutSeconds: 5 }).catch(() => {});
     await app.close({ timeoutSeconds: 5 }).catch(() => {});
@@ -312,5 +365,16 @@ export async function setupJobControlFixture(prefix: string): Promise<JobControl
     if (dataDir) await rm(dataDir, { recursive: true, force: true }).catch(() => {});
   }
 
-  return { admin, app, operator, leasing, resetRuntimeRows, seedPlacedJob, activateLease, fenceIdentity, teardown };
+  return {
+    admin,
+    app,
+    operator,
+    leasing,
+    resetRuntimeRows,
+    seedPlacedJob,
+    activateLease,
+    activateSiblingLease,
+    fenceIdentity,
+    teardown,
+  };
 }

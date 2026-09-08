@@ -63,8 +63,14 @@ export type ArtifactExportStage = "digest" | "grant" | "export" | "commit";
  * substitutes a default for them:
  *
  *   * `kind` is honoured by the control plane AND is what the E7-1 capability counter filters
- *     on (`e7-distributed-run-verifier-store.ts:207` matches `workspace_patch` only), so a
- *     default picked here would silently decide someone else's gate.
+ *     on — `countProducedOutputs` arm 1 in `server/src/services/e7-distributed-run-verifier-store.ts`
+ *     matches `workspace_patch` only — so a default picked here would silently decide someone
+ *     else's gate. (W21D: this cited `:207`, which W21B/W21C moved. Anchor on the SYMBOL, not a
+ *     line: `:207` in that file is now an unrelated `getAttemptTerminalReceipt` parameter, and a
+ *     reader following the old pin would have landed on the wrong function entirely. That
+ *     `kind` conjunct is also the ONLY thing arm 1's precision rests on — `stageJobInputFiles`
+ *     commits FENCELESS `job_artifacts` rows on the same job and attempt, so "committed implies
+ *     fenced" is false for this table.)
  *   * `retention` is CONTROL-PLANE-OWNED and the declaration is IGNORED, derived from `kind`
  *     instead (`artifact-commit.ts:166-182`, DAT-010). It is still sent honestly rather than
  *     hard-coded, so a disagreement shows up as the server's own warning.

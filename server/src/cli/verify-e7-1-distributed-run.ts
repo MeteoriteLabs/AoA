@@ -22,14 +22,45 @@
 // CAPABILITY. It is ALWAYS printed and ALWAYS in `verdict-json`. `--require-capability`
 // makes an unproven capability exit 3.
 //
-// ★ AND IT ANSWERS THAT QUESTION IMPERFECTLY, IN A MEASURED WAY (W7U2). Arm 2 of clause 6
+// ★ AND IT ANSWERS THAT QUESTION IMPERFECTLY, IN A MEASURED WAY (W7U2, RESTATED W21B).
+//
+// ★★ WHAT THIS PARAGRAPH USED TO SAY, AND WHY IT IS WRONG NOW. Until W21 it read: "arm 2
 // counts `task_outputs` rows by `created_by_run_id` with no provenance filter, and an
 // ordinary heartbeat path writes such a row for any run that freshly starts a declared dev
-// server — so `capability: PROVEN` can be reached with zero agent output (E7-F020, open,
-// HIGH). That limit is now PRINTED with every verdict and carried in `verdict-json`
-// (`capabilityLimitations`), so it survives being quoted from either. It is a disclosure —
-// the arms, the predicate and the counts are exactly what they were, and a green still has
-// to be checked by hand.
+// server — so `capability: PROVEN` can be reached with zero agent output". W21 changed the
+// predicate and did not change this header, so the CLI's own doc asserted a defect the code
+// no longer had. Corrected rather than deleted, because a stale doc beside a changed
+// predicate is how the next reader mis-sizes the gate.
+//
+// ARM 2 NOW counts a `task_outputs` row only when an APPLIED `output_projection` receipt on
+// this run's `distributed_job_id` AND `distributed_attempt_id` names it — the receipt only
+// `jobOutputBridge` `projectAcceptedOutput` writes, behind a live lease fence — so the E7-F020
+// platform-write path is excluded structurally. E7-F020 stays OPEN on a stated residual (an
+// UPSERT collision on a platform `external_id`), and the limit is PRINTED with every verdict
+// and carried in `verdict-json` (`capabilityLimitations`), so it survives being quoted from
+// either.
+//
+// ★★ AND THE PARAGRAPH ABOVE WENT STALE A SECOND TIME, WHICH IS THE POINT OF SAYING SO HERE.
+// W21C bound BOTH arms to the run's ATTEMPT rather than its job (E7-F031): a job carries
+// `max_attempts` (default 3) and every attempt shares the job id, so a RETRY attempt's output —
+// or its committed `workspace_patch` — used to print `capability: PROVEN` for a run that
+// produced nothing. This header said `distributed_job_id` alone and would have asserted the
+// old, wider predicate. Same failure the block above records for W21, one commit later: a doc
+// that narrates a predicate is a claim about the predicate, and it does not move on its own.
+// The SECRET SCANNER's `task_outputs` and `job_artifacts` surfaces are deliberately NOT
+// attempt-bound — they want recall, so a sibling attempt's output is still scanned. Do not
+// "make them consistent".
+//
+// ★ CORRECTED W21D. This line used to say flatly that the scanner is not attempt-bound. That
+// is false of ONE of clause 4's four surfaces: `listJobEvents` is keyed on `attempt_id`, so a
+// sibling attempt's event payloads are NEVER scanned. The commit that wrote this reassurance
+// is the same commit that FILED that gap as E7-F032 (open, not fixed) — the disclosure and
+// the reassurance shipped together and contradicted each other.
+//
+// ★★★ AND A GREEN IS STILL NOT EVIDENCE OF A WORKING GATE, for a reason that is not the
+// predicate: E7-F018 measured that `projectAcceptedOutput` has ZERO production callers and
+// that nothing checked in makes any run a distributed run, so arm 2 reads 0 on every real
+// run. The bar is CLOSED where it was falsely open. That is not the same as working.
 //
 // --require-capability is OFF BY DEFAULT, deliberately. Output capture is unbuilt
 // (CLI-008 Unit F: the E2B driver passes no stream handlers, stdoutRef/stderrRef are

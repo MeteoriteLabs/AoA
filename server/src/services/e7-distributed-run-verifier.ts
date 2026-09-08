@@ -205,12 +205,20 @@ export interface E7VerifyResult {
    * Unit A: the verifier starts telling a truth it already had the data for. A producer for
    * `job_artifacts` is what Unit F builds.
    *
-   * ★ CORRECTED (W7U2). This used to read "FALSE ON EVERY REAL RUN TODAY". That is refuted by
-   * E7-F020: arm 2 counts `task_outputs` rows by `created_by_run_id` alone, and an ordinary
+   * ★ CORRECTED (W7U2). This used to read "FALSE ON EVERY REAL RUN TODAY". That was refuted by
+   * E7-F020: arm 2 counted `task_outputs` rows by `created_by_run_id` alone, and an ordinary
    * heartbeat path already writes such a row when a run freshly starts a declared dev server,
-   * so this can read TRUE today on a run with zero agent output. `capabilityLimitations` carries
-   * that limit into the operator-facing output, where it cannot be missed by a reader of the
-   * verdict alone.
+   * so this could read TRUE on a run with zero agent output.
+   *
+   * ★★ RE-CORRECTED (W21, re-predicated W21C, narration fixed W21D). That hole is CLOSED at the
+   * predicate: arm 2 counts only rows carrying an APPLIED `output_projection` receipt matched on
+   * this run's `distributed_job_id` AND `distributed_attempt_id` — not the job alone (E7-F031) —
+   * which only `jobOutputBridge.projectAcceptedOutput` can write, under a live lease fence. Arm 1
+   * is attempt-bound too. So "FALSE on
+   * every real run" is true again — for a REASON THAT IS NOT PROGRESS: E7-F018 measured that
+   * `projectAcceptedOutput` has zero production callers and that nothing checked in makes any
+   * run a distributed run. The bar is now correctly CLOSED where it was falsely open; it is not
+   * working. `capabilityLimitations` carries that into the operator-facing output.
    */
   readonly capabilityProven: boolean;
   readonly capabilityFailures: readonly E7VerifyFailure[];
@@ -218,51 +226,100 @@ export interface E7VerifyResult {
    * The MEASURED limits of `capabilityProven`, rendered beside every verdict and carried in
    * `verdict-json` so the limitation cannot be dropped by quoting the machine-readable line.
    *
-   * A DISCLOSURE, NOT A CONTROL. Nothing here filters, rejects, weights or corrects a count;
-   * the predicate and both arms are exactly what they were. See `E7_CAPABILITY_LIMITATIONS`.
+   * ★ WHAT THIS BLOCK IS, RESTATED FOR W21. Until W21 it was a pure DISCLOSURE — nothing in it
+   * was enforced, because arm 2's predicate had not been touched. W21 changed the predicate, so
+   * the block now does two different jobs and says which is which: it states the provenance rule
+   * arm 2 ACTUALLY applies, and then states what a green still does NOT establish. Only the
+   * second half is a caveat. See `E7_CAPABILITY_LIMITATIONS`.
    */
   readonly capabilityLimitations: readonly string[];
   readonly observed: E7VerifyObserved;
 }
 
 /**
- * What a `capabilityProven` verdict does NOT establish — printed with every verdict.
+ * What arm 2 actually counts, and what a `capabilityProven` verdict still does NOT establish —
+ * printed with every verdict.
  *
- * ★ WHY THIS EXISTS AND WHY IT IS ONLY TEXT. E7-F020 (open, HIGH, owned by CLI-008) measured
- * that arm 2 of clause 6 — `eq(taskOutputs.createdByRunId, run.id)`, the whole predicate, at
- * `e7-distributed-run-verifier-store.ts:213-216` — applies NO provenance filter, and that an
- * ordinary internal heartbeat path writes exactly such a row before the run is handed off:
- * `ensureRuntimeServicesForRun` (`heartbeat.ts:4524`) → `startLocalRuntimeService`
- * (`workspace-runtime.ts:2649`) → `persistRuntimeServiceRecord` (`:2383`, at status "starting",
- * BEFORE readiness) → `emitRuntimeServiceTaskOutput` → `createdByRunId = run.id`
- * (`task-output-emitters.ts:113`). So one declared dev server, started fresh, clears arm 2 with
- * zero agent output, no forgery and no authenticated caller.
+ * ★ WHAT IT USED TO SAY, AND WHY IT CHANGED. Until W21 this block disclosed E7-F020: arm 2 of
+ * clause 6 was `eq(taskOutputs.createdByRunId, run.id)` and nothing else, so an ordinary
+ * heartbeat path cleared it with zero agent output — `ensureRuntimeServicesForRun`
+ * (`heartbeat.ts:4524`) → `startLocalRuntimeService` (`workspace-runtime.ts:2649`) →
+ * `persistRuntimeServiceRecord` (`:2383`, at status "starting", BEFORE readiness) →
+ * `emitRuntimeServiceTaskOutput` → `createdByRunId = run.id` (`task-output-emitters.ts:113`),
+ * all of it before the handoff, with no forgery and no authenticated caller. The block was a
+ * DISCLOSURE because no predicate had been changed. W21 changed the predicate, so leaving the
+ * old text would have printed a false statement beside every verdict.
  *
- * The obvious remedy — delete or narrow arm 2 — is NOT taken here and must not be taken here.
- * E7-F015's register entry records that dropping the task-output arm and widening the artifact
- * arm is REFUTED (input staging already commits `job_artifacts` rows on the same job id), and
- * E7-F020 states the residual any real fix has to meet: arm 2 must count only rows whose
- * provenance is a distributed agent's OUTPUT. Nothing in the current schema can express that.
- * Until something can, the honest move is for the verifier to state its own limit rather than
- * print a verdict whose reader has to already know the finding. That is all this is: the
- * verdict is unchanged, the counts are unchanged, and a reader is told what the green means.
+ * ★ WHAT THE PREDICATE IS NOW. Arm 2 counts a `task_outputs` row only when an APPLIED
+ * `output_projection` receipt in `job_projection_receipts` names it
+ * (`aggregate_kind = 'task_outputs'`, `job_id` = this run's `distributed_job_id` AND
+ * `attempt_id` = its `distributed_attempt_id` — the job alone is NOT enough, E7-F031; W21D
+ * corrected this sentence, which had kept the job-only wording). That receipt
+ * has exactly one writer in the tree — `jobOutputBridge.projectAcceptedOutput`, the distributed
+ * output projection — and it is written in the SAME tenant transaction as the row, behind
+ * `guardActiveFence`. The census that justifies the line is the callers of
+ * `upsertTaskOutputForIssue`, the single INSERT into the table; see the comment on
+ * `countProducedOutputs` in `e7-distributed-run-verifier-store.ts`.
  *
- * ★ ARM 2 ONLY, deliberately. Arm 1 (committed `workspace_patch` `job_artifacts`) is a different
- * arm with a different open question (E7-F019 — `kind` is the caller's declaration) and is
- * short-circuited entirely by `if (run.distributedJobId)` at `…-store.ts:200`. Blurring the two
- * would make this text unfalsifiable, which is the failure mode a disclosure is most prone to.
+ * ★★ AND WHY THAT IS NOT PROGRESS. E7-F018 (HIGH, open) measured that `projectAcceptedOutput`
+ * has ZERO production callers and that nothing checked in makes any run a distributed run, so
+ * arm 2 now reads 0 on every real run. The bar is CLOSED where it was falsely open — strictly
+ * better than a false PROVEN, and not the same thing as working. `capabilityProven` also still
+ * gates nothing: `--require-capability` is off by default and no workflow or script reads it.
+ *
+ * ★ W21C — THE SECOND TIME THIS TEXT WOULD HAVE GONE FALSE SILENTLY. It said the receipt is
+ * matched on "`job_id` = this run's `distributed_job_id`", and E7-F031 changed that to
+ * `job_id` AND `attempt_id`; it also said "arm 2 ONLY … arm 1 was not touched", and E7-F031
+ * bound arm 1 to the attempt too. A caveat printed beside every verdict is a claim about the
+ * code, so it goes stale exactly like a comment does — the difference is that this one is read
+ * by operators who cannot see the predicate.
+ *
+ * ★★★ AND THE CORRECTION NOTICE WAS ITSELF FALSE — corrected W21D. The sentence above used to
+ * end "Both sentences are corrected above". Only the EXPORTED CONSTANT had been corrected; the
+ * WHAT-THE-PREDICATE-IS-NOW paragraph fourteen lines higher still said `job_id` alone, so the
+ * notice quoted as false a sentence that was still standing false in the same comment block.
+ * W21C re-predicated both arms and updated two of SEVEN narration sites; W21D swept the other
+ * five. The lesson is not "update the comment": it is that a claim of the form "X is corrected
+ * above" is itself a checkable assertion, and nobody checked it.
+ *
+ * ★ SCOPE IS STILL SPLIT, deliberately. The receipt/column provenance text remains arm-2-only;
+ * arm 1 keeps its own open question (E7-F019 — `kind` is the caller's declaration), which the
+ * attempt binding does not touch. Only the ATTEMPT-granularity paragraph speaks for both arms,
+ * and it says so. Blurring the two would make this text unfalsifiable, which is the failure mode
+ * a caveat is most prone to.
  */
 export const E7_CAPABILITY_LIMITATIONS: readonly string[] = [
-  "E7-F020 (open, HIGH): the task_outputs arm — arm 2 of clause 6, `created_by_run_id = <this run>`",
-  "at e7-distributed-run-verifier-store.ts:213-216 — carries NO provenance filter, so it is",
-  "satisfiable with ZERO agent output: an ordinary heartbeat path writes exactly such a row when a",
-  "run freshly starts a declared dev server (heartbeat.ts:4524 ensureRuntimeServicesForRun ->",
-  "task-output-emitters.ts:113), before the distributed handoff. A PROVEN verdict reached through",
-  "arm 2 therefore does not by itself establish that anything the AGENT produced reached AoA.",
-  "This text is a DISCLOSURE, not a control: nothing here filters, rejects or corrects a count, and",
-  "no arm, predicate or conjunct was changed to add it. Confirm provenance before citing a green.",
-  "Scope: arm 2 ONLY. Arm 1 (committed workspace_patch job_artifacts) has a different open question",
-  "(E7-F019) and is not what this says.",
+  "Arm 2 (task_outputs) counts ONLY rows named by an APPLIED output_projection receipt in",
+  "job_projection_receipts for THIS run's distributed ATTEMPT — matched on job_id AND attempt_id,",
+  "not job_id alone — the receipt jobOutputBridge projectAcceptedOutput writes in the same tenant",
+  "transaction as the row, behind a live lease fence (predicate in",
+  "e7-distributed-run-verifier-store.ts, W21 then W21C). E7-F020's platform writer is",
+  "EXCLUDED: heartbeat.ts:4524 ensureRuntimeServicesForRun -> task-output-emitters.ts:113 sets",
+  "created_by_run_id before the handoff and writes no receipt, and neither can any other legacy",
+  "writer of the table.",
+  "ATTEMPT GRANULARITY (E7-F031): a job carries max_attempts (NOT NULL, default 3) and every",
+  "attempt shares its job_id, while a heartbeat run is bound to exactly ONE attempt via",
+  "heartbeat_runs.distributed_attempt_id. Both arms were job-granular, so a retry attempt's output",
+  "or committed patch printed capability PROVEN for a run that produced nothing. Both are now",
+  "attempt-bound, and a run carrying a job id with NO attempt id counts 0 on both arms rather than",
+  "widening back to job scope. The secret scanner's task_outputs and job_artifacts surfaces are",
+  "deliberately NOT attempt-bound: they want recall, so a sibling attempt's output is still",
+  "scanned. Its job_events surface IS attempt-narrow, so a sibling attempt's event payloads are",
+  "NOT scanned — a recall gap filed as E7-F032, open and NOT fixed. (Until W21D this block and",
+  "the CLI header both said flatly that the scanner is not attempt-bound, which was false of one",
+  "of its four surfaces in the very commit that filed E7-F032.)",
+  "WHAT A GREEN STILL DOES NOT ESTABLISH (E7-F018, HIGH, open): projectAcceptedOutput has ZERO",
+  "production callers and no checked-in configuration makes any run a distributed run, so arm 2",
+  "reads 0 on every real run — the bar is CLOSED rather than working. capabilityProven gates",
+  "nothing either: --require-capability is off by default and no workflow or script reads it.",
+  "E7-F020 stays OPEN on its residual: upsertTaskOutputForIssue UPDATES in place on",
+  "(company, issue, provider, external_id), so a future producer reusing a platform external id",
+  "would get a platform-minted ROW counted. That needs a real fenced accepted-output event and is",
+  "unexercised, but it is the one way a platform row can still reach this count.",
+  "Scope: the receipt/column PROVENANCE text above is arm 2 ONLY. Arm 1 (committed",
+  "workspace_patch job_artifacts) keeps its own open question — E7-F019, `kind` is the caller's",
+  "declaration — which the attempt binding does NOT address. The ATTEMPT GRANULARITY paragraph",
+  "above is the one statement here that is not arm-2-scoped.",
 ];
 
 export interface E7DistributedRunVerifier {
@@ -314,10 +371,43 @@ const HARD_LEAK_MATCHERS: readonly LeakClassMatcher[] = [
   { matchedClass: "e2b_key", re: /\be2b_[A-Za-z0-9]{16,}\b/g },
   // … and the literal assignment, which catches an E2B key regardless of value shape.
   { matchedClass: "e2b_api_key_assignment", re: /E2B_API_KEY\s*[=:]/g },
-  // Connection-string URIs — mirrors redaction.ts SECRET_VALUE_PATTERNS[0].
+  // Connection-string URIs carrying a CREDENTIAL.
+  //
+  // ★★★ THIS ONE DELIBERATELY DOES **NOT** MIRROR redaction.ts SECRET_VALUE_PATTERNS[0],
+  // and the divergence is the whole point (E7-F033, W21D). The redactor's version matches
+  // ANY URI of these schemes. Copying it into the HARD set inherited the redactor's error
+  // direction, which is the OPPOSITE of this set's:
+  //
+  //   the REDACTOR over-matches on purpose — a redundant `***REDACTED***` costs nothing.
+  //   a HARD matcher that over-matches REFUSES A CLEAN RUN — and a gate that fails runs
+  //   that leaked nothing gets overridden, then deleted.
+  //
+  // MEASURED, not theorised: W21B widened `listRunSecretScanSurfaces` to scan `url`, and
+  // `emitRuntimeServiceTaskOutput` copies a declared dev service's `row.url` straight
+  // through (task-output-emitters.ts:100). So an ordinary `workspaceRuntime.services[]`
+  // entry of `postgres://localhost:5432/dev` — loopback host, no credential, no secret —
+  // hard-failed clause 4 on a perfectly clean run. That is the exact mirror of E7-F020: a
+  // false FAIL rather than a false PROVEN, landing on the runs the campaign tries first.
+  //
+  // ★ WHAT MAKES A CONNECTION STRING A SECRET IS THE CREDENTIAL IN IT, NOT THE SCHEME.
+  // `postgres://localhost:5432/dev` is a hostname and a port. So the class is narrowed to
+  // the two shapes that actually carry credential material:
+  //
+  //   (a) URI userinfo WITH a password component — `scheme://user:pass@host`, including
+  //       the password-only `scheme://:pass@host`. A bare `scheme://user@host` is NOT
+  //       matched: a username alone is not a credential.
+  //   (b) a credential-bearing QUERY PARAMETER — `?password=` / `?token=` / `?api_key=` …
+  //       libpq and friends accept these, so narrowing to (a) alone WOULD have lost a real
+  //       leak. This is the recall that the narrowing deliberately keeps.
+  //
+  // The `/` exclusion in (a)'s character classes is load-bearing: it stops the userinfo
+  // scan from crossing the path separator, so `…:5432/dev@example` cannot be read as a
+  // credential. Both directions are pinned in `e7-f020-arm2-provenance.integration.test.ts`
+  // — `[precision]` arms red if this widens back, `[column]` / `[credential]` arms red if
+  // it narrows into a suppression.
   {
     matchedClass: "connection_string",
-    re: /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|rediss|amqp|kafka|nats|mssql|sqlserver):\/\/[^\s<>'")]+/gi,
+    re: /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|rediss|amqp|kafka|nats|mssql|sqlserver):\/\/(?:[^\s/<>'")@]*:[^\s/<>'")@]*@|[^\s<>'")]*[?&](?:password|passwd|pwd|token|secret|api[-_]?key|access[-_]?token|auth)=)/gi,
   },
   // PEM private-key block header — mirrors redaction.ts SECRET_VALUE_PATTERNS[7].
   { matchedClass: "private_key", re: /-----BEGIN[A-Z ]*PRIVATE KEY-----/g },
@@ -567,8 +657,12 @@ export function createE7DistributedRunVerifier(deps: {
         capabilityFailures.push({
           clause: 6,
           reason:
-            "nothing the agent produced reached AoA: no committed workspace_patch job_artifact and no task_output " +
-            "for this run. Output capture is UNBUILT (CLI-008 Unit F) — the E2B driver passes no stream handlers, " +
+            "nothing the agent produced reached AoA: no committed workspace_patch job_artifact and no " +
+            "output_projection-receipted task_output for THIS RUN'S DISTRIBUTED ATTEMPT (W21 — arm 2's provenance " +
+            "predicate; the pre-W21 wording said 'no task_output for this run', which counted platform-written " +
+            "rows. W21C then bound BOTH arms to the run's attempt rather than its job: a job carries max_attempts " +
+            "and every attempt shares the job id, so a retry attempt's output used to prove capability for a run " +
+            "that produced nothing — E7-F031). Output capture is UNBUILT (CLI-008 Unit F) — the E2B driver passes no stream handlers, " +
             "stdoutRef/stderrRef are fabricated literals rather than references to stored bytes, observeRun is " +
             "uncomposed, and buildWorkspacePatch/createResultCommitter have zero production callers. So this run " +
             "cannot be distinguished from a context-free one (E7-F003), whatever the agent actually did.",
@@ -673,7 +767,7 @@ export function formatVerifyResult(result: E7VerifyResult): string {
   // the verdict travels without its context otherwise. A limit stated only when the verdict is
   // green is a limit nobody reads until it is the thing being quoted.
   if (result.capabilityLimitations.length > 0) {
-    lines.push("    limit of this verdict (a DISCLOSURE — nothing below is enforced):");
+    lines.push("    limit of this verdict (what a green here does NOT establish):");
     for (const line of result.capabilityLimitations) {
       lines.push(`      ${line}`);
     }
@@ -681,8 +775,9 @@ export function formatVerifyResult(result: E7VerifyResult): string {
     // computes nothing — `o.producedArtifacts` is exactly what `countProducedOutputs` returned.
     if (o.producedArtifacts.taskOutputs > 0) {
       lines.push(
-        `      ^ THIS RUN: arm 2 is non-zero (task_outputs=${o.producedArtifacts.taskOutputs}), so the above is` +
-          " live here — confirm each row's provenance before citing this verdict.",
+        `      ^ THIS RUN: arm 2 is non-zero (task_outputs=${o.producedArtifacts.taskOutputs}), so this run's` +
+          " green rests on rows carrying a distributed output_projection receipt — read the residual above" +
+          " before citing this verdict.",
       );
     }
   }
