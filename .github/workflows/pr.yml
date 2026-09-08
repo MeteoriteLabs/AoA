@@ -197,6 +197,34 @@ jobs:
           node scripts/check-distributed-execution-foundation.mjs
           node --test scripts/check-distributed-execution-foundation.test.mjs
 
+      - name: Evidence-ledger immutability (QA/handoff records are write-once)
+        # E0-F014 item 3. `checkEvidenceImmutability` shipped with FND-005, was fully unit
+        # tested, and had ZERO PRODUCTION CALLERS: nothing ever handed it a real base and
+        # candidate tree. Meanwhile the rule it enforces was already broken in this
+        # repository's history with CI green - 6fc46988a created the E5 exit-gate QA record
+        # and 4379a2c53 rewrote it in place, bypassing `Supersedes` entirely. This step is
+        # that function's first caller.
+        #
+        # PR-only, deliberately and narrowly: the guard needs a base revision, and
+        # `base.sha` is the only trustworthy one available. `github.event.before` on a push
+        # is all-zeros for a branch's first push, which would make the guard fail open on
+        # exactly the event it could not evaluate. main is protected, so every evidence
+        # record arrives through a pull request and is seen here.
+        #
+        # Both commands in ONE step, for the reason the step below gives: two steps are two
+        # chances to run only one of them, and the one skipped is the one that failed.
+        #
+        # The base arrives through `env:`, not `${{ }}` inside `run:`, for two reasons: the
+        # command is then byte-identical in CI and under scripts/ci-local.mjs (which replays
+        # these run: blocks verbatim and cannot expand an expression), and an expression is
+        # never spliced into a shell line.
+        if: github.event_name == 'pull_request'
+        env:
+          EVIDENCE_IMMUTABILITY_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          node --test scripts/check-evidence-immutability.test.mjs
+          node scripts/check-evidence-immutability.mjs
+
       - name: Threat-control audit debt (an unaudited Critical control must not sit forever)
         run: |
           # The foundation checker above validates the SHAPE of deliveryStatus and imposes

@@ -72,6 +72,18 @@ const NEEDS_ENV = [
     ok: () => Boolean(process.env.GITHUB_TOKEN || process.env.GH_TOKEN),
     why: "reads the verdict consumer's published issue over the GitHub API; needs GITHUB_TOKEN (CI supplies it). Locally: GITHUB_TOKEN=$(gh auth token) GITHUB_REPOSITORY=MeteoriteLabs/AoA node scripts/ci-local.mjs",
   },
+  {
+    // The evidence-ledger immutability guard needs a BASE REVISION to compare against, and
+    // in CI that is github.event.pull_request.base.sha, which exists only on a PR event.
+    // Same per-step precision as the two rules above, and for the same reason: this gates
+    // ONLY the live CLI. `node --test …check-evidence-immutability.test.mjs` needs no
+    // environment at all — it replays the real historical breach (6fc46988a -> 4379a2c53),
+    // its green controls, and the assertion that pr.yml still names the caller — so it
+    // keeps running locally and is the half that actually catches a regression here.
+    match: /^node scripts\/check-evidence-immutability\.mjs\s*$/,
+    ok: () => Boolean(process.env.EVIDENCE_IMMUTABILITY_BASE),
+    why: "compares evidence records against a base revision; CI supplies github.event.pull_request.base.sha. Locally: EVIDENCE_IMMUTABILITY_BASE=origin/docs/replatform-program node scripts/ci-local.mjs",
+  },
 ];
 
 /** The reason a single STEP cannot run here, or undefined if it can. */

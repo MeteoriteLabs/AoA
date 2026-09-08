@@ -69,6 +69,10 @@
       "reason": "DSK-003 secret scanner for a desktop artifact. No shippable installer root exists yet (DSK-003-result.md), so the CLI has nothing to scan; its decision logic runs in CI via the named test.",
       "provenTest": "scripts/lib/__tests__/embedded-secret-scan.test.mjs"
     },
+    "scripts/check-evidence-immutability.mjs": {
+      "status": "ci",
+      "reason": "policy job, PR events only — it needs a base revision and github.event.pull_request.base.sha is the only trustworthy one (github.event.before is all-zeros on a branch's first push, which would fail open). main is protected, so every evidence record arrives through a PR and is seen. E0-F014 item 3: this is the first production caller of checkEvidenceImmutability."
+    },
     "scripts/check-execution-census.mjs": {
       "status": "ci",
       "reason": "invoked by a workflow"
