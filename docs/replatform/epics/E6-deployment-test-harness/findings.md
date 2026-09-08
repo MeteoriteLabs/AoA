@@ -1287,3 +1287,122 @@ escape rewrites inside libraries. A third entry point — the `pr.yml` step itse
 deleting its whole `run:` body: `check-guard-inventory.mjs` exits 1 with *"declared 'ci' but no
 workflow invokes it"* and `check-execution-census.mjs` exits 1 with `not_named_in_step` for both
 test files. That wiring was already pinned; the two script entry points were the whole gap.
+
+## E6-F020 — the invisible-character guard's OWN documented gap recurred within hours, and its stated reason for leaving the gap open ("no repair exists") is refuted by the repair made here
+
+**Status:** `open` · **Severity:** MED · **Owner:** `unowned`
+**Filed:** 2026-09-08, by SVC-002 design review (branch `replatform/svc-002-design`), against work
+done in the same PR that hit it.
+**Affected tickets:** none on disk. See "Why `unowned`".
+**Blocks gate:** no. Nothing is currently mis-enforced; the character is gone and the file's 24 tests
+pass.
+
+### 1. What happened, and the first draft of this finding got the cause wrong
+
+`scripts/check-threat-control-audit-debt.test.mjs:97` shipped a **U+200B ZERO WIDTH SPACE** inside a
+JSDoc comment, between the `*` and the `/` of a glob path:
+
+```
+/** An id no `docs/replatform/epics/*<U+200B>/tickets/` file can ever start with, so "not on disk" …
+```
+
+**It was not a stray keystroke.** Delete the ZWSP and the file **stops parsing** — `*/` closes the
+block comment, and `node --test` fails with `SyntaxError: Unexpected identifier 'findTicketIds'`.
+The character was load-bearing. It is therefore a third instance of **exactly the use
+`check-invisible-control-chars.mjs` counted and excused**: *"U+200B ZWSP (2 uses — one writes a
+close-comment sequence inside a JSDoc block, which cannot be expressed as an escape because it is a
+comment)."*
+
+That is recorded because the first draft of this finding said the character *"was introduced while
+writing the comment"*, framing it as an authoring slip. **That was wrong, and it was refuted by
+running the file rather than by reading it.** The correct statement is narrower and worse: the
+guard's documented exception is not a fixed set of two grandfathered sites, it is a **recurring
+pattern** — anyone writing a glob or a regex inside a JSDoc block reaches for it — and nothing in
+the repository counts it, because it is invisible by construction.
+
+**The repair, which is the load-bearing part.** The comment is now a run of `//` line comments, which
+have no terminator, so the glob is written literally and no invisible character is needed. The file's
+24 tests pass. The guard's parenthetical *"cannot be expressed as an escape"* is true and is **not
+the same claim** as "no repair exists": a rewrite repair exists, costs four characters, and is the
+one the guard's own design constraint asks for (*"the repair for a legitimate use is a rewrite that
+denotes the identical character. Nothing is ever deleted."*).
+
+**Scan of the whole PR**, by codepoint, over all changed files
+(`docs/architecture/distributed-execution-audit-debt.json`, `SVC-002-design.md`,
+`SVC-002-terrain.md`, `scripts/check-threat-control-audit-debt.test.mjs`, and this register plus
+`docs/replatform/epics/E9-service-agents/findings.md`):
+
+| Codepoint | Count before | Count after |
+|---|---|---|
+| U+200B ZWSP | **1** | 0 |
+| U+00A0 NBSP | 0 | 0 |
+| U+FEFF BOM | 0 | 0 |
+| U+2028 LS | 0 | 0 |
+| U+2029 PS | 0 | 0 |
+| U+0085 NEL | 0 | 0 |
+| U+2060 WJ | 0 | 0 |
+| U+180E MVS | 0 | 0 |
+
+One character, one file, one line. It was found by an explicit codepoint scan, not by review and not
+by CI.
+
+### 2. ★ Why this is a finding and not a typo
+
+`scripts/check-invisible-control-chars.mjs` bans raw **C0/DEL bytes** and states, in its own header,
+that this set does not:
+
+> *"STILL LEGAL, DELIBERATELY (legitimate uses found, and no escape-based repair exists for some of
+> them): U+200B ZWSP (2 uses …), U+00A0 NBSP (4 uses …), U+FEFF BOM (3 files). … the residual is
+> real and is stated rather than papered over: anyone who WANTS to hide a character in this
+> repository can still do it with one zero-width space."*
+
+That limit is pinned by a **passing** test —
+`scripts/lib/__tests__/invisible-control-chars.test.mjs:224-241`,
+*"★ THE DOCUMENTED LIMIT: ZWSP, NBSP and BOM still evade this guard, on purpose"* — which asserts
+that a ZWSP produces **zero** violations, and whose comment says: *"If that ever needs to change, the
+change is to ban ZWSP/NBSP and repair the six legitimate uses; this test is the place that decision
+gets recorded."*
+
+**So the gap was measured, documented and pinned — and the very use it excused recurred within
+hours, in a new file, without anybody deciding to use it.** Two things follow, and they are the whole
+content of this finding.
+
+1. **The census is not a fixed set.** *"2 uses"* reads like two grandfathered sites to be repaired
+   once. It is not: it is a pattern that regenerates whenever someone writes a glob or a regex
+   inside a JSDoc block, and **nothing counts it**, because the character is invisible in every
+   terminal, editor, diff view and code-review UI. This instance was found by an explicit codepoint
+   scan run for an unrelated review — not by CI, not by a reader, and not by the author.
+2. **"No escape-based repair exists" is not "no repair exists", and the difference decides the
+   question.** The header's parenthetical is literally true — an escape cannot appear in a comment —
+   and it is doing the work of a much stronger claim in the decision to leave ZWSP legal. The repair
+   in this PR is four characters: `/** … */` becomes `// …`, the glob is written literally, and the
+   file's 24 tests pass. If that generalises to the other ZWSP site, option 1 below is materially
+   cheaper than the guard's own note assumes.
+
+### 3. What is deliberately NOT done here
+
+**The guard is not widened in this PR.** The PR is a design document for service reconciliation;
+widening a repository-wide policy guard inside it is exactly the smuggling this programme's registers
+exist to prevent — and it would be the second time in two waves that a policy change rode a ticket
+about something else. The cost is also not zero: the guard's census found **six legitimate uses**
+(2 ZWSP, 4 NBSP) plus 3 BOM files, and each needs a rewrite, not a deletion — *"a checker whose only
+remedy is deletion gets deleted itself"* is that guard's own founding constraint. Banning without an
+answer for every one of them is the cry-wolf failure that gets a guard switched off.
+
+### 4. Why `unowned`, and what would close it
+
+`unowned`: no ticket on disk owns the invisible-character guard's scope. E6-F017/F018/F019 (its
+ancestors) are all RESOLVED, and naming a shipped ticket would be the false-ownership claim E4-F013
+exists to refuse. NOT `accepted`: accepting would re-assert the rationale this occurrence is evidence
+against, and the decision is a real one with a real cost, not a nit.
+
+**Resolution — one of these two, decided deliberately:**
+
+1. Add U+200B / U+00A0 (and a BOM rule) to `BANNED_CODEPOINTS`, repair the remaining legitimate uses
+   the way this PR repaired its own (block comment → line comments; the rewrite, not an escape), and
+   **invert** the `THE DOCUMENTED LIMIT` test so it asserts the ban with a positive control; or
+2. Record, with reasons, that the residual stays open — and amend the guard header and that test so
+   the census reads as a **recurring pattern with a known rewrite**, not as two grandfathered sites
+   with no repair.
+
+Either way, flip this Status and DELETE the `scripts/finding-ownership.json` key in the SAME commit.

@@ -74,6 +74,71 @@ function mintUnaudited(input, id) {
   return input.crossings.at(-1);
 }
 
+/**
+ * SVC-002 — MINT A DEFERRED CROSSING RATHER THAN BORROW THE ONE THE TREE HAPPENS TO HAVE.
+ *
+ * The five OWNER-EXISTS tests below used to reach into the real tree for two facts: that
+ * `DE-12` carried the sole declared `ownerTicketDeferrals` entry, and that `SVC-002` was an
+ * id with zero files on disk. **Both expired in the same commit**, and for the reason the
+ * deferral's own text predicted — it said "REMOVE THIS ENTRY the moment any of
+ * SVC-002/003/005 gets a file", SVC-002 got two design documents, and the entry was removed.
+ * The tests then failed not on a mutation but on fixture drift, which is the identical shape
+ * W20B repaired four tests above for. Deleting them would subtract five failures; keeping a
+ * deferral alive so they have something to chew on would red the real checker. The repair is
+ * the same one: each test constructs the state it is about.
+ *
+ * The synthetic row is `partial` (so OWNER-EXISTS applies to it), owns a ticket that IS on
+ * disk (so the input starts GREEN), and carries a declared deferral only where the test needs
+ * one. A green start is what makes any error the test then asserts attributable to its own
+ * mutation.
+ */
+const DEFERRAL_FIXTURE_ID = "DE-98";
+
+// An id no `docs/replatform/epics/*/tickets/` file can ever start with, so "not on disk"
+// is a property of the STRING and not of what the programme happens to have written yet.
+// `findTicketIds` matches `/^([A-Z]+-\d+)/`, so this parses as a ticket id and simply has
+// no file — which is exactly the state under test.
+//
+// ★ LINE COMMENTS, DELIBERATELY, AND THIS IS THE POINT OF E6-F020. This comment was first
+// written as a JSDoc block, which cannot contain the glob above: the `*/` inside it closes
+// the block. It shipped with a U+200B ZERO WIDTH SPACE wedged between the `*` and the `/`,
+// so the path a reader saw was not the path on disk — the exact "legitimate use with no
+// escape-based repair" that `scripts/check-invisible-control-chars.mjs` cites as its reason
+// for leaving ZWSP legal. A repair does exist and this is it: `//` has no terminator, so the
+// glob can be written literally. Do not restore the block form.
+const ABSENT_TICKET_ID = "ZZZNOSUCH-999";
+
+function mintPartialWithDeferral(input, { declareDeferral }) {
+  assert.ok(
+    !input.crossings.some((c) => c.id === DEFERRAL_FIXTURE_ID),
+    `${DEFERRAL_FIXTURE_ID} must not already exist`,
+  );
+  assert.ok(
+    !input.ticketIds.includes(ABSENT_TICKET_ID),
+    `${ABSENT_TICKET_ID} must have no file on disk for this fixture to mean anything`,
+  );
+  input.crossings.push({
+    id: DEFERRAL_FIXTURE_ID,
+    severity: "Critical",
+    deliveryStatus: "partial",
+    deliveryEvidence: "partial: synthetic fixture row minted by the guard's own self-test.",
+    ownerTickets: [ABSENT_TICKET_ID],
+  });
+  input.debt.ownerTicketDeferrals = input.debt.ownerTicketDeferrals ?? {};
+  if (declareDeferral) {
+    input.debt.ownerTicketDeferrals[DEFERRAL_FIXTURE_ID] = {
+      reason: "synthetic fixture deferral minted by the guard's own self-test.",
+    };
+    const { errors } = evaluateAuditDebt(input);
+    assert.deepEqual(
+      errors,
+      [],
+      `minting ${DEFERRAL_FIXTURE_ID} with its deferral must leave the input green:\n${report(errors)}`,
+    );
+  }
+  return input.crossings.at(-1);
+}
+
 function hasError(errors, needle) {
   return errors.some((e) => e.includes(needle));
 }
@@ -197,33 +262,38 @@ test("M9 DELIVERED-FLOOR: naming a crossing that does not exist reds", () => {
 
 // --- OWNER-EXISTS -----------------------------------------------------------------------
 
-test("M10 OWNER-EXISTS: deleting DE-12's declared deferral reds (the debt cannot become silent)", () => {
+test("M10 OWNER-EXISTS: deleting a declared deferral reds (the debt cannot become silent)", () => {
   const input = baseInput();
-  delete input.debt.ownerTicketDeferrals["DE-12"];
+  mintPartialWithDeferral(input, { declareDeferral: true });
+  delete input.debt.ownerTicketDeferrals[DEFERRAL_FIXTURE_ID];
   const { errors } = evaluateAuditDebt(input);
-  assert.ok(hasError(errors, "crossing DE-12 is \"partial\" and names no ownerTicket with a file on disk"), report(errors));
+  assert.ok(hasError(errors, `crossing ${DEFERRAL_FIXTURE_ID} is "partial" and names no ownerTicket with a file on disk`), report(errors));
   assert.ok(hasError(errors, "its audit route terminates nowhere"), report(errors));
 });
 
 test("M11 OWNER-EXISTS: a deferral with an empty reason is not a declaration", () => {
   const input = baseInput();
-  input.debt.ownerTicketDeferrals["DE-12"] = { reason: "   " };
+  mintPartialWithDeferral(input, { declareDeferral: true });
+  input.debt.ownerTicketDeferrals[DEFERRAL_FIXTURE_ID] = { reason: "   " };
   const { errors } = evaluateAuditDebt(input);
-  assert.ok(hasError(errors, "crossing DE-12 is \"partial\" and names no ownerTicket"), report(errors));
+  assert.ok(hasError(errors, `crossing ${DEFERRAL_FIXTURE_ID} is "partial" and names no ownerTicket`), report(errors));
 });
 
 test("M12 OWNER-EXISTS: a crossing losing its last on-disk owner ticket reds", () => {
   const input = baseInput();
-  crossing(input, "DE-06").ownerTickets = ["SVC-002"]; // an id with zero files on disk
+  assert.ok(!input.ticketIds.includes(ABSENT_TICKET_ID), "fixture drift: the absent-ticket sentinel now exists on disk");
+  crossing(input, "DE-06").ownerTickets = [ABSENT_TICKET_ID]; // an id with zero files on disk
   const { errors } = evaluateAuditDebt(input);
   assert.ok(hasError(errors, "crossing DE-06 is \"partial\" and names no ownerTicket with a file on disk"), report(errors));
 });
 
 test("M13 OWNER-EXISTS: a STALE deferral (its ticket now exists) reds — the entry is self-cleaning", () => {
   const input = baseInput();
-  input.ticketIds.push("SVC-002");
+  mintPartialWithDeferral(input, { declareDeferral: true });
+  // The deferral's whole justification is that its owner ticket has no file. Give it one.
+  input.ticketIds.push(ABSENT_TICKET_ID);
   const { errors } = evaluateAuditDebt(input);
-  assert.ok(hasError(errors, "the ownerTicketDeferrals entry for DE-12 is STALE"), report(errors));
+  assert.ok(hasError(errors, `the ownerTicketDeferrals entry for ${DEFERRAL_FIXTURE_ID} is STALE`), report(errors));
 });
 
 test("M14 OWNER-EXISTS: a ghost deferral (no such crossing) reds", () => {
@@ -237,8 +307,9 @@ test("NEGATIVE CONTROL: the `delivered` exemption does not swallow a real orphan
   // DE-02 is `delivered` and therefore exempt from OWNER-EXISTS. Prove the exemption is
   // keyed on the STATUS and not on the id: the same row, not delivered, must red.
   const input = baseInput();
+  assert.ok(!input.ticketIds.includes(ABSENT_TICKET_ID), "fixture drift: the absent-ticket sentinel now exists on disk");
   const de02 = crossing(input, "DE-02");
-  de02.ownerTickets = ["SVC-002"];
+  de02.ownerTickets = [ABSENT_TICKET_ID];
   const stillDelivered = evaluateAuditDebt(structuredClone(input));
   assert.ok(!hasError(stillDelivered.errors, "crossing DE-02 is"), report(stillDelivered.errors));
   de02.deliveryStatus = "partial";
