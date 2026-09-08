@@ -85,6 +85,11 @@
       "workflow": "pr.yml",
       "step": "Egress-policy destination vectors (DAT-005)"
     },
+    "scripts/check-evidence-immutability.test.mjs": {
+      "status": "runs",
+      "workflow": "pr.yml",
+      "step": "Evidence-ledger immutability (QA/handoff records are write-once)"
+    },
     "scripts/check-frozen-worker-protocol-consumer-isolation.test.mjs": {
       "status": "runs",
       "workflow": "pr.yml",

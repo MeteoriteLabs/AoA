@@ -617,6 +617,12 @@ with the flow-analysis guard, not the grep one.
   by the landing unit as whole-tree sweeps excluding `node_modules` and `dist`.
 - **Blocks gate:** No — but it is the reason five register rows are `partial` rather than
   `delivered`, and each of the five looks delivered from the register.
+- **Progress (2026-09-09):** ★ **Item 3 (DE-22) is CLOSED — one of five. Items 1, 2, 4 and 5 are
+  untouched and this finding stays open.** `checkEvidenceImmutability` now has exactly one
+  production caller: `scripts/check-evidence-immutability.mjs`, invoked by the `policy` job of
+  `.github/workflows/pr.yml` (step *"Evidence-ledger immutability (QA/handoff records are
+  write-once)"*) on every non-draft pull request. Do not read this line as movement on the other
+  four — nothing about them changed.
 
 **The class, as `E0-F011` states it.** The receiving half of the control is built, tested and
 correct, and the half that would ever arm it does not run in any deployment.
@@ -635,10 +641,11 @@ correct, and the half that would ever arm it does not run in any deployment.
    comment. Removing an organization from the rollout dial therefore does not cancel an in-flight
    distributed run; it only changes what the *next* wake resolves. The `revocation` clause describes
    a transition no code performs.
-3. **DE-22 (High) — the evidence ledger's immutability check has never run, and the rule it would
-   enforce is already broken in this repository's history.** `checkEvidenceImmutability`
-   (`scripts/check-distributed-execution-foundation.mjs:2633`, denies at `:2639` and `:2641`) has
-   **zero production callers**: its declaration, a comment at `:2199`, and five call sites inside
+3. **DE-22 (High) — ★ CLOSED 2026-09-09. As filed: the evidence ledger's immutability check had
+   never run, and the rule it would enforce was already broken in this repository's history.**
+   `checkEvidenceImmutability` (at filing `scripts/check-distributed-execution-foundation.mjs:2633`;
+   **the line was already stale when filed — it is `:2757`, denying at `:2763` and `:2765`**) had
+   **zero production callers**: its declaration, a comment at `:2323`, and five call sites inside
    its own test file. ★ The landing unit measured the consequence rather than asserting it:
    `docs/replatform/artifact-policy.md:54,67` makes a QA record "write-once from its first commit",
    and `git log --follow` over
@@ -648,6 +655,29 @@ correct, and the half that would ever arm it does not run in any deployment.
    own `Supersedes` field at tip still reads `— (E5 has no prior QA record; this is the first)`.
    The correction bypassed the Supersedes mechanism entirely, on a branch that merged CI-green,
    months after the deny function landed. Two further pairs were found by the auditor.
+
+   ★ **CLOSED by mechanism, not by amendment.** `scripts/check-evidence-immutability.mjs`
+   materialises both revisions' `qa/`+`handoffs/` records out of git blobs and calls the deny; the
+   `policy` job of `.github/workflows/pr.yml` invokes it on every non-draft PR, handed the base
+   through `EVIDENCE_IMMUTABILITY_BASE: ${{ github.event.pull_request.base.sha }}` (an `env:`
+   binding, not an expression spliced into the shell, so the command is byte-identical under
+   `scripts/ci-local.mjs`). **Proof that a previously-succeeding
+   operation now fails:** committing an in-place edit to
+   `docs/replatform/epics/E0-foundation/qa/2026-08-08-d0-e0-completion-3a469b6bec68-a1.md` — the
+   exact move that merged CI-green in `4379a2c53` — turned the guard from exit 0 to exit 1 with
+   *"base record … was modified after commit"*. **Positive control:** the same command on the
+   un-mutated tree exits 0 over 29 base records, so this is not an always-deny. The RED case is
+   real history, not a fixture: `scripts/check-evidence-immutability.test.mjs:50` replays
+   `6fc46988a → 4379a2c53`, and `:64`/`:74` are its green controls (unchanged ledger passes; a new
+   record added passes). Two further traps are closed: an **empty base** revision made the
+   underlying deny return zero errors — a disarmed run indistinguishable from a clean one — and is
+   now refused (`scripts/check-evidence-immutability.mjs:149`, test at `:99`); and
+   `check-evidence-immutability.test.mjs:158` asserts pr.yml still names the caller, so deleting
+   the caller goes red. It reads both sides out of git blobs rather than the worktree, which also makes it correct
+   on a Windows checkout with `core.autocrlf=true`. **Scope, honestly:** this closes the *docs
+   ledger* half of DE-22 only. The row stays `partial` — its redaction-on-transmit clause and the
+   runtime `job_events` store's append-only property (code discipline, not a grant: `aoa_app`'s
+   UPDATE/DELETE still succeed) are untouched, and REL-005 still has zero files on disk.
 4. **DE-24 (Critical) — the update admission that would run on a host is not connected to one.**
    `evaluateUpdateAdmission` (`scripts/lib/update-admission.mjs:79-119`) is fail-closed and
    well-tested, and its only non-test reference is the *promotion-time* verifier map at
@@ -673,15 +703,30 @@ paying for. (4) means the desktop supply-chain control stops at the release dire
 faith — the in-place correction it names was made in good faith and improved the record. The defect
 is that nothing could tell the difference.
 
-- **Affected crossings:** DE-18, DE-20, DE-22, DE-24, DE-28.
-- **Disposition:** `unowned`, and unevenly. (3) is the cheapest — wire `checkEvidenceImmutability` to
-  a CI step that materialises the merge-base tree and calls it with `(base, HEAD)`, then re-run it
-  over the three commits above as a positive control. (1), (2) and (5) need composition-root wiring
-  no ticket on disk carries. (4) needs a host binary that does not exist. NOT `accepted`: HIGH may
-  never be accepted.
+- **Affected crossings:** DE-18, DE-20, DE-22 *(closed 2026-09-09)*, DE-24, DE-28.
+- **Disposition:** `unowned`, and unevenly. (3) was the cheapest and is **done** — it went exactly
+  the predicted way. (1), (2) and (5) need composition-root wiring no ticket on disk carries.
+  (4) needs a host binary that does not exist. NOT `accepted`: HIGH may never be accepted.
+- **★ Next, for whoever picks this up (grouped, so it needs no re-measuring).** *Cheap — no new
+  mechanism:* **(1) DE-18** needs a scheduler that drains `execution_target_revocations` where
+  `status='pending'`; ★ it is a **garbage collector, not a deny** — the authz cutoff already fires
+  at `job-control.ts:1177`, which the code states at `:1127-1130` (*"the recheck is the gate, the
+  fanout is only convergence"*), so wiring it as a security control would duplicate a live one, and
+  the clause *"the broker revokes grants"* should be amended in the same change. **(2) DE-20**'s
+  lever AND its store are complete (`job-distributed-drain-store.ts:68` ships real SQL post-MIG-009)
+  — it needs a real trigger on the rollout-dial-off path that actually invokes `drainAll`;
+  ★ `GO-BOOK.md:2901` forbids composing it in `index.ts` merely to move the caller count, and the
+  row's word *"atomically"* is what is wrong (per-job cancellation already ships at
+  `routes/job-control.ts:227`). *Needs mechanism built:* **(5) DE-28/E0-F011 item 1** needs a
+  durable enumeration of quarantine candidates (none exists) **plus** composition-root wiring for
+  the zero-caller `createStartupReconciler` — two problems, not one. **(4) DE-24** needs a host
+  updater binary that does not exist *and* real verification inside `planUpdateSwap`, whose
+  `admitted`/`compatible`/`healthConfirmed` are injected booleans — wiring it as-is would be a
+  vacuous green.
 - **Resolution condition:** each lever gets a production caller and a test that goes red when the
-  caller is removed, or the clause it arms is AMENDED. Resolve = flip this Status and delete the
-  `E0-F014` key in `scripts/finding-ownership.json` in the SAME commit.
+  caller is removed, or the clause it arms is AMENDED. **(3) met this on 2026-09-09; four remain,
+  so this finding stays open.** Resolve = flip this Status and delete the `E0-F014` key in
+  `scripts/finding-ownership.json` in the SAME commit.
 
 ## E0-F015 — Three crossings are `not-delivered` on measurement: one has no tenant parameter anywhere in its code path, one has every deny line behind a zero-caller factory, and one has a conformance suite that has never been run against the thing it certifies
 

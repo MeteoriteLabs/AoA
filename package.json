@@ -48,6 +48,7 @@
     "version-packages": "changeset version",
     "check:tokens": "node scripts/check-forbidden-tokens.mjs",
     "check:distributed-foundation": "node scripts/check-distributed-execution-foundation.mjs",
+    "check:evidence-immutability": "node scripts/check-evidence-immutability.mjs",
     "check:worker-protocol-boundary": "node scripts/check-worker-protocol-boundary.mjs",
     "check:worker-daemon-boundary": "node scripts/check-worker-daemon-boundary.mjs",
     "check:sandbox-fake-provider-boundary": "node scripts/check-sandbox-fake-provider-boundary.mjs",
