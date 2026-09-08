@@ -109,8 +109,11 @@ captured both blockers in its own stderr, and they are at **different layers**:
   (`envVars: { OPENAI_API_KEY: key }`) and the key was non-empty — an empty one returns
   `inconclusive / no-model-provider-key` before any sandbox is created, which did not happen.
   ★ **What follows about A2 is a statement about the RECORD, not about the agent.** No
-  model-contact evidence is present in the ~889 characters of A2's stdout this run preserved
-  (`safe(exec.stdout, 900)`), and that capture ends **mid-token** at `{"type":"i` — while A3's
+  model-contact evidence is present in the stdout this run preserved — which was **exactly 900
+  characters**. ★★★ **900 is the cap (`safe(exec.stdout, 900)`), hit exactly, and that is itself the
+  proof of truncation:** a stdout that ended on its own would land on some arbitrary length, not
+  precisely on the limit. So it is **known** that there was more and **unknown** what it said. The
+  capture ends **mid-token** at `{"type":"i` — while A3's
   parallel line shows the same position reads `{"type":"item.completed","item":{"id":"item_0`,
   with the item type itself cut off. So **whether A2 emitted an `agent_message` after its
   reconnects cannot be determined from what was preserved.** A1's failure to reach a model IS
@@ -200,7 +203,7 @@ its bound attached.** The first repair said "at least one arm demonstrably ran",
 event, and **this very run** shows why that is not enough: codex A2 emitted
 `{"type":"thread.started",…}` and `{"type":"turn.started"}` and then **FOUR**
 `401 Unauthorized` reconnect lines (`2/5` through `5/5`) against `wss://api.openai.com/v1/responses`.
-It started, and **no model-contact evidence is present in the ~889 characters of its stdout this run
+It started, and **no model-contact evidence is present in the EXACTLY 900 characters of its stdout this run
 preserved** — a statement about the RECORD (that capture ends mid-token at `{"type":"i`), not the
 claim that the agent reached nothing. Under the head-event predicate that pair EXONERATES the
 posture, green, in the durable record. ★ **And v4 is still a proxy**: it does not establish that the model was given the intended

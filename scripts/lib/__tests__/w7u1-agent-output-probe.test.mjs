@@ -564,7 +564,7 @@ test("A1 and A2 both silent is a NO that EXONERATES the posture — ONLY when A2
 //   v4  `ran` comes from the HEAD EVENT ALONE, so an arm that STARTS and shows no
 //       model-contact evidence satisfies it. Measured shape: codex A2 in run 34087197668
 //       emitted `thread.started` + `turn.started`, then FOUR `Reconnecting… N/5` 401 lines
-//       (2/5, 3/5, 4/5, 5/5). ★ THE RECORD, NOT THE AGENT: the run preserved ~889 chars of
+//       (2/5, 3/5, 4/5, 5/5). ★ THE RECORD, NOT THE AGENT: the run preserved EXACTLY 900 chars of
 //       A2's stdout, ending mid-token at `{"type":"i`, so "it reached nothing" is NOT
 //       established — only that no model-contact evidence was present in what was kept.
 //
@@ -580,7 +580,7 @@ test("MUTATION (i) — two arms that STARTED with no model-contact evidence may 
   // posture and the lane goes green with a false cause in the durable record.
   //
   // ★ THIS FIXTURE IS THE PRESERVED PREFIX, NOT THE ARM'S WHOLE STDOUT, and the distinction
-  // is the point of the assertion below. The run kept ~889 characters of A2's stdout and
+  // is the point of the assertion below. The run kept EXACTLY 900 characters of A2's stdout and
   // they end MID-TOKEN at `{"type":"i`; A3's parallel line shows that position reads
   // `{"type":"item.completed","item":{"id":"item_0`. So the fixture proves what v4 does
   // with a stdout carrying no model-contact evidence — it does NOT establish that codex A2
@@ -798,7 +798,7 @@ test("the STDOUT THE CLASSIFIER READ survives into the durable record — a verd
   // shapes the model-contact predicate looks for — INCLUDING for the claude arms that
   // demonstrably reached a model. So no verdict from that run can be re-derived from what it
   // shipped, and that is precisely how six sentences came to assert more about codex A2 than
-  // the ~889 preserved characters could support.
+  // the 900 preserved characters could support.
   //
   // MUTATION: drop `armEvidence` from `buildProbeRecord`'s return, or slice it shorter than
   // `CLASSIFIER_STDOUT_LIMIT` at the call site, and this test reds.

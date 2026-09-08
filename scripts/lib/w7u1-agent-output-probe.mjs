@@ -426,13 +426,16 @@ export function detectStartupEvidence(stdout, adapterType) {
  *       — numbered 2/5, 3/5, 4/5, 5/5 — against `wss://api.openai.com/v1/responses`.
  *       ★★ THE SECOND HALF OF THAT SENTENCE IS ABOUT THE RECORD, NOT ABOUT THE AGENT, and
  *       it is stated that way deliberately. A2 STARTED, and NO model-contact evidence is
- *       present in the ~889 characters of its stdout the run preserved. It is NOT known
- *       that it reached nothing: that capture is `safe(exec.stdout, 900)` and it ends
- *       MID-TOKEN at `{"type":"i`, while codex A3's parallel line shows the same position
- *       reads `{"type":"item.completed","item":{"id":"item_0` with the item type cut off.
- *       So whether A2 emitted an `agent_message` after its reconnects CANNOT BE DETERMINED
- *       from what was preserved — which is exactly why v4 fails CLOSED (§`reachedModel !==
- *       true` ⇒ `inconclusive`) instead of concluding anything about the agent.
+ *       present in the stdout the run preserved — which was EXACTLY 900 characters.
+ *       ★★★ 900 IS THE CAP (`safe(exec.stdout, 900)`), HIT EXACTLY, AND THAT IS ITSELF THE
+ *       PROOF OF TRUNCATION: a stdout that stopped on its own would land on some arbitrary
+ *       length, not precisely on the limit. So it is KNOWN that there was more, and UNKNOWN
+ *       what it said. The capture ends MID-TOKEN at `{"type":"i`, while codex A3's parallel
+ *       line shows the same position reads `{"type":"item.completed","item":{"id":"item_0`
+ *       with the item type cut off. So whether A2 emitted an `agent_message` after its
+ *       reconnects CANNOT BE DETERMINED from what was preserved — which is exactly why v4
+ *       fails CLOSED (`reachedModel !== true` ⇒ `inconclusive`) instead of concluding
+ *       anything about the agent. "It reached nothing" was never a supportable sentence.
  *
  * So the gate is not "did the CLI start" but "did THIS ARM get far enough that the posture
  * could matter", and the nearest checkable proxy is MODEL OUTPUT ON ITS OWN STDOUT.
@@ -974,7 +977,7 @@ export function verdictProbeA(arms) {
     //     that start and then show no model-contact evidence still satisfy it — the exact
     //     shape codex A2 produced in run 34087197668 (`thread.started`, `turn.started`, then
     //     FOUR `Reconnecting… N/5` 401 lines, 2/5 through 5/5). ★ THAT IS A STATEMENT ABOUT
-    //     THE RECORD: the run preserved ~889 characters of A2's stdout and they end mid-token
+    //     THE RECORD: the run preserved EXACTLY 900 characters of A2's stdout and they end mid-token
     //     at `{"type":"i`, so "A2 reached nothing" is NOT established — only that no
     //     model-contact evidence was present in what was preserved. `reachedModel` requires
     //     model OUTPUT on A2's own stdout, and its absence yields `inconclusive`, not a
@@ -1205,8 +1208,7 @@ export const PROBE_RECORD_SCHEMA = "aoa.w7u1.output-probe-record/2";
  * instances of `assistant`, `output_tokens`, `agent_message` or `turn.completed` — none of
  * the four shapes the model-contact predicate looks for — INCLUDING for the claude arms that
  * demonstrably did reach a model. So no verdict from that run can be checked against its own
- * record, and six sentences in this repo went on to assert more about codex A2 than the ~889
- * preserved characters could support.
+ * record, and six sentences in this repo went on to assert more about codex A2 than the 900 preserved characters could support.
  *
  * ★★ WHY EXACTLY WHAT THE CLASSIFIER CONSUMED, AND NOT MORE. The record's job is to let a
  * later reader re-derive the verdict. The classifier cannot see past this limit, so a record

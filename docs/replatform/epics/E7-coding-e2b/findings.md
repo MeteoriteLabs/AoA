@@ -2392,8 +2392,11 @@ that happens.
   5/5), all `401 Unauthorized`, the server reporting *"Missing bearer or basic authentication in
   header"* against `wss://api.openai.com/v1/responses`.
   ★ **A1 reached no model — that is established** (exit 1, empty stdout, a named refusal on stderr).
-  **A2's is a statement about the RECORD:** no model-contact evidence is present in the ~889
-  characters of its stdout the run preserved, and that capture ends **mid-token** at `{"type":"i`
+  **A2's is a statement about the RECORD:** no model-contact evidence is present in the stdout the
+  run preserved — **exactly 900 characters**, which is the cap `safe(exec.stdout, 900)` **hit
+  exactly**, and that is itself the proof of truncation (a stdout ending on its own would land on an
+  arbitrary length, not precisely on the limit). So there **was** more, and what it said is
+  **unknown**. That capture ends **mid-token** at `{"type":"i`
   while A3's parallel line shows the same position reads
   `{"type":"item.completed","item":{"id":"item_0`. So whether A2 emitted an `agent_message` after
   its reconnects is **not determinable from what was preserved**. Either way the capability question
@@ -2467,7 +2470,7 @@ emits it here: replayed against the repaired classifier, codex A1 is
 > 401) is measured and named; and what the *apparatus* could not do at the time was tell a refusal
 > from a null result, which is why the pack mis-stated the cause even though the run had captured it.
 > **Neither arm was shown to reach the capability question** — A1 demonstrably did not, and A2 cannot
-> be shown either way from the ~889 characters of stdout the run preserved — so nothing is
+> be shown either way from the EXACTLY 900 characters of stdout the run preserved — so nothing is
 > established about whether codex can write under the production argv.
 
 ★ **This narrowing does not shrink the finding's scope and must not be read as doing so.** The
@@ -2655,7 +2658,7 @@ asymmetry, the durable record or the premise pin.
    | v1 | any non-zero exit ⇒ `did-not-write` | cannot tell a refusal from a result — the finding above |
    | v2 | at least one arm demonstrably ran | **wrong arm.** Only A2 carries the posture, so A1 running proves nothing about a posture-only fix |
    | v3 | `a2.ran === true` | better, and still head-event-only |
-   | v4 | `a2.reachedModel === true` | `ran` is computed from the HEAD EVENT ALONE, so two arms that **start and show no model-contact evidence** exonerate a posture nothing was shown to have exercised — codex A2 in run `34087197668` emitted `thread.started` + `turn.started` and then FOUR `Reconnecting… N/5` 401 lines (2/5–5/5), with no model-contact evidence in the ~889 chars of stdout the run preserved (a fact about the record: it ends mid-token at `{"type":"i`) |
+   | v4 | `a2.reachedModel === true` | `ran` is computed from the HEAD EVENT ALONE, so two arms that **start and show no model-contact evidence** exonerate a posture nothing was shown to have exercised — codex A2 in run `34087197668` emitted `thread.started` + `turn.started` and then FOUR `Reconnecting… N/5` 401 lines (2/5–5/5), with no model-contact evidence in the EXACTLY 900 chars of stdout the run preserved (a fact about the record: it ends mid-token at `{"type":"i`) |
 
    ★ **Assume v4 is insufficient too.** It is a proxy and says so, in the code (`EXONERATION_RESIDUAL`),
    in the verdict `detail` it emits verbatim (so the **durable record** carries it), and in the
