@@ -1598,6 +1598,16 @@ thing NO legacy caller can produce:
 - **The weaker form is closed too.** Pointing the verifier at an ordinary non-distributed heartbeat run
   no longer prints `capability: PROVEN`: no `distributed_job_id`, no query, count 0.
 
+★★★ **THIS NARROWING SHIPPED WITH A DEFECT OF ITS OWN, AND W21 INTRODUCED IT.** The change moved
+ONE consumer of "which `task_outputs` rows belong to this run" and left its sibling — clause 4's
+secret-scan surface in `listRunSecretScanSurfaces` — on `created_by_run_id`. A row projected through
+the bridge with a NULL run id therefore counted as capability evidence and was **never scanned for
+secrets**, so the verifier could report a clean mechanism/capability verdict over a leaked key. Found
+by external review (Codex P2 on PR #385), byte-verified, and filed as **E7-F030** with its own fix and
+pins in the same suite. It is recorded here, in this block, because it was created by this narrowing —
+not inherited. It does not change anything stated above about arm 2's predicate, which is unchanged
+and remains correct for its error direction.
+
 **Proof, both arms, observed RED before the fix.**
 `server/src/__tests__/e7-f020-arm2-provenance.integration.test.ts` (embedded PG, real lease fence, real
 bridge, real emitter). Against the pre-fix predicate: `[negative]` 1≠0, `[mixed]` 2≠1, `[cross-job]`
@@ -2942,3 +2952,109 @@ at; the claim is the code shape, and it is marked as such rather than borrowed f
 observation. Fixed identically (redirect + a new assertion on the redirected file). **Measured scope
 of the class: two sites, both `emitDurableRecord`-shaped packs; no third.** No other test in the repo
 calls a function that writes to `GITHUB_STEP_SUMMARY`.
+
+## E7-F030 — W21 moved ONE consumer of run-provenance and left its sibling behind, so a counted output was never scanned for secrets
+
+**Status:** open · **Owner:** CLI-008 · **Severity:** MEDIUM · **Filed:** 2026-09-08 (W21B), measured
+at `f433c8391`. **Introduced by W21 (PR #385), found by external review (Codex P2), not inherited** —
+the row-set gap did not exist before the arm-2 narrowing. The ROW-set half is FIXED in this same
+commit; the finding stays open on a measured COLUMN-set residual stated at the bottom.
+
+---
+
+**What.** `server/src/services/e7-distributed-run-verifier-store.ts` has **two** consumers of the
+question *"which `task_outputs` rows belong to this run?"*, and W21 changed one of them:
+
+| consumer | at `f433c8391` |
+|---|---|
+| `countProducedOutputs` arm 2 (clause 6 CAPABILITY) | an APPLIED `output_projection` receipt join — **does not read `created_by_run_id` at all** |
+| `listRunSecretScanSurfaces` source (2) (clause 4 SECRET SCAN) | `eq(taskOutputs.createdByRunId, run.id)` — **unchanged, still the column** |
+
+So a `task_outputs` row that counts as capability evidence *via the receipt*, but whose
+`created_by_run_id` is NULL or names another run, **is never scanned for secrets**. A recognizable
+provider key / E2B key / connection string / PEM header in its `summary` or `metadata` never reaches
+clause 4, and the verifier prints a clean mechanism **and** capability verdict over it.
+
+★ **THE PR ITSELF PROVED THE GAP WAS REACHABLE, WHICH IS WHY THIS IS NOT HYPOTHETICAL.** W21 shipped a
+PASSING test asserting exactly the divergent row shape is supported:
+`server/src/__tests__/e7-f020-arm2-provenance.integration.test.ts` `[positive B]` — *"it is counted
+even when the bridge caller supplied NO run id — provenance is the receipt, not the column"* — with
+`SELECT count(*) FROM task_outputs WHERE created_by_run_id IS NULL` asserted to be 1.
+
+**Reproduction, and the RED that sized it.** Three arms added to that same suite (embedded PG, real
+lease fence, real bridge, real emitter). Against the store **as it stands at `f433c8391`**, with the
+new tests present and nothing else changed:
+
+```
+pnpm --filter @armyofagents/server exec vitest run \
+  src/__tests__/e7-f020-arm2-provenance.integration.test.ts -t "E7-F030"     # AOA_RUN_WIN_INTEGRATION=1 on Windows
+
+  × [union]  a bridge-projected output with NO caller run id is SCANNED — its planted key reaches clause 4
+      → AssertionError: expected false to be true            (the row is not in the scan surface at all)
+  ✓ [legacy] a platform row linked ONLY by created_by_run_id is STILL scanned
+  ✓ [dedupe] a row satisfying BOTH notions is scanned exactly once
+  Tests  1 failed | 2 passed | 6 skipped (9)
+```
+
+Post-fix: **9/9 green** in that file.
+
+★★★ **THE FIX IS THE UNION, NOT "MAKE THE TWO PREDICATES CONSISTENT" — and that distinction is the
+whole finding.** The reviewer's suggested repair (reuse arm 2's receipt predicate in the scanner)
+introduces the MIRROR defect: every legacy platform writer — including
+`emitRuntimeServiceTaskOutput`, the one that needs nobody to do anything — would silently stop being
+scanned. **The two consumers want OPPOSITE error directions:**
+
+- the **COUNTER** wants **PRECISION**. Over-counting = a false `capability: PROVEN`. That is E7-F020,
+  and it is exactly why arm 2 was narrowed to the fenced receipt.
+- the **SCANNER** wants **RECALL**. Under-scanning = a leaked secret reported clean. Over-scanning a
+  row that turns out not to belong to this run costs one redundant regex pass, and if it *did* trip a
+  matcher it fails CLOSED (refuse to bless) — never a false PASS.
+
+So the scan surface is the **UNION**, de-duplicated by row id: rows named by an applied
+`output_projection` receipt for this run's distributed job, **OR** rows with
+`created_by_run_id = run.id`. **Two queries plus a merge into a `Map`**, deliberately, not one clever
+`OR`: the single-statement form needs a LEFT JOIN with a four-conjunct `ON`, `OR r.id IS NOT NULL`, a
+`DISTINCT` over a `jsonb` column, and correct degradation when the run has no `distributed_job_id`.
+The reasoning is written at the call site so the next "consistency" edit trips over it.
+
+**Both mutation directions are pinned, and the POSITIVE CONTROL is the more important one.**
+
+| mutation | reds |
+|---|---|
+| drop the receipt half (i.e. the state at `f433c8391`) | `[union]` only |
+| drop the column half (i.e. the same-predicate "consistency" fix) | `[legacy]` only — **observed**, by replacing the merge loop with `void columnLinked` |
+| `return []` / drop both | `[union]` + `[legacy]` |
+
+`[legacy]` is green before AND after the fix. A test that passes both before and after pins nothing
+*about the defect*; it is here to pin the **error direction**, which is the thing a future edit is
+most likely to get wrong. The tests live in the arm-2 file on purpose — splitting them would let the
+next edit to arm 2 happen without the scanner's pins in view, which is how the drift happened.
+
+★★ **THE CLASS, which is why this is a finding and not a line in a commit message.** Two consumers of
+one provenance notion drifted apart because the notion was never written down in one place, and
+nothing in CI could tell. Compare **E7-F010** — growing the non-frozen port left every
+frozen-DERIVED structure behind. Same shape: a change is made at one site of a relation that has
+several, the sites are not enumerated, and the untouched sites keep the old meaning silently.
+**Remedy applied:** a per-consumer provenance census is now a table in the store's module header
+(all ten consumers, each with its linkage, its error direction, and whether the linkage is right for
+that direction), together with the explicit statement that the notion **must not** be centralised
+into one predicate — the divergence between #7 and #10 is the correct state, and what was missing
+was a written reason.
+
+★ **NOT CENTRALISED, deliberately.** A shared `rowsBelongingToRun()` helper would have to take a
+direction parameter and would read as one notion with a flag, which is precisely the framing that
+produced the bug. Two explicit predicates with a census that names both is the safer artefact.
+
+**WHAT SURVIVES — a MEASURED COLUMN-set residual, reported rather than silently widened.** The scan
+reads only `summary` and `metadata`. On a bridge-projected row, `title` (NOT NULL) and `url` are also
+caller/agent-authored (`BridgeOutputInput`, `server/src/services/job-output-bridge.ts:68-87`) and are
+**not scanned**, so a recognizable secret in either still reaches a clean verdict. That is a different
+axis from the ROW-set gap fixed here — widening it changes what trips clause 4 for **every** legacy
+row too, so it wants its own pinning test and its own review rather than a drive-by line in this
+commit. It is the reason this finding stays **open**.
+
+**Not widened.** E7-F015 and E7-F018 are untouched. Arm 2's predicate, `ok`, the clause set, and
+`capabilityProven`'s separation from `ok` are all unchanged — this changes only which rows clause 4
+reads. **What a fixed scan does NOT buy:** E7-F018 still holds (nothing checked in makes any run a
+distributed run; `projectAcceptedOutput` has zero production callers), so the union's receipt half
+selects nothing on any real run today. It is correct rather than exercised.

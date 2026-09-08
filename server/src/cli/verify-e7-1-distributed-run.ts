@@ -22,14 +22,27 @@
 // CAPABILITY. It is ALWAYS printed and ALWAYS in `verdict-json`. `--require-capability`
 // makes an unproven capability exit 3.
 //
-// ★ AND IT ANSWERS THAT QUESTION IMPERFECTLY, IN A MEASURED WAY (W7U2). Arm 2 of clause 6
+// ★ AND IT ANSWERS THAT QUESTION IMPERFECTLY, IN A MEASURED WAY (W7U2, RESTATED W21B).
+//
+// ★★ WHAT THIS PARAGRAPH USED TO SAY, AND WHY IT IS WRONG NOW. Until W21 it read: "arm 2
 // counts `task_outputs` rows by `created_by_run_id` with no provenance filter, and an
 // ordinary heartbeat path writes such a row for any run that freshly starts a declared dev
-// server — so `capability: PROVEN` can be reached with zero agent output (E7-F020, open,
-// HIGH). That limit is now PRINTED with every verdict and carried in `verdict-json`
-// (`capabilityLimitations`), so it survives being quoted from either. It is a disclosure —
-// the arms, the predicate and the counts are exactly what they were, and a green still has
-// to be checked by hand.
+// server — so `capability: PROVEN` can be reached with zero agent output". W21 changed the
+// predicate and did not change this header, so the CLI's own doc asserted a defect the code
+// no longer had. Corrected rather than deleted, because a stale doc beside a changed
+// predicate is how the next reader mis-sizes the gate.
+//
+// ARM 2 NOW counts a `task_outputs` row only when an APPLIED `output_projection` receipt on
+// this run's `distributed_job_id` names it — the receipt only `jobOutputBridge`
+// `projectAcceptedOutput` writes, behind a live lease fence — so the E7-F020 platform-write
+// path is excluded structurally. E7-F020 stays OPEN on a stated residual (an UPSERT collision
+// on a platform `external_id`), and the limit is PRINTED with every verdict and carried in
+// `verdict-json` (`capabilityLimitations`), so it survives being quoted from either.
+//
+// ★★★ AND A GREEN IS STILL NOT EVIDENCE OF A WORKING GATE, for a reason that is not the
+// predicate: E7-F018 measured that `projectAcceptedOutput` has ZERO production callers and
+// that nothing checked in makes any run a distributed run, so arm 2 reads 0 on every real
+// run. The bar is CLOSED where it was falsely open. That is not the same as working.
 //
 // --require-capability is OFF BY DEFAULT, deliberately. Output capture is unbuilt
 // (CLI-008 Unit F: the E2B driver passes no stream handlers, stdoutRef/stderrRef are

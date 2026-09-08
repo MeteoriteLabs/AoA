@@ -18,6 +18,47 @@
 // FORCE RLS + the aoa_app policy, so the CLI must open the DB with a role/tenant
 // context that can see the run's tenant rows — otherwise clause 5 fails SAFE-CLOSED
 // (missing corroboration → refuse to bless), never a false PASS.
+//
+// ═══════════════════════════════════════════════════════════════════════════════
+// ★★★ PROVENANCE CENSUS — "which rows belong to this run", per consumer.
+//
+// W21 narrowed ONE consumer (arm 2 of `countProducedOutputs`) onto a receipt join and
+// left its sibling in `listRunSecretScanSurfaces` on `created_by_run_id`, so a receipt-
+// linked row with a NULL run id counted as capability evidence and was never scanned for
+// secrets (E7-F030, found in review of PR #385). The two consumers had drifted because
+// the notion was never written down in one place. It is written down here.
+//
+// ★ THE NOTION IS NOT CENTRALISABLE INTO ONE PREDICATE, and that is the point. Each
+// consumer's correct predicate is chosen by its ERROR DIRECTION:
+//
+//   PRECISION consumers (a wrong row → a false PASS / false PROVEN → must EXCLUDE when unsure)
+//   RECALL    consumers (a missed row → a missed secret / missed refusal → must INCLUDE when unsure)
+//
+// | # | consumer                                | linkage used                                    | direction | right? |
+// |---|-----------------------------------------|-------------------------------------------------|-----------|--------|
+// | 1 | getRun                                  | heartbeat_runs.id = runId (PK)                  | exact     | yes    |
+// | 2 | getAttempt                              | job_attempts.id = run.distributed_attempt_id    | precision | yes — the service re-checks company_id and job_id against the run (clause 5), so a dangling/mismatched id REFUSES |
+// | 3 | listLeases                              | leases.attempt_id                               | precision | yes — clause 5 counts corroboration; a foreign lease would be a false PASS. Tenant-filtered in the service |
+// | 4 | listJobEvents                           | job_events.attempt_id                           | BOTH      | yes — serves clause 5 (counts, tenant-filtered) AND clause 4 (payload scan, unfiltered). attempt_id is the only linkage the table has, and it is exact, so the two directions do not conflict here |
+// | 5 | getAttemptTerminalReceipt               | job_projection_receipts.attempt_id + kind       | precision | yes |
+// | 6 | listRunSecretScanSurfaces (1) heartbeat | heartbeat_runs.id (PK)                          | exact     | yes    |
+// | 7 | listRunSecretScanSurfaces (2) outputs   | ★ UNION: applied output_projection receipt on   | RECALL    | yes, AS OF THIS CHANGE. It was `created_by_run_id` alone — E7-F030 |
+// |   |                                         |   run.distributed_job_id  OR  created_by_run_id |           |        |
+// | 8 | listRunSecretScanSurfaces (3) artifacts | job_artifacts.job_id = run.distributed_job_id   | recall    | yes — job_id is the ONLY linkage the table has (no run column), so the union is a singleton |
+// | 9 | countProducedOutputs arm 1              | job_artifacts.job_id + kind + status            | precision | yes (its open question is E7-F019 — `kind` is the caller's declaration — not its linkage) |
+// |10 | countProducedOutputs arm 2              | applied output_projection receipt on job_id     | PRECISION | yes — E7-F020's narrowing. DO NOT widen it to #7's union |
+//
+// #7 and #10 read the same table for opposite purposes and MUST stay divergent. The
+// divergence is the correct state; what was missing was a written reason, which is now
+// at the #7 call site.
+//
+// ★ A MEASURED RESIDUAL IN #7, reported rather than silently widened: it scans only
+// `summary` + `metadata`. `title` (NOT NULL) and `url` are also agent-authored on a
+// bridge-projected row and are NOT scanned. That is a COLUMN-set recall gap, a different
+// axis from the ROW-set gap fixed here, and widening it changes what trips clause 4 for
+// every legacy row too — so it wants its own pinning test and its own review. Recorded in
+// E7-F030 rather than fixed here.
+// ═══════════════════════════════════════════════════════════════════════════════
 
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
@@ -158,14 +199,78 @@ export function createDrizzleE7RunVerifierStore(db: Db): E7RunVerifierStore {
         }
       }
 
-      // (2) task_outputs authored by this run (createdByRunId — clean run linkage).
-      const outputs = await db
+      // (2) task_outputs belonging to this run — the UNION of BOTH provenance notions,
+      //     de-duplicated by row id.
+      //
+      // ★★★ DO NOT "MAKE THIS CONSISTENT" WITH `countProducedOutputs`. STOP AND READ.
+      // The two consumers of "which task_outputs rows belong to this run" want OPPOSITE
+      // error directions, so one predicate cannot serve both:
+      //
+      //   * the COUNTER (arm 2 of clause 6) wants PRECISION. Over-counting prints a false
+      //     `capability: PROVEN` over a row the platform wrote, which is E7-F020 — the whole
+      //     reason arm 2 was narrowed to the fenced `output_projection` receipt. A row it is
+      //     unsure about must NOT be counted.
+      //   * this SCANNER (clause 4) wants RECALL. Under-scanning means a recognizable secret
+      //     in a row's summary/metadata never reaches clause 4 and the verifier reports a
+      //     clean mechanism/capability verdict OVER A LEAKED SECRET. Scanning a row that
+      //     turns out not to belong to this run costs one redundant regex pass, and if it
+      //     did trip a matcher it fails CLOSED (refuse to bless), never a false PASS.
+      //
+      // So: narrowing this to the receipt join (the "consistency" fix) would silently stop
+      // scanning every legacy platform writer — including `emitRuntimeServiceTaskOutput`,
+      // the one that needs nobody to do anything — and widening the counter to this union
+      // would re-open E7-F020. Both directions are regressions. A positive control in
+      // `e7-f020-arm2-provenance.integration.test.ts` reds on the first; the `[negative]`
+      // and `[mixed]` arms there red on the second.
+      //
+      // ★ THE DEFECT THIS FIXES (E7-F030, introduced by W21 and caught in review). W21 moved
+      // arm 2 onto the receipt and left this sibling on `created_by_run_id`. A row projected
+      // through `jobOutputBridge.projectAcceptedOutput` with NO caller-supplied run id — the
+      // case W21's own `[positive B]` test asserts is SUPPORTED — counted as capability
+      // evidence and was never scanned for secrets.
+      //
+      // ★ TWO QUERIES PLUS A MERGE, deliberately, not one clever `OR`. A single statement
+      // needs a LEFT JOIN with a four-conjunct ON clause, `OR r.id IS NOT NULL`, and a
+      // DISTINCT over a jsonb column, and it has to degrade correctly when the run has no
+      // `distributed_job_id`. Two SELECTs into a Map keyed by row id says exactly what it
+      // means and is de-duplicated by construction.
+      //
+      // ★ NO COMPANY CONJUNCT ON (2a), unlike the counter's. Same reason: for a scanner a
+      // cross-tenant row is a redundant scan whose worst case is an over-strict refusal,
+      // while for the counter it would be an over-count. (RLS makes it moot in practice —
+      // the CLI opens the DB in the run's tenant context — but the asymmetry is intentional.)
+      const scanRows = new Map<string, { summary: string | null; metadata: unknown }>();
+
+      // (2a) RECEIPT provenance — the rows arm 2 counts. Present here so a distributed
+      // output is scanned whatever its `created_by_run_id` says (including NULL).
+      if (run.distributedJobId) {
+        const projected = await db
+          .select({ id: taskOutputs.id, summary: taskOutputs.summary, metadata: taskOutputs.metadata })
+          .from(taskOutputs)
+          .innerJoin(jobProjectionReceipts, eq(jobProjectionReceipts.targetAggregateId, taskOutputs.id))
+          .where(
+            and(
+              eq(jobProjectionReceipts.jobId, run.distributedJobId),
+              eq(jobProjectionReceipts.projectionKind, "output_projection"),
+              eq(jobProjectionReceipts.aggregateKind, "task_outputs"),
+              eq(jobProjectionReceipts.status, "applied"),
+            ),
+          );
+        for (const o of projected) scanRows.set(o.id, { summary: o.summary, metadata: o.metadata });
+      }
+
+      // (2b) COLUMN provenance — every legacy platform writer that stamps this run's id
+      // (`emitRuntimeServiceTaskOutput`, `POST /api/issues/:issueId/outputs`, …). Arm 2
+      // deliberately stopped counting these; clause 4 must NOT stop scanning them.
+      const columnLinked = await db
         .select({ id: taskOutputs.id, summary: taskOutputs.summary, metadata: taskOutputs.metadata })
         .from(taskOutputs)
         .where(eq(taskOutputs.createdByRunId, run.id));
-      for (const o of outputs) {
+      for (const o of columnLinked) scanRows.set(o.id, { summary: o.summary, metadata: o.metadata });
+
+      for (const [id, o] of scanRows) {
         const text = `${textOf(o.summary)} ${textOf(o.metadata)}`.trim();
-        if (text) surfaces.push({ surface: "task_outputs", fieldOrEventId: o.id, text });
+        if (text) surfaces.push({ surface: "task_outputs", fieldOrEventId: id, text });
       }
 
       // (3) job_artifacts for the distributed job (job id linkage). identifier /
