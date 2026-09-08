@@ -124,6 +124,10 @@ function mintPartialWithDeferral(input, { declareDeferral }) {
     deliveryEvidence: "partial: synthetic fixture row minted by the guard's own self-test.",
     ownerTickets: [ABSENT_TICKET_ID],
   });
+  // W22: the floors are now EXHAUSTIVE, so an audited row that is not enrolled reds on its
+  // own. Enrol the fixture, or every OWNER-EXISTS test below would be asserting against an
+  // input that was already red for an unrelated reason.
+  input.debt.auditedFloor.ids.push(DEFERRAL_FIXTURE_ID);
   input.debt.ownerTicketDeferrals = input.debt.ownerTicketDeferrals ?? {};
   if (declareDeferral) {
     input.debt.ownerTicketDeferrals[DEFERRAL_FIXTURE_ID] = {
@@ -239,6 +243,98 @@ test("M7 AUDITED-FLOOR: naming a crossing that does not exist reds", () => {
   input.debt.auditedFloor.ids.push("DE-99");
   const { errors } = evaluateAuditDebt(input);
   assert.ok(hasError(errors, "auditedFloor names DE-99, which is not a crossing"), report(errors));
+});
+
+// --- W22: THE FOUR WAYS THE FLOOR ARM USED TO FAIL OPEN ---------------------------------
+//
+// Each of these passed the guard before W22, and the third and fourth are the ones that
+// matter: the arm was mutation-tested once already, and the mutation chose a crossing that
+// WAS in the floor — i.e. it exercised the single path that worked. Every test below asserts
+// a DISTINCT message, so no two of them can be satisfied by the same repair.
+
+test("M7a AUDITED-FLOOR fail-closed: deleting the whole section reds (it used to pass vacuously)", () => {
+  const input = baseInput();
+  delete input.debt.auditedFloor;
+  const { errors } = evaluateAuditDebt(input);
+  assert.ok(hasError(errors, 'auditedFloor is missing or is not an object with an "ids" array'), report(errors));
+  // And it must not bury that message under one derivative error per audited crossing.
+  assert.ok(!hasError(errors, "auditedFloor is INCOMPLETE"), report(errors));
+});
+
+test("M7b DELIVERED-FLOOR fail-closed: deleting the whole section reds (it used to pass vacuously)", () => {
+  const input = baseInput();
+  delete input.debt.deliveredFloor;
+  const { errors } = evaluateAuditDebt(input);
+  assert.ok(hasError(errors, 'deliveredFloor is missing or is not an object with an "ids" array'), report(errors));
+  assert.ok(!hasError(errors, "deliveredFloor is INCOMPLETE"), report(errors));
+});
+
+test("M7c AUDITED-FLOOR exhaustiveness: auditing a crossing while OMITTING it from the floor reds", () => {
+  // The reviewer's first commit. Pre-W22 every clause passed: the pin's count is right, and
+  // the floor loop could only ever speak about ids the floor already contained.
+  const input = baseInput();
+  const target = mintUnaudited(input, "DE-9004"); // green at pin+1
+  target.deliveryStatus = "partial"; // audited...
+  input.debt.ceilings.unauditedCriticalHigh -= 1; // ...and the pin lowered, honestly
+  // ...but the measurement is enrolled nowhere.
+  const { errors } = evaluateAuditDebt(input);
+  assert.ok(hasError(errors, "auditedFloor is INCOMPLETE — crossing DE-9004"), report(errors));
+  assert.ok(hasError(errors, 'is "partial" — i.e. it HAS been audited'), report(errors));
+  // The pin is satisfied, so this must be the ONLY thing speaking.
+  assert.ok(!hasError(errors, "ceilings.unauditedCriticalHigh"), report(errors));
+});
+
+test("M7d AUDITED-FLOOR: the count-preserving omit-then-regress sequence reds at BOTH steps", () => {
+  // The reviewer's two-commit attack in full. X is audited and the measurement recorded;
+  // a later commit returns X to `unaudited` while auditing Y, so the pin's count never
+  // moves and the floor is never edited. Pre-W22, if X had been omitted from the floor in
+  // step one, nothing anywhere would have noticed the discard.
+  const input = baseInput();
+  const x = mintUnaudited(input, "DE-9005");
+  const y = mintUnaudited(input, "DE-9006"); // green at pin+2
+
+  // Commit 1, done the ONLY way the fixed guard accepts: audit X, lower the pin, enrol X.
+  x.deliveryStatus = "partial";
+  input.debt.ceilings.unauditedCriticalHigh -= 1;
+  input.debt.auditedFloor.ids.push(x.id);
+  const afterAudit = evaluateAuditDebt(structuredClone(input));
+  assert.deepEqual(afterAudit.errors, [], `commit 1 must be green:\n${report(afterAudit.errors)}`);
+
+  // Commit 2: X's measurement is discarded and Y's replaces it. THE COUNT IS UNCHANGED.
+  x.deliveryStatus = "unaudited";
+  y.deliveryStatus = "partial";
+  const { errors } = evaluateAuditDebt(input);
+  assert.ok(
+    hasError(errors, `crossing ${x.id} is recorded in auditedFloor but has regressed to "unaudited"`),
+    report(errors),
+  );
+  assert.ok(hasError(errors, `auditedFloor is INCOMPLETE — crossing ${y.id}`), report(errors));
+  // ★ The pin is exactly what it was and is NOT what catches this. If the pin arm fired,
+  // this test would be passing for a reason that has nothing to do with the floor.
+  assert.ok(!hasError(errors, "ceilings.unauditedCriticalHigh"), report(errors));
+});
+
+test("M7e DELIVERED-FLOOR exhaustiveness: a NEW delivered row not enrolled in the floor reds", () => {
+  const input = baseInput();
+  const target = mintUnaudited(input, "DE-9007"); // green at pin+1
+  target.deliveryStatus = "delivered";
+  input.debt.ceilings.unauditedCriticalHigh -= 1;
+  input.debt.auditedFloor.ids.push(target.id); // audited floor satisfied; delivered floor not
+  const { errors } = evaluateAuditDebt(input);
+  assert.ok(hasError(errors, "deliveredFloor is INCOMPLETE — crossing DE-9007"), report(errors));
+  assert.ok(!hasError(errors, "auditedFloor is INCOMPLETE"), report(errors));
+});
+
+test("POSITIVE CONTROL: the committed floors are exhaustive — every audited/delivered row is enrolled", () => {
+  const input = baseInput();
+  const { errors } = evaluateAuditDebt(input);
+  assert.deepEqual(errors, [], report(errors));
+  const audited = input.crossings.filter((c) => c.deliveryStatus !== "unaudited").map((c) => c.id).sort();
+  assert.deepEqual([...input.debt.auditedFloor.ids].sort(), audited);
+  assert.deepEqual(
+    [...input.debt.deliveredFloor.ids].sort(),
+    input.crossings.filter((c) => c.deliveryStatus === "delivered").map((c) => c.id).sort(),
+  );
 });
 
 // --- DELIVERED-FLOOR --------------------------------------------------------------------
@@ -389,6 +485,62 @@ test("M17 FINDING-VISIBLE: an orphan top-level FINDING document reds", () => {
   const { errors } = evaluateAuditDebt(input);
   assert.ok(hasError(errors, "docs/replatform/FINDING-nobody-registered-me.md"), report(errors));
   assert.ok(hasError(errors, "can never see it and it can never print as unowned"), report(errors));
+});
+
+// --- W22: FINDING-VISIBLE (b) WAS A RAW SUBSTRING CHECK ---------------------------------
+//
+// `epicText.includes(basename)` over every register's concatenated text accepted three
+// things that leave the document exactly as invisible to check-finding-ownership.mjs as an
+// unregistered one: a mention in prose outside any finding, a mention inside a CLOSED
+// finding, and a sentence saying the document is NOT registered. The bar is now the object
+// the census actually reads — an OPEN, parsed finding entry.
+
+const ORPHAN_DOC = "docs/replatform/FINDING-w22-substring-probe.md";
+
+/** Strip every real reference to the probe doc, then register it however the test says. */
+function probeRegistration(text) {
+  const input = baseInput();
+  input.topLevelFindingDocPaths.push(ORPHAN_DOC);
+  input.findingDocuments.push({ path: "docs/replatform/epics/E0-foundation/findings.md", text });
+  return evaluateAuditDebt(input).errors;
+}
+
+const ORPHAN_ERROR = `${ORPHAN_DOC}: a top-level FINDING document is named by no OPEN finding entry`;
+
+test("M18a FINDING-VISIBLE: a mention in PROSE ALONE does not register a document", () => {
+  const errors = probeRegistration(
+    `Some register preamble that mentions ${path.posix.basename(ORPHAN_DOC)} in passing.\n`,
+  );
+  assert.ok(hasError(errors, ORPHAN_ERROR), report(errors));
+});
+
+test("M18b FINDING-VISIBLE: a mention inside a RESOLVED finding does not register a document", () => {
+  const errors = probeRegistration(
+    `## E0-F997 — the probe document\n\n**Status:** resolved\n\nSee ${path.posix.basename(ORPHAN_DOC)}.\n`,
+  );
+  assert.ok(hasError(errors, ORPHAN_ERROR), report(errors));
+});
+
+test("M18c DOCUMENTED LIMIT: a DENIAL inside an open finding still counts as registration", () => {
+  // Written down rather than left implicit, because the reviewer listed this alongside the
+  // two cases above and only those two are closed. The clause's job is STRUCTURAL: it asks
+  // whether an open, declared finding carries the document into the ownership census. It
+  // does not — and cannot — read what the sentence means. A denial sitting inside an open
+  // finding does put the document in front of that finding's owner, which is the whole
+  // protection; a denial in prose or in a closed finding does not, and now reds.
+  const errors = probeRegistration(
+    `## E0-F996 — unrelated\n\n**Status:** open\n\n` +
+      `Note that ${path.posix.basename(ORPHAN_DOC)} is NOT registered anywhere.\n`,
+  );
+  assert.ok(!hasError(errors, ORPHAN_ERROR), report(errors));
+});
+
+test("POSITIVE CONTROL: a genuine OPEN finding naming the document stays GREEN", () => {
+  const errors = probeRegistration(
+    `## E0-F995 — the probe document has an owner\n\n**Status:** open · **Severity:** LOW\n\n` +
+      `This finding is the register home of ${path.posix.basename(ORPHAN_DOC)}.\n`,
+  );
+  assert.deepEqual(errors, [], report(errors));
 });
 
 test("M18 FINDING-VISIBLE: removing E8-F011's reference re-orphans the retention document", () => {

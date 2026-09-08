@@ -39,7 +39,7 @@ in the system's own echo of the thing you asked for.
 | [DE-07](#de-07) | Does the resolve path deny four ways live? Is there any surface that can revoke a handle? | Yes — an operator-facing revoke would refute the dead-lever finding. |
 | [DE-09](#de-09) | **Is a capability restriction expressible on e2b create at all?** Which template does a live create receive? What can a tenant reach from inside the guest? | Yes, in both directions — and it may show the clause is unbuildable as written. |
 | [DE-10](#de-10) | With the reaper armed, is an orphan sandbox actually destroyed — as seen by the provider, not by our own code? | Yes — this is the only route to `delivered` for the destroy half. |
-| [DE-11](#de-11) | Does the artifact bucket carry default encryption or a lifecycle rule out of band? | Yes for the encryption clause only. |
+| [DE-11](#de-11) | Does the artifact bucket carry default encryption or a lifecycle rule out of band? | Yes — for **three** clauses (TTL, encryption, purge), all three now recorded `UNKNOWN` rather than absent. |
 | [DE-12](#de-12) | **Nothing.** | No — see the entry for why this is a finding, not a gap in this document. |
 | [DE-13](#de-13) | Does one noisy Organization starve another? | Yes — this is REL-002's acceptance and it has never been run. |
 | [DE-14](#de-14) | **Nothing.** Settled by executing the assertion. | No. |
@@ -360,8 +360,17 @@ Only (a)+(b)+(c)+(5) **together** upgrade the second conjunct of DE-10's `revoca
 ## DE-11 — Browser-session workload ↔ sensitive artifacts (High)
 
 Both checks are **read-only, cost nothing, and need only read access to the deployed bucket.**
-Neither can change the audit or revocation verdicts, which are settled by WHERE clauses in
-source. Only (a) could change the encryption verdict.
+
+★ **Corrected 2026-09-09 (W22).** This paragraph used to say *"neither can change the audit or
+revocation verdicts … only (a) could change the encryption verdict"*, and it contradicted the
+entry directly below it, which says in as many words that (b) would confirm *"the `revocation`
+clause has no out-of-band implementation **either**"* — a check that can confirm an absence can
+equally refute it. **(a) and (b) between them settle three of DE-11's four clauses**: the TTL
+half of `confidentiality`, its encryption half, and the purge half of `revocation`. All three
+are now recorded in the register as **`UNKNOWN` pending this inspection**, not as measured
+absences, because each can be delivered entirely by bucket configuration the application never
+expresses. **The `audit` clause is the one these cannot touch** — the record it names is an
+application artefact, and no bucket setting supplies it.
 
 - **(a) Encryption at rest.** `aws s3api get-bucket-encryption --bucket <artifact-bucket>`.
   A `ServerSideEncryptionConfiguration` means the bytes are encrypted by bucket policy even
@@ -708,8 +717,17 @@ The absence of any tenant parameter, deny line or production caller is settled s
 live run can make an absent control deny. **Even a fully green rehearsal leaves DE-23 at `partial`
 at best** — it exercises integrity-after-restore only. The steps that would settle the other four
 arms do not exist to run: there is no scoped restore identity to authenticate, no tenant-scoped
-restore to reject, no encryption to verify keys for, no restore grant to expire, and no audit row
+restore to reject, no per-tenant key to verify, no restore grant to expire, and no audit row
 to read back. Those need **code first**.
+
+★ **One exception, corrected 2026-09-09 (W22), and it is the DE-11 defect one row over.** The
+register used to list *"no encryption at rest"* among DE-23's settled absences. Source can rule
+out **per-tenant keys** — that needs a key parameter `RunDatabaseBackupOptions` does not have —
+but it cannot rule out **encryption at rest**, because an encrypted volume, an encrypted
+filesystem, or an object store with default SSE encrypts the dump with no application code at
+all. That clause now reads `UNKNOWN`, and settling it is an inspection of wherever the deployment
+writes the file, not a rehearsal step. **It changes nothing about the verdict**: the other five
+absences are missing tenant *decisions*, and no storage setting supplies a decision.
 
 The crossing's own chartered verification is nonetheless an **owed operator leg**.
 

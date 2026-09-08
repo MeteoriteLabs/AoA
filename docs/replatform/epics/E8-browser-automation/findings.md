@@ -1499,6 +1499,28 @@ exactly one place.
 | `revocation`: "TTL expiry and job completion **purge** sensitive artifacts" | **Nothing purges, and the refusal is structural rather than merely missing.** `isSweepEligible` refuses `status === "committed"` outright (`server/src/services/artifact-orphan-sweep.ts:79`) and refuses any row with a committed sibling (`:83`); the candidate query selects `status = 'granted'` only (`packages/db/src/repositories/tenant/index.ts:328`); and `markSwept`'s UPDATE is WHERE-guarded to `'granted'` (`:345-348`). No `PutBucketLifecycle` / `LifecycleConfiguration` exists anywhere. A committed sensitive artifact can never be collected by any shipped path. |
 | `audit`: "sensitive-artifact access and **retention are audited**" | **Nothing audits either.** The only observation of a retention decision is a `logger.warn` (`server/src/services/artifact-commit.ts:174`), and the code's own comment three lines above says so in these words: *"This is a LOG LINE, not an audit record — DE-11 claims retention is audited and nothing audits it; this ticket does not pretend to close that"* (`:172-173`). The download-grant branch records nothing durable at all (`server/src/services/artifact-transfer-grant.ts:186-206`). |
 
+★ **CORRECTION 2026-09-09 (W22), on external review: three of those four rows overstate what
+source can establish, and the register has been amended accordingly.** The TTL, encryption and
+purge rows above are all sound about **the application** and unsound about **the system**. Each of
+those three controls can be delivered entirely by artifact-bucket configuration that the
+application never expresses and that a repository checkout cannot see: a bucket with default
+server-side encryption encrypts the bytes though `PutObjectCommand` never asks, and an expiration
+lifecycle rule both TTL-bounds and purges though no `PutBucketLifecycle` call exists. **The absence
+of `ServerSideEncryption` in source therefore proves nothing about encryption at rest** — proving a
+control ABSENT needs strictly more evidence than proving it present, and a grep is not that
+evidence. Those three clauses now read `UNKNOWN` pending bucket inspection in
+`docs/architecture/distributed-execution-threat-controls.json`, not "measured absent".
+★ **The same commit that filed the absence claim already contained its refutation**:
+`docs/replatform/DE-AUDIT-live-experiments.md` DE-11 (a) and (b) name
+`get-bucket-encryption` and `get-bucket-lifecycle-configuration` as the reads that settle exactly
+these clauses. **The `audit` row is unaffected and stays a measured absence** — the record it names
+is an application artefact and no bucket setting can supply it. **The finding's own verdict does not
+move**: DE-11 stays `partial`, and this stays open, because three `UNKNOWN`s and one measured
+absence is not a controlled crossing either. What changes is that the register no longer claims to
+know something it did not measure. *(This paragraph is why the heading's "all four are absent" is
+retained rather than rewritten: the heading records what was filed, and this records what it was
+corrected to.)*
+
 **What is NO LONGER true, and must not be re-cited.** The source document's §3 — *"the commit path
 takes the worker's word ... the module that exists to deny this privilege has zero production
 callers"* — was **closed by DAT-010** and is stale. Retention is now derived control-plane-side
