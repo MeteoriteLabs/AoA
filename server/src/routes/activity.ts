@@ -7,8 +7,8 @@ import { accessibleCompanyIdsForActor, assertBoard, assertCompanyAccess } from "
 import { issueService } from "../services/index.js";
 import { sanitizeRecord } from "../redaction.js";
 import {
-  MARKETPLACE_RECONCILIATION_ACTION_PREFIX,
-  MARKETPLACE_RECONCILIATION_ENTITY_TYPE,
+  ReservedActivityNamespaceError,
+  assertUnreservedActivityNamespace,
 } from "../services/activity-namespace.js";
 
 const createActivitySchema = z
@@ -22,15 +22,18 @@ const createActivitySchema = z
     details: z.record(z.unknown()).optional().nullable(),
   })
   .superRefine((event, ctx) => {
-    if (
-      event.entityType === MARKETPLACE_RECONCILIATION_ENTITY_TYPE ||
-      event.action.startsWith(MARKETPLACE_RECONCILIATION_ACTION_PREFIX)
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message:
-          "Marketplace reconciliation audit events are reserved for the reconciliation service",
-      });
+    // DELEGATED, not re-implemented. This route used to inline the marketplace
+    // reservation, so the HTTP writer and the service writer were two copies of
+    // one rule that could drift apart — and a reservation that holds in one
+    // writer and not the other is worth nothing. A `security.denied.*` row is
+    // EVIDENCE THAT A CONTROL REFUSED SOMETHING; if an authenticated board
+    // client could POST one, "there is a denial record" would stop implying "a
+    // control denied". One predicate, three writers, one test.
+    try {
+      assertUnreservedActivityNamespace(event);
+    } catch (err) {
+      if (!(err instanceof ReservedActivityNamespaceError)) throw err;
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: err.message });
     }
   });
 

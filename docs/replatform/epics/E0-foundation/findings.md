@@ -177,13 +177,31 @@ one of them denying (DE-01 across 4,460 adversarial operations against real Post
 executing the assertion directly). The register rows for those crossings are `partial`, not
 `not-delivered`, precisely because the enforcement halves hold.
 
-- **Affected crossings:** DE-01, DE-03, DE-04, DE-06, DE-11, DE-12, DE-13, DE-14. (DE-11's is
-  carried in detail by `E8-F011`; it is listed here so the class is complete.)
-- **Disposition:** `unowned`. No ticket on disk owns "record a denial". The nearest candidate,
-  `jobAuditBridge`, exists and is caller-less; wiring it is not a code-motion task, because the
-  DE-01 case has **no error to intercept** (a filtered read is a successful empty read), so a
-  denial-observation point would have to be built rather than connected. Minimum work is stated in
-  the ownership manifest entry. NOT `accepted`: HIGH may never be accepted.
+**★ A WRITER NOW EXISTS, AND NONE OF THESE EIGHT USE IT (2026-09-08).** The E0 denial-audit slice
+built `recordSecurityDenial` (`server/src/services/security-denial-audit.ts`) and closed exactly
+one crossing's audit clause — **DE-19, in `E0-F013`'s cohort, not this one**. **All eight crossings
+in this finding are unchanged and this finding stays open.** Recorded here because the *reason*
+this finding gave for `unowned` — "a denial-observation point would have to be built rather than
+connected" — is now half-answered: the storage half is built and has a production caller. What is
+still true, and is why these eight did not come with it, is stated in the follow-on list under
+`E0-F013`. Two things from that slice bear directly on this finding: (1) **DE-01's read half is
+confirmed unbuildable by interception** — PostgreSQL emits no event when an RLS `USING` clause
+filters rows, so detecting it needs a `BYPASSRLS` comparator, i.e. exactly the privilege
+`packages/db/src/client.ts:325` throws at boot to forbid; **DE-01's WRITE half is different and IS
+interceptable**, because a `WITH CHECK` violation raises catchable SQLSTATE `42501`. (2) DE-04,
+DE-12 and DE-13's capacity half deny by `throw` **inside the tenant transaction**, so an
+in-transaction write of the denial rolls back with it; `recordSecurityDenial` is documented as
+requiring a pool-level handle and that separate-transaction lifecycle is not yet built. Neither is
+a wiring task.
+
+- **Affected crossings:** DE-01, DE-03, DE-04, DE-06, DE-11, DE-12, DE-13, DE-14 — **all eight
+  still open.** (DE-11's is carried in detail by `E8-F011`; it is listed here so the class is
+  complete.)
+- **Disposition:** `unowned`. No ticket on disk owns "record a denial" for these eight. The
+  nearest candidate, `jobAuditBridge`, exists and is caller-less; wiring it is not a code-motion
+  task, because the DE-01 case has **no error to intercept** (a filtered read is a successful empty
+  read), so a denial-observation point would have to be built rather than connected. Minimum work
+  is stated in the ownership manifest entry. NOT `accepted`: HIGH may never be accepted.
 - **Resolution condition:** each row's `audit` clause is either delivered against a named record
   point with a production caller, or AMENDED to state what the programme intends. Amending is a
   founder decision and is not taken here. Resolve = flip this Status and delete the `E0-F010` key
@@ -341,19 +359,65 @@ tenant-scoped, i.e. the blast radius the clause exists to bound is unbounded.
   actually enforce. Amendment is a founder decision and is not taken here. Resolve = flip this
   Status and delete the `E0-F012` key in `scripts/finding-ownership.json` in the SAME commit.
 
-## E0-F013 — The audit class, second cohort: nine more crossings assert that denials are audited, and on none of them is the denial recorded durably — on five of the nine nothing is recorded at all, and on the other four the success path is recorded and the refusal is not
+## E0-F013 — The audit class, second cohort: nine more crossings assert that denials are audited, and on eight of the nine the denial is still not recorded durably — DE-19 was closed on 2026-09-08 and the remaining eight are enumerated below
 
-- **Status:** open
+- **Status:** open — **8 of 9 remaining; DE-19 CLOSED 2026-09-08.**
 - **Severity:** HIGH
 - **Filed:** 2026-09-08, by W20B (the recovered-audit landing unit). Every citation below was
   measured at tip `4d5507a80` by the landing unit itself, not inherited from the auditor.
 - **Blocks gate:** No — a detection gap, not an enforcement gap. Every crossing named here does deny.
 
 **Why a sibling and not an edit to `E0-F010`.** `E0-F010` measured eight crossings and its count is
-correct for the cohort it audited. These are eight *different* crossings, from the sixteen an
+correct for the cohort it audited. These are **nine** *different* crossings, from the sixteen an
 orchestration bug dropped out of W20's landing commit. Folding them in would have required
 rewriting that finding's title, table and count in a wave whose whole subject is counts that stop
 matching their data. The class is identical; the cohort is not.
+*(★ CORRECTION, 2026-09-08. This paragraph said "eight *different* crossings" while the title, the
+table, and the affected-crossings list all said nine. Nine is right — DE-15, DE-16, DE-17, DE-18,
+DE-19, DE-20, DE-21, DE-27, DE-29 — and the count was re-verified against the table before this
+edit. A finding whose subject is counts that stop matching their data had three counts and one of
+them was wrong.)*
+
+**★ TWO CORRECTIONS TO THIS FINDING'S OWN CHARACTERISATION (2026-09-08), made by the unit that
+closed DE-19.** Both were found by re-measuring the citations rather than re-reading the prose.
+
+1. **The title's clause "on the other four the success path is recorded and the refusal is not" is
+   FALSE for DE-16.** It holds for DE-18, DE-19 and DE-20. On DE-16 what is recorded is the
+   **refusal itself** — `recordCloudPluginBlock` (`server/src/services/cloud-plugin-execution.ts:225-247`)
+   emits a `logger.warn` on the deny path carrying `pluginId`, `companyId`, `activationSource`,
+   `sink` and `reasonCode` — and the *success* path is not recorded at all. This finding's own
+   DE-16 table row says so correctly ("unlike the rest of this table there IS a log line"); it is
+   the title that generalises past its data. The **5/4 split is correct** and was re-verified; only
+   the description of the four is wrong. The title above has been rewritten to enumerate rather
+   than characterise.
+2. **DE-29's row header "Nothing, by ordering" applies a different standard than `E0-F010` applied
+   to DE-06, on the same evidence.** The row's own body then names the trace: an anonymous
+   `metrics?.secretRead({outcome:"denied", count:1})` tick at
+   `server/src/services/secret-broker.ts:328`, count-only and compile-closed against ids
+   (`job-control-metrics.ts:29`). That is the *same category* as DE-06's rejected-commit metric,
+   which `E0-F010` explicitly refused to call "nothing" — "this is the one row in the table where
+   'nothing' would be wrong". Read DE-29's "Nothing" as **"nothing attributable"**: the tick is
+   real, it carries no handle, owner, company or reason, and it therefore satisfies no clause in
+   this class. The substance of the finding is unchanged; the standard is now the same in both
+   siblings.
+
+**★ DE-19 IS CLOSED (2026-09-08).** Its audit clause — "context retrieval and denials are recorded
+in the retrieval audit" — is delivered against a named record point with a production caller:
+`recordSecurityDenial` (`server/src/services/security-denial-audit.ts:125`), called from
+`handleMemoryGet`'s `denyMemoryGet` closure (`server/src/mcp/tools/read-tools.ts:297`) on all three
+deny branches (`:339` `not_visible`, `:342` `not_approved`, `:351` `actor_filter_denied`). The row
+lands in `activity_log` under a reserved `security.denied.*` action namespace and carries WHO
+(`actor_type`/`actor_id`), TENANT (`company_id`), RESOURCE (`entity_type`/`entity_id`) and WHY
+(`details.reason`). Proven by provoking the real refusal, not by reading a record back:
+`server/src/__tests__/de-19-memory-denial-audit.integration.test.ts:298` (attribution), `:322`
+(the reason is read from the branch, not stamped), `:337` (positive control — the same path
+succeeding writes NO denial row and still writes its `memory_retrievals` success row). Observed
+RED against the pre-change tree, and four mutants killed. Enrolled as `E0-de19-denial-audit` in
+`scripts/gate-clause-wiring.json` in the same commit. **DE-19 stays `partial` in the threat
+register**: its `authentication`, `revocation` and `integrity` clauses are separately absent and
+are carried by `E0-F016`. **Not closed within DE-19:** `memory.search`'s refusals, which are the
+DE-01 empty-read shape (the in-SQL gate removes rows from a query that then SUCCEEDS, so there is
+no discrete refusal event to intercept).
 
 | Crossing | `audit` clause, verbatim | The line that denies | What records it |
 |---|---|---|---|
@@ -361,7 +425,7 @@ matching their data. The class is identical; the cohort is not.
 | DE-16 (Critical) | "blocked plugin routes, dispatch, and reconciliations are audited" | `server/src/services/cloud-plugin-execution.ts:254`; the 503 helper at `server/src/routes/plugins.ts:381`. | **Partly — and unlike the rest of this table there IS a log line.** `recordCloudPluginBlock` (`cloud-plugin-execution.ts:225-247`) emits `logger.warn` with `event:"plugin.worker.cloud_blocked"`, `pluginId`, `companyId`, `activationSource`, `sink` and `reasonCode`. What is absent is durability: the counters it increments are module-level process memory that resets on restart, and no row is written anywhere. Nobody can answer "how often was this company's plugin dispatch refused last week" from the system's own memory. |
 | DE-17 (Critical) | "post-fence cleanup and denied escalations are audited" | `packages/adapter-manager/src/owned-op-gate.ts:154-156`; `packages/worker-daemon/src/supervisor/cleanup-authority.ts:127-144,162-165`. | **Nothing.** `owned-op-gate.ts` and `create-gate.ts` contain zero matches for `logger|console.|audit|metric`; the only such matches in `adapter-manager/src/server.ts` are the reaper sweep counter. A whole-tree sweep shows **nothing anywhere catches or logs `CleanupAuthorityDeniedError`** — every reference is a throw site, a class declaration, a barrel re-export or a conformance assertion. |
 | DE-18 (Critical) | "placement decisions and generation changes are audited" | `packages/db/src/repositories/tenant/job-control.ts:1177` / `:1167`. | **Partly.** A generation bump does write one durable `execution_target_revocations` row. Every *denial* the fence then produces returns as a protocol error with no row, no metric and no log line. |
-| DE-19 (Critical) | "context retrieval and denials are recorded in the retrieval audit" | `server/src/mcp/tools/read-tools.ts:289-290` and `:294-296`. | **Half.** Retrieval *is* recorded — `recordMemoryRetrievals` runs after the gate. **Both deny returns sit before it**, so a refused memory read writes nothing. The clause is delivered for the success path and absent for the path it exists to cover. |
+| ~~DE-19 (Critical)~~ **CLOSED 2026-09-08** | "context retrieval and denials are recorded in the retrieval audit" | `read-tools.ts:339` / `:342` / `:351`, all via the `denyMemoryGet` closure at `:297`. | **Was: Half** — retrieval *was* recorded (`recordMemoryRetrievals` runs after the gate) and **both deny returns sat before it**, so a refused memory read wrote nothing. **Now:** each deny awaits `recordSecurityDenial` (`security-denial-audit.ts:125`), writing one attributable `security.denied.memory_read` row to `activity_log` (WHO/TENANT/RESOURCE/WHY) before returning the same non-disclosing message. Proven by provocation at `de-19-memory-denial-audit.integration.test.ts:298`/`:322`/`:337`. `memory.search`'s refusals remain uncovered — they are the DE-01 empty-read shape. |
 | DE-20 (Critical) | "cutover selection and rollback transitions are audited" | `server/src/services/heartbeat.ts:5399` → `:5451`. | **Half, and the other half cannot exist.** A distributed selection writes one `distributed_execution_handoff` run event; a legacy selection writes no durable row. There is no rollback transition to audit because there is no rollback (see `E0-F014`). |
 | DE-21 (High) | "subscribe, replay, and denial events are audited" | `server/src/realtime/live-events-ws.ts:1077-1079`. | **Nothing, with a positive control sitting beside it in the same file.** The 403 calls `rejectUpgrade`, whose entire body (`:106-112`) writes an HTTP status line to the socket and destroys it. The file *does* import `logger` (`:15`) and call it at eight sites — including `logger.error` at `:1090`, which fires only when the authorization function **threw**. So an internal fault is loud and a cross-tenant probe is silent. |
 | DE-27 (High) | "cross-replica admission and partition events are audited" | `server/src/services/worker-admission-rate-limit.ts:138-140`; `server/src/services/org-concurrency.ts:247-249`. | **Nothing, and the clause is unsatisfiable as written.** The `over_cap` deny returns through `sendWorkerOperationProtocolError`, whose whole body is a status-and-json write (`worker-protocol-http.ts:83-93`); `org-concurrency.ts` emits nothing at all. ★ A whole-tree sweep of `server/src` for `replicaId\|replica_id\|AOA_CONTROL_PLANE_REPLICA\|controlPlaneId` returns **zero hits** — the system has no replica identity, so no admission record could name a replica even if one were written, and there is no partition detector to produce a partition event. |
@@ -379,13 +443,123 @@ path it does not log is the security refusal.
 **What it is NOT.** It is not a claim that any of these controls fail to deny. Every crossing here
 is recorded `partial` precisely because its enforcement half was measured holding.
 
-- **Affected crossings:** DE-15, DE-16, DE-17, DE-18, DE-19, DE-20, DE-21, DE-27, DE-29.
+### What the remaining sixteen need (2026-09-08, from the unit that closed DE-19)
+
+Sixteen crossings in this class are still open: **eight here** (DE-15, DE-16, DE-17, DE-18, DE-20,
+DE-21, DE-27, DE-29) and **all eight in `E0-F010`** (DE-01, DE-03, DE-04, DE-06, DE-11, DE-12,
+DE-13, DE-14). They are not one job. Grouped by what they actually need:
+
+**Group A — the same shape as DE-19: an async deny path, a real tenant, a live DB handle, no
+surrounding transaction. `recordSecurityDenial` already fits; only the interception is new.**
+
+- **DE-16** — `recordCloudPluginBlock` (`cloud-plugin-execution.ts:225-247`) is already the
+  chokepoint for **ten** production call sites and already emits the right fields. ★ **But it is
+  NOT the drop-in the audit-phase measurement claimed.** Three obstacles, all measured at tip
+  `921b2c1f9`: (i) it is **synchronous** (`: number`) and one caller,
+  `plugin-worker-manager.ts:623` `spawnProcess()`, is a sync function returning `ChildProcess` —
+  a durable write cannot be awaited there; (ii) `companyId` is **optional**, and
+  `plugin-loader.ts:1285` and `:1777` pass **none at all**, so `activity_log`'s NOT NULL
+  `company_id` cannot be satisfied on those two sinks; (iii) `company-plugins.ts:333` blocks
+  **before** `assertCompanyAccess`, so its `companyId` is an unvalidated route param and may not
+  be a valid FK. Closing DE-16 means async-ifying the chokepoint (or splitting the sync backstop
+  off), plus Decision 2 below for the company-less sinks. Cheap, but not one line.
+- **DE-21** — `live-events-ws.ts:1078` `rejectUpgrade`. Async, and it ships its own positive
+  control (`logger.error` at `:1090` fires only when the authorize function *threw*). Blocked on
+  Decision 2: its `companyId` comes from an **unauthenticated URL path segment**.
+- **DE-15** — the kill-switch drain return at `job-leasing.ts:731-740`. In a transaction, but a
+  *returning* one rather than a rejecting one, so the rollback problem does not bite.
+
+**Group B — blocked on a lifecycle `recordSecurityDenial` does not have: the deny is a `throw`
+INSIDE the tenant transaction, so an in-transaction write rolls back with it.** DE-29 is the
+proof: the audit UPDATE at `job-control.ts:3139` sits after the throw at `:3122` and never runs.
+These need a **separate-transaction** recorder that commits after the refusing transaction has
+rolled back — a different lifecycle, not a wiring change.
+
+- **DE-04 + DE-18** — both refuse through `guardActiveFence`
+  (`job-control.ts:1167-1187`), which **11+ governed mutators** call. Highest leverage in the
+  whole class: one function, two crossings. **This is the right second slice**, once the
+  separate-transaction lifecycle exists.
+- **DE-29** (`job-control.ts:3122`), **DE-12**'s denial half (`job-submission.ts:229`), and
+  **DE-13**'s capacity half (`org-concurrency.ts:244/:248/:268`) join it on the same lifecycle.
+- **DE-01's WRITE half** belongs here too and is genuinely closable: an RLS `WITH CHECK` violation
+  raises catchable SQLSTATE **`42501`**, and `server/src/db/with-tenant-tx.ts` is the single place
+  to catch it.
+
+**Group C — shared interception point, but the point has no tenant context to give.**
+
+- **DE-03**, **DE-13**'s throttle half and **DE-27**'s throttle half all refuse through
+  `sendWorkerOperationProtocolError` (`worker-protocol-http.ts:76-93`), which has **20+ call sites
+  in `worker-control.ts` alone**. Its signature is `(req, res, operation, code, now)`: **no db
+  handle, no org, no company**. Widening it is the work, and DE-03's unenrolled-worker case hits
+  Decision 2 head-on.
+
+**Group D — structurally different; no amount of interception closes them at this architecture.
+Naming them, because a plan that quietly covers twelve and implies seventeen is this programme's
+own failure class.**
+
+- **DE-01's READ half — the hard one.** PostgreSQL emits **no event** when an RLS `USING` clause
+  filters rows: the planner ANDs the policy into the predicate, the query **succeeds**, and zero
+  rows is a legal, indistinguishable result. Detecting it requires re-running the query without
+  the policy and diffing — i.e. a `BYPASSRLS`/owner connection, exactly the privilege
+  `packages/db/src/client.ts:325` throws at boot to forbid and `server/src/app.ts:490` calls
+  "owner fallback is forbidden". `pgaudit` does not rescue it (it logs statements, not policy
+  verdicts) and appears nowhere in this tree. **Recommend AMENDING the clause, not building it.**
+  The same shape covers `memory.search` under DE-19 and is why DE-19's closure is scoped to
+  `memory.get`.
+- **DE-27's cross-replica and partition halves** — `replicaId|replica_id|AOA_CONTROL_PLANE_REPLICA|controlPlaneId`
+  returns **zero hits** across `server/src`. The clause names a fact the system has no vocabulary
+  to express. Needs a replica identity built first, or amendment.
+- **DE-12's "generation changes" half** — `services.generation` has **no writer anywhere**, so
+  there is no change to audit. Vacuous until one exists.
+- **DE-20's rollback half** — `createDistributedExecutionDrain` has **zero production callers**
+  (`E0-F014`), so there is no rollback transition. Selection is recordable; rollback is prose.
+- **DE-11** — the sensitive-artifact access and retention controls are themselves absent
+  (`E8-F011`). Nothing decides, so there is nothing to record; `artifact-commit.ts:170-176`
+  self-labels as "a LOG LINE, not an audit record".
+- **DE-17** — technically possible, practically blocked. `packages/adapter-manager` and
+  `packages/worker-daemon` run **off the control plane** and hold no control-plane DB handle, so a
+  durable row from a `CleanupAuthorityDeniedError` needs a **wire hop** — and
+  `packages/worker-protocol` is v1-FROZEN behind a hash-pinned cross-version conformance test. Its
+  own ticket, with its own freeze decision.
+- **DE-14** — recordable only as a **log**, and that is all its clause asks ("the startup
+  safety-assertion outcome is **logged**"). `assertHostedExecutionStartupSafe` fires at
+  `config.ts:198` during config load, **before any DB pool exists**, so a durable row is
+  structurally impossible. ~5 lines. Take it as a freebie; it proves nothing about the mechanism.
+
+**Honest arithmetic: of the seventeen, ONE is closed and at most ELEVEN more are closable end to
+end. Five clause-halves are not, and DE-17 is a sixth behind the protocol freeze.** Any plan must
+state twelve, not seventeen.
+
+### Decisions this slice did not take
+
+1. **(Blocking the plan, not the next slice.) What happens to the clause-halves that cannot be
+   delivered as written** — DE-01's read half, DE-27's cross-replica and partition halves,
+   DE-12's change half, DE-20's rollback half, and DE-11. Per clause: amend the wording in
+   `docs/architecture/distributed-execution-threat-controls.json` to what the programme actually
+   intends, or charter the missing machinery. **A mechanism that closes twelve while the register
+   still asserts seventeen reads as a solved class and is a false claim of enforcement.**
+2. **Where a company-less denial goes.** `activity_log.company_id` is NOT NULL with a cascade FK.
+   DE-03 (unenrolled worker), DE-21 (attacker-supplied path segment), DE-01 (wrong or absent org
+   GUC) and two of DE-16's sinks can all produce denials with **no resolvable company**. Either
+   (a) accept that those record nothing and **say so in the register**, or (b) mint a denial table
+   with a nullable company and an `organization_id` — a **schema** decision (Drizzle only,
+   `pnpm db:generate`), whose RLS/GRANT posture must be considered rather than guessed (AGENTS.md
+   + Decision #122; note the closest analogue, `activity_log`, is deliberately **non-RLS** per
+   `0245:15-18`, which is a live-fire question for a table holding cross-tenant evidence).
+3. **Retention and disclosure of a denial record.** (a) Whose log does a cross-tenant denial land
+   in? The probed company's `activity_log` discloses to them that they were probed and by whom.
+   (b) `activity_log` **cascade-deletes with its company**, so a hostile tenant can destroy the
+   evidence of their own probing by deleting their own company. An audit record a suspect can
+   delete is not an audit record.
+
+- **Affected crossings:** DE-15, DE-16, DE-17, DE-18, DE-20, DE-21, DE-27, DE-29 — **eight
+  remaining.** DE-19 is closed (above) and is no longer carried by this finding.
 - **Disposition:** `unowned`, for the reason `E0-F010` gives — no ticket on disk owns "record a
-  denial", and DE-27's case additionally needs a replica identity that does not exist. NOT
-  `accepted`: HIGH may never be accepted.
-- **Resolution condition:** each row's `audit` clause is either delivered against a named record
-  point with a production caller, or AMENDED to state what the programme intends (DE-27's is the
-  one most likely to need amending). Resolve = flip this Status and delete the `E0-F013` key in
+  denial" for the remaining eight, and DE-27's case additionally needs a replica identity that does
+  not exist. NOT `accepted`: HIGH may never be accepted.
+- **Resolution condition:** each remaining row's `audit` clause is either delivered against a named
+  record point with a production caller, or AMENDED to state what the programme intends (DE-27's is
+  the one most likely to need amending). Resolve = flip this Status and delete the `E0-F013` key in
   `scripts/finding-ownership.json` in the SAME commit.
 
 ## E0-F014 — The dead-arming-path class, second cohort: five more crossings are defended by a lever with zero production callers, including the rollback the cutover row calls "atomic" and the immutability check for the evidence ledger whose rule this repository has already broken three times
