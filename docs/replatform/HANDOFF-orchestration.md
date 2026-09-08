@@ -152,7 +152,9 @@ arm 2 — and E7-F018's status, severity and `unowned` ownership.
 
 ★★★ **SUPERSEDED FOR THE PREDICATE 2026-09-08 (W21).** The paragraph above describes the **pre-W21**
 arm 2 and is kept because it sized the fix. Arm 2 no longer reads `created_by_run_id`: a `task_outputs`
-row counts only when an APPLIED `output_projection` receipt names it on the run's `distributed_job_id`,
+row counts only when an APPLIED `output_projection` receipt names it on the run's `distributed_job_id`
+**AND its `distributed_attempt_id`** (W21C / E7-F031 re-predicated both arms onto the ATTEMPT; the
+job-only wording here stood for one commit and was corrected by W21D),
 whose sole writer is `jobOutputBridge.projectAcceptedOutput` (`job-output-bridge.ts:303`), fence-guarded
 via `recordGovernedProjection`. Both live legacy writers above (`task-output-emitters.ts:113`,
 `routes/task-outputs.ts:54`) are excluded structurally. ★★ **Not progress:** `projectAcceptedOutput`

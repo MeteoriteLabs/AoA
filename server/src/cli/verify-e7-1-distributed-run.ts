@@ -47,8 +47,15 @@
 // produced nothing. This header said `distributed_job_id` alone and would have asserted the
 // old, wider predicate. Same failure the block above records for W21, one commit later: a doc
 // that narrates a predicate is a claim about the predicate, and it does not move on its own.
-// The SECRET SCANNER is deliberately NOT attempt-bound — it wants recall, so a sibling
-// attempt's output is still scanned. Do not "make them consistent".
+// The SECRET SCANNER's `task_outputs` and `job_artifacts` surfaces are deliberately NOT
+// attempt-bound — they want recall, so a sibling attempt's output is still scanned. Do not
+// "make them consistent".
+//
+// ★ CORRECTED W21D. This line used to say flatly that the scanner is not attempt-bound. That
+// is false of ONE of clause 4's four surfaces: `listJobEvents` is keyed on `attempt_id`, so a
+// sibling attempt's event payloads are NEVER scanned. The commit that wrote this reassurance
+// is the same commit that FILED that gap as E7-F032 (open, not fixed) — the disclosure and
+// the reassurance shipped together and contradicted each other.
 //
 // ★★★ AND A GREEN IS STILL NOT EVIDENCE OF A WORKING GATE, for a reason that is not the
 // predicate: E7-F018 measured that `projectAcceptedOutput` has ZERO production callers and

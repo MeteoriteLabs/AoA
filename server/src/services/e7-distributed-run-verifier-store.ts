@@ -84,6 +84,52 @@
 // column-set residual was deferred out of W21B rather than smuggled in. The sentence that
 // claimed no conflict is corrected above, which is the load-bearing half: a census that
 // asserts a coverage it does not have is worse than one that admits the gap.
+//
+// ★★ W21D APPLIED THAT SENTENCE TO THIS FILE AND THE FILE FAILED IT. Row 9's call-site
+// comment warranted its attempt join by calling `commitArtifactVersion` "the sole writer" of
+// `status='committed'`. There are TWO: `stageJobInputFiles` writes committed job_artifacts
+// rows FENCELESS (leaseId/fenceToken NULL) on the same job_id and the same attempt number.
+// The COUNT was and is right — those rows are `kind='staged_input'` — but the WARRANT was a
+// coverage claim the census did not have, and it pointed at a remedy E7-F015 records as
+// REFUTED. Corrected in full at the row-9 call site; no predicate changed.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ★★ CITE THIS FILE BY SYMBOL, NOT BY LINE (W21D).
+//
+// MEASURED at W21D: THIRTY line-pinned citations of the form
+// `e7-distributed-run-verifier-store.ts:NNN` exist across THIRTEEN files, and every one was
+// anchored to the pre-W21 layout. W21B and W21C moved every anchor 180-290 lines
+// (`countProducedOutputs` 198 → 387, arm 1's `workspace_patch` conjunct 207 → 473, arm 2
+// 213-216 → 514+). THREE sit in files this branch never otherwise touches, so nobody opened
+// them while editing: a PRODUCTION comment in `packages/worker-daemon/src/lease/artifact-export.ts`,
+// the LIVE wiring register `scripts/gate-clause-wiring.json`, and `scripts/finding-ownership.json`
+// (E7-F015/F016/F019). Following the old `:207` today lands a reader inside
+// `getAttemptTerminalReceipt` — a different function answering a different question.
+//
+// ★ NO POSITIONAL GUARD WAS ADDED, DELIBERATELY, and the argument is not a new one: this repo
+// has already settled it. `scripts/lib/gate-clause-wiring.mjs` ("DOES NOT: pin LINE NUMBERS")
+// states that a line citation rots on every unrelated edit above it, and that a guard which
+// reds on unrelated edits gets switched off — this repo's own stated calibration. A
+// content-checking variant is positional too and inherits the same failure mode, and it would
+// red on the very sweep that FIXES the citations. So line pins stay author/review
+// responsibility, exactly as that register says, and the durable fix is to stop minting them.
+//
+// ★ THE ANCHORS. Cite these NAMES; they do not move on an unrelated edit and they grep in one
+// step. If you add a consumer, add its name here rather than a line number:
+//
+//   getRun / getAttempt / listLeases / listJobEvents / getAttemptTerminalReceipt
+//   listRunSecretScanSurfaces  — clause 4's non-event scan surfaces (three sources:
+//                                heartbeat_runs raw fields, the task_outputs UNION, job_artifacts)
+//   countProducedOutputs       — clause 6. "arm 1" = committed `workspace_patch` job_artifacts
+//                                joined to the run's attempt; "arm 2" = APPLIED
+//                                `output_projection` receipt on task_outputs, job AND attempt
+//   scanColumns                — the caller-authored task_outputs column set (W21B)
+//
+// Historical line pins inside DATED findings/result documents are left as written: they record
+// what was measured on a given day, and rewriting them to today's layout would falsify the
+// measurement rather than repair the citation. The LIVE registers and PRODUCTION comments were
+// converted to symbols; the dated records carry a note pointing here instead.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import { and, eq } from "drizzle-orm";
@@ -417,11 +463,38 @@ export function createDrizzleE7RunVerifierStore(db: Db): E7RunVerifierStore {
       let workspacePatchArtifacts = 0;
       if (run.distributedJobId && attemptId) {
         // `job_artifacts.attempt` is the attempt NUMBER, not an id, so the binding goes
-        // through `job_attempts`. Every `status='committed'` row carries it: the sole writer
-        // of that status (`commitArtifactVersion`) always stamps `attempt: input.attemptNumber`
-        // from the fence, and the `job_artifacts_committed_identity_uidx` partial-unique is
-        // keyed on it. The thin `authorizeArtifactCommit` rows that leave it NULL also leave
-        // `status` NULL, so they were never counted here in the first place.
+        // through `job_attempts`. Every `status='committed'` row carries it.
+        //
+        // ★★ THE COMMITTED-STATUS WRITER CENSUS IS **TWO**, NOT ONE (corrected W21D, E7-F033).
+        // This comment used to warrant the attempt join by calling `commitArtifactVersion`
+        // "the sole writer of that status". That is FALSE, and the false half was the
+        // load-bearing half:
+        //
+        //   1. `commitArtifactVersion` (`repositories/tenant/job-control.ts:2779-2784`) —
+        //      FENCED. Stamps `attempt: input.attemptNumber`, `leaseId` and `fenceToken`
+        //      from the live fence, and `job_artifacts_committed_identity_uidx` is keyed on
+        //      the attempt.
+        //   2. `stageJobInputFiles` (`services/job-input-staging.ts:372-386`) — **FENCELESS**.
+        //      Writes `status: "committed"` with `leaseId: null, fenceToken: null`, on the
+        //      SAME `job_id` and the SAME attempt NUMBER this run is bound to, for every task
+        //      run that stages inputs (`run-execution-owner.ts:361-368`). No fence has ever
+        //      existed for that attempt at that point, by design.
+        //
+        // ★ THE COUNT IS UNCHANGED AND CORRECT — it is the WARRANT that was wrong. Writer 2's
+        // rows carry `kind = 'staged_input'` (`job-input-staging.ts:64`), and the `kind` conjunct
+        // below excludes them. So ARM 1'S PRECISION RESTS ON THE `kind` CONJUNCT ALONE. It does
+        // NOT rest on "committed implies fenced", which is simply not true of this table.
+        //
+        // ★★★ WHY SAYING THIS PRECISELY MATTERS MORE THAN A COMMENT USUALLY DOES. A reader who
+        // believed "committed implies fenced" would conclude the `kind` conjunct is redundant
+        // and drop it. `scripts/finding-ownership.json` (E7-F015) records that exact remedy as
+        // REFUTED and "strictly worse than the forgery this finding names" — dropping `kind`
+        // leaves `job_id` + `status='committed'`, which writer 2 satisfies on every converted
+        // run, so arm 1 would count THE RUN'S OWN INPUT as agent capability, with no export and
+        // no producer. The old sentence would have led a reader straight into it.
+        //
+        // The thin `authorizeArtifactCommit` rows that leave `attempt` NULL also leave `status`
+        // NULL, so they were never counted here in the first place.
         const artifactRows = await db
           .select({ id: jobArtifacts.id })
           .from(jobArtifacts)

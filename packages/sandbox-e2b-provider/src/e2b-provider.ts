@@ -239,9 +239,11 @@ export class E2bSandboxProvider implements SandboxProvider {
    * Nothing in production calls `exportArtifact` — the worker-side sequencer
    * (digest → mint grant → export → commit) is DAT-009 slice 3 and is unbuilt — and the
    * kind an exported object is committed under is the COMMITTER's decision, not this
-   * provider's. `countProducedOutputs` filters `kind = 'workspace_patch'`
-   * (`e7-distributed-run-verifier-store.ts:201-211`), so this file moves no capability
-   * counter. See `CLI-008-unit-f-design.md` §1.6 link 2.
+   * provider's. `countProducedOutputs` arm 1 filters `kind = 'workspace_patch'` (in
+   * `server/src/services/e7-distributed-run-verifier-store.ts` — symbol, not a line pin; the
+   * old `:201-211` citation was moved ~280 lines by W21B/W21C and now points into
+   * `listJobEvents`), so this file moves no capability counter. See
+   * `CLI-008-unit-f-design.md` §1.6 link 2.
    */
   readonly artifactExportMode: ArtifactExportMode = "grant_upload";
 

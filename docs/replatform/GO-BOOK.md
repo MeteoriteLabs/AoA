@@ -525,10 +525,14 @@ non-zero arm 2 as evidence of NOTHING.
 ★★★ **SUPERSEDED FOR THE PREDICATE 2026-09-08 (W21), and kept because it is the measurement that
 sized the fix.** Everything above this paragraph describes the **pre-W21** arm 2. Arm 2 no longer reads
 `created_by_run_id`: a `task_outputs` row counts only when an APPLIED `output_projection` receipt in
-`job_projection_receipts` names it on the run's `distributed_job_id`, and that receipt has exactly one
+`job_projection_receipts` names it on the run's `distributed_job_id` **AND its
+`distributed_attempt_id`** (re-predicated by W21C / E7-F031 — the job alone let a RETRY attempt's
+output prove capability for a run that produced nothing; arm 1 is attempt-bound now too; this
+paragraph kept the job-only wording until W21D swept it), and that receipt has exactly one
 writer — `jobOutputBridge.projectAcceptedOutput` (`job-output-bridge.ts:303`), fence-guarded via
 `recordGovernedProjection`. Rows 3 and 4 of the census above are both EXCLUDED structurally, and a run
-with no `distributed_job_id` counts 0 without issuing a query. Discrimination test with both arms
+with no `distributed_job_id` **or no `distributed_attempt_id`** counts 0 without issuing a query.
+Discrimination test with both arms
 (negative observed RED pre-fix, positive controls that a `return 0` would break):
 `server/src/__tests__/e7-f020-arm2-provenance.integration.test.ts`.
 ★★ **This is NOT progress toward a green campaign, and must not be read as one.** Re-measured at

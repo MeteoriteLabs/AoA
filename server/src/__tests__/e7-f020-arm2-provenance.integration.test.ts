@@ -657,5 +657,183 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         expect(hits[0]).not.toContain(PLANTED_PROVIDER_KEY);
       });
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // W21D / E7-F033 — THE PRECISION HALF. The five arms above prove RECALL five
+    // times and precision ZERO times, and a scanner proven only for recall drifts
+    // into a denial of service on its own users. This is the MIRROR of E7-F020: a
+    // false FAIL rather than a false PASS, and it lands on the exact runs the
+    // campaign will try first.
+    //
+    // Every arm below is the same column carrying a value an ORDINARY run legitimately
+    // writes, asserted to produce NO hard leak class and NO clause-4 failure. Paired
+    // with the recall arm above it, so a fix here can never silently become a
+    // suppression: narrowing a matcher until it stops firing reds the recall arm,
+    // and deleting a column from the scan reds it too.
+    // ═══════════════════════════════════════════════════════════════════════════
+    const LEGITIMATE_OUTPUTS: ReadonlyArray<{ column: string; output: BridgeOutputInput }> = [
+      {
+        // A branch name is what `emitBranchTaskOutput`-shaped callers put in `title`.
+        column: "title",
+        output: { type: "branch", title: "replatform/w21d-arm2-provenance", url: null },
+      },
+      {
+        // ★ THE ONE THAT MATTERED. A declared dev service whose URL is a database —
+        // `workspaceRuntime.services[]` → `emitRuntimeServiceTaskOutput` copies
+        // `row.url` straight through (task-output-emitters.ts:100). No credentials,
+        // no secret, loopback host.
+        column: "url",
+        output: { type: "preview_url", title: "dev db", url: "postgres://localhost:5432/dev" },
+      },
+      {
+        column: "provider",
+        output: { type: "runtime_service", title: "dev server", url: null, provider: "local" },
+      },
+      {
+        // The literal shape `emitRuntimeServiceTaskOutput` mints for every service row.
+        column: "externalId",
+        output: {
+          type: "runtime_service",
+          title: "dev server",
+          url: null,
+          externalId: `runtime-service:${SERVICE}`,
+        },
+      },
+      {
+        column: "healthStatus",
+        output: { type: "runtime_service", title: "dev server", url: null, healthStatus: "healthy" },
+      },
+    ];
+    for (const { column, output } of LEGITIMATE_OUTPUTS) {
+      it(`[precision] a legitimate \`${column}\` value on a bridge-projected row does NOT trip clause 4`, async () => {
+        guard();
+        const { seeded, identity: fence } = await fixture!.activateLease(16);
+        const projected = await jobOutputBridge(fixture!.app.db, { env: ENABLED_ENV }).projectAcceptedOutput({
+          source: TASK_SOURCE,
+          actor,
+          fence,
+          acceptedEventId: randomUUID(),
+          eventDigest: DIGEST,
+          issueId: ISSUE,
+          output,
+        });
+        expect(projected.status).toBe("recorded");
+        const outputId = projected.outputId as string;
+
+        const { surfaces, result } = await scanForJob(seeded.jobId, seeded.attemptId);
+        // Anti-vacuity: the row really IS surfaced, so an empty class list is a
+        // PRECISION result and not a row the scanner never saw.
+        const surface = surfaces.find((s) => s.surface === "task_outputs" && s.fieldOrEventId === outputId);
+        expect(surface).toBeDefined();
+        expect(surface!.text).toContain(output.title);
+        expect(detectHardLeakClasses(surface!.text)).toEqual([]);
+        expect(clause4HitsFor(result, outputId)).toEqual([]);
+      });
+    }
+
+    // The composite: ONE row carrying a legitimate value in EVERY newly scanned column
+    // at once — the realistic declared-dev-service output, end to end.
+    it("[precision] a wholly legitimate runtime-service row leaves clause 4 clean", async () => {
+      guard();
+      const { seeded, identity: fence } = await fixture!.activateLease(17);
+      const projected = await jobOutputBridge(fixture!.app.db, { env: ENABLED_ENV }).projectAcceptedOutput({
+        source: TASK_SOURCE,
+        actor,
+        fence,
+        acceptedEventId: randomUUID(),
+        eventDigest: DIGEST,
+        issueId: ISSUE,
+        output: {
+          type: "preview_url",
+          title: "replatform/w21d-arm2-provenance",
+          url: "postgres://localhost:5432/dev",
+          provider: "local",
+          externalId: `runtime-service:${SERVICE}`,
+          healthStatus: "healthy",
+          summary: "dev database service started on port 5432; migrations applied",
+          metadata: { port: 5432, lifecycle: "ephemeral", scopeType: "issue", providerRef: null },
+        },
+      });
+      expect(projected.status).toBe("recorded");
+      const outputId = projected.outputId as string;
+
+      const { surfaces, result } = await scanForJob(seeded.jobId, seeded.attemptId);
+      const surface = surfaces.find((s) => s.surface === "task_outputs" && s.fieldOrEventId === outputId);
+      expect(surface).toBeDefined();
+      expect(surface!.text).toContain("postgres://localhost:5432/dev");
+      expect(detectHardLeakClasses(surface!.text)).toEqual([]);
+      expect(clause4HitsFor(result, outputId)).toEqual([]);
+      expect(result.failures.filter((f) => f.clause === 4)).toEqual([]);
+    });
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // …AND THE RECALL THAT THE E7-F033 NARROWING MUST NOT COST. The fix narrows
+    // `connection_string` from "any URI of these schemes" to "a URI carrying a
+    // credential". If that narrowing ever drifts into a suppression — someone
+    // trims the query-param alternative, or the userinfo alternative stops
+    // crossing `@` — these arms go red. A precision fix without them is
+    // indistinguishable from deleting the matcher.
+    // ═══════════════════════════════════════════════════════════════════════════
+    const CREDENTIALED_URIS: ReadonlyArray<{ shape: string; url: string }> = [
+      // (a) userinfo with a password component — the classic leaked DSN.
+      { shape: "user:password@", url: "postgres://aoa:W21DsyntheticPw@db.internal:5432/prod" },
+      // (a′) password-only userinfo. Not a corner case: many clients emit it.
+      { shape: ":password@", url: "rediss://:W21DsyntheticPw@cache.internal:6379" },
+      // (b) credential-bearing query parameter — libpq accepts this form, so the
+      //     userinfo alternative ALONE would have lost a real leak.
+      { shape: "?password=", url: "postgres://db.internal:5432/prod?sslmode=require&password=W21DsyntheticPw" },
+    ];
+    for (const { shape, url } of CREDENTIALED_URIS) {
+      it(`[credential] a connection URI carrying \`${shape}\` still hard-fails clause 4`, async () => {
+        guard();
+        const { seeded, identity: fence } = await fixture!.activateLease(18);
+        const projected = await jobOutputBridge(fixture!.app.db, { env: ENABLED_ENV }).projectAcceptedOutput({
+          source: TASK_SOURCE,
+          actor,
+          fence,
+          acceptedEventId: randomUUID(),
+          eventDigest: DIGEST,
+          issueId: ISSUE,
+          output: { type: "preview_url", title: "dev db", url },
+        });
+        expect(projected.status).toBe("recorded");
+        const outputId = projected.outputId as string;
+
+        const { surfaces, result } = await scanForJob(seeded.jobId, seeded.attemptId);
+        const surface = surfaces.find((s) => s.surface === "task_outputs" && s.fieldOrEventId === outputId);
+        expect(surface).toBeDefined();
+        expect(detectHardLeakClasses(surface!.text)).toContain("connection_string");
+        const hits = clause4HitsFor(result, outputId);
+        expect(hits).toHaveLength(1);
+        expect(hits[0]).toContain("connection_string");
+        // SHAPE only — the verdict never quotes the credential (design §6 / §8 BLOCKER 3).
+        expect(hits[0]).not.toContain("W21DsyntheticPw");
+      });
+    }
+
+    // The DELIBERATE boundary, asserted so a reader knows it was chosen and not missed:
+    // a bare username in the userinfo is not credential material, so it does not hard-fail.
+    it("[boundary] a URI with a username but NO password does not hard-fail", async () => {
+      guard();
+      const { seeded, identity: fence } = await fixture!.activateLease(19);
+      const projected = await jobOutputBridge(fixture!.app.db, { env: ENABLED_ENV }).projectAcceptedOutput({
+        source: TASK_SOURCE,
+        actor,
+        fence,
+        acceptedEventId: randomUUID(),
+        eventDigest: DIGEST,
+        issueId: ISSUE,
+        output: { type: "preview_url", title: "dev db", url: "postgres://aoa@localhost:5432/dev" },
+      });
+      expect(projected.status).toBe("recorded");
+      const outputId = projected.outputId as string;
+
+      const { surfaces, result } = await scanForJob(seeded.jobId, seeded.attemptId);
+      const surface = surfaces.find((s) => s.surface === "task_outputs" && s.fieldOrEventId === outputId);
+      expect(surface).toBeDefined();
+      expect(surface!.text).toContain("postgres://aoa@localhost:5432/dev");
+      expect(detectHardLeakClasses(surface!.text)).toEqual([]);
+      expect(clause4HitsFor(result, outputId)).toEqual([]);
+    });
   },
 );

@@ -210,9 +210,11 @@ export interface E7VerifyResult {
    * heartbeat path already writes such a row when a run freshly starts a declared dev server,
    * so this could read TRUE on a run with zero agent output.
    *
-   * ★★ RE-CORRECTED (W21). That hole is CLOSED at the predicate: arm 2 now counts only rows
-   * carrying an APPLIED `output_projection` receipt for this run's distributed job, which only
-   * `jobOutputBridge.projectAcceptedOutput` can write, under a live lease fence. So "FALSE on
+   * ★★ RE-CORRECTED (W21, re-predicated W21C, narration fixed W21D). That hole is CLOSED at the
+   * predicate: arm 2 counts only rows carrying an APPLIED `output_projection` receipt matched on
+   * this run's `distributed_job_id` AND `distributed_attempt_id` — not the job alone (E7-F031) —
+   * which only `jobOutputBridge.projectAcceptedOutput` can write, under a live lease fence. Arm 1
+   * is attempt-bound too. So "FALSE on
    * every real run" is true again — for a REASON THAT IS NOT PROGRESS: E7-F018 measured that
    * `projectAcceptedOutput` has zero production callers and that nothing checked in makes any
    * run a distributed run. The bar is now correctly CLOSED where it was falsely open; it is not
@@ -250,7 +252,9 @@ export interface E7VerifyResult {
  *
  * ★ WHAT THE PREDICATE IS NOW. Arm 2 counts a `task_outputs` row only when an APPLIED
  * `output_projection` receipt in `job_projection_receipts` names it
- * (`aggregate_kind = 'task_outputs'`, `job_id` = this run's `distributed_job_id`). That receipt
+ * (`aggregate_kind = 'task_outputs'`, `job_id` = this run's `distributed_job_id` AND
+ * `attempt_id` = its `distributed_attempt_id` — the job alone is NOT enough, E7-F031; W21D
+ * corrected this sentence, which had kept the job-only wording). That receipt
  * has exactly one writer in the tree — `jobOutputBridge.projectAcceptedOutput`, the distributed
  * output projection — and it is written in the SAME tenant transaction as the row, behind
  * `guardActiveFence`. The census that justifies the line is the callers of
@@ -266,9 +270,17 @@ export interface E7VerifyResult {
  * ★ W21C — THE SECOND TIME THIS TEXT WOULD HAVE GONE FALSE SILENTLY. It said the receipt is
  * matched on "`job_id` = this run's `distributed_job_id`", and E7-F031 changed that to
  * `job_id` AND `attempt_id`; it also said "arm 2 ONLY … arm 1 was not touched", and E7-F031
- * bound arm 1 to the attempt too. Both sentences are corrected above. A caveat printed beside
- * every verdict is a claim about the code, so it goes stale exactly like a comment does — the
- * difference is that this one is read by operators who cannot see the predicate.
+ * bound arm 1 to the attempt too. A caveat printed beside every verdict is a claim about the
+ * code, so it goes stale exactly like a comment does — the difference is that this one is read
+ * by operators who cannot see the predicate.
+ *
+ * ★★★ AND THE CORRECTION NOTICE WAS ITSELF FALSE — corrected W21D. The sentence above used to
+ * end "Both sentences are corrected above". Only the EXPORTED CONSTANT had been corrected; the
+ * WHAT-THE-PREDICATE-IS-NOW paragraph fourteen lines higher still said `job_id` alone, so the
+ * notice quoted as false a sentence that was still standing false in the same comment block.
+ * W21C re-predicated both arms and updated two of SEVEN narration sites; W21D swept the other
+ * five. The lesson is not "update the comment": it is that a claim of the form "X is corrected
+ * above" is itself a checkable assertion, and nobody checked it.
  *
  * ★ SCOPE IS STILL SPLIT, deliberately. The receipt/column provenance text remains arm-2-only;
  * arm 1 keeps its own open question (E7-F019 — `kind` is the caller's declaration), which the
@@ -290,8 +302,12 @@ export const E7_CAPABILITY_LIMITATIONS: readonly string[] = [
   "heartbeat_runs.distributed_attempt_id. Both arms were job-granular, so a retry attempt's output",
   "or committed patch printed capability PROVEN for a run that produced nothing. Both are now",
   "attempt-bound, and a run carrying a job id with NO attempt id counts 0 on both arms rather than",
-  "widening back to job scope. The secret scanner is deliberately NOT attempt-bound: it wants",
-  "recall, so a sibling attempt's output is still scanned.",
+  "widening back to job scope. The secret scanner's task_outputs and job_artifacts surfaces are",
+  "deliberately NOT attempt-bound: they want recall, so a sibling attempt's output is still",
+  "scanned. Its job_events surface IS attempt-narrow, so a sibling attempt's event payloads are",
+  "NOT scanned — a recall gap filed as E7-F032, open and NOT fixed. (Until W21D this block and",
+  "the CLI header both said flatly that the scanner is not attempt-bound, which was false of one",
+  "of its four surfaces in the very commit that filed E7-F032.)",
   "WHAT A GREEN STILL DOES NOT ESTABLISH (E7-F018, HIGH, open): projectAcceptedOutput has ZERO",
   "production callers and no checked-in configuration makes any run a distributed run, so arm 2",
   "reads 0 on every real run — the bar is CLOSED rather than working. capabilityProven gates",
@@ -355,10 +371,43 @@ const HARD_LEAK_MATCHERS: readonly LeakClassMatcher[] = [
   { matchedClass: "e2b_key", re: /\be2b_[A-Za-z0-9]{16,}\b/g },
   // … and the literal assignment, which catches an E2B key regardless of value shape.
   { matchedClass: "e2b_api_key_assignment", re: /E2B_API_KEY\s*[=:]/g },
-  // Connection-string URIs — mirrors redaction.ts SECRET_VALUE_PATTERNS[0].
+  // Connection-string URIs carrying a CREDENTIAL.
+  //
+  // ★★★ THIS ONE DELIBERATELY DOES **NOT** MIRROR redaction.ts SECRET_VALUE_PATTERNS[0],
+  // and the divergence is the whole point (E7-F033, W21D). The redactor's version matches
+  // ANY URI of these schemes. Copying it into the HARD set inherited the redactor's error
+  // direction, which is the OPPOSITE of this set's:
+  //
+  //   the REDACTOR over-matches on purpose — a redundant `***REDACTED***` costs nothing.
+  //   a HARD matcher that over-matches REFUSES A CLEAN RUN — and a gate that fails runs
+  //   that leaked nothing gets overridden, then deleted.
+  //
+  // MEASURED, not theorised: W21B widened `listRunSecretScanSurfaces` to scan `url`, and
+  // `emitRuntimeServiceTaskOutput` copies a declared dev service's `row.url` straight
+  // through (task-output-emitters.ts:100). So an ordinary `workspaceRuntime.services[]`
+  // entry of `postgres://localhost:5432/dev` — loopback host, no credential, no secret —
+  // hard-failed clause 4 on a perfectly clean run. That is the exact mirror of E7-F020: a
+  // false FAIL rather than a false PROVEN, landing on the runs the campaign tries first.
+  //
+  // ★ WHAT MAKES A CONNECTION STRING A SECRET IS THE CREDENTIAL IN IT, NOT THE SCHEME.
+  // `postgres://localhost:5432/dev` is a hostname and a port. So the class is narrowed to
+  // the two shapes that actually carry credential material:
+  //
+  //   (a) URI userinfo WITH a password component — `scheme://user:pass@host`, including
+  //       the password-only `scheme://:pass@host`. A bare `scheme://user@host` is NOT
+  //       matched: a username alone is not a credential.
+  //   (b) a credential-bearing QUERY PARAMETER — `?password=` / `?token=` / `?api_key=` …
+  //       libpq and friends accept these, so narrowing to (a) alone WOULD have lost a real
+  //       leak. This is the recall that the narrowing deliberately keeps.
+  //
+  // The `/` exclusion in (a)'s character classes is load-bearing: it stops the userinfo
+  // scan from crossing the path separator, so `…:5432/dev@example` cannot be read as a
+  // credential. Both directions are pinned in `e7-f020-arm2-provenance.integration.test.ts`
+  // — `[precision]` arms red if this widens back, `[column]` / `[credential]` arms red if
+  // it narrows into a suppression.
   {
     matchedClass: "connection_string",
-    re: /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|rediss|amqp|kafka|nats|mssql|sqlserver):\/\/[^\s<>'")]+/gi,
+    re: /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|rediss|amqp|kafka|nats|mssql|sqlserver):\/\/(?:[^\s/<>'")@]*:[^\s/<>'")@]*@|[^\s<>'")]*[?&](?:password|passwd|pwd|token|secret|api[-_]?key|access[-_]?token|auth)=)/gi,
   },
   // PEM private-key block header — mirrors redaction.ts SECRET_VALUE_PATTERNS[7].
   { matchedClass: "private_key", re: /-----BEGIN[A-Z ]*PRIVATE KEY-----/g },
