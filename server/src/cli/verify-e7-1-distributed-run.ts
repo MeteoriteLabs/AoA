@@ -33,11 +33,22 @@
 // predicate is how the next reader mis-sizes the gate.
 //
 // ARM 2 NOW counts a `task_outputs` row only when an APPLIED `output_projection` receipt on
-// this run's `distributed_job_id` names it — the receipt only `jobOutputBridge`
-// `projectAcceptedOutput` writes, behind a live lease fence — so the E7-F020 platform-write
-// path is excluded structurally. E7-F020 stays OPEN on a stated residual (an UPSERT collision
-// on a platform `external_id`), and the limit is PRINTED with every verdict and carried in
-// `verdict-json` (`capabilityLimitations`), so it survives being quoted from either.
+// this run's `distributed_job_id` AND `distributed_attempt_id` names it — the receipt only
+// `jobOutputBridge` `projectAcceptedOutput` writes, behind a live lease fence — so the E7-F020
+// platform-write path is excluded structurally. E7-F020 stays OPEN on a stated residual (an
+// UPSERT collision on a platform `external_id`), and the limit is PRINTED with every verdict
+// and carried in `verdict-json` (`capabilityLimitations`), so it survives being quoted from
+// either.
+//
+// ★★ AND THE PARAGRAPH ABOVE WENT STALE A SECOND TIME, WHICH IS THE POINT OF SAYING SO HERE.
+// W21C bound BOTH arms to the run's ATTEMPT rather than its job (E7-F031): a job carries
+// `max_attempts` (default 3) and every attempt shares the job id, so a RETRY attempt's output —
+// or its committed `workspace_patch` — used to print `capability: PROVEN` for a run that
+// produced nothing. This header said `distributed_job_id` alone and would have asserted the
+// old, wider predicate. Same failure the block above records for W21, one commit later: a doc
+// that narrates a predicate is a claim about the predicate, and it does not move on its own.
+// The SECRET SCANNER is deliberately NOT attempt-bound — it wants recall, so a sibling
+// attempt's output is still scanned. Do not "make them consistent".
 //
 // ★★★ AND A GREEN IS STILL NOT EVIDENCE OF A WORKING GATE, for a reason that is not the
 // predicate: E7-F018 measured that `projectAcceptedOutput` has ZERO production callers and
