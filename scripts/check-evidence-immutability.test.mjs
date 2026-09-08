@@ -25,7 +25,9 @@
 // -----------------------------------------------------------------------------
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
@@ -155,6 +157,116 @@ test("the materialised base tree is not empty at the current tip", () => {
   assert.ok(tree.count >= 20, `expected the evidence ledger at HEAD, found ${tree.count} records`);
 });
 
+// -----------------------------------------------------------------------------
+// WITHIN-PR INTRODUCTIONS.
+//
+// A base-to-tip comparison can only see records that already existed on the target branch
+// — the case a PR author cannot easily hit. The case they CAN hit is adding a record and
+// then rewriting or deleting it in a later commit of the same PR: that path is absent from
+// the base tree, so the single comparison returned CLEAN. Measured against the pre-fix
+// script in a throwaway repo, both sequences below returned `{ok: true}`.
+//
+// `artifact-policy.md:54,58,67` makes a record immutable FROM ITS FIRST COMMIT, so these
+// use a real throwaway git repository rather than fixtures: the rule is about commits.
+// Case (c) is the control that stops "any touched record reds" from passing as a fix, and
+// it also lands a LEGITIMATE supersede — a NEW attempt file whose `Supersedes` points back
+// at the untouched prior path — which must stay green.
+// -----------------------------------------------------------------------------
+
+const QA_DIR = "docs/replatform/epics/E9-throwaway/qa";
+const SEED_RECORD = `${QA_DIR}/2026-09-01-d0-seed-000000000000-a1.md`;
+const PR_RECORD = `${QA_DIR}/2026-09-02-d0-unit-111111111111-a1.md`;
+const SUPERSEDING_RECORD = `${QA_DIR}/2026-09-03-d0-unit-222222222222-a2.md`;
+
+function inRepo(root, args) {
+  return execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+}
+
+function writeRecord(root, rel, body) {
+  const abs = path.join(root, ...rel.split("/"));
+  mkdirSync(path.dirname(abs), { recursive: true });
+  writeFileSync(abs, body);
+}
+
+function commitAll(root, message) {
+  inRepo(root, ["add", "-A"]);
+  inRepo(root, ["-c", "commit.gpgsign=false", "commit", "-q", "-m", message]);
+  return inRepo(root, ["rev-parse", "HEAD"]);
+}
+
+/**
+ * A fresh repo whose base commit already holds one evidence record — an empty base is
+ * refused by the runner, so seeding it is what makes these cases exercise the new rule and
+ * not the empty-base guard.
+ */
+function throwawayRepo(t) {
+  const root = mkdtempSync(path.join(tmpdir(), "evidence-immutability-case-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  inRepo(root, ["init", "-q", "-b", "main"]);
+  inRepo(root, ["config", "user.email", "guard@example.invalid"]);
+  inRepo(root, ["config", "user.name", "guard"]);
+  writeRecord(root, SEED_RECORD, "# seed record\n\n| Supersedes | none |\n");
+  return { root, base: commitAll(root, "base: seed evidence ledger") };
+}
+
+test("RED — a record ADDED by this PR and REWRITTEN by a later commit of the same PR", async (t) => {
+  const { root, base } = throwawayRepo(t);
+  writeRecord(root, PR_RECORD, "# unit record\n\n| Supersedes | none |\n| Result | pass |\n");
+  const introducing = commitAll(root, "pr: add QA record");
+  writeRecord(root, PR_RECORD, "# unit record\n\n| Supersedes | none |\n\nCORRECTION\n");
+  const tip = commitAll(root, "pr: quietly correct the QA record in place");
+
+  const result = await runEvidenceImmutability({ repoRoot: root, base, candidate: tip });
+  assert.equal(result.ok, false, "a within-PR rewrite must not pass — this was the hole");
+  assert.equal(result.errors.length, 1);
+  assert.match(result.errors[0], /modified again by/);
+  assert.ok(result.errors[0].includes(PR_RECORD));
+  assert.ok(
+    result.errors[0].includes(introducing) && result.errors[0].includes(tip),
+    `the error must name the introducing and the offending commit, got: ${result.errors[0]}`,
+  );
+  assert.equal(result.commitCount, 2, "both PR commits must actually have been walked");
+});
+
+test("RED — a record ADDED by this PR and DELETED by a later commit of the same PR", async (t) => {
+  const { root, base } = throwawayRepo(t);
+  writeRecord(root, PR_RECORD, "# unit record\n\n| Supersedes | none |\n| Result | fail |\n");
+  const introducing = commitAll(root, "pr: add QA record");
+  rmSync(path.join(root, ...PR_RECORD.split("/")));
+  const tip = commitAll(root, "pr: drop the inconvenient QA record");
+
+  const result = await runEvidenceImmutability({ repoRoot: root, base, candidate: tip });
+  assert.equal(result.ok, false, "a within-PR deletion must not pass — this was the hole");
+  assert.equal(result.errors.length, 1);
+  assert.match(result.errors[0], /deleted or renamed later in the same pull request/);
+  assert.ok(result.errors[0].includes(PR_RECORD));
+  assert.ok(result.errors[0].includes(introducing));
+});
+
+test("POSITIVE CONTROL — adding a record, and superseding it with a NEW attempt, stays GREEN", async (t) => {
+  // If this ever goes red the fix has become "any record this PR touches is a breach",
+  // which would forbid the one correction path artifact-policy.md actually prescribes.
+  const { root, base } = throwawayRepo(t);
+  writeRecord(root, PR_RECORD, "# unit record\n\n| Supersedes | none |\n| Result | fail |\n");
+  commitAll(root, "pr: add QA record");
+  writeRecord(
+    root,
+    SUPERSEDING_RECORD,
+    `# unit record a2\n\n| Supersedes | \`${PR_RECORD}\` |\n| Result | pass |\n`,
+  );
+  const tip = commitAll(root, "pr: supersede a1 with a2, prior record untouched");
+
+  const result = await runEvidenceImmutability({ repoRoot: root, base, candidate: tip });
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.ok, true);
+  assert.equal(result.commitCount, 2, "the control must actually have commits to walk");
+  assert.equal(
+    result.candidateCount,
+    result.baseCount + 2,
+    "the control must really add two records, or it proves nothing",
+  );
+});
+
 test("WIRING — pr.yml's policy job actually invokes this guard", () => {
   // Goes RED if the caller is removed. E0-F014's resolution condition for item 3.
   const workflow = readFileSync(path.join(REPO_ROOT, ".github", "workflows", "pr.yml"), "utf8");
@@ -166,8 +278,14 @@ test("WIRING — pr.yml's policy job actually invokes this guard", () => {
     workflow.includes("node --test scripts/check-evidence-immutability.test.mjs"),
     "pr.yml must also run this self-test, or the deny can rot unnoticed",
   );
-  assert.ok(
-    workflow.includes("github.event.pull_request.base.sha"),
-    "the guard must be handed a real merge-base SHA, not left to default",
+  // NOT `workflow.includes("github.event.pull_request.base.sha")`: that substring already
+  // appears in pr.yml's pre-existing "Block manual lockfile edits" step, so the assertion
+  // was VACUOUSLY TRUE and stayed green even with this guard's env binding deleted. Pin the
+  // binding itself — the whole `EVIDENCE_IMMUTABILITY_BASE: ${{ ... }}` line.
+  assert.match(
+    workflow,
+    /^\s*EVIDENCE_IMMUTABILITY_BASE:\s*\$\{\{\s*github\.event\.pull_request\.base\.sha\s*\}\}\s*$/m,
+    "pr.yml must bind EVIDENCE_IMMUTABILITY_BASE to the PR base SHA — without the binding " +
+      "the guard refuses to run and the step fails, but nothing here would have noticed",
   );
 });
