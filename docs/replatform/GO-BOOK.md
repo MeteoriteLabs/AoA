@@ -522,6 +522,23 @@ not trip this). The service need not even come up: the row is written at status 
 configuration, started one dev server and produced nothing reads `capability: PROVEN`.** Read a
 non-zero arm 2 as evidence of NOTHING.
 
+★★★ **SUPERSEDED FOR THE PREDICATE 2026-09-08 (W21), and kept because it is the measurement that
+sized the fix.** Everything above this paragraph describes the **pre-W21** arm 2. Arm 2 no longer reads
+`created_by_run_id`: a `task_outputs` row counts only when an APPLIED `output_projection` receipt in
+`job_projection_receipts` names it on the run's `distributed_job_id`, and that receipt has exactly one
+writer — `jobOutputBridge.projectAcceptedOutput` (`job-output-bridge.ts:303`), fence-guarded via
+`recordGovernedProjection`. Rows 3 and 4 of the census above are both EXCLUDED structurally, and a run
+with no `distributed_job_id` counts 0 without issuing a query. Discrimination test with both arms
+(negative observed RED pre-fix, positive controls that a `return 0` would break):
+`server/src/__tests__/e7-f020-arm2-provenance.integration.test.ts`.
+★★ **This is NOT progress toward a green campaign, and must not be read as one.** Re-measured at
+`360d0b0ed`: `projectAcceptedOutput` still has ZERO production callers, nothing checked in arms the
+rollout dial (two grep hits, both register `reason` strings quoting the command; zero excluding both
+registers), and `capabilityProven` is still read by no workflow and no script. **So arm 2 now reads 0
+on every real run: the gate is correctly CLOSED where it was falsely open.** E7-F020 stays OPEN on a
+stated residual (the upsert-in-place path could still let a future producer get a platform-minted row
+counted). Read the finding, not this paragraph, before citing either state.
+
   What is UNCHANGED and was re-verified: the shared blocker, arm 1's unreachability, facts (1)-(3)
   above — **no PRODUCER moves arm 2** — and E7-F018's status, severity and `unowned` ownership.
 

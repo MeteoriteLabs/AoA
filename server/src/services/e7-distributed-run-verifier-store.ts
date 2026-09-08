@@ -210,11 +210,86 @@ export function createDrizzleE7RunVerifierStore(db: Db): E7RunVerifierStore {
           );
         workspacePatchArtifacts = artifactRows.length;
       }
-      const outputRows = await db
-        .select({ id: taskOutputs.id })
-        .from(taskOutputs)
-        .where(eq(taskOutputs.createdByRunId, run.id));
-      return { workspacePatchArtifacts, taskOutputs: outputRows.length };
+      // ARM 2 — task_outputs of DISTRIBUTED PROVENANCE, and nothing else (E7-F020).
+      //
+      // ★★★ WHY THE PREDICATE IS A RECEIPT JOIN AND NOT `created_by_run_id = run.id`.
+      // The old predicate was the whole of arm 2 and it filtered on NOTHING but a run
+      // linkage that ANY writer of `task_outputs` can set. `upsertTaskOutputForIssue`
+      // (`services/task-outputs.ts:135`) is the single INSERT into the table, and
+      // enumerating ITS callers — not grepping for the column name — closes the writer
+      // census. Eleven production call sites; ten legacy, four of those able to carry a
+      // `heartbeat_runs` id, TWO of them able to fire for a handed-off run:
+      //
+      //   * `task-output-emitters.ts:113` `emitRuntimeServiceTaskOutput`, reached from
+      //     `ensureRuntimeServicesForRun` (`heartbeat.ts:4524`) BEFORE the handoff, on the
+      //     DEFAULT isolated-workspace configuration, whenever the run declares one
+      //     `workspaceRuntime.services[]` entry — nobody has to do anything (E7-F020);
+      //   * `routes/task-outputs.ts:54` `POST /api/issues/:issueId/outputs`, which takes
+      //     `createdByRunId` from the request body (E7-F015).
+      //
+      // Both wrote a row this counter read as "the agent produced something". Neither
+      // does now: the predicate below does not read `created_by_run_id` at all.
+      //
+      // WHAT IT ADMITS — exactly one writer. `jobOutputBridge.projectAcceptedOutput`
+      // (`job-output-bridge.ts:303`) is the ONLY code in the tree that writes a
+      // `job_projection_receipts` row with `projection_kind = 'output_projection'` and
+      // `aggregate_kind = 'task_outputs'` (`:306-315`), and it writes it in the SAME
+      // tenant transaction as the output, with `target_aggregate_id` = the row it just
+      // wrote. `recordGovernedProjection` is the sole INSERT path for that receipt
+      // (`repositories/tenant/job-control.ts:3794`) and it runs `guardActiveFence` FIRST,
+      // so `job_id` / `attempt_id` are the control plane's LIVE fence — server-verified,
+      // never a caller's assertion. So a counted row exists only because a distributed
+      // attempt on THIS run's job had an accepted output event projected under an active
+      // lease fence. That is provenance, not a heuristic over `type` or `provider`.
+      //
+      // WHAT IT EXCLUDES — every one of the ten legacy callers, including both live
+      // writers above. None of them writes a receipt and none of them can: the receipt
+      // insert is fence-guarded on a live distributed attempt, which a pre-handoff
+      // heartbeat emitter and an HTTP route do not have.
+      //
+      // ★ FAIL-CLOSED IN BOTH DIRECTIONS, deliberately. A run with no `distributed_job_id`
+      // counts 0 without issuing a query — no distributed job, no distributed output —
+      // which also closes E7-F020's weaker form (pointing the verifier at an ORDINARY
+      // heartbeat run used to print `capability: PROVEN`). The company conjuncts mean a
+      // tenant mismatch UNDER-counts rather than over-counts.
+      //
+      // ★ TWO BOUNDED NOTES, stated rather than hidden. (a) One output row can carry more
+      // than one receipt — `upsertTaskOutputForIssue` UPDATES in place on
+      // (company, issue, provider, external_id), so two accepted events with the same
+      // provider identity link the same row twice — so rows are DEDUPED by id; arm 2 is a
+      // count of ROWS, as it always was. (b) A quarantined (stale/losing) output still
+      // carries a receipt and is still counted: it is a real agent output that reached
+      // AoA, which is exactly what this arm asks.
+      //
+      // ★ WHAT THIS DOES NOT BUY, and it is most of what there is: E7-F018 measured that
+      // NO checked-in configuration makes any run a distributed run, and that
+      // `projectAcceptedOutput` has ZERO production callers. So this predicate admits a
+      // writer nothing calls, on a path nothing arms: arm 2 reads 0 on every real run
+      // today. The gate is now correctly CLOSED where it was falsely open. It is not
+      // working, and `capabilityProven` still gates nothing (no workflow or script reads
+      // it). Do not read a change here as progress toward a green campaign.
+      let distributedTaskOutputs = 0;
+      if (run.distributedJobId) {
+        const outputRows = await db
+          .select({ id: taskOutputs.id })
+          .from(taskOutputs)
+          .innerJoin(
+            jobProjectionReceipts,
+            eq(jobProjectionReceipts.targetAggregateId, taskOutputs.id),
+          )
+          .where(
+            and(
+              eq(jobProjectionReceipts.jobId, run.distributedJobId),
+              eq(jobProjectionReceipts.projectionKind, "output_projection"),
+              eq(jobProjectionReceipts.aggregateKind, "task_outputs"),
+              eq(jobProjectionReceipts.status, "applied"),
+              eq(jobProjectionReceipts.companyId, run.companyId),
+              eq(taskOutputs.companyId, run.companyId),
+            ),
+          );
+        distributedTaskOutputs = new Set(outputRows.map((r) => r.id)).size;
+      }
+      return { workspacePatchArtifacts, taskOutputs: distributedTaskOutputs };
     },
   };
 }

@@ -1228,8 +1228,22 @@ toward.
 for a handed-off run. Both were wrong in the FAIL-OPEN direction, and the correction changes what
 arm 2 IS rather than whether this finding stands:
 
+★★★ **CROSS-NOTE 2026-09-08 (W21) — which sentences below W21 invalidated, and which stand.** W21 gave
+arm 2 a provenance predicate (see E7-F020). **INVALIDATED HERE:** every sentence describing arm 2's
+query as *unconditional* and as `eq(taskOutputs.createdByRunId, run.id)` — it is now a join to an
+APPLIED `output_projection` receipt on the run's `distributed_job_id`, and it short-circuits to 0 with
+no `distributed_job_id`; and "arm 2 is REACHABLE WITHOUT PROVING ANYTHING", which described the
+pre-W21 predicate. **UNCHANGED, and re-measured by hand at `360d0b0ed`:** measurement 1 (nothing
+checked in arms the rollout dial — two hits today, both register `reason` strings quoting the command;
+zero excluding both registers), measurement 2 (arm 1), and measurement 3 facts 1-3 — in particular
+`projectAcceptedOutput` still has ZERO production callers, which is now the reason arm 2 reads 0. This
+finding's **status, severity and UNOWNED ownership do not move**: the shared blocker is an operator
+decision and nothing in W21 touched it. What changed is that arm 2 is now 0 for an HONEST reason
+instead of being satisfiable by the platform.
+
 - **Arm 1 is unreachable.** Unchanged, and the strongest of the two: it issues no query at all.
-- **Arm 2 is not "unreachable" — it is REACHABLE WITHOUT PROVING ANYTHING.** No *producer* can move
+- **Arm 2 is not "unreachable" — it is REACHABLE WITHOUT PROVING ANYTHING** *(pre-W21; see the
+  cross-note above)*. No *producer* can move
   it (measurement 3, facts 1-3, all intact). But an ordinary internal path already writes
   `task_outputs.created_by_run_id = run.id` before the handoff — `ensureRuntimeServicesForRun`
   (`heartbeat.ts:4524`) — so once the dial is armed, arm 2 can read non-zero for a run whose agent
@@ -1547,11 +1561,93 @@ question this finding deliberately does not answer — it belongs with whoever s
 it is recorded here so that it is asked rather than rediscovered. No code unit owns this today, and
 inventing one would be a false ownership claim.
 
-## E7-F020 — Arm 2 of `capabilityProven` reads non-zero from an ordinary heartbeat code path, with no agent output, no forgery and no authenticated caller
+## E7-F020 — Arm 2 of `capabilityProven` reads non-zero from an ordinary heartbeat code path, with no agent output, no forgery and no authenticated caller (NARROWED W21 — platform-write path closed at the predicate; residual below)
 
 **Status:** open · **Owner:** CLI-008 · **Severity:** HIGH · **Filed:** 2026-09-06 (W4U3-R3), measured
 at `75920ef9a`. Found by an auditor re-deriving E7-F018's arm-2 analysis; every line number below was
 re-read by hand in this worktree before filing.
+
+---
+
+### ★★★ NARROWED 2026-09-08 (W21) — the platform-write path is CLOSED at the predicate; a residual survives, so this stays OPEN
+
+**What changed.** Arm 2's predicate is no longer `eq(taskOutputs.createdByRunId, run.id)`. It is now a
+join to `job_projection_receipts`: a `task_outputs` row counts only when an **APPLIED
+`output_projection` receipt** names it (`aggregate_kind = 'task_outputs'`,
+`target_aggregate_id` = the row, `job_id` = the run's `distributed_job_id`, company-scoped), and arm 2
+short-circuits to 0 for a run with no `distributed_job_id`.
+
+**Why that predicate and not a `type`/`provider` heuristic — derived from the writer census, not from
+taste.** The census below (fact (4) of E7-F018, re-verified at `360d0b0ed` before this change) closes
+on the callers of `upsertTaskOutputForIssue`, the sole INSERT into the table. The receipt is the one
+thing NO legacy caller can produce:
+
+- **ADMITS exactly one writer** — `jobOutputBridge.projectAcceptedOutput`
+  (`server/src/services/job-output-bridge.ts:303`), the distributed output projection. It is the only
+  code in the tree that writes `projection_kind = 'output_projection'` with
+  `aggregate_kind = "task_outputs"` (`:306-315`), it writes it in the SAME tenant transaction as the
+  row, and `recordGovernedProjection` (`packages/db/src/repositories/tenant/job-control.ts:3794`) runs
+  `guardActiveFence` FIRST, so `job_id`/`attempt_id` are the control plane's LIVE fence rather than a
+  caller's assertion.
+- **EXCLUDES all ten legacy callers**, including both writers that can fire for a handed-off run:
+  `emitRuntimeServiceTaskOutput` (`task-output-emitters.ts:113` — **this finding**) and
+  `POST /api/issues/:issueId/outputs` (`routes/task-outputs.ts:54` — E7-F015). Neither writes a
+  receipt, and neither can: the receipt insert is fence-guarded on a live distributed attempt, which a
+  pre-handoff heartbeat emitter and an HTTP route do not have. **The exclusion is structural, not a
+  filter on caller-controlled content** — which is the bar this finding set.
+- **The weaker form is closed too.** Pointing the verifier at an ordinary non-distributed heartbeat run
+  no longer prints `capability: PROVEN`: no `distributed_job_id`, no query, count 0.
+
+**Proof, both arms, observed RED before the fix.**
+`server/src/__tests__/e7-f020-arm2-provenance.integration.test.ts` (embedded PG, real lease fence, real
+bridge, real emitter). Against the pre-fix predicate: `[negative]` 1≠0, `[mixed]` 2≠1, `[cross-job]`
+1≠0, `[no job]` 1≠0 and `[positive B]` 0≠1 all FAILED, while `[positive A]` passed. Post-fix 6/6 pass.
+The **positive controls are load-bearing**: mutating the count to `return 0` reds `[positive A]`,
+`[positive B]` and `[mixed]` while `[negative]` stays green — i.e. deleting the feature is
+distinguishable from fixing it.
+
+**WHAT SURVIVES — the residual, and why this stays OPEN.** `upsertTaskOutputForIssue`
+(`services/task-outputs.ts:135-178`) is an UPSERT on `(company_id, issue_id, provider, external_id)`:
+when a projected output collides with an existing row it **UPDATES that row in place** and the receipt
+links it. So a future producer that reuses a platform-minted `external_id` (e.g.
+`runtime-service:<id>`, `task-output-emitters.ts:98`) would get a **platform-minted row counted** —
+E7-F020's own class, one layer down. It is bounded (it needs a real fenced accepted-output event, so
+nobody-does-anything no longer reaches it) and **unexercised** (`projectAcceptedOutput` has zero
+production callers), but it is the one remaining way a row the platform wrote reaches this counter,
+and it belongs with whoever ships the producer.
+
+**WHAT THIS DOES NOT BUY — verified at `360d0b0ed`, both E7-F018 claims re-measured by hand.**
+1. `grep -rn AOA_DISTRIBUTED_EXECUTION_ROLLOUT --include=*.yml --include=*.yaml --include=*.json --include=Dockerfile* .`
+   returns **two** hits at this tip, `scripts/finding-ownership.json` and
+   `scripts/gate-clause-wiring.json` — **both register `reason` strings quoting the command back at
+   the reader** (E7-F018 documents the first self-match; the second appeared later and is recorded
+   here rather than quietly dropped). Excluding both registers: **zero hits, exit 1, repo-wide.** No
+   compose file, Dockerfile, workflow or manifest arms the dial.
+2. `grep -rn "capabilityProven\|require-capability\|verify:e7-1" .github` → **zero hits**. The flag is
+   off by default (`server/src/cli/verify-e7-1-distributed-run.ts`, `requireCapability: false`) and the
+   `verify:e7-1-distributed-run` package script is invoked by no workflow.
+
+So **arm 2 now reads 0 on every real run**, and the gate is **correctly CLOSED where it was falsely
+open**. That is strictly better than a false PROVEN and it is **not the capability gate working**.
+What remains blocked, and by what: the campaign still needs (a) an operator arming the rollout dial —
+which `scripts/lib/staging-manifest-invariants.mjs:516-541` FORBIDS on every staging worker — and (b) a
+production caller for `projectAcceptedOutput` (arm 2) / a committed `workspace_patch` producer (arm 1).
+Both are E7-F018's, still UNOWNED, and neither moved.
+
+**Not widened.** E7-F015's own route hardening is untouched and its entry is not edited here; the
+receipt predicate does mean that route can no longer move arm 2, which is an observation for that
+finding's owner to verify, not a closure claimed by this unit. Arm 1, the `ok` computation, and
+`capabilityProven`'s separation from `ok` were not touched.
+
+**Text kept in sync.** `E7_CAPABILITY_LIMITATIONS` said arm 2 "carries NO provenance filter"; that is
+now false, so the block was rewritten to state the predicate AND the residual, and its anti-drift tests
+were repointed (not relaxed — the deny-list is kept verbatim and extended with "now works"/"gate
+works"/"capability is proven"/"ready to gate").
+
+**Everything below this line is the finding AS FILED, and describes the PRE-W21 predicate.** It is kept
+verbatim because it is the measurement that sized the fix.
+
+---
 
 **What.** `countProducedOutputs` applies **no provenance filter** to arm 2: it counts every
 `task_outputs` row whose `created_by_run_id` equals the run id

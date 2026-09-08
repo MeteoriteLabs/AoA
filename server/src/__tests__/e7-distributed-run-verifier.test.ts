@@ -625,7 +625,9 @@ describe("W7U2 — the capability verdict states its own limit (E7-F020)", () =>
     // MUTATION: delete the capabilityLimitations block from formatVerifyResult and this reds,
     // while every pre-existing capability test and the positive control below stay green.
     expect(printed).toContain("E7-F020");
-    expect(printed).toContain("task_outputs arm");
+    // ★ W21: was "task_outputs arm" — the block now leads with the predicate, so the arm is
+    // named as "Arm 2 (task_outputs)". Same property: the arm is identified, not "the check".
+    expect(printed).toContain("Arm 2 (task_outputs)");
     expect(printed).toContain("limit of this verdict");
   });
 
@@ -674,7 +676,18 @@ describe("W7U2 SECOND CONTROL — the caveat says something FALSIFIABLE", () => 
     expect(text).toContain("arm 2");
     expect(text).toContain("task_outputs");
     expect(text).toContain("created_by_run_id");
-    expect(text).toContain("e7-distributed-run-verifier-store.ts:213-216");
+    // ★ W21: the literal line range `:213-216` was dropped when the predicate moved. The FILE
+    // is still named; a line range that drifts on the next edit is a citation that rots.
+    expect(text).toContain("e7-distributed-run-verifier-store.ts");
+  });
+
+  // ★ W21 — THE NEW REQUIRED HALF. The block used to be pure disclosure; arm 2 now applies a
+  // provenance predicate, and the text has to NAME it, or a reader cannot check whether the
+  // rule described is the rule enforced. These are the load-bearing nouns of the new predicate.
+  it("names the provenance predicate arm 2 actually applies", () => {
+    expect(text).toContain("output_projection");
+    expect(text).toContain("job_projection_receipts");
+    expect(text).toContain("projectAcceptedOutput");
   });
 
   it("cites E7-F020 so a reader can find the measurement", () => {
@@ -694,9 +707,20 @@ describe("W7U2 SECOND CONTROL — the caveat says something FALSIFIABLE", () => 
   // here makes the caveat semantically correct — a human reader still owes that. They are cheap
   // regression tripwires on the exact wordings this unit reviewed, and that is their whole claim.
   // Do not read a green here as "the caveat has been checked for honesty".
-  it("says it is a DISCLOSURE, not a control — it must not read as 'now handled'", () => {
-    expect(text).toContain("DISCLOSURE, not a control");
+  // ★★★ W21 REPOINTED, NOT RELAXED. The required phrase used to be "DISCLOSURE, not a control",
+  // which stopped being true the moment W21 gave arm 2 a predicate — a caveat that describes
+  // itself wrongly is the drift this guard exists to catch, so the guard had to move with the
+  // text rather than be deleted. What replaces it is STRICTLY MORE: the deny-list is kept
+  // verbatim AND extended with the overclaim this particular change invites ("the capability
+  // gate now works"), and the block must still say what a green does not establish.
+  it("states the residual and must not read as 'the gate now works'", () => {
+    expect(text).toContain("WHAT A GREEN STILL DOES NOT ESTABLISH");
+    expect(text).toContain("E7-F018");
+    expect(text).toContain("gates nothing");
     for (const claim of ["now handled", "is fixed", "no longer", "mitigated", "prevents"]) {
+      expect(text.toLowerCase()).not.toContain(claim);
+    }
+    for (const claim of ["now works", "gate works", "capability is proven", "ready to gate"]) {
       expect(text.toLowerCase()).not.toContain(claim);
     }
   });
@@ -821,7 +845,10 @@ describe("W7U2-FIX — the PROVEN headline does not claim agent provenance", () 
     // The pointer must not dangle: the phrase the headline sends the reader to has to exist in
     // the SAME rendered report. A caveat reference to a block that got renamed is a dead end.
     expect(resultLine).toContain("limit of this verdict");
-    expect(printed).toContain("limit of this verdict (a DISCLOSURE");
+    // ★ W21: the parenthetical changed from "(a DISCLOSURE — nothing below is enforced)" because
+    // that stopped being true — arm 2's first sentences now describe an ENFORCED predicate. The
+    // dangling-pointer property this assertion exists for is unchanged.
+    expect(printed).toContain("limit of this verdict (what a green here does NOT establish)");
   });
 
   it("the NOT-PROVEN branch is untouched — the two branches stay distinct", async () => {

@@ -150,6 +150,17 @@ produces nothing therefore reads `capability: PROVEN`. **Do not read a non-zero 
 What is UNCHANGED: the shared blocker, arm 1's unreachability, facts (1)-(3) above — no PRODUCER moves
 arm 2 — and E7-F018's status, severity and `unowned` ownership.
 
+★★★ **SUPERSEDED FOR THE PREDICATE 2026-09-08 (W21).** The paragraph above describes the **pre-W21**
+arm 2 and is kept because it sized the fix. Arm 2 no longer reads `created_by_run_id`: a `task_outputs`
+row counts only when an APPLIED `output_projection` receipt names it on the run's `distributed_job_id`,
+whose sole writer is `jobOutputBridge.projectAcceptedOutput` (`job-output-bridge.ts:303`), fence-guarded
+via `recordGovernedProjection`. Both live legacy writers above (`task-output-emitters.ts:113`,
+`routes/task-outputs.ts:54`) are excluded structurally. ★★ **Not progress:** `projectAcceptedOutput`
+has zero production callers, nothing checked in arms the dial, and `capabilityProven` is read by no
+workflow or script — so arm 2 now reads **0 on every real run** and the gate is correctly CLOSED rather
+than falsely open. E7-F020 stays OPEN on a stated residual. See E7-F020 in
+`epics/E7-coding-e2b/findings.md`.
+
 **So a `workspace_patch` producer is NECESSARY and NOT SUFFICIENT — and read that as a claim about
 SUFFICIENCY only.** E7-F018 refutes *"ship Unit F (output capture) and `capabilityProven` follows"*.
 It does **not** establish that a producer is unnecessary: on arm 1 a committed `workspace_patch`
