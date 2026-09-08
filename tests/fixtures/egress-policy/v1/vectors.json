@@ -128,6 +128,83 @@
       "class": "private"
     },
     {
+      "name": "ipv6_nat64_well_known_prefix_carrying_imds",
+      "note": "W17. 64:ff9b::/96 (RFC6052). A NAT64 translator turns this into 169.254.169.254, so leaving it open re-opens every IPv4 range. The class is `private`, not `metadata`: METADATA_DENY_CIDRS is a family-4 host-route list and this address is family 6 — the deny still fires, one class less specific.",
+      "requestedUrl": "https://api.notion.com/v1",
+      "resolvedAddrs": ["64:ff9b::169.254.169.254"],
+      "class": "private"
+    },
+    {
+      "name": "ipv6_nat64_local_use_prefix",
+      "note": "W17. 64:ff9b:1::/48 (RFC8215), Globally Reachable = False.",
+      "requestedUrl": "https://api.github.com/repos",
+      "resolvedAddrs": ["64:ff9b:1::1"],
+      "class": "private"
+    },
+    {
+      "name": "ipv6_discard_only_prefix",
+      "note": "W17. 100::/64 (RFC6666) discard-only sink route.",
+      "requestedUrl": "https://api.notion.com/v1",
+      "resolvedAddrs": ["100::1"],
+      "class": "private"
+    },
+    {
+      "name": "ipv6_dummy_prefix_rfc9780",
+      "note": "W17 — ONE OF THE TWO RANGES THIS UNIT ADDED. 100:0:0:1::/64, Dummy IPv6 Prefix (RFC9780, allocated 2025-04, Globally Reachable = False). isPrivateIP's discard-only clause required the fourth word to be 0, so this ADJACENT /64 fell through to `return false` while 100::/64 was blocked.",
+      "requestedUrl": "https://api.notion.com/v1",
+      "resolvedAddrs": ["100:0:0:1::1"],
+      "class": "private"
+    },
+    {
+      "name": "ipv6_teredo_tunnel",
+      "note": "W17. 2001::/32 (RFC4380) — IPv6-over-UDP tunnelling, another v4 bypass.",
+      "requestedUrl": "https://api.github.com/repos",
+      "resolvedAddrs": ["2001::1"],
+      "class": "private"
+    },
+    {
+      "name": "ipv6_benchmarking_prefix",
+      "note": "W17. 2001:2::/48 (RFC5180), Globally Reachable = False.",
+      "requestedUrl": "https://api.notion.com/v1",
+      "resolvedAddrs": ["2001:2::1"],
+      "class": "private"
+    },
+    {
+      "name": "ipv6_orchid_deprecated",
+      "note": "W17. 2001:10::/28 (RFC4843, deprecated) — non-routable identifier space.",
+      "requestedUrl": "https://api.notion.com/v1",
+      "resolvedAddrs": ["2001:10::1"],
+      "class": "private"
+    },
+    {
+      "name": "ipv6_orchidv2",
+      "note": "W17. 2001:20::/28 (RFC7343) — cryptographic identifiers, not locators.",
+      "requestedUrl": "https://api.github.com/repos",
+      "resolvedAddrs": ["2001:20::1"],
+      "class": "private"
+    },
+    {
+      "name": "ipv6_6to4_carrying_imds",
+      "note": "W17. 2002::/16 (RFC3056). 2002:a9fe:a9fe::/48 is the 6to4 encoding of 169.254.169.254 — the v6 end of the tunnel whose v4 end is 192.88.99.0/24.",
+      "requestedUrl": "https://api.notion.com/v1",
+      "resolvedAddrs": ["2002:a9fe:a9fe::1"],
+      "class": "private"
+    },
+    {
+      "name": "ipv6_documentation_rfc9637",
+      "note": "W17. 3fff::/20 (RFC9637) additional documentation space.",
+      "requestedUrl": "https://api.github.com/repos",
+      "resolvedAddrs": ["3fff::1"],
+      "class": "private"
+    },
+    {
+      "name": "ipv6_srv6_sids_rfc9602",
+      "note": "W17 — THE OTHER RANGE THIS UNIT ADDED. 5f00::/16, Segment Routing (SRv6) SIDs (RFC9602, allocated 2024-04, Globally Reachable = False). Nothing in isPrivateIP matched the leading word 0x5f00; the whole /16 returned false.",
+      "requestedUrl": "https://api.notion.com/v1",
+      "resolvedAddrs": ["5f00::1"],
+      "class": "private"
+    },
+    {
       "name": "control_plane_public_ipv4",
       "requestedUrl": "https://api.notion.com/v1",
       "resolvedAddrs": ["45.55.12.34"],

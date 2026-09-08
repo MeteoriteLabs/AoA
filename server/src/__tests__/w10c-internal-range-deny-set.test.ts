@@ -87,7 +87,12 @@ describe("W10C internal-range deny set -- the exact-set pin", () => {
     expect(INTERNAL_RANGE_DENY_CIDRS_V6).toEqual([
       "::/16",
       "64:ff9b::/47",
-      "100::/64",
+      // W17: "100::/64" before W17. The RFC9780 Dummy Prefix 100:0:0:1::/64 was
+      // added to `isPrivateIP`, and it is ADJACENT and aligned to the RFC6666
+      // discard block, so the EXACT MINIMAL cover of the pair is one /63. This
+      // value was RE-DERIVED from the predicate (see the header note and
+      // w17-ipv6-range-closeout.test.ts), not hand-written to match an assumption.
+      "100::/63",
       "2001::/32",
       "2001:2::/32",
       "2001:10::/28",
@@ -95,6 +100,7 @@ describe("W10C internal-range deny set -- the exact-set pin", () => {
       "2001:db8::/32",
       "2002::/16",
       "3ff0::/12",
+      "5f00::/16", // W17: SRv6 SIDs, RFC9602, registry Globally Reachable = FALSE
       "fc00::/7",
       "fe80::/9",
       "ff00::/8",
@@ -106,7 +112,7 @@ describe("W10C internal-range deny set -- the exact-set pin", () => {
       ...INTERNAL_RANGE_DENY_CIDRS_V4,
       ...INTERNAL_RANGE_DENY_CIDRS_V6,
     ]);
-    expect(INTERNAL_RANGE_DENY_CIDRS).toHaveLength(27);
+    expect(INTERNAL_RANGE_DENY_CIDRS).toHaveLength(28);
     expect(Object.isFrozen(INTERNAL_RANGE_DENY_CIDRS_V4)).toBe(true);
     expect(Object.isFrozen(INTERNAL_RANGE_DENY_CIDRS_V6)).toBe(true);
     expect(Object.isFrozen(INTERNAL_RANGE_DENY_CIDRS)).toBe(true);

@@ -90,18 +90,30 @@
 // IPv6 side asserting that nothing the predicate rejects is MISSING here -- superset,
 // not equality. So the two cannot drift apart silently: editing `isPrivateIP` reds
 // this module's test.
+// ★ W17: the IPv6 half is now RE-DERIVED too, not only swept. `w17-ipv6-range-closeout.test.ts`
+// recomputes the exact minimal prefix cover of `isPrivateIP`'s IPv6 arm by a recursive
+// uniformity descent over the leading four words and asserts it EQUALS
+// `INTERNAL_RANGE_DENY_CIDRS_V6`. That is what produced `100::/63` here rather than the
+// two /64s a hand edit would have written.
 //
 // -- DIVERGENCE LEDGER (measured 2026-09-07, not assumed) ---------------------
 // Four representations of "internal range" already exist in the tree:
 //
-//   1. `isPrivateIP` (server/src/services/outbound-url-guard.ts:71) -- THE
+//   1. `isPrivateIP` (server/src/services/outbound-url-guard.ts) -- THE
 //      reference predicate. Prefix-string + IPv6 word-mask checks.
-//   2. `isPrivateIp` (scripts/check-egress-policy-vectors.mjs:138) -- a
-//      deliberately INDEPENDENT CIDR reimplementation used as the differential
-//      oracle for the egress-policy vectors gate. MEASURED: its IPv4 half agrees
-//      with `isPrivateIP` on all 2^24 /24 blocks -- zero divergence. It is NOT
-//      reused here on purpose: importing the oracle into the code it checks would
-//      destroy its independence.
+//   2. `isPrivateIp` (scripts/check-egress-policy-vectors.mjs) -- a deliberately
+//      INDEPENDENT CIDR reimplementation used as the differential oracle for the
+//      egress-policy vectors gate. MEASURED: its IPv4 half agrees with `isPrivateIP`
+//      on all 2^24 /24 blocks -- zero divergence. It is NOT reused here on purpose:
+//      importing the oracle into the code it checks would destroy its independence.
+//      ★ W17 UPDATE: its IPv6 half USED TO be a strict SUBSET of (1) -- it denied
+//      only ::/16, fc00::/7, fe80::/10, fec0::/10, ff00::/8, 2001:db8::/32 and
+//      2002::/16, so it silently allowed every range in (1) below. The fixture's
+//      IPv6 vectors exercised no divergent range, so the lane passed regardless.
+//      W17 widened the oracle FROM THE IANA REGISTRY (not by importing (1)) and
+//      added `w17-ipv6-range-closeout.test.ts`, which computes the EXACT symmetric
+//      difference between the two by interval arithmetic over the whole 2^128 space
+//      and pins it. NARROWING (1) now reds that test, naming the range.
 //   3. `blockedIpv4`/`blockedIpv6` (server/src/services/mcp-connector-oauth.ts)
 //      -- node `BlockList` tables for OAuth-metadata SSRF. NO LONGER A SEPARATE
 //      REPRESENTATION: W13 rebuilt them FROM `INTERNAL_RANGE_DENY_CIDRS`, so they
@@ -250,8 +262,27 @@ export const INTERNAL_RANGE_DENY_CIDRS_V6: readonly string[] = Object.freeze([
   // aggregated). A NAT64 translator turns these into arbitrary IPv4 destinations,
   // so an enforcer that left them open WOULD re-open every IPv4 range listed above.
   "64:ff9b::/47",
-  // RFC6666 discard-only prefix. Sink route; no legitimate destination.
-  "100::/64",
+  // RFC6666 discard-only prefix (100::/64) PLUS the RFC9780 Dummy IPv6 Prefix
+  // (100:0:0:1::/64, allocated 2025-04, registry Globally Reachable = FALSE),
+  // which W17 added to `isPrivateIP`. They are ADJACENT and aligned, so the exact
+  // minimal cover of the two is ONE /63 -- this entry was "100::/64" before W17
+  // and the re-derivation in `w17-ipv6-range-closeout.test.ts` produced the /63.
+  // Do not "restore" the /64 and add a second entry: that is a different -- still
+  // set-equal and still correct, but NON-MINIMAL -- list.
+  // ★ WHICH CHECK CATCHES THAT, measured by writing exactly that spelling and
+  // running the suite rather than by assuming. What REDS is the EXACT-SET PIN in
+  // `w10c-internal-range-deny-set.test.ts`: "IPv6 half is EXACTLY this list"
+  // (15 entries against the pinned 14) and, beside it, "the combined set is exactly
+  // v4 ++ v6" on `toHaveLength(28)` (29 against 28). The DERIVATION test in
+  // `w17-ipv6-range-closeout.test.ts` PASSES on that spelling and structurally
+  // cannot catch it: its exact-array assertion is on the cover RECOMPUTED from
+  // `isPrivateIP`, which no edit to THIS array can move, and its shipped-vs-derived
+  // comparison is INTERVAL SUBTRACTION in both directions -- set equality over
+  // addresses, blind to how the same addresses are spelled. So the two checks are
+  // not redundant: the derivation test says the ADDRESSES are right, the exact-set
+  // pin says the SPELLING is the minimal cover. Naming the wrong one here would
+  // send a future reader to a test that would have shrugged.
+  "100::/63",
   // 2001::/32 Teredo. IPv6-over-UDP tunnelling -- another v4 tunnel bypass.
   "2001::/32",
   // 2001:2::/32 BMWG benchmarking.
@@ -268,6 +299,12 @@ export const INTERNAL_RANGE_DENY_CIDRS_V6: readonly string[] = Object.freeze([
   // 3fff::/20 additional documentation space (RFC9637); `isPrivateIP` rejects the
   // wider 3ff0-3fff span, so the exact cover of the predicate is /12.
   "3ff0::/12",
+  // 5f00::/16 Segment Routing (SRv6) SIDs (RFC9602, allocated 2024-04, registry
+  // Globally Reachable = FALSE). Added by W17: an SRv6 SID is a router-internal
+  // forwarding label inside the operator's own SR domain, so nothing AoA talks to
+  // can live here, and a filter that left it open would leave a reserved,
+  // non-globally-reachable band addressable from a sandbox.
+  "5f00::/16",
   // fc00::/7 unique local addresses. The IPv6 equivalent of RFC1918 -- covers the
   // operator's own fabric.
   "fc00::/7",

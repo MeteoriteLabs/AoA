@@ -1384,3 +1384,89 @@ because that is where the deny-set family and the derivation machinery already l
 would promote it — **which W13 has now done, so that clause reads `wired` on this PR's branch.**
 **It blocks nothing in the re-platform programme.** It needs a founder decision about a live
 security path, and W13's PR is the shape that decision can take.
+
+---
+
+## E8-F010 — The differential oracle for the egress-policy gate denied a STRICT SUBSET of production on IPv6, and the fixture exercised no divergent range, so the lane could not have failed on any of it
+
+**Status:** resolved_by_w17 · **Owner:** — (closed; no ownership entry is created)
+**Successor:** **W17 — PR `replatform/w17-ipv6-closeout`**, the same commit that files this entry.
+See §5 for what it changes and what it proves.
+
+**Severity:** MEDIUM — the divergence never produced a wrong ALLOW in production (the oracle is a
+test-lane reference, not an enforcement point). What it produced is a **guard that could not fail**,
+which is this programme's most-repeated defect class and the reason the severity is not LOW.
+
+**Filed:** W17, 2026-09-08, by re-deriving both implementations from source and computing their exact
+difference over the whole 2^128 IPv6 space.
+**Cross-links:** `E8-F009` (the same predicate family; its §4 spelling `::169.254.169.254` is the
+address this oracle got RIGHT and production got WRONG), `E8-F003`/`E8-F008` (sandbox egress — a
+different boundary; do not merge them).
+
+### 1. What
+
+`scripts/check-egress-policy-vectors.mjs` is the independent reference verifier for the DAT-005
+egress-policy vectors gate. It carries its own from-scratch `isPrivateIp`, deliberately NOT importing
+`server/src/services/outbound-url-guard.ts`'s `isPrivateIP`, so that two implementations pinned to one
+fixture cannot silently diverge.
+
+**MEASURED, before W17.** Its IPv6 half denied exactly seven ranges: `::/16`, `fc00::/7`,
+`fe80::/10`, `fec0::/10`, `ff00::/8`, `2001:db8::/32`, `2002::/16`. Production denied all seven AND
+`64:ff9b::/47`, `100::/64`, `2001::/32`, `2001:2::/32`, `2001:10::/28`, `2001:20::/28` and the
+`3ff0::/12` band. The oracle was therefore a **strict subset** of the thing it was checking, in one
+direction only — it could never disagree by denying more, and it silently agreed by allowing more.
+
+**And the fixture could not expose it.** `tests/fixtures/egress-policy/v1/vectors.json` carried seven
+IPv6 addresses across its allow and deny vectors, and **not one of them was inside any divergent
+range**: they were `2606:4700::6812:2007`, `2606:1234:5::10`, `::10`, and four `::ffff:` mapped forms.
+So the `policy` lane passed regardless of how far the two implementations drifted apart.
+
+### 2. Why this is worse than a missing range
+
+The oracle was **RIGHT where production was WRONG**. Its `::/16` clause covers `::169.254.169.254` —
+the exact spelling `E8-F009` §4 measured `isPrivateIP` returning `false` for, on a live SSRF path. A
+real defect sat in shipped code with a correct independent answer already in the tree, and there was
+no test comparing the two. The mechanism that would have caught it existed and was never pointed at
+the question.
+
+### 3. Why the obvious repair is wrong
+
+The tempting fix is to have the oracle call `isPrivateIP`. That deletes the only independent answer
+this tree has ever had to "is this address internal", and an oracle that calls the thing it checks
+cannot disagree with it — it would convert a guard that was merely un-exercised into one that is
+structurally incapable of firing. Under `E8-F009` the repaired-that-way oracle would have agreed with
+the defect.
+
+### 4. Scope note — the OTHER three private-range representations were checked
+
+`w10c-internal-range-deny-set.ts` (a mechanically derived cover, CI-re-derived),
+`mcp-connector-oauth.ts` (built FROM that cover since W13) and `egress-policy.ts`'s
+`METADATA_DENY_CIDRS` (three host routes, not a private-range table). A tree-wide grep for
+`169.254` / `fc00` / `fe80::` / `2001:db8` over `.ts`/`.mjs`/`.js`/`.json` found no fifth predicate.
+`scripts/lib/w10b-egress-enforcement-probe.mjs` carries deny CIDRs for the E2B probe but is not a
+predicate over an address.
+
+### 5. Resolution
+
+W17 widens the oracle's IPv6 half **from the IANA IPv6 Special-Purpose registry** (retrieved
+2026-09-08, sha256 `775feea0621dec8735a44fbf30f762e721e8f0a1b3ab7eb341961a88cfce2139`) rather than
+from production's source, so it stays an independent implementation. It then:
+
+1. adds **eleven** IPv6 deny vectors to the fixture, one in every previously-divergent range, so the
+   lane now exercises what it could not see;
+2. adds `server/src/__tests__/w17-ipv6-range-closeout.test.ts`, which re-derives production's exact
+   IPv6 prefix cover from the live predicate and computes the **exact symmetric difference** against
+   the oracle's CIDR list by interval arithmetic over the whole 2^128 space. The oracle-only direction
+   is pinned **empty**; the production-only direction is pinned to **exactly four intervals** — the
+   three bands where production deliberately over-blocks relative to the registry (`64:ff9b::/47` vs
+   RFC 6052's `/96`, `2001:2::/32` vs RFC 5180's `/48`, `3ff0::/12` vs RFC 9637's `3fff::/20`). The
+   set is STATED, not asserted to be empty;
+3. adds a source-text guard asserting the oracle imports nothing but `node:` builtins, so the
+   "just import production" repair reds by name.
+
+**Mutation-tested.** Deleting production's `2002::/16` clause reds three cases in the new file naming
+`2002:0:0:0:0:0:0:0 .. 2002:ffff:…` — including the oracle-only assertion — **and** reds the
+fixture-bound production classifier on `ipv6_6to4_carrying_imds`. Narrowing the `3ff0..3fff`
+leading-word band to `3ffe..3fff` reds naming the vacated `3ff0:: .. 3ffd:ffff:…` span. Making the oracle import production reds the independence
+guard naming the specifier. The positive control is the shipped state: the oracle remains independent
+and diverges from production by four intervals, and every lane is green.

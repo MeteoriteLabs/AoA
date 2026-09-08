@@ -80,12 +80,40 @@ describe("isPrivateIP", () => {
     "100::1",
     "2002:7f00:1::1",
     "3fff::1",
+    // W17 -- the two ranges the IANA audit found missing.
+    "5f00::1", // RFC9602 Segment Routing (SRv6) SIDs, allocated 2024-04
+    "5f00:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+    "100:0:0:1::1", // RFC9780 Dummy IPv6 Prefix, allocated 2025-04
+    "100:0:0:1:ffff:ffff:ffff:ffff",
   ])(
     "rejects reserved IPv6 address %s",
     (ip) => {
       expect(isPrivateIP(ip)).toBe(true);
     },
   );
+  // --- W17 -- the two added ranges, and their boundaries --------------------
+  //
+  // Added from the IANA IPv6 Special-Purpose registry (retrieved 2026-09-08,
+  // sha256 775feea0621dec8735a44fbf30f762e721e8f0a1b3ab7eb341961a88cfce2139).
+  // Both read Globally Reachable = FALSE. The full audit -- including the IPv4
+  // completeness result, the range deliberately NOT added, and the RFC6052
+  // structural limit -- is recorded above `isPrivateIP` in outbound-url-guard.ts and
+  // checked in w17-ipv6-range-closeout.test.ts.
+  it("W17: the added ranges are ranges, not blankets -- both boundaries stay public", () => {
+    // 5f00::/16 (RFC9602 SRv6 SIDs)
+    expect(isPrivateIP("5eff:ffff:ffff:ffff:ffff:ffff:ffff:ffff")).toBe(false);
+    expect(isPrivateIP("5f00::")).toBe(true);
+    expect(isPrivateIP("5f01::")).toBe(false);
+    // 100:0:0:1::/64 (RFC9780 Dummy Prefix), adjacent to 100::/64 (RFC6666).
+    // The pre-W17 clause required the FOURTH word to be 0, so this /64 fell through
+    // to `return false` while its neighbour was blocked.
+    expect(isPrivateIP("100::ffff:ffff:ffff:ffff")).toBe(true); // last of 100::/64
+    expect(isPrivateIP("100:0:0:1::")).toBe(true); // first of the Dummy Prefix
+    expect(isPrivateIP("100:0:0:2::")).toBe(false); // first address past it
+    expect(isPrivateIP("100:0:1::1")).toBe(false); // third word non-zero
+    expect(isPrivateIP("100:1::1")).toBe(false); // second word non-zero
+  });
+
   it("does NOT reject 172.15.x.x or 172.32.x.x (boundary)", () => {
     expect(isPrivateIP("172.15.255.255")).toBe(false);
     expect(isPrivateIP("172.32.0.0")).toBe(false);
