@@ -114,7 +114,7 @@ export const FORBIDDEN_CREDENTIAL_TOKENS = ["E2B_API_KEY"];
  * The banned boolean-absence oracle, matched as a CODE TOKEN.
  *
  * Two earlier attempts at this line were wrong in instructive ways. The first
- * carried RAW 0x08 backspace bytes where `` was intended, so the regex matched
+ * carried RAW 0x08 backspace bytes where `\b` was intended, so the regex matched
  * nothing while the corpus still reported green — a guard that was dead the day
  * it was written. The second was a plain substring scan over raw source, which
  * then flagged `command-runner.ts` for the COMMENTS explaining why existsSync was

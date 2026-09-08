@@ -26,6 +26,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 const ROOT = process.cwd();
 const WORKFLOW = path.join(ROOT, ".github", "workflows", "pr.yml");
@@ -79,6 +80,29 @@ function envSkipReason(cmd) {
   return rule && !rule.ok() ? rule.why : undefined;
 }
 
+/**
+ * The ONE deliberate deviation from CI, named so `--list` and the run summary can STATE it.
+ * The source comment at the guard used to claim they did; they did not, because the guard
+ * dropped install steps silently. A named reason is the half that makes the claim true.
+ */
+export const INSTALL_SKIP_REASON =
+  "dependency install; this runner assumes a tree that already installs. `policy`'s "
+  + "--lockfile-only variant is skipped for a second, stronger reason: CI runs it only when "
+  + "a manifest file changed, and running it here can rewrite pnpm-lock.yaml.";
+
+/**
+ * `pnpm install` in either of the two forms this parser produces.
+ *
+ * ★★★ THE SECOND DEFECT, and the reason this is a named constant used on BOTH paths. Fixing
+ * the dead 0x08 byte alone moved the surviving-install count 8 -> 7, not 8 -> 0. The guard
+ * had only ever sat on the multi-line `run: |` path, while SEVEN of the eight installs are
+ * inline `run: pnpm install --frozen-lockfile` steps that the runInline branch pushes and
+ * `continue`s on, above the guard. So even a correctly-written regex could only ever have
+ * skipped ONE job's install. A dead escape and a placement that covers one eighth of the
+ * cases are two defects, and only the first is visible as a byte.
+ */
+export const IS_INSTALL_STEP = /^pnpm install\b/;
+
 /** The default fast gate: everything cheap that catches most red CI. */
 const FAST_JOBS = ["policy", "brand-check", "worker-protocol-contract-bytes", "lint"];
 
@@ -87,7 +111,7 @@ const FAST_JOBS = ["policy", "brand-check", "worker-protocol-contract-bytes", "l
  * Deliberately a small indent state machine rather than a YAML dependency: this repo has no yaml
  * package installed, and adding one to run CI locally would be its own supply-chain decision.
  */
-function parseJobs(text) {
+export function parseJobs(text) {
   const lines = text.split(/\r?\n/);
   const jobs = new Map();
   let job = null;
@@ -106,7 +130,13 @@ function parseJobs(text) {
 
     const runInline = /^(\s+)run:\s*(.+?)\s*$/.exec(line);
     if (runInline && runInline[2] !== "|") {
-      jobs.get(job).push(runInline[2]);
+      // Both paths consult IS_INSTALL_STEP. See its comment: the guard used to exist only on
+      // the block path below, which is why seven of eight installs ran regardless of the byte.
+      jobs.get(job).push(
+        IS_INSTALL_STEP.test(runInline[2])
+          ? { deliberateSkip: runInline[2], why: INSTALL_SKIP_REASON }
+          : runInline[2],
+      );
       inRun = false;
       continue;
     }
@@ -139,10 +169,33 @@ function parseJobs(text) {
       }
       // Shell scaffolding inside a block is executed as part of the block, not as a step; keep only
       // the invocations this runner can meaningfully attribute a pass/fail to.
-      // Environment setup, not a check. Running `pnpm install --frozen-lockfile` locally costs
-      // minutes and can churn node_modules; the local runner assumes a working tree that already
-      // installs. This is the ONE deliberate deviation from CI, and it is stated in --list.
-      if (/^pnpm install/.test(cmd)) continue;
+      // Environment setup, not a check. `pnpm install` is skipped here for EVERY job -- and the
+      // skip is recorded as a step, never silently dropped, so `--list` and the run summary
+      // state the deviation instead of a comment merely claiming they do.
+      //
+      // ★★★ W19: THIS GUARD WAS DEAD FROM THE DAY IT WAS WRITTEN. It intended `/^pnpm install\b/`
+      // but carried a literal 0x08 backspace byte where the two characters backslash-b belonged --
+      // a shell heredoc ate the backslash while the file was being written. The pattern therefore
+      // demanded a real control character after "install" and matched NOTHING. Eight install steps
+      // ran, one of them (`policy`'s --lockfile-only) lockfile-MUTATING and in the DEFAULT fast
+      // gate. A literal backspace renders invisibly in every terminal, editor and diff view, which
+      // is why it survived review; `cat -A` shows it as ^H. Pinned by
+      // scripts/lib/__tests__/ci-local-install-guard.test.mjs, which asserts the surviving-install
+      // count is 0 AND that this line carries no control byte. scripts/check-invisible-control-chars.mjs
+      // generalizes the byte half to the whole tree.
+      //
+      // ★ WHY `policy`'s LOCKFILE-ONLY INSTALL IS SKIPPED TOO, DELIBERATELY -- not by accident of
+      // the same pattern. It is not a cost decision. In CI that command sits behind TWO conditions
+      // this parser cannot see: a step-level `if: github.event_name == 'pull_request'`, and a shell
+      // `if` that runs it only when a manifest file changed. The parser keeps lines starting with
+      // node/pnpm/npx and drops the `changed=`/`if`/`fi` scaffolding around them, so running it
+      // locally does not reproduce CI -- it runs a command CI would usually NOT run, whose side
+      // effect (rewriting pnpm-lock.yaml) the `Block manual lockfile edits` step then fails the PR
+      // for. Skipping it is the faithful behaviour, and running it would be the unfaithful one.
+      if (IS_INSTALL_STEP.test(cmd)) {
+        jobs.get(job).push({ deliberateSkip: cmd, why: INSTALL_SKIP_REASON });
+        continue;
+      }
       if (/^(node|pnpm|npx) /.test(cmd)) jobs.get(job).push(cmd);
     }
   }
@@ -169,11 +222,13 @@ function main() {
     for (const [name, steps] of jobs) {
       const why = CANNOT_RUN_HERE[name];
       const gated = steps.filter((c) => typeof c === "string" && envSkipReason(c)).length;
-      const unrep = steps.filter((c) => typeof c === "object").length;
+      const unrep = steps.filter((c) => typeof c === "object" && c.unrepresentable).length;
+      const deviation = steps.filter((c) => typeof c === "object" && c.deliberateSkip).length;
       const mark = why ? "SKIP" : steps.length ? " RUN" : "  --";
-      console.log(`  ${mark}  ${name.padEnd(32)} ${steps.length} step(s)${why ? `  — ${why}` : gated || unrep ? `  (${gated} gated on env, ${unrep} unrepresentable)` : ""}`);
+      console.log(`  ${mark}  ${name.padEnd(32)} ${steps.length} step(s)${why ? `  — ${why}` : gated || unrep || deviation ? `  (${gated} gated on env, ${unrep} unrepresentable, ${deviation} deliberate deviation)` : ""}`);
     }
     console.log("\nfast gate:", FAST_JOBS.join(", "));
+    console.log("\ndeliberate deviation from CI:", INSTALL_SKIP_REASON);
     return;
   }
 
@@ -204,6 +259,15 @@ function main() {
     let jobFailed = false;
     let jobMs = 0;
     for (const step of steps) {
+      if (typeof step === "object" && step.deliberateSkip) {
+        console.log(`\n  - ${step.deliberateSkip}`);
+        console.log(`    SKIP — ${step.why}`);
+        skipped.push({
+          name: `${name}:step`,
+          why: `${step.deliberateSkip} — ${step.why}`,
+        });
+        continue;
+      }
       if (typeof step === "object" && step.unrepresentable) {
         console.log(`
   ? ${step.unrepresentable}`);
@@ -249,4 +313,9 @@ function main() {
   process.exit(failed ? 1 : 0);
 }
 
-main();
+// Run only when invoked as a script. The export above exists so
+// scripts/lib/__tests__/ci-local-install-guard.test.mjs can call the REAL parser: a pin that
+// re-implements the parser it pins cannot catch a regression in the parser.
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main();
+}

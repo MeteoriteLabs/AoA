@@ -210,7 +210,7 @@ export function hashResourceLabels(labels: ResourceLabels): string {
     String(labels.attempt),
     labels.leaseId,
     String(labels.deviceGeneration),
-  ].join(" ");
+  ].join("\0");
   return createHash("sha256").update(canonical, "utf8").digest("hex");
 }
 

@@ -97,6 +97,10 @@
       "status": "ci",
       "reason": "invoked by a workflow"
     },
+    "scripts/check-invisible-control-chars.mjs": {
+      "status": "ci",
+      "reason": "invoked by a workflow"
+    },
     "scripts/check-register-id-uniqueness.mjs": {
       "status": "ci",
       "reason": "invoked by a workflow"

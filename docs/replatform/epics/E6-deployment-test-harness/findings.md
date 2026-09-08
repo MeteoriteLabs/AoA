@@ -928,3 +928,157 @@ at `…campaign-blockers-and-fleet-terrain.md` §8, or the two password vars add
 charter is "do not touch docker/ or the D1 compose files (another unit owns those)", and
 `docker-compose.staging.yml` is close enough to that boundary that editing it belongs to the
 deployment track.
+## E6-F016 — `scripts/ci-local.mjs`'s "skip `pnpm install`" guard had never once been in effect, and its own comment said otherwise — RESOLVED
+
+**Status:** resolved
+**Severity:** MEDIUM — a local-runner-only defect (no CI lane is affected), but its side effect is
+lockfile mutation in the DEFAULT fast gate, which the `policy` job then fails the PR for.
+**Filed and resolved:** 2026-09-08 (W19), measured at `3814b90f3`. Cross-links the same class in
+`scripts/lib/worker-keystore-boundary.mjs` (fixed earlier) and
+`server/src/__tests__/w17-ipv6-range-closeout.test.ts` (fixed on another branch).
+
+### What was wrong
+
+`scripts/ci-local.mjs` carried, in source:
+
+```
+if (/^pnpm install<0x08>/.test(cmd)) continue;
+```
+
+a literal 0x08 backspace byte where the two characters backslash-b belonged — the signature of a
+file written through a shell heredoc, `echo`, `printf` or `sed`, all of which collapse those two
+characters into one control byte. The regex therefore demanded a real backspace character after
+`install` and matched nothing.
+
+The comment three lines above it read: *"Running `pnpm install --frozen-lockfile` locally costs
+minutes and can churn node_modules; the local runner assumes a working tree that already installs.
+This is the ONE deliberate deviation from CI, and it is stated in `--list`."* Measured with the
+script's own parser, **eight** `pnpm install` steps survived that guard and were executed as steps:
+
+```
+policy               :: pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
+verify               :: pnpm install --frozen-lockfile
+lint                 :: pnpm install --frozen-lockfile
+e2e                  :: pnpm install --frozen-lockfile
+migrations           :: pnpm install --frozen-lockfile
+e2e-pgvector         :: pnpm install --frozen-lockfile
+distributed-contract :: pnpm install --frozen-lockfile
+browser              :: pnpm install --frozen-lockfile
+```
+
+The `policy` one is lockfile-MUTATING and `policy` is in the default fast gate, so every
+`node scripts/ci-local.mjs` ran a command that can rewrite `pnpm-lock.yaml` in the working tree —
+which the `Block manual lockfile edits` step in that same job then fails the PR for.
+
+### ★★★ THE SECOND DEFECT, which the byte hid
+
+Fixing the byte alone moved the surviving-install count **8 → 7, not 8 → 0.** The guard had only
+ever sat on the multi-line `run: |` path, while **seven of the eight** installs are inline
+`run: pnpm install --frozen-lockfile` steps that `parseJobs` pushes and `continue`s on, several
+lines ABOVE the guard. So even a correctly-written regex could only ever have skipped ONE job's
+install, and the premise that "the intended regex would have skipped all 8" is false.
+
+That is the substance of this finding: a dead escape is visible once you know to look for it with
+`cat -A`; a guard on the wrong code path is invisible in any rendering, and only a test that
+asserts the CONSEQUENCE — the count — can see it. A byte-only fix, or a byte-only regression test,
+would have gone green over a guard that still covered one eighth of its cases.
+
+### ★ A third inaccuracy in the same three lines
+
+The comment claimed the deviation "is stated in `--list`". It was not: `--list` printed job names,
+step counts, env-gated counts and unrepresentable counts, and said nothing about installs — and
+after the byte fix the skipped steps were dropped silently, so it still would not have. Three
+claims in one comment, none of them true of the running code.
+
+### The decision that was made deliberately rather than inherited
+
+`policy`'s `--lockfile-only` install is skipped **too**, and not for the cost reason the original
+comment gives. In CI that command sits behind two conditions this parser cannot see: a step-level
+`if: github.event_name == 'pull_request'`, and a shell `if` that runs it only when a manifest file
+changed. `parseJobs` keeps lines starting with `node`/`pnpm`/`npx` and drops the `changed=` / `if` /
+`fi` scaffolding around them, so running it locally does not reproduce CI — it runs a command CI
+would usually NOT run, with a side effect on a tracked file. Skipping it is the faithful behaviour.
+
+### What changed
+
+- The byte is now `\b`, and the predicate is a named `IS_INSTALL_STEP` consulted on **both** parser
+  paths. Measured 8 → 0.
+- Install steps are RECORDED as deliberate deviations rather than dropped, so `--list` and the run
+  summary state the deviation the comment had only claimed they stated.
+- `scripts/lib/__tests__/ci-local-install-guard.test.mjs` pins the consequence (0 surviving), the
+  mechanism (both paths, ≥8 recorded), and the byte. All four mutants observed RED: re-inject the
+  0x08; remove the inline-path guard; remove the block-path guard; over-broaden to all `pnpm`.
+- `scripts/check-invisible-control-chars.mjs` generalises the byte half to the whole tree, wired
+  into `policy`. See E6-F017.
+
+---
+
+## E6-F017 — eight raw control bytes sat in seven tracked text files, three of them corrupting the prose that explains this very defect — RESOLVED
+
+**Status:** resolved
+**Severity:** LOW individually; the reason it is filed is the CLASS, which has shipped three times,
+twice after its own post-mortem was written down.
+**Filed and resolved:** 2026-09-08 (W19), measured at `3814b90f3`.
+
+### What was measured
+
+A byte scan of every tracked text file found eight raw control bytes in seven files. Every one of
+them is the same shell-eaten-escape corruption or an authored byte written raw; **none** required
+deleting an explanation to fix:
+
+| file | byte | disposition |
+|---|---|---|
+| `docs/aoa/plans/2026-07-20-cli-auth-detection-plan.md` | 4× 0x08 | prose meant `` `\b5\d{2}\b` ``; the four `\b` were eaten, leaving the sentence naming a character it could not show. **Restored.** |
+| `docs/replatform/qa/2026-08-31-blocker-ab-fix-design.md` | 0x08 | a Windows path `C:\pn\blockab\` with `\b` eaten. **Restored.** |
+| `scripts/lib/worker-keystore-boundary.mjs` | 0x08 | the POST-MORTEM comment for this defect class, reading "where `<0x08>` was intended". **Restored.** |
+| `packages/worker-daemon/src/supervisor/provider.ts` | NUL | authored join separator → `"\0"` |
+| `scripts/lib/__tests__/embedded-secret-scan.test.mjs` | NUL | authored fixture → `"\x00\x01\x02\uFFFD"` |
+| `server/src/services/asset-content-guard.ts` | NUL, 0x1f, 0x7f | authored strip class → `/[\x00-\x1f\x7f]/` |
+| `server/src/services/mcp-connectors.ts` | NUL | authored sentinel → `"\u0000bound"` |
+| `packages/browser-runtime/src/__tests__/path-adapter.test.ts` | 0x7f | authored test input → `"evil\x7f.pdf"`; the two lines above it already used `\u0000` and `\n` |
+
+The hand-picked six-byte reconnaissance list (00 07 08 0b 0c 1b) **missed three of these**: the
+0x1f, the 0x7f beside it, and the path-adapter hit which was 0x7f alone. That is why the guard bans
+a RANGE (C0 minus tab/LF/CR, plus DEL) rather than a list.
+
+### The objective harm, independent of taste
+
+git classifies a file containing a NUL as BINARY and refuses to show its diff. **Four source files
+were in that state**, so every change to them was unreviewable. Repairing them took the
+repository's NUL-bearing file count from 66 to 62 — the four are diffable text again. "The author
+meant it" is therefore not a sufficient defence for the raw byte.
+
+### The guard, and why it is not the checker that gets deleted
+
+The same post-mortem warns: *"a plain substring scan over raw source … flagged `command-runner.ts`
+for the COMMENTS explaining why existsSync was removed: a checker that makes you delete the
+explanation of a bug is a bad checker."*
+
+`scripts/check-invisible-control-chars.mjs` bans the raw BYTE and permits every ESCAPE that denotes
+the same character. Because the scan reads bytes, escapes are invisible to it by construction — no
+exception machinery, no allowlist, no intent-reading. The repair for a legitimate use is a rewrite
+to an escape denoting the identical character; the repair for a corrupted one restores meaning.
+**The tree reached zero hits with no allowlist, no suppression comment, and not one word of
+explanation removed. Three explanations were restored.** An allowlist of the day's findings was
+rejected outright: it catches nothing new.
+
+File type is decided by path and **never** by content. The usual NUL-sniff for binaries is
+self-defeating here — the NUL being hunted would exempt its own file, which is exactly the state
+the three `.ts` files above were in. Classification is default-deny: a tracked file whose type is in
+neither list fails until someone classifies it. That rule earned its keep on its first run,
+surfacing sixteen unclassified types, most of them text (`.mts`, `.jsonl`, `.npmrc`, `.mailmap`,
+`.webmanifest`, PEM `.key`/`.crt`) that a hand-written list had silently skipped.
+
+### ★★★ The evasion, stated rather than claimed away
+
+The guard was measured EVADED at zero cost by three invisible characters that are not bytes:
+U+200B ZWSP, U+202E RLO and U+00AD SHY each passed a full run. Two were then closed, chosen by
+measurement: bidi overrides (U+202A–U+202E, U+2066–U+2069) and SHY have **zero** legitimate uses in
+the tree and are a documented exploit class (Trojan Source, CVE-2021-42574). **U+200B, U+00A0 and
+U+FEFF remain legal**, deliberately — the tree has six legitimate uses and one of them (a ZWSP
+writing a close-comment sequence inside a JSDoc block) has no escape-based repair.
+
+So the honest verdict: this guard is **complete against the accident it was built for** — a shell
+can only ever emit a C0 byte — and it is **not a security boundary**. Anyone who wants to hide a
+character can still do it with one zero-width space. `scripts/lib/__tests__/invisible-control-chars.test.mjs`
+asserts that limit as a passing test so it cannot quietly be forgotten or over-claimed later.

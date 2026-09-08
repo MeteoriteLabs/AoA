@@ -397,7 +397,7 @@ references — but "cannot be mine" is not the same as "explained".
 The single root cause: this worktree sits deep under OneDrive, so `pnpm install` needs
 `--virtual-store-dir=C:/pn/<short>` to avoid `ENAMETOOLONG`. That puts the virtual store OUTSIDE the
 workspace root — and `@testing-library/jest-dom/dist/vitest.mjs` does a bare `import ... from
-"vitest"`. Node's upward `node_modules` walk from `C:\pnlockab\@testing-library+jest-dom@6.9.1\`
+"vitest"`. Node's upward `node_modules` walk from `C:\pn\blockab\@testing-library+jest-dom@6.9.1\`
 never reaches the repo's hoisted `vitest`, so the import fails. Every one of the 550 failures was a
 COLLECTION error with that identical message; zero were assertion failures. The typecheck failure is
 the same package failing to contribute its `Assertion` augmentation, for the same reason.

@@ -386,6 +386,29 @@ jobs:
           node --test scripts/lib/__tests__/guard-inventory.test.mjs
           node scripts/check-guard-inventory.mjs
 
+      - name: Invisible control characters (a shell must not write a regex escape)
+        run: |
+          # W19. Writing a file through a heredoc/echo/printf/sed turns the two characters
+          # backslash-b into ONE 0x08 byte, which renders invisibly in every terminal, editor
+          # and diff view. This repository shipped that three times, twice AFTER writing its own
+          # post-mortem about it, including into `scripts/ci-local.mjs`, where it silently
+          # disabled the guard that was supposed to stop CI's `pnpm install` steps from running
+          # locally: eight ran, one of them lockfile-mutating, for the life of the file.
+          #
+          # The ban is on the raw BYTE only; every escape that DENOTES the same character stays
+          # legal, so the repair for a legitimate use is a rewrite, never a deletion. That
+          # matters: the previous attempt at this class was a substring scan that demanded
+          # someone delete the comments explaining a bug, and a checker like that gets deleted
+          # itself. The tree reached zero hits with no allowlist and no explanation removed.
+          #
+          # Both commands in ONE step deliberately, as above: two steps are two chances to run
+          # only one of them, and the one skipped is the one that failed.
+          node --test scripts/lib/__tests__/invisible-control-chars.test.mjs
+          node scripts/check-invisible-control-chars.mjs
+          # The consequence half of the same defect: ci-local.mjs's install guard, pinned by
+          # count (8 -> 0) rather than by byte, because the byte fix alone left seven running.
+          node --test scripts/lib/__tests__/ci-local-install-guard.test.mjs
+
       - name: W7U1 output-probe decision logic (proven WITHOUT the key)
         run: |
           # The keyed lane `keyed-e2b-w7u1-output-probe.yml` runs ONCE, on an operator's
