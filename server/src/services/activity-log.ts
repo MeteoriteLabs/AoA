@@ -25,7 +25,16 @@ export interface PersistedActivity extends Omit<LogActivityInput, "details"> {
   details: Record<string, unknown> | null;
 }
 
-/** Persist the mandatory audit row without publishing a pre-commit event. */
+/**
+ * Persist the mandatory audit row without publishing a pre-commit event.
+ *
+ * ★ THIS IS WHERE A CALLER-SUPPLIED `action` BELONGS. `activity_log` has no
+ * single write chokepoint — thirty-four direct `insert(activityLog)` sites, two
+ * of them guarded (see `activity-namespace.ts`) — so the reserved
+ * `security.denied.*` namespace holds only because every direct writer hard-codes
+ * its action. If your action comes from a caller, route it through here rather
+ * than adding a thirty-fifth direct insert.
+ */
 export async function insertActivityLog(
   db: Db,
   input: LogActivityInput

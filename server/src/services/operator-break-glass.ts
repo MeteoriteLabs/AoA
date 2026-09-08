@@ -32,7 +32,18 @@ export interface BreakGlassDeps {
   }) => Promise<void>;
   /** Remove what materializeMembership wrote for this (organization, user). */
   revokeMembership: (a: { organizationId: string; userId: string }) => Promise<void>;
-  /** Best-effort audit sink. Never throws in a way that fails the grant/sweep. */
+  /**
+   * Best-effort audit sink. Never throws in a way that fails the grant/sweep.
+   *
+   * ★ `action` MUST stay an internal literal. The default sink below writes
+   * `activity_log` DIRECTLY, so it does not pass through
+   * `assertUnreservedActivityNamespace` — the reserved `security.denied.*`
+   * namespace is held by convention across every direct writer, not by a
+   * chokepoint (see `activity-namespace.ts` for the measured shape of that
+   * surface). Today's three call sites all pass `"operator.break_glass.*"`
+   * literals. Threading a caller-supplied string in here would make this the
+   * first direct writer that can mint a forged denial record.
+   */
   audit: (e: {
     action: string;
     operatorUserId: string;
