@@ -155,11 +155,58 @@ function inAny(ip, cidrs) {
 // 775feea0621dec8735a44fbf30f762e721e8f0a1b3ab7eb341961a88cfce2139
 // (https://www.iana.org/assignments/iana-ipv6-special-registry/iana-ipv6-special-registry-1.csv)
 //
-// The registry's `Globally Reachable` column is the criterion, with two documented
-// departures in the DENY-MORE direction, both tunnels: the two NAT64 translation
-// prefixes and 6to4 read Globally Reachable = TRUE / N/A, but a translator turns an
-// address inside them into an arbitrary IPv4 destination — leaving them open would
-// re-open every IPv4 range above. Deny-more is the safe direction for an oracle.
+// -- HOW THIS LIST IS DERIVED ------------------------------------------------
+// ★ Stated so it can be RE-DERIVED, not trusted. This file exists to be an
+// INDEPENDENT check, and an independent check whose stated derivation rule does not
+// reproduce its own contents cannot be re-derived by the next person — which is how
+// independence decays into folklore. So the rule below is exact, the count is exact,
+// and every entry the rule does not select is enumerated with its reason.
+//
+// STEP 1 — COVER EVERY `Globally Reachable = False` ROW, WITH ONE ENUMERATED
+// EXCEPTION. The snapshot above carries 13 such rows. This list covers 12; the
+// thirteenth, `2001::/23`, is deliberately left open — see
+// `IPV6_DELIBERATELY_NOT_DENIED` below. TEN of the seventeen entries come from here:
+//   * `64:ff9b:1::/48`, `100::/64`, `100:0:0:1::/64`, `2001:2::/48`,
+//     `2001:db8::/32`, `3fff::/20`, `5f00::/16`, `fc00::/7`, `fe80::/10` — nine
+//     entries, each EXACTLY one GR=False row.
+//   * `::/16` — ONE entry covering THREE GR=False rows (`::/128` unspecified,
+//     `::1/128` loopback, `::ffff:0:0/96` IPv4-mapped). It is WIDER than their
+//     union: the rest of `::/16` is unassigned in this registry. That widening is
+//     itself a deny-more choice, and it is the one that has actually paid — it
+//     covered `::169.254.169.254`, the spelling E8-F009 measured production
+//     ALLOWING, and no registry row covers that address.
+//
+// STEP 2 — SEVEN DELIBERATE DENY-MORE ADDITIONS. The column does not select any of
+// these. Deny-more is the safe direction for an oracle: a false deny costs a
+// destination, a false allow costs the boundary.
+//   1. `64:ff9b::/96`  GR = True  — RFC6052 NAT64 well-known prefix. A translator
+//      turns any address in it into an arbitrary IPv4 destination, so leaving it
+//      open re-opens every IPv4 range in `isPrivateIp` below.
+//   2. `2002::/16`     GR = N/A   — RFC3056 6to4. Same tunnel argument, and it is
+//      the v6 END of the `192.88.99.0/24` relay this file already denies; denying
+//      one end of a tunnel is denying neither.
+//   3. `2001::/32`     GR = N/A   — RFC4380 Teredo, IPv6-over-UDP. A third tunnel:
+//      it carries v6 traffic past a v4-only egress filter.
+//   4. `2001:20::/28`  GR = True  — RFC7343 ORCHIDv2. Cryptographic IDENTIFIERS,
+//      not locators; nothing is reachable there, so a connection attempt is a probe
+//      or a misconfiguration.
+//   5. `2001:10::/28`  GR = blank — the row reads "Deprecated (previously ORCHID)"
+//      (RFC4843, expired 2014-03) and its Globally Reachable cell is EMPTY. Same
+//      identifier-space argument; an empty cell is not an assertion of reachability.
+//   6. `fec0::/10`     NOT IN THIS REGISTRY — RFC3879 deprecated site-local; IANA
+//      removed the row. Legacy stacks still route it internally, so it is kept.
+//   7. `ff00::/8`      NOT IN THIS REGISTRY — multicast is registered in the
+//      separate IPv6 Multicast Address Space Registry, so this registry's column
+//      cannot select it either way. Denied for the neighbour-enumeration reason
+//      that `224.0.0.0/3` is denied on the v4 side.
+//
+// ★ THE COUNT THIS HEADER GOT WRONG, kept so the correction is checkable rather
+// than silent. An earlier revision said the column "is the criterion, with two
+// documented departures … both tunnels: the two NAT64 translation prefixes and
+// 6to4". Wrong three ways: it called three prefixes "two"; `64:ff9b:1::/48` reads
+// GR = False and is therefore not a departure at all; and it omitted Teredo, both
+// ORCHIDs, `fec0::/10`, `ff00::/8` and the `::/16` widening. Re-derive against the
+// pinned CSV rather than trusting any prose summary, this one included.
 export const IPV6_PRIVATE_CIDRS = [
   "::/16", // first word zero: ::, ::1 (loopback), IPv4-compatible ::a.b.c.d
   "64:ff9b::/96", // RFC6052 NAT64 well-known prefix — translates to arbitrary IPv4

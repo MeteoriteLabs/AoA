@@ -267,8 +267,21 @@ export const INTERNAL_RANGE_DENY_CIDRS_V6: readonly string[] = Object.freeze([
   // which W17 added to `isPrivateIP`. They are ADJACENT and aligned, so the exact
   // minimal cover of the two is ONE /63 -- this entry was "100::/64" before W17
   // and the re-derivation in `w17-ipv6-range-closeout.test.ts` produced the /63.
-  // Do not "restore" the /64 and add a second entry: that is a different (still
-  // correct, but non-minimal) list and the derivation test will red on it.
+  // Do not "restore" the /64 and add a second entry: that is a different -- still
+  // set-equal and still correct, but NON-MINIMAL -- list.
+  // ★ WHICH CHECK CATCHES THAT, measured by writing exactly that spelling and
+  // running the suite rather than by assuming. What REDS is the EXACT-SET PIN in
+  // `w10c-internal-range-deny-set.test.ts`: "IPv6 half is EXACTLY this list"
+  // (15 entries against the pinned 14) and, beside it, "the combined set is exactly
+  // v4 ++ v6" on `toHaveLength(28)` (29 against 28). The DERIVATION test in
+  // `w17-ipv6-range-closeout.test.ts` PASSES on that spelling and structurally
+  // cannot catch it: its exact-array assertion is on the cover RECOMPUTED from
+  // `isPrivateIP`, which no edit to THIS array can move, and its shipped-vs-derived
+  // comparison is INTERVAL SUBTRACTION in both directions -- set equality over
+  // addresses, blind to how the same addresses are spelled. So the two checks are
+  // not redundant: the derivation test says the ADDRESSES are right, the exact-set
+  // pin says the SPELLING is the minimal cover. Naming the wrong one here would
+  // send a future reader to a test that would have shrugged.
   "100::/63",
   // 2001::/32 Teredo. IPv6-over-UDP tunnelling -- another v4 tunnel bypass.
   "2001::/32",
