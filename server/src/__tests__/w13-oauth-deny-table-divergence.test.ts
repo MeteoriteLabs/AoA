@@ -173,11 +173,15 @@ describe("W13 OAuth deny table -- IPv6, exact over 2^128", () => {
     const added = subtract(after, before);
     const total = added.reduce((acc, iv) => acc + (iv.hi - iv.lo + 1n), 0n);
     // ::/16 minus (::/128 + ::1/128 + ::ffff:0:0/96), plus 64:ff9b::/47,
-    // 2001:2::/32, 2001:10::/28, 2001:20::/28, 2002::/16, 3ff0::/12, fec0::/10.
+    // 2001:2::/32, 2001:10::/28, 2001:20::/28, 2002::/16, 3ff0::/12, fec0::/10,
+    // and — W17 — 100:0:0:1::/64 (the RFC9780 Dummy Prefix: the derived entry
+    // widened from 100::/64 to 100::/63, and the PRE-W13 table carried the /64)
+    // plus 5f00::/16 (SRv6 SIDs, RFC9602).
     const size = (p: bigint): bigint => 1n << (128n - p);
     const expected =
       size(16n) - 1n - 1n - size(96n) +
-      size(47n) + size(32n) + size(28n) + size(28n) + size(16n) + size(12n) + size(10n);
+      size(47n) + size(32n) + size(28n) + size(28n) + size(16n) + size(12n) + size(10n) +
+      size(64n) + size(16n);
     expect(total).toBe(expected);
     // and every named class must actually be inside the difference
     const covered = (ip: string): boolean => {
@@ -195,6 +199,8 @@ describe("W13 OAuth deny table -- IPv6, exact over 2^128", () => {
       "3ff0:0:0:0:0:0:0:1",
       "3fff:0:0:0:0:0:0:1",
       "fec0:0:0:0:0:0:0:1",
+      "100:0:0:1:0:0:0:1", // W17 -- RFC9780 Dummy Prefix
+      "5f00:0:0:0:0:0:0:1", // W17 -- RFC9602 SRv6 SIDs
     ]) expect(covered(ip), ip).toBe(true);
   });
 });

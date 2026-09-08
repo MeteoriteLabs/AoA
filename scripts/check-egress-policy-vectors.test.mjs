@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   EgressPolicyVectorError,
+  IPV6_PRIVATE_CIDRS,
   NETWORK_DENIAL_CLASSES,
   classifyEgress,
   ipInCidr,
@@ -76,4 +77,95 @@ test("verifyFixture throws when a deny vector's expected class is wrong", () => 
   const target = fixture.denyVectors.find((v) => v.name === "cloud_metadata_imds");
   target.class = "private";
   assert.throws(() => verifyFixture(fixture), EgressPolicyVectorError);
+});
+
+// --- W17: the IPv6 half of the oracle ----------------------------------------
+//
+// This oracle's IPv6 half used to deny only 7 ranges — a strict SUBSET of the
+// production predicate it is supposed to disagree with. These cases pin the
+// widened list AS THIS FILE'S OWN PROPERTY. They deliberately do NOT compare
+// against `isPrivateIP`: that comparison lives in
+// `server/src/__tests__/w17-ipv6-range-closeout.test.ts`, which can import both,
+// and importing production HERE would destroy this file's independence.
+
+test("W17 IPv6: every registry range the oracle claims is actually denied", () => {
+  for (const [ip, why] of [
+    ["::1", "loopback"],
+    ["::169.254.169.254", "IPv4-compatible spelling of IMDS"],
+    ["64:ff9b::169.254.169.254", "RFC6052 NAT64 well-known prefix carrying IMDS"],
+    ["64:ff9b:1::1", "RFC8215 NAT64 local-use prefix"],
+    ["100::1", "RFC6666 discard-only"],
+    ["100:0:0:1::1", "RFC9780 Dummy Prefix"],
+    ["2001::1", "RFC4380 Teredo"],
+    ["2001:2::1", "RFC5180 benchmarking"],
+    ["2001:10::1", "RFC4843 ORCHID (deprecated)"],
+    ["2001:20::1", "RFC7343 ORCHIDv2"],
+    ["2001:db8::1", "RFC3849 documentation"],
+    ["2002:a9fe:a9fe::1", "RFC3056 6to4 carrying IMDS"],
+    ["3fff::1", "RFC9637 documentation"],
+    ["5f00::1", "RFC9602 SRv6 SIDs"],
+    ["fc00::1", "RFC4193 unique-local"],
+    ["fd12:3456::1", "RFC4193 unique-local"],
+    ["fe80::1", "link-local"],
+    ["fec0::1", "deprecated site-local"],
+    ["ff02::1", "multicast"],
+  ]) {
+    assert.equal(isPrivateIp(ip), true, `${ip} (${why})`);
+  }
+});
+
+test("W17 IPv6: THE POSITIVE CONTROL — real destinations stay allowed", () => {
+  // A predicate that denied everything would pass the case above. These are the
+  // address families AoA's real destinations live in.
+  for (const ip of [
+    "2606:4700:4700::1111", // Cloudflare DNS
+    "2001:4860:4860::8888", // Google DNS
+    "2600:1f18::1", // AWS
+    "2a00:1450:4001::1", // Google
+    "2620:4f:8000::1", // AS112 direct delegation — inside NO denied range
+    "2001:1::1", // RFC7723 PCP anycast — Globally Reachable = TRUE
+    "2001:1::2", // RFC8155 TURN anycast — Globally Reachable = TRUE
+    "2001:3::1", // RFC7450 AMT — Globally Reachable = TRUE
+    "2001:4:112::1", // RFC7535 AS112-v6 — Globally Reachable = TRUE
+    "2001:30::1", // RFC9374 DRIP DETs — Globally Reachable = TRUE
+    "2003::1", // ordinary global unicast just past 2002::/16
+    "3ffe::1", // 6bone, returned to the free pool; NOT reserved today
+    "5f01::1", // just past 5f00::/16
+    "100:0:0:2::1", // just past the Dummy Prefix
+  ]) {
+    assert.equal(isPrivateIp(ip), false, ip);
+  }
+});
+
+test("W17 IPv6: the 2001::/23 remainder is deliberately NOT denied", () => {
+  // The IETF Protocol Assignments superblock reads Globally Reachable = False, but
+  // its assigned sub-blocks outside the ranges above read TRUE. Covering the /23
+  // would deny real routed destinations to close nothing. This case exists so that
+  // "add 2001::/23, it's in the registry" is a RED test rather than a code review.
+  assert.equal(IPV6_PRIVATE_CIDRS.includes("2001::/23"), false);
+  for (const ip of ["2001:1::1", "2001:3::1", "2001:4:112::1", "2001:30::1"]) {
+    assert.equal(isPrivateIp(ip), false, ip);
+  }
+});
+
+test("W17 IPv6: the CIDR list is exactly the 17 registry-derived entries", () => {
+  assert.deepEqual(IPV6_PRIVATE_CIDRS, [
+    "::/16",
+    "64:ff9b::/96",
+    "64:ff9b:1::/48",
+    "100::/64",
+    "100:0:0:1::/64",
+    "2001::/32",
+    "2001:2::/48",
+    "2001:10::/28",
+    "2001:20::/28",
+    "2001:db8::/32",
+    "2002::/16",
+    "3fff::/20",
+    "5f00::/16",
+    "fc00::/7",
+    "fe80::/10",
+    "fec0::/10",
+    "ff00::/8",
+  ]);
 });
