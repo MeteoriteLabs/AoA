@@ -103,14 +103,25 @@ captured both blockers in its own stderr, and they are at **different layers**:
   sandbox's cwd (`/home/user`) is not a git repository. **A1 never reached a model.** This is a
   product-shaped defect in the `:203`/`:204` literals and is filed as **E7-F027**.
 - **Blocker 2 — credential delivery, hit only by A2/A3.** With the bypass flag on, codex got past
-  blocker 1 and then failed to authenticate: five reconnects, all `401`, with the server saying the
-  bearer header was **missing** rather than wrong. The pack delivered `OPENAI_API_KEY` as a
-  per-command env var (`envVars: { OPENAI_API_KEY: key }`) and the key was non-empty — an empty one
-  returns `inconclusive / no-model-provider-key` before any sandbox is created, which did not
-  happen. So **A2 never reached a model either.**
+  blocker 1 and then failed to authenticate: **FOUR** reconnect attempts (`Reconnecting… 2/5`,
+  `3/5`, `4/5`, `5/5`), all `401`, with the server saying the bearer header was **missing** rather
+  than wrong. The pack delivered `OPENAI_API_KEY` as a per-command env var
+  (`envVars: { OPENAI_API_KEY: key }`) and the key was non-empty — an empty one returns
+  `inconclusive / no-model-provider-key` before any sandbox is created, which did not happen.
+  ★ **What follows about A2 is a statement about the RECORD, not about the agent.** No
+  model-contact evidence is present in the stdout this run preserved — which was **exactly 900
+  characters**. ★★★ **900 is the cap (`safe(exec.stdout, 900)`), hit exactly, and that is itself the
+  proof of truncation:** a stdout that ended on its own would land on some arbitrary length, not
+  precisely on the limit. So it is **known** that there was more and **unknown** what it said. The
+  capture ends **mid-token** at `{"type":"i` — while A3's
+  parallel line shows the same position reads `{"type":"item.completed","item":{"id":"item_0`,
+  with the item type itself cut off. So **whether A2 emitted an `agent_message` after its
+  reconnects cannot be determined from what was preserved.** A1's failure to reach a model IS
+  established (exit 1, empty stdout, a named refusal); A2's is not established either way.
 
 **Consequence, and it is the important one: codex's ability to write under the production argv is
-still UNMEASURED.** Both arms failed upstream of the capability question. The pack nevertheless
+still UNMEASURED.** A1 failed upstream of the capability question and A2 cannot be shown from the
+preserved record to have reached it. The pack nevertheless
 reported `the-posture-is-not-the-cause`, which is contradicted by its own log — the posture removed
 A1's actual blocker. That classifier gap is filed as **E7-F028**.
 
@@ -170,3 +181,62 @@ text is not retrievable through the API, so it was not confirmed after the fact.
 
 **Consumed by:** `CLI-008-unit-f-design.md` §12 — probe (a) has returned, and §12.3's stop condition
 is replaced rather than deleted.
+
+---
+
+## 8. AMENDMENT — W16B, 2026-09-07: the apparatus that produced §4 has been repaired
+
+★★★ **Nothing above is rewritten.** This run happened as recorded; what follows is what the same
+inputs produce through the repaired instrument, so a later reader is not left choosing between a
+document and the code.
+
+**E7-F028 is RESOLVED.** `classifyProbeAArm` now returns `indeterminate / cli-refused-at-startup` for
+a non-zero exit with empty stdout, and `verdictProbeA`'s exoneration branch refuses to fire unless
+**A2 — the only arm carrying the permission posture — demonstrably reached a model**: an `assistant`
+event or a non-error `result` with billed output tokens for claude, an `agent_message`/`reasoning`
+item or a `turn.completed` with billed output tokens for codex. Shapes measured from the adapters
+*and* from this run's own captured stdout.
+
+★★★ **THE EXONERATION PREDICATE WAS WRONG THREE TIMES AND THIS IS THE FOURTH VERSION, so read it with
+its bound attached.** The first repair said "at least one arm demonstrably ran", which gates the
+**wrong arm** — only A2 carries the posture. The second said `a2.ran`, but `ran` is the CLI's *head*
+event, and **this very run** shows why that is not enough: codex A2 emitted
+`{"type":"thread.started",…}` and `{"type":"turn.started"}` and then **FOUR**
+`401 Unauthorized` reconnect lines (`2/5` through `5/5`) against `wss://api.openai.com/v1/responses`.
+It started, and **no model-contact evidence is present in the EXACTLY 900 characters of its stdout this run
+preserved** — a statement about the RECORD (that capture ends mid-token at `{"type":"i`), not the
+claim that the agent reached nothing. Under the head-event predicate that pair EXONERATES the
+posture, green, in the durable record. ★ **And v4 is still a proxy**: it does not establish that the model was given the intended
+prompt, understood it, or ever *attempted* a write; it says nothing about A1, which it does not gate;
+it sees only the first 8000 characters of captured stdout; and `model-authored-content` is text the
+CLI *attributes* to a model, where only `billed-usage` is a round trip that cannot be produced
+locally. Those four sentences are emitted verbatim into every exoneration verdict's `detail` — so
+they are in the **durable record** — and are a row in the runbook's probe-A table, pinned by a test.
+
+**Replayed through the repaired classifier, §1's codex row would read:**
+
+| probe | verdict | what it establishes |
+|---|---|---|
+| **A / `codex_local`** | `inconclusive` — `a1-cli-refused-at-startup` | A1 exited 1 having written nothing; the CLI refused before it did or declined the work. **Nothing about codex's ability to write is measured.** |
+
+★ **The disposition of this run would therefore have been `inconclusive`, and the lane RED.** That is
+the correct outcome: for codex the pack did not answer. The claude half — §2, four arms, the CLI's own
+`permissionMode` self-report — is **untouched** and still `no / …-posture-is-the-cause`. A pinned
+regression test drives this run's real captured stdout through the real classifier and the real
+verdict function and asserts exactly that.
+
+**E7-F029 is PARTLY fixed, and the register now says so.** The self-test redirects
+`GITHUB_STEP_SUMMARY` to a temp file **and reads the redirected block back**, so the synthetic report
+no longer reaches the **run page** and the summary channel gained its first assertion of any kind.
+The **step log** still shows two blocks — `console.log` is untouched — so the finding stays open,
+narrowed to the log channel. ★ Its ownership-register reason said *"not applied here because it is
+still a change to the instrument"*, which was true when filed and false on this tip; that sentence is
+corrected in the same commit as this line.
+
+**E7-F022 is partly addressed.** A new **probe T** runs first and asserts
+`command -v claude` / `command -v codex` inside the **resolved** template, in its own cheap sandbox,
+so the durable record names the image that answered. ★ It **caveats** probe A rather than gating it:
+probe A installs its own CLI and does not depend on the image carrying one, so blocking on probe T
+could only convert an unverified precondition into a guaranteed zero-information run — the argument
+is in the runbook's probe T box. §5's limit 3 ("one template, one tier, one image") is unchanged: it
+is still only `aoa-base` on this account that was measured.

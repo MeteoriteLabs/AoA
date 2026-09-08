@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 // -----------------------------------------------------------------------------
-// W7U1 — THE OUTPUT PROBE PACK. ONE KEYED RUN, THREE PROBES, THREE-STATE ANSWERS.
+// W7U1 — THE OUTPUT PROBE PACK. ONE KEYED RUN, FOUR PROBES, THREE-STATE ANSWERS.
+//
+// T (the template precondition, added W16B) / B / C / A-per-adapter. Probe T asserts the
+// RESOLVED template actually carries the agent CLIs, in its own cheap sandbox, and RECORDS
+// the answer beside probe A's (E7-F022). It is a caveat, not a gate: probe A installs its
+// own CLI and does not depend on the image carrying one, so blocking on T could only turn
+// an unknown into a guaranteed zero-information run. See `probeAPreflightCaveat`.
 //
 // A 26-agent decision wave concluded: build no output mechanism, MEASURE FIRST. The
 // founder authorised ONE keyed E2B run. This file is what that run executes. It
@@ -70,9 +76,12 @@ import {
   buildSandboxInvocation,
 } from "../../../../server/src/services/task-run-sandbox-invocation.js";
 import {
+  CLASSIFIER_STDOUT_LIMIT,
   CLI_BEARING_TEMPLATE_ALIAS,
+  TEMPLATE_CLI_PROBE_SCRIPT,
   buildProbeRecord,
   classifyProbeAArm,
+  evaluateTemplateCliPreflight,
   formatVerdict,
   isListingUsable,
   packDisposition,
@@ -109,6 +118,27 @@ const safe = (text: unknown, max = 1200): string => redactSecrets(String(text ??
 
 /** One nonce per RUN, so a file left by an earlier run can never pass an arm. */
 const RUN_NONCE = `W7U1-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`.toUpperCase();
+
+/**
+ * The stdout the CLASSIFIER read, per arm, on its way into the durable record.
+ *
+ * ★★★ MODULE-LEVEL BECAUSE THE ARMS AND THE RECORD ARE IN DIFFERENT SCOPES, and the run
+ * that proved this necessary is `34087197668`: its verdicts were computed from up to 8000
+ * characters of stdout and its record preserved NONE, so the verdicts cannot be re-derived
+ * from the artefact they shipped in. Appended by every probe-A arm, read once by
+ * `emitDurableRecord`.
+ */
+type ArmEvidence = {
+  probe: string;
+  label: string;
+  adapterType: string;
+  posture: boolean;
+  channel: string;
+  exitCode: number | null;
+  stdoutTruncated: boolean;
+  stdout: string;
+};
+const ARM_EVIDENCE: ArmEvidence[] = [];
 
 /** The candidate output paths probe B reads BEFORE any exec. */
 const CANDIDATE_OUTPUT_PATHS = [
@@ -312,6 +342,96 @@ const inconclusive = (probe: string, reason: string, detail: string): Verdict =>
   reason,
   detail,
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PROBE T — DOES THE RESOLVED IMAGE ACTUALLY CARRY THE AGENT CLIs?
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The lane-time template precondition, run FIRST and gating probe A.
+ *
+ * ★★★ E7-F022 NAMED THIS AND NOBODY BUILT IT. That finding measured that every keyed lane
+ * pipes `inputs.e2b_template` straight into `E2B_TEMPLATE`, that an omitted input therefore
+ * resolves to the bare `base` image which has NO agent CLIs, and that consequently "a keyed
+ * run against bare `base` can be reported green while the CLIs were never present". Its own
+ * owner paragraph says the remedy is "a boot-time or LANE-TIME assertion that the registered
+ * template contains what the Dockerfile promises".
+ *
+ * ★★ `resolveTemplate` ALREADY FIXED THE NAME. It is not enough: a name is not a filesystem.
+ * An operator may dispatch any alias explicitly (and `resolveTemplate` honours it verbatim,
+ * deliberately); an account may hold a stale or half-built `aoa-base`. Either way this pack
+ * would `npm install -g` its own CLI over the top and answer as though the image had been
+ * the one `e2b/e2b.Dockerfile` describes — the founder's authorised, token-spending run
+ * spent on a different question than the one asked.
+ *
+ * ★ IT RUNS IN ITS OWN CHEAP SANDBOX AND SPENDS NO MODEL TOKENS. `TEMPLATE_CLI_PROBE_SCRIPT`
+ * is the same assertion the image's final build layer makes (`command -v claude` /
+ * `command -v codex`), re-made against the image that actually answered.
+ */
+async function templatePreflight(): Promise<Verdict> {
+  return withSandbox("template-preflight", PROBE_SANDBOX_TTL_MS, async (t, sandboxId) => {
+    const res = await run(t, sandboxId, "sh", ["-c", TEMPLATE_CLI_PROBE_SCRIPT], { timeoutMs: SHELL_TIMEOUT_MS });
+    // eslint-disable-next-line no-console
+    console.log(
+      `[w7u1/T] channel=${res.channel} exit=${String(res.exitCode)} stdout=${JSON.stringify(safe(res.stdout, 400))} ` +
+        `stderr=${JSON.stringify(safe(res.stderr, 200))}`,
+    );
+    return evaluateTemplateCliPreflight({
+      channel: res.channel,
+      exitCode: res.exitCode,
+      stdout: res.stdout,
+      template: TEMPLATE,
+    }) as Verdict;
+  });
+}
+
+/**
+ * ★★★ PROBE T IS A RECORDED CAVEAT, NOT A GATE — AND THIS IS AN ARGUED CHANGE, NOT A
+ * PREFERENCE. It used to BLOCK probe A whenever it did not answer `yes`. That was wrong,
+ * and the reasoning is worth keeping because it is the general shape of a bad gate:
+ *
+ *   1. PROBE A DOES NOT DEPEND ON WHAT PROBE T CHECKS. Probe A `npm install -g`s its own
+ *      agent CLI unconditionally (plain, then `sudo` as a fallback) and has its OWN
+ *      preconditions for every way that can fail — `template-has-no-node-runtime`,
+ *      `cli-install-failed`, `cli-binary-not-on-path`. Run 34087197668 shows both lanes
+ *      taking that path (`install: "INSTALL_PLAIN"`, `binary = /usr/local/bin/claude`).
+ *      So the CLIs being PRE-BAKED into the image is a property of the image, not a
+ *      precondition of probe A's validity, and the false green E7-F022 feared — "reported
+ *      green while the CLIs were never present" — is not reachable through probe A, which
+ *      cannot answer at all without a CLI it put there itself.
+ *   2. THE GATE HAS NEVER PASSED ANYWHERE. It did not exist when the pack last fired, so
+ *      its first execution would be on the founder's next authorised, token-spending run.
+ *      An unverified hard gate in front of the only run that answers the question converts
+ *      an unknown into a GUARANTEED zero-information outcome — the exact cost it was
+ *      written to avoid, inverted.
+ *   3. FAIL-CLOSED IS FOR WRONG ANSWERS, NOT FOR MISSING ONES. Refusing to answer is right
+ *      when answering would assert something unsupported (that is why the exoneration
+ *      branch refuses). Here the answer is supported either way; only the note beside it
+ *      changes. So the honest move is to answer AND caveat.
+ *
+ * WHAT IS KEPT, so E7-F022 is not quietly dropped: probe T still RUNS FIRST, in its own
+ * cheap sandbox, spending no model tokens, and its three-state verdict still goes into the
+ * durable record — so the record still says which image answered and whether it carried the
+ * CLIs. An `inconclusive` T still reds the lane through `packDisposition`, exactly as any
+ * unreadable probe does; the difference is that probe A's answer now SURVIVES that red
+ * instead of being replaced by it. Every cell of the matrix is strictly better than before:
+ * `no` from T is a RESULT and stays green with A answered; `inconclusive` from T reds
+ * honestly with A answered.
+ *
+ * ★★ STILL A SEPARATE, PURE, MODULE-LOCAL FUNCTION SO IT CAN BE PROVEN WITHOUT A KEY. A
+ * caveat whose only exercise is the one keyed run is no better tested than a gate whose
+ * only exercise is the one keyed run.
+ *
+ * @returns the sentence to append to probe A's detail, or `null` when T certified the image.
+ */
+function probeAPreflightCaveat(adapterType: string, preflight: Verdict): string | null {
+  if (preflight.state === "yes") return null;
+  return (
+    ` CAVEAT: probe T did not certify the image (${preflight.state}/${preflight.reason}): ${preflight.detail} ` +
+    `Probe A for ${adapterType} RAN ANYWAY — it installs its own CLI and does not depend on the image carrying ` +
+    "one — so this answer stands, but it was measured in an image whose pre-baked agent CLIs were not confirmed."
+  );
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PROBE B — is the TEMPLATE already satisfying a location convention?
@@ -568,18 +688,69 @@ async function probeA(spec: AdapterArm): Promise<Verdict> {
         envVars: { [spec.keyEnvVar]: key },
       });
       const file = await readBack(t, sandboxId, path);
+
+      // ★★★ ONE SLICE, TAKEN ONCE, USED BY BOTH THE CLASSIFIER AND THE RECORD.
+      // This variable is the whole point of the repair. It used to be taken TWICE with two
+      // different limits — `safe(exec.stdout, 900)` into the console and
+      // `safe(exec.stdout, 8000)` into the classifier — and the durable record got neither.
+      // Run 34087197668's log is the consequence: it contains none of the four shapes the
+      // model-contact predicate looks for, not even for the claude arms that DID reach a
+      // model, so no verdict from it can be audited against its own record. Now the
+      // classifier and the record are handed the SAME STRING, and the console keeps its own
+      // shorter line on purpose — a 900-character console line is a reasonable console line,
+      // and THE RECORD, NOT THE CONSOLE, IS THE AUDITABLE ARTEFACT.
+      // ★ THE TRUNCATION FLAG IS COMPUTED POST-REDACTION, ON PURPOSE. `safe()` redacts and
+      // THEN slices, and redaction changes length — so comparing the RAW stdout against the
+      // limit can report `truncated` for a string the slice never actually cut. The flag has
+      // to mean exactly one thing ("the slice dropped bytes") or it is not a bound a reader
+      // can rely on, and an unreliable bound is how the ~900-character claim got made in the
+      // first place.
+      const redactedStdout = safe(exec.stdout, Number.MAX_SAFE_INTEGER);
+      const classifierStdout = redactedStdout.slice(0, CLASSIFIER_STDOUT_LIMIT);
+      const rawStdout = String(exec.stdout ?? "");
+      ARM_EVIDENCE.push({
+        probe: probeId,
+        label,
+        adapterType: spec.adapterType,
+        posture: applyPosture,
+        channel: String(exec.channel),
+        exitCode: exec.exitCode,
+        // A verdict that says "no model-contact evidence" means something different when the
+        // bytes ran out, so the record says which it was.
+        stdoutTruncated: redactedStdout.length > CLASSIFIER_STDOUT_LIMIT,
+        stdout: classifierStdout,
+      });
+
       // eslint-disable-next-line no-console
       console.log(
         `[w7u1/${probeId}] ${label} posture=${String(applyPosture)} channel=${exec.channel} ` +
           `exit=${String(exec.exitCode)} preExisted=${String(preExisted)} file=${String(file.found)} ` +
           `readErrorKind=${String(file.errorKind)} ` +
-          `stdout=${JSON.stringify(safe(exec.stdout, 900))} stderr=${JSON.stringify(safe(exec.stderr, 600))}`,
+          `stdout=${JSON.stringify(safe(exec.stdout, 900))} stderr=${JSON.stringify(safe(exec.stderr, 600))} ` +
+          `stdoutInRecord=${String(classifierStdout.length)}/${String(redactedStdout.length)} raw=${String(rawStdout.length)}`,
       );
       return classifyProbeAArm({
         label,
         nonce,
+        // ★★★ THE ADAPTER AND THE STDOUT REACH THE CLASSIFIER NOW, AND BOTH ARE REQUIRED.
+        // E7-F028: without them a non-zero exit was indistinguishable from "the agent ran
+        // and chose not to write", and `verdictProbeA` went on to EXONERATE the permission
+        // posture from two arms that had never started. `adapterType` selects which head
+        // event counts as evidence of starting; `stdout` is where that evidence lives.
+        //
+        // ★ THE SLICE IS GENEROUS AND THE REASON MATTERS: the head event is the FIRST line
+        // both CLIs emit (measured, run 34087197668), so a prefix cannot lose it — but a
+        // stingy slice could turn a real stdout into an apparent empty one and mint a false
+        // `cli-refused-at-startup`. Redacted, like every other string this pack handles.
+        adapterType: spec.adapterType,
         targetPreExisted: preExisted,
-        execution: { channel: exec.channel, exitCode: exec.exitCode, detail: safe(exec.detail, 200) },
+        execution: {
+          channel: exec.channel,
+          exitCode: exec.exitCode,
+          // The SAME string that went into `armEvidence` above. Not a second slice.
+          stdout: classifierStdout,
+          detail: safe(exec.detail, 200),
+        },
         file: { found: file.found, content: file.content, errorKind: file.errorKind, detail: safe(file.detail, 200) },
       });
     }
@@ -604,8 +775,17 @@ async function probeA(spec: AdapterArm): Promise<Verdict> {
     const a0 = classifyProbeAArm({
       label: "A0",
       nonce: a0Nonce,
+      // ★ A0 CARRIES NO `adapterType` ON PURPOSE: it is PLAIN SHELL, not an agent CLI, so
+      // no head event exists for it to emit and its `ran` is fail-closed `false`. Nothing
+      // consults it — A0's proof that it ran is the file it wrote — and inventing an
+      // adapter here would let a shell arm supply "the agent started" evidence.
       targetPreExisted: a0Pre,
-      execution: { channel: a0Exec.channel, exitCode: a0Exec.exitCode, detail: safe(a0Exec.detail, 200) },
+      execution: {
+        channel: a0Exec.channel,
+        exitCode: a0Exec.exitCode,
+        stdout: safe(a0Exec.stdout, 2000),
+        detail: safe(a0Exec.detail, 200),
+      },
       file: {
         found: a0File.found,
         content: a0File.content,
@@ -726,6 +906,11 @@ async function emitDurableRecord(verdicts: Verdict[]): Promise<void> {
       runNonce: RUN_NONCE,
       generatedAt: new Date().toISOString(),
       workflowRunUrl: RUN_URL,
+      // ★★★ WITHOUT THIS THE RECORD CANNOT AUDIT ITS OWN VERDICT — the defect measured on
+      // run 34087197668. `CLASSIFIER_STDOUT_LIMIT` says why, and the anti-drop test in
+      // `scripts/lib/__tests__/w7u1-agent-output-probe.test.mjs` reds if the field is
+      // silently dropped from `buildProbeRecord`.
+      armEvidence: ARM_EVIDENCE,
     });
     mkdirSync(dirname(recordPath), { recursive: true });
     // Redacted on the way out, exactly like every other string this pack emits: a probe
@@ -758,10 +943,22 @@ describeKeyed("W7U1 — the output probe pack, against REAL E2B", () => {
         }
       };
 
+      // ★★★ PROBE T RUNS FIRST AND CAVEATS PROBE A; IT NO LONGER BLOCKS IT. E7-F022's
+      // concern — the resolved template is an operator input no protocol surface can see —
+      // is answered by RECORDING which image answered, which probe T still does. Blocking
+      // was the wrong remedy: probe A installs its own CLI and does not depend on the
+      // image carrying one, so the gate could only ever turn an unknown into a guaranteed
+      // zero-information run. See `probeAPreflightCaveat` for the full argument. `guarded`
+      // still makes a THROWN preflight inconclusive, so an unreadable T still reds the lane
+      // — it just no longer takes probe A's answer down with it.
+      const preflight = await guarded("T", templatePreflight);
+      verdicts.push(preflight);
       verdicts.push(await guarded("B", probeB));
       verdicts.push(await guarded("C", probeC));
       for (const spec of ADAPTER_ARMS) {
-        verdicts.push(await guarded(`A/${spec.adapterType}`, () => probeA(spec)));
+        const caveat = probeAPreflightCaveat(spec.adapterType, preflight);
+        const answer = await guarded(`A/${spec.adapterType}`, () => probeA(spec));
+        verdicts.push(caveat ? { ...answer, detail: `${answer.detail}${caveat}` } : answer);
       }
 
       // ★★★ THE RECORD IS EMITTED BEFORE THE ASSERTION, AND IN A `finally`. The run that
@@ -901,8 +1098,26 @@ describe("W7U1 — template resolution and the durable record (no key required)"
     const { join } = await import("node:path");
     const dir = mkdtempSync(join(tmpdir(), "w7u1-record-"));
     const target = join(dir, "nested", "record.json");
+    const summaryTarget = join(dir, "step-summary.md");
     const previous = process.env.W7U1_RECORD_PATH;
+    // ★★★ E7-F029 — THE FIXTURE'S REPORT MUST NOT LAND ON THE RUN PAGE. `emitDurableRecord`
+    // renders `report(verdicts)` to THREE channels. This test used to redirect only ONE of
+    // them (`W7U1_RECORD_PATH`), so on a real Actions run the SECOND channel appended a
+    // SYNTHETIC report — same banner, same arm legend, same commit sha, the REAL run nonce,
+    // details `d1`/`d2` and a trailing `DISPOSITION: inconclusive` — to
+    // `$GITHUB_STEP_SUMMARY`, beneath a run that had measured everything it set out to.
+    // Measured in run 34087197668: two `W7U1 OUTPUT PROBE PACK — RESULT` blocks 7 ms apart,
+    // and the orchestrating session nearly reported the run's disposition from the trailing
+    // one.
+    //
+    // ★★ REDIRECTING IS STRICTLY BETTER THAN SILENCING. Pointing the variable at a temp file
+    // keeps the wiring assertion this test exists to make — and STRENGTHENS it: the summary
+    // channel had NO assertion at all before, and now the rendered block is read back and
+    // checked. The log-stream duplicate remains (harmless once known, and still evidence the
+    // emitter fired); the PR body records the structural fix that would remove it too.
+    const previousSummary = process.env.GITHUB_STEP_SUMMARY;
     process.env.W7U1_RECORD_PATH = target;
+    process.env.GITHUB_STEP_SUMMARY = summaryTarget;
     try {
       await emitDurableRecord([
         { probe: "B", state: "no", reason: "template-prefills-nothing", detail: "d1" },
@@ -922,10 +1137,153 @@ describe("W7U1 — template resolution and the durable record (no key required)"
         "B=no/template-prefills-nothing",
         "A/claude_local=inconclusive/no-model-provider-key",
       ]);
+      // The summary channel fired — INTO THE TEMP FILE, not the run page. Both halves
+      // matter: the first proves the redirect did not silently disable the emitter, the
+      // second is the E7-F029 fix itself.
+      const summary = readFileSync(summaryTarget, "utf8");
+      expect(summary).toContain("W7U1 OUTPUT PROBE PACK");
+      expect(summary).toContain("DISPOSITION: inconclusive");
     } finally {
       if (previous === undefined) delete process.env.W7U1_RECORD_PATH;
       else process.env.W7U1_RECORD_PATH = previous;
+      if (previousSummary === undefined) delete process.env.GITHUB_STEP_SUMMARY;
+      else process.env.GITHUB_STEP_SUMMARY = previousSummary;
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE TEMPLATE PRECONDITION CAVEATS PROBE A — proven WITHOUT a key
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// ★★★ THE PURE CORE OWNS THE DECISION (`evaluateTemplateCliPreflight`: what a preflight
+// observation MEANS); this block owns the WIRING — that a failed precondition is RECORDED
+// ON probe A's answer rather than silently dropped. It used to assert the opposite (that a
+// failed precondition STOPS probe A); see `probeAPreflightCaveat` for why that gate was
+// removed. A caveat whose only exercise is the one keyed run is no better tested than a
+// gate whose only exercise is the one keyed run, so both directions are proven here.
+
+describe("W7U1 — the template precondition caveats probe A (no key required)", () => {
+  const preflight = (state: string, reason: string): Verdict => ({ probe: "T", state, reason, detail: "d" });
+
+  /**
+   * The REAL preflight verdict for the one reason whose detail is written by
+   * `evaluateTemplateCliPreflight` rather than by this file — i.e. the only reason whose
+   * caveat text this file does not itself author.
+   */
+  const realMissingCliPreflight = (): Verdict =>
+    evaluateTemplateCliPreflight({
+      channel: "returned",
+      exitCode: 0,
+      stdout: "W7U1_MISSING:claude\nW7U1_MISSING:codex\n",
+      template: "base",
+    }) as Verdict;
+
+  it("an UNSATISFIED precondition CAVEATS probe A, and says the answer still stands", () => {
+    for (const [state, reason] of [
+      ["inconclusive", "template-does-not-carry-the-agent-clis"],
+      ["inconclusive", "template-preflight-unreadable"],
+      ["inconclusive", "template-preflight-did-not-run"],
+      ["inconclusive", "probe-threw"],
+      // Defensive: any state that is not exactly `yes` caveats. A precondition that
+      // answered `no` is still not a certification.
+      ["no", "whatever-a-future-edit-invents"],
+    ] as const) {
+      const caveat = probeAPreflightCaveat("codex_local", preflight(state, reason));
+      expect(caveat, `${state}/${reason} must caveat probe A`).not.toBeNull();
+      expect(caveat).toContain(reason);
+      expect(caveat).toContain("RAN ANYWAY");
+    }
+  });
+
+  // ★★★ THIS TEST REPLACES A VACUOUS ONE, AND THE VACUITY HID A LIVE DEFECT.
+  //
+  // The ban on "NO model tokens were spent" used to be asserted against a caveat built from
+  // a SYNTHETIC verdict whose `detail` was the string `"d"`. `probeAPreflightCaveat`
+  // interpolates `preflight.detail`, so the banned phrase could only ever have arrived
+  // through that field — and with `"d"` in it the assertion could not fail no matter what
+  // the real detail said. It said the phrase. `evaluateTemplateCliPreflight`'s
+  // `template-does-not-carry-the-agent-clis` detail read "Probe A was NOT run and NO model
+  // tokens were spent", which stopped being true the moment the preflight GATE became a
+  // CAVEAT — and that sentence was being appended to probe A's OWN answer, in the durable
+  // record, on a run where probe A had just run.
+  //
+  // ★ SO THE ASSERTION IS NOW DRIVEN BY THE PRODUCING FUNCTION. Re-introduce the sentence in
+  // `evaluateTemplateCliPreflight` (scripts/lib/w7u1-agent-output-probe.mjs, the
+  // `template-does-not-carry-the-agent-clis` branch) and this test goes RED. That mutation
+  // was run against this test before it was committed.
+  it("MUTATION-BACKED: the caveat carries the REAL preflight detail and that detail may not claim a skip", () => {
+    const real = realMissingCliPreflight();
+    // The premise, pinned: this is the branch whose detail the caveat interpolates.
+    expect(real.state).toBe("inconclusive");
+    expect(real.reason).toBe("template-does-not-carry-the-agent-clis");
+
+    const caveat = probeAPreflightCaveat("codex_local", real);
+    expect(caveat).not.toBeNull();
+    // The detail REALLY IS inside the caveat — without this the ban below is vacuous again.
+    expect(caveat).toContain(real.detail);
+    expect(caveat).toContain("RAN ANYWAY");
+
+    // A sentence that reaches probe A's answer may not claim probe A was skipped.
+    expect(caveat).not.toContain("NO model tokens were spent");
+    expect(caveat).not.toContain("Probe A was NOT run");
+    expect(real.detail).not.toContain("NO model tokens were spent");
+  });
+
+  it("POSITIVE CONTROL: a SATISFIED precondition adds no caveat at all", () => {
+    // If this ever fails, every clean run acquires a caveat it did not earn, which is the
+    // failure mode a caveat is most likely to introduce.
+    expect(probeAPreflightCaveat("claude_local", preflight("yes", "template-carries-the-agent-clis"))).toBeNull();
+    expect(probeAPreflightCaveat("codex_local", preflight("yes", "template-carries-the-agent-clis"))).toBeNull();
+  });
+
+  it("an unreadable probe T still REDS the lane on its own account — softening the gate did not soften the record", () => {
+    // ★★★ THE HALF THAT MUST NOT BE LOST. Probe T no longer decides whether probe A runs,
+    // but it is still a probe, and an `inconclusive` probe reds the lane exactly as any
+    // other does. The change is that probe A's ANSWER now survives that red instead of
+    // being replaced by it — so the founder's authorised run yields information either way.
+    const t = evaluateTemplateCliPreflight({
+      channel: "returned",
+      exitCode: 0,
+      stdout: "",
+      template: TEMPLATE,
+    }) as Verdict;
+    expect(t.state).toBe("inconclusive");
+    expect(packDisposition([t]).disposition).toBe("inconclusive");
+    // ...and a `no` from T is a RESULT, so a stale image no longer costs the whole run.
+    const bareT = evaluateTemplateCliPreflight({
+      channel: "returned",
+      exitCode: 0,
+      stdout: "W7U1_MISSING:claude\nW7U1_HAVE:codex\n",
+      template: "base",
+    }) as Verdict;
+    expect(packDisposition([bareT, { probe: "A/claude_local", state: "no", reason: "r", detail: "" }]).disposition).toBe(
+      bareT.state === "inconclusive" ? "inconclusive" : "measured",
+    );
+  });
+
+  it("this file's preflight observation is read by the pure core, from the SAME script constant", () => {
+    // The sandbox half cannot run without a key; what CAN be proven here is that the
+    // observation shape this file produces is the one the evaluator reads, and that both
+    // sides share ONE script constant rather than two copies that can drift.
+    expect(TEMPLATE_CLI_PROBE_SCRIPT).toContain("claude");
+    expect(TEMPLATE_CLI_PROBE_SCRIPT).toContain("codex");
+    const satisfied = evaluateTemplateCliPreflight({
+      channel: "returned",
+      exitCode: 0,
+      stdout: "W7U1_HAVE:claude\nW7U1_HAVE:codex\n",
+      template: TEMPLATE,
+    }) as Verdict;
+    expect(satisfied.state).toBe("yes");
+    expect(probeAPreflightCaveat("claude_local", satisfied)).toBeNull();
+    const bare = evaluateTemplateCliPreflight({
+      channel: "returned",
+      exitCode: 0,
+      stdout: "W7U1_MISSING:claude\nW7U1_MISSING:codex\n",
+      template: "base",
+    }) as Verdict;
+    expect(bare.state).toBe("inconclusive");
+    expect(probeAPreflightCaveat("claude_local", bare)).not.toBeNull();
   });
 });

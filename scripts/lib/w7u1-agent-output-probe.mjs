@@ -303,6 +303,430 @@ export function redactSecrets(text, secrets) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 2b. DID THE CLI ACTUALLY START? — the positive evidence an exoneration needs
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The head stream event each agent CLI emits once it has started, and nothing else does.
+ *
+ * ★★★ THIS EXISTS BECAUSE A REFUSAL AND A RESULT LOOKED THE SAME. E7-F028 measured the
+ * cost on a founder-authorised, token-spending run: `classifyProbeAArm` mapped EVERY
+ * non-zero exit to `did-not-write`, so codex — which exited 1 having refused before it
+ * ever contacted a model — was recorded as a capability answer, and `verdictProbeA` went
+ * on to state `a1-did-not-write-and-the-posture-is-not-the-cause`: a sentence the same
+ * run's own stderr contradicts. Concluding "the posture is not the cause" from two
+ * refusals is [[e2b-denyOut-accepted-echoed-inert]]'s error class — deciding a control is
+ * inert from a signal that never exercised it.
+ *
+ * ★★ MEASURED PER CLI, TWICE OVER — from the adapters that parse these events in the
+ * shipped product, AND from this pack's own recorded stdout in run 34087197668. Not
+ * guessed, and not inherited from the brief:
+ *
+ *   claude_local → `{"type":"system","subtype":"init",…}`
+ *     * `packages/adapters/claude-local/src/server/parse.ts:19`
+ *       `if (type === "system" && asString(event.subtype, "") === "init")`
+ *       (same pair at `claude-local/src/cli/format-event.ts:34` and
+ *       `claude-local/src/ui/parse-stdout.ts:44`).
+ *     * Run 34087197668, `[w7u1/A/claude_local] A1 … stdout="{\"type\":\"system\",
+ *       \"subtype\":\"init\",\"cwd\":\"/home/user\",\"session_id\":\"de6ba132-…\",…"`.
+ *       ★ BOTH keys are required, and on the SAME LINE: `"type":"system"` alone also
+ *       heads non-init system events, so matching it alone would call a CLI "started"
+ *       on an event that says nothing of the kind.
+ *
+ *   codex_local  → `{"type":"thread.started","thread_id":…}`
+ *     * `packages/adapters/codex-local/src/server/parse.ts:64` (`extractCodexSessionId`,
+ *       `if (asString(event.type, "") !== "thread.started") continue;`) and `:136`
+ *       (`parseCodexJsonl`, `if (type === "thread.started")`).
+ *     * Run 34087197668, `[w7u1/A/codex_local] A2 … stdout="{\"type\":\"thread.started\",
+ *       \"thread_id\":\"01a07a5b-b6b9-7fe2-9729-999757da1442\"}\n{\"type\":\"turn.started\"}…"`,
+ *       against `[w7u1/A/codex_local] A1 … exit=1 … stdout=""` — the refusal, with no
+ *       head event at all. That contrast IS the measurement.
+ *
+ * ★ WHITESPACE-TOLERANT, LINE-SCOPED. The measured output is compact JSONL, but a
+ * pretty-printed variant must not silently read as "did not start"; equally, requiring
+ * the pair on ONE line stops two unrelated events from combining into false evidence.
+ */
+export const STARTUP_STREAM_EVIDENCE = Object.freeze({
+  claude_local: Object.freeze({
+    describe: 'claude\'s stream-json head event `{"type":"system","subtype":"init",…}`',
+    required: Object.freeze([/"type"\s*:\s*"system"/, /"subtype"\s*:\s*"init"/]),
+  }),
+  codex_local: Object.freeze({
+    describe: 'codex\'s JSONL head event `{"type":"thread.started","thread_id":…}`',
+    required: Object.freeze([/"type"\s*:\s*"thread\.started"/]),
+  }),
+});
+
+/**
+ * Did THIS arm's stdout show the CLI reaching its own startup?
+ *
+ * ★★★ IT ANSWERS ONLY THE POSITIVE DIRECTION, AND THAT IS THE POINT. `ran:true` means a
+ * head event was seen. `ran:false` means NO SUCH EVENT WAS SEEN — never "the CLI did not
+ * run". The distinction matters because this value is consumed fail-closed: absence of
+ * evidence blocks an exoneration, it never manufactures one.
+ *
+ * An unknown adapter yields `ran:false` with a reason, for the same fail-closed cause: a
+ * pack that cannot say what starting looks like cannot certify that anything started.
+ *
+ * @param {unknown} stdout the arm's captured stdout (already redacted by the caller)
+ * @param {unknown} adapterType `"claude_local"` | `"codex_local"`
+ * @returns {{ran: boolean, evidence: string, detail: string}}
+ */
+export function detectStartupEvidence(stdout, adapterType) {
+  const spec = STARTUP_STREAM_EVIDENCE[adapterType];
+  if (!spec) {
+    return {
+      ran: false,
+      evidence: "",
+      detail:
+        `no startup stream event is defined for adapterType ${JSON.stringify(String(adapterType ?? ""))}, so this ` +
+        "arm cannot be shown to have run at all",
+    };
+  }
+  const text = typeof stdout === "string" ? stdout : "";
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line.length === 0) continue;
+    if (spec.required.every((re) => re.test(line))) {
+      return { ran: true, evidence: line.slice(0, 200), detail: `${spec.describe} was present on this arm's stdout` };
+    }
+  }
+  return {
+    ran: false,
+    evidence: "",
+    detail:
+      `${spec.describe} was NOT present on this arm's stdout (${text.trim().length} chars captured), so nothing ` +
+      "shows the CLI reached its own startup",
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2b-ii. DID THE ARM REACH A MODEL? — what an exoneration actually needs
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The stream events that evidence an arm RECEIVING OUTPUT FROM A MODEL, per agent CLI.
+ *
+ * ★★★ THE EXONERATION PREDICATE HAS BEEN WRONG THREE TIMES. This comment records the whole
+ * cascade rather than only the current rule, because every earlier version was NECESSARY
+ * AND INSUFFICIENT and the next one probably is too:
+ *
+ *   v1  any non-zero exit ⇒ `did-not-write`. Could not tell a REFUSAL from a RESULT, so
+ *       codex's trusted-directory refusal was booked as the agent's capability answer and
+ *       the lane went green on `the-posture-is-not-the-cause` (E7-F028, run 34087197668).
+ *   v2  "at least one arm demonstrably ran". WRONG ARM: only A2 carries the posture, so A1
+ *       running proves nothing about a posture-only fix — the gate could be satisfied by
+ *       the arm the claim is not about.
+ *   v3  require `a2.ran === true`. Better, and still insufficient.
+ *   v4  ★ `ran` IS COMPUTED FROM THE HEAD EVENT ALONE. Two arms that START and then show no
+ *       model-contact evidence satisfy v3 and exonerate a posture nothing was shown to have
+ *       exercised — GREEN, in the durable record. That is not hypothetical: codex A2 in run
+ *       34087197668 emitted `{"type":"thread.started",…}` and `{"type":"turn.started"}` and
+ *       then FOUR `{"type":"error","message":"Reconnecting… N/5 … 401 Unauthorized"}` lines
+ *       — numbered 2/5, 3/5, 4/5, 5/5 — against `wss://api.openai.com/v1/responses`.
+ *       ★★ THE SECOND HALF OF THAT SENTENCE IS ABOUT THE RECORD, NOT ABOUT THE AGENT, and
+ *       it is stated that way deliberately. A2 STARTED, and NO model-contact evidence is
+ *       present in the stdout the run preserved — which was EXACTLY 900 characters.
+ *       ★★★ 900 IS THE CAP (`safe(exec.stdout, 900)`), HIT EXACTLY, AND THAT IS ITSELF THE
+ *       PROOF OF TRUNCATION: a stdout that stopped on its own would land on some arbitrary
+ *       length, not precisely on the limit. So it is KNOWN that there was more, and UNKNOWN
+ *       what it said. The capture ends MID-TOKEN at `{"type":"i`, while codex A3's parallel
+ *       line shows the same position reads `{"type":"item.completed","item":{"id":"item_0`
+ *       with the item type cut off. So whether A2 emitted an `agent_message` after its
+ *       reconnects CANNOT BE DETERMINED from what was preserved — which is exactly why v4
+ *       fails CLOSED (`reachedModel !== true` ⇒ `inconclusive`) instead of concluding
+ *       anything about the agent. "It reached nothing" was never a supportable sentence.
+ *
+ * So the gate is not "did the CLI start" but "did THIS ARM get far enough that the posture
+ * could matter", and the nearest checkable proxy is MODEL OUTPUT ON ITS OWN STDOUT.
+ *
+ * ★★ MEASURED FROM THE SHIPPED ADAPTERS, and the NEGATIVE direction was measured too —
+ * that is the half v4 missed:
+ *
+ *   claude_local
+ *     * `{"type":"assistant","message":{"content":[…]}}` — the model's own message.
+ *       `packages/adapters/claude-local/src/server/parse.ts:25-37` reads exactly
+ *       `event.message.content`'s blocks off this event.
+ *     * `{"type":"result",…,"usage":{"output_tokens":N}}` with `is_error !== true` — a
+ *       BILLED turn (`parse.ts:40-64`). ★ THE `is_error` GUARD IS NOT DECORATION: the same
+ *       adapter records at `parse.ts:127-128` that a revoked-token run returns
+ *       `{"subtype":"success","is_error":true,"api_error_status":401,…}`. A `result` event
+ *       IS emitted when no model was ever reached, so `result` alone would re-open v4.
+ *
+ *   codex_local
+ *     * `{"type":"item.completed","item":{"type":"agent_message"|"reasoning","text":…}}` —
+ *       model-authored text (`packages/adapters/codex-local/src/server/parse.ts:189-201`).
+ *     * `{"type":"turn.completed","usage":{"output_tokens":N}}` — a billed turn (`:229-235`).
+ *     * ★ NEITHER `thread.started` NOR `turn.started` COUNTS. Those two ARE the v4 defect in
+ *       stream form.
+ *
+ * ★ TWO STRENGTHS, REPORTED SEPARATELY BECAUSE THEY ARE NOT EQUAL. `billed-usage` is a
+ * token count that cannot exist without a completed round trip. `model-authored-content` is
+ * text the CLI ATTRIBUTES to the model, which a future CLI could in principle synthesise
+ * locally on a transport failure. The verdict names which one fired so a reader can weigh it.
+ */
+export const MODEL_CONTACT_EVIDENCE = Object.freeze({
+  claude_local: Object.freeze({
+    describe: "claude's `assistant` message event, or a non-error `result` event reporting billed output tokens",
+    /** @param {Record<string, unknown>} event */
+    detect(event) {
+      if (event.type === "assistant") {
+        const message = event.message;
+        const content = message && typeof message === "object" && !Array.isArray(message) ? message.content : undefined;
+        if (Array.isArray(content) && content.length > 0) {
+          return { kind: "model-authored-content", note: "an `assistant` event carrying a non-empty message.content" };
+        }
+      }
+      if (event.type === "result" && event.is_error !== true) {
+        const usage = event.usage;
+        const out = usage && typeof usage === "object" && !Array.isArray(usage) ? usage.output_tokens : undefined;
+        if (typeof out === "number" && out > 0) {
+          return { kind: "billed-usage", note: `a non-error \`result\` event reporting usage.output_tokens=${out}` };
+        }
+      }
+      return null;
+    },
+  }),
+  codex_local: Object.freeze({
+    describe:
+      "codex's `item.completed` carrying an `agent_message`/`reasoning` item, or a `turn.completed` reporting billed output tokens",
+    /** @param {Record<string, unknown>} event */
+    detect(event) {
+      if (event.type === "item.completed") {
+        const item = event.item;
+        if (item && typeof item === "object" && !Array.isArray(item)) {
+          const itemType = item.type;
+          const text = item.text;
+          if (
+            (itemType === "agent_message" || itemType === "reasoning") &&
+            typeof text === "string" &&
+            text.trim().length > 0
+          ) {
+            return {
+              kind: "model-authored-content",
+              note: `an \`item.completed\` carrying a non-empty \`${itemType}\` item`,
+            };
+          }
+        }
+      }
+      if (event.type === "turn.completed") {
+        const usage = event.usage;
+        const out = usage && typeof usage === "object" && !Array.isArray(usage) ? usage.output_tokens : undefined;
+        if (typeof out === "number" && out > 0) {
+          return { kind: "billed-usage", note: `a \`turn.completed\` reporting usage.output_tokens=${out}` };
+        }
+      }
+      return null;
+    },
+  }),
+});
+
+/**
+ * ★★★ WHAT THE EXONERATION CANNOT SEE — WRITTEN WHERE THE VERDICT IS READ.
+ *
+ * This predicate is a PROXY and will still be a proxy after this repair. A limit stated
+ * only in a PR body is invisible to whoever reads the verdict six months from now, so this
+ * string is emitted VERBATIM into the exoneration verdict's `detail` — which is what the
+ * durable record and the job summary carry — and is quoted in the runbook's verdict row,
+ * with a test pinning the two together.
+ *
+ * It bounds the claim in four directions, each of them a real reachable case:
+ *   1. REACHED ≠ TRIED. Model output does not establish that the model was given the
+ *      intended prompt, understood it, or ever ATTEMPTED a write. An agent that answered
+ *      and then declined for its own reasons is indistinguishable here from one that tried
+ *      and was denied.
+ *   2. IT IS ABOUT A2 ONLY. This branch does not gate A1, so the accompanying "A1 did not
+ *      write" may itself rest on an arm that died early. The claim is narrow: ADDING THE
+ *      POSTURE IS NOT SUFFICIENT. It is not "A1's negative is sound".
+ *   3. THE CAPTURE BOUNDS IT. The keyed lane hands the classifier the FIRST 8000 characters
+ *      of stdout (`safe(exec.stdout, 8000)`). A CLI that emitted more than that before its
+ *      first model output would read as "did not reach a model" — fail-closed, so a false
+ *      INCONCLUSIVE, never a false exoneration.
+ *   4. `model-authored-content` IS CLI-ATTRIBUTED. A future CLI that synthesised an
+ *      assistant/agent message locally on a transport failure would satisfy it. Only
+ *      `billed-usage` is a round trip that cannot be produced locally.
+ */
+export const EXONERATION_RESIDUAL =
+  'WHAT THIS VERDICT DOES NOT ESTABLISH: "A2 reached a model" is inferred from ONE stream event on A2\'s ' +
+  "captured stdout. It does NOT establish that the model was given the intended prompt, that it understood the " +
+  "task, or that it ever ATTEMPTED a write. It says nothing about A1, which this branch does not gate, so the " +
+  'accompanying "A1 did not write" may itself rest on an arm that died early — the claim is only that ADDING THE ' +
+  "POSTURE IS NOT SUFFICIENT. It is bounded by the capture (the evidence must fall within the first 8000 " +
+  "characters of stdout the pack records) and, for `model-authored-content`, by the CLI's own attribution: only " +
+  "`billed-usage` is a round trip that cannot be produced locally.";
+
+/**
+ * Did THIS arm's stdout show the CLI receiving OUTPUT FROM A MODEL?
+ *
+ * ★★ SAME FAIL-CLOSED CONTRACT AS `detectStartupEvidence`, and for a stronger reason.
+ * `reached:false` means NO SUCH EVENT WAS SEEN — never "no model was reached". Absence of
+ * evidence must never manufacture an exoneration; an unknown adapter, an unparseable line
+ * and an empty stdout all come back false.
+ *
+ * @param {unknown} stdout the arm's captured stdout (already redacted by the caller)
+ * @param {unknown} adapterType `"claude_local"` | `"codex_local"`
+ * @returns {{reached: boolean, evidence: string, evidenceKind: string, detail: string}}
+ */
+export function detectModelContactEvidence(stdout, adapterType) {
+  const spec = MODEL_CONTACT_EVIDENCE[adapterType];
+  if (!spec) {
+    return {
+      reached: false,
+      evidence: "",
+      evidenceKind: "none",
+      detail:
+        `no model-contact stream event is defined for adapterType ${JSON.stringify(String(adapterType ?? ""))}, so ` +
+        "this arm cannot be shown to have reached a model at all",
+    };
+  }
+  const text = typeof stdout === "string" ? stdout : "";
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line.length === 0 || !line.startsWith("{")) continue;
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!event || typeof event !== "object" || Array.isArray(event)) continue;
+    const hit = spec.detect(event);
+    if (hit) {
+      return {
+        reached: true,
+        evidence: line.slice(0, 200),
+        evidenceKind: hit.kind,
+        detail: `${hit.note} was present on this arm's stdout (${hit.kind})`,
+      };
+    }
+  }
+  return {
+    reached: false,
+    evidence: "",
+    evidenceKind: "none",
+    detail:
+      `${spec.describe} was NOT present on this arm's stdout (${text.trim().length} chars captured), so nothing ` +
+      "shows this arm ever received output from a model",
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2c. DOES THE RESOLVED TEMPLATE ACTUALLY CARRY THE AGENT CLIs?
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The two binaries `e2b/e2b.Dockerfile` PROMISES are on PATH in the CLI-bearing image.
+ *
+ * Its final assertion layer is, verbatim:
+ *   `RUN command -v claude && command -v codex && claude --version && codex --version`
+ * with the comment *"Fail the build if either CLI is not resolvable — the whole point of
+ * the template."* This constant, and the script below, are that same assertion moved to
+ * the one place it was never made: the lane that spends the founder's model tokens.
+ */
+export const TEMPLATE_CLI_BINARIES = Object.freeze(["claude", "codex"]);
+
+/**
+ * The in-sandbox script whose output `evaluateTemplateCliPreflight` reads.
+ *
+ * ★ IT PRINTS A POSITIVE MARKER PER BINARY, NOT JUST FAILURES. A script that printed only
+ * what is missing would make "nothing was printed" — a script that never ran, a shell that
+ * died, a truncated capture — indistinguishable from "both are present", which is this
+ * programme's [[checks-that-nothing-runs]] class exactly. Every binary must be explicitly
+ * accounted for or the preflight refuses.
+ */
+export const TEMPLATE_CLI_PROBE_SCRIPT =
+  'for b in claude codex; do if command -v "$b" >/dev/null 2>&1; ' +
+  'then echo "W7U1_HAVE:$b"; else echo "W7U1_MISSING:$b"; fi; done';
+
+export const TEMPLATE_CLI_HAVE_PREFIX = "W7U1_HAVE:";
+export const TEMPLATE_CLI_MISSING_PREFIX = "W7U1_MISSING:";
+
+/**
+ * Probe T — the lane-time template precondition, evaluated BEFORE any model tokens.
+ *
+ * ★★★ E7-F022 NAMED THIS FIX AND NOBODY HAD BUILT IT. That finding's own owner paragraph
+ * says the remedy is *"a boot-time or lane-time assertion that the registered template
+ * contains what the Dockerfile promises"*, and measured why: `E2B_TEMPLATE` silently
+ * defaults to the bare `base` image on the sibling keyed lanes, so *"a keyed run against
+ * bare `base` can be reported green while the CLIs were never present"*. This lane already
+ * corrects an OMITTED input to `aoa-base` (`resolveTemplate`) — but a NAME is not a
+ * FILESYSTEM. An operator can dispatch any alias, an account can hold a stale build of
+ * `aoa-base`, and either way the pack would install its own CLI over the top and answer as
+ * if the image had been the one the Dockerfile describes.
+ *
+ * ★★ IT IS A THREE-STATE VERDICT LIKE EVERY OTHER PROBE, NOT A THROW. A failed precondition
+ * is `inconclusive` — "the apparatus was not in a state to answer; run me again" — which is
+ * the only state that reds this lane. It is emitted into the durable record beside the
+ * others, so a green run carries POSITIVE evidence that the image was checked rather than
+ * the silence of a check nobody can see.
+ *
+ * @param {{channel?: string, exitCode?: number|null, stdout?: unknown, template?: unknown}} [obs]
+ * @returns {{probe: string, state: string, reason: string, detail: string}}
+ */
+export function evaluateTemplateCliPreflight(obs = {}) {
+  const { channel, exitCode, stdout, template } = obs;
+  const named = typeof template === "string" && template.length > 0 ? template : "(unnamed)";
+  const line = (state, reason, detail) => ({ probe: "T", state, reason, detail });
+
+  if (channel !== "returned") {
+    return line(
+      "inconclusive",
+      "template-preflight-did-not-run",
+      `the CLI-presence check did not reach a terminal in template "${named}" (channel=${String(channel)}). ` +
+        "Nothing is established about what the image carries, so probe A must not spend model tokens against it.",
+    );
+  }
+
+  const text = typeof stdout === "string" ? stdout : "";
+  const missing = [];
+  const unreadable = [];
+  const present = [];
+  for (const bin of TEMPLATE_CLI_BINARIES) {
+    // ★ EXPLICIT PRESENCE IS REQUIRED. "no MISSING line" is NOT presence.
+    if (text.includes(`${TEMPLATE_CLI_HAVE_PREFIX}${bin}`)) present.push(bin);
+    else if (text.includes(`${TEMPLATE_CLI_MISSING_PREFIX}${bin}`)) missing.push(bin);
+    else unreadable.push(bin);
+  }
+
+  if (missing.length > 0) {
+    return line(
+      "inconclusive",
+      "template-does-not-carry-the-agent-clis",
+      `template "${named}" does NOT carry ${missing.join(" + ")} on PATH` +
+        (unreadable.length > 0 ? ` (and said nothing at all about ${unreadable.join(" + ")})` : "") +
+        `. e2b/e2b.Dockerfile's final layer asserts \`command -v claude && command -v codex\` for the CLI-bearing ` +
+        `alias "${CLI_BEARING_TEMPLATE_ALIAS}", so this image is not the one the pack's question is about ` +
+        // ★★★ THIS SENTENCE USED TO READ "Probe A was NOT run and NO model tokens were spent."
+        // IT WAS FALSE FROM THE MOMENT THE PREFLIGHT GATE BECAME A CAVEAT: probe A now RUNS
+        // on an uncertified image (it installs its own CLI), and this detail is INTERPOLATED
+        // INTO PROBE A'S OWN ANSWER by `probeAPreflightCaveat` — so the durable record
+        // carried "probe A was NOT run" appended to probe A's result. The keyed test that
+        // banned the phrase could not see it: it drove the caveat with a SYNTHETIC verdict
+        // whose detail was the string "d". It is now driven by this function.
+        "(E7-F022). Probe A RUNS ANYWAY — it installs its own CLI and does not depend on the image " +
+        "carrying one — so its answer stands, measured in an image whose pre-baked CLIs were not " +
+        `confirmed. Re-dispatch with \`e2b_template: ${CLI_BEARING_TEMPLATE_ALIAS}\`, or rebuild that ` +
+        "template on this account, then re-run to remove the caveat.",
+    );
+  }
+  if (unreadable.length > 0) {
+    return line(
+      "inconclusive",
+      "template-preflight-unreadable",
+      `the CLI-presence check returned (exit=${String(exitCode)}) but said nothing about ${unreadable.join(" + ")} ` +
+        `in template "${named}": ${JSON.stringify(text.slice(0, 200))}. Presence is NOT inferred from the absence ` +
+        "of a MISSING line, so nothing is established and probe A was not run.",
+    );
+  }
+  return line(
+    "yes",
+    "template-carries-the-agent-clis",
+    `template "${named}" carries ${present.join(" + ")} on PATH — the same assertion e2b/e2b.Dockerfile's final ` +
+      "layer makes at build time, re-made here against the image that actually answered.",
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 3. ONE ARM OF PROBE A
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -317,12 +741,44 @@ export function redactSecrets(text, secrets) {
  *   "did-not-write"  — the arm reached a terminal and the file is absent (or empty of
  *                      the nonce) — a genuine negative
  *   "indeterminate"  — nothing can be read from this arm: the binary was not runnable,
- *                      the target path already existed, or SOMETHING ELSE wrote content
- *                      we did not ask for
+ *                      the target path already existed, SOMETHING ELSE wrote content we
+ *                      did not ask for, or ★ THE CLI REFUSED BEFORE IT PRODUCED A BYTE
+ *                      (`cli-refused-at-startup`, E7-F028)
+ *
+ * Every arm additionally carries TWO independent pieces of progress evidence, and they are
+ * deliberately not one field:
+ *   `ran`          — its stdout showed the CLI's OWN head event (`detectStartupEvidence`).
+ *   `reachedModel` — its stdout showed OUTPUT FROM A MODEL (`detectModelContactEvidence`).
+ * Both are separate from `state` because a `did-not-write` arm can be a CLI that never
+ * started (the collapse E7-F028 measured) OR a CLI that started and died before any model
+ * (the collapse that survived E7-F028's fix — see MODEL_CONTACT_EVIDENCE, v4).
  */
 export function classifyProbeAArm(arm) {
-  const { label, targetPreExisted, execution, file, nonce } = arm;
-  const at = (state, cause, detail) => ({ label, state, cause, detail: detail ?? "" });
+  const { label, targetPreExisted, execution, file, nonce, adapterType } = arm;
+  // ★★★ EVERY ARM CARRIES ITS OWN "DID IT START" EVIDENCE, WHATEVER ITS STATE. The
+  // exoneration branch of `verdictProbeA` consumes it, and it must be present on a
+  // `did-not-write` arm as well as an `indeterminate` one — the whole defect E7-F028
+  // measured is that a `did-not-write` arm can be a CLI that never ran.
+  const startup = detectStartupEvidence(execution?.stdout, adapterType);
+  // ★★★ AND ITS OWN "DID IT REACH A MODEL" EVIDENCE, WHICH IS A DIFFERENT QUESTION.
+  // `ran` answers "did the CLI start"; `reachedModel` answers "did it get far enough that
+  // the permission posture could matter". Keeping them SEPARATE is the point: they were
+  // conflated once (v4 of the exoneration predicate — see MODEL_CONTACT_EVIDENCE) and an
+  // arm that starts and then dies on a 401 satisfies the first and refutes the second.
+  const contact = detectModelContactEvidence(execution?.stdout, adapterType);
+  const at = (state, cause, detail) => ({
+    label,
+    state,
+    cause,
+    detail: detail ?? "",
+    ran: startup.ran,
+    runEvidence: startup.evidence,
+    runEvidenceDetail: startup.detail,
+    reachedModel: contact.reached,
+    modelEvidence: contact.evidence,
+    modelEvidenceKind: contact.evidenceKind,
+    modelEvidenceDetail: contact.detail,
+  });
 
   if (targetPreExisted === true) {
     return at(
@@ -389,6 +845,32 @@ export function classifyProbeAArm(arm) {
       "the invocation did not terminate within its budget and no file appeared — the shape a permission gate takes in --print mode",
     );
   }
+
+  // ★★★ A REFUSAL IS NOT A RESULT. E7-F028: this function's catch-all used to map EVERY
+  // non-zero exit to `did-not-write`, so "the CLI refused before it ever reached a model"
+  // was recorded as the agent's answer. It is not hypothetical — run 34087197668's codex
+  // A1 exited 1 with `stdout=""` and the stderr
+  // `"Not inside a trusted directory and --skip-git-repo-check was not specified."`,
+  // and the pack booked it as a capability measurement and stayed GREEN.
+  //
+  // ★★ THE TEST IS EMPTY STDOUT, NOT "no startup event", AND THE TWO ARE KEPT SEPARATE ON
+  // PURPOSE. A CLI that produced no bytes at all before a non-zero exit did not get far
+  // enough to say anything — that is an apparatus-level miss whatever the reason. The
+  // richer question ("did it demonstrably START?") rides `ran`, is computed for every arm
+  // above, and is consumed by `verdictProbeA`'s exoneration branch. Folding the two into
+  // one test would let a fix to either silently satisfy the other.
+  const stdoutText = typeof execution?.stdout === "string" ? execution.stdout : "";
+  const exitCode = execution?.exitCode;
+  if (channel === "returned" && typeof exitCode === "number" && exitCode !== 0 && stdoutText.trim().length === 0) {
+    return at(
+      "indeterminate",
+      "cli-refused-at-startup",
+      `the CLI exited ${String(exitCode)} having written NOTHING to stdout, so it never reached the point of doing ` +
+        "or declining the work. That is an apparatus-level miss, not a capability answer: read this arm's stderr in " +
+        "the job log for the refusal it named.",
+    );
+  }
+
   return at("did-not-write", `exited-${String(execution?.exitCode ?? "unknown")}`, "");
 }
 
@@ -476,11 +958,61 @@ export function verdictProbeA(arms) {
     );
   }
   if (a2 && a2.state === "did-not-write") {
+    // ★★★ THE EXONERATION BRANCH REQUIRES POSITIVE EVIDENCE THAT A2 REACHED A MODEL, AND IT
+    // IS THE ONLY BRANCH THAT REQUIRES ANYTHING. This is the one verdict in the whole pack
+    // that asserts a NEGATIVE about a cause — "the posture is not it" — from two arms that
+    // each produced nothing. Two silences do not exonerate a variable; they are consistent
+    // with an agent that never got near the question, in which case the posture was never
+    // tested at all. E7-F028 measured exactly that outcome on a founder-authorised run and
+    // the lane stayed green, because a fourth-state situation had been folded into `no`,
+    // which is a RESULT.
+    //
+    // ★★ THE EVIDENCE IS A2's, AND IT IS "REACHED A MODEL", NOT "STARTED". Both halves of
+    // that sentence are corrections of a predicate that shipped wrong:
+    //
+    //   * A2, NOT "some arm". Only A2 carries the posture. A1 running says nothing about
+    //     whether a posture-only fix would have helped, so a gate A1 can satisfy is a gate
+    //     on the wrong arm.
+    //   * REACHED A MODEL, NOT STARTED. `ran` comes from the HEAD event alone, so two arms
+    //     that start and then show no model-contact evidence still satisfy it — the exact
+    //     shape codex A2 produced in run 34087197668 (`thread.started`, `turn.started`, then
+    //     FOUR `Reconnecting… N/5` 401 lines, 2/5 through 5/5). ★ THAT IS A STATEMENT ABOUT
+    //     THE RECORD: the run preserved EXACTLY 900 characters of A2's stdout and they end mid-token
+    //     at `{"type":"i`, so "A2 reached nothing" is NOT established — only that no
+    //     model-contact evidence was present in what was preserved. `reachedModel` requires
+    //     model OUTPUT on A2's own stdout, and its absence yields `inconclusive`, not a
+    //     finding about the agent.
+    //
+    // See MODEL_CONTACT_EVIDENCE for the full v1→v4 cascade and the per-CLI shapes, and
+    // EXONERATION_RESIDUAL — emitted verbatim below — for what this still cannot see.
+    //
+    // ★★ FAIL-CLOSED ON MISSING EVIDENCE. An arm with no such event — including one
+    // classified by an older caller that never passed stdout — counts as NOT SHOWN TO HAVE
+    // REACHED A MODEL. Absence of evidence must never manufacture an exoneration; that is
+    // the same error as reading a policy back from `getInfo()` and calling it enforced.
+    //
+    // ★ THE CONVICTION BRANCH ABOVE NEEDS NO SUCH GATE: A2 WROTE, which is stronger proof
+    // than any stream event, and the differential is then a real one.
+    if (a2.reachedModel !== true) {
+      return line(
+        "inconclusive",
+        "posture-exoneration-unsupported-a2-did-not-reach-a-model",
+        `Neither A1 (${a1.cause}) nor A2 (${a2.cause}) produced the file, and A2 — the ONLY arm carrying the ` +
+          `permission posture — cannot be shown to have reached a model: ` +
+          `${String(a2.modelEvidenceDetail ?? "no model-contact evidence recorded")}. ` +
+          `(A2 startup evidence: ${String(a2.runEvidenceDetail ?? "none recorded")}. ` +
+          `A1: ${String(a1.modelEvidenceDetail ?? "no model-contact evidence recorded")}.) ` +
+          "An arm that started and then died before any model output leaves the posture UNTESTED, so it may not be " +
+          "exonerated. Read both arms' stderr in the job log, then re-run with the blocker removed.",
+      );
+    }
     return line(
       "no",
       "a1-did-not-write-and-the-posture-is-not-the-cause",
-      `Neither A1 (${a1.cause}) nor A2 (${a2.cause}) produced the file. Adding the permission posture does NOT make ` +
-        "the agent able to write here; something else is in the way, and a posture-only fix would not have helped.",
+      `Neither A1 (${a1.cause}) nor A2 (${a2.cause}) produced the file, and A2 — the arm carrying the permission ` +
+        `posture — demonstrably REACHED A MODEL (${a2.modelEvidenceDetail}). Adding the permission posture does ` +
+        "NOT make the agent able to write here; something else is in the way, and a posture-only fix would not " +
+        `have helped. ${EXONERATION_RESIDUAL}`,
     );
   }
   return line(
@@ -663,7 +1195,32 @@ export function formatVerdict(v) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** The record's shape identifier, so a later reader can tell what it is holding. */
-export const PROBE_RECORD_SCHEMA = "aoa.w7u1.output-probe-record/1";
+export const PROBE_RECORD_SCHEMA = "aoa.w7u1.output-probe-record/2";
+
+/**
+ * How much of an arm's stdout the CLASSIFIER reads, and — because it is the same constant —
+ * how much the DURABLE RECORD preserves.
+ *
+ * ★★★ THIS CONSTANT EXISTS BECAUSE THE TWO NUMBERS DIVERGED AND A VERDICT BECAME
+ * UNAUDITABLE. In run `34087197668` the keyed pack logged `safe(exec.stdout, 900)` to the
+ * console and handed `safe(exec.stdout, 8000)` to the classifier, and the record carried NO
+ * stdout at all. The consequence is measurable in that run's job log: it contains ZERO
+ * instances of `assistant`, `output_tokens`, `agent_message` or `turn.completed` — none of
+ * the four shapes the model-contact predicate looks for — INCLUDING for the claude arms that
+ * demonstrably did reach a model. So no verdict from that run can be checked against its own
+ * record, and six sentences in this repo went on to assert more about codex A2 than the 900 preserved characters could support.
+ *
+ * ★★ WHY EXACTLY WHAT THE CLASSIFIER CONSUMED, AND NOT MORE. The record's job is to let a
+ * later reader re-derive the verdict. The classifier cannot see past this limit, so a record
+ * carrying exactly this much is COMPLETE for that purpose: every byte the verdict could have
+ * turned on is in it. Bytes beyond it would enlarge a public (redacted) artefact while
+ * auditing nothing. Bytes below it — any value at all below it — reintroduce the defect.
+ *
+ * ★ THE CONSOLE LINE IS DELIBERATELY LEFT SHORTER. A 900-character console line is a
+ * reasonable console line; the fix is not to make the log bigger but to stop treating the log
+ * as the record. See the runbook: THE RECORD IS THE AUDITABLE ARTEFACT, THE CONSOLE IS NOT.
+ */
+export const CLASSIFIER_STDOUT_LIMIT = 8000;
 
 /** Raised when a record would be written that cannot be interpreted later. */
 export class ProbeRecordError extends Error {
@@ -699,6 +1256,7 @@ export function buildProbeRecord({
   runNonce,
   generatedAt,
   workflowRunUrl,
+  armEvidence,
 } = {}) {
   const resolvedTemplate = typeof template === "string" ? template.trim() : "";
   if (resolvedTemplate.length === 0) {
@@ -729,6 +1287,25 @@ export function buildProbeRecord({
       state: String(v.state),
       reason: String(v.reason),
       detail: String(v.detail ?? ""),
+    })),
+    // ★★★ THE STDOUT THE CLASSIFIER ACTUALLY READ, so a verdict can be re-derived from its
+    // own record instead of from a job log that outlives nothing and preserved less. See
+    // `CLASSIFIER_STDOUT_LIMIT` for the measured reason this field exists. `stdout` here is
+    // the SAME STRING the classifier was handed — not a shorter one — and it is redacted on
+    // the way out by the caller, exactly like every other string in this artefact.
+    armEvidence: (armEvidence ?? []).filter(Boolean).map((a) => ({
+      probe: String(a.probe ?? ""),
+      label: String(a.label ?? ""),
+      adapterType: String(a.adapterType ?? ""),
+      posture: a.posture === true,
+      channel: String(a.channel ?? ""),
+      exitCode: a.exitCode === null || a.exitCode === undefined ? null : Number(a.exitCode),
+      // ★ THE BOUND TRAVELS WITH THE BYTES. A reader must be able to tell "no model-contact
+      // evidence in the whole of stdout" from "no model-contact evidence in the prefix the
+      // classifier could see", and that difference is exactly `stdoutTruncated`.
+      stdoutLimit: CLASSIFIER_STDOUT_LIMIT,
+      stdoutTruncated: a.stdoutTruncated === true,
+      stdout: String(a.stdout ?? ""),
     })),
   };
 }
@@ -846,6 +1423,30 @@ export function evaluateDurableRecord(workflowText, opts = {}) {
       detail:
         `${defaultTemplateVar} is "${declared[1]}" but the pure core resolves an omitted input to ` +
         `"${CLI_BEARING_TEMPLATE_ALIAS}". The record and the run would name different images.`,
+    });
+  }
+
+  // 5. The fallback's SCHEMA STRING is duplicated in shell too, and it drifts the same way
+  // the template default would.
+  //
+  // ★★★ THIS CHECK IS ADDED BECAUSE THE DRIFT ALREADY HAPPENED, IN THE SAME COMMIT THAT
+  // CREATED IT. Bumping `PROBE_RECORD_SCHEMA` to `/2` for `armEvidence` left this workflow's
+  // heredoc emitting `/1`, so the two record producers for one lane would have disagreed
+  // about the shape a reader should expect — and nothing would have said so. A schema
+  // version is only useful if every writer of that schema agrees on it.
+  const fallbackSchema = /"schema"\s*:\s*"([^"]+)"/.exec(text);
+  if (!fallbackSchema) {
+    violations.push({
+      code: "fallback-schema-undeclared",
+      detail:
+        "the fallback record writer names no `schema`, so a reader cannot tell which record shape it produced.",
+    });
+  } else if (fallbackSchema[1] !== PROBE_RECORD_SCHEMA) {
+    violations.push({
+      code: "fallback-schema-mismatch",
+      detail:
+        `the fallback record declares schema "${fallbackSchema[1]}" but \`buildProbeRecord\` emits ` +
+        `"${PROBE_RECORD_SCHEMA}". One lane must not ship two record shapes under two version numbers.`,
     });
   }
 
