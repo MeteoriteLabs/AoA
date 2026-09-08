@@ -552,6 +552,53 @@ state twelve, not seventeen.
    evidence of their own probing by deleting their own company. An audit record a suspect can
    delete is not an audit record.
 
+### The reserved namespace is a convention over thirty-four writers, not a chokepoint — and why no guard was shipped for it
+
+Recorded on 2026-09-08, after an adversarial check of the DE-19 slice measured the claim the slice's
+own prose made. The commit message and `server/src/services/activity-namespace.ts` described
+`activity_log` writes as funnelling through one predicate. **They do not.** Re-derived
+independently at `12660dbd6`: there are **thirty-four** direct `db.insert(activityLog)` /
+`tx.insert(activityLog)` sites in `server/src`, and `assertUnreservedActivityNamespace` runs at
+exactly **two** — `insertActivityLog` (`services/activity-log.ts:35`) and `activityService.create`
+(`services/activity.ts:188`) — plus the HTTP route's Zod refinement (`routes/activity.ts:33`) ahead
+of the second.
+
+**The property still holds, for a narrower reason than the prose gave.** Those two are the only
+writers that accept a caller-supplied `action`. All thirty-two others hard-code it: string
+literals, a ternary of literals (`work-question-continuation-terminal.ts:175`), a literal-union
+parameter (`user-notes.ts:27`), module-local consts (`marketplace-reconcile.ts:380`,
+`seed-commander-review.ts:267`), and one statically-prefixed template (`hub-items.ts:1186`,
+`` hub_item.${…} ``, unreachable from this namespace whatever the suffix). The single site typed
+`action: string` (`operator-break-glass.ts:277`) is a private dep hook with three internal literal
+call sites. Probed live: `logActivity` rejects, `activityService.create` throws, and
+`POST /companies/:cid/activity` returns 400 — zero forged rows.
+
+**Decision: no static guard.** A guard that fires when a new direct `insert(activityLog)` appears
+without the predicate was considered and declined, on three grounds:
+
+1. **It cannot be precise.** The honest predicate is "this site's `action` expression is
+   statically constrained away from `security.denied.`", which needs flow analysis: four of the
+   thirty-four pass an identifier or a parameter, and only reading their declarations separates
+   them from a genuine free-form writer. A grep-shaped guard must allowlist
+   `operator-break-glass.ts:277` **on the day it ships**. A guard that arrives with an exemption
+   for a legitimate site teaches its next reader to add the next exemption — the measured failure
+   in this programme's scanner history, where a benign `postgres://localhost:5432/dev` hard-failed
+   the leak check.
+2. **It reds on unrelated edits.** `activity_log` writers are ordinary product code and there are
+   thirty-four of them; an inventory-shaped guard goes red on every new one. This repository has
+   refused guards of that shape before, and a guard that gets switched off is worse than none
+   because it leaves a false claim of enforcement behind.
+3. **It buys little.** The hazard is a THIRD writer that takes free-form `action` text. Both of
+   today's two are guarded, and a new free-form writer is far likelier to be a new *caller* of
+   `insertActivityLog` — already covered — than a fresh direct insert typed `action: string`.
+
+**What was done instead**, because an unenforced rule must at least be stated where it is read:
+`activity-namespace.ts`'s docblock now carries the measured counts and the rule in place of the
+false chokepoint claim — *a direct `insert(activityLog)` must hard-code its `action`; if the action
+comes from the caller, route through `insertActivityLog`* — and says in terms that it is not
+mechanically enforced. If a third free-form writer ever appears, this decision should be revisited
+with the flow-analysis guard, not the grep one.
+
 - **Affected crossings:** DE-15, DE-16, DE-17, DE-18, DE-20, DE-21, DE-27, DE-29 — **eight
   remaining.** DE-19 is closed (above) and is no longer carried by this finding.
 - **Disposition:** `unowned`, for the reason `E0-F010` gives — no ticket on disk owns "record a

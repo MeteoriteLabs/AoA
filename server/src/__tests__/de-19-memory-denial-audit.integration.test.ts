@@ -37,6 +37,18 @@
  *   3. The two refusals carry DIFFERENT reason codes, so the writer is reading
  *      the real branch rather than stamping a constant.
  *
+ * ★ THE CROSS-TENANT ARM PINS THE ARGUMENT, not just the outcome. A
+ * cross-department refusal does not need the tenant GUC to be wrong, so the arms
+ * above would all stay GREEN if `activity_log` were folded into the tenant RLS
+ * kernel — while the reason the storage choice was made ("a denial can be
+ * recorded even when the org GUC is exactly what is wrong") silently stopped
+ * holding. The final four arms therefore probe ACROSS ORGANIZATIONS — the unit
+ * `aoa.organization_id` keys on — and then assert the storage posture itself:
+ * `activity_log` not RLS-enabled, not forced, no policies, no `organization_id`
+ * column, against a positive control that the kernel IS present and forced on
+ * eight sibling tables. Move the table into the kernel and this file goes red
+ * naming the change.
+ *
  * ★ NON-DISCLOSURE IS PRESERVED, and that is asserted too. Both refusals return
  * the identical opaque message "Memory item not found". The audit row is where
  * the distinction lives; the caller still learns nothing. A test that let the
@@ -114,6 +126,15 @@ let gB = "";
 let crossDeptRowId = "";
 /** Draft, scoped to department A — visible to agent A's SQL gate, not approved. */
 let draftRowId = "";
+/** A SECOND tenant: its own `organizations` row — the unit the RLS kernel keys on. */
+let orgB = "";
+let coB = "";
+/**
+ * Approved, `identity` layer, `company` visibility, owned by tenant B. Deliberately
+ * a row that agent A would be ALLOWED to read if it were in the same tenant, so the
+ * ONLY thing refusing this read is the tenant boundary itself.
+ */
+let crossTenantRowId = "";
 
 async function insertMemory(opts: {
   title: string;
@@ -369,6 +390,160 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         ...(await denialRowsFor(draftRowId)),
       ].map((r) => r.details?.reason);
       expect(new Set(reasons).size).toBe(2);
+    });
+
+    // ───────────────────────────────────────────────────────────────────────
+    // ★ THE CROSS-TENANT ARM — the case the storage choice was actually argued on.
+    //
+    // Everything above provokes a cross-DEPARTMENT refusal, and a cross-department
+    // refusal does not need the tenant GUC to be wrong. But the reason
+    // `security-denial-audit.ts` writes to `activity_log` instead of to a new,
+    // RLS-forced table is a claim about the CROSS-TENANT case: "a denial can be
+    // recorded even when the org GUC is exactly what is wrong". Without the arms
+    // below, that claim was proved nowhere — if `activity_log` were later folded
+    // into the tenant RLS kernel, every other test in this file would stay GREEN
+    // while the mechanism the design rests on silently broke.
+    // ───────────────────────────────────────────────────────────────────────
+
+    it("setup: a SECOND tenant — its own organization, its own company, and an approved memory item owned by it", async () => {
+      assertSetupOk();
+
+      orgB = firstId(
+        await db.execute<{ id: string }>(sql`
+          INSERT INTO organizations (id, name, slug, status, plan)
+          VALUES (gen_random_uuid(), 'DE-19 Tenant B', 'de19-tenant-b', 'active', 'beta')
+          RETURNING id`),
+      );
+      coB = firstId(
+        await db.execute<{ id: string }>(sql`
+          INSERT INTO companies (organization_id, id, name, issue_prefix)
+          VALUES (${orgB}, gen_random_uuid(), 'DE-19 Other Tenant Co', 'TNB')
+          RETURNING id`),
+      );
+      // identity + company visibility: a row agent A would be ALLOWED to read if it
+      // shared the tenant (Decision #118 grants agents the identity layer). So the
+      // refusal below isolates the tenant boundary and nothing else.
+      crossTenantRowId = firstId(
+        await db.execute<{ id: string }>(sql`
+          INSERT INTO memory_items
+            (id, company_id, title, content, category, source, status, created_by,
+             layer, visibility)
+          VALUES
+            (gen_random_uuid(), ${coB}, 'Tenant B identity', 'body of Tenant B identity',
+             'reference', 'founder', 'approved', 'integration-test', 'identity', 'company')
+          RETURNING id`),
+      );
+
+      // The two sides are distinct at the level the kernel keys on (`aoa.organization_id`),
+      // not merely two companies inside one organization.
+      const orgOfA = rowsOf<{ organization_id: string }>(
+        await db.execute(sql`SELECT organization_id FROM companies WHERE id = ${co}`),
+      )[0];
+      expect(orgOfA?.organization_id).toBeTruthy();
+      expect(orgOfA.organization_id).not.toBe(orgB);
+      expect(await denialRowsFor(crossTenantRowId)).toHaveLength(0);
+    });
+
+    it("PROVOKE — an agent in tenant A asks for tenant B's memory item and is refused, non-disclosingly", async () => {
+      assertSetupOk();
+      const res = await memoryGet(agA, crossTenantRowId);
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.message).toBe("Memory item not found");
+    });
+
+    it("★ THE CROSS-TENANT CLAUSE — that refusal is durable and attributable, and it lands in the REFUSING tenant, not the probed one", async () => {
+      assertSetupOk();
+      const rows = await denialRowsFor(crossTenantRowId);
+      expect(rows).toHaveLength(1);
+      const row = rows[0];
+
+      // WHO — the probing agent.
+      expect(row.actor_type).toBe("agent");
+      expect(row.actor_id).toBe(agA);
+      // TENANT — the tenant that REFUSED. Writing it into the probed tenant would
+      // turn the audit record into the disclosure channel it exists to avoid.
+      expect(row.company_id).toBe(co);
+      expect(row.company_id).not.toBe(coB);
+      // RESOURCE — and the resource genuinely belongs to the other tenant, so this
+      // is a cross-tenant probe and not a mislabelled in-tenant one.
+      expect(row.entity_type).toBe("memory_item");
+      expect(row.entity_id).toBe(crossTenantRowId);
+      const owner = rowsOf<{ company_id: string }>(
+        await db.execute(sql`SELECT company_id FROM memory_items WHERE id = ${crossTenantRowId}`),
+      )[0];
+      expect(owner.company_id).toBe(coB);
+      // WHY.
+      expect(row.action).toBe("security.denied.memory_read");
+      expect(row.details?.reason).toBe("not_visible");
+      expect(row.details?.crossing).toBe("DE-19");
+
+      // The probed tenant's own audit stream learns nothing at all about the probe.
+      const probed = rowsOf<{ n: string }>(
+        await db.execute(sql`SELECT count(*)::text AS n FROM activity_log WHERE company_id = ${coB}`),
+      );
+      expect(Number(probed[0]?.n ?? "-1")).toBe(0);
+    });
+
+    it("★ THE ARGUMENT, PINNED — the write above is possible ONLY because activity_log sits outside the tenant RLS kernel", async () => {
+      assertSetupOk();
+
+      // If `activity_log` is ever moved into the kernel it acquires exactly these
+      // four properties, and each one is asserted separately so the failure NAMES
+      // the change rather than surfacing as "the denial row is missing".
+      const posture = rowsOf<{
+        relrowsecurity: boolean;
+        relforcerowsecurity: boolean;
+        policies: string;
+        org_col: string;
+      }>(
+        await db.execute(sql`
+          SELECT c.relrowsecurity,
+                 c.relforcerowsecurity,
+                 (SELECT count(*)::text FROM pg_policies p
+                   WHERE p.schemaname = 'public' AND p.tablename = 'activity_log') AS policies,
+                 (SELECT count(*)::text FROM information_schema.columns col
+                   WHERE col.table_schema = 'public'
+                     AND col.table_name = 'activity_log'
+                     AND col.column_name = 'organization_id') AS org_col
+          FROM pg_class c
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = 'public' AND c.relname = 'activity_log'`),
+      )[0];
+      expect(posture, "activity_log must exist").toBeTruthy();
+      expect(
+        posture.relrowsecurity,
+        "activity_log has ENABLE ROW LEVEL SECURITY — it has been moved into the tenant kernel, and a denial whose org GUC is wrong can no longer be recorded (see security-denial-audit.ts, 'WHY activity_log AND NOT A NEW TABLE')",
+      ).toBe(false);
+      expect(
+        posture.relforcerowsecurity,
+        "activity_log has FORCE ROW LEVEL SECURITY — same consequence: the denial recorder now lives behind the policy it exists to observe",
+      ).toBe(false);
+      expect(
+        posture.policies,
+        "activity_log has row-level policies — the denial write is now conditional on the very tenant context the cross-tenant case has wrong",
+      ).toBe("0");
+      expect(
+        posture.org_col,
+        "activity_log grew an organization_id column — the shape a kernel table has, and the shape whose predicate a cross-tenant denial cannot satisfy",
+      ).toBe("0");
+
+      // POSITIVE CONTROL for the assertion itself. Four `false`/`0` readings are
+      // also what a database with no RLS at all would report, so prove the kernel
+      // really is present and forced on this database — otherwise the assertion
+      // above passes vacuously and pins nothing.
+      const forced = rowsOf<{ relname: string }>(
+        await db.execute(sql`
+          SELECT c.relname
+          FROM pg_class c
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relforcerowsecurity
+          ORDER BY c.relname`),
+      );
+      expect(
+        forced.length,
+        "no table on this database is FORCE-RLS, so the contrast this test asserts is meaningless here",
+      ).toBeGreaterThan(0);
+      expect(forced.map((r) => r.relname)).toContain("jobs");
     });
   },
 );
