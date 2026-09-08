@@ -11,6 +11,42 @@ exploit. What is live and wrong *now* is the **documentation**, and what would b
 
 ---
 
+> ## ★ REGISTER HOME AND STALENESS NOTICE — added by W20, 2026-09-08
+>
+> **This document now has a register entry: `E8-F011`** in
+> [`epics/E8-browser-automation/findings.md`](./epics/E8-browser-automation/findings.md), declared
+> `unowned` with a reason in `scripts/finding-ownership.json`.
+>
+> **Why it needed one, and why a register entry alone was not the fix.** This is a top-level
+> `FINDING-*.md`. `scripts/check-finding-ownership.mjs` globs only
+> `docs/replatform/epics/*/findings.md` (`findRegisters`, `:29-37`), so for as long as this
+> document lived only here it sat in **no register, with no ownership declaration, and could
+> never print as unowned** — the same invisibility `E11-F005`'s manifest entry already diagnosed
+> for the sibling `FINDING-daemon-provenance-is-not-row-observable.md`. Meanwhile the DE-11
+> register row said, in those words, *"no delivery audit has been performed for this crossing"*.
+> **Two committed records of one crossing said opposite things and nothing could see it.**
+>
+> So W20 did **both**, and the second half is the one that matters: a register entry fixes this
+> document, and `scripts/check-threat-control-audit-debt.mjs` fixes the **class** — it reds if any
+> top-level `FINDING-*.md` is named by no epic register, and reds if a crossing a committed
+> finding document is about is still marked `unaudited`. Deleting or inlining this document would
+> have destroyed the measurement and left the class open; registering it without the guard would
+> have fixed one instance and left the next one to repeat it.
+>
+> **★ §3 OF THIS DOCUMENT IS STALE — DO NOT RE-CITE IT.** The inverted retention authority
+> ("the commit path takes the worker's word"; "the module that exists to deny this privilege has
+> zero production callers") was **closed by DAT-010**. Retention is now derived control-plane-side
+> by `resolveStoredRetention` (`server/src/services/artifact-retention-authority.ts:49-53`), called
+> from `server/src/services/artifact-commit.ts:166` **before** the mutator and stored at `:202`,
+> with the manifest's declaration explicitly ignored; `DAT-010-result.md:4` records the closure.
+>
+> **§1 — the four absent controls — was re-verified at tip `360d0b0ed` and still holds in full.**
+> It is what `E8-F011` carries forward, and it is why DE-11's `deliveryStatus` is now `partial`
+> rather than `unaudited`. The rest of this document is left unedited as the record of the
+> measurement.
+
+---
+
 ## ★ 1. The security-control register asserts four controls, none of which exist
 
 `docs/architecture/distributed-execution-threat-controls.json` records **DE-11 — "Browser

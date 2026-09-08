@@ -207,11 +207,25 @@ const THREAT_CROSSING_REQUIRED_FIELDS = [
 //                   "delivered". A hard require-exist flip that forced every crossing
 //                   to claim delivery would have reproduced, at scale, exactly the
 //                   misrepresentation this field exists to end.
-const THREAT_DELIVERY_STATUSES = new Set(["delivered", "not-delivered", "unaudited"]);
+// `partial` — added by W20, when twelve crossings were audited at once and every one of
+//             them came back split: some asserted clauses enforced by a named line that
+//             was exhibited denying, others absent. Neither of the two existing verdicts
+//             could say that. Recording such a row `delivered` would assert controls that
+//             are not there; recording it `not-delivered` would erase enforcement that was
+//             measured; leaving it `unaudited` would discard the measurement entirely and
+//             is the option that produced the DE-11 contradiction this vocabulary now
+//             forbids. ★ `partial` IS NOT A SOFTER `delivered`. It carries the same
+//             finding-citation duty as `not-delivered` (see below), so a row can never use
+//             it to park an absent control outside every census.
+const THREAT_DELIVERY_STATUSES = new Set(["delivered", "partial", "not-delivered", "unaudited"]);
 // Every status must justify itself in `deliveryEvidence` — including "delivered".
 // This forces a delivery claim to carry prose naming its audit; it does NOT check that
 // the prose is true, that any test exists, or that the named test drives the control.
-const THREAT_DELIVERY_EVIDENCE_REQUIRED = new Set(["delivered", "not-delivered", "unaudited"]);
+const THREAT_DELIVERY_EVIDENCE_REQUIRED = new Set(["delivered", "partial", "not-delivered", "unaudited"]);
+// The statuses whose evidence must cite at least one finding id that exists in the
+// findings register. Both of these say, in part or in whole, "a control is absent"; that
+// absence must be OWNED by something the ownership census can see, or it is invisible.
+const THREAT_DELIVERY_FINDING_REQUIRED = new Set(["partial", "not-delivered"]);
 // The findings register: the external source both delivery rules resolve against.
 const FINDING_OWNERSHIP_JSON = "scripts/finding-ownership.json";
 // A finding id token (E8-F003, E7-F011, ...) as it appears inside free-text evidence.
@@ -1089,8 +1103,10 @@ async function loadFindingRegister(root, errors) {
  *   2. every status — delivered included — must carry a non-empty `deliveryEvidence`.
  *      The prose is required to EXIST; nothing here grades it. No test file is read,
  *      no test name is resolved, no control is executed.
- *   3. not-delivered must cite at least one finding id, and every finding id it
- *      cites must exist in the findings register (a dangling citation is refused).
+ *   3. not-delivered AND partial must each cite at least one finding id, and every
+ *      finding id cited must exist in the findings register (a dangling citation is
+ *      refused). Both statuses assert that some control is absent; the citation is what
+ *      keeps that absence inside the ownership census instead of only in this file.
  *   4. delivered is refused for a crossing whose id appears as a literal token
  *      (CROSSING_ID_RE, e.g. "DE-08") in the `reason` or `successor` free text of an
  *      OPEN finding in scripts/finding-ownership.json.
@@ -1126,12 +1142,12 @@ function checkCrossingDeliveryStatus(c, label, register, errors) {
     );
   }
 
-  if (status === "not-delivered") {
+  if (THREAT_DELIVERY_FINDING_REQUIRED.has(status)) {
     const cited = new Set(evidence.match(FINDING_ID_RE) || []);
     if (cited.size === 0) {
       if (evidence.trim() !== "") {
         errors.push(
-          `${THREAT_CONTROLS_JSON}: crossing ${label} is deliveryStatus "not-delivered" but its "deliveryEvidence" cites no finding id (expected a token like E8-F003)`,
+          `${THREAT_CONTROLS_JSON}: crossing ${label} is deliveryStatus "${status}" but its "deliveryEvidence" cites no finding id (expected a token like E8-F003)`,
         );
       }
     } else {

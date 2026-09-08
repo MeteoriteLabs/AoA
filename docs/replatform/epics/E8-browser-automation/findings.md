@@ -1470,3 +1470,64 @@ fixture-bound production classifier on `ipv6_6to4_carrying_imds`. Narrowing the 
 leading-word band to `3ffe..3fff` reds naming the vacated `3ff0:: .. 3ffd:ffff:…` span. Making the oracle import production reds the independence
 guard naming the specifier. The positive control is the shipped state: the oracle remains independent
 and diverges from production by four intervals, and every lane is green.
+
+## E8-F011 — DE-11 asserts four controls over sensitive browser artifacts; all four are absent, one of them is INVERTED, and the hand audit that measured them has lived outside every register since it was written
+
+**Status:** open · **Owner:** `unowned` (see the disposition — BRW-003c is design-only and REL-001 is unwritten)
+**Severity:** HIGH
+**Filed:** 2026-09-08, by W20 (the DE-audit landing unit), which re-verified every claim below
+at tip `360d0b0ed` before filing.
+
+**Why this is filed as a finding and not just a register edit.** `docs/architecture/distributed-execution-threat-controls.json`
+recorded DE-11 (*"Browser cookie/trace leakage"*, High) as `deliveryStatus: "unaudited"` with the
+evidence prose *"no delivery audit has been performed for this crossing"* — while
+`docs/replatform/FINDING-retention-authority-and-DE-11.md`, committed and unmodified in the tree,
+is a hand audit of exactly that crossing concluding that **none of its four controls exist**. Two
+committed records of the same crossing said opposite things, and nothing could see the
+contradiction, because `check-finding-ownership.mjs` globs only
+`docs/replatform/epics/*/findings.md` (`findRegisters`, `scripts/check-finding-ownership.mjs:29-37`)
+and a top-level `FINDING-*.md` is outside that glob. This entry is the register home that document
+never had; the document itself remains the home of the mechanism, so the measurement lives in
+exactly one place.
+
+**The four controls, each re-measured at tip (not inherited from the source document).**
+
+| DE-11 clause, verbatim | Measured state at `360d0b0ed` |
+|---|---|
+| `trustedSide`: "a job-scoped sensitive-artifact store **with a TTL**" | **No TTL exists.** `ARTIFACT_RETENTION_CLASSES` is four bare names — `["ephemeral","run","audit","checkpoint"]` — with no durations (`packages/worker-protocol/src/policy.ts:201`). Every duration-bearing "retention" in the tree belongs to an unrelated subsystem (`packages/db/src/backup-lib.ts`, `packages/db/src/schema/memory_settings.ts:40`, `packages/adapters/acpx-local/src/server/execute.ts:61`). |
+| `confidentiality`: "sensitive browser artifacts are **encrypted** and TTL-bounded" | **No encryption.** The single upload path builds `PutObjectCommand` with `Bucket / Key / Body / ContentType / ContentLength` and nothing else (`server/src/storage/s3-provider.ts:159-165`). A grep for `ServerSideEncryption\|SSEKMS\|BucketEncryption\|aws:kms` across `server/`, `packages/`, `ui/` and `scripts/` returns **zero** hits. |
+| `revocation`: "TTL expiry and job completion **purge** sensitive artifacts" | **Nothing purges, and the refusal is structural rather than merely missing.** `isSweepEligible` refuses `status === "committed"` outright (`server/src/services/artifact-orphan-sweep.ts:79`) and refuses any row with a committed sibling (`:83`); the candidate query selects `status = 'granted'` only (`packages/db/src/repositories/tenant/index.ts:328`); and `markSwept`'s UPDATE is WHERE-guarded to `'granted'` (`:345-348`). No `PutBucketLifecycle` / `LifecycleConfiguration` exists anywhere. A committed sensitive artifact can never be collected by any shipped path. |
+| `audit`: "sensitive-artifact access and **retention are audited**" | **Nothing audits either.** The only observation of a retention decision is a `logger.warn` (`server/src/services/artifact-commit.ts:174`), and the code's own comment three lines above says so in these words: *"This is a LOG LINE, not an audit record — DE-11 claims retention is audited and nothing audits it; this ticket does not pretend to close that"* (`:172-173`). The download-grant branch records nothing durable at all (`server/src/services/artifact-transfer-grant.ts:186-206`). |
+
+**What is NO LONGER true, and must not be re-cited.** The source document's §3 — *"the commit path
+takes the worker's word ... the module that exists to deny this privilege has zero production
+callers"* — was **closed by DAT-010** and is stale. Retention is now derived control-plane-side
+before the mutator call and the manifest's declaration is explicitly ignored:
+`resolveStoredRetention` (`server/src/services/artifact-retention-authority.ts:49-53`) is called at
+`server/src/services/artifact-commit.ts:166` and its result stored at `:202`. `browserArtifactRetention`
+now has a production caller chain two hops deep. `DAT-010-result.md:4` records the closure. **§1 of
+that document — the four absent controls — still holds in full, and is what this finding carries
+forward.**
+
+**Blast radius today.** Nothing in production uploads `browser_cookie_state` /
+`browser_storage_state`: BRW-003 is unbuilt. There is no live leak. What is live and wrong is the
+**record** — a High-severity crossing was documented as controlled by four mechanisms, none of
+which are built, which is worse than an uncontrolled crossing because a reader of the register
+stops looking. That is the same defect class as DE-08 (`E8-F003`), one severity down.
+
+**Disposition — `unowned`, with the reason stated rather than implied.** DE-11's owner tickets are
+BRW-003, BRW-004 and REL-001. BRW-004 shipped (`BRW-004-result.md`) and covers browser
+secrets/network/human-approval, not retention. BRW-003's retention slice — **BRW-003c** — is
+**design-only**: `docs/replatform/epics/E8-browser-automation/tickets/BRW-003c-design.md` exists
+with **no result file**, and its own §1 already states that `job_artifacts.expiresAt` has zero
+readers and zero writers. REL-001 has **zero files on disk** and is declared deferred in
+`docs/architecture/distributed-execution-release-tests.json` behind two unshipped epics (BRW-006,
+SVC-007). So no ticket that exists on disk owns closing any of the four clauses. NOT `accepted`:
+HIGH may never be accepted.
+
+**Resolution condition.** Either (a) BRW-003c ships and delivers TTL + purge + audit, and an
+encryption decision is taken for the artifact bucket, at which point DE-11's `deliveryStatus`
+moves off `partial` on a recorded measurement; or (b) the DE-11 clauses are AMENDED to state what
+the programme actually intends to build, which is a founder decision and is not taken here.
+Resolve = flip this Status **and** delete the `E8-F011` key in `scripts/finding-ownership.json` in
+the SAME commit.

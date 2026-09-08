@@ -110,6 +110,7 @@ is that distinction, and the foundation checker requires it on every crossing:
 | Value | Meaning |
 |---|---|
 | `delivered` | An **author's assertion**, not a machine-established fact, that the control is implemented and exercised by a test driving the real mechanism. The checker requires only that `deliveryEvidence` prose exists and that no open finding's free text names the crossing id; it reads no test file and executes no control. See the scope limit below. |
+| `partial` | The crossing **has been audited** and its clauses split: at least one is enforced by a named line that was exhibited *denying*, and at least one is **absent**. Must cite a live finding, exactly as `not-delivered` must — the absent half is always owned. ★ **This is not a softer `delivered`.** A `partial` row has controls that are not there; read the evidence for which. |
 | `not-delivered` | The control was **measured absent**. Must cite a live finding in `scripts/finding-ownership.json`. |
 | `unaudited` | **No delivery audit has been performed.** Read as *unknown*, never as *holds*. |
 
@@ -125,9 +126,31 @@ or ownership. A `delivered` value is therefore a human claim with a human citati
 audit the citation; do not infer that the control is implemented, tested or safe from
 the fact that the checker passed.
 
-Most crossings are `unaudited`: the field was introduced by a register-repair change
-that audited two crossings, and an unaudited crossing gets an explicit deferral rather
-than a fabricated delivery claim. Today exactly one crossing is `not-delivered`:
+**The tally today: 1 `delivered`, 12 `partial`, 1 `not-delivered`, 16 `unaudited`** — of
+30 crossings, all of them Critical (22) or High (8). Read that plainly: **more than half
+the crossings in this register have never been audited at all, and of the fourteen that
+have, exactly one came back whole.** The sixteen unaudited rows are not a backlog of
+paperwork; each is a control nobody has established either way.
+
+The field was introduced by a register-repair change that audited two crossings (DE-02 and
+DE-08). W20 audited twelve more — DE-01, DE-03, DE-04, DE-05, DE-06, DE-07, DE-09, DE-10,
+DE-11, DE-12, DE-13 and DE-14 — and **every one of the twelve came back `partial`**: an
+enforcement half that was exhibited denying, and an absent half. The absent halves cluster
+into three classes, each filed as a finding rather than left in prose:
+
+- **`E0-F010`** — eight crossings assert that denials are *audited*; on all eight the deny
+  path returns before anything durable is written.
+- **`E0-F011`** — four crossings are defended by a control whose **arming path is dead**:
+  two with zero production callers, one enabled by an environment variable set in no
+  manifest, one gated on a database column with no writer.
+- **`E0-F012`** — three crossings name a mechanism **no code attempts** (a capability
+  restriction never passed to the provider, a fair-share scheduler with no tenant term, a
+  "scoped service identity" that is one bucket-wide credential).
+- **`E8-F011`** — DE-11 specifically: all four of its named controls are absent.
+
+An unaudited crossing gets an explicit deferral rather than a fabricated delivery claim,
+and `scripts/check-threat-control-audit-debt.mjs` now pins the unaudited count as a
+**ceiling that can only fall**. Today exactly one crossing is `not-delivered`:
 
 - **DE-08 (Metadata/control-plane SSRF, Critical) is NOT DELIVERED.** Default-deny
   egress and blocked metadata/control-plane ranges are **required and absent**, not

@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "note": "Audit-debt ratchet for docs/architecture/distributed-execution-threat-controls.json, read by scripts/check-threat-control-audit-debt.mjs (required `policy` job). WHY IT EXISTS: before W20 the foundation checker validated the SHAPE of deliveryStatus and imposed no cap, deadline or count on `unaudited`, and scripts/check-finding-ownership.mjs globs only docs/replatform/epics/*/findings.md so this register was structurally invisible to the ownership census. Twenty-eight Critical/High controls could therefore sit unaudited forever with policy green, and one of them (DE-11) sat `unaudited` while a committed hand audit of that same crossing concluded all four of its controls were absent. This file carries the pinned numbers; the guard carries the rules. AN ABSENT FILE IS A FAIL (fail-closed), not an empty allow-list.",
+  "ceilings": {
+    "unauditedCriticalHigh": 16,
+    "$comment": "The number of Critical/High crossings that may carry deliveryStatus `unaudited`. A CEILING, never a target: it may be lowered by auditing a crossing, and lowering it is the ONLY edit this guard accepts in that direction. Raising it, or adding a new unaudited Critical/High row above it, is refused. ★ DO NOT READ THIS AS HEALTH. 16 unaudited Criticals and Highs is the honest measured state, and the ratchet's job is to stop it growing, not to imply it is acceptable."
+  },
+  "auditedFloor": {
+    "$comment": "Crossings that HAVE been audited. Each must never return to `unaudited` — that would discard a recorded measurement, which is the one direction this vocabulary must not travel. DE-02 and DE-08 were audited by W4U2; the twelve `partial` rows by W20.",
+    "ids": [
+      "DE-01",
+      "DE-02",
+      "DE-03",
+      "DE-04",
+      "DE-05",
+      "DE-06",
+      "DE-07",
+      "DE-08",
+      "DE-09",
+      "DE-10",
+      "DE-11",
+      "DE-12",
+      "DE-13",
+      "DE-14"
+    ]
+  },
+  "deliveredFloor": {
+    "$comment": "Crossings recorded `delivered` on a measurement. Each must STILL be `delivered`. This is the anti-regression arm: a delivered row silently dropping back to `unaudited` (or to `partial`) is a loss of established fact and reds here. Pinning the SET rather than a count means the guard names which row regressed.",
+    "ids": ["DE-02"]
+  },
+  "ownerTicketDeferrals": {
+    "$comment": "A crossing that is not `delivered` must name at least one ownerTicket with a file on disk, so its exit route terminates somewhere. Exactly one crossing cannot satisfy that today and it is declared here rather than left invisible — the `unowned`-with-reason pattern this repo already uses for release tests. NOTE the deliberately narrower rule: the guard requires ONE on-disk owner ticket, not that every named ticket exists. Twenty-four of thirty rows also charter their exit to an unwritten REL ticket (REL-001/002/005, zero files each); that debt is declared separately and already in docs/architecture/distributed-execution-release-tests.json, and enforcing it here would red the tree without adding a fact the repo does not already record.",
+    "DE-12": {
+      "reason": "ALL THREE ownerTickets — SVC-002, SVC-003, SVC-005 — have zero files on disk, and so does the releaseTest REL-002 and the D4 lane the row's verificationLane names. DE-12 is the only crossing in the register with no on-disk owner ticket at all, i.e. its audit route terminates nowhere at BOTH ends. This is not an oversight to be papered over: the crossing's control (`desired-state reconciler, generation, active fence`) is two-thirds unbuilt, its one shipped part is production-unreachable, and the only authored SVC ticket disclaims it in writing (docs/replatform/epics/E9-service-agents/tickets/SVC-001-terrain.md:216-218). Measured absences are recorded in the crossing's deliveryEvidence and owned by findings E0-F010 and E0-F011. REMOVE THIS ENTRY the moment any of SVC-002/003/005 gets a file — the guard reds on a stale deferral, so it is self-cleaning."
+    }
+  }
+}

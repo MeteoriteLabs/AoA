@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "note": "Authoritative machine-readable trust-crossing and control-ownership record for Decision #121. docs/architecture/distributed-execution-threat-model.md is a rendered view of these IDs. Every Critical/High crossing carries a release test (a REL-* owner ticket or a releaseTest field). ownerTickets reference defined backlog tickets in docs/replatform/program-design.md. Clause fields (authentication/authorization/confidentiality/integrity/revocation/audit) state what a crossing's control REQUIRES; they are a charter, not a report. `deliveryStatus` is the separate field that says whether the control has actually been built and measured -- delivered | not-delivered | unaudited -- and `deliveryEvidence` carries the backing. Before this field the two were indistinguishable, and a Critical crossing measured absent read exactly like one that holds. `unaudited` is the honest default for a crossing nobody has audited; it must never be upgraded to `delivered` except from a recorded measurement.",
+  "note": "Authoritative machine-readable trust-crossing and control-ownership record for Decision #121. docs/architecture/distributed-execution-threat-model.md is a rendered view of these IDs. Every Critical/High crossing carries a release test (a REL-* owner ticket or a releaseTest field). ownerTickets reference defined backlog tickets in docs/replatform/program-design.md. Clause fields (authentication/authorization/confidentiality/integrity/revocation/audit) state what a crossing's control REQUIRES; they are a charter, not a report. `deliveryStatus` is the separate field that says whether the control has actually been built and measured -- delivered | partial | not-delivered | unaudited -- and `deliveryEvidence` carries the backing. `partial` (added by W20) means the crossing HAS been audited and its asserted clauses split: at least one is enforced by a named line that was exhibited denying, and at least one is absent; it is NOT a softer `delivered` and must never be read as one. Like `not-delivered` it must cite a live finding id, so the absent half is always owned by something a census can see. Before this field the two were indistinguishable, and a Critical crossing measured absent read exactly like one that holds. `unaudited` is the honest default for a crossing nobody has audited; it must never be upgraded to `delivered` except from a recorded measurement.",
   "crossings": [
     {
       "id": "DE-01",
@@ -19,10 +19,14 @@
       "control": "non-owner role, forced RLS, tenant transaction",
       "verification": "real PostgreSQL adversarial tests",
       "verificationLane": "D0",
-      "ownerTickets": ["TEN-002", "TEN-003", "TEN-005"],
+      "ownerTickets": [
+        "TEN-002",
+        "TEN-003",
+        "TEN-005"
+      ],
       "releaseTest": "REL-001 end-to-end cross-tenant and secret-exposure gate",
-      "deliveryStatus": "unaudited",
-      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
+      "deliveryStatus": "partial",
+      "deliveryEvidence": "partial: AUDITED AND MEASURED at tip 360d0b0ed by W20 (the DE-audit landing unit). ENFORCED, and exhibited denying. The deny line is the per-table RLS policy itself -- packages/db/src/migrations/0211_tenant_rls_enforcement.sql:26-28 (CREATE POLICY \"jobs_tenant_isolation\" ON \"jobs\" TO \"aoa_app\" USING (organization_id = current_setting('aoa.organization_id', true)::uuid) WITH CHECK (same)) plus 7 sibling tables in the same file, extended to 24+ relations by 0218/0221/0228/0231/0233/0235/0237/0239/0241/0243/0245/0247/0253/0255. It is armed by the NOBYPASSRLS role at 0211:16 and by the transaction-local GUC writer at server/src/db/with-tenant-tx.ts:36 (set_config('aoa.organization_id', $1, true), org bound as a parameter). Boot-time refusals keep it armed: packages/db/src/client.ts:325 (throws if the serving role is rolsuper or rolbypassrls), :89-99 (blank-URL throw, no owner fallback), server/src/db/distributed-execution-databases.ts:684 assertExactCatalogCertificate, and server/src/app.ts:490 (\"owner fallback is forbidden\"). THE DENY WAS TAKEN AND OBSERVED against real embedded PostgreSQL 18 via the E2-D05 hatch, which runs unhatched on Linux CI (.github/workflows/pr.yml:1047): tenant-rls-enforcement.integration.test.ts 10/10, tenant-tx-context.integration.test.ts 7/7, and tenant-adversarial.property.integration.test.ts 11/11 over 8 seeds and 4,460 adversarial operations, whose PostgreSQL server log carries the refusals verbatim (the line: new row violates row-level security policy for table \"workers\" -- on both the INSERT and the UPDATE-to-null-org). ANTI-VACUITY: the suite asserts assertNonOwnerConnection resolves for aoa_app and rejects for the superuser, and the tenant accessors filter by id ONLY (packages/db/src/repositories/tenant/index.ts:169 is tx.select().from(jobs).where(eq(jobs.id, id)) with no organization predicate), so a cross-tenant getById returning null can only be the policy's USING clause -- not application filtering. That is the DE-08 trap avoided by construction. ABSENT: the audit clause (\"query and policy-denial events recorded in the control-plane audit log\"). No production code handles SQLSTATE 42501 or the string \"row-level security policy\" -- a grep over server/src and packages/*/src excluding tests returns only prose (e.g. server/src/services/job-input-staging.ts:25). The one control-plane audit writer for this path, jobAuditBridge (server/src/services/job-audit-bridge.ts:158), has ZERO production callers: its only references are its own definition and server/src/__tests__/job-audit-parity.integration.test.ts:24,42. Filed as E0-F010. SCOPE: ownerTickets TEN-002/TEN-003/TEN-005 all have complete result files on disk, but the row's releaseTest REL-001 has ZERO files and is deferred behind two unshipped epics, so the DB kernel is proven while the cross-workload release closure is chartered nowhere that exists. Live-access items are written out in docs/replatform/DE-AUDIT-live-experiments.md."
     },
     {
       "id": "DE-02",
@@ -41,7 +45,9 @@
       "control": "composite tenant constraints",
       "verification": "negative SQL integration",
       "verificationLane": "D0",
-      "ownerTickets": ["TEN-004"],
+      "ownerTickets": [
+        "TEN-004"
+      ],
       "releaseTest": "REL-001 end-to-end cross-tenant and secret-exposure gate",
       "deliveryStatus": "delivered",
       "deliveryEvidence": "delivered: the control named in `control` (composite tenant constraints) is implemented as schema-level DDL and is exercised by a real-PostgreSQL negative test that drives the actual mechanism -- packages/db/src/__tests__/tenant-composite-integrity.integration.test.ts, 9 cases, each mixed-tenant rejection paired with a same-tenant positive control that must insert cleanly. TEN-004-result.md records the RED-before/GREEN-after transition (8 failed pre-implementation because the constraints did not yet exist; 9 passed after) and the Postgres server log naming the constraint each rejection fired on (jobs_org_company_fk, job_attempts_org_job_fk, leases_org_attempt_fk, services_org_company_fk, service_instances_org_service_fk, job_artifacts_org_job_fk, job_secret_handles_org_job_fk as 23503; leases_active_per_attempt_idx as 23505). SCOPE OF THIS CLAIM: the authorization/integrity/revocation clauses, which are the constraint itself. The audit clause (constraint-violation events in the control-plane audit log) was NOT separately audited by W4U2."
@@ -63,10 +69,13 @@
       "control": "one-use enrollment, device key, short sessions",
       "verification": "replay/expiry tests",
       "verificationLane": "D1",
-      "ownerTickets": ["JOB-002", "WRK-002"],
+      "ownerTickets": [
+        "JOB-002",
+        "WRK-002"
+      ],
       "releaseTest": "REL-001 end-to-end cross-tenant and secret-exposure gate",
-      "deliveryStatus": "unaudited",
-      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
+      "deliveryStatus": "partial",
+      "deliveryEvidence": "partial: AUDITED AND MEASURED at tip 360d0b0ed by W20 (the DE-audit landing unit). ENFORCED, and exhibited denying. Replay denial: packages/db/src/repositories/tenant/worker-enrollment.ts:273-276 (insert(workerProofReplays).onConflictDoNothing().returning() then return rows.length === 1), backed by the real constraint worker_proof_replays_device_proof_uq on (device_thumbprint, proof_id) at packages/db/src/schema/worker_proof_replays.ts:18. Its false return is turned into a refusal at NINE production call sites (counted at tip): server/src/middleware/worker-session-auth.ts:151/:158, server/src/services/worker-enrollment.ts:315, job-leasing.ts:546 and :816, job-control-ack.ts:93, job-events.ts:169, job-fencing.ts:133, worker-fence-context.ts:68 and :162. Session integrity/expiry/audience: worker-session-auth.ts:103-104 (exp/iat/max-lifetime), HMAC compare at :100. Stolen-bearer-without-key: server/src/middleware/worker-operation-proof.ts:59 (proof.deviceThumbprint !== claims.deviceThumbprint => denied(); the thumbprint is signed into the JWT, so an attacker-supplied public key cannot match). Revocation reaches live sessions at worker-session-auth.ts:161-165 (target_revoked). DENIES TAKEN: worker-session-auth.test.ts and worker-device-proof.test.ts 6/6; worker-enrollment.integration.test.ts \"rejects proof replay\" and job-leasing.integration.test.ts \"rejects wrong worker, target, fence, lease, and revoked authority\" both pass against real embedded PostgreSQL, and neither file is globally skipped (the guard is describe.skipIf(win32 && AOA_RUN_WIN_INTEGRATION !== \"1\"), so both run unconditionally on Linux CI). Device-key confidentiality is STRUCTURAL, not policy: the wire protocol has no private-key field -- the daemon signs locally (packages/worker-daemon/src/identity/device-proof.ts) and only publicKey + signature cross the boundary. ABSENT: the audit clause (\"enrollment, session issue, and replay-rejection are audited\") on the job/lease operation paths. The refusal returns through server/src/services/worker-protocol-http.ts:76-93, which writes the HTTP response and NOTHING else -- no log, no metric -- and the route returns at server/src/routes/worker-control.ts:436-442 BEFORE the handler's only logger.error at :444. Filed as E0-F010. SCOPE: ownerTickets JOB-002 and WRK-002 both have result files on disk; releaseTest REL-001 has zero files. The row's verificationLane is D1, whose merge-train was RED for three merges (GO-BOOK section 1.9.8); this evidence deliberately rests on the embedded-PG verify lane instead, which was run. Live-access items are written out in docs/replatform/DE-AUDIT-live-experiments.md."
     },
     {
       "id": "DE-04",
@@ -85,10 +94,13 @@
       "control": "atomic lease and fencing",
       "verification": "concurrent claim/stale fence",
       "verificationLane": "D1",
-      "ownerTickets": ["JOB-003", "JOB-004"],
+      "ownerTickets": [
+        "JOB-003",
+        "JOB-004"
+      ],
       "releaseTest": "REL-001 end-to-end cross-tenant and secret-exposure gate",
-      "deliveryStatus": "unaudited",
-      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
+      "deliveryStatus": "partial",
+      "deliveryEvidence": "partial: AUDITED AND MEASURED at tip 360d0b0ed by W20 (the DE-audit landing unit). ENFORCED, and exhibited denying. Authorization/revocation: guardActiveFence (packages/db/src/repositories/tenant/job-control.ts:1118) denies at :1167 (stale_fence -- no lease row matches the complete identity+fence tuple, locked FOR UPDATE), :1177 (target_revoked -- the live execution_targets.device_generation differs from the lease's pinned generation, or the target is disabled/absent), :1185 (classifyFence => stale_fence | attempt_terminal) and :1187 (defense-in-depth re-check against the shared isActiveFence predicate). Expiry is evaluated in-SQL against clock_timestamp() inside the same locked read (:1134), never JS time. It is called by 11+ governed mutators (:2497, :2592, :2696, :2706, :2748, :2808, :2920, :3005, :3162, :3182, :3197). Integrity/single-claim has TWO independent denies in offerLease: the conditional CAS UPDATE ... WHERE status='pending' RETURNING (=> return null at :2328) and the partial unique index leases_active_per_attempt_idx, present in emitted DDL at packages/db/src/migrations/0209_tenant_composite_integrity.sql:27, whose 23505 is caught and turned into a head-restart. ACK adds a third (activateLeaseAck's WHERE status='offered' AND ack_deadline >= clock_timestamp()). Authentication binds the caller to the lease holder in-transaction via lockLeaseAckContext, which matches leases.worker_id = auth.workerId. ABSENT: the audit clause (\"claim, fence-generation, and stale-claim rejection are audited\"). The one table that looks like it records rejections, worker_lease_rejections, is an eligibility-certificate cache whose own header excludes this class -- \"Dynamic capacity, liveness, lock, parsing, and authority failures are deliberately excluded\" (packages/db/src/schema/worker_lease_rejections.ts:16-18) -- and its single writer (job-control.ts:2127) inserts placement certificates, not fence refusals. Filed as E0-F010. NAMED SCOPE LIMIT on the confidentiality clause (\"attempt inputs are visible only to the active lease holder\"): the artifact DOWNLOAD grant is deliberately fence-independent -- server/src/services/artifact-transfer-grant.ts:184-185 says so in a comment, and the branch checks only tenant scope, committed-row existence and prefix (:194-202). A worker whose lease has been released can still obtain a presigned GET for that attempt's committed artifacts, where the equivalent upload is refused stale_fence. This is a documented design choice, not an oversight; the clause and the code disagree and reconciling them is an amendment decision, not taken here. SCOPE: ownerTickets JOB-003 and JOB-004 both have result files on disk; releaseTest REL-001 has zero files. Live-access items are written out in docs/replatform/DE-AUDIT-live-experiments.md."
     },
     {
       "id": "DE-05",
@@ -107,10 +119,13 @@
       "control": "terminal immutability and quarantine",
       "verification": "lost-ACK/replacement tests",
       "verificationLane": "D1",
-      "ownerTickets": ["JOB-005", "JOB-006"],
+      "ownerTickets": [
+        "JOB-005",
+        "JOB-006"
+      ],
       "releaseTest": "REL-001 end-to-end cross-tenant and secret-exposure gate",
-      "deliveryStatus": "unaudited",
-      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
+      "deliveryStatus": "partial",
+      "deliveryEvidence": "partial: AUDITED AND MEASURED at tip 360d0b0ed by W20 (the DE-audit landing unit). ENFORCED, and exhibited denying -- the terminal-immutability half. guardActiveFence denies at packages/db/src/repositories/tenant/job-control.ts:1167/:1177/:1185/:1187. Terminal immutability additionally: packages/db/src/repositories/tenant/job-fence.ts:483-485 (classifyFence => attempt_terminal), job-control.ts:1234 (notInArray(jobAttempts.status, TERMINAL_ATTEMPT_STATUSES) in applyProjectionForFence) and :3169-3175 (completeAttempt's UPDATE is predicated on the attempt's observed status, and a zero-row result throws attempt_terminal). Revocation-at-replacement: :3575-3584 flips the lease conditionally out of offered|active BEFORE attempt N+1 is allocated at :3647. The quarantine RECEIVER is fully built and denies correctly (server/src/services/quarantine-finalize.ts:48,52-54; job-control.ts:3686 recordOrphanQuarantine, denying at :3707 target_revoked and :3722/:3742 unknown_job). NOT DELIVERED: the quarantine half has NO PRODUCER, so no shipped path can ever write a quarantined artifact row. runOrphanQuarantine is called only from packages/worker-daemon/src/supervisor/startup-reconcile.ts:480; that runs only if deps.quarantineCandidates is supplied (:468); and the factory createStartupReconciler (:292) has ZERO production callers -- every reference outside its own module is a test or the barrel re-export at packages/worker-daemon/src/index.ts:634. Three dead layers, each sufficient on its own. Consequently the audit clause (\"late or lost-ACK output routed to quarantine is audited\") has nothing to audit. This is the DE-08 shape one level up: the receiver being complete and correct is exactly what makes the row look delivered. Filed as E0-F011. DEPLOYMENT CAVEAT, honest rather than defect: every route above is mounted only inside opts.distributedExecutionEnabled (server/src/app.ts:489-514) and the reaper only inside server/src/index.ts:1183; flag-off, none of this surface exists. SCOPE: ownerTickets JOB-005 and JOB-006 both have result files on disk (both Result: pass); releaseTest REL-001 has zero files and is declared deferred. Live-access items are written out in docs/replatform/DE-AUDIT-live-experiments.md."
     },
     {
       "id": "DE-06",
@@ -129,10 +144,12 @@
       "control": "tenant/job prefixes and fenced commit",
       "verification": "MinIO malicious-key tests",
       "verificationLane": "D1",
-      "ownerTickets": ["DAT-002"],
+      "ownerTickets": [
+        "DAT-002"
+      ],
       "releaseTest": "REL-001 end-to-end cross-tenant and secret-exposure gate",
-      "deliveryStatus": "unaudited",
-      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
+      "deliveryStatus": "partial",
+      "deliveryEvidence": "partial: AUDITED AND MEASURED at tip 360d0b0ed by W20 (the DE-audit landing unit). ENFORCED, and exhibited denying -- the prefix/fence half, at four real lines each reachable from one production caller. (1) Upload-grant mint: server/src/services/artifact-transfer-grant.ts:113 refuses any expectedObjectKey not under the prefix built at :108-112 from auth.organizationId -- the AUTHENTICATED org, never the payload's. (2) Download-grant: :201-202 refuses unless a committed row exists for this tenant AND its objectKey matches AND the key is under the org/job/attempt prefix. (3) Fence: :99-101 maps lockActiveFence's refusal to rejected(stale_fence | attempt_terminal | target_revoked). (4) Commit: packages/db/src/repositories/tenant/job-control.ts:2750 wrong_prefix and :2751 tenant_mismatch, computed at server/src/services/artifact-commit.ts:155-163 from auth.organizationId plus the LOCKED lease's companyId -- never from the manifest's self-asserted org, which the frozen schema permits (packages/worker-protocol/src/artifacts.ts:313-321) and which is precisely why the service-layer check is the real control. There are EXACTLY THREE presign call sites in the repo (artifact-transfer-grant.ts:141 and :205, quarantine-grant.ts:98, the last guarded against the distinct quarantine/ prefix); no fourth exists. node scripts/check-artifact-commit-vectors.mjs was run: PASS, 2 accept / 8 reject. ABSENT, two clauses. (a) authentication, \"scoped service identity\": there is ONE static credential set, constructed twice for two endpoints at server/src/storage/s3-provider.ts:86-102, signing every grant for every tenant; a grep for AssumeRole|STSClient|@aws-sdk/client-sts over server/ and packages/ returns ZERO hits, so no per-tenant credential scoping is attempted (E0-F012). Whether the deployed credential is in fact bucket-wide is a one-command live check. (b) audit, \"object put/get and rejected-key attempts are audited\": rejected() (artifact-transfer-grant.ts:76-85) only constructs a response object -- no log, no metric, no row (E0-F010). SCOPE: ownerTicket DAT-002 has a full paper trail on disk (design, result, and the live-MinIO pair); releaseTest REL-001 has zero files. Live-access items are written out in docs/replatform/DE-AUDIT-live-experiments.md."
     },
     {
       "id": "DE-07",
@@ -151,9 +168,13 @@
       "control": "existing OAuth broker, opaque execution handles, live lease/fence, broker-owned refresh, audit, redaction",
       "verification": "wrong-tenant/fence/refresh/log corpus",
       "verificationLane": "D1",
-      "ownerTickets": ["DAT-004", "DAT-005", "REL-001"],
-      "deliveryStatus": "unaudited",
-      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
+      "ownerTickets": [
+        "DAT-004",
+        "DAT-005",
+        "REL-001"
+      ],
+      "deliveryStatus": "partial",
+      "deliveryEvidence": "partial: AUDITED AND MEASURED at tip 360d0b0ed by W20 (the DE-audit landing unit). ENFORCED, and exhibited denying against a real database. The primary deny is packages/db/src/repositories/tenant/job-control.ts:3122 (if (decision !== \"admit\") throw new SecretResolveRejection(decision)) inside the guarded mutator resolveExecutionSecret (:2997), preceded by :3005 (guardActiveFence FIRST -- a stale/terminal/revoked fence throws BEFORE any handle row or broker is touched) and :3016 (unknown_ref_kind). The decision is the pure authorizeSecretResolve (packages/db/src/repositories/tenant/job-fence.ts:288) whose 16 refusal returns include handle_revoked, ref_kind_policy_conflict, sandbox_local_network_destination and credential_unverified; refusals are mapped to a coarse non-disclosing wire denial at server/src/services/secret-broker.ts:284/288. A second independent refusal set is server/src/services/execution-secret-resolve.ts:118-136. Confidentiality is enforced at the wire: packages/worker-protocol/src/job.ts:367 addForbiddenWireKeyIssues on jobEnvelopeV1Schema, taken at server/src/services/job-leasing.ts:403 (safeParse fails => NO LEASE). MEASURED: secret-broker.integration.test.ts 17/17 against embedded PostgreSQL, including fence-staleness-before-broker-call, target_revoked, foreign-org non-disclosing malformed, sandbox-local-with-network-destination, generation mismatch, revoked handle, and \"no tenant GUC sees ZERO handle rows\"; and the real (not mirrored) authorizeSecretResolve was run against the committed fixture vectors -- 6 admits, 21 rejects, zero mismatches. Note the policy-lane gate scripts/check-secret-resolve-vectors.mjs exercises a hand-written MIRROR and by itself proves nothing about the shipped function; the binding is server/src/__tests__/secret-resolve-authz.test.ts:185-231. NOT DELIVERED, two clauses whose lever is dead. (a) revocation, \"the broker revokes grants\": job_secret_handles.revoked_at is READ at job-control.ts:2992 (isNull) and declared at packages/db/src/schema/job_secret_handles.ts:81, and the SINGLE write chokepoint for that table -- tx.update(jobSecretHandles) at job-control.ts:3139, the only such call in the tree -- sets exactly lastResolvedAt, resolveCount, updatedAt and optionally appliedPolicyVersion. It cannot set status or revokedAt. NO CODE PATH ANYWHERE CAN REVOKE A HANDLE. (b) integrity, \"broker-owned refresh\": server/src/services/execution-secret-brokers.ts:58-60 throws unconditionally. Filed as E0-F011. SCOPE: DAT-004 and DAT-005 have design+result files on disk; the third ownerTicket REL-001 has ZERO files, and DE-07 carries no releaseTest field, so the register's own \"every Critical/High crossing carries a release test\" note is satisfied for this row only by a ticket that does not exist as work. Live-access items are written out in docs/replatform/DE-AUDIT-live-experiments.md."
     },
     {
       "id": "DE-08",
@@ -172,7 +193,9 @@
       "control": "default-deny egress and blocked ranges",
       "verification": "DNS/IP/metadata tests",
       "verificationLane": "D2",
-      "ownerTickets": ["DAT-005"],
+      "ownerTickets": [
+        "DAT-005"
+      ],
       "releaseTest": "REL-001 end-to-end cross-tenant and secret-exposure gate",
       "deliveryStatus": "not-delivered",
       "deliveryEvidence": "not-delivered: MEASURED ABSENT at every candidate enforcement layer. Finding E8-F003 (open, HIGH, in scripts/finding-ownership.json) records the measurement: against REAL E2B sandboxes in workflow run 33857218680, with a positive control (the allowlisted host was reached) and an apparatus control (an RFC-2606 .invalid host failed), both of which held -- a host NOT on the declared egressAllowlist was reached from inside the sandbox that declared it, identically to a control sandbox that declared none; and 169.254.169.254 answered HTTP 401 from inside the guest, a live IMDSv2 token challenge rather than a dropped packet. E8-F003 further records that no enforcement exists at the provider level, the in-sandbox level (BRW-004 slice (f), not attempted), or the proxy level (classifyEgressDestination's only non-test consumer is a module nothing in production imports). This entry does not close DE-08 and does not close E8-F003; it only stops the register from asserting the opposite of what was measured. UPDATE 2026-09-07 (W11) -- ADDING EVIDENCE ONLY; deliveryStatus stays not-delivered and NO clause text on this crossing is reworded, rescoped or weakened. THE LAST CANDIDATE ENFORCEMENT LAYER OUTSIDE THE GUEST IS NOW ALSO MEASURED ABSENT. Finding E8-F008 (open, HIGH, in scripts/finding-ownership.json) records workflow run 34085130892 at ab23eabdc, template aoa-base, artefact w10b-egress-enforcement-record: a sandbox created through the e2b SDK's real network surface with denyOut = [169.254.0.0/16, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16] REACHED 169.254.169.254 (HTTP 401) from inside the guest, identically to an anti-vacuity sandbox that denied a different range; getInfo() returned the declared deny set EXACTLY; the API validates server-side (a sibling arm was refused with a 400 on an IPv6 CIDR), so it is not merely discarding an unknown field; and updateNetwork on a paused-and-resumed sandbox returned success with the target reachable before AND after. All four controls held and the probe's ABANDON condition did NOT fire, so this is genuine inertness rather than a broken experiment. CONSEQUENTLY every enumerated candidate layer for this crossing is now refuted -- each on evidence whose CLASS is named, because two of the five are not measurements: provider metadata (measured, E8-F003), provider network body (measured, E8-F008), in-guest (not a boundary -- the guest login shell is agent-writable by construction, which is STRUCTURAL; the proxy half, that Node's global fetch consults no proxy environment variable, was REPRODUCED at W11 on Node v24.14.0 and not on the node:22 guest, so it is MIXED rather than measured, and W10B's assertion of it cites no run), control-plane deny (structural: classifyEgressDestination's only route into production is a module nothing imports), and fail-closed-on-no-policy (DERIVED, not measured: its only discriminator is the read-back, which PASSES on the unpoliced sandbox). E8-F003 section 8 carries the census with each row labelled measurement / structural / derived. ★ THE SAFEGUARD HALF, which is what makes this worse than an unbuilt control: the getInfo() read-back that six programme records name as the MANDATORY precondition for adopting this layer PASSES on that sandbox. A read-back verifies what was DECLARED, never what is ENFORCED. This entry closes nothing -- not DE-08, not E8-F003, not E8-F007, not E8-F008 -- and takes no decision. WHAT TO DO ABOUT A CRITICAL CONTROL THAT CANNOT BE ENFORCED AT ANY AVAILABLE LAYER IS A FOUNDER DECISION THAT HAS NOT BEEN TAKEN; this field records the facts that inform it and pre-empts none of it."
@@ -194,9 +217,12 @@
       "control": "tenant commands only inside provider sandbox",
       "verification": "image/capability/provider tests",
       "verificationLane": "D2",
-      "ownerTickets": ["WRK-004", "REL-004"],
-      "deliveryStatus": "unaudited",
-      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
+      "ownerTickets": [
+        "WRK-004",
+        "REL-004"
+      ],
+      "deliveryStatus": "partial",
+      "deliveryEvidence": "partial: AUDITED AND MEASURED at tip 360d0b0ed by W20 (the DE-audit landing unit). THE HEADLINE CONTROL HAS NO ENFORCEMENT LINE. The row's control is \"tenant commands only inside provider sandbox\", and there is no line that refuses a host-executed tenant command -- because no host-execution path for a tenant command exists to refuse. The property is a STRUCTURAL ABSENCE defended by one unit test, not a deny. That is worth recording precisely because WRK-004-result.md's own security invariant, \"No local tenant spawn: ... asserts zero calls\", is an accurate description of a test and an inaccurate description of an enforced control. ENFORCED, and exhibited denying -- the adjacent controls in the same row: packages/worker-daemon/src/supervisor/effect-authority.ts:88 (#guard throws EffectAuthorityWithdrawnError; 10 in-class callers) is the revocation clause; cleanup-authority.ts:159 and :164 both throw the UNIFORM ResourceNotAvailableError so an unowned sandbox id is not an existence oracle; lifecycle/compose-dispatch.ts:103 refuses no_provider (the shipped daemon cannot construct a provider, so it cannot dispatch at all); supervisor.ts:545-546 terminalizes no_run_capability rather than building an ungated driver; packages/adapter-manager/src/bin/adapter-manager.ts:120-180 refuses to boot without provider, template and an ed25519 control-plane PUBLIC key (a private key or unparseable PEM is also a refusal); and packages/worker-daemon/src/snapshot/git-runner.ts:43 prepends GIT_HARDENING_FLAGS including -c core.hooksPath= to every host git argv, proven applied against real git at src/snapshot/__tests__/git-base.test.ts:133-139. Those denies are taken by tests inside the CI-run worker-daemon vitest project. NOT DELIVERED: the integrity clause, \"image and capability restrictions prevent host command execution\". packages/sandbox-e2b-provider/src/real-transport.ts:98-103 passes exactly {apiKey, timeoutMs, metadata, envs} to sdk.create -- no capability, user, seccomp or isolation configuration at any point -- so there is nothing that could take a deny path. CLI_001_CAPABILITY_MATRIX (capability-matrix.ts:59) is a TYPED FIXTURE whose only references outside its module are the barrel re-exports at index.ts:49,55. Filed as E0-F012. ★ NOT SETTLEABLE FROM SOURCE, and it is the prior question: whether a capability restriction is expressible on e2b create AT ALL. If it is not, this clause is not implementable as written and the row must be AMENDED rather than marked delivered -- a founder decision, not taken here. Also unsettled from source: whether the pinned template aoa-base (capability-matrix.ts:63) or the library default \"base\" (e2b-provider.ts:266) is what a live create actually receives. Both need a paid E2B key and the keyed workflow_dispatch lane. SCOPE: ownerTickets WRK-004 and REL-004 both exist on disk, and DE-09 is one of exactly six crossings admitted on the WRITTEN REL-004 by the E0 release-test gate, so unlike most rows its release route does not terminate nowhere. Live-access items are written out in docs/replatform/DE-AUDIT-live-experiments.md."
     },
     {
       "id": "DE-10",
@@ -215,10 +241,13 @@
       "control": "restart reconciliation and provider cleanup",
       "verification": "crash-point suite",
       "verificationLane": "D1",
-      "ownerTickets": ["WRK-007", "CLI-004"],
+      "ownerTickets": [
+        "WRK-007",
+        "CLI-004"
+      ],
       "releaseTest": "REL-004 signed images, SBOM, vulnerability and provider kill gates",
-      "deliveryStatus": "unaudited",
-      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
+      "deliveryStatus": "partial",
+      "deliveryEvidence": "partial: AUDITED AND MEASURED at tip 360d0b0ed by W20 (the DE-audit landing unit). ENFORCED, and exhibited denying -- the lease-fencing half. The deny is guardActiveFence at packages/db/src/repositories/tenant/job-control.ts:1167 and :1187, made reachable by the fence-revoking UPDATE at :3575 inside reapExpiredLeases (:3521), driven LIVE by the MIG-002 convergence loop at server/src/index.ts:1340 and :1376, inside the distributedExecutionEnabled block opened at :1183. It is exhibited in tests/d1/e6f-09-lease-faults.test.mjs case 3: back-date the expiry, reap, and a late event on the revoked fence is refused stale_fence. NOT DELIVERED: the half the row is actually named for -- \"the sandbox is destroyed\". Two candidate destroy lines exist and NEITHER is reachable in any deployment. (a) Server-side: packages/adapter-manager/src/reconcile-reaper.ts:192 (provider.reconcileCleanup) is reached from bin/adapter-manager.ts:228 startReaperLoop, but only when resolveReaperConfig returns enabled, which requires AOA_ADAPTER_MANAGER_REAPER_ENABLED to trim to EXACTLY \"1\" (reaper-loop.ts:55; \"true\" is OFF). A whole-tree grep finds that variable in docs, in code and in one test -- and in ZERO deployment manifests, including the adapter-manager service block of docker-compose.staging.yml, which also omits the required AOA_ADAPTER_MANAGER_CONTROL_PLANE_URL. The loop is therefore never started. (b) Worker-side (WRK-007): packages/worker-daemon/src/supervisor/startup-reconcile.ts:428 and :440 sit behind createStartupReconciler (:292), which has ZERO production callers; bootstrapWorkerDaemon builds an empty startup-step list when no reconciler is injected (packages/worker-daemon/src/bin/worker-daemon.ts:603, whose own comment at :601 reads \"the current default\"), and neither production entry point injects one (bin/worker-daemon.ts:652, bin/container-host.ts:127-135). CONSEQUENCE: a crashed worker's sandbox is reclaimed only by the provider's own 60s TTL; nothing in this system reclaims it, and nothing records that it was not reclaimed. Filed as E0-F011. BOTH OWNER TICKETS SELF-DECLARE THIS: WRK-007-result.md says \"inert-until-wired (E4-D12)\" and CLI-004-result.md residual risk 2 says \"No live periodic reconciliation LOOP\". Neither ever claimed the control was live; the register's unaudited was simply never resolved against them. (a) is a four-environment-variable deployment gap and can be closed live; (b) is a code gap that no live access can settle. SCOPE: WRK-007 and CLI-004 both have design+result files on disk. Live-access items are written out in docs/replatform/DE-AUDIT-live-experiments.md."
     },
     {
       "id": "DE-11",
@@ -237,9 +266,13 @@
       "control": "job-scoped sensitive artifacts and TTL",
       "verification": "browser retention/authorization",
       "verificationLane": "D3",
-      "ownerTickets": ["BRW-003", "BRW-004", "REL-001"],
-      "deliveryStatus": "unaudited",
-      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
+      "ownerTickets": [
+        "BRW-003",
+        "BRW-004",
+        "REL-001"
+      ],
+      "deliveryStatus": "partial",
+      "deliveryEvidence": "partial: AUDITED AND MEASURED at tip 360d0b0ed by W20 (the DE-audit landing unit). ENFORCED: the authorization and integrity clauses. Access is bound to the authenticated worker and the locked lease (server/src/services/worker-fence-context.ts:110 and the lease-identity conjunction at :111-122). Tenant/job scoping of artifact access denies at server/src/services/artifact-transfer-grant.ts:113 (upload key must be under THIS org's attempt prefix) and :201-202 (download requires a committed row for this tenant whose objectKey matches and is under the prefix), and at packages/db/src/repositories/tenant/job-control.ts:2750 wrong_prefix / :2751 tenant_mismatch on commit. Immutability-once-captured: :2789-2792 onConflictDoNothing on the committed partial-unique returns the existing row rather than UPDATEing, and artifact-transfer-grant.ts:139 refuses a re-PUT over committed bytes. NOT DELIVERED -- ALL FOUR of the clauses this row is named for, re-measured at tip and filed as E8-F011. (1) No TTL: ARTIFACT_RETENTION_CLASSES is four bare names with no durations (packages/worker-protocol/src/policy.ts:201). (2) No encryption: the single upload path builds PutObjectCommand with Bucket/Key/Body/ContentType/ContentLength and nothing else (server/src/storage/s3-provider.ts:159-165); a grep for ServerSideEncryption|SSEKMS|BucketEncryption|aws:kms over server/, packages/, ui/ and scripts/ returns ZERO hits. (3) Nothing purges, and the refusal is STRUCTURAL: isSweepEligible refuses status='committed' (server/src/services/artifact-orphan-sweep.ts:79) and any committed sibling (:83); the candidate query selects status='granted' only (packages/db/src/repositories/tenant/index.ts:328); markSwept's UPDATE is WHERE-guarded to 'granted' (:345-348); no PutBucketLifecycle exists anywhere. (4) Nothing audits, and the code says so at server/src/services/artifact-commit.ts:172-173: \"This is a LOG LINE, not an audit record -- DE-11 claims retention is audited and nothing audits it\" (also E0-F010). ★ UNTIL W20 THIS ROW WAS `unaudited`, asserting in its evidence prose that nobody had looked at this crossing, WHILE docs/replatform/FINDING-retention-authority-and-DE-11.md, committed in the tree, WAS a hand audit of this crossing concluding all four absent. Nothing could see the contradiction because check-finding-ownership.mjs globs only docs/replatform/epics/*/findings.md. E8-F011 is the register home that document never had. WHAT IS NOW STALE IN IT: its section 3 (the INVERTED retention authority) was CLOSED by DAT-010 -- retention is derived control-plane-side at server/src/services/artifact-retention-authority.ts:49-53, called from artifact-commit.ts:166 and stored at :202. Its section 1 still holds. NO LIVE LEAK TODAY: nothing in production uploads browser_cookie_state/browser_storage_state because BRW-003 is unbuilt. SCOPE: BRW-003's retention slice BRW-003c is DESIGN-ONLY (no result file); REL-001 has zero files. Live-access items are written out in docs/replatform/DE-AUDIT-live-experiments.md."
     },
     {
       "id": "DE-12",
@@ -258,10 +291,14 @@
       "control": "desired-state reconciler, generation, active fence",
       "verification": "partition/drain/generation tests",
       "verificationLane": "D4",
-      "ownerTickets": ["SVC-002", "SVC-003", "SVC-005"],
+      "ownerTickets": [
+        "SVC-002",
+        "SVC-003",
+        "SVC-005"
+      ],
       "releaseTest": "REL-002 load, fairness, and SLO gate",
-      "deliveryStatus": "unaudited",
-      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
+      "deliveryStatus": "partial",
+      "deliveryEvidence": "partial: AUDITED AND MEASURED at tip 360d0b0ed by W20 (the DE-audit landing unit). ONE real enforcement line exists and it is the only one, and it is PRODUCTION-UNREACHABLE. The deny is serviceSourceIsAdmitted (packages/db/src/repositories/tenant/job-control.ts:1667), which filters on eq(services.generation, input.generation) at :1675 and returns null on mismatch; it is taken at server/src/services/job-submission.ts:229. It cannot fire in production for two independent reasons, either sufficient. (a) The service_reconcile source requires requester kind \"system\" -- SOURCE_REQUESTER_KINDS.service_reconcile = [\"system\"] at job-submission.ts:99, checked at :164 and refused at :166, ONE GATE EARLIER than the generation check -- and server/src/routes/job-control.ts:21-61 principalFor never returns \"system\"; the only system principal producer in the tree is server/src/services/one-shot-sandbox-cli.ts:293, which submits one_shot. (b) services.generation HAS NO WRITER: repos.services exposes insert/getById/listForCompany and no update (packages/db/src/repositories/tenant/index.ts:215-226), and the call update(services) appears ZERO times anywhere in the tree outside comments, so no generation rollover can be performed and the fence has nothing to refuse. ★ DO NOT READ A GREEN FENCE TEST AS COVERING THIS ROW: guardActiveFence (job-control.ts:1118-1188) compares executionTargets.deviceGeneration (:1141, :1171-1177), which is the DEVICE-revocation generation of DE-03/DE-13's boundary. It never reads services.generation, service_generations.generation or service_instances.generation. NOT DELIVERED: the row's control names three components -- \"desired-state reconciler, generation, active fence\" -- and only \"generation\" exists at all, only at submit time, and only unreachably. There is no reconciler file, no instance fence, no drain, and consequently nothing for the audit clause (\"partition, drain, and generation changes are audited\") to record. Filed as E0-F010 and E0-F011. NOT SETTLEABLE BY LIVE ACCESS, and this is not a hedge: you cannot measure a reconciler that has no file, and services.generation has no writer to trigger a rollover with. ★ THIS ROW'S AUDIT ROUTE TERMINATES NOWHERE AT BOTH ENDS: all three ownerTickets (SVC-002, SVC-003, SVC-005) have ZERO files on disk -- it is the only crossing in the register with no on-disk owner ticket at all -- and its releaseTest REL-002 is also unwritten, as is the D4 lane its verificationLane names. The only authored SVC ticket disclaims it in writing (SVC-001-terrain.md:216-218). Declared in docs/architecture/distributed-execution-audit-debt.json rather than left invisible. Live-access items are written out in docs/replatform/DE-AUDIT-live-experiments.md."
     },
     {
       "id": "DE-13",
@@ -280,9 +317,12 @@
       "control": "per-Organization quotas/fair scheduling",
       "verification": "multi-tenant load",
       "verificationLane": "D5",
-      "ownerTickets": ["JOB-007", "REL-002"],
-      "deliveryStatus": "unaudited",
-      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
+      "ownerTickets": [
+        "JOB-007",
+        "REL-002"
+      ],
+      "deliveryStatus": "partial",
+      "deliveryEvidence": "partial: AUDITED AND MEASURED at tip 360d0b0ed by W20 (the DE-audit landing unit). ENFORCED, and exhibited denying -- the quota half, at two per-Organization enforcement points. (1) Admission: server/src/services/org-concurrency.ts:248 (usage >= cap => admitted false, reason capacity), computed inside the per-org pg_advisory_xact_lock at :223; the deny is TAKEN at server/src/services/job-submission.ts:349-354, which throws HttpError 429 and rolls the whole submission transaction back, so no leasable orphan is left behind. (2) Scheduler throttle: server/src/services/worker-admission-rate-limit.ts:139 (count > max => over_cap), fail-closed on store error at :136, taken at server/src/routes/worker-control.ts:414-416 => 429. Both denies are exercised by committed embedded-PostgreSQL suites that run in the required Linux verify gate (job-submit-capacity-admission.integration.test.ts, worker-admission-rate-limit.integration.test.ts). NOT DELIVERED, two clauses. (a) integrity, \"fair-share scheduling prevents monopolizing capacity\": the candidate claim orders by asc(jobs.availableAt), desc(jobs.priority), asc(jobs.createdAt), asc(jobs.id) at packages/db/src/repositories/tenant/job-control.ts:1981 -- NO TENANT TERM -- and there is no round-robin, weighting or borrow limit anywhere. What ships is admission and throttling, not scheduling; a second organization's first job waits behind every in-flight attempt of a backlogged first organization (E0-F012). (b) audit, \"admission, throttle, and quota-breach events are audited\": the throttle returns through the silent sendWorkerOperationProtocolError, and the capacity 429 surfaces only a generic job_submission_rejected reason code carrying neither cap nor usage (E0-F010). SURPRISE WORTH RECORDING: organizations.concurrency_cap has exactly ONE reader (org-concurrency.ts:324) and NO WRITER anywhere in server/, packages/ or ui/ -- there is no API, UI or CLI to set a per-organization cap, so every organization runs on the default. SCOPE: ownerTicket JOB-007 has a result file on disk; REL-002 has ZERO files and exists only as a prose graph node whose acceptance sentence is verbatim this row's exit criterion. The verificationLane D5 has no harness on disk (the only lane directory is tests/d1), and the row carries no releaseTest field. Live-access items are written out in docs/replatform/DE-AUDIT-live-experiments.md."
     },
     {
       "id": "DE-14",
@@ -301,10 +341,12 @@
       "control": "startup rejects process-wide unsafe override",
       "verification": "configuration test",
       "verificationLane": "D0",
-      "ownerTickets": ["FND-005"],
+      "ownerTickets": [
+        "FND-005"
+      ],
       "releaseTest": "REL-005 private beta rollout and evidence pack",
-      "deliveryStatus": "unaudited",
-      "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
+      "deliveryStatus": "partial",
+      "deliveryEvidence": "partial: AUDITED AND MEASURED at tip 360d0b0ed by W20 (the DE-audit landing unit). ENFORCED, AND THE DENY PATH WAS TAKEN AT TIP rather than read. The deny is the throw at server/src/config/distributed-execution.ts:72, whose message is \"<override name> is forbidden in cloud_auth; tenant workloads must use an isolated worker/provider boundary\", guarded by the condition at :68-71 (deploymentMode === \"cloud_auth\" && parseBooleanEnv(env, UNSANDBOXED_MULTITENANT_OPT_IN_ENV, false)) inside assertHostedExecutionStartupSafe (:46). It has EXACTLY ONE production caller, server/src/config.ts:198, invoked at module top level of the server entrypoint at server/src/index.ts:164 with no try/catch, so the throw is an unhandled module-eval error and the process exits before serving. The container runs that entrypoint (Dockerfile CMD node server/dist/index.js). MEASURED, calling the real exported function directly, seven cases: cloud_auth + \"1\" THREW (\"... is forbidden in cloud_auth; tenant workloads must use an isolated worker/provider boundary\"); cloud_auth + \"on\" THREW; cloud_auth + \"banana\" THREW (\"... is not a boolean flag\" -- it fails closed on garbage rather than reading it as false); and the POSITIVE CONTROLS held -- cloud_auth + \"0\" PASSED, cloud_auth + unset PASSED, local_trusted + \"1\" PASSED and authenticated + \"1\" PASSED, the last three by design (tenantIsolationEnforced is cloud_auth-only, server/src/config/deployment-mode.ts:13). So the refusal is caused by the override specifically, not by cloud_auth alone. ABSENT: the audit clause, \"the startup safety-assertion outcome is logged\". server/src/config/distributed-execution.ts imports no logger and contains no logger or console call at all -- its ONLY import is \"import type { DeploymentMode }\" at :1 -- so NEITHER outcome is recorded: the failure surfaces as an unhandled module-eval crash trace, and the success is never noted. Filed as E0-F010. SCOPE: ownerTicket FND-005 has files on disk; releaseTest REL-005 has ZERO files and is declared deferred behind REL-001/002/003/004. Live-access items are written out in docs/replatform/DE-AUDIT-live-experiments.md."
     },
     {
       "id": "DE-15",
@@ -323,7 +365,9 @@
       "control": "pinned digest, scan, signature, kill switch",
       "verification": "release gate",
       "verificationLane": "D6",
-      "ownerTickets": ["REL-004"],
+      "ownerTickets": [
+        "REL-004"
+      ],
       "deliveryStatus": "unaudited",
       "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
@@ -344,7 +388,11 @@
       "control": "cloud plugins remain disabled pending separate worker",
       "verification": "process/composition plus route/dispatcher/UI negatives and release regression",
       "verificationLane": "D0",
-      "ownerTickets": ["FND-006", "FND-008", "REL-005"],
+      "ownerTickets": [
+        "FND-006",
+        "FND-008",
+        "REL-005"
+      ],
       "deliveryStatus": "unaudited",
       "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
@@ -365,7 +413,12 @@
       "control": "separate resource-bound monotonic cleanup authority with effect operations unrepresentable",
       "verification": "post-fence cleanup, cross-resource denial, and escalation corpus",
       "verificationLane": "D1",
-      "ownerTickets": ["WRK-004", "DEP-008", "CLI-004", "REL-004"],
+      "ownerTickets": [
+        "WRK-004",
+        "DEP-008",
+        "CLI-004",
+        "REL-004"
+      ],
       "deliveryStatus": "unaudited",
       "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
@@ -386,7 +439,10 @@
       "control": "monotonic placement generation and admission fence",
       "verification": "target-replacement and stale-generation tests",
       "verificationLane": "D1",
-      "ownerTickets": ["JOB-004", "MIG-004"],
+      "ownerTickets": [
+        "JOB-004",
+        "MIG-004"
+      ],
       "releaseTest": "REL-001 end-to-end cross-tenant and secret-exposure gate",
       "deliveryStatus": "unaudited",
       "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
@@ -408,7 +464,11 @@
       "control": "scoped context API, no memory-table access, actor and visibility enforcement",
       "verification": "actor-scope and visibility adversarial tests",
       "verificationLane": "D1",
-      "ownerTickets": ["DAT-007", "TEN-005", "REL-001"],
+      "ownerTickets": [
+        "DAT-007",
+        "TEN-005",
+        "REL-001"
+      ],
       "deliveryStatus": "unaudited",
       "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
@@ -429,7 +489,11 @@
       "control": "single-writer owner and rollout flag",
       "verification": "cutover, drain, and rollback rehearsal",
       "verificationLane": "D5",
-      "ownerTickets": ["MIG-002", "MIG-008", "REL-003"],
+      "ownerTickets": [
+        "MIG-002",
+        "MIG-008",
+        "REL-003"
+      ],
       "deliveryStatus": "unaudited",
       "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
@@ -450,7 +514,9 @@
       "control": "tenant-scoped topics and authorized catch-up",
       "verification": "realtime fan-out and catch-up authorization tests",
       "verificationLane": "D1",
-      "ownerTickets": ["MIG-003"],
+      "ownerTickets": [
+        "MIG-003"
+      ],
       "releaseTest": "REL-002 load, fairness, and SLO gate",
       "deliveryStatus": "unaudited",
       "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
@@ -472,7 +538,10 @@
       "control": "append-only evidence with Supersedes and redaction on transmit",
       "verification": "append-only evidence and supersede-integrity tests",
       "verificationLane": "D0",
-      "ownerTickets": ["FND-005", "REL-005"],
+      "ownerTickets": [
+        "FND-005",
+        "REL-005"
+      ],
       "deliveryStatus": "unaudited",
       "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
@@ -493,7 +562,10 @@
       "control": "tenant-scoped encrypted backup and provenance-checked restore",
       "verification": "disaster-recovery and migration rehearsal",
       "verificationLane": "D5",
-      "ownerTickets": ["REL-003", "DAT-002"],
+      "ownerTickets": [
+        "REL-003",
+        "DAT-002"
+      ],
       "deliveryStatus": "unaudited",
       "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
@@ -514,7 +586,10 @@
       "control": "signed installers and signed update with drain and rollback",
       "verification": "signed-update, drain, and rollback tests",
       "verificationLane": "D6",
-      "ownerTickets": ["DSK-003", "DSK-004"],
+      "ownerTickets": [
+        "DSK-003",
+        "DSK-004"
+      ],
       "releaseTest": "REL-004 signed images, SBOM, vulnerability and provider kill gates",
       "deliveryStatus": "unaudited",
       "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
@@ -536,7 +611,10 @@
       "control": "explicit folder grants and local sandbox capability",
       "verification": "folder-grant and offline-policy tests",
       "verificationLane": "D1",
-      "ownerTickets": ["DSK-002", "DAT-006"],
+      "ownerTickets": [
+        "DSK-002",
+        "DAT-006"
+      ],
       "releaseTest": "REL-005 private beta rollout and evidence pack",
       "deliveryStatus": "unaudited",
       "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
@@ -558,7 +636,10 @@
       "control": "managed sandbox isolation conformance on the real provider",
       "verification": "real-provider isolation conformance suite",
       "verificationLane": "D2",
-      "ownerTickets": ["DEP-008", "REL-004"],
+      "ownerTickets": [
+        "DEP-008",
+        "REL-004"
+      ],
       "deliveryStatus": "unaudited",
       "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
@@ -579,7 +660,10 @@
       "control": "shared-admission ownership and serialized admission",
       "verification": "two-replica admission and partition tests",
       "verificationLane": "D5",
-      "ownerTickets": ["FND-005", "REL-002"],
+      "ownerTickets": [
+        "FND-005",
+        "REL-002"
+      ],
       "deliveryStatus": "unaudited",
       "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
@@ -600,7 +684,10 @@
       "control": "quarantine prefix with no automatic promotion",
       "verification": "late-output quarantine and no-auto-promote tests",
       "verificationLane": "D1",
-      "ownerTickets": ["JOB-005", "JOB-006"],
+      "ownerTickets": [
+        "JOB-005",
+        "JOB-006"
+      ],
       "releaseTest": "REL-001 end-to-end cross-tenant and secret-exposure gate",
       "deliveryStatus": "unaudited",
       "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
@@ -622,7 +709,11 @@
       "control": "company-scoped grant and fenced refresh with owner routing",
       "verification": "wrong-owner routing and refusal corpus",
       "verificationLane": "D1",
-      "ownerTickets": ["DAT-004", "DAT-005", "REL-001"],
+      "ownerTickets": [
+        "DAT-004",
+        "DAT-005",
+        "REL-001"
+      ],
       "deliveryStatus": "unaudited",
       "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."
     },
@@ -643,7 +734,10 @@
       "control": "server-derived capabilities from verified identity and live membership",
       "verification": "capability-spoofing and stale-membership tests",
       "verificationLane": "D1",
-      "ownerTickets": ["JOB-002", "TEN-002"],
+      "ownerTickets": [
+        "JOB-002",
+        "TEN-002"
+      ],
       "releaseTest": "REL-001 end-to-end cross-tenant and secret-exposure gate",
       "deliveryStatus": "unaudited",
       "deliveryEvidence": "unaudited: no delivery audit has been performed for this crossing. The deliveryStatus field was introduced by register-repair unit W4U2, which audited only DE-02 (positive control) and DE-08 (the misrepresentation it was opened to fix). Every other crossing carries this explicit deferral rather than a fabricated \"delivered\" -- claiming delivery for an unaudited crossing would reproduce, at scale, exactly the defect this field exists to end. Read this as \"unknown\", never as \"holds\". Replace it with delivered or not-delivered only from a recorded measurement."

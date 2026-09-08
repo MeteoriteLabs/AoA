@@ -2510,7 +2510,29 @@ test("W4U2 M4: not-delivered without deliveryEvidence is refused", async (t) => 
   assertDe02Unaffected(errors);
 });
 
+// DE-15 (not DE-01) because W20 audited DE-01 and moved it to `partial`. The test needs a
+// crossing that is still genuinely `unaudited`; picking one that has since been audited is
+// how a mutation test quietly stops testing the arm it names.
 test("W4U2 M5: an unaudited deferral without a reason is refused (no silent deferral)", async (t) => {
+  const root = makeFixture(t, ({ threatControlsPath }) => {
+    setCrossing(threatControlsPath, "DE-15", (c) => {
+      delete c.deliveryEvidence;
+    });
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, 'crossing DE-15 is deliveryStatus "unaudited" and must carry a non-empty "deliveryEvidence"'),
+    report(errors),
+  );
+  assertDe02Unaffected(errors);
+});
+
+// --- W20: the `partial` status carries not-delivered's citation duty ------------------
+// `partial` says "some of this control is absent". If it could be written without naming a
+// finding, it would be a strictly WEAKER `unaudited` — a place to park absent controls that
+// no ownership census can see — which is the opposite of why it was added.
+
+test("W20 M12: partial with no deliveryEvidence is refused", async (t) => {
   const root = makeFixture(t, ({ threatControlsPath }) => {
     setCrossing(threatControlsPath, "DE-01", (c) => {
       delete c.deliveryEvidence;
@@ -2518,10 +2540,45 @@ test("W4U2 M5: an unaudited deferral without a reason is refused (no silent defe
   });
   const { errors } = await runCheck(root);
   assert.ok(
-    hasError(errors, 'crossing DE-01 is deliveryStatus "unaudited" and must carry a non-empty "deliveryEvidence"'),
+    hasError(errors, 'crossing DE-01 is deliveryStatus "partial" and must carry a non-empty "deliveryEvidence"'),
     report(errors),
   );
   assertDe02Unaffected(errors);
+});
+
+test("W20 M13: partial whose evidence cites no finding id is refused", async (t) => {
+  const root = makeFixture(t, ({ threatControlsPath }) => {
+    setCrossing(threatControlsPath, "DE-01", (c) => {
+      c.deliveryEvidence = "half of it works, trust me";
+    });
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, 'crossing DE-01 is deliveryStatus "partial" but its "deliveryEvidence" cites no finding id'),
+    report(errors),
+  );
+  assertDe02Unaffected(errors);
+});
+
+test("W20 M14: partial citing a finding that is not in the register is refused", async (t) => {
+  const root = makeFixture(t, ({ threatControlsPath }) => {
+    setCrossing(threatControlsPath, "DE-01", (c) => {
+      c.deliveryEvidence = "the audit half is absent, see E9-F999";
+    });
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, "crossing DE-01 cites finding E9-F999 which is not in"),
+    report(errors),
+  );
+  assertDe02Unaffected(errors);
+});
+
+test("W20 M15: the shipped register's twelve partial rows all satisfy the citation rule (positive control)", async (t) => {
+  const root = makeFixture(t, () => {});
+  const { errors } = await runCheck(root);
+  const offenders = errors.filter((e) => /deliveryStatus "partial"/.test(e) || /cites finding .* which is not in/.test(e));
+  assert.deepEqual(offenders, [], report(errors));
 });
 
 test("W4U2 M6: not-delivered whose evidence cites no finding id is refused", async (t) => {
