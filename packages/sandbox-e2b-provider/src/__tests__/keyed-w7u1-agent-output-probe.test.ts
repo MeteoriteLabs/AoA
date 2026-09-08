@@ -699,7 +699,14 @@ async function probeA(spec: AdapterArm): Promise<Verdict> {
       // classifier and the record are handed the SAME STRING, and the console keeps its own
       // shorter line on purpose — a 900-character console line is a reasonable console line,
       // and THE RECORD, NOT THE CONSOLE, IS THE AUDITABLE ARTEFACT.
-      const classifierStdout = safe(exec.stdout, CLASSIFIER_STDOUT_LIMIT);
+      // ★ THE TRUNCATION FLAG IS COMPUTED POST-REDACTION, ON PURPOSE. `safe()` redacts and
+      // THEN slices, and redaction changes length — so comparing the RAW stdout against the
+      // limit can report `truncated` for a string the slice never actually cut. The flag has
+      // to mean exactly one thing ("the slice dropped bytes") or it is not a bound a reader
+      // can rely on, and an unreliable bound is how the ~900-character claim got made in the
+      // first place.
+      const redactedStdout = safe(exec.stdout, Number.MAX_SAFE_INTEGER);
+      const classifierStdout = redactedStdout.slice(0, CLASSIFIER_STDOUT_LIMIT);
       const rawStdout = String(exec.stdout ?? "");
       ARM_EVIDENCE.push({
         probe: probeId,
@@ -710,7 +717,7 @@ async function probeA(spec: AdapterArm): Promise<Verdict> {
         exitCode: exec.exitCode,
         // A verdict that says "no model-contact evidence" means something different when the
         // bytes ran out, so the record says which it was.
-        stdoutTruncated: rawStdout.length > CLASSIFIER_STDOUT_LIMIT,
+        stdoutTruncated: redactedStdout.length > CLASSIFIER_STDOUT_LIMIT,
         stdout: classifierStdout,
       });
 
@@ -720,7 +727,7 @@ async function probeA(spec: AdapterArm): Promise<Verdict> {
           `exit=${String(exec.exitCode)} preExisted=${String(preExisted)} file=${String(file.found)} ` +
           `readErrorKind=${String(file.errorKind)} ` +
           `stdout=${JSON.stringify(safe(exec.stdout, 900))} stderr=${JSON.stringify(safe(exec.stderr, 600))} ` +
-          `stdoutInRecord=${String(classifierStdout.length)}/${String(rawStdout.length)}`,
+          `stdoutInRecord=${String(classifierStdout.length)}/${String(redactedStdout.length)} raw=${String(rawStdout.length)}`,
       );
       return classifyProbeAArm({
         label,
