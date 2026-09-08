@@ -1471,7 +1471,7 @@ leading-word band to `3ffe..3fff` reds naming the vacated `3ff0:: .. 3ffd:ffff:�
 guard naming the specifier. The positive control is the shipped state: the oracle remains independent
 and diverges from production by four intervals, and every lane is green.
 
-## E8-F011 — DE-11 asserts four controls over sensitive browser artifacts; all four are absent, one of them is INVERTED, and the hand audit that measured them has lived outside every register since it was written
+## E8-F011 — DE-11 asserts four controls over sensitive browser artifacts and all four are absent, one of them structurally excluded rather than merely missing, and the hand audit that measured them has lived outside every register since it was written
 
 **Status:** open · **Owner:** `unowned` (see the disposition — BRW-003c is design-only and REL-001 is unwritten)
 **Severity:** HIGH
