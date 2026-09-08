@@ -11,7 +11,9 @@
 // characters expressed as escapes.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -245,5 +247,92 @@ test("this test file and the checker are themselves free of raw control bytes", 
     "scripts/lib/__tests__/invisible-control-chars.test.mjs",
   ]) {
     assert.deepEqual(scanBuffer(readFileSync(path.join(ROOT, rel))), [], rel);
+  }
+});
+
+// ---------------------------------------------------------------- the ENTRY POINT
+
+/**
+ * ★★★ WHY THIS SPAWNS A SUBPROCESS INSTEAD OF CALLING evaluateTree.
+ *
+ * Every test above this line imports the library and never runs the script. An adversarial
+ * mutation pass proved what that leaves open: DELETING `process.exit(1)` FROM main() SURVIVED
+ * THE WHOLE SUITE, and survived a clean-tree CI run too, because on a clean tree the exit code
+ * is 0 either way. On a DIRTY tree — the only tree this guard exists for — the mutated script
+ * printed its violations to stderr, then printed
+ *
+ *     invisible control characters: PASS (1 text files scanned, 0 raw control bytes)
+ *
+ * to stdout and exited 0. The CI step would have gone GREEN over a planted backspace byte while
+ * naming it on screen. That is precisely "a check that nothing runs", one layer down: the
+ * LIBRARY was checked, the EXECUTABLE never was, and the executable is what the workflow calls.
+ *
+ * So the assertion is on the EXIT STATUS of a real `node scripts/check-invisible-control-chars.mjs`
+ * process. An exit code cannot be observed from inside the module, and no import-only test can
+ * ever cover it.
+ *
+ * Cost: ONE `git init` and THREE node spawns over a two-file throwaway tree, ~1s total. The
+ * fixture must be a git repository because `listTrackedFiles` follows the index rather than the
+ * working tree — pointing `--root` at a plain directory would scan nothing and pass vacuously,
+ * which is the same failure in a new costume. Hence the positive control below: run 2 asserts
+ * the fixture CAN go green, so run 1's red is a verdict about the byte and not about the harness.
+ */
+test("the ENTRY POINT exits 1 on a dirty tree, 0 on a clean one, and names what it found", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "w19-control-chars-"));
+  const guard = path.join(ROOT, "scripts", "check-invisible-control-chars.mjs");
+  // GIT_DIR/GIT_WORK_TREE in the ambient environment (a git hook, a rebase) would silently
+  // redirect `git init`/`git add` at the REAL repository. Strip them.
+  const env = { ...process.env };
+  delete env.GIT_DIR;
+  delete env.GIT_WORK_TREE;
+  delete env.GIT_INDEX_FILE;
+
+  const git = (...args) => execFileSync("git", args, { cwd: root, env, stdio: "ignore" });
+  const runGuard = () =>
+    spawnSync(process.execPath, [guard, "--root", root], { encoding: "utf8", env });
+
+  try {
+    git("init", "-q");
+    mkdirSync(path.join(root, "scripts"), { recursive: true });
+    const planted = path.join(root, "scripts", "planted.mjs");
+
+    // (1) NEGATIVE — a raw 0x08 exactly where the two characters backslash-b belonged. This is
+    //     the ci-local.mjs defect, replanted.
+    writeFileSync(planted, `if (/^pnpm install${BSP}/.test(cmd)) continue;\n`, "utf8");
+    git("add", "-A", "-f");
+    const dirty = runGuard();
+    assert.equal(dirty.status, 1, `a planted 0x08 must exit 1, saw ${dirty.status}\n${dirty.stderr}`);
+    assert.match(dirty.stderr, /scripts\/planted\.mjs:1:\d+\s+BS/, "the violation must be NAMED on stderr");
+    assert.match(dirty.stderr, /REPAIR: replace the raw byte with an escape/, "and say how to repair it");
+    assert.doesNotMatch(
+      dirty.stdout,
+      /PASS/,
+      "★ the mutant printed both the violations AND `PASS`; a run that found something may never claim to have passed",
+    );
+
+    // (2) POSITIVE CONTROL — the SAME line written with the escape it always meant. If this
+    //     went red, run (1) would prove nothing: a guard that reds on everything is a broken
+    //     harness, not a working ban.
+    writeFileSync(planted, `if (/^pnpm install${BS}b/.test(cmd)) continue;\n`, "utf8");
+    git("add", "-A", "-f");
+    const clean = runGuard();
+    assert.equal(clean.status, 0, `the escape form must exit 0, saw ${clean.status}\n${clean.stderr}`);
+    assert.match(clean.stdout, /invisible control characters: PASS \(1 text files scanned/);
+
+    // (3) NEGATIVE — the OTHER arm of the same exit condition. `process.exit(1)` fires on
+    //     `violations.length > 0 || unclassified.length > 0`, and a mutant that drops the
+    //     second disjunct would still pass (1) and (2). Default-deny needs its own spawn.
+    writeFileSync(path.join(root, "thing.rb"), "puts 1\n", "utf8");
+    git("add", "-A", "-f");
+    const unclassified = runGuard();
+    assert.equal(
+      unclassified.status,
+      1,
+      `an unclassified file type must exit 1, saw ${unclassified.status}\n${unclassified.stderr}`,
+    );
+    assert.match(unclassified.stderr, /DEFAULT-DENY/);
+    assert.match(unclassified.stderr, /\.rb\s+e\.g\. thing\.rb/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

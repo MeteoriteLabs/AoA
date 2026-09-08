@@ -1082,3 +1082,138 @@ So the honest verdict: this guard is **complete against the accident it was buil
 can only ever emit a C0 byte — and it is **not a security boundary**. Anyone who wants to hide a
 character can still do it with one zero-width space. `scripts/lib/__tests__/invisible-control-chars.test.mjs`
 asserts that limit as a passing test so it cannot quietly be forgotten or over-claimed later.
+
+---
+
+## E6-F018 — the new control-character guard's ENTRY POINT was unpinned: deleting `process.exit(1)` kept every test and a clean-tree CI run green — RESOLVED
+
+**Status:** resolved
+**Severity:** MEDIUM — the guard's library was covered by eighteen tests; its EXECUTABLE, which
+is the thing the workflow calls, was covered by none. The consequence is a CI step that reports
+success over a planted control byte it has just printed to the screen.
+**Filed and resolved:** 2026-09-08 (W19 round 2), on the same PR that introduced the guard. Found
+by an adversarial mutation pass: sixteen mutants were landed against E6-F016/E6-F017's work,
+fourteen went red and **two survived** — this and E6-F019, the same shape twice.
+
+### What was wrong
+
+`scripts/check-invisible-control-chars.mjs` ends its `main()` with
+
+```
+  if (violations.length > 0 || unclassified.length > 0) process.exit(1);
+  console.log(`invisible control characters: PASS (...)`);
+```
+
+Delete that one line and **every test still passed**, `node --test` exit 0, and a clean-tree run
+of the script still exited 0 — because on a clean tree the exit code is 0 either way. Neither
+`invisible-control-chars.test.mjs` nor `ci-local-install-guard.test.mjs` contained the word
+`spawn`; both import the module and exercise `evaluateTree`, `scanBuffer`, `classifyPath` and the
+byte tables. None of them can observe an exit code, because an exit code does not exist inside the
+module.
+
+Measured against a throwaway git tree holding one file with a planted 0x08, the mutant printed
+**both halves at once**:
+
+```
+--- stdout ---
+invisible control characters: PASS (1 text files scanned, 0 raw control bytes)
+--- stderr ---
+invisible control characters in 1 file(s):
+  scripts/planted.mjs:1:19  BS
+--- exit status: 0 ---
+```
+
+So the `policy` step would have gone GREEN on a dirty tree while naming the violation on screen.
+That is the repository's own "a check that nothing runs is not a check", one layer down: the
+library was checked, the executable never was, and the executable is what CI invokes.
+
+### ★ Why the library tests could not have caught it, in principle
+
+This is not an oversight that more library tests would fix. The defect lives in the two lines
+between "the library computed the right answer" and "the process told the operating system about
+it". A test that imports the module has no process boundary to observe, so the ONLY instrument
+that can see this is a subprocess with a status code. Import-only coverage of a CLI is a
+structural blind spot, not a thin spot.
+
+### What changed
+
+`invisible-control-chars.test.mjs` gained one test that spawns the real script three times over a
+throwaway git repository (one `git init`, ~250 ms total) and asserts the exit STATUS each time:
+
+| fixture | expected | what it pins |
+|---|---|---|
+| a planted raw 0x08 | exit **1**, the file+`BS` named on **stderr**, and `PASS` absent from stdout | the mutant above |
+| the same line written `\b` (two characters) | exit **0**, `PASS` on stdout | the POSITIVE CONTROL — without it a red is not a verdict about the byte, only about the harness |
+| an unclassified `.rb` | exit **1**, `DEFAULT-DENY` on stderr | the second disjunct of the same `if`, which a narrower mutant drops |
+
+The fixture must be a git repository: `listTrackedFiles` follows the index, so pointing `--root`
+at a plain directory would scan zero files and pass vacuously — the same failure in a new costume.
+
+**Four mutants observed RED against the new pin** (all previously green): delete `process.exit(1)`;
+drop the `|| unclassified.length > 0` disjunct; make the exit unconditional (caught by the positive
+control, not by a negative one); and break `invokedDirectly` so `main()` never runs.
+
+---
+
+## E6-F019 — the `invokedDirectly` conditional this PR ADDED could turn `scripts/ci-local.mjs` into a silent no-op that exits 0 with no output — RESOLVED
+
+**Status:** resolved
+**Severity:** LOW-MEDIUM — `ci-local.mjs` is a developer runner, not a CI lane, so no gate depends
+on it. It is filed anyway because the failure mode is the one this programme keeps paying for: a
+tool that returns the success code having executed nothing, which reads to its operator as "your
+tree is clean".
+**Filed and resolved:** 2026-09-08 (W19 round 2). **This hole did not exist before this PR** — it
+was opened to make E6-F016's pin possible, and is closed in the same change.
+
+### What was wrong
+
+`main()` in `scripts/ci-local.mjs` used to be unconditional. Exporting `parseJobs` so the pin could
+call the REAL parser (rather than re-implement it, which cannot catch a parser regression) required
+guarding the call:
+
+```
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main();
+}
+```
+
+That conditional is a new place for a regression to hide, and the mutation pass proved it. Drop the
+`fileURLToPath` call — a plausible refactor, since the two sides look comparable — and the predicate
+compares a filesystem path to a `file://` URL, which is false on every platform forever. Measured:
+
+```
+$ node scripts/ci-local.mjs --list   ->  exit 0, zero bytes of output
+$ node scripts/ci-local.mjs          ->  exit 0, zero bytes of output
+$ node --test scripts/lib/__tests__/ci-local-install-guard.test.mjs  ->  5/5 pass
+```
+
+All five tests imported the module; none ran the script.
+
+### What changed
+
+Two tests, both spawning the real entry point, ~75 ms combined:
+
+- `--list` from the repository root: exit **0**, and — the assertion that matters — the stdout must
+  actually contain `jobs in pr.yml:`, name six real jobs from the workflow, carry at least ten job
+  lines, and print `INSTALL_SKIP_REASON` **verbatim**. Status alone cannot distinguish "ran and
+  passed" from "never ran": the mutant returns 0 too. Output is the only discriminator.
+- run from an empty directory: exit **2** with `no workflow at …` on stderr and nothing on stdout,
+  pinning `main()`'s other exit code against the same deletion E6-F018 describes.
+
+`--list` is chosen because it is the only invocation that reaches `main()` without executing a CI
+job — a real `node scripts/ci-local.mjs` run is the fast gate and takes minutes, a cost this suite
+may not impose — while still exercising `existsSync`, `readFileSync`, `parseJobs`, the
+`CANNOT_RUN_HERE` table and the deviation reporting.
+
+**Three mutants observed RED** (all previously green): the `invokedDirectly` no-op (reds BOTH
+tests); deleting `process.exit(2)`; and — from E6-F018's pass — the same class on the sibling script.
+
+### ★ The class, and the census of it in this change
+
+Two of sixteen mutants surviving is a class, not a pair, so the rest of the PR was swept for the
+same shape. Of the seventeen files it touches, exactly **two** contain an entry point
+(`#!`/`import.meta.url`/`main()`): these two scripts. The others are prose, data manifests, or
+escape rewrites inside libraries. A third entry point — the `pr.yml` step itself — was tested by
+deleting its whole `run:` body: `check-guard-inventory.mjs` exits 1 with *"declared 'ci' but no
+workflow invokes it"* and `check-execution-census.mjs` exits 1 with `not_named_in_step` for both
+test files. That wiring was already pinned; the two script entry points were the whole gap.

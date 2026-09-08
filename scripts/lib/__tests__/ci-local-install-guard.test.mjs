@@ -18,7 +18,9 @@
 // Each of the three fails independently.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -96,6 +98,88 @@ test("the regex matches both install forms, and is not anchored to a control byt
   assert.equal(IS_INSTALL_STEP.test("pnpm installer:verify"), false);
   assert.equal(IS_INSTALL_STEP.test("pnpm run install-check"), false);
   assert.equal(IS_INSTALL_STEP.test("node scripts/check-x.mjs"), false);
+});
+
+// ---------------------------------------------------------------- the ENTRY POINT
+
+/**
+ * ★★★ THE HOLE THIS PR OPENED, CLOSED IN THE SAME PR.
+ *
+ * `main()` in scripts/ci-local.mjs used to be UNCONDITIONAL. Exporting `parseJobs` so this file
+ * could pin the REAL parser required guarding it behind
+ *
+ *     if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
+ *
+ * and that conditional is now a place a regression can hide. An adversarial mutation pass proved
+ * it: drop the `fileURLToPath` call (a plausible refactor — the two sides look comparable) and
+ * the predicate is false on every platform forever. Measured, the mutant turned the whole runner
+ * into a SILENT NO-OP:
+ *
+ *     $ node scripts/ci-local.mjs --list   ->  exit 0, zero bytes of output
+ *     $ node scripts/ci-local.mjs          ->  exit 0, zero bytes of output
+ *
+ * and all five tests above stayed green, because every one of them imports the module and none
+ * of them runs the script. A local runner that exits 0 having executed NOTHING is worse than a
+ * missing runner: 0 is the same code a passing gate returns, so it reads as "your tree is clean".
+ *
+ * ★ WHY `--list`, AND WHY IT IS SUFFICIENT. It is the only invocation that reaches `main()`
+ * without executing a single CI job — a real `node scripts/ci-local.mjs` run is the fast gate
+ * and takes minutes, which is not a cost this suite may impose. `--list` still exercises the
+ * whole entry path: existsSync on the workflow, readFileSync, `parseJobs`, the CANNOT_RUN_HERE
+ * table, and the deviation reporting. So the assertions are on OUTPUT, not merely on status 0 —
+ * an exit code alone cannot tell "ran and passed" from "never ran", and the mutant returns 0.
+ *
+ * Cost: two spawns, well under a second.
+ */
+test("the ENTRY POINT actually runs: `--list` reports the workflow rather than exiting 0 in silence", () => {
+  const script = path.join(ROOT, "scripts", "ci-local.mjs");
+  const listed = spawnSync(process.execPath, [script, "--list"], {
+    cwd: ROOT,
+    encoding: "utf8",
+  });
+
+  assert.equal(listed.status, 0, `--list must exit 0, saw ${listed.status}\n${listed.stderr}`);
+
+  // ★ THE ANTI-NO-OP ASSERTION. Status 0 is what the mutant returns too; only output separates
+  // a runner that ran from one that was never called.
+  assert.match(listed.stdout, /^jobs in pr\.yml:/m, "the entry point produced NO output at all");
+
+  // It reached the real workflow: the jobs below are pr.yml's, not this test's invention.
+  for (const job of ["policy", "verify", "lint", "e2e", "migrations", "ci-required"]) {
+    assert.match(
+      listed.stdout,
+      new RegExp(`^\\s+(RUN|SKIP|--)\\s+${job}\\s`, "m"),
+      `--list must name the \`${job}\` job`,
+    );
+  }
+  const jobLines = listed.stdout.split("\n").filter((l) => /^\s+(RUN|SKIP|--)\s/.test(l));
+  assert.ok(jobLines.length >= 10, `expected >= 10 job lines, saw ${jobLines.length}`);
+
+  // And it STATES the deviation. The original comment claimed `--list` did this while `--list`
+  // said nothing; the claim is only checkable from outside the process.
+  assert.match(listed.stdout, /^deliberate deviation from CI: /m);
+  assert.ok(
+    listed.stdout.includes(INSTALL_SKIP_REASON),
+    "--list must print the stated reason verbatim, not a paraphrase that can drift from it",
+  );
+});
+
+test("the ENTRY POINT still fails loudly: no workflow means exit 2, not a quiet 0", () => {
+  // The other half of the same class. `main()` opens with `process.exit(2)` when pr.yml is
+  // missing; deleting that line would make a runner pointed at the wrong directory report
+  // success, which is the failure mode of the guard this file was written for.
+  const empty = mkdtempSync(path.join(os.tmpdir(), "w19-ci-local-noworkflow-"));
+  try {
+    const missing = spawnSync(process.execPath, [path.join(ROOT, "scripts", "ci-local.mjs")], {
+      cwd: empty,
+      encoding: "utf8",
+    });
+    assert.equal(missing.status, 2, `a missing workflow must exit 2, saw ${missing.status}`);
+    assert.match(missing.stderr, /no workflow at /);
+    assert.equal(missing.stdout.trim(), "", "nothing may be reported as run");
+  } finally {
+    rmSync(empty, { recursive: true, force: true });
+  }
 });
 
 test("scripts/ci-local.mjs carries no invisible control characters", () => {
