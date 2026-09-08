@@ -928,3 +928,362 @@ at `…campaign-blockers-and-fleet-terrain.md` §8, or the two password vars add
 charter is "do not touch docker/ or the D1 compose files (another unit owns those)", and
 `docker-compose.staging.yml` is close enough to that boundary that editing it belongs to the
 deployment track.
+## E6-F016 — `scripts/ci-local.mjs`'s "skip `pnpm install`" guard had never once been in effect, and its own comment said otherwise — RESOLVED
+
+**Status:** resolved
+**Severity:** MEDIUM — a local-runner-only defect (no CI lane is affected), but its side effect is
+lockfile mutation in the DEFAULT fast gate, which the `policy` job then fails the PR for.
+**Filed and resolved:** 2026-09-08 (W19), measured at `3814b90f3`. Cross-links the same class in
+`scripts/lib/worker-keystore-boundary.mjs` (fixed earlier) and
+`server/src/__tests__/w17-ipv6-range-closeout.test.ts` (fixed on another branch).
+
+### What was wrong
+
+`scripts/ci-local.mjs` carried, in source:
+
+```
+if (/^pnpm install<0x08>/.test(cmd)) continue;
+```
+
+a literal 0x08 backspace byte where the two characters backslash-b belonged — the signature of a
+file written through a shell heredoc, `echo`, `printf` or `sed`, all of which collapse those two
+characters into one control byte. The regex therefore demanded a real backspace character after
+`install` and matched nothing.
+
+The comment three lines above it read: *"Running `pnpm install --frozen-lockfile` locally costs
+minutes and can churn node_modules; the local runner assumes a working tree that already installs.
+This is the ONE deliberate deviation from CI, and it is stated in `--list`."* Measured with the
+script's own parser, **eight** `pnpm install` steps survived that guard and were executed as steps:
+
+```
+policy               :: pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
+verify               :: pnpm install --frozen-lockfile
+lint                 :: pnpm install --frozen-lockfile
+e2e                  :: pnpm install --frozen-lockfile
+migrations           :: pnpm install --frozen-lockfile
+e2e-pgvector         :: pnpm install --frozen-lockfile
+distributed-contract :: pnpm install --frozen-lockfile
+browser              :: pnpm install --frozen-lockfile
+```
+
+The `policy` one is lockfile-MUTATING and `policy` is in the default fast gate, so every
+`node scripts/ci-local.mjs` ran a command that can rewrite `pnpm-lock.yaml` in the working tree —
+which the `Block manual lockfile edits` step in that same job then fails the PR for.
+
+### ★★★ THE SECOND DEFECT, which the byte hid
+
+Fixing the byte alone moved the surviving-install count **8 → 7, not 8 → 0.** The guard had only
+ever sat on the multi-line `run: |` path, while **seven of the eight** installs are inline
+`run: pnpm install --frozen-lockfile` steps that `parseJobs` pushes and `continue`s on, several
+lines ABOVE the guard. So even a correctly-written regex could only ever have skipped ONE job's
+install, and the premise that "the intended regex would have skipped all 8" is false.
+
+That is the substance of this finding: a dead escape is visible once you know to look for it with
+`cat -A`; a guard on the wrong code path is invisible in any rendering, and only a test that
+asserts the CONSEQUENCE — the count — can see it. A byte-only fix, or a byte-only regression test,
+would have gone green over a guard that still covered one eighth of its cases.
+
+### ★ A third inaccuracy in the same three lines
+
+The comment claimed the deviation "is stated in `--list`". It was not: `--list` printed job names,
+step counts, env-gated counts and unrepresentable counts, and said nothing about installs — and
+after the byte fix the skipped steps were dropped silently, so it still would not have. Three
+claims in one comment, none of them true of the running code.
+
+### The decision that was made deliberately rather than inherited
+
+`policy`'s `--lockfile-only` install is skipped **too**, and not for the cost reason the original
+comment gives. In CI that command sits behind two conditions this parser cannot see: a step-level
+`if: github.event_name == 'pull_request'`, and a shell `if` that runs it only when a manifest file
+changed. `parseJobs` keeps lines starting with `node`/`pnpm`/`npx` and drops the `changed=` / `if` /
+`fi` scaffolding around them, so running it locally does not reproduce CI — it runs a command CI
+would usually NOT run, with a side effect on a tracked file. Skipping it is the faithful behaviour.
+
+### What changed
+
+- The byte is now `\b`, and the predicate is a named `IS_INSTALL_STEP` consulted on **both** parser
+  paths. Measured 8 → 0.
+- Install steps are RECORDED as deliberate deviations rather than dropped, so `--list` and the run
+  summary state the deviation the comment had only claimed they stated.
+- `scripts/lib/__tests__/ci-local-install-guard.test.mjs` pins the consequence (0 surviving), the
+  mechanism (both paths, ≥8 recorded), and the byte. All four mutants observed RED: re-inject the
+  0x08; remove the inline-path guard; remove the block-path guard; over-broaden to all `pnpm`.
+- `scripts/check-invisible-control-chars.mjs` generalises the byte half to the whole tree, wired
+  into `policy`. See E6-F017.
+
+---
+
+## E6-F017 — sixteen raw control bytes sat in nine tracked text files, six of them corrupting explanatory prose including the post-mortem for this very defect — RESOLVED
+
+**Status:** resolved
+**Severity:** LOW individually; the reason it is filed is the CLASS, which has shipped three times,
+twice after its own post-mortem was written down.
+**Filed and resolved:** 2026-09-08 (W19). Census measured at `3814b90f3` and re-measured at this
+PR's parent `c78a6827d`; the two trees give byte-for-byte the same result, so the rev is not what
+moved the number.
+
+### What was measured
+
+A byte scan of every tracked text file found **16 raw control bytes in 9 files**. Every one of them
+is the same shell-eaten-escape corruption or an authored byte written raw; **none** required
+deleting an explanation to fix. The `bytes` column is the unit — a file can hold more than one:
+
+| file | bytes | raw byte(s) | disposition |
+|---|---|---|---|
+| `docs/aoa/plans/2026-07-20-cli-auth-detection-plan.md` | 4 | 4× 0x08 BS | prose meant `` `\b5\d{2}\b` ``; the four `\b` were eaten, leaving the sentence naming a character it could not show. **Restored.** |
+| `docs/replatform/qa/2026-08-31-blocker-ab-fix-design.md` | 1 | 0x08 BS | a Windows path `C:\pn\blockab\` with `\b` eaten. **Restored.** |
+| `scripts/lib/worker-keystore-boundary.mjs` | 1 | 0x08 BS | the POST-MORTEM comment for this defect class, reading "where `<0x08>` was intended". **Restored.** |
+| `packages/worker-daemon/src/supervisor/provider.ts` | 1 | 0x00 NUL | authored join separator → `"\0"` |
+| `scripts/lib/__tests__/embedded-secret-scan.test.mjs` | **3** | 0x00 NUL, 0x01 SOH, 0x02 STX | authored fixture → `"\x00\x01\x02\uFFFD"` |
+| `server/src/services/asset-content-guard.ts` | **3** | 0x00 NUL, 0x1f, 0x7f DEL | authored strip class → `/[\x00-\x1f\x7f]/` |
+| `server/src/services/mcp-connectors.ts` | 1 | 0x00 NUL | authored sentinel → `"\u0000bound"` |
+| `packages/browser-runtime/src/__tests__/path-adapter.test.ts` | 1 | 0x7f DEL | authored test input → `"evil\x7f.pdf"`; the two lines above it already used `\u0000` and `\n` |
+| **subtotal repaired under this finding** | **15** | | across **8** files |
+| `scripts/ci-local.mjs` | 1 | 0x08 BS | not this finding's repair — it is E6-F016's defect, filed and fixed directly above. Counted here because the scan does not know the difference. |
+| **TOTAL, full-tree scan** | **16** | | across **9** files |
+
+### ★★★ How to re-derive this census in one step
+
+The number below is stated so it does not have to be trusted. **Banned set** is the guard's own
+unit, `isBannedByte()` in `scripts/check-invisible-control-chars.mjs`: every C0 control byte
+(0x00–0x1f) EXCEPT TAB 0x09, LF 0x0a and CR 0x0d, plus DEL 0x7f. **Scanned set** is every tracked
+file `classifyPath()` calls `text`, decided by path and extension only, never by content — so the
+62 binary blobs (PNG screenshots and the like), which hold ~800k of these bytes between them, are
+out of scope by construction, and an unclassified type FAILS rather than being skipped.
+
+Run the guard *from this branch* against a checkout of the parent, because the parent tree does not
+contain the guard:
+
+```
+git worktree add --detach ../w19-parent c78a6827d
+node scripts/check-invisible-control-chars.mjs --root ../w19-parent   # exits 1
+git worktree remove ../w19-parent
+```
+
+It prints **one line per BYTE**, `path:line:col  NAME`. Verbatim, 2026-09-08:
+
+```
+invisible control characters in 9 file(s):
+  docs/aoa/plans/2026-07-20-cli-auth-detection-plan.md:283:7  BS
+  docs/aoa/plans/2026-07-20-cli-auth-detection-plan.md:283:14  BS
+  docs/aoa/plans/2026-07-20-cli-auth-detection-plan.md:283:65  BS
+  docs/aoa/plans/2026-07-20-cli-auth-detection-plan.md:283:72  BS
+  docs/replatform/qa/2026-08-31-blocker-ab-fix-design.md:400:57  BS
+  packages/browser-runtime/src/__tests__/path-adapter.test.ts:52:34  DEL
+  packages/worker-daemon/src/supervisor/provider.ts:213:11  NUL
+  scripts/ci-local.mjs:145:25  BS
+  scripts/lib/__tests__/embedded-secret-scan.test.mjs:131:39  NUL
+  scripts/lib/__tests__/embedded-secret-scan.test.mjs:131:40  SOH
+  scripts/lib/__tests__/embedded-secret-scan.test.mjs:131:41  STX
+  scripts/lib/worker-keystore-boundary.mjs:117:44  BS
+  server/src/services/asset-content-guard.ts:77:16  NUL
+  server/src/services/asset-content-guard.ts:77:18  0x1f
+  server/src/services/asset-content-guard.ts:77:19  DEL
+  server/src/services/mcp-connectors.ts:563:33  NUL
+```
+
+Sixteen lines, nine distinct paths — that is the whole derivation. Substituting `3814b90f3` for
+`c78a6827d` prints the identical sixteen lines. Substituting this PR's head prints
+`invisible control characters: PASS` and exits 0.
+
+### ★ The number this record carried before, and why it was wrong
+
+This finding first said "eight raw control bytes in seven text files". **Both numbers were wrong,
+and wrong in the same way: they counted SITES, not BYTES** — one row per file-and-repair — so the
+two files carrying three bytes each (`embedded-secret-scan.test.mjs` NUL/SOH/STX and
+`asset-content-guard.ts` NUL/0x1f/DEL) were each counted as one, and an eight-row table was
+summarised as "seven files". The total is precisely what hid them, which is why the per-file
+breakdown above is now part of the record rather than a total standing alone.
+
+It is worth stating plainly that this was the **third** count of the same corpus and the first
+re-derivable one: 11-in-8 (which included a binary `.docx` and missed three bytes), then 8-in-7
+(sites, not bytes), and only the external review on PR #384 noticed that neither reproduced from
+the parent blobs. Three attempts to count invisible characters by eye produced three different
+answers — the best argument this guard could have, and the reason a command now sits beside the
+number. A false figure in the record justifying a guard is the exact class the guard exists to
+prevent.
+
+The hand-picked six-byte reconnaissance list (00 07 08 0b 0c 1b) would have **missed five of the
+sixteen bytes**, and one file entirely: the 0x01 and 0x02 in `embedded-secret-scan.test.mjs` (whose
+NUL it would have caught, so the file would have looked handled), the 0x1f and the 0x7f in
+`asset-content-guard.ts` (likewise), and the `path-adapter.test.ts` hit, which is 0x7f alone and so
+invisible to the list at file level too. (The earlier "missed three" here was the same
+site-counting error, carried through.) That is why the guard bans a RANGE — C0 minus tab/LF/CR,
+plus DEL — rather than a list.
+
+### The objective harm, independent of taste
+
+git classifies a file containing a NUL as BINARY and refuses to show its diff. **Four source files
+were in that state**, so every change to them was unreviewable. Repairing them took the
+repository's NUL-bearing file count from 66 to 62 — the four are diffable text again. "The author
+meant it" is therefore not a sufficient defence for the raw byte.
+
+### The guard, and why it is not the checker that gets deleted
+
+The same post-mortem warns: *"a plain substring scan over raw source … flagged `command-runner.ts`
+for the COMMENTS explaining why existsSync was removed: a checker that makes you delete the
+explanation of a bug is a bad checker."*
+
+`scripts/check-invisible-control-chars.mjs` bans the raw BYTE and permits every ESCAPE that denotes
+the same character. Because the scan reads bytes, escapes are invisible to it by construction — no
+exception machinery, no allowlist, no intent-reading. The repair for a legitimate use is a rewrite
+to an escape denoting the identical character; the repair for a corrupted one restores meaning.
+**The tree reached zero hits with no allowlist, no suppression comment, and not one word of
+explanation removed. Three explanations were restored.** An allowlist of the day's findings was
+rejected outright: it catches nothing new.
+
+File type is decided by path and **never** by content. The usual NUL-sniff for binaries is
+self-defeating here — the NUL being hunted would exempt its own file, which is exactly the state
+the three `.ts` files above were in. Classification is default-deny: a tracked file whose type is in
+neither list fails until someone classifies it. That rule earned its keep on its first run,
+surfacing sixteen unclassified types, most of them text (`.mts`, `.jsonl`, `.npmrc`, `.mailmap`,
+`.webmanifest`, PEM `.key`/`.crt`) that a hand-written list had silently skipped.
+
+### ★★★ The evasion, stated rather than claimed away
+
+The guard was measured EVADED at zero cost by three invisible characters that are not bytes:
+U+200B ZWSP, U+202E RLO and U+00AD SHY each passed a full run. Two were then closed, chosen by
+measurement: bidi overrides (U+202A–U+202E, U+2066–U+2069) and SHY have **zero** legitimate uses in
+the tree and are a documented exploit class (Trojan Source, CVE-2021-42574). **U+200B, U+00A0 and
+U+FEFF remain legal**, deliberately — the tree has six legitimate uses and one of them (a ZWSP
+writing a close-comment sequence inside a JSDoc block) has no escape-based repair.
+
+So the honest verdict: this guard is **complete against the accident it was built for** — a shell
+can only ever emit a C0 byte — and it is **not a security boundary**. Anyone who wants to hide a
+character can still do it with one zero-width space. `scripts/lib/__tests__/invisible-control-chars.test.mjs`
+asserts that limit as a passing test so it cannot quietly be forgotten or over-claimed later.
+
+---
+
+## E6-F018 — the new control-character guard's ENTRY POINT was unpinned: deleting `process.exit(1)` kept every test and a clean-tree CI run green — RESOLVED
+
+**Status:** resolved
+**Severity:** MEDIUM — the guard's library was covered by eighteen tests; its EXECUTABLE, which
+is the thing the workflow calls, was covered by none. The consequence is a CI step that reports
+success over a planted control byte it has just printed to the screen.
+**Filed and resolved:** 2026-09-08 (W19 round 2), on the same PR that introduced the guard. Found
+by an adversarial mutation pass: sixteen mutants were landed against E6-F016/E6-F017's work,
+fourteen went red and **two survived** — this and E6-F019, the same shape twice.
+
+### What was wrong
+
+`scripts/check-invisible-control-chars.mjs` ends its `main()` with
+
+```
+  if (violations.length > 0 || unclassified.length > 0) process.exit(1);
+  console.log(`invisible control characters: PASS (...)`);
+```
+
+Delete that one line and **every test still passed**, `node --test` exit 0, and a clean-tree run
+of the script still exited 0 — because on a clean tree the exit code is 0 either way. Neither
+`invisible-control-chars.test.mjs` nor `ci-local-install-guard.test.mjs` contained the word
+`spawn`; both import the module and exercise `evaluateTree`, `scanBuffer`, `classifyPath` and the
+byte tables. None of them can observe an exit code, because an exit code does not exist inside the
+module.
+
+Measured against a throwaway git tree holding one file with a planted 0x08, the mutant printed
+**both halves at once**:
+
+```
+--- stdout ---
+invisible control characters: PASS (1 text files scanned, 0 raw control bytes)
+--- stderr ---
+invisible control characters in 1 file(s):
+  scripts/planted.mjs:1:19  BS
+--- exit status: 0 ---
+```
+
+So the `policy` step would have gone GREEN on a dirty tree while naming the violation on screen.
+That is the repository's own "a check that nothing runs is not a check", one layer down: the
+library was checked, the executable never was, and the executable is what CI invokes.
+
+### ★ Why the library tests could not have caught it, in principle
+
+This is not an oversight that more library tests would fix. The defect lives in the two lines
+between "the library computed the right answer" and "the process told the operating system about
+it". A test that imports the module has no process boundary to observe, so the ONLY instrument
+that can see this is a subprocess with a status code. Import-only coverage of a CLI is a
+structural blind spot, not a thin spot.
+
+### What changed
+
+`invisible-control-chars.test.mjs` gained one test that spawns the real script three times over a
+throwaway git repository (one `git init`, ~250 ms total) and asserts the exit STATUS each time:
+
+| fixture | expected | what it pins |
+|---|---|---|
+| a planted raw 0x08 | exit **1**, the file+`BS` named on **stderr**, and `PASS` absent from stdout | the mutant above |
+| the same line written `\b` (two characters) | exit **0**, `PASS` on stdout | the POSITIVE CONTROL — without it a red is not a verdict about the byte, only about the harness |
+| an unclassified `.rb` | exit **1**, `DEFAULT-DENY` on stderr | the second disjunct of the same `if`, which a narrower mutant drops |
+
+The fixture must be a git repository: `listTrackedFiles` follows the index, so pointing `--root`
+at a plain directory would scan zero files and pass vacuously — the same failure in a new costume.
+
+**Four mutants observed RED against the new pin** (all previously green): delete `process.exit(1)`;
+drop the `|| unclassified.length > 0` disjunct; make the exit unconditional (caught by the positive
+control, not by a negative one); and break `invokedDirectly` so `main()` never runs.
+
+---
+
+## E6-F019 — the `invokedDirectly` conditional this PR ADDED could turn `scripts/ci-local.mjs` into a silent no-op that exits 0 with no output — RESOLVED
+
+**Status:** resolved
+**Severity:** LOW-MEDIUM — `ci-local.mjs` is a developer runner, not a CI lane, so no gate depends
+on it. It is filed anyway because the failure mode is the one this programme keeps paying for: a
+tool that returns the success code having executed nothing, which reads to its operator as "your
+tree is clean".
+**Filed and resolved:** 2026-09-08 (W19 round 2). **This hole did not exist before this PR** — it
+was opened to make E6-F016's pin possible, and is closed in the same change.
+
+### What was wrong
+
+`main()` in `scripts/ci-local.mjs` used to be unconditional. Exporting `parseJobs` so the pin could
+call the REAL parser (rather than re-implement it, which cannot catch a parser regression) required
+guarding the call:
+
+```
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main();
+}
+```
+
+That conditional is a new place for a regression to hide, and the mutation pass proved it. Drop the
+`fileURLToPath` call — a plausible refactor, since the two sides look comparable — and the predicate
+compares a filesystem path to a `file://` URL, which is false on every platform forever. Measured:
+
+```
+$ node scripts/ci-local.mjs --list   ->  exit 0, zero bytes of output
+$ node scripts/ci-local.mjs          ->  exit 0, zero bytes of output
+$ node --test scripts/lib/__tests__/ci-local-install-guard.test.mjs  ->  5/5 pass
+```
+
+All five tests imported the module; none ran the script.
+
+### What changed
+
+Two tests, both spawning the real entry point, ~75 ms combined:
+
+- `--list` from the repository root: exit **0**, and — the assertion that matters — the stdout must
+  actually contain `jobs in pr.yml:`, name six real jobs from the workflow, carry at least ten job
+  lines, and print `INSTALL_SKIP_REASON` **verbatim**. Status alone cannot distinguish "ran and
+  passed" from "never ran": the mutant returns 0 too. Output is the only discriminator.
+- run from an empty directory: exit **2** with `no workflow at …` on stderr and nothing on stdout,
+  pinning `main()`'s other exit code against the same deletion E6-F018 describes.
+
+`--list` is chosen because it is the only invocation that reaches `main()` without executing a CI
+job — a real `node scripts/ci-local.mjs` run is the fast gate and takes minutes, a cost this suite
+may not impose — while still exercising `existsSync`, `readFileSync`, `parseJobs`, the
+`CANNOT_RUN_HERE` table and the deviation reporting.
+
+**Three mutants observed RED** (all previously green): the `invokedDirectly` no-op (reds BOTH
+tests); deleting `process.exit(2)`; and — from E6-F018's pass — the same class on the sibling script.
+
+### ★ The class, and the census of it in this change
+
+Two of sixteen mutants surviving is a class, not a pair, so the rest of the PR was swept for the
+same shape. Of the seventeen files it touches, exactly **two** contain an entry point
+(`#!`/`import.meta.url`/`main()`): these two scripts. The others are prose, data manifests, or
+escape rewrites inside libraries. A third entry point — the `pr.yml` step itself — was tested by
+deleting its whole `run:` body: `check-guard-inventory.mjs` exits 1 with *"declared 'ci' but no
+workflow invokes it"* and `check-execution-census.mjs` exits 1 with `not_named_in_step` for both
+test files. That wiring was already pinned; the two script entry points were the whole gap.

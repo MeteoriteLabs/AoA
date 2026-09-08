@@ -49,7 +49,7 @@ describe("BRW-002 safeDownloadName — reduce an attacker-influenced name to a b
     // rejected. NUL in particular truncates a path in any C-based syscall layer.
     expect(safeDownloadName("evil\u0000.pdf")).toBeNull();
     expect(safeDownloadName("evil\n.pdf")).toBeNull();
-    expect(safeDownloadName("evil.pdf")).toBeNull();
+    expect(safeDownloadName("evil\x7f.pdf")).toBeNull();
   });
 
   it("refuses a leading dot so a download cannot become a dotfile", () => {
