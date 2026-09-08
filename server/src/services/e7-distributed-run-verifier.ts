@@ -263,19 +263,35 @@ export interface E7VerifyResult {
  * better than a false PROVEN, and not the same thing as working. `capabilityProven` also still
  * gates nothing: `--require-capability` is off by default and no workflow or script reads it.
  *
- * ★ ARM 2 ONLY, deliberately. Arm 1 (committed `workspace_patch` `job_artifacts`) is a different
- * arm with a different open question (E7-F019 — `kind` is the caller's declaration) and was not
- * touched. Blurring the two would make this text unfalsifiable, which is the failure mode a
- * caveat is most prone to.
+ * ★ W21C — THE SECOND TIME THIS TEXT WOULD HAVE GONE FALSE SILENTLY. It said the receipt is
+ * matched on "`job_id` = this run's `distributed_job_id`", and E7-F031 changed that to
+ * `job_id` AND `attempt_id`; it also said "arm 2 ONLY … arm 1 was not touched", and E7-F031
+ * bound arm 1 to the attempt too. Both sentences are corrected above. A caveat printed beside
+ * every verdict is a claim about the code, so it goes stale exactly like a comment does — the
+ * difference is that this one is read by operators who cannot see the predicate.
+ *
+ * ★ SCOPE IS STILL SPLIT, deliberately. The receipt/column provenance text remains arm-2-only;
+ * arm 1 keeps its own open question (E7-F019 — `kind` is the caller's declaration), which the
+ * attempt binding does not touch. Only the ATTEMPT-granularity paragraph speaks for both arms,
+ * and it says so. Blurring the two would make this text unfalsifiable, which is the failure mode
+ * a caveat is most prone to.
  */
 export const E7_CAPABILITY_LIMITATIONS: readonly string[] = [
   "Arm 2 (task_outputs) counts ONLY rows named by an APPLIED output_projection receipt in",
-  "job_projection_receipts for THIS run's distributed job — the receipt jobOutputBridge",
-  "projectAcceptedOutput writes in the same tenant transaction as the row, behind a live lease",
-  "fence (predicate in e7-distributed-run-verifier-store.ts, W21). E7-F020's platform writer is",
+  "job_projection_receipts for THIS run's distributed ATTEMPT — matched on job_id AND attempt_id,",
+  "not job_id alone — the receipt jobOutputBridge projectAcceptedOutput writes in the same tenant",
+  "transaction as the row, behind a live lease fence (predicate in",
+  "e7-distributed-run-verifier-store.ts, W21 then W21C). E7-F020's platform writer is",
   "EXCLUDED: heartbeat.ts:4524 ensureRuntimeServicesForRun -> task-output-emitters.ts:113 sets",
   "created_by_run_id before the handoff and writes no receipt, and neither can any other legacy",
   "writer of the table.",
+  "ATTEMPT GRANULARITY (E7-F031): a job carries max_attempts (NOT NULL, default 3) and every",
+  "attempt shares its job_id, while a heartbeat run is bound to exactly ONE attempt via",
+  "heartbeat_runs.distributed_attempt_id. Both arms were job-granular, so a retry attempt's output",
+  "or committed patch printed capability PROVEN for a run that produced nothing. Both are now",
+  "attempt-bound, and a run carrying a job id with NO attempt id counts 0 on both arms rather than",
+  "widening back to job scope. The secret scanner is deliberately NOT attempt-bound: it wants",
+  "recall, so a sibling attempt's output is still scanned.",
   "WHAT A GREEN STILL DOES NOT ESTABLISH (E7-F018, HIGH, open): projectAcceptedOutput has ZERO",
   "production callers and no checked-in configuration makes any run a distributed run, so arm 2",
   "reads 0 on every real run — the bar is CLOSED rather than working. capabilityProven gates",
@@ -284,8 +300,10 @@ export const E7_CAPABILITY_LIMITATIONS: readonly string[] = [
   "(company, issue, provider, external_id), so a future producer reusing a platform external id",
   "would get a platform-minted ROW counted. That needs a real fenced accepted-output event and is",
   "unexercised, but it is the one way a platform row can still reach this count.",
-  "Scope: arm 2 ONLY. Arm 1 (committed workspace_patch job_artifacts) has a different open question",
-  "(E7-F019) and is not what this says.",
+  "Scope: the receipt/column PROVENANCE text above is arm 2 ONLY. Arm 1 (committed",
+  "workspace_patch job_artifacts) keeps its own open question — E7-F019, `kind` is the caller's",
+  "declaration — which the attempt binding does NOT address. The ATTEMPT GRANULARITY paragraph",
+  "above is the one statement here that is not arm-2-scoped.",
 ];
 
 export interface E7DistributedRunVerifier {

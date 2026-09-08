@@ -3185,6 +3185,24 @@ written under a genuine live fence rather than forged with admin SQL:
 `[sibling-scan]` is the important one: one row, **scanned** by clause 4 and **not counted** by clause
 6, asserted in a single test. The divergence is pinned rather than merely tolerated.
 
+**THE OPERATOR-FACING CAVEAT WOULD HAVE GONE FALSE SILENTLY — for the second time.**
+`E7_CAPABILITY_LIMITATIONS` is printed beside every verdict, and it stated the receipt match as
+*"`job_id` = this run's `distributed_job_id`"* and declared *"arm 2 ONLY … arm 1 … was not touched"*.
+E7-F031 falsified both. Its own doc comment already records that W21 had to rewrite it for the same
+reason, so this is a recurring shape: **a caveat printed beside a verdict is a claim about the code
+and goes stale exactly like a comment, except it is read by operators who cannot see the predicate.**
+Corrected, plus a new assertion (`e7-distributed-run-verifier.test.ts`, W7U2 SECOND CONTROL) pinning
+`attempt_id`, `distributed_attempt_id`, `max_attempts`, `E7-F031`, and the scanner's exemption.
+
+★ **AND THE GUARD THAT CAUGHT IT WAS ITSELF WIDENED RATHER THAN ROUTED AROUND.** The existing
+assertion was a flat `expect(text).not.toContain("both arms")` — a proxy for "do not attribute
+E7-F020 to arm 1". E7-F031 made a cross-arm sentence TRUE, so the flat ban forbade an accurate
+statement, and the tempting fix is to reword around the banned string: **a guard defeated by a
+synonym is a guard that has stopped guarding.** It now says what it always meant — a cross-arm claim
+is allowed only inside the paragraph citing the finding that licenses it, and never in a sentence
+making the E7-F020 provenance claim. **Mutation-verified:** appending "covers both arms" to the
+`Scope:` tail reds it (`expected 2281 to be less than 1948`), so the structural rule is not vacuous.
+
 ★★ **THE CLASS — a census can be complete on the axis it was written for and blind on another.** The
 ten-row census in the store's module header is the remedy E7-F030 installed, and it MISSED this: it
 reasoned about WHICH LINKAGE each consumer used and never about AT WHAT GRANULARITY. An adversarial

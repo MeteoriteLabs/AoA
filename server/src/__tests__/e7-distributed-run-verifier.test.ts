@@ -694,6 +694,20 @@ describe("W7U2 SECOND CONTROL — the caveat says something FALSIFIABLE", () => 
     expect(text).toContain("E7-F020");
   });
 
+  // ★ W21C — THE SECOND TIME THIS BLOCK WOULD HAVE GONE FALSE SILENTLY. It stated the receipt
+  // match as `job_id` alone and declared arm 1 untouched; E7-F031 made both arms attempt-bound,
+  // so both sentences became false claims printed beside every verdict. These nouns pin the
+  // corrected version — a future edit that re-widens either arm to job scope, or that narrows
+  // the SCANNER to the attempt, leaves a text that no longer describes the code and reds here.
+  it("names the ATTEMPT granularity both arms now enforce, and the scanner's exemption", () => {
+    expect(text).toContain("attempt_id");
+    expect(text).toContain("distributed_attempt_id");
+    expect(text).toContain("max_attempts");
+    expect(text).toContain("E7-F031");
+    // The asymmetry is the part a "consistency" edit destroys, so it is asserted, not implied.
+    expect(text).toContain("scanner is deliberately NOT attempt-bound");
+  });
+
   it("names the writer path that makes it true, so the claim can be checked", () => {
     expect(text).toContain("heartbeat.ts:4524");
     expect(text).toContain("task-output-emitters.ts:113");
@@ -735,11 +749,38 @@ describe("W7U2 SECOND CONTROL — the caveat says something FALSIFIABLE", () => 
 
   it("scopes itself to arm 2 and does NOT attribute E7-F020 to arm 1", () => {
     // Arm 1 (workspace_patch job_artifacts) has a DIFFERENT open question (E7-F019) and is
-    // short-circuited by `if (run.distributedJobId)`. Blurring them would make the text
-    // unfalsifiable, and E7-F018/F019/F020 exist precisely because the arms differ.
+    // short-circuited by `if (run.distributedJobId && attemptId)`. Blurring them would make the
+    // text unfalsifiable, and E7-F018/F019/F020 exist precisely because the arms differ.
     expect(text).toContain("arm 2 ONLY");
     expect(text).toContain("E7-F019");
-    expect(text).not.toContain("both arms");
+
+    // ★★★ W21C WIDENED THIS FROM A STRING BAN TO A STRUCTURAL ONE, AND THE REASON MATTERS.
+    // The check used to be a flat `not.toContain("both arms")`. E7-F031 then made a cross-arm
+    // statement TRUE — the attempt binding really does cover arm 1 and arm 2 — so the flat ban
+    // forbade an accurate sentence. The tempting move at that point is to reword around the
+    // banned string, which keeps the guard green while saying the same thing in other words:
+    // a guard defeated by a synonym is a guard that has stopped guarding.
+    //
+    // So the rule now says what it always MEANT: a cross-arm claim is allowed, but only inside
+    // the paragraph that cites the finding licensing it, and NEVER attached to the E7-F020
+    // provenance claim, which is arm-2-only and must stay that way.
+    const attemptParagraph = text.indexOf("ATTEMPT GRANULARITY (E7-F031)");
+    const scopeTail = text.indexOf("Scope:");
+    expect(attemptParagraph).toBeGreaterThan(-1);
+    expect(scopeTail).toBeGreaterThan(attemptParagraph);
+    for (const match of text.matchAll(/both arms/gi)) {
+      const at = match.index ?? -1;
+      expect(at).toBeGreaterThan(attemptParagraph);
+      expect(at).toBeLessThan(scopeTail);
+    }
+
+    // And no sentence making the E7-F020 provenance claim may reach for arm 1 — the original
+    // intent, now checked per sentence instead of over the whole blob.
+    for (const sentence of text.split(/(?<=\.)\s+/)) {
+      if (!sentence.includes("E7-F020")) continue;
+      expect(sentence.toLowerCase()).not.toContain("arm 1");
+      expect(sentence.toLowerCase()).not.toContain("both arms");
+    }
   });
 });
 
