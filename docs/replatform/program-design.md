@@ -1069,6 +1069,13 @@ It unblocks JOB-004 through JOB-008, JOB-011 through JOB-014, and WRK-005 onward
 - **Acceptance:** The UI cannot configure public ingress; stale generation actions fail clearly; every control action is audited and reflected through durable event catch-up.
 - **Test:** API authorization/contract tests and UI tests for rollout, pause, restart loop, budget stop, and stale generation.
 
+#### SVC-008 — Daemon service supervisor and the `workload.service` advertisement (M)
+
+- **Depends on:** WRK-004, WRK-005, WRK-010, DEP-011, PRT-004.
+- **Outcome:** Add a worker-daemon lifecycle for a workload that does not end — a supervise loop over an un-awaited `execute` that emits the frozen service-instance events, honours `gracefulStopSeconds`, derives its budget from the provider constraint profile rather than the absent `workload.maxRuntimeSeconds`, and only then widens `SUPERVISABLE_WORKLOAD_CAPABILITIES` so the advertisement is true when it is made. Sole owner of finding E9-F002. E9's only daemon-side ticket; SVC-002 through SVC-007 stay control-plane.
+- **Acceptance:** A service job is placed on and leased by a real daemon; a service run is distinguishable from a batch run by its emitted events; graceful stop precedes kill; nothing is emitted past a closed fence; and no service run reaches `destroy` with an expired effect authority.
+- **Test:** Placement reachability (re-pointing the negative pin at `u0-d1-placement-reachability.test.ts:324`), branch dispatch, non-exiting process, graceful stop ordering, unadvertised health, fence close, effect-authority expiry, and capacity class separation.
+
 ### E10 — Desktop worker, realtime, and strangler migration
 
 #### DSK-001 — Desktop enrollment and OS key storage (M)

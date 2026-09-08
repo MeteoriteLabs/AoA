@@ -2,7 +2,7 @@
 
 **Status:** `backlog`
 **Depends on:** E7; SVC-007 additionally requires `E10-REALTIME-FOUNDATION`
-**Tickets:** SVC-001 through SVC-007
+**Tickets:** SVC-001 through SVC-008 (SVC-008 is the daemon-side supervisor + capability widening that E9-F002 requires; SVC-001..007 are control-plane)
 **Exit gate:** desired state, generation, placement, health, restart, checkpoint, drain, budgets, UI, and the 72-hour D4 continuity/reconciliation canary pass without public ingress.
 
 ## Mandatory planning brief
