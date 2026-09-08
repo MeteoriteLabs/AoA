@@ -27,6 +27,17 @@
 //   AOA_D1_LIVE=1 node --test tests/d1/e6f-14-orphan-sweep.test.mjs
 //
 // Without AOA_D1_LIVE=1 it SKIPS cleanly — it is NEVER faked.
+//
+// ── WHY THE GATE TITLE SAYS "CONTROL-PLANE gate" (W18, 2026-09-08) ──────────
+// The suite's own title now names what it tests. This is a TRUTH FIX and nothing
+// more: no assertion, threshold or pass condition changed with it. What runs here
+// is the CONTROL PLANE under a harness that plays the worker itself —
+// tests/d1/lib/e6f-harness.mjs:8-9 states it outright: "There is NO live
+// worker-daemon loop: enroll/poll/ack are ordinary authenticated HTTP calls the
+// harness makes itself." So a green run is evidence about the control plane's
+// fenced routes, and is NOT evidence that any worker daemon, device or machine
+// ran anything. Naming the half that has NOT run follows the precedent already in
+// this tree: scripts/gate-clause-wiring.json's E5-2-fenced-object-commit-worker-half.
 // -----------------------------------------------------------------------------
 
 import { test } from "node:test";
@@ -80,7 +91,7 @@ function waitForObjectGone(objectKey, { attempts = 20, everyMs = 500 } = {}) {
   return { gone: false, last, polls: attempts };
 }
 
-test("E6F-14 live orphan sweep: fence lost mid-flight -> commit refuses -> the object is DELETED", { skip: SKIP }, () => {
+test("E6F-14 CONTROL-PLANE gate (harness-driven; no worker daemon, no device) live orphan sweep: fence lost mid-flight -> commit refuses -> the object is DELETED", { skip: SKIP }, () => {
   const ids = newScenarioIds();
   const deviceKey = generateDeviceKey();
   const code = newEnrollmentCode();

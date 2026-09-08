@@ -21,6 +21,17 @@
 // advisory-lock / DB clock, so PostgreSQL is the single writer. DEP-009's net-new pieces are
 // the PG-backed shared rate limiter (worker_admission_rate_limits) and submit-time
 // org-capacity admission (admitAttemptCapacity), both DB-backed and fail-closed.
+//
+// ── WHY THE GATE TITLE SAYS "CONTROL-PLANE gate" (W18, 2026-09-08) ──────────
+// The suite's own title now names what it tests. This is a TRUTH FIX and nothing
+// more: no assertion, threshold or pass condition changed with it. What runs here
+// is the CONTROL PLANE under a harness that plays the worker itself —
+// tests/d1/lib/e6f-harness.mjs:8-9 states it outright: "There is NO live
+// worker-daemon loop: enroll/poll/ack are ordinary authenticated HTTP calls the
+// harness makes itself." So a green run is evidence about the control plane's
+// fenced routes, and is NOT evidence that any worker daemon, device or machine
+// ran anything. Naming the half that has NOT run follows the precedent already in
+// this tree: scripts/gate-clause-wiring.json's E5-2-fenced-object-commit-worker-half.
 // -----------------------------------------------------------------------------
 
 import { test } from "node:test";
@@ -165,7 +176,7 @@ function raceSpec(replica, base, s) {
 }
 
 // 1 ── No double-place/lease: one job, concurrent polls from replica A and replica B.
-test("E6F-11: single-winner lease race across replicas A and B (exactly one lease)", { skip: SKIP }, () => {
+test("E6F-11 CONTROL-PLANE gate (harness-driven; no worker daemon, no device): single-winner lease race across replicas A and B (exactly one lease)", { skip: SKIP }, () => {
   const s = seedAndEnroll({ jobCount: 1 });
   const race = stepResult(
     runReplicaRace({
@@ -188,7 +199,7 @@ test("E6F-11: single-winner lease race across replicas A and B (exactly one leas
 });
 
 // 2 ── No capacity exceed: concurrent capacity claims across replicas cannot exceed the cap.
-test("E6F-11: concurrent org-capacity claims across replicas never exceed the cap", { skip: SKIP }, () => {
+test("E6F-11 CONTROL-PLANE gate (harness-driven; no worker daemon, no device): concurrent org-capacity claims across replicas never exceed the cap", { skip: SKIP }, () => {
   // Seed one org with 3 lease-eligible attempts, then race 3 concurrent claims under the
   // shared advisory lock with cap=1 (the same authority admitAttemptCapacity composes into
   // submitJobWithinTenant — see job-submit-capacity-admission.integration for the wiring).
@@ -204,7 +215,7 @@ test("E6F-11: concurrent org-capacity claims across replicas never exceed the ca
 });
 
 // 3 ── No terminal disagreement: ack at one replica, terminal event at the other → one terminal.
-test("E6F-11: consistent terminal across replicas (ack@A, terminal@B)", { skip: SKIP }, () => {
+test("E6F-11 CONTROL-PLANE gate (harness-driven; no worker daemon, no device): consistent terminal across replicas (ack@A, terminal@B)", { skip: SKIP }, () => {
   const s = seedAndEnroll({ jobCount: 1 });
   // Win a lease at replica A and ack it there.
   const polled = stepResult(
@@ -246,7 +257,7 @@ test("E6F-11: consistent terminal across replicas (ack@A, terminal@B)", { skip: 
 });
 
 // 4 ── Replica-agnostic polling: enroll@A, poll+ack@B — one portable session.
-test("E6F-11: replica-agnostic session (enroll@A, poll+ack@B)", { skip: SKIP }, () => {
+test("E6F-11 CONTROL-PLANE gate (harness-driven; no worker daemon, no device): replica-agnostic session (enroll@A, poll+ack@B)", { skip: SKIP }, () => {
   const s = seedAndEnroll({ jobCount: 1, enrollBase: WORKER_CONTROL.enroll });
   // The A-minted session verifies at B (shared signing key + host-agnostic device proof).
   const polled = stepResult(
@@ -265,7 +276,7 @@ test("E6F-11: replica-agnostic session (enroll@A, poll+ack@B)", { skip: SKIP }, 
 });
 
 // 5 ── Replica loss → correctness + bounded progress: cut B's worker link, reap via A, converge.
-test("E6F-11: replica loss (cut worker-to-control-plane-b) converges via A", { skip: SKIP }, async () => {
+test("E6F-11 CONTROL-PLANE gate (harness-driven; no worker daemon, no device): replica loss (cut worker-to-control-plane-b) converges via A", { skip: SKIP }, async () => {
   const s = seedAndEnroll({ jobCount: 1 });
   // Offer a lease at replica B.
   const polled = stepResult(
@@ -331,7 +342,7 @@ test("E6F-11: replica loss (cut worker-to-control-plane-b) converges via A", { s
 });
 
 // 6 ── Shared rate limit: concurrent A+B polls increment ONE shared window counter.
-test("E6F-11: concurrent A+B polls share ONE rate-limit window counter", { skip: SKIP }, () => {
+test("E6F-11 CONTROL-PLANE gate (harness-driven; no worker daemon, no device): concurrent A+B polls share ONE rate-limit window counter", { skip: SKIP }, () => {
   const s = seedAndEnroll({ jobCount: 1 });
   // Six polls split across both replicas (same worker/session). Every poll — offer OR
   // no_work — increments the shared per-org window counter, so a process-local limiter would

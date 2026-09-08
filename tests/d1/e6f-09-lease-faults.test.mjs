@@ -35,6 +35,17 @@
 // Built on the LIVE-GREEN E6F harness (enroll/poll/ack over real Ed25519 device
 // proofs) + the DEP-005 primitives (expireLeaseDeadlines / reapOrganization /
 // setProxyEnabled / computeEventDigests / uploadEvents / queryLeaseFaultState).
+//
+// ── WHY THE GATE TITLE SAYS "CONTROL-PLANE gate" (W18, 2026-09-08) ──────────
+// The suite's own title now names what it tests. This is a TRUTH FIX and nothing
+// more: no assertion, threshold or pass condition changed with it. What runs here
+// is the CONTROL PLANE under a harness that plays the worker itself —
+// tests/d1/lib/e6f-harness.mjs:8-9 states it outright: "There is NO live
+// worker-daemon loop: enroll/poll/ack are ordinary authenticated HTTP calls the
+// harness makes itself." So a green run is evidence about the control plane's
+// fenced routes, and is NOT evidence that any worker daemon, device or machine
+// ran anything. Naming the half that has NOT run follows the precedent already in
+// this tree: scripts/gate-clause-wiring.json's E5-2-fenced-object-commit-worker-half.
 // -----------------------------------------------------------------------------
 
 import { test } from "node:test";
@@ -215,7 +226,7 @@ function ackOffer(A, session, offer, deviceKey, label = "ack") {
 
 // ── Case 1 — pre-ACK disconnect → clean reclaim ──────────────────────────────
 test(
-  "E6F-09 case 1 — pre-ACK disconnect: lease → cut worker-to-control-plane → back-date ack_deadline → reap → reclaimed, late ack refused",
+  "E6F-09 CONTROL-PLANE gate (harness-driven; no worker daemon, no device) case 1 — pre-ACK disconnect: lease → cut worker-to-control-plane → back-date ack_deadline → reap → reclaimed, late ack refused",
   { skip: SKIP },
   async () => {
     const { A, deviceKey, session, offer } = bringUpLeasedWorker("E691");
@@ -292,7 +303,7 @@ test(
 
 // ── Case 2 — lost completion ACK → idempotent replay, no duplicate effect ─────
 test(
-  "E6F-09 case 2 — lost completion ACK: a terminal event uploaded twice (same eventId + stable idempotencyKey) yields the identical ack and no duplicate row",
+  "E6F-09 CONTROL-PLANE gate (harness-driven; no worker daemon, no device) case 2 — lost completion ACK: a terminal event uploaded twice (same eventId + stable idempotencyKey) yields the identical ack and no duplicate row",
   { skip: SKIP },
   async () => {
     const { A, deviceKey, session, offer } = bringUpLeasedWorker("E692");
@@ -355,7 +366,7 @@ test(
 
 // ── Case 3 — expired lease → single-winner convergence ───────────────────────
 test(
-  "E6F-09 case 3 — expired lease: ack → stop renewing → back-date expires_at → reap → single-winner retry, late event refused stale_fence",
+  "E6F-09 CONTROL-PLANE gate (harness-driven; no worker daemon, no device) case 3 — expired lease: ack → stop renewing → back-date expires_at → reap → single-winner retry, late event refused stale_fence",
   { skip: SKIP },
   async () => {
     const { A, deviceKey, session, offer } = bringUpLeasedWorker("E693");
