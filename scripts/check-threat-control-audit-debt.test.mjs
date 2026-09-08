@@ -94,10 +94,18 @@ function mintUnaudited(input, id) {
  */
 const DEFERRAL_FIXTURE_ID = "DE-98";
 
-/** An id no `docs/replatform/epics/*​/tickets/` file can ever start with, so "not on disk"
- *  is a property of the STRING and not of what the programme happens to have written yet.
- *  `findTicketIds` matches `/^([A-Z]+-\d+)/`, so this parses as a ticket id and simply has
- *  no file — which is exactly the state under test. */
+// An id no `docs/replatform/epics/*/tickets/` file can ever start with, so "not on disk"
+// is a property of the STRING and not of what the programme happens to have written yet.
+// `findTicketIds` matches `/^([A-Z]+-\d+)/`, so this parses as a ticket id and simply has
+// no file — which is exactly the state under test.
+//
+// ★ LINE COMMENTS, DELIBERATELY, AND THIS IS THE POINT OF E6-F020. This comment was first
+// written as a JSDoc block, which cannot contain the glob above: the `*/` inside it closes
+// the block. It shipped with a U+200B ZERO WIDTH SPACE wedged between the `*` and the `/`,
+// so the path a reader saw was not the path on disk — the exact "legitimate use with no
+// escape-based repair" that `scripts/check-invisible-control-chars.mjs` cites as its reason
+// for leaving ZWSP legal. A repair does exist and this is it: `//` has no terminator, so the
+// glob can be written literally. Do not restore the block form.
 const ABSENT_TICKET_ID = "ZZZNOSUCH-999";
 
 function mintPartialWithDeferral(input, { declareDeferral }) {

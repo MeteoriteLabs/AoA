@@ -2,8 +2,10 @@
 
 **Epic:** E9 · **Lane:** B · **Start SHA:** this commit · **Terrain:** [`SVC-002-terrain.md`](./SVC-002-terrain.md)
 **Status:** designed, NOT implemented. **Three open questions (§10) are stated, not settled.**
+**★★★ START AT §1: the jobs this reconciler creates cannot be placed or leased today, and the
+prerequisite that unblocks them is not SVC-002's.**
 **Two defects found and NOT fixed here:** [`SVC-002-terrain.md`](./SVC-002-terrain.md) §5.1 and §2 —
-see §9.2 for the register obligation they carry.
+now **filed** as `E9-F001` / `E9-F002` in [`../findings.md`](../findings.md); see §9.2.
 
 > **Method.** Written against source re-opened at `921b2c1f9`, not against ticket statuses. The
 > terrain's two refutations carry into this document: the three-attempt ceiling is **not** the
@@ -14,7 +16,62 @@ see §9.2 for the register obligation they carry.
 
 ---
 
-## 1. What SVC-002 builds, and the one sentence that bounds it
+## 1. ★★★ PREREQUISITE — READ BEFORE ANYTHING ELSE. The jobs this reconciler creates cannot be placed or leased today
+
+**A reconciler built exactly to this design produces jobs that no worker can ever be offered.** That
+is true at `921b2c1f9`, it is not a defect in this design, and it is not SVC-002's to fix — but an
+implementer who learns it on page three has been misled by the document, so it is the first thing
+here. **Three citations, each re-opened and verified for this rewrite:**
+
+1. `packages/worker-daemon/src/enrollment/hello-provisioning.ts:27` —
+   `export const SUPERVISABLE_WORKLOAD_CAPABILITIES: readonly WorkerCapability[] = ["workload.batch"];`
+   Its own docstring says why: *"Batch only — the supervisor for browser_session/service composes in
+   later sprints, and D4 forbids reporting a workload the daemon cannot run."*
+2. `deriveHelloProvisioning` **intersects** the admin ceiling with what the device can provide
+   (`:44-50`: `deviceCanProvide` is built from `SUPERVISABLE_WORKLOAD_CAPABILITIES` +
+   `capabilitiesForIsolation`, and `reportedCapabilities = capabilityCeiling.filter(...)`). So
+   `workload.service` is filtered out of every daemon's advertised set **no matter what the ceiling
+   says** — widening the admin ceiling alone changes nothing.
+3. Placement demands the capability unconditionally: `submittedCapabilities` opens with
+   ``const workloadCapability = `workload.${input.workloadType}` `` (`job-placement.ts:177`) and
+   returns it in the required set (`:190`). A `service` job therefore requires `workload.service`,
+   which nothing advertises. (A free `serviceSlots` is additionally required,
+   `packages/worker-protocol/src/capabilities.ts:528-530`, but that is not the binding constraint.)
+
+Pinned, so this cannot drift silently: `server/src/__tests__/u0-d1-placement-reachability.test.ts:324`
+asserts `expect([...SUPERVISABLE_WORKLOAD_CAPABILITIES]).toEqual(["workload.batch"])`, under a
+comment saying that if either ceiling widens *"every reachability conclusion below is re-derivable
+rather than silently stale."*
+
+**And the programme already sequenced it.** `GO-BOOK.md:1763-1769` records the same measurement and
+concludes: *"enabling `workload.service` dispatch is a prerequisite step before health/restart/
+drain, not a given."*
+
+**WHAT MUST HAPPEN FIRST, stated as a sequence rather than a caveat.** Before any service reaches a
+worker, someone must (a) widen `SUPERVISABLE_WORKLOAD_CAPABILITIES` to include `workload.service`
+**and** (b) compose the service supervisor in the daemon that the constant's docstring says does not
+exist. Both are worker-daemon changes. **No ticket on disk owns them** — which is why they are filed
+here as **E9-F002** (HIGH, `unowned`) rather than assumed.
+
+> **DECISION (SVC-002).** SVC-002 is a control-plane ticket and does **not** enable
+> `workload.service` dispatch. It is designed and accepted against a **`queued`** placement, which
+> is what `decideJobPlacement` actually returns with no eligible candidate (`disposition: "queued"`,
+> `reasonCode: "no_eligible_target"`, `job-placement.ts:642-654`) — **not** a failure.
+
+**Why that is defensible rather than a dodge.** All four acceptance clauses are decided strictly
+*before* a lease is offered: idempotency at `insertJobOnce`, quota at `admitAttemptCapacity`, drain
+at `candidateFits`, desired state at `serviceSourceIsAdmitted`. Every one is observable on a job
+that is submitted, placed and queued. **The clause that genuinely needs a worker is
+"one *compatible* service-instance job"** — compatibility is provable by construction (the workload
+validates against the frozen strict schema, so `buildJobEnvelope` will parse it), but that a worker
+*accepts and runs* it is not demonstrated by this ticket and must not be claimed by it.
+
+**What this costs, stated so nobody discovers it at SVC-006.** Until a daemon advertises
+`workload.service`, every reconciled service accumulates exactly one `queued` job and one `pending`
+instance, forever. That is inert, tenant-scoped, and quota-accounted — but it is not nothing, and
+SVC-005's budget/TTL stop is the first thing that can clear it.
+
+## 2. What SVC-002 builds, and the one sentence that bounds it
 
 **One service, one running instance, converged from desired state, without duplicate placement.**
 That is the whole ticket.
@@ -35,35 +92,6 @@ and did not (terrain §5.1). **Nothing in SVC-002 drives an instance to a termin
 convergence loop converges once per service and then does nothing until SVC-003 gives it a terminal
 transition to react to. That is not a gap in this design; it is the seam between SVC-002 and SVC-003,
 and the acceptance table must not read "the reconciler maintains one running instance."
-
-## 2. ★ The blocker this design inherits, acknowledged rather than absorbed
-
-`SUPERVISABLE_WORKLOAD_CAPABILITIES = ["workload.batch"]`
-(`packages/worker-daemon/src/enrollment/hello-provisioning.ts:27`) is intersected into every
-daemon's advertised capability set (`:44-50`), so **no worker ever advertises `workload.service`**,
-while placement demands it unconditionally (`server/src/services/job-placement.ts:176-177`) and
-additionally requires a free `serviceSlots` (`packages/worker-protocol/src/capabilities.ts:528-530`).
-
-> **DECISION (SVC-002).** Enabling `workload.service` dispatch is **not** SVC-002's. It is a
-> worker-daemon change — the capability constant plus a service supervisor the daemon does not have
-> — and SVC-002 is a control-plane ticket. SVC-002 is designed and accepted against a **`queued`**
-> placement, which is what `decideJobPlacement` actually returns with no eligible candidate
-> (`disposition: "queued"`, `reasonCode: "no_eligible_target"`, `job-placement.ts:642-654`) —
-> **not** a failure. To be filed as **E9-F002** (HIGH, `unowned`) by the implementation commit, with
-> the release condition written down — the wording is in [`SVC-002-terrain.md`](./SVC-002-terrain.md) §7 item 3.
-
-**Why this is defensible rather than a dodge.** All four acceptance clauses are decided strictly
-*before* a lease is offered: idempotency at `insertJobOnce`, quota at `admitAttemptCapacity`, drain
-at `candidateFits`, desired state at `serviceSourceIsAdmitted`. Every one is observable on a job
-that is submitted, placed and queued. **The clause that genuinely needs a worker is
-"one *compatible* service-instance job"** — compatibility is provable by construction (the workload
-validates against the frozen strict schema, so `buildJobEnvelope` will parse it), but that a worker
-*accepts and runs* it is not demonstrated by this ticket and must not be claimed by it.
-
-**What this costs, stated so nobody discovers it at SVC-006.** Until a daemon advertises
-`workload.service`, every reconciled service accumulates exactly one `queued` job and one `pending`
-instance, forever. That is inert, tenant-scoped, and quota-accounted — but it is not nothing, and
-SVC-005's budget/TTL stop is the first thing that can clear it.
 
 ## 3. The reconcile loop
 
@@ -175,10 +203,47 @@ natural key for precisely this purpose (`packages/db/src/schema/job_artifacts.ts
 DAT-002/006/009), with the docstring *"a replayed commit is a DO-NOTHING (the fence-first mutator
 returns the existing row)"*. Same pattern, same reason, drizzle-generated.
 
-**What the loser does.** A `23505` on step 5 is **not** an error to log and retry. The reconciler
-catches it, re-reads the winning instance under the lock it now holds, and returns
-`{action:"none", reason:"instance_present"}` — the same result the sequential path returns. The two
-outcomes are indistinguishable to the caller, which is what "idempotent" means.
+**★ What the loser does — and the naive version of this paragraph cannot execute.** An earlier draft
+said the loser *"catches it and re-reads the winning instance"* inside the mandated single
+transaction. **That is impossible.** A `23505` aborts the whole PostgreSQL transaction; every
+subsequent statement raises `25P02` until a rollback. This repository has already written the lesson
+down, at `server/src/services/companies.ts:391`:
+
+> *"Retrying INSIDE a single transaction is impossible: a 23505 aborts the whole PG tx."*
+
+There were three ways out and this design takes the first.
+
+- **CHOSEN — a SAVEPOINT around step 5's insert alone.** `ROLLBACK TO SAVEPOINT` un-aborts the
+  transaction and leaves everything before the savepoint intact, so the loser survives, re-reads,
+  and returns without a second connection. It is the house mechanism, not an import: postgres-js
+  nests `.transaction()` on a transaction handle as a SAVEPOINT, and `runInTenant`'s own docstring
+  says so (`server/src/db/tenant-context.ts:38-41`, JOB-010). **This is the only option that keeps
+  §6.1's guarantee** — the instance insert and the submission must share one transaction, or quota
+  exhaustion leaves an orphan `pending` instance and wedges the service permanently.
+- **REJECTED — a second transaction.** It works, and it breaks the one-transaction composition §6.1
+  is built on.
+- **REJECTED — return the conflict with no re-read.** It is *sufficient* for the return value (the
+  result carries no instance data), and it is strictly less informative for no saving: the savepoint
+  is already open.
+
+**The exact sequence.** `SAVEPOINT svc_instance_insert` → `INSERT` → on `23505` **whose constraint
+name is the partial unique index** (`error.constraint_name`, checked; anything else re-raises
+untouched), `ROLLBACK TO SAVEPOINT svc_instance_insert` → re-read the non-terminal instance for
+`(org, service)` → return `{action:"none", reason:"instance_present"}` → commit. Step 6 is not run
+by the loser at all.
+
+**Why the re-read is guaranteed to find the winner.** `runInTenant` sets no isolation level
+(`server/src/db/tenant-context.ts:46-60` → `withTenantTx`), so the transaction is PostgreSQL's
+default **READ COMMITTED**, in which each statement takes a fresh snapshot. A `23505` is raised only
+*after* the conflicting inserter **committed** — a winner that rolls back releases the index entry
+and the loser's own insert then succeeds — so the post-savepoint `SELECT` sees the winning row by
+construction. Under REPEATABLE READ it would be a serialization failure instead, which is why the
+isolation level is stated rather than assumed.
+
+**★ And the promise this had to keep:** the loser returns `{action:"none", reason:"instance_present"}`
+— byte-identical to what step 4 returns on the sequential path, with no error raised and no extra
+field. **The two outcomes are indistinguishable to the caller**, which is what "idempotent" means and
+was this design's own claim before the mechanism was corrected.
 
 ### 4.2 The idempotency key, and the trap that makes the obvious one wrong
 
@@ -212,6 +277,13 @@ and `company_id` from the instance's own row, principal kind/id constant (`syste
 source kind constant. **The whole seven-column key reduces to `serviceInstanceId`, which is a primary
 key.** Two submissions for one instance are impossible; two non-terminal instances for one service
 are impossible.
+
+**★ And a reachability caveat this design owes its own test plan.** *No path in SVC-002 ever submits
+twice for one instance id* — the loser returns before step 6 (§4.1), and step 4 short-circuits before
+a second tick can. So this property is **unreachable from the reconciler**, and a test that drives
+the reconciler cannot kill a "revert `reconciliationId` to `randomUUID()`" mutant. It is pinned by
+T1c, in which the *test* performs the second submission; SVC-004's replacement path is its first real
+consumer. Stated here because the earlier version of this design claimed the reconciler covered it.
 
 **Why the instance id is random rather than derived.** A deterministic instance id keyed on
 `(service, generation)` would make **replacement** impossible — SVC-004 must be able to mint a
@@ -313,14 +385,22 @@ ticket).
 
 | # | Test | The failing case that must be observed RED **before** the fix exists | Mutant that must re-red it after |
 |---|---|---|---|
-| **T1** | **Concurrent reconcilers.** Two reconcile passes for one service, started concurrently against real embedded PostgreSQL, both committing. Assert: exactly **one** non-terminal `service_instances` row, exactly **one** `jobs` row, and the loser returned `{action:"none", reason:"instance_present"}` — not an error. | With the partial unique index absent (i.e. before the migration), two concurrent passes create **two** instances and **two** jobs. This must be run and seen, not asserted from the design. ★ **Two reconcilers in two *processes* is the real case**; two `await`s in one process can pass on scheduling luck alone. Use two concurrent transactions on separate connections. | Drop the partial unique index → red. Separately: keep the index, remove the advisory lock → must **stay green** (proving the lock is not the authority). Separately: revert `reconciliationId` to `randomUUID()` → the job half must go red while the instance half stays green, proving §4.2's trap is actually covered. |
+| **T1a** | **★ THE INDEX IS THE THING UNDER TEST — two lock-free concurrent inserters.** Two transactions on **separate connections** against real embedded PostgreSQL, neither taking step 1's advisory lock, each inserting a non-terminal `service_instances` row for the same `(organization_id, service_id)`. Interleave them explicitly: A inserts (does not commit) → B inserts and **blocks** → A commits → B's insert returns. Assert: B observes **`23505` naming the partial unique index**, B's savepoint path returns `{action:"none", reason:"instance_present"}` and does not throw, and exactly **one** non-terminal row exists. | **With the index absent, both inserts commit and two non-terminal instances exist for one service.** That is the red state, it is reachable, and it must be run and seen. Nothing serializes these two writers — which is the point: they model the writers §4.1 names (SVC-004's restart path, SVC-007's "start now") that will never take the advisory lock. | Drop the partial unique index → two rows → red. Change the predicate's terminal set (e.g. add `'pending'`) → the two inserts stop conflicting → red. Widen the loser's catch to a bare `catch {}` → the "does not throw" assertion still passes but T1d's foreign-key case goes red. |
+| **T1b** | **The lock's job, which is NOT the authority.** Two full reconcile passes for one service, started concurrently, both committing. Assert: exactly one instance, exactly one `jobs` row, the loser returns `{action:"none", reason:"instance_present"}` — **and that the loser reached that answer at step 4, without raising `23505` at all.** | The red state is the whole feature: today there is no reconciler. ★ Do **not** claim the index as this case's red state — with the lock present and the index dropped, the two passes serialize and the second still sees `instance_present` at step 4, so **one** instance appears and the case stays green. That is exactly why T1a exists and why the earlier version of this row pinned nothing. | Remove the advisory lock → T1b must **stay green** (the index catches it; only the loser's path changes from step-4 to `23505`). That "stays green" is the assertion, and it is what proves the lock is a wait-instead-of-race convenience and not the authority. |
+| **T1c** | **The §4.2 composite-key trap, pinned where it is actually reachable.** Call the submission path **twice for one `serviceInstanceId`** with the derived source — the *test* is the second submitter. Assert exactly **one** `jobs` row. | Red today in that neither the derivation nor the reconciler exists. ★ **Stated honestly: no path in SVC-002 ever submits twice for one instance id** — the loser returns before step 6 — so a "revert `reconciliationId` to `randomUUID()`" mutant against T1b **cannot kill**, and the earlier version of this plan claimed it would. The property being pinned is the *derivation's*, and SVC-004's replacement path is its first real consumer. | Revert `reconciliationId` to `randomUUID()` → two `jobs` rows → red. This mutant kills **only** because the test itself performs the second submission; if T1c is ever rewritten to drive the reconciler instead, the mutant goes silent again. |
+| **T1d** | **The loser's catch is narrow.** Provoke a *different* constraint violation on the same insert — e.g. a `service_id` violating the composite FK of §8 — inside the same savepoint path. Assert it **propagates** and the pass fails. | Red today. | Replace the constraint-name check with a bare `catch {}` → the error is swallowed and the pass reports `instance_present` for a service that has no instance → red. |
 | **T2** | **Quota exhaustion.** Set the org concurrency cap to 0 (or force a budget hard-stop through `defaultCapacityBudgetBridge`). Run one pass. Assert: `{action:"none", reason:"quota_denied"}`, **zero** `jobs` rows, and — the load-bearing half — **zero** `service_instances` rows. | Today there is no reconciler; the red state is the whole feature. The specific red state for the *rollback* half: write the instance in its own transaction and the instance row **survives** a 429. That variant must be built and seen red, because it is the version a reasonable implementer writes first. | Move the instance insert out of the submission transaction → the zero-instances assertion goes red while the zero-jobs assertion stays green. |
 | **T3** | **Stopped state.** Two cases, and both are required. **(a)** A reconcile pass over a service with `desired_state='stopped'` returns `{action:"none", reason:"desired_state_not_running"}`, raises **no** error, and creates nothing. **(b)** A **direct** `submitJobWithinTenant` with a `service_reconcile` source naming a stopped service is **denied**. Repeat (b) for `paused` and `deleted` to prove the predicate is an allow-list. | **(b) is red today**: `serviceSourceIsAdmitted` has no `desiredState` predicate, so a stopped service is admitted right now (terrain §3d). **(a)** is red only in that no reconciler exists. | Delete the sweep filter → **(a) must go red on the `reason` and the no-error assertion**, per §5. If it stays green, the assertion is the vacuous "zero instances" form and must be rewritten. Delete the admission predicate → (b) red. Change the predicate to `ne('stopped')` → the `paused` case in (b) goes red. |
 | **T4** | **Drained worker.** One registered execution target, `status='draining'`. Run **three** reconcile ticks. Assert: exactly one instance and one job after all three; the job's placement disposition is `queued` with `reasonCode: "no_eligible_target"`; nothing raised. Then flip the target to `active` and assert placement selects it — a **positive control**, so the test is not passing because placement is broken in general. | A reconciler keyed on "healthy instance present?" submits three jobs across three ticks. Build that variant and watch it go red; without it, T4 proves only that placement declines, which nothing in SVC-002 caused. | Change step 4's predicate from non-terminal to `status = 'healthy'` → red on ticks 2 and 3. Remove the positive control → the test can no longer distinguish "drain respected" from "placement never selects anything". |
 
-**T1's `23505` path needs its own positive control.** Assert that the loser's `23505` is *caught*
-(the pass returns a result rather than throwing) **and** that an unrelated constraint violation is
-*not* swallowed — a bare `catch {}` around the insert would pass T1 while hiding every other defect.
+**Why T1 was split into four, recorded so the split is not undone.** The single-row version of T1
+declared a red state that **cannot occur** (with the advisory lock in place, dropping the index
+still yields one instance), never exercised the index it called "the AUTHORITY", and carried a
+`reconciliationId` mutant that **cannot kill**. Three defects in one row, all of the same shape: the
+test named a mechanism and then measured something else. T1a is the index, with the lock deliberately
+out of the picture; T1b is the lock, whose expected result under a dropped index is **green**; T1c is
+the composite key, driven by the test rather than by the reconciler because the reconciler never
+submits twice; T1d is the narrow catch. Merging any two of them re-creates the masking.
 
 **Migration idempotency.** The static check in
 `packages/db/src/__tests__/migration-idempotency.test.ts:122` matches only
@@ -401,8 +481,8 @@ needs a restart counter SVC-002 deliberately does not add.
 - **Health, liveness deadline, graceful stop, checkpoint request, bounded lease renewal → SVC-003.**
   SVC-002 writes `status='pending'` once and never writes it again. It also does **not** widen
   `ServiceHealthStatus` (terrain §5.1) — SVC-001 §3.2 CORRECTION 6a places that on a governed fence
-  mutator, which is SVC-003's. Terrain §5.1 records the contradiction, and §9.2 records the
-  obligation to file it as E9-F001; it is not fixed here.
+  mutator, which is SVC-003's. Terrain §5.1 records the contradiction; it is **filed** as E9-F001
+  in this commit and it is not fixed here.
 - **Restart, backoff, checkpoint recovery → SVC-004.** No restart counter, no backoff column, no
   checkpoint restore. `service_generations.checkpoint_artifact_id` is a restore-*input* pointer with
   no writer.
@@ -410,13 +490,13 @@ needs a restart counter SVC-002 deliberately does not add.
   reads `generation` under a row lock and never bumps it; `services.generation` still has no writer
   after this ticket. `desired_state='paused'` is refused by §5's allow-list, which is enforcement of
   a *policy* SVC-005 owns, not an implementation of pause.
-- **The 72-hour canary → SVC-006.** It needs a worker (§2).
+- **The 72-hour canary → SVC-006.** It needs a worker (§1).
 - **Create/update/pause/resume/stop controls and any UI → SVC-007.** SVC-002 adds **no routes**.
   There is still no way for a human to create a service; `repos.services.insert` keeps its zero
   production callers. **The reconciler reconciles rows only a test can create.** Said plainly
   because it is the honest scope of "the first ticket in E9 with a producer".
-- **Enabling `workload.service` dispatch** → §2; a worker-daemon change, to be filed as E9-F002,
-  `unowned`.
+- **Enabling `workload.service` dispatch** → §1; a worker-daemon change, filed in this commit as
+  E9-F002, `unowned`.
 
 ### 9.2 Register obligations
 
@@ -446,16 +526,39 @@ needs a restart counter SVC-002 deliberately does not add.
   a symbol that does not exist, and an `unwired` clause with count 0 **passes** — so a clause added
   today would be admitted and would assert nothing, which is this programme's defining failure class.
   **The SVC-002 implementation commit adds `E9-1-service-reconciler`, `unwired`, symbol
-  `createServiceReconciler`,** with a reason naming §2's capability blocker as what would have to
+  `createServiceReconciler`,** with a reason naming §1's capability blocker as what would have to
   change. At that point the symbol exists and the count is meaningful.
-- **The E9 findings register does not exist and the implementation commit must create it.** E0–E8,
-  E10 and E11 all carry a `findings.md`; E9 does not, while this ticket's mapping found two defects
-  that belong in one (terrain §5.1 and §2). Both are written out in full in terrain §7 item 3 with their
-  severities, dispositions and resolution conditions, so the filing is a transcription rather than a
-  judgement. **It cannot be quietly skipped and it cannot be quietly half-done:** a new open finding
-  is born undeclared and undeclared **fails** (`scripts/lib/finding-ownership.mjs:409-411`), so
-  creating the register without the two `scripts/finding-ownership.json` entries reds the required
-  `policy` job in the same commit that creates it.
+- **★ The E9 findings register is CREATED IN THIS COMMIT, not deferred.** E0–E8, E10 and E11 all
+  carry a `findings.md`; E9 did not. The earlier draft of this bullet handed the filing to the
+  implementation commit on the ground that *"filing a finding is a code-register act, not a prose
+  one"* (terrain §7 item 3). **That reasoning is withdrawn.** A defect recorded only in a design
+  document is exactly the weak form this programme keeps re-learning, and adversarial review said
+  so. `docs/replatform/epics/E9-service-agents/findings.md` now carries **E9-F001** (MED, `unowned`)
+  and **E9-F002** (HIGH, `unowned`), transcribed from terrain §7 item 3, each with its
+  `scripts/finding-ownership.json` entry in the same commit — a new open finding is born undeclared
+  and undeclared **fails** (`scripts/lib/finding-ownership.mjs:409-411`), so half-doing it reds the
+  required `policy` job.
+- **E9-F001 is filed rather than corrected in place, and that is the artifact policy, not a
+  preference.** `SVC-001-result.md` §6 records an edit to `ServiceHealthStatus` that never happened
+  (`tenant/job-control.ts:620` still carries `| "interrupted"`, and it is the last such literal in
+  `server/src` + `packages/`). `artifact-policy.md` — *"Once status becomes `complete`, the file is
+  frozen; a later correction creates a finding and a new ticket/result rather than rewriting approved
+  evidence"* — forbids editing the result doc. A dated result document is a measurement; the honest
+  repair is a finding that says what was claimed and what is actually there, which is what E9-F001 §2
+  does.
+- **★ A finding for the invisible-character class, filed OUTSIDE this epic and deliberately not
+  fixed here.** This PR's own `scripts/check-threat-control-audit-debt.test.mjs:97` carried a
+  **U+200B** inside a JSDoc comment, between the `*` and the `/` of a glob path — so the string a
+  reader sees is not the string on disk. **It was load-bearing, not a slip:** removing it makes
+  `*/` close the block comment and the file stops parsing. That is a third instance of the exact use
+  `scripts/check-invisible-control-chars.mjs` counted and excused in its own header, whose limit is
+  pinned by a **passing** test (`scripts/lib/__tests__/invisible-control-chars.test.mjs:224-241`).
+  Repaired by rewriting the block comment as `//` line comments, which need no invisible character
+  (24/24 tests green). The **class** is filed as **E6-F020** in the guard's home register, `unowned`,
+  with the two things this occurrence establishes: the guard's census is a recurring pattern rather
+  than two grandfathered sites, and *"no escape-based repair exists"* is not *"no repair exists"*.
+  **The guard is not widened in this PR** — that decision gets made deliberately, not smuggled into a
+  ticket about service reconciliation.
 
 ### 9.3 Deployment honesty
 
