@@ -40,14 +40,45 @@ import { SECURITY_DENIAL_ACTION_PREFIX } from "./activity-namespace.js";
  *   3. `action`/`entityType` are free text and `details` is jsonb, so the
  *      namespace needs no schema change and no DDL.
  *
- * ★ THE LIMIT, STATED RATHER THAN HIDDEN. `activity_log.company_id` is NOT NULL
- * with a cascade FK to `companies`. A denial whose company is UNRESOLVABLE — an
- * unenrolled worker (DE-03), an attacker-supplied path segment (DE-21), a wrong
- * or absent org GUC (DE-01) — CANNOT be written here at all, and this recorder
- * does not pretend otherwise: it logs loudly and returns null. Where such a
- * denial should go, and whether a suspect should be able to cascade-delete their
- * own denial history by deleting their own company, are open questions this
- * slice does not answer. See `E0-F013`.
+ * ★ THE LIMIT, AS IT NOW STANDS — E0-F013 DECISION 2, RULED (a2) 2026-09-09.
+ * The paragraph that used to sit here said `activity_log.company_id` is NOT NULL
+ * and that a denial with no resolvable company "CANNOT be written here at all".
+ * That is no longer true and is replaced rather than footnoted, because a stale
+ * limit in a recorder's own contract is how a caller learns the wrong rule.
+ *
+ * `company_id` is now NULLABLE, a nullable `organization_id` sits beside it, and
+ * a partial CHECK (`company_id IS NOT NULL OR action LIKE 'security.denied.%'`)
+ * keeps the NOT NULL guarantee for every product writer while admitting a
+ * tenantless row inside this recorder's reserved namespace ONLY. Migration
+ * `0274_activity_log_denial_sink.sql`; ruling
+ * `docs/replatform/DECISION-REQUEST-unattributable-denial-sink.md` §4.
+ *
+ * ★ WHAT THAT DOES AND DOES NOT BUY, per axis:
+ *   - a denial that resolves a company still writes it, unchanged;
+ *   - a denial that resolves only an ORGANIZATION (DE-03's eight session-bound
+ *     refusals, DE-15's drain, five of DE-06's six fence throws) now writes a row
+ *     attributed to that organization and to no company;
+ *   - two DE-03 sites stay DOUBLY NULL even under (a2) and this recorder does not
+ *     pretend otherwise: `server/src/services/worker-enrollment.ts:315`, where
+ *     `authoritativeOrganizationId` is typed `string | null` and an unrouted
+ *     enrollment code yields no organization, and the pre-code refusal at `:295`,
+ *     which fires before any organization is resolved at all. Those rows are
+ *     attributable to nothing but the device thumbprint and proof id in
+ *     `details`, and that is the honest ceiling, not an oversight.
+ *   - `organization_id` is `ON DELETE restrict`, not `cascade`, and a null-company
+ *     row does not cascade with any company. Decision 3(b)'s "a suspect deletes
+ *     their own denial history" therefore has less surface here, but is NOT
+ *     answered by this slice.
+ *
+ * ★ THE ORGANIZATION MUST BE VERIFIED, NEVER CALLER-SUPPLIED. This is the whole
+ * difference between the ruled option (a2) and the rejected option (c). Callers
+ * pass `organizationId` ONLY when it came out of a control-plane-minted, HMAC-
+ * verified artefact (`verifyWorkerOperationProof` → `verifyWorkerSessionToken`,
+ * `worker-operation-proof.ts:47-60`) or out of a row read in this transaction.
+ * A value taken off the wire lets a prober CHOOSE THE DESTINATION of the record
+ * of its own refusal — dilute it, flood a victim's feed, or omit it to force the
+ * row back into the tenantless bucket. A prober that controls the attribution
+ * controls the audit. Do not add a caller-supplied path.
  *
  * ★ TRANSACTION DISCIPLINE, and why callers must read this. `db` MUST be a
  * pool-level handle, never the transaction that is about to reject. Many
@@ -71,10 +102,28 @@ import { SECURITY_DENIAL_ACTION_PREFIX } from "./activity-namespace.js";
  */
 export interface SecurityDenialInput {
   /**
-   * The tenant the refusal happened in. Required: an unattributed denial does
-   * not satisfy any crossing in this class.
+   * The tenant the refusal happened in, on the COMPANY axis.
+   *
+   * `null` ONLY where the refusing control genuinely holds no FK-valid company —
+   * `organization → company` is 1:N and therefore not a function, so there is no
+   * reverse lookup to perform (`companies.ts:20`, and the only unique constraint
+   * over `organization_id` is the composite `companies_org_id_uq`, `:87`). Pass
+   * `null` because the company is ABSENT, never because it was inconvenient to
+   * thread: a null here is a claim that nothing in scope resolves one.
    */
-  companyId: string;
+  companyId: string | null;
+  /**
+   * The tenant the refusal happened in, on the ORGANIZATION axis. Added by
+   * E0-F013 Decision 2 (a2) so an organization-only refusal records WHO was
+   * refused instead of "someone, somewhere".
+   *
+   * ★ MUST be token-attested or DB-resolved — see the header. Never a value the
+   * caller put on the wire.
+   *
+   * Optional, and `null` is a real answer: at two DE-03 sites there is no
+   * organization either (see the header).
+   */
+  organizationId?: string | null;
   /**
    * The crossing id from `distributed-execution-threat-controls.json` whose
    * `audit` clause this row exists to satisfy, e.g. "DE-19". Makes a row
@@ -140,6 +189,12 @@ export async function recordSecurityDenial(
       .insert(activityLog)
       .values({
         companyId: input.companyId,
+        // E0-F013 Decision 2 (a2). Undefined and null are the same row here — the
+        // column is nullable and has no default — but the explicit `?? null`
+        // keeps the value that reaches the database identical to the value the
+        // caller passed, so a test can assert the two doubly-null DE-03 sites
+        // really do write a doubly-null row rather than a defaulted one.
+        organizationId: input.organizationId ?? null,
         actorType: input.actorType,
         actorId: input.actorId,
         action,
@@ -165,6 +220,7 @@ export async function recordSecurityDenial(
         crossing: input.crossing,
         action,
         companyId: input.companyId,
+        organizationId: input.organizationId ?? null,
         actorType: input.actorType,
         actorId: input.actorId,
         entityType: input.entityType,

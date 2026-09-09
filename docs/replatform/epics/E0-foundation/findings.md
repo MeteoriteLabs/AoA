@@ -817,6 +817,54 @@ state twelve, not seventeen.
    ruling carries a third acceptance condition to close it with a provocation test. The paper names
    the strongest argument against itself. **It changes no status and wires nothing** — it exists so
    this decision can be signed.
+
+   ★★★ **RULED 2026-09-09 — OPTION (a2), WITH THE CHECK, AND THREE ACCEPTANCE CONDITIONS.**
+   The founder ratified the paper's recommendation. **Decision 2 is CLOSED as a decision.** What
+   the sink unit landed, and what it deliberately did not:
+
+   **LANDED (the storage half).** `activity_log.company_id` is **NULLABLE**; a nullable
+   `organization_id uuid REFERENCES organizations(id) ON DELETE restrict` is added; the partial
+   `CHECK (company_id IS NOT NULL OR action LIKE 'security.denied.%')` retains the NOT NULL
+   guarantee for **every** product writer and relaxes it only inside the reserved denial namespace.
+   All of it is `pnpm db:generate` output from `packages/db/src/schema/activity_log.ts`
+   (drizzle `check()`), landed as `0274_activity_log_denial_sink.sql` with **C14 class (a)**
+   idempotency guards hand-appended below the generated DDL for replay safety
+   (`ADD COLUMN IF NOT EXISTS`, `DROP CONSTRAINT IF EXISTS` before each `ADD CONSTRAINT`,
+   `CREATE INDEX IF NOT EXISTS`). The migration is **expand-only and N/N-1 compatible**: the old
+   binary still writes and reads correctly against the new schema, and both properties are proven
+   in `server/src/__tests__/e0-f013-unattributable-denial-sink.integration.test.ts` (arms 5 and 6)
+   rather than asserted in prose. The recorder (`security-denial-audit.ts`) accepts
+   `companyId: string | null` and an optional `organizationId`, contractually **token-attested or
+   DB-resolved, never caller-supplied** — accepting a caller-supplied organization is option (c),
+   which was **not** ruled, and whose attack is that a prober chooses its own record's destination.
+
+   **NOT LANDED — THE SINK IS EMPTY.** ★ **No residual sink is wired.** DE-03's eight production
+   `recordProof` refusals, DE-15's drain return (`job-leasing.ts:731-740`) and DE-06's five
+   organization-only fence throws still write **no row**. The ruling removed the STORAGE blocker;
+   it did not do the wiring, and nothing in this entry may be read as if it had. Acceptance
+   condition **(a)** — a production reader of `security.denied.*` must ship in the same wave — and
+   condition **(c)** — closing or fencing `activityService.forIssue`, with a provocation — are both
+   **OPEN**. Condition **(b)** is discharged: DE-15's `audit` clause in
+   `docs/architecture/distributed-execution-threat-controls.json` was amended in the landing commit
+   to say what an organization-attributed drain record does and does not establish.
+
+   ★ **A MEASUREMENT CORRECTION THE PAPER OWES.** The paper's §1.1 count of **nine** DE-03
+   `recordProof` refusal sites is right, but two details are wrong and both flatter the ruling.
+   Measured at tip: **eight** of the nine are in `server/src/services`; the ninth is in
+   `server/src/`**`middleware`**`/worker-session-auth.ts:151`, not `services/`. And the paper places
+   that ninth among the **eight** sites that hold a verified organization. It does not: its
+   `authoritativeOrganizationId` is typed **`string | null`**, and `:183` passes an explicit `null`
+   for a `platform`-scope worker (whose `claims.organizationId` is null by the invariant at `:72`).
+   A platform-scope session refusal is therefore a **THIRD doubly-null site**.
+
+   **The honest per-axis split for DE-03 under (a2):** **SEVEN** sites always carry a non-null,
+   token-attested organization — `job-control-ack.ts:93`, `job-events.ts:169`, `job-fencing.ts:133`,
+   `job-leasing.ts:546` and `:816`, `worker-fence-context.ts:68` and `:162` — because
+   `VerifiedWorkerOperation.organizationId` is `string` and platform scope is refused ahead of it
+   (`middleware/worker-operation-proof.ts:6,50`). **TWO** are conditionally doubly-null:
+   `worker-enrollment.ts:315` (unrouted enrollment code) and
+   `middleware/worker-session-auth.ts:151` (platform scope). And the separate pre-code refusal at
+   `worker-enrollment.ts:295` — not one of the nine — has no organization at all.
 3. **Retention and disclosure of a denial record.** (a) Whose log does a cross-tenant denial land
    in? The probed company's `activity_log` discloses to them that they were probed and by whom.
    (b) `activity_log` **cascade-deletes with its company**, so a hostile tenant can destroy the
