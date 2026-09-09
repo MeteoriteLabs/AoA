@@ -16,8 +16,22 @@
 // suites assert. The transport itself makes NO authority decision.
 // -----------------------------------------------------------------------------
 
-/** The lifecycle state a transport reports for a sandbox record. */
-export type E2bRecordState = "running" | "paused" | "stopped";
+/**
+ * The lifecycle state a transport reports for a sandbox record.
+ *
+ * ★ SVC-008a §4.2 A-i — `"unknown"` means the transport got an answer it CANNOT
+ * CLASSIFY, or no answer at all, for THIS field. It is not a lifecycle state; it is the
+ * ABSENCE of one, and it exists so no parser is ever cornered into inventing a lifecycle.
+ *
+ * Before this inhabitant existed, `mapState` (`real-transport.ts`) fell through to
+ * `"stopped"` for an absent, renamed or non-string state field — so an SDK field rename,
+ * a partial/error-shaped response body, or a future `"hibernated"` was laundered into an
+ * affirmative stop. That is E7-F034's exact class, one layer below where the finding
+ * looked. `E2bRecordState` is LOCAL to this package: it is not `SANDBOX_STATES`, not
+ * `StopOutcome`, and nothing under `packages/worker-protocol/`, so widening it touches no
+ * frozen surface.
+ */
+export type E2bRecordState = "running" | "paused" | "stopped" | "unknown";
 
 /** An opaque provider-owned record. `metadata` is round-tripped verbatim — the
  * provider stores its (management) labels + any test fault directives there; the
@@ -39,10 +53,19 @@ export interface E2bCommandResult {
   readonly crashed: boolean;
 }
 
-/** Outcome of a cancel/kill signal delivery. `delivered: false` models a sandbox
- * that ignored the signal (the provider maps it to `StopOutcome.ignored`). */
+/**
+ * What the transport OBSERVED after a cancel/kill signal attempt — never what it
+ * assumed, and never what it merely requested.
+ *
+ * ★ SVC-008a §4.2 A-ii. This replaces `delivered: boolean`, which had no inhabitant for
+ * "I witnessed nothing" and so forced `RealE2bTransport.signal` to return an affirmative
+ * `{delivered: true}` from its own `catch` (E7-F034). The provider maps `"stopped"` to
+ * `StopOutcome.stopped` and BOTH other values to `"ignored"` — mapping an indeterminate
+ * read onto the ESCALATING value is fail-safe; mapping it onto the terminating value is
+ * the defect.
+ */
 export interface E2bSignalResult {
-  readonly delivered: boolean;
+  readonly observed: "stopped" | "still_running" | "unknown";
 }
 
 /** A page of records from `list`. */
@@ -130,6 +153,70 @@ export interface E2bStagedFile {
   readonly bytes: Uint8Array;
 }
 
+// --- SVC-008a: process supervision at the transport scope --------------------
+//
+// `runCommand` is a COMPLETION oracle — it resolves only once the command has exited
+// (this file's own `real-transport.ts` comment records, from real E2B run 33789547290,
+// that `sandbox.commands.run()` is `start()` then `CommandHandle.wait()`). A supervisor
+// built on it records a hung launch as a started instance. `getInfo`/`isRunning` answer
+// about the SANDBOX, which is up from the moment `create` resolves. The trio below is the
+// missing scope: a launch you can witness, a status you can read, and a stop that cannot
+// lie about what it saw.
+
+/** Whether this transport can launch a process it can later observe and signal. */
+export type E2bProcessSupervisionMode = "none" | "handle";
+
+/** An opaque, TRANSPORT-MINTED process handle. Never empty — see {@link E2bProcessStartResult}. */
+export type E2bProcessHandle = string;
+
+/**
+ * WHAT THE TRANSPORT SAW. `"unknown"` is not a lifecycle state; it is the absence of one,
+ * and its `reason` names a read that was ATTEMPTED and did not answer.
+ */
+export type E2bProcessObservation =
+  | { readonly state: "running" }
+  | { readonly state: "exited"; readonly exitCode: number | null; readonly signal: string | null }
+  | { readonly state: "gone" }
+  | {
+      readonly state: "unknown";
+      readonly reason: "read_failed" | "sandbox_unreachable" | "handle_unrecognized" | "state_unrecognized";
+    };
+
+export interface E2bProcessStartResult {
+  /** ★ NON-EMPTY BY CONTRACT — presence is the acknowledgement, so "present" must not be
+   * satisfiable by a value that means nothing. A launch response from which no non-empty
+   * handle can be read is an {@link E2bProcessLaunchNotAcknowledgedError}, never `""`. */
+  readonly handle: E2bProcessHandle;
+}
+
+export interface E2bProcessSignalResult {
+  /** About the CALL only. There is deliberately no member naming a process outcome. */
+  readonly accepted: "accepted" | "refused" | "unsupported";
+  /** About the PROCESS, obtained by RE-READING after the attempt. */
+  readonly observation: E2bProcessObservation;
+}
+
+export interface E2bStartProcessRequest {
+  readonly sandboxId: string;
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly envVars: Readonly<Record<string, string>>;
+  /** The sandbox-side command budget, forwarded to the provider. */
+  readonly timeoutMs: number;
+}
+
+/** The transport could not ACKNOWLEDGE a launch: the provider refused, or its response
+ * carried no handle this binding can read. The provider maps it to the domain
+ * `ProcessLaunchNotAcknowledged`. */
+export class E2bProcessLaunchNotAcknowledgedError extends Error {
+  readonly sandboxId: string;
+  constructor(sandboxId: string, detail?: string) {
+    super(`e2b transport: process launch not acknowledged for ${sandboxId}${detail ? `: ${detail}` : ""}`);
+    this.name = "E2bProcessLaunchNotAcknowledgedError";
+    this.sandboxId = sandboxId;
+  }
+}
+
 /**
  * The injectable E2B transport. Optional capabilities (`pause`/`resume`) may be
  * absent — the provider gates the optional `checkpoint`/`restore` ops on their
@@ -163,6 +250,31 @@ export interface E2bTransport {
   list(req: E2bListRequest): Promise<E2bListPage>;
   setTimeout(sandboxId: string, timeoutMs: number): Promise<void>;
   isRunning(sandboxId: string): Promise<boolean>;
+
+  // --- SVC-008a process supervision (MANDATORY methods, optional SUPPORT) ------
+  //
+  // "Mandatory means no absent path": every transport implements all three, and only
+  // `processSupervisionMode` says whether they do anything. A `"none"` transport THROWS
+  // `UnsupportedProviderOperation` (via the provider) rather than returning an `unknown`
+  // observation — an unsupported capability must never be called again, while an
+  // `unknown` means "escalate and retry", and one value cannot carry both handlings.
+
+  /** Whether the three methods below are supported. */
+  readonly processSupervisionMode: E2bProcessSupervisionMode;
+  /** Launch a DETACHED process and return as soon as the provider acknowledges a handle.
+   * Never waits for the process to exit. Throws
+   * {@link E2bProcessLaunchNotAcknowledgedError} when no non-empty handle can be read. */
+  startProcess(req: E2bStartProcessRequest): Promise<E2bProcessStartResult>;
+  /** Read what the transport can SEE of the process behind `handle`. A read that THREW is
+   * `{state: "unknown"}`; an ANSWER that the process is absent is `{state: "gone"}`. */
+  processStatus(sandboxId: string, handle: E2bProcessHandle): Promise<E2bProcessObservation>;
+  /** Signal the process behind `handle`, then RE-READ its status. */
+  signalProcess(
+    sandboxId: string,
+    handle: E2bProcessHandle,
+    kind: "cancel" | "kill",
+  ): Promise<E2bProcessSignalResult>;
+
   pause?(sandboxId: string): Promise<{ readonly snapshotId: string }>;
   resume?(sandboxId: string): Promise<void>;
 }

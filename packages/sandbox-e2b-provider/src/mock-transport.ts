@@ -16,10 +16,17 @@
 
 import { decodeCreateFaults, decodeExecuteFaults } from "./directives.js";
 import {
+  E2bProcessLaunchNotAcknowledgedError,
   E2bTransportEgressBlockedError,
   E2bTransportNotFoundError,
   E2bTransportTransientError,
   type E2bCommandResult,
+  type E2bProcessHandle,
+  type E2bProcessObservation,
+  type E2bProcessSignalResult,
+  type E2bProcessStartResult,
+  type E2bProcessSupervisionMode,
+  type E2bStartProcessRequest,
   type E2bCreateRequest,
   type E2bListPage,
   type E2bListRequest,
@@ -42,6 +49,26 @@ interface MockRecord {
   destroyFailuresRemaining: number;
   /** CLI-002/D1 — deterministic in-memory filesystem: absolute path → bytes. */
   fs: Map<string, Uint8Array>;
+  /** SVC-008a — every `getInfo`/`list` read of this record THROWS. Models the branch that
+   * used to be laundered into `{delivered: true}` from `signal`'s own catch (E7-F034). */
+  readFails: boolean;
+  /** SVC-008a — this record's `state` is `"unknown"`. The mock's records never pass
+   * through `mapState`, so without this directive the unrecognized-payload case (§4.2
+   * A-i) would be testable on the KEYED arm only — i.e. skipped in the CI that runs. */
+  stateUnknown: boolean;
+  /** SVC-008a — `startProcess` cannot be acknowledged. */
+  refuseLaunch: boolean;
+  /** SVC-008a — every `processStatus` read of this sandbox's processes THROWS. */
+  processReadFails: boolean;
+  /** SVC-008a — in-sandbox processes: handle → its observation-bearing record. */
+  processes: Map<string, MockProcess>;
+}
+
+interface MockProcess {
+  handle: string;
+  state: "running" | "exited";
+  exitCode: number | null;
+  signal: string | null;
 }
 
 export interface MockE2bTransportOptions {
@@ -89,12 +116,20 @@ export class MockE2bTransport implements E2bTransport {
     const faults = decodeCreateFaults(req.envVars);
     this.#records.set(sandboxId, {
       sandboxId,
+      // SVC-008a — a record whose state field the parser could not classify. The mock's
+      // records are minted from its own store and never pass through `mapState`, so this
+      // directive is the only no-key way to reach the `unknown` state arm.
+      state: faults.stateUnknown ? "unknown" : "running",
       metadata: { ...req.metadata },
-      state: "running",
       ignoreCancel: faults.ignoreCancel,
       ignoreKill: faults.ignoreKill,
       destroyFailuresRemaining: faults.destroyFailures,
       fs: new Map<string, Uint8Array>(),
+      readFails: faults.readFails,
+      stateUnknown: faults.stateUnknown,
+      refuseLaunch: faults.refuseLaunch,
+      processReadFails: faults.processReadFails,
+      processes: new Map<string, MockProcess>(),
     });
     return { sandboxId };
   }
@@ -139,11 +174,80 @@ export class MockE2bTransport implements E2bTransport {
 
   async signal(sandboxId: string, kind: "cancel" | "kill"): Promise<E2bSignalResult> {
     const record = this.#records.get(sandboxId);
-    if (!record) return { delivered: true }; // already gone — a no-op convergence
-    if (kind === "cancel" && record.ignoreCancel) return { delivered: false };
-    if (kind === "kill" && record.ignoreKill) return { delivered: false };
+    // Already gone: an ABSENCE this store genuinely answered, so it is a witness.
+    if (!record) return { observed: "stopped" };
+    // ★ SVC-008a — the two arms production has and no double could previously produce.
+    if (record.readFails) return { observed: "unknown" };
+    if (record.state === "unknown") return { observed: "unknown" };
+    if (kind === "cancel" && record.ignoreCancel) return { observed: "still_running" };
+    if (kind === "kill" && record.ignoreKill) return { observed: "still_running" };
     record.state = "stopped";
-    return { delivered: true };
+    return { observed: "stopped" };
+  }
+
+  // --- SVC-008a process supervision -------------------------------------------
+  //
+  // ★★★ THE DOUBLE MUST NOT BE MORE CAPABLE THAN PRODUCTION, and that is asserted by the
+  // conformance suite rather than left to review. The one place it would have been is
+  // `signalProcess("cancel")`: a mock that genuinely stopped a process gracefully, while
+  // `RealE2bTransport` reports `unsupported` because `e2b@2.30.5` exposes no per-pid
+  // SIGTERM, would rebuild E7-F034's exact shape one layer up. So this mock reports
+  // `unsupported` for `"cancel"` too.
+
+  readonly processSupervisionMode: E2bProcessSupervisionMode = "handle";
+
+  async startProcess(req: E2bStartProcessRequest): Promise<E2bProcessStartResult> {
+    const record = this.#requireRecord(req.sandboxId);
+    if (record.refuseLaunch) {
+      // No handle comes back at all — never `handle: ""`, which is "present" and would
+      // read to a caller as a started process.
+      throw new E2bProcessLaunchNotAcknowledgedError(req.sandboxId, "launch refused by directive");
+    }
+    this.#counter += 1;
+    const handle = `proc-${String(this.#counter).padStart(6, "0")}`;
+    record.processes.set(handle, { handle, state: "running", exitCode: null, signal: null });
+    return { handle };
+  }
+
+  async processStatus(sandboxId: string, handle: E2bProcessHandle): Promise<E2bProcessObservation> {
+    const record = this.#records.get(sandboxId);
+    if (!record) return { state: "unknown", reason: "sandbox_unreachable" };
+    // A read that THREW — distinct from an answer of absence, which is the distinction
+    // `RealE2bTransport.isRunning`'s `catch { return false }` cannot make.
+    if (record.processReadFails) return { state: "unknown", reason: "read_failed" };
+    const proc = record.processes.get(handle);
+    // The store ANSWERED and this handle is not in it.
+    if (!proc) return { state: "gone" };
+    if (proc.state === "exited") return { state: "exited", exitCode: proc.exitCode, signal: proc.signal };
+    return { state: "running" };
+  }
+
+  async signalProcess(
+    sandboxId: string,
+    handle: E2bProcessHandle,
+    kind: "cancel" | "kill",
+  ): Promise<E2bProcessSignalResult> {
+    const record = this.#records.get(sandboxId);
+    if (!record) {
+      return { accepted: "refused", observation: { state: "unknown", reason: "sandbox_unreachable" } };
+    }
+    if (kind === "cancel") {
+      // Deliberately NOT more capable than `RealE2bTransport` — see the block comment.
+      return { accepted: "unsupported", observation: await this.processStatus(sandboxId, handle) };
+    }
+    const proc = record.processes.get(handle);
+    if (!proc) {
+      return { accepted: "refused", observation: await this.processStatus(sandboxId, handle) };
+    }
+    if (!record.ignoreKill) {
+      proc.state = "exited";
+      proc.exitCode = null;
+      proc.signal = "SIGKILL";
+    }
+    // ★ `accepted` describes the CALL and nothing else — under `ignoreKill` the request
+    // was taken and the process is still running, which is real E2B's only interesting
+    // case and the one a caller must not read as success.
+    return { accepted: "accepted", observation: await this.processStatus(sandboxId, handle) };
   }
 
   async terminate(sandboxId: string): Promise<void> {
@@ -158,6 +262,9 @@ export class MockE2bTransport implements E2bTransport {
 
   async getInfo(sandboxId: string): Promise<E2bSandboxRecord> {
     const record = this.#requireRecord(sandboxId);
+    // SVC-008a — a read that THREW. Distinguishable from an answer, which is the whole
+    // point: the pre-fix `signal` could not tell them apart and reported both as a stop.
+    if (record.readFails) throw new E2bTransportTransientError("e2b transport: getInfo failed");
     return { sandboxId: record.sandboxId, metadata: { ...record.metadata }, state: record.state };
   }
 

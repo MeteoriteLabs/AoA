@@ -50,25 +50,36 @@ import type {
   InspectResult,
   ListInput,
   ListResult,
+  ProcessHandle,
+  ProcessObservation,
+  ProcessSignalResult,
+  ProcessStartResult,
+  ProcessStatusResult,
+  ProcessSupervisionMode,
   ProviderOpContext,
   ResourceLabels,
   ResourceSummary,
   RestoreResult,
   SandboxProvider,
   SandboxState,
+  StopOutcome,
   StopResult,
 } from "@armyofagents/worker-daemon";
 
 import { METADATA_KEYS } from "./directives.js";
 import {
+  ProcessLaunchNotAcknowledged,
   SandboxEgressDeniedError,
   SandboxNotFoundError,
+  SandboxRecordIndeterminateError,
   UnsupportedProviderOperation,
 } from "./errors.js";
 import {
+  E2bProcessLaunchNotAcknowledgedError,
   E2bTransportEgressBlockedError,
   E2bTransportNotFoundError,
   E2bTransportTransientError,
+  type E2bProcessObservation,
   type E2bRecordState,
   type E2bSandboxRecord,
   type E2bStagedFile,
@@ -163,7 +174,18 @@ async function putGrantBytes(grant: ArtifactUploadGrantV1, bytes: Uint8Array): P
   }
 }
 
-function mapState(state: E2bRecordState): SandboxState {
+/**
+ * Project a CLASSIFIED record state onto the port's lifecycle vocabulary.
+ *
+ * ★ SVC-008a §4.2 A-iii — `"unknown"` is deliberately NOT accepted here. Widening
+ * `E2bRecordState` with `"unknown"` reds this exhaustive switch, and that red is the
+ * MECHANISM, not a cost: it forces every consumer of a record state to decide what an
+ * indeterminate one means, and the two consumers are ruled differently because they fail
+ * in opposite directions (`inspect` throws; `list` takes the non-destructive interim rule
+ * of §9.4). Clearing the red by mapping `"unknown"` onto some lifecycle value HERE would
+ * launder it into both call sites at once.
+ */
+function mapClassifiedState(state: Exclude<E2bRecordState, "unknown">): SandboxState {
   switch (state) {
     case "running":
       return "running";
@@ -173,6 +195,37 @@ function mapState(state: E2bRecordState): SandboxState {
       return "stopped";
     default: {
       const exhaustive: never = state;
+      return exhaustive;
+    }
+  }
+}
+
+/**
+ * Project the transport's observation onto the port's, adding only the timestamp of the
+ * READ that produced it.
+ *
+ * ★ `observedAt` timestamps the read, never the state, and it is STRUCTURALLY ABSENT from
+ * the `unknown` arm — the arm with no successful read to timestamp. There is no default
+ * branch: a new transport-level inhabitant reds the build here rather than being
+ * laundered into whichever arm happens to be last.
+ */
+function toPortObservation(observation: E2bProcessObservation): ProcessObservation {
+  switch (observation.state) {
+    case "running":
+      return { state: "running", observedAt: Date.now() };
+    case "exited":
+      return {
+        state: "exited",
+        exitCode: observation.exitCode,
+        signal: observation.signal,
+        observedAt: Date.now(),
+      };
+    case "gone":
+      return { state: "gone", observedAt: Date.now() };
+    case "unknown":
+      return { state: "unknown", reason: observation.reason };
+    default: {
+      const exhaustive: never = observation;
       return exhaustive;
     }
   }
@@ -261,7 +314,38 @@ export class E2bSandboxProvider implements SandboxProvider {
   /** Idempotency ledger: a stable create key → the recorded resource. A replayed
    * key returns the SAME sandbox and never provisions a second one. */
   readonly #idempotency = new Map<string, { sandboxId: string; resourceLabels: ResourceLabels }>();
+  /**
+   * SVC-008a — the SAME mechanism as `#idempotency` above, for the launch.
+   *
+   * ★ A SECOND MAP, NOT A SECOND SCHEME. `ProviderOpContext` states one contract for every
+   * op ("a repeated key returns the recorded result and does not double-apply"), and this
+   * follows the ledger `create` already uses rather than inventing a parallel one — two
+   * idempotency schemes in one provider would be worse than the gap. It is a separate MAP
+   * only because the recorded values have different shapes and a shared key space would let
+   * a create replay hand back a launch, or the reverse.
+   */
+  readonly #processIdempotency = new Map<string, ProcessStartResult>();
   #opCounter = 0;
+  /** SVC-008a §9.4 — how many records this provider could not classify. The observable
+   * that keeps the interim `hasLiveLease` rule from being silent; the provider has no
+   * metrics sink injected, so it is exposed for inspection instead. */
+  #indeterminateRecords = 0;
+
+  /**
+   * SVC-008a — declared from the TRANSPORT's own answer, never asserted.
+   *
+   * ★ WHAT THIS DOES AND DOES NOT CLAIM. `RealE2bTransport` declares `"handle"` on the
+   * strength of a reading of the `e2b@2.30.5` TYPE DECLARATIONS — `commands.run(cmd,
+   * {background: true})` resolves a `CommandHandle` with a `pid`, `commands.list()`
+   * resolves `ProcessInfo[]`, `commands.kill(pid)` resolves `true`/`false` — and that
+   * reading has NOT been run against a real E2B account. So this field says "the binding
+   * beneath me implements the trio against the SDK's documented surface", never "this has
+   * been measured working". The keyed lane is what measures it, and the conformance
+   * suite's keyed arm must report SKIPPED rather than passed when no key is present.
+   *
+   * A transport that declares `"none"` makes this `"none"`, and all three methods throw.
+   */
+  readonly processSupervisionMode: ProcessSupervisionMode;
 
   constructor(options: E2bSandboxProviderOptions) {
     this.#transport = options.transport;
@@ -281,6 +365,14 @@ export class E2bSandboxProvider implements SandboxProvider {
     this.advertisedOperations = advertised;
     this.checkpointMode = canCheckpoint ? "snapshot" : "none";
     this.healthMode = requested.has("health") ? "poll" : "none";
+    // Delegated, never asserted: the provider claims exactly what the injected transport
+    // claims (the same shape `checkpointMode` uses, which gates on `transport.pause`).
+    this.processSupervisionMode = this.#transport.processSupervisionMode;
+  }
+
+  /** SVC-008a §9.4 — records whose lifecycle state could not be classified. */
+  indeterminateRecordCount(): number {
+    return this.#indeterminateRecords;
   }
 
   #nextOpId(op: ProviderOperation): string {
@@ -375,14 +467,46 @@ export class E2bSandboxProvider implements SandboxProvider {
     }
   }
 
+  /**
+   * ★★★ SVC-008a §4.2 Half A — THE STOP VERDICT, DERIVED FROM WHAT WAS OBSERVED.
+   *
+   * `StopOutcome` is NOT widened, and it does not need to be: `"ignored"`'s existing
+   * contract is already *"the sandbox did not comply and the supervisor must escalate"*,
+   * which is the correct handling for BOTH `still_running` and `unknown`. Mapping an
+   * indeterminate read onto the ESCALATING value is fail-safe; mapping it onto the
+   * TERMINATING value is the E7-F034 defect.
+   *
+   * What this changes on the shipping lane: `cancel` now returns `"ignored"` against real
+   * E2B, so `CleanupAuthority`'s `kill` rung EXECUTES for the first time in production,
+   * `kill` also returns `"ignored"`, and the stage reaches `destroy`. The unconditional
+   * forced `destroy` after the ladder is unchanged, so `cleanup_escalation{escalation_stage}`
+   * starts reporting `"destroy"` where it reported `"cancel"` — the metric becoming TRUE:
+   * this provider has no graceful stop, and every cancellation is a hard teardown.
+   *
+   * ★★★ FOR A CLASSIFIABLE RECORD, AND ONLY FOR ONE. This docstring used to say "no resource
+   * behaviour changes at all", and that was FALSE for the class {@link inspect} introduces
+   * below. An UNCLASSIFIABLE record previously mapped to `"stopped"` (the old `mapState`
+   * default) -> a terminal `SandboxState` -> the ordinary ladder -> a forced `destroy`. It
+   * now throws `SandboxRecordIndeterminateError` out of `inspect`, `CleanupAuthority`'s
+   * ownership gate refuses, `#convergeOne` reports `"failed"`, and NO destroy is issued: the
+   * resource is deliberately left to the next pass and, failing that, to the reaper. That is
+   * the intended non-destructive disposition — no teardown against a record whose ownership
+   * could not be established — but it IS a resource-behaviour change, and stating otherwise
+   * would hide the one case an operator most needs to know about. `indeterminateRecordCount()`
+   * is how often it fires.
+   */
+  #stopVerdict(observed: "stopped" | "still_running" | "unknown"): StopOutcome {
+    return observed === "stopped" ? "stopped" : "ignored";
+  }
+
   async cancel(sandboxId: string, _ctx: ProviderOpContext): Promise<StopResult> {
     const result = await this.#transport.signal(sandboxId, "cancel");
-    return { providerOpId: this.#nextOpId("cancel"), outcome: result.delivered ? "stopped" : "ignored" };
+    return { providerOpId: this.#nextOpId("cancel"), outcome: this.#stopVerdict(result.observed) };
   }
 
   async kill(sandboxId: string, _ctx: ProviderOpContext): Promise<StopResult> {
     const result = await this.#transport.signal(sandboxId, "kill");
-    return { providerOpId: this.#nextOpId("kill"), outcome: result.delivered ? "stopped" : "ignored" };
+    return { providerOpId: this.#nextOpId("kill"), outcome: this.#stopVerdict(result.observed) };
   }
 
   async destroy(sandboxId: string, _ctx: ProviderOpContext): Promise<CleanupResult> {
@@ -417,12 +541,33 @@ export class E2bSandboxProvider implements SandboxProvider {
     const resources: ResourceSummary[] = page.items
       .map((record) => {
         const parsed = parseRecord(record);
+        const indeterminate = record.state === "unknown";
+        if (indeterminate) this.#indeterminateRecords += 1;
         return {
           sandboxId: record.sandboxId,
           resourceLabels: parsed.labels,
           generation: parsed.labels.deviceGeneration ?? 0,
-          state: mapState(record.state),
-          hasLiveLease: record.state === "running",
+          // ★ SVC-008a §9.4 — `SandboxState` has no indeterminate inhabitant, and adding
+          // one is a cross-package widening (`startup-reconcile`, `reconcile`,
+          // `provider-wire/projection`, the contract harness) that this ticket does NOT
+          // own. `"cancelling"` is a PLACEHOLDER CHOSEN FOR ITS ROUTE, not a claim: it is
+          // the member of `ALIVE_STATES` (`startup-reconcile.ts`) that asserts the least
+          // about a settled lifecycle, and it keeps an unreadable record on the
+          // ESCALATING cleanup-authority route rather than the direct-teardown one.
+          state: indeterminate ? "cancelling" : mapClassifiedState(record.state),
+          // ★★★ SVC-008a §9.4 — THE MANDATORY INTERIM RULE, and it is a deferral with a
+          // rule rather than a hole. `hasLiveLease` is a BOOLEAN and both values are
+          // affirmative claims made from nothing: `false` sends a live sandbox whose state
+          // field was unreadable to `defaultIsOrphan` (`reconcile.ts`) and then to
+          // TEARDOWN; `true` leaks a genuinely dead one past every converge. The
+          // non-destructive direction is taken, matching the `indeterminate -> leave it to
+          // the reaper` precedent at `startup-reconcile.ts` (`state === "unreachable"` ->
+          // `disposition: "indeterminate"`). An indeterminate record must NEVER silently
+          // become an orphan verdict, which is what shipped before this line. Whoever
+          // answers §9.4 replaces the boolean; until then this loses orphans to the reaper
+          // rather than tearing down live work — and `indeterminateRecordCount()` below is
+          // how an operator sees how often it fires.
+          hasLiveLease: record.state === "running" || indeterminate,
         };
       })
       // DRIVER-OWNED deterministic ordering: real E2B does not promise a stable total
@@ -441,6 +586,15 @@ export class E2bSandboxProvider implements SandboxProvider {
       if (err instanceof E2bTransportNotFoundError) throw new SandboxNotFoundError();
       throw err;
     }
+    if (record.state === "unknown") {
+      // ★ SVC-008a §4.2 A-iii. An indeterminate record is a PARTIAL READ — not a
+      // lifecycle fact and not an absence — so it propagates rather than being collapsed
+      // onto a state. Specifically NOT `SandboxNotFoundError`: the cleanup authority maps
+      // that to a converged "already gone" success, so laundering an unreadable record
+      // into it would end the converge on nothing witnessed.
+      this.#indeterminateRecords += 1;
+      throw new SandboxRecordIndeterminateError(sandboxId);
+    }
     const parsed = parseRecord(record);
     // The FULL, sensitive detail — held here so the cleanup authority's redaction
     // is non-vacuous. `list` deliberately never carries any of this.
@@ -449,7 +603,7 @@ export class E2bSandboxProvider implements SandboxProvider {
       sandboxId: record.sandboxId,
       resourceLabels: parsed.labels,
       generation: parsed.labels.deviceGeneration ?? 0,
-      state: mapState(record.state),
+      state: mapClassifiedState(record.state),
       command: parsed.command,
       env: parsed.env,
       logs: [],
@@ -576,6 +730,103 @@ export class E2bSandboxProvider implements SandboxProvider {
     }
     await this.#transport.writeFiles(sandboxId, staged);
     return { stagedPaths: staged.map((file) => file.path) };
+  }
+
+  // --- SVC-008a process supervision -------------------------------------------
+  //
+  // A thin, honest projection of the transport's observations onto the port's. Every
+  // arm is either a value the transport WITNESSED or an explicit `unknown` with a reason;
+  // there is no default branch anywhere below, which is the property `mapState` lacked.
+
+  #requireProcessSupervision(op: "start_process" | "process_status" | "signal_process"): void {
+    // A `"none"` provider THROWS and never returns an observation: an unsupported
+    // capability must never be called again, while a returned `unknown` means "escalate
+    // and retry". One value cannot carry both handlings, and a caller that wired up a
+    // `"none"` provider by mistake would emit an escalation storm instead of failing at
+    // the first call. Same mechanism, same failure behaviour, as `stageFiles`.
+    if (this.processSupervisionMode === "none") throw new UnsupportedProviderOperation(op);
+  }
+
+  async startProcess(input: ExecuteInput, ctx: ProviderOpContext): Promise<ProcessStartResult> {
+    this.#requireProcessSupervision("start_process");
+    // ★★★ REPLAY BEFORE LAUNCH — the `ProviderOpContext` contract, on the operation where
+    // breaking it is most expensive.
+    //
+    // Without this, `startProcess` twice under one key invoked the transport twice and
+    // returned two handles. The realistic producer is a retry after a LOST RESPONSE: the
+    // launch succeeded, the answer never arrived, the caller retries with the stable key —
+    // and now TWO service instances run in one sandbox while the caller never learned the
+    // first handle, so the second is invisible to the very supervisor that would stop it.
+    // That is duplicate placement one layer below the epic designed to prevent it.
+    //
+    // The recorded result is returned VERBATIM (same `providerOpId`, same handle, same
+    // `acknowledgedAt`): a freshly minted op id would mean a second op happened, which is
+    // the thing being ruled out. An empty key opts out, exactly as it does for `create` —
+    // that is the create-gate's deliberate STRIP (`adapter-manager/create-gate.ts`), where a
+    // durable ledger above this one is the sole idempotency layer.
+    const key = ctx.idempotencyKey;
+    if (key) {
+      const recorded = this.#processIdempotency.get(key);
+      if (recorded) return recorded;
+    }
+    try {
+      const { handle } = await this.#transport.startProcess({
+        sandboxId: input.sandboxId,
+        command: input.command,
+        args: input.args,
+        envVars: input.env,
+        timeoutMs: this.#ttl(ctx),
+      });
+      // Belt-and-suspenders on the port's non-empty contract: a transport that regressed
+      // to the `String(x ?? "")` idiom must not be able to hand a caller `handle: ""`,
+      // which IS present and would read as a started process.
+      if (typeof handle !== "string" || handle.length === 0) {
+        throw new ProcessLaunchNotAcknowledged(input.sandboxId, "transport returned no usable handle");
+      }
+      const result: ProcessStartResult = {
+        providerOpId: this.#nextOpId("execute"),
+        handle,
+        acknowledgedAt: Date.now(),
+      };
+      // ★ RECORDED ONLY ON A WITNESSED LAUNCH. A refusal or an unreadable handle threw
+      // above and records nothing, so a retry under the same key is a genuine retry of a
+      // launch that never happened — never a replay of a failure.
+      if (key) this.#processIdempotency.set(key, result);
+      return result;
+    } catch (err) {
+      if (err instanceof E2bProcessLaunchNotAcknowledgedError) {
+        throw new ProcessLaunchNotAcknowledged(input.sandboxId, err.message);
+      }
+      if (err instanceof E2bTransportNotFoundError) throw new SandboxNotFoundError();
+      throw err;
+    }
+  }
+
+  async processStatus(
+    sandboxId: string,
+    handle: ProcessHandle,
+    _ctx: ProviderOpContext,
+  ): Promise<ProcessStatusResult> {
+    this.#requireProcessSupervision("process_status");
+    return {
+      providerOpId: this.#nextOpId("inspect"),
+      observation: toPortObservation(await this.#transport.processStatus(sandboxId, handle)),
+    };
+  }
+
+  async signalProcess(
+    sandboxId: string,
+    handle: ProcessHandle,
+    kind: "cancel" | "kill",
+    _ctx: ProviderOpContext,
+  ): Promise<ProcessSignalResult> {
+    this.#requireProcessSupervision("signal_process");
+    const result = await this.#transport.signalProcess(sandboxId, handle, kind);
+    return {
+      providerOpId: this.#nextOpId(kind === "cancel" ? "cancel" : "kill"),
+      accepted: result.accepted,
+      observation: toPortObservation(result.observation),
+    };
   }
 
   async checkpoint(sandboxId: string, _ctx: ProviderOpContext): Promise<CheckpointResult> {

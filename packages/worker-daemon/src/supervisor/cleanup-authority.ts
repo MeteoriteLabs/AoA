@@ -34,6 +34,7 @@ import {
   hashResourceLabels,
   labelsEqual,
   SandboxNotFoundError,
+  SandboxRecordIndeterminateError,
   type CleanupResult,
   type CleanupStatus,
   type ProviderOpContext,
@@ -279,12 +280,25 @@ export class CleanupAuthority {
       cancel = await this.cancel(sandboxId, makeCtx());
     } catch (err) {
       if (err instanceof ResourceNotAvailableError) return "success"; // already gone — nothing to converge
+      // ★ ONE RUNG IS NOT THE CLASS. See `#indeterminate` below: `#requireOwned` gates ALL
+      // THREE teardown ops, and a record is re-read at each, so the condition can first
+      // appear at ANY rung. Handling it only here was the shape of the leak.
+      if (this.#indeterminate(err)) return "failed";
       throw err;
     }
     if (cancel.outcome === "ignored") {
       // Escalate to kill.
       if (CLEANUP_STAGES.indexOf(this.#stage) < CLEANUP_STAGES.indexOf("kill")) this.escalate();
-      const kill = await this.kill(sandboxId, makeCtx());
+      let kill: StopResult;
+      try {
+        kill = await this.kill(sandboxId, makeCtx());
+      } catch (err) {
+        if (err instanceof ResourceNotAvailableError) return "success"; // vanished mid-converge
+        // ★★★ THE SECOND RUNG. A record readable at `cancel` and UNREADABLE here threw past
+        // `converge()` entirely — see `#indeterminate`.
+        if (this.#indeterminate(err)) return "failed";
+        throw err;
+      }
       if (kill.outcome === "ignored") {
         // Both ignored — the forced destroy below stops the tree.
         if (CLEANUP_STAGES.indexOf(this.#stage) < CLEANUP_STAGES.indexOf("destroy")) this.escalate();
@@ -298,6 +312,12 @@ export class CleanupAuthority {
         result = await this.destroy(sandboxId, makeCtx());
       } catch (err) {
         if (err instanceof ResourceNotAvailableError) return "success"; // vanished mid-converge
+        // ★★★ THE THIRD RUNG, and the most expensive one to have missed: this is the
+        // UNCONDITIONAL reclaim, so a throw escaping here is the leak in its purest form.
+        // Retrying the loop would be worse than pointless — the ownership gate refuses on a
+        // READ, and re-reading the same unclassifiable record just re-throws — so this
+        // reports "failed" and leaves the resource to the next pass, like the rungs above.
+        if (this.#indeterminate(err)) return "failed";
         throw err;
       }
       if (result.cleanupStatus === "success") {
@@ -306,5 +326,39 @@ export class CleanupAuthority {
       }
     }
     return status;
+  }
+
+  /**
+   * ★★★ SVC-008a — AN UNREADABLE RECORD MUST NOT DISARM THE REAPER, AND MUST NOT AUTHORIZE
+   * A BLIND TEARDOWN EITHER. The single ruling, applied at EVERY rung.
+   *
+   * `#requireOwned` gates cancel, kill AND destroy on `inspect`, and `inspect` THROWS on a
+   * record whose lifecycle state it cannot classify (rather than laundering it into an
+   * affirmative state — the E7-F034 class). A provider record is re-read at every rung, so
+   * the condition can first appear at any of them: a record that classified at `cancel` and
+   * became unclassifiable at `kill` or `destroy` is the ordinary case, not an exotic one.
+   *
+   * Left to propagate, that throw escapes `converge()` before the UNCONDITIONAL forced
+   * `destroy`, leaking a paid resource: strictly worse than the defect being repaired, which
+   * leaked nothing. Worse still, `supervisor.ts` consumes the terminal `run.cleanedUp` latch
+   * BEFORE calling `converge`, so the rejection also suppresses the retry — the sandbox
+   * survives until an external reaper finds it. And swallowing it as `"success"` would be
+   * worse than both: a converged claim over a resource nothing observed.
+   *
+   * So: report `"failed"`. The resource stays discoverable and RETRYABLE, the caller gets no
+   * false convergence, and no teardown is performed against a record whose ownership could
+   * not be established. That is the same non-destructive `indeterminate -> leave it to the
+   * reaper` disposition `startup-reconcile` already models for an unreachable lease probe.
+   *
+   * ★ MATCHED BY NAME, NOT BY `instanceof`. `SandboxRecordIndeterminateError` crosses a
+   * package boundary (`sandbox-e2b-provider` imports the class from this package's public
+   * entry point), and a duplicated module instance under a different resolution would make
+   * `instanceof` silently false — a fail-OPEN miss that reinstates the leak with every test
+   * still green. The name is the stable identity across that boundary; the `instanceof` is
+   * kept as the fast path so a subclass still matches.
+   */
+  #indeterminate(err: unknown): boolean {
+    if (err instanceof SandboxRecordIndeterminateError) return true;
+    return err instanceof Error && err.name === "SandboxRecordIndeterminateError";
   }
 }

@@ -495,7 +495,20 @@ terminating value is the current defect.
 `cleanupEpoch` reaches 3 instead of 1 — and a whole-tree grep shows `cleanupEpoch()` has exactly
 **one** consumer, a log field at `supervisor.ts:406`, so nothing branches on it; the unconditional
 forced `destroy` after the `if` (`cleanup-authority.ts:293-307`, `per-op-adapter.ts:271-275`) is
-unchanged, so **no resource behaviour changes at all**. What changes is the observable: see §6.
+unchanged. **For a CLASSIFIABLE record, no resource behaviour changes.** What changes is the
+observable: see §6.
+
+★★★ **CORRECTION (post-implementation). This paragraph said "no resource behaviour changes at
+all", and that is FALSE for one class — the one this design itself introduced two sub-sections
+later.** §4.2 A-iii makes `inspect` THROW on a record whose lifecycle state cannot be classified.
+Before this ticket such a record was laundered by the old `mapState` default into `"stopped"` — a
+terminal `SandboxState` — and ran the ordinary ladder to a forced `destroy`. It now reaches
+`CleanupAuthority`'s ownership gate, `#requireOwned` re-raises, `#convergeOne` reports `"failed"`,
+and **no destroy is issued**: the resource is deliberately left to the next pass and, failing that,
+to the reaper. That is the intended non-destructive disposition (no teardown against a record whose
+ownership could not be established), but it is unambiguously a resource-behaviour change, and it is
+the one an operator most needs to know about. `E2bSandboxProvider.indeterminateRecordCount()` is
+how often it fires. §6's "None." for `CleanupAuthority` is likewise superseded — see the §6 note.
 
 **Half B — the process handle. SDK-conditional, and the condition is §9.1.**
 
@@ -699,6 +712,22 @@ the same invariant of both and letting them disagree.
 | **`Supervisor.escalateCleanup`** (`supervisor.ts:349-415`) | None. | None — it delegates to `converge`. | `cleanupEpoch` in the converged-cleanup log line goes 1 → 3. Log-only: a whole-tree grep shows `cleanupEpoch()` has exactly one consumer (`supervisor.ts:406`). |
 | **`EffectAuthority`** (`effect-authority.ts:64-68`) | **Adds three fence-gated passthroughs** for the new trio, matching how it already wraps `stageFiles`. A port method reachable *around* the fence would be worse than one that does not exist. | None today (no caller). | None. |
 | **SVC-008b's service loop** | The consumer. Uses `startProcess`/`processStatus`/`signalProcess` and the §2.3 conclusion table. | Out of scope here. | Out of scope here. |
+
+★★★ **CORRECTION (post-implementation): the `CleanupAuthority` row's "None." is WRONG, and it is
+wrong in a way that leaked a paid sandbox.** §4.2 A-iii makes `inspect` throw on an unclassifiable
+record, and `#requireOwned` gates **cancel, kill AND destroy** on `inspect` — while `#convergeOne`
+caught only `ResourceNotAvailableError`. So the throw escaped `converge()` before the unconditional
+forced `destroy`: a **disarmed reaper**, strictly worse than the defect being repaired, which leaked
+nothing. Worse, `Supervisor.escalateCleanup` consumes the terminal `run.cleanedUp` latch *before*
+calling `converge`, so the escaping rejection also suppressed the retry — the sandbox survived until
+an external reaper found it. `SandboxRecordIndeterminateError` therefore lives on the port and
+`#convergeOne` reports `"failed"` for it **at every rung**: retryable, never a false convergence, and
+no teardown against a record whose ownership could not be established. A first pass covered the
+CANCEL rung only, which handled the single-shot case and left the *ordering* case — a record readable
+at cancel and unreadable at kill or destroy — leaking exactly as before; the pinning tests therefore
+drive the ORDER of classification, not a single indeterminate fixture
+(`svc-008a-escalation-reachability.test.ts`). The `Supervisor.escalateCleanup` row's "None." holds
+only because `converge` no longer rejects.
 
 ### 6.1 ★ The new observable, and why it is an improvement rather than noise
 

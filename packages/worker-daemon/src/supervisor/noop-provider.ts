@@ -34,6 +34,11 @@ import {
   type InspectResult,
   type ListInput,
   type ListResult,
+  type ProcessHandle,
+  type ProcessSignalResult,
+  type ProcessStartResult,
+  type ProcessStatusResult,
+  type ProcessSupervisionMode,
   type ProviderOpContext,
   type ProviderOperation,
   type RestoreResult,
@@ -71,12 +76,19 @@ export function createNoopProvider(): SandboxProvider {
   const healthMode: HealthMode = "none";
   const artifactExportMode: ArtifactExportMode = "none";
   const fileStagingMode: FileStagingMode = "none";
+  // SVC-008a — the null object supervises nothing, and says so. The trio below THROWS
+  // rather than returning an `unknown` observation: an unsupported capability must never
+  // be called again, while a returned `unknown` means "escalate and retry" — one value
+  // cannot carry both handlings, and a caller that wired up a `"none"` provider by mistake
+  // would emit an escalation storm instead of failing at the first call.
+  const processSupervisionMode: ProcessSupervisionMode = "none";
   return {
     advertisedOperations: new Set<ProviderOperation>(CORE_OPS),
     checkpointMode,
     healthMode,
     artifactExportMode,
     fileStagingMode,
+    processSupervisionMode,
     create(_spec: CreateSandboxSpec, _ctx: ProviderOpContext): Promise<CreateResult> {
       throw new NoopProviderReachedError("create");
     },
@@ -121,6 +133,20 @@ export function createNoopProvider(): SandboxProvider {
     },
     stageFiles(): Promise<StageFilesResult> {
       throw new NoopProviderReachedError("stage_files");
+    },
+    startProcess(_input: ExecuteInput, _ctx: ProviderOpContext): Promise<ProcessStartResult> {
+      throw new NoopProviderReachedError("start_process");
+    },
+    processStatus(_sandboxId: string, _handle: ProcessHandle, _ctx: ProviderOpContext): Promise<ProcessStatusResult> {
+      throw new NoopProviderReachedError("process_status");
+    },
+    signalProcess(
+      _sandboxId: string,
+      _handle: ProcessHandle,
+      _kind: "cancel" | "kill",
+      _ctx: ProviderOpContext,
+    ): Promise<ProcessSignalResult> {
+      throw new NoopProviderReachedError("signal_process");
     },
   };
 }

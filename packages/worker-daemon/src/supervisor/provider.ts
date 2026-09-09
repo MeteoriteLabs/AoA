@@ -127,6 +127,114 @@ export interface StageFilesResult {
   readonly stagedPaths: readonly string[];
 }
 
+// -----------------------------------------------------------------------------
+// SVC-008a — optional PROCESS SUPERVISION (gated on `processSupervisionMode`).
+//
+// NOT in `advertisedOperations`, for the same reason the export pair and `stageFiles`
+// are not: that set is typed to the FROZEN `ProviderOperation` union and these are not
+// frozen operations. Support is declared by the mode below. The METHODS are present on
+// every implementer and only SUPPORT is optional — "mandatory means no absent path".
+//
+// ★★★ THE ONE RULE. A value returned by this trio may assert ONLY what the
+// implementation actually WITNESSED. The way to enforce that in a type system is to
+// make "I witnessed nothing" a representable value, so no implementation is ever
+// cornered into an affirmative one. `StopOutcome` below has no such inhabitant, which
+// is why `RealE2bTransport.signal` returned `{delivered:true}` from its own catch
+// (E7-F034): the lie was not a slip, the type made it mandatory.
+// -----------------------------------------------------------------------------
+
+/**
+ * Whether this provider can launch a process it can later observe and signal.
+ *
+ * ★ DEFINED LOCALLY ON PURPOSE, exactly like {@link ArtifactExportMode} and
+ * {@link FileStagingMode} above: entering the frozen `ProviderOperation` vocabulary
+ * would be an E4-D02 STOP, and this answers the purely LOCAL question "can THIS
+ * provider supervise a process?".
+ */
+export type ProcessSupervisionMode = "none" | "handle";
+
+/**
+ * An opaque, PROVIDER-MINTED process handle. Never parsed by a caller, never logged
+ * unredacted, and never empty — see {@link ProcessStartResult.handle}.
+ */
+export type ProcessHandle = string;
+
+/**
+ * WHAT THE PROVIDER SAW. Not what it did, not what it hoped.
+ *
+ * The `unknown` arm is the whole point of this type: an implementation that could not
+ * observe anything returns it rather than picking an affirmative claim. It carries no
+ * `observedAt` because there is no successful read to timestamp.
+ */
+export type ProcessObservation =
+  | { readonly state: "running"; readonly observedAt: number }
+  | {
+      readonly state: "exited";
+      readonly exitCode: number | null;
+      readonly signal: string | null;
+      readonly observedAt: number;
+    }
+  | { readonly state: "gone"; readonly observedAt: number }
+  | { readonly state: "unknown"; readonly reason: ProcessUnknownReason };
+
+/**
+ * EVERY member names a read that was ATTEMPTED and did not answer. Nothing here names
+ * a call that was never made — a provider that does not supervise processes THROWS
+ * (see {@link SandboxProvider.startProcess}); it does not return an observation. A
+ * failed read must be escalated and retried; an unsupported capability must never be
+ * called again, and one value cannot carry two incompatible handlings.
+ */
+export type ProcessUnknownReason =
+  /** The status read itself threw. */
+  | "read_failed"
+  /** The sandbox could not be described. */
+  | "sandbox_unreachable"
+  /** The provider does not recognize this handle. */
+  | "handle_unrecognized"
+  /** ★ The read ANSWERED, and its answer named no state this implementation recognizes. */
+  | "state_unrecognized";
+
+export interface ProcessStartResult {
+  readonly providerOpId: string;
+  /**
+   * ★ PRESENCE IS THE ACKNOWLEDGEMENT, and it is NON-EMPTY BY CONTRACT.
+   *
+   * There is deliberately no `started: boolean` — a boolean lets an implementation
+   * return `false` and a caller read it as "started, sort of". Absence of a handle is
+   * a {@link ProcessLaunchNotAcknowledged} throw, never a returned value.
+   *
+   * The non-emptiness clause is not a nicety: this tree's idiom for minting an id from
+   * an SDK response is `String(x ?? "")` (`real-transport.ts` `create`/`toRecord`), and
+   * an empty string IS present. An implementation written in that idiom would
+   * acknowledge a launch it did not witness. A response from which no non-empty handle
+   * can be read is a THROW.
+   */
+  readonly handle: ProcessHandle;
+  readonly acknowledgedAt: number;
+}
+
+export interface ProcessStatusResult {
+  readonly providerOpId: string;
+  readonly observation: ProcessObservation;
+}
+
+export interface ProcessSignalResult {
+  readonly providerOpId: string;
+  /**
+   * About the CALL only. There is deliberately NO `outcome: "stopped"` here — the word
+   * "stopped" is absent from this type, so `accepted` is structurally incapable of
+   * being laundered into a claim about the process. The stop verdict is derived by the
+   * caller from `observation`, and only from `observation`.
+   *
+   * ★ `"unsupported"` means THIS SIGNAL KIND is not deliverable on a provider that DOES
+   * supervise processes. It does NOT mean `processSupervisionMode === "none"`; that case
+   * throws and never returns.
+   */
+  readonly accepted: "accepted" | "refused" | "unsupported";
+  /** About the PROCESS, and obtained by RE-READING — never by asserting. */
+  readonly observation: ProcessObservation;
+}
+
 /** Lifecycle state of a provider sandbox resource. */
 export const SANDBOX_STATES = [
   "creating",
@@ -347,7 +455,15 @@ export interface HealthResult {
  * a decline for them could not otherwise be expressed. Widening here is additive and local:
  * every existing caller passes a `ProviderOperation`, which still typechecks.
  */
-export type DeclinableOperation = ProviderOperation | "digest_artifact" | "export_artifact" | "stage_files";
+export type DeclinableOperation =
+  | ProviderOperation
+  | "digest_artifact"
+  | "export_artifact"
+  | "stage_files"
+  // SVC-008a — the process-supervision trio. Not frozen operations, same as the three above.
+  | "start_process"
+  | "process_status"
+  | "signal_process";
 
 export class UnsupportedProviderOperation extends Error {
   readonly operation: DeclinableOperation;
@@ -367,6 +483,84 @@ export class SandboxNotFoundError extends Error {
   constructor() {
     super("sandbox not found");
     this.name = "SandboxNotFoundError";
+  }
+}
+
+/**
+ * SVC-008a §4.2 A-iii — the provider read a resource record whose LIFECYCLE STATE it
+ * could not classify. A partial read: neither a lifecycle fact nor an absence.
+ *
+ * ★ IT IS DELIBERATELY NOT {@link SandboxNotFoundError}. Mapping an unreadable record
+ * onto "this sandbox does not exist" would hand the cleanup authority an
+ * affirmative-from-nothing, and that one is DESTRUCTIVE in the other direction: a
+ * not-found is a CONVERGED SUCCESS that ends the converge on nothing witnessed.
+ *
+ * ★★★ IT LIVES ON THE PORT, NOT IN THE E2B PACKAGE, AND THAT IS A CORRECTION TO THE
+ * DESIGN. SVC-008a §4.2 A-iii ruled that `inspect` must throw and §6 recorded that
+ * `CleanupAuthority` needs "None." code change. Those two cannot both hold:
+ * `#requireOwned` gates cancel/kill/destroy on `inspect`, and `#convergeOne` catches only
+ * `ResourceNotAvailableError` — so an unclassifiable record would propagate out of
+ * `converge()` and the UNCONDITIONAL forced `destroy` would never run. That turns a
+ * lenient stop verdict into a DISARMED REAPER: strictly worse than E7-F034, which leaked
+ * nothing. The authority must therefore be able to RECOGNIZE this condition, which means
+ * the class is the port's.
+ */
+export class SandboxRecordIndeterminateError extends Error {
+  readonly sandboxId: string;
+  constructor(sandboxId: string) {
+    super(`sandbox record state could not be classified for ${sandboxId}`);
+    this.name = "SandboxRecordIndeterminateError";
+    this.sandboxId = sandboxId;
+  }
+}
+
+/**
+ * SVC-008a — thrown when a launch could not be ACKNOWLEDGED: the provider refused, or
+ * its response carried no handle this implementation can read.
+ *
+ * ★ It exists so {@link ProcessStartResult} needs no `started: boolean` and no
+ * empty-string handle. There is no third state for a caller to misread: either a
+ * non-empty handle came back, or nothing did and this threw.
+ */
+export class ProcessLaunchNotAcknowledged extends Error {
+  readonly sandboxId: string;
+  constructor(sandboxId: string, detail?: string) {
+    super(`process launch was not acknowledged for sandbox ${sandboxId}${detail ? `: ${detail}` : ""}`);
+    this.name = "ProcessLaunchNotAcknowledged";
+    this.sandboxId = sandboxId;
+  }
+}
+
+/**
+ * SVC-008a — THE DERIVED STOP PREDICATE, stated once so no caller re-derives it wrong.
+ *
+ * ```
+ * stopped      iff observation.state is "exited" or "gone"
+ * still up     iff observation.state is "running"
+ * undetermined iff observation.state is "unknown"   -> ESCALATE, never conclude
+ * ```
+ *
+ * ★ Compare with what this replaces: `cancel` returns `outcome: "stopped"` — an
+ * affirmative claim of EFFECT — from a function that read metadata and, on the real
+ * transport, from the catch branch where even that read failed (E7-F034). Under this
+ * predicate the same implementation yields `undetermined`, which no caller can read as
+ * success. That is the entire fix, and it is a type fix, not a courtesy.
+ */
+export function deriveStopVerdict(observation: ProcessObservation): "stopped" | "still_up" | "undetermined" {
+  switch (observation.state) {
+    case "exited":
+    case "gone":
+      return "stopped";
+    case "running":
+      return "still_up";
+    case "unknown":
+      return "undetermined";
+    default: {
+      // A new inhabitant must be RULED ON here, never defaulted — a default branch is
+      // exactly how `mapState` laundered an unreadable state into an affirmative stop.
+      const exhaustive: never = observation;
+      return exhaustive;
+    }
   }
 }
 
@@ -458,6 +652,65 @@ export interface SandboxProvider {
 
   /** Whether this provider supports the operation above. */
   readonly fileStagingMode: FileStagingMode;
+
+  // --- optional process supervision (gated on `processSupervisionMode`) -----------------
+  //
+  // NOT in `advertisedOperations`, for the same reason the export pair and stageFiles are
+  // not: that set is typed to the FROZEN `ProviderOperation` union. Support is declared by
+  // the mode below. The METHODS are present on every implementer and only SUPPORT is
+  // optional — "mandatory means no absent path".
+  //
+  // ★ WHY THIS EXISTS AT ALL. `execute` is a COMPLETION oracle: it resolves only once the
+  // command has already exited, so a supervisor built on it records a hung launch as a
+  // started instance. `inspect`/`health` answer about the SANDBOX, which is up from the
+  // moment `create` resolves. Neither can witness a process.
+
+  /**
+   * Launch a process and return as soon as the provider ACKNOWLEDGES it — never waiting
+   * for it to exit.
+   *
+   * ★ It takes {@link ExecuteInput} as the WHOLE request rather than a payload beside a
+   * redundant `sandboxId`, so the launch target is single-sourced: a separate parameter
+   * would let the validated sandbox and the launched sandbox disagree, and an authority
+   * wrapper would then validate one and launch in another.
+   *
+   * Throws {@link UnsupportedProviderOperation} when `processSupervisionMode` is `"none"`,
+   * and {@link ProcessLaunchNotAcknowledged} when no non-empty handle can be read.
+   */
+  startProcess(input: ExecuteInput, ctx: ProviderOpContext): Promise<ProcessStartResult>;
+
+  /**
+   * Read what the provider can SEE of the process behind `handle`. About the PROCESS —
+   * never about the sandbox, and never a sandbox-scoped answer relabelled.
+   *
+   * ★ `gone` may NOT be sourced from a boolean whose `false` branch also swallows an
+   * error (`RealE2bTransport.isRunning` is exactly that shape). A failure to look is
+   * `{state: "unknown", reason: "read_failed"}`; an ANSWER that the process is absent is
+   * `gone`. Collapsing the two reports an affirmative absence from a read that threw.
+   *
+   * Throws {@link UnsupportedProviderOperation} when `processSupervisionMode` is `"none"`.
+   */
+  processStatus(
+    sandboxId: string,
+    handle: ProcessHandle,
+    ctx: ProviderOpContext,
+  ): Promise<ProcessStatusResult>;
+
+  /**
+   * Deliver a graceful-stop or forced-kill signal to the process behind `handle`, then
+   * RE-READ its status and report what that read saw.
+   *
+   * Throws {@link UnsupportedProviderOperation} when `processSupervisionMode` is `"none"`.
+   */
+  signalProcess(
+    sandboxId: string,
+    handle: ProcessHandle,
+    kind: "cancel" | "kill",
+    ctx: ProviderOpContext,
+  ): Promise<ProcessSignalResult>;
+
+  /** Whether this provider supports the three operations above. */
+  readonly processSupervisionMode: ProcessSupervisionMode;
 }
 
 /** A management-only, REDACTED projection of a sandbox: identity + lifecycle

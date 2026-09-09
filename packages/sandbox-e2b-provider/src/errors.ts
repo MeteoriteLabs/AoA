@@ -20,6 +20,13 @@ export {
   ResourceNotAvailableError,
   SandboxNotFoundError,
   UnsupportedProviderOperation,
+  // SVC-008a — a launch that could not be acknowledged, and a record whose lifecycle
+  // state could not be classified. Same reuse rule as above: these are the worker-daemon
+  // classes, not shape-mirrors, so `instanceof` works across the seam — which for
+  // `SandboxRecordIndeterminateError` is load-bearing rather than tidy: `CleanupAuthority`
+  // must RECOGNIZE it to keep an unreadable record from disarming the forced destroy.
+  ProcessLaunchNotAcknowledged,
+  SandboxRecordIndeterminateError,
 } from "@armyofagents/worker-daemon";
 
 /**

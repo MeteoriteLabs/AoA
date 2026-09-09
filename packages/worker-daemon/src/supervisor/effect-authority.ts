@@ -31,6 +31,10 @@ import type {
   ExecuteInput,
   ExecuteResult,
   HealthResult,
+  ProcessHandle,
+  ProcessSignalResult,
+  ProcessStartResult,
+  ProcessStatusResult,
   ProviderOpContext,
   RestoreResult,
   SandboxProvider,
@@ -148,6 +152,45 @@ export class EffectAuthority {
   ): Promise<ArtifactExportResult> {
     this.#guard();
     return this.#provider.exportArtifact(sandboxId, path, grant, ctx);
+  }
+
+  // --- SVC-008a process supervision -------------------------------------------------
+  //
+  // ★ GATED HERE FOR THE SAME REASON `stageFiles` AND `digestArtifact` ARE, and it is
+  // not a formality. A port method reachable AROUND the fence would be worse than one
+  // that does not exist: a run whose lease was replaced must not still be launching
+  // processes inside — or signalling processes inside — the sandbox its successor is
+  // about to use. SVC-008a §6 requires these three passthroughs to land WITH the port,
+  // not after a caller appears, precisely so no such door is ever open.
+  //
+  // These have ZERO production callers today; SVC-008b's service loop is the consumer.
+  // That residual is recorded rather than hidden (SVC-008a §10).
+
+  /** Launch a supervised process inside a live sandbox (acknowledgement, not completion). */
+  startProcess(input: ExecuteInput, ctx: ProviderOpContext): Promise<ProcessStartResult> {
+    this.#guard();
+    return this.#provider.startProcess(input, ctx);
+  }
+
+  /** Read what the provider can see of a supervised process. */
+  processStatus(
+    sandboxId: string,
+    handle: ProcessHandle,
+    ctx: ProviderOpContext,
+  ): Promise<ProcessStatusResult> {
+    this.#guard();
+    return this.#provider.processStatus(sandboxId, handle, ctx);
+  }
+
+  /** Signal a supervised process, then re-read its status. */
+  signalProcess(
+    sandboxId: string,
+    handle: ProcessHandle,
+    kind: "cancel" | "kill",
+    ctx: ProviderOpContext,
+  ): Promise<ProcessSignalResult> {
+    this.#guard();
+    return this.#provider.signalProcess(sandboxId, handle, kind, ctx);
   }
 
   /** Resume a checkpointed sandbox (the frozen optional `restore` op). Effectful:
