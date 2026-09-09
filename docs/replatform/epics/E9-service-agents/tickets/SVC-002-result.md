@@ -69,7 +69,7 @@ exists, exactly one instance and one job appear for it and never two.
 
 ## 4. Reds observed, and the named positive control
 
-**Eleven mutants in total across three revisions; the last three below came out of review and each names a REAL BUG this diff shipped and then fixed.**
+**Twelve mutants in total across four revisions; the last four below came out of review and each names a REAL BUG this diff shipped and then fixed.**
 
 **★ HOW THE REDS WERE OBSERVED, stated so it is not over-read.** Only ONE case is red on the
 unchanged base tree; the rest are red under mutants applied to the shipped source. A suite
@@ -107,6 +107,7 @@ about drain.
 | Anchor the per-organization sweep at the head instead of its cursor | **1 red** — T5: `expected [ …(2) ] to deeply equal [ …(5) ]`, two of five services converged and three starved forever. A REAL BUG in revision 1 (§6a(ii)) |
 | Drop the `notExists` convergence predicate from `listReconcilableServices` | **2 red** — T4's per-tick `services` count goes `[1,1,1]`, and T6's window still returns all three converged services. A REAL BUG in revision 2 (§6a(vi)) |
 | Wrap the sweep cursor on a SHORT page without checking it was fully processed | **1 red** — T7: with three stalled services ahead of it, the fourth is never reached (`expected [] to deeply equal [ Array(1) ]`). A REAL BUG in revision 2 (§6a(v)) |
+| Revert the live-instance predicate from inlined literals to `notInArray` | **2 red** — the compiled statement carries three bind parameters, so the partial index cannot be proven applicable and a generic plan seq-scans. A REAL BUG in revision 2 (§6a(vii)) |
 
 ---
 
@@ -234,8 +235,8 @@ fail-closed direction.
 
 ## 6a. Review findings (PR #406), each verified against source
 
-**SIX** were raised across two rounds. **All six were real. FOUR were bugs in this diff and are
-fixed here; TWO are pre-existing and are recorded rather than closed** — one filed as a new
+**SEVEN** were raised across three rounds. **All seven were real. FIVE were bugs in this diff and
+are fixed here; TWO are pre-existing and are recorded rather than closed** — one filed as a new
 finding, one already on the register.
 
 **(i) P1 — fixtures inserting `service_instances` without `company_id`. REAL, FIXED.** The original
@@ -302,6 +303,39 @@ load-bearing. **T6** pins it; observed RED under a dropped predicate (2 cases: T
 discriminate — one tick pages the whole tenant with the in-tick cursor — and the
 **empty-window** assertion is the one that separates the arms. An earlier draft of that comment
 claimed the fresh-sweeper setup was the discriminator; it is not.
+
+**A third round raised one more, and it confirmed a risk I had flagged for review myself.**
+
+**(vii) P1 — the sweep's convergence predicate is emitted as BIND PARAMETERS, so the partial
+index is unusable under a generic plan. REAL, FIXED.** I had asked the reviewer to check
+exactly this claim ("if that reasoning is wrong, this is a sequential scan per tick per
+tenant"). It was wrong. Drizzle's `notInArray` emits the three statuses as `$n` parameters;
+postgres-js prepares these statements; and once PostgreSQL promotes a prepared statement to a
+GENERIC plan (after five custom executions) it can no longer prove that
+`status NOT IN ($1,$2,$3)` implies the LITERAL predicate of `service_instances_live_service_uq`
+— so the index drops out of the plan. **Reproduced by the reviewer on PostgreSQL 18: the generic
+plan sequentially scanned `service_instances`.** For a tenant with substantial instance history
+that turns the per-tick sweep into a full rescan and can push it into the statement timeout,
+which delays or prevents reconciliation — the opposite of what the predicate was added to do.
+
+**Fixed with ONE shared helper**, `nonTerminalServiceInstanceStatus()`, which emits the frozen
+terminals as inlined SQL literals and is used by **all three** readers of "is there a live
+instance" (the sweep `NOT EXISTS`, the observed-state count, and the lost-race re-read), so
+they cannot drift from each other or from the index predicate they are meant to match. The
+literals are derived from `TERMINAL_SERVICE_INSTANCE_STATUSES` and a module-load guard rejects
+any value that is not a bare lowercase identifier, which makes the `sql.raw` provably safe
+rather than safe-by-inspection.
+
+**Pinned by `packages/db/src/__tests__/service-instance-live-predicate.test.ts`** (4 cases),
+which compiles the predicate through `PgDialect` and asserts **zero bind parameters**. A pure
+SQL-shape assertion is the right instrument here: an EXPLAIN-based test would have to force
+five custom executions to reach the generic plan, which is slow and timing-dependent, while
+the property that actually matters is decidable from the compiled statement. Observed RED under
+a revert to `notInArray`: `expected [ 'stopped', 'failed', 'lost' ] to deeply equal []`.
+
+*Worth keeping: an index predicate and a query predicate that are textually identical are still
+not interchangeable if one of them is parameterised. "Served by the index" is a claim about the
+PLAN, and the plan depends on how the values reach the planner.*
 
 **(iii) P1 — the executor principal names the SERVICE under the kind `service_instance`. REAL,
 PRE-EXISTING, NOT FIXED, now FILED as `E9-F003`.** `serviceSourceIsAdmitted` returns a `services`

@@ -138,6 +138,46 @@ export const TERMINAL_SERVICE_INSTANCE_STATUSES = Object.freeze([
 /** The partial unique index that is SVC-002's duplicate-placement authority. */
 export const LIVE_SERVICE_INSTANCE_INDEX = "service_instances_live_service_uq";
 
+// Fail at module load rather than at query time: `nonTerminalServiceInstanceStatus` below
+// interpolates these values into SQL text with `sql.raw`, so anything but a bare lowercase
+// identifier would be a defect the moment someone edited the frozen list. They come from a
+// frozen `as const` in this file and can only change by an edit here, but an assertion costs
+// nothing and makes the `sql.raw` provably safe rather than safe-by-inspection.
+for (const status of TERMINAL_SERVICE_INSTANCE_STATUSES) {
+  if (!/^[a-z_]+$/.test(status)) {
+    throw new Error(
+      `TERMINAL_SERVICE_INSTANCE_STATUSES contains ${JSON.stringify(status)}, which is not a ` +
+        "bare lowercase identifier and therefore cannot be inlined as a SQL literal.",
+    );
+  }
+}
+
+const TERMINAL_STATUS_LITERAL_LIST = TERMINAL_SERVICE_INSTANCE_STATUSES
+  .map((status) => `'${status}'`)
+  .join(", ");
+
+/**
+ * SVC-002 — `status NOT IN (<the three frozen terminals>)`, emitted as SQL **LITERALS**
+ * rather than bind parameters.
+ *
+ * ★★★ THE LITERALS ARE THE POINT, AND THIS WAS MEASURED, NOT GUESSED. `notInArray` emits the
+ * statuses as `$n` parameters. postgres-js prepares these statements, and once PostgreSQL
+ * switches a prepared statement to a GENERIC plan (after five custom executions) it can no
+ * longer prove that a parameterised `status NOT IN ($1,$2,$3)` predicate implies the LITERAL
+ * predicate of the partial index `service_instances_live_service_uq` — so the index becomes
+ * unusable and the plan falls back to a sequential scan of `service_instances`. Reproduced on
+ * PostgreSQL 18 in review of PR #406: the generic plan seq-scanned. For a tenant with
+ * substantial instance history that turns the per-tick sweep into a full rescan, which delays
+ * or prevents reconciliation under the statement timeout.
+ *
+ * ONE definition, used by all three readers of "is there a live instance", so the sweep
+ * window's predicate, the observed-state count and the lost-race re-read cannot drift from
+ * each other OR from the index predicate they are meant to match.
+ */
+export function nonTerminalServiceInstanceStatus() {
+  return sql`${serviceInstances.status} NOT IN (${sql.raw(TERMINAL_STATUS_LITERAL_LIST)})`;
+}
+
 /**
  * SVC-002 — is this error a lost race against {@link LIVE_SERVICE_INSTANCE_INDEX}?
  *
@@ -1901,7 +1941,7 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         .where(and(
           eq(serviceInstances.organizationId, input.organizationId),
           eq(serviceInstances.serviceId, input.serviceId),
-          notInArray(serviceInstances.status, [...TERMINAL_SERVICE_INSTANCE_STATUSES]),
+          nonTerminalServiceInstanceStatus(),
         ));
       return Number(row?.total ?? 0);
     },
@@ -1926,7 +1966,7 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
           .where(and(
             eq(serviceInstances.organizationId, values.organizationId),
             eq(serviceInstances.serviceId, values.serviceId),
-            notInArray(serviceInstances.status, [...TERMINAL_SERVICE_INSTANCE_STATUSES]),
+            nonTerminalServiceInstanceStatus(),
           ))
           .limit(1);
         return { outcome: "conflict", instance: existing ?? null };
@@ -1965,7 +2005,7 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
               .where(and(
                 eq(serviceInstances.organizationId, services.organizationId),
                 eq(serviceInstances.serviceId, services.id),
-                notInArray(serviceInstances.status, [...TERMINAL_SERVICE_INSTANCE_STATUSES]),
+                nonTerminalServiceInstanceStatus(),
               )),
           ),
           input.afterServiceId ? gt(services.id, input.afterServiceId) : undefined,
