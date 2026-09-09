@@ -187,7 +187,7 @@ this finding gave for `unowned` — "a denial-observation point would have to be
 connected" — is now half-answered: the storage half is built and has a production caller. What is
 still true, and is why these eight did not come with it, is stated in the follow-on list under
 `E0-F013`. Two things from that slice bear directly on this finding: (1) **DE-01's read half is
-confirmed unbuildable by interception** — PostgreSQL emits no event when an RLS `USING` clause
+confirmed unbuildable by interception** — ★ **the `BYPASSRLS` half of this sentence was MEASURED FALSE on 2026-09-09; see `docs/replatform/MEASUREMENT-de-01-read-half-does-not-need-bypassrls.md`. A cross-tenant read by a non-owner `NOSUPERUSER NOBYPASSRLS` role is achievable two ways, both already shipped in this tree, and `client.ts:325` must NOT be amended. This finding's status and disposition are unchanged.** — PostgreSQL emits no event when an RLS `USING` clause
 filters rows, so detecting it needs a `BYPASSRLS` comparator, i.e. exactly the privilege
 `packages/db/src/client.ts:325` throws at boot to forbid; **DE-01's WRITE half is different and IS
 interceptable**, because a `WITH CHECK` violation raises catchable SQLSTATE `42501`. (2) DE-04,
@@ -736,7 +736,7 @@ own failure class.**
   the policy and diffing — i.e. a `BYPASSRLS`/owner connection, exactly the privilege
   `packages/db/src/client.ts:325` throws at boot to forbid and `server/src/app.ts:490` calls
   "owner fallback is forbidden". `pgaudit` does not rescue it (it logs statements, not policy
-  verdicts) and appears nowhere in this tree. **Recommend AMENDING the clause, not building it.**
+  verdicts) and appears nowhere in this tree. **Recommend AMENDING the clause, not building it.** ★ **CORRECTION, 2026-09-09 (`docs/replatform/MEASUREMENT-de-01-read-half-does-not-need-bypassrls.md`): the words "i.e. a `BYPASSRLS`/owner connection, exactly the privilege `client.ts:325` throws at boot to forbid" are MEASURED FALSE. A cross-tenant read needs no `BYPASSRLS`: an owner-owned narrow `SECURITY DEFINER` function granted to `aoa_operator` alone (the `0268` shape) and a role-targeted `CREATE POLICY ... TO "aoa_operator"` (the `0233` shape, on a FORCE-RLS table) each deliver one, with the serving pool's `rolbypassrls=false` and `client.ts:325` still passing. Amending that guard is WITHDRAWN as a recommendation — and it would falsify DE-01's own `revocation` clause ("the role holds no BYPASSRLS"). What stays true is that a serving-path comparator is undesirable on its own merits, so this clause-half remains undelivered and Decision 1 below is still the open question. Status and disposition unchanged.**
   The same shape covers `memory.search` under DE-19 and is why DE-19's closure is scoped to
   `memory.get`.
 - **DE-27's cross-replica and partition halves** — `replicaId|replica_id|AOA_CONTROL_PLANE_REPLICA|controlPlaneId`
