@@ -59,6 +59,56 @@ export function makeHandoff(overrides: Record<string, unknown> = {}): LeaseHando
   };
 }
 
+/**
+ * SVC-008b — the SAME offer, re-stamped as a `service` job envelope.
+ *
+ * ★ It parses through the SAME frozen `leaseOfferV1Schema` as `makeHandoff`, so the
+ * discriminated union (`workloadType: "service"` -> `serviceWorkloadV1Schema`) is what
+ * validates the workload. A hand-rolled object would let a test assert against a shape
+ * the wire would refuse.
+ *
+ * `workloadClass` is `"service"` because the poll loop's limiter keys on
+ * `offer.job.workloadType`; a handoff whose class disagreed with its envelope would
+ * make T7's class-separation assertion vacuous.
+ */
+export function makeServiceHandoff(
+  workloadOverrides: Record<string, unknown> = {},
+  offerOverrides: Record<string, unknown> = {},
+): LeaseHandoff {
+  const base = compatibleOffer();
+  const job = base.job as Record<string, unknown>;
+  const offer: LeaseOfferV1 = leaseOfferV1Schema.parse({
+    ...base,
+    ...offerOverrides,
+    job: {
+      ...job,
+      workloadType: "service",
+      workload: {
+        serviceId: SERVICE_FIXTURE_IDS.serviceId,
+        serviceInstanceId: SERVICE_FIXTURE_IDS.serviceInstanceId,
+        generation: 3,
+        command: "codex",
+        args: ["serve", "--port", "8080"],
+        checkpointArtifactId: null,
+        gracefulStopSeconds: 5,
+        ...workloadOverrides,
+      },
+    },
+  });
+  return {
+    offer,
+    leaseId: String(offer.leaseId),
+    fenceToken: String(offer.fenceToken),
+    workloadClass: "service",
+  };
+}
+
+/** The service identity `makeServiceHandoff` stamps — every service event must repeat it. */
+export const SERVICE_FIXTURE_IDS = {
+  serviceId: "00000000-0000-4000-8000-0000000000b1",
+  serviceInstanceId: "00000000-0000-4000-8000-0000000000b2",
+} as const;
+
 /** The exact `ResourceLabels` the supervisor derives from `makeHandoff()` — for
  * building a CleanupAuthority / create spec bound to the same resource. */
 export function handoffLabels(): ResourceLabels {

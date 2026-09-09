@@ -66,8 +66,13 @@ which CORRECTION 6a reserved for SVC-003. Then flip this Status and DELETE the
 
 ## E9-F002 — no worker can ever be offered a service job: the daemon's capability intersection removes `workload.service` before placement ever sees it
 
-**Status:** `open` · **Severity:** HIGH · **Owner:** **SVC-008**
-(`tickets/SVC-008-design.md`, repointed 2026-09-09 — see §4)
+**Status:** `open`, **NARROWED** 2026-09-09 by SVC-008b (see §1.6) · **Severity:** HIGH
+**Owner:** **`unowned`** as of 2026-09-09 — SVC-008 shipped both halves and an open finding owned by
+shipped work is owned by nothing (E4-F013). The natural inheritor is **SVC-003**, which has a node in
+`program-design.md` but **no ticket file on disk**, so it cannot be named as a `successor` without
+failing the guard's existence bar. Declared rather than hidden; see §1.6 and
+`scripts/finding-ownership.json`. (Previously: **SVC-008**, `tickets/SVC-008-design.md`, repointed
+2026-09-09 — see §4.)
 **Filed:** 2026-09-08, by SVC-002 terrain mapping (§2) and re-verified line-by-line for the design's
 adversarial review. **Amended 2026-09-09** with §1.5: the capability constant is the *smallest* of
 **five** blockers, and the other four were not in this register. (§1.5 items 4-5 were added the same
@@ -185,6 +190,76 @@ falls to its §3.4 fallback, which SVC-008 §5.1 clause 5 says does not earn the
 **This finding's Status, Severity and Owner are unchanged.** It is still `open`, still HIGH, still
 owned by `SVC-008` — SVC-008a resolves for it to be *possible*, not for it to be *done*, and the
 resolution criterion is still T0: a service job observed leased by a real daemon.
+
+### 1.6 ★★★ NARROWED (2026-09-09) — SVC-008b landed; four of five blockers are closed and the finding STAYS OPEN on the fifth
+
+**★★★ READ THIS FIRST: THIS IS NOT A CLOSURE, AND AN EARLIER DRAFT OF THIS SECTION WAS WRITTEN AS
+ONE.** `scripts/finding-ownership.json`'s entry for E9-F002 states the resolve criterion as a
+**conjunction**: *"SVC-008's T0 green on a shipped daemon (a service job observed leased) **AND**
+blocker (3) answered rather than deferred, OR E9's acceptance language amended…"*. T0 is green.
+Blocker (3) is **bounded, not answered** — SVC-008 §9.1 is still unruled — and E9's acceptance
+language is unamended. So neither disjunct holds, and flipping the status would be exactly the
+defect `gate-clause-wiring.json`'s own `$comment` records from earlier the same day: *"A CLAUSE IS
+THE UNIT OF CLAIM, AND HALF A CONJUNCTIVE CLAUSE MAY NOT BE ENROLLED."* The finding stays `open`
+and its ownership entry stays in the manifest. What follows is what changed, per blocker.
+
+The half that IS met is met **mechanically**, not by assertion.
+`server/src/__tests__/u0-d1-placement-reachability.test.ts` runs the **shipped daemon's derived
+hello** (via `deriveHelloProvisioning` + `buildDesktopHello`, the same calls
+`bin/worker-daemon.ts` makes) against **D1's committed `worker-b` profile** through the **real**
+`evaluateStaticLeaseEligibility`, and a `service` job now returns `eligible: true` with a null
+reason code. Reverting the constant reds that case and the exact-equality pin, while both batch
+cases stay green.
+
+Per blocker, stated so no reader has to infer which are actually gone:
+
+| # | Blocker | State | Where |
+|---|---|---|---|
+| §1 | the capability intersection removes `workload.service` | **CLOSED** | `SUPERVISABLE_WORKLOAD_CAPABILITIES` is `["workload.batch", "workload.service"]`; the pin at `u0-d1-placement-reachability.test.ts` is UPDATED to exact-equality on the new pair, deliberately not weakened to `toContain` |
+| §1.5(1) | mis-supervision that looks like success | **CLOSED** | `runLifecycle` dispatches `workloadType === "service"` to `runServiceLifecycle` (`supervisor/service-lifecycle.ts`) BEFORE `execute`; T1 asserts `execute` is never called on a service run |
+| §1.5(2) | the 60 s budget floor | **CLOSED** | `resolveRunOpDeadlineMs` gains a service arm returning the 240 s ceiling. ★ WITNESSED, and it was not at first: `dispatch-runtime.test.ts`'s pure-resolver block asserts the ceiling for a handoff typed `workloadType: "service"` carrying a service workload with no runtime field, AND the 60 s floor for that same workload untyped — neutralising the arm (`&& false`) reds it. Before that pair the arm had ZERO coverage and the whole 154-file / 1020-test worker-daemon suite stayed green with it dead, i.e. this row read CLOSED on an unwitnessed branch. ★ It does NOT use §3.3's stated source: `maxContinuousRuntimeSeconds` is measured absent from the worker side of the wire (the envelope carries a provider-constraint *reference*), so the profile clamp could not be applied and the deviation is recorded at the call site |
+| §1.5(3) | the effect authority expires and is never re-minted | **BOUNDED, NOT FIXED** | The supervise loop stops on `capExpiresAt - RUN_TEARDOWN_HEADROOM_MS` and tears down under a valid cap, so no service run orphans a billable sandbox (T6, on the imported constants). What is NOT done is re-minting: SVC-008 §9.1 is UNRULED and the scheduled-re-materialization option would re-run a secret resolution on a timer. **The consequence is a 240-second service.** |
+| §1.5(4) | nothing can witness a launch | **CLOSED by SVC-008a, CONSUMED here** | `startProcess` is the launch witness; no handle ⇒ no `service_instance_started` (T4) |
+| §1.5(5) | no stop primitive | **CLOSED by SVC-008a, CONSUMED here** | The ladder derives its verdict from `ProcessSignalResult.observation`, never from `accepted`; a process that survives cancel AND kill is `service_instance_lost`, never `_stopped` (T3) |
+
+**★ TWO ZERO-CALLER CLAUSES BECAME REAL, and they are named because a zero-caller function makes
+its clause vacuously true.** SVC-008a shipped `EffectAuthority.startProcess`/`.processStatus`/
+`.signalProcess` and `deriveStopVerdict` with its own disclosure that they had **zero production
+callers** and that "SVC-008b's service loop is the consumer". Measured with the register's own
+`countProductionCallers`, before/after: `startProcess` 10→11, `processStatus` 15→16,
+`signalProcess` 10→11, and **`deriveStopVerdict` 0→2** — SVC-008b is its first production consumer.
+
+**★ WHAT IS STILL NOT TRUE AFTER THIS.** A daemon can be offered a service job and will supervise
+one; nothing yet *creates* one. SVC-008b adds **no consumer** of `recordServiceHealth` and no
+`service_health` projection — its `countProductionCallers` reading is **2 at base and 2 at head**,
+unchanged by this diff. (An earlier draft of this line said it "keeps its zero production callers";
+that number was false against the very instrument cited two paragraphs above, which counts the
+declaration and the implementation. The substance — no new consumer — is what the clause needs.)
+Ingest is generic (`toAcceptInputs` durably appends any event type and sets `terminalStatus` only for
+`terminal`), so every `service_health` / `_started` / `_stopped` / `_lost` emitted here is durably
+stored and **projects no state change**. Wiring that projection is SVC-003's, because deciding what
+a health event means for ownership is SVC-003's Outcome. Restart/checkpoint are SVC-004's; drain and
+generation are SVC-005's; a human path is SVC-007's.
+
+**WHAT WOULD CLOSE THIS FINDING, unchanged from the manifest and restated so nobody has to
+reconstruct it:** blocker §1.5(3) answered rather than bounded — a ruling on SVC-008 §9.1 (re-mint
+on the tick, re-mint on lease renewal, or accept the ceiling) — **or** E9's acceptance language
+amended to say a service is dispatchable only within the effect-authority window, with DE-12's
+`deliveryEvidence` corrected to carry that reason. Until one of those, a "service" on this fleet is
+a four-minute service, and that sentence is the finding.
+
+**★ AND IT IS NOW `unowned`, which is a downgrade in accountability, said out loud.** SVC-008 owned
+this end to end; SVC-008 has shipped. §9.1 option (b) — a fresh capability minted on
+`/leases/:leaseId/renew` — is a **server** change on the renew route that SVC-008 §9.1 itself says is
+*"not SVC-008's to make"*, and option (a) is an unruled security question. The inheritor that fits is
+**SVC-003** (`program-design.md` §SVC-003, "Long-session lease and health semantics"), whose Outcome
+is the lease/ownership authority question — but SVC-003 has **no file** under
+`docs/replatform/epics/*/tickets/`, and the guard holds `successor` to the same existence bar as
+`ticket`. Naming SVC-002 instead (which *does* have a file) to get past that check would be exactly
+the register-accuracy defect the guard exists to prevent. **What blocks:** any E9/D4 clause asserting
+a *long-running* service, and the 72-hour D4 continuity canary specifically — it cannot be run
+against a 240-second service. It no longer blocks service **dispatch** or **supervision**. When
+SVC-003 gets a ticket file, flip this back to `owned` and name it.
 
 ### 2. Consequence, and why it is filed at HIGH
 

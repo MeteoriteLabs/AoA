@@ -59,6 +59,31 @@ export function resolveRunOpDeadlineMs(
   ceilingMs: number = RUN_OP_DEADLINE_CEILING_MS,
 ): number {
   const workload = handoff.offer.job.workload as Record<string, unknown> | null | undefined;
+  // SVC-008b §3.3 — THE SERVICE ARM. `serviceWorkloadV1Schema` carries NO time field at all
+  // (`gracefulStopSeconds` is a stop budget, not a runtime one), so without this arm every
+  // service falls to the 60 s FLOOR and is born with a 60-second sandbox TTL.
+  //
+  // ★★★ WHERE THIS DEVIATES FROM THE DESIGN, AND WHY. §3.3 specified
+  // `min(profile.maxContinuousRuntimeSeconds * 1000, CEILING)` and asserted "the handoff
+  // carries the resolved target, so the value is available without a wire change". MEASURED
+  // FALSE: the job envelope carries only a provider-constraint REFERENCE
+  // (`placement.targetRequirements.providerConstraints` = `{profileId, version, digest}`,
+  // `worker-protocol/src/job.ts`), and `maxContinuousRuntimeSeconds` appears NOWHERE on the
+  // worker side of the wire — the only readers in the tree are `job-placement.ts` and
+  // `job-leasing.ts`, both server-side. Threading it to the supervisor is a wire or a
+  // composition change, and SVC-008b does not smuggle one in.
+  //
+  // So the service budget is the CEILING, and the ceiling is the honest bound anyway: it is
+  // `OWNED_LABELS_CAPABILITY_TTL_MS - RUN_TEARDOWN_HEADROOM_MS`, i.e. exactly the window in
+  // which the run's effect authority can still tear its own sandbox down (§5.1 clause 3).
+  // WHAT IS LOST by dropping the profile clamp: a fleet advertising LESS than 240 s of
+  // continuous runtime would get a service budget above its own profile. That is bounded by
+  // the server, not by us — `providerDemandFits` (`job-placement.ts`) refuses any candidate
+  // whose `maxContinuousRuntimeSeconds` is below the demanded runtime, so such a target is
+  // never offered the job in the first place. Recorded rather than papered over.
+  if (handoff.offer.job.workloadType === "service") {
+    return Math.max(floorMs, ceilingMs);
+  }
   const requested = workload?.maxRuntimeSeconds;
   if (typeof requested !== "number" || !Number.isFinite(requested) || requested <= 0) {
     return floorMs;

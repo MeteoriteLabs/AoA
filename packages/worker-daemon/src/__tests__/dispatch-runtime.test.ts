@@ -261,6 +261,45 @@ describe("resolveRunOpDeadlineMs — the pure resolver", () => {
   it("floors a fractional budget before converting to ms", () => {
     expect(resolveRunOpDeadlineMs(handoff({ maxRuntimeSeconds: 90.9 }))).toBe(90_000);
   });
+
+  // ★★★ SVC-008b §3.3 — THE SERVICE ARM, and the only witness it has.
+  //
+  // `serviceWorkloadV1Schema` carries NO runtime field at all (`gracefulStopSeconds` is a STOP
+  // budget, not a runtime one), so a service can only be resolved off `workloadType`. Every
+  // other case in this block builds its handoff with NO `workloadType` key, so the arm was
+  // unreachable from here; and the 14 SVC-008b supervisor cases pass a LITERAL `opDeadlineMs`
+  // number to `createSupervisor`, bypassing the resolver entirely. Neutralising the arm
+  // (`workloadType === "service" && false`) therefore left the ENTIRE worker-daemon suite
+  // green — 154 files / 1020 passed — while silently returning every service to the 60 s
+  // floor. This pair is what makes "a service on this fleet runs for at most 240 seconds" a
+  // CHECKED claim rather than a sentence in three documents.
+  it("★★★ a service gets the CEILING, and ONLY because the job is typed `service`", () => {
+    // A real service workload: schema-shaped, and carrying no runtime budget anywhere.
+    const serviceWorkload = {
+      serviceId: "svc_01J0000000000000000000000",
+      serviceInstanceId: "svi_01J0000000000000000000000",
+      generation: 1,
+      command: "node",
+      args: ["server.js"],
+      checkpointArtifactId: null,
+      gracefulStopSeconds: 30,
+    };
+    const typed = (workloadType: string, workload: unknown) =>
+      ({ offer: { job: { workloadType, workload } }, leaseId: "l", fenceToken: "1", workloadClass: "service" }) as never;
+
+    // POSITIVE. No `maxRuntimeSeconds` exists on this workload, so the ONLY thing that can
+    // lift it off the floor is the service arm.
+    expect(resolveRunOpDeadlineMs(typed("service", serviceWorkload))).toBe(RUN_OP_DEADLINE_CEILING_MS);
+    // ★ And the headline number itself, pinned: 240 s is the residual the PR claims.
+    expect(RUN_OP_DEADLINE_CEILING_MS).toBe(240_000);
+
+    // ★ THE NEGATIVE HALF — what the arm is actually worth. The SAME workload, untyped or
+    // typed anything else, falls to the 60 s floor. Delete the arm and this is what every
+    // service silently gets.
+    expect(resolveRunOpDeadlineMs(handoff(serviceWorkload))).toBe(RUN_OP_DEADLINE_FLOOR_MS);
+    expect(resolveRunOpDeadlineMs(typed("batch", serviceWorkload))).toBe(RUN_OP_DEADLINE_FLOOR_MS);
+    expect(RUN_OP_DEADLINE_FLOOR_MS).not.toBe(RUN_OP_DEADLINE_CEILING_MS);
+  });
 });
 
 /**
