@@ -47,6 +47,13 @@ import {
   type StagedFileRequest,
 } from "./provider.js";
 import type { RunCanaryCoordinator } from "./run-canaries.js";
+import {
+  parseServiceWorkload,
+  runServiceLifecycle,
+  SERVICE_HEALTH_TICK_MS_DEFAULT,
+  type ServiceStopHandle,
+} from "./service-lifecycle.js";
+import { RUN_TEARDOWN_HEADROOM_MS } from "../lifecycle/run-op-deadline.js";
 import type { OwnedLabelsCapabilityLike } from "../lease/owned-labels-capability.js";
 
 /** CLI-003/D3 — a captured stdout/stderr/system log line to turn into a `log` event. */
@@ -143,6 +150,16 @@ export interface SupervisorDeps {
    * 60 s while every knob still read 30. A bound nobody can compute from the config is not a bound.
    */
   readonly stageInputDeadlineMs?: number;
+  /**
+   * SVC-008b — the service supervise loop's tick interval, in ms
+   * (default {@link SERVICE_HEALTH_TICK_MS_DEFAULT}). Ignored by every non-service run.
+   *
+   * ★ INJECTABLE BECAUSE §9.3 IS OPEN, not because tests want it fast. The interval sets the
+   * durable `service_health` volume (a 10 s tick over 72 h is ~26 000 rows per instance) and
+   * it interacts with SVC-003's liveness deadline, so whoever rules on §9.3 changes the
+   * composition root rather than this module.
+   */
+  readonly serviceHealthTickMs?: number;
   /** Injectable timer for the create-deadline race (default node timers). */
   readonly setTimeoutFn?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
   readonly clearTimeoutFn?: (handle: ReturnType<typeof setTimeout>) => void;
@@ -251,9 +268,29 @@ interface ActiveRun {
    * from `workload.maxRuntimeSeconds`). Governs `create` (⇒ the sandbox TTL) and `execute`;
    * cleanup/teardown keep the base deadline. */
   readonly opDeadlineMs: number;
+  /**
+   * SVC-008b — the live service sequencer's stop handle, or null (every batch run, and a
+   * service run before its launch / after it settles).
+   *
+   * ★ It is what makes `gracefulStopSeconds` reachable at all. Without it, a server-ordered
+   * cooperative cancel goes straight to `escalateCleanup`, which destroys the sandbox and
+   * hard-kills the process tree — the graceful ladder never runs, which is the behaviour
+   * SVC-008 §1.3(d) objects to.
+   */
+  serviceStop: ServiceStopHandle | null;
 }
 
 const TIMEOUT = Symbol("create-deadline");
+
+/**
+ * SVC-008b — how long past `gracefulStopSeconds` the supervisor waits for a service
+ * sequencer to finish its ladder before raising the fence and escalating anyway.
+ *
+ * It covers the two provider round-trips the ladder still owes after its deadline lapses
+ * (`signalProcess("kill")` + the status re-read). It is NOT a second graceful window: when it
+ * fires, the run is cancelled and the sandbox is reclaimed on the existing escalation path.
+ */
+const GRACEFUL_STOP_MARGIN_MS = 5_000;
 
 export function createSupervisor(deps: SupervisorDeps): Supervisor {
   // DEP-011 Slice 2a — FAIL FAST at construction (review F4/F5):
@@ -284,6 +321,12 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     typeof deps.opDeadlineMs === "function" ? deps.opDeadlineMs : () => opDeadlineMs;
   const cleanupDeadlineMs = deps.cleanupDeadlineMs ?? 30_000;
   const stageInputDeadlineMs = deps.stageInputDeadlineMs ?? 30_000;
+  const serviceHealthTickMs =
+    typeof deps.serviceHealthTickMs === "number" &&
+    Number.isFinite(deps.serviceHealthTickMs) &&
+    deps.serviceHealthTickMs > 0
+      ? deps.serviceHealthTickMs
+      : SERVICE_HEALTH_TICK_MS_DEFAULT;
   // DAT-008 slice 5 (R6): the redemption budget is CARVED FROM the create budget — never larger —
   // so redeem + create together stay within `createDeadlineMs`.
   const secretRedeemDeadlineMs = Math.min(deps.secretRedeemDeadlineMs ?? 5_000, createDeadlineMs);
@@ -709,6 +752,62 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     // 2. attempt_started — the tenant command is running INSIDE the sandbox.
     await events.attemptStarted(created.sandboxId);
 
+    // 2b. SVC-008b — THE SERVICE BRANCH.
+    //
+    // ★ Position: after `attempt_started` (the attempt HAS started — the sandbox exists and
+    // the staged input landed) and before `execute`. `execute` is a COMPLETION oracle, and
+    // running a service through it is SVC-008 §1.2's mis-supervision: the run ends when the
+    // startup script returns, and a service that happens to exit 0 is reported `succeeded`.
+    //
+    // ★ The service sequencer emits the INSTANCE events and returns an outcome; `terminal`
+    // and teardown stay HERE, so the orphan-aware destroy below is written once and cannot
+    // drift per workload type.
+    if (handoff.offer.job.workloadType === "service") {
+      const workload = parseServiceWorkload(handoff.offer.job.workload);
+      if (workload === null) {
+        // Defensive: the envelope's discriminated union already guarantees this shape, so a
+        // failure here is a wire/parse divergence. Fail the attempt with a NAMED code rather
+        // than falling through to the batch body, which is the defect this branch exists for.
+        await events.terminal({ status: "failed", exitCode: null, errorCode: "service_workload_invalid", errorMessage: null });
+        await escalateCleanup(run, "service_workload_invalid");
+        return;
+      }
+      const outcome = await runServiceLifecycle({
+        workload,
+        sandboxId: created.sandboxId,
+        effect: run.effect,
+        events,
+        makeCtx: run.makeCtx,
+        now,
+        nowIso,
+        schedule,
+        tickMs: serviceHealthTickMs,
+        deadlineAt: now() + run.opDeadlineMs,
+        capExpiresAt: run.capExpiresAt,
+        teardownHeadroomMs: RUN_TEARDOWN_HEADROOM_MS,
+        // ★ EVERY tick, not once: §4.5. `run.cancelled` is set by `cancel`/`onLeaseLost`/
+        // `shutdown`, and the renewal driver closes the fence-close proxy before calling them.
+        fenceClosed: () => run.cancelled,
+        logger: deps.logger,
+        publishStopHandle: (handle) => {
+          run.serviceStop = handle;
+        },
+      });
+      run.serviceStop = null;
+      await events.terminal({
+        status: outcome.status,
+        exitCode: outcome.exitCode,
+        errorCode: outcome.errorCode,
+        errorMessage: outcome.errorMessage,
+      });
+      if (outcome.escalate !== null) {
+        await escalateCleanup(run, outcome.escalate);
+        return;
+      }
+      await finishRun(run, created.sandboxId);
+      return;
+    }
+
     // 3. execute (in sandbox) — raced against a supervisor-side op deadline so a
     // provider that hangs (ignoring the opDeadlineMs it also carries on ctx) still
     // reaches a durable terminal within a bound (§2.1 within-policy). A well-behaved
@@ -795,17 +894,28 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     await events.terminal({ status, exitCode: exec.exitCode, errorCode, errorMessage });
 
     // 5. destroy UNDER EFFECT AUTHORITY (happy-path reclaim).
-    // DEP-011 Slice 2a §2a.5 — PROACTIVE clock-first check on the networked branch: the cap is
-    // lease-clamped + never re-minted, so a run longer than its TTL reaches here with an EXPIRED
-    // cap. A gated destroy would be doomed (uniform RNA), and routing that RNA into the `:catch`
-    // below would risk the masked-strand. Record an HONEST orphan DIRECTLY and return — the run
-    // terminal already emitted `succeeded` above; the orphan is a DISTINCT cleanup outcome.
+    await finishRun(run, created.sandboxId);
+  }
+
+  /**
+   * The happy-path reclaim, shared by the batch and service arms.
+   *
+   * DEP-011 Slice 2a §2a.5 — PROACTIVE clock-first check on the networked branch: the cap is
+   * lease-clamped + never re-minted, so a run longer than its TTL reaches here with an EXPIRED
+   * cap. A gated destroy would be doomed (uniform RNA), and routing that RNA into the `:catch`
+   * below would risk the masked-strand. Record an HONEST orphan DIRECTLY and return — the run
+   * terminal already emitted above; the orphan is a DISTINCT cleanup outcome.
+   *
+   * ★ EXTRACTED VERBATIM by SVC-008b, not rewritten. A second copy on the service arm is
+   * exactly how the two would drift, and the thing that would drift is the orphan check.
+   */
+  async function finishRun(run: ActiveRun, sandboxId: string): Promise<void> {
     if (run.networked && run.capExpiresAt !== null && !(run.capExpiresAt > now())) {
       recordOrphan(run, "cap_expired_before_happy_destroy");
       return;
     }
     try {
-      const destroyed = await run.effect.destroy(created.sandboxId, ctx());
+      const destroyed = await run.effect.destroy(sandboxId, ctx());
       emitOp("destroy", destroyed.cleanupStatus === "success" ? "success" : "failed");
       deps.metrics?.inc(CLEANUP_OUTCOME_METRIC, { outcome: destroyed.cleanupStatus });
       if (destroyed.cleanupStatus === "failed") {
@@ -815,7 +925,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       deps.logger?.info(
         {
           leaseId: run.leaseId,
-          sandboxId: created.sandboxId,
+          sandboxId,
           providerOpId: destroyed.providerOpId,
           resourceLabelsHash: hashResourceLabels(run.labels),
           cleanupStatus: destroyed.cleanupStatus,
@@ -892,7 +1002,39 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       networked,
       capExpiresAt: null,
       opDeadlineMs: runOpDeadlineMs,
+      serviceStop: null,
     };
+  }
+
+  /**
+   * SVC-008b — the single stop path, with ONE new decision: whether the stop is COOPERATIVE.
+   *
+   * ★★★ WHAT CHANGED AND WHAT DID NOT. For every batch run the behaviour is byte-identical
+   * to the pre-SVC-008b `cancel`: `run.serviceStop` is null, so the `graceful` block is
+   * skipped entirely and the function is `cancelled = true` then `escalateCleanup`, in that
+   * order, as before. The graceful block is reachable ONLY while a service sequencer has
+   * published a stop handle.
+   *
+   * ★ ORDERING IS LOAD-BEARING. `run.cancelled` is set AFTER the graceful window, not before:
+   * the service loop treats `run.cancelled` as its fence-closed signal (§4.5) and would abort
+   * its own ladder mid-way if the flag were raised first, emitting nothing and leaving the
+   * process to the hard destroy — i.e. the graceful path would exist and never run.
+   *
+   * ★ BOUNDED. The wait is the workload's own `gracefulStopSeconds` plus one teardown-margin,
+   * raced by the supervisor's injected timer. A sequencer that wedges cannot hold the renewal
+   * driver open: the race fires, `cancelled` is raised, and the escalation reclaims the
+   * sandbox exactly as it does today.
+   */
+  async function stopRun(leaseId: string, reason: string, cooperative: boolean): Promise<void> {
+    const run = runs.get(leaseId);
+    if (run === undefined) return;
+    const stop = run.serviceStop;
+    if (cooperative && stop !== null) {
+      stop.requestStop(reason);
+      await withDeadline(stop.finished, stop.gracefulStopMs + GRACEFUL_STOP_MARGIN_MS);
+    }
+    run.cancelled = true;
+    await escalateCleanup(run, reason);
   }
 
   const supervisor: Supervisor = {
@@ -917,22 +1059,30 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     },
 
     async cancel(leaseId: string, reason = "cancel"): Promise<void> {
-      const run = runs.get(leaseId);
-      if (run === undefined) return;
-      run.cancelled = true;
-      await escalateCleanup(run, reason);
+      return stopRun(leaseId, reason, true);
     },
 
+    /**
+     * ★ SVC-008b SPLIT THIS FROM `cancel`, and the split is the whole difference.
+     *
+     * It used to delegate: `cancel(leaseId, "lease_lost")`. For a BATCH run that is still
+     * byte-identical — `graceful` only reaches a live `run.serviceStop`, which is null on
+     * every batch run — so nothing about batch behaviour moved. For a SERVICE run it is the
+     * §4.5 rule: a lost lease is NOT a cooperative stop. The fence has closed, the renewal
+     * driver has already denied every governed effect locally, and negotiating a graceful
+     * shutdown across a dead fence would be the first daemon component to write past one.
+     */
     onLeaseLost(leaseId: string): Promise<void> {
-      return supervisor.cancel(leaseId, "lease_lost");
+      return stopRun(leaseId, "lease_lost", false);
     },
 
     async shutdown(): Promise<void> {
       const live = [...runs.values()];
       for (const run of live) {
-        run.cancelled = true;
         try {
-          await escalateCleanup(run, "shutdown");
+          // Shutdown is not cooperative either: the process this daemon supervises is going
+          // away with it, and waiting out a 300 s graceful window would hold the shutdown.
+          await stopRun(run.leaseId, "shutdown", false);
         } catch {
           // best-effort per run
         }

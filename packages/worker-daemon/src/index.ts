@@ -505,6 +505,9 @@ export type {
   EventDeliveryIdentity,
   EventSequencerDeps,
   WorkerEventSink,
+  // SVC-008b — the service-event identity + verdict types.
+  ServiceInstanceRef,
+  ServiceHealthStatus,
 } from "./supervisor/events.js";
 
 export { reconcile, RECONCILE_PROVIDER_OUTAGE_EVENT } from "./supervisor/reconcile.js";
@@ -513,6 +516,20 @@ export type {
   ReconcileResult,
   ReconcileOutcomeRecord,
 } from "./supervisor/reconcile.js";
+
+// SVC-008b — the service sequencer. Exported for the composition root's tick knob and for
+// the public-surface guard; `runServiceLifecycle` itself is reached only through
+// `createSupervisor`'s dispatch, never called directly by a composition root.
+export {
+  runServiceLifecycle,
+  parseServiceWorkload,
+  SERVICE_HEALTH_TICK_MS_DEFAULT,
+} from "./supervisor/service-lifecycle.js";
+export type {
+  ServiceLifecycleDeps,
+  ServiceRunOutcome,
+  ServiceStopHandle,
+} from "./supervisor/service-lifecycle.js";
 
 export { createSupervisor } from "./supervisor/supervisor.js";
 export type {

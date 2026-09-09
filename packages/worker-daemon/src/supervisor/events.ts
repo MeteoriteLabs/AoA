@@ -23,6 +23,7 @@ import {
   type LogPayloadV1,
   type NetworkDeniedPayloadV1,
   type ProgressPayloadV1,
+  type ServiceHealthPayloadV1,
   type TerminalEventStatus,
   type UsagePayloadV1,
   type WorkerEventType,
@@ -33,6 +34,28 @@ import { scrubEventStrings } from "./redaction.js";
 
 /** The four frozen network-denial destination classes (`NETWORK_DENIAL_CLASSES`). */
 export type NetworkDenialClass = NetworkDeniedPayloadV1["destinationClass"];
+
+/** The two frozen `service_health` verdicts (`SERVICE_HEALTH_STATUSES`). */
+export type ServiceHealthStatus = ServiceHealthPayloadV1["status"];
+
+/**
+ * SVC-008b — the identity every frozen service event repeats verbatim
+ * (`serviceInstanceRefShape`, `worker-protocol/src/events.ts`).
+ *
+ * Held as plain strings/number on this side: the frozen ids are BRANDED zod types and the
+ * schema parse in `#emit` is what re-establishes the brand. Widening to `string` here would
+ * be unsafe if the parse were skipped — it is not: every emitter goes through `#emit`, which
+ * parses the COMPLETE event against `workerEventV1Schema` before it leaves.
+ */
+export interface ServiceInstanceRef {
+  readonly serviceId: string;
+  readonly serviceInstanceId: string;
+  readonly generation: number;
+}
+
+function serviceRef(ref: ServiceInstanceRef): { serviceId: string; serviceInstanceId: string; generation: number } {
+  return { serviceId: ref.serviceId, serviceInstanceId: ref.serviceInstanceId, generation: ref.generation };
+}
 
 /** The delivery identity every event under a lease repeats verbatim. */
 export interface EventDeliveryIdentity {
@@ -214,6 +237,70 @@ export class EventSequencer {
       { artifactIds: [...input.artifactIds], url: input.url, title: input.title },
       input.extensions ?? [],
     );
+  }
+
+  // --- SVC-008b: the service-instance events -----------------------------------
+  //
+  // ★★★ THE ONE RULE THESE FIVE OBEY (SVC-008 §3.1a). An event may assert ONLY what an op
+  // the daemon actually called returned. A sandbox-scoped answer may not be reported as a
+  // process-scoped fact. That rule lives in `service-lifecycle.ts` (which decides WHEN each
+  // of these is called); the docstrings here restate the precondition so a future caller
+  // cannot reach for one without meeting it.
+  //
+  // ★ There is deliberately NO emitter for `service_checkpoint_prepared` / `_restored`
+  // (SVC-004 owns checkpoint policy, and an emitter with no policy is a scope leak) and
+  // NONE for `service_provider_interrupted` / `_resumed`. The latter is NOT an oversight:
+  // §4.4 names `inspect` reporting the sandbox "suspended and then live again" as the
+  // witness, and `SandboxState` (`provider.ts`) has no suspended/paused inhabitant —
+  // creating/running/cancelling/stopped/destroyed/failed. Adding the emitter would hand a
+  // caller a durable claim nothing in this tree can witness, which is §1.3(c) one event over.
+
+  /**
+   * `service_instance_started` — asserts **`starting`** and NOTHING about the process.
+   *
+   * PRECONDITION: `create` resolved `providerResourceId` (a SANDBOX id — the frozen payload
+   * names a provider resource, not a process) AND a launch has been requested on it. It is
+   * NOT a claim that the process is up; that claim is `service_health`, and it needs a
+   * process-scoped witness.
+   */
+  serviceInstanceStarted(input: ServiceInstanceRef & { providerResourceId: string }): Promise<WorkerEventV1> {
+    return this.#emit("service_instance_started", { ...serviceRef(input), providerResourceId: input.providerResourceId });
+  }
+
+  /**
+   * `service_health` — the provider's verdict about the SUPERVISED PROCESS, verbatim.
+   *
+   * PRECONDITION: `processSupervisionMode !== "none"` and the verdict came from a
+   * `processStatus` read of the run's handle. ★ The frozen optional `health` op may NOT
+   * source this: it answers `sandbox.isRunning()`, and a sandbox is up from the moment
+   * `create` resolves, so it would report `healthy` for a process that never started.
+   * A verdict that could not be read is NOT an event — emit nothing.
+   */
+  serviceHealth(input: ServiceInstanceRef & { status: ServiceHealthStatus; detail: string | null }): Promise<WorkerEventV1> {
+    return this.#emit("service_health", { ...serviceRef(input), status: input.status, detail: input.detail });
+  }
+
+  /** `service_graceful_stop_observed` — observes the stop REQUEST and its deadline. Honest
+   * either way: the payload is only `{ref, deadline}` and claims nothing about the process. */
+  serviceGracefulStopObserved(input: ServiceInstanceRef & { deadline: string }): Promise<WorkerEventV1> {
+    return this.#emit("service_graceful_stop_observed", { ...serviceRef(input), deadline: input.deadline });
+  }
+
+  /**
+   * `service_instance_stopped` — the process was OBSERVED gone.
+   *
+   * PRECONDITION: a `processStatus` observation of `exited` or `gone`. ★ NEVER on a stop
+   * request, and never on a signal's return value: `ProcessSignalResult.accepted` describes
+   * the CALL, and real E2B accepts a signal that stops nothing (E7-F034).
+   */
+  serviceInstanceStopped(input: ServiceInstanceRef & { exitCode: number | null }): Promise<WorkerEventV1> {
+    return this.#emit("service_instance_stopped", { ...serviceRef(input), exitCode: input.exitCode });
+  }
+
+  /** `service_instance_lost` — the instance can no longer be accounted for: the sandbox is
+   * gone, or a stop ladder ran to its end with the process still observed running. */
+  serviceInstanceLost(input: ServiceInstanceRef & { reason: string }): Promise<WorkerEventV1> {
+    return this.#emit("service_instance_lost", { ...serviceRef(input), reason: truncateUtf16Safe(input.reason, 1000) });
   }
 
   /** The terminal attempt event (succeeded/failed/cancelled/expired). */

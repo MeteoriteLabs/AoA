@@ -20,11 +20,42 @@ import { capabilitiesForIsolation, type IsolationMechanism } from "./isolation-c
 import type { HelloProvisioning } from "./desktop-hello.js";
 
 /**
- * The workload capabilities THIS daemon can actually supervise today. Batch only — the
- * supervisor for browser_session/service composes in later sprints, and D4 forbids reporting
- * a workload the daemon cannot run. Widening this is a deliberate edit, not a config.
+ * The workload capabilities THIS daemon can actually supervise today. The supervisor for
+ * browser_session composes in a later sprint, and D4 forbids reporting a workload the daemon
+ * cannot run. Widening this is a deliberate edit, not a config.
+ *
+ * ★★★ SVC-008b ADDED `workload.service`, and this is the LAST LINE OF ITS DIFF — deliberately,
+ * because splitting the advertisement from the supervisor would open a window in which the
+ * daemon reports a workload nothing supervises. That window is SVC-008 §1.2's harm: a service
+ * job flowed through the BATCH body with no type error and no branch, `execute` returned when
+ * the startup script exited, and a long-running service was reported `succeeded`. Advertising
+ * before the branch existed would have shipped that deliberately.
+ *
+ * ★ WHAT BECOMES REACHABLE, enumerated, because a widening is exactly the shape that silently
+ * enables things:
+ *   - A daemon whose ADMIN-RATIFIED ceiling grants `workload.service` now REPORTS it (the
+ *     derivation below intersects the ceiling with this set), so `workerSatisfiesRequirements`
+ *     step 5 stops refusing service candidates and placement can lease a service job to it. A
+ *     daemon whose ceiling does NOT grant it is unaffected — the intersection still removes it.
+ *   - Nothing else. `workload.browser_session` remains absent and is still filtered out.
+ *
+ * ★ WHAT IS NOT CHANGED HERE, and was already true before this ticket: the slot default
+ * (`config/config.ts` `service: {defaultValue: 1}`) and the provisioned hello that reports it
+ * (`bin/worker-daemon.ts` `serviceSlots: config.concurrency.service`). The UNPROVISIONED path's
+ * hardcoded `serviceSlots: 0` (`desktop-hello.ts`) also stays — an unprovisioned daemon
+ * advertising service slots would be a second false claim one field over.
+ *
+ * ★ THE RESIDUAL THE ADVERTISEMENT CARRIES. A service supervised by this daemon runs for at
+ * most `RUN_OP_DEADLINE_CEILING_MS` (240 s): the run's owned-labels capability is minted with a
+ * 5-minute TTL on exactly one route and is NEVER re-minted, so the supervise loop stops on the
+ * teardown headroom rather than continue past its own authority and leak a billable sandbox.
+ * Whether a four-minute service is worth advertising is SVC-008 §9.1, which is UNRULED. What is
+ * advertised is true; what it is worth is a founder call.
  */
-export const SUPERVISABLE_WORKLOAD_CAPABILITIES: readonly WorkerCapability[] = ["workload.batch"];
+export const SUPERVISABLE_WORKLOAD_CAPABILITIES: readonly WorkerCapability[] = [
+  "workload.batch",
+  "workload.service",
+];
 
 export function deriveHelloProvisioning(input: {
   /** The self-model read response body (`{ registeredProfile, providerConstraintProfile, … }`). */

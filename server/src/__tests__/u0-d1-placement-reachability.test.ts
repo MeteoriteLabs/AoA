@@ -283,24 +283,42 @@ function shippedDaemonHello(input: {
  * through the REAL `normalizeSubmittedJobPlacementFacts` that `job-leasing.ts:208` uses.
  */
 function pollRequirementsForBatchJob(target: NormalizedPlacementRegistryTarget) {
+  return pollRequirementsForJob(target, "batch");
+}
+
+/**
+ * SVC-008b — the same builder, over any workload type.
+ *
+ * ★ Generalised rather than duplicated: the `workload.<type>` conjunct of step 5 is the one
+ * clause a stored job can actually fail on this path (see the header), so a second hand-built
+ * copy is exactly where a service case would quietly stop testing the same thing as the batch
+ * case.
+ */
+function pollRequirementsForJob(
+  target: NormalizedPlacementRegistryTarget,
+  workloadType: "batch" | "browser_session" | "service",
+) {
   const normalized = normalizeSubmittedJobPlacementFacts({
     sourceKind: "one_shot" as never,
     inputHash: "b".repeat(64),
     policyHash: target.registeredProfile.policyHash,
-    requirements: { workloadType: "batch", requiredCapabilities: [] },
+    requirements: { workloadType, requiredCapabilities: [] },
     placementRequest: { policyId: "job-submission-default", policyVersion: 1, requestedTarget: null },
     rollout: { enabled: true, mode: "active", reason: "stored_placement" },
     credentialBinding: inferredCredentialBinding(target),
     resolvedTarget: target,
   });
-  expect(normalized.success && normalized.active, "the D1 batch job did not normalize into placement facts").toBe(true);
+  expect(normalized.success && normalized.active, `the D1 ${workloadType} job did not normalize into placement facts`).toBe(true);
   return (normalized as { requirements: ReturnType<typeof Object> } & {
     requirements: Parameters<typeof evaluateStaticLeaseEligibility>[0]["requirements"];
   }).requirements;
 }
 
 /** The one decision the poll transaction makes per candidate (`job-leasing.ts:749`). */
-async function offerableWithCeiling(capabilityCeiling: readonly string[]) {
+async function offerableWithCeiling(
+  capabilityCeiling: readonly string[],
+  workloadType: "batch" | "browser_session" | "service" = "batch",
+) {
   const fileProfile = { ...JSON.parse(read(WORKER_B_PROFILE_FILE)), capabilityCeiling };
   const target = await normalizedTargetForCommittedProfile(fileProfile);
   const { hello, reported } = shippedDaemonHello({
@@ -312,16 +330,23 @@ async function offerableWithCeiling(capabilityCeiling: readonly string[]) {
     target: target.registeredProfile,
     verifiedProviderConstraints: target.providerConstraintProfile,
     worker: hello,
-    requirements: pollRequirementsForBatchJob(target),
+    requirements: pollRequirementsForJob(target, workloadType),
   });
   return { reported, evaluation };
 }
 
 describe("U0 — a shipped worker daemon's derived hello against D1's committed target profile", () => {
-  it("the shipped daemon can supervise batch and nothing else, and reports no isolation at all", () => {
+  it("the shipped daemon can supervise batch and service and nothing else, and reports no isolation at all", () => {
     // The two ceilings the union in hello-provisioning.ts is built from. If either widens,
     // every reachability conclusion below is re-derivable rather than silently stale.
-    expect([...SUPERVISABLE_WORKLOAD_CAPABILITIES]).toEqual(["workload.batch"]);
+    //
+    // ★ SVC-008b WIDENED THE FIRST ONE, and this pin going red on that edit is the pin
+    // WORKING. It is UPDATED, not deleted, and deliberately NOT weakened to `toContain`:
+    // exact equality is what makes the NEXT widening (`workload.browser_session`) announce
+    // itself, and `toContain` would let a third workload in silently — the same hole one
+    // workload over. The conclusions below were RE-DERIVED against the new set, not
+    // re-asserted; see the service case further down.
+    expect([...SUPERVISABLE_WORKLOAD_CAPABILITIES]).toEqual(["workload.batch", "workload.service"]);
     expect([...capabilitiesForIsolation(shippedDaemonIsolation())]).toEqual([]);
   });
 
@@ -343,10 +368,17 @@ describe("U0 — a shipped worker daemon's derived hello against D1's committed 
 
   it("a ceiling that grants no supervisable workload makes the daemon permanently unofferable", async () => {
     // The defect this file was written to find, pinned as a class rather than as one file's
-    // contents: `workload.service` is a workload the daemon does not supervise, so a ceiling
-    // of only-service reports nothing at all.
+    // contents: a ceiling granting only a workload the daemon does not supervise reports
+    // nothing at all.
+    //
+    // ★ RE-DERIVED BY SVC-008b, not re-asserted. This case used `workload.service` as its
+    // unsupervisable example. That is no longer true — the daemon supervises service now —
+    // so keeping the old literal would have turned a class test into a green statement about
+    // a workload that IS supported, which is worse than deleting it. The example is now
+    // `workload.browser_session`, which remains unsupervisable (its supervisor is BRW's), and
+    // the class the test asserts is unchanged.
     const { reported, evaluation } = await offerableWithCeiling([
-      "workload.service",
+      "workload.browser_session",
       "provider.lifecycle_v1",
       "provider.cleanup_v1",
       "provider.health_v1",
@@ -354,6 +386,43 @@ describe("U0 — a shipped worker daemon's derived hello against D1's committed 
     expect(reported).toEqual([]);
     expect(evaluation.eligible).toBe(false);
     expect(evaluation.reasonCode).toBe("static_requirements_mismatch");
+  });
+
+  // -- SVC-008b T0: THE REACHABILITY TEST -------------------------------------------------
+  //
+  // ★★★ The clause the whole ticket turns on. Before the widening this was RED FOR A
+  // STRUCTURAL REASON — `deriveHelloProvisioning` INTERSECTS the admin ceiling with what the
+  // device can provide, so `workload.service` was filtered out of every daemon's hello no
+  // matter what the ceiling said, step 5 refused every service candidate, and a service job
+  // was `queued` / `static_requirements_mismatch` forever.
+  //
+  // Note what it does NOT claim: an eligible daemon is not a running service. D1 seeds no
+  // service job and no attempt for worker-b's target, and SVC-007 owns the human path to
+  // create one. This says a service job CAN now reach a worker.
+
+  it("T0 — the committed worker-b ceiling now leaves the daemon offerable a real SERVICE job", async () => {
+    const { reported, evaluation } = await offerableWithCeiling(
+      JSON.parse(read(WORKER_B_PROFILE_FILE)).capabilityCeiling,
+      "service",
+    );
+    expect(reported).toContain("workload.service");
+    expect(
+      evaluation.eligible,
+      "a service job cannot be offered to D1's only real worker daemon: `workload.service` is " +
+        "in the ratified ceiling but the daemon's derived hello does not report it, so step 5 " +
+        "of workerSatisfiesRequirements refuses every service candidate as " +
+        "static_requirements_mismatch — a permanent, silent no_work",
+    ).toBe(true);
+    expect(evaluation.reasonCode).toBeNull();
+  });
+
+  it("T0 — and batch is still offerable: the widening ADDED a workload, it did not swap one", async () => {
+    const { reported, evaluation } = await offerableWithCeiling(
+      JSON.parse(read(WORKER_B_PROFILE_FILE)).capabilityCeiling,
+      "batch",
+    );
+    expect(reported).toContain("workload.batch");
+    expect(evaluation.eligible).toBe(true);
   });
 
   it("adding one required capability the ceiling withholds flips the same match to red", async () => {
