@@ -9,6 +9,13 @@ re-dispositioned here. This document measures one load-bearing premise inside tw
 and records what it found.
 **Production code written by this unit:** **none.** The only file added is a measurement harness
 under `server/src/__tests__/`.
+**Revision, same day (post-review):** an external review on PR #400 (`chatgpt-codex-connector`, P2,
+against `de01-read-half-alternatives.integration.test.ts:135`) observed that ALT-A(ii)'s green was
+being attributed to *ownership* when it is in fact carried by the owner's **superuser** attribute.
+That is correct. The precondition is now stated wherever ALT-A is recommended and is **pinned by a
+test** — `ALT-A(iii)`, the non-superuser-table-owner control — rather than by this prose. **The
+verdict is unchanged**: it never depended on ALT-A, because **ALT-B needs no privileged role
+anywhere** and the `revocation`-clause self-contradiction in §2 is independently sufficient.
 
 ---
 
@@ -38,6 +45,15 @@ is FALSE, and it is the one the recommendation rests on.**
 
 Proposition 3 is a non-sequitur: it treats `BYPASSRLS` as the only way a connection can see rows
 outside its tenant. It is not, and this tree already ships two other ways.
+
+**★ ALT-A CARRIES A PRECONDITION, AND IT IS NOT OPTIONAL.** `SECURITY DEFINER` relocates authority
+to the function's **owner**; under `FORCE ROW LEVEL SECURITY` an ordinary table owner is **still
+subject to its own policies**. So ALT-A reads across tenants only when the owner is *itself*
+exempt — i.e. **owner-owned AND owner-privileged** (`SUPERUSER` or `BYPASSRLS`). Measured both
+ways: ALT-A(ii) green with a superuser owner, **ALT-A(iii) the same function returning zero rows
+under a `NOSUPERUSER NOBYPASSRLS` owner of `jobs`**. **ALT-B carries no such precondition** — a
+role-targeted policy needs no privileged role anywhere — which is why proposition 3 is false
+regardless of how ALT-A's precondition is resolved.
 
 ---
 
@@ -111,7 +127,11 @@ Harness: `server/src/__tests__/de01-read-half-alternatives.integration.test.ts`,
 PostgreSQL through the shared `startMigratedDatabase` bootstrap, with the whole migration chain
 applied. Two organizations, one `jobs` row each. `jobs` is `ENABLE` + `FORCE ROW LEVEL SECURITY`
 with a single policy targeted `TO "aoa_app"`. Run locally under `AOA_RUN_WIN_INTEGRATION=1`:
-**8/8 pass, 7.63s.**
+**10/10 pass** (test wall-clock 6.7–9.7s across runs).
+
+**The bootstrap's migration owner is the embedded-postgres SUPERUSER** (`startMigratedDatabase`
+connects as `test`). That is stated here because it is load-bearing for exactly one row below —
+ALT-A(ii) — and ALT-A(iii) is the control that makes the dependence visible rather than assumed.
 
 | Test | What it establishes | Result |
 |---|---|---|
@@ -119,7 +139,9 @@ with a single policy targeted `TO "aoa_app"`. Run locally under `AOA_RUN_WIN_INT
 | **P2** | `aoa_operator` selecting `jobs` with no `GRANT` raises SQLSTATE **`42501`**. | A missing grant is a *loud* refusal, not a filter — the two failure shapes are distinct. |
 | **P3** | After `GRANT SELECT ON jobs TO aoa_operator`, `aoa_operator` sees **zero rows**. | **`GRANT` alone is not enough.** Under FORCE RLS a granted role matched by no policy is default-denied. This is the fact the standing claim generalised from — correctly, as far as it goes. |
 | **ALT-A(i)** | A `SECURITY DEFINER` function **owned by a `NOSUPERUSER NOBYPASSRLS` role matched by no policy** returns **zero rows**. | **`SECURITY DEFINER` is not magic.** It relocates authority to the function's owner; if that owner is itself filtered, nothing is gained. Stated because the opposite is the natural assumption. |
-| **ALT-A(ii)** | A `SECURITY DEFINER` function **owned by the migration owner**, `REVOKE ALL FROM PUBLIC` and from `aoa_app`, `GRANT EXECUTE` to `aoa_operator` only: `aoa_operator` reads **both** organizations' rows. Its own `pg_roles` row is asserted in the same test to be `rolsuper=false, rolbypassrls=false`. `aoa_app` calling the same function is refused **`42501`**. | **A cross-tenant read by a NON-`BYPASSRLS`, non-owner role. Proposition 3 is false.** |
+| **ALT-A(ii)** | A `SECURITY DEFINER` function **owned by the migration owner — who here is also `SUPERUSER`**, `REVOKE ALL FROM PUBLIC` and from `aoa_app`, `GRANT EXECUTE` to `aoa_operator` only: `aoa_operator` reads **both** organizations' rows. Its own `pg_roles` row is asserted in the same test to be `rolsuper=false, rolbypassrls=false`, and the **function owner's** `rolsuper OR rolbypassrls` is asserted **true** in the same test so the precondition cannot be read out of the result. `aoa_app` calling the same function is refused **`42501`**. | **A cross-tenant read by a NON-`BYPASSRLS`, non-owner CALLER — under an owner-privileged owner. Proposition 3 is false.** |
+| **ALT-A(iii) — CONTROL** | `jobs` is re-owned to `de01_tabowner` (`LOGIN NOSUPERUSER NOBYPASSRLS`, attributes asserted; `relrowsecurity`/`relforcerowsecurity` asserted still true), and the **identical** definer function owned by that table owner, `EXECUTE` granted to `aoa_operator` alone, returns **zero rows**. Ownership is restored in a `finally`. | **★ ALT-A IS NOT PORTABLE TO A NON-SUPERUSER MIGRATION OWNER.** Under FORCE RLS the table owner is not exempt from its own policies, so "owner-owned" is **not** sufficient — "owner-owned **and** owner-privileged" is. **Mutation-checked:** adding `ALTER ROLE de01_tabowner BYPASSRLS` before the function is created turns this case red (`expected [ {…}, {…} ] to deeply equal []`), so the green is caused by the missing privilege and nothing else. |
+| **ALT-A(iv) — VIEW** | A plain (non-`security_invoker`) view over `jobs`, `SELECT` granted to `aoa_operator`: reads **both** organizations while its owner is the superuser (owner privilege asserted in-test); re-owned to `de01_tabowner`, the same view returns **zero rows**. | **A view is ALT-A in different spelling, and inherits ALT-A(iii) exactly.** A view executes as *its* owner, so it is the same mechanism with the same precondition — not a third alternative. |
 | **ALT-B** | `CREATE POLICY ... ON jobs FOR SELECT TO "aoa_operator" USING (true)`: `aoa_operator` reads both organizations' rows, while `aoa_app` under `ORG_A`'s GUC in the same database **still sees only its own**. | **A second, independent cross-tenant read with no `BYPASSRLS`, and the tenant boundary for the serving pool is untouched.** |
 | **GUARD** | `assertNonOwnerConnection(operatorDb, "aoa_operator")` **resolves** after both ALT-A and ALT-B have been applied. | Neither alternative requires, implies, or survives-by-weakening `client.ts:325`. |
 | **POSITIVE CONTROL** | A purpose-made `LOGIN NOSUPERUSER BYPASSRLS` role is refused by `assertNonOwnerConnection` with the exact `:325` message and `rolbypassrls=true`. | The guard is live and the harness can see it bite. Without this, all seven greens above would be consistent with a guard that does nothing. |
@@ -146,7 +168,18 @@ reads `environment_leases`, which has **no RLS at all** (zero `ROW LEVEL SECURIT
 statements anywhere in the migration chain mention it). `0268` therefore solves a **`GRANT`**
 problem, not an **RLS** problem, and on its own it does **not** demonstrate that `SECURITY
 DEFINER` defeats FORCE RLS. That is what **ALT-A(ii)** was run to establish, on `jobs`, which *is*
-FORCE-RLS'd. The pattern transfers; the existing migration alone would not have proved it.
+FORCE-RLS'd. The existing migration alone would not have proved it.
+
+**★ AND THE TRANSFER IS CONDITIONAL — this is the correction to the correction.** `SECURITY
+DEFINER` does not "defeat" FORCE RLS; it *substitutes the owner for the caller*, and FORCE RLS then
+applies to the owner. ALT-A(ii) reads across tenants because this bootstrap's migration owner is a
+`SUPERUSER`, not because the function is owner-owned. **ALT-A(iii) is the control**: the same
+function, owned by a `NOSUPERUSER NOBYPASSRLS` owner of `jobs`, returns **zero rows**. So the
+`0268` shape is portable to a FORCE-RLS relation **only where the migration owner is `SUPERUSER` or
+`BYPASSRLS`**. Any future unit that adopts it must either (a) establish that precondition for its
+own deployment and assert it in a test, or (b) use **ALT-B**, which needs no privileged role at
+all. Getting this wrong does not fail loudly — it produces a comparator that reads `[]` and reports
+"no divergence" forever, which is this programme's own "a check that nothing runs".
 
 ---
 
@@ -161,8 +194,14 @@ ever chartered for this purpose, it takes one of two shapes, both C14 class (b) 
 both hand-authored into a delta-free `--custom` migration, and **neither** touching a role attribute:
 
 - a narrow owner-owned `SECURITY DEFINER` function on the model of `0268`, `EXECUTE` granted to
-  `aoa_operator` alone and explicitly `REVOKE`d from `aoa_app`; or
-- a role-targeted `CREATE POLICY ... TO "aoa_operator"` on the model of `0233`.
+  `aoa_operator` alone and explicitly `REVOKE`d from `aoa_app` — **admissible against a FORCE-RLS
+  relation ONLY where the function's owner is itself `SUPERUSER` or `BYPASSRLS` (ALT-A(iii)); a
+  chartering unit must assert that precondition in its own test, because failing it yields zero
+  rows silently, not an error.** A view is the same shape with the same precondition (ALT-A(iv)),
+  not an escape from it; or
+- a role-targeted `CREATE POLICY ... TO "aoa_operator"` on the model of `0233` — **no precondition,
+  no privileged role anywhere. Prefer this one** unless the projection narrowing a definer function
+  gives is specifically needed.
 
 Detecting abuse of either is a bounded problem, and the machinery already exists. Both boot
 certificates run on the two serving pools at `distributed-execution-databases.ts:1754-1770`:
