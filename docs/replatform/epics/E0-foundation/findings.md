@@ -786,6 +786,21 @@ state twelve, not seventeen.
    (DE-03, DE-21's board half, DE-15, and — added by this unit's own measurement — DE-06's
    fence-resolution throws; see the authoritative count above) and is
    the highest-leverage unblock left in the class.
+   ★ **OPTIONS PAPER, 2026-09-09:
+   [`docs/replatform/DECISION-REQUEST-unattributable-denial-sink.md`](../../DECISION-REQUEST-unattributable-denial-sink.md).**
+   It re-measured all four sinks at their throw/deny lines rather than inheriting this count, and
+   **two of the four are not blocked by this decision at all**: DE-06's tuple-integrity throw
+   (`worker-fence-context.ts:122`) and DE-21's agent-key branches (`live-events-ws.ts:377`, `:395`)
+   hold a DB-resolved FK-valid company today, and DE-21's board/session branches are blocked by
+   **Decision 3**, not this one. It also corrects **"DE-15 has no tenant at all"** — the drain
+   return holds a token-attested `organizationId` and 0..N DB-resolved `jobs` rows
+   (`job-control.ts:1930-1941`), so its shape is *not singular*, not *absent*. The residue this
+   decision genuinely owns is DE-03, DE-15, and five of DE-06's six fence throws — all
+   organization-attested, none company-resolvable, because `organization → company` is 1:N
+   (`companies.ts:20,87`). Six options are costed there; the paper recommends a nullable
+   `company_id` plus a new nullable `organization_id` on `activity_log`, and names the strongest
+   argument against itself. **It changes no status and wires nothing** — it exists so this decision
+   can be signed.
 3. **Retention and disclosure of a denial record.** (a) Whose log does a cross-tenant denial land
    in? The probed company's `activity_log` discloses to them that they were probed and by whom.
    (b) `activity_log` **cascade-deletes with its company**, so a hostile tenant can destroy the
