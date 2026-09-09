@@ -38,6 +38,11 @@ import {
   type VerifiedWorkerOperation,
 } from "./job-leasing.js";
 import { normalizePlacementRegistryTarget } from "./execution-target-resolver.js";
+import {
+  createWorkerDenialSink,
+  drainWorkerDenial,
+  workerProofReplayIntent,
+} from "./worker-denial-audit.js";
 
 export {
   isActiveFence,
@@ -126,6 +131,11 @@ export function createJobLeaseRenewalService(input: {
       if (!parsedRequest.success) throw new JobLeasingError("malformed");
       const request = parsedRequest.data;
       const digest = semanticRenewDigest(renewInput.auth, request);
+      // ★ DE-03, replay-rejection conjunct — the refusal below THROWS out of
+      // `runInTenant`, so its record is collected as an INTENT and drained on the
+      // pool handle once the transaction has unwound.
+      const proofDenial = createWorkerDenialSink();
+
       return runInTenant(input.appDb, renewInput.auth.organizationId, async (repos) => {
         const databaseNow = await repos.jobControl.currentDatabaseTime();
         await repos.workerEnrollment.cleanupExpiredProofs(databaseNow, 100);
@@ -137,7 +147,10 @@ export function createJobLeaseRenewalService(input: {
           issuedAt: renewInput.auth.proofIssuedAt,
           expiresAt: renewInput.auth.sessionExpiresAt,
         });
-        if (!proofRecorded) throw new JobLeasingError("unauthorized");
+        if (!proofRecorded) {
+          proofDenial.intent = workerProofReplayIntent(renewInput.auth);
+          throw new JobLeasingError("unauthorized");
+        }
 
         const authority = await repos.jobControl.lockWorkerLeaseAuthority({
           workerId: renewInput.auth.workerId,
@@ -260,7 +273,17 @@ export function createJobLeaseRenewalService(input: {
           if (error instanceof DbJobFenceError) throw new JobLeasingError(error.code);
           throw error;
         }
-      });
+      })
+        // ★ DE-03 — drain the THROWING replay refusal on the POOL handle after the
+        // tenant transaction has closed. `recordSecurityDenial` never throws, so a
+        // broken recorder cannot turn a refusal into a 500.
+        .finally(async () => {
+          await drainWorkerDenial(input.appDb, proofDenial, {
+            control: "server/src/services/job-fencing.ts:renew",
+            workerId: renewInput.auth.workerId,
+            operation: "lease_renew",
+          });
+        });
     },
   };
 }

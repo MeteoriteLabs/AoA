@@ -56,6 +56,11 @@ import {
   leaseStaticContextHash,
 } from "./job-lease-eligibility.js";
 import type { VerifiedWorkerOperation } from "../middleware/worker-operation-proof.js";
+import {
+  createWorkerDenialSink,
+  drainWorkerDenial,
+  workerProofReplayIntent,
+} from "./worker-denial-audit.js";
 
 export type { VerifiedWorkerOperation } from "../middleware/worker-operation-proof.js";
 
@@ -534,6 +539,19 @@ export function createJobLeasingService(input: {
       // so the frozen JOB-003 authority chain gains no repository selection. Reading it once
       // also means a switch thrown mid-restart cannot flip the verdict between retry attempts.
       const killSwitchDocument = await killSwitches.read();
+      // ★ DE-03, replay-rejection conjunct — the replay refusal below THROWS out of
+      // `runInTenant`, so its record is collected as an INTENT and drained on the pool
+      // handle in the loop's `finally`, once the transaction has unwound.
+      const proofDenial = createWorkerDenialSink();
+      // Built HERE, OUTSIDE the frozen JOB-003 authority chain, and only ASSIGNED
+      // inside it. The intent is a pure function of the already-verified session
+      // artefact, so hoisting it changes nothing semantically — but constructing it
+      // inside the tenant body would pass a protected authority symbol to a
+      // non-approved call, which `job-leasing-contract.test.ts` refuses as
+      // `binding:protected-value-escape`. That guard is right: it exists so no new
+      // consumer of the authority chain appears inside the transaction without
+      // review. An earlier revision of this change tripped it and CI caught it.
+      const replayDenialIntent = workerProofReplayIntent(pollInput.auth);
       for (let restartAttempt = 0; restartAttempt < 3; restartAttempt += 1) {
         // A retry iteration (restartAttempt > 0) means the previous head claim rolled back; count it
         // here so the head-conflict catch below stays the exact classifier/exhaustion/continue triple.
@@ -549,6 +567,11 @@ export function createJobLeasingService(input: {
               targetId: pollInput.auth.targetId,
             });
             if (!lockedAuthority || !proofRecorded) {
+              // ★ DE-03 covers the REPLAY disjunct only. A missing authority with a
+              // FRESH proof is a different refusal at the same line and is NOT one of
+              // the crossing’s nine `recordProof` sites, so it is left unrecorded
+              // rather than filed under a reason it did not fire.
+              if (!proofRecorded) proofDenial.intent = replayDenialIntent;
               throw new JobLeasingError("unauthorized");
             }
             const guardedAuthority = await guardPlatformAuthority(repos, pollInput.auth, lockedAuthority);
@@ -796,6 +819,23 @@ export function createJobLeasingService(input: {
           if (!isHeadRestartConflict(error)) throw error;
           if (restartAttempt >= 2) throw new JobLeasingError("internal_unavailable");
           continue;
+        } finally {
+          // ★ DE-03 — the drain point, and WHY IT IS HERE AND NOT IN THE CATCH.
+          // The catch above is a FROZEN shape: `job-leasing-contract.test.ts`
+          // ("maps one attempt-local typed static context ... with no laundering or
+          // injection") requires it to be EXACTLY the classifier / exhaustion /
+          // continue triple, with the classifier's `then` a bare re-throw of the
+          // caught error. Putting the drain inside it turned that assertion red —
+          // an earlier revision of this change did exactly that and CI caught it.
+          // A `finally` leaves the triple untouched, still runs on the POOL handle
+          // after the tenant transaction has unwound, and still runs BEFORE the
+          // caller sees the error. It also runs on the success and head-restart
+          // paths, where the sink is empty and the drain is a no-op.
+          await drainWorkerDenial(input.appDb, proofDenial, {
+            control: "server/src/services/job-leasing.ts:poll",
+            workerId: pollInput.auth.workerId,
+            operation: "lease_poll",
+          });
         }
       }
       throw new JobLeasingError("internal_unavailable");
@@ -809,6 +849,28 @@ export function createJobLeasingService(input: {
       if (!parsedRequest.success) throw new JobLeasingError("malformed");
       const request = parsedRequest.data;
       const digest = semanticAckDigest(ackInput.auth, request);
+      // ★ DE-03 — THIS SITE IS NOT WIRED, AND THE REASON IS A FROZEN CONTRACT, NOT
+      // AN OVERSIGHT. `job-leasing.ts:816`'s `recordProof` refusal is one of the
+      // crossing's seven organization-attested sites, and it is the ONE this unit
+      // could not record. The refusal THROWS out of `runInTenant`, so the row must
+      // be drained on the pool handle after the transaction unwinds — and every
+      // drain point is closed here:
+      //   * inside the callback → a nested pool borrow while the tenant transaction
+      //     still holds a connection (the documented self-deadlock), and rolled back
+      //     with the transaction anyway;
+      //   * `.finally(…)` on the call → `job-leasing-contract.test.ts`'s
+      //     `exactAckReturnDominance` requires a return whose parent IS this method
+      //     body and whose expression unwraps to the `runInTenant` call itself.
+      //     `unwrap` strips `await`, parens, `as` and `!` — never a `.finally`;
+      //   * a `try`/`finally` around the return → that same check fails, because the
+      //     return's parent becomes the try block.
+      // The poll path above takes the one shape the contract does allow (a `finally`
+      // on the retry `try`, which leaves the classifier/exhaustion/continue triple
+      // untouched); the ack path has no retry `try` to hang one on. Wiring it needs
+      // an AMENDMENT to the frozen JOB-003 ack-flow contract, which is a decision
+      // this unit does not take. The arm in
+      // `de-03-worker-replay-denial-audit.integration.test.ts` PINS that this site
+      // records nothing, asserting the throw FIRST so the pin cannot pass by vacuity.
       return runInTenant(input.appDb, ackInput.auth.organizationId, async (repos) => {
         const databaseNow = await repos.jobControl.currentDatabaseTime();
         await repos.workerEnrollment.cleanupExpiredProofs(databaseNow, 100);
@@ -820,6 +882,7 @@ export function createJobLeasingService(input: {
           issuedAt: ackInput.auth.proofIssuedAt,
           expiresAt: ackInput.auth.sessionExpiresAt,
         });
+        // ★ DE-03 — unrecorded; see the note above this `runInTenant` call.
         if (!proofRecorded) throw new JobLeasingError("unauthorized");
 
         const authority = await repos.jobControl.lockWorkerLeaseAuthority({

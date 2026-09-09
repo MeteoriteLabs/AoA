@@ -282,6 +282,25 @@ measured rather than inherited:
   Amending is a founder decision and is not taken here. Resolve = flip this Status and delete the
   `E0-F010` key in `scripts/finding-ownership.json` in the SAME commit. **All eight are still open,
   DE-06 included; a HALF-delivered conjunctive clause closes nothing.**
+- **2026-09-10, Unit A — two rows moved and the cohort did NOT.** The wave that the ruling on
+  `E0-F013` Decision 2 unblocked wired the organization-attributable denial sinks: **DE-06**'s five
+  remaining `resolveWorkerFenceContext` throws (`:86` proof replay, `:100` in both of its codes,
+  `:103`, `:108`, `:121`) and **SIX of DE-03's seven** organization-attested `recordProof`
+  refusals (`job-control-ack.ts:93`, `job-events.ts:169`, `job-fencing.ts:133`,
+  `job-leasing.ts:546`, `worker-fence-context.ts:68` and `:162`). **`job-leasing.ts:816` (ack) was
+  NOT wired** — the frozen JOB-003 ack-flow contract (`job-leasing-contract.test.ts`,
+  `exactAckReturnDominance`) leaves no drain point outside the transaction, and amending it is a
+  decision this unit did not take; the proving file PINS that site as recording nothing rather than
+  dropping it from the count. Both rows' full per-site evidence, the four DE-06 sites actually
+  PROVOKED versus the two pinned as structurally unreachable, and the mutation matrix are in
+  `docs/architecture/distributed-execution-threat-controls.json`.
+  **NEITHER CROSSING CLOSES AND THE COHORT STAYS AT EIGHT.** DE-06's clause is
+  "object put/get **AND** rejected-key attempts", and the put/get half — a SUCCESSFUL grant — still
+  writes nothing at the tree's only production `presignGet` call site. DE-03's clause is
+  "enrollment, session issue, **AND** replay-rejection", and only replay-rejection is wired. Two of
+  DE-03's nine `recordProof` sites (`worker-enrollment.ts:315`,
+  `middleware/worker-session-auth.ts:151`) stay DOUBLY NULL and were deliberately not wired and are
+  not claimed. A larger fraction of a conjunction is not a closure.
 
 ## E0-F011 — Four crossings are defended by a control whose ARMING PATH is dead: two have zero production callers, one is enabled by an environment variable set in no manifest, and one is gated on a database column with no writer
 
