@@ -4,6 +4,7 @@
     "wired   = a production path reaches the named symbol; the checker verifies it and fails on 0.",
     "unwired = honestly dormant; reason must say what would have to change. Reported on green runs.",
     "Claiming wired when nothing calls it is the defect this register exists to make impossible.",
+    "A CLAUSE IS THE UNIT OF CLAIM, AND HALF A CONJUNCTIVE CLAUSE MAY NOT BE ENROLLED. 2026-09-09: E0-de06-artifact-denial-audit was added here as `wired` for DE-06's audit clause and REMOVED the same day. The clause reads 'object put/get AND rejected-key attempts are audited'; only the rejected-key conjunct was wired, and a successful download grant still writes nothing. The symbol genuinely had callers, so the checker was green and correct -- what was false was the CLAUSE-LEVEL claim the key asserts. Enrolment here reads as delivery; a partly-delivered clause belongs in its finding until the whole clause holds. See docs/replatform/epics/E0-foundation/findings.md, E0-F010.",
     "providerCapabilityClaims (optional) = the provider-capability values this clause's reason asserts, checked against the source that declares them. Added 2026-09-06 (W4U1) after E5-2's reason described artifactExportMode for weeks after PR #353 changed it, because nothing read the sentence."
   ],
   "clauses": {
