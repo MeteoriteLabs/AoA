@@ -22,6 +22,14 @@ The E2B tier behind this repository's `E2B_API_KEY` **accepts** a `network.denyO
 server-side, **stores** it, **reads it back verbatim** through `getInfo()` — and **routes the denied
 traffic anyway**, through both `Sandbox.create` and `updateNetwork`.
 
+> ★★★ **SCOPE, ADDED 2026-09-09 (W10B-B): that is one SHAPE, and it is not the shape E2B documents as
+> the control.** This run declared a `denyOut` list of CIDRs with **no `allowOut`**. E2B's docs present
+> the fine-grained control as default-deny (`denyOut: ({allTraffic}) => [allTraffic]`) **plus** an
+> `allowOut` allowlist, and say domains are unsupported in deny lists — so domain filtering *requires*
+> that form. **It is UNMEASURED.** An arm for it is built and **not dispatched** (runbook §13).
+> **Unmeasured is not "probably works":** `DE-08` stays `not-delivered`, no production path passes a
+> `network` body, and nothing about this run's conclusion changes.
+
 **The ABANDON condition (question **c**) did NOT fire**, so this is genuine inertness and not a
 misconfiguration that broke its own experiment: the guest's resolver (`8.8.8.8`) was outside every
 declared range, name resolution worked under the policy, and the product-regression rows were reached.
@@ -219,5 +227,17 @@ These are not in the summary block and are the evidence behind three claims in `
   names the row.
 - **`allowOut`** and **`allowInternetAccess: false`** — this run measured `denyOut`. Reasoning from this
   result to those fields is an argument, not a measurement.
+  **★ FOLLOWED UP 2026-09-09 (W10B-B).** `allowOut` is not a footnote: default-deny **plus** an
+  `allowOut` allowlist is the construction **E2B's own documentation presents as the fine-grained
+  control**, and the only one that supports domains. An arm for it — with a positive control (an
+  allowlisted destination that must be REACHED), the metadata endpoint and an ordinary public IP that
+  must both be REFUSED, a resolver probe, and a liveness probe that separates *blocked* from *dead* —
+  is **built and deliberately not dispatched**: runbook §13. Records that generalised this run to
+  *"the tier does not honour a `network` body"* have been narrowed to the deny-only shape.
+- **The guest's DNS resolver was the reason it could not be tested here, and it turns out to be
+  nameable.** `/etc/resolv.conf` read `nameserver 8.8.8.8` in **both** arms — a static public address,
+  so `allowOut: ["8.8.8.0/24"]` admits it and the documented shape is usable for us. The runbook's §2
+  treated the default-deny flip as a stop condition to avoid, which was right for this probe and is
+  what left the allowlist shape unmeasured.
 - **Any tier other than the one this repository's `E2B_API_KEY` reaches.** `resolveE2bDomain` makes the
   API target per-company configurable.

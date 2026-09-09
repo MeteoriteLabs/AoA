@@ -251,9 +251,15 @@ shipped configuration surface that this finding recorded as absent.
    so a tolerant or self-hosted server can return `200` and leave the sandbox unpoliced with
    identical code and identical logs. A read-back is mandatory before anyone relies on it.
    **★ SUPERSEDED 2026-09-07 (W11) — both halves of this item are now measured, and BOTH ARE
-   WORSE than they read here. The tier does NOT honour a `network` body (`E8-F008`, run
+   WORSE than they read here. The tier does NOT honour a DENY-SPECIFIC `network` body — a
+   `denyOut` list of CIDRs with no `allowOut` — (`E8-F008`, run
    `34085130892`): it accepts, validates and echoes the deny set and routes the denied traffic
-   anyway. And the read-back this item calls mandatory PASSES on that sandbox — it was specified
+   anyway. ★ NARROWED 2026-09-09 (W10B-B): this sentence read "does NOT honour a `network` body",
+   which is a claim about ALL network bodies generalised from the one shape that was tested. The
+   default-deny-plus-`allowOut` construction E2B documents as the fine-grained control is
+   UNMEASURED — the arm is built and not dispatched. **Unmeasured is not "probably works":
+   `DE-08` stays `not-delivered` and no production path passes a `network` body.**
+   And the read-back this item calls mandatory PASSES on that sandbox — it was specified
    against a tolerant server that IGNORES the field, and this tier does the opposite. Do not
    cite "a read-back is mandatory" as a safeguard without reading `E8-F008` §3. The conclusion
    of the item — that this note does not say egress can be locked — stands more firmly than
@@ -264,9 +270,14 @@ shipped configuration surface that this finding recorded as absent.
 
 **What it does change for the disposition.** "Option (b) is unavailable" must now be read as
 *"option (b) is UNADOPTED, and whether the operator's tier honours it is unmeasured"*
-**— CORRECTED AGAIN 2026-09-07 (W11): it is now MEASURED, and the tier does not honour it
+**— CORRECTED AGAIN 2026-09-07 (W11): it is now MEASURED for the deny-only shape, and the tier
+does not honour that one
 (`E8-F008`; the full census is §8). "Back on the table" below is therefore withdrawn: the
-provider layer is available to DECLARE and unavailable to ENFORCE at the tier AoA's key reaches.
+provider layer is available to DECLARE and, in the shape that was measured, unavailable to
+ENFORCE at the tier AoA's key reaches. ★ NARROWED 2026-09-09 (W10B-B) — "does not honour it"
+generalised one measured shape to the whole surface. The measured shape is `denyOut` with no
+`allowOut`; the default-deny-plus-allowlist shape E2B documents is UNMEASURED, and that is a gap
+in the record rather than a reason for hope: nothing is adopted, `DE-08` stays `not-delivered`.
 AND THE SENTENCE BELOW IS ALSO NARROWED: D3(c) (= BRW-004 slice (f)) is still the only REMAINING
 CHARTERED enforcement point — "REMAINING" inserted 2026-09-07 (W16A-FIX): DAT-005 and DSK-002 were
 also chartered over this capability and shipped without it, which **§1 of this same finding already
@@ -508,12 +519,19 @@ an anti-vacuity sandbox that denied a different range, while `getInfo()` returne
 **exactly**. All four controls held and the ABANDON condition did **not** fire, so the failure is
 genuine inertness rather than an experiment that broke itself.
 
-**The census, with the evidence class for each row stated so the strong and the weak are not mixed:**
+**The census, with the evidence class for each row stated so the strong and the weak are not mixed.**
+★ **AMENDED 2026-09-09 (W10B-B): row 2 was SPLIT.** As written it named the provider `network`
+surface as one candidate and refuted it on run `34085130892` — but that run measured a `denyOut`
+CIDR list with **no `allowOut`**, and E2B documents a different construction (default-deny plus an
+allowlist) as the fine-grained control. One shape was measured; the row spoke for both. The
+measured half keeps its verdict unchanged; the unmeasured half is now its own row, marked
+**UNMEASURED**, which is neither a refutation nor a candidate anyone is pursuing.
 
 | candidate layer | verdict | how it was established |
 |---|---|---|
 | **1. Provider — `metadata.egressAllowlist`** (what AoA actually sends) | INERT | §2. MEASURED, real E2B, run `33857218680`, both controls held. |
-| **2. Provider — `network.denyOut` / `updateNetwork`** (the surface `E8-F007` found and AoA has never called) | ACCEPTED, VALIDATED, ECHOED, **INERT** | MEASURED, real E2B, run `34085130892`. `E8-F008`. |
+| **2. Provider — `network.denyOut` / `updateNetwork`, DENY-ONLY** (a `denyOut` CIDR list with no `allowOut`; the surface `E8-F007` found and AoA has never called) | ACCEPTED, VALIDATED, ECHOED, **INERT** | MEASURED, real E2B, run `34085130892`. `E8-F008`. |
+| **2b. Provider — default-deny + `allowOut` allowlist** (`denyOut: ({allTraffic}) => [allTraffic]` plus an allow list — the construction E2B's own docs present as the fine-grained control, and the only one that supports domains) | **UNMEASURED — no row, not a refutation** | ★ ADDED 2026-09-09 (W10B-B). Row 2 was being read as covering this, which it does not: it tests the opposite construction. The arm is BUILT and NOT DISPATCHED (`keyed-w10b-egress-enforcement-probe.test.ts`, arm `A/allowlist`; runbook §13). **This row does not soften the census.** An unmeasured candidate is not a promising one — nothing in the product passes a `network` body, `DE-08` reads `not-delivered`, and E8-F008 §6.2 already recorded that reasoning from the deny result to the allow shape is "an argument, **not a measurement**". |
 | **3. In-guest** — a proxy, or anything the login shell can reach | NOT A BOUNDARY against this workload | **MIXED, and the weakest row here — read the note below it.** Proxy half: REPRODUCED locally (see ★). Shell half: STRUCTURAL — `buildE2bLoginShellScript` (`sandbox-provider-runtime.ts:647-655`) sources `/etc/profile`, `$HOME/.profile` and `$HOME/.bashrc` from an **agent-writable** home before `exec env … claude`, so anything the guest can edit, the agent can edit. |
 | **4. Control-plane deny** — `classifyEgressDestination` / `createFenceAwareEgressProxy` | INSPECTS ZERO PACKETS | STRUCTURAL, by caller count: §3 point 3 — `egress-proxy.ts` is imported by exactly one file in the tree, an integration test. A classifier the sandbox's traffic never traverses cannot deny anything, whatever it computes. Tracked as `E5-6-denied-egress` → `unwired` in `scripts/gate-clause-wiring.json`, printed on every green run. |
 | **5. Fail-closed on "no policy applied"** — refuse to run a sandbox whose egress policy could not be applied | **DISSOLVED** | DERIVED from row 2, and marked as derivation rather than measurement: the discriminator such a design would branch on is the read-back, and the read-back **passes** on an unpoliced sandbox (`E8-F008` §3). There is no observable that separates "policy applied" from "policy stored and ignored", so there is nothing for a fail-closed branch to test. |
@@ -537,12 +555,21 @@ genuine inertness rather than an experiment that broke itself.
 > inherited, and the row is labelled MIXED for that reason and not promoted. It would not change the
 > census either way — the shell half alone already makes an in-guest mechanism agent-editable — but a
 > reader is entitled to know which half is which.
-**★ Read this before proposing a sixth.** Rows 1, 2 and 3 are measurements against real infrastructure;
-rows 4 and 5 are structural and derived respectively, and are labelled that way on purpose. The
+**★ Read this before proposing another.** Rows 1, 2 and 3 are measurements against real infrastructure;
+rows 4 and 5 are structural and derived respectively, row 2b is UNMEASURED, and each is labelled that
+way on purpose. The
 programme has now spent four units arriving here, and the recurring error each time was to propose the
-next layer without measuring the last one. **If a sixth candidate is proposed, the first question is
+next layer without measuring the last one. **If another candidate is proposed, the first question is
 what packet would demonstrate it, and the second is what the positive control is** — not what the API
 accepts, not what a read-back returns, and not what a classifier computes.
+
+★★ **And row 2b is the same error in its OTHER direction, caught in this census rather than in a
+build.** Row 2 was written as a refutation of "the provider `network` surface" and was cited that way,
+when what was measured was one construction of it. Widening a measurement to the surface it was taken
+on is how a census stops being trustworthy — the same move, one level up, as calling a structural
+argument a measurement. **The correction is a narrowing of the CLAIM, not a softening of the
+CONCLUSION:** nothing is enforced anywhere today, no production path passes a `network` body, and
+`DE-08` reads `not-delivered`.
 
 **What this does NOT do.** It does not close or downgrade this finding; it does not change `DE-08`'s
 `deliveryStatus`, clause text or scope — that record still reads `not-delivered`, which remains
@@ -1074,6 +1101,16 @@ Stated so none of it is over-read. Each is a limit of the run, not a hedge on th
    it as one. Note also that total egress denial is not the `DE-08` control in any case: the
    product-regression rows in this very run show the sandbox needs DNS, the package registry and the
    model API.
+   **★ FOLLOWED UP 2026-09-09 (W10B-B), and this clause turned out to be the one other records
+   overrode.** Several of them generalised this finding to "the tier does not honour a `network`
+   body"; this clause always said otherwise, and it is now the authority — every one of those
+   sentences has been narrowed to the deny-only shape (`E8-F003` §8 rows 2 and 2b,
+   `sandbox-provider-runtime.ts`, the `DE-08` register row, the W10B runbook and result docs, and
+   this file). E2B's documentation presents default-deny + `allowOut` as **the** fine-grained control
+   and states that domains are unsupported in deny lists, so the allowlist form is the shape a real
+   control would take — and the one nobody has run. An arm for it is **built and deliberately not
+   dispatched** (runbook §13). **Nothing about that changes this finding's severity, status or
+   conclusion**, and "unmeasured" must not be read as "promising": it is a hole in the record.
 3. **Two denied-range rows are unattributable.** `rfc1918_10` timed out in **both** arms and
    `metadata_v6` failed to connect in **both**, so neither says anything about the policy. The
    verdict rests on `169.254.169.254`, which is reachable in both arms and inside a declared denied

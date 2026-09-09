@@ -793,15 +793,32 @@ export function createE2bSandboxRuntimeProvider(
           // server applied.
           //
           // ★★★ MEASURED 2026-09-07 (E8-F008, workflow run 34085130892): the
-          // tier does NOT honour a network body. It ACCEPTS the deny set,
+          // tier does NOT honour a DENY-SPECIFIC network body -- a denyOut list
+          // of CIDRs with NO allowOut. It ACCEPTS the deny set,
           // VALIDATES it server-side, STORES it, returns it VERBATIM from
           // getInfo() -- and routes the denied traffic anyway. A sandbox
           // declaring denyOut 169.254.0.0/16 reached 169.254.169.254 (401)
           // exactly as an anti-vacuity sandbox that denied a different range.
           // updateNetwork behaves the same way.
           //
+          // ★ THE SCOPE OF THAT RESULT, NARROWED 2026-09-09 (W10B-B) BECAUSE
+          // THIS COMMENT OVERSTATED IT. It said "does NOT honour a network
+          // body" -- a claim about ALL network bodies, generalised from the one
+          // shape that was tested. E2B documents a DIFFERENT construction as
+          // the fine-grained control: default-deny (denyOut: ({allTraffic}) =>
+          // [allTraffic]) PLUS an allowOut allowlist, which is also the only
+          // form that supports domains. That shape is UNMEASURED. The arm for
+          // it is built and NOT dispatched (keyed-w10b-egress-enforcement-probe
+          // .test.ts, arm "A/allowlist").
+          //
+          // ★★ UNMEASURED IS NOT "PROBABLY WORKS". DE-08 stays not-delivered,
+          // this call STILL passes no network body, and nothing changes here on
+          // the strength of a shape nobody has run.
+          //
           // So this call still passes `metadata` and NOT `network` -- and the
-          // reason has changed from "unmeasured" to "measured inert". DO NOT
+          // reason has changed from "unmeasured" to "measured inert FOR THE
+          // DENY-ONLY SHAPE, and unmeasured for the documented allowlist
+          // shape". Either way nothing is adopted here. DO NOT
           // adopt `network` here on the strength of a getInfo() read-back: the
           // read-back PASSES on that unpoliced sandbox, so it verifies what was
           // DECLARED and not what is ENFORCED. Adopting it would ship a control

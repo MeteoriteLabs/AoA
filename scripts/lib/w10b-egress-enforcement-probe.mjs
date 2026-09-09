@@ -56,12 +56,20 @@
 // therefore "the seam exists and was never called", not "the boundary works". This file
 // is written so that "it does not enforce" comes back as cleanly as "it does".
 //
-// ★★★ AND IT CAME BACK "IT DOES NOT ENFORCE": run 34085130892, 2026-09-07, at ab23eabdc,
-// template aoa-base — a=no b=yes c=no d=no e=no regression=no, DECISION abandon
+// ★★★ AND IT CAME BACK "IT DOES NOT ENFORCE" — FOR ONE SHAPE: run 34085130892, 2026-09-07,
+// at ab23eabdc, template aoa-base — a=no b=yes c=no d=no e=no regression=no, DECISION abandon
 // (denyout-is-inert-at-this-tier). The tier ACCEPTS the deny set, VALIDATES it server-side,
 // STORES it and ECHOES it back verbatim, and routes the denied traffic anyway. Finding
 // E8-F008. NOTE FOR ANYONE EDITING THE PARAGRAPH BELOW: (b) is real and it is NOT a
 // safeguard — it passed on the unpoliced sandbox.
+//
+// ★★★ THE SCOPE OF THAT RESULT, STATED BECAUSE SEVERAL RECORDS OVERSTATED IT. What was
+// measured is DENY-SPECIFIC: a `denyOut` list of CIDRs with NO `allowOut`. E2B documents a
+// DIFFERENT construction as the fine-grained control — default-deny (`denyOut:
+// ({allTraffic}) => [allTraffic]`) PLUS an `allowOut` allowlist — and that shape is
+// UNMEASURED. Section 16 builds the arm for it. "Unmeasured" is not "probably works": DE-08
+// stays not-delivered, no production path passes a `network` body, and nothing here proposes
+// that one should.
 //
 // ★★★ AND A READ-BACK IS MANDATORY, NOT HYGIENE. `buildNetworkEgress` is a pure
 // passthrough — the SDK validates NOTHING client-side, and the only error path is the HTTP
@@ -1541,4 +1549,368 @@ export function evaluateDurableRecord(workflowText, opts = {}) {
   }
 
   return { violations };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 16. THE ALLOWLIST ARM — the shape E2B DOCUMENTS as the control, never tested
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// ★★★ WHY THIS EXISTS, AND WHY THE FIRST RUN DID NOT ANSWER IT.
+//
+// Run 34085130892 measured ONE shape: a `denyOut` list of CIDRs with NO `allowOut`. It came
+// back inert (E8-F008). That is a real result about THAT shape, and several records then
+// generalised it to "the tier does not honour a network body" — a claim about ALL network
+// bodies, inferred from one.
+//
+// E2B's own documentation (https://docs.e2b.dev/network/internet-access.md) presents the
+// fine-grained control as the OPPOSITE construction: DEFAULT-DENY PLUS AN ALLOWLIST.
+//
+//     denyOut: ({ allTraffic }) => [allTraffic],   // allTraffic === "0.0.0.0/0"
+//     allowOut: ["1.1.1.1", "8.8.8.0/24"]
+//
+// and it states that domains are NOT supported in deny lists — so domain-level filtering
+// REQUIRES this form. It is the shape a real DE-08 control would have to take, and it is
+// exactly the shape nobody has measured.
+//
+// ★ THE RUNBOOK ALREADY KNEW THE MECHANISM AND FILED IT AS A HAZARD. §2 records that "any
+// `allowOut` entry flips the whole policy to default-deny", and treated that as the STOP
+// CONDITION to avoid — because carving the guest's DNS resolver out of a deny set is
+// impossible, and a default-deny that starves the resolver would break the experiment
+// rather than measure it. That reasoning was correct for the deny-set probe. It also means
+// the allowlist shape was never attempted, and "flips to default-deny" is a HAZARD only
+// while the resolver is unnameable. It is nameable: see below.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// THE RESOLVER, WHICH IS WHAT MAKES THE ARM RUNNABLE AT ALL
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The guest's DNS resolver, MEASURED — not assumed, and not read from documentation.
+ *
+ * ★★★ THIS IS THE FACT THE WHOLE ARM TURNS ON. Run 34085130892 read `/etc/resolv.conf`
+ * inside BOTH sandboxes on the `aoa-base` template and both said, verbatim,
+ * `nameserver 8.8.8.8` (probe (c)'s detail, and `observations.resolvConfPolicyArm` /
+ * `observations.resolvConfControlArm` in `W10B-egress-enforcement-result.md`). It is a
+ * static, public, globally-routed address — so unlike a dynamic in-fabric resolver it CAN
+ * be named in an `allowOut` entry, and the documented shape is therefore usable for us.
+ *
+ * ★★ AND THE ARM DOES NOT TRUST THIS CONSTANT. It re-reads `/etc/resolv.conf` inside its own
+ * guest and reports what it finds, and it runs a resolution probe that is independent of any
+ * connect. If a future template moves the resolver, the arm says so instead of silently
+ * measuring a starved sandbox — which would look identical to enforcement.
+ */
+export const MEASURED_GUEST_RESOLVER = "8.8.8.8";
+
+/** The run that measured it, so the constant above can be re-derived rather than believed. */
+export const MEASURED_GUEST_RESOLVER_RUN = "34085130892";
+
+/**
+ * What the allowlist arm ALLOWS. Everything else is denied by the `denyOut: [allTraffic]`
+ * half, which is what makes this the documented shape rather than a second deny list.
+ *
+ * ★ EVERY ENTRY IS HERE FOR A NAMED REASON, and an entry with no reason is an entry that
+ * quietly widens the control until the experiment cannot fail.
+ */
+export const ALLOWLIST_ALLOW_SET = Object.freeze([
+  Object.freeze({
+    value: "8.8.8.0/24",
+    kind: "cidr",
+    why:
+      `contains the MEASURED guest resolver ${MEASURED_GUEST_RESOLVER} (run ${MEASURED_GUEST_RESOLVER_RUN}, /etc/resolv.conf ` +
+      "in both arms). Without it the default-deny half starves name resolution and every row fails for the wrong reason — " +
+      "the exact hazard the runbook's §2 stop condition names. It is also the SDK's own documented example entry.",
+  }),
+  Object.freeze({
+    value: "1.1.1.1",
+    kind: "ip",
+    why:
+      "the arm's POSITIVE CONTROL destination: a stable anycast public address that answers HTTPS and needs NO name " +
+      "resolution, so it separates `the allowlist permits what it names` from `DNS happens to work`.",
+  }),
+  Object.freeze({
+    value: "example.com",
+    kind: "hostname",
+    why:
+      "an OBSERVATION only, never load-bearing. The SDK types accept hostnames in an egress list " +
+      "(`SandboxNetworkSelector` = CIDR blocks, IP addresses, or hostnames) and E2B's docs say domains are unsupported " +
+      "in DENY lists specifically. Whether a hostname allow entry actually works is unmeasured; this row reports it and " +
+      "no verdict rests on it.",
+  }),
+]);
+
+/** Just the strings, in declaration order — the shape `allowOut` takes. */
+export function allowOutEntries(entries) {
+  return (entries ?? []).map((e) => e.value);
+}
+
+/**
+ * The allowlist arm's target set.
+ *
+ * ★★★ THE POSITIVE CONTROL IS NOT OPTIONAL HERE, AND IT IS THE REASON THIS ARM CAN MEAN
+ * ANYTHING. An allowlist that blocks EVERYTHING is byte-indistinguishable from a broken or
+ * dead sandbox: in both, every request fails. Reading "everything failed" as "enforcement
+ * works" is the same error as reading a skipped test suite as a passing one. So the arm asks
+ * both directions, and a run in which the ALLOWED destination was not reached yields NO
+ * verdict on enforcement at all.
+ *
+ * ★★ AND THE DENIED PUBLIC IP IS A WITHIN-ARM DIFFERENTIAL. `1.1.1.1` (allowed) and
+ * `9.9.9.9` (not allowed) are both ordinary anycast public resolvers answering HTTPS from
+ * the same sandbox at the same moment. The ONLY thing that differs between them is whether
+ * the allowlist names them — which is a tighter control than any cross-sandbox comparison,
+ * because no second sandbox has to be assumed identical.
+ */
+export const ALLOWLIST_HTTP_TARGETS = Object.freeze([
+  Object.freeze({
+    id: "allow_ip",
+    role: "positive_control",
+    url: "https://1.1.1.1/",
+    why:
+      "IN the allowlist, by IP literal, so no name resolution is involved. MUST be REACHED. If it is not, the arm is " +
+      "BROKEN and no enforcement verdict may be read from it, however cleanly the denied rows failed.",
+  }),
+  Object.freeze({
+    id: "allow_host",
+    role: "observation",
+    url: "https://example.com/",
+    why:
+      "IN the allowlist by HOSTNAME. Reported, never load-bearing: it answers whether hostname allow entries work, and a " +
+      "failure here is a fact about hostname support, not about enforcement.",
+  }),
+  Object.freeze({
+    id: "deny_metadata",
+    role: "question",
+    url: `http://${METADATA_V4}/latest/meta-data/`,
+    why:
+      "THE MEASUREMENT. NOT in the allowlist. Measured REACHED (HTTP 401) under a deny set naming its own range, and " +
+      "REACHED in the anti-vacuity arm, so a refusal here is attributable to the allowlist shape.",
+  }),
+  Object.freeze({
+    id: "deny_public_ip",
+    role: "question",
+    url: "https://9.9.9.9/",
+    why:
+      "AN ORDINARY PUBLIC DESTINATION, not in the allowlist. Its partner is `allow_ip`: same sandbox, same instant, same " +
+      "kind of destination, differing only in whether the allowlist names it. Without this row a refusal of the metadata " +
+      "endpoint alone could not tell `default-deny is enforced` from `this one destination is special`.",
+  }),
+  Object.freeze({
+    id: "deny_public_host",
+    role: "observation",
+    url: "https://registry.npmjs.org/",
+    why:
+      "a NAME that is not in the allowlist. Its curl exit code separates two very different failures that look alike in a " +
+      "summary: exit 6 means the name could not be resolved AT ALL (the resolver entry did not work), while 7 or 28 means " +
+      "resolution SUCCEEDED and the connection was denied. Read with `dns_lookup`, never alone.",
+  }),
+  Object.freeze({
+    id: "apparatus",
+    role: "apparatus_control",
+    url: "https://aoa-w10b-must-not-resolve.invalid/",
+    why: "RFC 2606 `.invalid`. Must FAIL. If it is REACHED the arm is not reading the network and nothing may be read.",
+  }),
+]);
+
+/** The id of the arm's own positive control, named once so no caller can mistype it. */
+export const ALLOWLIST_POSITIVE_CONTROL_ID = "allow_ip";
+
+/** The rows whose refusal is what "enforced" would mean. Both must agree, or the arm is mixed. */
+export const ALLOWLIST_DENIED_IDS = Object.freeze(["deny_metadata", "deny_public_ip"]);
+
+/**
+ * The DNS-resolution row's outcomes.
+ *
+ * ★ RESOLUTION IS PROBED SEPARATELY FROM EVERY CONNECT, because under a default-deny policy
+ * a failure to resolve and a failure to connect produce the same user-visible "it did not
+ * work" — and they mean opposite things. A failed resolve means the allowlist did not
+ * actually admit the resolver, i.e. the ARM is invalid. A successful resolve followed by a
+ * refused connect is precisely the enforcement being measured.
+ */
+export const DNS_LOOKUP_OUTCOMES = Object.freeze(["resolved", "resolve-failed", "unknown"]);
+
+export function classifyDnsRow(row) {
+  const detail = String(row?.detail ?? "");
+  if (!row || typeof row.exitCode !== "number") return "unknown";
+  if (detail.startsWith("resolved")) return "resolved";
+  if (detail.startsWith("resolve-failed")) return "resolve-failed";
+  return "unknown";
+}
+
+/**
+ * The outcome vocabulary for this arm.
+ *
+ * ★★★ THE UNIT ASKED FOR THREE OUTCOMES AND THIS DECLARES FIVE, DELIBERATELY. Three are the
+ * answers — `enforces`, `inert`, `broken`. The other two are NOT answers and are named
+ * rather than folded into one of the three, because folding them is the massaging that would
+ * make this arm untrustworthy:
+ *
+ *   enforces — the ALLOWED destination was reached AND every denied destination refused.
+ *   inert    — denied destinations were reached. The shape declared a policy and routed the
+ *              traffic anyway, exactly as the deny-set shape did.
+ *   broken   — the sandbox was ALIVE and reached NOTHING, including the destination the
+ *              policy explicitly allowed. An allowlist that blocks everything cannot be
+ *              distinguished from an enforced one, so there is NO verdict. This is a
+ *              legitimate outcome and must be reported as itself.
+ *   mixed    — the denied rows DISAGREED with each other, or the positive control failed
+ *              while a denied destination was reached. Neither `enforces` nor `inert` is
+ *              true; reporting either would be a claim the rows do not support.
+ *   unrun    — the experiment never happened: the arm was not created, the guest could not
+ *              run a local command, or a required row produced no line. Distinct from
+ *              `broken`, which is a live sandbox that reached nothing.
+ */
+export const ALLOWLIST_OUTCOMES = Object.freeze(["enforces", "inert", "broken", "mixed", "unrun"]);
+
+/** Which of the three the operator asked for, if any, an outcome maps to. */
+export const ALLOWLIST_OUTCOME_IS_A_VERDICT = Object.freeze({
+  enforces: true,
+  inert: true,
+  broken: true,
+  mixed: false,
+  unrun: false,
+});
+
+/**
+ * Classify the allowlist arm.
+ *
+ * The order of the guards is the argument. Liveness first, because a dead guest explains
+ * every other row; then the apparatus control, because a probe that is not reading the
+ * network cannot be read; then the rows themselves.
+ *
+ * @param {{arm?: object}} input `arm` carries `created`, `detail`, `liveness`, `rows`,
+ *   `dnsRow`, `resolvConf` and `readBack`, filled by the keyed file.
+ */
+export function classifyAllowlistArm({ arm } = {}) {
+  const rowOf = (id) => arm?.rows?.[id] ?? null;
+  const shown = ALLOWLIST_HTTP_TARGETS.map((t) => {
+    const r = rowOf(t.id);
+    return `${t.id}=${classifyHttpRow(r)}/${blockShape(r)}`;
+  }).join(" ");
+  const dns = classifyDnsRow(arm?.dnsRow);
+  const resolverNote = `dns_lookup=${dns}`;
+  const observedResolvers =
+    typeof arm?.resolvConf?.text === "string" && arm.resolvConf.ok === true ? parseResolvConf(arm.resolvConf.text) : null;
+
+  const out = (outcome, reason, detail) => ({
+    arm: "allowlist",
+    outcome,
+    reason,
+    detail,
+    isVerdict: ALLOWLIST_OUTCOME_IS_A_VERDICT[outcome] === true,
+    rows: shown,
+    dns,
+    resolver: { expected: MEASURED_GUEST_RESOLVER, observed: observedResolvers },
+  });
+
+  // ── (0) THE ARM MUST EXIST ────────────────────────────────────────────────
+  // ★ A create REFUSAL IS A RESULT ABOUT THE SHAPE and its detail carries the status: the
+  // API validates server-side (measured — it refused an IPv6 CIDR with a 400), so a rejected
+  // deny-all-plus-allowlist body would mean the documented shape is not accepted at this
+  // tier at all. It is still `unrun` for verdict purposes: nothing was measured about
+  // enforcement.
+  if (arm?.created !== true) {
+    return out(
+      "unrun",
+      "arm-was-never-created",
+      `Sandbox.create did not return for the allowlist arm: ${String(arm?.detail ?? "no record at all")}. If that is an ` +
+        "HTTP status, it is a RESULT about the documented shape — the tier refused the deny-all-plus-allowlist body — and " +
+        "it should be recorded as such. It is not an enforcement measurement either way.",
+    );
+  }
+
+  // ── (1) THE GUEST MUST BE ALIVE, PROVEN WITHOUT THE NETWORK ───────────────
+  // ★★★ THIS IS THE GUARD THAT SEPARATES `broken` FROM `unrun`, AND IT IS THE ONE THE UNIT
+  // ASKED FOR BY NAME. A local `echo` traverses no egress path. If it does not come back,
+  // the sandbox never really started (or the default-deny took its control channel with it)
+  // and every network row is explained by that, not by a policy.
+  if (arm?.liveness?.ok !== true) {
+    return out(
+      "unrun",
+      "guest-never-answered-a-local-command",
+      `the sandbox was created (${String(arm?.sandboxId ?? "no id")}) but a purely LOCAL command produced no line ` +
+        `(${String(arm?.liveness?.detail ?? "no detail")}). Nothing about the network may be read: an unreachable ` +
+        "destination and an unreachable guest look identical from here.",
+    );
+  }
+
+  // ── (2) THE PROBE MUST BE READING THE NETWORK ─────────────────────────────
+  const apparatus = classifyHttpRow(rowOf("apparatus"));
+  if (apparatus === "no-result") {
+    return out("unrun", "apparatus-row-missing", `the RFC-2606 .invalid row produced no line at all. ${shown}`);
+  }
+  if (apparatus === "reached") {
+    return out(
+      "unrun",
+      "apparatus-control-violated",
+      `the RFC-2606 .invalid host was REACHED, so this arm is not measuring the network and no row may be read. ${shown}`,
+    );
+  }
+
+  // ── (3) EVERY LOAD-BEARING ROW MUST HAVE LANDED ───────────────────────────
+  const required = [ALLOWLIST_POSITIVE_CONTROL_ID, ...ALLOWLIST_DENIED_IDS];
+  const missing = required.filter((id) => classifyHttpRow(rowOf(id)) === "no-result");
+  if (missing.length > 0) {
+    return out("unrun", "load-bearing-rows-missing", `no result line for ${missing.join(", ")}. ${shown} ${resolverNote}`);
+  }
+
+  const positive = classifyHttpRow(rowOf(ALLOWLIST_POSITIVE_CONTROL_ID)) === "reached";
+  const deniedReached = ALLOWLIST_DENIED_IDS.filter((id) => classifyHttpRow(rowOf(id)) === "reached");
+  const deniedRefused = ALLOWLIST_DENIED_IDS.filter((id) => classifyHttpRow(rowOf(id)) === "blocked");
+
+  // ── (4) THE ANSWERS ───────────────────────────────────────────────────────
+  if (positive && deniedReached.length === 0) {
+    return out(
+      "enforces",
+      "allowed-reached-and-every-denied-destination-refused",
+      `★ the DOCUMENTED shape ENFORCES at this tier. The allowlisted destination was REACHED and ` +
+        `${deniedRefused.map((id) => `${id} (${blockShape(rowOf(id))})`).join(", ")} ` +
+        `${deniedRefused.length === 1 ? "was" : "were"} refused from the SAME sandbox at the same moment — including an ` +
+        `ordinary public address whose only difference from the allowed one is that the allowlist does not name it. ` +
+        `${shown} ${resolverNote}. This says nothing about DE-08's delivery: nothing in the product passes a network ` +
+        "body, and adopting one would be a build with its own design, regression and verification questions.",
+    );
+  }
+  if (deniedReached.length === ALLOWLIST_DENIED_IDS.length) {
+    return out(
+      "inert",
+      "denied-destinations-still-reachable",
+      `the DOCUMENTED shape is INERT at this tier too: ${deniedReached.join(", ")} ${deniedReached.length === 1 ? "was" : "were"} ` +
+        `REACHED from a sandbox whose policy denied all traffic and allowed only ${allowOutEntries(ALLOWLIST_ALLOW_SET).join(", ")}. ` +
+        `Positive control ${positive ? "held" : "did NOT hold, which is noted but does not change this: reaching a destination the policy excluded is decisive on its own"}. ` +
+        `${shown} ${resolverNote}`,
+    );
+  }
+  if (deniedReached.length > 0) {
+    return out(
+      "mixed",
+      "the-denied-rows-disagree",
+      `NO VERDICT. ${deniedReached.join(", ")} was REACHED while ${deniedRefused.join(", ") || "nothing"} was refused, so the ` +
+        "shape neither enforced nor was inert as a whole. Reporting either would be a claim these rows do not support; the " +
+        `pattern is the finding. ${shown} ${resolverNote}`,
+    );
+  }
+  // Nothing denied was reached, and the positive control did not hold.
+  if (dns === "resolve-failed") {
+    return out(
+      "broken",
+      "nothing-reachable-and-name-resolution-failed",
+      `★ BROKEN, and the cause is named: the guest resolved NO name (${resolverNote}), so the allowlist did not in fact ` +
+        `admit the resolver — the arm starved its own experiment. Expected resolver ${MEASURED_GUEST_RESOLVER}; the guest ` +
+        `reported ${JSON.stringify(observedResolvers)}. If those differ, the constant is stale and the ` +
+        "allow set needs the observed address. NO enforcement verdict: an allowlist that blocks everything is " +
+        `indistinguishable from an enforced one. ${shown}`,
+    );
+  }
+  return out(
+    "broken",
+    "nothing-reachable-including-the-allowed-destination",
+    `★ BROKEN. The guest was ALIVE (a local command answered) and reached NOTHING — not even ${ALLOWLIST_POSITIVE_CONTROL_ID}, ` +
+      "the destination this policy explicitly ALLOWS. So the arm cannot tell an enforced allowlist from a sandbox with no " +
+      `egress at all, and it reports NO verdict rather than the flattering one. ${shown} ${resolverNote}`,
+  );
+}
+
+/** The arm's headline, formatted so it cannot be skimmed past in the report. */
+export function formatAllowlistOutcome(result) {
+  const r = result ?? { outcome: "unrun", reason: "no-result-object", detail: "", rows: "", dns: "unknown" };
+  const banner = r.isVerdict ? String(r.outcome).toUpperCase() : `${String(r.outcome).toUpperCase()} — NO VERDICT`;
+  return `ALLOWLIST ARM (the shape E2B documents): ${banner} — ${r.reason}\n    ${r.detail}`;
 }

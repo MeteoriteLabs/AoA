@@ -42,8 +42,19 @@ name: Keyed E2B — W10B DE-08 egress-enforcement probe
 # ★★★ IT HAS NOW ANSWERED, ONCE: run 34085130892 (2026-09-07, ab23eabdc, template aoa-base) —
 # a=no b=yes c=no d=no e=no regression=no, DECISION abandon (denyout-is-inert-at-this-tier).
 # The tier accepts, validates, stores and echoes the deny set and enforces none of it. Finding
-# E8-F008; operator record in the runbook §12. Re-firing on the SAME tier is expected to
-# reproduce it and spends an authorisation the founder gives individually.
+# E8-F008; operator record in the runbook §12.
+#
+# ★★★ AND A FIFTH ARM WAS ADDED 2026-09-09 (W10B-B) THAT HAS NEVER RUN, so "re-firing adds
+# nothing" is NO LONGER TRUE. (a)–(e) declare a `denyOut` CIDR list with NO `allowOut`; E2B
+# documents the fine-grained control as default-deny PLUS an `allowOut` allowlist, and that
+# shape is UNMEASURED. The ALLOWLIST ARM measures it, with a POSITIVE CONTROL (an allowlisted
+# destination that must be REACHED — otherwise a total failure to connect would read as
+# enforcement), a LIVENESS row that separates `blocked` from `dead`, and its own vocabulary:
+# ENFORCES / INERT / BROKEN, plus two explicit no-verdict states. It takes NO part in
+# DISPOSITION, so a BROKEN arm cannot red a lane that answered every question. Operator
+# instructions, cost and what each outcome would mean: runbook §13. Firing this lane still
+# spends an authorisation the founder gives individually, and UNMEASURED is not "probably
+# works" — DE-08 stays not-delivered and nothing in the product passes a network body.
 #
 # ★★★ AND A READ-BACK IS MANDATORY. The SDK validates nothing client-side
 # (`buildNetworkEgress` is a pure passthrough; the only error path is the HTTP status) and the

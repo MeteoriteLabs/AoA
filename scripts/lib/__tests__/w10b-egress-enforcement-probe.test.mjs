@@ -57,6 +57,18 @@ import {
   evaluateDurableRecord,
   formatVerdict,
   ipv4InCidr,
+  ALLOWLIST_ALLOW_SET,
+  ALLOWLIST_DENIED_IDS,
+  ALLOWLIST_HTTP_TARGETS,
+  ALLOWLIST_OUTCOMES,
+  ALLOWLIST_OUTCOME_IS_A_VERDICT,
+  ALLOWLIST_POSITIVE_CONTROL_ID,
+  DNS_LOOKUP_OUTCOMES,
+  MEASURED_GUEST_RESOLVER,
+  allowOutEntries,
+  classifyAllowlistArm,
+  classifyDnsRow,
+  formatAllowlistOutcome,
   looksLikeIpv6,
   packDisposition,
   parseIpv4,
@@ -964,3 +976,220 @@ test("evaluateDurableRecord finds every violation it exists to find", () => {
 // mechanisms for one invariant — the weaker of which would be the one a reader trusts,
 // because it is the one named in the step comment. Do not reintroduce a check here. If
 // the ban needs to grow, grow `scripts/w10a-sdk-capability-premise.json`.
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 16. THE ALLOWLIST ARM — the shape E2B documents, and the reasons it can mean anything
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// ★★★ THE ARM'S WHOLE VALUE IS THAT `broken` CANNOT BE MISTAKEN FOR `enforces`, so that is
+// what most of this section drives. An allowlist that blocks everything and a sandbox with no
+// egress produce IDENTICAL rows; only the positive control and the liveness probe separate
+// them, and a classifier that quietly rounded "nothing reached" up to "enforced" would
+// manufacture a security result out of an apparatus failure. Every guard below is a case that
+// must NOT be allowed to read as enforcement.
+
+/** A green ENFORCES baseline. Every negative case below perturbs exactly one thing. */
+function allowlistArmFixture(overrides = {}) {
+  return {
+    label: "A/allowlist",
+    created: true,
+    detail: "",
+    sandboxId: "isandboxid",
+    liveness: { ok: true, detail: "a local command ran and its line parsed" },
+    dnsRow: row("dns_lookup", 0, "resolved registry.npmjs.org -> 1.2.3.4"),
+    resolvConf: { ok: true, text: `nameserver ${MEASURED_GUEST_RESOLVER}\n`, detail: "" },
+    readBack: { ok: true, denyOut: ["0.0.0.0/0"], network: {}, detail: "" },
+    rows: {
+      allow_ip: reached("allow_ip"),
+      allow_host: reached("allow_host"),
+      deny_metadata: timedOut("deny_metadata"),
+      deny_public_ip: refused("deny_public_ip"),
+      deny_public_host: refused("deny_public_host"),
+      apparatus: dnsFailed("apparatus"),
+    },
+    ...overrides,
+  };
+}
+
+test("the allow set names the MEASURED guest resolver, or the arm starves its own experiment", () => {
+  // ★★★ THIS IS THE ARM'S LOAD-BEARING FACT AND IT IS A MEASUREMENT, NOT A GUESS: run
+  // 34085130892 read `nameserver 8.8.8.8` from /etc/resolv.conf in BOTH sandboxes. Because
+  // `denyOut: [allTraffic]` denies everything not named in `allowOut`, an allow set that
+  // omits the resolver breaks name resolution and every row fails for a reason that has
+  // nothing to do with enforcement — the runbook's own §2 hazard, arriving from the other
+  // side.
+  const entries = allowOutEntries(ALLOWLIST_ALLOW_SET);
+  assert.ok(entries.some((cidr) => ipv4InCidr(MEASURED_GUEST_RESOLVER, cidr)), `no allowOut entry contains ${MEASURED_GUEST_RESOLVER}: ${entries.join(", ")}`);
+  // Every entry carries a stated reason. An entry with no reason widens the control silently.
+  for (const entry of ALLOWLIST_ALLOW_SET) {
+    assert.ok(typeof entry.why === "string" && entry.why.length > 20, `allow entry ${entry.value} has no real reason`);
+    assert.ok(["cidr", "ip", "hostname"].includes(entry.kind));
+  }
+});
+
+test("the allowlist targets form a real differential: the positive control is allowed, the denied ones are not", () => {
+  const entries = allowOutEntries(ALLOWLIST_ALLOW_SET);
+  const hostOf = (url) => /^https?:\/\/(\d+\.\d+\.\d+\.\d+)\//.exec(url)?.[1] ?? "";
+
+  const positive = ALLOWLIST_HTTP_TARGETS.find((t) => t.id === ALLOWLIST_POSITIVE_CONTROL_ID);
+  assert.ok(positive, "the arm has no positive control");
+  assert.equal(positive.role, "positive_control");
+  assert.ok(entries.some((cidr) => ipv4InCidr(hostOf(positive.url), cidr)), "the positive control is not in the allow set");
+
+  for (const id of ALLOWLIST_DENIED_IDS) {
+    const target = ALLOWLIST_HTTP_TARGETS.find((t) => t.id === id);
+    assert.ok(target, `denied id ${id} names no target`);
+    assert.equal(target.role, "question");
+    // ★ CIDR CONTAINMENT, not string comparison: a denied host inside an allowed /24 would
+    // be spelt differently, read as "not in the list", and the arm would report INERT on a
+    // destination its own policy permitted.
+    assert.equal(entries.some((cidr) => ipv4InCidr(hostOf(target.url), cidr)), false, `${id} is inside the allow set`);
+  }
+  // An apparatus control is mandatory here for the same reason it is in the deny arms.
+  assert.ok(ALLOWLIST_HTTP_TARGETS.some((t) => t.role === "apparatus_control"));
+});
+
+test("classifyDnsRow reads only the helper's own vocabulary, never prose", () => {
+  assert.equal(classifyDnsRow(row("dns_lookup", 0, "resolved a -> 1.2.3.4")), "resolved");
+  assert.equal(classifyDnsRow(row("dns_lookup", 0, "resolve-failed gaierror")), "resolve-failed");
+  assert.equal(classifyDnsRow(row("dns_lookup", 0, "no-resolver-tool")), "unknown");
+  assert.equal(classifyDnsRow(null), "unknown");
+  // Prose that merely CONTAINS the word must not classify: only a prefix counts.
+  assert.equal(classifyDnsRow(row("dns_lookup", 0, "we hoped it resolved")), "unknown");
+  assert.deepEqual([...DNS_LOOKUP_OUTCOMES], ["resolved", "resolve-failed", "unknown"]);
+});
+
+test("ENFORCES requires BOTH directions: the allowed destination reached and every denied one refused", () => {
+  const r = classifyAllowlistArm({ arm: allowlistArmFixture() });
+  assert.equal(r.outcome, "enforces");
+  assert.equal(r.isVerdict, true);
+  assert.match(r.detail, /ENFORCES/);
+  // The headline must say what it is, not merely carry it in a field.
+  assert.match(formatAllowlistOutcome(r), /ALLOWLIST ARM .*ENFORCES/);
+});
+
+test("★ BROKEN, not ENFORCES: a live guest that reached NOTHING yields no verdict", () => {
+  // ★★★ THE CASE THIS ARM EXISTS FOR. Every denied destination failed — which, read alone,
+  // looks exactly like a working default-deny. It is not: the destination the policy
+  // explicitly ALLOWS failed too, so the arm cannot tell an enforced allowlist from a sandbox
+  // with no egress at all, and it must say so instead of reporting the flattering answer.
+  const arm = allowlistArmFixture();
+  arm.rows.allow_ip = timedOut("allow_ip");
+  const r = classifyAllowlistArm({ arm });
+  assert.equal(r.outcome, "broken");
+  assert.notEqual(r.outcome, "enforces");
+  assert.match(r.detail, /BROKEN/);
+  assert.match(formatAllowlistOutcome(r), /BROKEN/);
+  // BROKEN is still one of the three the unit asked for — it is a legitimate outcome, and
+  // marking it "not a verdict" would be the opposite over-correction.
+  assert.equal(r.isVerdict, true);
+});
+
+test("★ BROKEN names the cause when name resolution itself failed", () => {
+  // The most likely way this arm breaks is that `allowOut` did not in fact admit the
+  // resolver. When that happens the arm must say WHICH failure it was, so an operator does
+  // not re-spend an authorisation guessing.
+  const arm = allowlistArmFixture();
+  arm.rows.allow_ip = timedOut("allow_ip");
+  arm.dnsRow = row("dns_lookup", 0, "resolve-failed gaierror");
+  const r = classifyAllowlistArm({ arm });
+  assert.equal(r.outcome, "broken");
+  assert.match(r.reason, /name-resolution-failed/);
+  assert.match(r.detail, /starved its own experiment/);
+});
+
+test("★ UNRUN, not BROKEN: a guest that never answered a LOCAL command is an apparatus failure", () => {
+  // ★★ THE DISCRIMINATOR THE WHOLE DESIGN TURNS ON. A dead sandbox and an enforced allowlist
+  // both reach nothing. Only a command that traverses no egress path separates them, and
+  // without this guard "the sandbox never started" would be reported as a network result.
+  const arm = allowlistArmFixture();
+  arm.liveness = { ok: false, detail: "no line" };
+  arm.rows.allow_ip = timedOut("allow_ip");
+  const r = classifyAllowlistArm({ arm });
+  assert.equal(r.outcome, "unrun");
+  assert.equal(r.isVerdict, false);
+  assert.match(r.reason, /guest-never-answered-a-local-command/);
+  assert.match(formatAllowlistOutcome(r), /NO VERDICT/);
+});
+
+test("INERT: denied destinations reached means the documented shape enforces nothing either", () => {
+  const arm = allowlistArmFixture();
+  arm.rows.deny_metadata = reached("deny_metadata", "401");
+  arm.rows.deny_public_ip = reached("deny_public_ip", "200");
+  const r = classifyAllowlistArm({ arm });
+  assert.equal(r.outcome, "inert");
+  assert.equal(r.isVerdict, true);
+  // Reaching an excluded destination is decisive on its own, so a simultaneously-failed
+  // positive control does not turn this into "broken".
+  const armNoPositive = allowlistArmFixture();
+  armNoPositive.rows.deny_metadata = reached("deny_metadata", "401");
+  armNoPositive.rows.deny_public_ip = reached("deny_public_ip", "200");
+  armNoPositive.rows.allow_ip = timedOut("allow_ip");
+  assert.equal(classifyAllowlistArm({ arm: armNoPositive }).outcome, "inert");
+});
+
+test("★ MIXED is named rather than rounded to either answer", () => {
+  // One denied destination reached and one refused supports NEITHER conclusion. Rounding it
+  // to `enforces` would be a false claim of enforcement; rounding it to `inert` would throw
+  // away a real refusal. The pattern is the finding, so the pattern is what is reported.
+  const arm = allowlistArmFixture();
+  arm.rows.deny_metadata = reached("deny_metadata", "401");
+  const r = classifyAllowlistArm({ arm });
+  assert.equal(r.outcome, "mixed");
+  assert.equal(r.isVerdict, false);
+  assert.match(r.detail, /NO VERDICT/);
+});
+
+test("UNRUN covers a refused create and a violated apparatus control, and both are named", () => {
+  // A create REFUSED by the API is a RESULT about the documented shape — it would mean the
+  // tier does not accept deny-all-plus-allowlist at all — but it is not an enforcement
+  // measurement, so it may never be reported as one.
+  const refusedCreate = classifyAllowlistArm({ arm: allowlistArmFixture({ created: false, detail: "SandboxError: 400: invalid allowed host" }) });
+  assert.equal(refusedCreate.outcome, "unrun");
+  assert.match(refusedCreate.detail, /400/);
+
+  const armApparatus = allowlistArmFixture();
+  armApparatus.rows.apparatus = reached("apparatus", "200");
+  const violated = classifyAllowlistArm({ arm: armApparatus });
+  assert.equal(violated.outcome, "unrun");
+  assert.match(violated.reason, /apparatus-control-violated/);
+
+  // A missing load-bearing row is never a silent pass.
+  const armMissing = allowlistArmFixture();
+  armMissing.rows.deny_metadata = null;
+  const missing = classifyAllowlistArm({ arm: armMissing });
+  assert.equal(missing.outcome, "unrun");
+  assert.match(missing.reason, /load-bearing-rows-missing/);
+
+  assert.equal(classifyAllowlistArm({}).outcome, "unrun");
+});
+
+test("the outcome vocabulary, and which words are verdicts, is pinned", () => {
+  // ★ If `mixed` or `unrun` ever became a verdict, a run that measured nothing would start
+  // reading as one that measured something — which is precisely the class of defect this
+  // programme keeps re-finding.
+  assert.deepEqual([...ALLOWLIST_OUTCOMES].sort(), ["broken", "enforces", "inert", "mixed", "unrun"]);
+  assert.equal(ALLOWLIST_OUTCOME_IS_A_VERDICT.enforces, true);
+  assert.equal(ALLOWLIST_OUTCOME_IS_A_VERDICT.inert, true);
+  assert.equal(ALLOWLIST_OUTCOME_IS_A_VERDICT.broken, true);
+  assert.equal(ALLOWLIST_OUTCOME_IS_A_VERDICT.mixed, false);
+  assert.equal(ALLOWLIST_OUTCOME_IS_A_VERDICT.unrun, false);
+  // Every outcome the classifier can emit is in the declared vocabulary.
+  for (const outcome of [
+    classifyAllowlistArm({ arm: allowlistArmFixture() }).outcome,
+    classifyAllowlistArm({}).outcome,
+  ]) {
+    assert.ok(ALLOWLIST_OUTCOMES.includes(outcome));
+  }
+});
+
+test("★ the allowlist arm takes NO part in the pack's disposition", () => {
+  // ★★★ A BROKEN ARM MUST NOT RED A LANE THAT ANSWERED EVERY QUESTION IT WAS DISPATCHED FOR.
+  // `packDisposition` reads verdict objects with a `state`; the arm's result carries an
+  // `outcome` and no `state`, which is what structurally keeps it out. Asserted rather than
+  // assumed, because a later edit that gave it a `state` would silently start reding the
+  // lane on a legitimate outcome.
+  const r = classifyAllowlistArm({ arm: allowlistArmFixture() });
+  assert.equal(r.state, undefined);
+  assert.equal(packDisposition([{ probe: "a", state: "no", reason: "r", detail: "" }]).disposition, "measured");
+});
