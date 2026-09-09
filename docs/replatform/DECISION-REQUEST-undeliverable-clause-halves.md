@@ -62,6 +62,33 @@ the same error at a smaller scale, and §4 fixes it.
 Nothing below is inherited from `E0-F013`'s Group D, from the register's `deliveryEvidence`, or from
 the Decision 2 paper. Each is re-run at tip.
 
+### ★★★ 1.1 THAT PROMISE WAS BROKEN TWICE, AND THIS IS WHERE IT SAYS SO
+
+**The first draft of this paper inherited from `deliveryEvidence` in two places, and in both places
+what it inherited was stale.** Both were caught on review and both are corrected below rather than
+footnoted. They are recorded here, at the promise, because a method section that states a rule and
+does not record its own violations is the weaker half of the failure this paper is about.
+
+1. **The `SVC-*` census (§2.5, §4.3, §4.4, Decision 1.3).** *"All three ownerTickets have ZERO files
+   on disk — the only crossing in the register with no on-disk owner ticket at all — and the only
+   authored `SVC` ticket disclaims it in writing"* is **the register's own DE-12 `deliveryEvidence`,
+   reproduced element for element in the same order.** It was true when W20 measured it at
+   `360d0b0ed` (2026-09-08 15:47). **`SVC-002-design.md` (604 lines) and `SVC-002-terrain.md` (350
+   lines) landed nine hours later in `08746b160` (PR #388, 2026-09-09 00:23) — before this paper's
+   own branch point.** The census is re-run from scratch in §4.3 and every assertion that depended on
+   it is corrected. ★ **This is the paper's own thesis turned on itself: a census must be re-run, not
+   inherited, and the one the paper did not re-run is the one that was wrong.**
+2. **DE-11's access citations (§6.1, conjunct 5a).** The file:line list under "access is gated and
+   denies" reproduced DE-11's `deliveryEvidence` verbatim — same lines, same parentheticals, same
+   order — and **two of the three had moved**. Re-verified at source and corrected in §6.1, which
+   records what each cited line actually is.
+
+**The tell in both cases is the same and is worth naming for the next reader: an inherited citation
+reads as measured because it is precise.** A line number is not evidence of a measurement; it is
+evidence that *someone* measured, once, at a tip that may not be yours. Conjunct 5b of §6.1 is the
+control — it re-measured, found the register's `artifact-commit.ts:172-173` had moved to `:259-260`,
+and is right. The two that were inherited are the two that are wrong.
+
 ---
 
 ## 2. DE-01 (Critical) — the read-denial conjunct
@@ -145,11 +172,13 @@ honest *and* leaves a chartered route to partial detection.
 
 **★ THE STRONGEST ARGUMENT AGAINST (c).** *A chartered-but-unscheduled verifier is this programme's
 own worst failure class.* A clause that says "declined on the serving path, offline verifier
-chartered" reads as covered while the verifier has zero files — which is exactly what `DE-12`'s
-three `SVC-*` ownerTickets do today (`SVC-002`, `SVC-003`, `SVC-005`: **zero files on disk**, the
-only crossing in the register with no on-disk owner ticket at all). If the founder is not prepared
-to fund the verifier in a named wave, **take (a) plain and write the loss down** — a stated,
-unmitigated gap is worth more than a mitigation that never lands.
+chartered" reads as covered while the verifier has zero files — which is what `DE-12`'s `SVC-003`
+and `SVC-005` do today (**zero files on disk**, re-measured in §4.3), and what `SVC-002` does in the
+more instructive way: it has **954 lines of design and terrain and no implementation**, and its
+design hands the very mechanisms `DE-12` names to the two tickets that have nothing. **A chartered
+ticket is not a funded one, and a designed ticket is not a built one.** If the founder is not
+prepared to fund the verifier in a named wave, **take (a) plain and write the loss down** — a
+stated, unmitigated gap is worth more than a mitigation that never lands.
 
 ---
 
@@ -268,7 +297,7 @@ amendment that drops only "generation changes" leaves two vacuous conjuncts stan
 
 **(a) AMEND.** Exact replacement text:
 
-> `"audit": "partition, drain, and generation changes are audited. ★ AMENDED <date> by founder ruling (E0-F013 Decision 1). ALL THREE CONJUNCTS ARE DROPPED AS VACUOUS, and the clause now asserts NOTHING pending the controls it depends on. Measured whole-tree at tip: (1) 'partition' -- no replica identity and no partition detector exist (replicaId|replica_id|AOA_CONTROL_PLANE_REPLICA|controlPlaneId returns zero hits), so no partition event exists; (2) 'drain' -- there is no service reconciler, no instance fence and no drain, so no drain event exists; (3) 'generation changes' -- services.generation has NO WRITER anywhere in the tree (update(services) returns zero hits; the column is notNull().default(1) at packages/db/src/schema/services.ts:26 and is read only as a WHERE predicate at packages/db/src/repositories/tenant/job-control.ts:1675), so no generation ever changes. ★ THIS IS AN AUDIT CLAUSE WITH NOTHING TO AUDIT, NOT AN AUDIT GAP: the three components this row's control names -- 'desired-state reconciler, generation, active fence' -- are themselves unbuilt (E0-F011). This clause becomes deliverable only when SVC-002/SVC-003/SVC-005 build them, and all three ownerTickets have ZERO FILES ON DISK. Do not read the drop as coverage."`
+> `"audit": "partition, drain, and generation changes are audited. ★ AMENDED <date> by founder ruling (E0-F013 Decision 1). ALL THREE CONJUNCTS ARE DROPPED AS VACUOUS, and the clause now asserts NOTHING pending the controls it depends on. Measured whole-tree at tip: (1) 'partition' -- no replica identity and no partition detector exist (replicaId|replica_id|AOA_CONTROL_PLANE_REPLICA|controlPlaneId returns zero hits), so no partition event exists; (2) 'drain' -- there is no service reconciler, no instance fence and no drain, so no drain event exists; (3) 'generation changes' -- services.generation has NO WRITER anywhere in the tree (update(services) returns zero hits; the column is notNull().default(1) at packages/db/src/schema/services.ts:26 and is read only as a WHERE predicate at packages/db/src/repositories/tenant/job-control.ts:1675), so no generation ever changes. ★ THIS IS AN AUDIT CLAUSE WITH NOTHING TO AUDIT, NOT AN AUDIT GAP: the three components this row's control names -- 'desired-state reconciler, generation, active fence' -- are themselves unbuilt (E0-F011). This clause becomes deliverable only when SVC-002/SVC-003/SVC-005 build them, and NONE OF THE THREE IS BUILT: SVC-003 and SVC-005 have ZERO FILES ON DISK, and SVC-002 has design + terrain only (SVC-002-design.md, 604 lines, Status 'designed, NOT implemented' with three open questions unsettled; SVC-002-terrain.md, 350 lines; no result file). ★ AND SVC-002'S DESIGN WOULD NOT CLOSE THIS CLAUSE EVEN IF IMPLEMENTED EXACTLY AS WRITTEN, BY ITS OWN SCOPE-OUTS: it hands the instance fence to SVC-003 (SVC-002-design.md:481-485, :435, :438-439) and the generation rollout, pause and drain to SVC-005 (:489-492), and its only use of generation is a FOR UPDATE interlock AGAINST a bump SVC-005 performs (:123, :187). Its own words at :490-491: 'SVC-002 reads generation under a row lock and never bumps it; services.generation still has no writer after this ticket.' Do not read the drop as coverage, and do not read SVC-002's design as the writer arriving."`
 
 - **What is lost, and who is harmed.** **Nothing that exists today.** A vacuous conjunct protects
   nobody; dropping it removes a *false* assertion, not a real guarantee. The genuine risk is the
@@ -277,11 +306,53 @@ amendment that drops only "generation changes" leaves two vacuous conjuncts stan
   its `E0-F011` reference intact.
 
 **(b) CHARTER.** Build the desired-state reconciler, the instance fence and the drain — i.e. build
-`SVC-002`, `SVC-003` and `SVC-005`, which have **zero files between them**. This is not an audit
-ticket; it is the service-lifecycle epic. **Does the programme intend to build it?** The only
-authored `SVC` ticket **explicitly disclaims this crossing in writing**
-(`SVC-001-terrain.md:216-218`), and its `releaseTest` `REL-002` and its `verificationLane` D4 are
-both unwritten. On the evidence, **no.**
+`SVC-002`, `SVC-003` and `SVC-005`.
+
+**★★★ THE CENSUS, RE-RUN — because the first draft inherited it and it was stale.** The first draft
+said these three had *"zero files between them"* and that `DE-12` was *"the only crossing in the
+register with no on-disk owner ticket at all"*. **That is DE-12's own `deliveryEvidence`,
+reproduced.** It was true at `360d0b0ed`; it is **false at this paper's branch point.** Re-measured
+here with `git ls-tree -r --name-only 743c30f08 | grep -i 'svc-'` — the whole tree, not the ticket
+directory alone:
+
+| Ticket | Files at `743c30f08` | Lines |
+|---|---|---|
+| `SVC-001` | `SVC-001-design.md`, `SVC-001-result.md`, `SVC-001-terrain.md` | 292 / 227 / 241 |
+| ★ **`SVC-002`** | ★ **`SVC-002-design.md`, `SVC-002-terrain.md`** | ★ **604 / 350** |
+| `SVC-003` | **none** | — |
+| `SVC-004` | **none** | — |
+| `SVC-005` | **none** | — |
+| `SVC-006`, `SVC-007` | **none** | — |
+| `SVC-008` / `-008a` / `-008b` | `SVC-008-design.md`, `SVC-008a-design.md`, `SVC-008b-result.md` (+5 test files under `packages/`) | 785 / 951 / 248 |
+
+So: **`SVC-003` and `SVC-005` have zero files — `SVC-002` has 954 lines of design and terrain**, it
+landed in `08746b160` (PR #388) nine hours after the register measured it absent, and it is
+`Status: designed, NOT implemented` with **three open questions (§10) stated and unsettled** and no
+result file. `REL-002` and the D4 lane are **still** unwritten (re-verified: no `REL-002` file exists
+anywhere in the tree). `SVC-001-terrain.md:216-218` does say `DE-12` is *"owned by SVC-002/003/005 —
+SVC-001 owns no control there"*, which is a fair scope-out — but **"the only authored `SVC` ticket"
+is now false**, and it was the phrase doing the work.
+
+**★ Does the programme intend to build it? THE ANSWER CHANGES, AND IT SPLITS THREE WAYS — and the
+new evidence is STRONGER for this option's rejection than the empty census was.**
+
+- **The reconciler (the subject of conjunct 3b's "drain" and the row's `control`): YES, intended —
+  designed, not built.** A 604-line design exists and it is serious. `SVC-002-design.md:123` and
+  `:187` design a `SELECT … FOR UPDATE` interlock precisely so *"a concurrent SVC-005 generation
+  bump cannot land between the read and the insert"* — i.e. it plans around **exactly** the
+  mechanism this clause names. **This is evidence the other way and it is recorded as such.**
+- **The generation writer (conjunct 3c): NO — and now on the record, in the design's own words.**
+  `SVC-002-design.md:489-491` scopes generation rollout, pause and drain **out**, to `SVC-005`:
+  *"SVC-002 reads `generation` under a row lock and never bumps it; **`services.generation` still
+  has no writer after this ticket.**"* The one authored owner ticket states that **shipping it in
+  full leaves conjunct 3c exactly as vacuous as it is today**, and hands the writer to a ticket with
+  zero files.
+- **The instance fence (the row's third named component) and the partition detector (conjunct 3a):
+  NO evidence of intent.** The fence is scoped out to `SVC-003` (`:481-485`, `:435`, `:438-439`),
+  which has zero files; no `SVC` ticket mentions a partition detector at all.
+
+**On the evidence: partly yes, and not for the parts this clause needs.** That is a weaker "no" than
+the first draft's, and a better-evidenced one.
 
 **(c) THIRD PATH — none worth naming.** There is no conjunct here to split off and close; splitting
 requires at least one deliverable side, and all three are vacuous.
@@ -292,6 +363,39 @@ requires at least one deliverable side, and all three are vacuous.
 as its owner, and make the amendment say in terms that the *control* is unbuilt so the audit clause
 has no subject.
 
+**★★★ DOES THIS RECOMMENDATION SURVIVE THE CORRECTED CENSUS? YES — AND HERE IS WHY IT SURVIVES
+WITHOUT IT.** The correction is stated first and the conclusion is re-derived from scratch, because
+patching a number and leaving the conclusion it supported standing is the move this paper exists to
+refuse.
+
+**The recommendation never rested on the census, and it must not be read as having done so.** (a)
+rests on **vacuity**, and vacuity is a measurement of the **source tree**, not of the ticket
+directory. Re-run independently at `743c30f08`, each on its own:
+
+- `update(services)` → **zero hits** whole-tree, tests included. `insert(services)` → exactly two
+  (`packages/db/src/repositories/tenant/index.ts`, one adversarial test). So **no generation ever
+  changes.**
+- No service-reconciler source file exists under `server/` or `packages/`
+  (`packages/adapter-manager/src/reconcile-reaper.ts` is the orphan-**sandbox** reaper, a different
+  mechanism on a different boundary).
+- `replicaId|replica_id|AOA_CONTROL_PLANE_REPLICA|controlPlaneId` → **zero hits.**
+
+**A design document is not a writer.** 954 lines of `SVC-002` change none of those three numbers,
+and the amendment they justify is unchanged: all three conjuncts assert events that cannot occur.
+
+**What the census DID support was the rejection of option (b)** — *"does the programme intend to
+build it?"* — and **on the corrected evidence (b) is rejected more firmly, not less.** The first
+draft rejected (b) because nobody had started. The measured reason is better: **the one owner ticket
+that HAS started scopes the generation writer OUT in writing** — *"`services.generation` still has no
+writer after this ticket"* (`SVC-002-design.md:490-491`) — and hands it, with the fence and the
+drain, to `SVC-003` and `SVC-005`, which have zero files. Chartering (b) to save this clause would
+therefore mean chartering the two tickets nobody has begun, **not** funding the one that exists.
+
+**What DOES change is the amendment's tense, and it is changed in §4.3's text.** With a live design
+on disk, the drop must not read as permanent: the replacement text now says the three components are
+unbuilt **and** that `SVC-002`'s design would not close the clause even if shipped as written. That
+is a sharper claim than "zero files", and it is the one a future reader needs.
+
 **★ THE STRONGEST ARGUMENT AGAINST (a).** *A Critical crossing whose entire audit clause is dropped
 is a Critical crossing that now asserts less than a Low one — and the honest response to "the
 control is unbuilt" is to build it, not to edit the register down to match.* If `DE-12`'s
@@ -301,8 +405,12 @@ register's job is to keep saying so loudly until someone funds `SVC-002`. Agains
 field that the register's own note defines as "a charter, not a report" — so the amendment moves
 the charter to match the intent while `deliveryEvidence` keeps the alarm. **This argument is strong
 enough that the founder should consider a variant of (a) that drops the conjuncts but ALSO
-re-raises `E0-F011`'s visibility** — the loss here is not in the register, it is in the empty
-`SVC-*` tickets.
+re-raises `E0-F011`'s visibility** — the loss here is not in the register, it is in `SVC-003` and
+`SVC-005` having zero files while the one designed owner ticket, `SVC-002`, explicitly leaves
+`services.generation` writerless. ★ **The corrected census strengthens this objection rather than
+weakening it:** there is now a live, serious design to attach an escalation to, so "raise
+`E0-F011`'s visibility" is no longer a gesture at an empty directory — it is a request to fund
+`SVC-003`/`SVC-005` behind a reconciler someone has already thought through.
 
 ---
 
@@ -317,7 +425,7 @@ re-raises `E0-F011`'s visibility** — the loss here is not in the register, it 
 | # | Conjunct | Verdict | Why, measured at tip |
 |---|---|---|---|
 | 4a | **"cutover selection … audited"** | ★ **HALF DELIVERED, and the missing half is CLOSABLE TODAY. Not a Decision 1 item.** | A **distributed** selection writes one `distributed_execution_handoff` heartbeat-run event (`server/src/services/heartbeat.ts:6937`). A **legacy** selection — the other arm of the same decision — writes nothing: the non-suppressed path falls straight to `adapter.execute` at `heartbeat.ts:5453`. Both arms sit in `heartbeat.ts`, which is on the control plane, holds a db handle, is async, and already owns the event writer. **This is a wiring job in the same file, not a decision.** |
-| 4b | **"… rollback transitions are audited"** | **UNDELIVERABLE — vacuous.** | Re-measured whole-tree at tip: `createDistributedExecutionDrain` has **zero production callers** — the census returns its declaration (`server/src/services/job-distributed-drain.js:114`), two test files, and nothing else. Removing an organization from the rollout dial cancels nothing in flight; it only changes what the **next** wake resolves. **There is no rollback transition, so there is no transition event.** |
+| 4b | **"… rollback transitions are audited"** | **UNDELIVERABLE — vacuous.** | Re-measured whole-tree at tip: `createDistributedExecutionDrain` has **zero production callers** — the census returns its declaration (`server/src/services/job-distributed-drain.ts:114`), two test files, and nothing else. Removing an organization from the rollout dial cancels nothing in flight; it only changes what the **next** wake resolves. **There is no rollback transition, so there is no transition event.** |
 
 **★ Conjunct 4a does not belong in Decision 1.** `E0-F013` files "DE-20's rollback half" — correctly
 — but a founder ruling that treats `DE-20` as a Decision 1 row risks the selection conjunct being
@@ -391,14 +499,44 @@ are themselves absent (`E8-F011`). Nothing decides, so there is nothing to recor
 
 | # | Conjunct | Verdict | The decision that exists |
 |---|---|---|---|
-| 5a | **"sensitive-artifact access … audited"** | **ABSENT, but DECISIONS EXIST and some already record.** | Access is gated and **denies** at `server/src/services/artifact-transfer-grant.ts:113` (upload key must be under this org's attempt prefix) and `:201-202` (download requires a committed row for this tenant), and at `packages/db/src/repositories/tenant/job-control.ts:2750` `wrong_prefix` / `:2751` `tenant_mismatch`. ★ **Refusals at that surface ALREADY write `security.denied.artifact_transfer_grant` rows** (`server/src/services/artifact-denial-audit.ts:66`, wired by DE-06's Unit C). What is missing is the **successful** access record — which is precisely `DE-06`'s open "object put/get" conjunct, i.e. **already-scheduled work, not a decision.** |
+| 5a | **"sensitive-artifact access … audited"** | **ABSENT, but DECISIONS EXIST and some already record.** | Access is gated and **denies** in `server/src/services/artifact-transfer-grant.ts` — upload key must be under this org's attempt prefix (`:180-184`, `deny("foreign_object_prefix")`); download requires a committed row for this tenant (`:295` `findCommitted` → `:300` `deny("artifact_not_committed")`, with the key compare at `:302` and the download prefix guard at `:290-292`) — and at `packages/db/src/repositories/tenant/job-control.ts:2750` `wrong_prefix` / `:2751` `tenant_mismatch`. ★ **Refusals at that surface ALREADY write `security.denied.artifact_transfer_grant` rows**: `recordSecurityDenial(input.appDb, { crossing: "DE-06", surface: ARTIFACT_TRANSFER_GRANT_DENIAL_SURFACE, … })` at `artifact-transfer-grant.ts:354-357`, the slug declared at `server/src/services/artifact-denial-audit.ts:67`, wired by DE-06's Unit C. What is missing is the **successful** access record — which is precisely `DE-06`'s open "object put/get" conjunct, i.e. **already-scheduled work, not a decision.** |
 | 5b | **"… retention are audited"** | ★★ **ABSENT, AND DELIVERABLE TODAY, CHEAPLY.** | `resolveStoredRetention` (`server/src/services/artifact-retention-authority.ts:49`) is a **live control-plane retention decision**, called at `server/src/services/artifact-commit.ts:253`, that overrides a worker's declared class. It returns `declarationIgnored: boolean`, and `artifact-commit.ts:257` branches on it. **The code's own comment at `:259-260` says: "This is a LOG LINE, not an audit record — DE-11 claims retention is audited and nothing audits it; this ticket does not pretend to close that."** That is a **deferral**, not an impossibility. |
+
+### ★★★ CITATION NOTE — 5a's file:lines were INHERITED, and two of them were stale
+
+**The method promise in §1 was broken here.** 5a's citation list read, in the first draft,
+*"`artifact-transfer-grant.ts:113` (upload key must be under this org's attempt prefix) and
+`:201-202` (download requires a committed row for this tenant), and at `job-control.ts:2750`
+`wrong_prefix` / `:2751` `tenant_mismatch`"* — **which is `DE-11`'s `deliveryEvidence`, verbatim:
+same lines, same parentheticals, same order.** Re-verified at source at `743c30f08`:
+
+| Cited | What that line actually is at `743c30f08` | Verdict |
+|---|---|---|
+| `artifact-transfer-grant.ts:113` | `outcome: "rejected",` — a field inside the **generic `rejected()` helper closure** (`:105-117`) that all six refusal branches return through. Not a denial site, and not about prefixes. | ★ **STALE.** The upload-prefix denial **moved** to `:180-184`. |
+| `artifact-transfer-grant.ts:201-202` | `ceilingBytes: maxArtifactBytes,` and `}),` — the tail of the **`declared_size_over_ceiling`** denial (`:196-203`), a BRW-003d-5 size refusal. | ★ **STALE.** Nothing to do with downloads. The download's committed-row check is `:295`/`:300`. |
+| `job-control.ts:2750` / `:2751` | `throw new ArtifactCommitRejection("wrong_prefix")` / `("tenant_mismatch")`. | ✔ **EXACT.** |
+
+**The substance of 5a is unaffected** — access *is* gated, it *does* deny, and refusals *do* write
+`security.denied.*` rows; every one of those claims is re-verified above at corrected lines. What
+was wrong was the **evidence**, and on this programme's own standing rule that is not a small thing:
+**an inherited citation reads as measured because it is precise.**
+
+★ **This is the second occurrence of one defect on this PR.** Codex caught the first — the paper
+reproduced the register's `owned-op-gate.ts:154-156` under §6.2's conjunct 6b, where it does not
+belong (§6.2 records it). **The same defect then went undetected a second time, here, in the section
+this paper calls its most valuable.** Both are recorded at the promise they break, in §1.1.
+
+★ **Conjunct 5b is the control that proves the diagnosis.** 5b did **not** inherit: it re-measured,
+and found the register's own citation for the "LOG LINE, not an audit record" comment —
+`artifact-commit.ts:172-173` — had **moved to `:259-260`**. The conjunct that re-ran its measurement
+is right; the conjunct that inherited is the one that was wrong.
 
 **★ WHY 5b IS THE MOST VALUABLE THING IN THIS PAPER.** The record point sits inside a closure that
 **already has everything the write needs**: `input.appDb` (the same handle `recordSecurityDenial` is
 called with at `artifact-commit.ts:374`), `ctx.companyId` (the **locked lease's** company, not the
-manifest's self-asserted one — `:187-188`), the artifact id, the kind, the declared class and the
-derived class. `recordSecurityDenial` is **already imported in this file** (`:46`). This is roughly
+manifest's self-asserted one — `:186-187`; `:188` is where the `deny` helper begins), the artifact
+id, the kind, the declared class and the derived class. `recordSecurityDenial` is **already imported
+in this file** (`:46`). This is roughly
 the same shape and size as the `DE-19` closure, in a file that has already been wired twice.
 
 **Two caveats stated rather than implied, because exoneration needs more evidence than conviction:**
@@ -495,10 +633,11 @@ carried here rather than footnoted.*
 path that would make it durable rejects it first. Worker events land through the fenced ingest
 service `server/src/services/job-events.ts`, whose own header states the pipeline: it *"hand[s] the
 batch to the guarded `acceptEvent` mutator, which gates on the ACTIVE fence FIRST (throws
-`stale_fence` / `attempt_terminal`)"*. At the mutator, `packages/db/src/repositories/tenant/job-control.ts:2588-2589`
-is `await guardActiveFence(input)` **before any append**, under the closed governed-mutator
-invariant that *"[e]very method below gates on `guardActiveFence` BEFORE touching (or reading) a
-governed row"* (`:2584-2586`).
+`stale_fence` / `attempt_terminal`)"*. At the mutator, `acceptEvent`
+(`packages/db/src/repositories/tenant/job-control.ts:2588`) runs
+`const { lease, attempt } = await guardActiveFence(input);` at **`:2592`** — **before any append**,
+under the closed governed-mutator invariant that *"[e]very method below gates on `guardActiveFence`
+BEFORE touching (or reading) a governed row"* (`:2585-2587`).
 
 **★ AND DE-17'S SCENARIO IS POST-FENCE BY DEFINITION.** The row's boundary is *"Provider manager ↔
 expired/replaced resource"* and its `failureMode` is *"cleanup is blocked **after fence loss**"*.
@@ -686,10 +825,19 @@ unwritten**, and are **not** covered by this ruling.
 - ▢ **(a) ★ RECOMMENDED** — Amend, dropping **all three** conjuncts as vacuous (exact text in §4.3),
   keeping `partial`, keeping `E0-F011` as owner, and stating in the clause that the *control* is
   unbuilt so the audit clause has no subject.
-- ▢ **(a) + escalate** — as (a), **and** raise `E0-F011`/`SVC-002`'s visibility, since the real loss
-  is three ownerTickets with zero files.
-- ▢ **(b)** Charter the reconciler / fence / drain (`SVC-002`, `SVC-003`, `SVC-005`). *`SVC-001-terrain.md:216-218`
-  disclaims this crossing in writing.*
+- ▢ **(a) + escalate** — as (a), **and** raise `E0-F011`/`SVC-003`/`SVC-005`'s visibility, since the
+  real loss is that **two of the three ownerTickets have zero files** while the third, `SVC-002`, is
+  designed-not-implemented (954 lines) and **scopes the generation writer out in writing**.
+- ▢ **(b)** Charter the reconciler / fence / drain (`SVC-002`, `SVC-003`, `SVC-005`). *Chartering to
+  save this clause means funding `SVC-003` and `SVC-005`, which have zero files — `SVC-002`'s design
+  says `services.generation` still has no writer after it ships (`SVC-002-design.md:490-491`).*
+
+**★ CENSUS CORRECTED, 2026-09-10.** An earlier draft of this decision said *"three ownerTickets with
+zero files"*, inherited from `DE-12`'s own `deliveryEvidence`. **`SVC-002` has two files (604 + 350
+lines), landed in `08746b160` before this paper's branch point.** Re-measured in §4.3; the
+recommendation is unchanged and is re-derived in §4.4 **without** the census, from three
+source-tree measurements (`update(services)` zero hits; no reconciler source file; no replica
+identity).
 
 **★ Do not amend only the "generation changes" conjunct.** The clause has three and all three are
 vacuous.
@@ -744,7 +892,8 @@ otherwise get wrong twice:** the *stated* blocker — the v1 protocol freeze —
 (`extensions[]` is on the worker-event schema at `events.ts:347`; V1 recognises no critical
 namespaces, so a `critical:false` extension is additive **under** the freeze). **The real blockers
 are two, and both are harder:** (1) the fenced worker-event ingest gates on `guardActiveFence`
-**before any append** (`job-events.ts` header; `job-control.ts:2588-2589`), and DE-17's scenario is
+**before any append** (`job-events.ts` header; `job-control.ts:2592`, in `acceptEvent` at `:2588`,
+under the closed-mutator invariant at `:2585-2587`), and DE-17's scenario is
 post-fence **by definition**, so that carrier rejects exactly the case the row names; (2)
 `OwnedLabelsCapability` has no operation or scope field and `execute` shares `gateOwnedOp` with
 `cancel`/`kill`/`destroy` (`server.ts:89-98`, `:153-155`), so the only denial available at the wire

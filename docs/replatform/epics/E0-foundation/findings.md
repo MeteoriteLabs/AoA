@@ -886,7 +886,8 @@ state twelve, not seventeen.
    concluded DE-17 was therefore deliverable and recommended a split by channel, and **that was
    withdrawn on review** (Codex P1, PR #407, verified at source). **DE-17 has two harder blockers:**
    the fenced worker-event ingest gates on `guardActiveFence` BEFORE any append
-   (`job-events.ts` header; `job-control.ts:2588-2589`) and DE-17's scenario is post-fence BY
+   (`job-events.ts` header; `job-control.ts:2592`, in `acceptEvent` at `:2588`, under the
+   closed-mutator invariant at `:2585-2587`) and DE-17's scenario is post-fence BY
    DEFINITION, so that carrier rejects exactly the case the row names; and `OwnedLabelsCapability`
    has no operation or scope field while `execute` shares `gateOwnedOp` with `cancel`/`kill`/`destroy`
    (`server.ts:89-98`, `:153-155`), so the only wire denial available is an ownership mismatch and
@@ -903,7 +904,7 @@ state twelve, not seventeen.
    The paper's §7 shows the working and enumerates the eleven. **It changes no status, no
    `deliveryStatus`, no ownership, no clause text and no gate-clause enrolment, and wires nothing** —
    it exists so this decision can be signed PER CLAUSE, and so that three of the six are not amended
-   away on a blocker measurement does not support.
+   away on a blocker that measurement does not support.
 2. **Where a company-less denial goes.** `activity_log.company_id` is NOT NULL with a cascade FK.
    DE-03 (unenrolled worker), DE-21 (attacker-supplied path segment), DE-01 (wrong or absent org
    GUC) and two of DE-16's sinks can all produce denials with **no resolvable company**. Either
