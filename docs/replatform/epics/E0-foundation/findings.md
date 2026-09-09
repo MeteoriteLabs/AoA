@@ -786,6 +786,37 @@ state twelve, not seventeen.
    (DE-03, DE-21's board half, DE-15, and — added by this unit's own measurement — DE-06's
    fence-resolution throws; see the authoritative count above) and is
    the highest-leverage unblock left in the class.
+   ★ **OPTIONS PAPER, 2026-09-09:
+   [`docs/replatform/DECISION-REQUEST-unattributable-denial-sink.md`](../../DECISION-REQUEST-unattributable-denial-sink.md).**
+   It re-measured all four sinks at their throw/deny lines rather than inheriting this count.
+   **On these four halves, NONE is wholly unblocked by this decision** — an earlier draft of the
+   paper claimed two were, and retracted it. What is true: **individual deny sites** inside them are
+   already resolvable — DE-06's tuple-integrity throw (`worker-fence-context.ts:122`, FK-valid via
+   `lockLeaseAckContext`'s `job_attempts` join, **not** because `leases.company_id` is NOT NULL — it
+   is nullable) and DE-21's agent-key sites (`live-events-ws.ts:395`, and `:376`'s
+   `key.companyId !== companyId` arm but **not** its dominant `!key` arm), which this decision's own
+   2026-09-09 amendment had already excluded from the four. DE-06's fence half stays blocked on its
+   other five throws, and **DE-21's board/session half is blocked by Decision 3**, not this one — the
+   blocker moves, the half does not clear. It also corrects **"DE-15 has no tenant at all"** — the drain
+   return holds a token-attested `organizationId` and 0..N DB-resolved `jobs` rows
+   (`job-control.ts:1930-1941`), so its shape is *not singular*, not *absent*. The residue this
+   decision genuinely owns is DE-03, DE-15, and five of DE-06's six fence throws — all
+   organization-attested, none company-resolvable, because `organization → company` is 1:N
+   (`companies.ts:20,87`) — though two DE-03 sites (`worker-enrollment.ts:295`, and `:315` when
+   `authoritativeOrganizationId` is null) hold **no organization either**. Six options are costed
+   there; the paper recommends a nullable `company_id` plus a new nullable `organization_id` on
+   `activity_log`, **plus a `db:generate`-emitted partial `CHECK (company_id IS NOT NULL OR action
+   LIKE 'security.denied.%')`** — Drizzle's `check()` primitive is already used across this schema
+   and drizzle-kit emits `ADD CONSTRAINT … CHECK` on live tables (`0135:3-4`), so the mitigation
+   that keeps the NOT NULL guarantee for the other ~34 writers is free and does **not** engage C14.
+   ★ **It also finds a LIVE cross-company read path this decision must account for:**
+   `activityService.forIssue` (`services/activity.ts:60-70`) filters only `entityType='issue'` +
+   `entityId` — no company predicate — and is served at `GET /issues/:id/activity` behind a check on
+   *the issue's* company, while `entityType`/`entityId` are caller-supplied free text on
+   `recordSecurityDenial`. So a tenantless denial row is **not** undisclosed by construction, and the
+   ruling carries a third acceptance condition to close it with a provocation test. The paper names
+   the strongest argument against itself. **It changes no status and wires nothing** — it exists so
+   this decision can be signed.
 3. **Retention and disclosure of a denial record.** (a) Whose log does a cross-tenant denial land
    in? The probed company's `activity_log` discloses to them that they were probed and by whom.
    (b) `activity_log` **cascade-deletes with its company**, so a hostile tenant can destroy the
