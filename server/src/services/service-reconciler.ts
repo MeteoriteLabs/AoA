@@ -388,22 +388,31 @@ export function createServiceReconciler(input: {
 
   let cursor: string | null = null;
   /**
-   * ★ PER-ORGANIZATION SERVICE CURSOR — the fix for a starvation bug this reconciler had.
+   * ★ PER-ORGANIZATION SERVICE CURSOR — half of the fix for a starvation bug this reconciler
+   * had. Both halves came out of review on PR #406.
    *
    * The first version always asked for the FIRST page (`afterServiceId: null`). A converged
    * service stays `desired_state = 'running'` forever, so for a tenant with more than
    * `serviceBatchLimit` running services the same lowest-id rows filled every page on every
-   * tick and every later service was NEVER reconciled. Caught in review on PR #406.
+   * tick and every later service was NEVER reconciled — silently.
    *
-   * The sweep now pages from a per-organization cursor and carries it across ticks, so a
-   * tenant whose sweep is cut short by the tick budget resumes where it stopped instead of
-   * restarting at the head. A short page means the end of the tenant's services was reached,
-   * and the cursor resets to `null` so the next tick starts over — the same
-   * rotate-then-wrap discipline the organization cursor above uses.
+   * ★★★ THE CURSOR IS NOT THE LOAD-BEARING HALF, and saying which is which matters. This map
+   * is PROCESS-LOCAL: a control-plane restart or a second replica starts each tenant at the
+   * head again. If the cursor were the only fix, a tenant whose service set exceeds one tick
+   * budget could still starve its tail across repeated restarts, because progress would
+   * depend on a full pass completing before the process was replaced. The load-bearing half
+   * is therefore in the QUERY: `listReconcilableServices` excludes services that already have
+   * a non-terminal instance, so the window IS the remaining work and every tick shortens it
+   * whether or not anything was remembered. Losing this map then costs a re-read of a window
+   * that no longer contains converged services.
+   *
+   * What the cursor still buys: fair rotation among a large set of genuinely UNCONVERGED
+   * services inside one tick budget, so the first page cannot be re-attempted every tick
+   * while the rest wait.
    *
    * Bounded: entries are only ever added for organizations the admitted-org enumerator
    * returned, and an organization that stops being admitted simply stops being visited (the
-   * map is process-local and dies with the process, like the org cursor).
+   * map dies with the process, like the org cursor).
    */
   const serviceCursors = new Map<string, string | null>();
   let inFlight: Promise<ServiceReconcilerTickResult> | null = null;
@@ -454,8 +463,17 @@ export function createServiceReconciler(input: {
           serviceCursor = null;
           break;
         }
+        // ★ Whether the WHOLE page was admitted, not just whether it was short. Wrapping on
+        // `window.length < serviceBatchLimit` alone is wrong when the tick budget expires
+        // part-way through a short final page: the unprocessed tail would be dropped, the
+        // next tick would restart at the head, and under a repeatable timing pattern that
+        // tail could starve indefinitely. Caught in review on PR #406.
+        let pageFullyProcessed = true;
         for (const row of window) {
-          if (remaining(deadline) < 1) break;
+          if (remaining(deadline) < 1) {
+            pageFullyProcessed = false;
+            break;
+          }
           // Advance on admission, not on completion, so one wedged service cannot pin the
           // rotation and starve the rest of the tenant on every subsequent tick.
           serviceCursor = row.serviceId;
@@ -475,8 +493,10 @@ export function createServiceReconciler(input: {
             input.onPassFailure?.(error, { organizationId, serviceId: row.serviceId });
           }
         }
-        // A short page is the end of the tenant; wrap rather than re-request it next tick.
-        if (window.length < serviceBatchLimit) {
+        // A FULLY PROCESSED short page is the end of the tenant; wrap rather than re-request
+        // it next tick. A short page that was cut off mid-way keeps its cursor, so the next
+        // tick resumes at the first row this one did not admit.
+        if (window.length < serviceBatchLimit && pageFullyProcessed) {
           serviceCursor = null;
           break;
         }

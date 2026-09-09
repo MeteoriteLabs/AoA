@@ -277,10 +277,31 @@ export interface JobControlRepository {
     attemptId: string;
   }): Promise<ServiceInstance | null>;
   /**
-   * SVC-002 — the sweep window: services in this tenant whose desired state is `running`,
-   * ordered by id from a rotating cursor. An ALLOW-LIST (`= 'running'`), never a deny-list:
-   * a deny-list would admit `paused` and `deleted`, while an allow-list is fail-closed and
-   * gives SVC-005's pause its enforcement for free.
+   * SVC-002 — the sweep window: services in this tenant that DIVERGE from their desired
+   * state, ordered by id from a rotating cursor.
+   *
+   * Two predicates, and the second one is a review fix (PR #406):
+   *
+   * 1. `desired_state = 'running'` — an ALLOW-LIST, never a deny-list. A deny-list would
+   *    admit `paused` and `deleted`; an allow-list is fail-closed and gives SVC-005's pause
+   *    its enforcement for free.
+   * 2. **NO non-terminal instance exists.** ★ THIS IS WHAT MAKES THE SWEEP TERMINATE. Without
+   *    it the window is "every running service", and a converged service — which stays
+   *    `running` forever — occupies its page slot forever. For a tenant with more services
+   *    than a page holds, the same lowest-id rows filled every page on every tick and every
+   *    later service STARVED, silently. A cursor alone only narrows that window: it still
+   *    depends on a full pass completing, so a control-plane restart or a repeatedly
+   *    budget-truncated tick could re-starve the tail. Filtering converged services out
+   *    means the window IS the work, so progress does not depend on remembering anything.
+   *
+   * The `NOT EXISTS` is served by `service_instances_live_service_uq`, whose index predicate
+   * is exactly this subquery's — the same partial unique index that is the ticket's
+   * duplicate-placement authority.
+   *
+   * This does NOT make the in-pass observed-state check redundant: the window is read in one
+   * transaction and each pass opens its own, so an instance can appear in between. The
+   * window is an optimisation of WHICH services to visit; the index remains the authority for
+   * how many instances a service may have.
    */
   listReconcilableServices(input: {
     afterServiceId: string | null;
@@ -1935,6 +1956,18 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         .from(services)
         .where(and(
           eq(services.desiredState, "running"),
+          // The convergence predicate. Served by `service_instances_live_service_uq`, whose
+          // index predicate is byte-for-byte this subquery's.
+          notExists(
+            tx
+              .select({ one: sql`1` })
+              .from(serviceInstances)
+              .where(and(
+                eq(serviceInstances.organizationId, services.organizationId),
+                eq(serviceInstances.serviceId, services.id),
+                notInArray(serviceInstances.status, [...TERMINAL_SERVICE_INSTANCE_STATUSES]),
+              )),
+          ),
           input.afterServiceId ? gt(services.id, input.afterServiceId) : undefined,
         ))
         .orderBy(asc(services.id))

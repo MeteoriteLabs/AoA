@@ -560,7 +560,23 @@ suite("SVC-002 — the reconciler converges desired state into exactly one insta
     const results = [await reconciler.tick(), await reconciler.tick(), await reconciler.tick()];
     expect(results.map((r) => r.created)).toEqual([1, 0, 0]);
     expect(results.map((r) => r.failed)).toEqual([0, 0, 0]);
-    expect(results.map((r) => r.services)).toEqual([1, 1, 1]);
+    // Ticks 2 and 3 do not even VISIT the service: `listReconcilableServices` excludes a
+    // service that already has a non-terminal instance, so a converged service leaves the
+    // window. That is the property T6 exists for, and it is why the sweep terminates.
+    expect(results.map((r) => r.services)).toEqual([1, 0, 0]);
+
+    // ★ The in-pass observed-state check, exercised directly rather than through the window.
+    // With the window filter in place the sweeper stops visiting a converged service, so
+    // three ticks no longer drive three passes -- and the check that a REPEATED PASS creates
+    // nothing would go untested if this were left to the sweeper. Two more direct passes:
+    const repeat = [
+      await reconcileService(f().app.db, { organizationId: ORG, companyId: COMPANY, serviceId: SERVICE }),
+      await reconcileService(f().app.db, { organizationId: ORG, companyId: COMPANY, serviceId: SERVICE }),
+    ];
+    expect(repeat).toEqual([
+      { action: "none", reason: "instance_present" },
+      { action: "none", reason: "instance_present" },
+    ]);
 
     const live = await liveInstances(SERVICE);
     expect(live).toHaveLength(1);
@@ -618,6 +634,100 @@ suite("SVC-002 — the reconciler converges desired state into exactly one insta
       SELECT DISTINCT service_id FROM service_instances ORDER BY service_id
     `;
     expect(converged.map((row) => row.service_id).sort()).toEqual([...ids].sort());
+  }, 90_000);
+
+  it("T7 — a page cut off by the tick budget KEEPS its cursor, so a stalled tail is not starved", async () => {
+    // ★ THE SCENARIO THAT MAKES THIS REACHABLE, and it is not the obvious one. Wrapping the
+    // cursor on `window.length < serviceBatchLimit` alone is harmless for services that
+    // CONVERGE -- they leave the window (T6), so restarting at the head lands on the
+    // unprocessed tail anyway. It is NOT harmless for services that stay in the window
+    // because a pass does not converge them, and TODAY THAT IS EVERY SERVICE ON A REAL
+    // DEPLOYMENT: `service_generations` has no writer, so a pass stalls at `no_generation`
+    // and the service is still there on the next tick. A short page cut off by the budget
+    // then wraps to the head, and the tail behind those stalled rows never gets a turn.
+    //
+    // Three stalled services (no definition) sorted before one reconcilable service. The
+    // clock is driven so exactly ONE row is admitted per tick, so the reconcilable service is
+    // reachable only if each tick RESUMES where the last stopped.
+    //
+    // MUTANT: wrap on `window.length < serviceBatchLimit` without checking that the page was
+    // fully processed -> every tick re-admits the first stalled service, the fourth is never
+    // reached, and no instance is ever created -> red.
+    const stalled = [1, 2, 3].map((n) => `a6900000-0000-4000-8000-00000000000${n}`);
+    const reconcilable = "a6900000-0000-4000-8000-000000000009";
+    for (const id of stalled) await seedService({ serviceId: id, withDefinition: false });
+    await seedService({ serviceId: reconcilable });
+
+    // A monotonic clock that advances a fixed step PER CALL. The sweeper calls it once for
+    // the deadline, once per organization, once per page, and once per row, so a budget of 35
+    // with a step of 10 admits exactly one row before `remaining()` goes under 1.
+    let calls = 0;
+    const reconciler = createServiceReconciler({
+      appDb: f().app.db,
+      listAdmittedOrganizationIds: async () => [ORG],
+      serviceBatchLimit: 5, // one SHORT page of four -- the case the wrap bug mishandles
+      tickBudgetMs: 35,
+      monotonicNow: () => {
+        calls += 1;
+        return calls * 10;
+      },
+    });
+
+    const perTick: number[] = [];
+    for (let tick = 0; tick < 4; tick += 1) {
+      perTick.push((await reconciler.tick()).services);
+    }
+    // One row per tick, four ticks, four services -- the fourth is the reconcilable one.
+    expect(perTick).toEqual([1, 1, 1, 1]);
+
+    const converged = await f().admin<{ service_id: string }[]>`
+      SELECT service_id FROM service_instances
+    `;
+    expect(
+      converged.map((row) => row.service_id),
+      "the tail behind three stalled services must eventually get a turn",
+    ).toEqual([reconcilable]);
+  }, 90_000);
+
+  it("T6 — a converged service LEAVES the sweep window, so progress does not depend on remembering a cursor", async () => {
+    // ★ THE LOAD-BEARING HALF of the starvation fix, and the one T5 cannot see. T5 proves the
+    // cursor advances WITHIN a live sweeper object; this proves the WINDOW ITSELF SHRINKS, so
+    // progress does not depend on any process remembering anything.
+    //
+    // ★ WHICH ASSERTION ACTUALLY DISCRIMINATES, measured rather than assumed. The converged
+    // list below does NOT: one tick pages through the whole tenant using the in-tick cursor,
+    // so all three converge with or without the convergence predicate, and a fresh sweeper
+    // per tick changes nothing at this size. **The EMPTY-WINDOW assertion is the one that
+    // separates them** -- with the predicate dropped, `listReconcilableServices` still
+    // returns all three converged services and would hand them to a restarted process
+    // forever. Stated here because an earlier draft of this comment claimed the fresh-sweeper
+    // setup was itself the discriminator, and mutant 13 showed it is not.
+    //
+    // MUTANT: drop the `notExists` from `listReconcilableServices` -> the window still
+    // contains all three converged services (and T4's per-tick `services` count goes
+    // [1,1,1]) -> 2 red.
+    const ids = [1, 2, 3].map((n) => `a6800000-0000-4000-8000-00000000000${n}`);
+    for (const id of ids) await seedService({ serviceId: id });
+
+    for (let tick = 0; tick < 3; tick += 1) {
+      const fresh = createServiceReconciler({
+        appDb: f().app.db,
+        listAdmittedOrganizationIds: async () => [ORG],
+        serviceBatchLimit: 1,
+      });
+      await fresh.tick();
+    }
+
+    const converged = await f().admin<{ service_id: string }[]>`
+      SELECT DISTINCT service_id FROM service_instances ORDER BY service_id
+    `;
+    expect(converged.map((row) => row.service_id).sort()).toEqual([...ids].sort());
+
+    // And once every service has converged, the window is EMPTY — the sweep terminates
+    // rather than re-walking work that is already done.
+    const empty = await runInTenant(f().app.db, ORG, (repos) =>
+      repos.jobControl.listReconcilableServices({ afterServiceId: null, limit: 32 }));
+    expect(empty).toEqual([]);
   }, 90_000);
 
   it("T4 POSITIVE CONTROL — the SAME placement input selects an ACTIVE service-capable target and refuses a DRAINING one", () => {

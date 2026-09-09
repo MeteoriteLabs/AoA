@@ -69,6 +69,8 @@ exists, exactly one instance and one job appear for it and never two.
 
 ## 4. Reds observed, and the named positive control
 
+**Eleven mutants in total across three revisions; the last three below came out of review and each names a REAL BUG this diff shipped and then fixed.**
+
 **★ HOW THE REDS WERE OBSERVED, stated so it is not over-read.** Only ONE case is red on the
 unchanged base tree; the rest are red under mutants applied to the shipped source. A suite
 that drives a module which does not exist at base reds on "cannot import", which proves
@@ -102,6 +104,9 @@ about drain.
 | Delete the reconciler's sweep filter | **1 red** — T3(a), on the **reason** and the **no-error** assertion (`"Job submission denied"`). A vacuous "zero instances" assertion would have stayed green, because the admission predicate denies and the transaction rolls back — §5's masking hazard, avoided |
 | Delete the `desiredState` admission predicate | **3 red** — T3(b) ×3. This is the base-tree state |
 | Change that predicate to `ne('stopped')` | **2 red** — `paused` and `deleted`, with `stopped` still green: the allow-list-vs-deny-list discrimination |
+| Anchor the per-organization sweep at the head instead of its cursor | **1 red** — T5: `expected [ …(2) ] to deeply equal [ …(5) ]`, two of five services converged and three starved forever. A REAL BUG in revision 1 (§6a(ii)) |
+| Drop the `notExists` convergence predicate from `listReconcilableServices` | **2 red** — T4's per-tick `services` count goes `[1,1,1]`, and T6's window still returns all three converged services. A REAL BUG in revision 2 (§6a(vi)) |
+| Wrap the sweep cursor on a SHORT page without checking it was fully processed | **1 red** — T7: with three stalled services ahead of it, the fourth is never reached (`expected [] to deeply equal [ Array(1) ]`). A REAL BUG in revision 2 (§6a(v)) |
 
 ---
 
@@ -229,8 +234,9 @@ fail-closed direction.
 
 ## 6a. Review findings (PR #406), each verified against source
 
-Three were raised. **All three were real; two were bugs in this diff and are fixed here, one is
-pre-existing and is now FILED rather than fixed.**
+**SIX** were raised across two rounds. **All six were real. FOUR were bugs in this diff and are
+fixed here; TWO are pre-existing and are recorded rather than closed** — one filed as a new
+finding, one already on the register.
 
 **(i) P1 — fixtures inserting `service_instances` without `company_id`. REAL, FIXED.** The original
 diff's census used the Drizzle symbol and therefore missed four suites that insert with **raw SQL**:
@@ -253,6 +259,49 @@ cursor carried across ticks, advancing on admission (so one wedged service canno
 and wrapping to `null` on a short page. **T5** pins it: five services at a page size of two, three
 ticks, all five converged. Observed RED under the exact pre-fix behaviour
 (`afterServiceId: null`): `expected [ …(2) ] to deeply equal [ …(5) ]` — two of five, forever.
+
+**A second review round on the fixed diff raised three more. Two were real bugs in my own
+fix and are fixed; one is real, epic-wide and already filed elsewhere.**
+
+**(iv) P1 — the reconciler writes no `activity_log` entry. REAL, EPIC-WIDE, PRE-EXISTING,
+ALREADY FILED, NOT CLOSED HERE.** Measured: `job-submission.ts` writes no `activity_log` for
+**any** source kind, and `jobAuditBridge` — the vehicle purpose-built for exactly this — has
+**zero production callers** (`countProductionCallers`, and its only references are its own
+definition plus `job-audit-parity.integration.test.ts`). So no distributed submission is
+audited: not `task_run`, not `commander_turn`, not `crew_run`, not `one_shot`, not
+`browser_request`, and not `service_reconcile`. It is already on the register —
+`E0-foundation/findings.md` records it under DE-01, and
+`distributed-execution-threat-controls.json` names the caller-less bridge in its own evidence.
+Auditing only the service path here would leave five older source kinds unaudited while the
+register said the class was being closed, which is worse than the honest gap. The bridge also
+has a structural obstacle (`activity_log.run_id` FKs to `heartbeat_runs`, which a distributed
+attempt has no row in) that the bridge exists to solve and a bespoke write here would not.
+
+**(v) P2 — the cursor wrapped on a SHORT page even when the budget cut it off part-way. REAL,
+FIXED, with T7.** The wrap now requires the page to have been fully processed. ★ The scenario
+that makes this reachable is not the obvious one: for services that **converge** it is
+harmless, because they leave the window (see (vi)) and a head restart lands on the tail
+anyway. It bites services that **stay** in the window — and today that is *every* service on a
+real deployment, since `service_generations` has no writer and every pass stalls at
+`no_generation`. **T7** drives a controlled monotonic clock so exactly one row is admitted per
+tick, with three stalled services sorted before one reconcilable one; observed RED under the
+pre-fix wrap (`expected [] to deeply equal [ Array(1) ]` — the fourth service never reached).
+
+**(vi) P2 — the per-organization cursor is process-local, so a restart loses it. REAL, and the
+fix is the reviewer's own alternative.** I had argued a lost cursor costs "a wasted read"; the
+reviewer's escalation is correct — for a tenant whose service set exceeds one tick budget,
+repeated restarts before a full pass completes can starve the tail indefinitely, and the
+zero-create ticks in between take the 30-second idle delay. **`listReconcilableServices` now
+excludes services that already have a non-terminal instance**, so the window *is* the remaining
+work and every tick shortens it whether or not anything was remembered. The `NOT EXISTS` is
+served by `service_instances_live_service_uq`, whose index predicate is byte-for-byte the
+subquery's. **The cursor is kept but demoted**, and the comment now says which half is
+load-bearing. **T6** pins it; observed RED under a dropped predicate (2 cases: T4's per-tick
+`services` count goes `[1,1,1]`, and the window still returns all three converged services).
+★ T6's own comment records what mutant 13 taught: its *converged-list* assertion does **not**
+discriminate — one tick pages the whole tenant with the in-tick cursor — and the
+**empty-window** assertion is the one that separates the arms. An earlier draft of that comment
+claimed the fresh-sweeper setup was the discriminator; it is not.
 
 **(iii) P1 — the executor principal names the SERVICE under the kind `service_instance`. REAL,
 PRE-EXISTING, NOT FIXED, now FILED as `E9-F003`.** `serviceSourceIsAdmitted` returns a `services`
