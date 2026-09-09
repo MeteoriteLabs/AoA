@@ -38,6 +38,10 @@ import {
   DEFAULT_REPLAY_BUFFER_CAP,
 } from "./live-event-catchup.js";
 import { threadService } from "../services/threads.js";
+import {
+  recordUpgradeDenial,
+  type LiveEventsUpgradeDenialReason,
+} from "./live-events-denial-audit.js";
 import { permissionService } from "../services/permissions.js";
 import { hubItemsService } from "../services/hub-items.js";
 import {
@@ -355,6 +359,16 @@ export async function authorizeUpgrade(
     const hasCompanyMembership = memberships.some(
       (row) => row.companyId === companyId
     );
+    // ★ DE-21 — MEASURED FOR THE DENIAL-AUDIT UNIT AND DELIBERATELY NOT RECORDED.
+    // `memberships` holds FK-valid company ids (the actor's own active
+    // memberships, SELECTed just above for the authorization decision itself), so
+    // this branch LOOKS attributable. It is not, for two independent reasons:
+    // (a) the array is EMPTY in the shape a probe actually takes — a session
+    // holder with no memberships at all — so there is often no FK-valid company
+    // here whatsoever; and (b) when it is non-empty the ids are the actor's OTHER
+    // tenants, none of which was asked for anything or refused anything, so
+    // picking one is an attribution rule, not a wiring gap. This branch therefore
+    // stays open under `E0-F013`'s Decision 3. See `live-events-denial-audit.ts`.
     if (!roleRow && !hasCompanyMembership) return null;
 
     return {
@@ -373,7 +387,30 @@ export async function authorizeUpgrade(
     )
     .then((rows) => rows[0] ?? null);
 
-  if (!key || key.companyId !== companyId) {
+  // ★ DE-21 — THE UNIT OF CORRECTION IS THE DISJUNCT, NOT THE BRANCH. This was
+  // one two-arm `||`; the arms differ on exactly the axis the audit turns on and
+  // are now separate. Behaviour on the wire is unchanged: both still `return
+  // null` and the caller still answers an opaque `403 Forbidden`.
+  if (!key) {
+    // NO DB-RESOLVED COMPANY EXISTS HERE. An unknown, revoked or malformed token
+    // matched no `agent_api_keys` row, so the only company in hand is the
+    // caller-supplied path segment — the dominant probe case, and the one that
+    // cannot be attributed without a ruling. Nothing durable is written; this arm
+    // belongs to `E0-F013`'s Decision 3, with the board/session branches above.
+    return null;
+  }
+  if (key.companyId !== companyId) {
+    // A LIVE key, aimed at a company it does not own. `agent_api_keys.company_id`
+    // is NOT NULL with an FK to `companies`, so the refusal is attributable — to
+    // the KEY's own tenant, never to the one it reached for.
+    await recordUpgradeDenial(db, {
+      companyId: key.companyId,
+      reason: "agent_key_tenant_mismatch",
+      agentId: key.agentId,
+      keyId: key.id,
+      requestedCompanyId: companyId,
+      control: "server/src/realtime/live-events-ws.ts:authorizeUpgrade",
+    });
     return null;
   }
 
@@ -386,12 +423,35 @@ export async function authorizeUpgrade(
     .where(eq(agents.id, key.agentId))
     .then((rows) => rows[0] ?? null);
 
-  if (
-    !agent ||
-    agent.companyId !== key.companyId ||
-    agent.status === "terminated" ||
-    agent.status === "pending_approval"
-  ) {
+  // ★ DE-21 — four disjuncts, four machine codes, ONE unchanged 403. Control only
+  // reaches here when `key` is non-null, so `key.companyId` is DB-resolved and
+  // FK-valid on every one of them; that is what makes this whole branch
+  // recordable while the `!key` arm above is not.
+  const agentRefusal: LiveEventsUpgradeDenialReason | null = !agent
+    ? "agent_missing"
+    : agent.companyId !== key.companyId
+      ? "agent_key_company_drift"
+      : agent.status === "terminated"
+        ? "agent_terminated"
+        : agent.status === "pending_approval"
+          ? "agent_pending_approval"
+          : null;
+  if (agentRefusal) {
+    await recordUpgradeDenial(db, {
+      companyId: key.companyId,
+      reason: agentRefusal,
+      agentId: key.agentId,
+      keyId: key.id,
+      requestedCompanyId: companyId,
+      control: "server/src/realtime/live-events-ws.ts:authorizeUpgrade",
+      details: {
+        // Present only when there IS an agent row; both are inside the key's own
+        // tenant on every arm but `agent_key_company_drift`, where naming the
+        // drift is the whole evidence.
+        agentCompanyId: agent?.companyId ?? null,
+        agentStatus: agent?.status ?? null,
+      },
+    });
     return null;
   }
 

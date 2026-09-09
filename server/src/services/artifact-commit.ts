@@ -49,6 +49,10 @@ import {
   type ArtifactDenialReason,
   ARTIFACT_COMMIT_DENIAL_SURFACE,
 } from "./artifact-denial-audit.js";
+import {
+  createWorkerFenceDenialSink,
+  drainWorkerFenceDenial,
+} from "./worker-fence-denial-audit.js";
 import type { StorageProvider } from "../storage/types.js";
 import type { JobControlMetrics } from "./job-control-metrics.js";
 
@@ -132,6 +136,12 @@ export function createArtifactCommitService(input: {
       // back at its declared type.
       const denial: { intent: ArtifactDenialIntent | null } = { intent: null };
 
+      // ★ DE-06 — the THROWING refusal's own holder, separate from `denial`
+      // because it is filled inside `resolveWorkerFenceContext` and drained even
+      // when `runInTenant` rejects. Only the tuple-integrity branch fills it; the
+      // other five fence throws still write nothing (worker-fence-denial-audit.ts).
+      const fenceDenial = createWorkerFenceDenialSink();
+
       const rejected = (
         reason: string,
         intent: ArtifactDenialIntent,
@@ -164,7 +174,7 @@ export function createArtifactCommitService(input: {
             jobId: payload.jobId,
             attempt: payload.attempt,
             fenceToken: payload.fenceToken,
-          }, maxHeartbeatAgeMs);
+          }, maxHeartbeatAgeMs, fenceDenial);
         } catch (error) {
           if (error instanceof JobLeasingError && error.code === "stale_fence") {
             sweepTrigger.trigger(auth.organizationId);
@@ -323,7 +333,22 @@ export function createArtifactCommitService(input: {
           versionNumber: row.versionNumber!,
           committedAt: (row.committedAt ?? new Date()).toISOString(),
         });
-      });
+      })
+        // ★ DE-06 — drain the THROWING refusal's record. `.finally` rather than a
+        // trailing statement because `runInTenant` REJECTS on a fence refusal, so
+        // the code below never runs on that path; and `.finally` awaits a
+        // thenable callback, so the row is written before the caller sees the
+        // `JobLeasingError`. `drainWorkerFenceDenial` is a no-op when nothing was
+        // recorded and `recordSecurityDenial` never throws, so this cannot alter
+        // the outcome or convert a refusal into a 500.
+        .finally(async () => {
+          await drainWorkerFenceDenial(input.appDb, fenceDenial, {
+            control: "server/src/services/worker-fence-context.ts:resolveWorkerFenceContext",
+            workerId: auth.workerId,
+            organizationId: auth.organizationId,
+            operation: "artifact_commit",
+          });
+        });
 
       // DEP-007 — count-only artifact-commit telemetry (committed | rejected), emitted
       // AFTER the authoritative response is resolved so it can never alter the commit

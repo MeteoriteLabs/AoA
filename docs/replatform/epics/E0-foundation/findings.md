@@ -141,7 +141,11 @@ New findings use IDs `E0-F001`, `E0-F002`, and so on, and retain their resolutio
 ## E0-F010 — Eight trust crossings assert that denials are audited; on every one of them the deny path returns before anything durable is written, so a refused cross-tenant read, a replayed credential and a shed submission are all indistinguishable from traffic that never happened
 
 - **Status:** open — **all 8 remain. DE-06's audit clause is HALF delivered (2026-09-09) and its
-  closure was RETRACTED the same day; see the row and the correction below.**
+  closure was RETRACTED the same day; see the row and the correction below. On the same day Unit C
+  wired the two deny-site groups the Decision 2 paper measured as already resolvable — DE-06's
+  tuple-integrity fence throw (1 of its 6) and DE-21's agent-key branches (4 disjuncts of its 7
+  deny branches). NEITHER FINDING CLOSES and no cohort count moves: both clauses are conjunctions
+  with halves still absent. See "★ UNIT C" below.**
 - **Severity:** HIGH
 - **Filed:** 2026-09-08, by W20 (the DE-audit landing unit). Every citation below was measured
   at tip `360d0b0ed`, not inherited.
@@ -565,7 +569,7 @@ no discrete refusal event to intercept).
 | DE-18 (Critical) | "placement decisions and generation changes are audited" | `packages/db/src/repositories/tenant/job-control.ts:1177` / `:1167`. | **Partly.** A generation bump does write one durable `execution_target_revocations` row. Every *denial* the fence then produces returns as a protocol error with no row, no metric and no log line. |
 | ~~DE-19 (Critical)~~ **CLOSED 2026-09-08** | "context retrieval and denials are recorded in the retrieval audit" | `read-tools.ts:339` / `:342` / `:351`, all via the `denyMemoryGet` closure at `:297`. | **Was: Half** — retrieval *was* recorded (`recordMemoryRetrievals` runs after the gate) and **both deny returns sat before it**, so a refused memory read wrote nothing. **Now:** each deny awaits `recordSecurityDenial` (`security-denial-audit.ts:125`), writing one attributable `security.denied.memory_read` row to `activity_log` (WHO/TENANT/RESOURCE/WHY) before returning the same non-disclosing message. Proven by provocation at `de-19-memory-denial-audit.integration.test.ts:298`/`:322`/`:337`. `memory.search`'s refusals remain uncovered — they are the DE-01 empty-read shape. |
 | DE-20 (Critical) | "cutover selection and rollback transitions are audited" | `server/src/services/heartbeat.ts:5399` → `:5451`. | **Half, and the other half cannot exist.** A distributed selection writes one `distributed_execution_handoff` run event; a legacy selection writes no durable row. There is no rollback transition to audit because there is no rollback (see `E0-F014`). |
-| DE-21 (High) | "subscribe, replay, and denial events are audited" | `server/src/realtime/live-events-ws.ts:1077-1079`. | **Nothing, with a positive control sitting beside it in the same file.** The 403 calls `rejectUpgrade`, whose entire body (`:106-112`) writes an HTTP status line to the socket and destroys it. The file *does* import `logger` (`:15`) and call it at eight sites — including `logger.error` at `:1090`, which fires only when the authorization function **threw**. So an internal fault is loud and a cross-tenant probe is silent. |
+| DE-21 (High) | "subscribe, replay, and denial events are audited" | `server/src/realtime/live-events-ws.ts:1077-1079`; the deny decisions are `authorizeUpgrade`'s seven `return null` branches. | **★ PARTLY, since 2026-09-09 (Unit C) — four deny DISJUNCTS of seven branches, and neither of the other two conjuncts.** Now recorded: `:376`'s `key.companyId !== companyId` arm and all four `:395` disjuncts, each writing one attributable `security.denied.live_events_upgrade` row filed under the KEY's own company (`agent_api_keys.company_id`, NOT NULL + FK), never the probed one. Still **nothing**: `:376`'s `!key` arm (no key row → no DB-resolved company: Decision 3), the five board/session branches (`:293`/`:304`/`:311`/`:322`/`:358` — `:358` measured and excluded, see Unit C below), and the "subscribe" and "replay" conjuncts, which are not denial events at all and have no writer. **Was, and still is the shape of everything above:** the 403 calls `rejectUpgrade`, whose entire body (`:106-112`) writes an HTTP status line to the socket and destroys it. The file *does* import `logger` (`:15`) and call it at eight sites — including `logger.error` at `:1090`, which fires only when the authorization function **threw**. So an internal fault is loud and an unknown-token probe is still silent. |
 | DE-27 (High) | "cross-replica admission and partition events are audited" | `server/src/services/worker-admission-rate-limit.ts:138-140`; `server/src/services/org-concurrency.ts:247-249`. | **Nothing, and the clause is unsatisfiable as written.** The `over_cap` deny returns through `sendWorkerOperationProtocolError`, whose whole body is a status-and-json write (`worker-protocol-http.ts:83-93`); `org-concurrency.ts` emits nothing at all. ★ A whole-tree sweep of `server/src` for `replicaId\|replica_id\|AOA_CONTROL_PLANE_REPLICA\|controlPlaneId` returns **zero hits** — the system has no replica identity, so no admission record could name a replica even if one were written, and there is no partition detector to produce a partition event. |
 | DE-29 (Critical) | "grant routing and wrong-owner denials are audited" | `packages/db/src/repositories/tenant/job-control.ts:3122`. | **Nothing, by ordering.** The audit UPDATE is `job-control.ts:3139` — *after* the throw at `:3122` — so on a denial it never runs and the transaction rolls back. The only trace is an anonymous `secretRead{outcome,count}` metric tick carrying no handle, owner, company or reason, which makes a **wrong-owner denial forensically indistinguishable from a stale fence**. |
 
@@ -580,6 +584,92 @@ path it does not log is the security refusal.
 
 **What it is NOT.** It is not a claim that any of these controls fail to deny. Every crossing here
 is recorded `partial` precisely because its enforcement half was measured holding.
+
+### ★ UNIT C, 2026-09-09 — the two halves the Decision 2 paper measured as unblocked are now wired, and NEITHER FINDING CLOSES
+
+**The count first. Nothing is struck from any cohort.** `E0-F010` still carries all eight; the
+seventeen-crossing denial-audit class still stands at ONE closed (DE-19) and SIXTEEN open. Unit C
+delivered two more FRACTIONS of two clauses that are conjunctions, and a fraction closes nothing.
+Striking a row here on this evidence is exactly the error PR #396 existed to correct.
+
+**What was decided, and how.** The Decision 2 options paper (`docs/replatform/DECISION-REQUEST-unattributable-denial-sink.md`,
+merged `bb0572f19`) re-measured four queued clause-halves at their deny lines and found two groups
+that need a UNIT rather than a RULING. Unit C is that unit. Every line below was re-verified at the
+source rather than inherited from the paper, and one of the paper's own suggestions was measured and
+REJECTED (`:358`, below).
+
+**(1) DE-06 — `resolveWorkerFenceContext`, 1 throw site of 6.**
+
+- **What now writes:** the post-resolution tuple-integrity branch. One
+  `security.denied.worker_fence_resolution` row per refusal, filed under the LOCKED LEASE's company,
+  carrying WHO (`actor_id` = the refused `workerId`, `actor_type` = `system`), TENANT, RESOURCE
+  (`entity_type` = `job_lease`, `entity_id` = the lease), and WHY (`reason` = `fence_tuple_mismatch`
+  plus `details.mismatched`, the residual conjunct that actually fired). The worker's wire answer is
+  the unchanged, coarse `stale_fence`.
+- **What still writes nothing:** the other FIVE throws (`:75`, `:89` twice, `:92`, the target-inactive
+  and profile-drift `:92`/`:97`, and `:110`). `workers` and `execution_targets` carry
+  `organization_id` only, and the lease is what has not resolved. They remain Decision 2's.
+- **★ THE COMPANY IS NOT ASSERTED, IT IS NARROWED.** `leases.company_id` is declared
+  `uuid("company_id")` with NO `.notNull()` (`packages/db/src/schema/leases.ts:28`), and
+  `!context.lease.companyId` is the FIRST disjunct of the very condition that throws. The value is
+  present because `lockLeaseAckContext` inner-joins `jobAttempts` on
+  `eq(jobAttempts.companyId, leases.companyId)` and `jobAttempts.companyId` is NOT NULL, so a
+  null-company lease never joins and lands on `:110` instead. That is an argument about a JOIN, not a
+  column, so the null disjunct is split into its own throw and the recorder reads a plain `string`.
+- **★ WHICH CALLERS THIS REACHES, stated because the helper is shared by four services.** The sink
+  parameter is REQUIRED, so **all four** compile against it and **all four** drain it:
+  `artifact-commit.ts`, `artifact-transfer-grant.ts`, `patch-apply.ts`, `secret-broker.ts`. The last
+  two had NO denial-audit wiring of any kind before this; they still have none for their own
+  `rejected(...)` / `{denied: …}` returns — this is one throw site each, not a service-level closure.
+- **What is still missing for DE-06 to close:** the "object put/get" conjunct (a SUCCESSFUL grant
+  still writes nothing) AND the five residual fence throws. **DE-06 stays `partial` and stays in the
+  cohort.**
+
+**(2) DE-21 — `authorizeUpgrade`, 4 deny disjuncts of 7 branches.**
+
+- **What now writes:** `:376`'s `key.companyId !== companyId` arm, and all four `:395` disjuncts
+  (`agent_missing`, `agent_key_company_drift`, `agent_terminated`, `agent_pending_approval`). One
+  `security.denied.live_events_upgrade` row each, filed under `key.companyId` — the tenant that OWNS
+  the credential, never the tenant the probe reached for. `entity_id` is the REQUESTED company, so a
+  cross-tenant probe is a row in tenant A naming tenant B, and tenant B's own log stays empty (the
+  DE-19 non-disclosure precedent, asserted separately by test).
+- **★ THE UNIT OF CORRECTION IS THE DISJUNCT, NOT THE BRANCH.** `:376` was a two-arm `||` whose arms
+  differ on exactly the axis this turns on. The `!key` arm — an unknown, revoked or malformed token,
+  and the DOMINANT probe case — resolves NO row, so there is no `key.companyId` at all and only the
+  caller-supplied path segment is in hand. It is split out and writes nothing. It is Decision 3's,
+  with branches 1-4.
+- **★ `:358` WAS MEASURED FOR INCLUSION AND REJECTED.** The paper flagged it as possibly holding an
+  FK-valid company because `memberships[]` is already SELECTed at `:343-352`. Measured at the line, it
+  does not hold, for two independent reasons: **(a)** the branch fires when the actor has no
+  `instance_admin` row AND no membership for the requested company, so a session holder with ZERO
+  memberships — the shape a probe takes — reaches it with an EMPTY array and no FK-valid company
+  whatsoever (pinned by a positive-control arm that provokes exactly that and asserts no row); and
+  **(b)** when the array is non-empty its ids are the actor's OTHER tenants, none of which was asked
+  for anything or refused anything, so choosing one is an attribution rule, not a wiring gap — the
+  same category error §1.3 of the paper names for DE-15. `:358` stays open under Decision 3.
+- **What is still missing for DE-21 to close:** the `!key` arm, the five board/session branches, and
+  the "subscribe" and "replay" conjuncts, which have no writer at all. **DE-21 stays `partial` and
+  stays in the cohort.**
+
+**Evidence.** Both were provoked through the real path against real PostgreSQL and the committed
+migration chain, never constructed:
+`server/src/__tests__/de-06-artifact-denial-audit.integration.test.ts` (18 arms) and
+`server/src/__tests__/de-21-live-events-upgrade-denial-audit.integration.test.ts` (13 arms, new).
+Observed against the UNCHANGED tree first: DE-06 3 RED / 15 GREEN, DE-21 7 RED / 6 GREEN. The greens
+in each are the NAMED POSITIVE CONTROLS — DE-06's two "THE FENCE-AUTH REFUSAL IS NOT RECORDED" arms
+(the five residual throws) and its granted-upload arm; DE-21's `!key`, revoked-key, `:311`, `:358`
+and granted-upgrade arms. Both files 18/18 and 13/13 green after, with `de-19-memory-denial-audit`
+and `artifact-transfer-commit` re-run unchanged.
+
+**★ A MEASUREMENT THE UNIT OWES ITS OWN TEST.** Of the seven mismatch conjuncts at DE-06's
+tuple-integrity branch, only `provider_constraint_hash` can be provoked by a legal row. Five
+(`job_id`, `attempt_number`, `target_id`, `target_generation`, `profile_hash`) also appear in
+`lockLeaseAckContext`'s WHERE, so drifting one stops the lease JOINING and the refusal lands on
+`:110` instead. `target_authority_key` is FK-pinned from both sides
+(`leases_target_authority_fk` and `workers_target_authority_fk`, composite on
+`(target_authority_key, target_id)`), and an `UPDATE leases SET target_authority_key = …` was
+OBSERVED being refused by that FK. So the branch is proven on one conjunct, on both artifact
+services, and the other six are compiled but unprovoked here. Stated rather than implied.
 
 ### ★ RE-TRIAGE, 2026-09-09, by the denial-audit batch (the unit that HALF-delivered DE-06)
 
