@@ -684,9 +684,26 @@ integration("DE-06 — a refused artifact object operation is durable and attrib
   // ATTRIBUTION is the blocker, and it is not uniform across the six throw sites.
   // At the FIVE sites these two arms drive, `workers` and `execution_targets`
   // carry `organization_id` only and the one row that carries `company_id` — the
-  // lease — is precisely what failed to resolve; `activity_log.company_id` is
-  // NOT NULL with a cascade FK, so `recordSecurityDenial` would log-and-return
-  // null. Those five remain `E0-F013`'s Decision 2.
+  // lease — is precisely what failed to resolve.
+  //
+  // ★ UPDATED 2026-09-09 — AND THE REASON THOSE FIVE ARE STILL UNWIRED HAS
+  // CHANGED, so do not read the sentence above as the whole story. Until the
+  // ruling, `activity_log.company_id` was NOT NULL with a cascade FK, so
+  // `recordSecurityDenial` would log-and-return-null: the STORAGE was the
+  // blocker. `E0-F013` Decision 2 was then ruled, option (a2) — `company_id` is
+  // nullable inside the `security.denied.` namespace, guarded by a partial CHECK,
+  // and a nullable `organization_id` exists — so the storage blocker is GONE and
+  // all five of these throws could record the organization they do hold.
+  // WHAT REMAINS IS THE WIRING, and nothing else. That is exactly what the two
+  // arms below pin: they assert NO row, and when the wiring lands they must be
+  // INVERTED rather than deleted.
+  //
+  // Of the two escapes the finding weighed, neither was taken: resolving the
+  // company from the CALLER-SUPPLIED `jobId` was option (c) and was NOT ruled —
+  // it lets a prober choose which of its own tenants absorbs the record — and
+  // widening the shared helper is not a DE-06-scoped change, since
+  // `resolveWorkerFenceContext` is shared by FOUR services (artifact-commit,
+  // artifact-transfer-grant, patch-apply, secret-broker).
   //
   // The SIXTH — the post-resolution tuple-integrity branch — is different: by
   // then the lease has been resolved AND inner-joined to `job_attempts` on
@@ -1020,7 +1037,29 @@ integration("DE-06 — a refused artifact object operation is durable and attrib
       "activity_log has FORCE ROW LEVEL SECURITY — the denial recorder now lives behind the policy it exists to observe",
     ).toBe(false);
     expect(posture.policies, "activity_log grew row-level policies").toBe("0");
-    expect(posture.org_col, "activity_log grew an organization_id column — the kernel-table shape").toBe("0");
+    // ★ AMENDED 2026-09-09 — E0-F013 Decision 2, ruled option (a2). This line
+    // used to assert `.toBe("0")`: the ABSENCE of an `organization_id` column
+    // stood in for "activity_log is not a kernel table". The ruling adds that
+    // column deliberately (as a NULLABLE attribution column for denials that
+    // resolve no company), so the proxy is now false while the property it stood
+    // for is unchanged. Replaced, not deleted. What made a kernel tenant key a
+    // kernel tenant key is that it is NOT NULL and READ BY A POLICY — the policy
+    // half is `posture.policies === "0"` on the line above; the NOT NULL half is
+    // asserted here. The same reasoning is written out at length in
+    // `de-19-memory-denial-audit.integration.test.ts`.
+    expect(
+      posture.org_col,
+      "activity_log lost its organization_id column — E0-F013 Decision 2 (a2) requires it, and five of DE-06's six fence throws have no other tenant axis to be recorded on",
+    ).toBe("1");
+    const nullability = await admin<{ column_name: string; is_nullable: string }[]>`
+      SELECT column_name, is_nullable FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'activity_log'
+        AND column_name IN ('company_id', 'organization_id')
+      ORDER BY column_name`;
+    expect(
+      nullability.map((r) => `${r.column_name}=${r.is_nullable}`),
+      "a tenant column on activity_log became NOT NULL — that is the kernel shape, and a denial that resolves neither axis can no longer be recorded at all",
+    ).toEqual(["company_id=YES", "organization_id=YES"]);
 
     // POSITIVE CONTROL for the assertion itself: four false/0 readings are also
     // what a database with NO RLS at all would report.

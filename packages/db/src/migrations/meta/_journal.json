@@ -1919,6 +1919,13 @@
       "when": 1788523348119,
       "tag": "0273_trust_rule_agent_binding",
       "breakpoints": true
+    },
+    {
+      "idx": 274,
+      "version": "7",
+      "when": 1788967437919,
+      "tag": "0274_activity_log_denial_sink",
+      "breakpoints": true
     }
   ]
 }

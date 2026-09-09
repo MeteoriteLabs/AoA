@@ -522,10 +522,54 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         posture.policies,
         "activity_log has row-level policies — the denial write is now conditional on the very tenant context the cross-tenant case has wrong",
       ).toBe("0");
+      // ★ AMENDED 2026-09-09 — E0-F013 Decision 2, ruled option (a2).
+      //
+      // This assertion used to read `.toBe("0")`: the ABSENCE of an
+      // `organization_id` column stood in as a proxy for "activity_log is not a
+      // kernel table". The founder ruling ADDS that column deliberately, so the
+      // proxy is now false while the property it stood for is unchanged — and a
+      // proxy that has come apart from its property must be replaced, not
+      // deleted and not merely relaxed to accept both readings.
+      //
+      // What actually made the proxy work was never the column's existence. It
+      // was that a kernel table's tenant key is NOT NULL and is READ BY A
+      // POLICY: `jobs.organization_id` is `notNull()` and
+      // `0211_tenant_rls_enforcement.sql:20-28` gates every row on
+      // `organization_id = current_setting('aoa.organization_id')`. Both halves
+      // of that are asserted directly now:
+      //   - the policy half by `posture.policies === "0"` immediately above —
+      //     a column no policy reads cannot gate a write;
+      //   - the NOT NULL half here. A NULLABLE attribution column records who
+      //     was refused when a company cannot be resolved; a NOT NULL one would
+      //     mean a cross-tenant denial with no resolvable organization can no
+      //     longer be written at all, which is precisely the failure the proxy
+      //     was watching for.
       expect(
         posture.org_col,
-        "activity_log grew an organization_id column — the shape a kernel table has, and the shape whose predicate a cross-tenant denial cannot satisfy",
-      ).toBe("0");
+        "activity_log lost its organization_id column — E0-F013 Decision 2 (a2) requires it, and without it every organization-only denial (DE-03, DE-15, five of DE-06's six fence throws) becomes unattributable again",
+      ).toBe("1");
+      const orgColumnNullable = rowsOf<{ is_nullable: string }>(
+        await db.execute(sql`
+          SELECT is_nullable FROM information_schema.columns
+          WHERE table_schema = 'public' AND table_name = 'activity_log'
+            AND column_name = 'organization_id'`),
+      )[0];
+      expect(
+        orgColumnNullable?.is_nullable,
+        "activity_log.organization_id became NOT NULL — that is the kernel shape, and a denial that resolves NEITHER tenant axis (worker-enrollment.ts:295 and :315) can no longer be recorded at all",
+      ).toBe("YES");
+      // The same reasoning applies to the column the recorder writes when it DOES
+      // resolve a tenant: it must stay nullable, or the ruling is undone.
+      const companyColumnNullable = rowsOf<{ is_nullable: string }>(
+        await db.execute(sql`
+          SELECT is_nullable FROM information_schema.columns
+          WHERE table_schema = 'public' AND table_name = 'activity_log'
+            AND column_name = 'company_id'`),
+      )[0];
+      expect(
+        companyColumnNullable?.is_nullable,
+        "activity_log.company_id went back to NOT NULL — the tenantless denial sink is gone",
+      ).toBe("YES");
 
       // POSITIVE CONTROL for the assertion itself. Four `false`/`0` readings are
       // also what a database with no RLS at all would report, so prove the kernel

@@ -32,8 +32,13 @@
 // transaction (a drain point outside `runInTenant` is a `try`/`catch`) but
 // ATTRIBUTION: `workers`/`execution_targets` carry `organization_id` only, and
 // the lease that carries `company_id` is exactly what failed to resolve, while
-// `activity_log.company_id` is NOT NULL. That is `E0-F013`'s Decision 2. Both
-// throws are driven and pinned in
+// `activity_log.company_id` was NOT NULL. ★ THE STORAGE HALF OF THAT BLOCKER IS
+// GONE as of E0-F013 Decision 2, ruled option (a2) on 2026-09-09: `company_id` is
+// nullable inside the `security.denied.` namespace and a nullable
+// `organization_id` sits beside it, so five of the six throws can now record the
+// organization they hold. THE WIRING IS STILL NOT DONE — these throws write no
+// row today, and nothing here may be read as if they did. Both throws are driven
+// and pinned as UNRECORDED in
 // `server/src/__tests__/de-06-artifact-denial-audit.integration.test.ts`.
 //
 // ★ WHY A SEPARATE INTENT TYPE AND NOT A DIRECT CALL. Every refusal in both

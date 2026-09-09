@@ -122,7 +122,9 @@ export interface RunExecutionOwnerDeps {
    */
   stageJobInput?(input: {
     organizationId: string;
-    /** For the bundle-level `activity_log` entry, whose `company_id` is NOT NULL. The tenant
+    /** For the bundle-level `activity_log` entry. `company_id` stays effectively NOT NULL for
+     * this writer: E0-F013 Decision 2 (a2) relaxed the column but retained the guarantee with a
+     * CHECK scoped to the reserved `security.denied.` namespace, which this is not in. The tenant
      * Organization does not address it. */
     companyId: string;
     jobId: string;
