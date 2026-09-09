@@ -29,6 +29,7 @@ import {
   workerLeaseRejections,
   services,
   serviceInstances,
+  serviceGenerations,
   jobArtifacts,
   jobSecretHandles,
   jobEvents,
@@ -114,6 +115,53 @@ export interface SourceExecutorAuthority {
   id: string;
 }
 
+/**
+ * SVC-002 — the three TERMINAL states of the frozen `serviceInstance` lifecycle, i.e. the
+ * states with no outgoing transition in `SERVICE_INSTANCE_TRANSITIONS`
+ * (packages/worker-protocol states.ts, mirrored in
+ * docs/architecture/distributed-execution-lifecycles.json).
+ *
+ * Hand-listed here for the same reason the DB CHECK is: `packages/db` does not depend on
+ * `@armyofagents/worker-protocol`. That makes this the THIRD copy of a frozen list living
+ * outside its authority, so — exactly as SVC-001 did for the CHECK — the reconciliation is
+ * asserted server-side against the imported authority, in
+ * server/src/__tests__/service-reconciler.integration.test.ts. Both copies must move
+ * together with the index predicate in migration 0275; the assertion is what makes that
+ * true rather than hoped.
+ */
+export const TERMINAL_SERVICE_INSTANCE_STATUSES = Object.freeze([
+  "stopped",
+  "failed",
+  "lost",
+] as const);
+
+/** The partial unique index that is SVC-002's duplicate-placement authority. */
+export const LIVE_SERVICE_INSTANCE_INDEX = "service_instances_live_service_uq";
+
+/**
+ * SVC-002 — is this error a lost race against {@link LIVE_SERVICE_INSTANCE_INDEX}?
+ *
+ * NARROW ON PURPOSE. Only a 23505 naming that one index is a lost race; every other
+ * constraint violation on the same insert (the composite tenant FK, the status CHECK) must
+ * propagate, because reporting `conflict` for a service that has no instance at all would be
+ * a fabricated definite answer — the exact fail-open shape SVC-008b's stop-verdict work
+ * exists to refuse.
+ *
+ * postgres-js surfaces the PostgreSQL fields as `code` / `constraint_name`, sometimes behind
+ * a `cause` chain, so both are unwrapped rather than assumed to be on the top-level object.
+ */
+function isLiveServiceInstanceConflict(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 8 && current && typeof current === "object"; depth += 1) {
+    const record = current as { code?: unknown; constraint_name?: unknown; cause?: unknown };
+    if (record.code === "23505" && record.constraint_name === LIVE_SERVICE_INSTANCE_INDEX) {
+      return true;
+    }
+    current = record.cause;
+  }
+  return false;
+}
+
 export interface JobControlRepository {
   admission(input: {
     organizationId: string;
@@ -147,6 +195,119 @@ export interface JobControlRepository {
     serviceId: string;
     generation: number;
   }): Promise<SourceExecutorAuthority | null>;
+  /**
+   * SVC-002 — the INTENDED-state read for one reconcile pass.
+   *
+   * Takes the per-service advisory transaction lock, then pins the `services` row with
+   * `SELECT ... FOR UPDATE` so `desired_state` AND `generation` cannot move under the pass
+   * (SVC-005's generation bump is the concurrent writer this interlocks with). The lock is a
+   * WAIT-INSTEAD-OF-RACE convenience; it is deliberately NOT the duplicate-placement
+   * authority, which is `service_instances_live_service_uq`.
+   *
+   * Returns `null` when the service does not exist in this tenant — a definite absence, not
+   * an unreadable state.
+   */
+  lockServiceForReconcile(input: {
+    organizationId: string;
+    companyId: string;
+    serviceId: string;
+  }): Promise<{ desiredState: string; generation: number } | null>;
+  /**
+   * SVC-002 — the OBSERVED-state read: how many instances of this service are NOT in a
+   * terminal state. Non-terminal (rather than "healthy") is load-bearing: a reconciler that
+   * asked for a HEALTHY instance would answer "none" on every tick under a drained or
+   * capability-less fleet and submit forever, since `pending` is where such an instance sits.
+   */
+  countNonTerminalInstances(input: {
+    organizationId: string;
+    serviceId: string;
+  }): Promise<number>;
+  /**
+   * SVC-002 — insert one service instance under a SAVEPOINT, resolving a lost race against
+   * `service_instances_live_service_uq` into a definite answer instead of an aborted
+   * transaction.
+   *
+   * WHY A SAVEPOINT. A 23505 aborts the whole PostgreSQL transaction; every later statement
+   * raises 25P02 until a rollback, so the loser cannot simply "catch and re-read"
+   * (server/src/services/companies.ts:391 already wrote this lesson down). `ROLLBACK TO
+   * SAVEPOINT` un-aborts it and leaves everything before the savepoint intact, which is the
+   * only option that keeps the instance insert and the job submission in ONE transaction --
+   * and that single transaction is what makes a quota denial roll the instance back rather
+   * than leave an orphan `pending` row that wedges the service forever.
+   *
+   * THE CATCH IS NARROW ON PURPOSE: only a 23505 naming that one index is a lost race. Any
+   * other constraint violation propagates untouched, because swallowing it would report
+   * `conflict` for a service that has no instance at all.
+   *
+   * The re-read is guaranteed to find the winner: `runInTenant` sets no isolation level, so
+   * the transaction is READ COMMITTED and each statement takes a fresh snapshot; a 23505 is
+   * raised only after the conflicting inserter COMMITTED (a winner that rolls back releases
+   * the index entry and this insert then succeeds). Under REPEATABLE READ it would be a
+   * serialization failure instead, which is why the level is stated rather than assumed.
+   */
+  insertServiceInstance(values: {
+    id: string;
+    organizationId: string;
+    companyId: string;
+    serviceId: string;
+    generation: number;
+    status: string;
+  }): Promise<
+    | { outcome: "inserted"; instance: ServiceInstance }
+    | { outcome: "conflict"; instance: ServiceInstance | null }
+  >;
+  /**
+   * SVC-002 — attribute an instance to the job/attempt serving it, inside the SAME
+   * transaction that inserted the instance and submitted the job.
+   *
+   * Two writes rather than one because the ordering is forced: the instance id must exist
+   * before the submission (the frozen `serviceWorkloadV1Schema` requires `serviceInstanceId`
+   * and the derived idempotency key is a function of it), and the job/attempt ids only exist
+   * after it. Doing the insert LAST would mean the loser of a race had already claimed org
+   * capacity and written a job before discovering it lost.
+   *
+   * Deliberately does NOT touch `status`: `recordServiceHealth` remains the only writer of
+   * that column, and widening a governed fence mutator's domain is SVC-003's (SVC-001 §3.2
+   * CORRECTION 6a).
+   */
+  attributeServiceInstance(input: {
+    organizationId: string;
+    serviceInstanceId: string;
+    jobId: string;
+    attemptId: string;
+  }): Promise<ServiceInstance | null>;
+  /**
+   * SVC-002 — the sweep window: services in this tenant whose desired state is `running`,
+   * ordered by id from a rotating cursor. An ALLOW-LIST (`= 'running'`), never a deny-list:
+   * a deny-list would admit `paused` and `deleted`, while an allow-list is fail-closed and
+   * gives SVC-005's pause its enforcement for free.
+   */
+  listReconcilableServices(input: {
+    afterServiceId: string | null;
+    limit: number;
+  }): Promise<Array<{ serviceId: string; companyId: string; generation: number }>>;
+  /**
+   * SVC-002 — the immutable definition this generation froze (SVC-001's `service_generations`).
+   *
+   * ★ THE UNKNOWN CASE IS THE POINT. `null` here means the read ANSWERED and there is no row
+   * for (service, generation). It does NOT mean "start it with a default command": the
+   * service's INTENDED state says `running`, but the definition needed to realize that intent
+   * is not there, so the honest verdict is that the reconciler cannot decide and must stall.
+   * A default branch that returned a definite answer for an unreadable intent is exactly the
+   * fail-open SVC-008b's `deriveStopVerdict` was built to refuse.
+   *
+   * `service_generations` has ZERO writers in the tree (SVC-002-terrain.md §1) and SVC-002
+   * adds none -- the create/update controls that fill it are SVC-007's. So on a real
+   * deployment this read answers `null` for every service today, and the reconciler stalls
+   * rather than inventing a workload. That is stated here so a green acceptance suite is not
+   * read as "services start".
+   */
+  findServiceGenerationDefinition(input: {
+    organizationId: string;
+    companyId: string;
+    serviceId: string;
+    generation: number;
+  }): Promise<{ definition: Record<string, unknown>; ttlSeconds: number | null; checkpointArtifactId: string | null } | null>;
   insertJobOnce(values: NewJob): Promise<Job | null>;
   findSubmission(input: {
     organizationId: string;
@@ -1673,9 +1834,134 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
           eq(services.organizationId, input.organizationId),
           eq(services.companyId, input.companyId),
           eq(services.generation, input.generation),
+          // ★ SVC-002 — "stopped services create no new instance", located in THE AUTHORITY
+          // every submission passes through rather than in one loop's control flow. Before
+          // this predicate a `service_reconcile` submission naming a service whose desired
+          // state was 'stopped', 'paused' or 'deleted' was admitted; the clause had no
+          // enforcement anywhere (SVC-001-terrain.md:200-201 handed it here by name).
+          //
+          // An ALLOW-LIST, never `ne('stopped')`: a deny-list would admit `paused` and
+          // `deleted`. Fail-closed, and it gives SVC-005's pause its enforcement for free
+          // without SVC-002 implementing pause.
+          //
+          // It is redundant with the reconciler's own sweep filter FOR THE RECONCILER, which
+          // holds the row lock. Its value is entirely in the OTHER callers: a replayed
+          // submission, SVC-007's future controls, a direct call.
+          eq(services.desiredState, "running"),
         ))
         .limit(1);
       return row ? { kind: "service_instance", id: row.id } : null;
+    },
+
+    async lockServiceForReconcile(input) {
+      // WAIT-INSTEAD-OF-RACE, not the authority. Two concurrent passes for one service
+      // serialize here into a clean wait; a writer that never calls this takes no lock at
+      // all, which is precisely why `service_instances_live_service_uq` exists.
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock(hashtext('aoa:service-reconcile'), hashtext(${input.serviceId}))`,
+      );
+      const [row] = await tx
+        .select({ desiredState: services.desiredState, generation: services.generation })
+        .from(services)
+        .where(and(
+          eq(services.id, input.serviceId),
+          eq(services.organizationId, input.organizationId),
+          eq(services.companyId, input.companyId),
+        ))
+        .for("update")
+        .limit(1);
+      return row ?? null;
+    },
+
+    async countNonTerminalInstances(input) {
+      const [row] = await tx
+        .select({ total: count() })
+        .from(serviceInstances)
+        .where(and(
+          eq(serviceInstances.organizationId, input.organizationId),
+          eq(serviceInstances.serviceId, input.serviceId),
+          notInArray(serviceInstances.status, [...TERMINAL_SERVICE_INSTANCE_STATUSES]),
+        ));
+      return Number(row?.total ?? 0);
+    },
+
+    async insertServiceInstance(values) {
+      try {
+        // postgres-js nests `.transaction()` on a transaction handle as a SAVEPOINT
+        // (JOB-010; runInTenant's own docstring says so), so this is the house mechanism
+        // rather than an import.
+        const instance = await tx.transaction(async (savepoint) => {
+          const [row] = await savepoint.insert(serviceInstances).values(values).returning();
+          return row!;
+        });
+        return { outcome: "inserted", instance };
+      } catch (error) {
+        if (!isLiveServiceInstanceConflict(error)) throw error;
+        // The savepoint has been rolled back, so the transaction is usable again and this
+        // read sees the COMMITTED winner (READ COMMITTED; see the interface docstring).
+        const [existing] = await tx
+          .select()
+          .from(serviceInstances)
+          .where(and(
+            eq(serviceInstances.organizationId, values.organizationId),
+            eq(serviceInstances.serviceId, values.serviceId),
+            notInArray(serviceInstances.status, [...TERMINAL_SERVICE_INSTANCE_STATUSES]),
+          ))
+          .limit(1);
+        return { outcome: "conflict", instance: existing ?? null };
+      }
+    },
+
+    async attributeServiceInstance(input) {
+      const [row] = await tx
+        .update(serviceInstances)
+        .set({ jobId: input.jobId, attemptId: input.attemptId, updatedAt: sql`clock_timestamp()` })
+        .where(and(
+          eq(serviceInstances.id, input.serviceInstanceId),
+          eq(serviceInstances.organizationId, input.organizationId),
+        ))
+        .returning();
+      return row ?? null;
+    },
+
+    async listReconcilableServices(input) {
+      const bounded = Math.max(1, Math.min(256, Math.floor(input.limit)));
+      return tx
+        .select({
+          serviceId: services.id,
+          companyId: services.companyId,
+          generation: services.generation,
+        })
+        .from(services)
+        .where(and(
+          eq(services.desiredState, "running"),
+          input.afterServiceId ? gt(services.id, input.afterServiceId) : undefined,
+        ))
+        .orderBy(asc(services.id))
+        .limit(bounded);
+    },
+
+    async findServiceGenerationDefinition(input) {
+      const [row] = await tx
+        .select({
+          definition: serviceGenerations.definition,
+          ttlSeconds: serviceGenerations.ttlSeconds,
+          checkpointArtifactId: serviceGenerations.checkpointArtifactId,
+        })
+        .from(serviceGenerations)
+        .where(and(
+          eq(serviceGenerations.organizationId, input.organizationId),
+          eq(serviceGenerations.companyId, input.companyId),
+          eq(serviceGenerations.serviceId, input.serviceId),
+          eq(serviceGenerations.generation, input.generation),
+        ))
+        .limit(1);
+      if (!row) return null;
+      return {
+        definition: (row.definition ?? {}) as Record<string, unknown>,
+        ttlSeconds: row.ttlSeconds,
+        checkpointArtifactId: row.checkpointArtifactId,
+      };
     },
 
     async insertJobOnce(values) {

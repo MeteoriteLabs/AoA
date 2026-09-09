@@ -1383,6 +1383,69 @@ if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
   process.once("SIGTERM", stopConvergence);
   process.once("SIGINT", stopConvergence);
 
+  // ── SVC-002 service reconciliation — START the desired-state reconciler ─────────────────
+  //
+  // ★★★ THIS BLOCK IS THE POINT OF THE TICKET. `createServiceReconciler` is exactly the
+  // shape that ships wired to nothing and reads as delivered — this register already carries
+  // `createStartupReconciler` as a symbol with ZERO production callers — so the arming path
+  // is composed in the SAME commit as the reconciler, and the gate clause
+  // `E9-1-service-reconciler` is enrolled against the measured caller count rather than
+  // against an intention.
+  //
+  // REGISTERED INSIDE THIS BLOCK, for MIG-002's reason at :1334-1339 rather than by copying
+  // it: flag-off allocates no `aoa_app` pool at all, so `runInTenant` would have nothing to
+  // open. Unconditional registration would be a throw, not a safety net.
+  //
+  // ★ WHAT THIS TICK ACTUALLY DOES TODAY, stated so nobody reads a running timer as a
+  // running service. `listReconcilableServices` scans `services`, which has ONE insert in
+  // the tree and ZERO production callers — there is no route by which a human or an agent
+  // can create a service (SVC-007 owns that). So on every real deployment this tick reads an
+  // empty window and converges nothing. What it does deliver is that the moment a `services`
+  // row exists with `desired_state='running'` and a `service_generations` definition, exactly
+  // one instance and one job appear for it, and never two.
+  const { createServiceReconciler } = await import("./services/service-reconciler.js");
+  const serviceReconciler = createServiceReconciler({
+    appDb,
+    listAdmittedOrganizationIds: (page) =>
+      listAdmittedOrganizationIds!({ ...page, statementTimeoutMs: 750 }),
+    onPassFailure: (err, context) => {
+      logger.warn({ err, ...context }, "[svc-002] service reconcile pass failed");
+    },
+  });
+  let serviceReconcileStopped = false;
+  let serviceReconcileTimer: NodeJS.Timeout | undefined;
+  const serviceReconcileTick = async (): Promise<void> => {
+    if (serviceReconcileStopped) return;
+    let delay = 30_000;
+    try {
+      const result = await serviceReconciler.tick();
+      // Same discipline as the convergence sweeper above: the backoff is only real if the
+      // composition root reads it.
+      delay = serviceReconciler.nextDelayMs(result);
+      if (result.created > 0 || result.failed > 0) {
+        logger.info(
+          {
+            organizations: result.organizations, services: result.services,
+            created: result.created, unchanged: result.unchanged, failed: result.failed,
+          },
+          "[svc-002] service reconciler converged desired state",
+        );
+      }
+    } catch (err) {
+      logger.warn({ err }, "[svc-002] service reconciler tick failed");
+    }
+    if (serviceReconcileStopped) return;
+    serviceReconcileTimer = setTimeout(() => { void serviceReconcileTick(); }, delay);
+    serviceReconcileTimer.unref();
+  };
+  void serviceReconcileTick();
+  const stopServiceReconcile = () => {
+    serviceReconcileStopped = true;
+    if (serviceReconcileTimer) clearTimeout(serviceReconcileTimer);
+  };
+  process.once("SIGTERM", stopServiceReconcile);
+  process.once("SIGINT", stopServiceReconcile);
+
   const { setDistributedCancellationPort } = await import(
     "./services/distributed-cancellation-port.js"
   );
