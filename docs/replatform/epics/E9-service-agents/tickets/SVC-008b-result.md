@@ -203,8 +203,15 @@ as delivery; the register's own `$comment` records that lesson from earlier the 
 close it: a ruling on §9.1, or an amendment to E9's acceptance language with DE-12's
 `deliveryEvidence` corrected to carry the reason.
 
-**Also still not true after this:** nothing *creates* a service. `recordServiceHealth` keeps its zero
-production callers — ingest is generic, so every service event emitted here is durably stored and
+**Also still not true after this:** nothing *creates* a service. SVC-008b adds **no consumer** of
+`recordServiceHealth` and **no `service_health` projection** — its `countProductionCallers` reading
+is **2 at base and 2 at head**, unchanged by this diff. ★ RETRACTED: an earlier draft of this
+paragraph said `recordServiceHealth` "keeps its zero production callers", which is false against the
+very instrument this document cites — the two are its interface declaration and its implementation,
+and the register's counter has always reported them. The substance is unchanged (no new consumer, no
+state projection); the number was wrong, and a result document asserting a figure its own cited
+instrument contradicts is the failure class E9-F001 exists to record. Ingest is generic, so every
+service event emitted here is durably stored and
 **projects no state change**. Wiring that projection is SVC-003's; restart and checkpoint are
 SVC-004's; drain and generation are SVC-005's; the human path is SVC-007's. The acceptance sentence
 is *"a service job reaches a worker and is supervised as a service"*, never *"services are managed"*.
