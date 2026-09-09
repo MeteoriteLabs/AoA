@@ -87,7 +87,7 @@ sites: `worker-session-auth.ts:151`, `job-control-ack.ts:93`, `job-events.ts:169
 
 | In hand at the throw | Provenance | Tenant axis |
 |---|---|---|
-| `auth.organizationId`, `auth.workerId`, `auth.targetId`, `auth.deviceThumbprint`, `auth.proofId` (eight session-bound sites) | **token-attested** | organization |
+| `auth.organizationId`, `auth.workerId`, `auth.targetId`, `auth.deviceThumbprint`, `auth.proofId` (~~eight~~ **SEVEN** session-bound sites — see the correction below) | **token-attested** | organization |
 | `authoritativeOrganizationId` (the enrollment site, `worker-enrollment.ts:315`) | **DB-resolved** from `worker_enrollment_code_routes.candidate_organization_id` (`:289-294`) — **but typed `string \| null`** | organization, or none |
 | Any company | — | **absent** |
 
@@ -98,6 +98,21 @@ themselves nullable for platform scope.
 
 **Verdict: genuinely unresolvable on the company axis.** Resolvable on the organization axis at
 eight of nine sites, and at the ninth only when the enrollment code was org-routed.
+
+> ★ **CORRECTION, 2026-09-09 (PR #403, the sink unit).** The two sentences above are wrong in the
+> ruling's favour and are corrected here rather than left for a reader to inherit. Re-measured at
+> the nine `recordProof` call sites: **SEVEN** always carry a non-null, token-attested organization
+> (`job-control-ack.ts:93`, `job-events.ts:169`, `job-fencing.ts:133`, `job-leasing.ts:546` and
+> `:816`, `worker-fence-context.ts:68` and `:162`). **TWO** are conditionally doubly-null, not one:
+> `worker-enrollment.ts:315` (unrouted enrollment code) **and**
+> `server/src/`**`middleware`**`/worker-session-auth.ts:151`, which this paper lists above among the
+> session-bound sites — it is in `middleware/`, not `services/`, its
+> `authoritativeOrganizationId` is typed `string | null`, and its
+> `claims.organizationId === null` branch (`:183-185`) passes an explicit `null` for a
+> platform-scope worker (invariant at `:72`). The separate pre-code refusal at
+> `worker-enrollment.ts:295` is doubly null too and is **not** one of the nine. The ruling and the
+> landed schema are unaffected; the count of what (a2) buys is. Full measurement:
+> `docs/replatform/epics/E0-foundation/findings.md`, E0-F013 Decision 2.
 
 ### 1.2 DE-21 — WebSocket upgrade refusal, `authorizeUpgrade` (`live-events-ws.ts:251-407`)
 
@@ -316,7 +331,8 @@ sites, not clause-halves; §1.5's roll-up shows why the distinction matters.
 Everything in (a), plus `organization_id uuid REFERENCES organizations(id)`.
 
 - **Unblocks:** the same residue, **but attributably at most of it**. This is the only option that
-  records what is actually known at those sites: DE-03's eight session-bound refusals, DE-15's drain,
+  records what is actually known at those sites: DE-03's ~~eight~~ **seven** organization-attested
+  refusals (corrected 2026-09-09 — see §1.1), DE-15's drain,
   and DE-06's five org-only throws all hold a verified organization. Under (a) they become "some
   denial happened somewhere"; under (a2) they become "this organization was refused."
 - ★ **NOT all of it — two DE-03 sites this paper itself measured stay DOUBLY null under (a2).** At
@@ -327,6 +343,10 @@ Everything in (a), plus `organization_id uuid REFERENCES organizations(id)`.
   a row with `company_id` null **and** `organization_id` null — attributable to nothing but the
   device thumbprint and proof id in `details`. §1.1 says this; the "attributably" claim must not be
   read past it, and §4's acceptance language is scoped accordingly.
+  ★ **CORRECTION, 2026-09-09:** the pair named here is wrong. `:295` is doubly null but is **not one
+  of the nine**; the second doubly-null site *among the nine* is
+  `middleware/worker-session-auth.ts:151` at platform scope. The count of doubly-null sites is
+  unchanged (two of the nine, plus `:295`); which sites they are is not. See §1.1's correction.
 - ★ **Inherits (a)'s retraction in full.** `forIssue` reads without a company predicate, so an (a2)
   row is not undisclosed by construction either — the org column changes what is *recorded*, not who
   can *read* it. The third acceptance condition in §4.4c applies to (a2) exactly as to (a).
