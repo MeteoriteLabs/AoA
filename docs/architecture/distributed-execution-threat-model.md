@@ -180,7 +180,10 @@ sixteen from disk, re-verified every load-bearing citation at `file:line` agains
 completed DE-14. **Seven of the sixteen recovered records cited at least one line number that
 is wrong at tip**, and two carry a substantive correction: DE-21's auditor stated that no
 audit writer exists in the realtime module, which is false — the module logs at eight sites,
-and the real (worse) finding is that the *deny* path is the one path that never reaches one;
+and the real (worse) finding was that the *deny* path is the one path that never reaches one
+(★ partly superseded on 2026-09-09: five of `authorizeUpgrade`'s deny disjuncts now write an
+attributable row, the rest still write nothing, and DE-21 stays `partial` — the row's own
+`★ UNIT C` clause is the statement, not this sentence);
 and DE-16's audit clause, which the auditor left unsettled, was measured here. Every row
 names its own corrections in its evidence.
 
