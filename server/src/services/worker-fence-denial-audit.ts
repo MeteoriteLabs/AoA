@@ -5,8 +5,10 @@
 // tenant transaction the throw unwinds.
 //
 // ★ WHAT THIS IS AND, FIRST, WHAT IT IS NOT. `resolveWorkerFenceContext`
-// (`worker-fence-context.ts`) refuses at six places — `:75`, `:89` twice, `:92`,
-// `:97`, `:110` and the post-resolution tuple-integrity branch. At FIVE of them
+// (`worker-fence-context.ts`) refuses at SIX throw sites: `:75` (proof replay),
+// `:89` (one site, two codes — `unauthorized` with no authority, `target_revoked`
+// with one), `:92` (target inactive), `:97` (profile drift), `:110` (no lease
+// resolved), and the post-resolution tuple-integrity branch. At FIVE of them
 // there is no company in hand at all: `workers` and `execution_targets` carry
 // `organization_id` only, and the lease — the one row that carries `company_id`
 // — is precisely what has not resolved yet. `activity_log.company_id` is

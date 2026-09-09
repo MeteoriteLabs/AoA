@@ -688,11 +688,13 @@ integration("DE-06 — a refused artifact object operation is durable and attrib
   // NOT NULL with a cascade FK, so `recordSecurityDenial` would log-and-return
   // null. Those five remain `E0-F013`'s Decision 2.
   //
-  // The SIXTH — the post-resolution tuple-integrity branch — is different, and
-  // the arms below it now prove it: by then the lease has been resolved AND
-  // inner-joined to `job_attempts` on `company_id`, so an FK-valid company is in
-  // hand. That branch was wired on 2026-09-09; these two arms are its NAMED
-  // POSITIVE CONTROLS and must stay green.
+  // The SIXTH — the post-resolution tuple-integrity branch — is different: by
+  // then the lease has been resolved AND inner-joined to `job_attempts` on
+  // `company_id`, so an FK-valid company is in hand. It was wired on 2026-09-09
+  // and is proven by the "TUPLE-INTEGRITY FENCE REFUSAL IS RECORDED" arms further
+  // down. THE TWO ARMS IMMEDIATELY BELOW THIS COMMENT are those arms' NAMED
+  // POSITIVE CONTROLS: remove the recorder and they must stay green while the
+  // tuple-integrity arms go red. Observed in exactly that shape.
   //
   // ★ AND THE FIRST ARM BELOW IS ALSO THE `:110`-vs-tuple-integrity FIXTURE PIN.
   // A superseded fence changes the LOOKUP key, so `lockLeaseAckContext` returns
