@@ -139,6 +139,24 @@ const EXPECTED_UNGUARDED = [
   // would refuse every real call; its safety is classifying dead only on monotonic
   // status/generation columns. Not a worker-reachable governed mutator.
   "classifyLeaseTruth",
+  // SVC-002 the service reconciler's surface, deliberately UNGUARDED and classified in
+  // the SAME commit that adds it (this test fails closed on any unclassified method).
+  //
+  // None of the six is worker-side and none is reached through a lease: they run in the
+  // control-plane sweeper's own tenant transaction, BEFORE any job exists, so at that point
+  // there is no fence to guard against and `guardActiveFence` would be unsatisfiable rather
+  // than stricter same reasoning DAT-008's `insertExecutionSecretHandle` is classified
+  // here. The duplicate-placement invariant they uphold lives in the partial unique index
+  // `service_instances_live_service_uq`, not in a fence.
+  //
+  // `attributeServiceInstance` writes only `job_id` / `attempt_id`, never `status`:
+  // `recordServiceHealth` stays the sole (and guarded) writer of instance status.
+  "lockServiceForReconcile",
+  "countNonTerminalInstances",
+  "insertServiceInstance",
+  "attributeServiceInstance",
+  "listReconcilableServices",
+  "findServiceGenerationDefinition",
 ];
 
 function parse(path: string): ts.SourceFile {

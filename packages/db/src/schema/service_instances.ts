@@ -1,4 +1,15 @@
-import { pgTable, uuid, text, integer, timestamp, index, check, unique, foreignKey } from "drizzle-orm/pg-core";
+import {
+  pgTable,
+  uuid,
+  text,
+  integer,
+  timestamp,
+  index,
+  uniqueIndex,
+  check,
+  unique,
+  foreignKey,
+} from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { organizations } from "./organizations.js";
 import { services } from "./services.js";
@@ -10,6 +21,15 @@ import { services } from "./services.js";
 // tenant. At TEN-001b only the plain service_id FK (ON DELETE CASCADE — instances
 // die with their service) + the denormalized organization_id column exist; the
 // composite FK is TEN-004.
+//
+// SVC-002 gave this table its first writer with a production caller. Every column added
+// there is written by the reconciler's own transaction — the rule that keeps this from
+// becoming a set of columns nothing fills, which is the vacuously-true acceptance pattern
+// SVC-001 already declined `actor_context_policy_id` on. Columns SVC-002 deliberately did
+// NOT add, with the ticket that owns each: `lease_id` / `worker_id` / `started_at` /
+// `last_health_at` (SVC-003 — the lease is minted after SVC-002's transaction has
+// committed, and health is the only writer of the last two); `restart_count` /
+// `backoff_until` (SVC-004); `paused_at` / `budget_*` / `ttl_deadline_at` (SVC-005).
 export const serviceInstances = pgTable(
   "service_instances",
   {
@@ -23,8 +43,38 @@ export const serviceInstances = pgTable(
     // cross-tenant existence oracle (FK checks bypass RLS). organization_id keeps
     // its FK.
     serviceId: uuid("service_id").notNull(),
+    // SVC-002. Denormalized and load-bearing, exactly as on `services` and
+    // `service_generations`: `aoa.organization_id` is the ONLY GUC, so company scoping is
+    // necessarily app-layer and this column is the sole company predicate any later reader
+    // has. Its integrity comes from the TRIPLE composite FK below, never from a
+    // single-column FK (which would bypass RLS and leak cross-tenant existence, E2-F013).
+    //
+    // NOT NULL with no default, deliberately: a sentinel-company default would be a
+    // fail-open, and the reconciler writes this column in the same transaction that inserts
+    // the row. The migration can add it NOT NULL without a backfill because this table has
+    // never had a production writer (SVC-002-terrain.md §1: `service_instances` has one
+    // INSERT in the tree with ZERO production callers), so every deployment's table is empty.
+    companyId: uuid("company_id").notNull(),
     generation: integer("generation").notNull().default(1),
     status: text("status").notNull().default("pending"),
+    // SVC-002. Without these the instance row is UNATTRIBUTABLE: nothing correlates an
+    // instance with the job serving it and SVC-003 has nothing to fence against. Both ids
+    // exist inside the reconciler's single transaction, so both are written by the same
+    // commit that adds the columns (no vacuously-true column).
+    //
+    // Deliberately PLAIN COLUMNS rather than a composite FK into
+    // `jobs(organization_id, company_id, id)`, even though `jobs_org_company_id_uq` exists.
+    // The direction of the dependency would be wrong: `jobs` is the generic control plane,
+    // and a service-specific child FK into it makes job lifecycle management service-aware,
+    // with non-obvious ON DELETE semantics (a deleted job should probably NOT delete the
+    // instance row that is the audit record of it). Recorded as a judgement call, not an
+    // impossibility — SVC-002-design.md §10.3, still unmade.
+    //
+    // Nullable because the ORDER inside the transaction is insert-then-submit: the instance
+    // id is minted first so the workload can carry it. The reconciler UPDATEs both to
+    // non-null before commit, so a committed reconciler-authored row always carries them.
+    jobId: uuid("job_id"),
+    attemptId: uuid("attempt_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -44,15 +94,46 @@ export const serviceInstances = pgTable(
     // bind a composite tenant FK to an instance. Every child table SVC-002/003 needs was
     // blocked on this one line.
     orgIdUq: unique("service_instances_org_id_uq").on(table.organizationId, table.id),
-    // TEN-004: composite org-scoped FK — an instance's (organization_id,
-    // service_id) must exist together in services(organization_id, id), so an
-    // instance cannot be stamped with a different tenant than its service. The redundant
-    // single-column service FK was DROPPED in E2-F013 (0212) — it bypassed RLS and leaked
-    // cross-tenant existence; this composite is the SOLE service FK, ON DELETE cascade (E2-D09).
-    orgServiceFk: foreignKey({
-      columns: [table.organizationId, table.serviceId],
-      foreignColumns: [services.organizationId, services.id],
-      name: "service_instances_org_service_fk",
+    // ★★★ SVC-002 — THE AUTHORITY for "one service, one running instance, without
+    // duplicate placement". Everything else the reconciler does about duplicates is
+    // convenience.
+    //
+    // WHY AN INDEX AND NOT A LOCK. A unique index is enforced by the storage engine on
+    // EVERY insert, including one written by a caller that does not exist yet. The advisory
+    // lock the reconciler takes is ADVISORY: nothing forces SVC-004's restart path or
+    // SVC-007's manual "start now" control to take it, and a concurrency test written
+    // against two copies of the reconciler cannot see a writer that skips it. Same objection
+    // kills `SELECT ... FOR UPDATE` on the parent `services` row (an inserter that never
+    // reads `services` takes no lock) and the submission idempotency key (it constrains
+    // `jobs`, not this table). The invariant has to live in the database or it is not an
+    // invariant.
+    //
+    // THE PREDICATE IS DERIVED, NOT HAND-PICKED. 'stopped' / 'failed' / 'lost' are exactly
+    // the three states with no outgoing transitions in the FROZEN `serviceInstance`
+    // lifecycle (packages/worker-protocol states.ts SERVICE_INSTANCE_TRANSITIONS, mirrored
+    // in docs/architecture/distributed-execution-lifecycles.json). Hand-written here for the
+    // same reason the CHECK above is (packages/db does not depend on worker-protocol); the
+    // reconciliation against the frozen authority is asserted server-side.
+    //
+    // House precedent: `job_artifacts` carries three disjoint partial uniques over a natural
+    // key for exactly this purpose (DAT-002/006/009).
+    liveInstanceUq: uniqueIndex("service_instances_live_service_uq")
+      .on(table.organizationId, table.serviceId)
+      .where(sql`status NOT IN ('stopped', 'failed', 'lost')`),
+    // TEN-004 + SVC-002: composite org-scoped FK. Widened from the (organization_id,
+    // service_id) PAIR to the (organization_id, company_id, service_id) TRIPLE for E2-F013's
+    // reason: with the pair, an instance could carry company B while its service belongs to
+    // company A inside one org, with every constraint satisfied — and the denormalized
+    // company_id is the sole company predicate any later reader has, so its integrity is the
+    // whole guarantee. This is the same correction SVC-001 applied to `service_generations`.
+    // The FK target `services_org_company_id_uq` already exists (SVC-001). ON DELETE cascade
+    // (E2-D09) — instances die with their service. Still the SOLE service FK: the redundant
+    // single-column one was DROPPED in E2-F013 (0212) because it bypassed RLS and leaked
+    // cross-tenant existence.
+    orgCompanyServiceFk: foreignKey({
+      columns: [table.organizationId, table.companyId, table.serviceId],
+      foreignColumns: [services.organizationId, services.companyId, services.id],
+      name: "service_instances_org_company_service_fk",
     }).onDelete("cascade"),
   }),
 );
