@@ -232,37 +232,55 @@ all four read as shipped.
    its own module is a test or the barrel re-export at `packages/worker-daemon/src/index.ts:634`.
    Consequence: **no shipped path can ever write a quarantined artifact row.**
 2. **DE-07 (Critical) — the secret-handle revocation lever cannot be pulled.** ★ **HALF-CLOSED
-   2026-09-09 by founder ruling — the revoke-lever half, and closed by DELETION, not by wiring.
-   The broker-refresh half below is untouched and this item stays open.** As filed: the clause was
+   2026-09-09 by founder ruling — the revoke-lever half, and closed by RETIREMENT of the dead
+   column plus a narrowed clause, not by wiring. The broker-refresh half below is untouched and
+   this item stays open.** As filed: the clause was
    *"lease or fence loss invalidates handles; the broker revokes grants."* The fence half holds
    (`job-control.ts:3005`). The broker half did not: `job_secret_handles.revoked_at` was **read**
    (`job-control.ts:2992`, `isNull(...)`) and declared (`packages/db/src/schema/job_secret_handles.ts:81`),
    and the **single write chokepoint** for that table — `tx.update(jobSecretHandles)` at
-   `job-control.ts:3139`, the only such call in the tree — sets exactly
+   `job-control.ts:3146`, the only such call in the tree — sets exactly
    `lastResolvedAt`, `resolveCount`, `updatedAt` and optionally `appliedPolicyVersion`. It could set
    neither `status` nor `revokedAt`. **No code path anywhere could revoke a handle.**
 
-   ★ **The ruling did not arm it. It removed it, and narrowed the claim to what ships.** Founder
-   ruling of 2026-09-09: **device-grained revocation is sufficient**, so `revoked_at` was dropped
-   (Drizzle schema edit + `pnpm db:generate` → `packages/db/src/migrations/0274_jittery_nehzno.sql`,
-   a single `ALTER TABLE "job_secret_handles" DROP COLUMN "revoked_at";`), the single reader lost
-   its `isNull(...)` conjunct, and DE-07's `revocation` clause was rewritten to state the
+   ★ **The ruling did not arm it. It retired it, and narrowed the claim to what ships.** Founder
+   ruling of 2026-09-09: **device-grained revocation is sufficient**, so the single reader lost
+   its `isNull(...)` conjunct and DE-07's `revocation` clause was rewritten to state the
    **device-grained fence cutoff** that actually ships:
    `POST /organizations/:organizationId/workers/:workerId/revoke` → `revokeWorker`
    (`server/src/services/job-operations.ts:302`) → `revokeExecutionTarget` →
    `bumpExecutionTargetGeneration` (`server/src/services/execution-targets.ts:272`, taken at
    `:307`/`:311`), after which every later resolve dies at
    `throw new JobFenceError("target_revoked")` (`job-control.ts:1177`) inside `guardActiveFence`,
-   **before the handle row is read**. Re-verified at branch tip before the drop: zero writers
+   **before the handle row is read**.
+
+   ★ **THE COLUMN ITSELF IS STILL THERE, AND THAT IS DELIBERATE (corrected 2026-09-09).** An
+   earlier draft of this entry — and a migration, `0274_jittery_nehzno.sql`, carrying a single
+   `ALTER TABLE "job_secret_handles" DROP COLUMN "revoked_at";` — shipped the DROP alongside the
+   reader removal. **That was withdrawn**: the migration, its journal entry and its snapshot are
+   removed, `db:generate` reports no delta, and `revokedAt` is declared again in
+   `packages/db/src/schema/job_secret_handles.ts` marked **VESTIGIAL AND UNREAD**. Reason:
+   `scripts/deploy/remote-compose-deploy.sh` rolls the **binary** back when a deploy fails after
+   `MUTATION_STARTED` (`on_exit` → `rollback_previous`), and nothing in that sequence
+   (`restore_environment` / `rollback_previous` / `restore_current_link`) reverts the database — so
+   the N-1 binary would come back up against a schema with no `revoked_at` while still naming it in
+   `listActiveExecutionSecretHandles` and in full-row selects, and every secret-handle operation
+   would fail with `column revoked_at does not exist`. `docs/replatform/test-gates.md` D5-HA03
+   requires rolling deployment and N/N-1 compatibility, so shipping the drop here would have been a
+   contract violation. **This release is the EXPAND half.** The CONTRACT half — dropping the column
+   once no deployable binary still names it — is filed as **E0-F017**.
+
+   Re-verified at branch tip before removing the reader: zero writers
    tree-wide; the only reader ANDed the column with `status = 'active'` so it could never subtract
    a row `status` had not already admitted; no index, no RLS policy and no per-column grant
    referenced it (`job_secret_handles` carries a whole-table `aoa_app` grant,
    `server/src/db/job-control-legacy-grants.ts:626`; the `revoked_at` entry in that file's column
    matrix at `:667` is **`mcp_api_keys`**, a different table, and is untouched); it appeared in
-   exactly one assertion (`server/src/__tests__/secret-broker.integration.test.ts`, now asserting
-   its **absence**); and `0250_condemned_warbird.sql:23` added it nullable with no default and no
+   exactly one assertion (`server/src/__tests__/secret-broker.integration.test.ts`, which still
+   asserts its **presence** and flips to absence in the contract commit); and
+   `0250_condemned_warbird.sql:23` added it nullable with no default and no
    backfill, so no row could carry a non-null value.
-   **The deletion forecloses nothing:** `status` and its deny —
+   **The retirement forecloses nothing:** `status` and its deny —
    `if (h.status !== "active") return "handle_revoked"` in `authorizeSecretResolve`
    (`packages/db/src/repositories/tenant/job-fence.ts:293`) — are retained unchanged, and are the
    surface a future per-handle revocation arms with **one** mutator.
@@ -921,4 +939,54 @@ its full token lifetime after the run that justified it has ended.
 - **Resolution condition:** each clause is either delivered against a named line or AMENDED to state
   the bound the code actually provides. **Do not leave a field asserting "immediately" while the code
   does not.** Resolve = flip this Status and delete the `E0-F016` key in
+  `scripts/finding-ownership.json` in the SAME commit.
+
+## E0-F017 — The CONTRACT half of DE-07's column retirement: `job_secret_handles.revoked_at` is now declared-but-unread, and the DROP that was withdrawn from this release still has to happen
+
+- **Status:** open
+- **Severity:** MED
+- **Filed:** 2026-09-09, by the unit that withdrew the drop from the DE-07 ruling PR.
+- **Blocks gate:** No.
+
+**What shipped, and what did not.** The DE-07 founder ruling (see `E0-F011` item 2) retired
+`job_secret_handles.revoked_at` as a revocation lever. The **EXPAND** half shipped: the column's only
+reader — the `isNull(jobSecretHandles.revokedAt)` conjunct in `listActiveExecutionSecretHandles`
+(`packages/db/src/repositories/tenant/job-control.ts`) — is removed, which is safe because
+`status = 'active'` beside it was already the strictly stronger predicate. Nothing in the tree reads
+the column now, and nothing ever wrote it. The **CONTRACT** half — the `DROP COLUMN` — did **not**
+ship, and the migration that carried it (`0274_jittery_nehzno`) was removed from this branch along
+with its journal entry and snapshot.
+
+**Why the drop was withdrawn.** `scripts/deploy/remote-compose-deploy.sh` runs `rollback_previous`
+from `on_exit` when a deploy fails after `MUTATION_STARTED`, and **nothing** in that sequence
+(`restore_environment` → `rollback_previous` → `restore_current_link`) reverts the database. The
+rollback therefore returns the **N-1 binary** to a **post-migration schema**. With the drop applied,
+that binary comes back up still naming `revoked_at` — in `listActiveExecutionSecretHandles` and in
+Drizzle's explicit full-row column lists — and every secret-handle operation fails with
+`column revoked_at does not exist`. `docs/replatform/test-gates.md` D5-HA03 requires rolling
+deployment and N/N-1 compatibility, so shipping a destructive DDL beside its reader removal is a
+contract violation, not merely a risk. It was also caught only after the same PR had first shipped
+the drop unguarded and then "fixed" it with `DROP COLUMN IF EXISTS` — an idempotency guard that
+makes **replay** safe and does nothing whatever for **rollback**.
+
+**Why this is filed rather than just deferred.** A vestigial column with a comment is exactly the
+kind of thing that survives forever. The precondition is objective and checkable, so it is written
+down here instead of trusted to memory.
+
+- **Affected crossings:** DE-07 (the `revocation` clause; the column is not what enforces it —
+  device-grained revocation via `revokeWorker` → `bumpExecutionTargetGeneration` → the
+  `target_revoked` deny at `job-control.ts:1177` is), DE-29 (clause (b), same chokepoint).
+- **Precondition for the contract step:** **no deployable binary still names the column.** Concretely:
+  the release that carries the reader removal has been promoted, and the oldest binary any rollback
+  path can restore is at or after it — i.e. the N-1 rollback window for that release has closed.
+  Until then the declaration stays.
+- **Disposition:** `unowned`. No shipped ticket owns `job_secret_handles`' column set; `DAT-004`
+  (which added the column in `0250`) has a result document on disk, and naming a completed ticket
+  would be the false-ownership claim `E4-F013` exists to refuse.
+- **Resolution condition:** one `db:generate` migration dropping `revoked_at` (Drizzle schema edit
+  only — never hand-authored DDL), landed in a release **after** the one carrying this PR, together
+  with: the schema comment deleted, the `revoked_at` entry in the
+  `server/src/__tests__/secret-broker.integration.test.ts` column assertion flipped back to
+  `.not.toContain("revoked_at")`, and DE-07 + DE-29's `deliveryEvidence` updated from
+  "declared but unread" to "dropped". Resolve = flip this Status and delete the `E0-F017` key in
   `scripts/finding-ownership.json` in the SAME commit.

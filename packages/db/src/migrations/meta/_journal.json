@@ -1919,13 +1919,6 @@
       "when": 1788523348119,
       "tag": "0273_trust_rule_agent_binding",
       "breakpoints": true
-    },
-    {
-      "idx": 274,
-      "version": "7",
-      "when": 1788929429435,
-      "tag": "0274_jittery_nehzno",
-      "breakpoints": true
     }
   ]
 }

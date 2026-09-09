@@ -157,12 +157,32 @@ export function byteName(code) {
  *
  * That rule can only be applied where an escape can be written. INSIDE A BLOCK COMMENT THERE
  * IS NO ESCAPE -- a backslash-u-200B written inside a comment is six literal characters that
- * denote nothing, not a codepoint the reader can see standing in for one. So this guard
- * covers the ACCIDENT CLASS (a shell eating backslash-b, which can only ever emit a C0
- * byte, and which has shipped here three times) and NOT the AUTHORED CLASS (a human typing an
- * invisible codepoint on purpose, in a place where the byte/escape distinction does not
- * exist). Those are different classes with different remedies; the byte scan is COMPLETE
- * against the first and was never a candidate for the second.
+ * denote nothing, not a codepoint the reader can see standing in for one.
+ *
+ * SO, STATED AS TWO SEPARATE RULES OVER TWO SEPARATE SETS -- because this guard does BOTH and
+ * an earlier wording of this paragraph denied the second, in flat contradiction of
+ * BANNED_CODEPOINTS eight lines below it:
+ *
+ *   (i) ALL RAW C0/DEL BYTES ARE BANNED, WITHOUT EXCEPTION. That is `isBannedByte`, it is a
+ *       RANGE and not a list, and it is COMPLETE against the accident class -- a shell eating
+ *       backslash-b can only ever emit a C0 byte. "Ban the raw byte, permit the escape"
+ *       applies here in full, because in every context where a C0 byte can appear an escape
+ *       can be written instead.
+ *
+ *   (ii) AN ENUMERATED SET OF AUTHORED INVISIBLE CODEPOINTS IS ALSO BANNED: U+00AD SHY and the
+ *        bidi overrides/isolates U+202A..U+202E and U+2066..U+2069 (BANNED_CODEPOINTS). Those
+ *        are NOT an accident class at all -- they are Trojan Source (CVE-2021-42574), a
+ *        deliberate adversarial technique -- and they are banned because the measurement found
+ *        ZERO legitimate uses of them in this tree, so banning them costs nobody a rewrite.
+ *
+ * WHAT IS NOT CLAIMED: (ii) is an ENUMERATION, not a decision procedure, so this guard is NOT
+ * COMPLETE against an author who deliberately hides a character. The gap is named above and
+ * pinned by a test: U+200B ZWSP, U+00A0 NBSP and U+FEFF BOM stay legal because each has
+ * legitimate uses here, and a ban whose only remedy is deletion gets the guard switched off.
+ * The line therefore runs between "banned because nothing here needs it" and "permitted
+ * because something here does" -- NOT between accident and intent. Adding a codepoint to (ii)
+ * is a measurement (count the legitimate uses; if non-zero, supply the rewrite first), not a
+ * category question.
  *
  * ★ THE COUNT WAS NEVER A FIXED SET, AND SAYING "2 uses" IMPLIED IT WAS. E6-F020 measured the
  * excused ZWSP use RECURRING within hours, in a new file, with nobody deciding to use it:

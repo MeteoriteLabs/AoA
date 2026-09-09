@@ -2990,9 +2990,12 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
           eq(jobSecretHandles.jobId, input.jobId),
           // `status = 'active'` is the WHOLE liveness predicate, and the same one
           // `authorizeSecretResolve` denies on (job-fence.ts:293). The former
-          // `isNull(revokedAt)` conjunct was dropped with the column (DE-07 ruling,
-          // 2026-09-09): it had no writer, so ANDing it here could never subtract a
-          // row that `status` had not already admitted.
+          // `isNull(revokedAt)` conjunct was REMOVED by the DE-07 ruling (2026-09-09):
+          // it had no writer tree-wide, so ANDing it here could never subtract a row
+          // that `status` had not already admitted. The COLUMN itself is still declared
+          // (see packages/db/src/schema/job_secret_handles.ts) — vestigial and unread,
+          // held for one release so a binary rollback cannot land on a schema missing
+          // it. This removal is the EXPAND step; the DROP is E0-F017.
           eq(jobSecretHandles.status, "active"),
         ))
         .orderBy(asc(jobSecretHandles.createdAt), asc(jobSecretHandles.handle));

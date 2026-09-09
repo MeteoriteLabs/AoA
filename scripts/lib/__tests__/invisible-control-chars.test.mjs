@@ -225,17 +225,26 @@ test("★ THE DOCUMENTED LIMIT: ZWSP, NBSP and BOM still evade this guard, on pu
   // ★★★ THIS TEST ASSERTS A WEAKNESS, AND IT IS SUPPOSED TO. The cheapest evasion of this guard
   // is one zero-width space: cost zero, and a full run passes.
   //
-  // So: this guard is a defence against an ACCIDENT that has shipped three times -- a shell
+  // So: the BYTE SCAN is a defence against an ACCIDENT that has shipped three times -- a shell
   // eating backslash-b, which can only ever produce a C0 byte -- and it is complete against
-  // that. It is NOT a security boundary against a deliberate adversary, and must never be cited
-  // as one.
+  // that. The guard as a whole is NOT a security boundary against a deliberate adversary, and
+  // must never be cited as one.
   //
   // ★★★ THE DECISION THIS TEST RECORDS, RULED 2026-09-09 (founder ruling on E6-F020). The
   // boundary is DELIBERATE SCOPE, not a known hole. The guard's rule is "ban the raw byte,
   // permit the ESCAPE" -- and that rule can only be applied where an escape can be written.
-  // Inside a block comment there IS no escape, only a REWRITE. So the byte scan covers the
-  // ACCIDENT class and NOT the AUTHORED class (a human typing an invisible codepoint on
-  // purpose), and it was never a candidate for the second.
+  // Inside a block comment there IS no escape, only a REWRITE.
+  //
+  // ★ SAID PRECISELY, because an earlier wording of this comment said the guard "was never a
+  // candidate" for the AUTHORED class and the test DIRECTLY ABOVE refutes it: BANNED_CODEPOINTS
+  // bans U+00AD and the bidi overrides/isolates, which are Trojan Source -- a purely AUTHORED
+  // adversarial class. The guard does BOTH: (i) ALL raw C0/DEL bytes, a complete range, where
+  // "ban the byte, permit the escape" applies in full; and (ii) an ENUMERATED set of authored
+  // invisible codepoints, banned because this tree has ZERO legitimate uses of them so the ban
+  // costs nobody a rewrite. (ii) is an enumeration, not a decision procedure, so it is not
+  // complete against a determined author. The line runs between "banned because nothing here
+  // needs it" and "permitted because something here does" -- NOT between accident and intent.
+  // The three codepoints asserted below are on the permitted side for exactly that reason.
   //
   // ★ WHAT WAS CORRECTED AT THE SAME TIME. This comment used to say ZWSP stays legal because
   // "no escape-based repair exists", and the guard header used to count "2 uses" as though the

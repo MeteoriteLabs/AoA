@@ -403,14 +403,19 @@ integration("DAT-004 lease-scoped secret broker", () => {
     // The rich binding + audit columns exist.
     expect(names).toEqual(expect.arrayContaining([
       "ref_kind", "ref_id", "materialization", "use_policy", "destination",
-      "bound_target_generation", "status", "last_resolved_at", "resolve_count",
+      "bound_target_generation", "status", "last_resolved_at", "resolve_count", "revoked_at",
       "owner_principal_kind", "owner_principal_id",
     ]));
-    // DE-07 ruling (2026-09-09): `revoked_at` was DROPPED (0274). It had zero writers
-    // tree-wide and its only reader ANDed it with `status = 'active'`, so it could never
-    // independently deny anything. Per-handle revocation is `status` alone. Asserted
-    // NEGATIVELY so a re-added second, unwired revocation column reds this test.
-    expect(names).not.toContain("revoked_at");
+    // `revoked_at` is asserted PRESENT on purpose, and it is VESTIGIAL AND UNREAD.
+    // DE-07's ruling (2026-09-09) retired it as a revocation lever — zero writers
+    // tree-wide, and its only reader ANDed it with `status = 'active'` so it could never
+    // independently deny anything. That reader conjunct is removed (the EXPAND step);
+    // per-handle liveness is `status` alone and revocation is device-grained. The
+    // DECLARATION must outlive the reader removal by one release: a failed deploy rolls
+    // the BINARY back and reverts NO schema, so dropping the column here would leave an
+    // N-1 binary selecting a column that no longer exists. The CONTRACT step (E0-F017)
+    // drops it once the rollback window has closed, and flips this line back to
+    // `.not.toContain("revoked_at")` in the same commit.
   });
 
   // ---- happy resolves per ref_kind ----------------------------------------
