@@ -22,6 +22,24 @@ The E2B tier behind this repository's `E2B_API_KEY` **accepts** a `network.denyO
 server-side, **stores** it, **reads it back verbatim** through `getInfo()` — and **routes the denied
 traffic anyway**, through both `Sandbox.create` and `updateNetwork`.
 
+> ★★★ **SCOPE, ADDED 2026-09-09 (W10B-B): that is one SHAPE, and it is not the shape E2B documents as
+> the control.** This run declared a `denyOut` list of CIDRs with **no `allowOut`**. E2B's docs present
+> the fine-grained control as default-deny (`denyOut: ({allTraffic}) => [allTraffic]`) **plus** an
+> `allowOut` allowlist, and say domains are unsupported in deny lists — so domain filtering *requires*
+> that form. **It is UNMEASURED.** An arm for it is built (runbook §13).
+> **Unmeasured is not "probably works":** `DE-08` stays `not-delivered`, no production path passes a
+> `network` body, and nothing about this run's conclusion changes.
+>
+> ★★ **ATTEMPTED TWICE, 2026-09-09 — AND STILL UNMEASURED.** That arm was dispatched twice (runs
+> [`34328502574`](https://github.com/MeteoriteLabs/AoA/actions/runs/34328502574) and
+> [`34328780645`](https://github.com/MeteoriteLabs/AoA/actions/runs/34328780645), three minutes apart,
+> branch `replatform/w10b-allowlist-arm` @ `899aceeec`, template `aoa-base`) and returned
+> **`UNRUN — NO VERDICT — arm-was-never-created`** both times: `Sandbox.create` answered
+> `SandboxError: 500: Failed to place sandbox: sandbox creation failed on 3 node(s), please retry; if
+> the problem persists, contact us`. **§14 is the record.** The sandbox never existed, so no row ran.
+> **`UNRUN` is not `INERT`:** nothing in this document may be read as the allowlist shape having been
+> tested and found not to enforce.
+
 **The ABANDON condition (question **c**) did NOT fire**, so this is genuine inertness and not a
 misconfiguration that broke its own experiment: the guest's resolver (`8.8.8.8`) was outside every
 declared range, name resolution worked under the policy, and the product-regression rows were reached.
@@ -219,5 +237,111 @@ These are not in the summary block and are the evidence behind three claims in `
   names the row.
 - **`allowOut`** and **`allowInternetAccess: false`** — this run measured `denyOut`. Reasoning from this
   result to those fields is an argument, not a measurement.
+  **★ FOLLOWED UP 2026-09-09 (W10B-B).** `allowOut` is not a footnote: default-deny **plus** an
+  `allowOut` allowlist is the construction **E2B's own documentation presents as the fine-grained
+  control**, and the only one that supports domains. An arm for it — with a positive control (an
+  allowlisted destination that must be REACHED), the metadata endpoint and an ordinary public IP that
+  must both be REFUSED, a resolver probe, and a liveness probe that separates *blocked* from *dead* —
+  is **built**: runbook §13. Records that generalised this run to
+  *"the tier does not honour a `network` body"* have been narrowed to the deny-only shape.
+  **★ It was dispatched twice on 2026-09-09 and returned `UNRUN` both times — the sandbox failed to
+  place — so `allowOut` is STILL not exercised. §14.**
+- **The guest's DNS resolver was the reason it could not be tested here, and it turns out to be
+  nameable.** `/etc/resolv.conf` read `nameserver 8.8.8.8` in **both** arms — a static public address,
+  so `allowOut: ["8.8.8.0/24"]` admits it and the documented shape is usable for us. The runbook's §2
+  treated the default-deny flip as a stop condition to avoid, which was right for this probe and is
+  what left the allowlist shape unmeasured.
 - **Any tier other than the one this repository's `E2B_API_KEY` reaches.** `resolveE2bDomain` makes the
   API target per-company configurable.
+
+---
+
+## 14. THE ALLOWLIST ARM'S TWO DISPATCHES — 2026-09-09, `UNRUN` both times
+
+**This section exists because the arm ran and did not answer, and that has to be written down as
+precisely as an answer would have been.** The `E7-F025` failure — *fired and unrecorded* — does not
+become acceptable when the firing produced no verdict.
+
+| | run 1 | run 2 |
+|---|---|---|
+| id | [`34328502574`](https://github.com/MeteoriteLabs/AoA/actions/runs/34328502574) | [`34328780645`](https://github.com/MeteoriteLabs/AoA/actions/runs/34328780645) |
+| started | 2026-09-09 08:19:42Z | 2026-09-09 08:22:47Z |
+| branch / commit | `replatform/w10b-allowlist-arm` @ `899aceeec` | same |
+| template | `aoa-base` | same |
+| lane conclusion | `success` | `success` |
+| **allowlist arm** | **`UNRUN — NO VERDICT — arm-was-never-created`** | **`UNRUN — NO VERDICT — arm-was-never-created`** |
+| policy arm sandbox | `i531or2zgvmdlt18e2u2s` — **created** | `im9ge2ldwohsitqrtx5rc` — **created** |
+| anti-vacuity arm sandbox | `i13yih10trv4512eugjmz` — **created** | `i0xsmm4fzyhr3ep736ge9` — **created** |
+| IPv6-deny arm | `400: invalid denied CIDR ::ffff:0:0/96` — refused | same |
+
+**The body sent** (both runs, logged verbatim by the pack before the call):
+
+```
+[w10b/A/allowlist] creating (template=aoa-base) network={"allowOut":["8.8.8.0/24","1.1.1.1","example.com"]}
+```
+
+— with `denyOut: ["0.0.0.0/0"]` via the SDK's `allTraffic` sentinel.
+
+**What `Sandbox.create` returned** (both runs, verbatim):
+
+```
+SandboxError: 500: Failed to place sandbox: sandbox creation failed on 3 node(s), please retry; if the problem persists, contact us
+```
+
+**What the arm therefore recorded** (from `observations.allowlistArm` in both durable records):
+
+```
+outcome  : unrun          isVerdict: false        created: false
+reason   : arm-was-never-created
+rows     : allow_ip=no-result/unknown  allow_host=no-result/unknown
+           deny_metadata=no-result/unknown  deny_public_ip=no-result/unknown
+           deny_public_host=no-result/unknown  apparatus=no-result/unknown
+dns      : unknown        resolver : expected 8.8.8.8, observed null
+readBack : getInfo failed: not attempted
+resolvConf: UNREADABLE: not attempted
+```
+
+Not one row ran. **Nothing about enforcement was observed, in either direction.**
+
+### 14.1 ★ Why this is evidence and not noise: the siblings placed
+
+Both runs created the policy arm and the anti-vacuity arm **successfully**, on the **same template**,
+with the **same key**, **seconds** before the allowlist arm's create call. A capacity or availability
+problem broad enough to fail a placement would have taken those with it. It did not, twice.
+
+**Only the default-deny + `allowOut` body fails to place, and it did so on both attempts.**
+
+### 14.2 ★★ The claim, at the strength the evidence supports
+
+> **The shape E2B documents as the fine-grained control reproducibly FAILS TO PLACE at this tier.
+> The cause is unknown, and it is E2B's to explain.**
+
+Three readings that are **not** supported:
+
+* **NOT "the tier refuses the shape."** A `500 … please retry; if the problem persists, contact us`
+  is a server-side placement failure carrying a retry hint. It is not a validation rejection.
+  **The contrast is in the same run:** the IPv6 deny arm was refused `400: invalid denied CIDR
+  ::ffff:0:0/96` — *that* is a tier refusing a body, and it looks nothing like this.
+* **NOT "transient."** It reproduced across two dispatches three minutes apart, each with siblings
+  that placed successfully seconds earlier. Sibling success is precisely what rules that reading out.
+* **NOT a measurement of enforcement.** **`UNRUN` is not `INERT`.** The deny-only shape is measured
+  inert (this document's §"The answer in one line"); the allowlist shape has never been observed.
+
+**Two attempts is the evidence, and this record says two attempts.** It is not a sample from which a
+failure rate can be quoted.
+
+### 14.3 What it changes
+
+* Census row **2b** (`E8-F003` §8) stays **UNMEASURED**, now annotated `ATTEMPTED TWICE, UNRUN`.
+* **`DE-08` keeps `deliveryStatus: not-delivered`** — unchanged, and it could not have moved.
+* **No production path passes a `network` body** — `sandbox-provider-runtime.ts` still sends
+  `metadata` only. Unchanged.
+* **The support ticket gains a second item**, quoting the four sandbox ids and both run ids: the
+  documented allowlist construction does not place on this tier while sibling sandboxes on the same
+  template place seconds apart.
+* **The arm's own design held.** `UNRUN` carries an `outcome` and never a `state`, so it took no part
+  in `packDisposition` and both lanes concluded `success` — a non-verdict did not red a lane that
+  answered every question it was dispatched for, and it also did not quietly read as enforcement.
+
+Runbook **§13.7** carries the same record plus the operator guidance for what would have to change
+before a third dispatch is worth an authorisation.

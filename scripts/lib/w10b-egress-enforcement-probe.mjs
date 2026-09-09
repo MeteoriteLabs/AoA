@@ -56,12 +56,37 @@
 // therefore "the seam exists and was never called", not "the boundary works". This file
 // is written so that "it does not enforce" comes back as cleanly as "it does".
 //
-// ★★★ AND IT CAME BACK "IT DOES NOT ENFORCE": run 34085130892, 2026-09-07, at ab23eabdc,
-// template aoa-base — a=no b=yes c=no d=no e=no regression=no, DECISION abandon
+// ★★★ AND IT CAME BACK "IT DOES NOT ENFORCE" — FOR ONE SHAPE: run 34085130892, 2026-09-07,
+// at ab23eabdc, template aoa-base — a=no b=yes c=no d=no e=no regression=no, DECISION abandon
 // (denyout-is-inert-at-this-tier). The tier ACCEPTS the deny set, VALIDATES it server-side,
 // STORES it and ECHOES it back verbatim, and routes the denied traffic anyway. Finding
 // E8-F008. NOTE FOR ANYONE EDITING THE PARAGRAPH BELOW: (b) is real and it is NOT a
 // safeguard — it passed on the unpoliced sandbox.
+//
+// ★★★ THE SCOPE OF THAT RESULT, STATED BECAUSE SEVERAL RECORDS OVERSTATED IT. What was
+// measured is DENY-SPECIFIC: a `denyOut` list of CIDRs with NO `allowOut`. E2B documents a
+// DIFFERENT construction as the fine-grained control — default-deny (`denyOut:
+// ({allTraffic}) => [allTraffic]`) PLUS an `allowOut` allowlist — and that shape is
+// UNMEASURED. Section 16 builds the arm for it. "Unmeasured" is not "probably works": DE-08
+// stays not-delivered, no production path passes a `network` body, and nothing here proposes
+// that one should.
+//
+// ★★★ THAT ARM WAS DISPATCHED TWICE ON 2026-09-09 AND THE SHAPE IS STILL UNMEASURED. Runs
+// 34328502574 and 34328780645, three minutes apart, on replatform/w10b-allowlist-arm at
+// 899aceeec, template aoa-base: BOTH returned `UNRUN — arm-was-never-created`, because
+// `Sandbox.create` answered `500: Failed to place sandbox: sandbox creation failed on 3
+// node(s), please retry; if the problem persists, contact us`. In the SAME runs, SECONDS
+// apart, on the SAME template, the policy and anti-vacuity arms CREATED successfully
+// (i531or2zgvmdlt18e2u2s / i13yih10trv4512eugjmz, then im9ge2ldwohsitqrtx5rc /
+// i0xsmm4fzyhr3ep736ge9) — which is what makes this evidence rather than noise. STATE IT AT
+// THIS STRENGTH AND NO HIGHER: the documented shape REPRODUCIBLY FAILS TO PLACE at this tier,
+// cause unknown and E2B's to explain. It is NOT a refusal — a 500 with a please-retry hint is
+// not a validation rejection, and the contrast is in the same run, where the IPv6 deny arm was
+// refused `400: invalid denied CIDR ::ffff:0:0/96`. It is NOT transient — it reproduced, with
+// successful siblings each time. Two attempts is the evidence; do not quote a rate.
+// ★ AND UNRUN IS NOT INERT: the sandbox never existed, so nothing in this file may be read as
+// the allowlist construction having been tested and found not to enforce. E8-F008 §8;
+// W10B-egress-enforcement-result.md §14; runbook §13.7.
 //
 // ★★★ AND A READ-BACK IS MANDATORY, NOT HYGIENE. `buildNetworkEgress` is a pure
 // passthrough — the SDK validates NOTHING client-side, and the only error path is the HTTP
@@ -583,25 +608,96 @@ export function parseProbeLine(stdout, id) {
  * refuses immediately (7). A destination that was reachable in the anti-vacuity arm and
  * TIMES OUT in the policy arm was dropped in the packet path.
  */
+/**
+ * ★★★ EACH MEANING CARRIES ITS PHASE, AND EVERY REFUSED/REACHED SPLIT IS DERIVED FROM IT.
+ *
+ * This map used to hold prose only, and the code that decided which exits counted as a
+ * refusal was a separate hand-written rule elsewhere. The two drifted, exactly as two copies
+ * of one fact do: the rule said "every nonzero exit is a refusal" while this map said, in
+ * writing, that 35 and 56 mean the connection was MADE. A denied destination that was reached
+ * and then broke at TLS was therefore counted as refused, and the allowlist arm could declare
+ * enforcement on it. There is now ONE place the phase is written down — here — and every
+ * consumer reads it through `curlExitPhase`, so the drift cannot recur.
+ *
+ *   "completed"       the transfer finished: the destination answered.
+ *   "name-resolution" the name never became an address. Says NOTHING about reachability, and
+ *                     this map has always said so; it must not be read as a refusal.
+ *   "pre-connect"     the failure happened at or before the TCP connect. The ONLY phase that
+ *                     may count as "the destination was not reached".
+ *   "post-connect"    the connect succeeded and the failure came after. The destination WAS
+ *                     reached, whatever happened next.
+ */
+export const CURL_EXIT_PHASES = Object.freeze(["completed", "name-resolution", "pre-connect", "post-connect"]);
+
 export const CURL_EXIT_MEANINGS = Object.freeze({
-  0: "the transfer completed; the detail field holds the HTTP status",
-  6: "could not resolve host — a DNS failure, not a reachability failure",
-  7: "could not connect — the peer or the path answered immediately (refused / no route)",
-  28: "operation timed out — the shape a silently-dropped packet takes",
-  35: "TLS handshake failure — the connection was made and then broke",
-  56: "failure receiving data — the connection was made and then broke",
+  0: Object.freeze({ phase: "completed", meaning: "the transfer completed; the detail field holds the HTTP status" }),
+  6: Object.freeze({ phase: "name-resolution", meaning: "could not resolve host — a DNS failure, not a reachability failure" }),
+  7: Object.freeze({ phase: "pre-connect", meaning: "could not connect — the peer or the path answered immediately (refused / no route)" }),
+  28: Object.freeze({ phase: "pre-connect", meaning: "operation timed out — the shape a silently-dropped packet takes" }),
+  35: Object.freeze({ phase: "post-connect", meaning: "TLS handshake failure — the connection was MADE and then broke" }),
+  56: Object.freeze({ phase: "post-connect", meaning: "failure receiving data — the connection was MADE and then broke" }),
 });
+
+/** The phase of one exit code, or `unmodelled` for a code nobody has reasoned about yet. */
+export function curlExitPhase(exitCode) {
+  const entry = CURL_EXIT_MEANINGS[exitCode];
+  return entry ? entry.phase : "unmodelled";
+}
 
 /**
  * Reachability, kept SEPARATE from the cause.
  *
  *   "reached"    — curl completed the transfer
- *   "blocked"    — a terminal that means the destination was not reached
+ *   "blocked"    — a terminal that means the transfer did not complete
  *   "no-result"  — no line was parsed. NOTHING may be concluded from this row.
+ *
+ * ★ THIS IS A TRANSFER-COMPLETION READING AND IT IS NOT THE ONE AN ENFORCEMENT CLAIM MAY USE.
+ * "The transfer did not complete" is true of a refused SYN and of a TLS handshake that broke
+ * after the connection was established, and only the first is evidence of a filter. Every
+ * verdict that would assert "this destination was NOT reached" reads `classifyReachEvidence`
+ * instead; this function survives for the control gates, where "did it complete" is the
+ * question actually being asked.
  */
 export function classifyHttpRow(row) {
   if (!row || typeof row.exitCode !== "number") return "no-result";
   return row.exitCode === 0 ? "reached" : "blocked";
+}
+
+/**
+ * WHERE the row failed — the only reading an enforcement claim may rest on.
+ *
+ *   "reached"                the transfer completed.
+ *   "reached-then-broke"     the connect succeeded; the failure came after. The destination
+ *                            WAS reached, so this REFUTES enforcement for that target.
+ *   "refused-before-connect" the failure happened at or before the TCP connect. The only
+ *                            evidence that supports "this destination was refused".
+ *   "indeterminate"          a name-resolution failure, or an exit code this pack does not
+ *                            model. It is NOT a refusal: nothing may be concluded about
+ *                            reachability, and a caller must treat it as BROKEN rather than
+ *                            default it to either answer.
+ *   "no-result"              no line was parsed.
+ */
+export const REACH_EVIDENCE = Object.freeze(["reached", "reached-then-broke", "refused-before-connect", "indeterminate", "no-result"]);
+
+export function classifyReachEvidence(row) {
+  if (!row || typeof row.exitCode !== "number") return "no-result";
+  switch (curlExitPhase(row.exitCode)) {
+    case "completed":
+      return "reached";
+    case "post-connect":
+      return "reached-then-broke";
+    case "pre-connect":
+      return "refused-before-connect";
+    default:
+      return "indeterminate";
+  }
+}
+
+/** The evidence with its exit code and this file's own words for it, for a report line. */
+export function reachEvidenceNote(row) {
+  if (!row || typeof row.exitCode !== "number") return "no row at all";
+  const entry = CURL_EXIT_MEANINGS[row.exitCode];
+  return `exit ${row.exitCode} (${entry ? entry.meaning : "an exit code this pack does not model, so it proves nothing either way"})`;
 }
 
 /** How a `blocked` row was blocked — the input to (e)'s packet-path reasoning. */
@@ -701,6 +797,11 @@ export function evaluateControls({ policyArm, antiVacuityArm } = {}) {
   }
   if (problems.length > 0) return { ok: false, problems };
 
+  // ★ STRICT ON PURPOSE, AND NOT TO BE "MADE CONSISTENT" WITH THE PHASE READING ELSEWHERE.
+  // A completed transfer is the only thing that proves the apparatus can reach anything; a
+  // connection that broke after connect is enough to REFUTE a block but not enough to
+  // establish a healthy control. Relaxing this admits more verdicts, which is the one
+  // direction that can close a crossing on a run that measured nothing.
   const positive = rowOf(policyArm, "allowed_public");
   if (classifyHttpRow(positive) !== "reached") {
     problems.push({
@@ -797,13 +898,39 @@ export function verdictHonoured({ controls, policyArm, antiVacuityArm } = {}) {
   if (state === "no-result") {
     return verdict(probe, "inconclusive", "question-row-missing", "the question target produced no result line in the policy arm; nothing may be concluded.");
   }
-  if (state === "blocked") {
+  // ★★★ THE ENFORCEMENT ANSWER READS THE PHASE, NOT THE EXIT BOOLEAN. "The transfer did not
+  // complete" is true of a refused SYN AND of a TLS handshake that broke after the connection
+  // was established — and only the first is evidence of a filter. Reading them alike is what
+  // let the sibling allowlist arm report enforcement on a destination it had reached.
+  const evidence = classifyReachEvidence(underPolicy);
+  if (evidence === "refused-before-connect") {
     return verdict(
       probe,
       "yes",
       "denied-target-unreachable-under-policy",
-      `${METADATA_V4} was ${blockShape(underPolicy)} in the arm that declared it denied, and REACHED in the ` +
-        `anti-vacuity arm whose deny set does not name it. The tier HONOURS denyOut at Sandbox.create. ${spellingNote}`,
+      `${METADATA_V4} was ${blockShape(underPolicy)} AT OR BEFORE THE TCP CONNECT (${reachEvidenceNote(underPolicy)}) in the arm ` +
+        `that declared it denied, and REACHED in the anti-vacuity arm whose deny set does not name it. The tier HONOURS ` +
+        `denyOut at Sandbox.create. ${spellingNote}`,
+    );
+  }
+  if (evidence === "indeterminate") {
+    return verdict(
+      probe,
+      "inconclusive",
+      "question-row-carries-an-unattributable-exit-code",
+      `${METADATA_V4} came back with ${reachEvidenceNote(underPolicy)}, which does not say whether the destination was ` +
+        "reached. It is NOT a refusal and must not be counted as one; name the code in CURL_EXIT_MEANINGS with its phase " +
+        `and re-run. ${spellingNote}`,
+    );
+  }
+  if (evidence === "reached-then-broke") {
+    return verdict(
+      probe,
+      "no",
+      "denied-target-reached-then-the-connection-broke",
+      `${METADATA_V4} was REACHED under the policy — ${reachEvidenceNote(underPolicy)} — and the transfer failed only ` +
+        `AFTERWARDS. The packets got there, so the deny set did not stop them; whatever broke the connection is not this ` +
+        `policy. ${spellingNote}`,
     );
   }
   return verdict(
@@ -1036,6 +1163,8 @@ export function verdictWarmReassert({ arm } = {}) {
       : `Pause was unavailable at this tier (${String(arm.reuseShapeDetail ?? "no detail")}), so the update was applied to a ` +
         "still-RUNNING reused sandbox. That is AoA's reuseLease question but NOT the resume half; do not read a resume result into it.";
 
+  // Strict for the same reason the control gate is: this row is what makes "unreachable
+  // after" mean anything, and a control that only half-worked cannot license a `yes`.
   if (before !== "reached") {
     return verdict(
       probe,
@@ -1045,13 +1174,35 @@ export function verdictWarmReassert({ arm } = {}) {
         "sandbox that could never reach it. The arm's own positive control did not hold.",
     );
   }
-  if (after === "blocked") {
+  // The same phase reading as (a): an update that "took effect" must have stopped the packets,
+  // not merely broken the transfer after they arrived.
+  const afterEvidence = classifyReachEvidence(arm.after);
+  if (afterEvidence === "refused-before-connect") {
     return verdict(
       probe,
       "yes",
       "update-took-effect-on-a-reused-sandbox",
-      `the target was REACHED before updateNetwork and ${blockShape(arm.after)} after it, on the same sandbox. A reused ` +
-        `lease CAN be re-policed rather than trusted. ${shapeNote}`,
+      `the target was REACHED before updateNetwork and ${blockShape(arm.after)} after it — refused AT OR BEFORE THE TCP ` +
+        `CONNECT (${reachEvidenceNote(arm.after)}) — on the same sandbox. A reused lease CAN be re-policed rather than ` +
+        `trusted. ${shapeNote}`,
+    );
+  }
+  if (afterEvidence === "indeterminate") {
+    return verdict(
+      probe,
+      "inconclusive",
+      "post-update-row-carries-an-unattributable-exit-code",
+      `after the update the target came back with ${reachEvidenceNote(arm.after)}, which does not say whether it was ` +
+        `reached. Counting it as a block would credit updateNetwork with a failure it may have had no part in. ${shapeNote}`,
+    );
+  }
+  if (afterEvidence === "reached-then-broke") {
+    return verdict(
+      probe,
+      "no",
+      "update-did-not-stop-the-packets",
+      `after updateNetwork the target was still REACHED — ${reachEvidenceNote(arm.after)} — and the transfer broke only ` +
+        `afterwards. The connection was established, so the re-asserted policy did not stop it. ${shapeNote}`,
     );
   }
   return verdict(
@@ -1541,4 +1692,559 @@ export function evaluateDurableRecord(workflowText, opts = {}) {
   }
 
   return { violations };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 16. THE ALLOWLIST ARM — the shape E2B DOCUMENTS as the control, never tested
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// ★★★ WHY THIS EXISTS, AND WHY THE FIRST RUN DID NOT ANSWER IT.
+//
+// Run 34085130892 measured ONE shape: a `denyOut` list of CIDRs with NO `allowOut`. It came
+// back inert (E8-F008). That is a real result about THAT shape, and several records then
+// generalised it to "the tier does not honour a network body" — a claim about ALL network
+// bodies, inferred from one.
+//
+// E2B's own documentation (https://docs.e2b.dev/network/internet-access.md) presents the
+// fine-grained control as the OPPOSITE construction: DEFAULT-DENY PLUS AN ALLOWLIST.
+//
+//     denyOut: ({ allTraffic }) => [allTraffic],   // allTraffic === "0.0.0.0/0"
+//     allowOut: ["1.1.1.1", "8.8.8.0/24"]
+//
+// and it states that domains are NOT supported in deny lists — so domain-level filtering
+// REQUIRES this form. It is the shape a real DE-08 control would have to take, and it is
+// exactly the shape nobody has measured.
+//
+// ★ THE RUNBOOK ALREADY KNEW THE MECHANISM AND FILED IT AS A HAZARD. §2 records that "any
+// `allowOut` entry flips the whole policy to default-deny", and treated that as the STOP
+// CONDITION to avoid — because carving the guest's DNS resolver out of a deny set is
+// impossible, and a default-deny that starves the resolver would break the experiment
+// rather than measure it. That reasoning was correct for the deny-set probe. It also means
+// the allowlist shape was never attempted, and "flips to default-deny" is a HAZARD only
+// while the resolver is unnameable. It is nameable: see below.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// THE RESOLVER, WHICH IS WHAT MAKES THE ARM RUNNABLE AT ALL
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The guest's DNS resolver, MEASURED — not assumed, and not read from documentation.
+ *
+ * ★★★ THIS IS THE FACT THE WHOLE ARM TURNS ON. Run 34085130892 read `/etc/resolv.conf`
+ * inside BOTH sandboxes on the `aoa-base` template and both said, verbatim,
+ * `nameserver 8.8.8.8` (probe (c)'s detail, and `observations.resolvConfPolicyArm` /
+ * `observations.resolvConfControlArm` in `W10B-egress-enforcement-result.md`). It is a
+ * static, public, globally-routed address — so unlike a dynamic in-fabric resolver it CAN
+ * be named in an `allowOut` entry, and the documented shape is therefore usable for us.
+ *
+ * ★★ AND THE ARM DOES NOT TRUST THIS CONSTANT. It re-reads `/etc/resolv.conf` inside its own
+ * guest and reports what it finds, and it runs a resolution probe that is independent of any
+ * connect. If a future template moves the resolver, the arm says so instead of silently
+ * measuring a starved sandbox — which would look identical to enforcement.
+ */
+export const MEASURED_GUEST_RESOLVER = "8.8.8.8";
+
+/** The run that measured it, so the constant above can be re-derived rather than believed. */
+export const MEASURED_GUEST_RESOLVER_RUN = "34085130892";
+
+/**
+ * What the allowlist arm ALLOWS. Everything else is denied by the `denyOut: [allTraffic]`
+ * half, which is what makes this the documented shape rather than a second deny list.
+ *
+ * ★ EVERY ENTRY IS HERE FOR A NAMED REASON, and an entry with no reason is an entry that
+ * quietly widens the control until the experiment cannot fail.
+ */
+export const ALLOWLIST_ALLOW_SET = Object.freeze([
+  Object.freeze({
+    value: "8.8.8.0/24",
+    kind: "cidr",
+    why:
+      `contains the MEASURED guest resolver ${MEASURED_GUEST_RESOLVER} (run ${MEASURED_GUEST_RESOLVER_RUN}, /etc/resolv.conf ` +
+      "in both arms). Without it the default-deny half starves name resolution and every row fails for the wrong reason — " +
+      "the exact hazard the runbook's §2 stop condition names. It is also the SDK's own documented example entry.",
+  }),
+  Object.freeze({
+    value: "1.1.1.1",
+    kind: "ip",
+    why:
+      "the arm's POSITIVE CONTROL destination: a stable anycast public address that answers HTTPS and needs NO name " +
+      "resolution, so it separates `the allowlist permits what it names` from `DNS happens to work`.",
+  }),
+  Object.freeze({
+    value: "example.com",
+    kind: "hostname",
+    why:
+      "an OBSERVATION only, never load-bearing. The SDK types accept hostnames in an egress list " +
+      "(`SandboxNetworkSelector` = CIDR blocks, IP addresses, or hostnames) and E2B's docs say domains are unsupported " +
+      "in DENY lists specifically. Whether a hostname allow entry actually works is unmeasured; this row reports it and " +
+      "no verdict rests on it.",
+  }),
+]);
+
+/** Just the strings, in declaration order — the shape `allowOut` takes. */
+export function allowOutEntries(entries) {
+  return (entries ?? []).map((e) => e.value);
+}
+
+/**
+ * The allowlist arm's target set.
+ *
+ * ★★★ THE POSITIVE CONTROL IS NOT OPTIONAL HERE, AND IT IS THE REASON THIS ARM CAN MEAN
+ * ANYTHING. An allowlist that blocks EVERYTHING is byte-indistinguishable from a broken or
+ * dead sandbox: in both, every request fails. Reading "everything failed" as "enforcement
+ * works" is the same error as reading a skipped test suite as a passing one. So the arm asks
+ * both directions, and a run in which the ALLOWED destination was not reached yields NO
+ * verdict on enforcement at all.
+ *
+ * ★★ AND THE DENIED PUBLIC IP IS A WITHIN-ARM DIFFERENTIAL. `1.1.1.1` (allowed) and
+ * `9.9.9.9` (not allowed) are both ordinary anycast public resolvers answering HTTPS from
+ * the same sandbox at the same moment. The ONLY thing that differs between them is whether
+ * the allowlist names them — which is a tighter control than any cross-sandbox comparison,
+ * because no second sandbox has to be assumed identical.
+ */
+export const ALLOWLIST_HTTP_TARGETS = Object.freeze([
+  Object.freeze({
+    id: "allow_ip",
+    role: "positive_control",
+    url: "https://1.1.1.1/",
+    why:
+      "IN the allowlist, by IP literal, so no name resolution is involved. MUST be REACHED. If it is not, the arm is " +
+      "BROKEN and no enforcement verdict may be read from it, however cleanly the denied rows failed.",
+  }),
+  Object.freeze({
+    id: "allow_host",
+    role: "observation",
+    url: "https://example.com/",
+    why:
+      "IN the allowlist by HOSTNAME. Reported, never load-bearing: it answers whether hostname allow entries work, and a " +
+      "failure here is a fact about hostname support, not about enforcement.",
+  }),
+  Object.freeze({
+    id: "deny_metadata",
+    role: "question",
+    url: `http://${METADATA_V4}/latest/meta-data/`,
+    why:
+      "THE MEASUREMENT. NOT in the allowlist. Measured REACHED (HTTP 401) under a deny set naming its own range, and " +
+      "REACHED in the anti-vacuity arm, so a refusal here is attributable to the allowlist shape.",
+  }),
+  Object.freeze({
+    id: "deny_public_ip",
+    role: "question",
+    url: "https://9.9.9.9/",
+    why:
+      "AN ORDINARY PUBLIC DESTINATION, not in the allowlist. Its partner is `allow_ip`: same sandbox, same instant, same " +
+      "kind of destination, differing only in whether the allowlist names it. Without this row a refusal of the metadata " +
+      "endpoint alone could not tell `default-deny is enforced` from `this one destination is special`.",
+  }),
+  Object.freeze({
+    id: "deny_public_host",
+    role: "observation",
+    url: "https://registry.npmjs.org/",
+    why:
+      "a NAME that is not in the allowlist. Its curl exit code separates two very different failures that look alike in a " +
+      "summary: exit 6 means the name could not be resolved AT ALL (the resolver entry did not work), while 7 or 28 means " +
+      "resolution SUCCEEDED and the connection was denied. Read with `dns_lookup`, never alone.",
+  }),
+  Object.freeze({
+    id: "apparatus",
+    role: "apparatus_control",
+    url: "https://aoa-w10b-must-not-resolve.invalid/",
+    why: "RFC 2606 `.invalid`. Must FAIL. If it is REACHED the arm is not reading the network and nothing may be read.",
+  }),
+]);
+
+/** The id of the arm's own positive control, named once so no caller can mistype it. */
+export const ALLOWLIST_POSITIVE_CONTROL_ID = "allow_ip";
+
+/** The rows whose refusal is what "enforced" would mean. Both must agree, or the arm is mixed. */
+export const ALLOWLIST_DENIED_IDS = Object.freeze(["deny_metadata", "deny_public_ip"]);
+
+/**
+ * The DNS-resolution row's outcomes.
+ *
+ * ★ RESOLUTION IS PROBED SEPARATELY FROM EVERY CONNECT, because under a default-deny policy
+ * a failure to resolve and a failure to connect produce the same user-visible "it did not
+ * work" — and they mean opposite things. A failed resolve means the allowlist did not
+ * actually admit the resolver, i.e. the ARM is invalid. A successful resolve followed by a
+ * refused connect is precisely the enforcement being measured.
+ */
+export const DNS_LOOKUP_OUTCOMES = Object.freeze(["resolved", "resolve-failed", "unknown"]);
+
+export function classifyDnsRow(row) {
+  const detail = String(row?.detail ?? "");
+  if (!row || typeof row.exitCode !== "number") return "unknown";
+  if (detail.startsWith("resolved")) return "resolved";
+  if (detail.startsWith("resolve-failed")) return "resolve-failed";
+  return "unknown";
+}
+
+/** The IPv4 literals this arm counts as DENIED, read off the targets rather than retyped. */
+export function allowlistDeniedAddresses() {
+  return ALLOWLIST_DENIED_IDS.map((id) => {
+    const target = ALLOWLIST_HTTP_TARGETS.find((t) => t.id === id);
+    return /^https?:\/\/(\d+\.\d+\.\d+\.\d+)(?:[:/]|$)/.exec(String(target?.url ?? ""))?.[1] ?? null;
+  }).filter((value) => value !== null);
+}
+
+/**
+ * Does the MATERIALIZED policy contradict the one this arm asked for? Returns a reason or null.
+ *
+ * ★★★ A READ-BACK VERIFIES WHAT WAS DECLARED, NOT WHAT IS ENFORCED — that lesson is why this
+ * is a DISQUALIFIER and never a confirmation. It can only take the verdict away. The tier
+ * stores what it is given (measured: it refused an IPv6 CIDR with a 400 rather than silently
+ * dropping it), so a materialized policy that differs from the declared one says the REQUEST
+ * was wrong and the sandbox ran some other shape.
+ *
+ * ★★ AND IT FIRES ONLY ON A POSITIVE CONTRADICTION. `getInfo()`'s `allowOut` shape is
+ * UNMEASURED at this tier: it may normalise `1.1.1.1` to `1.1.1.1/32`, drop the hostname entry
+ * (an observation, never load-bearing), or carry no network object at all. Reading any of
+ * those as a mismatch would spend the operator's single authorised run on formatting — a false
+ * BROKEN costs a run, so it is cheap, but not free, and it must not be manufactured.
+ */
+export function allowlistReadBackProblem({ readBack } = {}) {
+  if (!readBack || readBack.ok !== true) return null;
+  const network = readBack.network;
+  if (network === null || typeof network !== "object") return null;
+
+  const problems = [];
+  const denyOut = Array.isArray(network.denyOut) ? network.denyOut.map(String) : null;
+  const allowOut = Array.isArray(network.allowOut) ? network.allowOut.map(String) : null;
+
+  if (denyOut !== null && !denyOut.some((entry) => entry.includes(ALL_TRAFFIC_SENTINEL))) {
+    problems.push(
+      `the materialized denyOut ${JSON.stringify(denyOut)} does not carry the all-traffic sentinel ${ALL_TRAFFIC_SENTINEL}, ` +
+        "so the DEFAULT-DENY half of the documented shape is not what ran",
+    );
+  }
+  if (allowOut !== null) {
+    // Containment either way, so a normalised spelling is not a contradiction.
+    const loadBearing = ALLOWLIST_ALLOW_SET.filter((entry) => entry.kind !== "hostname").map((entry) => entry.value);
+    const uncovered = loadBearing.filter((value) => !allowOut.some((got) => got.includes(value) || value.includes(got)));
+    if (uncovered.length > 0) {
+      problems.push(`the materialized allowOut ${JSON.stringify(allowOut)} does not carry the load-bearing entr${uncovered.length === 1 ? "y" : "ies"} ${uncovered.join(", ")}`);
+    }
+    const admittedDenied = allowlistDeniedAddresses().filter((address) => allowOut.some((entry) => ipv4InCidr(address, entry)));
+    if (admittedDenied.length > 0) {
+      problems.push(
+        `the materialized allowOut ADMITS ${admittedDenied.join(", ")}, which this arm counts as DENIED — the allowed and ` +
+          "denied sets overlap, so nothing that happened to those destinations is attributable to the allowlist shape",
+      );
+    }
+  }
+  return problems.length > 0 ? `${problems.join("; ")}.` : null;
+}
+
+/** What the read-back is allowed to add to a verdict: confirmation, or a named absence. */
+export function allowlistReadBackNote(readBack) {
+  if (!readBack || readBack.ok !== true) {
+    return (
+      `★ The policy read-back could NOT be taken (${String(readBack?.detail ?? "not attempted")}), so this rests on what was ` +
+      "REQUESTED at create rather than on what the tier confirmed it stored."
+    );
+  }
+  const network = readBack.network;
+  if (network === null || typeof network !== "object") {
+    return "★ The read-back carried no network object, so this rests on what was REQUESTED at create rather than on what the tier confirmed it stored.";
+  }
+  if (!Array.isArray(network.allowOut)) {
+    return (
+      `★ The read-back carried no allowOut array (network=${JSON.stringify(network)}), so the ALLOWLIST half rests on what ` +
+      "was REQUESTED at create rather than on what the tier confirmed it stored."
+    );
+  }
+  return `The read-back does not contradict the request: network=${JSON.stringify(network)}.`;
+}
+
+/**
+ * The outcome vocabulary for this arm.
+ *
+ * ★★★ THE UNIT ASKED FOR THREE OUTCOMES AND THIS DECLARES FIVE, DELIBERATELY. Three are the
+ * answers — `enforces`, `inert`, `broken`. The other two are NOT answers and are named
+ * rather than folded into one of the three, because folding them is the massaging that would
+ * make this arm untrustworthy:
+ *
+ *   enforces — the ALLOWED destination was reached (transfer completed) AND every denied
+ *              destination was refused AT OR BEFORE THE TCP CONNECT, with the arm's own
+ *              preconditions intact: a live guest, a working apparatus control, name
+ *              resolution through a resolver the allow set names, and a read-back that does
+ *              not contradict the requested policy.
+ *   inert    — denied destinations were REACHED — including reached-then-broken, because a
+ *              connection that was established and then failed still proves the packets got
+ *              there. The shape declared a policy and routed the traffic anyway, exactly as
+ *              the deny-set shape did.
+ *   broken   — the experiment did not measure the policy it claims to measure. Three shapes:
+ *              the sandbox was ALIVE and reached NOTHING (an allowlist that blocks everything
+ *              cannot be distinguished from an enforced one); name resolution was starved or
+ *              came through a resolver the allow set does not name (the policy that ran is not
+ *              the policy under test); or a row carries an exit code the pack cannot place,
+ *              which is NOT a refusal. A legitimate outcome, reported as itself.
+ *   mixed    — the denied rows DISAGREED with each other, or the positive control failed
+ *              while a denied destination was reached. Neither `enforces` nor `inert` is
+ *              true; reporting either would be a claim the rows do not support.
+ *   unrun    — the experiment never happened: the arm was not created, the guest could not
+ *              run a local command, or a required row — the resolution control included —
+ *              produced no line. Distinct from `broken`, where the apparatus worked and the
+ *              measurement is the thing that cannot be read.
+ *
+ * ★★★ AND THE ASYMMETRY THAT DECIDES EVERY TIE BETWEEN THEM: a false BROKEN costs one more
+ * run; a false ENFORCES closes a Critical trust crossing on an experiment that did not happen.
+ * Where the rows admit both readings, this classifier takes the one that costs a run.
+ */
+export const ALLOWLIST_OUTCOMES = Object.freeze(["enforces", "inert", "broken", "mixed", "unrun"]);
+
+/** Which of the three the operator asked for, if any, an outcome maps to. */
+export const ALLOWLIST_OUTCOME_IS_A_VERDICT = Object.freeze({
+  enforces: true,
+  inert: true,
+  broken: true,
+  mixed: false,
+  unrun: false,
+});
+
+/**
+ * Classify the allowlist arm.
+ *
+ * The order of the guards is the argument. Liveness first, because a dead guest explains
+ * every other row; then the apparatus control, because a probe that is not reading the
+ * network cannot be read; then the rows themselves.
+ *
+ * @param {{arm?: object}} input `arm` carries `created`, `detail`, `liveness`, `rows`,
+ *   `dnsRow`, `resolvConf` and `readBack`, filled by the keyed file.
+ */
+export function classifyAllowlistArm({ arm } = {}) {
+  const rowOf = (id) => arm?.rows?.[id] ?? null;
+  const shown = ALLOWLIST_HTTP_TARGETS.map((t) => {
+    const r = rowOf(t.id);
+    return `${t.id}=${classifyHttpRow(r)}/${blockShape(r)}`;
+  }).join(" ");
+  const dns = classifyDnsRow(arm?.dnsRow);
+  const resolverNote = `dns_lookup=${dns}`;
+  const observedResolvers =
+    typeof arm?.resolvConf?.text === "string" && arm.resolvConf.ok === true ? parseResolvConf(arm.resolvConf.text) : null;
+
+  const out = (outcome, reason, detail) => ({
+    arm: "allowlist",
+    outcome,
+    reason,
+    detail,
+    isVerdict: ALLOWLIST_OUTCOME_IS_A_VERDICT[outcome] === true,
+    rows: shown,
+    dns,
+    resolver: { expected: MEASURED_GUEST_RESOLVER, observed: observedResolvers },
+  });
+
+  // ── (0) THE ARM MUST EXIST ────────────────────────────────────────────────
+  // ★ A create failure IS A RESULT ABOUT THE SHAPE, but WHICH result depends on the status,
+  // and this branch must not overstate it. A 4xx is a VALIDATION REFUSAL — the tier does not
+  // accept the body (measured precedent: the IPv6 deny arm, `400: invalid denied CIDR
+  // ::ffff:0:0/96`). A 5xx is a PLACEMENT FAILURE — the tier accepted the request and could
+  // not satisfy it; that is NOT a refusal, however many times it repeats. This branch used to
+  // print "the tier refused the ... body" for BOTH, which made a false claim on 2026-09-09
+  // when runs 34328502574 / 34328780645 hit a 500 (see the header). Either way it is `unrun`
+  // for verdict purposes: NOTHING was measured about enforcement, and UNRUN IS NOT INERT.
+  if (arm?.created !== true) {
+    const createDetail = String(arm?.detail ?? "no record at all");
+    const status = /\b(4\d\d)\b/.test(createDetail)
+      ? "refusal"
+      : /\b(5\d\d)\b/.test(createDetail)
+        ? "server-side"
+        : "unknown";
+    const reading =
+      status === "refusal"
+        ? "That is a 4xx: the tier REFUSED the deny-all-plus-allowlist body, i.e. it does not accept the documented shape. " +
+          "Record it as a refusal."
+        : status === "server-side"
+          ? "That is a 5xx: the tier ACCEPTED the request and FAILED TO PLACE the sandbox. That is NOT a refusal and NOT a " +
+            "statement about whether the shape is valid — record it as 'fails to place, cause unknown', and check whether the " +
+            "sibling arms placed in the same run before calling it anything stronger or weaker than that."
+          : "No HTTP status is visible in that detail, so nothing may be inferred about the shape from it at all.";
+    return out(
+      "unrun",
+      "arm-was-never-created",
+      `Sandbox.create did not return for the allowlist arm: ${createDetail}. ${reading} ` +
+        "It is not an enforcement measurement either way: the sandbox never existed, so UNRUN must never be read as INERT.",
+    );
+  }
+
+  // ── (1) THE GUEST MUST BE ALIVE, PROVEN WITHOUT THE NETWORK ───────────────
+  // ★★★ THIS IS THE GUARD THAT SEPARATES `broken` FROM `unrun`, AND IT IS THE ONE THE UNIT
+  // ASKED FOR BY NAME. A local `echo` traverses no egress path. If it does not come back,
+  // the sandbox never really started (or the default-deny took its control channel with it)
+  // and every network row is explained by that, not by a policy.
+  if (arm?.liveness?.ok !== true) {
+    return out(
+      "unrun",
+      "guest-never-answered-a-local-command",
+      `the sandbox was created (${String(arm?.sandboxId ?? "no id")}) but a purely LOCAL command produced no line ` +
+        `(${String(arm?.liveness?.detail ?? "no detail")}). Nothing about the network may be read: an unreachable ` +
+        "destination and an unreachable guest look identical from here.",
+    );
+  }
+
+  // ── (2) THE PROBE MUST BE READING THE NETWORK ─────────────────────────────
+  const apparatus = classifyHttpRow(rowOf("apparatus"));
+  if (apparatus === "no-result") {
+    return out("unrun", "apparatus-row-missing", `the RFC-2606 .invalid row produced no line at all. ${shown}`);
+  }
+  if (apparatus === "reached") {
+    return out(
+      "unrun",
+      "apparatus-control-violated",
+      `the RFC-2606 .invalid host was REACHED, so this arm is not measuring the network and no row may be read. ${shown}`,
+    );
+  }
+
+  // ── (3) EVERY LOAD-BEARING ROW MUST HAVE LANDED ───────────────────────────
+  const required = [ALLOWLIST_POSITIVE_CONTROL_ID, ...ALLOWLIST_DENIED_IDS];
+  const missing = required.filter((id) => classifyHttpRow(rowOf(id)) === "no-result");
+  if (missing.length > 0) {
+    return out("unrun", "load-bearing-rows-missing", `no result line for ${missing.join(", ")}. ${shown} ${resolverNote}`);
+  }
+
+  // ── (3b) ★★★ THE RESOLVER CONTROL IS A PRECONDITION, NOT A POSTSCRIPT ─────
+  //
+  // ★★★ IT USED TO BE CONSULTED ONLY AFTER THE POSITIVE CONTROL HAD ALREADY FAILED, WHICH
+  // MEANT A DNS-STARVED RUN COULD REPORT ENFORCEMENT. The arm's premise is that `allowOut`
+  // admits the guest's resolver; the whole reason the arm is runnable at all is that the
+  // resolver is a nameable public address. If resolution did not work, the policy that ran is
+  // NOT the policy under test — the default-deny half starved the experiment — and the rows it
+  // produced are indistinguishable from enforcement. That is an INVALID experiment, and an
+  // invalid experiment has no verdict in either direction: never ENFORCES, and never INERT
+  // either, because "reached a denied destination" under a policy nobody can describe is a
+  // claim about the wrong policy.
+  if (arm?.dnsRow == null || dns === "unknown") {
+    return out(
+      "unrun",
+      "dns-control-did-not-run",
+      `the resolution control produced no classifiable line (${resolverNote}; usually a template with no python3). It is ` +
+        "the row that separates `the allowlist refused this destination` from `the allowlist starved the resolver`, so " +
+        `without it neither reading may be taken. ${shown}`,
+    );
+  }
+  if (dns === "resolve-failed") {
+    return out(
+      "broken",
+      "name-resolution-failed-so-the-experiment-was-starved",
+      `★ BROKEN, and the cause is named: the guest resolved NO name (${resolverNote}), so the allowlist did not in fact ` +
+        `admit the resolver — the arm starved its own experiment. Expected resolver ${MEASURED_GUEST_RESOLVER}; the guest ` +
+        `reported ${JSON.stringify(observedResolvers)}. If those differ, the constant is stale and the allow set needs the ` +
+        "observed address. NO enforcement verdict in EITHER direction: the policy that ran is not the policy under test, " +
+        `and an allowlist that blocks everything is indistinguishable from an enforced one. ${shown}`,
+    );
+  }
+  // Resolution SUCCEEDED — through which resolver? It must be one the allow set names, or the
+  // success is either a stale constant or egress to a destination the policy excluded, and
+  // the second reading is the OPPOSITE of enforcement. The arm cannot tell them apart, so it
+  // takes the outcome that costs a run rather than the one that closes a crossing.
+  const allowEntries = allowOutEntries(ALLOWLIST_ALLOW_SET);
+  const unallowedResolvers = (observedResolvers ?? []).filter((ns) => !allowEntries.some((entry) => ipv4InCidr(ns, entry) === true));
+  if (observedResolvers === null || observedResolvers.length === 0 || unallowedResolvers.length > 0) {
+    return out(
+      "broken",
+      "the-resolver-that-answered-is-not-one-the-allow-set-names",
+      `★ BROKEN. Name resolution SUCCEEDED, but the arm cannot attribute it to an allowed resolver: ` +
+        `${observedResolvers === null ? `/etc/resolv.conf was unreadable (${String(arm?.resolvConf?.detail ?? "no detail")})` : observedResolvers.length === 0 ? "/etc/resolv.conf named no nameserver at all" : `${unallowedResolvers.join(", ")} is not covered by allowOut ${allowEntries.join(", ")}`}. ` +
+        `Either the measured constant ${MEASURED_GUEST_RESOLVER} is stale, or egress to an UNALLOWED destination succeeded — ` +
+        `which would be the opposite of enforcement. Both readings forbid a verdict here. ${shown} ${resolverNote}`,
+    );
+  }
+
+  // ── (3c) THE MATERIALIZED POLICY MUST NOT CONTRADICT THE REQUESTED ONE ────
+  // ★ The tier stores what it is given, so a read-back that DIFFERS means the request was
+  // wrong and the run measured some other shape. It fires only on a positive contradiction:
+  // `getInfo()`'s `allowOut` shape is UNMEASURED at this tier, and treating a normalisation
+  // (`1.1.1.1` → `1.1.1.1/32`) or a dropped hostname entry as a mismatch would spend the
+  // operator's authorisation on formatting.
+  const readBackProblem = allowlistReadBackProblem({ readBack: arm?.readBack });
+  if (readBackProblem !== null) {
+    return out(
+      "broken",
+      "the-read-back-contradicts-the-requested-policy",
+      `★ BROKEN. ${readBackProblem} The tier stores what it is given, so this says the REQUEST was wrong and the sandbox ` +
+        "was not running the documented deny-all-plus-allowlist shape. Whatever the rows show, they are not evidence about " +
+        `that shape. ${shown} ${resolverNote}`,
+    );
+  }
+
+  const positiveEvidence = classifyReachEvidence(rowOf(ALLOWLIST_POSITIVE_CONTROL_ID));
+  const positive = positiveEvidence === "reached";
+  const evidenceOf = (id) => classifyReachEvidence(rowOf(id));
+  // ★★★ POST-CONNECT EVIDENCE IS ADMITTED AGAINST ENFORCEMENT AND NEVER FOR IT. A denied row
+  // that reached the destination and then broke at TLS REFUTES enforcement for that target, so
+  // it belongs in `deniedReached`. The same code on the POSITIVE CONTROL does not prove the
+  // allowlist admitted it — a TLS-terminating interceptor produces exit 35 without the packets
+  // leaving — so it does not unlock a verdict. The asymmetry is deliberate: both halves point
+  // away from a false ENFORCES, which is the only error here that closes a crossing on nothing.
+  const deniedReached = ALLOWLIST_DENIED_IDS.filter((id) => evidenceOf(id) === "reached" || evidenceOf(id) === "reached-then-broke");
+  const deniedRefused = ALLOWLIST_DENIED_IDS.filter((id) => evidenceOf(id) === "refused-before-connect");
+  const deniedUnreadable = ALLOWLIST_DENIED_IDS.filter((id) => evidenceOf(id) === "indeterminate");
+
+  // ── (4) THE ANSWERS ───────────────────────────────────────────────────────
+  if (deniedReached.length === 0 && deniedUnreadable.length > 0) {
+    // ★ AN EXIT CODE IN NEITHER BUCKET MUST NOT DEFAULT TO REFUSED. `curl: not found` (127) and
+    // a name that never resolved (6) are facts about the template and the resolver; reading
+    // either as "the policy refused this destination" is defect 2 with a wider blast radius,
+    // because it applies to every code nobody has thought about yet.
+    return out(
+      "broken",
+      "a-denied-row-carries-an-unmodelled-exit-code",
+      `★ BROKEN. ${deniedUnreadable.map((id) => `${id}: ${reachEvidenceNote(rowOf(id))}`).join("; ")}. That is NOT evidence of ` +
+        "a refusal — it does not say whether the destination was reached — and defaulting it to `refused` is how a run that " +
+        "measured the template, or the resolver, would read as a run that measured the policy. Name the code, add it to " +
+        `CURL_EXIT_MEANINGS with its phase, and re-run. ${shown} ${resolverNote}`,
+    );
+  }
+  if (positive && deniedReached.length === 0) {
+    return out(
+      "enforces",
+      "allowed-reached-and-every-denied-destination-refused",
+      `★ the DOCUMENTED shape ENFORCES at this tier. The allowlisted destination was REACHED (transfer completed) and ` +
+        `${deniedRefused.map((id) => `${id} (${blockShape(rowOf(id))}, ${reachEvidenceNote(rowOf(id))})`).join(", ")} ` +
+        `${deniedRefused.length === 1 ? "was" : "were"} refused AT OR BEFORE THE TCP CONNECT from the SAME sandbox at the ` +
+        `same moment — including an ordinary public address whose only difference from the allowed one is that the ` +
+        `allowlist does not name it. Name resolution worked through ${JSON.stringify(observedResolvers)}, which the allow ` +
+        `set covers, so the policy that ran is the policy under test. ${allowlistReadBackNote(arm?.readBack)} ` +
+        `${shown} ${resolverNote}. This says nothing about DE-08's delivery: nothing in the product passes a network ` +
+        "body, and adopting one would be a build with its own design, regression and verification questions.",
+    );
+  }
+  if (deniedReached.length === ALLOWLIST_DENIED_IDS.length) {
+    return out(
+      "inert",
+      "denied-destinations-still-reachable",
+      `the DOCUMENTED shape is INERT at this tier too: ${deniedReached.join(", ")} ${deniedReached.length === 1 ? "was" : "were"} ` +
+        `REACHED from a sandbox whose policy denied all traffic and allowed only ${allowOutEntries(ALLOWLIST_ALLOW_SET).join(", ")}. ` +
+        `Positive control ${positive ? "held" : "did NOT hold, which is noted but does not change this: reaching a destination the policy excluded is decisive on its own"}. ` +
+        `${shown} ${resolverNote}`,
+    );
+  }
+  if (deniedReached.length > 0) {
+    return out(
+      "mixed",
+      "the-denied-rows-disagree",
+      `NO VERDICT. ${deniedReached.join(", ")} was REACHED while ${deniedRefused.join(", ") || "nothing"} was refused, so the ` +
+        "shape neither enforced nor was inert as a whole. Reporting either would be a claim these rows do not support; the " +
+        `pattern is the finding. ${shown} ${resolverNote}`,
+    );
+  }
+  // Nothing denied was reached, and the positive control did not hold. Name resolution is
+  // already known to have worked through an allowed resolver — guard (3b) would have returned
+  // otherwise — so the cause is NOT a starved resolver, and the detail must not offer one.
+  return out(
+    "broken",
+    "nothing-reachable-including-the-allowed-destination",
+    `★ BROKEN. The guest was ALIVE (a local command answered) and reached NOTHING — not even ${ALLOWLIST_POSITIVE_CONTROL_ID}, ` +
+      `the destination this policy explicitly ALLOWS (${reachEvidenceNote(rowOf(ALLOWLIST_POSITIVE_CONTROL_ID))}). So the arm ` +
+      "cannot tell an enforced allowlist from a sandbox with no egress at all, and it reports NO verdict rather than the " +
+      `flattering one. ★ Note that a POST-CONNECT failure on this row is deliberately NOT counted as reaching it: it would ` +
+      `be enough to refute enforcement for a denied target, and is not enough to establish it for the allowed one. ` +
+      `${shown} ${resolverNote}`,
+  );
+}
+
+/** The arm's headline, formatted so it cannot be skimmed past in the report. */
+export function formatAllowlistOutcome(result) {
+  const r = result ?? { outcome: "unrun", reason: "no-result-object", detail: "", rows: "", dns: "unknown" };
+  const banner = r.isVerdict ? String(r.outcome).toUpperCase() : `${String(r.outcome).toUpperCase()} — NO VERDICT`;
+  return `ALLOWLIST ARM (the shape E2B documents): ${banner} — ${r.reason}\n    ${r.detail}`;
 }

@@ -975,6 +975,31 @@ makes **replay** safe and does nothing whatever for **rollback**.
 kind of thing that survives forever. The precondition is objective and checkable, so it is written
 down here instead of trusted to memory.
 
+### ★★ The merged commit's TITLE claims a drop the commit does not contain
+
+`deb13d01f` — *"Four founder rulings executed: **DE-07 column drop**, DE-18/DE-20 clause amendments,
+capabilityProven disclosure, E6-F020 scope boundary (#393)"* — is the commit this finding was filed
+from. **There is no column drop in it.** Migration `0274_jittery_nehzno` was removed from the branch
+before merge (with its journal entry and snapshot), and `revokedAt: timestamp("revoked_at", …)` is
+still declared at `packages/db/src/schema/job_secret_handles.ts:101`; what the commit actually does
+to that file is **add** the twenty-line vestigial comment above the declaration. Its message **body**
+repeats the same claim (*"`job_secret_handles.revoked_at` is DELETED … `pnpm db:generate` produced
+0274"*), so both halves of the commit message are stale and **the diff is the only accurate record**.
+
+**How it happened.** The PR body was rewritten when the ruling was split into an expand step and a
+contract step; the PR **title** was not. A squash merge takes its subject from the PR title, so the
+stale title became the permanent commit subject.
+
+**It cannot be repaired.** `deb13d01f` is merged on `docs/replatform-program`; rewriting it would
+rewrite every descendant. **This note is the repair** — and it is placed here, rather than in a
+commit-hygiene document, because this finding is where someone reading about the withdrawn drop
+actually arrives. **The drop is deferred, not done**; the precondition and resolution condition below
+are what govern it.
+
+★ **The process lesson, in one line.** A PR title goes stale the moment scope changes mid-PR, and it
+becomes the **permanent** squash-commit title — so it must be re-read against the diff at merge time,
+not written once at open time.
+
 - **Affected crossings:** DE-07 (the `revocation` clause; the column is not what enforces it —
   device-grained revocation via `revokeWorker` → `bumpExecutionTargetGeneration` → the
   `target_revoked` deny at `job-control.ts:1177` is), DE-29 (clause (b), same chokepoint).

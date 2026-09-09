@@ -3,6 +3,14 @@
 **Status:** built, CI-green, **FIRED ONCE** — run [`34085130892`](https://github.com/MeteoriteLabs/AoA/actions/runs/34085130892), 2026-09-07, on `docs/replatform-program` at `ab23eabdc`, template `aoa-base`.
 **Verdict: `measured` — `a=no b=yes c=no d=no e=no regression=no`; `DECISION: abandon (denyout-is-inert-at-this-tier)`.** §12 is the record; §7's block is that run's real report.
 Firing it again is an operator action.
+**★ A FIFTH ARM WAS ADDED 2026-09-09 (W10B-B), DISPATCHED TWICE, AND RETURNED `UNRUN` BOTH TIMES —
+§13.7.** The `measured` verdict above is about a `denyOut` list with no `allowOut`; the
+default-deny-plus-allowlist shape E2B documents as the control is **still UNMEASURED**. Runs
+[`34328502574`](https://github.com/MeteoriteLabs/AoA/actions/runs/34328502574) and
+[`34328780645`](https://github.com/MeteoriteLabs/AoA/actions/runs/34328780645) both failed to place
+that arm's sandbox (`500: Failed to place sandbox … please retry`) while their sibling arms placed
+seconds apart on the same template. **`UNRUN` is not `INERT`** — the sandbox never existed, so
+nothing about enforcement was observed either way.
 **Written:** 2026-09-07, against `73f3b00fd`.
 **Read this instead of the source.** Everything you need to run the probe and read its answer is here.
 
@@ -38,6 +46,18 @@ address falls in a denied range, denying that range breaks **all** name resoluti
 * Adding an `allowOut` entry to carve the resolver out does not carve anything out: the SDK's own
   documentation says *"If `allowOut` is not specified, all outbound traffic is allowed"*, so
   specifying it flips the **whole** policy to default-deny — the opposite of a carve-out.
+
+> ★★★ **AND THAT SECOND BULLET IS THE HINGE THIS UNIT TURNED, 2026-09-09 (W10B-B).** "Any `allowOut`
+> entry flips the whole policy to default-deny" is a correct statement of the mechanism, and this
+> section filed it as a **hazard to avoid** — rightly, for a probe whose deny set could not name the
+> resolver. But default-deny-plus-allowlist is exactly the construction **E2B's own documentation
+> presents as the fine-grained control**, and the flip is only fatal while the resolver is
+> *unnameable*. It is nameable: this very run read `nameserver 8.8.8.8` from `/etc/resolv.conf` in
+> **both** arms, a static public address, so an `allowOut` entry of `8.8.8.0/24` admits it. **The
+> shape this section treats as the thing that would break the experiment is the shape a real control
+> would have to take — and it was never tested.** §13. **It has since been attempted twice and is
+> still untested: both dispatches failed to place the sandbox (§13.7), so the flip hazard this
+> section describes was never even reached.**
 
 So a `yes` on (c) closes the option outright, and the pack **says so itself**: `decideOption` computes
 the consequence and prints it as `DECISION: abandon (resolver-or-resolution-is-inside-the-deny-set)`
@@ -81,9 +101,16 @@ the seam**:
 the operator's tier **enforces** what the seam declares — and that is precisely what this run
 answered. The honest correction is therefore *"the seam exists and was never called"*, **not**
 *"the boundary works"*.
-**★ MEASURED 2026-09-07 (run `34085130892`): the tier does NOT enforce it. It accepts the deny set,
-validates it server-side, stores it, reads it back verbatim — and routes the denied traffic anyway.
-`E8-F008`. §12.**
+**★ MEASURED 2026-09-07 (run `34085130892`): the tier does NOT enforce the shape that was tested. It
+accepts the deny set, validates it server-side, stores it, reads it back verbatim — and routes the
+denied traffic anyway. `E8-F008`. §12.**
+**★★ NARROWED 2026-09-09 (W10B-B). That run measured a `denyOut` CIDR list with NO `allowOut`. E2B
+documents a DIFFERENT construction as the fine-grained control — default-deny plus an `allowOut`
+allowlist — and it is UNMEASURED. §13 is the arm for it. ATTEMPTED TWICE on 2026-09-09 (runs
+`34328502574`, `34328780645`) and `UNRUN` both times: `Sandbox.create` failed to place that body
+(`500 … please retry`) while sibling arms placed seconds apart, so the shape is still unmeasured and
+`UNRUN` must not be read as `INERT` — §13.7. `Unmeasured` is not `probably works`: `DE-08` stays
+`not-delivered` and nothing in the product passes a `network` body.**
 
 > ★★★ **And that is why the read-back, question (b), is a first-class question rather than a
 > footnote.** **★ SUPERSEDED BY THE RUN, and this is the single most important correction in this
@@ -155,10 +182,10 @@ skipped and the verdict says so.)
 | | |
 |---|---|
 | Secrets | **`E2B_API_KEY` only** — it already exists as a repo secret. **No model-provider key**, and no model tokens are spent. |
-| Sandboxes created | **4** — the policy arm, the anti-vacuity arm, the reuse arm, the IPv6-deny arm |
-| Sandbox TTL (hard ceiling per sandbox) | 420 s for the two differential arms; 300 s for the reuse and IPv6 arms |
-| Expected wall time | **~6–12 minutes**. Each HTTP target is one `curl --max-time 12`; each raw socket is one 8-second connect. |
-| Absolute worst case if everything stalls | 2 × 420 s + 2 × 300 s = 1,440 sandbox-seconds, and only if every teardown also fails — every sandbox is killed in a `finally`. |
+| Sandboxes ATTEMPTED | **5** — the policy arm, the anti-vacuity arm, the reuse arm, the IPv6-deny arm, and (added W10B-B) the **allowlist arm** (§13). ★ **Two of the five have never been created on this tier:** the IPv6-deny arm is refused at create (`400: invalid denied CIDR`) and the allowlist arm failed to place on both 2026-09-09 dispatches (`500 … please retry`, §13.7). Budget for 5; expect 3. |
+| Sandbox TTL (hard ceiling per sandbox) | 420 s for the two differential arms and the allowlist arm; 300 s for the reuse and IPv6 arms |
+| Expected wall time | **~8–15 minutes**. Each HTTP target is one `curl --max-time 12`; each raw socket is one 8-second connect; the allowlist arm adds six HTTP rows, one 8-second DNS lookup and one local command. |
+| Absolute worst case if everything stalls | 3 × 420 s + 2 × 300 s = 1,860 sandbox-seconds, and only if every teardown also fails — every sandbox is killed in a `finally`. |
 | Job timeout | 45 minutes (the in-test budget is 38, so a kill names the job rather than an innocent step) |
 
 Without `E2B_API_KEY` the pack **skips** and the workflow's own positive-control step fails the job
@@ -174,6 +201,7 @@ embedded in a fixture; every string the pack emits passes through its own redact
 | **N** anti-vacuity | `denyOut: [198.51.100.0/24]` (RFC 5737 TEST-NET-2) | **the control that makes a deny result attributable.** It differs from P in exactly one thing — *which* addresses are denied — not in whether a network config exists at all |
 | **U** reuse | none at create, then `updateNetwork(denyOut: …)` | (d) |
 | **P6** IPv6 | the P set **plus** `fe80::/10, fd00::/8, ::ffff:0:0/96` | an **observation**, not a verdict: does the API even accept IPv6 deny entries? |
+| **A** allowlist *(W10B-B)* | `denyOut: ({ allTraffic }) => [allTraffic]` **plus** `allowOut: ["8.8.8.0/24", "1.1.1.1", "example.com"]` | **§13.** The shape E2B DOCUMENTS as the control, which arms P/N/U/P6 do not test. Its own vocabulary — ENFORCES / INERT / BROKEN — and **no vote in `DISPOSITION`**. ★ **On both 2026-09-09 dispatches this arm's sandbox failed to place (`500 … please retry`) and the arm returned `UNRUN` — no verdict — while P and N placed seconds apart. §13.7.** |
 
 > ★★ **Loopback (`127.0.0.0/8`) and CGNAT (`100.64.0.0/10`) are deliberately NOT in the deny set.**
 > A `systemd-resolved` stub listens on `127.0.0.53`, and cloud fabrics use CGNAT for infrastructure the
@@ -388,11 +416,11 @@ route around is not a boundary against the very workload it is meant to contain.
 
 | File | Role |
 |---|---|
-| `packages/sandbox-e2b-provider/src/__tests__/keyed-w10b-egress-enforcement-probe.test.ts` | the probe: the four arms, the raw-socket helper, the report. Skips cleanly without `E2B_API_KEY`. Its no-key blocks PIN the `e2b` SDK seam (`ALL_TRAFFIC`, `network`, `updateNetwork`, `getInfo`) so the premise cannot rot in the other direction either. |
+| `packages/sandbox-e2b-provider/src/__tests__/keyed-w10b-egress-enforcement-probe.test.ts` | the probe: the **five** arms (the fifth is §13's allowlist arm, added W10B-B), the raw-socket helper, the DNS and liveness helpers, the report. Skips cleanly without `E2B_API_KEY`. Its no-key blocks PIN the `e2b` SDK seam (`ALL_TRAFFIC`, `network`, `updateNetwork`, `getInfo`) so the premise cannot rot in the other direction either. |
 | `scripts/lib/w10b-egress-enforcement-probe.mjs` | the pure core: template resolution, the deny sets, the CIDR engine behind the ABANDON question, the command builder and line parser, the four control rows, all five verdicts plus the regression verdict, the computed decision, the redactor, the durable-record builder, and `evaluateDurableRecord`. Zero imports; no network, no filesystem. |
 | `scripts/lib/__tests__/w10b-egress-enforcement-probe.test.mjs` | proves every one of those decisions **without a key**, on every PR, in the required `policy` job. It does **not** pin the stale-premise correction: an earlier draft did, FILE-WIDE, which could not fail on the thing it named. Section 15 of that file records the deletion; W10A's per-occurrence guard is the enforcement. |
 | `.github/workflows/keyed-e2b-w10b-egress-enforcement-probe.yml` | the lane: the probe step, the `always()` fallback record writer, the `always()` artefact upload, and the positive-control step that refuses to let a skip read as success. |
-| `.github/keyed-e2b-w10b-egress-enforcement-trigger` | **NOW EXISTS** — created by `ab23eabdc` to fire run `34085130892`. It was not created by the probe's own PR. **★ APPENDING TO THIS FILE ON `docs/replatform-program` FIRES ANOTHER KEYED E2B RUN**, which spends an authorisation the founder gives individually — so do not edit it to record an outcome. Outcomes go in §12 and in `W10B-egress-enforcement-result.md`. |
+| `.github/keyed-e2b-w10b-egress-enforcement-trigger` | **NOW EXISTS** — created by `ab23eabdc` to fire run `34085130892`. It was not created by the probe's own PR. **★ APPENDING TO THIS FILE ON `docs/replatform-program` FIRES ANOTHER KEYED E2B RUN**, which spends an authorisation the founder gives individually — so do not edit it to record an outcome. Outcomes go in §12, §13.7 and in `W10B-egress-enforcement-result.md`. |
 
 ---
 
@@ -469,10 +497,19 @@ curl exit 6 in both arms, anti-vacuity `metadata_v4` 401, and every row `parsed=
 
 ### 12.4 What it closed, and what it did NOT
 
-**Closed.** The provider-network option, and with it the candidate-layer census for `DE-08` — see
-`E8-F003` §8, which lists all five candidates with each row labelled *measurement*, *structural* or
-*derived*. Finding **`E8-F008`** (HIGH, open, `unowned`) owns the result and the read-back lesson;
+**Closed.** The provider-network option **in the shape that was measured** — a `denyOut` CIDR list
+with no `allowOut` — and with it that row of the candidate-layer census for `DE-08`; see
+`E8-F003` §8, which labels each row *measurement*, *structural*, *derived* or *unmeasured*. Finding
+**`E8-F008`** (HIGH, open, `unowned`) owns the result and the read-back lesson;
 **`E8-F007`** §7 records the closure of its own open tier question, in both directions.
+
+★ **NARROWED 2026-09-09 (W10B-B).** This paragraph said "the provider-network option" without
+qualification, which read as *the surface*. One construction was measured. The default-deny +
+`allowOut` construction E2B documents is **UNMEASURED** and is now census row **2b**. **That is a
+narrowing of the CLAIM, not a softening of the CONCLUSION**: `DE-08` still reads `not-delivered`,
+nothing in the product passes a `network` body, and the arm for the unmeasured shape (§13) was
+dispatched twice on 2026-09-09 and returned `UNRUN` both times — **the shape remains unmeasured, and
+`UNRUN` is not `INERT`** (§13.7).
 
 **NOT closed, and deliberately.** `DE-08` keeps `deliveryStatus: not-delivered` and its clause text is
 untouched; `E8-F003` and `E8-F007` keep their status, severity and ownership. **What to do about a
@@ -490,3 +527,211 @@ are worth knowing first:
 2. **Pass `-f aoa_api_url=…`** if you want the regression check to stop reporting PARTIAL.
 3. **The IPv6 arm cannot be created as written** — `::ffff:0:0/96` is refused with a 400. That is a
    recorded result, not a bug to route around; changing the arm's CIDRs changes what the arm measures.
+4. **There is a fifth arm, it has been dispatched twice, and it has never produced a verdict** —
+   §13.7. Both dispatches failed to place its sandbox with the same `500`, while their sibling arms
+   placed seconds apart. A third dispatch of the **identical** body is expected to reproduce that and
+   would add nothing; §13.7's closing list says what would have to change first.
+
+---
+
+## 13. THE ALLOWLIST ARM — built 2026-09-09 (W10B-B), DISPATCHED TWICE, **UNRUN**
+
+**Status: BUILT, CI-green without a key, DISPATCHED TWICE on 2026-09-09 with the founder's
+authorisation — and it returned `UNRUN`, no verdict, both times.** `Sandbox.create` never placed the
+allowlist body, so **the sandbox for this arm has never existed and enforcement is still
+UNMEASURED**. §13.7 is the result. Firing it again is an operator action and it is **not** authorised
+by this document.
+
+### 13.1 Why it exists: the shape E2B documents as the control was never tested
+
+Run `34085130892` measured **one** shape — a `denyOut` list of CIDRs with **no `allowOut`** — and it
+came back inert. Several records then generalised that to *"the tier does not honour a `network`
+body"*, a claim about **all** network bodies inferred from one. E2B's documentation
+(`https://docs.e2b.dev/network/internet-access.md`, read 2026-09-09) presents the fine-grained control
+as the **opposite** construction:
+
+```js
+denyOut: ({ allTraffic }) => [allTraffic],   // allTraffic === "0.0.0.0/0"
+allowOut: ["1.1.1.1", "8.8.8.0/24"]
+```
+
+and states that **domains are not supported in deny lists** — so domain filtering *requires* this
+form. It is the shape a real `DE-08` control would take, and it is unmeasured. **It is STILL
+unmeasured after two dispatches** — see §13.7; the arm was never created, so nothing about
+enforcement was observed either way.
+
+★ **§2 already knew the mechanism and filed it as a hazard**, correctly: "any `allowOut` entry flips
+the whole policy to default-deny", which for the deny-set probe would have starved the guest's
+resolver and broken the experiment. The flip is only fatal while the resolver is **unnameable**.
+
+### 13.2 How the resolver was determined — MEASURED, not assumed
+
+**`8.8.8.8`.** Read from `/etc/resolv.conf` **inside the guest**, in **both** arms of run
+`34085130892`: probe (c)'s detail line (*"nameservers: 8.8.8.8"*) and the durable record's
+`observations.resolvConfPolicyArm` / `observations.resolvConfControlArm`, both literally
+`"nameserver 8.8.8.8"` — reproduced verbatim in §7 above and in `W10B-egress-enforcement-result.md`.
+
+It is a **static, public, globally-routed** address, so unlike a dynamic in-fabric resolver it **can**
+be named in an `allowOut` entry. The arm allows `8.8.8.0/24`, which contains it — and which is also
+the SDK's own documented example entry. **The documented shape is therefore usable for us**; had the
+resolver been dynamic or internal-only, the honest finding would have been that the shape is unusable
+and no arm would have been built.
+
+★★ **The arm does not trust that constant.** It re-reads `/etc/resolv.conf` in its own guest and
+reports what it finds, and it runs a resolution probe (`dns_lookup`) that is independent of any
+connect. A template that moved the resolver produces a **named** `BROKEN` outcome, not a silent one
+that reads as enforcement.
+
+### 13.3 The design — why the result can mean anything
+
+★★★ **An allowlist that blocks everything is indistinguishable from a broken sandbox.** In both, every
+request fails. So the arm asks **both directions**, and adds a third probe that touches no network at
+all:
+
+| row | id | in `allowOut`? | what it must show |
+|---|---|---|---|
+| **LIVENESS** | `guest_alive` | n/a — a purely **local** command | the guest is alive. Without it, "the sandbox never started" is reported as a network result. |
+| **POSITIVE CONTROL** | `allow_ip` → `https://1.1.1.1/` | **yes**, by IP literal (no DNS involved) | **REACHED.** If it is not, there is **no** enforcement verdict, however cleanly the denied rows failed. |
+| **THE TEST** | `deny_metadata` → `http://169.254.169.254/…` | no | **REFUSED.** Measured reachable (401) under a deny set naming its own range and in the anti-vacuity arm, so a refusal here is attributable. |
+| **THE TEST** | `deny_public_ip` → `https://9.9.9.9/` | no | **REFUSED.** Its partner is `allow_ip`: same sandbox, same instant, same kind of destination, differing only in whether the allowlist names it. A **within-arm** differential, which is tighter than any cross-sandbox one. |
+| **RESOLVER** | `dns_lookup` | — | `resolved`. `resolve-failed` means the allowlist did **not** admit the resolver and the arm starved its own experiment. |
+| observation | `allow_host` → `https://example.com/` | **yes**, by **hostname** | reported only — does a hostname allow entry work? No verdict rests on it. |
+| observation | `deny_public_host` → `https://registry.npmjs.org/` | no | its curl exit separates *resolution failed* (6) from *resolved, connect denied* (7/28). |
+| apparatus | RFC-2606 `.invalid` | no | **FAILS**, or the arm is not reading the network and nothing may be read. |
+
+**What "refused" looks like, so it is never confused with a dead sandbox:** curl exit **7**
+(`refused-or-unrouted` — an immediate RST or no route), exit **28** (`timed-out` — the shape a
+silently-dropped packet takes), exit **6** (`dns-failure` — resolution, not reachability). Every row's
+exit code is printed and stored; `guest_alive` is what says the sandbox existed at all.
+
+### 13.4 The three outcomes, and the two that are NOT outcomes
+
+| outcome | meaning |
+|---|---|
+| **ENFORCES** | the allowed destination was REACHED **and** every denied destination refused. The documented shape enforces at this tier. |
+| **INERT** | denied destinations were REACHED. The shape declares a policy and routes the traffic anyway — the same answer the deny-only shape gave. |
+| **BROKEN** | the guest was **alive** and reached **nothing**, including the destination the policy explicitly ALLOWS. **No verdict.** This is a legitimate outcome and is reported as itself; it must never be read as enforcement. |
+| *MIXED* — **not a verdict** | the denied rows disagreed with each other. Neither ENFORCES nor INERT is true, and reporting either would be a claim the rows do not support. |
+| *UNRUN* — **not a verdict** | the experiment never happened: the arm was not created (a create **refusal** is a result about the shape and its status is recorded), the guest never answered a local command, the apparatus control was violated, or a load-bearing row produced no line. |
+
+★ **The arm takes no part in `DISPOSITION`.** A `BROKEN` result must not red a lane that answered
+every question it was dispatched for. Its result carries an `outcome`, never a `state`, which is what
+structurally keeps it out of `packDisposition` — asserted in the pure-core suite, not assumed.
+
+### 13.5 How to dispatch it — the operator's exact steps
+
+**It has been dispatched twice (§13.7) and this document does not authorise dispatching it again.**
+Each dispatch spends an authorisation the founder gives individually. **Read §13.7 first: two runs
+minutes apart both failed to place this arm's sandbox, so a third dispatch buys a third
+`arm-was-never-created` unless something about the tier or the body has changed.**
+
+* **Workflow:** `.github/workflows/keyed-e2b-w10b-egress-enforcement-probe.yml` — the **same** lane.
+  The arm is part of the same keyed test, so there is no second workflow and no second secret.
+* **Trigger (preferred):**
+  `gh workflow run keyed-e2b-w10b-egress-enforcement-probe.yml --ref docs/replatform-program -f e2b_template=aoa-base`
+* **Trigger (fallback, if that 404s):** the push route in §4 — append a line to the sentinel file
+  `.github/keyed-e2b-w10b-egress-enforcement-trigger` on `docs/replatform-program` and push.
+  **★ That file already exists**, and appending to it on that branch **fires a keyed E2B run**. It is
+  the only path in the lane's `push` filter, so merging this unit's PR fires nothing.
+* **Cost:** `E2B_API_KEY` only; **no model-provider key and no model tokens**. **5** sandboxes
+  instead of 4 — one more 420 s-TTL sandbox running six bounded `curl --max-time 12` rows, one 8 s DNS
+  lookup and one local command. Expected wall time ~8–15 min; absolute worst case 1,860
+  sandbox-seconds if every teardown also failed, which it cannot (every sandbox is killed in a
+  `finally`).
+* **Where the answer lands:** the same three channels as §6 — job summary, step log, and the
+  `w10b-egress-enforcement-record` artefact, where the arm rides
+  `observations.allowlistArm` with its outcome, reason, every row's exit code and detail, the
+  `getInfo()` read-back, and the guest's own `/etc/resolv.conf`.
+
+### 13.6 What each outcome would mean — for `DE-08` and for the support ticket
+
+| outcome | for `DE-08` | for the support ticket |
+|---|---|---|
+| **ENFORCES** | `DE-08` **stays `not-delivered`.** A capability that is not adopted delivers nothing, and the census row 2b would move from UNMEASURED to *available and unadopted* — a **build** question with its own design, product-regression and verification work, none of which exists. It would **not** revive the `getInfo()` read-back as a safeguard: `E8-F008` §3 measured that the read-back certifies an unpoliced sandbox, and an enforcing tier does not make a broken verification instrument sound. | The ticket's premise changes: the complaint is no longer "your network body does nothing" but "your **deny-only** body does nothing while your **allowlist** body works" — which is a documentation-and-consistency bug, still worth reporting, and much more precisely stated. |
+| **INERT** | `DE-08` stays `not-delivered`; census row 2b becomes a **second measurement** rather than a gap, and the provider layer is closed on both of its constructions rather than on one plus an inference. | The ticket is **strengthened**: the tier accepts, validates, stores and echoes **both** documented constructions and applies neither. That is a much harder claim for a vendor to attribute to operator error. |
+| **BROKEN** | **Nothing changes.** No verdict, no evidence, row 2b stays UNMEASURED, and the record must say the arm ran and did not answer — never that it "sort of" enforced. | Nothing to report; the ticket would be about our own apparatus. Read `dns_lookup` first: `resolve-failed` means the allowlist did not admit the resolver, which is ours to fix, not E2B's. |
+
+**In every one of the three, `DE-08` keeps `deliveryStatus: not-delivered` and nothing in the product
+passes a `network` body.** This arm measures a capability. It builds, proposes and adopts no
+enforcement.
+
+★ **A fourth thing happened instead: `UNRUN`.** The table above enumerates the three *verdicts*; the
+arm also carries two states that are **not** verdicts (§13.4), and one of them is what both dispatches
+returned. §13.7.
+
+### 13.7 ★★★ THE RESULT — dispatched twice 2026-09-09, `UNRUN` both times
+
+| | |
+|---|---|
+| **Runs** | [`34328502574`](https://github.com/MeteoriteLabs/AoA/actions/runs/34328502574) (08:19:42Z) and [`34328780645`](https://github.com/MeteoriteLabs/AoA/actions/runs/34328780645) (08:22:47Z) — **three minutes apart** |
+| **Branch / commit** | `replatform/w10b-allowlist-arm` @ `899aceeec` (both) |
+| **Template** | `aoa-base` (both) |
+| **Authorisation** | the founder's, given individually per dispatch |
+| **Body sent** | `denyOut: ["0.0.0.0/0"]` + `allowOut: ["8.8.8.0/24", "1.1.1.1", "example.com"]` |
+| **Outcome** | `UNRUN — NO VERDICT — arm-was-never-created` (both) |
+| **What `Sandbox.create` returned** | `SandboxError: 500: Failed to place sandbox: sandbox creation failed on 3 node(s), please retry; if the problem persists, contact us` (both, verbatim) |
+| **Lane conclusion** | `success` both times — correctly: `UNRUN` carries an `outcome`, never a `state`, so it takes no part in `packDisposition` (§13.4). The design held. |
+
+**Nothing about enforcement was measured.** The sandbox was never created, so no row ran: every one
+of `allow_ip`, `allow_host`, `deny_metadata`, `deny_public_ip`, `deny_public_host` and the apparatus
+control reads `no-result/unknown`, `dns` reads `unknown`, and the guest's `/etc/resolv.conf` was
+`UNREADABLE: not attempted`.
+
+#### ★ What makes this evidence rather than noise: the siblings placed
+
+In the **same** run, **seconds** apart, on the **same** template and the same key, the other arms
+created successfully:
+
+| run | policy arm | anti-vacuity arm | allowlist arm |
+|---|---|---|---|
+| `34328502574` | `i531or2zgvmdlt18e2u2s` ✔ | `i13yih10trv4512eugjmz` ✔ | **failed to place** |
+| `34328780645` | `im9ge2ldwohsitqrtx5rc` ✔ | `i0xsmm4fzyhr3ep736ge9` ✔ | **failed to place** |
+
+A capacity or availability wobble that took the tier down would have taken the siblings with it. It
+did not. **Only the default-deny + `allowOut` body fails to place, and it did so on both attempts.**
+
+#### ★★ The claim, at the strength the evidence supports
+
+> **The shape E2B documents as the fine-grained control reproducibly FAILS TO PLACE at this tier.
+> The cause is unknown, and it is E2B's to explain.**
+
+Three things that claim is **not**, each for a stated reason:
+
+* **NOT "the tier refuses the shape."** A `500 … please retry; if the problem persists, contact us`
+  is a server-side placement failure with a retry hint, not a validation rejection. **The contrast is
+  in the same run:** the IPv6 deny arm was refused with `400: invalid denied CIDR ::ffff:0:0/96` —
+  *that* is the tier refusing a body. This one is not shaped like that, and calling it a refusal
+  reads a verdict into an error code that does not carry one.
+* **NOT "transient."** It reproduced across two dispatches minutes apart, each with siblings that
+  placed successfully seconds earlier. "Transient" is the reading the sibling evidence rules out.
+* **NOT a measurement of enforcement, in either direction.** **`UNRUN` is not `INERT`.** The
+  deny-only shape was measured inert (§12); this shape was never observed at all. Anything that reads
+  as though the allowlist construction was tested and found not to enforce is false.
+
+**Two attempts is the evidence, and the record says two attempts.** It is not a sample from which a
+rate can be quoted.
+
+#### What it changes, and what it does not
+
+* Census row **2b** (`E8-F003` §8) stays **UNMEASURED**, with `ATTEMPTED TWICE, UNRUN` added — the
+  gap is now *attempted and blocked*, not *never tried*.
+* **`DE-08` keeps `deliveryStatus: not-delivered`.** Unchanged, and it could not have moved: even an
+  `ENFORCES` result would have been evidence about a capability, not a delivered control.
+* **No production path passes a `network` body.** `sandbox-provider-runtime.ts` still sends
+  `metadata` only. Unchanged by this run.
+* **The support ticket gains a second, sharper item.** Alongside *"your deny-only body is accepted,
+  validated, echoed and inert"*, it can now say *"and your documented allowlist construction does not
+  place on our tier — `500`, twice, while sibling sandboxes on the same template placed seconds
+  apart"*, quoting the four sandbox ids above.
+
+#### Before a third dispatch
+
+A third run is only worth an authorisation if something has changed. In order:
+
+1. **Ask E2B** what the placement failure is, quoting the four sandbox ids and both run ids. The
+   error's own text says to.
+2. **If a narrower body is worth trying**, change one thing at a time — e.g. drop the hostname entry
+   `example.com` from `allowOut` (hostnames are the entry class E2B's docs treat differently from
+   CIDRs), or drop to a single IP-literal allow entry. A run that changes two things answers nothing.
+3. **Do not** re-fire the identical body expecting a different answer. Two attempts already say what
+   that costs.

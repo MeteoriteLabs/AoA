@@ -40,11 +40,42 @@ import { describe, expect, it } from "vitest";
 // bottom of this file PINS those SDK facts on every PR, so the premise cannot silently rot
 // in the other direction either.
 //
-// ★★★ ENFORCEMENT IS NOW MEASURED, ONCE: run 34085130892 (2026-09-07, ab23eabdc, aoa-base).
+// ★★★ ENFORCEMENT IS NOW MEASURED, ONCE, FOR ONE SHAPE: run 34085130892 (2026-09-07,
+// ab23eabdc, aoa-base).
 // a=no b=yes c=no d=no e=no regression=no; DECISION abandon (denyout-is-inert-at-this-tier).
 // The tier accepts, validates, stores and echoes the deny set and enforces none of it, on
 // both Sandbox.create and updateNetwork. Finding E8-F008; the operator record is the runbook
 // §12 and W10B-egress-enforcement-result.md.
+//
+// ★★★ AND THE SHAPE E2B DOCUMENTS AS THE CONTROL WAS NEVER TESTED (W10B-B, 2026-09-09).
+// Questions (a)–(e) declare a `denyOut` CIDR list with NO `allowOut`. E2B's docs present the
+// fine-grained control as default-deny — `denyOut: ({allTraffic}) => [allTraffic]` — PLUS an
+// `allowOut` allowlist, and say domains are unsupported in DENY lists, so domain filtering
+// requires that form. The ALLOWLIST ARM below measures it. It reports
+// ENFORCES / INERT / BROKEN in its own vocabulary and takes NO part in the disposition,
+// because BROKEN — a live guest that reached nothing, including what the policy ALLOWS — is a
+// legitimate outcome and must not red a lane that answered everything it was dispatched for.
+// Records that generalised the run above to "the tier does not honour a network body" have
+// been narrowed to the deny-only shape. UNMEASURED IS NOT "PROBABLY WORKS": DE-08 stays
+// not-delivered and this file still applies no policy to any production path.
+//
+// ★★★ THE ALLOWLIST ARM HAS NOW BEEN DISPATCHED TWICE AND HAS STILL MEASURED NOTHING.
+// Runs 34328502574 and 34328780645 (2026-09-09, three minutes apart, on
+// replatform/w10b-allowlist-arm at 899aceeec, template aoa-base) BOTH returned
+// `UNRUN — arm-was-never-created`: `Sandbox.create` answered `500: Failed to place sandbox:
+// sandbox creation failed on 3 node(s), please retry; if the problem persists, contact us`.
+// Not one row ran. ★ The discriminating fact: in the SAME runs, SECONDS apart, on the SAME
+// template, the policy and anti-vacuity arms CREATED successfully
+// (i531or2zgvmdlt18e2u2s / i13yih10trv4512eugjmz, then im9ge2ldwohsitqrtx5rc /
+// i0xsmm4fzyhr3ep736ge9). So: THE DOCUMENTED SHAPE REPRODUCIBLY FAILS TO PLACE AT THIS TIER,
+// cause unknown and E2B's to explain. NOT a refusal — a 500 with a please-retry hint is not a
+// validation rejection, and the same run's IPv6 arm shows what one looks like
+// (`400: invalid denied CIDR ::ffff:0:0/96`). NOT transient — it reproduced with successful
+// siblings. Two attempts is the evidence. ★★ AND UNRUN IS NOT INERT: the sandbox never
+// existed, so nothing here may be read as the allowlist construction having been tested and
+// found not to enforce. Both lanes concluded `success`, which is the arm's design working —
+// a non-verdict neither reds the lane nor reads as enforcement. E8-F008 §8;
+// W10B-egress-enforcement-result.md §14; runbook §13.7.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // HOW TO READ THE RESULT — and why a NO, and the ABANDON YES, keep this lane GREEN
@@ -68,21 +99,33 @@ import type { SandboxNetworkOpts } from "e2b";
 
 import {
   AOA_API_TARGET_ID,
+  ALLOWLIST_ALLOW_SET,
+  ALLOWLIST_DENIED_IDS,
+  ALLOWLIST_HTTP_TARGETS,
+  ALLOWLIST_OUTCOMES,
+  ALLOWLIST_OUTCOME_IS_A_VERDICT,
+  ALLOWLIST_POSITIVE_CONTROL_ID,
   ALL_TRAFFIC_SENTINEL,
   DEFAULT_AOA_API_URL,
   DENY_SET_V4,
   DENY_SET_V6,
   HTTP_TARGETS,
+  MEASURED_GUEST_RESOLVER,
   NON_MATCHING_DENY_SET,
   PROBE_TEMPLATE_ALIAS,
   RAW_TARGETS,
+  allowOutEntries,
   buildHttpTargetCommand,
   buildProbeRecord,
+  classifyAllowlistArm,
+  classifyDnsRow,
   classifyRawRow,
   decideOption,
   denyCidrs,
   evaluateControls,
+  formatAllowlistOutcome,
   formatVerdict,
+  ipv4InCidr,
   packDisposition,
   parseProbeLine,
   redactSecrets,
@@ -122,6 +165,12 @@ const CMD_TIMEOUT_MS = 45_000;
 /** Where the raw-socket helper is staged inside each guest. */
 const RAW_HELPER_PATH = "/tmp/w10b-raw-socket.py";
 
+/** Where the DNS-resolution helper is staged. Same reason it is a FILE and not an `sh -c`. */
+const DNS_HELPER_PATH = "/tmp/w10b-dns-lookup.py";
+
+/** The name the DNS helper resolves. A real name, so a failure means the RESOLVER, not NXDOMAIN. */
+const DNS_LOOKUP_NAME = "registry.npmjs.org";
+
 type Row = { id: string; exitCode: number; detail: string } | null;
 type RawRow = { id: string; exitCode: number; detail: string; tool: string } | null;
 type Verdict = { probe: string; state: string; reason: string; detail: string };
@@ -136,6 +185,10 @@ interface Arm {
   expectedRowIds: string[];
   rows: Record<string, Row>;
   rawRows: Record<string, RawRow>;
+  /** ★ THE LIVENESS ROW: a purely LOCAL command, so it traverses no egress path at all. */
+  liveness: { ok: boolean; detail: string };
+  /** The resolution probe, independent of any connect. See DNS_LOOKUP_OUTCOMES. */
+  dnsRow: Row;
   resolvConf: { ok: boolean; text: string; detail: string };
   readBack: { ok: boolean; denyOut: string[] | null; network: unknown; detail: string };
 }
@@ -149,6 +202,8 @@ function emptyArm(label: string): Arm {
     expectedRowIds: [],
     rows: {},
     rawRows: {},
+    liveness: { ok: false, detail: "not attempted" },
+    dnsRow: null,
     resolvConf: { ok: false, text: "", detail: "not attempted" },
     readBack: { ok: false, denyOut: null, network: undefined, detail: "not attempted" },
   };
@@ -218,6 +273,66 @@ const RAW_HELPER_SOURCE = [
   "sys.exit(0)",
   "",
 ].join("\n");
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE DNS-RESOLUTION HELPER — the row that stops "denied" and "starved" looking alike
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// ★★★ UNDER A DEFAULT-DENY ALLOWLIST, A FAILED RESOLVE AND A DENIED CONNECT PRODUCE THE SAME
+// "it did not work" AND MEAN OPPOSITE THINGS. A failed resolve means the allowlist did NOT
+// admit the guest's resolver, so the arm starved its own experiment and every other row is
+// worthless. A successful resolve followed by a refused connect is exactly the enforcement
+// being measured. curl cannot separate them reliably (an unreachable resolver can surface as
+// exit 6 OR as a timeout), so resolution is probed on its own, with no socket to a remote
+// port at all.
+//
+// It speaks the same PROBE/END line protocol as every other row, so one parser reads them
+// all and a truncated line is REJECTED rather than half-read.
+const DNS_HELPER_SOURCE = [
+  "import socket, sys",
+  "",
+  "name, ident = sys.argv[1], sys.argv[2]",
+  "",
+  "def clean(text):",
+  "    keep = []",
+  "    for ch in str(text)[:120]:",
+  "        keep.append(ch if (ch.isalnum() or ch in ' .:/=-_,()') else '?')",
+  "    return ''.join(keep).replace('END', 'end')",
+  "",
+  "socket.setdefaulttimeout(8)",
+  "try:",
+  "    addr = socket.gethostbyname(name)",
+  "    word, extra = 'resolved', '%s -> %s' % (name, addr)",
+  "except Exception as err:",
+  "    word, extra = 'resolve-failed', '%s %s' % (type(err).__name__, err)",
+  "sys.stdout.write('W10B %s 0 %s %s END' % (ident, word, clean(extra)) + chr(10))",
+  "sys.stdout.flush()",
+  "",
+].join("\n");
+
+/** The DNS row's id, kept out of the HTTP target set because it is not an HTTP row. */
+const DNS_ROW_ID = "dns_lookup";
+
+function dnsHelperCommand(): string {
+  const body =
+    `if command -v python3 >/dev/null 2>&1; then python3 ${DNS_HELPER_PATH} ${DNS_LOOKUP_NAME} ${DNS_ROW_ID}; ` +
+    `else printf "W10B ${DNS_ROW_ID} 0 no-resolver-tool END\\n"; fi; exit 0`;
+  return `sh -c '${body}'`;
+}
+
+/**
+ * The LIVENESS command: prove the guest can run something, WITHOUT touching the network.
+ *
+ * ★★★ THIS IS THE DISCRIMINATOR THE ALLOWLIST ARM CANNOT DO WITHOUT. "Every destination
+ * failed" is produced by an enforced default-deny AND by a sandbox that never really came
+ * up. Only a command that traverses no egress path separates them, and reading the second as
+ * the first would be this programme's [[checks-that-nothing-runs]] class wearing a security
+ * result's clothes.
+ */
+const LIVENESS_ROW_ID = "guest_alive";
+function livenessCommand(): string {
+  return `sh -c 'printf "W10B ${LIVENESS_ROW_ID} 0 local-command-ran END\\n"; exit 0'`;
+}
 
 /** The wrapper that runs the helper, or REPORTS that the template carries no python3. */
 function rawHelperCommand(target: (typeof RAW_TARGETS)[number]): string {
@@ -300,7 +415,17 @@ async function rawRow(sandbox: Sandbox, label: string, target: (typeof RAW_TARGE
 async function runArm(
   label: string,
   network: SandboxNetworkOpts | undefined,
-  opts: { httpTargets: { id: string; url: string }[]; raw: boolean; readResolvConf: boolean; readBack: boolean; ttlMs: number },
+  opts: {
+    httpTargets: { id: string; url: string }[];
+    raw: boolean;
+    readResolvConf: boolean;
+    readBack: boolean;
+    ttlMs: number;
+    /** ★ Prove the guest answers a LOCAL command before reading anything about the network. */
+    liveness?: boolean;
+    /** Probe name resolution on its own, with no remote socket. */
+    dns?: boolean;
+  },
 ): Promise<Arm> {
   const arm = emptyArm(label);
   arm.expectedRowIds = opts.httpTargets.map((t) => t.id);
@@ -338,6 +463,21 @@ async function runArm(
       }
     }
 
+    // ── LIVENESS, FIRST AND BEFORE ANY NETWORK ROW ─────────────────────────
+    // It runs before the targets deliberately: if the guest cannot answer a local command,
+    // every subsequent row is explained by that and the arm must say so rather than let a
+    // dead sandbox masquerade as an enforced policy.
+    if (opts.liveness) {
+      const exec = await run(sandbox, livenessCommand());
+      const parsed = parseProbeLine(exec.stdout, LIVENESS_ROW_ID);
+      arm.liveness = {
+        ok: parsed !== null,
+        detail: parsed ? "a local command ran and its line parsed" : `channel=${exec.channel} ${safe(exec.detail, 200)} stdout=${JSON.stringify(safe(exec.stdout, 200))}`,
+      };
+      // eslint-disable-next-line no-console
+      console.log(`[w10b/${label}] LIVENESS: ${arm.liveness.ok ? "guest answered a LOCAL command" : `NO LINE — ${arm.liveness.detail}`}`);
+    }
+
     if (opts.readResolvConf) {
       try {
         const text = String(await sandbox.files.read("/etc/resolv.conf"));
@@ -360,6 +500,22 @@ async function runArm(
         // eslint-disable-next-line no-console
         console.log(`[w10b/${label}] could not stage the raw helper: ${safe(String(err), 200)}`);
       }
+    }
+
+    if (opts.dns) {
+      try {
+        await sandbox.files.write(DNS_HELPER_PATH, DNS_HELPER_SOURCE);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.log(`[w10b/${label}] could not stage the DNS helper: ${safe(String(err), 200)}`);
+      }
+      const exec = await run(sandbox, dnsHelperCommand());
+      arm.dnsRow = parseProbeLine(exec.stdout, DNS_ROW_ID);
+      // eslint-disable-next-line no-console
+      console.log(
+        `[w10b/${label}] DNS ${DNS_ROW_ID}: parsed=${arm.dnsRow ? "yes" : "NO"} outcome=${classifyDnsRow(arm.dnsRow)} ` +
+          `channel=${exec.channel} stdout=${JSON.stringify(safe(exec.stdout, 300))}`,
+      );
     }
 
     for (const target of opts.httpTargets) {
@@ -481,6 +637,7 @@ function report(verdicts: Verdict[], observations: Record<string, unknown>): str
   lines.push(`  ${TEMPLATE_RESOLUTION.note}`);
   lines.push(`DENY SET (policy arm): ${denyCidrs(DENY_SET_V4).join(", ")}`);
   lines.push(`ANTI-VACUITY SET     : ${denyCidrs(NON_MATCHING_DENY_SET).join(", ")}`);
+  lines.push(`ALLOWLIST ARM        : denyOut = [${ALL_TRAFFIC_SENTINEL}] (all traffic) + allowOut = ${allowOutEntries(ALLOWLIST_ALLOW_SET).join(", ")}`);
   lines.push(`commit: ${COMMIT_SHA}   run nonce: ${RUN_NONCE}`);
   lines.push("");
   lines.push("Questions:");
@@ -490,8 +647,25 @@ function report(verdicts: Verdict[], observations: Record<string, unknown>): str
   lines.push("  d  RE-ASSERT?  does updateNetwork work on a reused sandbox?");
   lines.push("  e  WHERE?      packet path, or an L7 proxy the guest can route around?");
   lines.push("");
+  lines.push("Plus ONE separate arm, with its OWN vocabulary and no vote in the disposition:");
+  lines.push("  ALLOWLIST — the shape E2B DOCUMENTS as the control: default-deny + an allowOut list.");
+  lines.push("    (a)–(e) measured a denyOut list with NO allowOut. This is the other construction,");
+  lines.push("    and it reports ENFORCES / INERT / BROKEN — BROKEN meaning `no verdict`, not `works`.");
+  lines.push("");
   for (const v of verdicts) lines.push(formatVerdict(v));
   lines.push("");
+  // ★★★ THE ALLOWLIST ARM IS PRINTED AS ITS OWN HEADLINE BLOCK, NOT BURIED IN OBSERVATIONS.
+  // It answers a DIFFERENT question from (a)–(e) — those measure a deny-only body, this
+  // measures the default-deny-plus-allowlist shape E2B documents — and it has its own
+  // vocabulary (ENFORCES / INERT / BROKEN, plus two explicit no-verdict states) precisely so
+  // a BROKEN result cannot be massaged into one of the other two. It deliberately does NOT
+  // enter `packDisposition`: a BROKEN arm is a legitimate outcome and must not red a lane
+  // that answered every question it was dispatched for.
+  const allowlist = (observations as { allowlistArm?: { outcome?: string; reason?: string; detail?: string; isVerdict?: boolean } }).allowlistArm;
+  if (allowlist) {
+    lines.push(formatAllowlistOutcome(allowlist));
+    lines.push("");
+  }
   lines.push(`OBSERVATIONS: ${JSON.stringify(observations)}`);
   lines.push("");
   lines.push(`DISPOSITION: ${d.disposition} — ${d.detail}`);
@@ -663,6 +837,61 @@ describeKeyed("W10B — the DE-08 egress-enforcement probe, against REAL E2B", (
           `its only sentinel is ALL_TRAFFIC = ${ALL_TRAFFIC_SENTINEL}, with no ::/0. A create failure here is a RESULT.`,
       };
 
+      // ── ★★★ THE ALLOWLIST ARM — THE SHAPE E2B DOCUMENTS AS THE CONTROL ──────
+      //
+      // (a)–(e) measured a `denyOut` list with NO `allowOut`, and that came back inert
+      // (E8-F008). E2B's own documentation presents the fine-grained control as the OTHER
+      // construction — default-deny via the selector, plus an `allowOut` allowlist — and
+      // that shape has never been measured. The runbook's §2 knew the mechanism ("any
+      // `allowOut` entry flips the whole policy to default-deny") and filed it as a STOP
+      // CONDITION TO AVOID, because a default-deny that starves the guest's resolver breaks
+      // the experiment rather than measuring it. That is only true while the resolver is
+      // unnameable — and it is nameable: run 34085130892 read `nameserver 8.8.8.8` from
+      // /etc/resolv.conf in BOTH arms, so `8.8.8.0/24` in `allowOut` admits it.
+      //
+      // ★ THE SELECTOR FORM IS USED VERBATIM FROM THE DOCS (`({ allTraffic }) => [allTraffic]`)
+      // rather than the equivalent literal, so this arm measures the construction a reader of
+      // those docs would actually write.
+      //
+      // ★★ LIKE THE IPv6 ARM, IT CANNOT RED THE LANE. Its outcome vocabulary is its own and
+      // it takes no part in `packDisposition`. BROKEN — a live guest that reached nothing,
+      // including the destination the policy ALLOWS — is a legitimate outcome that must be
+      // reported as itself, and forcing it into a yes/no verdict would be the exact
+      // over-reading this arm exists to prevent.
+      const allowlistArm = await runArm(
+        "A/allowlist",
+        { denyOut: ({ allTraffic }) => [allTraffic], allowOut: allowOutEntries(ALLOWLIST_ALLOW_SET) },
+        {
+          httpTargets: ALLOWLIST_HTTP_TARGETS.map((t) => ({ id: t.id, url: t.url })),
+          raw: false,
+          readResolvConf: true,
+          readBack: true,
+          ttlMs: ARM_TTL_MS,
+          liveness: true,
+          dns: true,
+        },
+      );
+      const allowlistResult = classifyAllowlistArm({ arm: allowlistArm });
+      observations.allowlistArm = {
+        ...allowlistResult,
+        sandboxId: allowlistArm.sandboxId,
+        created: allowlistArm.created,
+        createDetail: allowlistArm.detail,
+        allowOut: allowOutEntries(ALLOWLIST_ALLOW_SET),
+        denyOut: [ALL_TRAFFIC_SENTINEL],
+        readBack: allowlistArm.readBack.ok ? allowlistArm.readBack.network : `getInfo failed: ${allowlistArm.readBack.detail}`,
+        resolvConf: allowlistArm.resolvConf.ok ? safe(allowlistArm.resolvConf.text, 400) : `UNREADABLE: ${allowlistArm.resolvConf.detail}`,
+        rowDetail: Object.fromEntries(
+          Object.entries(allowlistArm.rows).map(([id, r]) => [id, r ? `exit=${r.exitCode} ${r.detail}` : "NO ROW"]),
+        ),
+        note:
+          "The DOCUMENTED shape (default-deny + allowOut), which questions (a)-(e) did NOT measure. Its outcome is NOT a " +
+          "vote in DISPOSITION: BROKEN means the arm reached nothing at all and yields NO verdict, which must never be " +
+          "read as enforcement. Nothing here is a claim about DE-08 delivery: no production path passes a network body.",
+      };
+      // eslint-disable-next-line no-console
+      console.log(formatAllowlistOutcome(allowlistResult));
+
       const verdicts: Verdict[] = [a, b, c, d, e, regression];
 
       // ★★★ THE RECORD IS EMITTED BEFORE THE ASSERTION, AND IN A `finally`. The run that most
@@ -798,6 +1027,76 @@ describe("W10B — the e2b SDK network seam, pinned (no key required)", () => {
     expect(parseProbeLine(fallback, "raw_tcp_nonhttp")?.detail).toBe("no-raw-socket-tool");
     expect(classifyRawRow(parseProbeLine(fallback, "raw_tcp_nonhttp"))).toBe("unknown");
     expect(RAW_HELPER_SOURCE).toContain("socket.timeout");
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // THE ALLOWLIST ARM'S OWN WIRING, PROVEN WITHOUT A KEY
+  // ───────────────────────────────────────────────────────────────────────────
+  //
+  // ★★★ THE ARM FIRES ONCE, ON AN AUTHORISATION. If the first execution of its command
+  // builders is the authorised run itself, a stray quote or a missing row costs the operator
+  // the run — the shape that cost the sibling probe three of them. So every string this arm
+  // sends is asserted here, on every PR, with no key and no sandbox.
+
+  it("the DNS and liveness commands survive their own sh -c wrapper and speak the line protocol", () => {
+    for (const cmd of [dnsHelperCommand(), livenessCommand()]) {
+      expect(cmd.startsWith("sh -c '")).toBe(true);
+      // One stray single quote would terminate the wrapper and leave a command that still
+      // exits 0 and prints nothing — the silently-empty row.
+      expect(cmd.slice(7, -1).includes("'")).toBe(false);
+    }
+    expect(dnsHelperCommand()).toContain(DNS_LOOKUP_NAME);
+    // The no-tool fallbacks must PARSE as rows, or a template without python3 would produce
+    // no row at all and the arm would report "missing" instead of "no tool".
+    expect(parseProbeLine("W10B dns_lookup 0 no-resolver-tool END\n", DNS_ROW_ID)?.detail).toBe("no-resolver-tool");
+    expect(classifyDnsRow(parseProbeLine("W10B dns_lookup 0 no-resolver-tool END\n", DNS_ROW_ID))).toBe("unknown");
+    expect(classifyDnsRow(parseProbeLine("W10B dns_lookup 0 resolved a -> 1.2.3.4 END\n", DNS_ROW_ID))).toBe("resolved");
+    expect(parseProbeLine(`W10B ${LIVENESS_ROW_ID} 0 local-command-ran END\n`, LIVENESS_ROW_ID)?.detail).toBe("local-command-ran");
+    // The DNS helper must not reach a remote PORT: its whole job is to separate resolution
+    // from connection, and a connect inside it would reintroduce the ambiguity.
+    expect(DNS_HELPER_SOURCE).toContain("gethostbyname");
+    expect(DNS_HELPER_SOURCE).toContain("socket.setdefaulttimeout");
+  });
+
+  it("the allowlist arm names its resolver, keeps its allowed and denied targets disjoint, and cannot vote", () => {
+    const allowed = allowOutEntries(ALLOWLIST_ALLOW_SET);
+    // ★ THE RESOLVER ENTRY IS WHAT MAKES THE ARM RUNNABLE. Without an allowOut entry covering
+    // the measured guest resolver, the default-deny half starves name resolution and every
+    // row fails for a reason that has nothing to do with enforcement.
+    expect(allowed.some((entry) => ipv4InCidr(MEASURED_GUEST_RESOLVER, entry))).toBe(true);
+    // The positive control must itself be allowed, or the arm has no way to tell an enforced
+    // allowlist from a sandbox with no egress at all.
+    const positive = ALLOWLIST_HTTP_TARGETS.find((t) => t.id === ALLOWLIST_POSITIVE_CONTROL_ID)!;
+    expect(positive.role).toBe("positive_control");
+    const positiveHost = /^https?:\/\/(\d+\.\d+\.\d+\.\d+)\//.exec(positive.url)?.[1] ?? "";
+    expect(positiveHost.length).toBeGreaterThan(0);
+    expect(allowed.some((entry) => ipv4InCidr(positiveHost, entry))).toBe(true);
+    // ★ And every DENIED target must be outside the allow set — checked by CIDR CONTAINMENT,
+    // not by string comparison. A denied host inside an allowed /24 would be spelt
+    // differently and read as "not in the list" while the policy allowed it, and the arm
+    // would then report INERT on a destination it had itself permitted.
+    for (const id of ALLOWLIST_DENIED_IDS) {
+      const target = ALLOWLIST_HTTP_TARGETS.find((t) => t.id === id)!;
+      expect(target.role).toBe("question");
+      const host = /^https?:\/\/(\d+\.\d+\.\d+\.\d+)\//.exec(target.url)?.[1] ?? "";
+      expect(host.length).toBeGreaterThan(0);
+      expect(allowed.some((entry) => ipv4InCidr(host, entry))).toBe(false);
+    }
+    // ★★ BROKEN AND MIXED ARE NOT VERDICTS, AND THE TABLE THAT SAYS SO IS ASSERTED RATHER
+    // THAN TRUSTED. If `mixed` or `unrun` ever became a verdict, a run that measured nothing
+    // would start reading as one that measured something.
+    expect([...ALLOWLIST_OUTCOMES].sort()).toEqual(["broken", "enforces", "inert", "mixed", "unrun"]);
+    expect(ALLOWLIST_OUTCOME_IS_A_VERDICT.mixed).toBe(false);
+    expect(ALLOWLIST_OUTCOME_IS_A_VERDICT.unrun).toBe(false);
+    expect(ALLOWLIST_OUTCOME_IS_A_VERDICT.broken).toBe(true);
+  });
+
+  it("the arm passes the DOCUMENTED selector form, and the SDK resolves it to the all-traffic sentinel", () => {
+    // The docs' own spelling: `denyOut: ({ allTraffic }) => [allTraffic]`. This asserts the
+    // callback the arm ships resolves to exactly the sentinel the SDK exports, so the arm
+    // cannot silently declare something narrower than "deny everything".
+    const denyOut = ({ allTraffic }: { allTraffic: string }) => [allTraffic];
+    expect(denyOut({ allTraffic: ALL_TRAFFIC })).toEqual([ALL_TRAFFIC_SENTINEL]);
   });
 });
 
