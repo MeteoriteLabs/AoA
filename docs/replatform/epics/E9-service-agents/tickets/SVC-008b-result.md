@@ -16,8 +16,11 @@ about the sandbox), runs a real cancel→kill graceful ladder whose verdict come
 **observation** rather than from `ProcessSignalResult.accepted`, and emits exactly one of
 `service_instance_stopped` / `service_instance_lost` before the attempt `terminal`.
 `resolveRunOpDeadlineMs` gains a service arm. `SUPERVISABLE_WORKLOAD_CAPABILITIES` gains
-`workload.service` — **the last line of the diff**, because advertising before the branch existed
-would have shipped SVC-008 §1.2's mis-supervision deliberately. Zero wire change: every event,
+`workload.service` — **in the same commit as the supervisor branch, never ahead of it**, because
+advertising before the branch existed would have shipped SVC-008 §1.2's mis-supervision
+deliberately. (An earlier draft called this "the last line of the diff". That reads like a
+checkable property and is not one — this is one commit, and the file is not last in file order.
+Same-commit is the property that is real.) Zero wire change: every event,
 payload and status is frozen v1 and already on disk.
 
 ---

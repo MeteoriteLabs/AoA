@@ -211,9 +211,12 @@ export class EventSequencer {
   /**
    * `browser_observation` — BRW-003d-3.
    *
-   * ★ DORMANT, and labelled so. `createSupervisor` has zero production callers, so
-   * nothing emits this yet; it is the API the browser runtime will use and a
-   * FORWARD GUARD, never a clause's proof.
+   * ★ DORMANT, and labelled so — but NOT for the reason originally written here.
+   * `createSupervisor` does have a production caller (`lifecycle/dispatch-runtime.ts`,
+   * which says so itself), so that clause was false. What is still dormant is THIS
+   * METHOD: `browserObservation` has no caller outside its own tests, so nothing emits
+   * the event yet. It is the API the browser runtime will use and a FORWARD GUARD,
+   * never a clause's proof.
    *
    * The FROZEN payload is `.strict()` with exactly three fields — artifactIds, url,
    * title. Console lines and network summaries have nowhere else to go, so they

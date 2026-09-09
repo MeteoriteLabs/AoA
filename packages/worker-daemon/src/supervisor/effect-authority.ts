@@ -163,8 +163,10 @@ export class EffectAuthority {
   // about to use. SVC-008a §6 requires these three passthroughs to land WITH the port,
   // not after a caller appears, precisely so no such door is ever open.
   //
-  // These have ZERO production callers today; SVC-008b's service loop is the consumer.
-  // That residual is recorded rather than hidden (SVC-008a §10).
+  // SVC-008a landed these with zero production callers and recorded that as a residual
+  // (SVC-008a §10). THAT RESIDUAL IS NOW CLOSED, by this diff: `supervisor/service-lifecycle.ts`
+  // — SVC-008b's service loop — calls all three through `deps.effect`, so every one of them is
+  // now reached in production through the fence above.
 
   /** Launch a supervised process inside a live sandbox (acknowledgement, not completion). */
   startProcess(input: ExecuteInput, ctx: ProviderOpContext): Promise<ProcessStartResult> {

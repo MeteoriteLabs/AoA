@@ -217,7 +217,7 @@ Per blocker, stated so no reader has to infer which are actually gone:
 |---|---|---|---|
 | §1 | the capability intersection removes `workload.service` | **CLOSED** | `SUPERVISABLE_WORKLOAD_CAPABILITIES` is `["workload.batch", "workload.service"]`; the pin at `u0-d1-placement-reachability.test.ts` is UPDATED to exact-equality on the new pair, deliberately not weakened to `toContain` |
 | §1.5(1) | mis-supervision that looks like success | **CLOSED** | `runLifecycle` dispatches `workloadType === "service"` to `runServiceLifecycle` (`supervisor/service-lifecycle.ts`) BEFORE `execute`; T1 asserts `execute` is never called on a service run |
-| §1.5(2) | the 60 s budget floor | **CLOSED** | `resolveRunOpDeadlineMs` gains a service arm returning the 240 s ceiling. ★ It does NOT use §3.3's stated source: `maxContinuousRuntimeSeconds` is measured absent from the worker side of the wire (the envelope carries a provider-constraint *reference*), so the profile clamp could not be applied and the deviation is recorded at the call site |
+| §1.5(2) | the 60 s budget floor | **CLOSED** | `resolveRunOpDeadlineMs` gains a service arm returning the 240 s ceiling. ★ WITNESSED, and it was not at first: `dispatch-runtime.test.ts`'s pure-resolver block asserts the ceiling for a handoff typed `workloadType: "service"` carrying a service workload with no runtime field, AND the 60 s floor for that same workload untyped — neutralising the arm (`&& false`) reds it. Before that pair the arm had ZERO coverage and the whole 154-file / 1020-test worker-daemon suite stayed green with it dead, i.e. this row read CLOSED on an unwitnessed branch. ★ It does NOT use §3.3's stated source: `maxContinuousRuntimeSeconds` is measured absent from the worker side of the wire (the envelope carries a provider-constraint *reference*), so the profile clamp could not be applied and the deviation is recorded at the call site |
 | §1.5(3) | the effect authority expires and is never re-minted | **BOUNDED, NOT FIXED** | The supervise loop stops on `capExpiresAt - RUN_TEARDOWN_HEADROOM_MS` and tears down under a valid cap, so no service run orphans a billable sandbox (T6, on the imported constants). What is NOT done is re-minting: SVC-008 §9.1 is UNRULED and the scheduled-re-materialization option would re-run a secret resolution on a timer. **The consequence is a 240-second service.** |
 | §1.5(4) | nothing can witness a launch | **CLOSED by SVC-008a, CONSUMED here** | `startProcess` is the launch witness; no handle ⇒ no `service_instance_started` (T4) |
 | §1.5(5) | no stop primitive | **CLOSED by SVC-008a, CONSUMED here** | The ladder derives its verdict from `ProcessSignalResult.observation`, never from `accepted`; a process that survives cancel AND kill is `service_instance_lost`, never `_stopped` (T3) |
@@ -230,8 +230,12 @@ callers** and that "SVC-008b's service loop is the consumer". Measured with the 
 `signalProcess` 10→11, and **`deriveStopVerdict` 0→2** — SVC-008b is its first production consumer.
 
 **★ WHAT IS STILL NOT TRUE AFTER THIS.** A daemon can be offered a service job and will supervise
-one; nothing yet *creates* one. `recordServiceHealth` keeps its zero production callers — ingest is
-generic (`toAcceptInputs` durably appends any event type and sets `terminalStatus` only for
+one; nothing yet *creates* one. SVC-008b adds **no consumer** of `recordServiceHealth` and no
+`service_health` projection — its `countProductionCallers` reading is **2 at base and 2 at head**,
+unchanged by this diff. (An earlier draft of this line said it "keeps its zero production callers";
+that number was false against the very instrument cited two paragraphs above, which counts the
+declaration and the implementation. The substance — no new consumer — is what the clause needs.)
+Ingest is generic (`toAcceptInputs` durably appends any event type and sets `terminalStatus` only for
 `terminal`), so every `service_health` / `_started` / `_stopped` / `_lost` emitted here is durably
 stored and **projects no state change**. Wiring that projection is SVC-003's, because deciding what
 a health event means for ownership is SVC-003's Outcome. Restart/checkpoint are SVC-004's; drain and

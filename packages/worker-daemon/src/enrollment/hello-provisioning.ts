@@ -24,11 +24,15 @@ import type { HelloProvisioning } from "./desktop-hello.js";
  * browser_session composes in a later sprint, and D4 forbids reporting a workload the daemon
  * cannot run. Widening this is a deliberate edit, not a config.
  *
- * ★★★ SVC-008b ADDED `workload.service`, and this is the LAST LINE OF ITS DIFF — deliberately,
- * because splitting the advertisement from the supervisor would open a window in which the
- * daemon reports a workload nothing supervises. That window is SVC-008 §1.2's harm: a service
- * job flowed through the BATCH body with no type error and no branch, `execute` returned when
- * the startup script exited, and a long-running service was reported `succeeded`. Advertising
+ * ★★★ SVC-008b ADDED `workload.service`, and it lands IN THE SAME COMMIT as the supervisor
+ * branch that makes it true — never before it. (The original wording here, "the last line of
+ * its diff", read like a checkable property and is not one: SVC-008b is a single commit and
+ * this file is not last in its file order. The ordering that actually matters is the one
+ * stated: same commit, not a separate earlier one.) Splitting the advertisement from the
+ * supervisor would open a window in which the daemon reports a workload nothing supervises.
+ * That window is SVC-008 §1.2's harm: a service job flowed through the BATCH body with no type
+ * error and no branch, `execute` returned when the startup script exited, and a long-running
+ * service was reported `succeeded`. Advertising
  * before the branch existed would have shipped that deliberately.
  *
  * ★ WHAT BECOMES REACHABLE, enumerated, because a widening is exactly the shape that silently
