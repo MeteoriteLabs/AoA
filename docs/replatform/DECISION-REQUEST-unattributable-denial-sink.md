@@ -7,7 +7,9 @@
 
 **Queued behind this decision:** four clause-halves — **DE-03**, **DE-21's board/session half**,
 **DE-15**, and **DE-06's fence-resolution throws** (the fourth was added by PR #396's own
-measurement).
+measurement). ★ **None of the four is wholly unblocked by the measurement below** — an earlier draft
+of this paper claimed two were, and the headline that follows retracts it. What the measurement does
+move is *individual deny sites* inside them, and DE-21's board half's *blocker*.
 
 ---
 
@@ -99,7 +101,9 @@ eight of nine sites, and at the ninth only when the enrollment code was org-rout
 
 ### 1.2 DE-21 — WebSocket upgrade refusal, `authorizeUpgrade` (`live-events-ws.ts:251-407`)
 
-Seven `return null` branches. The finding treats them as one; they are not one shape.
+Seven `return null` branches. The finding treats them as one; they are not one shape — and branch 6
+is itself a two-arm `||` whose arms differ, so the table below has **eight** rows for seven
+`return`s.
 
 | # | Branch | What is in hand | Provenance | FK-valid company? |
 |---|---|---|---|---|
