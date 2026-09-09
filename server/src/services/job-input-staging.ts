@@ -103,9 +103,11 @@ export interface StageJobInputFilesInput {
   readonly appDb: Db;
   readonly storage: StorageProvider;
   readonly organizationId: string;
-  /** The Company the audit entry belongs to. `activity_log.company_id` is NOT NULL and FKs
-   * `companies`, so the tenant Organization alone cannot address the row — the caller has it
-   * on `actor.companyId` and passes it down. */
+  /** The Company the audit entry belongs to. `activity_log.company_id` FKs `companies` and is
+   * still effectively NOT NULL for this writer — E0-F013 Decision 2 (a2) relaxed the column but
+   * kept the guarantee with a CHECK scoped to the reserved `security.denied.` namespace, which
+   * this product write is not in — so the tenant Organization alone cannot address the row. The
+   * caller has it on `actor.companyId` and passes it down. */
   readonly companyId: string;
   readonly jobId: string;
   /** The attempt's ROW id. The attempt NUMBER (which the object key binds) is resolved from
