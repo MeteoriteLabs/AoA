@@ -122,6 +122,9 @@ export function createArtifactCommitService(input: {
       // ★ DE-06 — see artifact-denial-audit.ts. Set by the refusing branch, drained
       // after the tenant transaction closes. The `intent` parameter is REQUIRED, so
       // a future refusal branch that forgets to audit does not compile.
+      // ★ That compiler property is about `rejected`, NOT about refusals in
+      // general: `resolveWorkerFenceContext` below THROWS out of `runInTenant`
+      // and its refusals are NOT recorded (artifact-denial-audit.ts).
       // A one-field holder rather than a bare `let`: TypeScript narrows a `let`
       // from its initializer and cannot see the assignment inside `rejected`, so
       // a bare `let` reads back as `null` (and `if (…)` as `never`) at the drain
@@ -169,7 +172,8 @@ export function createArtifactCommitService(input: {
           throw error;
         }
 
-        // DE-06 — the attribution every refusal below shares. `ctx.companyId` is
+        // DE-06 — the attribution every RETURNING refusal below shares (the
+        // throwing ones above never get here). `ctx.companyId` is
         // the LOCKED LEASE's company, never the manifest's self-asserted one.
         const deny = (
           reason: ArtifactDenialIntent["reason"],

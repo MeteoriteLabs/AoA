@@ -84,6 +84,12 @@ export function createArtifactTransferGrantService(input: {
       // `rejected` is a local closure; its call sites are enumerable in this file
       // and every one of them supplies a `denial`, because the parameter is
       // REQUIRED — a new refusal branch that forgets to audit does not compile.
+      // ★ THE COMPILER PROPERTY IS ABOUT `rejected`, NOT ABOUT REFUSALS. A
+      // refusal that THROWS instead of returning never reaches this holder:
+      // `resolveWorkerFenceContext` below throws `JobLeasingError` out of
+      // `runInTenant`, and those refusals are NOT recorded (see
+      // `artifact-denial-audit.ts` for why, and the pinned arms in
+      // `de-06-artifact-denial-audit.integration.test.ts` for the measurement).
       // A one-field holder rather than a bare `let`: TypeScript narrows a `let`
       // from its initializer and cannot see the assignment inside `rejected`, so
       // a bare `let` reads back as `null` (and `if (…)` as `never`) at the drain
@@ -116,7 +122,8 @@ export function createArtifactTransferGrantService(input: {
         const issuedAt = ctx.authorityNow;
         const expiresAt = new Date(issuedAt.getTime() + grantTtlSeconds * 1000);
 
-        // DE-06 — the attribution every refusal below shares. `ctx.companyId` is
+        // DE-06 — the attribution every RETURNING refusal below shares (the
+        // throwing ones never get here; see the header note). `ctx.companyId` is
         // the LOCKED LEASE's company, resolved from the database under this
         // worker's own organization GUC; it is never taken from the request.
         const deny = (

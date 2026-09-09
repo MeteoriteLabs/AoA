@@ -13,7 +13,18 @@
  * A worker in organization A that repeatedly asked for a presigned URL under
  * organization B's object-key prefix therefore left the same durable trace as a
  * worker that asked for nothing at all. That is the gap `E0-F010` files for
- * DE-06, and closing it is what this file proves.
+ * DE-06, and closing THE REJECTED-KEY HALF of it is what this file proves.
+ *
+ * ★ WHAT THIS FILE DOES NOT PROVE, first, because the clause is CONJUNCTIVE and
+ * only one conjunct is delivered. DE-06's clause is verbatim "object put/get AND
+ * rejected-key attempts are audited".
+ *   - "rejected-key attempts" — delivered and proven below.
+ *   - "object put/get" — NOT delivered. A SUCCESSFUL download grant
+ *     (`artifact-transfer-grant.ts`, the sole production `presignGet` call site)
+ *     presigns, parses and returns while writing no audit record at all, and no
+ *     arm here asserts one. So DE-06's audit clause is HALF delivered, DE-06
+ *     stays in `E0-F010`'s open cohort, and no record may say otherwise.
+ *   - The fence-AUTH refusals are unrecorded too; see the pinned arms below.
  *
  * ★ WHY THIS IS NOT A READ-BACK. This file never constructs a denial. It
  * PROVOKES the real refusal through the real service — a real enrolled worker,
@@ -78,7 +89,11 @@ import {
   type RegisteredTargetProfileV1,
 } from "@armyofagents/worker-protocol";
 import { provisionTenantAppRoleLoginSql } from "../db/rls-tenant.js";
-import { createJobLeasingService, type VerifiedWorkerOperation } from "../services/job-leasing.js";
+import {
+  createJobLeasingService,
+  JobLeasingError,
+  type VerifiedWorkerOperation,
+} from "../services/job-leasing.js";
 import { createArtifactTransferGrantService } from "../services/artifact-transfer-grant.js";
 import { createArtifactCommitService } from "../services/artifact-commit.js";
 import { DEFAULT_MAX_ARTIFACT_BYTES } from "../services/artifact-size-ceiling.js";
@@ -604,6 +619,11 @@ integration("DE-06 — a refused artifact object operation is durable and attrib
     // transaction. The refusal is a throw the service catches and turns into a
     // `rejected` return — so the transaction still COMMITS, and the intent
     // recorded in the catch drains on the pool handle afterwards.
+    //
+    // ★ AND THIS ARM'S REACH IS EXACTLY THAT ONE CATCH. The lease tuple still
+    // MATCHES here (only its deadlines moved), so `resolveWorkerFenceContext`
+    // resolves and its own `stale_fence`/`target_revoked` throws are never
+    // exercised. Those are driven, and pinned as unrecorded, two arms below.
     await admin`UPDATE leases SET ack_deadline = clock_timestamp() - interval '2 seconds',
       expires_at = clock_timestamp() - interval '1 second' WHERE id = ${offer.leaseId}`;
     const svc = createArtifactTransferGrantService({ appDb: app.db, storage: makeStubStorage() });
@@ -619,6 +639,111 @@ integration("DE-06 — a refused artifact object operation is durable and attrib
     expect(rows[0].company_id).toBe(COMPANY);
     expect(rows[0].actor_id).toBe(WORKER);
     expect(rows[0].details?.leaseId).toBe(offer.leaseId);
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // ★ THE MEASURED GAP, PINNED — the fence-AUTH refusals, which are NOT recorded.
+  //
+  // The `guardActiveFence` arm above expires a lease whose tuple still MATCHES,
+  // so `lockLeaseAckContext` still resolves and the refusal lands on the LATER
+  // `lockActiveFence` catch. That arm therefore cannot reach
+  // `resolveWorkerFenceContext`'s OWN throws — a test that appears to cover a
+  // branch it cannot reach. The two arms below drive those throws directly: a
+  // lease tuple that no longer resolves (`stale_fence`) and a revoked target
+  // authority (`target_revoked`).
+  //
+  // They assert what is TRUE TODAY, which is that NOTHING is recorded, and they
+  // are written aspiration-first: `rejects` fires before the row assertion, so a
+  // fixture that stopped reaching the branch would fail LOUDLY rather than pass
+  // by vacuity. Observed in this shape against the current tree.
+  //
+  // ★ WHY THIS IS NOT WIRED HERE, stated so the gap is not read as an oversight.
+  // The transaction is NOT the blocker — `runInTenant` rejects, but a drain point
+  // outside it is a `try`/`catch` around the `await`. ATTRIBUTION is the blocker:
+  // at every throw site in `resolveWorkerFenceContext` there is no FK-valid
+  // company in hand. `workers` and `execution_targets` carry `organization_id`
+  // only, and the one row that carries `company_id` — the lease — is precisely
+  // what failed to resolve. `activity_log.company_id` is NOT NULL with a cascade
+  // FK, so `recordSecurityDenial` would log-and-return-null. That is `E0-F013`'s
+  // Decision 2 (where a company-less denial goes), and this is a FOURTH
+  // clause-half it blocks. The two escapes both cost a design decision rather
+  // than a wire: resolving the company from the CALLER-SUPPLIED `jobId` lets a
+  // prober choose which of its own tenants absorbs the record, and the
+  // post-resolution tuple-integrity branch (`worker-fence-context.ts:111-123`,
+  // where `context.lease.companyId` does exist) sits inside a helper shared by
+  // FOUR services (artifact-commit, artifact-transfer-grant, patch-apply,
+  // secret-broker), so widening it is not a DE-06-scoped change.
+  //
+  // WHEN THAT IS CLOSED, these two arms go red naming exactly what changed, and
+  // the expected row count becomes 1 per path.
+  // ───────────────────────────────────────────────────────────────────────────
+
+  it("★ THE FENCE-AUTH REFUSAL IS NOT RECORDED — a superseded lease tuple is refused on BOTH paths and leaves NOTHING", async () => {
+    const { app, admin } = ctx();
+    const offer = await activateLease();
+    const storage = makeStubStorage();
+    const before = await activityRowCount(COMPANY);
+    // The lease tuple no longer RESOLVES: `lockLeaseAckContext` looks the lease up
+    // BY the presented fence, so a superseded fence finds no row at all and
+    // `resolveWorkerFenceContext` throws before `lockActiveFence` is ever reached.
+    await admin`UPDATE leases SET fence = ${"9".repeat(32)} WHERE id = ${offer.leaseId}`;
+
+    const grantSvc = createArtifactTransferGrantService({ appDb: app.db, storage });
+    const g = grantRequest(offer, "upload");
+    // POSITIVE CONTROL for the fixture: the branch really is reached.
+    await expect(
+      grantSvc.grant({ auth: auth(`sl-${crypto.randomUUID()}`), request: g.request }),
+    ).rejects.toBeInstanceOf(JobLeasingError);
+    expect(
+      await denialRowsFor(g.artifactId),
+      "the grant path now records a fence-auth refusal — update this arm and the DE-06 records",
+    ).toHaveLength(0);
+
+    const commitSvc = createArtifactCommitService({ appDb: app.db, storage });
+    const c = commitRequest(offer);
+    await expect(
+      commitSvc.commit({ auth: auth(`slc-${crypto.randomUUID()}`), request: c.request }),
+    ).rejects.toBeInstanceOf(JobLeasingError);
+    expect(
+      await denialRowsFor(c.artifactId),
+      "the commit path now records a fence-auth refusal — update this arm and the DE-06 records",
+    ).toHaveLength(0);
+    // Nothing at all was appended: the refusal is indistinguishable from traffic
+    // that never happened, which is exactly what DE-06's clause forbids.
+    expect(await activityRowCount(COMPANY)).toBe(before);
+  });
+
+  it("★ THE FENCE-AUTH REFUSAL IS NOT RECORDED — a revoked target authority is refused on BOTH paths and leaves NOTHING", async () => {
+    const { app, admin } = ctx();
+    const offer = await activateLease();
+    const storage = makeStubStorage();
+    const before = await activityRowCount(COMPANY);
+    // A revoked authority: the target is no longer active, so the authority
+    // recheck throws `target_revoked` — again before any fence guard runs.
+    await admin`UPDATE execution_targets SET status = 'disabled' WHERE id = ${TARGET}`;
+
+    const grantSvc = createArtifactTransferGrantService({ appDb: app.db, storage });
+    const g = grantRequest(offer, "upload");
+    await expect(
+      grantSvc.grant({ auth: auth(`rv-${crypto.randomUUID()}`), request: g.request }),
+    ).rejects.toBeInstanceOf(JobLeasingError);
+    expect(
+      await denialRowsFor(g.artifactId),
+      "the grant path now records a revoked-authority refusal — update this arm and the DE-06 records",
+    ).toHaveLength(0);
+
+    const commitSvc = createArtifactCommitService({ appDb: app.db, storage });
+    const c = commitRequest(offer);
+    await expect(
+      commitSvc.commit({ auth: auth(`rvc-${crypto.randomUUID()}`), request: c.request }),
+    ).rejects.toBeInstanceOf(JobLeasingError);
+    expect(
+      await denialRowsFor(c.artifactId),
+      "the commit path now records a revoked-authority refusal — update this arm and the DE-06 records",
+    ).toHaveLength(0);
+    expect(await activityRowCount(COMPANY)).toBe(before);
+
+    await admin`UPDATE execution_targets SET status = 'active' WHERE id = ${TARGET}`;
   });
 
   it("POSITIVE CONTROL — a GRANTED upload writes NO denial row (so 'always write a denial' fails this file)", async () => {
@@ -721,13 +846,14 @@ integration("DE-06 — a refused artifact object operation is durable and attrib
   // ───────────────────────────────────────────────────────────────────────────
   // ★ THE ARGUMENT, PINNED — why the row can exist at all.
   //
-  // Every refusal above is recorded from INSIDE a request whose tenant context is
-  // the refusing worker's own organization. The recorder writes to `activity_log`
-  // specifically because that table sits OUTSIDE the tenant RLS kernel: an
-  // RLS-forced table would refuse the denial write for the same reason a
-  // cross-tenant read is refused. If `activity_log` is ever folded into the
-  // kernel, every arm above would go red as "the row is missing" without saying
-  // why. These arms name the change instead.
+  // Every refusal above that IS recorded (the returning ones — not the two
+  // pinned fence-auth arms, which record nothing) is recorded from INSIDE a
+  // request whose tenant context is the refusing worker's own organization. The
+  // recorder writes to `activity_log` specifically because that table sits
+  // OUTSIDE the tenant RLS kernel: an RLS-forced table would refuse the denial
+  // write for the same reason a cross-tenant read is refused. If `activity_log`
+  // is ever folded into the kernel, every recording arm above would go red as
+  // "the row is missing" without saying why. These arms name the change instead.
   // ───────────────────────────────────────────────────────────────────────────
 
   it("★ activity_log sits OUTSIDE the tenant RLS kernel — and the kernel is genuinely present on this database", async () => {

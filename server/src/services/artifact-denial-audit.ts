@@ -15,6 +15,27 @@
 // presigned URL under org B's object prefix left the same durable trace as a
 // worker that asked for nothing: a number going up. See `E0-F010`.
 //
+// ★ THE CLAUSE IS CONJUNCTIVE AND ONLY ONE CONJUNCT IS HERE. DE-06 reads "object
+// put/get AND rejected-key attempts are audited". This module delivers the
+// REJECTED-KEY half. The other half — a SUCCESSFUL object put/get — is NOT
+// audited: a granted download presigns and returns from
+// `artifact-transfer-grant.ts` (the sole production `presignGet` call site)
+// writing no record at all, and a granted upload leaves only the operational
+// `recordArtifactGrantIntent` row. DE-06's audit clause is therefore HALF
+// delivered, DE-06 remains in `E0-F010`'s open cohort, and nothing here may be
+// read as closing it.
+//
+// ★ AND ONE REFUSAL SHAPE IS OUT OF REACH OF THE MECHANISM BELOW. The intent
+// drain covers refusals that RETURN. `resolveWorkerFenceContext` instead THROWS
+// `JobLeasingError("stale_fence"|"target_revoked"|"unauthorized")` before any
+// intent exists, and those throws are not recorded. The blocker is not the
+// transaction (a drain point outside `runInTenant` is a `try`/`catch`) but
+// ATTRIBUTION: `workers`/`execution_targets` carry `organization_id` only, and
+// the lease that carries `company_id` is exactly what failed to resolve, while
+// `activity_log.company_id` is NOT NULL. That is `E0-F013`'s Decision 2. Both
+// throws are driven and pinned in
+// `server/src/__tests__/de-06-artifact-denial-audit.integration.test.ts`.
+//
 // ★ WHY A SEPARATE INTENT TYPE AND NOT A DIRECT CALL. Every refusal in both
 // services happens INSIDE `runInTenant` — an open tenant transaction borrowed
 // from the same `appDb` pool. `recordSecurityDenial` is documented as requiring
@@ -86,10 +107,17 @@ export type ArtifactDenialReason = (typeof ARTIFACT_DENIAL_REASONS)[number];
  * nothing. The code exists so that if the invariant ever weakens, the refusal is
  * attributable on the day it starts firing.
  *
- * Every other code in the list above is provoked through the real path in
- * `server/src/__tests__/de-06-artifact-denial-audit.integration.test.ts` or is
- * an existing DAT-002 refusal branch already covered by
- * `artifact-transfer-commit.integration.test.ts`.
+ * ★ AND THE REST OF THE LIST IS A VOCABULARY, NOT A LIST OF PROVEN BRANCHES.
+ * Counted rather than asserted: FIVE of the fourteen codes are provoked end to
+ * end in `server/src/__tests__/de-06-artifact-denial-audit.integration.test.ts`
+ * — `foreign_object_prefix`, `declared_size_over_ceiling`,
+ * `artifact_not_committed`, `stale_fence`, `declared_hash_mismatch`. The other
+ * nine are compiled and reviewable but unprovoked here, and the DAT-002 suite
+ * (`artifact-transfer-commit.integration.test.ts`) does not stand in for them
+ * either: a grep of that file for the branch names finds only `attempt_terminal`
+ * and `hash_mismatch`. An earlier version of this comment claimed the whole list
+ * was covered by one file or the other; it was not, and that is the same
+ * over-generalisation this module's own crossing exists to catch.
  */
 
 /**
