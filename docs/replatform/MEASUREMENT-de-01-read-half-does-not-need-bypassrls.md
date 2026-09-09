@@ -50,11 +50,12 @@ From `docs/architecture/distributed-execution-threat-controls.json`, verbatim:
 
 **The audit clause is a conjunction, and only one conjunct is contested.**
 
-- **"query [...] events recorded"** — pure instrumentation of the serving path. `withTenantTx`
-  (`server/src/db/with-tenant-tx.ts:29`) is the single chokepoint that opens every new-path tenant
-  transaction and is the sole writer of the GUC. Recording who queried what, under which
-  organization, needs **no database privilege whatsoever**. Nothing about this half is blocked by
-  anything.
+- **"query [...] events recorded"** — pure instrumentation of the serving path.
+  `server/src/db/with-tenant-tx.ts` is the single **file** holding every writer of the tenant GUC —
+  `withTenantTx` at `:36` and `withReadOnlyTenantTx` at `:75`, two functions, and a whole-tree grep
+  for `set_config('aoa.organization_id'` outside tests returns those two lines and nothing else.
+  Recording who queried what, under which organization, needs **no database privilege whatsoever**.
+  Nothing about this half is blocked by anything.
 - **"policy-denial events recorded"** — this splits again. The **write** half raises catchable
   SQLSTATE `42501` and `E0-F013` already classes it as "genuinely closable". The **read** half is
   the contested one.
