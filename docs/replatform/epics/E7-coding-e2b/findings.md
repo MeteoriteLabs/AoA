@@ -3392,7 +3392,8 @@ asks the question instead of rediscovering it.
 
 ## E7-F034 — `RealE2bTransport.signal` is a metadata READ that always reports `delivered: true`, so the cleanup ladder's `kill` rung is structurally unreachable in production — and every double that exercises that rung is more capable than the shipping transport
 
-**Status:** open · **Owner:** unowned (see reason)
+**Status:** open — **NARROWED 2026-09-09 by the SVC-008a implementation; read the narrowing at the end
+of this entry before acting on anything above it.** · **Owner:** unowned (see reason)
 **Severity:** MEDIUM
 **Filed:** 2026-09-09, on the E9 branch `replatform/e9-f002-service-dispatch`, by re-verifying at source a
 mechanism established during the SVC-008 revision-2 review. That review **correctly declined to file it
@@ -3640,3 +3641,69 @@ SVC-008 (`epics/E9-service-agents/tickets/SVC-008-design.md` §1.3d, §3.4, §6 
 (`E0-foundation/findings.md:243`) — adjacent, not overlapping: DE-10 is a *disarmed* reaper, this is an
 *inert rung* inside the armed one. **E7-F020/F030/F031** — the false-PROVEN family; this is deliberately
 *not* one of them (nothing is certified that is untrue about a run), which is the argument for MEDIUM.
+
+<a id="e7-f034-narrowing"></a>
+
+### ★★★ NARROWING (2026-09-09) — what the SVC-008a implementation actually repaired, and what it did not
+
+**Status stays `open`. Owner stays `unowned`.** What follows is a narrowing, not a closure, and the
+reason is in the last block. Every claim below cites a test that runs in the NO-KEY core.
+
+**Half 1 — the unreachable rung. REPAIRED and PINNED.**
+
+- `RealE2bTransport.signal` no longer discards the record it fetched. `E2bSignalResult` is now
+  `{observed: "stopped" | "still_running" | "unknown"}` (`packages/sandbox-e2b-provider/src/transport.ts`),
+  and the catch branch returns `{observed: "unknown"}` — not an affirmative.
+  Pinned: `packages/sandbox-e2b-provider/src/__tests__/svc-008a-witnessed-stop.test.ts:68`
+  ("★ a getInfo that THROWS yields 'ignored' — the finding in one line").
+- `E2bSandboxProvider.cancel`/`.kill` map `observed === "stopped" ? "stopped" : "ignored"`, so
+  `"ignored"` is now producible by the real provider.
+- **The `kill` rung EXECUTES.** `CleanupAuthority.converge` over the shipped provider over the shipped
+  transport runs `cancel -> kill -> destroy` and `escalationStage()` reaches `"destroy"`.
+  Pinned: `packages/sandbox-e2b-provider/src/__tests__/svc-008a-escalation-reachability.test.ts:108`.
+  The two production-metric pins that asserted `escalation_stage="destroy"` — a value production could
+  not emit — are now TRUE rather than aspirational
+  (`worker-daemon/src/__tests__/startup-sandbox-classification.test.ts:108`,
+  `supervisor-cancel-escalation.test.ts:40`; both were re-run green and neither needed re-pointing).
+- **The wider root cause of amendment point 3 is repaired too.** `mapState` matches every recognized
+  state POSITIVELY and returns `"unknown"` otherwise; `E2bRecordState` gained that inhabitant.
+  Pinned against all four unclassifiable payloads, asserting the NEGATIVE explicitly:
+  `svc-008a-witnessed-stop.test.ts:115 (the four-payload loop, inside the describe at :101)`. The `hasLiveLease` half is carried at
+  `e2b-provider.ts` under the SVC-008a §9.4 interim rule (non-destructive), pinned at
+  `svc-008a-witnessed-stop.test.ts:145`.
+
+**Half 2 — the doubles were more capable than production. REPAIRED and PINNED.**
+
+- `MockE2bTransport` gained the two arms no double in this tree could previously produce: a read that
+  THREW (`__aoa_fault_read_fails`) and a record whose state is unclassifiable
+  (`__aoa_fault_state_unknown`). The worker-daemon support double gained scriptable process
+  supervision whose ACCEPTANCE is independent of its EFFECT.
+- T8 is landed as a DIRECTORY WALK with anti-vacuity, a positive control, the unknown case, the four
+  unclassifiable payloads, the unsupported-mode throw, the empty-handle clause, and the
+  `gone`-requires-an-answer clause: `packages/provider-wire/src/__tests__/svc-008a-t8-process-conformance.test.ts`.
+- ★ **Clause 11 is the one that pins THIS finding's shape**
+  (`svc-008a-t8-process-conformance.test.ts:340`): no arm may claim a graceful process cancel the
+  shipping transport lacks. On the pre-fix tree the mock stopped the process and the real transport
+  reported a stop it never performed; that disagreement was the finding, and the clause is asserted of
+  both arms so it is a red rather than a review note.
+
+**★ WHY IT STAYS OPEN, stated so it is refusable rather than lost.**
+
+1. **This entry's own stated resolution names the keyed arm**, and that arm has never been RUN. T8's
+   real-account arm is `it.skipIf`-gated on `E2B_API_KEY` and reports SKIPPED, never passed
+   (`svc-008a-t8-process-conformance.test.ts:421`). The no-key real arm exercises the SHIPPING
+   `real-transport.ts` with only the `e2b` SDK boundary injected — it proves this file cannot
+   manufacture an affirmative from nothing, and it proves nothing about what the live service returns.
+   Flipping Status on a skipped arm would be this programme's defining failure class.
+2. **The SDK caveat is unchanged and is NOT upgraded.** The new
+   `startProcess`/`processStatus`/`signalProcess` binding is written against the `e2b@2.30.5` TYPE
+   DECLARATIONS (`Commands.run(cmd, {background: true}) -> CommandHandle{pid}`, `Commands.list() ->
+   ProcessInfo[]`, `Commands.kill(pid) -> boolean`, documented SIGKILL-only). That is a CODE READING,
+   not a provider measurement. It answers SVC-008a §9.1's STRUCTURAL half — a detached launch with a
+   handle IS expressible, and so is a forced kill — and leaves its BEHAVIOURAL half open.
+3. **Owner is unchanged for the unchanged reason**: `findTicketIds` resolves `SVC-008a-design.md` to
+   the ticket id `SVC-008`, which explicitly refused jurisdiction. The pointer stays prose.
+
+**What a closer must do:** run T8's keyed arm once against a real E2B account (Linux CI with a key, or
+Windows with `AOA_RUN_WIN_INTEGRATION=1`), record the run id here, then flip Status and delete the
+`finding-ownership.json` key in the same commit.

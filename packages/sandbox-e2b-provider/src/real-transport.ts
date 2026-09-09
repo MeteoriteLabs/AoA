@@ -22,9 +22,16 @@
 import { CommandExitError, Sandbox } from "e2b";
 
 import {
+  E2bProcessLaunchNotAcknowledgedError,
   E2bTransportNotFoundError,
   E2bTransportTransientError,
   type E2bCommandResult,
+  type E2bProcessHandle,
+  type E2bProcessObservation,
+  type E2bProcessSignalResult,
+  type E2bProcessStartResult,
+  type E2bProcessSupervisionMode,
+  type E2bStartProcessRequest,
   type E2bCreateRequest,
   type E2bListPage,
   type E2bListRequest,
@@ -48,6 +55,19 @@ export interface RealE2bTransportOptions {
   readonly apiKey?: string;
   /** Advertise pause/resume (E2B beta) — off by default. */
   readonly enablePauseResume?: boolean;
+  /**
+   * ★ TEST-ONLY SDK INJECTION, and its limits are stated rather than implied.
+   *
+   * Defaults to the real `e2b` `Sandbox` class. A suite may substitute a stub so the
+   * PRODUCTION parsing and verdict-derivation code in this file (`mapState`, `toRecord`,
+   * `signal`, `processStatus`) can be driven keylessly against the response shapes a real
+   * SDK can return. That proves this file's LOGIC; it proves NOTHING about what the live
+   * `e2b` service actually returns, and it is never a substitute for the keyed arm —
+   * which is why T8's keyed arm reports SKIPPED, never passed, when `E2B_API_KEY` is
+   * absent. Injecting here does not make this a double: the code under test is the
+   * shipping code, and only the SDK boundary moves.
+   */
+  readonly sdk?: unknown;
 }
 
 function requireApiKey(explicit?: string): string {
@@ -58,11 +78,38 @@ function requireApiKey(explicit?: string): string {
   return key;
 }
 
-function mapState(raw: unknown): E2bRecordState {
-  const s = typeof raw === "string" ? raw.toLowerCase() : "";
+/**
+ * ★★★ SVC-008a §4.2 A-i — RECOGNITION IS EXPLICIT AND THE FALLTHROUGH IS HONEST.
+ *
+ * This function used to be `if includes("run") … if includes("paus") … return "stopped"`,
+ * fed `info?.state ?? info?.status` by {@link toRecord}. So an ABSENT, RENAMED or
+ * NON-STRING state field — an SDK field rename anywhere in the pinned `^2.30.5` range, a
+ * partial or error-shaped response body, a future `"hibernated"` — became
+ * `state: "stopped"`: an affirmative stop derived from a read that witnessed nothing
+ * about the state. That is E7-F034's class, one layer below where the finding measured
+ * it, and it would have been rebuilt inside E7-F034's own repair.
+ *
+ * Now every recognized value is matched POSITIVELY and everything else is `"unknown"`.
+ * `"unknown"` is the honest inhabitant, and the provider maps it to the ESCALATING stop
+ * verdict, never the terminating one.
+ */
+export function mapState(raw: unknown): E2bRecordState {
+  if (typeof raw !== "string") return "unknown"; // absent / renamed / non-string
+  const s = raw.toLowerCase();
   if (s.includes("run")) return "running";
   if (s.includes("paus")) return "paused";
-  return "stopped";
+  if (s.includes("stop") || s.includes("kill") || s.includes("terminat")) return "stopped";
+  return "unknown"; // ★ NOT "stopped"
+}
+
+/** Parse a transport-minted handle back to a pid. A handle this binding did not mint —
+ * or one carrying no usable pid — is `null`, which becomes `handle_unrecognized`: an
+ * honest "I cannot look this up", never a guess about the process. */
+function parseHandle(handle: string): number | null {
+  if (typeof handle !== "string" || handle.length === 0) return null;
+  if (!/^[0-9]+$/.test(handle)) return null;
+  const pid = Number.parseInt(handle, 10);
+  return Number.isInteger(pid) && pid > 0 ? pid : null;
 }
 
 function toRecord(info: SandboxSdk): E2bSandboxRecord {
@@ -82,7 +129,7 @@ export class RealE2bTransport implements E2bTransport {
 
   constructor(options: RealE2bTransportOptions = {}) {
     this.#apiKey = requireApiKey(options.apiKey);
-    this.#sdk = Sandbox as SandboxSdk;
+    this.#sdk = (options.sdk ?? Sandbox) as SandboxSdk;
     if (options.enablePauseResume) {
       this.pause = async (sandboxId: string) => {
         const snapshotId = await this.#sdk.betaPause(sandboxId, { apiKey: this.#apiKey });
@@ -175,15 +222,157 @@ export class RealE2bTransport implements E2bTransport {
   }
 
   async signal(sandboxId: string, _kind: "cancel" | "kill"): Promise<E2bSignalResult> {
-    // E2B has no in-sandbox graceful-cancel primitive distinct from teardown; a
-    // signal is best-effort and reported delivered. The escalation ladder relies on
-    // the forced `terminate` for reclamation.
+    // ★★★ THE E7-F034 REPAIR (SVC-008a §4.2 Half A). Read against the same single
+    // `getInfo` this function already paid for — the honest answer was fetched and
+    // DISCARDED, so this costs zero additional provider calls.
+    //
+    // What it used to do: `getInfo`, throw the record away, `return {delivered: true}` —
+    // and `{delivered: true}` from the `catch` too, i.e. report a delivery when the only
+    // read it performed had FAILED. `E2bSandboxProvider.cancel`/`.kill` mapped that to
+    // `outcome: "stopped"` unconditionally, so `"ignored"` was not producible by the real
+    // provider, `CleanupAuthority`'s `kill` rung was structurally unreachable in
+    // production, and `cleanup_escalation{escalation_stage}` could only ever say "cancel".
+    //
+    // `_kind` is STILL not read, and that stays true rather than being papered over:
+    // this is a SANDBOX-scoped signal, and E2B has no in-sandbox graceful-cancel
+    // primitive distinct from teardown, so cancel and kill genuinely are the same
+    // sandbox-level act. The graceful/forced distinction lives at the PROCESS scope
+    // (`signalProcess` below), which is what a supervisor should use. What changes here
+    // is only that the verdict is now WITNESSED.
+    let record: E2bSandboxRecord;
     try {
-      await this.#sdk.getInfo(sandboxId, { apiKey: this.#apiKey });
-      return { delivered: true };
+      record = toRecord(await this.#sdk.getInfo(sandboxId, { apiKey: this.#apiKey }));
     } catch {
-      return { delivered: true };
+      // The read threw. Nothing was witnessed, and that is now SAYABLE.
+      return { observed: "unknown" };
     }
+    switch (record.state) {
+      case "running":
+      case "paused":
+        // A paused sandbox's process was not stopped — reporting a stop here would be the
+        // same lie in a quieter place.
+        return { observed: "still_running" };
+      case "stopped":
+        return { observed: "stopped" };
+      case "unknown":
+        // ★ The payload ANSWERED and named no state this parser recognizes (see
+        // `mapState`). That is not a stop; it is the absence of an answer about state.
+        return { observed: "unknown" };
+      default: {
+        const exhaustive: never = record.state;
+        return exhaustive;
+      }
+    }
+  }
+
+  // --- SVC-008a process supervision -------------------------------------------
+  //
+  // ★★★ THE HONESTY LABEL ON THIS WHOLE BLOCK, AND IT MUST NOT BE QUIETLY UPGRADED.
+  // Everything below is written against the `e2b@2.30.5` TYPE DECLARATIONS
+  // (`dist/index.d.ts`): `Commands.run(cmd, {background: true})` resolves a
+  // `CommandHandle` carrying `readonly pid: number`; `Commands.list()` resolves
+  // `ProcessInfo[]` each carrying a `pid`; `Commands.kill(pid)` resolves `true` when the
+  // command was killed and `false` when it was NOT FOUND, and its own doc comment says it
+  // "uses `SIGKILL`". That is a CODE READING of a package that is not installed in the
+  // worktree this was authored in. NONE of it has been run against a real E2B account.
+  // Behavioural correctness is the keyed lane's job, exactly as this file's header says.
+  //
+  // ★ ONE CAPABILITY IS ABSENT AND IS REPORTED AS ABSENT, NOT SIMULATED. There is no
+  // per-pid SIGTERM in that surface — `Commands.kill` is SIGKILL only and takes no signal
+  // selector — so `signalProcess(…, "cancel")` returns `accepted: "unsupported"`. It does
+  // NOT quietly escalate to a kill, and it does NOT claim a graceful stop happened.
+  //
+  // ★ ONE OBSERVATION IS UNREACHABLE AND IS REPORTED AS SUCH. `processStatus` polls
+  // `Commands.list()`, which carries no exit status, so this transport can witness
+  // `running` and `gone` but can NEVER produce `exited` with a code. Reading a code would
+  // need `Commands.connect(pid).wait()`, which BLOCKS until exit — the completion oracle
+  // this whole primitive exists to escape. A `gone` process therefore has no code, and
+  // inventing one is the E7-F014 failure this file already refused once.
+
+  readonly processSupervisionMode: E2bProcessSupervisionMode = "handle";
+
+  async startProcess(req: E2bStartProcessRequest): Promise<E2bProcessStartResult> {
+    const sandbox = await this.#sdk.connect(req.sandboxId, { apiKey: this.#apiKey });
+    const full = shellJoin(req.command, req.args);
+    const handle = await sandbox.commands.run(full, {
+      background: true,
+      envs: req.envVars,
+      timeoutMs: req.timeoutMs,
+    });
+    // ★ THE HANDLE IS READ, NEVER MINTED. This file's own id idiom is
+    // `String(x ?? "")` (`create`, `toRecord`) — and an empty string IS present, so a
+    // `startProcess` written that way would acknowledge a launch it did not witness while
+    // satisfying "presence is the acknowledgement". A response with no readable pid is a
+    // THROW.
+    const pid: unknown = (handle as SandboxSdk)?.pid;
+    if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) {
+      throw new E2bProcessLaunchNotAcknowledgedError(req.sandboxId, "launch response carried no usable pid");
+    }
+    return { handle: String(pid) };
+  }
+
+  async processStatus(sandboxId: string, handle: E2bProcessHandle): Promise<E2bProcessObservation> {
+    const pid = parseHandle(handle);
+    if (pid === null) return { state: "unknown", reason: "handle_unrecognized" };
+    let sandbox: SandboxSdk;
+    try {
+      sandbox = await this.#sdk.connect(sandboxId, { apiKey: this.#apiKey });
+    } catch {
+      // ★ A FAILURE TO LOOK IS NOT AN ABSENCE. `isRunning` right below is
+      // `catch { return false }`, and `e2b-provider.ts` already ships that `false` as
+      // `status: "unhealthy"` — an affirmative claim from a read that threw. This method
+      // must not be built on that shape.
+      return { state: "unknown", reason: "sandbox_unreachable" };
+    }
+    let processes: unknown;
+    try {
+      processes = await sandbox.commands.list();
+    } catch {
+      return { state: "unknown", reason: "read_failed" };
+    }
+    if (!Array.isArray(processes)) {
+      // The call answered with something this binding cannot classify. Not an absence.
+      return { state: "unknown", reason: "state_unrecognized" };
+    }
+    for (const info of processes as SandboxSdk[]) {
+      if (typeof info?.pid === "number" && info.pid === pid) return { state: "running" };
+    }
+    // The list ANSWERED and this pid is not in it. That is a witnessed absence — and it
+    // carries no exit code, because this read has none to carry.
+    return { state: "gone" };
+  }
+
+  async signalProcess(
+    sandboxId: string,
+    handle: E2bProcessHandle,
+    kind: "cancel" | "kill",
+  ): Promise<E2bProcessSignalResult> {
+    const pid = parseHandle(handle);
+    if (pid === null) {
+      return { accepted: "refused", observation: { state: "unknown", reason: "handle_unrecognized" } };
+    }
+    if (kind === "cancel") {
+      // ★ NOT deliverable, and said so rather than silently promoted to a kill. The
+      // observation is still a real re-read: the process may have stopped for other
+      // reasons, and the caller must be able to see that.
+      return { accepted: "unsupported", observation: await this.processStatus(sandboxId, handle) };
+    }
+    let accepted: E2bProcessSignalResult["accepted"];
+    try {
+      const sandbox = await this.#sdk.connect(sandboxId, { apiKey: this.#apiKey });
+      const killed: unknown = await sandbox.commands.kill(pid);
+      // `true` = killed, `false` = not found. Both are ANSWERS about the CALL only; the
+      // claim about the PROCESS comes from the re-read below and from nowhere else.
+      accepted = killed === true ? "accepted" : "refused";
+    } catch {
+      // The call failed. `accepted` has no "unknown" inhabitant by design — it describes
+      // only whether the request was taken, and nothing may be concluded about the
+      // process from it either way (see the port's `accepted` docstring). Reporting a
+      // thrown call as "not taken" launders nothing, because the whole process claim
+      // rides on the observation below.
+      accepted = "refused";
+    }
+    return { accepted, observation: await this.processStatus(sandboxId, handle) };
   }
 
   async terminate(sandboxId: string): Promise<void> {

@@ -39,6 +39,11 @@ import type {
   InspectResult,
   ListInput,
   ListResult,
+  ProcessHandle,
+  ProcessSignalResult,
+  ProcessStartResult,
+  ProcessStatusResult,
+  ProcessSupervisionMode,
   ProviderOperation,
   ProviderOpContext,
   RedactedResourceProjection,
@@ -91,6 +96,22 @@ export class NetworkedProviderDriver implements SandboxProvider {
    * silently drop every staged file.
    */
   readonly fileStagingMode: FileStagingMode = "none";
+
+  /**
+   * SVC-008a — `"none"`, and honestly so, for exactly the reason `fileStagingMode` is.
+   *
+   * `start_process` / `process_status` / `signal_process` are NOT members of the frozen
+   * `ProviderOperation` vocabulary (deliberately — see `ProcessSupervisionMode`), and
+   * `#post` is typed to that vocabulary, so this driver has no wire route to reach a
+   * remote provider's process supervision. Giving the adapter-manager wire an inbound
+   * process route is its own piece of work; claiming support without one would silently
+   * drop every signal and report a launch nobody made.
+   *
+   * ★ Consequence, stated rather than smuggled: the containerized/networked lane CANNOT
+   * supervise a service until that route exists. That is the identical, accepted cost
+   * CLI-008 Unit B paid for `stageFiles`, and this ticket does not take it on.
+   */
+  readonly processSupervisionMode: ProcessSupervisionMode = "none";
 
   readonly #baseUrl: string;
   readonly #fetch: typeof fetch;
@@ -196,6 +217,30 @@ export class NetworkedProviderDriver implements SandboxProvider {
     _ctx: ProviderOpContext,
   ): Promise<StageFilesResult> {
     throw new UnsupportedProviderOperation("stage_files");
+  }
+
+  // SVC-008a — a `"none"` provider THROWS from all three; it never returns an
+  // observation. A returned `unknown` is indistinguishable at the call site from a
+  // transient read failure, whose prescribed response is "escalate and retry" — so a
+  // caller that wired up this driver by mistake would retry forever instead of failing
+  // at the first call. The throw is unmissable and names the operation.
+  async startProcess(_input: ExecuteInput, _ctx: ProviderOpContext): Promise<ProcessStartResult> {
+    throw new UnsupportedProviderOperation("start_process");
+  }
+  async processStatus(
+    _sandboxId: string,
+    _handle: ProcessHandle,
+    _ctx: ProviderOpContext,
+  ): Promise<ProcessStatusResult> {
+    throw new UnsupportedProviderOperation("process_status");
+  }
+  async signalProcess(
+    _sandboxId: string,
+    _handle: ProcessHandle,
+    _kind: "cancel" | "kill",
+    _ctx: ProviderOpContext,
+  ): Promise<ProcessSignalResult> {
+    throw new UnsupportedProviderOperation("signal_process");
   }
 
   async #post<R>(

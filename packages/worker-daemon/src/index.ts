@@ -428,10 +428,18 @@ export {
   PROVIDER_OPERATIONS,
   UnsupportedProviderOperation,
   SandboxNotFoundError,
+  // SVC-008a — the process-supervision primitive.
+  ProcessLaunchNotAcknowledged,
+  SandboxRecordIndeterminateError,
+  deriveStopVerdict,
   labelsEqual,
   labelsMatchSelector,
   hashResourceLabels,
 } from "./supervisor/provider.js";
+// The null-object provider. Exported so SVC-008a's cross-package conformance suite can
+// discover-and-exercise every `SandboxProvider` implementer by construction rather than by
+// a hand-listed set — an implementer the suite cannot reach is one that silently escapes.
+export { createNoopProvider, NoopProviderReachedError } from "./supervisor/noop-provider.js";
 export type {
   SandboxProvider,
   ProviderOperation,
@@ -446,6 +454,14 @@ export type {
   FileStagingMode,
   StagedFileRequest,
   StageFilesResult,
+  // SVC-008a — the provider-side process-supervision capability.
+  ProcessSupervisionMode,
+  ProcessHandle,
+  ProcessObservation,
+  ProcessUnknownReason,
+  ProcessStartResult,
+  ProcessStatusResult,
+  ProcessSignalResult,
   DeclinableOperation,
   SandboxState,
   CleanupStatus,

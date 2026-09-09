@@ -30,9 +30,17 @@ import type { ArtifactUploadGrantV1 } from "@armyofagents/worker-protocol";
 
 import {
   labelsMatchSelector,
+  ProcessLaunchNotAcknowledged,
   SandboxNotFoundError,
   UnsupportedProviderOperation,
   type ArtifactExportMode,
+  type ProcessHandle,
+  type ProcessObservation,
+  type ProcessSignalResult,
+  type ProcessStartResult,
+  type ProcessStatusResult,
+  type ProcessSupervisionMode,
+  type ProcessUnknownReason,
   type FileStagingMode,
   type StagedFileRequest,
   type CheckpointMode,
@@ -131,6 +139,41 @@ export interface FakeProviderScript {
    * the supervisor consumes its cleanup latch on an empty (nothing-listed) pass.
    */
   readonly createGate?: Promise<void>;
+
+  // --- SVC-008a process supervision ------------------------------------------------
+  //
+  // ★ DEFAULTS TO `"none"` so an unscripted double DECLINES rather than fabricating a
+  // launch, for the same reason `artifactExportMode` and `fileStagingMode` do. And the
+  // scripted arms below exist for a sharper reason: this double's header already says a
+  // fake that could not inject "an ignored cancel, an ignored kill" would be a DEFECT —
+  // and until now no double in this tree could inject the case that is real E2B's ONLY
+  // case, an accepted signal that stopped nothing, or an observation that says "I could
+  // not tell". A double that cannot represent production cannot test it.
+
+  readonly processSupervisionMode?: ProcessSupervisionMode;
+  /** `startProcess` cannot be acknowledged → `ProcessLaunchNotAcknowledged`. */
+  readonly refuseLaunch?: boolean;
+  /**
+   * What `processStatus` reports for a live handle. Default `"running"`.
+   * `"unknown"` is the arm real E2B reaches whenever its status read fails.
+   */
+  readonly processState?: "running" | "exited" | "gone" | "unknown";
+  /** The exit status `processStatus` reports when `processState` is `"exited"`. */
+  readonly processExitCode?: number | null;
+  /** The reason `processStatus` reports when `processState` is `"unknown"`. */
+  readonly processUnknownReason?: ProcessUnknownReason;
+  /**
+   * ★ What `signalProcess` reports for the CALL — scripted INDEPENDENTLY of the
+   * observation, so a test can exercise "accepted, and nothing stopped": the case that is
+   * real E2B's only case and the one a caller must never read as success. Default
+   * `"unsupported"` for `"cancel"` (matching the real transport, which has no per-pid
+   * SIGTERM) and `"accepted"` for `"kill"`.
+   */
+  readonly signalAccepted?: "accepted" | "refused" | "unsupported";
+  /** When true, a `"kill"` that was accepted actually stops the process (so the follow-up
+   * observation is `"gone"`). Default false — the double does not assume an effect it did
+   * not model. */
+  readonly signalStopsProcess?: boolean;
 }
 
 interface FakeSandbox {
@@ -208,6 +251,10 @@ export function createFakeSandboxProvider(script: FakeProviderScript = {}): Fake
   const artifactExportMode: ArtifactExportMode = script.artifactExportMode ?? "none";
   const artifactFiles: Readonly<Record<string, string>> = script.artifactFiles ?? {};
   const fileStagingMode: FileStagingMode = script.fileStagingMode ?? "none";
+  const processSupervisionMode: ProcessSupervisionMode = script.processSupervisionMode ?? "none";
+  /** Live process handles per sandbox, and whether each has been stopped. */
+  const processes = new Map<string, { sandboxId: string; stopped: boolean }>();
+  let processCounter = 0;
   const stagedObjects: Readonly<Record<string, string>> = script.stagedObjects ?? {};
   /** What actually landed in the sandbox, by path. */
   const stagedFileContents: Record<string, string> = {};
@@ -259,6 +306,26 @@ export function createFakeSandboxProvider(script: FakeProviderScript = {}): Fake
 
   function requireAdvertised(op: ProviderOperation): void {
     if (!advertised.has(op)) throw new UnsupportedProviderOperation(op);
+  }
+
+  /**
+   * SVC-008a — what this double SAW of a process. Every arm is scripted or read from the
+   * double's own store; there is no default branch that manufactures a lifecycle.
+   */
+  function observe(sandboxId: string, handle: ProcessHandle): ProcessObservation {
+    const scripted = script.processState ?? "running";
+    if (scripted === "unknown") {
+      return { state: "unknown", reason: script.processUnknownReason ?? "read_failed" };
+    }
+    const proc = processes.get(handle);
+    // The store ANSWERED and this handle is not in it (or belongs elsewhere) — a witnessed
+    // absence, not a failure to look.
+    if (proc === undefined || proc.sandboxId !== sandboxId) return { state: "gone", observedAt: 0 };
+    if (proc.stopped || scripted === "gone") return { state: "gone", observedAt: 0 };
+    if (scripted === "exited") {
+      return { state: "exited", exitCode: script.processExitCode ?? 0, signal: null, observedAt: 0 };
+    }
+    return { state: "running", observedAt: 0 };
   }
 
   function requireSandbox(sandboxId: string): FakeSandbox {
@@ -545,6 +612,54 @@ export function createFakeSandboxProvider(script: FakeProviderScript = {}): Fake
       record("health", sandboxId, ctx, false);
       requireSandbox(sandboxId);
       return { providerOpId: nextOpId(), mode: healthMode, status: script.healthStatus ?? "healthy" };
+    },
+
+    // --- SVC-008a process supervision -----------------------------------------
+    processSupervisionMode,
+
+    async startProcess(input: ExecuteInput, _ctx: ProviderOpContext): Promise<ProcessStartResult> {
+      // A `"none"` double THROWS rather than returning an observation — the same contract
+      // every other `"none"` implementer has, so a `"none"` provider has exactly one
+      // behaviour to satisfy.
+      if (processSupervisionMode === "none") throw new UnsupportedProviderOperation("start_process");
+      requireSandbox(input.sandboxId);
+      if (script.refuseLaunch === true) {
+        // ★ NEVER `handle: ""`. An empty string is "present" and satisfies "presence is
+        // the acknowledgement" while acknowledging a launch that never happened.
+        throw new ProcessLaunchNotAcknowledged(input.sandboxId, "launch refused by script");
+      }
+      processCounter += 1;
+      const handle = `${prefix}-proc-${processCounter}`;
+      processes.set(handle, { sandboxId: input.sandboxId, stopped: false });
+      return { providerOpId: nextOpId(), handle, acknowledgedAt: 0 };
+    },
+
+    async processStatus(
+      sandboxId: string,
+      handle: ProcessHandle,
+      _ctx: ProviderOpContext,
+    ): Promise<ProcessStatusResult> {
+      if (processSupervisionMode === "none") throw new UnsupportedProviderOperation("process_status");
+      return { providerOpId: nextOpId(), observation: observe(sandboxId, handle) };
+    },
+
+    async signalProcess(
+      sandboxId: string,
+      handle: ProcessHandle,
+      kind: "cancel" | "kill",
+      _ctx: ProviderOpContext,
+    ): Promise<ProcessSignalResult> {
+      if (processSupervisionMode === "none") throw new UnsupportedProviderOperation("signal_process");
+      const accepted =
+        script.signalAccepted ?? (kind === "cancel" ? ("unsupported" as const) : ("accepted" as const));
+      const proc = processes.get(handle);
+      // ★ The EFFECT is scripted separately from the ACCEPTANCE, so "accepted and nothing
+      // stopped" is expressible. That is real E2B's only case, and a double that could not
+      // express it is exactly what let E7-F034 survive every ladder test.
+      if (proc !== undefined && accepted === "accepted" && script.signalStopsProcess === true) {
+        proc.stopped = true;
+      }
+      return { providerOpId: nextOpId(), accepted, observation: observe(sandboxId, handle) };
     },
 
     // --- inspection surface (test-only) ---

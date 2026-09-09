@@ -36,6 +36,21 @@ export const DIRECTIVE_KEYS = {
   // no-key-testable. A REAL transport ignores it — the keyed lane binds the `e2b`
   // SDK command stream instead.
   streamChunks: "__aoa_stream_chunks",
+  // SVC-008a (mock transport ONLY) — the four directives that let the DOUBLE reproduce
+  // what PRODUCTION can actually do. Before them, no double in this tree could produce an
+  // indeterminate observation at all, which is precisely why E7-F034 survived every
+  // ladder test: the mock was strictly MORE CAPABLE than the shipping transport in the
+  // one dimension under test, so a suite that passed against it proved nothing.
+  /** Every `getInfo`/`list` read of this sandbox THROWS — the branch that used to return
+   * an affirmative `{delivered: true}` from `signal`'s own catch. */
+  readFails: "__aoa_fault_read_fails",
+  /** This sandbox's record carries an UNRECOGNIZED state (`E2bRecordState "unknown"`) —
+   * the mock's stand-in for an SDK payload `mapState` cannot classify. */
+  stateUnknown: "__aoa_fault_state_unknown",
+  /** `startProcess` cannot be acknowledged (no handle). */
+  refuseLaunch: "__aoa_fault_refuse_launch",
+  /** Every `processStatus` read THROWS — an indeterminate PROCESS observation. */
+  processReadFails: "__aoa_fault_process_read_fails",
 } as const;
 
 /** Metadata keys the provider round-trips through the transport to reconstruct a
@@ -51,6 +66,14 @@ export interface CreateFaultDirectives {
   readonly ignoreCancel: boolean;
   readonly ignoreKill: boolean;
   readonly destroyFailures: number;
+  /** SVC-008a — see {@link DIRECTIVE_KEYS.readFails}. */
+  readonly readFails: boolean;
+  /** SVC-008a — see {@link DIRECTIVE_KEYS.stateUnknown}. */
+  readonly stateUnknown: boolean;
+  /** SVC-008a — see {@link DIRECTIVE_KEYS.refuseLaunch}. */
+  readonly refuseLaunch: boolean;
+  /** SVC-008a — see {@link DIRECTIVE_KEYS.processReadFails}. */
+  readonly processReadFails: boolean;
 }
 
 /** Decode the create-time fault directives from a stored env/metadata bag (mock
@@ -62,6 +85,10 @@ export function decodeCreateFaults(env: Readonly<Record<string, string>>): Creat
     ignoreCancel: env[DIRECTIVE_KEYS.ignoreCancel] === "1",
     ignoreKill: env[DIRECTIVE_KEYS.ignoreKill] === "1",
     destroyFailures: Number.isFinite(parsed) && parsed > 0 ? parsed : 0,
+    readFails: env[DIRECTIVE_KEYS.readFails] === "1",
+    stateUnknown: env[DIRECTIVE_KEYS.stateUnknown] === "1",
+    refuseLaunch: env[DIRECTIVE_KEYS.refuseLaunch] === "1",
+    processReadFails: env[DIRECTIVE_KEYS.processReadFails] === "1",
   };
 }
 

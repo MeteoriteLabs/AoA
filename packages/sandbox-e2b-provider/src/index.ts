@@ -19,11 +19,19 @@ export type {
   E2bSandboxRecord,
   E2bRecordState,
   E2bStagedFile,
+  // SVC-008a — the transport-scope process-supervision seam.
+  E2bProcessSupervisionMode,
+  E2bProcessHandle,
+  E2bProcessObservation,
+  E2bProcessStartResult,
+  E2bProcessSignalResult,
+  E2bStartProcessRequest,
 } from "./transport.js";
 export {
   E2bTransportNotFoundError,
   E2bTransportTransientError,
   E2bTransportEgressBlockedError,
+  E2bProcessLaunchNotAcknowledgedError,
 } from "./transport.js";
 
 // The deterministic, key-less mock transport (no-key core proof).
@@ -43,7 +51,17 @@ export {
   SandboxNotFoundError,
   UnsupportedProviderOperation,
   SandboxEgressDeniedError,
+  // SVC-008a — an unacknowledged launch, and an unclassifiable sandbox record.
+  ProcessLaunchNotAcknowledged,
+  SandboxRecordIndeterminateError,
 } from "./errors.js";
+
+// The reserved fault/canary directive key names. Exported so a cross-package conformance
+// suite can drive the mock's fault levers by the SHARED constant rather than by
+// hand-copied string literals — this module is deliberately "the ONE place the reserved
+// key names live ... so they can never silently drift", and a suite that re-typed them
+// would be the drift.
+export { DIRECTIVE_KEYS, METADATA_KEYS } from "./directives.js";
 
 // The capability-matrix disposition fixture (D5).
 export { CLI_001_CAPABILITY_MATRIX } from "./capability-matrix.js";

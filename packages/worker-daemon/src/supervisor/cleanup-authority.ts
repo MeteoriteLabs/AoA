@@ -34,6 +34,7 @@ import {
   hashResourceLabels,
   labelsEqual,
   SandboxNotFoundError,
+  SandboxRecordIndeterminateError,
   type CleanupResult,
   type CleanupStatus,
   type ProviderOpContext,
@@ -279,6 +280,23 @@ export class CleanupAuthority {
       cancel = await this.cancel(sandboxId, makeCtx());
     } catch (err) {
       if (err instanceof ResourceNotAvailableError) return "success"; // already gone — nothing to converge
+      // ★★★ SVC-008a — AN UNREADABLE RECORD MUST NOT DISARM THE REAPER, AND MUST NOT
+      // AUTHORIZE A BLIND TEARDOWN EITHER.
+      //
+      // `#requireOwned` gates every teardown op on `inspect`, and `inspect` now THROWS on
+      // a record whose lifecycle state it cannot classify (rather than laundering it into
+      // an affirmative state — the E7-F034 class). Left to propagate, that throw would
+      // escape `converge()` before the UNCONDITIONAL forced `destroy` below, leaking a
+      // paid resource: strictly worse than the defect being repaired, which leaked
+      // nothing. Swallowing it as `"success"` would be worse still — a converged claim
+      // over a resource nothing observed.
+      //
+      // So: report `"failed"`. The resource stays discoverable and RETRYABLE, the caller
+      // gets no false convergence, and no teardown is performed against a record whose
+      // ownership could not be established. That is the same non-destructive
+      // `indeterminate -> leave it to the reaper` disposition `startup-reconcile` already
+      // models for an unreachable lease probe.
+      if (err instanceof SandboxRecordIndeterminateError) return "failed";
       throw err;
     }
     if (cancel.outcome === "ignored") {
