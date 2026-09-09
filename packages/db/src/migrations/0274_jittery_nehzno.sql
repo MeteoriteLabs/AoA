@@ -1,1 +1,14 @@
-ALTER TABLE "job_secret_handles" DROP COLUMN "revoked_at";
+-- DE-07 — drop job_secret_handles.revoked_at (device-grained revocation is the cutoff).
+--
+-- C14 hand-edited idempotency guard (class (a)), same idiom as 0240 ("drizzle-kit emits
+-- bare DROP/ADD CONSTRAINT and ADD COLUMN") and 0195 ("DROP ... IF EXISTS"): drizzle-kit
+-- emits a bare `DROP COLUMN`, and a bare DROP COLUMN is NOT replay-safe. The privileged
+-- migration job re-applies the PENDING TAIL on recovery (runMigrateJob ->
+-- applyPendingMigrations), so a second application of this file errors with
+-- `column "revoked_at" of relation "job_secret_handles" does not exist` and readiness
+-- never recovers. IF EXISTS makes the statement a no-op on replay.
+--
+-- End state is unchanged (the column is absent either way), so meta/0274_snapshot.json —
+-- which already carries job_secret_handles WITHOUT revoked_at — still describes this
+-- migration exactly, and db:generate has no delta to re-emit.
+ALTER TABLE "job_secret_handles" DROP COLUMN IF EXISTS "revoked_at";
