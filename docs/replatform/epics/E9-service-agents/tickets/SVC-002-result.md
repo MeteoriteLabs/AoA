@@ -111,7 +111,7 @@ Recorded rather than dropped, because a mutant that was claimed and never checke
 clause becomes vacuous.
 
 **5.1 — "change step 4's predicate to `status = 'healthy'` → red on ticks 2 and 3" is FALSE.**
-`SVC-002-design.md` §7 names that mutant for T4. Measured: **the suite stays 14/14 GREEN.**
+`SVC-002-design.md` §7 names that mutant for T4. Measured: **the suite stays GREEN** (14/14 at the time; T5 was added later, in the review pass).
 The reason is the masking shape the design itself warned about for T1:
 `countNonTerminalInstances` and `service_instances_live_service_uq` carry **the same
 predicate at two layers**. Under the mutant, tick 2 walks past the observed-state check, hits

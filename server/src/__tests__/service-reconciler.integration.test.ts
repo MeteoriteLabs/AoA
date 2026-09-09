@@ -538,7 +538,7 @@ suite("SVC-002 — the reconciler converges desired state into exactly one insta
     // resolves to `conflict`, and still returns `instance_present` with `created` unchanged.
     //
     // MEASURED, so the clause is not vacuous:
-    //   * healthy predicate ONLY        -> 14/14 GREEN (the index masks it)
+    //   * healthy predicate ONLY        -> GREEN (measured 14/14, pre-T5; the index masks it)
     //   * index dropped ONLY            -> this case GREEN (the count check masks it)
     //   * index dropped AND healthy     -> THIS CASE REDS: `created` is [1, 1, 1], three
     //                                      instances and three jobs across three ticks --
