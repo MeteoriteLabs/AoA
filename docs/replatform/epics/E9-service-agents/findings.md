@@ -165,7 +165,14 @@ and belongs to E4/CLI.
 `:460`), every implementer, and a conformance test with both arms. **Blockers (4) and (5) of §1.5 are
 SVC-008a's; (1), (2) and the consumption of (5) are SVC-008b's** — the daemon supervisor and the
 constant widening, which remain everything else in `SVC-008-design.md`. **(3) — the never-re-minted
-effect authority — is owned by neither and stays open as SVC-008 §9.1.**
+effect authority — is SVC-008b's**, and stays open as its `SVC-008-design.md` §9.1.
+
+★ **Correction (2026-09-09, review).** An earlier draft of this amendment said blocker (3) was
+"owned by neither", which contradicted this finding's unchanged `SVC-008` owner and
+`scripts/finding-ownership.json`'s reason that SVC-008 owns E9-F002 end to end. It was also simply
+wrong on its own terms: **SVC-008b *is* everything else in `SVC-008-design.md`**, and §9.1 is in
+that document — so (3) was never outside the split, only unlisted in it. The split partitions all
+five blockers; nothing is unowned and **no manifest change is implied.**
 
 Two things SVC-008a establishes that this finding did not. **(i) The root cause of (5) is a TYPE:**
 `StopOutcome` (`worker-daemon/src/supervisor/provider.ts:146`) has no inhabitant for "I witnessed

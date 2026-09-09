@@ -3535,6 +3535,25 @@ design and is **the specified resolution of this finding**. It records two thing
    (SVC-008a §4.2 Half A). Only the *process-handle* half (`startProcess`/`processStatus`/`signalProcess`)
    depends on the unverified E2B SDK question, and SVC-008a §9.1 keeps that question open rather than
    assuming it.
+3. **★★★ THE ROOT CAUSE IS WIDER THAN THIS ENTRY MEASURED — added 2026-09-09 after review of
+   SVC-008a.** Point 2 above is true but incomplete, and the gap is load-bearing: **the record it
+   calls the honest answer is itself minted by a parser that defaults to the affirmative-stop
+   value.** `mapState` (`real-transport.ts:61-66`) is `if includes("run") … if includes("paus") …
+   return "stopped"`, and `toRecord:73` feeds it `info?.state ?? info?.status` — so an **absent,
+   renamed or unrecognized** state field (`undefined` → `""`) yields `state: "stopped"`, and
+   `E2bRecordState` (`transport.ts:20`) has **no inhabitant for "I could not classify this either"**.
+   A repair that merely stops discarding the record therefore still returns an affirmative stop from
+   a read that witnessed nothing about the state — **this finding, reconstructed inside its own
+   fix.** SVC-008a §4.2 A-i now widens `E2bRecordState` with `"unknown"` and makes recognition
+   explicit **before** deriving any verdict, §4.6 re-walks every value the design specifies against
+   the same question (finding two more: an empty-string process handle, and a `gone` observation
+   sourced from `isRunning`'s `catch { return false }`, `:263-268`), and T8 gains a clause driving
+   four unclassifiable `getInfo` payloads. ★ **A second, live consequence in the opposite direction,
+   recorded here because it is the same parser:** `list` projects `hasLiveLease: record.state ===
+   "running"` (`e2b-provider.ts:425`) and `reconcile.ts:73`'s `defaultIsOrphan` is `!hasLiveLease`,
+   so a **running** sandbox whose state field this parser does not recognize is classified an orphan
+   and **torn down**. That half is carried as SVC-008a §9.4 with a mandatory non-destructive interim
+   rule; it is not separately filed, because it is this function and this class.
 
 **Two consequences worth recording here.** (i) `CleanupAuthority` cannot use a process-scoped signal:
 it converges sandboxes discovered by reconcile/list, for which **no process handle exists** — so the
