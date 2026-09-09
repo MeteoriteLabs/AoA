@@ -276,10 +276,11 @@ export async function recordSecurityDenial(
       .values({
         companyId: input.companyId,
         // E0-F013 Decision 2 (a2). Undefined and null are the same row here — the
-        // column is nullable and has no default — but the explicit `?? null`
-        // keeps the value that reaches the database identical to the value the
-        // caller passed, so a test can assert the two doubly-null DE-03 sites
-        // really do write a doubly-null row rather than a defaulted one.
+        // column is nullable and has no default — but `attested` below normalises
+        // with an explicit `?? null` before this runs, so the value that reaches
+        // the database is identical to the value the caller passed and a test can
+        // assert the two doubly-null DE-03 sites really do write a doubly-null row
+        // rather than a defaulted one.
         organizationId,
         actorType: input.actorType,
         actorId: input.actorId,
