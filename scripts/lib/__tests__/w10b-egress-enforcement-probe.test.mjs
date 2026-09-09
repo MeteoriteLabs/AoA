@@ -45,10 +45,17 @@ import {
   RAW_TARGETS,
   REDACTION_MARKER,
   TARGET_ROLES,
+  CURL_EXIT_MEANINGS,
+  CURL_EXIT_PHASES,
+  REACH_EVIDENCE,
+  allowlistDeniedAddresses,
+  allowlistReadBackProblem,
   blockShape,
   buildHttpTargetCommand,
   buildProbeRecord,
   classifyHttpRow,
+  classifyReachEvidence,
+  curlExitPhase,
   classifyRawRow,
   classifyResolvers,
   decideOption,
@@ -1192,4 +1199,241 @@ test("★ the allowlist arm takes NO part in the pack's disposition", () => {
   const r = classifyAllowlistArm({ arm: allowlistArmFixture() });
   assert.equal(r.state, undefined);
   assert.equal(packDisposition([{ probe: "a", state: "no", reason: "r", detail: "" }]).disposition, "measured");
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 17. TWO WAYS A BROKEN EXPERIMENT REPORTED `enforces`, AND THE CLASS AROUND THEM
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// ★★★ THE ASYMMETRY THAT DECIDES EVERY TIE BELOW. A false BROKEN costs one more run. A false
+// ENFORCES closes a Critical trust crossing (DE-08) on an experiment that did not happen.
+// So every case here is written from the false-ENFORCES side: the question is never "is this
+// probably enforcement", it is "could this row be produced by a run that measured nothing".
+//
+// Both defects fixed here PASSED an adversarial check whose first gate was "can this return a
+// false ENFORCES". Section 16 above drives the outcome vocabulary; this section drives the
+// two inputs that vocabulary is computed FROM.
+
+test("★ BROKEN, not ENFORCES: a starved resolver invalidates the experiment BEFORE any verdict", () => {
+  // ★★★ DEFECT 1. `resolve-failed` means the default-deny half did NOT admit the guest's
+  // resolver — so the policy that ran is not the policy under test and the experiment is
+  // invalid. The rows it produces are indistinguishable from enforcement, which is exactly
+  // why the DNS row exists. It was consulted only AFTER the positive control had already
+  // failed, so a run with a healthy IP-literal control and a starved resolver read as
+  // ENFORCES.
+  const arm = allowlistArmFixture();
+  arm.dnsRow = row("dns_lookup", 0, "resolve-failed gaierror Name or service not known");
+  const r = classifyAllowlistArm({ arm });
+  assert.notEqual(r.outcome, "enforces");
+  assert.equal(r.outcome, "broken");
+  assert.match(r.reason, /name-resolution-failed/);
+  assert.match(r.detail, /starved its own experiment/);
+});
+
+test("★ a DNS control that never ran is UNRUN, and never rounds up to a verdict", () => {
+  // `no-resolver-tool` is the template carrying no python3: the control did not run. That is
+  // not the same fact as `resolve-failed`, and neither may unlock an enforcement verdict.
+  for (const dnsRow of [row("dns_lookup", 0, "no-resolver-tool"), null]) {
+    const r = classifyAllowlistArm({ arm: allowlistArmFixture({ dnsRow }) });
+    assert.equal(r.outcome, "unrun");
+    assert.equal(r.isVerdict, false);
+    assert.match(r.reason, /dns-control/);
+  }
+});
+
+test("★ the resolver that answered must be one the ALLOW SET names, or there is no verdict", () => {
+  // A successful resolve through a nameserver the allowlist does NOT name is not a healthy
+  // control: either the constant is stale, or egress to an unnamed destination succeeded —
+  // and the second reading is the opposite of enforcement. The arm cannot tell which, so it
+  // returns BROKEN rather than the flattering one.
+  const foreign = classifyAllowlistArm({ arm: allowlistArmFixture({ resolvConf: { ok: true, text: "nameserver 10.0.2.3\n", detail: "" } }) });
+  assert.equal(foreign.outcome, "broken");
+  assert.match(foreign.reason, /resolver/);
+  assert.match(foreign.detail, /10\.0\.2\.3/);
+
+  // Unreadable /etc/resolv.conf: the resolution cannot be attributed to an allowed resolver.
+  const unreadable = classifyAllowlistArm({ arm: allowlistArmFixture({ resolvConf: { ok: false, text: "", detail: "NotFoundError" } }) });
+  assert.equal(unreadable.outcome, "broken");
+  assert.match(unreadable.reason, /resolver/);
+});
+
+test("★ INERT, not ENFORCES: curl 35 and 56 PROVE the denied destination was reached", () => {
+  // ★★★ DEFECT 2. `CURL_EXIT_MEANINGS` documents 35 and 56 as "the connection was made and
+  // then broke". Counting every nonzero exit as a refusal filtered those rows OUT of the
+  // reached set, so a destination the policy excluded — reached, then broken at TLS — read as
+  // a clean refusal and the arm declared the allowlist enforcing.
+  for (const code of [35, 56]) {
+    const arm = allowlistArmFixture();
+    arm.rows.deny_metadata = row("deny_metadata", code, `curl: (${code}) post-connect failure`);
+    arm.rows.deny_public_ip = row("deny_public_ip", code, `curl: (${code}) post-connect failure`);
+    const r = classifyAllowlistArm({ arm });
+    assert.notEqual(r.outcome, "enforces");
+    assert.equal(r.outcome, "inert", `exit ${code} on both denied rows must read as REACHED`);
+  }
+  // One reached-then-broke and one genuinely refused supports NEITHER answer.
+  const mixed = allowlistArmFixture();
+  mixed.rows.deny_metadata = row("deny_metadata", 35, "curl: (35) TLS handshake");
+  const r = classifyAllowlistArm({ arm: mixed });
+  assert.equal(r.outcome, "mixed");
+  assert.equal(r.isVerdict, false);
+});
+
+test("★ an exit code the pack does not model is BROKEN — it never defaults to refused", () => {
+  // 127 is `curl: not found`: the row measured the TEMPLATE, not the network. Defaulting an
+  // unmodelled exit to "refused" is the same error as defect 2 with a wider blast radius,
+  // because it applies to every code nobody has thought about yet.
+  const arm = allowlistArmFixture();
+  arm.rows.deny_public_ip = row("deny_public_ip", 127, "sh: 1: curl: not found");
+  const r = classifyAllowlistArm({ arm });
+  assert.notEqual(r.outcome, "enforces");
+  assert.equal(r.outcome, "broken");
+  assert.match(r.reason, /unmodelled-exit/);
+  assert.match(r.detail, /127/);
+});
+
+test("★ post-connect evidence is admitted AGAINST enforcement and never FOR it", () => {
+  // ★★★ THE ASYMMETRY, ASSERTED SO A LATER "let's be consistent" EDIT CANNOT ERASE IT. Exit 35
+  // on a DENIED row proves the destination was reached, which BLOCKS `enforces`. Exit 35 on
+  // the POSITIVE CONTROL does not prove the allowlist admitted it — a TLS-terminating
+  // interceptor produces the same code without the packets ever leaving — so it does NOT
+  // unlock `enforces`. Both readings point away from a false ENFORCES; that is the point.
+  const arm = allowlistArmFixture();
+  arm.rows.allow_ip = row("allow_ip", 35, "curl: (35) TLS handshake failure");
+  const r = classifyAllowlistArm({ arm });
+  assert.notEqual(r.outcome, "enforces");
+  assert.equal(r.outcome, "broken");
+});
+
+test("★ a read-back that CONTRADICTS the request is BROKEN: the shape under test is not the documented one", () => {
+  // The tier stores what it is given, so a materialized policy that differs from the declared
+  // one means the REQUEST was wrong — and the run measured some other shape. Nothing about
+  // that run supports a claim about the shape E2B documents.
+  const wrongAllow = allowlistArmFixture({
+    readBack: { ok: true, denyOut: ["0.0.0.0/0"], network: { denyOut: ["0.0.0.0/0"], allowOut: ["1.1.1.1", "8.8.8.0/24", "9.9.9.9"] }, detail: "" },
+  });
+  const r = classifyAllowlistArm({ arm: wrongAllow });
+  assert.notEqual(r.outcome, "enforces");
+  assert.equal(r.outcome, "broken");
+  assert.match(r.reason, /read-back/);
+  assert.match(r.detail, /9\.9\.9\.9/);
+
+  // A dropped default-deny half is the same class: the arm would be measuring no policy.
+  const noDeny = allowlistArmFixture({
+    readBack: { ok: true, denyOut: [], network: { denyOut: [], allowOut: ["1.1.1.1", "8.8.8.0/24"] }, detail: "" },
+  });
+  assert.equal(classifyAllowlistArm({ arm: noDeny }).outcome, "broken");
+
+  // A missing load-bearing allow entry is a request that did not ask for the documented shape.
+  const shortAllow = allowlistArmFixture({
+    readBack: { ok: true, denyOut: ["0.0.0.0/0"], network: { denyOut: ["0.0.0.0/0"], allowOut: ["8.8.8.0/24"] }, detail: "" },
+  });
+  assert.equal(classifyAllowlistArm({ arm: shortAllow }).outcome, "broken");
+});
+
+test("a read-back that merely NORMALISES, or cannot be taken at all, does not manufacture a BROKEN", () => {
+  // ★ The other half of the asymmetry: a false BROKEN costs a run, so the read-back gate fires
+  // only on a positive CONTRADICTION. `getInfo()`'s shape for `allowOut` is UNMEASURED at this
+  // tier — it may normalise `1.1.1.1` to `1.1.1.1/32`, drop the hostname entry (which is an
+  // observation, never load-bearing), or carry no network object at all. None of those is a
+  // contradiction, and treating them as one would burn the operator's authorisation on
+  // formatting.
+  const normalised = allowlistArmFixture({
+    readBack: { ok: true, denyOut: ["0.0.0.0/0"], network: { denyOut: ["0.0.0.0/0"], allowOut: ["1.1.1.1/32", "8.8.8.0/24"] }, detail: "" },
+  });
+  assert.equal(classifyAllowlistArm({ arm: normalised }).outcome, "enforces");
+
+  const noReadBack = allowlistArmFixture({ readBack: { ok: false, denyOut: null, network: undefined, detail: "getInfo threw" } });
+  const r = classifyAllowlistArm({ arm: noReadBack });
+  assert.equal(r.outcome, "enforces");
+  // …but the claim must SAY that it rests on what was requested, not on what was confirmed.
+  assert.match(r.detail, /read-back/i);
+});
+
+test("★ the refused/reached split is DERIVED from CURL_EXIT_MEANINGS, so the two cannot drift apart", () => {
+  // ★★★ THE DRIFT *IS* THE DEFECT. The map said, in writing, that 35 and 56 mean "the
+  // connection was MADE and then broke", while a separate hand-written rule counted every
+  // nonzero exit as a refusal. One fact, two copies, and the copy the verdict read was the
+  // wrong one. So the phase now lives in the map, and this test ties the prose to the phase:
+  // an edit that changes one without the other reds here.
+  for (const [code, entry] of Object.entries(CURL_EXIT_MEANINGS)) {
+    assert.ok(CURL_EXIT_PHASES.includes(entry.phase), `exit ${code} has no declared phase`);
+    assert.equal(curlExitPhase(Number(code)), entry.phase);
+    if (/\bMADE and then broke\b/.test(entry.meaning)) {
+      assert.equal(entry.phase, "post-connect", `exit ${code} says the connection was made, so its phase cannot be a refusal`);
+    }
+    if (/not a reachability failure/.test(entry.meaning)) {
+      assert.notEqual(entry.phase, "pre-connect", `exit ${code} says it is not a reachability failure, so it may not count as refused`);
+    }
+  }
+  assert.equal(curlExitPhase(127), "unmodelled");
+
+  assert.equal(classifyReachEvidence(reached("x")), "reached");
+  assert.equal(classifyReachEvidence(refused("x")), "refused-before-connect");
+  assert.equal(classifyReachEvidence(timedOut("x")), "refused-before-connect");
+  assert.equal(classifyReachEvidence(row("x", 35)), "reached-then-broke");
+  assert.equal(classifyReachEvidence(row("x", 56)), "reached-then-broke");
+  // A name that never resolved says NOTHING about reachability — the map has always said so.
+  assert.equal(classifyReachEvidence(dnsFailed("x")), "indeterminate");
+  assert.equal(classifyReachEvidence(row("x", 127)), "indeterminate");
+  assert.equal(classifyReachEvidence(null), "no-result");
+  for (const value of [reached("x"), refused("x"), row("x", 35), row("x", 127), null].map(classifyReachEvidence)) {
+    assert.ok(REACH_EVIDENCE.includes(value));
+  }
+});
+
+test("★ (a) and (d) make the same enforcement claim, so they read the same phase", () => {
+  // The class, not the instance. Both verdicts asserted a filter had worked on the strength of
+  // "the transfer did not complete", which a reached-then-broken connection also satisfies.
+  const honouredWith = (under) =>
+    verdictHonoured({ controls: greenControls(), policyArm: policyArm({ rows: { metadata_v4: under } }), antiVacuityArm: antiVacuityArm() });
+  assert.equal(honouredWith(timedOut("metadata_v4")).state, "yes");
+  assert.equal(honouredWith(row("metadata_v4", 35, "curl: (35) TLS")).state, "no");
+  assert.match(honouredWith(row("metadata_v4", 56, "curl: (56) recv")).reason, /reached-then/);
+  assert.equal(honouredWith(row("metadata_v4", 127, "curl: not found")).state, "inconclusive");
+
+  const reuseWith = (after) => verdictWarmReassert({ arm: reuseArm({ after }) });
+  assert.equal(reuseWith(timedOut("metadata_v4")).state, "yes");
+  assert.equal(reuseWith(row("metadata_v4", 35, "curl: (35) TLS")).state, "no");
+  assert.equal(reuseWith(row("metadata_v4", 127, "curl: not found")).state, "inconclusive");
+});
+
+test("★ every POSITIVE control stays strict: a reached-then-broken control licenses nothing", () => {
+  // ★★ THE OTHER HALF OF THE ASYMMETRY, PINNED WHERE A LATER "make it consistent" EDIT WOULD
+  // LAND. Post-connect evidence refutes a block; it does not establish a healthy apparatus.
+  // Relaxing these three would admit MORE verdicts, which is the only direction that can close
+  // a crossing on a run that measured nothing.
+  const brokeAfterConnect = row("allowed_public", 35, "curl: (35) TLS handshake failure");
+  const gate = evaluateControls({ policyArm: policyArm({ rows: { allowed_public: brokeAfterConnect } }), antiVacuityArm: antiVacuityArm() });
+  assert.equal(gate.ok, false);
+  assert.ok(gate.problems.some((p) => p.code === "positive-control-failed"));
+
+  const reuse = verdictWarmReassert({ arm: reuseArm({ before: row("metadata_v4", 56, "curl: (56) recv failure") }) });
+  assert.equal(reuse.state, "inconclusive");
+  assert.match(reuse.reason, /positive-control-failed/);
+});
+
+test("the read-back disqualifier reads the DENIED addresses off the targets rather than a retyped list", () => {
+  const denied = allowlistDeniedAddresses();
+  assert.deepEqual(denied, ["169.254.169.254", "9.9.9.9"]);
+  // A /24 that swallows a denied address is a contradiction even though no string matches.
+  assert.match(
+    String(allowlistReadBackProblem({ readBack: { ok: true, network: { denyOut: ["0.0.0.0/0"], allowOut: ["1.1.1.1", "8.8.8.0/24", "9.9.9.0/24"] } } })),
+    /ADMITS 9\.9\.9\.9/,
+  );
+  // It can only ever take a verdict away, never grant one: no read-back, no problem raised.
+  assert.equal(allowlistReadBackProblem({ readBack: { ok: false, detail: "getInfo threw" } }), null);
+  assert.equal(allowlistReadBackProblem({}), null);
+});
+
+test("★ ENFORCES survives all of it when the evidence is real: pre-connect refusals, live control, healthy resolver", () => {
+  // The over-correction is its own failure mode. A genuine result must still be reportable,
+  // or the arm becomes a check that can only ever say `broken` — which is a check that
+  // nothing runs, wearing the opposite costume.
+  const arm = allowlistArmFixture();
+  arm.rows.deny_metadata = timedOut("deny_metadata"); // 28: a silently-dropped SYN
+  arm.rows.deny_public_ip = refused("deny_public_ip"); // 7: refused at connect
+  const r = classifyAllowlistArm({ arm });
+  assert.equal(r.outcome, "enforces");
+  assert.equal(r.isVerdict, true);
+  assert.match(r.detail, /ENFORCES/);
 });
