@@ -158,6 +158,27 @@ produce what the events assert**, and SVC-008 design §11 restates its conclusio
 Protocol Custodian STOP, but a provider change IS required, and the provider half is the larger unit
 and belongs to E4/CLI.
 
+**★ AMENDMENT (2026-09-09) — the provider half is now a written ticket.**
+**[SVC-008a](tickets/SVC-008a-design.md)** turns SVC-008 §3.4 into a standalone design: the
+`startProcess`/`processStatus`/`signalProcess` trio behind a locally-defined `processSupervisionMode`
+(the verified `stageFiles`/`artifactExport` non-frozen precedent, `provider.ts:408`, `:433`, `:437`,
+`:460`), every implementer, and a conformance test with both arms. **Blockers (4) and (5) of §1.5 are
+SVC-008a's; (1), (2) and the consumption of (5) are SVC-008b's** — the daemon supervisor and the
+constant widening, which remain everything else in `SVC-008-design.md`. **(3) — the never-re-minted
+effect authority — is owned by neither and stays open as SVC-008 §9.1.**
+
+Two things SVC-008a establishes that this finding did not. **(i) The root cause of (5) is a TYPE:**
+`StopOutcome` (`worker-daemon/src/supervisor/provider.ts:146`) has no inhabitant for "I witnessed
+nothing", so a provider that cannot observe is forced into an affirmative claim. **(ii) The fix
+splits**, and only one half depends on the unverified E2B SDK question — the verdict repair reads a
+record the current code already fetches and discards, so it needs no new provider capability at all.
+**If the SDK cannot express a detached handle, that is the finding** (SVC-008a §9.1) and SVC-008b
+falls to its §3.4 fallback, which SVC-008 §5.1 clause 5 says does not earn the widening.
+
+**This finding's Status, Severity and Owner are unchanged.** It is still `open`, still HIGH, still
+owned by `SVC-008` — SVC-008a resolves for it to be *possible*, not for it to be *done*, and the
+resolution criterion is still T0: a service job observed leased by a real daemon.
+
 ### 2. Consequence, and why it is filed at HIGH
 
 A reconciler built to `SVC-002-design.md` **creates jobs that can never be placed or leased**. The

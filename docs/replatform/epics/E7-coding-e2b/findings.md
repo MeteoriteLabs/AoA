@@ -3517,6 +3517,42 @@ prevent. E9/SVC-008 is a **consumer** and explicitly refused jurisdiction. It is
 refusable rather than lost, and it is blocked on someone taking the `packages/sandbox-e2b-provider`
 transport lane.
 
+### ★ AMENDMENT (2026-09-09) — the fix is now specified as a ticket, and it splits in two
+
+**[SVC-008a](../E9-service-agents/tickets/SVC-008a-design.md)** turns SVC-008 §3.4 into a standalone
+design and is **the specified resolution of this finding**. It records two things this entry did not:
+
+1. **★ THE ROOT CAUSE IS THE TYPE, NOT THE FUNCTION.** `StopOutcome` (`worker-daemon/src/supervisor/provider.ts:146`)
+   is `"stopped" | "ignored"` and has **no inhabitant for "I witnessed nothing"**, so an implementation
+   that cannot observe anything is *forced* to pick an affirmative claim. The `catch { return
+   { delivered: true } }` is what the type left available. SVC-008a §2.2 makes the honest value
+   representable (`ProcessObservation`'s `"unknown"` with a `reason`) and deletes the word "stopped"
+   from the new signal result entirely.
+2. **★ THE HONEST ANSWER IS ALREADY FETCHED AND DISCARDED.** `signal`'s `getInfo` returns an
+   `E2bSandboxRecord` whose `state` is `"running" | "paused" | "stopped"` (`transport.ts:20`, `:25-29`);
+   the function throws it away. So the repair of **Half 1 costs zero additional provider calls and
+   needs no new SDK capability** — it is a verdict-derivation change on a read that already happens
+   (SVC-008a §4.2 Half A). Only the *process-handle* half (`startProcess`/`processStatus`/`signalProcess`)
+   depends on the unverified E2B SDK question, and SVC-008a §9.1 keeps that question open rather than
+   assuming it.
+
+**Two consequences worth recording here.** (i) `CleanupAuthority` cannot use a process-scoped signal:
+it converges sandboxes discovered by reconcile/list, for which **no process handle exists** — so the
+fix for the ladder is Half A, not the new trio. (ii) After Half A, `cleanup_escalation{escalation_stage}`
+reports `"destroy"` on every real-E2B converge instead of `"cancel"`. **That is the metric becoming
+true**: no assertion in the tree expects `"cancel"` (a grep over both test packages returns seven
+`escalation_stage`/`escalationStage` assertions, all `"kill"`/`"destroy"`/`"none"`), and the two
+production pins already assert `"destroy"`.
+
+**Status and owner are UNCHANGED, deliberately.** It stays `open` because a design is not a fix, and
+it stays `unowned` because the id `SVC-008a` **cannot be declared**: `findTicketIds`
+(`scripts/check-finding-ownership.mjs:40-54`) extracts ticket ids with `/^([A-Z]+-\d+)/`, so
+`SVC-008a-design.md` resolves to **`SVC-008`** — and SVC-008 is the ticket that explicitly refused
+jurisdiction over this defect (`SVC-008-design.md` §10, §9.5 ii). Declaring it would be the false
+claim of ownership `scripts/lib/finding-ownership.mjs` exists to prevent; declaring `SVC-008a` would
+red `owner_ticket_missing`. The pointer is therefore **prose**, here and in the manifest reason. Same
+shape as `REL-FOUNDATION-GATE`.
+
 ### Resolution test — T8, already specified
 
 `SVC-008-design.md` §6 **T8** is the resolution test and it is already written down: a **transport-level**
@@ -3527,6 +3563,13 @@ signal must still report the process running on the follow-up status read. It ru
 SKIPPED, never passed, when `E2B_API_KEY` is absent** — a keyless "green" on the arm whose entire purpose
 is to disagree with the double would be this same failure class one level up. T8 is red today *because*
 the two arms disagree, and that disagreement is this finding.
+
+**★ SVC-008a §5 strengthens T8 in two ways, and the first is load-bearing.** As written above, T8
+asserts only that a *refusal* is representable — **a transport hardcoded to "still running" passes it
+and asserts nothing**, which is the same inversion that let `delivered: true` pass every ladder test.
+SVC-008a §5 clause 4 adds a **positive control** (a target that genuinely stops must report stopped)
+and clause 5 asserts the **`unknown` case is representable** on every implementation, so the honest
+value cannot be decorative. Clause 2 adds anti-vacuity on the directory walk itself.
 
 **Resolve = give the real transport a signal primitive whose refusal is representable (SVC-008 §3.4
 proposes `signalProcess`/`processStatus`), land T8 as a directory walk over transport implementers, then
@@ -3546,7 +3589,9 @@ Recorded because this register cites by line and a wrong pin is worse than none.
 4. `#convergeOne`'s escalation branch is **`:284-292`**; `:279` is the `cancel` call and `:279-290`
    truncates the block mid-statement.
 
-**Cross-links:** SVC-008 (`epics/E9-service-agents/tickets/SVC-008-design.md` §1.3d, §3.4, §6 T3+T8,
+**Cross-links:** **SVC-008a** (`epics/E9-service-agents/tickets/SVC-008a-design.md` §1.2, §2.2, §4.2,
+§5, §6) — **the specified fix**: the port design, the two-half split, and the strengthened T8.
+SVC-008 (`epics/E9-service-agents/tickets/SVC-008-design.md` §1.3d, §3.4, §6 T3+T8,
 §10) — the consumer that will build on this primitive and the source of T8. **DE-10**
 (`E0-foundation/findings.md:243`) — adjacent, not overlapping: DE-10 is a *disarmed* reaper, this is an
 *inert rung* inside the armed one. **E7-F020/F030/F031** — the false-PROVEN family; this is deliberately
