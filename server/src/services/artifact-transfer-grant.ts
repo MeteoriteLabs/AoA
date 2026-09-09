@@ -39,9 +39,9 @@ import {
   ARTIFACT_TRANSFER_GRANT_DENIAL_SURFACE,
 } from "./artifact-denial-audit.js";
 import {
-  createWorkerFenceDenialSink,
-  drainWorkerFenceDenial,
-} from "./worker-fence-denial-audit.js";
+  createWorkerDenialSink,
+  drainWorkerDenial,
+} from "./worker-denial-audit.js";
 import type { StorageProvider } from "../storage/types.js";
 
 /** Map the guard's fence-error code onto the frozen protocol reason vocabulary. */
@@ -115,10 +115,14 @@ export function createArtifactTransferGrantService(input: {
         });
       };
 
-      // ★ DE-06 — the THROWING refusal's holder (see `worker-fence-denial-audit.ts`).
-      // Filled ONLY by the post-resolution tuple-integrity branch; the other five
-      // fence throws still write nothing, and that is Decision 2's residue.
-      const fenceDenial = createWorkerFenceDenialSink();
+      // ★ DE-06 — the THROWING refusal's holder (see `worker-denial-audit.ts`).
+      // Filled by ALL SIX of `resolveWorkerFenceContext`'s throw sites: the
+      // post-resolution tuple-integrity branch with an FK-valid company, the
+      // other five with a token-attested organization and a null company, which
+      // `E0-F013` Decision 2 (a2) made storable. This comment previously said the
+      // other five wrote nothing — Decision 2's residue — and that residue is
+      // gone; the stale sentence is corrected rather than left to mislead an audit.
+      const fenceDenial = createWorkerDenialSink();
 
       const response = await runInTenant(input.appDb, auth.organizationId, async (repos) => {
         const ctx = await resolveWorkerFenceContext(repos, auth, {
@@ -336,10 +340,9 @@ export function createArtifactTransferGrantService(input: {
         // awaits a thenable callback, so the row is written before the caller sees
         // the `JobLeasingError`.
         .finally(async () => {
-          await drainWorkerFenceDenial(input.appDb, fenceDenial, {
+          await drainWorkerDenial(input.appDb, fenceDenial, {
             control: "server/src/services/worker-fence-context.ts:resolveWorkerFenceContext",
             workerId: auth.workerId,
-            organizationId: auth.organizationId,
             operation: "artifact_transfer_grant",
           });
         });

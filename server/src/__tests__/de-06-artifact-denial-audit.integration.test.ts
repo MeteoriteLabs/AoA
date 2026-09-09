@@ -24,12 +24,15 @@
  *     presigns, parses and returns while writing no audit record at all, and no
  *     arm here asserts one. So DE-06's audit clause is HALF delivered, DE-06
  *     stays in `E0-F010`'s open cohort, and no record may say otherwise.
- *   - The fence-AUTH refusals are ONE-SIXTH recorded (2026-09-09). Of
- *     `resolveWorkerFenceContext`'s six throw sites, only the post-resolution
- *     tuple-integrity branch has an FK-valid company in hand, and only that one
- *     writes a row (`worker-fence-denial-audit.ts`). The other five carry
- *     `organization_id` only and are still pinned below as writing NOTHING.
- *     DE-06 does not move.
+ *   - The fence-AUTH refusals are now ALL SIX recorded, and that still does not
+ *     move DE-06. Only the post-resolution tuple-integrity branch has an
+ *     FK-valid company in hand; the other five carry a token-attested
+ *     `organization_id` and write a company-null row into the sink `E0-F013`
+ *     Decision 2 (a2) opened (`worker-denial-audit.ts`). FOUR of the six are
+ *     PROVOKED through the real path below (`:86`, `:100` in both codes, `:121`,
+ *     plus the tuple-integrity branch); `:103` and `:108` are structurally
+ *     unreachable behind `ackAuthorityCurrent` and are PINNED as never-fired
+ *     rather than claimed. A larger fraction of a conjunction is not a closure.
  *
  * ★ WHY THIS IS NOT A READ-BACK. This file never constructs a denial. It
  * PROVOKES the real refusal through the real service — a real enrolled worker,
@@ -242,7 +245,8 @@ function makeStubStorage(): StorageProvider & { headResult: HeadObjectResult; re
 }
 
 interface DenialRow {
-  company_id: string;
+  company_id: string | null;
+  organization_id: string | null;
   actor_type: string;
   actor_id: string;
   action: string;
@@ -283,7 +287,7 @@ integration("DE-06 — a refused artifact object operation is durable and attrib
   async function denialRowsFor(artifactId: string): Promise<DenialRow[]> {
     const { admin } = ctx();
     return (await admin<DenialRow[]>`
-      SELECT company_id, actor_type, actor_id, action, entity_type, entity_id, details
+      SELECT company_id, organization_id, actor_type, actor_id, action, entity_type, entity_id, details
       FROM activity_log
       WHERE entity_id = ${artifactId}
       ORDER BY created_at`) as unknown as DenialRow[];
@@ -295,10 +299,46 @@ integration("DE-06 — a refused artifact object operation is durable and attrib
   async function fenceDenialRowsFor(leaseId: string): Promise<DenialRow[]> {
     const { admin } = ctx();
     return (await admin<DenialRow[]>`
-      SELECT company_id, actor_type, actor_id, action, entity_type, entity_id, details
+      SELECT company_id, organization_id, actor_type, actor_id, action, entity_type, entity_id, details
       FROM activity_log
       WHERE entity_id = ${leaseId} AND action = 'security.denied.worker_fence_resolution'
       ORDER BY created_at`) as unknown as DenialRow[];
+  }
+
+  /** The ORGANIZATION-ONLY fence-resolution rows for one presented lease. These
+   * refusals resolve no company at all, so they are invisible to
+   * `fenceDenialRowsFor` (which is company-blind but entity-keyed on the RESOLVED
+   * lease id) and to `activityRowCount(COMPANY)` (which is company-keyed).
+   * `details.presentedLeaseId` is the only stable key they share. */
+  async function fenceOrgDenialRowsFor(leaseId: string): Promise<DenialRow[]> {
+    const { admin } = ctx();
+    return (await admin<DenialRow[]>`
+      SELECT company_id, organization_id, actor_type, actor_id, action, entity_type, entity_id, details
+      FROM activity_log
+      WHERE action = 'security.denied.worker_fence_resolution'
+        AND details->>'presentedLeaseId' = ${leaseId}
+      ORDER BY created_at`) as unknown as DenialRow[];
+  }
+
+  /** The DE-03 replay-rejection rows for one proof id. */
+  async function proofDenialRowsFor(proofId: string): Promise<DenialRow[]> {
+    const { admin } = ctx();
+    return (await admin<DenialRow[]>`
+      SELECT company_id, organization_id, actor_type, actor_id, action, entity_type, entity_id, details
+      FROM activity_log
+      WHERE action = 'security.denied.worker_proof_replay' AND entity_id = ${proofId}
+      ORDER BY created_at`) as unknown as DenialRow[];
+  }
+
+  /** Rows in the tenantless sink E0-F013 Decision 2 (a2) opened: no company, one
+   * organization. Counted separately because `activityRowCount(COMPANY)` cannot
+   * see them and would read a real write as silence. */
+  async function tenantlessRowCount(organizationId: string): Promise<number> {
+    const { admin } = ctx();
+    const rows = await admin<{ n: string }[]>`
+      SELECT count(*)::text AS n FROM activity_log
+      WHERE company_id IS NULL AND organization_id = ${organizationId}`;
+    return Number(rows[0]?.n ?? "-1");
   }
 
   async function activityRowCount(companyId: string): Promise<number> {
@@ -663,7 +703,39 @@ integration("DE-06 — a refused artifact object operation is durable and attrib
   });
 
   // ───────────────────────────────────────────────────────────────────────────
-  // ★ THE MEASURED GAP, PINNED — the fence-AUTH refusals, which are NOT recorded.
+  // ★ THE GAP THAT WAS PINNED HERE IS NOW WIRED, AND THESE ARMS ARE INVERTED
+  // RATHER THAN DELETED. Until this unit the two arms below asserted that
+  // `resolveWorkerFenceContext`'s ORGANIZATION-ONLY throws left NOTHING, and the
+  // comment they carried said in terms that they must be INVERTED when the
+  // wiring landed. It has: `E0-F013` Decision 2 was ruled option (a2) and shipped
+  // (migration `0274`), `activity_log.company_id` is nullable inside the reserved
+  // `security.denied.` namespace, a nullable `organization_id` sits beside it,
+  // and all five sites now record the organization their token attests.
+  //
+  // ★ THE `rejects` ASSERTION STILL FIRES FIRST, AND THAT ORDERING IS THE POINT.
+  // It is the reachability control: without it, a fixture that stopped reaching
+  // the branch would pass by vacuity — first as "no row was written" (the old
+  // shape) and now as a stale row left by an earlier arm. The row assertions are
+  // keyed on `details.presentedLeaseId`, which is per-activation, so a row from a
+  // previous arm cannot satisfy them either.
+  //
+  // ★ WHAT IS STILL NOT PROVEN HERE, stated rather than implied. Of the SIX
+  // throw sites, this file provokes FOUR through the real path — `:86` proof
+  // replay, `:100` in BOTH of its codes (missing authority / not-current
+  // authority), and `:121` no-lease-resolved — plus the tuple-integrity branch
+  // further down. `:103` (target inactive) and `:108` (profile drift) are
+  // STRUCTURALLY UNREACHABLE behind `ackAuthorityCurrent`, whose conjunction at
+  // `:100` already requires `target.status === "active"`, the matching device
+  // generation, and a non-revoked worker — every condition those two later
+  // branches test. They are compiled and reviewable but unprovoked, and an arm
+  // below PINS that their reason codes never appear, so the day one becomes
+  // reachable this file goes red naming it.
+  //
+  // ★ AND DE-06 STILL DOES NOT CLOSE. Its audit clause is a conjunction and the
+  // `object put/get` half — a SUCCESSFUL grant — writes nothing at the tree's
+  // only production `presignGet` call site. Nothing below asserts one.
+  //
+  // ★ THE HISTORICAL NOTE, kept because it is what makes the inversion legible:
   //
   // The `guardActiveFence` arm above expires a lease whose tuple still MATCHES,
   // so `lockLeaseAckContext` still resolves and the refusal lands on the LATER
@@ -721,48 +793,77 @@ integration("DE-06 — a refused artifact object operation is durable and attrib
   // once already.
   // ───────────────────────────────────────────────────────────────────────────
 
-  it("★ THE FENCE-AUTH REFUSAL IS NOT RECORDED — a superseded lease tuple is refused on BOTH paths and leaves NOTHING", async () => {
+  it("★ THE `:121` FENCE-AUTH REFUSAL IS RECORDED — a superseded lease tuple is refused on BOTH paths and each writes ONE organization-attributed, company-null row", async () => {
     const { app, admin } = ctx();
     const offer = await activateLease();
     const storage = makeStubStorage();
-    const before = await activityRowCount(COMPANY);
+    const beforeCompany = await activityRowCount(COMPANY);
+    const beforeTenantless = await tenantlessRowCount(ORG);
     // The lease tuple no longer RESOLVES: `lockLeaseAckContext` looks the lease up
     // BY the presented fence, so a superseded fence finds no row at all and
     // `resolveWorkerFenceContext` throws before `lockActiveFence` is ever reached.
+    // ★ This is ALSO the `:121`-vs-tuple-integrity fixture pin: if a superseded
+    // fence ever started landing on the tuple-integrity branch instead, the reason
+    // asserted below would change and this arm would go red naming it.
     await admin`UPDATE leases SET fence = ${"9".repeat(32)} WHERE id = ${offer.leaseId}`;
 
     const grantSvc = createArtifactTransferGrantService({ appDb: app.db, storage });
     const g = grantRequest(offer, "upload");
-    // POSITIVE CONTROL for the fixture: the branch really is reached.
+    // REACHABILITY CONTROL, asserted FIRST: the branch really is reached, and it
+    // is reached as a THROW. Without this a fixture that stopped reaching the
+    // branch would pass on a row left by some other arm.
     await expect(
       grantSvc.grant({ auth: auth(`sl-${crypto.randomUUID()}`), request: g.request }),
     ).rejects.toBeInstanceOf(JobLeasingError);
-    expect(
-      await denialRowsFor(g.artifactId),
-      "the grant path now records a fence-auth refusal — update this arm and the DE-06 records",
-    ).toHaveLength(0);
+
+    const afterGrant = await fenceOrgDenialRowsFor(offer.leaseId);
+    expect(afterGrant).toHaveLength(1);
+    const row = afterGrant[0]!;
+    // WHY — the branch, not the wire code. The worker saw only `stale_fence`.
+    expect(row.details?.reason).toBe("lease_unresolved");
+    // TENANT — the ORGANIZATION axis only. `company_id` is null because nothing
+    // in scope resolves one: the lease is exactly what failed to resolve.
+    expect(row.company_id).toBeNull();
+    expect(row.organization_id).toBe(ORG);
+    // WHO — the refused worker, as a machine identity.
+    expect(row.actor_id).toBe(WORKER);
+    expect(row.actor_type).toBe("system");
+    // RESOURCE — the lease the worker PRESENTED, named as unresolved.
+    expect(row.entity_type).toBe("job_lease");
+    expect(row.entity_id).toBe(offer.leaseId);
+    expect(row.details?.operation).toBe("artifact_transfer_grant");
+    expect(row.details?.crossings).toEqual(["DE-06"]);
 
     const commitSvc = createArtifactCommitService({ appDb: app.db, storage });
     const c = commitRequest(offer);
     await expect(
       commitSvc.commit({ auth: auth(`slc-${crypto.randomUUID()}`), request: c.request }),
     ).rejects.toBeInstanceOf(JobLeasingError);
-    expect(
-      await denialRowsFor(c.artifactId),
-      "the commit path now records a fence-auth refusal — update this arm and the DE-06 records",
-    ).toHaveLength(0);
-    // Nothing at all was appended: the refusal is indistinguishable from traffic
-    // that never happened, which is exactly what DE-06's clause forbids.
-    expect(await activityRowCount(COMPANY)).toBe(before);
+    const afterCommit = await fenceOrgDenialRowsFor(offer.leaseId);
+    // The DISTINGUISHING assertion: two independent drains, one recorder.
+    expect(afterCommit).toHaveLength(2);
+    expect(afterCommit[1]!.details?.operation).toBe("artifact_commit");
+    expect(afterCommit[1]!.details?.reason).toBe("lease_unresolved");
+
+    // The artifact-keyed view still sees nothing — this is not an artifact
+    // refusal — and neither is the COMPANY-keyed log, which is the whole shape of
+    // a tenantless record. The tenantless sink is where the two rows landed.
+    expect(await denialRowsFor(g.artifactId)).toHaveLength(0);
+    expect(await denialRowsFor(c.artifactId)).toHaveLength(0);
+    expect(await activityRowCount(COMPANY)).toBe(beforeCompany);
+    expect(await tenantlessRowCount(ORG)).toBe(beforeTenantless + 2);
   });
 
-  it("★ THE FENCE-AUTH REFUSAL IS NOT RECORDED — a revoked target authority is refused on BOTH paths and leaves NOTHING", async () => {
+  it("★ THE `:100` FENCE-AUTH REFUSAL IS RECORDED — a revoked target authority is refused on BOTH paths and records `authority_not_current`", async () => {
     const { app, admin } = ctx();
     const offer = await activateLease();
     const storage = makeStubStorage();
-    const before = await activityRowCount(COMPANY);
-    // A revoked authority: the target is no longer active, so the authority
-    // recheck throws `target_revoked` — again before any fence guard runs.
+    const beforeCompany = await activityRowCount(COMPANY);
+    const beforeTenantless = await tenantlessRowCount(ORG);
+    // A revoked authority: the target is no longer active. `ackAuthorityCurrent`
+    // itself requires `target.status === "active"`, so the refusal lands on the
+    // `:100` recheck — NOT on the later `:103` target-inactive branch, which this
+    // arm's reason assertion therefore also pins.
     await admin`UPDATE execution_targets SET status = 'disabled' WHERE id = ${TARGET}`;
 
     const grantSvc = createArtifactTransferGrantService({ appDb: app.db, storage });
@@ -770,28 +871,129 @@ integration("DE-06 — a refused artifact object operation is durable and attrib
     await expect(
       grantSvc.grant({ auth: auth(`rv-${crypto.randomUUID()}`), request: g.request }),
     ).rejects.toBeInstanceOf(JobLeasingError);
-    expect(
-      await denialRowsFor(g.artifactId),
-      "the grant path now records a revoked-authority refusal — update this arm and the DE-06 records",
-    ).toHaveLength(0);
+    const afterGrant = await fenceOrgDenialRowsFor(offer.leaseId);
+    expect(afterGrant).toHaveLength(1);
+    const row = afterGrant[0]!;
+    // The authority ROW existed and was refused as stale — a different code from
+    // the missing-authority arm below, at the SAME line and behind two different
+    // wire answers (`target_revoked` here, `unauthorized` there).
+    expect(row.details?.reason).toBe("authority_not_current");
+    expect(row.company_id).toBeNull();
+    expect(row.organization_id).toBe(ORG);
+    expect(row.entity_type).toBe("execution_target");
+    expect(row.entity_id).toBe(TARGET);
+    expect(row.actor_id).toBe(WORKER);
 
     const commitSvc = createArtifactCommitService({ appDb: app.db, storage });
     const c = commitRequest(offer);
     await expect(
       commitSvc.commit({ auth: auth(`rvc-${crypto.randomUUID()}`), request: c.request }),
     ).rejects.toBeInstanceOf(JobLeasingError);
-    expect(
-      await denialRowsFor(c.artifactId),
-      "the commit path now records a revoked-authority refusal — update this arm and the DE-06 records",
-    ).toHaveLength(0);
-    expect(await activityRowCount(COMPANY)).toBe(before);
+    const afterCommit = await fenceOrgDenialRowsFor(offer.leaseId);
+    expect(afterCommit).toHaveLength(2);
+    expect(afterCommit[1]!.details?.operation).toBe("artifact_commit");
+
+    expect(await denialRowsFor(g.artifactId)).toHaveLength(0);
+    expect(await activityRowCount(COMPANY)).toBe(beforeCompany);
+    expect(await tenantlessRowCount(ORG)).toBe(beforeTenantless + 2);
 
     await admin`UPDATE execution_targets SET status = 'active' WHERE id = ${TARGET}`;
   });
 
+  it("★ THE SAME LINE, THE OTHER CODE — an attested target that no longer EXISTS records `authority_missing`, not `authority_not_current`", async () => {
+    const { app } = ctx();
+    const offer = await activateLease();
+    const storage = makeStubStorage();
+    const beforeTenantless = await tenantlessRowCount(ORG);
+    // `lockWorkerLeaseAuthority` returns null when the attested target has no row
+    // at all (`job-control.ts`: the unlocked authority-key probe returns nothing).
+    // A worker token minted before the target was torn down is exactly this case,
+    // and the session artefact still attests the organization — which is why the
+    // row is writable at all.
+    const missingTarget = "d6000000-0000-4000-8000-00000000dead";
+    const staleAuth = { ...auth(`am-${crypto.randomUUID()}`), targetId: missingTarget };
+
+    const grantSvc = createArtifactTransferGrantService({ appDb: app.db, storage });
+    const g = grantRequest(offer, "upload");
+    await expect(
+      grantSvc.grant({ auth: staleAuth, request: g.request }),
+    ).rejects.toBeInstanceOf(JobLeasingError);
+
+    const rows = await fenceOrgDenialRowsFor(offer.leaseId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.details?.reason).toBe("authority_missing");
+    expect(rows[0]!.company_id).toBeNull();
+    expect(rows[0]!.organization_id).toBe(ORG);
+    expect(rows[0]!.entity_id).toBe(missingTarget);
+    expect(await tenantlessRowCount(ORG)).toBe(beforeTenantless + 1);
+  });
+
+  it("★ THE `:86` REPLAY REFUSAL IS RECORDED, AND IT SERVES TWO CROSSINGS — a spent proof id on the grant path writes DE-03's replay row", async () => {
+    const { app } = ctx();
+    const offer = await activateLease();
+    const storage = makeStubStorage();
+    const beforeTenantless = await tenantlessRowCount(ORG);
+    // A REAL replay, not a constructed one: the first grant SUCCEEDS and commits
+    // the proof row, so the second presents a genuinely spent (thumbprint, proof
+    // id) pair and the real unique constraint refuses it.
+    const spentProof = `rp-${crypto.randomUUID()}`;
+    const grantSvc = createArtifactTransferGrantService({ appDb: app.db, storage });
+    const first = grantRequest(offer, "upload");
+    const granted = await grantSvc.grant({ auth: auth(spentProof), request: first.request });
+    expect(granted.outcome).toBe("upload_granted");
+
+    const g = grantRequest(offer, "upload");
+    await expect(
+      grantSvc.grant({ auth: auth(spentProof), request: g.request }),
+    ).rejects.toBeInstanceOf(JobLeasingError);
+
+    const rows = await proofDenialRowsFor(spentProof);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.details?.reason).toBe("proof_replayed");
+    expect(rows[0]!.company_id).toBeNull();
+    expect(rows[0]!.organization_id).toBe(ORG);
+    expect(rows[0]!.entity_type).toBe("worker_proof");
+    expect(rows[0]!.entity_id).toBe(spentProof);
+    // ★ THIS SITE SERVES BOTH CROSSINGS — it is DE-06's `:75` fence throw AND
+    // DE-03's `worker-fence-context.ts:68` `recordProof` site. A row naming only
+    // one of them would under-report the other crossing's coverage.
+    expect(rows[0]!.details?.crossings).toEqual(["DE-03", "DE-06"]);
+    expect(await tenantlessRowCount(ORG)).toBe(beforeTenantless + 1);
+    // The SUCCESSFUL first grant is the positive control inside this arm: it
+    // wrote no denial row of its own.
+    expect(await denialRowsFor(first.artifactId)).toHaveLength(0);
+  });
+
+  it("★ PINNED AS UNREACHABLE — `:103` target-inactive and `:108` profile-drift have never fired, and this arm goes red the day one does", async () => {
+    const { admin } = ctx();
+    // Every condition those two branches test is already a conjunct of
+    // `ackAuthorityCurrent` at `:100` (`target.status === "active"`, the matching
+    // device generation, a non-revoked worker), so no legal row can reach them.
+    // They are wired and reviewable but UNPROVOKED, and this file says so rather
+    // than letting a compiled branch read as a proven one.
+    const rows = await admin<{ reason: string }[]>`
+      SELECT details->>'reason' AS reason FROM activity_log
+      WHERE action = 'security.denied.worker_fence_resolution'
+        AND details->>'reason' IN ('target_inactive', 'profile_drift')`;
+    expect(
+      rows.map((r) => r.reason),
+      "one of the two structurally-unreachable fence throws fired — it is now provokable, so prove it directly and invert this pin",
+    ).toEqual([]);
+    // POSITIVE CONTROL for the query itself: the reasons that DO fire are visible
+    // to exactly this predicate, so an empty result above is a fact and not a typo.
+    const live = await admin<{ reason: string }[]>`
+      SELECT DISTINCT details->>'reason' AS reason FROM activity_log
+      WHERE action = 'security.denied.worker_fence_resolution'
+        AND details->>'reason' IN ('lease_unresolved', 'authority_not_current', 'authority_missing')`;
+    expect(live.length).toBeGreaterThan(0);
+  });
+
   // ───────────────────────────────────────────────────────────────────────────
-  // ★ THE ONE FENCE THROW THAT IS ATTRIBUTABLE — the post-resolution
-  // tuple-integrity branch. The lease RESOLVES (organization, lease id, job,
+  // ★ THE ONE FENCE THROW THAT RESOLVES A COMPANY — the post-resolution
+  // tuple-integrity branch. (Its heading used to read "THE ONE FENCE THROW THAT
+  // IS ATTRIBUTABLE", and that stopped being true above: all six now record. The
+  // difference is the AXIS — five carry only a token-attested organization, and
+  // this one carries an FK-valid company as well.) The lease RESOLVES (organization, lease id, job,
   // attempt number, worker, target, generation, profile hash and fence all match
   // `lockLeaseAckContext`'s lookup) and is then rejected on a residual conjunct
   // the lookup does not cover. By then it has inner-joined `job_attempts` on
@@ -806,7 +1008,7 @@ integration("DE-06 — a refused artifact object operation is durable and attrib
   // the recorder takes a runtime narrow instead of a non-null assertion.)
   // ───────────────────────────────────────────────────────────────────────────
 
-  it("★ THE TUPLE-INTEGRITY FENCE REFUSAL IS RECORDED — a resolved lease that disagrees with the CURRENT target writes one attributable row, on a path where five sibling throws still write none", async () => {
+  it("★ THE TUPLE-INTEGRITY FENCE REFUSAL IS RECORDED — a resolved lease that disagrees with the CURRENT target writes the ONE row on this path that names a COMPANY, not just an organization", async () => {
     const { app, admin } = ctx();
     const offer = await activateLease();
     const storage = makeStubStorage();
@@ -1077,13 +1279,25 @@ integration("DE-06 — a refused artifact object operation is durable and attrib
 
   it("★ EVERY DENIAL ROW LANDED IN THE RESERVED NAMESPACE, and nothing else was written to either tenant's log", async () => {
     const { admin } = ctx();
-    const rows = await admin<{ action: string; company_id: string }[]>`
-      SELECT action, company_id FROM activity_log ORDER BY created_at`;
+    const rows = await admin<{ action: string; company_id: string | null; organization_id: string | null }[]>`
+      SELECT action, company_id, organization_id FROM activity_log ORDER BY created_at`;
     expect(rows.length).toBeGreaterThanOrEqual(6);
     for (const row of rows) {
       expect(row.action.startsWith("security.denied.")).toBe(true);
-      expect(row.company_id).toBe(COMPANY);
+      // Two shapes and NO third: a company-attributed row in THIS company, or a
+      // tenantless row in THIS organization. A row naming another tenant, or one
+      // attributed to neither axis, fails here.
+      if (row.company_id === null) {
+        expect(row.organization_id).toBe(ORG);
+      } else {
+        expect(row.company_id).toBe(COMPANY);
+      }
     }
+    // ★ AND THE PARTIAL CHECK IS REAL, not merely unexercised: the tenantless rows
+    // above exist only because `0274`'s
+    // `company_id IS NOT NULL OR action LIKE 'security.denied.%'` admits them.
+    expect(rows.some((r) => r.company_id === null)).toBe(true);
+    expect(rows.some((r) => r.company_id === COMPANY)).toBe(true);
     // Both surfaces are represented, so neither service is silently unwired.
     const actions = new Set(rows.map((r) => r.action));
     expect(actions).toContain("security.denied.artifact_transfer_grant");
@@ -1092,5 +1306,7 @@ integration("DE-06 — a refused artifact object operation is durable and attrib
     // LEASE rather than the artifact and so are invisible to every other arm's
     // `denialRowsFor` lookup.
     expect(actions).toContain("security.denied.worker_fence_resolution");
+    // ...and the DE-03 replay surface, which the `:86` throw shares.
+    expect(actions).toContain("security.denied.worker_proof_replay");
   });
 });

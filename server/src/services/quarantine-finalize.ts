@@ -30,6 +30,10 @@ import {
 import { runInTenant } from "../db/tenant-context.js";
 import { JobLeasingError, type VerifiedWorkerOperation } from "./job-leasing.js";
 import { resolveWorkerDeviceContext } from "./worker-fence-context.js";
+import {
+  createWorkerDenialSink,
+  drainWorkerDenial,
+} from "./worker-denial-audit.js";
 import type { StorageProvider } from "../storage/types.js";
 
 export function createQuarantineFinalizeService(input: {
@@ -62,10 +66,16 @@ export function createQuarantineFinalizeService(input: {
           reason,
         });
 
+      // ★ DE-03 — the replay refusal inside `resolveWorkerDeviceContext` THROWS out
+      // of `runInTenant`, so its record is collected as an INTENT here and drained on
+      // the pool handle after the transaction has unwound. The sink is a no-op when
+      // nothing was refused.
+      const proofDenial = createWorkerDenialSink();
+
       return runInTenant(input.appDb, auth.organizationId, async (repos) => {
         // DEVICE-only current-authority recheck (no lease/fence). Throws
         // unauthorized/target_revoked, never stale_fence.
-        const ctx = await resolveWorkerDeviceContext(repos, auth, maxHeartbeatAgeMs);
+        const ctx = await resolveWorkerDeviceContext(repos, auth, maxHeartbeatAgeMs, proofDenial);
 
         // Integrity: head the quarantine object and FAIL CLOSED on anything short of a
         // fully-verified sha256 + size match. This precedes the record so no unverifiable
@@ -140,7 +150,18 @@ export function createQuarantineFinalizeService(input: {
           }
           throw error;
         }
-      });
+      })
+        // ★ DE-03 — drain the THROWING replay refusal on the POOL handle after the
+        // tenant transaction has closed. `.finally` awaits a thenable callback, so the
+        // row is written before the caller sees the `JobLeasingError`;
+        // `recordSecurityDenial` never throws, so this cannot alter the outcome.
+        .finally(async () => {
+          await drainWorkerDenial(input.appDb, proofDenial, {
+            control: "server/src/services/worker-fence-context.ts:resolveWorkerDeviceContext",
+            workerId: auth.workerId,
+            operation: "quarantine_finalize",
+          });
+        });
     },
   };
 }

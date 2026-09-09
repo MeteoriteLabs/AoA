@@ -42,9 +42,9 @@ import { runInTenant } from "../db/tenant-context.js";
 import { JobLeasingError, type VerifiedWorkerOperation } from "./job-leasing.js";
 import { resolveWorkerFenceContext, type ResolvedFenceContext } from "./worker-fence-context.js";
 import {
-  createWorkerFenceDenialSink,
-  drainWorkerFenceDenial,
-} from "./worker-fence-denial-audit.js";
+  createWorkerDenialSink,
+  drainWorkerDenial,
+} from "./worker-denial-audit.js";
 import type { JobControlMetrics } from "./job-control-metrics.js";
 import { applyOwnedLabelsCapability, OWNED_LABELS_CAPABILITY_DEFAULT_TTL_MS } from "./owned-labels-mint.js";
 
@@ -270,10 +270,14 @@ export function createSecretBrokerService(input: {
       // ★ DE-06 — THE FIRST DENIAL RECORD ON THIS SERVICE. Before this, a refused
       // secret resolve left only the count-only `metrics.secretRead({outcome:"denied"})`
       // tick that `E0-F013` files against DE-29 as forensically indistinguishable.
-      // This holder covers exactly ONE refusal — the post-resolution tuple-integrity
-      // branch inside `resolveWorkerFenceContext`. Every `{ denied: … }` return below
-      // is still unaudited, and so are the other five fence throws.
-      const fenceDenial = createWorkerFenceDenialSink();
+      // This holder now covers ALL SIX throw sites inside `resolveWorkerFenceContext`
+      // — the tuple-integrity branch with an FK-valid company, the other five with a
+      // token-attested organization and a null company (`worker-denial-audit.ts`;
+      // `E0-F013` Decision 2 (a2) made the latter storable). An earlier version of
+      // this comment said the other five were still unaudited; that is no longer true.
+      // STILL UNAUDITED, and NOT covered by this holder: every `{ denied: … }` return
+      // below. Those are this service's own refusals and have no recorder.
+      const fenceDenial = createWorkerDenialSink();
 
       // Fence identity + authorization inside ONE tenant tx, BEFORE any broker access.
       const authorized = await runInTenant(input.appDb, auth.organizationId, async (repos):
@@ -306,10 +310,9 @@ export function createSecretBrokerService(input: {
         // refusal REJECTS `runInTenant` and skips everything below, so this has to be
         // `.finally` (whose thenable callback IS awaited) rather than a statement.
         .finally(async () => {
-          await drainWorkerFenceDenial(input.appDb, fenceDenial, {
+          await drainWorkerDenial(input.appDb, fenceDenial, {
             control: "server/src/services/worker-fence-context.ts:resolveWorkerFenceContext",
             workerId: auth.workerId,
-            organizationId: auth.organizationId,
             operation: "secret_resolve",
           });
         });

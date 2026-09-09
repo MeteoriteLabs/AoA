@@ -41,9 +41,9 @@ import { runInTenant } from "../db/tenant-context.js";
 import { JobLeasingError, type VerifiedWorkerOperation } from "./job-leasing.js";
 import { resolveWorkerFenceContext } from "./worker-fence-context.js";
 import {
-  createWorkerFenceDenialSink,
-  drainWorkerFenceDenial,
-} from "./worker-fence-denial-audit.js";
+  createWorkerDenialSink,
+  drainWorkerDenial,
+} from "./worker-denial-audit.js";
 import type { StorageProvider } from "../storage/types.js";
 
 /** A guarded-fence refusal → the frozen protocol reason vocabulary. */
@@ -101,11 +101,15 @@ export function createPatchApplyService(input: {
 
       // ★ DE-06 — THE FIRST DENIAL RECORD ON THIS SERVICE. Before this, patch-apply
       // recorded NOTHING on any refusal: `rejected()` builds a wire object and the
-      // fence throws left no trace at all. This holder covers exactly ONE of those
-      // refusals — the post-resolution tuple-integrity branch inside
-      // `resolveWorkerFenceContext`. Every `rejected(...)` return below is still
-      // unaudited, and so are the other five fence throws.
-      const fenceDenial = createWorkerFenceDenialSink();
+      // fence throws left no trace at all. This holder now covers ALL SIX throw
+      // sites inside `resolveWorkerFenceContext` — the tuple-integrity branch with
+      // an FK-valid company, the other five with a token-attested organization and
+      // a null company (`worker-denial-audit.ts`; `E0-F013` Decision 2 (a2) made
+      // the latter storable). An earlier version of this comment said the other
+      // five were still unaudited; that is no longer true.
+      // STILL UNAUDITED, and NOT covered by this holder: every `rejected(...)`
+      // return below. Those are this service's own refusals and have no recorder.
+      const fenceDenial = createWorkerDenialSink();
 
       // The callback's return type is annotated because the `.finally` below breaks
       // the contextual-type flow from `apply`'s own signature, and without it the
@@ -189,10 +193,9 @@ export function createPatchApplyService(input: {
         // fence refusal REJECTS `runInTenant`, so this has to be `.finally` (whose
         // thenable callback IS awaited) rather than a trailing statement.
         .finally(async () => {
-          await drainWorkerFenceDenial(input.appDb, fenceDenial, {
+          await drainWorkerDenial(input.appDb, fenceDenial, {
             control: "server/src/services/worker-fence-context.ts:resolveWorkerFenceContext",
             workerId: auth.workerId,
-            organizationId: auth.organizationId,
             operation: "patch_apply",
           });
         });

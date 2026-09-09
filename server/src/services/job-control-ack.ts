@@ -27,6 +27,11 @@ import {
   type VerifiedWorkerOperation,
 } from "./job-leasing.js";
 import { normalizePlacementRegistryTarget } from "./execution-target-resolver.js";
+import {
+  createWorkerDenialSink,
+  drainWorkerDenial,
+  workerProofReplayIntent,
+} from "./worker-denial-audit.js";
 
 /** The worker→server control-ACK envelope (HTTP-neutral): the delivery identity the
  * worker echoes plus the frozen ACK payload. There is no frozen envelope for this
@@ -86,7 +91,16 @@ export function createJobControlAckService(input: {
         throw new JobLeasingError("unauthorized");
       }
 
-      return runInTenant(input.appDb, auth.organizationId, async (repos) => {
+      // ★ DE-03, replay-rejection conjunct — the refusal below THROWS out of
+      // `runInTenant`, so its record is collected as an INTENT and drained on the
+      // pool handle once the transaction has unwound.
+      const proofDenial = createWorkerDenialSink();
+
+      // The explicit type argument is load-bearing: chaining `.finally` below drops
+      // the contextual typing this call used to get from the method's return
+      // annotation, and the response literal's `protocolVersion: 1` would widen to
+      // `number`.
+      return runInTenant<ControlAckOperationResponseV1>(input.appDb, auth.organizationId, async (repos) => {
         const databaseNow = await repos.jobControl.currentDatabaseTime();
         await repos.workerEnrollment.cleanupExpiredProofs(databaseNow, 100);
         await repos.jobControl.cleanupExpiredOperationReceipts(databaseNow, 100);
@@ -97,7 +111,10 @@ export function createJobControlAckService(input: {
           issuedAt: auth.proofIssuedAt,
           expiresAt: auth.sessionExpiresAt,
         });
-        if (!proofRecorded) throw new JobLeasingError("unauthorized");
+        if (!proofRecorded) {
+          proofDenial.intent = workerProofReplayIntent(auth);
+          throw new JobLeasingError("unauthorized");
+        }
 
         const authority = await repos.jobControl.lockWorkerLeaseAuthority({
           workerId: auth.workerId,
@@ -185,7 +202,17 @@ export function createJobControlAckService(input: {
           if (error instanceof DbJobFenceError) throw new JobLeasingError(error.code);
           throw error;
         }
-      });
+      })
+        // ★ DE-03 — drain the THROWING replay refusal on the POOL handle after the
+        // tenant transaction has closed. `recordSecurityDenial` never throws, so a
+        // broken recorder cannot turn a refusal into a 500.
+        .finally(async () => {
+          await drainWorkerDenial(input.appDb, proofDenial, {
+            control: "server/src/services/job-control-ack.ts:ack",
+            workerId: auth.workerId,
+            operation: "control_command_ack",
+          });
+        });
     },
   };
 }
