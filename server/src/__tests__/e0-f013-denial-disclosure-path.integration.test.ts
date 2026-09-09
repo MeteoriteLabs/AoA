@@ -174,6 +174,42 @@ interface ActivityRow {
   companyId: string | null;
 }
 
+/**
+ * A row as the denial reader returns it. `createdAt` is the millisecond-truncated
+ * JSON `Date`; `cursor` is the microsecond-precision paging key. Both are typed
+ * here because one arm below deliberately pages on the WRONG one to prove the
+ * other is load bearing.
+ */
+type DenialRow = ActivityRow & { createdAt: string; cursor: string };
+
+/**
+ * Walk the denial reader from newest to oldest through its keyset cursor,
+ * returning the ids in the order the pages produced them.
+ *
+ * The iteration cap is not decoration: a reader that IGNORES the cursor returns
+ * the same newest page forever, and without the cap that failure hangs the suite
+ * instead of failing it.
+ */
+async function pageAll(query: Record<string, string | number>, pageSize: number): Promise<string[]> {
+  const seen: string[] = [];
+  let cursor: { before: string; beforeId: string } | null = null;
+  for (let page = 0; page < 20; page++) {
+    const res = await request(appAsOperator())
+      .get("/api/instance/security-denials")
+      .query({ ...query, limit: pageSize, ...(cursor ?? {}) });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const rows = res.body as DenialRow[];
+    if (rows.length === 0) break;
+    seen.push(...rows.map((r) => r.id));
+    const last = rows[rows.length - 1]!;
+    // ★ Page on `cursor`, never on `createdAt` — that is the property under test.
+    expect(last.cursor, "the reader stopped emitting the full-precision `cursor` field").toBeTruthy();
+    cursor = { before: last.cursor, beforeId: last.id };
+    if (rows.length < pageSize) break;
+  }
+  return seen;
+}
+
 beforeAll(async () => {
   try {
     dataDir = await mkdtemp(join(tmpdir(), "aoa-e0f013-disclosure-"));
@@ -389,6 +425,184 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         .query({ crossing: "E0-F013" });
       expect(hit.status).toBe(200);
       expect((hit.body as ActivityRow[]).length).toBeGreaterThan(0);
+    });
+
+    /**
+     * ★ (a) THE TAIL — raised as a P1 on the PR and fixed rather than argued.
+     *
+     * `since` is a LOWER bound and the order is newest-first, so before the
+     * cursor existed the OLDEST matching rows were unreachable through the only
+     * production reader of this namespace once the matches exceeded one page:
+     * moving `since` earlier only ever adds NEWER rows. A sustained series of
+     * identical refusals — which is what an incident looks like — therefore hid
+     * its own beginning. That is evidence written and unreachable, the exact
+     * failure acceptance condition (a) exists to prevent, so this arm is part of
+     * the condition and not an ergonomics test.
+     *
+     * ★ THE FIXTURE DELIBERATELY CONTAINS A `created_at` TIE. Three of the five
+     * rows share one timestamp, because that is what a burst of denials written
+     * by one statement looks like and it is the case a timestamp-only cursor
+     * gets wrong: `created_at < last_seen` skips the rest of the tie, and
+     * `<=` repeats it forever. The assertion below is exact-set + no-duplicates,
+     * so either mistake reds it. These rows are planted by raw SQL rather than
+     * through `recordSecurityDenial` only because the recorder cannot be asked
+     * for a chosen `created_at`; the attribution arms above are the ones that
+     * prove the real writer's shape.
+     */
+    it("★ (a) THE TAIL: the OLDEST denial row is reachable by paging the cursor, ties included", async () => {
+      assertSetupOk();
+
+      // t1 is OLDER than t2. Three rows share t1 exactly (the tie), two share t2.
+      await db.execute(sql`
+        INSERT INTO activity_log (id, company_id, actor_type, actor_id, action, entity_type, entity_id, details, created_at)
+        SELECT gen_random_uuid(), ${coB}, 'system', 'tail-prober',
+               'security.denied.tail_probe', 'memory_item', 'tail-' || g,
+               jsonb_build_object('crossing', 'E0-F013-TAIL', 'reason', 'tail_probe'),
+               TIMESTAMPTZ '2020-01-01 00:00:00+00'
+        FROM generate_series(1, 3) AS g`);
+      await db.execute(sql`
+        INSERT INTO activity_log (id, company_id, actor_type, actor_id, action, entity_type, entity_id, details, created_at)
+        SELECT gen_random_uuid(), ${coB}, 'system', 'tail-prober',
+               'security.denied.tail_probe', 'memory_item', 'tail-' || (g + 3),
+               jsonb_build_object('crossing', 'E0-F013-TAIL', 'reason', 'tail_probe'),
+               TIMESTAMPTZ '2020-01-01 00:00:01+00'
+        FROM generate_series(1, 2) AS g`);
+
+      const allPlanted = rowsOf<{ id: string }>(
+        await db.execute(sql`
+          SELECT id::text AS id FROM activity_log
+          WHERE action = 'security.denied.tail_probe'
+          ORDER BY created_at DESC, id DESC`),
+      ).map((r) => r.id);
+      expect(allPlanted.length, "the tail fixture was not planted").toBe(5);
+      const oldestPlanted = allPlanted[allPlanted.length - 1]!;
+
+      // POSITIVE CONTROL — one page really is too small to hold the tail, so an
+      // "oldest is reachable" pass below cannot be an artefact of a page that
+      // happened to contain everything.
+      const firstPage = await request(appAsOperator())
+        .get("/api/instance/security-denials")
+        .query({ crossing: "E0-F013-TAIL", limit: 2 });
+      expect(firstPage.status, JSON.stringify(firstPage.body)).toBe(200);
+      const firstRows = firstPage.body as DenialRow[];
+      expect(firstRows.length).toBe(2);
+      expect(
+        firstRows.map((r) => r.id),
+        "the fixture is too small to prove anything: one page already holds the oldest row",
+      ).not.toContain(oldestPlanted);
+
+      const seen = await pageAll({ crossing: "E0-F013-TAIL" }, 2);
+
+      expect(
+        new Set(seen).size,
+        "the cursor returned the same row on more than one page — a `<=` cursor repeats a `created_at` tie",
+      ).toBe(seen.length);
+      expect(
+        seen,
+        "paging the cursor did not enumerate every denial row exactly once in total order — the earliest incident evidence is unreachable or the tie was skipped",
+      ).toEqual(allPlanted);
+      expect(
+        seen,
+        "the OLDEST denial row was never returned by any page: evidence written and unreachable",
+      ).toContain(oldestPlanted);
+    });
+
+    /**
+     * ★ (a) THE CURSOR IS EMITTED, NOT INFERRED — the precision half of the same
+     * P1, and the reason the reader carries a `cursor` field at all.
+     *
+     * Postgres orders these rows at MICROSECOND precision. `createdAt` reaches
+     * the operator as JSON, where it is a `Date` truncated to MILLISECONDS. A
+     * cursor built from `createdAt` therefore excludes every row that shares the
+     * boundary row's millisecond but has a larger microsecond part — silently,
+     * with a 200 and no error. Measured on this same embedded Postgres, 40 rows
+     * written by 40 separate statements produced 40 distinct microsecond
+     * timestamps and only 21 distinct millisecond ones, so that is not a corner
+     * case; it is roughly half the rows.
+     *
+     * This arm plants rows that are distinct only BELOW the millisecond and
+     * asserts the full set is still enumerable. It reds if the reader stops
+     * emitting `cursor`, if `cursor` loses precision, or if the service parses
+     * `before` through a `Date` anywhere on the path.
+     */
+    it("★ (a) THE CURSOR ROUND-TRIPS AT MICROSECOND PRECISION: rows inside one millisecond are not skipped", async () => {
+      assertSetupOk();
+
+      // Six rows inside a single millisecond, distinct only in microseconds.
+      await db.execute(sql`
+        INSERT INTO activity_log (id, company_id, actor_type, actor_id, action, entity_type, entity_id, details, created_at)
+        SELECT gen_random_uuid(), ${coB}, 'system', 'us-prober',
+               'security.denied.microsecond_probe', 'memory_item', 'us-' || g,
+               jsonb_build_object('crossing', 'E0-F013-US', 'reason', 'microsecond_probe'),
+               TIMESTAMPTZ '2020-02-02 00:00:00.500000+00' + (g || ' microseconds')::interval
+        FROM generate_series(1, 6) AS g`);
+
+      const planted = rowsOf<{ id: string; ms: string }>(
+        await db.execute(sql`
+          SELECT id::text AS id,
+                 to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS') AS ms
+          FROM activity_log
+          WHERE action = 'security.denied.microsecond_probe'
+          ORDER BY created_at DESC, id DESC`),
+      );
+      expect(planted.length).toBe(6);
+      // THE PREMISE OF THIS ARM, asserted rather than assumed: at millisecond
+      // resolution these rows are indistinguishable from one another.
+      expect(
+        new Set(planted.map((r) => r.ms)).size,
+        "the fixture does not actually collide at millisecond precision, so it proves nothing",
+      ).toBe(1);
+
+      const seen = await pageAll({ crossing: "E0-F013-US" }, 2);
+      expect(
+        seen,
+        "paging lost rows that differ only below the millisecond — the cursor is being truncated somewhere on the round trip",
+      ).toEqual(planted.map((r) => r.id));
+
+      // ...and the negative: the SAME paging driven by `createdAt` instead of
+      // `cursor` does lose them. This pins WHY the `cursor` field exists, so a
+      // future reader cannot delete it as redundant and keep this file green.
+      const firstPage = await request(appAsOperator())
+        .get("/api/instance/security-denials")
+        .query({ crossing: "E0-F013-US", limit: 2 });
+      const firstRows = firstPage.body as DenialRow[];
+      const lossy = await request(appAsOperator())
+        .get("/api/instance/security-denials")
+        .query({
+          crossing: "E0-F013-US",
+          limit: 10,
+          before: firstRows[firstRows.length - 1]!.createdAt,
+          beforeId: firstRows[firstRows.length - 1]!.id,
+        });
+      expect(lossy.status).toBe(200);
+      expect(
+        (lossy.body as DenialRow[]).length,
+        "paging on `createdAt` returned everything, so millisecond truncation is not real here and this arm's premise is wrong",
+      ).toBeLessThan(4);
+    });
+
+    /**
+     * The cursor has two halves and only one of them is a timestamp. A caller
+     * that sends `beforeId` alone must be REFUSED rather than quietly served an
+     * unpaged newest-first page — a cursor half that silently does nothing is
+     * how a pager loses the tail while looking like it works.
+     */
+    it("(a) half a cursor is refused, not silently ignored", async () => {
+      assertSetupOk();
+      const res = await request(appAsOperator())
+        .get("/api/instance/security-denials")
+        .query({ beforeId: "00000000-0000-0000-0000-000000000009" });
+      expect(res.status, JSON.stringify(res.body)).toBe(400);
+
+      // POSITIVE CONTROL — the same id WITH its timestamp half is accepted, so
+      // the 400 above is the refinement and not a broken uuid/route path.
+      const ok = await request(appAsOperator())
+        .get("/api/instance/security-denials")
+        .query({
+          beforeId: "00000000-0000-0000-0000-000000000009",
+          before: new Date().toISOString(),
+        });
+      expect(ok.status, JSON.stringify(ok.body)).toBe(200);
     });
   },
 );

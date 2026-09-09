@@ -45,19 +45,47 @@ const createActivitySchema = z
 /**
  * Query shape for the operator-plane denial reader. Everything is optional and
  * nothing widens: `companyId` narrows to one tenant, and `limit` is re-clamped
- * in the service so a bad value cannot become an unbounded scan even if a future
- * caller bypasses this schema.
+ * in the service so a bad value cannot mean "no limit" even if a future caller
+ * bypasses this schema.
+ *
+ * ★ `limit` is a PAGE SIZE, not a scan bound. It bounds the result set only —
+ * `activity_log` has no index on `action`, so the query is a seq scan + sort per
+ * page. That is measured and filed; do not restate it as a protection.
+ *
+ * ★ `before`/`beforeId` are the KEYSET CURSOR, and `beforeId` is required
+ * whenever `before` is a page boundary rather than a wall-clock choice —
+ * `created_at` is not unique, so a timestamp-only cursor drops rows on a tie.
+ * Passing `beforeId` alone is rejected rather than ignored: a cursor half that
+ * silently does nothing is how a pager loses the oldest evidence.
+ *
+ * ★ `before` is NOT parsed into a `Date` anywhere on this path. It is carried as
+ * text and cast to `timestamptz` in SQL, because a `Date` holds milliseconds
+ * while the rows are ordered at microseconds — see `SecurityDenialQuery.before`
+ * for the measurement. `since` may safely be a `Date`: it is a wall-clock bound
+ * an operator chooses, not a value round-tripped out of a previous page.
  */
-const securityDenialQuerySchema = z.object({
-  crossing: z.string().min(1).optional(),
-  surface: z.string().min(1).optional(),
-  actorId: z.string().min(1).optional(),
-  entityType: z.string().min(1).optional(),
-  entityId: z.string().min(1).optional(),
-  companyId: z.string().uuid().optional(),
-  since: z.string().datetime().optional(),
-  limit: z.coerce.number().int().positive().max(500).optional(),
-});
+const securityDenialQuerySchema = z
+  .object({
+    crossing: z.string().min(1).optional(),
+    surface: z.string().min(1).optional(),
+    actorId: z.string().min(1).optional(),
+    entityType: z.string().min(1).optional(),
+    entityId: z.string().min(1).optional(),
+    companyId: z.string().uuid().optional(),
+    since: z.string().datetime().optional(),
+    before: z.string().datetime().optional(),
+    beforeId: z.string().uuid().optional(),
+    limit: z.coerce.number().int().positive().max(500).optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.beforeId && !value.before) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["beforeId"],
+        message: "beforeId requires before: pass both halves of the cursor from the last row of the previous page",
+      });
+    }
+  });
 
 export function activityRoutes(db: Db) {
   const router = Router();
@@ -92,6 +120,11 @@ export function activityRoutes(db: Db) {
    * data-plane bypass. That choice is what keeps this route reachable by a real
    * cloud operator while remaining closed to every company member, including
    * founders, in every deployment mode.
+   *
+   * Paging is a keyset cursor: take `cursor` + `id` from the LAST row of a page
+   * and pass them back as `before` + `beforeId` to get the next older page.
+   * Without it, only the newest `limit` matches are reachable at all — see
+   * `activityService.securityDenials`. Page on `cursor`, never on `createdAt`.
    */
   router.get("/instance/security-denials", async (req, res) => {
     assertCanManageInstanceSettings(req);
@@ -99,6 +132,7 @@ export function activityRoutes(db: Db) {
     const result = await svc.securityDenials({
       ...parsed,
       since: parsed.since ? new Date(parsed.since) : undefined,
+      // `before` is deliberately passed through as text — see the schema above.
     });
     res.json(result);
   });

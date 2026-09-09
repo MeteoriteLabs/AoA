@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, isNull, like, or, sql } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, gte, isNull, like, or, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { activityLog, heartbeatRuns, issues } from "@armyofagents/db";
 import {
@@ -34,17 +34,62 @@ export interface SecurityDenialQuery {
   entityId?: string;
   /** Narrow to ONE tenant's refusals. Never widens; a NULL-company row cannot match. */
   companyId?: string;
+  /** Inclusive LOWER time bound. */
   since?: Date;
+  /**
+   * ★ THE KEYSET CURSOR — strict UPPER bound, and the only way to reach evidence
+   * older than one page. See `securityDenials` for why a lower bound plus a
+   * limit is not enough.
+   *
+   * ★ IT IS A STRING, NOT A `Date`, AND THAT IS THE WHOLE POINT. Postgres stores
+   * `created_at` at MICROSECOND precision; a JS `Date` — and therefore anything
+   * that has been through `JSON.stringify` — holds MILLISECONDS. Measured on
+   * real Postgres, 40 rows written by 40 separate statements had 40 distinct
+   * microsecond timestamps and only 21 distinct millisecond ones, so a cursor
+   * that was truncated to milliseconds anywhere on its round trip would silently
+   * SKIP roughly half of them. This value is carried as text end to end and cast
+   * to `timestamptz` in SQL so no truncation can occur. The reader emits it as
+   * the `cursor` field for exactly this reason — do NOT page on `createdAt`.
+   */
+  before?: string;
+  /**
+   * The tiebreaker half of the cursor: the `id` of the last row of the previous
+   * page. Required whenever `before` came from a page boundary, because
+   * `created_at` is NOT unique — rows written by one statement share `now()`, so
+   * a timestamp-only cursor either skips or repeats every row on a tie.
+   */
+  beforeId?: string;
   limit?: number;
 }
+
+/**
+ * The full-precision paging key, emitted alongside every denial row.
+ *
+ * `created_at` reaches a client as JSON, where it is a `Date` truncated to
+ * milliseconds — unusable as a keyset cursor (see `SecurityDenialQuery.before`).
+ * This projects the same instant as UTC text at microsecond precision, which is
+ * exactly what `::timestamptz` reads back, so `cursor` + `id` round-trip the row
+ * order losslessly.
+ */
+const DENIAL_CURSOR_SQL = sql<string>`to_char(${activityLog.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
 
 export const SECURITY_DENIAL_DEFAULT_LIMIT = 100;
 export const SECURITY_DENIAL_MAX_LIMIT = 500;
 
 /**
- * A page bound that cannot be turned into an unbounded scan of the whole audit
- * table by a query string. A missing, non-finite or non-positive value takes the
- * default rather than meaning "no limit".
+ * The PAGE SIZE. A missing, non-finite or non-positive value takes the default
+ * rather than meaning "no limit".
+ *
+ * ★ WHAT THIS DOES NOT DO, stated because the earlier version of this comment
+ * claimed it did. It bounds the RESULT SET, not the scan. `activity_log` carries
+ * indexes on `(company_id, created_at)`, `(run_id)` and `(entity_type,
+ * entity_id)` and NOTHING on `action` or on `created_at` alone, so the default
+ * cross-tenant denial query is planned as
+ * `Limit <- Sort (created_at DESC) <- Seq Scan on activity_log`. Measured on
+ * real Postgres over 60,300 rows (60,000 product rows, 300 denials):
+ * `Rows Removed by Filter: 60000`. The plan is pasted in
+ * `docs/replatform/epics/E0-foundation/findings.md`. The missing index is filed
+ * there as NOT-DONE and is owned by the wave that owns the schema file.
  */
 export function clampDenialLimit(limit: number | undefined): number {
   if (limit === undefined || !Number.isFinite(limit)) return SECURITY_DENIAL_DEFAULT_LIMIT;
@@ -301,6 +346,35 @@ export function activityService(db: Db) {
      * change to this file and no compile-time coupling to a column that does not
      * exist yet. Rows with a NULL `company_id` are visible ONLY here: no
      * company-scoped reader can match them.
+     *
+     * ★ WHY THERE IS A CURSOR, AND WHY IT IS A KEYSET ONE. A page size plus a
+     * LOWER bound (`since`) is not a pager: moving `since` earlier only ever adds
+     * NEWER rows, so past one page of matches the OLDEST rows are unreachable
+     * through the only production reader of this namespace. That is evidence
+     * written and unreachable — the exact failure acceptance condition (a) exists
+     * to prevent, reappearing in the tail — so `before`/`beforeId` are part of the
+     * condition being met, not an ergonomic extra.
+     *
+     * It is a keyset (`(created_at, id) < (before, beforeId)`) rather than an
+     * OFFSET because `created_at` is not unique — a single INSERT ... SELECT of
+     * denial rows shares one `now()` — and a timestamp-only cursor silently SKIPS
+     * rows on a tie, which is the same "unreachable evidence" failure wearing a
+     * pagination name. The order is therefore a total one (`created_at DESC, id
+     * DESC`) so that the cursor and the ordering agree.
+     *
+     * ★ AND THE CURSOR IS EMITTED, NOT INFERRED FROM `createdAt`. Page on the
+     * `cursor` field plus `id`, never on `createdAt`: `createdAt` arrives at the
+     * client as JSON and is therefore truncated to milliseconds, while the rows
+     * are ordered at microsecond precision. Measured, this is not theoretical —
+     * 40 rows written by 40 separate statements had 40 distinct microsecond
+     * timestamps and 21 distinct millisecond ones, so a `createdAt`-based cursor
+     * would have skipped 19 of them without erroring. `cursor` carries the same
+     * instant as microsecond-precision UTC text and casts back exactly.
+     *
+     * ★ IT DOES NOT MAKE THE SCAN CHEAPER. See `clampDenialLimit`: with no index
+     * on `action` this is a seq scan + sort per page, so deep paging is O(table)
+     * each time. The cursor makes the evidence REACHABLE; the missing index is
+     * filed separately and is not fixed here.
      */
     securityDenials: (filters: SecurityDenialQuery = {}) => {
       const conditions = [
@@ -326,6 +400,18 @@ export function activityService(db: Db) {
       if (filters.since) {
         conditions.push(gte(activityLog.createdAt, filters.since));
       }
+      // ★ The cursor. With `beforeId` this is a row-value comparison, which is
+      // exactly the total order the ORDER BY below imposes, so no row on a
+      // `created_at` tie can be skipped or repeated across a page boundary.
+      // Without it, `before` is still a useful plain upper bound ("refusals
+      // older than this moment").
+      if (filters.before && filters.beforeId) {
+        conditions.push(
+          sql`(${activityLog.createdAt}, ${activityLog.id}) < (${filters.before}::timestamptz, ${filters.beforeId}::uuid)`,
+        );
+      } else if (filters.before) {
+        conditions.push(sql`${activityLog.createdAt} < ${filters.before}::timestamptz`);
+      }
       // `crossing` lives inside the redacted `details` jsonb rather than a
       // column, because the recorder puts it there; matching it in SQL keeps the
       // filter from being a post-fetch pass over a truncated page.
@@ -333,10 +419,18 @@ export function activityService(db: Db) {
         conditions.push(sql`${activityLog.details} ->> 'crossing' = ${filters.crossing}`);
       }
       return db
-        .select()
+        // ★ `getTableColumns` keeps the forward-compatibility this reader was
+        // built for: it is read from the schema object at runtime, so Unit A's
+        // nullable `company_id` and new `organization_id` still appear here the
+        // moment they land, with no change to this file. It is used instead of a
+        // bare `select()` only so the full-precision `cursor` can ride alongside.
+        .select({ ...getTableColumns(activityLog), cursor: DENIAL_CURSOR_SQL })
         .from(activityLog)
         .where(and(...conditions))
-        .orderBy(desc(activityLog.createdAt))
+        // A TOTAL order. `created_at DESC` alone is not one — ties are ordered
+        // arbitrarily and differently per plan, which would make the keyset
+        // cursor above lose rows.
+        .orderBy(desc(activityLog.createdAt), desc(activityLog.id))
         .limit(clampDenialLimit(filters.limit));
     },
 

@@ -1271,8 +1271,44 @@ are caller-supplied free text on the denial recorder.
 namespace existed anywhere** — three writers, a namespace guard and prose. Shipped:
 `GET /api/instance/security-denials` (`routes/activity.ts` →
 `activityService.securityDenials`), cross-tenant, newest-first, filterable by crossing / surface /
-actor / resource / tenant / `since`, limit clamped 1–500 (default 100) in the service so a query
-string cannot become an unbounded scan.
+actor / resource / tenant / `since`, page size clamped 1–500 (default 100) in the service, with a
+keyset cursor (`before`/`beforeId`) for the tail.
+
+★ **A CLAIM THIS ENTRY PREVIOUSLY MADE AND THAT WAS FALSE, corrected rather than quietly dropped.**
+This paragraph, the service doc comment, the routes comment, the PR body and the unit report all
+said the clamp meant "a query string cannot become an unbounded scan". It does not. It bounds the
+RESULT SET. Raised as a P2 by review, then measured on real Postgres (embedded-pg + the committed
+migration chain, 60,300 rows: 60,000 ordinary product rows and 300 denials, `ANALYZE`d):
+
+```
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM activity_log WHERE action LIKE 'security.denied.%' ORDER BY created_at DESC LIMIT 100;
+
+Limit  (cost=1806.98..1807.23 rows=100 width=168) (actual time=2.928..2.935 rows=100.00 loops=1)
+  ->  Sort  (cost=1806.98..1807.78 rows=320 width=168) (actual time=2.927..2.930 rows=100.00 loops=1)
+        Sort Key: created_at DESC
+        Sort Method: top-N heapsort  Memory: 50kB
+        ->  Seq Scan on activity_log  (cost=0.00..1794.75 rows=320 width=168) (actual time=2.864..2.887 rows=300.00 loops=1)
+              Filter: (action ~~ 'security.denied.%'::text)
+              Rows Removed by Filter: 60000
+```
+
+The LIMIT sits above a Sort which sits above a full sequential scan: 60,000 rows are read and
+discarded to produce a 100-row page. ★ A FALSE CLAIM OF ENFORCEMENT IS WORSE THAN A MISSING CHECK,
+so all five surfaces are reworded to "bounds the result set" and the index is filed below rather
+than implied. (A `since` bound does narrow it — the planner reaches
+`activity_log_company_created_idx` for the `created_at >=` predicate — but the default
+incident-response call has no `since`.)
+
+**NOT DONE — the missing index, and why it is NOT added here.** `activity_log` wants a partial index
+supporting the denial prefix in newest-first order, e.g. on `(created_at DESC)`
+`WHERE action LIKE 'security.denied.%'`. It is not added in this unit because
+`packages/db/src/schema/activity_log.ts` is **Unit A's file this wave** — Unit A is editing that
+exact `(table) => ({...})` index block (adding `organizationId`, `activity_log_organization_idx` and
+the `activity_log_company_or_denial_check`) and owns migration `0274`. A second index migration
+generated from Unit B would collide on both the hunk and the migration number, and the right shape
+for the index is a question that should be answered once `organization_id` exists. Owner: the wave
+that owns the schema file. Until then the reader is correct and slow, which is stated, not hidden.
 
 - **Who can read it:** the **operator plane** only — `assertCanManageInstanceSettings`, which reads
   `req.actor.operator` (or the `local_implicit` self-hosted board) and deliberately **not**
@@ -1288,24 +1324,64 @@ string cannot become an unbounded scan.
   is instance-wide and its audience is one operator working an incident. A company-scoped UI is the
   one shape that would answer Decision 3 by accident, in the direction that discloses. Documented at
   `docs/api/activity.md`.
-- **Forward-compatible with Unit A on purpose:** the reader projects `select()` rather than a column
-  list, so the nullable `company_id` and the new `organization_id` appear the moment they land, with
-  no compile-time coupling to a column that does not exist yet. Rows with a NULL `company_id` are
-  visible **only** here — no company-scoped reader can match them.
+- **Forward-compatible with Unit A on purpose:** the reader projects every column the schema object
+  carries (`getTableColumns`) rather than a hand-written list, so the nullable `company_id` and the
+  new `organization_id` appear the moment they land, with no compile-time coupling to a column that
+  does not exist yet. Rows with a NULL `company_id` are visible **only** here — no company-scoped
+  reader can match them.
+- ★ **THE TAIL — a second false-completeness surface, raised as a P1 by review and FIXED rather than
+  documented away.** As first shipped, the reader's only temporal filter was `since`, a **lower**
+  bound, with the order newest-first and no `before`, cursor or offset. Past `limit` matching rows
+  the OLDEST evidence was therefore unreachable through the only production reader of the namespace:
+  moving `since` earlier only ever adds NEWER rows. That is **evidence written and unreachable** —
+  the exact failure acceptance condition (a) exists to prevent — reappearing in the tail, so it is
+  part of the condition and not a follow-up.
+  - **Fix:** a keyset cursor, `before` + `beforeId`, over a total order (`created_at DESC, id DESC`).
+    Keyset rather than OFFSET because `created_at` is **not unique** — one `INSERT ... SELECT` of
+    denial rows shares a single `now()` — and a timestamp-only cursor SKIPS the rest of a tie with
+    `<` or repeats it forever with `<=`. Half a cursor (`beforeId` without `before`) is a `400`, not
+    a silently ignored filter.
+  - ★ **AND THE CURSOR IS EMITTED, NOT INFERRED — a defect found while fixing the first one.**
+    Postgres orders these rows at MICROSECOND precision; `created_at` reaches a client as JSON,
+    where it is a `Date` truncated to MILLISECONDS. Measured on the same embedded Postgres, **40
+    rows written by 40 separate statements produced 40 distinct microsecond timestamps and only 21
+    distinct millisecond ones** — so a cursor built from `createdAt` would have skipped 19 of 40
+    rows silently, with a `200` and no error. That is the same "unreachable evidence" failure
+    wearing a pagination name, so the reader emits an explicit full-precision `cursor` field
+    (`to_char(... 'US')`) and `before` is carried as **text** end to end, never parsed into a
+    `Date`, and cast to `timestamptz` in SQL.
+
+**Which of the two P1/P2 review findings was substantive:** both. Neither was a false alarm, and
+neither was answered by argument.
 
 **PROOF — one file, provocation not read-back:**
 `server/src/__tests__/e0-f013-denial-disclosure-path.integration.test.ts` (real Postgres, real
 route, real service, real `recordSecurityDenial`). Both halves are asserted **against the same
 planted row**, which is what makes "we hid it" distinguishable from "we lost it".
 
-- **OBSERVED RED against the unchanged tree** on exactly the provocation arm (1 failed / 3 passed),
-  with all three named positive controls green — the same-tenant row still returned, the planted row
-  present in the table by raw SQL, and the route answering 200. The cross-company read is real, not
-  inferred from the predicate.
-- **Mutants killed, one arm each, the rest staying green:** (1) drop the company predicate in
-  `forIssue` → the provocation arm reds; (2) widen the namespace predicate to `LIKE '%'` → *only*
-  "returns only the reserved namespace" reds; (3) remove the operator gate → *only* "closed to a
-  company member" reds.
+- **OBSERVED RED against the unchanged tree** on exactly the provocation arm, with all three named
+  positive controls green — the same-tenant row still returned, the planted row present in the table
+  by raw SQL, and the route answering 200. The cross-company read is real, not inferred from the
+  predicate. ★ **The count that observation was reported with — "1 failed / 3 passed" — belonged to
+  the 4-arm (c)-only stage and is corrected here:** the file is now **11 arms**, and the equivalent
+  measurement on it is mutant 1 below, **1 failed / 10 passed**. A stale arm count in an evidence
+  claim is the same species of defect as the scan claim above, so it is corrected rather than
+  carried.
+- **Mutants killed, each reding the arms it should and no others, re-run against the 11-arm file:**
+  1. drop the company predicate in `forIssue` → **1 failed / 10 passed**, the failure being exactly
+     *"★ THE PROVOCATION"*;
+  2. widen the namespace predicate to `LIKE '%'` → *only* "returns only the reserved namespace" reds;
+  3. remove the operator gate → *only* "closed to a company member" reds;
+  4. disable the cursor predicate → **2 failed / 9 passed**, both cursor arms and nothing else. Two
+     arms is correct rather than imprecise: the microsecond arm pages through the same cursor, so a
+     dead cursor legitimately reds it too;
+  5. truncate the emitted `cursor` from microseconds to milliseconds (`'US'` → `'MS'`) →
+     **1 failed / 10 passed**, *only* the microsecond arm. This is what stops a future reader
+     deleting the `cursor` field as redundant with `createdAt`;
+  6. remove the half-cursor refinement → **1 failed / 10 passed**, *only* "half a cursor is refused".
+- 11/11 green on the shipped tree.
 
-**NOT DONE, and left open:** the marketplace reader (above) is contained, not scoped. No
-finding, crossing or register entry is closed or amended by this unit.
+**NOT DONE, and left open:** (i) the marketplace reader (above) is contained, not scoped; (ii) the
+missing denial-prefix index, filed above and owned by the wave that owns the schema file — the
+reader is correct and does a seq scan per page. No finding, crossing or register entry is closed or
+amended by this unit.
