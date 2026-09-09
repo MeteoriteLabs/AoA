@@ -3,7 +3,12 @@ import { z } from "zod";
 import type { Db } from "@armyofagents/db";
 import { validate } from "../middleware/validate.js";
 import { activityService } from "../services/activity.js";
-import { accessibleCompanyIdsForActor, assertBoard, assertCompanyAccess } from "./authz.js";
+import {
+  accessibleCompanyIdsForActor,
+  assertBoard,
+  assertCanManageInstanceSettings,
+  assertCompanyAccess,
+} from "./authz.js";
 import { issueService } from "../services/index.js";
 import { sanitizeRecord } from "../redaction.js";
 import {
@@ -37,6 +42,23 @@ const createActivitySchema = z
     }
   });
 
+/**
+ * Query shape for the operator-plane denial reader. Everything is optional and
+ * nothing widens: `companyId` narrows to one tenant, and `limit` is re-clamped
+ * in the service so a bad value cannot become an unbounded scan even if a future
+ * caller bypasses this schema.
+ */
+const securityDenialQuerySchema = z.object({
+  crossing: z.string().min(1).optional(),
+  surface: z.string().min(1).optional(),
+  actorId: z.string().min(1).optional(),
+  entityType: z.string().min(1).optional(),
+  entityId: z.string().min(1).optional(),
+  companyId: z.string().uuid().optional(),
+  since: z.string().datetime().optional(),
+  limit: z.coerce.number().int().positive().max(500).optional(),
+});
+
 export function activityRoutes(db: Db) {
   const router = Router();
   const svc = activityService(db);
@@ -55,6 +77,29 @@ export function activityRoutes(db: Db) {
       entityId: req.query.entityId as string | undefined,
     };
     const result = await svc.list(filters);
+    res.json(result);
+  });
+
+  /**
+   * ★ THE OPERATOR READER FOR `security.denied.*` — E0-F013 Decision 2,
+   * acceptance condition (a). See `activityService.securityDenials` for why this
+   * exists, why it is cross-tenant, and why it is deliberately NOT a
+   * company-scoped surface.
+   *
+   * The gate is `assertCanManageInstanceSettings` — the OPERATOR plane
+   * (`req.actor.operator` / the `local_implicit` self-hosted board), not
+   * `isInstanceAdmin`, which is clamped to false in cloud_auth to kill the
+   * data-plane bypass. That choice is what keeps this route reachable by a real
+   * cloud operator while remaining closed to every company member, including
+   * founders, in every deployment mode.
+   */
+  router.get("/instance/security-denials", async (req, res) => {
+    assertCanManageInstanceSettings(req);
+    const parsed = securityDenialQuerySchema.parse(req.query);
+    const result = await svc.securityDenials({
+      ...parsed,
+      since: parsed.since ? new Date(parsed.since) : undefined,
+    });
     res.json(result);
   });
 
@@ -93,7 +138,11 @@ export function activityRoutes(db: Db) {
       return;
     }
     await assertCompanyAccess(db, req, issue.companyId);
-    const result = await svc.forIssue(id);
+    // Scope the read to the SAME company the gate above authorized. Before
+    // E0-F013 (c) the gate used `issue.companyId` and the read used no company
+    // at all, so the two disagreed for any row whose entity keys were chosen by
+    // a caller rather than by the task.
+    const result = await svc.forIssue(issue.companyId, id);
     res.json(result);
   });
 

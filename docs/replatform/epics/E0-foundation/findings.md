@@ -1222,3 +1222,90 @@ not written once at open time.
   `.not.toContain("revoked_at")`, and DE-07 + DE-29's `deliveryEvidence` updated from
   "declared but unread" to "dropped". Resolve = flip this Status and delete the `E0-F017` key in
   `scripts/finding-ownership.json` in the SAME commit.
+
+### Decision 2, Unit B — the reader and the disclosure path (`E0-F013` acceptance conditions (a) and (c))
+
+Landed 2026-09-09, in the SAME WAVE as the sink, because the ruling says both halves must ship
+together or it becomes the failure it exists to fix. Unit B touched **no file Unit A owns** — not
+the `activity_log` schema, not a migration, not `security-denial-audit.ts`, not the threat-controls
+JSON. It changes **no crossing status and no finding status**: the residue Decision 2 owns (DE-03,
+DE-15, five of DE-06's six fence throws) is Unit A's, and none of it is claimed here.
+
+**(c) THE DISCLOSURE PATH — measured LATENT, then closed anyway.** The paper found
+`activityService.forIssue` reading `activity_log` with **no company predicate**, served at
+`GET /issues/:id/activity` behind a check on *the issue's* company, while `entityType`/`entityId`
+are caller-supplied free text on the denial recorder.
+
+- **Blast radius, measured before choosing** (the paper asked for this, and the answer changes
+  nothing about whether to fix it, only about how to describe it). All three production callers of
+  `recordSecurityDenial` **hard-code** their `entityType`: `memory_item`
+  (`mcp/tools/read-tools.ts`), `job_artifact` (`services/artifact-commit.ts`,
+  `services/artifact-transfer-grant.ts`). **None types `issue`.** So no denial row reachable through
+  `forIssue` exists today, and `company_id` is still NOT NULL, so no tenantless row exists either.
+  The denial-namespace exposure was **LATENT, not LIVE** — one future writer, or one
+  caller-chosen `entityType`, away. It is fixed now because the ruling removes the second of the two
+  things that were accidentally containing it.
+- ★ **But the cross-company read itself was LIVE and was observed.** The provocation test was run
+  against the unchanged tree and the planted tenant-B row **came back to a tenant-A reader**. The
+  latency is in *reaching* the reader with a denial row, not in the reader.
+- **Fix: `forIssue` is now scoped by company** (`services/activity.ts`, `routes/activity.ts` passes
+  `issue.companyId` — the same company the gate above it authorized). Chosen over the paper's other
+  option (bar the denial namespace from entity types an unscoped reader keys on) because that would
+  have to be enforced inside `security-denial-audit.ts` — **Unit A's file this wave** — and it
+  protects only the rows it knows about, leaving `forIssue` cross-tenant for every other writer.
+  Scoping the reader fixes the reader, which is where the defect is.
+- **It is also the defence against the nullable column, by construction:** a NULL `company_id` never
+  satisfies `company_id = $1`, so a tenantless denial row is invisible to this reader the moment
+  Unit A lands, with no further change.
+- ★ **THIS IS A SITE FIX, NOT A CLASS FIX, and the difference is stated rather than implied.** The
+  second company-unscoped reader — `inspectMarketplaceReconciliation`
+  (`services/marketplace-reconcile.ts`) — **is untouched**. It is instance-wide by design (its
+  operation spans many companies, so there is no single company to scope it to). It was measured
+  separately and does **not** disclose denial rows: every row it selects is then filtered by exact
+  `action` equality against three `marketplace.reconciliation_*` literals, and only surviving rows
+  reach `started`/`terminal` and therefore its output. That is containment by **downstream
+  construction**, not by this change, and it would stop holding if a future reader used those rows
+  unfiltered.
+
+**(a) THE READER for `security.denied.*`.** The paper measured that **no production reader of that
+namespace existed anywhere** — three writers, a namespace guard and prose. Shipped:
+`GET /api/instance/security-denials` (`routes/activity.ts` →
+`activityService.securityDenials`), cross-tenant, newest-first, filterable by crossing / surface /
+actor / resource / tenant / `since`, limit clamped 1–500 (default 100) in the service so a query
+string cannot become an unbounded scan.
+
+- **Who can read it:** the **operator plane** only — `assertCanManageInstanceSettings`, which reads
+  `req.actor.operator` (or the `local_implicit` self-hosted board) and deliberately **not**
+  `isInstanceAdmin`, which cloud_auth clamps to false to kill the data-plane bypass. It is
+  unreachable by any company member, founders included, in every deployment mode.
+- ★ **THE DISCLOSURE QUESTION — FOLLOWING DE-06's PRECEDENT, AND SAYING SO.** Both live writers
+  attribute a cross-tenant refusal to the **actor's own** tenant, never the probed one, and DE-06's
+  test asserts the **probed** tenant's `activity_log` is EMPTY. This reader follows that precedent:
+  it adds **no per-company denial feed**, so the probed tenant still learns nothing about having
+  been probed or by whom. Whether a probed tenant is *entitled* to know is Decision 3's question and
+  is **not** pre-empted here.
+- **Why an operator query rather than a UI** (the ruling invited the narrower answer): the evidence
+  is instance-wide and its audience is one operator working an incident. A company-scoped UI is the
+  one shape that would answer Decision 3 by accident, in the direction that discloses. Documented at
+  `docs/api/activity.md`.
+- **Forward-compatible with Unit A on purpose:** the reader projects `select()` rather than a column
+  list, so the nullable `company_id` and the new `organization_id` appear the moment they land, with
+  no compile-time coupling to a column that does not exist yet. Rows with a NULL `company_id` are
+  visible **only** here — no company-scoped reader can match them.
+
+**PROOF — one file, provocation not read-back:**
+`server/src/__tests__/e0-f013-denial-disclosure-path.integration.test.ts` (real Postgres, real
+route, real service, real `recordSecurityDenial`). Both halves are asserted **against the same
+planted row**, which is what makes "we hid it" distinguishable from "we lost it".
+
+- **OBSERVED RED against the unchanged tree** on exactly the provocation arm (1 failed / 3 passed),
+  with all three named positive controls green — the same-tenant row still returned, the planted row
+  present in the table by raw SQL, and the route answering 200. The cross-company read is real, not
+  inferred from the predicate.
+- **Mutants killed, one arm each, the rest staying green:** (1) drop the company predicate in
+  `forIssue` → the provocation arm reds; (2) widen the namespace predicate to `LIKE '%'` → *only*
+  "returns only the reserved namespace" reds; (3) remove the operator gate → *only* "closed to a
+  company member" reds.
+
+**NOT DONE, and left open:** the marketplace reader (above) is contained, not scoped. No
+finding, crossing or register entry is closed or amended by this unit.
