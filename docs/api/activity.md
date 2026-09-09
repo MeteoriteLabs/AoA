@@ -79,9 +79,15 @@ Without paging, only the newest `limit` matching refusals are reachable at all: 
 
 **Do not build the cursor out of `createdAt`.** `createdAt` is JSON, so it is truncated to milliseconds, while rows are ordered at the microsecond precision Postgres stores. Measured on real Postgres, 40 rows written by 40 separate statements had 40 distinct microsecond timestamps and only 21 distinct millisecond ones — a `createdAt`-based cursor would have skipped 19 of them silently, with a `200` and no error. The `cursor` field exists precisely to avoid this and casts back losslessly.
 
-### What `limit` does not do
+### What `limit` does not do, and what does it instead
 
-`limit` bounds the **result set**, not the scan. `activity_log` has indexes on `(company_id, created_at)`, `(run_id)` and `(entity_type, entity_id)` and none on `action` or on `created_at` alone, so the default cross-tenant query is planned as `Limit <- Sort (created_at DESC) <- Seq Scan`. Deep paging re-scans the table per page. The missing index is filed as an open item in `docs/replatform/epics/E0-foundation/findings.md`; passing a `companyId` or `since` narrows the scan in the meantime.
+`limit` bounds the **result set**, not the scan. The scan is bounded by an index, which is a different mechanism.
+
+Migration `0275` adds a **partial** index — `(created_at DESC, id DESC) WHERE action LIKE 'security.denied.%'` — matching this endpoint's predicate and its total order exactly. The default cross-tenant query is now planned as `Limit <- Index Scan`, with no `Sort` and no `Seq Scan`, and a cursor page's row-value comparison becomes an `Index Cond` (a seek) instead of a per-row `Filter`. Measured on real Postgres over 60,300 rows, the first page went from 1,098 shared buffers to 6, and a deep cursor page from 1,098 to 4; `Rows Removed by Filter: 60000` disappears. Because the index is partial it holds denial rows only, so ordinary product rows cost nothing to maintain and are invisible to it.
+
+**This is a matched pair, not a free win.** The planner uses the index only while the query's `WHERE` still implies the index predicate and its `ORDER BY` still matches the index ordering. Changing the action prefix, the sort columns, or the sort direction on this endpoint silently reverts it to `Sort <- Seq Scan` with no error and no failing test — which is why `server/src/__tests__/e0-f013-denial-index-plan.integration.test.ts` asserts the **plan** rather than only the rows.
+
+Before `0275` this section said deep paging re-scanned the table per page. That was accurate then and is not now.
 
 ## Issue Heartbeat Runs
 

@@ -81,15 +81,23 @@ export const SECURITY_DENIAL_MAX_LIMIT = 500;
  * rather than meaning "no limit".
  *
  * ★ WHAT THIS DOES NOT DO, stated because the earlier version of this comment
- * claimed it did. It bounds the RESULT SET, not the scan. `activity_log` carries
- * indexes on `(company_id, created_at)`, `(run_id)` and `(entity_type,
- * entity_id)` and NOTHING on `action` or on `created_at` alone, so the default
- * cross-tenant denial query is planned as
- * `Limit <- Sort (created_at DESC) <- Seq Scan on activity_log`. Measured on
- * real Postgres over 60,300 rows (60,000 product rows, 300 denials):
- * `Rows Removed by Filter: 60000`. The plan is pasted in
- * `docs/replatform/epics/E0-foundation/findings.md`. The missing index is filed
- * there as NOT-DONE and is owned by the wave that owns the schema file.
+ * claimed it did. It bounds the RESULT SET, not the scan. The scan is bounded by
+ * an INDEX, and that is a separate mechanism that this function knows nothing
+ * about — see below.
+ *
+ * ★ THE SCAN CLAIM, UPDATED BECAUSE IT IS NOW FALSE AS PREVIOUSLY WRITTEN. This
+ * comment used to say the denial query "is planned as
+ * `Limit <- Sort <- Seq Scan on activity_log`" and that the missing index was
+ * filed NOT-DONE. Migration `0275` added it — a PARTIAL index on
+ * `(created_at DESC, id DESC) WHERE action LIKE 'security.denied.%'` — so the
+ * plan is now `Limit <- Index Scan using activity_log_denial_created_idx`, with
+ * no Sort and no Seq Scan, and the keyset cursor's row-value comparison becomes
+ * an `Index Cond` rather than a per-row `Filter`. Measured on real Postgres over
+ * 60,300 rows: `Rows Removed by Filter: 60000` and 1,098 shared buffers before,
+ * 6 buffers after; on the deep page, 1,098 buffers before and 4 after. Both
+ * plans are pasted in `docs/replatform/epics/E0-foundation/findings.md`, and
+ * `e0-f013-denial-index-plan.integration.test.ts` asserts the plan so this
+ * paragraph cannot go stale silently again.
  */
 export function clampDenialLimit(limit: number | undefined): number {
   if (limit === undefined || !Number.isFinite(limit)) return SECURITY_DENIAL_DEFAULT_LIMIT;
@@ -371,10 +379,17 @@ export function activityService(db: Db) {
      * would have skipped 19 of them without erroring. `cursor` carries the same
      * instant as microsecond-precision UTC text and casts back exactly.
      *
-     * ★ IT DOES NOT MAKE THE SCAN CHEAPER. See `clampDenialLimit`: with no index
-     * on `action` this is a seq scan + sort per page, so deep paging is O(table)
-     * each time. The cursor makes the evidence REACHABLE; the missing index is
-     * filed separately and is not fixed here.
+     * ★ AND IT IS NOW CHEAP AS WELL AS REACHABLE — the second half of the same
+     * acceptance condition, previously filed NOT-DONE here. When this comment
+     * was written there was no index on `action`, so every page was a seq scan
+     * plus a sort and deep paging was O(table) EACH TIME: the cursor made the
+     * evidence reachable and re-read the whole table to reach it. Migration
+     * `0275` adds a partial index on `(created_at DESC, id DESC)
+     * WHERE action LIKE 'security.denied.%'`, which the predicate and the ORDER
+     * BY here are written to match exactly — change either and the planner
+     * silently stops using it, which is why
+     * `e0-f013-denial-index-plan.integration.test.ts` asserts the PLAN and not
+     * just the answer.
      */
     securityDenials: (filters: SecurityDenialQuery = {}) => {
       const conditions = [
