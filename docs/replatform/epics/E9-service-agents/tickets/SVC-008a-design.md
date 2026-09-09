@@ -760,7 +760,14 @@ them.
   resolves none of them.** Even with this port shipped, a service run longer than five minutes still
   ends in a billable orphan until SVC-008 §9.1 is ruled on.
 - **It does not give the networked lane process supervision** (§4.4).
-- **It does not widen `StopOutcome`, `ProviderOperation`, or any frozen schema** (§3).
+- **It does not widen `StopOutcome`, `ProviderOperation`, or any frozen schema** (§3). ★ It **does**
+  widen one type — `E2bRecordState` gains `"unknown"` (§4.2 A-i) — and the distinction is stated
+  rather than buried: that type is declared in `packages/sandbox-e2b-provider/src/transport.ts:20`,
+  is local to that package, and is neither `SANDBOX_STATES` (`provider.ts:130-139`) nor
+  `StopOutcome` (`:146`) nor anything under `packages/worker-protocol/`. §3's three mechanical
+  checks are unaffected; a reader running them still finds zero frozen-package files touched.
+  **The `SANDBOX_STATES`/`ResourceSummary` widening that a full repair of §1.4's second direction
+  would need is exactly what §9.4 declines to do here.**
 
 ---
 
