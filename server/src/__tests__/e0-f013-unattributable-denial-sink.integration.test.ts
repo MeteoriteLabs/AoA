@@ -40,6 +40,10 @@
  *   6 (N/N-1) — `remote-compose-deploy.sh` rolls the BINARY back without
  *     reverting the DATABASE, so the N-1 binary's exact SQL (no
  *     `organization_id`, `company_id` always supplied) must still write and read.
+ *   7 (the FK trap this PR lays) — an attested organization that no longer
+ *     exists must DEGRADE to the tenantless sink, not vanish. Observed RED
+ *     against this PR's own first draft, where `recordSecurityDenial` swallowed
+ *     the 23503 and returned null.
  *
  * ★ THE NAMED POSITIVE CONTROL IS ARM 4, and the mutation discipline is: change
  * the CHECK predicate in `packages/db/src/schema/activity_log.ts` (e.g. to
@@ -203,9 +207,13 @@ describe.skipIf(!RUN)("E0-F013 Decision 2 (a2) — the unattributable-denial sin
   it("arm 2 — a security.denied.* row with a null company_id is ACCEPTED", async () => {
     const id = await recordSecurityDenial(f().appDb, {
       companyId: null,
-      // No organization either — this is the DOUBLY NULL shape of the two DE-03
-      // sites (`worker-enrollment.ts:295` and `:315` with an unrouted code). It
-      // is the weakest row the sink must still accept.
+      // No organization either — this is the DOUBLY NULL shape. Of DE-03's NINE
+      // `recordProof` refusals, two are conditionally doubly null
+      // (`worker-enrollment.ts:315` with an unrouted code, and
+      // `middleware/worker-session-auth.ts:151` at platform scope); the pre-code
+      // refusal at `worker-enrollment.ts:295` — not one of the nine — is doubly
+      // null unconditionally, and is the shape reproduced here. It is the
+      // weakest row the sink must still accept.
       crossing: "DE-03",
       surface: "worker_enrollment",
       reason: "enrollment_route_expired",
@@ -250,7 +258,7 @@ describe.skipIf(!RUN)("E0-F013 Decision 2 (a2) — the unattributable-denial sin
       actorId: "worker-arm-3",
       entityType: "worker_session",
       entityId: "arm-3-entity",
-      control: "server/src/services/worker-session-auth.ts:151",
+      control: "server/src/middleware/worker-session-auth.ts:151",
     });
     expect(id, "the org-attributed denial was not stored").not.toBeNull();
 
@@ -424,5 +432,103 @@ describe.skipIf(!RUN)("E0-F013 Decision 2 (a2) — the unattributable-denial sin
     const [{ count }] = await f().appDb.execute<{ count: number }>(sql`
       SELECT count(*)::int AS count FROM activity_log WHERE "company_id" = ${COMPANY}`);
     expect(count).toBe(2); // arm 4's row and this one. Neither tenantless row.
+  });
+
+  // ── ARM 7 ── THE TRAP THIS PR LAYS FOR THE WIRING UNIT (Codex P2, PR #403).
+  //
+  // `organizationId` is token-attested, which makes it trustworthy ATTRIBUTION —
+  // but a signed id is not proof that the `organizations` row still EXISTS. The
+  // FK added by this migration cannot tell the difference. Delete an
+  // organization, then replay a worker token minted before the delete, and the
+  // insert reds 23503 — and `recordSecurityDenial` never throws, so without a
+  // fallback that error lands in the swallow and THE ONE denial class most worth
+  // keeping (a replayed credential from a torn-down tenant) is the one that
+  // records nothing.
+  //
+  // RED-FIRST: observed red against this PR's own first draft, where the single
+  // `catch` logged and returned null. It failed on `expect(id).not.toBeNull()` —
+  // a different failure from every other arm, because it is a different defect.
+  //
+  // ★ THREE MUTATIONS WERE RUN, AND EACH RED THIS ARM ALONE (arms 0-6 green
+  // throughout, arm 4's positive control included):
+  //   1. disable the fallback (`false && attested !== null`) → RED on
+  //      `expect(id).not.toBeNull()`. The fallback is load bearing.
+  //   2. point `ORGANIZATION_FK_CONSTRAINT` at the COMPANY foreign key → RED the
+  //      same way. The constraint NAME is load bearing, not just the SQLSTATE.
+  //   3. widen the retry to any 23503 AND make it drop `company_id` too → RED on
+  //      the narrowness assertion below (`a bad company FK was laundered…`), not
+  //      on the first. So the second half of this arm discriminates too, rather
+  //      than passing for free.
+  //
+  // ★ It is unreachable through production callers today (none passes
+  // `organizationId`), which is exactly why it is proven here rather than left
+  // as a note for the unit that would have tripped over it.
+  it("arm 7 — an attested organization that no longer exists DEGRADES to the tenantless sink", async () => {
+    const GONE_ORG = "f0130000-0000-4000-8000-000000000003";
+    // Mint the organization, then destroy it — the real sequence, not a
+    // fabricated id. A token attesting GONE_ORG is still perfectly valid HMAC.
+    await f().admin`INSERT INTO organizations (id, name, slug)
+      VALUES (${GONE_ORG}, 'E0-F013 deleted org', 'e0-f013-gone')`;
+    await f().admin`DELETE FROM organizations WHERE id = ${GONE_ORG}`;
+
+    const id = await recordSecurityDenial(f().appDb, {
+      companyId: null,
+      organizationId: GONE_ORG,
+      crossing: "DE-03",
+      surface: "worker_session_auth",
+      reason: "proof_replayed",
+      actorType: "system",
+      actorId: "worker-arm-7",
+      entityType: "worker_session",
+      entityId: "arm-7-entity",
+      control: "server/src/middleware/worker-session-auth.ts:151",
+    });
+    expect(
+      id,
+      "the stale-credential denial went UNAUDITED — the 23503 was swallowed instead of falling back",
+    ).not.toBeNull();
+
+    const [row] = await f()
+      .appDb.select({
+        companyId: activityLog.companyId,
+        organizationId: activityLog.organizationId,
+        action: activityLog.action,
+        details: activityLog.details,
+      })
+      .from(activityLog)
+      .where(eq(activityLog.id, id!));
+    expect(row).toBeDefined();
+    expect(row!.companyId).toBeNull();
+    expect(row!.organizationId).toBeNull();
+    expect(row!.action).toBe(`${SECURITY_DENIAL_ACTION_PREFIX}worker_session_auth`);
+    // ★ DEGRADED, NOT LOST. The attested id survives in `details`, so a reader
+    // can still say WHICH organization was attested and that the FK — not the
+    // caller, and not a missing attestation — is why the column is null.
+    expect(row!.details?.organizationAttributionDropped).toBe(true);
+    expect(row!.details?.unresolvedOrganizationId).toBe(GONE_ORG);
+    // The ordinary fields are not collateral damage of the retry.
+    expect(row!.details?.crossing).toBe("DE-03");
+    expect(row!.details?.reason).toBe("proof_replayed");
+
+    // ★ NARROWNESS. The fallback fires for the ORGANIZATION foreign key only. A
+    // denial naming a company that does not exist must still fail closed rather
+    // than being silently rewritten into the tenantless sink — a company FK
+    // violation is a caller bug, not a torn-down tenant, and laundering it into
+    // an unattributed row would hide it.
+    const orphanCompany = await recordSecurityDenial(f().appDb, {
+      companyId: "f0130000-0000-4000-8000-0000000000fe",
+      crossing: "DE-03",
+      surface: "worker_session_auth",
+      reason: "proof_replayed",
+      actorType: "system",
+      actorId: "worker-arm-7-orphan",
+      entityType: "worker_session",
+      entityId: "arm-7-orphan-entity",
+      control: "server/src/middleware/worker-session-auth.ts:151",
+    });
+    expect(orphanCompany, "a bad company FK was laundered into the tenantless sink").toBeNull();
+    const [{ count: orphanRows }] = await f().appDb.execute<{ count: number }>(sql`
+      SELECT count(*)::int AS count FROM activity_log WHERE entity_id = 'arm-7-orphan-entity'`);
+    expect(orphanRows).toBe(0);
   });
 });

@@ -838,9 +838,13 @@ state twelve, not seventeen.
    DB-resolved, never caller-supplied** — accepting a caller-supplied organization is option (c),
    which was **not** ruled, and whose attack is that a prober chooses its own record's destination.
 
-   **NOT LANDED — THE SINK IS EMPTY.** ★ **No residual sink is wired.** DE-03's eight production
+   **NOT LANDED — THE SINK IS EMPTY.** ★ **No residual sink is wired.** DE-03's **nine** production
    `recordProof` refusals, DE-15's drain return (`job-leasing.ts:731-740`) and DE-06's five
-   organization-only fence throws still write **no row**. The ruling removed the STORAGE blocker;
+   organization-only fence throws still write **no row**. *(★ This sentence said "eight" and
+   contradicted the "nine" three paragraphs below — eight is the count of the nine that sit in
+   `server/src/services`, not the count of the refusals. Corrected 2026-09-09 against the nine call
+   sites; the same drift was corrected in `security-denial-audit.ts`'s own contract header, where
+   it mattered more, because a caller reads the contract and not this entry.)* The ruling removed the STORAGE blocker;
    it did not do the wiring, and nothing in this entry may be read as if it had. Acceptance
    condition **(a)** — a production reader of `security.denied.*` must ship in the same wave — and
    condition **(c)** — closing or fencing `activityService.forIssue`, with a provocation — are both
@@ -853,7 +857,8 @@ state twelve, not seventeen.
    Measured at tip: **eight** of the nine are in `server/src/services`; the ninth is in
    `server/src/`**`middleware`**`/worker-session-auth.ts:151`, not `services/`. And the paper places
    that ninth among the **eight** sites that hold a verified organization. It does not: its
-   `authoritativeOrganizationId` is typed **`string | null`**, and `:183` passes an explicit `null`
+   `authoritativeOrganizationId` is typed **`string | null`**, and the `claims.organizationId === null`
+   branch at `:183-185` passes an explicit `null`
    for a `platform`-scope worker (whose `claims.organizationId` is null by the invariant at `:72`).
    A platform-scope session refusal is therefore a **THIRD doubly-null site**.
 
@@ -865,6 +870,53 @@ state twelve, not seventeen.
    `worker-enrollment.ts:315` (unrouted enrollment code) and
    `middleware/worker-session-auth.ts:151` (platform scope). And the separate pre-code refusal at
    `worker-enrollment.ts:295` — not one of the nine — has no organization at all.
+
+   ★ **THE TRAP THIS SLICE LAYS FOR THE WIRING UNIT, AND THE FIX IT SHIPPED WITH.** Raised by Codex
+   as P2 on PR #403, verified at source, and **fixed in the same commit rather than noted.** An
+   `organizationId` reaching `recordSecurityDenial` is HMAC-attested, which makes it trustworthy
+   *attribution* — but a signed id is **not** proof that the `organizations` row still exists, and
+   the new `activity_log_organization_id_organizations_id_fk` cannot tell the difference. Delete an
+   organization, then replay a worker token minted before the delete, and the insert reds **23503**.
+   `recordSecurityDenial` never throws, so in the slice's first draft that error landed in the
+   swallow: **the one denial class most worth keeping — a replayed credential from a torn-down
+   tenant — would have been the one that recorded nothing**, and the doubly-null sink this whole
+   ruling exists to open would never have been reached. Unreachable through production callers today
+   (`read-tools.ts:298`, `artifact-commit.ts:349` and `artifact-transfer-grant.ts:332` all pass a
+   resolved company and no organization), but **this is the PR that adds the FK the wiring unit's
+   seven organization-attested DE-03 sites will hit**, so the trap belongs to this slice.
+   **What ships:** a 23503 on **that named constraint only** retries ONCE with `organization_id`
+   null — the row still satisfies the partial CHECK by construction — and the attested id moves into
+   `details.unresolvedOrganizationId` beside `details.organizationAttributionDropped`, so a reader
+   still learns WHICH organization was attested and that the FK, not the caller, is why the column is
+   null. Degraded attribution beats a lost record. A **company** FK violation is deliberately NOT
+   caught: that is a caller bug, not a torn-down tenant, and laundering it into an unattributed row
+   would hide it. Proven by **arm 7** of `e0-f013-unattributable-denial-sink.integration.test.ts`
+   against real PostgreSQL — the organization is created and then DELETED, not fabricated — observed
+   RED against the first draft on `expect(id).not.toBeNull()`, a different failure from every other
+   arm, and carrying its own narrowness assertion for the company-FK case.
+
+   ★ **THE TWO P1s CODEX RAISED ON THE SAME REVIEW, AND WHY NEITHER MOVED THIS SLICE.** Both were
+   verified at source and both are **real as acceptance conditions this entry already declares
+   OPEN** — neither is a defect the diff introduces:
+   - *"Ship the denial reader required by the ruling."* Correct that no consumer of `security.denied.*`
+     exists in `server/src` or `ui/src`; that is condition **(a)**, named as OPEN two paragraphs
+     above. The comment reads "Decision 2 is CLOSED as a decision" as a claim that the conditions are
+     discharged. It is not, and the entry says so in the same breath as the closure. Shipping the
+     reader *now* would also be the programme's own failure class in reverse: **the tenantless
+     namespace is empty** — every one of the three live denial writers passes a resolved company —
+     so a reader built today would be a surface with nothing to read and no way to go red. It ships
+     with the wiring, against rows that exist.
+   - *"Fence the unscoped issue activity reader."* Correct that `activityService.forIssue`
+     (`services/activity.ts:60-70`) filters only `entityType='issue'` + `entityId` with no company
+     predicate, and is served at `GET /issues/:id/activity` behind a check on *the issue's* company.
+     That is condition **(c)**, named as OPEN, and it was found by this decision's own options paper
+     before Codex found it. It is **not reachable by this diff**: no production denial writer emits
+     `entityType: "issue"` (`memory_item`, `job_artifact`, `job_artifact`), and none writes a
+     tenantless row at all. The ruling requires it be closed **with a provocation**, which is a
+     fence plus a cross-company probe test — the wiring unit's work, in the wave that first makes a
+     tenantless row producible. Deliberately not folded in here: a storage slice that also
+     re-scopes a live product read path is two properties in one PR, and the entry would then be
+     claiming a fence nobody probed.
 3. **Retention and disclosure of a denial record.** (a) Whose log does a cross-tenant denial land
    in? The probed company's `activity_log` discloses to them that they were probed and by whom.
    (b) `activity_log` **cascade-deletes with its company**, so a hostile tenant can destroy the

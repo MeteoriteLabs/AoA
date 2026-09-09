@@ -55,16 +55,32 @@ import { SECURITY_DENIAL_ACTION_PREFIX } from "./activity-namespace.js";
  *
  * ★ WHAT THAT DOES AND DOES NOT BUY, per axis:
  *   - a denial that resolves a company still writes it, unchanged;
- *   - a denial that resolves only an ORGANIZATION (DE-03's eight session-bound
- *     refusals, DE-15's drain, five of DE-06's six fence throws) now writes a row
- *     attributed to that organization and to no company;
- *   - two DE-03 sites stay DOUBLY NULL even under (a2) and this recorder does not
- *     pretend otherwise: `server/src/services/worker-enrollment.ts:315`, where
+ *   - a denial that resolves only an ORGANIZATION (SEVEN of DE-03's nine
+ *     `recordProof` refusals, DE-15's drain, five of DE-06's six fence throws)
+ *     now writes a row attributed to that organization and to no company. The
+ *     seven are `job-control-ack.ts:93`, `job-events.ts:169`,
+ *     `job-fencing.ts:133`, `job-leasing.ts:546` and `:816`,
+ *     `worker-fence-context.ts:68` and `:162` — each holds a
+ *     `VerifiedWorkerOperation.organizationId` typed `string`, with platform
+ *     scope refused ahead of it (`middleware/worker-operation-proof.ts:6,50`).
+ *   - the OTHER TWO of the nine stay DOUBLY NULL even under (a2), and this
+ *     recorder does not pretend otherwise:
+ *     `server/src/services/worker-enrollment.ts:315`, where
  *     `authoritativeOrganizationId` is typed `string | null` and an unrouted
- *     enrollment code yields no organization, and the pre-code refusal at `:295`,
- *     which fires before any organization is resolved at all. Those rows are
- *     attributable to nothing but the device thumbprint and proof id in
- *     `details`, and that is the honest ceiling, not an oversight.
+ *     enrollment code yields no organization, and
+ *     `server/src/middleware/worker-session-auth.ts:151`, whose
+ *     `claims.organizationId === null` branch (`:183-185`) passes an explicit
+ *     `null` for a platform-scope worker — the scope/organization invariant is
+ *     asserted at `:72`. The separate pre-code refusal at `worker-enrollment.ts:295`
+ *     — NOT one of the nine — fires before any organization is resolved at all
+ *     and is doubly null for the same reason. Those rows are attributable to
+ *     nothing but the device thumbprint and proof id in `details`, and that is
+ *     the honest ceiling, not an oversight.
+ *     (★ The paragraph above said "eight session-bound refusals" and named
+ *     `:315` + `:295` as the doubly-null pair. Both were wrong and both
+ *     flattered the ruling; corrected against the nine call sites on 2026-09-09.
+ *     A stale count in a recorder's own contract is how a caller learns the
+ *     wrong rule — the same failure this header's `★ THE LIMIT` note exists for.)
  *   - `organization_id` is `ON DELETE restrict`, not `cascade`, and a null-company
  *     row does not cascade with any company. Decision 3(b)'s "a suspect deletes
  *     their own denial history" therefore has less surface here, but is NOT
@@ -163,6 +179,40 @@ export interface SecurityDenialInput {
 }
 
 /**
+ * The FK added by `0274_activity_log_denial_sink.sql`. Named here, not matched
+ * loosely, because the fallback below must fire for THIS constraint and no other
+ * — `company_id`, `agent_id` and `run_id` also carry foreign keys, and dropping
+ * the organization would not repair a violation of any of them.
+ */
+const ORGANIZATION_FK_CONSTRAINT = "activity_log_organization_id_organizations_id_fk";
+/** SQLSTATE 23503 = foreign_key_violation. */
+const FOREIGN_KEY_VIOLATION = "23503";
+
+/**
+ * Drizzle re-throws its own `DrizzleQueryError` with the driver error on
+ * `.cause`, so the SQLSTATE is NOT on the outer object. Reading only the outer
+ * one yields `undefined` for every failure alike — which would make the fallback
+ * below either never fire or fire on everything. Walk the cause chain to the
+ * first frame that carries a code.
+ */
+function pgErrorFrame(err: unknown): { code?: string; constraint?: string } {
+  let cursor: unknown = err;
+  for (let depth = 0; depth < 5 && cursor; depth += 1) {
+    const e = cursor as {
+      code?: string;
+      constraint_name?: string;
+      constraint?: string;
+      cause?: unknown;
+    };
+    if (typeof e.code === "string") {
+      return { code: e.code, constraint: e.constraint_name ?? e.constraint };
+    }
+    cursor = e.cause;
+  }
+  return {};
+}
+
+/**
  * Record one security refusal durably and attributably. Returns the row id, or
  * `null` when nothing could be written (which is logged at error level).
  *
@@ -170,21 +220,57 @@ export interface SecurityDenialInput {
  * company-scoped, so broadcasting a denial would push a cross-tenant probe into
  * the probed company's own event stream — turning an audit record into a
  * disclosure channel.
+ *
+ * ★ AN ATTESTED ORGANIZATION IS NOT A LIVE ROW, AND THE FK CANNOT TELL THE
+ * DIFFERENCE (Codex P2 on PR #403, verified). `organizationId` is trustworthy
+ * ATTRIBUTION — it comes off an HMAC-verified, control-plane-minted artefact —
+ * but a signed id does not prove the `organizations` row still EXISTS. Delete an
+ * organization, then replay a worker token minted before the delete, and the
+ * new FK rejects the insert with 23503. Without the fallback below that error
+ * lands in the swallow, so the ONE denial class most worth keeping — a replayed
+ * credential from a torn-down tenant — is the one that records nothing, and the
+ * doubly-null sink this whole ruling exists to open is never reached.
+ *
+ * So a 23503 on THAT named constraint, and only that one, retries ONCE with
+ * `organization_id` null. The row still satisfies the partial CHECK (the action
+ * is in the reserved namespace by construction), and the attested id is not lost
+ * — it moves into `details.unresolvedOrganizationId` alongside
+ * `details.organizationAttributionDropped`, so a reader can still tell WHICH
+ * organization was attested and that the FK, not the caller, is why the column
+ * is null. Degrading attribution beats losing the record.
+ *
+ * ★ WHY THIS IS NOT REACHABLE TODAY, and why it ships anyway. No production
+ * caller passes `organizationId` yet — the three live callers
+ * (`read-tools.ts:298`, `artifact-commit.ts:349`, `artifact-transfer-grant.ts:332`)
+ * all pass a resolved company. This PR is the one that LAYS the trap: it adds
+ * the FK the wiring unit's seven organization-attested DE-03 sites will hit. The
+ * fallback is proven by arm 7 of
+ * `e0-f013-unattributable-denial-sink.integration.test.ts` against real
+ * PostgreSQL rather than left as a note for the unit that would trip over it.
+ *
+ * ★ THE RETRY REQUIRES THE POOL HANDLE THE HEADER ALREADY DEMANDS. On an
+ * aborted transaction the second insert fails with 25P02 and is swallowed and
+ * logged exactly as before — no worse than today, and one more reason `db` must
+ * not be the transaction that is about to reject.
  */
 export async function recordSecurityDenial(
   db: Db,
   input: SecurityDenialInput,
 ): Promise<string | null> {
   const action = `${SECURITY_DENIAL_ACTION_PREFIX}${input.surface}`;
-  const details = sanitizeRecord({
+  const baseDetails: Record<string, unknown> = {
     ...(input.details ?? {}),
     crossing: input.crossing,
     reason: input.reason,
     control: input.control,
     actorSource: input.actorType,
-  });
+  };
+  const details = sanitizeRecord(baseDetails);
 
-  try {
+  const insert = async (
+    organizationId: string | null,
+    rowDetails: Record<string, unknown>,
+  ): Promise<string | null> => {
     const [row] = await db
       .insert(activityLog)
       .values({
@@ -194,7 +280,7 @@ export async function recordSecurityDenial(
         // keeps the value that reaches the database identical to the value the
         // caller passed, so a test can assert the two doubly-null DE-03 sites
         // really do write a doubly-null row rather than a defaulted one.
-        organizationId: input.organizationId ?? null,
+        organizationId,
         actorType: input.actorType,
         actorId: input.actorId,
         action,
@@ -208,29 +294,81 @@ export async function recordSecurityDenial(
         // `actor_id` (plain text) and `details` instead.
         agentId: null,
         runId: null,
-        details,
+        details: rowDetails,
       })
       .returning({ id: activityLog.id });
     return row?.id ?? null;
-  } catch (err) {
-    logger.error(
-      {
-        service: "security-denial-audit",
-        event: "security.denial_audit_write_failed",
-        crossing: input.crossing,
-        action,
-        companyId: input.companyId,
-        organizationId: input.organizationId ?? null,
-        actorType: input.actorType,
-        actorId: input.actorId,
-        entityType: input.entityType,
-        entityId: input.entityId,
-        reason: input.reason,
-        control: input.control,
-        err,
-      },
-      "failed to record a security denial — the refusal still stands, but it is now unattributable",
-    );
-    return null;
+  };
+
+  const attested = input.organizationId ?? null;
+
+  try {
+    return await insert(attested, details);
+  } catch (firstErr) {
+    const frame = pgErrorFrame(firstErr);
+    if (
+      attested !== null &&
+      frame.code === FOREIGN_KEY_VIOLATION &&
+      frame.constraint === ORGANIZATION_FK_CONSTRAINT
+    ) {
+      try {
+        const id = await insert(
+          null,
+          sanitizeRecord({
+            ...baseDetails,
+            organizationAttributionDropped: true,
+            unresolvedOrganizationId: attested,
+          }),
+        );
+        logger.warn(
+          {
+            service: "security-denial-audit",
+            event: "security.denial_audit_organization_unresolvable",
+            crossing: input.crossing,
+            action,
+            companyId: input.companyId,
+            organizationId: attested,
+            actorType: input.actorType,
+            actorId: input.actorId,
+            entityType: input.entityType,
+            entityId: input.entityId,
+            reason: input.reason,
+            control: input.control,
+          },
+          "the attested organization no longer exists — the denial was recorded in the tenantless sink instead",
+        );
+        return id;
+      } catch (retryErr) {
+        return recordFailure(input, action, retryErr);
+      }
+    }
+    return recordFailure(input, action, firstErr);
   }
+}
+
+/**
+ * The swallow. A failure to record must not convert a security refusal into a
+ * 500 (see the header's `★ IT NEVER THROWS`), so this logs at error level with
+ * the attribution the row would have carried and returns null.
+ */
+function recordFailure(input: SecurityDenialInput, action: string, err: unknown): null {
+  logger.error(
+    {
+      service: "security-denial-audit",
+      event: "security.denial_audit_write_failed",
+      crossing: input.crossing,
+      action,
+      companyId: input.companyId,
+      organizationId: input.organizationId ?? null,
+      actorType: input.actorType,
+      actorId: input.actorId,
+      entityType: input.entityType,
+      entityId: input.entityId,
+      reason: input.reason,
+      control: input.control,
+      err,
+    },
+    "failed to record a security denial — the refusal still stands, but it is now unattributable",
+  );
+  return null;
 }
