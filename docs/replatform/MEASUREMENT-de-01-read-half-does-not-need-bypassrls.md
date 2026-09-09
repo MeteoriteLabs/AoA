@@ -129,6 +129,11 @@ applied. Two organizations, one `jobs` row each. `jobs` is `ENABLE` + `FORCE ROW
 with a single policy targeted `TO "aoa_app"`. Run locally under `AOA_RUN_WIN_INTEGRATION=1`:
 **10/10 pass** (test wall-clock 6.7–9.7s across runs).
 
+**★ AND IT RUNS IN CI, so this is not a harness that only ever ran on one laptop.** The
+`AOA_RUN_WIN_INTEGRATION` hatch gates **Windows only**; Linux runs the suite unconditionally, and
+the `verify (1)` shard on PR #400's run `34381776576` logs
+`✓ src/__tests__/de01-read-half-alternatives.integration.test.ts (10 tests) 10245ms`.
+
 **The bootstrap's migration owner is the embedded-postgres SUPERUSER** (`startMigratedDatabase`
 connects as `test`). That is stated here because it is load-bearing for exactly one row below —
 ALT-A(ii) — and ALT-A(iii) is the control that makes the dependence visible rather than assumed.
