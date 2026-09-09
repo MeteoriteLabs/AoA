@@ -232,9 +232,9 @@ all four read as shipped.
    its own module is a test or the barrel re-export at `packages/worker-daemon/src/index.ts:634`.
    Consequence: **no shipped path can ever write a quarantined artifact row.**
 2. **DE-07 (Critical) — the secret-handle revocation lever cannot be pulled.** ★ **HALF-CLOSED
-   2026-09-09 by founder ruling — the revoke-lever half, and closed by RETIREMENT of the dead
-   column plus a narrowed clause, not by wiring. The broker-refresh half below is untouched and
-   this item stays open.** As filed: the clause was
+   2026-09-09 by founder ruling — the revoke-lever half, and closed by RETIREMENT OF THE DEAD
+   COLUMN'S READER (the column itself is RETAINED — see below) plus a narrowed clause, not by
+   wiring. The broker-refresh half below is untouched and this item stays open.** As filed: the clause was
    *"lease or fence loss invalidates handles; the broker revokes grants."* The fence half holds
    (`job-control.ts:3005`). The broker half did not: `job_secret_handles.revoked_at` was **read**
    (`job-control.ts:2992`, `isNull(...)`) and declared (`packages/db/src/schema/job_secret_handles.ts:81`),
@@ -345,9 +345,11 @@ controls could not fire.
   experiment is written out in `docs/replatform/DE-AUDIT-live-experiments.md`); (1) and (3)'s
   worker half need the E4-D12 composition-root wiring, which no ticket on disk carries; (2) needed
   *a revoke mutator or the deletion of the dead clause* and ★ **took the second route on
-  2026-09-09** — the column is dropped and the clause now states the device-grained cutoff, so
-  what remains of (2) is only broker-owned refresh; (4) needs SVC-002/003/005, none of which
-  are written. NOT `accepted`: HIGH may never be accepted.
+  2026-09-09** — the READER was removed and the clause now states the device-grained cutoff. ★ The
+  column itself is **RETAINED**: `job_secret_handles.revoked_at` is now declared-but-unread, its
+  `DROP` was withdrawn from this release (an N-1 binary would still name it), and that `DROP` is the
+  contract step, filed as `E0-F017`. So what remains of (2) is only broker-owned refresh; (4) needs
+  SVC-002/003/005, none of which are written. NOT `accepted`: HIGH may never be accepted.
 - **Resolution condition:** for each item, either the arming path gains a production caller and
   the crossing is re-measured, or the clause is deleted from the register — *a guard that nothing
   can arm is the failure class this programme has already shipped three times.* Resolve = flip this
