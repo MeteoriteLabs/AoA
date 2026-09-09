@@ -510,14 +510,27 @@ const STATUS_PATTERNS = Object.freeze([
 const SEVERITY_PATTERN = /\*{0,2}Severity:\*{0,2}\s*[`*]{0,2}\s*([A-Za-z][A-Za-z0-9]*)/;
 
 /**
- * Parse `findings.md` text into finding records.
+ * Parse `findings.md` text into finding records, KEEPING each finding's own block text.
  *
  * Deliberately tolerant about everything except the two fields the guard reasons over.
  * A heading with no readable `Status:` yields `status: "unknown"`, which the evaluator
  * treats as a HARD FAILURE (`unparseable_status`) rather than as "not open" — the silent
  * version is what made three whole registers invisible.
+ *
+ * ★ WHY THE BLOCK TEXT IS EXPORTED. `check-threat-control-audit-debt.mjs`'s FINDING-VISIBLE
+ * clause used to ask `epicText.includes(basename)` over the CONCATENATED text of every
+ * register — so a filename appearing in ordinary prose, inside a CLOSED finding, or in a
+ * sentence saying the document is NOT registered, all satisfied a guard whose stated
+ * protection is that `check-finding-ownership.mjs` can reach the document. It cannot reach
+ * prose, and it reasons about nothing that is not open. That guard needs to ask a question
+ * about ONE PARSED, OPEN FINDING'S OWN TEXT — and a second parser written next door is the
+ * "two guards disagreeing about what a thing IS" failure this file already fixed once. So
+ * the extent of a finding block is published here, from the one parser, rather than
+ * re-derived there.
+ *
+ * @returns {Array<{id: string, title: string, status: string, severity: string, text: string}>}
  */
-export function parseFindings(text) {
+export function parseFindingBlocks(text) {
   if (typeof text !== "string") return [];
   const out = [];
   for (const block of text.split(/\n(?=## )/)) {
@@ -540,7 +553,13 @@ export function parseFindings(text) {
       // for exactly the same reason the three registers above were.
       status: status ? status.toLowerCase() : UNPARSEABLE_STATUS,
       severity: severity ? severity[1].toUpperCase() : UNPARSEABLE_SEVERITY,
+      text: block,
     });
   }
   return out;
+}
+
+/** The record shape the ownership evaluator consumes: the same parse, without the block. */
+export function parseFindings(text) {
+  return parseFindingBlocks(text).map(({ text: _block, ...finding }) => finding);
 }

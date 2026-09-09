@@ -32,16 +32,19 @@
  *                     a crossing forces the pin down in the same commit. Exact-pin, not
  *                     slack-ceiling: a ceiling with slack silently absorbs a regression.
  *   AUDITED-FLOOR     a crossing recorded as audited may never return to `unaudited`. That
- *                     direction discards a recorded measurement.
+ *                     direction discards a recorded measurement. The floor must EXIST and
+ *                     must contain EVERY audited crossing — see `checkFloor` for why an
+ *                     iterate-the-floor version failed open in exactly this direction.
  *   DELIVERED-FLOOR   a crossing recorded `delivered` must still be `delivered`. This is the
  *                     "a delivered row regressing" arm, pinned as a SET so the error names
- *                     which row moved.
+ *                     which row moved. Same existence and exhaustiveness rules.
  *   OWNER-EXISTS      a crossing that is not `delivered` must name at least one ownerTicket
  *                     with a file on disk, or carry a declared deferral with a reason. An
  *                     audit route that terminates nowhere is declared debt, never silence.
  *   FINDING-VISIBLE   (the DE-11 shape) a crossing named by a committed finding document may
  *                     not be `unaudited`; and every top-level `FINDING-*.md` must be named by
- *                     an epic findings register, so the ownership census can reach it.
+ *                     an OPEN, PARSED finding entry in an epic register, so the ownership
+ *                     census can reach it. Prose, or a closed finding, does not count.
  *
  * Usage:
  *   node scripts/check-threat-control-audit-debt.mjs
@@ -50,6 +53,8 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
+
+import { classifyStatus, parseFindingBlocks } from "./lib/finding-ownership.mjs";
 
 export const THREAT_CONTROLS_JSON = "docs/architecture/distributed-execution-threat-controls.json";
 export const AUDIT_DEBT_JSON = "docs/architecture/distributed-execution-audit-debt.json";
@@ -80,6 +85,46 @@ const CROSSING_RANGE_RE = /\bDE-\d+\s*(?:\.\.\.|\.\.|…|—|–|-{1,2}|to)\s*DE
 export function crossingIdsNamedBy(text) {
   if (typeof text !== "string") return [];
   return [...new Set(text.replace(CROSSING_RANGE_RE, " ").match(CROSSING_ID_RE) ?? [])];
+}
+
+/** A character that can sit INSIDE a filename token, so a match touching one is part of a longer name. */
+const NAME_CHAR = /[A-Za-z0-9._-]/;
+const WORD_CHAR = /[A-Za-z0-9_-]/;
+const ALNUM = /[A-Za-z0-9]/;
+
+/**
+ * Does `text` name `basename` as a WHOLE filename or path token?
+ *
+ * ★★ W22B — `text.includes(basename)` was still a substring test one layer down. With two
+ * top-level documents whose names overlap, an open finding naming only the LONGER
+ * (`FINDING-other-FINDING-probe.md`) also satisfied the shorter (`FINDING-probe.md`), leaving
+ * the shorter document exactly as invisible to the ownership census as an unregistered one —
+ * the failure this clause exists to close.
+ *
+ * The two ends are NOT symmetric, and conflating them is how the first attempt at this fix
+ * red-lit a real registration. A path prefix (`docs/replatform/FINDING-probe.md`) is a
+ * legitimate mention, so `/` delimits on the left while `.`/`-` do not. On the right the
+ * common case is ordinary prose — "See FINDING-probe.md." — so a SENTENCE-ENDING period must
+ * delimit, while an extension-continuing one (`FINDING-probe.md.bak`) must not.
+ *
+ * @param {unknown} text
+ * @param {string} basename
+ * @returns {boolean}
+ */
+export function namesFileToken(text, basename) {
+  if (typeof text !== "string" || typeof basename !== "string" || basename.length === 0) return false;
+  for (let from = 0; ; ) {
+    const at = text.indexOf(basename, from);
+    if (at === -1) return false;
+    const end = at + basename.length;
+    const before = at > 0 ? text[at - 1] : "";
+    const after = end < text.length ? text[end] : "";
+    const afterNext = end + 1 < text.length ? text[end + 1] : "";
+    const leftDelimited = !NAME_CHAR.test(before);
+    const rightDelimited = !WORD_CHAR.test(after) && !(after === "." && ALNUM.test(afterNext));
+    if (leftDelimited && rightDelimited) return true;
+    from = at + 1;
+  }
 }
 
 /** Every `findings.md` under the epic tree — the same notion `check-finding-ownership.mjs` uses. */
@@ -148,6 +193,64 @@ export function collect(root) {
 }
 
 /**
+ * One floor arm: EXISTS, is EXHAUSTIVE, names only real crossings, and none of its members
+ * has moved in the forbidden direction.
+ *
+ * ★★★ W22 — THE ARM FAILED OPEN IN THE EXACT DIRECTION IT EXISTS TO PREVENT, and it had
+ * already been mutation-tested. The mutation used a crossing that WAS in the floor, so it
+ * exercised the one path that worked. Two holes, both found by external review:
+ *
+ *   (a) NOT EXHAUSTIVE. The loop iterated the floor, so it could only ever speak about ids
+ *       the floor already contained. Audit a crossing, lower the pin, and simply OMIT it
+ *       from `auditedFloor`: every clause passes. A later commit then returns THAT crossing
+ *       to `unaudited` while auditing a different one — the pin's count is preserved, the
+ *       floor is untouched, and a recorded measurement has been discarded with policy green.
+ *       The floor advertised "a recorded measurement may not be discarded" and did not
+ *       deliver it. The fix inverts the direction of the check: the EXPECTED set is derived
+ *       from the register, and the floor must contain all of it. A measurement is therefore
+ *       enrolled the moment it is recorded, not when someone remembers to enrol it.
+ *   (b) `?? []` MEANT DELETING THE WHOLE SECTION PASSED. Zero iterations, zero errors — the
+ *       "a check that nothing runs is not a check" shape, inside a guard whose own header
+ *       names that failure class. An absent floor now FAILS, matching `collect`'s stated
+ *       fail-closed posture for an absent manifest one level up.
+ *
+ * When the section itself is unreadable the membership and exhaustiveness passes are SKIPPED
+ * rather than run against an empty set: thirty derivative errors would bury the one that
+ * says what actually happened.
+ */
+function checkFloor({ errors, byId, section, floor, expectedIds, expectedWhy, regressed, regressionMessage }) {
+  const ids = floor == null ? undefined : floor.ids;
+  if (floor == null || typeof floor !== "object" || Array.isArray(floor) || !Array.isArray(ids)) {
+    errors.push(
+      `${AUDIT_DEBT_JSON}: ${section} is missing or is not an object with an "ids" array. ` +
+        "An absent floor is a FAIL, not an empty allow-list: deleting the section would otherwise retire " +
+        "this arm with zero iterations and zero errors, which is the failure class this guard exists to catch.",
+    );
+    return;
+  }
+
+  const recorded = new Set(ids);
+  for (const id of ids) {
+    const crossing = byId.get(id);
+    if (!crossing) {
+      errors.push(`${AUDIT_DEBT_JSON}: ${section} names ${id}, which is not a crossing in ${THREAT_CONTROLS_JSON}`);
+      continue;
+    }
+    if (regressed(crossing)) errors.push(regressionMessage(id, crossing));
+  }
+
+  for (const id of expectedIds) {
+    if (recorded.has(id)) continue;
+    errors.push(
+      `${AUDIT_DEBT_JSON}: ${section} is INCOMPLETE — crossing ${id} ${expectedWhy(byId.get(id))} in ` +
+        `${THREAT_CONTROLS_JSON} but is absent from ${section}. The floor must name EVERY such crossing in the ` +
+        "SAME commit that records it; a measurement enrolled nowhere can be discarded later while the pin's " +
+        "count stays constant, and nothing would notice.",
+    );
+  }
+}
+
+/**
  * The whole verdict, as a pure function of already-read text.
  * @returns {{errors: string[], notes: string[]}}
  */
@@ -182,34 +285,36 @@ export function evaluateAuditDebt(input) {
   }
 
   // --- AUDITED-FLOOR -------------------------------------------------------------------
-  for (const id of debt?.auditedFloor?.ids ?? []) {
-    const crossing = byId.get(id);
-    if (!crossing) {
-      errors.push(`${AUDIT_DEBT_JSON}: auditedFloor names ${id}, which is not a crossing in ${THREAT_CONTROLS_JSON}`);
-      continue;
-    }
-    if (crossing.deliveryStatus === UNAUDITED) {
-      errors.push(
-        `${THREAT_CONTROLS_JSON}: crossing ${id} is recorded in auditedFloor but has regressed to "${UNAUDITED}"; ` +
-          "a recorded measurement may not be discarded",
-      );
-    }
-  }
+  const auditedIds = crossings
+    .filter((c) => c?.id != null && c.deliveryStatus != null && c.deliveryStatus !== UNAUDITED)
+    .map((c) => c.id);
+  checkFloor({
+    errors,
+    byId,
+    section: "auditedFloor",
+    floor: debt?.auditedFloor,
+    expectedIds: auditedIds,
+    expectedWhy: (crossing) => `is "${crossing.deliveryStatus}" — i.e. it HAS been audited`,
+    regressed: (crossing) => crossing.deliveryStatus === UNAUDITED,
+    regressionMessage: (id) =>
+      `${THREAT_CONTROLS_JSON}: crossing ${id} is recorded in auditedFloor but has regressed to "${UNAUDITED}"; ` +
+      "a recorded measurement may not be discarded",
+  });
 
   // --- DELIVERED-FLOOR -----------------------------------------------------------------
-  for (const id of debt?.deliveredFloor?.ids ?? []) {
-    const crossing = byId.get(id);
-    if (!crossing) {
-      errors.push(`${AUDIT_DEBT_JSON}: deliveredFloor names ${id}, which is not a crossing in ${THREAT_CONTROLS_JSON}`);
-      continue;
-    }
-    if (crossing.deliveryStatus !== "delivered") {
-      errors.push(
-        `${THREAT_CONTROLS_JSON}: crossing ${id} is recorded in deliveredFloor but is now "${crossing.deliveryStatus}"; ` +
-          "a delivered control may not silently regress",
-      );
-    }
-  }
+  const deliveredIds = crossings.filter((c) => c?.id != null && c.deliveryStatus === "delivered").map((c) => c.id);
+  checkFloor({
+    errors,
+    byId,
+    section: "deliveredFloor",
+    floor: debt?.deliveredFloor,
+    expectedIds: deliveredIds,
+    expectedWhy: () => 'is "delivered"',
+    regressed: (crossing) => crossing.deliveryStatus !== "delivered",
+    regressionMessage: (id, crossing) =>
+      `${THREAT_CONTROLS_JSON}: crossing ${id} is recorded in deliveredFloor but is now "${crossing.deliveryStatus}"; ` +
+      "a delivered control may not silently regress",
+  });
 
   // --- OWNER-EXISTS --------------------------------------------------------------------
   const deferrals = debt?.ownerTicketDeferrals ?? {};
@@ -264,17 +369,30 @@ export function evaluateAuditDebt(input) {
   }
   // (b) A top-level FINDING-*.md that no epic register names can never print as unowned,
   //     because check-finding-ownership.mjs cannot see it. Make that structurally impossible.
-  const epicText = (input.findingDocuments ?? [])
+  //
+  // ★★ W22 — THIS WAS A RAW SUBSTRING CHECK OVER EVERY REGISTER'S CONCATENATED TEXT, and it
+  // therefore reported a protection it did not provide. The filename appearing in ordinary
+  // prose, inside a CLOSED finding, or inside a sentence saying the document is NOT
+  // registered, all satisfied it — while the document stayed exactly as structurally
+  // invisible to `check-finding-ownership.mjs` as before, because that census reasons about
+  // OPEN, PARSED findings and about nothing else. The bar must therefore be the same object
+  // the census reads: an OPEN finding entry whose own block names the file. The parse is
+  // `finding-ownership.mjs`'s own (`parseFindingBlocks` + `classifyStatus`), not a second
+  // one written here — two parsers disagreeing about what a finding IS is the failure this
+  // repo has already paid for twice.
+  const openFindingBlocks = (input.findingDocuments ?? [])
     .filter((d) => d.path.endsWith("/findings.md"))
-    .map((d) => d.text)
-    .join("\n");
+    .flatMap((d) => parseFindingBlocks(d.text).map((f) => ({ ...f, register: d.path })))
+    .filter((f) => classifyStatus(f.status) === "open");
   for (const rel of input.topLevelFindingDocPaths ?? []) {
     const basename = path.posix.basename(rel);
-    if (!epicText.includes(basename)) {
+    if (!openFindingBlocks.some((f) => namesFileToken(f.text, basename))) {
       errors.push(
-        `${rel}: a top-level FINDING document is named by no epic findings register, so scripts/check-finding-ownership.mjs ` +
-          "(which globs only docs/replatform/epics/*/findings.md) can never see it and it can never print as unowned. " +
-          "File a finding in the owning epic's register that names this document by filename.",
+        `${rel}: a top-level FINDING document is named by no OPEN finding entry in any epic findings register, so ` +
+          "scripts/check-finding-ownership.mjs (which globs only docs/replatform/epics/*/findings.md and reasons only " +
+          "about open findings) can never see it and it can never print as unowned. A mention in prose, or inside a " +
+          "finding that is already resolved, does not carry the document into the ownership census. File an OPEN " +
+          "finding in the owning epic's register that names this document by filename.",
       );
     }
   }

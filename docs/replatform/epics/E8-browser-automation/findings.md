@@ -1494,10 +1494,51 @@ exactly one place.
 
 | DE-11 clause, verbatim | Measured state at `360d0b0ed` |
 |---|---|
-| `trustedSide`: "a job-scoped sensitive-artifact store **with a TTL**" | **No TTL exists.** `ARTIFACT_RETENTION_CLASSES` is four bare names — `["ephemeral","run","audit","checkpoint"]` — with no durations (`packages/worker-protocol/src/policy.ts:201`). Every duration-bearing "retention" in the tree belongs to an unrelated subsystem (`packages/db/src/backup-lib.ts`, `packages/db/src/schema/memory_settings.ts:40`, `packages/adapters/acpx-local/src/server/execute.ts:61`). |
-| `confidentiality`: "sensitive browser artifacts are **encrypted** and TTL-bounded" | **No encryption.** The single upload path builds `PutObjectCommand` with `Bucket / Key / Body / ContentType / ContentLength` and nothing else (`server/src/storage/s3-provider.ts:159-165`). A grep for `ServerSideEncryption\|SSEKMS\|BucketEncryption\|aws:kms` across `server/`, `packages/`, `ui/` and `scripts/` returns **zero** hits. |
-| `revocation`: "TTL expiry and job completion **purge** sensitive artifacts" | **Nothing purges, and the refusal is structural rather than merely missing.** `isSweepEligible` refuses `status === "committed"` outright (`server/src/services/artifact-orphan-sweep.ts:79`) and refuses any row with a committed sibling (`:83`); the candidate query selects `status = 'granted'` only (`packages/db/src/repositories/tenant/index.ts:328`); and `markSwept`'s UPDATE is WHERE-guarded to `'granted'` (`:345-348`). No `PutBucketLifecycle` / `LifecycleConfiguration` exists anywhere. A committed sensitive artifact can never be collected by any shipped path. |
+| `trustedSide`: "a job-scoped sensitive-artifact store **with a TTL**" | ★ *Superseded in part — see the CORRECTIONs below; this row is sound about the application, `UNKNOWN` about the bucket.* **No TTL exists in the application.** `ARTIFACT_RETENTION_CLASSES` is four bare names — `["ephemeral","run","audit","checkpoint"]` — with no durations (`packages/worker-protocol/src/policy.ts:201`). Every duration-bearing "retention" in the tree belongs to an unrelated subsystem (`packages/db/src/backup-lib.ts`, `packages/db/src/schema/memory_settings.ts:40`, `packages/adapters/acpx-local/src/server/execute.ts:61`). |
+| `confidentiality`: "sensitive browser artifacts are **encrypted** and TTL-bounded" | ★ *Superseded in part — see the CORRECTIONs below; `UNKNOWN` pending `get-bucket-encryption`.* **The application never asks for encryption.** The single upload path builds `PutObjectCommand` with `Bucket / Key / Body / ContentType / ContentLength` and nothing else (`server/src/storage/s3-provider.ts:159-165`). A grep for `ServerSideEncryption\|SSEKMS\|BucketEncryption\|aws:kms` across `server/`, `packages/`, `ui/` and `scripts/` returns **zero** hits. |
+| `revocation`: "TTL expiry and job completion **purge** sensitive artifacts" | ★ *Split by the CORRECTIONs below: TTL-expiry half `UNKNOWN` pending `get-bucket-lifecycle-configuration`; **purge-on-job-completion half stays MEASURED ABSENT**, since a lifecycle rule cannot observe job completion.* **Nothing in the application purges, and the refusal is structural rather than merely missing.** `isSweepEligible` refuses `status === "committed"` outright (`server/src/services/artifact-orphan-sweep.ts:79`) and refuses any row with a committed sibling (`:83`); the candidate query selects `status = 'granted'` only (`packages/db/src/repositories/tenant/index.ts:328`); and `markSwept`'s UPDATE is WHERE-guarded to `'granted'` (`:345-348`). No `PutBucketLifecycle` / `LifecycleConfiguration` exists anywhere. A committed sensitive artifact can never be collected by any shipped path. |
 | `audit`: "sensitive-artifact access and **retention are audited**" | **Nothing audits either.** The only observation of a retention decision is a `logger.warn` (`server/src/services/artifact-commit.ts:174`), and the code's own comment three lines above says so in these words: *"This is a LOG LINE, not an audit record — DE-11 claims retention is audited and nothing audits it; this ticket does not pretend to close that"* (`:172-173`). The download-grant branch records nothing durable at all (`server/src/services/artifact-transfer-grant.ts:186-206`). |
+
+★ **CORRECTION 2026-09-09 (W22), on external review: parts of those four rows overstate what
+source can establish, and the register has been amended accordingly.** The TTL, encryption and
+purge rows above are all sound about **the application** and, in part, unsound about **the
+system**. Encryption and TTL can be delivered entirely by artifact-bucket configuration that the
+application never expresses and that a repository checkout cannot see: a bucket with default
+server-side encryption encrypts the bytes though `PutObjectCommand` never asks, and an expiration
+lifecycle rule TTL-bounds the objects though no `PutBucketLifecycle` call exists. **The absence
+of `ServerSideEncryption` in source therefore proves nothing about encryption at rest** — proving a
+control ABSENT needs strictly more evidence than proving it present, and a grep is not that
+evidence. Those sub-properties now read `UNKNOWN` pending bucket inspection in
+`docs/architecture/distributed-execution-threat-controls.json`, not "measured absent".
+★ **The same commit that filed the absence claim already contained its refutation**:
+`docs/replatform/DE-AUDIT-live-experiments.md` DE-11 (a) and (b) name
+`get-bucket-encryption` and `get-bucket-lifecycle-configuration` as the reads that settle exactly
+these clauses.
+
+★★ **CORRECTION 2026-09-09 (W22B), on the review of that correction: W22 over-corrected, and the
+rule it violated is the one this entry now leads with — THE UNIT OF CORRECTION IS THE CLAUSE AND
+THE CONJUNCT, NOT THE ROW.** W22 downgraded the **whole** `revocation` row because one of its two
+conjuncts had become unknown. `revocation` reads *"**TTL expiry and job completion** purge
+sensitive artifacts"*, and only the first conjunct is bucket-settable:
+
+- **TTL expiry → `UNKNOWN`** pending (b). An expiration lifecycle rule deletes on object age with
+  no application code at all.
+- **Purge on job completion → MEASURED ABSENT, and it stays absent whatever (b) returns.** An S3
+  expiration rule fires on object age plus prefix/tag; **it cannot observe job completion**.
+  Nothing in the commit path writes a completion-derived tag or key, and no code calls
+  `PutBucketLifecycle` to install a rule at all. The application-side refusal in the row above is
+  structural and stands. Downgrading this to `UNKNOWN` discarded a measured revocation gap.
+
+**The `audit` row is likewise unaffected and stays a measured absence** — the record it names is an
+application artefact and no bucket setting can supply it. **The finding's own verdict does not
+move**: DE-11 stays `partial`, and this stays open, because two-and-a-half `UNKNOWN`s over a
+measured missing purge-on-completion and a measured missing audit record is not a controlled
+crossing either. What changes is that the register neither claims to know something it did not
+measure, **nor forgets something it did**. *(These paragraphs are why the heading's "all four are
+absent" is retained rather than rewritten: the heading records what was filed on 2026-09-08, and
+these record what it was corrected to. Every **present-tense** assertion below has been brought
+into line with them; the dated measurement table has not, because it is a record of what was read
+at `360d0b0ed` — see the ★ markers in its three affected cells.)*
 
 **What is NO LONGER true, and must not be re-cited.** The source document's §3 — *"the commit path
 takes the worker's word ... the module that exists to deny this privilege has zero production
@@ -1505,15 +1546,24 @@ callers"* — was **closed by DAT-010** and is stale. Retention is now derived c
 before the mutator call and the manifest's declaration is explicitly ignored:
 `resolveStoredRetention` (`server/src/services/artifact-retention-authority.ts:49-53`) is called at
 `server/src/services/artifact-commit.ts:166` and its result stored at `:202`. `browserArtifactRetention`
-now has a production caller chain two hops deep. `DAT-010-result.md:4` records the closure. **§1 of
-that document — the four absent controls — still holds in full, and is what this finding carries
-forward.**
+now has a production caller chain two hops deep. `DAT-010-result.md:4` records the closure.
+
+**§1 of that document — the four absent controls — DOES NOT hold in full** (amended by W22B; it
+said "still holds in full" until the corrections above were written and that sentence then
+contradicted them). What §1 establishes, and what this finding carries forward, is narrower and
+exact: **the application implements none of the four**, which is a measured fact; **two of them
+and half of a third are `UNKNOWN` at the system level** pending the bucket reads; and **two
+sub-properties remain measured absences that no bucket setting can supply — purge on job
+completion, and the retention audit record.**
 
 **Blast radius today.** Nothing in production uploads `browser_cookie_state` /
 `browser_storage_state`: BRW-003 is unbuilt. There is no live leak. What is live and wrong is the
-**record** — a High-severity crossing was documented as controlled by four mechanisms, none of
-which are built, which is worse than an uncontrolled crossing because a reader of the register
-stops looking. That is the same defect class as DE-08 (`E8-F003`), one severity down.
+**record** — a High-severity crossing was documented as controlled by four mechanisms, **none of
+which the application builds, two of which are known-missing outright (purge on job completion,
+the retention audit record), and the rest of which nobody has checked the deployed bucket for**
+(amended by W22B; this sentence read "none of which are built", a present-tense absence claim the
+corrections above retract). That is worse than an uncontrolled crossing because a reader of the
+register stops looking. That is the same defect class as DE-08 (`E8-F003`), one severity down.
 
 **Disposition — `unowned`, with the reason stated rather than implied.** DE-11's owner tickets are
 BRW-003, BRW-004 and REL-001. BRW-004 shipped (`BRW-004-result.md`) and covers browser

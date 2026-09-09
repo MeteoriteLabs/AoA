@@ -231,7 +231,15 @@ so each finding's count stays true to the cohort it measured) plus one more:
   capabilities narrow "immediately" except for the one principal whose role rides a
   ten-minute token, and DE-19's "context authority ends with the lease" over a lane where
   no line reads run status at all.
-- **`E8-F011`** — DE-11 specifically: all four of its named controls are absent.
+- **`E8-F011`** — DE-11 specifically: **the application implements none of its four named
+  controls**, and two sub-properties are measured absent outright — purge on job completion,
+  and the retention audit record. *(Amended 2026-09-09 by W22B. This line read "all four of
+  its named controls are absent" until the register recorded that DE-11's encryption clause,
+  its TTL clause and the TTL-expiry half of its purge clause are `UNKNOWN` pending an
+  artifact-bucket inspection: source shows the application never asks for them, which is not
+  the same as the bucket not providing them. The other half of the purge clause and the audit
+  clause are unaffected — no bucket setting can observe job completion or write an application
+  audit record.)* DE-11's `deliveryStatus` is unchanged at `partial`.
 
 `scripts/check-threat-control-audit-debt.mjs` pins the unaudited count as a **ceiling that
 can only fall**, and that pin is now **zero** — so the ratchet's live work is its other two

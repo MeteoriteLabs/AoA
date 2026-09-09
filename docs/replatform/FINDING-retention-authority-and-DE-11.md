@@ -40,10 +40,24 @@ exploit. What is live and wrong *now* is the **documentation**, and what would b
 > from `server/src/services/artifact-commit.ts:166` **before** the mutator and stored at `:202`,
 > with the manifest's declaration explicitly ignored; `DAT-010-result.md:4` records the closure.
 >
-> **§1 — the four absent controls — was re-verified at tip `360d0b0ed` and still holds in full.**
-> It is what `E8-F011` carries forward, and it is why DE-11's `deliveryStatus` is now `partial`
-> rather than `unaudited`. The rest of this document is left unedited as the record of the
-> measurement.
+> **★ §1 DOES NOT HOLD IN FULL — amended 2026-09-09 (W22/W22B).** This banner said *"§1 — the
+> four absent controls — was re-verified at tip `360d0b0ed` and still holds in full"*, and that
+> sentence is now retracted. §1's table, and the §7 bullet *"Every factual observation in §1's
+> table … still stands"*, are sound about **the application** and overreach about **the system**.
+> Three sub-properties can be delivered entirely by artifact-bucket configuration a repository
+> checkout cannot see, and are now recorded `UNKNOWN` pending inspection in
+> `docs/architecture/distributed-execution-threat-controls.json`: **encryption at rest**
+> (`get-bucket-encryption`), the **TTL** bound, and the **TTL-expiry half of purge**
+> (`get-bucket-lifecycle-configuration`). Proving a control absent needs strictly more evidence
+> than proving it present, and the S3-PUT grep is not that evidence.
+>
+> **What §1 still establishes, unchanged and measured:** the application implements none of the
+> four; **purge on job completion is absent** whatever the bucket returns, because a lifecycle
+> rule fires on object age plus prefix/tag and cannot observe job completion; and **nothing
+> audits retention** — an application record no bucket setting can supply. `E8-F011` carries
+> exactly that forward, and DE-11's `deliveryStatus` stays `partial` rather than `unaudited`.
+> The body below is left unedited as the record of what was measured on the date it was
+> measured; read it through this banner.
 
 ---
 

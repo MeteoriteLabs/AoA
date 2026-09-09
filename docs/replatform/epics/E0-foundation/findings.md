@@ -240,17 +240,30 @@ all four read as shipped.
    `lastResolvedAt`, `resolveCount`, `updatedAt` and optionally `appliedPolicyVersion`. It cannot
    set `status` or `revokedAt`. **No code path anywhere can revoke a handle.** Separately,
    broker-owned refresh throws unconditionally (`server/src/services/execution-secret-brokers.ts:58-61`).
-3. **DE-10 (High) — orphan sandbox destruction is disarmed in every deployment, twice over.**
-   Server-side: `reconcile-reaper.ts:192` destroys, reached from `bin/adapter-manager.ts:228`
+3. **DE-10 (High) — orphan sandbox destruction is armed by nothing committed to this
+   repository, twice over.** Server-side: `reconcile-reaper.ts:192` destroys, reached from
+   `bin/adapter-manager.ts:228`
    → `reaper-loop.ts` — but only when `resolveReaperConfig` returns `enabled`, which requires
    `AOA_ADAPTER_MANAGER_REAPER_ENABLED` to trim to **exactly** `"1"` (`reaper-loop.ts:55`). A
    whole-tree grep finds that variable in docs, code and one test — and in **zero** deployment
-   manifests, so the loop is never started. Worker-side: WRK-007's restart reconciliation is the
+   manifests, so **no committed manifest starts the loop**. Worker-side: WRK-007's restart
+   reconciliation is the
    same dead `createStartupReconciler` as (1) — `bootstrapWorkerDaemon` builds an empty step list
    when no reconciler is injected (`packages/worker-daemon/src/bin/worker-daemon.ts:603`, whose
    own comment at `:601` says *"the current default"*), and neither production entry point injects
-   one. Consequence: **a crashed worker's sandbox is reclaimed only by the provider's own 60s TTL,
-   and nothing in this system reclaims it.**
+   one. Consequence: **no startup path reclaims a crashed worker's sandbox** — the worker-side
+   half is dead code that no setting can arm — **and nothing records that it was not reclaimed**,
+   unconditionally, since no code writes such a record on any path.
+   ★ **Amended 2026-09-09 (W22B).** This item read *"disarmed in every deployment"*, *"the loop
+   is never started"*, and *"reclaimed only by the provider's own 60s TTL, and nothing in this
+   system reclaims it"*. Those are three present-tense absolutes about the **server-side** half
+   that a source grep cannot support: `AOA_ADAPTER_MANAGER_REAPER_ENABLED` can be set out of
+   band — an orchestrator secret, a `.env`, an operator export — and arms the loop with **no
+   repository change at all**. Whether it runs in the deployed system is `UNKNOWN` pending an
+   inspection of the running adapter-manager's environment. **The finding's verdict does not
+   move**: the destroy half still fails on the worker-side code gap regardless, and the register
+   row (`DE-10`, `deliveryStatus: partial`) was corrected in the same direction on the same day —
+   this item is the derived half of that correction, and it was missed on the first pass.
 4. **DE-12 (Critical) — the generation fence is production-unreachable and has no writer.** The
    deny exists (`job-control.ts:1667-1679`, `eq(services.generation, input.generation)` at `:1675`)
    and is taken at `server/src/services/job-submission.ts:229` (`if (!executionPrincipal) throw
