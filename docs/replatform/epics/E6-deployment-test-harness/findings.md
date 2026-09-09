@@ -1290,9 +1290,47 @@ test files. That wiring was already pinned; the two script entry points were the
 
 ## E6-F020 — the invisible-character guard's OWN documented gap recurred within hours, and its stated reason for leaving the gap open ("no repair exists") is refuted by the repair made here
 
-**Status:** `open` · **Severity:** MED · **Owner:** `unowned`
+**Status:** `resolved` · **Severity:** MED · **Owner:** `unowned` (at filing; closed by ruling, not
+by an owner)
 **Filed:** 2026-09-08, by SVC-002 design review (branch `replatform/svc-002-design`), against work
 done in the same PR that hit it.
+**RESOLVED 2026-09-09 by founder ruling, via resolution option 2 (§4), NOT option 1.**
+
+> ★★★ **THE RULING, and the principle that decides it.** The guard is **NOT widened** — ZWSP, NBSP
+> and BOM stay legal. What was wrong was the guard's *description of itself*, and that is what was
+> repaired.
+>
+> The guard's rule is **"ban the raw byte, permit the ESCAPE."** That rule can only be applied
+> where an escape can be written — and **inside a block comment there IS no escape, only a
+> REWRITE.** So the byte scan covers the **ACCIDENT class** (a shell injecting a C0 byte, which has
+> shipped here three times and which the scan is complete against) and **not the AUTHORED class**
+> (a human typing an invisible codepoint on purpose). Those are different classes with different
+> remedies; the byte scan was never a candidate for the second. That boundary is now stated in the
+> header as **deliberate scope, not a known hole**.
+>
+> The one ZWSP found in practice was **load-bearing** (§1: deleting it stops the file parsing), which
+> is what makes this a scope question rather than a hygiene one.
+>
+> **The rewrite recipe is now recorded in both places** (`scripts/check-invisible-control-chars.mjs`
+> header, `scripts/lib/__tests__/invisible-control-chars.test.mjs` `THE DOCUMENTED LIMIT`): *convert
+> the block comment to `//` line comments* — line comments have no terminator, so a star followed by
+> a slash is written literally and no invisible character is needed. That is the four-character
+> repair §2 item 2 demonstrated, and the next author now finds it instead of reaching for a ZWSP.
+> Both narration sites were also corrected on the two claims this finding refuted: **"2 uses"** no
+> longer reads as a fixed grandfathered set (it is a **recurring pattern**), and **"no escape-based
+> repair exists"** no longer stands in for **"no repair exists"**.
+>
+> **Option 1 was considered and REFUSED, not deferred:** banning ZWSP/NBSP/BOM without a rewrite for
+> every legitimate use is the cry-wolf failure that gets a guard switched off — which is strictly
+> worse than a stated boundary. §4's option-1 text is retained below as the recorded path if it is
+> ever revisited.
+>
+> **What this ruling does NOT claim.** The residual in §2 is unchanged and still true: one
+> zero-width space still evades this guard, it is still not a security boundary against a deliberate
+> adversary, and nothing counts the authored class. The ruling changes what the repository *says*
+> about that, not what it *catches*.
+
+
 **Affected tickets:** none on disk. See "Why `unowned`".
 **Blocks gate:** no. Nothing is currently mis-enforced; the character is gone and the file's 24 tests
 pass.
@@ -1396,7 +1434,9 @@ ancestors) are all RESOLVED, and naming a shipped ticket would be the false-owne
 exists to refuse. NOT `accepted`: accepting would re-assert the rationale this occurrence is evidence
 against, and the decision is a real one with a real cost, not a nit.
 
-**Resolution — one of these two, decided deliberately:**
+**Resolution — one of these two, decided deliberately.** ★ **DECIDED 2026-09-09: option 2. See the
+ruling block at the head of this finding.** Option 1 is retained below as the recorded path if the
+decision is ever revisited; it was refused, not deferred.
 
 1. Add U+200B / U+00A0 (and a BOM rule) to `BANNED_CODEPOINTS`, repair the remaining legitimate uses
    the way this PR repaired its own (block comment → line comments; the rewrite, not an escape), and

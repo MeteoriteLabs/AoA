@@ -78,6 +78,26 @@ export const jobSecretHandles = pgTable(
     status: text("status"),
     lastResolvedAt: timestamp("last_resolved_at", { withTimezone: true }),
     resolveCount: integer("resolve_count"),
+    // VESTIGIAL AND UNREAD — kept ON PURPOSE, do not delete without reading the note.
+    //
+    // DE-07's founder ruling (2026-09-09) retired this column as a revocation lever:
+    // it shipped with ZERO writers tree-wide, and its single reader ANDed it with
+    // `status = 'active'`, so it could never independently deny anything. That reader
+    // conjunct is GONE (listActiveExecutionSecretHandles, job-control.ts) — nothing in
+    // the tree reads `revokedAt` any more. Device-grained revocation is the cutoff
+    // (revokeWorker -> bumpExecutionTargetGeneration -> the `target_revoked` deny), and
+    // `status` is the per-handle surface a future revocation arms with ONE mutator
+    // (`authorizeSecretResolve`'s `if (h.status !== "active") return "handle_revoked"`,
+    // job-fence.ts:293).
+    //
+    // The DECLARATION stays because the DROP cannot ship in the same release as the
+    // reader removal. `scripts/deploy/remote-compose-deploy.sh` rolls the BINARY back
+    // on a failed deploy (on_exit -> rollback_previous) and reverts NO schema, so an
+    // N-1 binary would come back up selecting `revoked_at` against a table that no
+    // longer has it and every secret-handle operation would fail. This is the EXPAND
+    // half of expand/contract; the CONTRACT (drop the column) is scheduled for a later
+    // release, once the N-1 rollback window has closed — i.e. once no deployable binary
+    // still names this column. Tracked as E0-F017.
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
