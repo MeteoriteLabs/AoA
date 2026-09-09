@@ -367,6 +367,13 @@ canary. SVC-002 delivers the first two-and-a-bit.
 * **Drain means one thing here, not two.** A draining target is not *selected* for a new
   instance. Moving, stopping or replacing an instance already running on a target that has
   begun draining is SVC-003/SVC-005.
+* **E9-F003 is OPENED, not closed.** The lease envelope's `executionPrincipal` for a
+  `service_reconcile` job names the SERVICE under the kind `service_instance`, while the
+  same envelope's workload carries a different `serviceInstanceId`. Closing it needs a
+  Protocol Custodian ruling (design §10.2), which this unit cannot make. §6a(iii).
+* **No distributed submission writes an `activity_log` entry** — not this one and not the
+  five older source kinds. `jobAuditBridge` has zero production callers. Already on the
+  register under DE-01; §6a(iv).
 * **E9-F001 is untouched.** `ServiceHealthStatus` still carries `"interrupted"` while the DB
   CHECK forbids it. SVC-002 does not widen or narrow a governed fence mutator.
 * **E9-F002 stays open**, and its `deliveryEvidence` is unchanged by this ticket. SVC-008b
