@@ -1,0 +1,1 @@
+ALTER TABLE "job_secret_handles" DROP COLUMN "revoked_at";

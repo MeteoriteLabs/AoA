@@ -1228,6 +1228,31 @@ function.
 scouting workflow; every claim below survived two independent refutation rounds and was re-measured
 by hand before filing.
 
+★★★ **FOUNDER RULING 2026-09-09 — `capabilityProven` STAYS UNWIRED, AS A PRINTED DISCLOSURE.
+This is a decision, not an omission; the next reader should find a ruling here rather than a
+gap.** `capabilityProven` is computed on every run, printed with every verdict and carried in
+`verdict-json` — and it **gates nothing**. `--require-capability` stays an operator opt-in, off
+by default (`server/src/cli/verify-e7-1-distributed-run.ts:65`), and no workflow, script or gate
+clause passes it.
+
+*The reason is this repository's own precedent, not a judgement about the remaining work.* A gate
+nobody can pass gets deleted, argued around, and then bypassed. This finding is the measurement
+that makes that outcome certain today: **no checked-in configuration makes any run distributed**,
+so both arms read 0 structurally, and arming the flag now would mint an always-red gate whose
+redness says nothing about the agent under test — on the first campaign that then needs it green.
+A disclosure that is always printed and never lies is worth more than a gate that is always red
+and will be relaxed.
+
+**The condition for revisiting is named, so the ruling cannot become permanent by default:** turn
+`--require-capability` on by default (and wire it into a gate clause) when BOTH **(a)** this
+finding, E7-F018, is CLOSED — some checked-in configuration actually makes a run distributed and a
+producer exists for at least one arm — AND **(b)** the rollout dial is ARMED in a real deployment,
+not merely armable. Until both hold, do not read the absent gate as an oversight and do not "fix"
+it by flipping the flag. **No code was changed by this ruling** — not the computation, not either
+arm, not `capabilityProven`'s separation from `ok`; the same text is recorded in the CLI header
+beside the limitations block so an operator meets it where the flag lives. Nothing here moves this
+finding's **status**, **severity** or **UNOWNED** ownership.
+
 **What.** `capabilityProven` is an OR over two counters (predicate
 `server/src/services/e7-distributed-run-verifier.ts:506`, verdict `:522`). **Neither counter can be
 moved by any producer, however correct, in any configuration checked into this repository** — and,

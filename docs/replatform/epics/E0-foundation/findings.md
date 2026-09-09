@@ -231,15 +231,44 @@ all four read as shipped.
    `createStartupReconciler` (`:292`) has **zero production callers** — every reference outside
    its own module is a test or the barrel re-export at `packages/worker-daemon/src/index.ts:634`.
    Consequence: **no shipped path can ever write a quarantined artifact row.**
-2. **DE-07 (Critical) — the secret-handle revocation lever cannot be pulled.** The clause is
+2. **DE-07 (Critical) — the secret-handle revocation lever cannot be pulled.** ★ **HALF-CLOSED
+   2026-09-09 by founder ruling — the revoke-lever half, and closed by DELETION, not by wiring.
+   The broker-refresh half below is untouched and this item stays open.** As filed: the clause was
    *"lease or fence loss invalidates handles; the broker revokes grants."* The fence half holds
-   (`job-control.ts:3005`). The broker half does not: `job_secret_handles.revoked_at` is **read**
+   (`job-control.ts:3005`). The broker half did not: `job_secret_handles.revoked_at` was **read**
    (`job-control.ts:2992`, `isNull(...)`) and declared (`packages/db/src/schema/job_secret_handles.ts:81`),
    and the **single write chokepoint** for that table — `tx.update(jobSecretHandles)` at
    `job-control.ts:3139`, the only such call in the tree — sets exactly
-   `lastResolvedAt`, `resolveCount`, `updatedAt` and optionally `appliedPolicyVersion`. It cannot
-   set `status` or `revokedAt`. **No code path anywhere can revoke a handle.** Separately,
-   broker-owned refresh throws unconditionally (`server/src/services/execution-secret-brokers.ts:58-61`).
+   `lastResolvedAt`, `resolveCount`, `updatedAt` and optionally `appliedPolicyVersion`. It could set
+   neither `status` nor `revokedAt`. **No code path anywhere could revoke a handle.**
+
+   ★ **The ruling did not arm it. It removed it, and narrowed the claim to what ships.** Founder
+   ruling of 2026-09-09: **device-grained revocation is sufficient**, so `revoked_at` was dropped
+   (Drizzle schema edit + `pnpm db:generate` → `packages/db/src/migrations/0274_jittery_nehzno.sql`,
+   a single `ALTER TABLE "job_secret_handles" DROP COLUMN "revoked_at";`), the single reader lost
+   its `isNull(...)` conjunct, and DE-07's `revocation` clause was rewritten to state the
+   **device-grained fence cutoff** that actually ships:
+   `POST /organizations/:organizationId/workers/:workerId/revoke` → `revokeWorker`
+   (`server/src/services/job-operations.ts:302`) → `revokeExecutionTarget` →
+   `bumpExecutionTargetGeneration` (`server/src/services/execution-targets.ts:272`, taken at
+   `:307`/`:311`), after which every later resolve dies at
+   `throw new JobFenceError("target_revoked")` (`job-control.ts:1177`) inside `guardActiveFence`,
+   **before the handle row is read**. Re-verified at branch tip before the drop: zero writers
+   tree-wide; the only reader ANDed the column with `status = 'active'` so it could never subtract
+   a row `status` had not already admitted; no index, no RLS policy and no per-column grant
+   referenced it (`job_secret_handles` carries a whole-table `aoa_app` grant,
+   `server/src/db/job-control-legacy-grants.ts:626`; the `revoked_at` entry in that file's column
+   matrix at `:667` is **`mcp_api_keys`**, a different table, and is untouched); it appeared in
+   exactly one assertion (`server/src/__tests__/secret-broker.integration.test.ts`, now asserting
+   its **absence**); and `0250_condemned_warbird.sql:23` added it nullable with no default and no
+   backfill, so no row could carry a non-null value.
+   **The deletion forecloses nothing:** `status` and its deny —
+   `if (h.status !== "active") return "handle_revoked"` in `authorizeSecretResolve`
+   (`packages/db/src/repositories/tenant/job-fence.ts:293`) — are retained unchanged, and are the
+   surface a future per-handle revocation arms with **one** mutator.
+   **The residual is now stated in the register rather than implied:** revocation blast radius is
+   the whole device, not one secret. *Still open here:* broker-owned refresh throws unconditionally
+   (`server/src/services/execution-secret-brokers.ts:58-61`), which is why DE-07 remains `partial`.
 3. **DE-10 (High) — orphan sandbox destruction is armed by nothing committed to this
    repository, twice over.** Server-side: `reconcile-reaper.ts:192` destroys, reached from
    `bin/adapter-manager.ts:228`
@@ -278,9 +307,11 @@ all four read as shipped.
    call anywhere in the tree. A generation rollover cannot be performed, so the fence cannot fire.
 
 **Why each is HIGH.** (1) and (3) are silent data/resource losses — a late result is dropped rather
-than quarantined, and an orphan sandbox is billable. (2) means the only revocation story for a
-resolved execution secret is fence expiry; an operator who learns a handle is compromised has no
-lever. (4) means DE-12's `failureMode` — *"two service instances act as active simultaneously"* —
+than quarantined, and an orphan sandbox is billable. (2) meant, as filed, that the only revocation
+story for a resolved execution secret was fence expiry; ★ **as of the 2026-09-09 ruling the
+operator lever is `revokeWorker`, which is real but DEVICE-GRAINED** — an operator who learns one
+handle is compromised must revoke the whole device — and (2) stays HIGH on its broker-refresh
+half. (4) means DE-12's `failureMode` — *"two service instances act as active simultaneously"* —
 has no control at all, only a gate that nothing can reach.
 
 **What it is NOT.** None of the four is a *wrong* implementation. Each ticket's own result document
@@ -294,8 +325,10 @@ controls could not fire.
 - **Disposition:** `unowned` for the class. Per-item ownership is uneven and is stated in the
   ownership manifest entry: (3)'s server half needs four environment settings and no code (the
   experiment is written out in `docs/replatform/DE-AUDIT-live-experiments.md`); (1) and (3)'s
-  worker half need the E4-D12 composition-root wiring, which no ticket on disk carries; (2) needs
-  a revoke mutator or the deletion of the dead clause; (4) needs SVC-002/003/005, none of which
+  worker half need the E4-D12 composition-root wiring, which no ticket on disk carries; (2) needed
+  *a revoke mutator or the deletion of the dead clause* and ★ **took the second route on
+  2026-09-09** — the column is dropped and the clause now states the device-grained cutoff, so
+  what remains of (2) is only broker-owned refresh; (4) needs SVC-002/003/005, none of which
   are written. NOT `accepted`: HIGH may never be accepted.
 - **Resolution condition:** for each item, either the arming path gains a production caller and
   the crossing is re-measured, or the clause is deleted from the register — *a guard that nothing
@@ -631,7 +664,12 @@ with the flow-analysis guard, not the grep one.
 - **Blocks gate:** No — but it is the reason five register rows are `partial` rather than
   `delivered`, and each of the five looks delivered from the register.
 - **Progress (2026-09-09):** ★ **Item 3 (DE-22) is CLOSED — one of five. Items 1, 2, 4 and 5 are
-  untouched and this finding stays open.** `checkEvidenceImmutability` now has exactly one
+  untouched and this finding stays open.** ★ **Later the same day, items 1 and 2 had their register
+  CLAUSES amended by founder ruling — no lever gained a caller, no `deliveryStatus` moved, and
+  neither item is closed.** Both clauses overstated what the code does (DE-18's missing piece is
+  liveness, not a deny; DE-20's *"atomically"* named a transition no code performs while per-job
+  cancellation ships and is routed). Read those amendments as the register being made honest, not
+  as progress on the wiring. `checkEvidenceImmutability` now has exactly one
   production caller: `scripts/check-evidence-immutability.mjs`, invoked by the `policy` job of
   `.github/workflows/pr.yml` (step *"Evidence-ledger immutability (QA/handoff records are
   write-once)"*) on every non-draft pull request. Do not read this line as movement on the other
@@ -648,12 +686,28 @@ correct, and the half that would ever arm it does not run in any deployment.
    revocation the lease stays `offered`/`active` and the `execution_target_revocations` row stays
    `pending` forever, so the job attached to it is **stranded non-terminal with its organization
    concurrency slot still held**.
+   ★ **Clause amended 2026-09-09 by founder ruling — the CLAIM was wrong, the lever is still
+   unwired, `deliveryStatus` unchanged.** DE-18's `revocation` clause now says in its own words
+   what this item measured: the missing thing is **liveness, not a deny**. The authz cutoff already
+   fires at `job-control.ts:1177`, and the code states the division at `:1127-1130` — *"the recheck
+   is the gate, the fanout is only convergence"* — so no old-generation effect executes while the
+   work sits stranded. What the fanout would add is retirement of that stranded work and release of
+   the held slot. Wiring it is a **garbage collector, not a security control**.
 2. **DE-20 (Critical) — the rollback lever cannot be pulled, and the row's own word is "atomically".**
    `createDistributedExecutionDrain` (`server/src/services/job-distributed-drain.ts:114`) has **zero
    production callers** — declaration, two test files, and the same `gate-clause-wiring.mjs:10`
    comment. Removing an organization from the rollout dial therefore does not cancel an in-flight
-   distributed run; it only changes what the *next* wake resolves. The `revocation` clause describes
-   a transition no code performs.
+   distributed run; it only changes what the *next* wake resolves.
+   ★ **Clause amended 2026-09-09 by founder ruling, and the amendment NARROWS this item; the lever
+   is still unwired and `deliveryStatus` is unchanged.** *"Atomically"* is **dropped** from DE-20's
+   `revocation` clause, because it described a transition no code performs. But *"the rollback lever
+   cannot be pulled"* was too broad as written: **per-job cancellation ships and is routed** —
+   `POST /organizations/:organizationId/companies/:companyId/jobs/:jobId/drain`
+   (`server/src/routes/job-control.ts:218`, on the router mounted at `server/src/app.ts:498`) →
+   `operations.drainJob` (`server/src/services/job-operations.ts:291`) →
+   `reconciliation.requestCancellation({graceful:true})`, alongside JOB-006's operator cancel at
+   `server/src/routes/worker-control.ts:988`. What has zero production callers is the **org-wide
+   sweep bound to the rollout dial**, and that is what stays absent.
 3. **DE-22 (High) — ★ CLOSED 2026-09-09. As filed: the evidence ledger's immutability check had
    never run, and the rule it would enforce was already broken in this repository's history.**
    `checkEvidenceImmutability` (at filing `scripts/check-distributed-execution-foundation.mjs:2633`;
@@ -724,13 +778,15 @@ is that nothing could tell the difference.
   mechanism:* **(1) DE-18** needs a scheduler that drains `execution_target_revocations` where
   `status='pending'`; ★ it is a **garbage collector, not a deny** — the authz cutoff already fires
   at `job-control.ts:1177`, which the code states at `:1127-1130` (*"the recheck is the gate, the
-  fanout is only convergence"*), so wiring it as a security control would duplicate a live one, and
-  the clause *"the broker revokes grants"* should be amended in the same change. **(2) DE-20**'s
+  fanout is only convergence"*), so wiring it as a security control would duplicate a live one.
+  ★ **The clause amendment this bullet asked for is DONE (2026-09-09); only the scheduler is
+  owed.** **(2) DE-20**'s
   lever AND its store are complete (`job-distributed-drain-store.ts:68` ships real SQL post-MIG-009)
   — it needs a real trigger on the rollout-dial-off path that actually invokes `drainAll`;
-  ★ `GO-BOOK.md:2901` forbids composing it in `index.ts` merely to move the caller count, and the
-  row's word *"atomically"* is what is wrong (per-job cancellation already ships at
-  `routes/job-control.ts:227`). *Needs mechanism built:* **(5) DE-28/E0-F011 item 1** needs a
+  ★ `GO-BOOK.md:2901` forbids composing it in `index.ts` merely to move the caller count.
+  ★ **The word *"atomically"* has been DROPPED from the clause (2026-09-09) and the clause now
+  records that per-job cancellation already ships at `routes/job-control.ts:218`→`:227`; only the
+  org-wide sweep is owed.** *Needs mechanism built:* **(5) DE-28/E0-F011 item 1** needs a
   durable enumeration of quarantine candidates (none exists) **plus** composition-root wiring for
   the zero-caller `createStartupReconciler` — two problems, not one. **(4) DE-24** needs a host
   updater binary that does not exist *and* real verification inside `planUpdateSwap`, whose

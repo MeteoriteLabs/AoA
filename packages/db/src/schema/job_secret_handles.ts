@@ -78,7 +78,13 @@ export const jobSecretHandles = pgTable(
     status: text("status"),
     lastResolvedAt: timestamp("last_resolved_at", { withTimezone: true }),
     resolveCount: integer("resolve_count"),
-    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    // NOTE — there is deliberately NO `revoked_at` column. DE-07's founder ruling
+    // (2026-09-09) deleted it: it shipped with ZERO writers tree-wide, and its single
+    // reader ANDed it with `status = 'active'`, so it could never independently deny
+    // anything. `status` is retained and IS the per-handle revocation surface — the
+    // deny is `authorizeSecretResolve`'s `if (h.status !== "active") return
+    // "handle_revoked"` (job-fence.ts:293), which a future per-handle revocation arms
+    // with ONE mutator. Do not re-add a second, unwired revocation column.
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

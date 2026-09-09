@@ -403,9 +403,14 @@ integration("DAT-004 lease-scoped secret broker", () => {
     // The rich binding + audit columns exist.
     expect(names).toEqual(expect.arrayContaining([
       "ref_kind", "ref_id", "materialization", "use_policy", "destination",
-      "bound_target_generation", "status", "last_resolved_at", "resolve_count", "revoked_at",
+      "bound_target_generation", "status", "last_resolved_at", "resolve_count",
       "owner_principal_kind", "owner_principal_id",
     ]));
+    // DE-07 ruling (2026-09-09): `revoked_at` was DROPPED (0274). It had zero writers
+    // tree-wide and its only reader ANDed it with `status = 'active'`, so it could never
+    // independently deny anything. Per-handle revocation is `status` alone. Asserted
+    // NEGATIVELY so a re-added second, unwired revocation column reds this test.
+    expect(names).not.toContain("revoked_at");
   });
 
   // ---- happy resolves per ref_kind ----------------------------------------

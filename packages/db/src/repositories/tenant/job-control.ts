@@ -2988,8 +2988,12 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         .where(and(
           eq(jobSecretHandles.organizationId, input.organizationId),
           eq(jobSecretHandles.jobId, input.jobId),
+          // `status = 'active'` is the WHOLE liveness predicate, and the same one
+          // `authorizeSecretResolve` denies on (job-fence.ts:293). The former
+          // `isNull(revokedAt)` conjunct was dropped with the column (DE-07 ruling,
+          // 2026-09-09): it had no writer, so ANDing it here could never subtract a
+          // row that `status` had not already admitted.
           eq(jobSecretHandles.status, "active"),
-          isNull(jobSecretHandles.revokedAt),
         ))
         .orderBy(asc(jobSecretHandles.createdAt), asc(jobSecretHandles.handle));
     },
