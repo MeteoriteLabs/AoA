@@ -15,7 +15,8 @@ decision being requested**, so this paper does not pre-empt it by making the ame
 ## 0. The headline, stated so it cannot outrun its own measurement
 
 Six clause-halves were queued here. **Measured at source, they are not one shape and not one
-verdict — and three of the six are not blocked in the way the finding says they are.**
+verdict, and on THREE of the six the stated blocker does not hold. On two of those three the clause
+turns out to be deliverable; on the third — DE-17 — a different and harder blocker takes its place.**
 
 | # | Clause-half | E0-F013's stated blocker | Measured verdict |
 |---|---|---|---|
