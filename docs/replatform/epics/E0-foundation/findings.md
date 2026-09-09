@@ -247,8 +247,12 @@ measured rather than inherited:
    back". The pattern used here — the refusing branch records an **intent** into a local, the
    transaction returns, and the caller writes the row on the pool handle before responding —
    costs nothing and avoids borrowing a second pool connection while the first is still held,
-   which on a small pool would be a self-deadlock **on the refusal path**. Any Group A/returning
-   deny can use it as-is. ★ **And the corollary this list first drew — "a `throw`-shaped deny
+   which on a small pool would be a self-deadlock **on the refusal path**. Any returning deny
+   **that has an FK-valid tenant at its sink** can use it as-is — ★ and that qualifier is not
+   decoration: CORRECTION 2 below measures that Group A is false for **all three** of its
+   members (DE-16 and DE-21's board half have no `companyId` at their sinks, DE-15 has no tenant
+   at all), and none of the sixteen remaining is a drop-in. The transaction was never the axis.
+   Attribution is. ★ **And the corollary this list first drew — "a `throw`-shaped deny
    still cannot" — is itself too strong, measured on DE-06's own throwing refusals.** A throw can
    be caught OUTSIDE `runInTenant` and drained there; nothing about the transaction forbids it.
    What actually stops DE-06's `resolveWorkerFenceContext` throws is that no FK-valid company
@@ -778,7 +782,9 @@ state twelve, not seventeen.
    ★ **AMENDED 2026-09-09.** **DE-15 joins this list** — a kill-switch drain is a fleet-level
    verdict about a *provider* and has no tenant to attribute to at all — and **DE-21's share of
    this decision is its board/session half only**, not the whole crossing, because its agent-key
-   branches DO resolve an FK-valid prober tenant. This decision now blocks three crossings and is
+   branches DO resolve an FK-valid prober tenant. This decision now blocks **four** clause-halves
+   (DE-03, DE-21's board half, DE-15, and — added by this unit's own measurement — DE-06's
+   fence-resolution throws; see the authoritative count above) and is
    the highest-leverage unblock left in the class.
 3. **Retention and disclosure of a denial record.** (a) Whose log does a cross-tenant denial land
    in? The probed company's `activity_log` discloses to them that they were probed and by whom.
