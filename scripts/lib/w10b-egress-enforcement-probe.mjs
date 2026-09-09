@@ -71,6 +71,23 @@
 // stays not-delivered, no production path passes a `network` body, and nothing here proposes
 // that one should.
 //
+// ★★★ THAT ARM WAS DISPATCHED TWICE ON 2026-09-09 AND THE SHAPE IS STILL UNMEASURED. Runs
+// 34328502574 and 34328780645, three minutes apart, on replatform/w10b-allowlist-arm at
+// 899aceeec, template aoa-base: BOTH returned `UNRUN — arm-was-never-created`, because
+// `Sandbox.create` answered `500: Failed to place sandbox: sandbox creation failed on 3
+// node(s), please retry; if the problem persists, contact us`. In the SAME runs, SECONDS
+// apart, on the SAME template, the policy and anti-vacuity arms CREATED successfully
+// (i531or2zgvmdlt18e2u2s / i13yih10trv4512eugjmz, then im9ge2ldwohsitqrtx5rc /
+// i0xsmm4fzyhr3ep736ge9) — which is what makes this evidence rather than noise. STATE IT AT
+// THIS STRENGTH AND NO HIGHER: the documented shape REPRODUCIBLY FAILS TO PLACE at this tier,
+// cause unknown and E2B's to explain. It is NOT a refusal — a 500 with a please-retry hint is
+// not a validation rejection, and the contrast is in the same run, where the IPv6 deny arm was
+// refused `400: invalid denied CIDR ::ffff:0:0/96`. It is NOT transient — it reproduced, with
+// successful siblings each time. Two attempts is the evidence; do not quote a rate.
+// ★ AND UNRUN IS NOT INERT: the sandbox never existed, so nothing in this file may be read as
+// the allowlist construction having been tested and found not to enforce. E8-F008 §8;
+// W10B-egress-enforcement-result.md §14; runbook §13.7.
+//
 // ★★★ AND A READ-BACK IS MANDATORY, NOT HYGIENE. `buildNetworkEgress` is a pure
 // passthrough — the SDK validates NOTHING client-side, and the only error path is the HTTP
 // status. The API target is per-company configurable (`resolveE2bDomain` =
@@ -2017,18 +2034,35 @@ export function classifyAllowlistArm({ arm } = {}) {
   });
 
   // ── (0) THE ARM MUST EXIST ────────────────────────────────────────────────
-  // ★ A create REFUSAL IS A RESULT ABOUT THE SHAPE and its detail carries the status: the
-  // API validates server-side (measured — it refused an IPv6 CIDR with a 400), so a rejected
-  // deny-all-plus-allowlist body would mean the documented shape is not accepted at this
-  // tier at all. It is still `unrun` for verdict purposes: nothing was measured about
-  // enforcement.
+  // ★ A create failure IS A RESULT ABOUT THE SHAPE, but WHICH result depends on the status,
+  // and this branch must not overstate it. A 4xx is a VALIDATION REFUSAL — the tier does not
+  // accept the body (measured precedent: the IPv6 deny arm, `400: invalid denied CIDR
+  // ::ffff:0:0/96`). A 5xx is a PLACEMENT FAILURE — the tier accepted the request and could
+  // not satisfy it; that is NOT a refusal, however many times it repeats. This branch used to
+  // print "the tier refused the ... body" for BOTH, which made a false claim on 2026-09-09
+  // when runs 34328502574 / 34328780645 hit a 500 (see the header). Either way it is `unrun`
+  // for verdict purposes: NOTHING was measured about enforcement, and UNRUN IS NOT INERT.
   if (arm?.created !== true) {
+    const createDetail = String(arm?.detail ?? "no record at all");
+    const status = /\b(4\d\d)\b/.test(createDetail)
+      ? "refusal"
+      : /\b(5\d\d)\b/.test(createDetail)
+        ? "server-side"
+        : "unknown";
+    const reading =
+      status === "refusal"
+        ? "That is a 4xx: the tier REFUSED the deny-all-plus-allowlist body, i.e. it does not accept the documented shape. " +
+          "Record it as a refusal."
+        : status === "server-side"
+          ? "That is a 5xx: the tier ACCEPTED the request and FAILED TO PLACE the sandbox. That is NOT a refusal and NOT a " +
+            "statement about whether the shape is valid — record it as 'fails to place, cause unknown', and check whether the " +
+            "sibling arms placed in the same run before calling it anything stronger or weaker than that."
+          : "No HTTP status is visible in that detail, so nothing may be inferred about the shape from it at all.";
     return out(
       "unrun",
       "arm-was-never-created",
-      `Sandbox.create did not return for the allowlist arm: ${String(arm?.detail ?? "no record at all")}. If that is an ` +
-        "HTTP status, it is a RESULT about the documented shape — the tier refused the deny-all-plus-allowlist body — and " +
-        "it should be recorded as such. It is not an enforcement measurement either way.",
+      `Sandbox.create did not return for the allowlist arm: ${createDetail}. ${reading} ` +
+        "It is not an enforcement measurement either way: the sandbox never existed, so UNRUN must never be read as INERT.",
     );
   }
 

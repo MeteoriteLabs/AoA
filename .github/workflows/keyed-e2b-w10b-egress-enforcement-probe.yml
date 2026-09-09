@@ -44,9 +44,9 @@ name: Keyed E2B — W10B DE-08 egress-enforcement probe
 # The tier accepts, validates, stores and echoes the deny set and enforces none of it. Finding
 # E8-F008; operator record in the runbook §12.
 #
-# ★★★ AND A FIFTH ARM WAS ADDED 2026-09-09 (W10B-B) THAT HAS NEVER RUN, so "re-firing adds
-# nothing" is NO LONGER TRUE. (a)–(e) declare a `denyOut` CIDR list with NO `allowOut`; E2B
-# documents the fine-grained control as default-deny PLUS an `allowOut` allowlist, and that
+# ★★★ AND A FIFTH ARM WAS ADDED 2026-09-09 (W10B-B). (a)–(e) declare a `denyOut` CIDR list
+# with NO `allowOut`; E2B documents the fine-grained control as default-deny PLUS an
+# `allowOut` allowlist, and that
 # shape is UNMEASURED. The ALLOWLIST ARM measures it, with a POSITIVE CONTROL (an allowlisted
 # destination that must be REACHED — otherwise a total failure to connect would read as
 # enforcement), a LIVENESS row that separates `blocked` from `dead`, and its own vocabulary:
@@ -55,6 +55,21 @@ name: Keyed E2B — W10B DE-08 egress-enforcement probe
 # instructions, cost and what each outcome would mean: runbook §13. Firing this lane still
 # spends an authorisation the founder gives individually, and UNMEASURED is not "probably
 # works" — DE-08 stays not-delivered and nothing in the product passes a network body.
+#
+# ★★★ THAT ARM HAS BEEN DISPATCHED TWICE AND MEASURED NOTHING, SO RE-FIRING THE IDENTICAL BODY
+# IS AGAIN EXPECTED TO ADD NOTHING. Runs 34328502574 and 34328780645 (2026-09-09, three
+# minutes apart, replatform/w10b-allowlist-arm @ 899aceeec, template aoa-base) BOTH returned
+# `UNRUN — arm-was-never-created`: `Sandbox.create` answered `500: Failed to place sandbox:
+# sandbox creation failed on 3 node(s), please retry; if the problem persists, contact us`,
+# while in the SAME runs, SECONDS apart, the policy and anti-vacuity arms placed successfully.
+# So the documented shape REPRODUCIBLY FAILS TO PLACE at this tier — cause unknown and E2B's
+# to explain; NOT a refusal (a 500 with a retry hint is not a validation rejection — the same
+# run's IPv6 arm shows one: `400: invalid denied CIDR ::ffff:0:0/96`) and NOT transient (it
+# reproduced, with successful siblings). ★ UNRUN IS NOT INERT: the sandbox never existed, so
+# enforcement for this shape is STILL UNMEASURED and nothing here may be read as it having
+# been tested and found not to enforce. Both lanes concluded `success` — correct, because the
+# arm carries an `outcome` and never a `state`. Before spending a third authorisation, read
+# runbook §13.7: ask E2B first, and change ONE thing if a narrower body is tried.
 #
 # ★★★ AND A READ-BACK IS MANDATORY. The SDK validates nothing client-side
 # (`buildNetworkEgress` is a pure passthrough; the only error path is the HTTP status) and the

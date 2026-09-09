@@ -51,13 +51,31 @@ import { describe, expect, it } from "vitest";
 // Questions (a)–(e) declare a `denyOut` CIDR list with NO `allowOut`. E2B's docs present the
 // fine-grained control as default-deny — `denyOut: ({allTraffic}) => [allTraffic]` — PLUS an
 // `allowOut` allowlist, and say domains are unsupported in DENY lists, so domain filtering
-// requires that form. The ALLOWLIST ARM below measures it. It has NEVER RUN; it reports
+// requires that form. The ALLOWLIST ARM below measures it. It reports
 // ENFORCES / INERT / BROKEN in its own vocabulary and takes NO part in the disposition,
 // because BROKEN — a live guest that reached nothing, including what the policy ALLOWS — is a
 // legitimate outcome and must not red a lane that answered everything it was dispatched for.
 // Records that generalised the run above to "the tier does not honour a network body" have
 // been narrowed to the deny-only shape. UNMEASURED IS NOT "PROBABLY WORKS": DE-08 stays
 // not-delivered and this file still applies no policy to any production path.
+//
+// ★★★ THE ALLOWLIST ARM HAS NOW BEEN DISPATCHED TWICE AND HAS STILL MEASURED NOTHING.
+// Runs 34328502574 and 34328780645 (2026-09-09, three minutes apart, on
+// replatform/w10b-allowlist-arm at 899aceeec, template aoa-base) BOTH returned
+// `UNRUN — arm-was-never-created`: `Sandbox.create` answered `500: Failed to place sandbox:
+// sandbox creation failed on 3 node(s), please retry; if the problem persists, contact us`.
+// Not one row ran. ★ The discriminating fact: in the SAME runs, SECONDS apart, on the SAME
+// template, the policy and anti-vacuity arms CREATED successfully
+// (i531or2zgvmdlt18e2u2s / i13yih10trv4512eugjmz, then im9ge2ldwohsitqrtx5rc /
+// i0xsmm4fzyhr3ep736ge9). So: THE DOCUMENTED SHAPE REPRODUCIBLY FAILS TO PLACE AT THIS TIER,
+// cause unknown and E2B's to explain. NOT a refusal — a 500 with a please-retry hint is not a
+// validation rejection, and the same run's IPv6 arm shows what one looks like
+// (`400: invalid denied CIDR ::ffff:0:0/96`). NOT transient — it reproduced with successful
+// siblings. Two attempts is the evidence. ★★ AND UNRUN IS NOT INERT: the sandbox never
+// existed, so nothing here may be read as the allowlist construction having been tested and
+// found not to enforce. Both lanes concluded `success`, which is the arm's design working —
+// a non-verdict neither reds the lane nor reads as enforcement. E8-F008 §8;
+// W10B-egress-enforcement-result.md §14; runbook §13.7.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // HOW TO READ THE RESULT — and why a NO, and the ABANDON YES, keep this lane GREEN

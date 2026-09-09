@@ -1171,6 +1171,49 @@ test("UNRUN covers a refused create and a violated apparatus control, and both a
   assert.equal(classifyAllowlistArm({}).outcome, "unrun");
 });
 
+test("★★ a 5xx create failure is reported as FAILED TO PLACE, never as a refusal", () => {
+  // ★★★ THIS PINS A CORRECTION TO A FALSE CLAIM THAT WAS ACTUALLY EMITTED. The branch used to
+  // print "the tier refused the deny-all-plus-allowlist body" for EVERY create failure. On
+  // 2026-09-09 the allowlist arm hit a 500 twice (runs 34328502574 / 34328780645) and that
+  // sentence went into both durable records, asserting a refusal the status code does not
+  // support. A 4xx is a refusal; a 5xx is a placement failure. Both are `unrun`.
+  const placementFailure = classifyAllowlistArm({
+    arm: allowlistArmFixture({
+      created: false,
+      detail:
+        "SandboxError: 500: Failed to place sandbox: sandbox creation failed on 3 node(s), please retry; if the problem persists, contact us",
+    }),
+  });
+  assert.equal(placementFailure.outcome, "unrun");
+  assert.equal(placementFailure.reason, "arm-was-never-created");
+  assert.match(placementFailure.detail, /FAILED TO PLACE/);
+  assert.match(placementFailure.detail, /NOT a refusal/);
+  // The word must not appear as a claim about what the tier did.
+  assert.ok(
+    !/tier REFUSED/i.test(placementFailure.detail),
+    "a 5xx must never be described as the tier refusing the body",
+  );
+
+  // The 4xx arm still says refusal — the correction must not have flattened both directions.
+  const refusal = classifyAllowlistArm({
+    arm: allowlistArmFixture({ created: false, detail: "SandboxError: 400: invalid denied CIDR ::ffff:0:0/96" }),
+  });
+  assert.equal(refusal.outcome, "unrun");
+  assert.match(refusal.detail, /REFUSED/);
+  assert.ok(!/FAILED TO PLACE/.test(refusal.detail), "a 4xx must not be described as a placement failure");
+
+  // No status at all: infer nothing about the shape.
+  const opaque = classifyAllowlistArm({ arm: allowlistArmFixture({ created: false, detail: "connection reset" }) });
+  assert.equal(opaque.outcome, "unrun");
+  assert.match(opaque.detail, /No HTTP status/);
+
+  // ★ Every branch has to carry the UNRUN-is-not-INERT guard, or the correction leaks.
+  for (const r of [placementFailure, refusal, opaque]) {
+    assert.match(r.detail, /UNRUN must never be read as INERT/);
+    assert.equal(r.isVerdict, false);
+  }
+});
+
 test("the outcome vocabulary, and which words are verdicts, is pinned", () => {
   // ★ If `mixed` or `unrun` ever became a verdict, a run that measured nothing would start
   // reading as one that measured something — which is precisely the class of defect this

@@ -808,12 +808,25 @@ export function createE2bSandboxRuntimeProvider(
           // the fine-grained control: default-deny (denyOut: ({allTraffic}) =>
           // [allTraffic]) PLUS an allowOut allowlist, which is also the only
           // form that supports domains. That shape is UNMEASURED. The arm for
-          // it is built and NOT dispatched (keyed-w10b-egress-enforcement-probe
-          // .test.ts, arm "A/allowlist").
+          // it is built (keyed-w10b-egress-enforcement-probe.test.ts, arm
+          // "A/allowlist").
+          //
+          // ★★★ THAT ARM WAS DISPATCHED TWICE (2026-09-09, runs 34328502574 and
+          // 34328780645) AND THE SHAPE IS STILL UNMEASURED. Both returned
+          // UNRUN -- arm-was-never-created: Sandbox.create failed to place the
+          // body with a 500 ("Failed to place sandbox ... please retry") while
+          // the sibling arms placed seconds apart on the same template. So the
+          // documented shape REPRODUCIBLY FAILS TO PLACE at this tier, cause
+          // unknown. That is NOT a refusal (a 500 with a retry hint is not a
+          // validation rejection) and NOT transient (it reproduced, with
+          // successful siblings) -- and, the direction that matters here,
+          // ★ UNRUN IS NOT INERT: the sandbox never existed, so nothing below
+          // may be read as the allowlist shape having been tested and found not
+          // to enforce. E8-F008 section 8.
           //
           // ★★ UNMEASURED IS NOT "PROBABLY WORKS". DE-08 stays not-delivered,
           // this call STILL passes no network body, and nothing changes here on
-          // the strength of a shape nobody has run.
+          // the strength of a shape nobody has managed to run.
           //
           // So this call still passes `metadata` and NOT `network` -- and the
           // reason has changed from "unmeasured" to "measured inert FOR THE

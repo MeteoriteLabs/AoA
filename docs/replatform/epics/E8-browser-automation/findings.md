@@ -257,7 +257,16 @@ shipped configuration surface that this finding recorded as absent.
    anyway. ★ NARROWED 2026-09-09 (W10B-B): this sentence read "does NOT honour a `network` body",
    which is a claim about ALL network bodies generalised from the one shape that was tested. The
    default-deny-plus-`allowOut` construction E2B documents as the fine-grained control is
-   UNMEASURED — the arm is built and not dispatched. **Unmeasured is not "probably works":
+   UNMEASURED — the arm is built. **★★ ATTEMPTED TWICE 2026-09-09 (runs `34328502574`,
+   `34328780645`) AND STILL UNMEASURED:** both dispatches returned `UNRUN — arm-was-never-created`
+   because `Sandbox.create` failed to place that body (`500: Failed to place sandbox … please
+   retry`) while the policy and anti-vacuity arms placed seconds apart on the same template. **The
+   sandbox never existed, so nothing about the allowlist shape's enforcement was observed —
+   `UNRUN` is not `INERT`.** The honest statement of the new fact is that *the documented shape
+   reproducibly fails to place at this tier, cause unknown*; it is not a refusal (contrast the IPv6
+   arm's `400: invalid denied CIDR`, which is) and not transient (it reproduced, with successful
+   siblings). `E8-F008` §8 and `W10B-egress-enforcement-result.md` §14 are the record.
+   **Unmeasured is not "probably works":
    `DE-08` stays `not-delivered` and no production path passes a `network` body.**
    And the read-back this item calls mandatory PASSES on that sandbox — it was specified
    against a tolerant server that IGNORES the field, and this tier does the opposite. Do not
@@ -278,6 +287,10 @@ ENFORCE at the tier AoA's key reaches. ★ NARROWED 2026-09-09 (W10B-B) — "doe
 generalised one measured shape to the whole surface. The measured shape is `denyOut` with no
 `allowOut`; the default-deny-plus-allowlist shape E2B documents is UNMEASURED, and that is a gap
 in the record rather than a reason for hope: nothing is adopted, `DE-08` stays `not-delivered`.
+★ **The gap has since been ATTEMPTED and is still a gap** — two dispatches on 2026-09-09
+(`34328502574`, `34328780645`) both failed to place that arm's sandbox and returned `UNRUN`, no
+verdict. Reading that as "unavailable to ENFORCE" would be exactly the error this narrowing exists
+to correct: **UNRUN is not INERT**. `E8-F008` §8.
 AND THE SENTENCE BELOW IS ALSO NARROWED: D3(c) (= BRW-004 slice (f)) is still the only REMAINING
 CHARTERED enforcement point — "REMAINING" inserted 2026-09-07 (W16A-FIX): DAT-005 and DSK-002 were
 also chartered over this capability and shipped without it, which **§1 of this same finding already
@@ -531,7 +544,7 @@ measured half keeps its verdict unchanged; the unmeasured half is now its own ro
 |---|---|---|
 | **1. Provider — `metadata.egressAllowlist`** (what AoA actually sends) | INERT | §2. MEASURED, real E2B, run `33857218680`, both controls held. |
 | **2. Provider — `network.denyOut` / `updateNetwork`, DENY-ONLY** (a `denyOut` CIDR list with no `allowOut`; the surface `E8-F007` found and AoA has never called) | ACCEPTED, VALIDATED, ECHOED, **INERT** | MEASURED, real E2B, run `34085130892`. `E8-F008`. |
-| **2b. Provider — default-deny + `allowOut` allowlist** (`denyOut: ({allTraffic}) => [allTraffic]` plus an allow list — the construction E2B's own docs present as the fine-grained control, and the only one that supports domains) | **UNMEASURED — no row, not a refutation** | ★ ADDED 2026-09-09 (W10B-B). Row 2 was being read as covering this, which it does not: it tests the opposite construction. The arm is BUILT and NOT DISPATCHED (`keyed-w10b-egress-enforcement-probe.test.ts`, arm `A/allowlist`; runbook §13). **This row does not soften the census.** An unmeasured candidate is not a promising one — nothing in the product passes a `network` body, `DE-08` reads `not-delivered`, and E8-F008 §6.2 already recorded that reasoning from the deny result to the allow shape is "an argument, **not a measurement**". |
+| **2b. Provider — default-deny + `allowOut` allowlist** (`denyOut: ({allTraffic}) => [allTraffic]` plus an allow list — the construction E2B's own docs present as the fine-grained control, and the only one that supports domains) | **UNMEASURED — ATTEMPTED TWICE, `UNRUN`. No row, not a refutation** | ★ ADDED 2026-09-09 (W10B-B). Row 2 was being read as covering this, which it does not: it tests the opposite construction. The arm is BUILT (`keyed-w10b-egress-enforcement-probe.test.ts`, arm `A/allowlist`; runbook §13). ★★ **UPDATED same day: DISPATCHED TWICE** — runs `34328502574` and `34328780645`, three minutes apart, both `UNRUN — arm-was-never-created`. `Sandbox.create` failed to place the body (`500: Failed to place sandbox … please retry`) while the policy and anti-vacuity arms placed seconds apart on the same template, so **the documented shape reproducibly fails to place at this tier** (cause unknown; not a validation refusal — contrast the IPv6 arm's `400: invalid denied CIDR` — and not transient). **The sandbox never existed, so this row is still UNMEASURED and must NEVER be read as INERT.** `E8-F008` §8. **This row does not soften the census.** An unmeasured candidate is not a promising one — nothing in the product passes a `network` body, `DE-08` reads `not-delivered`, and E8-F008 §6.2 already recorded that reasoning from the deny result to the allow shape is "an argument, **not a measurement**". |
 | **3. In-guest** — a proxy, or anything the login shell can reach | NOT A BOUNDARY against this workload | **MIXED, and the weakest row here — read the note below it.** Proxy half: REPRODUCED locally (see ★). Shell half: STRUCTURAL — `buildE2bLoginShellScript` (`sandbox-provider-runtime.ts:647-655`) sources `/etc/profile`, `$HOME/.profile` and `$HOME/.bashrc` from an **agent-writable** home before `exec env … claude`, so anything the guest can edit, the agent can edit. |
 | **4. Control-plane deny** — `classifyEgressDestination` / `createFenceAwareEgressProxy` | INSPECTS ZERO PACKETS | STRUCTURAL, by caller count: §3 point 3 — `egress-proxy.ts` is imported by exactly one file in the tree, an integration test. A classifier the sandbox's traffic never traverses cannot deny anything, whatever it computes. Tracked as `E5-6-denied-egress` → `unwired` in `scripts/gate-clause-wiring.json`, printed on every green run. |
 | **5. Fail-closed on "no policy applied"** — refuse to run a sandbox whose egress policy could not be applied | **DISSOLVED** | DERIVED from row 2, and marked as derivation rather than measurement: the discriminator such a design would branch on is the read-back, and the read-back **passes** on an unpoliced sandbox (`E8-F008` §3). There is no observable that separates "policy applied" from "policy stored and ignored", so there is nothing for a fail-closed branch to test. |
@@ -1056,13 +1069,35 @@ Three spellings of the **same destination**, in the **same sandbox**, under the 
 | `[::ffff:a9fe:a9fe]` (v4-mapped, hex — what URL parsers canonicalise to) | **REACHED 401** |
 | `[fd00:ec2::254]` (IMDS over IPv6) | `curl (7)`, but it failed in the anti-vacuity arm too, so **not attributable to the policy** |
 
-Two of them reached. On this tier the point is moot because nothing is enforced at all, but it is
-recorded because it is a property of the **surface**, not of this tier: the SDK's only sentinel is
+Two of them reached. On this tier the point is moot **for the deny-only shape**, because nothing that
+shape declares is enforced at all — but it is recorded because it is a property of the **surface**,
+not of this tier: the SDK's only sentinel is
 `ALL_TRAFFIC = "0.0.0.0/0"` (`node_modules/.pnpm/e2b@2.30.5/node_modules/e2b/dist/index.d.ts:7749`,
 read directly), and `::/0` occurs **zero** times in that file. And the one attempt to declare an IPv6
 deny set was **refused at create** (`400: invalid denied CIDR ::ffff:0:0/96`). So an IPv4 deny set
 that *did* work would still be routed around by the second and third spellings in this table, and the
 API declined the arm that would have closed them.
+
+> ★★★ **This is a DESIGN GAP in the surface, and it outranks the inertness result in durability.**
+> Inertness is a property of **this tier** and could be fixed by E2B tomorrow, or be absent on
+> another. **The gap is a property of the API:** an IPv6 deny entry is *inexpressible* — the only
+> sentinel is `ALL_TRAFFIC = 0.0.0.0/0`, there is no `::/0`, and the one concrete IPv6 CIDR anyone
+> tried was rejected at create with a `400`. So a `denyOut` that **worked perfectly** would still be
+> walkable by rewriting the destination in IPv6 — `[::ffff:169.254.169.254]` and
+> `[::ffff:a9fe:a9fe]`, the second being what URL parsers canonicalise to — and **the API offers no
+> way to close it**. Any future design that reaches for `denyOut` as a boundary has to answer this
+> first; a deny list that cannot express half the address space is not a boundary.
+>
+> **What is measured and what is not, kept apart.** The two v4-mapped spellings **REACHED** — that is
+> a measurement, taken under a policy that named `169.254.0.0/16`, and reproduced in all three
+> keyed runs (`34085130892`, `34328502574`, `34328780645`). The `400` on `::ffff:0:0/96` is a
+> measurement. That an IPv6-reachable destination would *still* be reached under a **working** deny
+> set is an **inference** from those two, not an observation — no working deny set exists to test it
+> against. It is labelled here so nobody cites it as a measurement.
+>
+> **This is not a separate finding.** It lives here because it is a property of the same surface this
+> finding measures, and splitting it would put half the evidence in each. Nothing about it moves
+> `DE-08` (`not-delivered`), and no enforcement is proposed.
 
 ### 5. Why HIGH, and the argument for MEDIUM recorded rather than settled
 
@@ -1108,8 +1143,14 @@ Stated so none of it is over-read. Each is a limit of the run, not a hedge on th
    `sandbox-provider-runtime.ts`, the `DE-08` register row, the W10B runbook and result docs, and
    this file). E2B's documentation presents default-deny + `allowOut` as **the** fine-grained control
    and states that domains are unsupported in deny lists, so the allowlist form is the shape a real
-   control would take — and the one nobody has run. An arm for it is **built and deliberately not
-   dispatched** (runbook §13). **Nothing about that changes this finding's severity, status or
+   control would take — and the one nobody has run. An arm for it is **built** (runbook §13).
+   **★★★ THE ARM HAS SINCE BEEN DISPATCHED TWICE AND THIS CLAUSE STILL STANDS UNCHANGED.** Runs
+   `34328502574` and `34328780645` (2026-09-09) both returned `UNRUN — arm-was-never-created`: the
+   allowlist body **failed to place** (`500 … please retry`) while sibling arms placed seconds
+   apart. `allowOut` is still **not exercised**, so this clause's "an argument, not a measurement"
+   remains the correct reading — and the new fact must not be over-read either: **`UNRUN` is not
+   `INERT`**, and *fails to place* is not *refused* (§8). **Nothing about that changes this
+   finding's severity, status or
    conclusion**, and "unmeasured" must not be read as "promising": it is a hole in the record.
 3. **Two denied-range rows are unattributable.** `rfc1918_10` timed out in **both** arms and
    `metadata_v6` failed to connect in **both**, so neither says anything about the policy. The
@@ -1146,6 +1187,54 @@ precisely the move that would produce a false claim of enforcement here. Do not 
 probe (b)'s `yes`: that is the defect, not the remedy. Close it when an enforcement point exists that
 was measured by traffic which tried to cross, or when the provider surface is measured to enforce on
 a tier AoA actually uses.
+
+### 8. ★★ The allowlist arm was DISPATCHED TWICE on 2026-09-09 and returned `UNRUN` — the documented shape reproducibly fails to place
+
+§6.2 named `allowOut` as the thing this run did not measure. An arm for it was built (runbook §13),
+and on 2026-09-09 it was dispatched **twice**, with the founder's authorisation, on
+`replatform/w10b-allowlist-arm` @ `899aceeec`, template `aoa-base`:
+
+| | `34328502574` (08:19:42Z) | `34328780645` (08:22:47Z) |
+|---|---|---|
+| allowlist arm | `UNRUN — NO VERDICT — arm-was-never-created` | `UNRUN — NO VERDICT — arm-was-never-created` |
+| `Sandbox.create` returned | `SandboxError: 500: Failed to place sandbox: sandbox creation failed on 3 node(s), please retry; if the problem persists, contact us` | identical |
+| policy arm | `i531or2zgvmdlt18e2u2s` **created** | `im9ge2ldwohsitqrtx5rc` **created** |
+| anti-vacuity arm | `i13yih10trv4512eugjmz` **created** | `i0xsmm4fzyhr3ep736ge9` **created** |
+
+The body was `denyOut: ["0.0.0.0/0"]` + `allowOut: ["8.8.8.0/24", "1.1.1.1", "example.com"]`. Not one
+row ran: every allow/deny/apparatus row reads `no-result/unknown`, `dns` reads `unknown`, and the
+guest's `/etc/resolv.conf` was never read.
+
+★ **What makes it evidence rather than noise:** in the **same** run, **seconds** apart, on the **same**
+template and key, the sibling arms placed successfully. Only the default-deny + `allowOut` body failed
+to place, on both attempts.
+
+★★ **At the strength the evidence supports:** *the shape E2B documents as the fine-grained control
+reproducibly **fails to place** at this tier; the cause is unknown and is E2B's to explain.* Three
+readings it does not license:
+
+* **Not "the tier refuses the shape."** A `500 … please retry; if the problem persists, contact us` is
+  a placement failure with a retry hint, not a validation rejection. The contrast sits in the same
+  run: the IPv6 deny arm was refused `400: invalid denied CIDR ::ffff:0:0/96` (§4) — *that* is a
+  refusal, and this does not look like it.
+* **Not "transient."** It reproduced three minutes apart with successful siblings each time.
+* **Not a measurement of enforcement. `UNRUN` is not `INERT`.** §2's inertness verdict is about the
+  deny-only shape and **does not extend** to this one, which has never been observed at all.
+
+**Two attempts is the evidence, and this section says two attempts** — it is not a sample from which a
+failure rate can be quoted.
+
+**What moves:** nothing in this finding's severity, status, ownership or conclusion, and nothing for
+`DE-08`, which keeps `deliveryStatus: not-delivered`; no production path passes a `network` body.
+Census row 2b (`E8-F003` §8) stays **UNMEASURED**, now annotated *attempted twice, `UNRUN`*. What
+moves is the support ticket, which gains a second, independently checkable item. The full record,
+including what would have to change before a third dispatch is worth an authorisation, is
+`W10B-egress-enforcement-result.md` §14 and runbook §13.7.
+
+★ **The arm's design is what makes this readable at all.** `UNRUN` carries an `outcome` and never a
+`state`, so it took no part in `packDisposition`: both lanes concluded `success`, a non-verdict did
+not red a lane that answered every question it was dispatched for, and — the direction that matters
+more — a sandbox that never existed did not report as enforcement.
 
 ---
 
