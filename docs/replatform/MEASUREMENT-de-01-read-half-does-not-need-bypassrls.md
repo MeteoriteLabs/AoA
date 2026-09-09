@@ -41,7 +41,7 @@ is FALSE, and it is the one the recommendation rests on.**
 |---|---|---|
 | 1 | An RLS-filtered read raises no error and is indistinguishable from an empty result. | **TRUE** — measured, P1 below. |
 | 2 | `client.ts:325` refuses a `BYPASSRLS` serving connection at boot. | **TRUE** — measured, POSITIVE CONTROL below. |
-| 3 | Therefore a cross-tenant comparator read **requires** `BYPASSRLS`, so the guard must be amended. | **FALSE** — measured twice over, ALT-A(ii) and ALT-B below. |
+| 3 | Therefore a cross-tenant comparator read **requires** `BYPASSRLS`, so the guard must be amended. | **FALSE** — measured twice over: **ALT-B** below, unconditionally, and **ALT-A(ii)** under the precondition stated immediately after this table and controlled for by ALT-A(iii). |
 
 Proposition 3 is a non-sequitur: it treats `BYPASSRLS` as the only way a connection can see rows
 outside its tenant. It is not, and this tree already ships two other ways.
@@ -144,7 +144,7 @@ ALT-A(ii) — and ALT-A(iii) is the control that makes the dependence visible ra
 | **ALT-A(iv) — VIEW** | A plain (non-`security_invoker`) view over `jobs`, `SELECT` granted to `aoa_operator`: reads **both** organizations while its owner is the superuser (owner privilege asserted in-test); re-owned to `de01_tabowner`, the same view returns **zero rows**. | **A view is ALT-A in different spelling, and inherits ALT-A(iii) exactly.** A view executes as *its* owner, so it is the same mechanism with the same precondition — not a third alternative. |
 | **ALT-B** | `CREATE POLICY ... ON jobs FOR SELECT TO "aoa_operator" USING (true)`: `aoa_operator` reads both organizations' rows, while `aoa_app` under `ORG_A`'s GUC in the same database **still sees only its own**. | **A second, independent cross-tenant read with no `BYPASSRLS`, and the tenant boundary for the serving pool is untouched.** |
 | **GUARD** | `assertNonOwnerConnection(operatorDb, "aoa_operator")` **resolves** after both ALT-A and ALT-B have been applied. | Neither alternative requires, implies, or survives-by-weakening `client.ts:325`. |
-| **POSITIVE CONTROL** | A purpose-made `LOGIN NOSUPERUSER BYPASSRLS` role is refused by `assertNonOwnerConnection` with the exact `:325` message and `rolbypassrls=true`. | The guard is live and the harness can see it bite. Without this, all seven greens above would be consistent with a guard that does nothing. |
+| **POSITIVE CONTROL** | A purpose-made `LOGIN NOSUPERUSER BYPASSRLS` role is refused by `assertNonOwnerConnection` with the exact `:325` message and `rolbypassrls=true`. | The guard is live and the harness can see it bite. Without this, all nine greens above would be consistent with a guard that does nothing. |
 
 **Both alternatives are already shipped patterns in this tree — this unit invented neither.**
 
