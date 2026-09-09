@@ -872,18 +872,27 @@ state twelve, not seventeen.
    [`docs/replatform/DECISION-REQUEST-undeliverable-clause-halves.md`](../../DECISION-REQUEST-undeliverable-clause-halves.md).**
    It re-measured all six at source rather than inheriting this list, decomposed each clause into
    its CONJUNCTS, and reports **three results that contradict the framing above**, each evidenced at
-   a file:line. **(1) THREE OF THE SIX ARE NOT BLOCKED FOR THE STATED REASON.** DE-01's read half:
+   a file:line. **(1) TWO OF THE SIX ARE NOT BLOCKED FOR THE STATED REASON.** DE-01's read half:
    the `BYPASSRLS` premise is already measured FALSE in this very entry's own inline correction, so
    the half is deliverable and the objection is a DESIGN cost (a comparator on the hot path of every
    tenant read), not an impossibility. DE-11: the premise *"nothing decides, so there is nothing to
    record"* is **stale** — `resolveStoredRetention` is a live control-plane retention decision at
    `artifact-commit.ts:253`, branched on at `:257`, with `input.appDb` and `ctx.companyId` in scope
    and `recordSecurityDenial` already imported at `:46`; its own comment at `:259-260` records a
-   DEFERRAL, not a blocker. DE-17: the v1 protocol freeze is **not** the blocker — `extensions[]` is
-   on the frozen worker-EVENT schema (`worker-protocol/src/events.ts:347`) and V1 recognises no
-   critical namespaces, which is exactly what makes a `critical:false` extension additive under the
-   freeze; and the adapter-manager already holds an authenticated CP channel (`app.ts:525`). What is
-   missing is a catch point and a drain — code, not a ruling. **(2) TWO CONJUNCT MISCOUNTS, in this
+   DEFERRAL, not a blocker. ★ **DE-17 IS NOT A THIRD, AND THE PAPER SAYS SO AGAINST ITS OWN FIRST
+   DRAFT.** The v1 protocol freeze is genuinely **not** its blocker (`extensions[]` is on the frozen
+   worker-EVENT schema, `events.ts:347`, and V1 recognises no critical namespaces, so a
+   `critical:false` extension is additive UNDER the freeze) — but the paper's first draft then
+   concluded DE-17 was therefore deliverable and recommended a split by channel, and **that was
+   withdrawn on review** (Codex P1, PR #407, verified at source). **DE-17 has two harder blockers:**
+   the fenced worker-event ingest gates on `guardActiveFence` BEFORE any append
+   (`job-events.ts` header; `job-control.ts:2588-2589`) and DE-17's scenario is post-fence BY
+   DEFINITION, so that carrier rejects exactly the case the row names; and `OwnedLabelsCapability`
+   has no operation or scope field while `execute` shares `gateOwnedOp` with `cancel`/`kill`/`destroy`
+   (`server.ts:89-98`, `:153-155`), so the only wire denial available is an ownership mismatch and
+   auditing it yields a generic authorization log, not a denied-escalation record. **Disproving one
+   blocker is not proving deliverability** — and the paper had to relearn that on its own page.
+   **(2) TWO CONJUNCT MISCOUNTS, in this
    list's own direction of error.** DE-12's audit clause is a **three**-way conjunction (partition,
    drain, generation changes) and **all three** are vacuous — this list queues one of three, so an
    amendment scoped to "the change half" would leave two vacuous conjuncts standing in a Critical

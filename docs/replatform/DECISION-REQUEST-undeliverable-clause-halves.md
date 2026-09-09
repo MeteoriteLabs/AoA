@@ -24,13 +24,22 @@ verdict — and three of the six are not blocked in the way the finding says the
 | 3 | **DE-12** `audit`, generation-change conjunct | "`services.generation` has no writer" | **CONFIRMED undeliverable — and WORSE than filed.** The clause has **three** conjuncts and **all three** are vacuous, not one. |
 | 4 | **DE-20** `audit`, rollback conjunct | "`createDistributedExecutionDrain` has zero production callers" | **CONFIRMED undeliverable** for the rollback conjunct. ★ But the *other* conjunct (legacy selection) is **closable today** and does not belong in this decision at all. |
 | 5 | **DE-11** `audit` (whole clause) | "the controls themselves are absent; nothing decides, so there is nothing to record" | ★★ **THE PREMISE IS STALE.** Something *does* decide, at a named line, with a tenant and a live DB handle already in scope. **Deliverable, cheaply.** |
-| 6 | **DE-17** `audit` (whole clause) | "needs a wire hop, and `worker-protocol` is v1-FROZEN" | ★ **THE FREEZE IS NOT THE BLOCKER.** The frozen envelope ships a bounded extension container *for exactly this*, already carried on the worker-event schema. What is missing is a catch point and a drain — code, not a freeze ruling. |
+| 6 | **DE-17** `audit` (whole clause) | "needs a wire hop, and `worker-protocol` is v1-FROZEN" | ★ **STILL BLOCKED — but not by the freeze, and the real blocker is HARDER.** ★★ **CORRECTED ON REVIEW, see §6.2.** The extension container *is* additive under the freeze and *is* a real carrier — but the worker-event **ingest** path is fence-guarded and the adapter-manager's wire capability is **not authority-typed**, so neither channel reaches DE-17's post-fence boundary. |
 
-**So: of the six, TWO are hard (DE-12, DE-20's rollback conjunct), ONE is half-hard (DE-27), and
-THREE were mis-blocked (DE-01, DE-11, DE-17).** Per §1 of the brief's own standing rule —
-*exoneration needs strictly more evidence than conviction* — each of those three is evidenced at a
-file:line below, and none of them is claimed **delivered**; they are claimed **not blocked for the
-stated reason**.
+**So: of the six, THREE are hard (DE-12, DE-20's rollback conjunct, DE-17), ONE is half-hard
+(DE-27), and TWO were mis-blocked (DE-01, DE-11).** Per the brief's standing rule — *exoneration
+needs strictly more evidence than conviction* — each of those two is evidenced at a file:line below,
+and neither is claimed **delivered**; they are claimed **not blocked for the stated reason**.
+
+★★ **AND DE-17 IS THE STANDING RULE BITING THIS PAPER.** As first written, §6.2 concluded that
+DE-17's stated blocker (the protocol freeze) does not hold — which is **true** — and then took the
+further step of concluding it was therefore *not architecturally blocked*, recommending a split by
+channel. **That further step was wrong, and it was wrong in this programme's own worst way: it named
+a carrier without measuring whether the carrier reaches the durable store on the path DE-17
+actually names.** Raised as P1 by Codex on PR #407, verified at source, and corrected in §6.2 and in
+Decision 1.6 rather than footnoted. The refutation of the *stated* blocker stands; the exoneration
+does not. **Disproving one blocker is not proving deliverability** — and this paper had to relearn
+that on its own page.
 
 **And the arithmetic in the finding is off by one, in the direction that flatters it.** §7 shows the
 working: under `E0-F013`'s *own* groupings the number is **ELEVEN**, not twelve.
@@ -447,7 +456,10 @@ decision."*
 of `@armyofagents/db` or `drizzle`; `packages/worker-daemon/src/index.ts:5` states the constraint is
 **statically enforced**. A durable row genuinely cannot be written in-process.
 
-**★ But "the freeze blocks the wire hop" does not hold, and there are TWO independent channels.**
+**★ "The freeze blocks the wire hop" does not hold — two candidate channels exist. ★★ BUT NEITHER
+REACHES DE-17'S BOUNDARY, and that is the correction this section carries.**
+
+The two candidates are set out first, because the refutation is only legible against them.
 
 1. **The frozen envelope ships a bounded extension container built for exactly this.**
    `packages/worker-protocol/src/extensions.ts` defines `{namespace, schemaVersion, critical, value}`
@@ -467,45 +479,103 @@ of `@armyofagents/db` or `drizzle`; `packages/worker-daemon/src/index.ts:5` stat
    can be reported over a channel that is **already built, already authenticated, and not governed
    by `worker-protocol` at all.**
 
-**What is genuinely missing, then:** a **catch point** (nothing catches `CleanupAuthorityDeniedError`
-today), a **carrier** (choose channel 1 or 2), and a **CP-side drain** into `activity_log`. That is
-three pieces of ordinary code across two packages — real work, plausibly a wave — but **it is not a
-freeze decision and it is not architecturally blocked.**
+★ **The counter-evidence about `E7-F011`, stated because it is the obvious objection and it does
+NOT apply.** `E7-F011` records that `CLI-008` Unit B's channel *"has no route on the
+networked/container lane"* — but measured, that finding is about a **provider operation**
+(`stage_files`) missing from the frozen **operation vocabulary** (`capabilities.ts:142-153`), which
+is a different mechanism from the **extensions container on a worker event**. It does not transfer.
 
-★ **The counter-evidence I am obliged to state.** `E7-F011` records that `CLI-008` Unit B's channel
-*"has no route on the networked/container lane"* — but measured, that finding is about a **provider
-operation** (`stage_files`) missing from the frozen **operation vocabulary**
-(`capabilities.ts:142-153`), which is a different mechanism from the **extensions container on a
-worker event**. It does not transfer. I have **not** measured that any control-plane consumer drains
-worker-event extensions into `activity_log` today; a chartering unit must establish that itself.
+### ★★ THE REFUTATION — BOTH CHANNELS FAIL, AND THE FAILURES ARE INDEPENDENT
 
-**Options.**
+*Raised as P1 by Codex on PR #407 against this section's first draft, verified at source, and
+carried here rather than footnoted.*
+
+**Channel 1 fails on INGESTION, not on the envelope.** The envelope can carry the extension; the
+path that would make it durable rejects it first. Worker events land through the fenced ingest
+service `server/src/services/job-events.ts`, whose own header states the pipeline: it *"hand[s] the
+batch to the guarded `acceptEvent` mutator, which gates on the ACTIVE fence FIRST (throws
+`stale_fence` / `attempt_terminal`)"*. At the mutator, `packages/db/src/repositories/tenant/job-control.ts:2588-2589`
+is `await guardActiveFence(input)` **before any append**, under the closed governed-mutator
+invariant that *"[e]very method below gates on `guardActiveFence` BEFORE touching (or reading) a
+governed row"* (`:2584-2586`).
+
+**★ AND DE-17'S SCENARIO IS POST-FENCE BY DEFINITION.** The row's boundary is *"Provider manager ↔
+expired/replaced resource"* and its `failureMode` is *"cleanup is blocked **after fence loss**"*.
+An event carrying post-fence cleanup evidence therefore arrives holding exactly the fence
+`guardActiveFence` exists to reject, and is refused with **no durable write**. So the extension
+container is a real carrier for events on a **live** fence and is structurally unable to carry the
+defining case. A unit that wired it would ship a recorder that is green in every test with an active
+fence and silent on every occasion DE-17 names — **this programme's own "a check that nothing
+runs."**
+
+**Channel 2 fails on TYPING, not on reachability.** The adapter-manager's CP channel exists and
+works; the *denial available on it is the wrong denial*. `execute` — the escalation the clause cares
+about — is dispatched through **the same** `gateOwnedOp` as `cancel`/`kill`/`destroy`
+(`packages/adapter-manager/src/server.ts:153-155` beside `:157-165`; all eight ops sit in one
+`GATE_REQUIRED_OPS` set at `:89-98`). And the denial at `owned-op-gate.ts:154-156` is a **field-wise
+label/generation mismatch** throwing `ResourceNotAvailableError` — an **ownership** refusal, thrown
+identically for an effect op and a cleanup op, and deliberately collapsed with not-found so there is
+no existence oracle. `OwnedLabelsCapability` is `{v, audience, ownedLabels, expiresAt, sig}` with
+**no operation or scope field**, so nothing at that gate can distinguish *"a cleanup-authority
+holder attempted an effect op"* (conjunct 6b's escalation) from *"a caller asked about a resource it
+does not own."* Auditing it yields a **generic authorization log**, not a denied-escalation record.
+
+★ **AND THIS CORRECTS A CITATION THIS PAPER INHERITED.** `owned-op-gate.ts:154-156` is the line the
+**register itself** cites under DE-17. It is a fair citation for the *ownership* compare at the
+wire — but this paper first reproduced it in support of conjunct **6b** ("denied escalations"),
+which it does not support. That is precisely the inheritance §1 forbids, committed in the document
+that forbids it.
+
+**What is genuinely missing, then, restated after the refutation:** a **catch point** (nothing
+catches `CleanupAuthorityDeniedError` today), **an authority-typed carrier that is not fence-guarded**
+— neither of which exists — and a **CP-side drain**. The first is code; **the second is a design
+obligation this paper cannot discharge and did not measure a route to.**
+
+**Options, rewritten after the refutation.**
+
 **(a) AMEND** — narrow to "denied escalations are recorded in the worker's local log". Cost: a
-Critical cleanup-authority crossing would assert only a process-local log line that dies with the
-process, on a boundary whose whole point is that the worker is **less** trusted. **Reject.**
-**(b) CHARTER** — a ticket for the catch point + carrier + drain. `DE-17`'s four ownerTickets
-(`WRK-004`, `DEP-008`, `CLI-004`, `REL-004`) all have files on disk, so the route does not terminate
-nowhere — but **`REL-004` names no `DE-17` post-fence-cleanup test**, so the exit criterion is only
-as specific as `REL-004`, and that must be fixed in the same charter.
-**(c) THIRD PATH** — split by channel: charter the **adapter-manager** half (6a/6b at the wire, over
-the existing HTTP control channel — no protocol question at all) **now**, and defer the
-**worker-daemon** half (extensions on a worker event) behind a named later decision that establishes
-whether anything drains extensions today.
+**Critical** cleanup-authority crossing would assert only a process-local line that dies with the
+process, on a boundary whose entire premise is that the worker is **less trusted**. A record the
+untrusted side keeps about itself is not an audit record. **Reject.**
 
-**★ RECOMMENDATION — (c).** It closes the half that needs no protocol judgement, and it forces the
-open question about the extensions drain to be *measured* rather than assumed in either direction.
+**(b) CHARTER — and this is now the substantive option, but it is bigger than "a catch point and a
+drain".** It requires, in order: (i) a **catch point** for `CleanupAuthorityDeniedError`; (ii) an
+**authority-typed** denial — which means giving `OwnedLabelsCapability` an operation/scope field, so
+the gate can tell an escalation from a wrong-owner miss. **That is `DE-17`'s `authorization` clause,
+not its `audit` clause** — the register already records it as absent and *unrepresentable*, and
+`E0-F014` owns it. So the audit conjunct **cannot be chartered ahead of the authorization one**; and
+(iii) a carrier that is **not fence-guarded**, because the worker-event ingest path rejects
+post-fence batches before any append. `DE-17`'s four ownerTickets (`WRK-004`, `DEP-008`, `CLI-004`,
+`REL-004`) all have files on disk, but **`REL-004` names no `DE-17` post-fence-cleanup test**, so the
+exit criterion must be written in the same charter.
 
-**★ THE STRONGEST ARGUMENT AGAINST (c).** *A split delivers the wrong half.* `DE-17`'s
-`failureMode` is *"cleanup authority is escalated into effect authority"*, and the register records
-that **at the wire the opposite line exists** — `packages/adapter-manager/src/server.ts:89-98` puts
-`create` and `execute` **inside** `GATE_REQUIRED_OPS` beside `cancel`/`kill`/`destroy`, and
-`OwnedLabelsCapability` is `{v, audience, ownedLabels, expiresAt, sig}` with **no operation or scope
-field**, so a cleanup-only wire capability is *unrepresentable*. Auditing denials on a wire whose
-`authorization` clause is itself not delivered records refusals of a gate that cannot express the
-distinction the clause names. **Against that:** an audit record is still strictly better than
-silence, and `E0-F014` already owns the authorization gap separately. But the founder should not
-read a wired 6a/6b as evidence that `DE-17` is closing — it is not, and the `authorization` clause
-is the reason.
+**(c) THIRD PATH — move the whole clause behind `E0-F014`, as `DE-21`'s board half went to
+Decision 3.** Do not amend and do not charter the audit conjunct independently. Record that both
+conjuncts are blocked on `DE-17`'s **`authorization`** clause (an authority-typed capability) and on
+a non-fence-guarded carrier, and rule when `E0-F014` rules. Cost: `DE-17` stays `partial` with an
+`audit` clause it does not satisfy — which is exactly what `partial` is defined to mean.
+
+**★ RECOMMENDATION — (c).** ★★ **This is a change from this paper's first draft, which recommended a
+split by channel; the split is withdrawn on measurement.** (c) is the only option that neither
+narrows a Critical control to something the current architecture happens to satisfy, nor charters an
+audit record ahead of the authorization typing that record depends on. The dependency runs one way:
+**you cannot record "a denied escalation" until the system can tell an escalation from a wrong-owner
+miss.**
+
+**★ THE STRONGEST ARGUMENT AGAINST (c).** *Deferring behind another open finding is how a Critical
+clause goes quiet for a year.* `E0-F014` is open, unscheduled, and now carries three obligations
+(the dead drain, the dead deadline, and — under (c) — DE-17's capability typing); adding a fourth
+dependent to an unfunded finding is chartering by implication. The honest counter-move if the
+founder finds that unacceptable is **(b) with the sequencing written into the ticket** — fix the
+capability typing first, then the carrier, then the record — accepting that this is a multi-ticket
+epic and not an audit-wiring job.
+
+**★ Record with whichever is chosen, because it is what this section actually established:** the
+*stated* blocker — the v1 protocol freeze — **does not hold**. `extensions[]` is on the worker-event
+schema and V1 recognises no critical namespaces, so a `critical:false` extension is additive under
+the freeze. **`DE-17` is blocked for two different and harder reasons: the ingest path is
+fence-guarded on exactly the post-fence case the row names, and the wire capability cannot express
+the escalation the clause asks to record.** The freeze should not be cited as the blocker again.
 
 ---
 
@@ -549,19 +619,25 @@ ELEVEN TOTAL.** The slip is visible inside the sentence itself: it subtracts **f
 Enumerated, so the eleven can be checked one at a time: `DE-03`, `DE-04`, `DE-06`, `DE-13`, `DE-14`,
 `DE-15`, `DE-16`, `DE-18`, `DE-19` *(closed)*, `DE-21`, `DE-29`.
 
-**★ AND MY OWN MEASUREMENT MOVES IT AGAIN — which is why this paper does not hand over a single
-number.** Under §2, §6.1 and §6.2, three of the six are not blocked as filed:
+**★ AND THIS PAPER'S OWN MEASUREMENT MOVES IT AGAIN — which is why no single number is handed over.**
+Under §2 and §6.1, **two** of the six are not blocked as filed. **DE-17 is not one of them**: §6.2's
+first draft placed it here, and the placement was withdrawn on review (the freeze is not its
+blocker, but it has two harder ones).
 
 | Premise | Hard-blocked crossings | Honest ceiling |
 |---|---|---|
 | `E0-F013`'s Group D as written | `DE-01`, `DE-11`, `DE-12`, `DE-17`, `DE-20`, `DE-27` (6) | **11** |
-| This paper's measurement (DE-11 and DE-17 rescheduled; DE-01 deliverable at a declined cost) | `DE-12`, `DE-20`, `DE-27` (3) | **14** |
+| This paper's measurement (DE-11 rescheduled; DE-01 deliverable at a declined cost; **DE-17 stays blocked**) | `DE-12`, `DE-17`, `DE-20`, `DE-27` (4) | **13** |
+| ~~This paper's first draft (DE-17 also rescheduled)~~ | ~~`DE-12`, `DE-20`, `DE-27` (3)~~ | ~~14~~ — **WITHDRAWN**, see §6.2 |
 
 **The number a plan may state depends on this ruling, and on nothing else.** State it as a band with
-its premise attached — *"eleven under the current dispositions; up to fourteen if Decision 1
-reschedules DE-11 and DE-17 and funds DE-01's read half"* — and **never** as seventeen. The only
-figure that is pure arithmetic rather than judgement is the correction above: **`E0-F013`'s "twelve"
-should read "eleven."**
+its premise attached — *"eleven under the current dispositions; up to thirteen if Decision 1
+reschedules DE-11 and funds DE-01's read half"* — and **never** as seventeen. The only figure here
+that is pure arithmetic rather than judgement is the correction above: **`E0-F013`'s "twelve" should
+read "eleven."** Everything else in this table is a disposition the founder has not yet signed.
+
+★ **The withdrawn row is kept struck rather than deleted**, on this programme's own convention: a
+paper whose central complaint is an over-stated count must not quietly restate its own.
 
 **One drift noted in passing, changing nothing here.** `E0-F013` records Decision 2's acceptance
 condition **(a)** — a production reader of `security.denied.*` — as **OPEN**. At this branch point
@@ -647,22 +723,33 @@ vacuous.
 
 ### ▢ **DECISION 1.6 — DE-17 (Critical), `audit`**
 
-- ▢ **★ RECOMMENDED — (c), SPLIT BY CHANNEL.** Charter the **adapter-manager** half now over the
-  **existing authenticated CP control channel** (`server/src/app.ts:525`,
-  `routes/adapter-manager-control-auth.ts`) — no protocol question arises. Defer the
-  **worker-daemon** half behind a named later decision that first **measures** whether any
-  control-plane consumer drains worker-event `extensions[]`.
-- ▢ **(b)** Charter both halves as one ticket, and fix `REL-004` to name a `DE-17` post-fence-cleanup
-  test in the same charter.
-- ▢ **(a)** Amend to "recorded in the worker's local log". *Reject — a process-local line on a
-  less-trusted boundary is not an audit record.*
+★★ **THIS DECISION CHANGED ON REVIEW. A split by channel was recommended in the first draft and is
+WITHDRAWN** — Codex P1 on PR #407, verified at source (§6.2). Neither candidate channel reaches this
+row's post-fence boundary.
 
-**★ Record with whichever is chosen:** the *stated* blocker — the v1 protocol freeze — **does not
-hold**. `extensions[]` is on the worker-event schema (`events.ts:347`) and V1 recognises no critical
-namespaces, which is precisely what makes a `critical:false` extension additive under the freeze.
-**And record the counterweight:** `DE-17`'s `authorization` clause is separately not delivered at the
-wire (`server/src/adapter-manager` capability cannot express cleanup-only), so a wired audit must not
-be read as `DE-17` closing.
+- ▢ **★ RECOMMENDED — (c), MOVE THE WHOLE CLAUSE BEHIND `E0-F014`** (as `DE-21`'s board half went to
+  Decision 3). Both conjuncts are blocked on `DE-17`'s **`authorization`** clause — an
+  authority-typed capability, without which a "denied escalation" cannot be told from a wrong-owner
+  miss — and on a carrier that is not fence-guarded. Rule when `E0-F014` rules. `DE-17` stays
+  `partial`.
+- ▢ **(b)** Charter as a sequenced multi-ticket epic — capability typing **first**, then the
+  carrier, then the record — and fix `REL-004` to name a `DE-17` post-fence-cleanup test in the same
+  charter. *Choose this if deferring behind an unfunded `E0-F014` is unacceptable.*
+- ▢ **(a)** Amend to "recorded in the worker's local log". *Reject — a process-local line kept by the
+  less-trusted side is not an audit record.*
+
+**★ Record with whichever is chosen, because it is measured and it is what a future reader will
+otherwise get wrong twice:** the *stated* blocker — the v1 protocol freeze — **does not hold**
+(`extensions[]` is on the worker-event schema at `events.ts:347`; V1 recognises no critical
+namespaces, so a `critical:false` extension is additive **under** the freeze). **The real blockers
+are two, and both are harder:** (1) the fenced worker-event ingest gates on `guardActiveFence`
+**before any append** (`job-events.ts` header; `job-control.ts:2588-2589`), and DE-17's scenario is
+post-fence **by definition**, so that carrier rejects exactly the case the row names; (2)
+`OwnedLabelsCapability` has no operation or scope field and `execute` shares `gateOwnedOp` with
+`cancel`/`kill`/`destroy` (`server.ts:89-98`, `:153-155`), so the only denial available at the wire
+is an ownership mismatch (`owned-op-gate.ts:154-156`, `ResourceNotAvailableError`) and auditing it
+yields a generic authorization log. **Do not cite the freeze as the blocker again, and do not read a
+wired ownership-denial log as DE-17 closing.**
 
 ---
 
@@ -670,8 +757,11 @@ be read as `DE-17` closing.
 
 - ▢ **★ RECOMMENDED** — Record that `E0-F013`'s **"twelve"** is **eleven** under its own groupings
   (working in §7), and that any plan states the number **as a band with its premise attached** —
-  *eleven under current dispositions, up to fourteen if 1.5 and 1.6 reschedule and 1.1 funds the
-  read half* — **never seventeen**.
+  *eleven under current dispositions, up to thirteen if 1.5 reschedules DE-11 and 1.1 funds the read
+  half* — **never seventeen**.
+- ★ **The ceiling read fourteen in this paper's first draft**, on the strength of DE-17 also being
+  rescheduled. **That was withdrawn on review** (§6.2, §7), and the struck row is kept visible in
+  §7's table: a paper complaining about an over-stated count does not get to quietly restate its own.
 
 ---
 
