@@ -337,6 +337,20 @@ a revert to `notInArray`: `expected [ 'stopped', 'failed', 'lost' ] to deeply eq
 not interchangeable if one of them is parameterised. "Served by the index" is a claim about the
 PLAN, and the plan depends on how the values reach the planner.*
 
+**★ AND THE FIX TRIPPED A GUARD, WHICH IS THE GUARD WORKING.** `sql.raw` is a **dynamic
+raw-SQL site**, and `job-leasing-contract.test.ts` keeps an exhaustive inventory of every one in
+`server/src` + `packages/db` so that each is a reviewed decision rather than an accident. CI's
+`verify (3)` went red on `expected [ …(44) ] to deeply equal [ …(43) ]` — my new site, undeclared.
+It is now declared, with the two things a reader needs: **why it is `raw`** (the generic-plan
+problem above) and **why it is safe** — the interpolated text is built only from a frozen
+`as const` array of three literals in the same module, a module-load guard throws unless every one
+matches `/^[a-z_]+$/`, and the helper **takes no arguments at all**, so no caller input can reach
+it. That is a mechanism, not an assurance.
+
+*Second lesson, and it is about my own process: `pnpm -r build` plus the suites I could name did
+not cover a whole-tree AST contract test in a file I had never touched. The instrument that would
+have caught it before CI is the full package suite, not a targeted list.*
+
 **(iii) P1 — the executor principal names the SERVICE under the kind `service_instance`. REAL,
 PRE-EXISTING, NOT FIXED, now FILED as `E9-F003`.** `serviceSourceIsAdmitted` returns a `services`
 id as `{kind:"service_instance"}`, and `job-leasing.ts` carries that into the lease envelope's
