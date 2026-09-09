@@ -140,7 +140,7 @@ New findings use IDs `E0-F001`, `E0-F002`, and so on, and retain their resolutio
 
 ## E0-F010 — Eight trust crossings assert that denials are audited; on every one of them the deny path returns before anything durable is written, so a refused cross-tenant read, a replayed credential and a shed submission are all indistinguishable from traffic that never happened
 
-- **Status:** open
+- **Status:** open — **7 of 8 remaining; DE-06 CLOSED 2026-09-09.**
 - **Severity:** HIGH
 - **Filed:** 2026-09-08, by W20 (the DE-audit landing unit). Every citation below was measured
   at tip `360d0b0ed`, not inherited.
@@ -159,7 +159,8 @@ with **no row, no metric and no log line** recording that a security control fir
 | DE-01 (Critical) | "query and policy-denial events recorded in the control-plane audit log" | The RLS policy itself — `packages/db/src/migrations/0211_tenant_rls_enforcement.sql:26-28` and 24+ siblings. A read is silently filtered; a write raises 42501. | **Nothing.** No production code handles SQLSTATE 42501 or the string `row-level security policy` — a grep over `server/src` + `packages/*/src` excluding tests returns only prose (e.g. `server/src/services/job-input-staging.ts:25`). The one control-plane audit writer for this path, `jobAuditBridge` (`server/src/services/job-audit-bridge.ts:158`), has **zero production callers** — its only references are its own definition and `server/src/__tests__/job-audit-parity.integration.test.ts:24,42`. |
 | DE-03 (High) | "enrollment, session issue, and replay-rejection are audited" | `packages/db/src/repositories/tenant/worker-enrollment.ts:273-276` (`onConflictDoNothing().returning()` → `rows.length === 1`), turned into a refusal at **nine** production call sites. | **Nothing on the job/lease paths.** The refusal returns via `sendWorkerOperationProtocolError` (`server/src/services/worker-protocol-http.ts:76-93`), which writes the HTTP response and nothing else, and the route returns at `server/src/routes/worker-control.ts:436-442` **before** the handler's only `logger.error` at `:444`. |
 | DE-04 (Critical) | "claim, fence-generation, and stale-claim rejection are audited" | `packages/db/src/repositories/tenant/job-control.ts:1167` / `:1177` / `:1185` / `:1187` (`guardActiveFence`, 11+ governed mutators call it). | **Nothing.** The one table that looks like it records rejections, `worker_lease_rejections`, is an eligibility-certificate cache whose own header excludes exactly this class — *"Dynamic capacity, liveness, lock, parsing, and **authority failures** are deliberately excluded"* (`packages/db/src/schema/worker_lease_rejections.ts:16-18`), and its single writer (`job-control.ts:2127`) inserts placement certificates, not fence refusals. |
-| DE-06 (Critical) | "object put/get and rejected-key attempts are audited" | `server/src/services/artifact-transfer-grant.ts:113` (upload key outside this org's prefix), `:201-202` (download), `packages/db/src/repositories/tenant/job-control.ts:2750-2751` (commit). | **Partly — and this is the one row in the table where "nothing" would be wrong.** A rejected *commit* does emit a **count-only** metric: `metrics?.artifactOp({operation:"commit", outcome:"rejected", count:1})` (`server/src/services/artifact-commit.ts:246-250`), and the sink is genuinely wired in production (`createPinoJobControlMetrics`, `server/src/index.ts:657-660`). It is **not an audit record**: by deliberate design it carries no organization, no object key, no reason and no actor (`job-control-metrics.ts:15-17` — high-cardinality ids ride the logger spine, never a metric label), so a breach cannot be attributed or reconstructed from it. The *grant* rejections emit nothing at all: `rejected()` (`artifact-transfer-grant.ts:76-85`) only constructs a parsed response object, and although `ArtifactOpOperation` includes `"transfer_grant"` (`job-control-metrics.ts:30`), the sole production `artifactOp` caller is the commit path. |
+| ~~DE-06 (Critical)~~ **CLOSED 2026-09-09** | "object put/get and rejected-key attempts are audited" | `server/src/services/artifact-transfer-grant.ts` (upload key outside this org's prefix; download), `packages/db/src/repositories/tenant/job-control.ts:2750-2751` (commit). | **Was: partly** (the count-only commit metric described below; the grant rejections emitted nothing at all). **Now:** every refusal on both paths writes one attributable row to `activity_log` — `security.denied.artifact_transfer_grant` / `security.denied.artifact_commit` — carrying WHO (the refused `workerId`), TENANT (the LOCKED LEASE's company, never the request's or the manifest's), RESOURCE (`job_artifact` + `details.requestedObjectKey`, the key actually asked for) and WHY (a per-BRANCH machine code behind the unchanged coarse wire `malformed`). Proven by provoking the real refusals through the real services against real PostgreSQL: `server/src/__tests__/de-06-artifact-denial-audit.integration.test.ts`, observed 9-RED / 4-PASS against the unchanged tree and 13/13 green after, four mutants killed. The central provocation is CROSS-TENANT at the `organizations` level, and the probed tenant's own `activity_log` is asserted empty. **DE-06 stays `partial`** in the register: its `authentication` clause is separately absent (`E0-F012`). The historical measurement is kept below because it is what the closure was built against. |
+| *(DE-06, as measured 2026-09-08)* | — | — | **Partly — and this is the one row in the table where "nothing" would be wrong.** A rejected *commit* does emit a **count-only** metric: `metrics?.artifactOp({operation:"commit", outcome:"rejected", count:1})` (`server/src/services/artifact-commit.ts:246-250`), and the sink is genuinely wired in production (`createPinoJobControlMetrics`, `server/src/index.ts:657-660`). It is **not an audit record**: by deliberate design it carries no organization, no object key, no reason and no actor (`job-control-metrics.ts:15-17` — high-cardinality ids ride the logger spine, never a metric label), so a breach cannot be attributed or reconstructed from it. The *grant* rejections emit nothing at all: `rejected()` (`artifact-transfer-grant.ts:76-85`) only constructs a parsed response object, and although `ArtifactOpOperation` includes `"transfer_grant"` (`job-control-metrics.ts:30`), the sole production `artifactOp` caller is the commit path. |
 | DE-11 (High) | "sensitive-artifact access and retention are audited" | — (the controls themselves are absent; see `E8-F011`) | **Nothing**, and the code says so: `server/src/services/artifact-commit.ts:172-173`. |
 | DE-12 (Critical) | "partition, drain, and generation changes are audited" | `packages/db/src/repositories/tenant/job-control.ts:1667-1679` (the generation gate) | **Nothing**, and nothing could: `services.generation` has **no writer anywhere in the tree** (`grep -rn "update(services)"` returns zero hits outside comments), so no generation change exists to audit. |
 | DE-13 (High) | "admission, throttle, and quota-breach events are audited" | `server/src/services/org-concurrency.ts:248` (capacity) and `server/src/services/worker-admission-rate-limit.ts:139` (`over_cap`). | **Nothing for the throttle.** `server/src/routes/worker-control.ts:414-416` returns the 429 through the same silent `sendWorkerOperationProtocolError`. The capacity 429 (`server/src/services/job-submission.ts:353`) surfaces only a generic `job_submission_rejected` reason code carrying neither cap nor usage. |
@@ -194,18 +195,41 @@ in-transaction write of the denial rolls back with it; `recordSecurityDenial` is
 requiring a pool-level handle and that separate-transaction lifecycle is not yet built. Neither is
 a wiring task.
 
-- **Affected crossings:** DE-01, DE-03, DE-04, DE-06, DE-11, DE-12, DE-13, DE-14 — **all eight
-  still open.** (DE-11's is carried in detail by `E8-F011`; it is listed here so the class is
-  complete.)
-- **Disposition:** `unowned`. No ticket on disk owns "record a denial" for these eight. The
+**★ DE-06 IS CLOSED (2026-09-09), AND SEVEN REMAIN.** The denial-audit batch wired
+`recordSecurityDenial` into both artifact object-operation paths (`artifact-transfer-grant.ts`,
+`artifact-commit.ts`), enrolled as `E0-de06-artifact-denial-audit` in
+`scripts/gate-clause-wiring.json` in the same commit. See the table row above for the evidence.
+**Two things this closure changes about how the rest of this cohort should be read**, both
+measured rather than inherited:
+
+1. **The "in a transaction" objection is narrower than the paragraph above implies.** DE-06's
+   refusals happen *inside* `runInTenant`, and they are still recordable — because a `rejected`
+   outcome is a **RETURN, not a throw**, so the tenant transaction COMMITS. What actually blocks
+   Group B is not "inside a transaction" but "the deny is a `throw` that rolls the transaction
+   back". The pattern used here — the refusing branch records an **intent** into a local, the
+   transaction returns, and the caller writes the row on the pool handle before responding —
+   costs nothing and avoids borrowing a second pool connection while the first is still held,
+   which on a small pool would be a self-deadlock **on the refusal path**. Any Group A/returning
+   deny can use it as-is; a `throw`-shaped deny still cannot.
+2. **The pool-borrow hazard was not previously named anywhere.** `security-denial-audit.ts` says
+   the handle must be pool-level; it does not say that calling it *from inside* an open tenant
+   transaction is the way to satisfy that sentence and deadlock anyway. That is now documented in
+   `server/src/services/artifact-denial-audit.ts` and is a live constraint for every remaining
+   crossing in this class.
+
+- **Affected crossings:** DE-01, DE-03, DE-04, DE-11, DE-12, DE-13, DE-14 — **seven remaining.**
+  DE-06 is closed (above) and is no longer carried by this finding. (DE-11's is carried in detail
+  by `E8-F011`; it is listed here so the class is complete.)
+- **Disposition:** `unowned`. No ticket on disk owns "record a denial" for these seven. The
   nearest candidate, `jobAuditBridge`, exists and is caller-less; wiring it is not a code-motion
   task, because the DE-01 case has **no error to intercept** (a filtered read is a successful empty
   read), so a denial-observation point would have to be built rather than connected. Minimum work
   is stated in the ownership manifest entry. NOT `accepted`: HIGH may never be accepted.
-- **Resolution condition:** each row's `audit` clause is either delivered against a named record
-  point with a production caller, or AMENDED to state what the programme intends. Amending is a
-  founder decision and is not taken here. Resolve = flip this Status and delete the `E0-F010` key
-  in `scripts/finding-ownership.json` in the SAME commit.
+- **Resolution condition:** each *remaining* row's `audit` clause is either delivered against a
+  named record point with a production caller, or AMENDED to state what the programme intends.
+  Amending is a founder decision and is not taken here. Resolve = flip this Status and delete the
+  `E0-F010` key in `scripts/finding-ownership.json` in the SAME commit. **Seven of eight are still
+  open; do not read the DE-06 closure as closing the cohort.**
 
 ## E0-F011 — Four crossings are defended by a control whose ARMING PATH is dead: two have zero production callers, one is enabled by an environment variable set in no manifest, and one is gated on a database column with no writer
 
@@ -509,7 +533,86 @@ path it does not log is the security refusal.
 **What it is NOT.** It is not a claim that any of these controls fail to deny. Every crossing here
 is recorded `partial` precisely because its enforcement half was measured holding.
 
+### ★ RE-TRIAGE, 2026-09-09, by the denial-audit batch (the unit that closed DE-06)
+
+**The count first, because a skim must not conclude this class is closed. Of the SEVENTEEN,
+TWO are closed — DE-19 (2026-09-08) and DE-06 (2026-09-09) — and FIFTEEN remain open.** The
+group taxonomy below was re-measured against source rather than inherited, and it is wrong in
+three ways. Each correction is stated here; the original text is kept beneath it, unedited, so
+the change is visible.
+
+**CORRECTION 1 — the taxonomy lost one of the sixteen it was a taxonomy of, and it was the one
+that closed.** The list opening the section names sixteen crossings. Groups A, B, C and D between
+them name DE-01, DE-03, DE-04, DE-11, DE-12, DE-13, DE-14, DE-15, DE-16, DE-17, DE-18, DE-20,
+DE-21, DE-27 and DE-29 — **fifteen. DE-06 appears in the list and in no group.** A Critical
+crossing dropped out of the very structure whose stated purpose was that "a plan that quietly
+covers twelve and implies seventeen is this programme's own failure class". It was then the most
+closable crossing in the set: its refusals are `return`s inside a *committing* transaction, its
+tenant is the locked lease's `companyId` (FK-valid, resolved under the refusing worker's own org
+GUC, never caller-supplied), and it needed no new lifecycle at all.
+
+**CORRECTION 2 — "Group A … `recordSecurityDenial` already fits; only the interception is new" is
+false for all three of its members, on three different grounds.**
+
+- **DE-16** — already corrected in place below (synchronous chokepoint; two sinks with no
+  `companyId` at all). Left as the finding states it.
+- **DE-21** — split, and only half is closable with the existing mechanism. Re-measured at
+  `f13f1f4d0` in `server/src/realtime/live-events-ws.ts`: the 403 is produced when
+  `authorizeUpgrade` returns `null`, and its `return null` branches divide cleanly. The
+  **agent-key branches** (`:376` an unknown key or a key belonging to a DIFFERENT company —
+  the cross-tenant probe itself; `:387-393` a terminated / pending-approval / company-mismatched
+  agent) resolve an FK-valid prober tenant from `agent_api_keys.companyId`, which is exactly
+  DE-19's "write into the tenant that refused, never the tenant that was probed". The
+  **board/session branches** (`:302`, `:313`, `:319`, `:425`, `:430`) do not: a board user
+  belongs to many companies, so the only company in hand is the one the URL asked for, and
+  writing there would put a probe record into the PROBED tenant's own audit stream. Decision 2
+  below governs that half. So DE-21 is a partial closure at best today, not a drop-in.
+- **DE-15** — **has no tenant to attribute to.** The kill-switch drain at `job-leasing.ts:731-740`
+  is a fleet-level verdict about a PROVIDER, returned to a worker poll. `LeaseCandidate.job`
+  does carry a `companyId`, but candidates may be empty, and attributing a provider kill verdict
+  to whichever job happened to be at the head of the queue is a fabricated attribution, not an
+  audit record. DE-15 belongs with Decision 2, not with Group A.
+
+**CORRECTION 3 — Group B's blocker is narrower than "inside the tenant transaction", and the
+lifecycle it says does not exist is not needed.** The stated rule is that these denials cannot be
+recorded because "an in-transaction write rolls back with it". The operative property is not
+*inside a transaction* — it is *the transaction rolls back*. DE-06's refusals are all inside
+`runInTenant` and every one of them is now recorded, because a `rejected` outcome is a **RETURN,
+not a throw**, so the transaction COMMITS. And the pattern that made it work does not need a
+separate-transaction recorder either: the refusing branch records an **intent** into a local, the
+transaction unwinds (by return OR by a caught throw), and the caller writes the row on the pool
+handle before responding. `server/src/services/artifact-denial-audit.ts` documents it.
+
+★ This is not a theory about DE-04/DE-18. **A `guardActiveFence` refusal — the exact throw those
+two crossings turn on — is now recorded durably and attributably at one of its callers**, and the
+arm that proves it provokes a real expired lease against real PostgreSQL
+(`de-06-artifact-denial-audit.integration.test.ts`, the `guardActiveFence` arm; the throw is caught
+inside the tenant transaction, the intent is recorded there, the row is written outside). What
+DE-04 and DE-18 still need is the same treatment at the **other 10+ governed mutators' callers**,
+which is real work — but it is wiring, not a missing lifecycle.
+
+★ **AND ONE NEW HAZARD THE ORIGINAL TRIAGE COULD NOT HAVE NAMED.** `security-denial-audit.ts` says
+`db` must be a pool-level handle. It does not say that calling it *from inside* an open tenant
+transaction satisfies that sentence and **borrows a second pool connection while the first is
+still held** — a self-deadlock on the refusal path, i.e. an audit that converts a refusal into a
+hang. Every remaining crossing in this class whose deny sits inside `runInTenant` hits this, and
+the intent-drain pattern is the answer.
+
+**Honest arithmetic, re-derived rather than inherited.** The original section closes with "of the
+seventeen, ONE is closed and at most ELEVEN more are closable end to end". That count is now
+**two closed**, and of the fifteen remaining **none is a drop-in with today's mechanism**: DE-21
+is half-blocked and DE-15 fully blocked on Decision 2; DE-16 needs its chokepoint async-ified;
+DE-04/DE-18/DE-29 and DE-12's and DE-13's capacity halves need the intent-drain applied at
+each governed mutator's caller; DE-03 and DE-13's and DE-27's throttle halves need
+`sendWorkerOperationProtocolError` widened to carry a db handle and a tenant; and the six
+clause-halves in Group D are unchanged and still not closable at this architecture. **Decision 2
+(where a company-less denial goes) is now blocking three crossings, not two, and is the single
+highest-leverage unblock left in the class.**
+
 ### What the remaining sixteen need (2026-09-08, from the unit that closed DE-19)
+
+*(Superseded in part by the re-triage above; kept verbatim because the corrections are only
+legible against it. Its own count of "sixteen" was correct on 2026-09-08 and is now fifteen.)*
 
 Sixteen crossings in this class are still open: **eight here** (DE-15, DE-16, DE-17, DE-18, DE-20,
 DE-21, DE-27, DE-29) and **all eight in `E0-F010`** (DE-01, DE-03, DE-04, DE-06, DE-11, DE-12,
@@ -612,6 +715,11 @@ state twelve, not seventeen.
    `pnpm db:generate`), whose RLS/GRANT posture must be considered rather than guessed (AGENTS.md
    + Decision #122; note the closest analogue, `activity_log`, is deliberately **non-RLS** per
    `0245:15-18`, which is a live-fire question for a table holding cross-tenant evidence).
+   ★ **AMENDED 2026-09-09.** **DE-15 joins this list** — a kill-switch drain is a fleet-level
+   verdict about a *provider* and has no tenant to attribute to at all — and **DE-21's share of
+   this decision is its board/session half only**, not the whole crossing, because its agent-key
+   branches DO resolve an FK-valid prober tenant. This decision now blocks three crossings and is
+   the highest-leverage unblock left in the class.
 3. **Retention and disclosure of a denial record.** (a) Whose log does a cross-tenant denial land
    in? The probed company's `activity_log` discloses to them that they were probed and by whom.
    (b) `activity_log` **cascade-deletes with its company**, so a hostile tenant can destroy the

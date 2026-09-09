@@ -43,6 +43,12 @@ import { resolveStoredRetention } from "./artifact-retention-authority.js";
 import type { SweepTrigger } from "./artifact-sweep-trigger.js";
 import { JobLeasingError, type VerifiedWorkerOperation } from "./job-leasing.js";
 import { resolveWorkerFenceContext } from "./worker-fence-context.js";
+import { recordSecurityDenial } from "./security-denial-audit.js";
+import {
+  type ArtifactDenialIntent,
+  type ArtifactDenialReason,
+  ARTIFACT_COMMIT_DENIAL_SURFACE,
+} from "./artifact-denial-audit.js";
 import type { StorageProvider } from "../storage/types.js";
 import type { JobControlMetrics } from "./job-control-metrics.js";
 
@@ -57,6 +63,22 @@ function fenceReason(code: JobFenceErrorCode): "stale_fence" | "attempt_terminal
  * not disclose a foreign resource). */
 function verificationReason(reason: ArtifactCommitRejectionReason): "event_hash_mismatch" | "malformed" {
   return reason === "hash_mismatch" ? "event_hash_mismatch" : "malformed";
+}
+
+/** DE-06 — the same verification refusal, as the DURABLE reason code. Total over
+ * `ArtifactCommitRejectionReason`, so a new mutator rejection reason fails to
+ * compile here rather than silently collapsing into an existing audit code. */
+function commitDenialReason(reason: ArtifactCommitRejectionReason): ArtifactDenialReason {
+  switch (reason) {
+    case "wrong_prefix":
+      return "foreign_object_prefix";
+    case "tenant_mismatch":
+      return "manifest_tenant_mismatch";
+    case "size_mismatch":
+      return "declared_size_mismatch";
+    case "hash_mismatch":
+      return "declared_hash_mismatch";
+  }
 }
 
 export function createArtifactCommitService(input: {
@@ -97,14 +119,29 @@ export function createArtifactCommitService(input: {
       const auth = commitInput.auth;
       if (payload.workerId !== auth.workerId) throw new JobLeasingError("unauthorized");
 
-      const rejected = (reason: string): ArtifactCommitOperationResponseV1 =>
-        artifactCommitOperationResponseV1Schema.parse({
+      // ★ DE-06 — see artifact-denial-audit.ts. Set by the refusing branch, drained
+      // after the tenant transaction closes. The `intent` parameter is REQUIRED, so
+      // a future refusal branch that forgets to audit does not compile.
+      // A one-field holder rather than a bare `let`: TypeScript narrows a `let`
+      // from its initializer and cannot see the assignment inside `rejected`, so
+      // a bare `let` reads back as `null` (and `if (…)` as `never`) at the drain
+      // below. Property narrowing is reset by the intervening call, so this reads
+      // back at its declared type.
+      const denial: { intent: ArtifactDenialIntent | null } = { intent: null };
+
+      const rejected = (
+        reason: string,
+        intent: ArtifactDenialIntent,
+      ): ArtifactCommitOperationResponseV1 => {
+        denial.intent = intent;
+        return artifactCommitOperationResponseV1Schema.parse({
           protocolVersion: 1,
           correlationId: request.correlationId,
           serverTime: new Date().toISOString(),
           outcome: "rejected",
           reason,
         });
+      };
 
       const response = await runInTenant(input.appDb, auth.organizationId, async (repos) => {
         // ★ DAT-011 FIX (found by the live D1 lane, E6F-14). A stale fence is refused HERE,
@@ -132,6 +169,33 @@ export function createArtifactCommitService(input: {
           throw error;
         }
 
+        // DE-06 — the attribution every refusal below shares. `ctx.companyId` is
+        // the LOCKED LEASE's company, never the manifest's self-asserted one.
+        const deny = (
+          reason: ArtifactDenialIntent["reason"],
+          extra: Record<string, unknown> = {},
+        ): ArtifactDenialIntent => ({
+          reason,
+          companyId: ctx.companyId,
+          artifactId: manifest.artifactId,
+          details: {
+            operation: "commit",
+            organizationId: auth.organizationId,
+            workerId: auth.workerId,
+            targetId: auth.targetId,
+            jobId: payload.jobId,
+            attempt: payload.attempt,
+            leaseId: payload.leaseId,
+            // The key the manifest CLAIMED, plus the org/company it claimed to be
+            // committing for. On a `manifest_tenant_mismatch` these are the whole
+            // evidence, and the coarse wire `malformed` carries none of it.
+            requestedObjectKey: manifest.objectKey,
+            declaredOrganizationId: String(manifest.organizationId),
+            declaredCompanyId: String(manifest.companyId),
+            ...extra,
+          },
+        });
+
         // Object existence + store-observed integrity, run ONLY AFTER the fence
         // IDENTITY is resolved (an unresolvable/foreign fence throws above, before the
         // store is ever touched) — so a caller cannot use object existence/metadata as
@@ -139,15 +203,24 @@ export function createArtifactCommitService(input: {
         // cannot supply a SHA256 checksum, fails closed — an unverifiable hash must
         // never commit.
         const head = await input.storage.headObject({ objectKey: manifest.objectKey });
-        if (!head.exists) return rejected("malformed"); // upload_incomplete
+        if (!head.exists) return rejected("malformed", deny("object_missing")); // upload_incomplete
         if (typeof head.contentLength !== "number" || !head.checksumSha256) {
-          return rejected("event_hash_mismatch"); // integrity unverifiable → fail closed
+          // integrity unverifiable → fail closed
+          return rejected("event_hash_mismatch", deny("object_integrity_unverifiable"));
         }
         const actualSizeBytes = head.contentLength;
         const actualSha256 = head.checksumSha256;
         // Server-authoritative absolute size ceiling (the grant's maxBytes is not
         // persisted and a presigned PUT imposes no size bound at the store).
-        if (actualSizeBytes > maxArtifactBytes) return rejected("malformed");
+        if (actualSizeBytes > maxArtifactBytes) {
+          return rejected(
+            "malformed",
+            deny("object_size_over_ceiling", {
+              actualSizeBytes,
+              ceilingBytes: maxArtifactBytes,
+            }),
+          );
+        }
 
         // Tenant + prefix validity are evaluated with the AUTH org + the LOCKED
         // lease's company (never the manifest's self-asserted org/company) and
@@ -217,9 +290,18 @@ export function createArtifactCommitService(input: {
             // so a retry could still re-PUT to the same key. `isSweepEligible` remains the
             // single authority and is unchanged. This sweeps what has ALREADY expired.
             sweepTrigger.trigger(auth.organizationId);
-            return rejected(fenceReason(error.code));
+            return rejected(fenceReason(error.code), deny(fenceReason(error.code)));
           }
-          if (error instanceof ArtifactCommitRejection) return rejected(verificationReason(error.reason));
+          if (error instanceof ArtifactCommitRejection) {
+            // ★ DE-06 — `verificationReason` collapses wrong_prefix / tenant_mismatch /
+            // size_mismatch onto the same coarse wire `malformed` (redaction-safe: a
+            // tenant mismatch must not disclose a foreign resource). The durable
+            // record keeps them apart, which is the whole clause.
+            return rejected(
+              verificationReason(error.reason),
+              deny(commitDenialReason(error.reason), { verificationBranch: error.reason }),
+            );
+          }
           throw error;
         }
 
@@ -250,6 +332,30 @@ export function createArtifactCommitService(input: {
         });
       } catch {
         /* best-effort telemetry */
+      }
+
+      // ★ DE-06 — the ATTRIBUTABLE half of the record the metric above cannot be.
+      // The metric ticks `{operation, outcome, count}` and is compile-closed
+      // against ids by deliberate design, so it answers "how many" and never
+      // "whose", "which tenant", "which key" or "why". This writes the row that
+      // does, on the POOL handle after the tenant transaction has closed and
+      // before the caller sees the response. `recordSecurityDenial` never throws.
+      const pending = denial.intent;
+      if (pending) {
+        await recordSecurityDenial(input.appDb, {
+          companyId: pending.companyId,
+          crossing: "DE-06",
+          surface: ARTIFACT_COMMIT_DENIAL_SURFACE,
+          reason: pending.reason,
+          // A worker has no `agents` row and no `auth` row; `actor_id` is plain
+          // text with no FK, which is what makes `workerId` usable directly.
+          actorType: "system",
+          actorId: auth.workerId,
+          entityType: "job_artifact",
+          entityId: pending.artifactId,
+          control: "server/src/services/artifact-commit.ts:commit",
+          details: pending.details,
+        });
       }
       return response;
     },
