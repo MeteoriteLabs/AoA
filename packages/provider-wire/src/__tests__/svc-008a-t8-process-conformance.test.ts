@@ -221,10 +221,17 @@ const mockArm: TransportArm = {
  * ★ WHAT THIS ARM DOES AND DOES NOT PROVE. The code under test is the SHIPPING
  * `real-transport.ts` — its parsing, its verdict derivation, its observation mapping. Only
  * the `e2b` SDK boundary is substituted, with response shapes taken from the
- * `e2b@2.30.5` type declarations. It proves that this file cannot manufacture an
- * affirmative from nothing. It proves NOTHING about what the live E2B service returns,
- * which is the keyed arm's job — and the keyed arm reports SKIPPED, never passed, when no
- * key is present.
+ * `e2b@2.30.5` type declarations.
+ *
+ * ★★★ AND THE CLAIM THAT USED TO STAND HERE WAS FALSE. It read "it proves that this file
+ * cannot manufacture an affirmative from nothing". It did not: `processStatus` returned the
+ * affirmative `{state: "gone"}` for any non-empty list whose entries carried no readable
+ * numeric pid, and NO CLAUSE IN THIS FILE DROVE THAT SHAPE — so the claim was one no test
+ * here could refute. See clause 12, which now does. What this arm proves is bounded: FOR
+ * THE RESPONSE SHAPES DRIVEN BELOW, this file answers `unknown` rather than an affirmative.
+ * That is a statement about coverage, not about the file, and it proves NOTHING about what
+ * the live E2B service returns — which is the keyed arm's job, and the keyed arm reports
+ * SKIPPED, never passed, when no key is present.
  */
 const realArm: TransportArm = {
   name: "RealE2bTransport (SDK boundary injected)",
@@ -232,7 +239,12 @@ const realArm: TransportArm = {
     const running = { sandboxId: "sbx-real", state: "running", metadata: {} };
     const stopped = { sandboxId: "sbx-real", state: "stopped", metadata: {} };
     const unclassifiable = { sandboxId: "sbx-real", state: "hibernated", metadata: {} };
-    const livePids = [{ pid: 4242 }];
+    // ★ EACH BACKGROUND LAUNCH MINTS A FRESH PID, as a real OS does, and `list()` reports
+    // exactly what was launched. A double that answered the SAME pid to every `run` would
+    // make clause 13's replay assertion pass on a provider that launched twice — the
+    // discriminator has to be a value only ONE launch could have produced.
+    let nextPid = 4242;
+    const launched: number[] = [];
     const sdk = {
       getInfo: async () => {
         if (condition === "read_fails") throw new Error("e2b control API unreachable");
@@ -247,11 +259,17 @@ const realArm: TransportArm = {
         commands: {
           run: async (_cmd: string, opts: { background?: boolean }) => {
             expect(opts.background).toBe(true);
-            return condition === "refuse_launch" ? {} : { pid: 4242 };
+            if (condition === "refuse_launch") return {};
+            const pid = nextPid++;
+            launched.push(pid);
+            return { pid };
           },
           list: async () => {
             if (condition === "process_read_fails") throw new Error("envd channel dropped");
-            return livePids;
+            // Before any launch there is still one live process to be absent FROM — clause
+            // 9's witnessed-absence arm needs a non-empty answer that does not contain the
+            // handle it asks about.
+            return launched.length > 0 ? launched.map((pid) => ({ pid })) : [{ pid: 4242 }];
           },
           kill: async () => true,
         },
@@ -331,9 +349,50 @@ describe.each(ARMS.map((a) => [a.name, a] as const))("T8 transport arm — %s", 
     expect(deriveStopVerdict(status.observation)).toBe("undetermined");
 
     // The other arm of the same distinction: a read that ANSWERS absence IS "gone".
+    //
+    // ★ TIGHTENED. This clause used to accept `["gone", "unknown"]`, which is the same
+    // permissiveness the whole suite exists to refuse: a transport that answered `unknown`
+    // to EVERY handle satisfied it, and so did one that answered `gone` to every handle.
+    // The distinction being pinned is precise — this list ANSWERED, and this handle is a
+    // well-formed one the answer does not contain — so the expected value is exactly
+    // `"gone"`, and the escalating value is now the failure, not an accepted alternative.
     const live = await providerFor("clean");
     const gone = await live.provider.processStatus(live.sandboxId, "999999", ctx());
-    expect(["gone", "unknown"]).toContain(gone.observation.state);
+    expect(gone.observation.state).toBe("gone");
+    expect(deriveStopVerdict(gone.observation)).toBe("stopped");
+  });
+
+  // --- clause 13: THE PORT'S IDEMPOTENCY CONTRACT, ON THE LAUNCH -------------
+  it("clause 13 — ★ a REPLAYED idempotency key returns the recorded launch and starts nothing new", async () => {
+    // `ProviderOpContext` says a repeated key "returns the recorded result and does not
+    // double-apply (lost-response replay)". `startProcess` is the operation where breaking
+    // that is most expensive: a retry after a lost response leaves TWO service instances
+    // running in one sandbox, and the caller never learned the first handle — so the second
+    // launch is invisible to the very supervisor that would stop it. That is duplicate
+    // placement one layer below the epic designed around avoiding it.
+    //
+    // ★ THE DISCRIMINATOR IS THE HANDLE, NOT THE CALL COUNT. Both arms mint a FRESH handle
+    // per real launch (mock: `${prefix}-proc-N`; real: the SDK's pid, which a second
+    // `commands.run` would have to re-issue), so a provider that re-invoked the transport
+    // could not return the first handle by accident.
+    const { provider, sandboxId } = await providerFor("clean");
+    const replayCtx: ProviderOpContext = { deadlineMs: 5_000, idempotencyKey: "t8-replay-1" };
+    const first = await provider.startProcess({ sandboxId, command: "sleep", args: ["infinity"], env: {} }, replayCtx);
+    const second = await provider.startProcess({ sandboxId, command: "sleep", args: ["infinity"], env: {} }, replayCtx);
+    expect(second.handle).toBe(first.handle);
+    // The RECORDED result, returned verbatim — a fresh `providerOpId` would mean a second
+    // op was minted, which is the thing being ruled out.
+    expect(second.providerOpId).toBe(first.providerOpId);
+    expect(second.acknowledgedAt).toBe(first.acknowledgedAt);
+
+    // POSITIVE CONTROL — a DIFFERENT key is a different launch, so the replay ledger is not
+    // just "always return the first handle", which would break every legitimate second
+    // process in the same sandbox.
+    const third = await provider.startProcess(
+      { sandboxId, command: "sleep", args: ["infinity"], env: {} },
+      { deadlineMs: 5_000, idempotencyKey: "t8-replay-2" },
+    );
+    expect(third.handle).not.toBe(first.handle);
   });
 
   // --- clause 11: ★ THE ARMS AGREE ON CAPABILITY (the E7-F034 shape, pinned) --
@@ -358,6 +417,114 @@ describe.each(ARMS.map((a) => [a.name, a] as const))("T8 transport arm — %s", 
 async function providerStart(provider: E2bSandboxProvider, sandboxId: string) {
   return provider.startProcess({ sandboxId, command: "sleep", args: ["infinity"], env: {} }, ctx());
 }
+
+// =============================================================================
+// Clause 12 — ★★★ AN UNCLASSIFIABLE PROCESS LIST IS NOT AN ABSENCE.
+//
+// ★ THIS CLAUSE IS ASSERTED OF THE REAL ARM EXPLICITLY, AND THAT IS THE POINT.
+// `MockE2bTransport` keeps a typed in-memory process store; there is no payload shape it
+// could return that its own reader fails to classify, so this condition is STRUCTURALLY
+// UNREACHABLE on the mock arm. Folding it into the `describe.each` above would produce a
+// clause that passes on the mock by never firing — a test that cannot fire is this
+// repository's defining failure class, and hiding one inside the suite written to prevent
+// it would be that failure two layers deep. So the arm is named, and only the shipping
+// binding is driven.
+//
+// WHAT IT PINS. `RealE2bTransport.processStatus` walked `commands.list()` looking for a
+// numeric `pid` and, finding none, fell through to `return {state: "gone"}` — the
+// affirmative absence, from a payload it could not read a single entry of.
+// `gone -> deriveStopVerdict -> "stopped"`, the TERMINATING verdict. The realistic
+// producer is an SDK FIELD RENAME (`pid` -> `processId`) inside the pinned `^2.30.5`
+// range: exactly the class `mapState` was repaired for one method away, rebuilt inside
+// this PR's own repair. It was self-inconsistent too — a NON-array payload already
+// yielded `unknown/state_unrecognized`; only the unclassifiable-ENTRIES case failed open.
+// =============================================================================
+
+describe("T8 clause 12 — RealE2bTransport: a process list it cannot classify is 'unknown', never 'gone'", () => {
+  /** Drive the SHIPPING transport with a `commands.list()` that answers `payload`. */
+  async function statusOver(payload: unknown) {
+    const sdk = {
+      getInfo: async () => ({ sandboxId: "sbx-real", state: "running", metadata: {} }),
+      connect: async () => ({
+        commands: {
+          run: async () => ({ pid: 4242 }),
+          list: async () => payload,
+          kill: async () => true,
+        },
+      }),
+    };
+    const provider = new E2bSandboxProvider({
+      transport: new RealE2bTransport({ apiKey: "t8-not-a-credential", sdk }),
+    });
+    return provider.processStatus("sbx-real", "4242", ctx());
+  }
+
+  // Every shape a real SDK response could plausibly take that carries no readable numeric
+  // pid. `[{processId: 4242}]` is the realistic one — a field rename — and the rest are the
+  // partial/typed/null variants that arrive with a degraded or error-shaped body.
+  const UNCLASSIFIABLE: ReadonlyArray<[string, unknown]> = [
+    ["an SDK field rename", [{ processId: 4242 }]],
+    ["entries with no fields at all", [{}]],
+    ["entries that are bare strings", ["4242"]],
+    ["a pid carried as a string", [{ pid: "4242" }]],
+    ["a null entry", [null]],
+  ];
+
+  for (const [name, payload] of UNCLASSIFIABLE) {
+    it(`★ ${name} → unknown/state_unrecognized, and explicitly NOT 'gone'`, async () => {
+      const status = await statusOver(payload);
+      // Assert the NEGATIVE first and by name: `"gone"` is the value the defect produced,
+      // and a test that only checked the positive would pass on it.
+      expect(status.observation.state).not.toBe("gone");
+      expect(status.observation).toEqual({ state: "unknown", reason: "state_unrecognized" });
+      // ...and the derived verdict is the ESCALATING one, never the terminating one.
+      expect(deriveStopVerdict(status.observation)).toBe("undetermined");
+      expect(deriveStopVerdict(status.observation)).not.toBe("stopped");
+    });
+  }
+
+  it("★ a MIXED list whose READABLE entries do not contain the pid is also not an absence", async () => {
+    // To claim a pid is ABSENT you must have read every entry: the one you could not read
+    // might have been it. Stricter than the minimum the review named, and it is what the
+    // `gone` contract actually implies.
+    const status = await statusOver([{ pid: 1 }, { processId: 9999 }]);
+    expect(status.observation).toEqual({ state: "unknown", reason: "state_unrecognized" });
+  });
+
+  it("★ ...but a POSITIVE MATCH beside an unreadable entry is still 'running'", async () => {
+    // The rule is about the ABSENCE conclusion only. Finding the pid is a witnessed
+    // presence, and an unreadable neighbour cannot unmake it — degrading this to `unknown`
+    // would throw away a real observation, which is the opposite failure.
+    const status = await statusOver([{ pid: 4242 }, { processId: 9999 }]);
+    expect(status.observation.state).toBe("running");
+  });
+
+  it("POSITIVE CONTROL — an EMPTY list is a legitimate witnessed absence: 'gone'", async () => {
+    // Without this the clause is passed perfectly by a transport hardcoded to `unknown`,
+    // which asserts nothing — the same inversion that let `delivered: true` pass every
+    // ladder test. An empty answer IS an answer: nothing is running.
+    const status = await statusOver([]);
+    expect(status.observation.state).toBe("gone");
+    expect(deriveStopVerdict(status.observation)).toBe("stopped");
+  });
+
+  it("POSITIVE CONTROL — a readable list containing the pid is 'running'", async () => {
+    const status = await statusOver([{ pid: 4242 }]);
+    expect(status.observation.state).toBe("running");
+  });
+
+  it("a readable list NOT containing the pid stays 'gone' — the classifiable path is unchanged", async () => {
+    const status = await statusOver([{ pid: 1 }, { pid: 2 }]);
+    expect(status.observation.state).toBe("gone");
+  });
+
+  it("a NON-array payload keeps its existing answer — the two cases now AGREE", async () => {
+    // The self-inconsistency was the tell: this branch was already honest while the
+    // unclassifiable-entries branch beside it was not.
+    const status = await statusOver({ processes: [] });
+    expect(status.observation).toEqual({ state: "unknown", reason: "state_unrecognized" });
+  });
+});
 
 // =============================================================================
 // Clause 7 — the unsupported mode THROWS, on every provider that declares it.

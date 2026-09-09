@@ -334,11 +334,37 @@ export class RealE2bTransport implements E2bTransport {
       // The call answered with something this binding cannot classify. Not an absence.
       return { state: "unknown", reason: "state_unrecognized" };
     }
+    // ★★★ AN ABSENCE CLAIM REQUIRES HAVING READ EVERY ENTRY.
+    //
+    // This loop used to be `if (typeof info?.pid === "number" && info.pid === pid) return
+    // running` and then fall through to `return {state: "gone"}` — so a list whose entries
+    // this binding could not read AT ALL produced the affirmative absence, and
+    // `gone -> deriveStopVerdict -> "stopped"`, the TERMINATING verdict, from a payload
+    // nothing was classified out of. Measured on the shipped code with `[{processId: 4242}]`
+    // (an SDK field rename inside the pinned `^2.30.5` range — the realistic producer),
+    // `[{}]`, `["4242"]`, `[{pid: "4242"}]` and `[null]`.
+    //
+    // ★ IT WAS SELF-INCONSISTENT WITH THE BRANCH DIRECTLY ABOVE, which is the tell: a
+    // NON-array payload already answered `unknown/state_unrecognized`, and only the
+    // unclassifiable-ENTRIES case failed open. This is E7-F034's own class, rebuilt one
+    // method away from the repair for it — which is exactly how this class survives.
+    //
+    // The rule: an entry that carries no readable pid is an entry that MIGHT have been this
+    // one, so no absence may be concluded from a list containing any. `gone` now requires
+    // that every entry was classified and none of them matched. An EMPTY list still means
+    // `gone` — nothing is running is an answer, not a failure to read.
+    let unclassifiable = 0;
     for (const info of processes as SandboxSdk[]) {
-      if (typeof info?.pid === "number" && info.pid === pid) return { state: "running" };
+      const entryPid: unknown = (info as SandboxSdk)?.pid;
+      if (typeof entryPid !== "number" || !Number.isInteger(entryPid) || entryPid <= 0) {
+        unclassifiable += 1;
+        continue;
+      }
+      if (entryPid === pid) return { state: "running" };
     }
-    // The list ANSWERED and this pid is not in it. That is a witnessed absence — and it
-    // carries no exit code, because this read has none to carry.
+    if (unclassifiable > 0) return { state: "unknown", reason: "state_unrecognized" };
+    // The list ANSWERED, every entry was read, and this pid is not among them. That is a
+    // witnessed absence — and it carries no exit code, because this read has none to carry.
     return { state: "gone" };
   }
 

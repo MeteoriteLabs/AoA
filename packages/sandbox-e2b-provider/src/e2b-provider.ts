@@ -314,6 +314,17 @@ export class E2bSandboxProvider implements SandboxProvider {
   /** Idempotency ledger: a stable create key → the recorded resource. A replayed
    * key returns the SAME sandbox and never provisions a second one. */
   readonly #idempotency = new Map<string, { sandboxId: string; resourceLabels: ResourceLabels }>();
+  /**
+   * SVC-008a — the SAME mechanism as `#idempotency` above, for the launch.
+   *
+   * ★ A SECOND MAP, NOT A SECOND SCHEME. `ProviderOpContext` states one contract for every
+   * op ("a repeated key returns the recorded result and does not double-apply"), and this
+   * follows the ledger `create` already uses rather than inventing a parallel one — two
+   * idempotency schemes in one provider would be worse than the gap. It is a separate MAP
+   * only because the recorded values have different shapes and a shared key space would let
+   * a create replay hand back a launch, or the reverse.
+   */
+  readonly #processIdempotency = new Map<string, ProcessStartResult>();
   #opCounter = 0;
   /** SVC-008a §9.4 — how many records this provider could not classify. The observable
    * that keeps the interim `hasLiveLease` rule from being silent; the provider has no
@@ -468,10 +479,21 @@ export class E2bSandboxProvider implements SandboxProvider {
    * What this changes on the shipping lane: `cancel` now returns `"ignored"` against real
    * E2B, so `CleanupAuthority`'s `kill` rung EXECUTES for the first time in production,
    * `kill` also returns `"ignored"`, and the stage reaches `destroy`. The unconditional
-   * forced `destroy` after the ladder is unchanged, so no resource behaviour changes at
-   * all — what changes is that `cleanup_escalation{escalation_stage}` starts reporting
-   * `"destroy"` where it reported `"cancel"`, which is the metric becoming TRUE: this
-   * provider has no graceful stop, and every cancellation is a hard teardown.
+   * forced `destroy` after the ladder is unchanged, so `cleanup_escalation{escalation_stage}`
+   * starts reporting `"destroy"` where it reported `"cancel"` — the metric becoming TRUE:
+   * this provider has no graceful stop, and every cancellation is a hard teardown.
+   *
+   * ★★★ FOR A CLASSIFIABLE RECORD, AND ONLY FOR ONE. This docstring used to say "no resource
+   * behaviour changes at all", and that was FALSE for the class {@link inspect} introduces
+   * below. An UNCLASSIFIABLE record previously mapped to `"stopped"` (the old `mapState`
+   * default) -> a terminal `SandboxState` -> the ordinary ladder -> a forced `destroy`. It
+   * now throws `SandboxRecordIndeterminateError` out of `inspect`, `CleanupAuthority`'s
+   * ownership gate refuses, `#convergeOne` reports `"failed"`, and NO destroy is issued: the
+   * resource is deliberately left to the next pass and, failing that, to the reaper. That is
+   * the intended non-destructive disposition — no teardown against a record whose ownership
+   * could not be established — but it IS a resource-behaviour change, and stating otherwise
+   * would hide the one case an operator most needs to know about. `indeterminateRecordCount()`
+   * is how often it fires.
    */
   #stopVerdict(observed: "stopped" | "still_running" | "unknown"): StopOutcome {
     return observed === "stopped" ? "stopped" : "ignored";
@@ -727,6 +749,26 @@ export class E2bSandboxProvider implements SandboxProvider {
 
   async startProcess(input: ExecuteInput, ctx: ProviderOpContext): Promise<ProcessStartResult> {
     this.#requireProcessSupervision("start_process");
+    // ★★★ REPLAY BEFORE LAUNCH — the `ProviderOpContext` contract, on the operation where
+    // breaking it is most expensive.
+    //
+    // Without this, `startProcess` twice under one key invoked the transport twice and
+    // returned two handles. The realistic producer is a retry after a LOST RESPONSE: the
+    // launch succeeded, the answer never arrived, the caller retries with the stable key —
+    // and now TWO service instances run in one sandbox while the caller never learned the
+    // first handle, so the second is invisible to the very supervisor that would stop it.
+    // That is duplicate placement one layer below the epic designed to prevent it.
+    //
+    // The recorded result is returned VERBATIM (same `providerOpId`, same handle, same
+    // `acknowledgedAt`): a freshly minted op id would mean a second op happened, which is
+    // the thing being ruled out. An empty key opts out, exactly as it does for `create` —
+    // that is the create-gate's deliberate STRIP (`adapter-manager/create-gate.ts`), where a
+    // durable ledger above this one is the sole idempotency layer.
+    const key = ctx.idempotencyKey;
+    if (key) {
+      const recorded = this.#processIdempotency.get(key);
+      if (recorded) return recorded;
+    }
     try {
       const { handle } = await this.#transport.startProcess({
         sandboxId: input.sandboxId,
@@ -741,7 +783,16 @@ export class E2bSandboxProvider implements SandboxProvider {
       if (typeof handle !== "string" || handle.length === 0) {
         throw new ProcessLaunchNotAcknowledged(input.sandboxId, "transport returned no usable handle");
       }
-      return { providerOpId: this.#nextOpId("execute"), handle, acknowledgedAt: Date.now() };
+      const result: ProcessStartResult = {
+        providerOpId: this.#nextOpId("execute"),
+        handle,
+        acknowledgedAt: Date.now(),
+      };
+      // ★ RECORDED ONLY ON A WITNESSED LAUNCH. A refusal or an unreadable handle threw
+      // above and records nothing, so a retry under the same key is a genuine retry of a
+      // launch that never happened — never a replay of a failure.
+      if (key) this.#processIdempotency.set(key, result);
+      return result;
     } catch (err) {
       if (err instanceof E2bProcessLaunchNotAcknowledgedError) {
         throw new ProcessLaunchNotAcknowledged(input.sandboxId, err.message);

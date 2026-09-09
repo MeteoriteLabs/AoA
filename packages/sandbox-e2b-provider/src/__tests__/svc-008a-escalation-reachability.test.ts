@@ -12,11 +12,19 @@
 // shipped `E2bSandboxProvider` over the shipped `RealE2bTransport` (SDK boundary injected;
 // see `svc-008a-witnessed-stop.test.ts` for exactly what that does and does not prove).
 //
-// ★ NOTHING ABOUT RESOURCE BEHAVIOUR CHANGES. The forced `destroy` after the ladder was
-// always unconditional, so no sandbox was ever leaked by this defect and none is reclaimed
-// differently now. What changes is that the RUNG executes and the metric becomes TRUE:
-// "this provider has no graceful stop; every cancellation is a hard teardown" — which is
-// the single most useful fact about the lane, and was previously unfalsifiable.
+// ★ FOR A CLASSIFIABLE RECORD, NOTHING ABOUT RESOURCE BEHAVIOUR CHANGES. The forced
+// `destroy` after the ladder was always unconditional, so no such sandbox was ever leaked by
+// this defect and none is reclaimed differently now. What changes is that the RUNG executes
+// and the metric becomes TRUE: "this provider has no graceful stop; every cancellation is a
+// hard teardown" — the single most useful fact about the lane, previously unfalsifiable.
+//
+// ★★★ AND FOR AN UNCLASSIFIABLE ONE, IT CHANGES — this header used to say "nothing about
+// resource behaviour changes" full stop, which was false. Such a record was previously
+// laundered by `mapState`'s default into `"stopped"`, a terminal state, and ran the ordinary
+// ladder to a forced `destroy`. It now throws out of `inspect`, the ownership gate refuses,
+// and `#convergeOne` reports "failed" with NO destroy issued — deliberately non-destructive
+// (no teardown against a record whose ownership could not be established), and deliberately
+// retryable, but a real change, and the one an operator most needs to know about.
 // -----------------------------------------------------------------------------
 
 import { describe, expect, it } from "vitest";
@@ -52,13 +60,25 @@ const makeCtx = () => ({ deadlineMs: 5_000, idempotencyKey: `esc-${++seq}` });
 /**
  * A sandbox that CANNOT be stopped by a signal — i.e. the production condition. `getInfo`
  * keeps reporting `running`; only `kill` (terminate) actually reclaims it.
+ *
+ * `stateAfterSignal` may be a SEQUENCE, consumed one entry per `getInfo` with the last
+ * entry repeating forever. That is what lets a test drive the ORDER in which a record stops
+ * being classifiable — see the ordering clauses below, which a single-shot fixture cannot
+ * express.
  */
-function ladderFixture(opts: { readonly stateAfterSignal: string }) {
+function ladderFixture(opts: { readonly stateAfterSignal: string | readonly string[] }) {
   const calls: string[] = [];
   let terminated = false;
+  const states = typeof opts.stateAfterSignal === "string" ? [opts.stateAfterSignal] : opts.stateAfterSignal;
+  let reads = 0;
+  const currentState = (): string => {
+    const state = states[Math.min(reads, states.length - 1)];
+    reads += 1;
+    return state;
+  };
   const record = () => ({
     sandboxId: "sbx-ladder",
-    state: terminated ? "stopped" : opts.stateAfterSignal,
+    state: terminated ? "stopped" : currentState(),
     metadata: { [METADATA_KEYS.labels]: JSON.stringify(LABELS) },
   });
   const sdk = {
@@ -147,6 +167,69 @@ describe("SVC-008a A2 — the `kill` rung EXECUTES against a sandbox a signal ca
     expect(calls).not.toContain("terminate");
   });
 
+  // ★★★ THE ORDERING CLAUSES. A record that classifies ONCE and then does not.
+  //
+  // The shipped indeterminate handling wrapped the CANCEL rung ONLY. `#requireOwned` gates
+  // ALL THREE teardown ops on `inspect`, and a provider record is re-read at every rung — so
+  // a record that was readable at cancel and became unreadable at the kill or destroy
+  // ownership check threw `SandboxRecordIndeterminateError` straight PAST `converge()`.
+  //
+  // ★ AND THE THROW IS NOT MERELY UNTIDY: `supervisor.ts` sets `run.cleanedUp = true` BEFORE
+  // calling `converge`, so the terminal latch is already consumed when the rejection
+  // escapes. The retry is suppressed and the paid sandbox survives until an external reaper
+  // finds it — the leak WRK-004 exists to prevent, reached through the repair for E7-F034.
+  //
+  // ★ A SINGLE-SHOT INDETERMINATE FIXTURE PASSES WITHOUT EXERCISING ANY OF THIS (the test
+  // above it is exactly that fixture, and it was green on the defect). Only a fixture that
+  // drives the ORDER of classification reaches the later rungs, which is why `ladderFixture`
+  // takes a sequence.
+
+  it("★★★ a record that becomes UNREADABLE at the KILL rung reports 'failed' — it does not throw past converge", async () => {
+    // reads: 1 inspect(cancel)=running, 2 signal(cancel)=running -> ignored,
+    //        3 inspect(kill)=hibernated -> indeterminate.
+    const { provider, rungs, calls } = ladderFixture({
+      stateAfterSignal: ["running", "running", "hibernated"],
+    });
+    const authority = authorityOver(provider);
+
+    // RED BEFORE THE FIX: this REJECTED with SandboxRecordIndeterminateError.
+    const status = await authority.converge(["sbx-ladder"], makeCtx);
+
+    expect(status).toBe("failed"); // retryable, and NEVER a false "success"
+    // The cancel rung ran (the record was still readable then); the kill rung's ownership
+    // gate refused, so no teardown was performed against an unreadable record.
+    expect(rungs).toEqual(["cancel"]);
+    expect(calls).not.toContain("terminate");
+  });
+
+  it("★★★ a record that becomes UNREADABLE at the DESTROY rung reports 'failed' too", async () => {
+    // reads: 1 inspect(cancel), 2 signal(cancel) -> ignored, 3 inspect(kill),
+    //        4 signal(kill) -> ignored, 5 inspect(destroy)=hibernated -> indeterminate.
+    const { provider, rungs, calls } = ladderFixture({
+      stateAfterSignal: ["running", "running", "running", "running", "hibernated"],
+    });
+    const authority = authorityOver(provider);
+
+    const status = await authority.converge(["sbx-ladder"], makeCtx);
+
+    expect(status).toBe("failed");
+    expect(rungs).toEqual(["cancel", "kill"]);
+    expect(calls).not.toContain("terminate");
+    // The ladder still ADVANCED to destroy before the gate refused — the escalation is
+    // monotonic and the next pass resumes from there rather than restarting at cancel.
+    expect(authority.escalationStage()).toBe("destroy");
+  });
+
+  it("POSITIVE CONTROL — the destroy RETRY loop still runs when the record stays readable", async () => {
+    // Without this, an implementation that returned "failed" from the destroy rung
+    // unconditionally would pass both clauses above and reclaim nothing, ever.
+    const { provider, rungs, calls } = ladderFixture({ stateAfterSignal: ["running"] });
+    const status = await authorityOver(provider).converge(["sbx-ladder"], makeCtx);
+    expect(status).toBe("success");
+    expect(rungs).toEqual(["cancel", "kill", "destroy"]);
+    expect(calls).toContain("terminate");
+  });
+
   it("POSITIVE CONTROL — a sandbox that DOES comply still skips the kill rung", async () => {
     // Without this, an implementation that always escalated would pass both cases above
     // and prove nothing about the ladder's monotonic shape. The ladder must still be a
@@ -165,8 +248,10 @@ describe("SVC-008a — the resource is still reclaimed on every CLASSIFIABLE rec
       const { provider, calls } = ladderFixture({ stateAfterSignal: state });
       const status = await authorityOver(provider).converge(["sbx-ladder"], makeCtx);
       // `terminate` is the FIRST and ONLY real termination on this lane, and it happened
-      // in every case. Nothing was leaked before this ticket and nothing is now: what was
-      // lost was the RUNG, not the resource.
+      // in every CLASSIFIABLE case. For these three states nothing was leaked before this
+      // ticket and nothing is now: what was lost was the RUNG, not the resource. The
+      // unclassifiable case is the exception, and it is asserted separately above —
+      // deliberately NOT reclaimed, deliberately reported "failed", deliberately retryable.
       expect(calls, `state=${state}`).toContain("terminate");
       expect(status, `state=${state}`).toBe("success");
     }

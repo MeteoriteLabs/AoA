@@ -134,6 +134,26 @@ describe("SVC-008a — the double can represent every arm production has", () =>
     expect(result.observation.state).toBe("running");
   });
 
+  it("clause 13 — ★ a REPLAYED idempotency key returns the recorded launch and starts nothing new", async () => {
+    // This double's own header promises "a repeated `idempotencyKey` returns the recorded
+    // result and does NOT double-apply", and `ProviderOpContext` states it as the port
+    // contract. `startProcess` shipped ignoring its ctx entirely, so the ONE operation where
+    // a double-apply costs a second live service instance was the one operation that did not
+    // honour it — and a double that double-applies cannot red the provider that does.
+    const { provider, sandboxId } = await withSandbox({ processSupervisionMode: "handle" });
+    const replay: ProviderOpContext = { deadlineMs: 5_000, idempotencyKey: "svc008a-replay" };
+    const first = await provider.startProcess({ sandboxId, command: "c", args: [], env: {} }, replay);
+    const second = await provider.startProcess({ sandboxId, command: "c", args: [], env: {} }, replay);
+    expect(second.handle).toBe(first.handle);
+    expect(second.providerOpId).toBe(first.providerOpId);
+
+    // POSITIVE CONTROL — a fresh key is a genuinely new process, so the ledger is not just
+    // "always hand back the first handle".
+    const third = await provider.startProcess({ sandboxId, command: "c", args: [], env: {} }, ctx());
+    expect(third.handle).not.toBe(first.handle);
+    expect(third.providerOpId).not.toBe(first.providerOpId);
+  });
+
   it("clause 9 — a handle the store does not hold is 'gone': an ANSWER, not a failure to look", async () => {
     const { provider, sandboxId } = await withSandbox({ processSupervisionMode: "handle" });
     const status = await provider.processStatus(sandboxId, "never-minted", ctx());

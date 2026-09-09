@@ -3691,10 +3691,29 @@ reason is in the last block. Every claim below cites a test that runs in the NO-
 
 1. **This entry's own stated resolution names the keyed arm**, and that arm has never been RUN. T8's
    real-account arm is `it.skipIf`-gated on `E2B_API_KEY` and reports SKIPPED, never passed
-   (`svc-008a-t8-process-conformance.test.ts:421`). The no-key real arm exercises the SHIPPING
-   `real-transport.ts` with only the `e2b` SDK boundary injected — it proves this file cannot
-   manufacture an affirmative from nothing, and it proves nothing about what the live service returns.
-   Flipping Status on a skipped arm would be this programme's defining failure class.
+   (`svc-008a-t8-process-conformance.test.ts`, clause 10). The no-key real arm exercises the SHIPPING
+   `real-transport.ts` with only the `e2b` SDK boundary injected. It proves nothing about what the live
+   service returns.
+
+   **★★★ AND THE CLAIM THAT USED TO STAND HERE WAS FALSE, so it is corrected rather than softened.**
+   This sentence read *"it proves this file cannot manufacture an affirmative from nothing"*. It could
+   not: at the moment it was written, `RealE2bTransport.processStatus` returned the affirmative
+   `{state: "gone"}` — `deriveStopVerdict -> "stopped"`, the TERMINATING verdict — whenever
+   `commands.list()` resolved a non-empty ARRAY whose entries carried no readable numeric `pid`.
+   Measured on the shipped code with `[{processId: 4242}]` (an SDK field rename, the realistic
+   producer), `[{}]`, `["4242"]`, `[{pid: "4242"}]` and `[null]`. It was self-inconsistent inside its
+   own function — a NON-array payload already answered `unknown/state_unrecognized` — and it was
+   E7-F034's own class rebuilt one method away from the repair for it. The suite as landed drove none
+   of those shapes, so the claim was not merely optimistic: **no test could have refuted it.**
+   Repaired, and T8 clause 12 now asserts the negative for all five entry shapes plus the mixed-list
+   case, on the REAL arm explicitly — the mock keeps a typed in-memory store and cannot produce the
+   condition at all, so folding it into the shared `describe.each` would have been a clause that passes
+   by never firing.
+
+   What the no-key real arm proves is bounded and now stated that way: **for the response shapes the
+   suite actually drives**, this file's parsing and verdict derivation return an honest `unknown`
+   rather than an affirmative. That is a claim about coverage, not about the file. Flipping Status on a
+   skipped arm would be this programme's defining failure class.
 2. **The SDK caveat is unchanged and is NOT upgraded.** The new
    `startProcess`/`processStatus`/`signalProcess` binding is written against the `e2b@2.30.5` TYPE
    DECLARATIONS (`Commands.run(cmd, {background: true}) -> CommandHandle{pid}`, `Commands.list() ->

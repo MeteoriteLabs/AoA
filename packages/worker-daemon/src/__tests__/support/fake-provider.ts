@@ -617,12 +617,24 @@ export function createFakeSandboxProvider(script: FakeProviderScript = {}): Fake
     // --- SVC-008a process supervision -----------------------------------------
     processSupervisionMode,
 
-    async startProcess(input: ExecuteInput, _ctx: ProviderOpContext): Promise<ProcessStartResult> {
+    async startProcess(input: ExecuteInput, ctx: ProviderOpContext): Promise<ProcessStartResult> {
       // A `"none"` double THROWS rather than returning an observation — the same contract
       // every other `"none"` implementer has, so a `"none"` provider has exactly one
       // behaviour to satisfy.
       if (processSupervisionMode === "none") throw new UnsupportedProviderOperation("start_process");
       requireSandbox(input.sandboxId);
+      // ★ THE SAME REPLAY THE REST OF THIS DOUBLE DOES. This file's header promises "a
+      // repeated `idempotencyKey` returns the recorded result and does NOT double-apply",
+      // and `startProcess` shipped ignoring its ctx entirely — so the one op where a
+      // double-apply costs a second live service instance was the one op that did not
+      // honour it, and a double that double-applies cannot red a provider that does.
+      //
+      // It uses the SHARED `idempotency` map rather than a private one: this double's keys
+      // are per-op-unique by construction in every suite, and re-using the store keeps it
+      // one mechanism. Recorded AFTER the refusal check, so a refused launch records
+      // nothing and a retry is a real retry.
+      const key = ctx.idempotencyKey;
+      if (key && idempotency.has(key)) return idempotency.get(key) as ProcessStartResult;
       if (script.refuseLaunch === true) {
         // ★ NEVER `handle: ""`. An empty string is "present" and satisfies "presence is
         // the acknowledgement" while acknowledging a launch that never happened.
@@ -631,7 +643,9 @@ export function createFakeSandboxProvider(script: FakeProviderScript = {}): Fake
       processCounter += 1;
       const handle = `${prefix}-proc-${processCounter}`;
       processes.set(handle, { sandboxId: input.sandboxId, stopped: false });
-      return { providerOpId: nextOpId(), handle, acknowledgedAt: 0 };
+      const result: ProcessStartResult = { providerOpId: nextOpId(), handle, acknowledgedAt: 0 };
+      if (key) idempotency.set(key, result);
+      return result;
     },
 
     async processStatus(
