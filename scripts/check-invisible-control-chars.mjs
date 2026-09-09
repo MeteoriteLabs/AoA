@@ -141,15 +141,69 @@ export function byteName(code) {
  *   CVE-2021-42574, in which a bidi override makes source read differently to a human than to
  *   the compiler):   U+202A..U+202E, U+2066..U+2069, U+00AD.
  *
- *   STILL LEGAL, DELIBERATELY (legitimate uses found, and no escape-based repair exists for
- *   some of them):   U+200B ZWSP (2 uses -- one writes a close-comment sequence inside a JSDoc
- *   block, which cannot be expressed as an escape because it is a comment), U+00A0 NBSP (4
- *   uses, deliberate non-breaking spaces in UI text), U+FEFF BOM (3 files).
+ *   STILL LEGAL, DELIBERATELY:   U+200B ZWSP, U+00A0 NBSP (deliberate non-breaking spaces in
+ *   UI text), U+FEFF BOM (3 files).
  *
  * So the residual is real and is stated rather than papered over: anyone who WANTS to hide a
  * character in this repository can still do it with one zero-width space. This guard is a
  * defence against an accident that has shipped three times, not a security boundary against a
  * deliberate adversary. The test suite pins that limit as a fact, so nobody mistakes it later.
+ *
+ * ★★★ THE SCOPE BOUNDARY, RULED 2026-09-09 (founder ruling on E6-F020). THIS IS A DELIBERATE
+ * SCOPE, NOT A KNOWN HOLE, and the principle that decides it is the guard's own rule stated
+ * one level up:
+ *
+ *     THE RULE IS "BAN THE RAW BYTE, PERMIT THE ESCAPE".
+ *
+ * That rule can only be applied where an escape can be written. INSIDE A BLOCK COMMENT THERE
+ * IS NO ESCAPE -- a backslash-u-200B written inside a comment is six literal characters that
+ * denote nothing, not a codepoint the reader can see standing in for one.
+ *
+ * SO, STATED AS TWO SEPARATE RULES OVER TWO SEPARATE SETS -- because this guard does BOTH and
+ * an earlier wording of this paragraph denied the second, in flat contradiction of
+ * BANNED_CODEPOINTS eight lines below it:
+ *
+ *   (i) ALL RAW C0/DEL BYTES ARE BANNED, WITHOUT EXCEPTION. That is `isBannedByte`, it is a
+ *       RANGE and not a list, and it is COMPLETE against the accident class -- a shell eating
+ *       backslash-b can only ever emit a C0 byte. "Ban the raw byte, permit the escape"
+ *       applies here in full, because in every context where a C0 byte can appear an escape
+ *       can be written instead.
+ *
+ *   (ii) AN ENUMERATED SET OF AUTHORED INVISIBLE CODEPOINTS IS ALSO BANNED: U+00AD SHY and the
+ *        bidi overrides/isolates U+202A..U+202E and U+2066..U+2069 (BANNED_CODEPOINTS). Those
+ *        are NOT an accident class at all -- they are Trojan Source (CVE-2021-42574), a
+ *        deliberate adversarial technique -- and they are banned because the measurement found
+ *        ZERO legitimate uses of them in this tree, so banning them costs nobody a rewrite.
+ *
+ * WHAT IS NOT CLAIMED: (ii) is an ENUMERATION, not a decision procedure, so this guard is NOT
+ * COMPLETE against an author who deliberately hides a character. The gap is named above and
+ * pinned by a test: U+200B ZWSP, U+00A0 NBSP and U+FEFF BOM stay legal because each has
+ * legitimate uses here, and a ban whose only remedy is deletion gets the guard switched off.
+ * The line therefore runs between "banned because nothing here needs it" and "permitted
+ * because something here does" -- NOT between accident and intent. Adding a codepoint to (ii)
+ * is a measurement (count the legitimate uses; if non-zero, supply the rewrite first), not a
+ * category question.
+ *
+ * ★ THE COUNT WAS NEVER A FIXED SET, AND SAYING "2 uses" IMPLIED IT WAS. E6-F020 measured the
+ * excused ZWSP use RECURRING within hours, in a new file, with nobody deciding to use it:
+ * anyone writing a glob or a regex inside a JSDoc block reaches for it, because `*` + `/`
+ * closes the comment. Read the census as a RECURRING PATTERN, not as grandfathered sites.
+ *
+ * ★ THE REWRITE RECIPE, so the next author has an out that is not "type an invisible
+ * character". "No ESCAPE-based repair exists" is TRUE and is NOT the same claim as "no repair
+ * exists". A repair exists, costs four characters, and is the one this guard's own design
+ * constraint asks for (a rewrite that denotes the identical text; nothing is ever deleted):
+ *
+ *     CONVERT THE BLOCK COMMENT TO `//` LINE COMMENTS. Line comments have no terminator, so
+ *     a glob or regex whose star is immediately followed by a slash -- the exact shape that
+ *     would otherwise close a block comment -- can be written LITERALLY, with no invisible
+ *     character at all.
+ *
+ * Applied in E6-F020's own repair: a JSDoc block became a run of `//` lines and all 24 tests
+ * in that file kept passing. Use it. Do NOT add ZWSP/NBSP/BOM to the banned set to "fix" this
+ * -- that was considered and REFUSED: banning them without a rewrite for every legitimate use
+ * is the cry-wolf failure that gets a guard switched off, which is strictly worse than a
+ * stated boundary.
  */
 export const BANNED_CODEPOINTS = new Map([
   [0x00ad, "SHY"],

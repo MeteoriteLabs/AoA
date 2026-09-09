@@ -72,6 +72,29 @@
 // the always-printed CAPABILITY line — with the E7-F020 limit under it — is what stops a
 // green run being read as capability, and a green CAPABILITY being read as agent output.
 //
+// ★★★ THIS IS NOW A RULING, NOT AN OMISSION — DECISION E7-D-CAPABILITY-DISCLOSURE
+// (founder, 2026-09-09). `capabilityProven` STAYS UNWIRED AS A PRINTED DISCLOSURE. It is
+// computed on every run, printed on every verdict and carried in `verdict-json`, and it
+// GATES NOTHING: `--require-capability` remains an operator opt-in and no workflow, script
+// or gate clause passes it.
+//
+// The reason is this repository's own precedent, not an estimate of the work. A gate nobody
+// can pass gets deleted, argued around, and then bypassed — and E7-F018 measured that NO
+// CHECKED-IN CONFIGURATION MAKES ANY RUN DISTRIBUTED, so both arms read 0 structurally.
+// Arming the flag today would therefore mint exactly that gate: always-red, for a reason
+// having nothing to do with the agent under test, on the first campaign that needs it green.
+// A disclosure that is always printed and never lies is worth more here than a gate that is
+// always red and will be relaxed.
+//
+// ★ THE CONDITION FOR REVISITING IS NAMED, so this does not become permanent by default:
+// flip `--require-capability` on by default (and wire it into a gate clause) when BOTH
+//   (a) E7-F018 is CLOSED — some checked-in configuration actually makes a run distributed
+//       and a producer exists for at least one arm; AND
+//   (b) the rollout dial is ARMED in a real deployment, not merely armable.
+// Until both hold, do not read the absence of a gate here as an oversight, and do not
+// "fix" it by turning the flag on. Nothing about the computation, the arms or the
+// separation of `capabilityProven` from `ok` is changed by this ruling.
+//
 // Exit codes: 0 = verdict clean · 1 = mechanism FAIL (or an unreadable verifier)
 //             2 = usage · 3 = mechanism PASS but capability unproven, with
 //                            --require-capability set.

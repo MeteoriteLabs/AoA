@@ -223,16 +223,43 @@ test("bidi overrides and SHY are caught -- 0 legitimate uses, and a known exploi
 
 test("★ THE DOCUMENTED LIMIT: ZWSP, NBSP and BOM still evade this guard, on purpose", () => {
   // ★★★ THIS TEST ASSERTS A WEAKNESS, AND IT IS SUPPOSED TO. The cheapest evasion of this guard
-  // is one zero-width space: cost zero, and a full run passes. It stays legal because the
-  // repository has legitimate uses with no escape-based repair -- U+200B writes a close-comment
-  // sequence INSIDE a JSDoc block (an escape cannot appear in a comment), U+00A0 is a deliberate
-  // non-breaking space in UI text, U+FEFF is a BOM on three files.
+  // is one zero-width space: cost zero, and a full run passes.
   //
-  // So: this guard is a defence against an ACCIDENT that has shipped three times -- a shell
+  // So: the BYTE SCAN is a defence against an ACCIDENT that has shipped three times -- a shell
   // eating backslash-b, which can only ever produce a C0 byte -- and it is complete against
-  // that. It is NOT a security boundary against a deliberate adversary, and must never be cited
-  // as one. If that ever needs to change, the change is to ban ZWSP/NBSP and repair the six
-  // legitimate uses; this test is the place that decision gets recorded.
+  // that. The guard as a whole is NOT a security boundary against a deliberate adversary, and
+  // must never be cited as one.
+  //
+  // ★★★ THE DECISION THIS TEST RECORDS, RULED 2026-09-09 (founder ruling on E6-F020). The
+  // boundary is DELIBERATE SCOPE, not a known hole. The guard's rule is "ban the raw byte,
+  // permit the ESCAPE" -- and that rule can only be applied where an escape can be written.
+  // Inside a block comment there IS no escape, only a REWRITE.
+  //
+  // ★ SAID PRECISELY, because an earlier wording of this comment said the guard "was never a
+  // candidate" for the AUTHORED class and the test DIRECTLY ABOVE refutes it: BANNED_CODEPOINTS
+  // bans U+00AD and the bidi overrides/isolates, which are Trojan Source -- a purely AUTHORED
+  // adversarial class. The guard does BOTH: (i) ALL raw C0/DEL bytes, a complete range, where
+  // "ban the byte, permit the escape" applies in full; and (ii) an ENUMERATED set of authored
+  // invisible codepoints, banned because this tree has ZERO legitimate uses of them so the ban
+  // costs nobody a rewrite. (ii) is an enumeration, not a decision procedure, so it is not
+  // complete against a determined author. The line runs between "banned because nothing here
+  // needs it" and "permitted because something here does" -- NOT between accident and intent.
+  // The three codepoints asserted below are on the permitted side for exactly that reason.
+  //
+  // ★ WHAT WAS CORRECTED AT THE SAME TIME. This comment used to say ZWSP stays legal because
+  // "no escape-based repair exists", and the guard header used to count "2 uses" as though the
+  // set were fixed. E6-F020 refuted both: the excused use RECURRED within hours in a new file,
+  // so it is a RECURRING PATTERN (anyone writing a glob or regex inside a JSDoc block reaches
+  // for it), and "no ESCAPE-based repair" is not "no repair" -- the REWRITE RECIPE is to
+  // convert the block comment to `//` line comments, which have no terminator, so a star
+  // followed by a slash can be written literally. That repair cost four characters and kept
+  // 24 tests green in the file that hit it.
+  //
+  // ★ AND THE ALTERNATIVE WAS REFUSED, not deferred: adding ZWSP/NBSP/BOM to the banned set
+  // without a rewrite for every legitimate use is the cry-wolf failure that gets a guard
+  // switched off. If it is ever revisited, the change is to ban ZWSP/NBSP, repair the
+  // legitimate uses with the rewrite recipe, and INVERT this test with a positive control.
+  // This test is still the place that decision gets recorded.
   const cp = (n) => String.fromCodePoint(n);
   for (const n of [0x200b, 0x00a0, 0xfeff]) {
     const { violations } = evaluate({ "server/src/a.ts": `const ROOT${cp(n)} = 1;\n` });

@@ -2,7 +2,7 @@
 
 **Status:** `backlog`
 **Depends on:** E7; SVC-007 additionally requires `E10-REALTIME-FOUNDATION`
-**Tickets:** SVC-001 through SVC-008 (SVC-008 is the daemon-side supervisor + capability widening that E9-F002 requires; SVC-001..007 are control-plane)
+**Tickets:** SVC-001 through SVC-008 (SVC-001..007 are control-plane). **SVC-008 split on 2026-09-09** into **SVC-008a** — the `SandboxProvider` process primitive (`tickets/SVC-008a-design.md`; the work belongs to **E4/CLI's port lane**, and it is the specified fix for E7-F034) — and **SVC-008b**, the daemon-side supervisor + capability widening that E9-F002 requires. 008b depends on 008a; both resolve to the ticket id `SVC-008` for every register guard.
 **Exit gate:** desired state, generation, placement, health, restart, checkpoint, drain, budgets, UI, and the 72-hour D4 continuity/reconciliation canary pass without public ingress.
 
 ## Mandatory planning brief

@@ -1228,6 +1228,31 @@ function.
 scouting workflow; every claim below survived two independent refutation rounds and was re-measured
 by hand before filing.
 
+★★★ **FOUNDER RULING 2026-09-09 — `capabilityProven` STAYS UNWIRED, AS A PRINTED DISCLOSURE.
+This is a decision, not an omission; the next reader should find a ruling here rather than a
+gap.** `capabilityProven` is computed on every run, printed with every verdict and carried in
+`verdict-json` — and it **gates nothing**. `--require-capability` stays an operator opt-in, off
+by default (`server/src/cli/verify-e7-1-distributed-run.ts:65`), and no workflow, script or gate
+clause passes it.
+
+*The reason is this repository's own precedent, not a judgement about the remaining work.* A gate
+nobody can pass gets deleted, argued around, and then bypassed. This finding is the measurement
+that makes that outcome certain today: **no checked-in configuration makes any run distributed**,
+so both arms read 0 structurally, and arming the flag now would mint an always-red gate whose
+redness says nothing about the agent under test — on the first campaign that then needs it green.
+A disclosure that is always printed and never lies is worth more than a gate that is always red
+and will be relaxed.
+
+**The condition for revisiting is named, so the ruling cannot become permanent by default:** turn
+`--require-capability` on by default (and wire it into a gate clause) when BOTH **(a)** this
+finding, E7-F018, is CLOSED — some checked-in configuration actually makes a run distributed and a
+producer exists for at least one arm — AND **(b)** the rollout dial is ARMED in a real deployment,
+not merely armable. Until both hold, do not read the absent gate as an oversight and do not "fix"
+it by flipping the flag. **No code was changed by this ruling** — not the computation, not either
+arm, not `capabilityProven`'s separation from `ok`; the same text is recorded in the CLI header
+beside the limitations block so an operator meets it where the flag lives. Nothing here moves this
+finding's **status**, **severity** or **UNOWNED** ownership.
+
 **What.** `capabilityProven` is an OR over two counters (predicate
 `server/src/services/e7-distributed-run-verifier.ts:506`, verdict `:522`). **Neither counter can be
 moved by any producer, however correct, in any configuration checked into this repository** — and,
@@ -3517,6 +3542,61 @@ prevent. E9/SVC-008 is a **consumer** and explicitly refused jurisdiction. It is
 refusable rather than lost, and it is blocked on someone taking the `packages/sandbox-e2b-provider`
 transport lane.
 
+### ★ AMENDMENT (2026-09-09) — the fix is now specified as a ticket, and it splits in two
+
+**[SVC-008a](../E9-service-agents/tickets/SVC-008a-design.md)** turns SVC-008 §3.4 into a standalone
+design and is **the specified resolution of this finding**. It records two things this entry did not:
+
+1. **★ THE ROOT CAUSE IS THE TYPE, NOT THE FUNCTION.** `StopOutcome` (`worker-daemon/src/supervisor/provider.ts:146`)
+   is `"stopped" | "ignored"` and has **no inhabitant for "I witnessed nothing"**, so an implementation
+   that cannot observe anything is *forced* to pick an affirmative claim. The `catch { return
+   { delivered: true } }` is what the type left available. SVC-008a §2.2 makes the honest value
+   representable (`ProcessObservation`'s `"unknown"` with a `reason`) and deletes the word "stopped"
+   from the new signal result entirely.
+2. **★ THE HONEST ANSWER IS ALREADY FETCHED AND DISCARDED.** `signal`'s `getInfo` returns an
+   `E2bSandboxRecord` whose `state` is `"running" | "paused" | "stopped"` (`transport.ts:20`, `:25-29`);
+   the function throws it away. So the repair of **Half 1 costs zero additional provider calls and
+   needs no new SDK capability** — it is a verdict-derivation change on a read that already happens
+   (SVC-008a §4.2 Half A). Only the *process-handle* half (`startProcess`/`processStatus`/`signalProcess`)
+   depends on the unverified E2B SDK question, and SVC-008a §9.1 keeps that question open rather than
+   assuming it.
+3. **★★★ THE ROOT CAUSE IS WIDER THAN THIS ENTRY MEASURED — added 2026-09-09 after review of
+   SVC-008a.** Point 2 above is true but incomplete, and the gap is load-bearing: **the record it
+   calls the honest answer is itself minted by a parser that defaults to the affirmative-stop
+   value.** `mapState` (`real-transport.ts:61-66`) is `if includes("run") … if includes("paus") …
+   return "stopped"`, and `toRecord:73` feeds it `info?.state ?? info?.status` — so an **absent,
+   renamed or unrecognized** state field (`undefined` → `""`) yields `state: "stopped"`, and
+   `E2bRecordState` (`transport.ts:20`) has **no inhabitant for "I could not classify this either"**.
+   A repair that merely stops discarding the record therefore still returns an affirmative stop from
+   a read that witnessed nothing about the state — **this finding, reconstructed inside its own
+   fix.** SVC-008a §4.2 A-i now widens `E2bRecordState` with `"unknown"` and makes recognition
+   explicit **before** deriving any verdict, §4.6 re-walks every value the design specifies against
+   the same question (finding two more: an empty-string process handle, and a `gone` observation
+   sourced from `isRunning`'s `catch { return false }`, `:263-268`), and T8 gains a clause driving
+   four unclassifiable `getInfo` payloads. ★ **A second, live consequence in the opposite direction,
+   recorded here because it is the same parser:** `list` projects `hasLiveLease: record.state ===
+   "running"` (`e2b-provider.ts:425`) and `reconcile.ts:73`'s `defaultIsOrphan` is `!hasLiveLease`,
+   so a **running** sandbox whose state field this parser does not recognize is classified an orphan
+   and **torn down**. That half is carried as SVC-008a §9.4 with a mandatory non-destructive interim
+   rule; it is not separately filed, because it is this function and this class.
+
+**Two consequences worth recording here.** (i) `CleanupAuthority` cannot use a process-scoped signal:
+it converges sandboxes discovered by reconcile/list, for which **no process handle exists** — so the
+fix for the ladder is Half A, not the new trio. (ii) After Half A, `cleanup_escalation{escalation_stage}`
+reports `"destroy"` on every real-E2B converge instead of `"cancel"`. **That is the metric becoming
+true**: no assertion in the tree expects `"cancel"` (a grep over both test packages returns seven
+`escalation_stage`/`escalationStage` assertions, all `"kill"`/`"destroy"`/`"none"`), and the two
+production pins already assert `"destroy"`.
+
+**Status and owner are UNCHANGED, deliberately.** It stays `open` because a design is not a fix, and
+it stays `unowned` because the id `SVC-008a` **cannot be declared**: `findTicketIds`
+(`scripts/check-finding-ownership.mjs:40-54`) extracts ticket ids with `/^([A-Z]+-\d+)/`, so
+`SVC-008a-design.md` resolves to **`SVC-008`** — and SVC-008 is the ticket that explicitly refused
+jurisdiction over this defect (`SVC-008-design.md` §10, §9.5 ii). Declaring it would be the false
+claim of ownership `scripts/lib/finding-ownership.mjs` exists to prevent; declaring `SVC-008a` would
+red `owner_ticket_missing`. The pointer is therefore **prose**, here and in the manifest reason. Same
+shape as `REL-FOUNDATION-GATE`.
+
 ### Resolution test — T8, already specified
 
 `SVC-008-design.md` §6 **T8** is the resolution test and it is already written down: a **transport-level**
@@ -3527,6 +3607,13 @@ signal must still report the process running on the follow-up status read. It ru
 SKIPPED, never passed, when `E2B_API_KEY` is absent** — a keyless "green" on the arm whose entire purpose
 is to disagree with the double would be this same failure class one level up. T8 is red today *because*
 the two arms disagree, and that disagreement is this finding.
+
+**★ SVC-008a §5 strengthens T8 in two ways, and the first is load-bearing.** As written above, T8
+asserts only that a *refusal* is representable — **a transport hardcoded to "still running" passes it
+and asserts nothing**, which is the same inversion that let `delivered: true` pass every ladder test.
+SVC-008a §5 clause 4 adds a **positive control** (a target that genuinely stops must report stopped)
+and clause 5 asserts the **`unknown` case is representable** on every implementation, so the honest
+value cannot be decorative. Clause 2 adds anti-vacuity on the directory walk itself.
 
 **Resolve = give the real transport a signal primitive whose refusal is representable (SVC-008 §3.4
 proposes `signalProcess`/`processStatus`), land T8 as a directory walk over transport implementers, then
@@ -3546,7 +3633,9 @@ Recorded because this register cites by line and a wrong pin is worse than none.
 4. `#convergeOne`'s escalation branch is **`:284-292`**; `:279` is the `cancel` call and `:279-290`
    truncates the block mid-statement.
 
-**Cross-links:** SVC-008 (`epics/E9-service-agents/tickets/SVC-008-design.md` §1.3d, §3.4, §6 T3+T8,
+**Cross-links:** **SVC-008a** (`epics/E9-service-agents/tickets/SVC-008a-design.md` §1.2, §2.2, §4.2,
+§5, §6) — **the specified fix**: the port design, the two-half split, and the strengthened T8.
+SVC-008 (`epics/E9-service-agents/tickets/SVC-008-design.md` §1.3d, §3.4, §6 T3+T8,
 §10) — the consumer that will build on this primitive and the source of T8. **DE-10**
 (`E0-foundation/findings.md:243`) — adjacent, not overlapping: DE-10 is a *disarmed* reaper, this is an
 *inert rung* inside the armed one. **E7-F020/F030/F031** — the false-PROVEN family; this is deliberately
