@@ -590,6 +590,36 @@ suite("SVC-002 — the reconciler converges desired state into exactly one insta
     await f().admin`UPDATE execution_targets SET status = 'active' WHERE organization_id = ${ORG}`;
   }, 90_000);
 
+  it("T5 — every service is reconciled even when the tenant has more of them than one page holds", async () => {
+    // ★ REGRESSION for a STARVATION BUG THIS RECONCILER HAD, caught in review on PR #406.
+    // The first version always asked for the FIRST page (`afterServiceId: null`). A converged
+    // service stays `desired_state='running'` forever, so for a tenant with more services
+    // than `serviceBatchLimit` the same lowest-id rows filled every page on every tick and
+    // every later service was NEVER reconciled -- silently, with no error anywhere.
+    //
+    // MUTANT (and the exact shipped-before state): pass `afterServiceId: null` instead of the
+    // per-organization cursor -> only the first `serviceBatchLimit` services ever converge
+    // -> red. Five services with a page size of two makes it reachable in three ticks.
+    const ids = [1, 2, 3, 4, 5].map((n) => `a6700000-0000-4000-8000-00000000000${n}`);
+    for (const id of ids) await seedService({ serviceId: id });
+
+    const reconciler = createServiceReconciler({
+      appDb: f().app.db,
+      listAdmittedOrganizationIds: async () => [ORG],
+      serviceBatchLimit: 2,
+    });
+    // Three ticks is the number a correct cursor needs for 5 services at 2 per page; a
+    // head-anchored sweep would still be on the first two after any number of ticks.
+    await reconciler.tick();
+    await reconciler.tick();
+    await reconciler.tick();
+
+    const converged = await f().admin<{ service_id: string }[]>`
+      SELECT DISTINCT service_id FROM service_instances ORDER BY service_id
+    `;
+    expect(converged.map((row) => row.service_id).sort()).toEqual([...ids].sort());
+  }, 90_000);
+
   it("T4 POSITIVE CONTROL — the SAME placement input selects an ACTIVE service-capable target and refuses a DRAINING one", () => {
     // Without this the drained-worker case could pass because placement never selects
     // anything at all, which would prove nothing about drain. Pure `decideJobPlacement`, the

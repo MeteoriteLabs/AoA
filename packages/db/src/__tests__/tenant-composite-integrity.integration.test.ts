@@ -271,18 +271,34 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(serviceId).not.toBe("");
     });
 
-    // 5. service_instances ↔ service: (organization_id, service_id) → services(organization_id, id)
-    it("rejects a service_instance whose org (B) does not match its service's org (A); allows same-tenant", async () => {
+    // 5. service_instances ↔ service: SVC-002 widened this from the (organization_id,
+    //    service_id) PAIR to the (organization_id, company_id, service_id) TRIPLE, targeting
+    //    services(organization_id, company_id, id). The pair could not tie an instance's
+    //    company to its SERVICE's company, so an instance could carry company B while its
+    //    service belonged to company A inside one org with every constraint satisfied —
+    //    E2-F013's shape, and the denormalized company_id is the only company predicate any
+    //    later reader has. Both mismatch arms are asserted, org and company.
+    it("rejects a service_instance whose org (B) or company (B) does not match its service's; allows same-tenant", async () => {
       guard();
       const serviceId = await seedService(orgA, companyA);
-      const err = await captureReject(() =>
-        client`INSERT INTO service_instances (organization_id, service_id) VALUES (${orgB}, ${serviceId})`,
+      const orgMismatch = await captureReject(() =>
+        client`INSERT INTO service_instances (organization_id, company_id, service_id)
+          VALUES (${orgB}, ${companyA}, ${serviceId})`,
       );
-      expect(err.code).toBe("23503");
-      expect(err.constraint_name).toBe("service_instances_org_service_fk");
+      expect(orgMismatch.code).toBe("23503");
+      expect(orgMismatch.constraint_name).toBe("service_instances_org_company_service_fk");
+
+      // The arm the PAIR could not express: right org, right service, WRONG company.
+      const companyMismatch = await captureReject(() =>
+        client`INSERT INTO service_instances (organization_id, company_id, service_id)
+          VALUES (${orgA}, ${companyB}, ${serviceId})`,
+      );
+      expect(companyMismatch.code).toBe("23503");
+      expect(companyMismatch.constraint_name).toBe("service_instances_org_company_service_fk");
 
       const ok = await client<{ id: string }[]>`
-        INSERT INTO service_instances (organization_id, service_id) VALUES (${orgA}, ${serviceId})
+        INSERT INTO service_instances (organization_id, company_id, service_id)
+        VALUES (${orgA}, ${companyA}, ${serviceId})
         RETURNING id`;
       expect(ok[0]!.id).not.toBe("");
     });

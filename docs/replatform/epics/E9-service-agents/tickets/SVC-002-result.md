@@ -3,7 +3,7 @@
 **Epic:** E9 · **Lane:** B · **Base:** `743c30f08` (branched from `docs/replatform-program`)
 **Design:** [`SVC-002-design.md`](./SVC-002-design.md) · **Terrain:** [`SVC-002-terrain.md`](./SVC-002-terrain.md)
 **Register:** gate clause `E9-1-service-reconciler` enrolled `wired`. **No finding closed.
-E9-F001 and E9-F002 are untouched and both stay `open`.**
+E9-F001 and E9-F002 are untouched and both stay `open`; `E9-F003` is OPENED here (§6a(iii)).**
 
 ---
 
@@ -204,11 +204,68 @@ direction is wrong and the ON DELETE semantics are not obvious); it is additive 
 `jobSubmissionService.submit`. `listAdmittedOrganizationIds` already excludes the sentinel, but
 this function is exported and a future caller need not come through the sweeper.
 
-**6.6 — `service_instances.company_id` is NOT NULL with no backfill.** Safe for a measured
+**6.6 — the parent-FK rename leaves a STALE CONSTRAINT NAME in a frozen evidence string, and it
+is NOT edited here.** `docs/architecture/distributed-execution-threat-controls.json` records, in a
+crossing's `deliveryEvidence`, the list of constraints TEN-004's negative test fires on — including
+`service_instances_org_service_fk`, which this ticket renamed to
+`service_instances_org_company_service_fk`. The sentence is now inaccurate about that one name.
+**It is deliberately left alone:** `scripts/check-evidence-immutability.mjs` compares evidence
+records against the PR's base revision, so editing an evidence string here would fail the required
+`policy` job, and rewriting another ticket's evidence is not this unit's to do. The live test itself
+IS updated (`tenant-composite-integrity.integration.test.ts` now asserts the new name, and gained
+the company-mismatch arm the old pair FK could not express), so the mechanism is correct and only
+the narration is stale. Flagged rather than fixed, and named here so the next unit touching that
+crossing corrects it under the right guard.
+
+**6.7 — `service_instances.company_id` is NOT NULL with no backfill.** Safe for a measured
 reason: at the base commit the table had exactly one INSERT in the tree with zero production
 callers, so no deployment has ever written a row. If that ever stops being true the statement
 fails loudly on a non-empty table rather than silently stamping a sentinel company — the
 fail-closed direction.
+
+---
+
+---
+
+## 6a. Review findings (PR #406), each verified against source
+
+Three were raised. **All three were real; two were bugs in this diff and are fixed here, one is
+pre-existing and is now FILED rather than fixed.**
+
+**(i) P1 — fixtures inserting `service_instances` without `company_id`. REAL, FIXED.** The original
+diff's census used the Drizzle symbol and therefore missed four suites that insert with **raw SQL**:
+`server/src/__tests__/job-fencing.integration.test.ts` (2 sites),
+`server/src/__tests__/tenant-rls-enforcement.integration.test.ts` (2),
+`packages/db/src/__tests__/tenant-composite-integrity.integration.test.ts`, and
+`packages/db/src/__tests__/tenant-composite-ondelete.integration.test.ts`. Every one would have hit
+a NOT NULL violation during setup once 0275 applied, so `verify` could not have passed. All now
+supply the service's company. The composite-integrity case additionally had to move off the old
+constraint name and **gained the arm the pair FK could not express**: right org, right service,
+**wrong company** — E2-F013's exact shape, which is why the FK was widened in the first place.
+*A lesson worth keeping: a symbol grep is not a census when the table is also reachable by raw SQL.*
+
+**(ii) P2 — per-organization service cursor. REAL, FIXED, with a regression test.** The sweeper
+always requested the FIRST page (`afterServiceId: null`). A converged service stays
+`desired_state='running'` forever, so for a tenant with more than `serviceBatchLimit` running
+services the same lowest-id rows filled every page on every tick and **every later service was
+never reconciled** — silently, with nothing erroring. The sweep now pages from a per-organization
+cursor carried across ticks, advancing on admission (so one wedged service cannot pin the rotation)
+and wrapping to `null` on a short page. **T5** pins it: five services at a page size of two, three
+ticks, all five converged. Observed RED under the exact pre-fix behaviour
+(`afterServiceId: null`): `expected [ …(2) ] to deeply equal [ …(5) ]` — two of five, forever.
+
+**(iii) P1 — the executor principal names the SERVICE under the kind `service_instance`. REAL,
+PRE-EXISTING, NOT FIXED, now FILED as `E9-F003`.** `serviceSourceIsAdmitted` returns a `services`
+id as `{kind:"service_instance"}`, and `job-leasing.ts` carries that into the lease envelope's
+`executionPrincipal` — so a worker gets an envelope whose principal is the service while the same
+envelope's workload carries a different `serviceInstanceId`. The reviewer's proposed fix — pass the
+instance identity through admission — is **not available to SVC-002**: `serviceReconcileSourceSchema`
+carries no `serviceInstanceId` and adding it is a **Protocol Custodian STOP** (design §10.2), while
+reading it off the caller-controlled workload instead would promote an *unauthorized* value into a
+persisted principal id, turning a mislabel into an authorization defect. What SVC-002 does deliver
+is the other direction: `service_instances.job_id`/`.attempt_id`, written in the same transaction.
+Recorded in prose since terrain §5.4 and never filed — so it is filed now, `unowned`, with its
+`scripts/finding-ownership.json` entry in this commit.
 
 ---
 

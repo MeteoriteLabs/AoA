@@ -387,6 +387,25 @@ export function createServiceReconciler(input: {
   const monotonicNow = input.monotonicNow ?? (() => performance.now());
 
   let cursor: string | null = null;
+  /**
+   * ★ PER-ORGANIZATION SERVICE CURSOR — the fix for a starvation bug this reconciler had.
+   *
+   * The first version always asked for the FIRST page (`afterServiceId: null`). A converged
+   * service stays `desired_state = 'running'` forever, so for a tenant with more than
+   * `serviceBatchLimit` running services the same lowest-id rows filled every page on every
+   * tick and every later service was NEVER reconciled. Caught in review on PR #406.
+   *
+   * The sweep now pages from a per-organization cursor and carries it across ticks, so a
+   * tenant whose sweep is cut short by the tick budget resumes where it stopped instead of
+   * restarting at the head. A short page means the end of the tenant's services was reached,
+   * and the cursor resets to `null` so the next tick starts over — the same
+   * rotate-then-wrap discipline the organization cursor above uses.
+   *
+   * Bounded: entries are only ever added for organizations the admitted-org enumerator
+   * returned, and an organization that stops being admitted simply stops being visited (the
+   * map is process-local and dies with the process, like the org cursor).
+   */
+  const serviceCursors = new Map<string, string | null>();
   let inFlight: Promise<ServiceReconcilerTickResult> | null = null;
 
   function remaining(deadline: number): number {
@@ -418,31 +437,51 @@ export function createServiceReconciler(input: {
       // Advance on admission, not completion, so a slow tenant cannot pin the rotation.
       cursor = organizationId;
       result.organizations += 1;
-      // The sweep window is read in its own short tenant transaction; each PASS then opens
-      // its own, so one service's failure cannot roll back another's convergence.
-      const window = await runInTenant(input.appDb, organizationId, (repos) =>
-        repos.jobControl.listReconcilableServices({
-          afterServiceId: null,
-          limit: serviceBatchLimit,
-        }));
-      for (const row of window) {
-        if (remaining(deadline) < 1) break;
-        result.services += 1;
-        try {
-          const outcome = await reconcileService(input.appDb, {
-            organizationId,
-            companyId: row.companyId,
-            serviceId: row.serviceId,
-          });
-          if (outcome.action === "created") result.created += 1;
-          else result.unchanged += 1;
-        } catch (error) {
-          // Per-service and best-effort: one tenant's broken service must not cost the rest
-          // of the sweep, and must never fail the tick.
-          result.failed += 1;
-          input.onPassFailure?.(error, { organizationId, serviceId: row.serviceId });
+      // Page through this tenant's running services from its own cursor until the budget is
+      // out or the tenant is exhausted. Each window is read in its own short tenant
+      // transaction; each PASS then opens its own, so one service's failure cannot roll back
+      // another's convergence.
+      let serviceCursor = serviceCursors.get(organizationId) ?? null;
+      while (remaining(deadline) >= 1) {
+        const after: string | null = serviceCursor;
+        const window = await runInTenant(input.appDb, organizationId, (repos) =>
+          repos.jobControl.listReconcilableServices({
+            afterServiceId: after,
+            limit: serviceBatchLimit,
+          }));
+        if (window.length === 0) {
+          // End of this tenant's services. Wrap so the next tick starts at the head.
+          serviceCursor = null;
+          break;
+        }
+        for (const row of window) {
+          if (remaining(deadline) < 1) break;
+          // Advance on admission, not on completion, so one wedged service cannot pin the
+          // rotation and starve the rest of the tenant on every subsequent tick.
+          serviceCursor = row.serviceId;
+          result.services += 1;
+          try {
+            const outcome = await reconcileService(input.appDb, {
+              organizationId,
+              companyId: row.companyId,
+              serviceId: row.serviceId,
+            });
+            if (outcome.action === "created") result.created += 1;
+            else result.unchanged += 1;
+          } catch (error) {
+            // Per-service and best-effort: one tenant's broken service must not cost the rest
+            // of the sweep, and must never fail the tick.
+            result.failed += 1;
+            input.onPassFailure?.(error, { organizationId, serviceId: row.serviceId });
+          }
+        }
+        // A short page is the end of the tenant; wrap rather than re-request it next tick.
+        if (window.length < serviceBatchLimit) {
+          serviceCursor = null;
+          break;
         }
       }
+      serviceCursors.set(organizationId, serviceCursor);
     }
     return result;
   }

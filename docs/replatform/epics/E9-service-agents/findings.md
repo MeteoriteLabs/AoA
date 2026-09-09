@@ -298,3 +298,70 @@ a service job **observed leased** by a real daemon — is its T0, which the desi
 run. Flipping this finding on a design document would be the "document narrating its own diff"
 failure that E9-F001 exists to record. It closes when T0 is green on a shipped daemon, and blocker
 (3) of §1.5 is answered rather than deferred.
+
+## E9-F003 — a `service_reconcile` job's executor principal is the SERVICE id under the kind `service_instance`, and that mislabel reaches the worker's lease envelope
+
+**Status:** `open` · **Severity:** MED · **Owner:** `unowned`
+**Filed:** 2026-09-10, by the SVC-002 implementation unit, after external review of PR #406
+raised it against the shipped reconciler. Recorded in prose since 2026-09-08
+(`tickets/SVC-002-terrain.md` §5.4) and **never filed** — which is the weak form this programme
+keeps re-learning, so it is filed now.
+**Affected tickets:** SVC-003 (the natural inheritor, no file on disk), SVC-002 (first producer).
+**Blocks gate:** no for dispatch; yes for any clause asserting that a job is attributable to a
+service INSTANCE from the job side.
+
+### 1. The mislabel, verified at `ca5089663`
+
+`serviceSourceIsAdmitted` (`packages/db/src/repositories/tenant/job-control.ts`) selects `id` from
+**`services`** and returns it as `{ kind: "service_instance", id: row.id }`. That value becomes
+`jobs.executor_principal_kind` / `executor_principal_id`, whose kind column is unconstrained `text`
+with no CHECK (`packages/db/src/schema/jobs.ts:54`), so nothing refuses it.
+
+**It does not stop at the row.** `job-leasing.ts`'s `principal()` maps
+`kind === "service_instance"` to `principalType: "service"`, and the `service_reconcile` arm of
+`source()` puts that `defaultExecutor` into the lease envelope's `executionPrincipal`. So a worker
+receives an envelope whose `executionPrincipal.principalId` is the **service** id while the same
+envelope's `serviceWorkloadV1` carries a **different** UUID in `serviceInstanceId`. Nothing
+reconciles the two, and nothing today reads `executor_principal_id` expecting an instance
+(`execution-secret-handle-mint-runner` reads it only for `agent`; `job-fence.ts`'s
+`ownerPrincipalId` comparison is self-consistent with whatever was minted), so the consequence
+today is a **mislabel**, not a broken flow. It becomes load-bearing the moment SVC-003 fences or
+attributes anything instance-scoped from the job side.
+
+### 2. Why SVC-002 did not fix it, and why the obvious fix is worse
+
+The reviewer's proposed repair — *"pass the created instance identity through the admission path
+and persist it as the executor principal"* — is not available to SVC-002:
+
+1. **`serviceReconcileSourceSchema` carries no `serviceInstanceId`**
+   (`packages/worker-protocol/src/source.ts`). Adding it is a **frozen wire change and a Protocol
+   Custodian STOP**, recorded unresolved as `SVC-002-design.md` §10.2, which says a custodian
+   should rule because SVC-003's fence work will face the same question with less freedom.
+2. **Reading the instance id off the workload instead would be strictly worse.** That field is
+   caller-controlled and validated against nothing (`stampServiceIdentity` covers `serviceId` and
+   `generation` only, and says so). Promoting an unauthorized caller-supplied value into a
+   persisted principal id turns a mislabel into an authorization defect.
+
+**What SVC-002 did deliver instead, and it is a different guarantee:** `service_instances.job_id`
+and `.attempt_id` (migration 0275), written in the same transaction, correlate the instance with
+the job **from the instance side**. That is the attribution SVC-003 needs for its own rows. What
+remains missing is the job-side and envelope-side identity, which is this finding.
+
+### 3. Why `unowned`, and what would close it
+
+`unowned` because the fix is either a frozen-wire ruling or a change to what
+`executor_principal_id` means for this source kind, and the ticket that owns instance identity and
+fencing is **SVC-003**, which has a node in `program-design.md` and **no file** under
+`docs/replatform/epics/*/tickets/`. Naming it would fail the guard's existence bar; naming SVC-002
+(which does have a file) to get past that check would be exactly the register-accuracy defect the
+guard exists to prevent — SVC-002 shipped and cannot make a custodian ruling. Not `accepted`: an
+identity field that names the wrong entity is not something to accept.
+
+**Resolution.** A Protocol Custodian ruling on `SVC-002-design.md` §10.2 — either add
+`serviceInstanceId` to `serviceReconcileSourceSchema` so admission can authorize and stamp it, or
+rule that the executor principal for `service_reconcile` is deliberately the SERVICE and rename the
+kind from `service_instance` to `service` so the label stops lying. Either way the lease envelope's
+`executionPrincipal` and the workload's `serviceInstanceId` must agree or be documented as
+different things on purpose. Then flip this Status and DELETE the
+`scripts/finding-ownership.json` key in the SAME commit.
+
