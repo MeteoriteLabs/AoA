@@ -38,6 +38,10 @@ import {
   type ArtifactDenialIntent,
   ARTIFACT_TRANSFER_GRANT_DENIAL_SURFACE,
 } from "./artifact-denial-audit.js";
+import {
+  createWorkerFenceDenialSink,
+  drainWorkerFenceDenial,
+} from "./worker-fence-denial-audit.js";
 import type { StorageProvider } from "../storage/types.js";
 
 /** Map the guard's fence-error code onto the frozen protocol reason vocabulary. */
@@ -111,13 +115,18 @@ export function createArtifactTransferGrantService(input: {
         });
       };
 
+      // ★ DE-06 — the THROWING refusal's holder (see `worker-fence-denial-audit.ts`).
+      // Filled ONLY by the post-resolution tuple-integrity branch; the other five
+      // fence throws still write nothing, and that is Decision 2's residue.
+      const fenceDenial = createWorkerFenceDenialSink();
+
       const response = await runInTenant(input.appDb, auth.organizationId, async (repos) => {
         const ctx = await resolveWorkerFenceContext(repos, auth, {
           leaseId: body.leaseId,
           jobId: body.jobId,
           attempt: body.attempt,
           fenceToken: body.fenceToken,
-        }, maxHeartbeatAgeMs);
+        }, maxHeartbeatAgeMs, fenceDenial);
 
         const issuedAt = ctx.authorityNow;
         const expiresAt = new Date(issuedAt.getTime() + grantTtlSeconds * 1000);
@@ -320,7 +329,20 @@ export function createArtifactTransferGrantService(input: {
           outcome: "download_granted",
           grant,
         });
-      });
+      })
+        // ★ DE-06 — drain the THROWING refusal's record. `.finally` rather than a
+        // trailing statement because a fence refusal REJECTS `runInTenant`, so the
+        // returning-refusal drain below is never reached on that path; `.finally`
+        // awaits a thenable callback, so the row is written before the caller sees
+        // the `JobLeasingError`.
+        .finally(async () => {
+          await drainWorkerFenceDenial(input.appDb, fenceDenial, {
+            control: "server/src/services/worker-fence-context.ts:resolveWorkerFenceContext",
+            workerId: auth.workerId,
+            organizationId: auth.organizationId,
+            operation: "artifact_transfer_grant",
+          });
+        });
 
       // ★ DE-06 — the durable, attributable record of the refusal, written on the
       // POOL handle after the tenant transaction has closed and BEFORE the caller

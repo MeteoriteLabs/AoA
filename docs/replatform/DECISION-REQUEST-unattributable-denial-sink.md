@@ -5,6 +5,20 @@
 **Date:** 2026-09-09. **Measured at:** `fffc7e1de` (PR #396, the DE-06 landing + re-triage merge).
 **Status:** OPEN — awaiting a founder ruling. **Changes no finding's status and wires no code.**
 
+> **★ ADDENDUM, 2026-09-09 — the two "needs a unit, not a ruling" groups are now WIRED (Unit C).**
+> The scheduling consequence in the headline below has been acted on: DE-06's `:122` tuple-integrity
+> throw and DE-21's agent-key disjuncts (`:395` in full, `:376`'s tenant-mismatch arm only) now write
+> durable attributable rows, provoked through the real path against real PostgreSQL. **This changes
+> nothing this decision owns.** DE-03 in full, FIVE of DE-06's six fence throws, and DE-15 are still
+> blocked here; DE-21's board/session half is still Decision 3's; neither DE-06 nor DE-21 closes,
+> and no cohort count moves. Two of the addendum's measurements correct this paper:
+> **(a)** §1.2's suggestion that `:358` may be includable is REJECTED — measured at the line, the
+> membership array is EMPTY in the probe shape and plural-and-unrelated otherwise, so `:358` stays
+> with Decision 3; **(b)** at `:122` only ONE of the seven mismatch conjuncts
+> (`provider_constraint_hash`) can be provoked by a legal row — five are inside
+> `lockLeaseAckContext`'s own WHERE and land on `:110`, and `target_authority_key` is FK-pinned from
+> both sides. Full record: `epics/E0-foundation/findings.md`, "★ UNIT C".
+
 **Queued behind this decision:** four clause-halves — **DE-03**, **DE-21's board/session half**,
 **DE-15**, and **DE-06's fence-resolution throws** (the fourth was added by PR #396's own
 measurement). ★ **None of the four is wholly unblocked by the measurement below** — an earlier draft

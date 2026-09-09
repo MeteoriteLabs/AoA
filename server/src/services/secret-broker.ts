@@ -41,6 +41,10 @@ import {
 import { runInTenant } from "../db/tenant-context.js";
 import { JobLeasingError, type VerifiedWorkerOperation } from "./job-leasing.js";
 import { resolveWorkerFenceContext, type ResolvedFenceContext } from "./worker-fence-context.js";
+import {
+  createWorkerFenceDenialSink,
+  drainWorkerFenceDenial,
+} from "./worker-fence-denial-audit.js";
 import type { JobControlMetrics } from "./job-control-metrics.js";
 import { applyOwnedLabelsCapability, OWNED_LABELS_CAPABILITY_DEFAULT_TTL_MS } from "./owned-labels-mint.js";
 
@@ -263,6 +267,14 @@ export function createSecretBrokerService(input: {
       // (the route maps it to a coarse denial) and leaves this undefined, so no capability is minted.
       let fenceCtx: ResolvedFenceContext | undefined;
 
+      // ★ DE-06 — THE FIRST DENIAL RECORD ON THIS SERVICE. Before this, a refused
+      // secret resolve left only the count-only `metrics.secretRead({outcome:"denied"})`
+      // tick that `E0-F013` files against DE-29 as forensically indistinguishable.
+      // This holder covers exactly ONE refusal — the post-resolution tuple-integrity
+      // branch inside `resolveWorkerFenceContext`. Every `{ denied: … }` return below
+      // is still unaudited, and so are the other five fence throws.
+      const fenceDenial = createWorkerFenceDenialSink();
+
       // Fence identity + authorization inside ONE tenant tx, BEFORE any broker access.
       const authorized = await runInTenant(input.appDb, auth.organizationId, async (repos):
         Promise<AuthorizedSecretResolution | { denied: SecretResolveOutcome & { outcome: "denied" } }> => {
@@ -271,7 +283,7 @@ export function createSecretBrokerService(input: {
           jobId: request.jobId,
           attempt: request.attempt,
           fenceToken: request.fenceToken,
-        }, maxHeartbeatAgeMs);
+        }, maxHeartbeatAgeMs, fenceDenial);
         fenceCtx = ctx;
         try {
           return await repos.jobControl.resolveExecutionSecret({
@@ -289,7 +301,18 @@ export function createSecretBrokerService(input: {
           }
           throw error;
         }
-      });
+      })
+        // Drain on the POOL handle once the tenant transaction has unwound. A fence
+        // refusal REJECTS `runInTenant` and skips everything below, so this has to be
+        // `.finally` (whose thenable callback IS awaited) rather than a statement.
+        .finally(async () => {
+          await drainWorkerFenceDenial(input.appDb, fenceDenial, {
+            control: "server/src/services/worker-fence-context.ts:resolveWorkerFenceContext",
+            workerId: auth.workerId,
+            organizationId: auth.organizationId,
+            operation: "secret_resolve",
+          });
+        });
 
       // Resolve to the final control-plane outcome, THEN emit the count-only outcome
       // token. A broker fetch failure is a coarse, non-disclosing `malformed` (never a

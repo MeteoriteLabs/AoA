@@ -40,6 +40,10 @@ import type { Readable } from "node:stream";
 import { runInTenant } from "../db/tenant-context.js";
 import { JobLeasingError, type VerifiedWorkerOperation } from "./job-leasing.js";
 import { resolveWorkerFenceContext } from "./worker-fence-context.js";
+import {
+  createWorkerFenceDenialSink,
+  drainWorkerFenceDenial,
+} from "./worker-fence-denial-audit.js";
 import type { StorageProvider } from "../storage/types.js";
 
 /** A guarded-fence refusal → the frozen protocol reason vocabulary. */
@@ -95,7 +99,18 @@ export function createPatchApplyService(input: {
       const rejected = (reason: "stale_fence" | "attempt_terminal" | "target_revoked" | "malformed"): PatchApplyResultV1 =>
         ({ outcome: "rejected", reason });
 
-      return runInTenant(input.appDb, auth.organizationId, async (repos) => {
+      // ★ DE-06 — THE FIRST DENIAL RECORD ON THIS SERVICE. Before this, patch-apply
+      // recorded NOTHING on any refusal: `rejected()` builds a wire object and the
+      // fence throws left no trace at all. This holder covers exactly ONE of those
+      // refusals — the post-resolution tuple-integrity branch inside
+      // `resolveWorkerFenceContext`. Every `rejected(...)` return below is still
+      // unaudited, and so are the other five fence throws.
+      const fenceDenial = createWorkerFenceDenialSink();
+
+      // The callback's return type is annotated because the `.finally` below breaks
+      // the contextual-type flow from `apply`'s own signature, and without it the
+      // literal `outcome` fields widen to `string`.
+      return runInTenant(input.appDb, auth.organizationId, async (repos): Promise<PatchApplyResultV1> => {
         // Resolve the fence IDENTITY first (throws for a foreign/unresolvable fence),
         // BEFORE any object-store probe — no cross-tenant existence oracle.
         const ctx = await resolveWorkerFenceContext(repos, auth, {
@@ -103,7 +118,7 @@ export function createPatchApplyService(input: {
           jobId: request.jobId,
           attempt: request.attempt,
           fenceToken: request.fenceToken,
-        }, maxHeartbeatAgeMs);
+        }, maxHeartbeatAgeMs, fenceDenial);
 
         // The presented object key MUST bind the auth org + this job/attempt. This
         // gate precedes any storage read, so a caller cannot point the fetch at a
@@ -169,7 +184,18 @@ export function createPatchApplyService(input: {
           if (error instanceof PatchApplyRejection) return rejected("malformed");
           throw error;
         }
-      });
+      })
+        // Drain on the POOL handle once the tenant transaction has unwound — a
+        // fence refusal REJECTS `runInTenant`, so this has to be `.finally` (whose
+        // thenable callback IS awaited) rather than a trailing statement.
+        .finally(async () => {
+          await drainWorkerFenceDenial(input.appDb, fenceDenial, {
+            control: "server/src/services/worker-fence-context.ts:resolveWorkerFenceContext",
+            workerId: auth.workerId,
+            organizationId: auth.organizationId,
+            operation: "patch_apply",
+          });
+        });
     },
   };
 }

@@ -21,6 +21,7 @@ import {
   type VerifiedWorkerOperation,
 } from "./job-leasing.js";
 import { normalizePlacementRegistryTarget } from "./execution-target-resolver.js";
+import type { WorkerFenceDenialSink } from "./worker-fence-denial-audit.js";
 
 export interface ResolvedFenceContext {
   fenceIdentity: ActiveFenceRequest;
@@ -55,12 +56,22 @@ export interface ResolvedDeviceContext {
  *                        tuple pinned to the CURRENT authority/target
  * A returned context means the worker is authenticated and the fence identity is
  * fully pinned; whether the fence must additionally be ACTIVE is the caller's call.
+ *
+ * ★ DE-06, audit clause — `denialSink` (REQUIRED). Of the six throw sites below,
+ * exactly ONE has an FK-valid company in hand: the post-resolution tuple-integrity
+ * branch, where the lease has already joined `job_attempts` on `company_id`. That
+ * branch records an intent into `denialSink` before it throws, and the CALLER
+ * drains it on a pool handle once this transaction has unwound. The other five
+ * carry `organization_id` only and write nothing — see
+ * `worker-fence-denial-audit.ts` and `E0-F013`'s Decision 2. The parameter is
+ * required so a new caller cannot silently inherit an undrained refusal.
  */
 export async function resolveWorkerFenceContext(
   repos: TenantRepositories,
   auth: VerifiedWorkerOperation,
   presented: { leaseId: string; jobId: string; attempt: number; fenceToken: string },
   maxHeartbeatAgeMs: number,
+  denialSink: WorkerFenceDenialSink,
 ): Promise<ResolvedFenceContext> {
   const databaseNow = await repos.jobControl.currentDatabaseTime();
   await repos.workerEnrollment.cleanupExpiredProofs(databaseNow, 100);
@@ -108,26 +119,79 @@ export async function resolveWorkerFenceContext(
     fence: presented.fenceToken,
   });
   if (!context) throw new JobLeasingError("stale_fence");
-  if (!context.lease.companyId
-    || !context.lease.jobId
-    || !context.lease.attemptNumber
-    || !context.lease.expiresAt
-    || context.lease.jobId !== presented.jobId
-    || context.lease.attemptNumber !== presented.attempt
-    || context.lease.targetAuthorityKey !== authority.worker.targetAuthorityKey
-    || context.lease.targetId !== target.targetId
-    || context.lease.targetGeneration !== target.targetGeneration
-    || context.lease.profileHash !== auth.profileHash
-    || context.lease.providerConstraintHash !== target.providerConstraintHash) {
+
+  // ★ DE-06 — THE TUPLE-INTEGRITY BRANCH, SPLIT INTO ITS TWO KINDS. This was one
+  // eleven-disjunct `||`; it is now the same eleven conditions in the same
+  // control flow, throwing the same `stale_fence`, in two groups.
+  //
+  // GROUP 1 — the ABSENT-column disjuncts. These are the pre-JOB-003 kernel
+  // shape (`leases.ts:28-44` leaves company/job/attempt/expiry nullable and the
+  // `leases_authority_atomic_check` CHECK enforces all-or-nothing), and they are
+  // taken FIRST so the recorder below reads a genuine `string` rather than an
+  // asserted one. A NON-NULL ASSERTION WOULD BE WRONG HERE: the declared type is
+  // `string | null`, and the reason a value is nevertheless present is a property
+  // of the JOIN, not of the column — `lockLeaseAckContext` inner-joins
+  // `jobAttempts` on `eq(jobAttempts.companyId, leases.companyId)` and
+  // `jobAttempts.companyId` is NOT NULL, so a null-company lease never joins and
+  // lands on the `!context` throw above. This group is therefore expected to be
+  // unreachable in production and is deliberately NOT recorded: if it ever does
+  // fire, the company is null and there is nothing FK-valid to attribute to.
+  const leaseCompanyId = context.lease.companyId;
+  const leaseJobId = context.lease.jobId;
+  const leaseAttemptNumber = context.lease.attemptNumber;
+  const leaseExpiresAt = context.lease.expiresAt;
+  if (!leaseCompanyId || !leaseJobId || !leaseAttemptNumber || !leaseExpiresAt) {
+    throw new JobLeasingError("stale_fence");
+  }
+
+  // GROUP 2 — the MISMATCH disjuncts: a lease that resolved against the presented
+  // tuple but disagrees with the CURRENT authority/target. `company_id` is joined
+  // and FK-valid by the time control is here, so this is the one refusal in this
+  // function that can be attributed. Collected rather than short-circuited so the
+  // record can name WHICH conjunct fired — the worker still sees only the coarse,
+  // non-disclosing `stale_fence`.
+  const mismatched: string[] = [];
+  if (leaseJobId !== presented.jobId) mismatched.push("job_id");
+  if (leaseAttemptNumber !== presented.attempt) mismatched.push("attempt_number");
+  if (context.lease.targetAuthorityKey !== authority.worker.targetAuthorityKey) {
+    mismatched.push("target_authority_key");
+  }
+  if (context.lease.targetId !== target.targetId) mismatched.push("target_id");
+  if (context.lease.targetGeneration !== target.targetGeneration) {
+    mismatched.push("target_generation");
+  }
+  if (context.lease.profileHash !== auth.profileHash) mismatched.push("profile_hash");
+  if (context.lease.providerConstraintHash !== target.providerConstraintHash) {
+    mismatched.push("provider_constraint_hash");
+  }
+  if (mismatched.length > 0) {
+    denialSink.intent = {
+      reason: "fence_tuple_mismatch",
+      companyId: leaseCompanyId,
+      leaseId: context.lease.id,
+      mismatched,
+      details: {
+        // What the worker PRESENTED, and the job/attempt the lease actually
+        // carries. Both are inside the lease's own tenant, so neither discloses
+        // anything across the boundary.
+        presentedJobId: presented.jobId,
+        presentedAttempt: presented.attempt,
+        presentedLeaseId: presented.leaseId,
+        leaseJobId,
+        leaseAttemptNumber,
+        targetId: target.targetId,
+        targetGeneration: target.targetGeneration,
+      },
+    };
     throw new JobLeasingError("stale_fence");
   }
 
   const fenceIdentity: ActiveFenceRequest = {
     organizationId: auth.organizationId,
-    companyId: context.lease.companyId,
-    jobId: context.lease.jobId,
+    companyId: leaseCompanyId,
+    jobId: leaseJobId,
     attemptId: context.lease.attemptId,
-    attemptNumber: context.lease.attemptNumber,
+    attemptNumber: leaseAttemptNumber,
     leaseId: context.lease.id,
     workerId: auth.workerId,
     targetId: target.targetId,
@@ -137,7 +201,7 @@ export async function resolveWorkerFenceContext(
     providerConstraintHash: target.providerConstraintHash,
     fence: presented.fenceToken,
   };
-  return { fenceIdentity, companyId: context.lease.companyId, authorityNow, leaseDeadline: context.lease.expiresAt };
+  return { fenceIdentity, companyId: leaseCompanyId, authorityNow, leaseDeadline: leaseExpiresAt };
 }
 
 /**
