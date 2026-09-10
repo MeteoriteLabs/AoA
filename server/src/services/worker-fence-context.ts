@@ -71,9 +71,17 @@ export interface ResolvedDeviceContext {
  * See `worker-denial-audit.ts`. The parameter is required so a new caller
  * cannot silently inherit an undrained refusal.
  *
- * ★ NEITHER CROSSING CLOSES ON THIS. DE-06's audit clause is a conjunction and
- * its `object put/get` half — a SUCCESSFUL grant — still writes nothing. DE-03's
- * is a conjunction too and only its replay-rejection third is wired.
+ * ★ NEITHER CROSSING CLOSES ON THIS, AND THAT IS STILL TRUE OF THIS MODULE.
+ * DE-06's audit clause is a conjunction, and its `object put/get` half was
+ * delivered SEPARATELY on 2026-09-10 by `artifact-object-access-audit.ts` (a
+ * SUCCESSFUL grant now writes a `security.object_access.*` row), so both
+ * conjuncts hold and DE-06 has left `E0-F010`'s cohort — on that unit's work
+ * plus this one's, never on this one's alone. DE-06 stays `partial` in the
+ * threat register for its separately-absent `authentication` clause
+ * (`E0-F012`). **DE-03 is unchanged**: its clause is a conjunction too and only
+ * its replay-rejection third is wired.
+ * *(Superseded text, kept so the correction is visible: "its `object put/get`
+ * half — a SUCCESSFUL grant — still writes nothing".)*
  */
 export async function resolveWorkerFenceContext(
   repos: TenantRepositories,

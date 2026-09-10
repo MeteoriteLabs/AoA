@@ -138,14 +138,22 @@ New findings use IDs `E0-F001`, `E0-F002`, and so on, and retain their resolutio
 - **Affected tickets:** FND-008 (facade code — `plugins.ts`), FND-006/008 test flip (`plugin-broker-cloud.integration.test.ts`). Both files were reviewed at their ticket revisions; this is a Task-9-gate scoped-defect repair (the plan Task 9 explicitly permits "Modify only if verification exposes a scoped defect").
 - **Disposition:** **Fixed and re-verified green** (86/86 across the 7 E0 integration files on embedded PG; server typecheck 0; dependency-free checker + mutations pass; E0 unit suites unchanged). Lesson: for cloud-execution-boundary code, run the DB-backed integration tests on a short-path embedded-PG worktree before the gate — unit + typecheck + review are necessary but not sufficient.
 
-## E0-F010 — Eight trust crossings assert that denials are audited; on every one of them the deny path returns before anything durable is written, so a refused cross-tenant read, a replayed credential and a shed submission are all indistinguishable from traffic that never happened
+## E0-F010 — Eight trust crossings asserted that denials are audited and recorded nothing on the deny path; DE-06's audit clause was completed on 2026-09-10 and the remaining SEVEN are enumerated below, so a refused cross-tenant read, a replayed credential and a shed submission are still indistinguishable from traffic that never happened
 
-- **Status:** open — **all 8 remain. DE-06's audit clause is HALF delivered (2026-09-09) and its
-  closure was RETRACTED the same day; see the row and the correction below. On the same day Unit C
-  wired the two deny-site groups the Decision 2 paper measured as already resolvable — DE-06's
-  tuple-integrity fence throw (1 of its 6) and DE-21's agent-key branches (5 disjuncts across 2 of its 7
-  deny branches). NEITHER FINDING CLOSES and no cohort count moves: both clauses are conjunctions
-  with halves still absent. See "★ UNIT C" below.**
+- **Status:** open — **7 of 8 remain. DE-06's audit clause is DELIVERED IN FULL (2026-09-10) and
+  DE-06 is struck from this cohort; see "★ THE OBJECT-ACCESS UNIT" at the end of this entry, and
+  read the correction there before trusting the older sentence in this entry that adds `E0-F012`'s
+  authentication clause to DE-06's exit condition — that sentence contradicts this finding's own
+  Resolution condition and the DE-19 precedent, and it is corrected in place.**
+  **History, kept because the corrections are only legible against it:** DE-06's audit clause was
+  recorded as CLOSED on 2026-09-09 and RETRACTED the same day, because only the rejected-key
+  conjunct was wired. On the same day Unit C wired two more deny-site groups — DE-06's
+  tuple-integrity fence throw (1 of its 6) and DE-21's agent-key branches (5 disjuncts across 2 of
+  its 7 deny branches) — and NEITHER FINDING CLOSED on that, because both clauses are conjunctions
+  and a fraction closes nothing. Unit A then wired DE-06's five remaining fence throws and six of
+  DE-03's seven, and again nothing closed. What is different on 2026-09-10 is not a larger fraction:
+  it is that BOTH of DE-06's audit conjuncts now hold. **DE-21 and DE-03 are unchanged and neither
+  closes.**
 - **Severity:** HIGH
 - **Filed:** 2026-09-08, by W20 (the DE-audit landing unit). Every citation below was measured
   at tip `360d0b0ed`, not inherited.
@@ -164,7 +172,7 @@ with **no row, no metric and no log line** recording that a security control fir
 | DE-01 (Critical) | "query and policy-denial events recorded in the control-plane audit log" | The RLS policy itself — `packages/db/src/migrations/0211_tenant_rls_enforcement.sql:26-28` and 24+ siblings. A read is silently filtered; a write raises 42501. | **Nothing.** No production code handles SQLSTATE 42501 or the string `row-level security policy` — a grep over `server/src` + `packages/*/src` excluding tests returns only prose (e.g. `server/src/services/job-input-staging.ts:25`). The one control-plane audit writer for this path, `jobAuditBridge` (`server/src/services/job-audit-bridge.ts:158`), has **zero production callers** — its only references are its own definition and `server/src/__tests__/job-audit-parity.integration.test.ts:24,42`. |
 | DE-03 (High) | "enrollment, session issue, and replay-rejection are audited" | `packages/db/src/repositories/tenant/worker-enrollment.ts:273-276` (`onConflictDoNothing().returning()` → `rows.length === 1`), turned into a refusal at **nine** production call sites. | **Nothing on the job/lease paths.** The refusal returns via `sendWorkerOperationProtocolError` (`server/src/services/worker-protocol-http.ts:76-93`), which writes the HTTP response and nothing else, and the route returns at `server/src/routes/worker-control.ts:436-442` **before** the handler's only `logger.error` at `:444`. |
 | DE-04 (Critical) | "claim, fence-generation, and stale-claim rejection are audited" | `packages/db/src/repositories/tenant/job-control.ts:1167` / `:1177` / `:1185` / `:1187` (`guardActiveFence`, 11+ governed mutators call it). | **Nothing.** The one table that looks like it records rejections, `worker_lease_rejections`, is an eligibility-certificate cache whose own header excludes exactly this class — *"Dynamic capacity, liveness, lock, parsing, and **authority failures** are deliberately excluded"* (`packages/db/src/schema/worker_lease_rejections.ts:16-18`), and its single writer (`job-control.ts:2127`) inserts placement certificates, not fence refusals. |
-| DE-06 (Critical) — **STILL OPEN; the rejected-key HALF delivered 2026-09-09** | "object put/get **and** rejected-key attempts are audited" | `server/src/services/artifact-transfer-grant.ts` (upload key outside this org's prefix; download), `packages/db/src/repositories/tenant/job-control.ts:2750-2751` (commit). | **Half.** ★ The clause is CONJUNCTIVE and only the second conjunct was wired. **Delivered — "rejected-key attempts":** every refusal that RETURNS a `rejected` outcome on either path now writes one attributable row to `activity_log` — `security.denied.artifact_transfer_grant` / `security.denied.artifact_commit` — carrying WHO (the refused `workerId`), TENANT (the LOCKED LEASE's company, never the request's or the manifest's), RESOURCE (`job_artifact` + `details.requestedObjectKey`) and WHY (a per-BRANCH machine code behind the unchanged coarse wire `malformed`). Proven by provocation against real PostgreSQL: `server/src/__tests__/de-06-artifact-denial-audit.integration.test.ts`, observed 9-RED / 4-PASS against the unchanged tree and 13/13 green after, four mutants killed (the file now holds 15 arms: those 13 plus the two that pin the fence-auth gap, both observed RED in their aspirational form before being pinned); the central provocation is CROSS-TENANT at the `organizations` level and the probed tenant's own `activity_log` is asserted empty. **NOT delivered — "object put/get":** a SUCCESSFUL download grant (`artifact-transfer-grant.ts:288-315`, the sole production `presignGet` call site in the tree) presigns, parses and returns while writing NOTHING; a successful upload grant leaves only the operational `recordArtifactGrantIntent` row. The disclosure-relevant event for an object-key threat is exactly the successful GET. **ALSO NOT delivered:** the fence-AUTH refusals — `resolveWorkerFenceContext` throws `JobLeasingError` out of `runInTenant` on both paths and nothing records it (pinned, with the reachability control, by two arms in the same test file). **DE-06 stays `partial`** in the register and stays in this cohort. The historical measurement is kept below because it is what the half-closure was built against. |
+| ~~DE-06 (Critical)~~ — **AUDIT CLAUSE COMPLETE 2026-09-10; STRUCK FROM THIS COHORT** | "object put/get **and** rejected-key attempts are audited" | `server/src/services/artifact-transfer-grant.ts` (upload key outside this org's prefix; download), the `wrong_prefix`/`tenant_mismatch` guards at the head of `commitArtifactVersion` (commit). | **BOTH CONJUNCTS DELIVERED.** ★ *"object put/get"* — a SUCCESSFUL grant now writes one attributable `activity_log` row under the reserved `security.object_access.` namespace: `…artifact_upload_grant` on a granted PUT, `…artifact_download_grant` on a granted GET, carrying WHO (`actor_id` = the authenticated `workerId`), TENANT (the LOCKED LEASE's company), RESOURCE (`job_artifact` + `details.objectKey`, the key that was actually SIGNED) and the exposure window (`details.grantExpiresAt`); the download row additionally carries `details.kind`/`details.sensitivity` read from the committed row, which is DE-11's access half. Writer: `artifact-object-access-audit.ts` `recordObjectAccessGrant`, drained on the POOL handle after the tenant transaction closes. **The record is of ISSUANCE, not REDEMPTION**, and it therefore OVER-reports — the control plane never observes the transfer and no wiring creates a second observation point. ★ *"rejected-key attempts"* — unchanged and delivered as described below. **DE-06 leaves this cohort. It stays `partial` in the register** for its separately-absent `authentication` clause (`E0-F012`), which is the same shape as DE-19. Full evidence, the hot-path bound and the five-mutant matrix are in "★ THE OBJECT-ACCESS UNIT" at the end of this entry and in the register row. *(Historical, kept because the corrections are only legible against it:)* **Half.** ★ The clause is CONJUNCTIVE and only the second conjunct was wired. **Delivered — "rejected-key attempts":** every refusal that RETURNS a `rejected` outcome on either path now writes one attributable row to `activity_log` — `security.denied.artifact_transfer_grant` / `security.denied.artifact_commit` — carrying WHO (the refused `workerId`), TENANT (the LOCKED LEASE's company, never the request's or the manifest's), RESOURCE (`job_artifact` + `details.requestedObjectKey`) and WHY (a per-BRANCH machine code behind the unchanged coarse wire `malformed`). Proven by provocation against real PostgreSQL: `server/src/__tests__/de-06-artifact-denial-audit.integration.test.ts`, observed 9-RED / 4-PASS against the unchanged tree and 13/13 green after, four mutants killed (the file now holds 15 arms: those 13 plus the two that pin the fence-auth gap, both observed RED in their aspirational form before being pinned); the central provocation is CROSS-TENANT at the `organizations` level and the probed tenant's own `activity_log` is asserted empty. **NOT delivered — "object put/get":** a SUCCESSFUL download grant (`artifact-transfer-grant.ts:288-315`, the sole production `presignGet` call site in the tree) presigns, parses and returns while writing NOTHING; a successful upload grant leaves only the operational `recordArtifactGrantIntent` row. The disclosure-relevant event for an object-key threat is exactly the successful GET. **ALSO NOT delivered:** the fence-AUTH refusals — `resolveWorkerFenceContext` throws `JobLeasingError` out of `runInTenant` on both paths and nothing records it (pinned, with the reachability control, by two arms in the same test file). **DE-06 stays `partial`** in the register and stays in this cohort. The historical measurement is kept below because it is what the half-closure was built against. |
 | *(DE-06, as measured 2026-09-08)* | — | — | **Partly — and this is the one row in the table where "nothing" would be wrong.** A rejected *commit* does emit a **count-only** metric: `metrics?.artifactOp({operation:"commit", outcome:"rejected", count:1})` (`server/src/services/artifact-commit.ts:246-250`), and the sink is genuinely wired in production (`createPinoJobControlMetrics`, `server/src/index.ts:657-660`). It is **not an audit record**: by deliberate design it carries no organization, no object key, no reason and no actor (`job-control-metrics.ts:15-17` — high-cardinality ids ride the logger spine, never a metric label), so a breach cannot be attributed or reconstructed from it. The *grant* rejections emit nothing at all: `rejected()` (`artifact-transfer-grant.ts:76-85`) only constructs a parsed response object, and although `ArtifactOpOperation` includes `"transfer_grant"` (`job-control-metrics.ts:30`), the sole production `artifactOp` caller is the commit path. |
 | DE-11 (High) | "sensitive-artifact access and retention are audited" | — (the controls themselves are absent; see `E8-F011`) | **Nothing**, and the code says so: `server/src/services/artifact-commit.ts:172-173`. |
 | DE-12 (Critical) | "partition, drain, and generation changes are audited" | `packages/db/src/repositories/tenant/job-control.ts:1667-1679` (the generation gate) | **Nothing**, and nothing could: `services.generation` has **no writer anywhere in the tree** (`grep -rn "update(services)"` returns zero hits outside comments), so no generation change exists to audit. |
@@ -238,8 +246,27 @@ FOUR services (artifact-commit, artifact-transfer-grant, patch-apply, secret-bro
 it: (a) record the SUCCESSFUL download grant and the successful upload grant as object-access
 audit rows — new behaviour on a hot path, so it needs its own unit and its own review, and it must
 decide whether an issued GET is recorded at issuance or at redemption (the control plane never sees
-the redemption); (b) close, or amend, the fence-auth refusal half under Decision 2. Only when both
-land, plus the separately-absent `authentication` clause (`E0-F012`), does DE-06 leave this cohort.
+the redemption); (b) close, or amend, the fence-auth refusal half under Decision 2. ~~Only when both
+land, plus the separately-absent `authentication` clause (`E0-F012`), does DE-06 leave this cohort.~~
+
+★ **BOTH (a) AND (b) HAVE LANDED — (b) by Unit C + Unit A on 2026-09-09/10, (a) by the
+object-access unit on 2026-09-10.** ★ **AND THE STRUCK SENTENCE ABOVE IS CORRECTED, NOT MERELY
+SATISFIED, because it stated the wrong exit condition.** It added `E0-F012`'s `authentication`
+clause to DE-06's membership test for THIS cohort. That contradicts three things, each measured
+rather than recalled: (1) **this finding's own Resolution condition**, below, which sets the bar at
+*"each remaining row's `audit` clause is either delivered against a named record point with a
+production caller, or AMENDED"* — the audit clause, and nothing else; (2) **this finding's own
+title and subject**, which is crossings whose *audit* clause asserts denials are recorded; and
+(3) **the DE-19 precedent applied in the sibling one section down**, where DE-19's audit clause
+closed on 2026-09-08, DE-19 was struck from `E0-F013`'s cohort, and DE-19 nevertheless stayed
+`partial` in the register precisely because its `authentication`/`revocation`/`integrity` clauses
+are separately absent under `E0-F016`. A fourth authority agrees: `scripts/gate-clause-wiring.json`'s
+own `$comment` makes **the clause** the unit of claim. Under one reading DE-19's closure was wrong;
+under the other, this sentence was. The sentence is the outlier, and it is the one corrected.
+**DE-06 therefore leaves this cohort on its audit clause and stays `partial` in the register for
+`E0-F012`'s.** If a reviewer prefers the stricter reading, reversing this is one edit — restore
+DE-06 to the affected-crossings list and set the count back to eight — but the same reading would
+have to reverse DE-19 too.
 
 **Two things the half-closure still changes about how the rest of this cohort should be read**, both
 measured rather than inherited:
@@ -268,11 +295,19 @@ measured rather than inherited:
    `server/src/services/artifact-denial-audit.ts` and is a live constraint for every remaining
    crossing in this class.
 
-- **Affected crossings:** DE-01, DE-03, DE-04, **DE-06**, DE-11, DE-12, DE-13, DE-14 — **all eight
-  remaining.** DE-06 is carried here again: its rejected-key half is delivered, its "object put/get"
-  half is not, and its fence-auth refusals are not. (DE-11's is carried in detail
-  by `E8-F011`; it is listed here so the class is complete.)
-- **Disposition:** `unowned`. No ticket on disk owns "record a denial" for these eight. The
+- **Affected crossings:** DE-01, DE-03, DE-04, DE-11, DE-12, DE-13, DE-14 — **seven remaining.**
+  **DE-06 is struck (2026-09-10):** both conjuncts of its audit clause are delivered — rejected-key
+  attempts (every returning refusal on both artifact services, plus all six
+  `resolveWorkerFenceContext` throws) AND object put/get (a successful upload or download grant).
+  It stays `partial` in the register for `E0-F012`'s separately-absent `authentication` clause,
+  which is the DE-19 shape and is not a member of this cohort's test. **DE-03 and DE-11 are NOT
+  struck**, and both are re-stated here because each had a half move in the same wave: DE-03's
+  clause is "enrollment, session issue, AND replay-rejection" and only replay-rejection is wired;
+  DE-11's is "sensitive-artifact ACCESS and RETENTION" and both halves now have a live writer, but
+  the coverage caveat holds it open (see the object-access unit below and `E0-F013`'s Group D DE-11
+  bullet).
+  (DE-11's is carried in detail by `E8-F011`; it is listed here so the class is complete.)
+- **Disposition:** `unowned`. No ticket on disk owns "record a denial" for these seven. The
   nearest candidate, `jobAuditBridge`, exists and is caller-less; wiring it is not a code-motion
   task, because the DE-01 case has **no error to intercept** (a filtered read is a successful empty
   read), so a denial-observation point would have to be built rather than connected. Minimum work
@@ -280,8 +315,10 @@ measured rather than inherited:
 - **Resolution condition:** each *remaining* row's `audit` clause is either delivered against a
   named record point with a production caller, or AMENDED to state what the programme intends.
   Amending is a founder decision and is not taken here. Resolve = flip this Status and delete the
-  `E0-F010` key in `scripts/finding-ownership.json` in the SAME commit. **All eight are still open,
-  DE-06 included; a HALF-delivered conjunctive clause closes nothing.**
+  `E0-F010` key in `scripts/finding-ownership.json` in the SAME commit. **SEVEN are still open; a
+  HALF-delivered conjunctive clause closes nothing, and the reason DE-06 left on 2026-09-10 is that
+  BOTH of its audit conjuncts hold — not that a larger fraction of one does.** The `E0-F010` key
+  stays in `scripts/finding-ownership.json`: seven crossings remain and this finding is open.
 - **2026-09-10, Unit A — two rows moved and the cohort did NOT.** The wave that the ruling on
   `E0-F013` Decision 2 unblocked wired the organization-attributable denial sinks: **DE-06**'s five
   remaining `resolveWorkerFenceContext` throws (`:86` proof replay, `:100` in both of its codes,
@@ -301,6 +338,153 @@ measured rather than inherited:
   DE-03's nine `recordProof` sites (`worker-enrollment.ts:315`,
   `middleware/worker-session-auth.ts:151`) stay DOUBLY NULL and were deliberately not wired and are
   not claimed. A larger fraction of a conjunction is not a closure.
+  *(★ The sentence "THE COHORT STAYS AT EIGHT" was correct on 2026-09-10 when Unit A wrote it and
+  is superseded later the same day by the object-access unit below, which delivered the OTHER
+  conjunct rather than a larger fraction of the same one. Left standing so the distinction is
+  visible.)*
+
+### ★ THE OBJECT-ACCESS UNIT, 2026-09-10 — DE-06's put/get conjunct, and the FIRST closure in this cohort
+
+**The count first, because a skim must not read this as the class being solved.** Of the SEVENTEEN
+crossings in the denial-audit class (`E0-F010`'s eight plus `E0-F013`'s nine), **TWO now have a
+whole audit clause — DE-19 (2026-09-08) and DE-06 (2026-09-10) — and FIFTEEN remain open.** This
+cohort goes from eight to seven. `E0-F013`'s stays at eight. **DE-03, DE-11, DE-20 and DE-21 each
+still carry part of a conjunction and NONE of them moves.**
+
+**What was missing, exactly.** DE-06's clause is *"object put/get **and** rejected-key attempts are
+audited"*. The rejected-key conjunct was finished across three earlier units. The put/get conjunct
+was untouched, and it is the disclosure-relevant one: a SUCCESSFUL download grant — issued at the
+tree's **only production `presignGet` call site** — presigned, parsed and returned while writing
+nothing at all, so a worker HANDED read access to an object's bytes left the same durable trace as
+a worker that asked for nothing. It had been deferred three times, each with a good reason: it is
+new behaviour on a success path.
+
+**What the code now does.** A successful grant captures an intent at the two `*_granted` returns
+inside `runInTenant` and drains it on the **pool handle** after the transaction closes, via
+`recordObjectAccessGrant` (`server/src/services/artifact-object-access-audit.ts`). One
+`activity_log` row per grant, under a third reserved namespace `security.object_access.`:
+`…artifact_upload_grant` for a PUT, `…artifact_download_grant` for a GET — two action slugs rather
+than one plus a jsonb field, so *"how many download URLs were issued in this tenant"* is an
+`action` predicate. The row carries WHO (`actor_id` = the authenticated `workerId`, `actor_type` =
+`system`), TENANT (`company_id` = the LOCKED LEASE's company, resolved under the worker's own
+organization GUC; the frozen grant request carries **no tenancy field at all**, so the record
+cannot be aimed), RESOURCE (`job_artifact` + the artifact identity, plus `details.objectKey`, the
+key that was actually SIGNED), and `details.grantExpiresAt`, the window in which the capability
+works. The download row additionally carries `details.kind` and `details.sensitivity`, read from
+the committed `job_artifacts` row the branch had already loaded.
+
+★ **THE SCOPE LIMIT, WHICH MUST TRAVEL WITH EVERY CLAIM MADE ABOUT THIS RECORD.** It records
+**ISSUANCE, NOT REDEMPTION**. The bytes move directly between worker and object storage — the whole
+purpose of the presigned design — so the control plane has exactly ONE observation point and no
+wiring creates a second (only the object store's own access log could, and this tree's
+`StorageProvider` port has no such operation). The record therefore **over-reports**: an issued but
+never-redeemed GET still writes a row. Over-reporting is the right direction for a disclosure audit
+— a missed disclosure is unrecoverable and a spurious one is noise — but **"there is a row" means a
+capability was handed out, never that bytes moved.** That limit is asserted by its own arm (the
+store's `getObject` is never called and the row exists anyway) rather than left in prose.
+
+★ **THE HOT-PATH COST, MEASURED — because three units deferred this on that risk and a fourth
+deferral would have needed a number.** **Reach:** the only caller is the `artifact_transfer_grant`
+worker-control operation, and the whole worker-control route graph is registered only inside
+`if (opts.distributedExecutionEnabled)` in `server/src/app.ts`, a block that **dynamically imports**
+`./routes/worker-control.js` so a flag-off startup never loads the module. The flag is
+`AOA_DISTRIBUTED_EXECUTION_ENABLED`, **default false**. **Cost when enabled:** one INSERT per
+SUCCESSFUL grant, on the pool handle, awaited before the response, never throwing. The UPLOAD arm
+already performed one durable write per grant (`recordArtifactGrantIntent`), so it goes from one
+write to two — the same order. ★ **The DOWNLOAD arm becomes a WRITER where it was a reader**, and
+that is stated plainly rather than buried: it is the one property a future reviewer should re-weigh
+if that path ever serves interactive traffic. **Volume:** one row per artifact transfer — bounded by
+artifact count, not by request rate.
+
+**Reds observed, each against named positive controls.**
+`server/src/__tests__/de-06-object-access-audit.integration.test.ts` carries **eleven** arms at this
+PR's HEAD, every one provoked through the real leasing / commit / transfer-grant services against
+real embedded PostgreSQL under the real `aoa_app` non-owner role. Against the unchanged tree it was
+**6 RED / 4 PASS** at ten arms; the eleventh (DE-11's kind arm) arrived with the
+`kind`/`sensitivity` fields and was observed RED against the code without them, which is the
+narrower claim. 11/11 green after. The four greens in the RED run are the **named positive
+controls**: anti-vacuity, the refused-grant mutation guard, cross-tenant non-disclosure, and the
+namespace reservation. **Five mutants, each killed, each with controls green:** delete the drain
+(7 of 11 red); delete ONLY the download capture (**exactly the 4 GET-dependent arms red, the PUT arm
+GREEN** — which is what makes the conjunction asserted per conjunct rather than in aggregate);
+collapse the action mapping to always report upload (exactly the 2 conjunct-distinguishing arms
+red); **hoist the upload capture above the foreign-prefix refusal branch** (exactly ONE arm red —
+the mutation guard — with nine controls green, which is the property the deliberate ABSENCE of a
+second `response.outcome` check at the drain exists to preserve; a redundant guard would have let
+that mutation pass); and stop reading `kind`/`sensitivity` off the committed row (exactly the 2
+kind-asserting arms red, with the PUT arm that asserts `kind` is NULL still green, proving the
+upload null is a real answer and not an unwired field).
+
+★ **TWO EXISTING ARMS ASSERTED THE VERY ABSENCE THIS CLOSES, and each was observed RED before being
+amended.** In `de-06-artifact-denial-audit.integration.test.ts`: the granted-upload positive control
+asserted *"nothing at all was appended to the tenant's audit stream"* — true, and exactly this
+conjunct's gap — and now asserts `+1` row in the object-access namespace and NOT the denial one, so
+the control it exists for is asserted directly instead of inferred from a total count; and the
+whole-log namespace sweep asserted every `activity_log` row is a `security.denied.` row and now
+asserts every row is in ONE OF THE TWO reserved audit namespaces, with a named positive control that
+the object-access namespace is genuinely represented so the widening is not dead allowance. That
+file's `denialRowsFor` helper was also narrowed to the denial prefix: it was **action-blind**
+(`WHERE entity_id = $1` and nothing else) while all of its call sites read it as "the denial rows"
+— harmless only while the denial recorder was the sole artifact-keyed writer. Its other 20 arms
+stayed green throughout as the regression control; the full denial-audit family is **140/140 green
+across twelve suites**, re-run and RE-COUNTED after this unit's last edit: `de-06-object-access-audit`,
+`de-06-artifact-denial-audit`, `de-03-worker-replay-denial-audit`, `de-11-retention-audit`,
+`de-19-memory-denial-audit`, `de-21-live-events-upgrade-denial-audit`, `artifact-transfer-commit`,
+`activity-reserved-namespace`, `cli-008-unit-b-staging-channel`, `e0-f013-denial-disclosure-path`,
+`e0-f013-unattributable-denial-sink`, `e0-f013-denial-index-plan`. *(An earlier draft of this
+paragraph said "123/123 across ten suites" — a true measurement of a narrower set, taken before the
+last two suites were added to the sweep. Re-counted rather than carried forward.)*
+
+**Enrolled** as `E0-de06-object-access-audit` in `scripts/gate-clause-wiring.json`, whose own
+`$comment` — which records the 2026-09-09 enrolment and same-day removal — is updated in the same
+commit to say that the release condition it named is met. That removal is **not** retracted: it was
+correct on the evidence it had.
+
+**NOT DONE, and left open by this unit:**
+
+- **DE-06's `authentication` clause.** Untouched; `E0-F012`'s. DE-06 stays `partial` in the register.
+- **The two PRE-TRANSACTION throws in each artifact service** — a frozen-schema parse failure, and
+  `body.workerId !== auth.workerId` — still write nothing. **Measured and excluded, not missed:**
+  neither is a "rejected-key attempt", because both refuse before any object key is examined.
+  Stated so that silence is not read as coverage.
+- **DE-11 does not close**; see `E0-F013`'s DE-11 note below and the register row.
+- **DE-14 was measured and NOT wired, and the finding's characterisation of it is corrected**; see
+  the DE-14 note immediately below.
+- **No other crossing is touched.** DE-01, DE-03, DE-04, DE-12, DE-13 and DE-14 in this cohort, and
+  all eight in `E0-F013`, are exactly as they were.
+
+### ★ DE-14 — MEASURED AND NOT WIRED, and "~5 lines. Take it as a freebie" is CORRECTED (2026-09-10)
+
+`E0-F013`'s Group D says of DE-14: *"recordable only as a **log**, and that is all its clause asks
+… **~5 lines. Take it as a freebie**; it proves nothing about the mechanism."* The object-access
+unit took DE-14 as its second candidate on exactly that sentence, measured it, and **did not wire
+it** — because the sentence is wrong for a reason nobody had measured, and shipping it as a freebie
+would have put an unbounded log write on a universal boot path.
+
+**What was measured, at HEAD.**
+
+1. **`loadConfig` is NOT memoized.** `server/src/config.ts` `loadConfig` has no cache: it re-reads
+   the config file and re-runs `assertHostedExecutionStartupSafe` on **every call**.
+2. **There are 64 `loadConfig()` call expressions** in `server/src` outside `config.ts`, across 36
+   files (routes, services, storage, and tests). So the assertion does not run "once at startup" —
+   it runs on every one of those, in every process, including test processes.
+3. **The one obvious logger cannot be imported there.** `server/src/middleware/logger.ts` has
+   module-level side effects — `fs.mkdirSync(logDir, {recursive:true})` and a `pino.transport(...)`
+   that spawns a worker thread — so importing it from `config.ts` would create a log directory and a
+   transport worker in every process that loads config, including the CLI and migrations.
+4. **The failure outcome cannot be moved to the entrypoint.** `server/src/index.ts` calls
+   `loadConfig()` at module top level with no `try`/`catch`, so a refusal is an unhandled
+   module-eval error and no line after it ever runs. The clause asks for *"the outcome"* and
+   `E0-F010`'s own row reads it as both directions — *"Nothing, in either direction"* — so success
+   and failure need different sites.
+
+**Therefore DE-14 is a UNIT, not a freebie.** It needs a decision about where a pre-logger,
+un-memoized, 64-call-site startup assertion reports its outcome **exactly once** — a once-only
+guard, a memoized config, or an injected sink with a default that is silent in library use. None of
+that is hard; none of it is five lines; and doing it in the same PR as a new write on the artifact
+success path would be two properties in one diff, which is the shape the Decision 2 sink slice
+explicitly refused. **DE-14 stays in this cohort, unchanged, and the count above already reflects
+that.** What changes is only that the next unit will not be told it is free.
 
 ## E0-F011 — Four crossings are defended by a control whose ARMING PATH is dead: two have zero production callers, one is enabled by an environment variable set in no manifest, and one is gated on a database column with no writer
 
@@ -522,7 +706,24 @@ tenant-scoped, i.e. the blast radius the clause exists to bound is unbounded.
 
 ## E0-F013 — The audit class, second cohort: nine more crossings assert that denials are audited, and on eight of the nine the denial is still not recorded durably — DE-19 was closed on 2026-09-08 and the remaining eight are enumerated below
 
-- **Status:** open — **8 of 9 remaining; DE-19 CLOSED 2026-09-08.**
+- **Status:** open — **8 of 9 remaining in THIS cohort; DE-19 CLOSED 2026-09-08. This cohort is
+  UNCHANGED by the 2026-09-10 object-access unit, which closed DE-06 — a member of `E0-F010`'s
+  cohort, not this one.**
+- ★ **THE AUTHORITATIVE CLASS-WIDE COUNT, as of 2026-09-10, stated once here because five dated
+  snapshots below say "ONE closed and SIXTEEN open" and every one of them was correct on its own
+  date.** The denial-audit class is **SEVENTEEN** crossings — `E0-F010`'s eight plus this cohort's
+  nine. **TWO have a whole `audit` clause: DE-19 (2026-09-08) and DE-06 (2026-09-10). FIFTEEN
+  remain open** — DE-01, DE-03, DE-04, DE-11, DE-12, DE-13, DE-14 in `E0-F010`, and DE-15, DE-16,
+  DE-17, DE-18, DE-20, DE-21, DE-27, DE-29 here. **Of those FIFTEEN, exactly FOUR carry a delivered
+  fraction of a conjunction and none of them counts as closed:** DE-03 (replay-rejection wired;
+  enrollment and session-issue not), DE-11 (both halves now have a live writer, but the coverage
+  caveat holds it open — see the Group D bullet below), DE-20 (cutover selection wired; the rollback
+  conjunct is vacuous), and DE-21 (five deny disjuncts across two of seven branches; the subscribe
+  and replay conjuncts have no writer at all). **A larger fraction of a conjunction is still not a
+  closure; what moved DE-06 was the OTHER conjunct.** *(DE-06 is not one of the fifteen and is not
+  counted among the four. Its register row nevertheless stays `partial`, because its
+  `authentication` clause is a DIFFERENT clause carried by `E0-F012` — the same shape as DE-19,
+  whose row stays `partial` under `E0-F016`.)*
 - **Severity:** HIGH
 - **Filed:** 2026-09-08, by W20B (the recovered-audit landing unit). Every citation below was
   measured at tip `4d5507a80` by the landing unit itself, not inherited from the auditor.
@@ -644,7 +845,11 @@ REJECTED (`:358`, below).
   `rejected(...)` / `{denied: …}` returns — this is one throw site each, not a service-level closure.
 - **What is still missing for DE-06 to close:** the "object put/get" conjunct (a SUCCESSFUL grant
   still writes nothing) AND the five residual fence throws. **DE-06 stays `partial` and stays in the
-  cohort.**
+  cohort.** ★ **BOTH LANDED: the five residual fence throws by Unit A (2026-09-10) and the put/get
+  conjunct by the object-access unit (2026-09-10). DE-06's audit clause is whole and DE-06 has left
+  `E0-F010`'s cohort; it stays `partial` in the register for `E0-F012`'s `authentication` clause.
+  See "★ THE OBJECT-ACCESS UNIT" under `E0-F010`. This bullet is kept as written because Unit C's
+  own scope claim is only legible against it.**
 
 **(2) DE-21 — `authorizeUpgrade`, FIVE deny disjuncts across TWO of its SEVEN branches.**
 *(Counted as disjuncts, not branches, because that is the unit of correction here: `:395` contributes
@@ -698,6 +903,10 @@ OBSERVED being refused by that FK. So the branch is proven on one conjunct, on b
 services, and the other six are compiled but unprovoked here. Stated rather than implied.
 
 ### ★ RE-TRIAGE, 2026-09-09, by the denial-audit batch (the unit that HALF-delivered DE-06)
+
+★ **SUPERSEDED 2026-09-10: the class now stands at TWO closed (DE-19, DE-06) and FIFTEEN open.
+See the authoritative count in this finding's Status block. The paragraph below was correct on
+2026-09-09 and is kept because the corrections beneath it are only legible against it.**
 
 **The count first, because a skim must not conclude this class is closed. Of the SEVENTEEN,
 ONE is closed — DE-19 (2026-09-08) — and SIXTEEN remain open.** DE-06 was recorded here as the
@@ -862,9 +1071,32 @@ own failure class.**
   there is no change to audit. Vacuous until one exists.
 - **DE-20's rollback half** — `createDistributedExecutionDrain` has **zero production callers**
   (`E0-F014`), so there is no rollback transition. Selection is recordable; rollback is prose.
-- **DE-11** — the sensitive-artifact access and retention controls are themselves absent
+- **DE-11** — ~~the sensitive-artifact access and retention controls are themselves absent
   (`E8-F011`). Nothing decides, so there is nothing to record; `artifact-commit.ts:170-176`
-  self-labels as "a LOG LINE, not an audit record".
+  self-labels as "a LOG LINE, not an audit record".~~ ★ **BOTH HALVES NOW HAVE A LIVE WRITER, AND
+  DE-11 STILL DOES NOT CLOSE (2026-09-10).** The "nothing decides" premise was already measured
+  STALE for the RETENTION half by Decision 1's options paper, and W20-B wired it
+  (`recordRetentionDecision`, `artifact-retention-audit.ts`) — the self-labelling "LOG LINE" comment
+  is gone. The **ACCESS** half was then the last piece, and W20-B named its blocker exactly: it
+  *"rides DE-06's existing put/get obligation"*. **That obligation is discharged**: a successful
+  download grant now writes a `security.object_access.artifact_download_grant` row carrying
+  `details.kind` and `details.sensitivity`, read from the committed `job_artifacts` row, so the
+  record says WHICH KIND became reachable rather than only that a transfer happened. **DE-11 stays
+  `partial` on the SECOND, INDEPENDENT ground W20-B recorded, which this unit does not touch:** the
+  **coverage caveat** — nothing in production uploads `browser_cookie_state` or
+  `browser_storage_state` because BRW-003 is unbuilt, so on today's traffic both records can only
+  ever be about a `log`, a `workspace_patch` or a `screenshot`, and **never once about a
+  credential-bearing kind**. Both proving suites provoke a sensitive kind BY HAND and pin it as
+  test-provoked in the arm title precisely so it cannot be mistaken for production coverage.
+  ★ Two further things stay true and are not claimed: on the UPLOAD arm `kind`/`sensitivity` are
+  `null` because the artifact does not exist yet and the frozen grant request carries neither field
+  (they are first declared in the COMMIT manifest) — a true answer, not a missing one; and
+  `sensitivity` is not a discriminator at all in v1, measured at the frozen schema
+  (`artifactSensitivitySchema` is `z.literal("restricted")` and `RESTRICTED_ARTIFACT_KINDS ===
+  ARTIFACT_KINDS`), so `kind` is the only field that separates a credential-bearing artifact from a
+  log. **DE-11's non-audit gaps are entirely untouched** and remain `E8-F011`'s: purge on job
+  completion in particular still has no writer. A mechanism that has never been exercised on its
+  subject is not coverage, and a discharged ground is not a discharged clause.
 - **DE-17** — technically possible, practically blocked. `packages/adapter-manager` and
   `packages/worker-daemon` run **off the control plane** and hold no control-plane DB handle, so a
   durable row from a `CleanupAuthorityDeniedError` needs a **wire hop** — and

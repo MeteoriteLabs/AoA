@@ -17,13 +17,18 @@
 //
 // ★ THE CLAUSE IS CONJUNCTIVE AND ONLY ONE CONJUNCT IS HERE. DE-06 reads "object
 // put/get AND rejected-key attempts are audited". This module delivers the
-// REJECTED-KEY half. The other half — a SUCCESSFUL object put/get — is NOT
-// audited: a granted download presigns and returns from
-// `artifact-transfer-grant.ts` (the sole production `presignGet` call site)
-// writing no record at all, and a granted upload leaves only the operational
-// `recordArtifactGrantIntent` row. DE-06's audit clause is therefore HALF
-// delivered, DE-06 remains in `E0-F010`'s open cohort, and nothing here may be
-// read as closing it.
+// REJECTED-KEY half. ★ THE OTHER HALF LANDED ON 2026-09-10 AND IS NOT THIS
+// MODULE'S: `artifact-object-access-audit.ts` records a SUCCESSFUL upload or
+// download grant as an attributable `security.object_access.*` row. Both
+// conjuncts of DE-06's AUDIT clause therefore now hold and DE-06 has left
+// `E0-F010`'s cohort — but nothing HERE closes it, and this module must still
+// not be cited as the closure. DE-06 also stays `partial` in the threat register
+// for its separately-absent `authentication` clause (`E0-F012`).
+// *(Superseded text, kept so the correction is visible: "The other half — a
+// SUCCESSFUL object put/get — is NOT audited: a granted download presigns and
+// returns from `artifact-transfer-grant.ts` (the sole production `presignGet`
+// call site) writing no record at all, and a granted upload leaves only the
+// operational `recordArtifactGrantIntent` row.")*
 //
 // ★ AND ONE REFUSAL SHAPE IS OUT OF REACH OF THE MECHANISM BELOW. The intent
 // drain covers refusals that RETURN. `resolveWorkerFenceContext` instead THROWS

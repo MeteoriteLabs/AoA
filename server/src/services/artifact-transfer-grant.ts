@@ -42,6 +42,10 @@ import {
   createWorkerDenialSink,
   drainWorkerDenial,
 } from "./worker-denial-audit.js";
+import {
+  createObjectAccessSink,
+  recordObjectAccessGrant,
+} from "./artifact-object-access-audit.js";
 import type { StorageProvider } from "../storage/types.js";
 
 /** Map the guard's fence-error code onto the frozen protocol reason vocabulary. */
@@ -123,6 +127,13 @@ export function createArtifactTransferGrantService(input: {
       // other five wrote nothing — Decision 2's residue — and that residue is
       // gone; the stale sentence is corrected rather than left to mislead an audit.
       const fenceDenial = createWorkerDenialSink();
+
+      // ★ DE-06 — the SUCCESS half of the same clause ("object put/get AND
+      // rejected-key attempts are audited"). Filled by the two `*_granted`
+      // returns below and drained on the pool handle after this transaction
+      // closes. See `artifact-object-access-audit.ts` for why issuance is the
+      // only observation point the control plane has, and for the hot-path bound.
+      const access = createObjectAccessSink();
 
       const response = await runInTenant(input.appDb, auth.organizationId, async (repos) => {
         const ctx = await resolveWorkerFenceContext(repos, auth, {
@@ -259,6 +270,32 @@ export function createArtifactTransferGrantService(input: {
             expectedSha256: body.expectedSha256,
             maxBytes: body.maxBytes,
           });
+          // ★ DE-06 put/get — the PUT was AUTHORIZED. Captured here, as the last
+          // statement before the response is built, so nothing between the
+          // capture and the return can turn this into a refusal; a throw after
+          // it (the parse below, or a failed COMMIT) rejects `runInTenant` and
+          // the drain never runs. `objectKey` is the key that was SIGNED, which
+          // by this point has been proven to start with THIS org's prefix.
+          access.intent = {
+            operation: "upload",
+            companyId: ctx.companyId,
+            organizationId: auth.organizationId,
+            workerId: auth.workerId,
+            targetId: auth.targetId,
+            artifactId: body.artifactId,
+            objectKey: body.expectedObjectKey,
+            // DE-11's access half: null on an UPLOAD because the artifact does
+            // not exist yet and the frozen request carries neither field — they
+            // are first declared in the COMMIT manifest. A true answer, not a
+            // missing one. See `artifact-object-access-audit.ts`.
+            kind: null,
+            sensitivity: null,
+            jobId: body.jobId,
+            attempt: body.attempt,
+            leaseId: body.leaseId,
+            expiresAt,
+            maxBytes: body.maxBytes,
+          };
           return artifactTransferGrantOperationResponseV1Schema.parse({
             protocolVersion: 1,
             correlationId: request.correlationId,
@@ -326,6 +363,30 @@ export function createArtifactTransferGrantService(input: {
           objectKey: body.expectedObjectKey,
           redaction: "secret",
         });
+        // ★ DE-06 put/get — THE DISCLOSURE-RELEVANT EVENT. This is the tree's
+        // only production `presignGet` call site, so this row is the only record
+        // that will ever exist of a worker being handed read access to an
+        // object's bytes. `committed.objectKey === body.expectedObjectKey` was
+        // enforced above, so the recorded key is the committed artifact's own.
+        access.intent = {
+          operation: "download",
+          companyId: ctx.companyId,
+          organizationId: auth.organizationId,
+          workerId: auth.workerId,
+          targetId: auth.targetId,
+          artifactId: body.artifactId,
+          objectKey: body.expectedObjectKey,
+          // DE-11's access half. Free here: `committed` is the row this branch
+          // already loaded to prove the key is this tenant's, so the record can
+          // say WHICH KIND became reachable rather than only that something did.
+          kind: committed.kind ?? null,
+          sensitivity: committed.sensitivity ?? null,
+          jobId: body.jobId,
+          attempt: body.attempt,
+          leaseId: body.leaseId,
+          expiresAt,
+          maxBytes: body.maxBytes,
+        };
         return artifactTransferGrantOperationResponseV1Schema.parse({
           protocolVersion: 1,
           correlationId: request.correlationId,
@@ -371,6 +432,21 @@ export function createArtifactTransferGrantService(input: {
           details: pending.details,
         });
       }
+
+      // ★ DE-06 put/get — the durable, attributable record of the AUTHORIZED
+      // object operation, written on the POOL handle after the tenant
+      // transaction has closed (so it cannot borrow a second connection while
+      // the first is still held) and BEFORE the caller sees the grant.
+      // `recordObjectAccessGrant` never throws, so a failed audit cannot turn a
+      // legitimate grant into a 500 and cannot be used to fail grants.
+      //
+      // ★ THERE IS DELIBERATELY NO `response.outcome` CHECK HERE. The intent is
+      // set at the two `*_granted` returns and nowhere else, so its presence IS
+      // the gate. A redundant second guard would make the "a refused grant
+      // writes no access row" arm pass even with the capture moved above a
+      // refusal branch — i.e. pass for the wrong reason.
+      const granted = access.intent;
+      if (granted) await recordObjectAccessGrant(input.appDb, granted);
       return response;
     },
   };

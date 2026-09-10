@@ -80,6 +80,36 @@ export const SECURITY_DENIAL_ACTION_PREFIX = "security.denied.";
  */
 export const SECURITY_RETENTION_ACTION_PREFIX = "security.retention.";
 
+/**
+ * Reserved `action` prefix for OBJECT-ACCESS AUTHORIZATIONS — DE-06's `audit`
+ * clause, "object put/get and rejected-key attempts are audited", PUT/GET HALF.
+ *
+ * ★ WHY THIS IS A THIRD NAMESPACE AND NOT `security.denied.`. A granted transfer
+ * is the OPPOSITE of a refusal. The denial reservation exists so that "count the
+ * `security.denied.` rows" answers "count the refusals" and nothing else; filing
+ * successful grants there would break exactly that property, which is the same
+ * argument `SECURITY_RETENTION_ACTION_PREFIX` above makes for its own prefix.
+ *
+ * ★ WHAT A ROW IN THIS NAMESPACE MEANS, AND WHAT IT DOES NOT. It means the
+ * control plane HANDED a named worker a presigned URL capable of a PUT or a GET
+ * against a named object key, in a named tenant. It does NOT mean bytes moved:
+ * the grant is redeemed DIRECTLY against object storage and the control plane
+ * never observes the redemption (that is the whole point of the presigned
+ * design — see `artifact-transfer-grant.ts`). So this record OVER-reports
+ * access: an issued-but-never-redeemed GET still writes a row. Over-reporting is
+ * the safe direction for a disclosure audit — a missed disclosure is
+ * unrecoverable, a spurious one is merely noise — but a reader must not read a
+ * row as proof of transfer. See `artifact-object-access-audit.ts`.
+ *
+ * ★ THE PARTIAL CHECK DOES NOT COVER THIS PREFIX, DELIBERATELY, for the same
+ * reason it does not cover `security.retention.`: an object-access row is
+ * written under a LOCKED LEASE, so `ctx.companyId` is always an FK-valid
+ * company and the row satisfies `activity_log_company_or_denial_check`'s NOT
+ * NULL arm (migration `0274`). A company-less object access should be refused by
+ * the database, not laundered into the tenantless sink.
+ */
+export const SECURITY_OBJECT_ACCESS_ACTION_PREFIX = "security.object_access.";
+
 export class ReservedActivityNamespaceError extends Error {
   constructor(message?: string) {
     super(
@@ -107,6 +137,11 @@ export function assertUnreservedActivityNamespace(input: {
   if (input.action.startsWith(SECURITY_RETENTION_ACTION_PREFIX)) {
     throw new ReservedActivityNamespaceError(
       "Retention-decision audit events are reserved for the retention recorder",
+    );
+  }
+  if (input.action.startsWith(SECURITY_OBJECT_ACCESS_ACTION_PREFIX)) {
+    throw new ReservedActivityNamespaceError(
+      "Object-access audit events are reserved for the object-access recorder",
     );
   }
 }
