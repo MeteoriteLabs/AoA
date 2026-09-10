@@ -105,6 +105,41 @@ export const serviceInstances = pgTable(
     // reconciler creating a row is not the worker being seen — and would erase the very
     // distinction above.
     lastObservedAt: timestamp("last_observed_at", { withTimezone: true }),
+    // ★★★ SVC-005a — WHO drove this row terminal, and it is a FENCE INPUT rather than
+    // telemetry.
+    //
+    // E9-F009 recorded the gap: `service_instances` carried `status` and `updated_at` and
+    // nothing that said WHO moved the row, so a worker that reported itself gone and a
+    // control plane that GAVE UP on a worker it could not reach were indistinguishable in
+    // durable state. E9-F009 §2 called that the "durable half" and left it open. This column
+    // is that half, and SVC-005a needs it because the distinction is load-bearing for the
+    // generation rollout fence, not merely informative:
+    //
+    //   'worker_stopped'  the worker's own attributed, fenced observation that the PROCESS WAS
+    //                   SEEN GONE. The ONLY witness.
+    //   'worker_unconfirmed'  the worker's own attributed, fenced event, but one that does NOT
+    //                   assert an observed stop -- `service_instance_lost`, which the daemon
+    //                   emits when `inspect` could not describe the sandbox OR when "a full
+    //                   stop ladder ended with the process still observed `running`"
+    //                   (packages/worker-daemon/src/supervisor/service-lifecycle.ts). Fenced
+    //                   and authentic, and still NOT evidence that anything stopped. Splitting
+    //                   this off the witness was external review of PR #415's P1.
+    //   'liveness_deadline'  SVC-003b's clock condemned it because nothing had been heard.
+    //                   The worker may still be running (E9-F007). AN ASSUMPTION.
+    //   'control_plane_backstop'  SVC-007a's cancelled-attempt projection moved it because
+    //                   the ATTEMPT was terminal and the instance was stranded. Also an
+    //                   assumption about the process, though a better-founded one.
+    //
+    // ★ WRITTEN ONLY WHEN THE STATUS BEING WRITTEN IS TERMINAL, at the single chokepoint
+    // `writeServiceInstanceStatus` — the ONE writer of `status`, which all four authors
+    // already funnel through. A non-terminal move leaves it NULL, so the column never claims
+    // an authorship for a row that has not ended.
+    //
+    // NULLABLE, and no default. NULL means "this row has not been terminalized" for a live
+    // row, and for a terminal row it means "terminalized before this column existed" — a
+    // state the fence must read as UNKNOWN and therefore as NOT-A-WITNESS, which is the
+    // fail-closed direction. A default would forge an author.
+    terminalizedBy: text("terminalized_by"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -119,6 +154,28 @@ export const serviceInstances = pgTable(
     statusValid: check(
       "service_instances_status_check",
       sql`status IN ('pending', 'leased', 'starting', 'healthy', 'unhealthy', 'stopping', 'stopped', 'failed', 'lost')`,
+    ),
+    // SVC-005a: all four authors, spelled once in the database. Hand-written here for the
+    // same reason `service_instances_status_check` is (packages/db does not depend on
+    // worker-protocol), and reconciled against the server-side constant
+    // `SERVICE_INSTANCE_TERMINAL_AUTHORS` by `T-P5c` in
+    // server/src/__tests__/service-generation-rollout.test.ts, which reads THIS literal as
+    // source text and asserts set EQUALITY, so an author added on one side and not the other
+    // is caught rather than silently storable. `T-P5` asserts the same equality against the
+    // applied DDL of migration 0279, and `T-P5d` against each other.
+    //
+    // ★ WHAT T-P5c DOES NOT PROVE, because this comment previously claimed an enforcement
+    // that did not exist and external review of PR #415 caught it: reading this literal says
+    // nothing about the constraint any deployed database is actually running — 0279 is
+    // immutable once applied and T-P5 is what covers it. What this copy governs is the DDL
+    // `db:generate` would emit NEXT for this table, which is why a divergence here is worth
+    // catching even though today's deployment would not notice it.
+    //
+    // NULL is admitted by a CHECK on a nullable column and is the pre-column / not-yet-
+    // terminal state; the fence reads it as NOT-A-WITNESS.
+    terminalizedByValid: check(
+      "service_instances_terminalized_by_check",
+      sql`terminalized_by IS NULL OR terminalized_by IN ('worker_stopped', 'worker_unconfirmed', 'liveness_deadline', 'control_plane_backstop')`,
     ),
     // SVC-001: this table previously had NO unique constraint at all, so nothing could
     // bind a composite tenant FK to an instance. Every child table SVC-002/003 needs was

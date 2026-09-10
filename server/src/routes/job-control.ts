@@ -18,6 +18,7 @@ import {
   readService,
   setServiceDesiredState,
 } from "../services/service-management.js";
+import { rollServiceGeneration } from "../services/service-generation-rollout.js";
 import {
   SERVICE_CREATE_ACTION,
   SERVICE_DESIRED_STATE_ACTION,
@@ -46,6 +47,23 @@ const createServiceBodySchema = z
     desiredState: z
       .enum(CREATABLE_DESIRED_STATES as unknown as [string, ...string[]])
       .optional(),
+  })
+  .strict();
+
+/**
+ * SVC-005a generation-roll body. `definition` is deliberately `unknown` here and validated by
+ * `normalizeServiceDefinition` INSIDE the handler AFTER the authority gate — the same ordering
+ * constraint the create route states, and for the same reason: an unauthorized caller must not
+ * be able to tell a malformed definition from a valid one.
+ *
+ * The `reason` is carried into the drain's `job_control_commands` row, so the operator's words
+ * reach a durable sink rather than only a log line — the gap external review of PR #412 found
+ * on the resume path.
+ */
+const rollServiceGenerationBodySchema = z
+  .object({
+    definition: z.unknown(),
+    reason: z.string().min(1).max(1000),
   })
   .strict();
 
@@ -535,6 +553,123 @@ export function jobControlRoutes(opts: { db: Db; appDb: Db; operatorDb: Db }) {
           "service desired state set",
         );
         res.status(200).json({ ...result.verdict, stop: result.stop });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  /**
+   * SVC-005a — ★★★ THE GENERATION ROLLOUT. The route that gives `services.generation` its
+   * first writer.
+   *
+   * `POST .../services/:serviceId/generation` and NOT `PATCH .../services/:serviceId`,
+   * deliberately: a generation roll is not an edit of a service, it is the MINTING OF A NEW
+   * IMMUTABLE DEFINITION plus a rollout, and `service_generations` is a table `aoa_app` holds
+   * only SELECT and INSERT on. A PATCH-shaped route would invite exactly the mutate-in-place
+   * reading the immutability mechanism exists to refuse.
+   *
+   * ★ 202, NOT 200, AND THE STATUS CODE IS A CLAIM. The response reports that generation N+1
+   * has been MINTED and that a graceful stop has been REQUESTED of the old instance. It does
+   * NOT report that the old generation stopped, and it cannot: the drain is a
+   * `job_control_commands` row an unreachable worker never collects. Whether generation N+1 is
+   * ever PLACED is decided later by the reconciler under the cross-generation fence. Answering
+   * 200 here would be the "confident wrong verdict that acts" this epic keeps being taught to
+   * refuse; see `service-generation-rollout.ts`'s header, §2-§5.
+   *
+   * ★ NO `validate(...)` MIDDLEWARE, for the reason the two routes above state: it runs BEFORE
+   * the handler and would answer an unauthorized caller with a 400 describing their body.
+   *
+   * ★★★ THIS ROUTE WRITES NO `activity_log` ROW, AND THAT IS A REAL GAP RATHER THAN A CHOICE
+   * THIS ROUTE MADE. Raised by external review of PR #415 (P2), and it is right that
+   * `AGENTS.md` §3 lists "Activity logging for all mutating actions" as a control-plane
+   * invariant. It is NOT closed here, for two measured reasons:
+   *
+   *   (1) IT IS PRE-EXISTING AND ALREADY DECLARED. Neither sibling control on this router —
+   *       SVC-007a's service create nor its desired-state stop/resume — writes one either
+   *       (`grep activity_log` over this file and `service-management.ts` returns nothing), and
+   *       SVC-007a's result already declares it open BY NAME: "no `activity_log` row is written
+   *       for a control action (DE-01)". Closing it for one of three sibling routes and leaving
+   *       the other two would make the gap LESS visible, not smaller.
+   *   (2) THE LAYER HAS NO SUCH WRITER AT ALL. E9-F009 §3 measured that NO repository method
+   *       under `packages/db/src/repositories/tenant/` writes `activity_log` — not the JOB-005
+   *       ingest, not `reapExpiredLeases`, not SVC-002's reconciler — and declined to introduce
+   *       one from a liveness sweeper because "a convention nothing else in the layer follows is
+   *       the kind of thing that is correct once and wrong thereafter". The same argument holds
+   *       here and that ruling is not overturned by this unit.
+   *
+   * ★ SO NOTHING IN THIS UNIT'S RECORDS CLAIMS THE ROLL IS AUDITED. The DE-12 register row is
+   * left at `deliveryStatus: "partial"` and its append says in terms that a `logger.info` line
+   * is not a durable record and that "generation changes are audited" is NOT delivered. The
+   * structured line below is operator telemetry, not an audit trail. Owner: DE-01.
+   */
+  router.post(
+    "/organizations/:organizationId/companies/:companyId/services/:serviceId/generation",
+    async (req, res, next) => {
+      try {
+        const organizationId = uuid.parse(req.params.organizationId);
+        const companyId = uuid.parse(req.params.companyId);
+        const serviceId = uuid.parse(req.params.serviceId);
+        await assertOrgAdmin(req, organizationId);
+        const body = rollServiceGenerationBodySchema.parse(req.body) as {
+          definition: unknown;
+          reason: string;
+        };
+        // The SAME normalizer the create route uses, so a definition that could not be created
+        // cannot be rolled to either — including the control-plane-owned fields
+        // (`serviceId`, `serviceInstanceId`, `generation`, `checkpointArtifactId`) and the
+        // ingress deny-list. A second validator here would be a second idea of what a service
+        // definition is.
+        const definition = normalizeServiceDefinition(body.definition);
+        if (!definition.ok) {
+          res.status(400).json({ error: "Service definition rejected", reason: definition.reason });
+          return;
+        }
+        const result = await rollServiceGeneration(
+          { appDb: opts.appDb },
+          {
+            organizationId,
+            companyId,
+            serviceId,
+            definition: definition.value,
+            reason: body.reason,
+            createdBy: operatorUserId(req),
+          },
+        );
+        if (result.verdict.outcome === "absent") {
+          // Uniform 404, no audit line — absent is indistinguishable from cross-tenant.
+          throw notFound("Service not found");
+        }
+        if (result.verdict.outcome === "desired_state_forbids") {
+          throw new HttpError(
+            409,
+            `Service in desired state ${result.verdict.desiredState} cannot be rolled`,
+          );
+        }
+        if (result.verdict.outcome === "generation_exists") {
+          throw new HttpError(409, "Service generation already exists");
+        }
+        if (result.verdict.outcome === "conflict") {
+          throw new HttpError(409, "Service generation changed concurrently");
+        }
+        logger.info(
+          {
+            action: "service.generation_roll",
+            organizationId,
+            companyId,
+            serviceId,
+            from: result.verdict.from,
+            to: result.verdict.to,
+            desiredState: result.verdict.desiredState,
+            drainStatus: result.drain?.status ?? null,
+            drainInstance: result.drain?.status === "requested" ? result.drain.instance : null,
+            reason: body.reason,
+            operatorUserId: operatorUserId(req),
+            reasonCode: "service_generation_rolled",
+          },
+          "service generation rolled",
+        );
+        res.status(202).json({ ...result.verdict, drain: result.drain });
       } catch (error) {
         next(error);
       }

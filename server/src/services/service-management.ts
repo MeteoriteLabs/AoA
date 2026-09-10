@@ -125,8 +125,15 @@ export interface ServiceControlAuditContext {
  *
  * Resolved at module load and asserted: a `null` here would be a backstop that exists and
  * projects nothing, which is this programme's signature defect.
+ *
+ * ★ EXPORTED BY SVC-005a, and exported rather than re-derived on purpose. The generation
+ * rollout's drain (`service-generation-rollout.ts`) issues the SAME graceful stop this
+ * operator stop does, so it needs the SAME projection. A second `decideServiceProjection`
+ * call in the other file would be a second place for the mapping to drift, and drift between
+ * two ideas of what a cancelled attempt means to an instance is precisely what the paragraph
+ * above says this constant exists to prevent.
  */
-const CANCELLED_ATTEMPT_PROJECTION = (() => {
+export const CANCELLED_ATTEMPT_PROJECTION = (() => {
   const projection = decideServiceProjection({
     eventType: "terminal",
     payload: { status: "cancelled" },
