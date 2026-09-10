@@ -304,11 +304,24 @@ relation whose grants, RLS and policy are in place, and adding a column changes 
 generated filename was renamed (and its `_journal.json` tag with it), matching 0275/0277's
 precedent.
 
-**5.6 — no new index.** The sweep's population is the LIVE instances per organization, and
-`service_instances_live_service_uq` is already a partial unique index on
-`(organization_id, service_id)` with exactly that predicate. A second index over `last_observed_at`
-would serve nothing: the deadline predicate is evaluated on rows the partial index has already
-narrowed to the whole population.
+**5.6 — no new index, AND THE COST THAT CHOICE CARRIES IS STATED RATHER THAN LEFT TO BE FOUND.** The
+sweep's population is the LIVE instances per organization, and `service_instances_live_service_uq`
+is already a partial unique index on `(organization_id, service_id)` with exactly that predicate, so
+the FILTER is served. ★ The SORT is not: §4b(i)'s fix orders by
+`COALESCE(last_observed_at, created_at)`, which is an expression no existing index covers, so
+PostgreSQL narrows through the partial index and then sorts that organization's live set on every
+tick before applying `LIMIT`.
+
+Accepted deliberately, with the reason and the exit both named. **Today the cost is zero**:
+`repos.services.insert` has zero production callers, so the live set is empty on every real
+deployment, and the population is in any case bounded by ONE live instance per service (that is what
+the partial unique index enforces) rather than by instance history. The fix, if it is ever needed,
+is one `db:generate` expression index on
+`(organization_id, COALESCE(last_observed_at, created_at))` with the same partial predicate — no
+hand-authored DDL. **This should be re-measured with `EXPLAIN` the moment SVC-007 makes services
+creatable**, which is the same discipline PR #406's review applied when it caught a generic plan
+dropping this table's partial index; adding an index now against a population of zero would be
+optimising a plan nobody has observed.
 
 **5.7 — `FOR UPDATE SKIP LOCKED`, and skipping is CORRECT rather than merely convenient.** A row
 another transaction holds locked is one an event ingest is projecting onto right now, which is

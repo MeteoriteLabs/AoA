@@ -14,10 +14,15 @@
 -- observed, which is aged against `created_at` under a separate and longer admission window,
 -- never against the short liveness window. See `classifyServiceInstanceLiveness`.
 --
--- NO NEW INDEX. The sweep reads live instances per organization, and
--- `service_instances_live_service_uq` is already a partial unique index on
--- (organization_id, service_id) WHERE status NOT IN ('stopped','failed','lost') -- the
--- organization-prefixed scan of exactly that set. A second index over `last_observed_at`
--- would be a column nothing needs: the deadline predicate is evaluated on rows the partial
--- index has already narrowed to the live ones, which is the whole population.
+-- NO NEW INDEX, and the cost of that choice is stated rather than left to be found. The sweep
+-- reads live instances per organization, and `service_instances_live_service_uq` is already a
+-- partial unique index on (organization_id, service_id) WHERE status NOT IN
+-- ('stopped','failed','lost') -- the organization-prefixed scan of exactly that set, so the
+-- FILTER is served. The SORT is not: the sweep orders by
+-- COALESCE(last_observed_at, created_at), an expression no index covers, so the live set is
+-- sorted per tick before LIMIT. Accepted because that set is empty on every real deployment
+-- today (nothing creates a service -- SVC-007) and is bounded by ONE live instance per
+-- service in any case. If it ever matters the fix is one db:generate expression index on
+-- (organization_id, COALESCE(last_observed_at, created_at)) with the same partial predicate;
+-- re-measure with EXPLAIN when SVC-007 makes services creatable. See SVC-003b-result.md 5.6.
 ALTER TABLE "service_instances" ADD COLUMN IF NOT EXISTS "last_observed_at" timestamp with time zone;
