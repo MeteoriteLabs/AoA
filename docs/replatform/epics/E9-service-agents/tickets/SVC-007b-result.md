@@ -173,6 +173,12 @@ it ever reds under an audit mutant, the mutant broke something other than what i
 existing pure (`service-management.test.ts`) + 18 integration
 (`service-management.integration.test.ts`, of which 5 are new: T14–T18). **All twelve killed.**
 
+★ **THE TABLE BELOW IS ONE SNAPSHOT, RE-RUN WHOLE AT FINAL HEAD**, not a matrix assembled from
+rows measured at different commits. The campaign ran once during the build and was run again in
+full after the last source edit; both runs produced the identical twelve rows — same red counts,
+same anchor forms, positive control green throughout — and `git status --porcelain` was clean
+after each. A row here is not a remembered figure from an earlier revision.
+
 | # | Mutant | Anchor | Result |
 |---|---|---|---|
 | M1 | Delete the create audit call entirely — **the BASE-TREE state** | CRLF | **4 red** — T14, T15, T17, T18 |
