@@ -146,9 +146,13 @@ substitutes for the other:
 
 Both collapses are defects with names, and both are mutation-pinned:
 
-* **Collapse onto creation** (`COALESCE(last_observed_at, created_at)`, or `?? createdAgeMs`)
-  applies the SHORT window to an instance whose worker has simply not polled yet, and kills
-  services that are merely starting. Mutants **L4** (classifier) and **L15** (SQL).
+* **Collapse onto creation** — `COALESCE(last_observed_at, created_at)` **in the value the verdict
+  reads**, or `?? createdAgeMs` in the classifier — applies the SHORT window to an instance whose
+  worker has simply not polled yet, and kills services that are merely starting. Mutants **L4**
+  (classifier) and **L15** (the sweep's SELECT).
+  ★ The same `COALESCE` appears legitimately in the sweep's **ORDER BY** (§6), and the distinction
+  is the whole point: there it decides only WHICH ROW IS LOOKED AT FIRST, and the two ages are
+  still projected and judged separately. L15 is what keeps the two uses from being confused.
 * **Collapse onto infinity** (a missing observation treated as maximally stale) terminalizes a
   freshly created instance on the first tick, before any worker could reach it. Mutant **L5**.
 * **The observed arm consulting `created_at` too** terminalizes every long-running healthy service,
@@ -196,3 +200,39 @@ mocked clock that does not resemble production.
   decided, and must survive any later ruling: the liveness window is a MULTIPLE of the tick, never a
   peer of it (mutant **L8**), and the admission window is strictly longer than the liveness window
   (mutant **L9**).
+
+---
+
+## 6. ★★★ The batch is BOUNDED, so its ORDER BY is a correctness property, not a preference
+
+This section exists because the first version of this design got it wrong and external review of
+PR #413 caught it. It is written as the rule rather than as an incident, because the rule is what a
+later bounded sweeper needs.
+
+**A bounded batch over a population that some members never leave will starve that population's
+tail.** The sweep reads `LIMIT n` from the LIVE instances. A HEALTHY instance never leaves the live
+set. So under `ORDER BY created_at ASC`, the `n` oldest-created healthy rows fill the batch on every
+tick, forever, and a silent instance created after them is **never inspected** — which is a stuck
+service the deadline itself cannot see, i.e. the failure this ticket exists to remove, reintroduced
+by the fix for it.
+
+This is not a new lesson in this repo. `listReconcilableServices` shipped the same shape and review
+caught it on PR #406; its correction note lives a few hundred lines above the new query, in the same
+file. *A lesson recorded in a neighbouring comment is not a lesson applied.*
+
+**Two fixes were available and only one of them is free.** SVC-002 took the pair "rotating cursor +
+make the window BE the work", and recorded that the second half is the load-bearing one. Here the
+second half is not available cheaply: narrowing the window to condemnable rows means putting the two
+deadline windows into SQL, which is a **second copy of the policy** — the thing this design keeps in
+one pure function on purpose.
+
+**So the ordering carries it instead:** `ORDER BY COALESCE(last_observed_at, created_at) ASC`. A
+healthy instance is refreshed every health tick and therefore sinks to the back; an instance that
+has gone quiet floats to the front within one tick and stays there until it is terminalized. The
+window is always the most-likely-condemned rows, a condemned row leaves the live set, so every batch
+is real work — the same property SVC-002's query filter buys, obtained from the sort instead.
+
+★ **AND THE `COALESCE` IS AN ORDERING, NOT A VERDICT.** Mutant **L15** collapses the two instants in
+the SELECT — the value the decider judges — and kills starting services; that mutant is what keeps
+this legitimate use and that illegitimate one from being confused. `L-T12` is the starvation
+regression case and **L18** restores the defect.
