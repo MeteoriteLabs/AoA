@@ -40,7 +40,10 @@ right — `SVC-002-result.md` §7 (*"Nothing creates a service … Nothing write
 `README.md` (*"every pass stalls at `no_generation` on a real deployment"*). Those sentences are
 no longer true. SVC-002's reconciler and SVC-003a's projection were **shipped and structurally
 unreachable**; a service created through this path is converged by the reconciler — including
-through the composition root's own sweeper, not only through the per-service pass — into exactly
+through `createServiceReconciler(...).tick()` — the SAME sweeper the composition root drives,
+with its admitted-organization enumerator stubbed and its backoff timer not exercised, so what
+that case proves is that a created service ENTERS `listReconcilableServices`'s window and
+converges through the sweep, not that the process wiring around the sweeper runs — into exactly
 one instance and one `service` job built from the STORED definition.
 
 **★ STILL NOT TRUE, AND E9'S EXIT GATE IS NOT MET.** The gate names ten things. This unit moves

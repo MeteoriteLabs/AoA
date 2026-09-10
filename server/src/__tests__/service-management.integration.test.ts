@@ -511,6 +511,14 @@ suite("SVC-007 — creating a service, and the loop it unblocks", () => {
   // comes from `listReconcilableServices`. A created service that never entered that window
   // would converge in T2 and never converge in production.
   //
+  // ★ WHAT IS AND IS NOT THE PRODUCTION COMPOSITION, said so the case is not over-read: this
+  // builds the SAME factory the composition root builds, and drives the SAME `tick()`, but the
+  // admitted-organization enumerator is a stub returning `[ORG]` rather than
+  // `listAdmittedOrganizationIds` off the `aoa_app` pool, and the backoff timer that
+  // `server/src/index.ts` wraps around it is not exercised. What this proves is that a service
+  // this unit created enters `listReconcilableServices`'s window and converges through the
+  // sweep — not that the process wiring around the sweeper runs.
+  //
   // MUTANT: write `desired_state` as anything but `running` at create — the sweep window's
   // predicate is `desired_state = 'running'`, so the service would be invisible to the tick.
   it("★ T11 — the composition root's sweeper converges a service the create path made", async () => {
