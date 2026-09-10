@@ -397,23 +397,45 @@ if that path ever serves interactive traffic. **Volume:** one row per artifact t
 artifact count, not by request rate.
 
 **Reds observed, each against named positive controls.**
-`server/src/__tests__/de-06-object-access-audit.integration.test.ts` carries **eleven** arms at this
-PR's HEAD, every one provoked through the real leasing / commit / transfer-grant services against
-real embedded PostgreSQL under the real `aoa_app` non-owner role. Against the unchanged tree it was
-**6 RED / 4 PASS** at ten arms; the eleventh (DE-11's kind arm) arrived with the
-`kind`/`sensitivity` fields and was observed RED against the code without them, which is the
-narrower claim. 11/11 green after. The four greens in the RED run are the **named positive
-controls**: anti-vacuity, the refused-grant mutation guard, cross-tenant non-disclosure, and the
-namespace reservation. **Five mutants, each killed, each with controls green:** delete the drain
-(7 of 11 red); delete ONLY the download capture (**exactly the 4 GET-dependent arms red, the PUT arm
-GREEN** — which is what makes the conjunction asserted per conjunct rather than in aggregate);
-collapse the action mapping to always report upload (exactly the 2 conjunct-distinguishing arms
-red); **hoist the upload capture above the foreign-prefix refusal branch** (exactly ONE arm red —
-the mutation guard — with nine controls green, which is the property the deliberate ABSENCE of a
-second `response.outcome` check at the drain exists to preserve; a redundant guard would have let
-that mutation pass); and stop reading `kind`/`sensitivity` off the committed row (exactly the 2
-kind-asserting arms red, with the PUT arm that asserts `kind` is NULL still green, proving the
-upload null is a real answer and not an unwired field).
+`server/src/__tests__/de-06-object-access-audit.integration.test.ts` carries **TWELVE** arms at this
+PR's HEAD — **re-counted after the last edit**, because the register row for this unit was written
+in the same commit that changed the thing it counts — every one provoked through the real leasing /
+commit / transfer-grant services against real embedded PostgreSQL under the real `aoa_app` non-owner
+role. Against the unchanged tree it was **6 RED / 4 PASS** *at ten arms*, which is what the file held
+at that moment; the eleventh (DE-11's kind arm) arrived with the `kind`/`sensitivity` fields and the
+twelfth with the Codex fix below, and **each was observed RED against the code it was added for**
+rather than against base — which is the narrower claim and is stated as such. 12/12 green after. The
+four greens in the RED run are the **named positive controls**: anti-vacuity, the refused-grant
+mutation guard, cross-tenant non-disclosure, and the namespace reservation. **SIX mutants, each
+killed, each with controls green:** delete the drain (7 of 11 red at the time); delete ONLY the
+download capture (**exactly the 4 GET-dependent arms red, the PUT arm GREEN** — which is what makes
+the conjunction asserted per conjunct rather than in aggregate); collapse the action mapping to
+always report upload (exactly the 2 conjunct-distinguishing arms red); **hoist the upload capture
+above the foreign-prefix refusal branch** (exactly ONE arm red — the mutation guard — with nine
+controls green, which is the property the deliberate ABSENCE of a second `response.outcome` check at
+the drain exists to preserve; a redundant guard would have let that mutation pass); stop reading
+`kind`/`sensitivity` off the committed row (exactly the 2 kind-asserting arms red, with the PUT arm
+that asserts `kind` is NULL still green, proving the upload null is a real answer and not an unwired
+field); and **restore the raw `objectKey` to the failure log** (exactly ONE arm red — the redaction
+arm — with eleven controls green).
+
+★ **POST-REVIEW: ONE CODEX P2, REAL, AND FIXED WITH ITS OWN OBSERVED-RED ARM.** The recorder's
+`catch` branch re-listed the intent's fields and wrote `objectKey` **verbatim** to the server log,
+while the persisted row's copy of the same value goes through `sanitizeRecord`. The object key's
+**suffix is caller-controlled** — the frozen grant schema bounds it only by length and by this org's
+attempt prefix — so a worker may legally name a file `whsec_<24 chars>.bin`, and `sanitizeRecord`
+really does redact exactly that shape (**MEASURED**: three secret-shaped suffixes come back
+`***REDACTED***`, an ordinary `out.bin` comes back intact). A transient FK or connection failure
+would therefore have written to the log the one value the durable row deliberately refuses to keep —
+the audit's own redaction pass defeated by its own error handler. **This module was the outlier**:
+the sibling `security-denial-audit.ts` logs only scalars and never its `details`, so its
+`requestedObjectKey` was never exposed. **Fixed structurally, not with a second `sanitizeRecord`
+call:** the `catch` now logs the already-sanitized `details`, so there is exactly ONE sanitized
+`objectKey` in the module and the two sinks cannot drift. The new arm calls the recorder directly
+with a secret-shaped key and a company id that violates the FK — a real constraint, not a stub —
+spies the logger, and asserts the raw key is absent from the serialized payload while
+`***REDACTED***` is present, with two anti-vacuity assertions that the payload is genuinely about
+this write. Observed RED against the unfixed code.
 
 ★ **TWO EXISTING ARMS ASSERTED THE VERY ABSENCE THIS CLOSES, and each was observed RED before being
 amended.** In `de-06-artifact-denial-audit.integration.test.ts`: the granted-upload positive control
@@ -426,14 +448,17 @@ the object-access namespace is genuinely represented so the widening is not dead
 file's `denialRowsFor` helper was also narrowed to the denial prefix: it was **action-blind**
 (`WHERE entity_id = $1` and nothing else) while all of its call sites read it as "the denial rows"
 — harmless only while the denial recorder was the sole artifact-keyed writer. Its other 20 arms
-stayed green throughout as the regression control; the full denial-audit family is **140/140 green
+stayed green throughout as the regression control; the full denial-audit family is **141/141 green
 across twelve suites**, re-run and RE-COUNTED after this unit's last edit: `de-06-object-access-audit`,
 `de-06-artifact-denial-audit`, `de-03-worker-replay-denial-audit`, `de-11-retention-audit`,
 `de-19-memory-denial-audit`, `de-21-live-events-upgrade-denial-audit`, `artifact-transfer-commit`,
 `activity-reserved-namespace`, `cli-008-unit-b-staging-channel`, `e0-f013-denial-disclosure-path`,
-`e0-f013-unattributable-denial-sink`, `e0-f013-denial-index-plan`. *(An earlier draft of this
-paragraph said "123/123 across ten suites" — a true measurement of a narrower set, taken before the
-last two suites were added to the sweep. Re-counted rather than carried forward.)*
+`e0-f013-unattributable-denial-sink`, `e0-f013-denial-index-plan`. *(This figure has been re-counted
+TWICE rather than carried forward, and both earlier values were true measurements of what existed
+when they were taken: "123/123 across ten suites" before the last two suites joined the sweep, then
+"140/140 across twelve" before the Codex-fix arm was added. A count edited in the same commit that
+changes the thing it counts is this programme's own blocker class, so it is re-run after the last
+edit every time.)*
 
 **Enrolled** as `E0-de06-object-access-audit` in `scripts/gate-clause-wiring.json`, whose own
 `$comment` — which records the 2026-09-09 enrolment and same-day removal — is updated in the same

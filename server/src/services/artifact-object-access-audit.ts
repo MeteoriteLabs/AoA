@@ -289,6 +289,34 @@ export async function recordObjectAccessGrant(
       .returning({ id: activityLog.id });
     return row?.id ?? null;
   } catch (err) {
+    // ★ THE FAILURE PATH LOGS THE ALREADY-SANITIZED `details`, NOT THE RAW
+    // INTENT — and that is structural, not stylistic. (Codex P2 on PR #411,
+    // verified at source and fixed rather than noted.)
+    //
+    // THE DEFECT, NAMED. The first draft re-listed the intent's fields here,
+    // including `objectKey` VERBATIM, while the persisted row's copy of the same
+    // value goes through `sanitizeRecord`. The object key's suffix is
+    // CALLER-CONTROLLED — the frozen grant schema bounds it only by length and
+    // by this org's attempt prefix — so a worker may legally name a file
+    // `whsec_<24 chars>.bin` or `sk-ant-…`, and `sanitizeRecord` really does
+    // redact exactly those (MEASURED: three secret-shaped suffixes come back
+    // `***REDACTED***`, an ordinary `out.bin` comes back intact). A transient
+    // FK or connection failure would then have written to the server log the one
+    // value the durable row deliberately refuses to keep — i.e. the audit's own
+    // redaction pass would have been defeated by its own error handler.
+    //
+    // WHY THIS SHAPE AND NOT A SECOND `sanitizeRecord` CALL: two sanitized
+    // copies can drift, and the next field added to one would not reach the
+    // other. There is exactly ONE sanitized `objectKey` in this module and both
+    // sinks read it, so the two cannot disagree. `details` already carries every
+    // diagnostic the old payload had (`workerId`, `organizationId`, `targetId`,
+    // `jobId`, `attempt`, `leaseId`, `operation`), so nothing is lost.
+    //
+    // `err` is passed OUTSIDE `details` deliberately: pino serializes an Error
+    // specially, and `sanitizeRecord` would leave a non-plain object untouched
+    // anyway — routing it through would gain nothing and lose the serializer.
+    // The sibling `security-denial-audit.ts` reaches the same place by a
+    // different route: it logs only scalars and never its `details` at all.
     logger.error(
       {
         service: "artifact-object-access-audit",
@@ -296,11 +324,8 @@ export async function recordObjectAccessGrant(
         crossing: "DE-06",
         action,
         companyId: intent.companyId,
-        organizationId: intent.organizationId,
-        workerId: intent.workerId,
         artifactId: intent.artifactId,
-        objectKey: intent.objectKey,
-        operation: intent.operation,
+        details,
         err,
       },
       "failed to record an authorized object operation — the grant still stands, but it is now unattributable",

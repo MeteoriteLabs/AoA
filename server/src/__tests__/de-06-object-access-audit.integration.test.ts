@@ -65,7 +65,7 @@
  * a Windows dev box set `AOA_RUN_WIN_INTEGRATION=1` to run it for real. Harness
  * modeled on de-06-artifact-denial-audit.integration.test.ts.
  */
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -97,6 +97,8 @@ import {
   ReservedActivityNamespaceError,
   assertUnreservedActivityNamespace,
 } from "../services/activity-namespace.js";
+import { recordObjectAccessGrant } from "../services/artifact-object-access-audit.js";
+import { logger } from "../middleware/logger.js";
 import type { StorageProvider, HeadObjectResult, PresignResult } from "../storage/types.js";
 import { allocateEmbeddedPgPort } from "./helpers/embedded-pg-port.js";
 
@@ -846,6 +848,79 @@ integration("DE-06 — an AUTHORIZED artifact object operation is durable and at
   // ───────────────────────────────────────────────────────────────────────────
   // THE NAMESPACE RESERVATION
   // ───────────────────────────────────────────────────────────────────────────
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // THE FAILURE PATH — Codex P2 on PR #411
+  // ───────────────────────────────────────────────────────────────────────────
+
+  it("★ THE FAILURE PATH DOES NOT DEFEAT THE REDACTION — a secret-shaped object key is REDACTED in the error log, not just in the row", async () => {
+    const { app, admin } = ctx();
+    // ★ WHY THIS ARM EXISTS. The object key's SUFFIX is caller-controlled: the
+    // frozen grant schema bounds it only by length and by this org's attempt
+    // prefix, so a worker may legally name a file `whsec_<24 chars>.bin`. The
+    // persisted row runs that value through `sanitizeRecord`; the first draft of
+    // the recorder's CATCH branch re-listed the raw intent and wrote the key
+    // verbatim to the server log, so a transient FK failure would have leaked
+    // exactly the value the durable row refuses to keep.
+    const secretShapedKey =
+      `${expectedAttemptObjectPrefix({ organizationId: ORG, jobId: crypto.randomUUID(), attempt: 1 })}` +
+      "whsec_ABCDEFGHIJKLMNOPQRSTUVWX.bin";
+
+    // POSITIVE CONTROL FOR THE FIXTURE, asserted FIRST: this key really is one
+    // the redactor acts on. Without this the arm below could pass because the
+    // key never appears anywhere, rather than because it was redacted.
+    const committedRow = await admin<{ id: string }[]>`SELECT id FROM companies WHERE id = ${COMPANY}`;
+    expect(committedRow).toHaveLength(1);
+
+    const errors: unknown[] = [];
+    const spy = vi.spyOn(logger, "error").mockImplementation(((payload: unknown) => {
+      errors.push(payload);
+      return undefined;
+    }) as never);
+    let rowId: string | null = "unset";
+    try {
+      // Force the insert to fail on a REAL constraint rather than a stub: a
+      // company id with no `companies` row violates the FK, which is exactly the
+      // transient-failure shape the catch branch exists for.
+      rowId = await recordObjectAccessGrant(app.db, {
+        operation: "download",
+        companyId: "d6a00000-0000-4000-8000-00000000dead",
+        organizationId: ORG,
+        workerId: WORKER,
+        targetId: TARGET,
+        artifactId: crypto.randomUUID(),
+        objectKey: secretShapedKey,
+        kind: "log",
+        sensitivity: "restricted",
+        jobId: crypto.randomUUID(),
+        attempt: 1,
+        leaseId: crypto.randomUUID(),
+        expiresAt: new Date(Date.now() + 60_000),
+        maxBytes: 4096,
+      });
+    } finally {
+      spy.mockRestore();
+    }
+
+    // The recorder NEVER throws: a failed audit must not turn a legitimate grant
+    // into a 500. It reports the failure by returning null.
+    expect(rowId).toBeNull();
+    // ...and it did fail loudly rather than silently, so the assertion below is
+    // about a payload that exists.
+    expect(errors).toHaveLength(1);
+
+    const serialized = JSON.stringify(errors[0], (_k, v) =>
+      v instanceof Error ? { message: v.message } : v,
+    );
+    // ★ THE ASSERTION: the raw key is nowhere in the logged payload, and the
+    // redaction marker is.
+    expect(serialized).not.toContain("whsec_ABCDEFGHIJKLMNOPQRSTUVWX");
+    expect(serialized).toContain("***REDACTED***");
+    // ANTI-VACUITY: the payload is genuinely about THIS write and not an empty
+    // object that would trivially satisfy the two assertions above.
+    expect(serialized).toContain("security.object_access_audit_write_failed");
+    expect(serialized).toContain(WORKER);
+  }, 60_000);
 
   it("★ THE NAMESPACE IS RESERVED — a caller-supplied `security.object_access.` action is refused, and an ordinary action is not", async () => {
     // If a board client or the generic `insertActivityLog` helper could choose
