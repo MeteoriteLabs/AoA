@@ -74,6 +74,40 @@ import { runInTenant, runInTenantReadOnly } from "../db/tenant-context.js";
 import { assertAdmissibleOrganization } from "./tenant-admission.js";
 import { SERVICE_INGRESS_DENY_KEYS } from "./service-job-config.js";
 import { decideServiceProjection } from "./service-health-projection.js";
+import type { PreparedActivityEvent } from "./activity-log.js";
+import {
+  publishServiceControlActivity,
+  recordServiceCreateActivity,
+  recordServiceDesiredStateActivity,
+  type ServiceControlActor,
+} from "./service-control-audit.js";
+
+/**
+ * SVC-007 (Unit B) — the audit context every mutating control carries.
+ *
+ * ★ IT IS REQUIRED, NOT OPTIONAL, AND THAT IS THE ENFORCEMENT. AGENTS.md's "activity logging
+ * for all mutating actions" invariant was NOT met by this file at `SVC-007a` — the routes
+ * wrote a structured logger line and nothing durable. An optional parameter would leave the
+ * invariant exactly as unenforced as a convention: a caller that omitted it would compile,
+ * run, mutate and audit nothing. Making it a required argument means the type checker refuses
+ * a mutating call site that has nowhere to record the mutation.
+ *
+ * ★ `tx` IS THE MUTATION'S OWN TRANSACTION HANDLE, and passing it is the whole guarantee. The
+ * audit row commits with the mutation or not at all; see `service-control-audit.ts` for why
+ * that is the replay guard here and why JOB-013's fenced receipt is not available (and not
+ * needed).
+ */
+export interface ServiceControlAuditContext {
+  /** The SAME transaction the mutation runs in. Never a fresh handle. */
+  tx: Db;
+  actor: ServiceControlActor;
+  /**
+   * Sink for prepared `activity.logged` events, drained by the transaction's OWNER after it
+   * commits — the identical after-commit shape `jobAuditBridge` uses. Publishing inside the
+   * transaction would announce a mutation a later rollback un-does.
+   */
+  published: PreparedActivityEvent[];
+}
 
 /**
  * ★★★ THE PROJECTION A CANCELLED ATTEMPT DRIVES, TAKEN FROM THE WORKER PATH'S OWN DECIDER.
@@ -303,11 +337,23 @@ export interface CreatedService {
  * Returns `null` when the generation insert lost a race against
  * `service_generations_service_generation_uq` — unreachable for a freshly-minted service id
  * and therefore not swallowed into a fabricated success; the caller turns it into a definite
- * refusal and the transaction rolls back.
+ * refusal.
+ *
+ * ★ CORRECTION (SVC-007 Unit B, `E9-F011`). An earlier version of this sentence ended "…and
+ * the transaction rolls back". IT DOES NOT. Returning `null` from the `runInTenant` callback
+ * COMMITS; `insertServiceGeneration` catches its `23505` on a SAVEPOINT precisely so the outer
+ * transaction stays alive, and the route's 409 is thrown after `createService` has already
+ * returned. On that path a `services` row commits with NO generation — exactly the permanent
+ * `no_generation` wedge the paragraph above says must never happen — and NO audit row, since
+ * the audit is written only on success. It is still unreachable by construction (the service
+ * id is minted by this insert, so `(service_id, 1)` cannot already exist), so this is a false
+ * record rather than a live defect; it is filed OPEN as `E9-F011` rather than fixed here,
+ * because a fix changes what this function returns and needs its own red.
  */
 export async function createServiceWithinTenant(
   repos: TenantRepositories,
   input: CreateServiceInput,
+  audit: ServiceControlAuditContext,
 ): Promise<CreatedService | null> {
   // The generic repository insert that had ZERO production callers at base. It is used
   // directly rather than re-implemented so the symbol the register tracks is the symbol that
@@ -331,6 +377,18 @@ export async function createServiceWithinTenant(
     createdBy: input.createdBy,
   });
   if (!generation) return null;
+  // ★ THE DURABLE AUDIT, IN THIS TRANSACTION AND NOT AFTER IT. `activity_log` is an append
+  // with no unique index and no other writer on this path, so it adds no edge to the lock
+  // order stated on `setServiceDesiredState`; what it adds is the guarantee that a committed
+  // `services` row and the record of who created it cannot exist apart.
+  audit.published.push(await recordServiceCreateActivity(audit.tx, {
+    actor: audit.actor,
+    companyId: input.companyId,
+    organizationId: input.organizationId,
+    serviceId: service.id,
+    generation: generation.generation,
+    desiredState: service.desiredState,
+  }));
   return {
     serviceId: service.id,
     generation: generation.generation,
@@ -338,18 +396,31 @@ export async function createServiceWithinTenant(
   };
 }
 
-/** Create one service, opening (and on failure ROLLING BACK) its own tenant transaction. */
+/**
+ * Create one service in its own tenant transaction, publishing the audit event only once that
+ * transaction has committed.
+ *
+ * ★ A THROW rolls the transaction back — the service row, its generation and the audit row
+ * together. A `null` RETURN does NOT; see `createServiceWithinTenant`'s correction note and
+ * `E9-F011`. The earlier one-line docstring here said "on failure ROLLING BACK", which
+ * conflated the two.
+ */
 export async function createService(
   appDb: Db,
-  input: CreateServiceInput,
+  input: CreateServiceInput & { actor: ServiceControlActor },
 ): Promise<CreatedService | null> {
   // Parity with the reconciler and with `jobSubmissionService.submit`: a forbidden sentinel
   // organization must never reach the distributed path by an unguarded route (FND-007,
   // Decision #121). It THROWS rather than returning a refusal, because a sentinel org here
   // is a programming error and not a state a caller can be in.
   assertAdmissibleOrganization(input.organizationId);
-  return runInTenant(appDb, input.organizationId, (repos) =>
-    createServiceWithinTenant(repos, input));
+  const published: PreparedActivityEvent[] = [];
+  const created = await runInTenant(appDb, input.organizationId, (repos, tx) =>
+    createServiceWithinTenant(repos, input, { tx, actor: input.actor, published }));
+  // Reached ONLY on a commit: a mid-transaction throw exits `runInTenant` above and never
+  // arrives here, so a rollback publishes nothing.
+  publishServiceControlActivity(published);
+  return created;
 }
 
 export type SetServiceDesiredStateVerdict =
@@ -399,6 +470,49 @@ export interface ServiceControlDependencies {
  * production callers before this function; its table was a lifecycle nothing enforced.
  */
 export async function setServiceDesiredStateWithinTenant(
+  repos: TenantRepositories,
+  input: SetServiceDesiredStateInput & { reason: string },
+  audit: ServiceControlAuditContext,
+): Promise<SetServiceDesiredStateResult> {
+  const result = await applyServiceDesiredState(repos, input);
+  // ★ ONLY THE TWO VERDICTS THAT CAN MUTATE ARE AUDITED, and `unchanged` is one of them —
+  // it is not a no-op. The stop still runs on `unchanged` (a reconcile pass that began before
+  // an earlier stop can commit an instance after that stop moved the column), so an
+  // `unchanged` control action can cancel a job and terminalize an instance. `illegal` and
+  // `conflict` write nothing, and `absent` returns a uniform 404 whose whole point is that it
+  // is indistinguishable from a cross-tenant miss. AGENTS.md's invariant is over MUTATING
+  // actions; a refusal is a denial-audit question and belongs to the reserved
+  // `security.denied.` namespace, not to this action.
+  if (result.verdict.outcome === "updated" || result.verdict.outcome === "unchanged") {
+    audit.published.push(await recordServiceDesiredStateActivity(audit.tx, {
+      actor: audit.actor,
+      companyId: input.companyId,
+      organizationId: input.organizationId,
+      serviceId: input.serviceId,
+      outcome: result.verdict.outcome,
+      from: result.verdict.outcome === "updated" ? result.verdict.from : undefined,
+      to: input.desiredState,
+      generation: result.verdict.generation,
+      reason: input.reason,
+      stopStatus: result.stop?.status ?? null,
+      stopInstance: result.stop?.status === "requested" ? result.stop.instance : null,
+    }));
+  }
+  return result;
+}
+
+/**
+ * The control's decision and writes, with no audit of its own.
+ *
+ * Split out of {@link setServiceDesiredStateWithinTenant} by SVC-007 Unit B for ONE reason:
+ * ★ this function has SEVEN `return` statements (counted at head, not remembered) and the
+ * audit must fire on exactly two of the five VERDICT values — `updated` and `unchanged` —
+ * which between them are reached from four of those seven exits, and only AFTER the
+ * cancellation and the terminalization so the row can record what happened to the live
+ * instance. Auditing at each exit would be four call sites to keep in step and an eighth exit
+ * away from silently writing nothing.
+ */
+async function applyServiceDesiredState(
   repos: TenantRepositories,
   input: SetServiceDesiredStateInput & { reason: string },
 ): Promise<SetServiceDesiredStateResult> {
@@ -542,11 +656,16 @@ export interface SetServiceDesiredStateResult {
  */
 export async function setServiceDesiredState(
   deps: ServiceControlDependencies,
-  input: SetServiceDesiredStateInput & { reason: string },
+  input: SetServiceDesiredStateInput & { reason: string; actor: ServiceControlActor },
 ): Promise<SetServiceDesiredStateResult> {
   assertAdmissibleOrganization(input.organizationId);
-  return runInTenant(deps.appDb, input.organizationId, (repos) =>
-    setServiceDesiredStateWithinTenant(repos, input));
+  const published: PreparedActivityEvent[] = [];
+  const result = await runInTenant(deps.appDb, input.organizationId, (repos, tx) =>
+    setServiceDesiredStateWithinTenant(repos, input, { tx, actor: input.actor, published }));
+  // Reached ONLY on a commit — a cancellation failure rolls the desired-state write, the
+  // instance terminalization AND the audit row back together, and never arrives here.
+  publishServiceControlActivity(published);
+  return result;
 }
 
 export interface ServiceView {
