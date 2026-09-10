@@ -1912,13 +1912,13 @@ enrolment, no cohort count struck.
   control-plane retention decision called at `artifact-commit.ts:272` and branched on at `:276`.
   That branch previously emitted a `logger.warn` whose own comment said *"This is a LOG LINE, not an
   audit record — DE-11 claims retention is audited and nothing audits it"*. It now captures a record
-  intent (`:295`) drained after the tenant transaction closes, on the pool handle, at `:448` —
+  intent (`:295`) drained after the tenant transaction closes, on the pool handle, at `:480` —
   gated on `response.outcome === "committed"`, because the decision runs *before* the mutator and
   three refusal branches sit after it. Recorder: `artifact-retention-audit.ts`, writing one
   `activity_log` row per OVERRIDE carrying company (the locked lease's), organization
   (token-attested), worker, artifact, kind, **and both `declaredRetention` and `storedRetention`**.
-- **DE-20 (4a).** One `appendRunEvent` at `heartbeat.ts:5373`, placed AFTER `canaryExecutionOwner`
-  is assigned and BEFORE `shouldSuppressLegacyExecution` (`:5448`) reads it, writing a
+- **DE-20 (4a).** One `appendRunEvent` at `heartbeat.ts:5388` (seq from the in-process counter), placed AFTER `canaryExecutionOwner`
+  is assigned and BEFORE `shouldSuppressLegacyExecution` (`:5457`) reads it, writing a
   `distributed_execution_selection` event for **both** arms. Before this, a distributed selection
   wrote a `distributed_execution_handoff` row and a legacy selection wrote **nothing durable** — so
   "the cutover selected legacy" was indistinguishable, in the database, from "this run was never a
@@ -1973,7 +1973,7 @@ stale**, including one its correction table marked *"✔ EXACT"*:
 | download committed-row check | `:201-202` → paper: `:295`/`:300`/`:302` | `:296`/`:299`/`:304`/`:306` |
 | `wrong_prefix`/`tenant_mismatch` | `job-control.ts:2750`/`:2751` — **paper: "✔ EXACT"** | `:3109`/`:3110` (359-line drift) |
 | the "LOG LINE" comment | register: `artifact-commit.ts:172-173` → paper: `:259-260` | `:263-265` (now removed) |
-| suppression gate / return / execute | register: `:5399`/`:5451`/`:5453` | `:5448`/`:5500`/`:5502` — **shifted by this unit's own edit** |
+| suppression gate / return / execute | register: `:5399`/`:5451`/`:5453` | `:5457`/`:5509`/`:5511` — **shifted by this unit's own edit** |
 | lease-candidate eligibility, `offerLease`, CHECK | register: `:1947`, `:2318-2328`, `job_attempts.ts:95-112` | `:2306`, `:2669`+`:2680-2687`, `:95-135` |
 
 All corrected in the register, with the correction itself recorded there rather than silently applied.
@@ -1985,6 +1985,49 @@ has no callers. **A prose match is not a caller census.** Replaced with a commen
 carrying its own anti-vacuity control. Separately, the byte scan caught a **U+200B** this unit had
 inserted into a comment to avoid closing a block comment — the invisible-byte defect, found before
 push rather than after.
+
+
+#### Post-review: two Codex P2 findings, both real, both fixed with their own observed-red arms
+
+Neither was a style note; both were defects in this unit's own new code, and both are in the
+"a check that passes for the wrong reason" family this programme keeps re-learning.
+
+1. **An idempotent commit replay would have duplicated the retention record — and worse.**
+   `commitArtifactVersion` answers `outcome: "committed"` in **two** cases: it inserted the row
+   (`job-control.ts:3162`), or the artifact was **already** committed and it returned the existing
+   row unchanged (`:3176`). The first gate checked only the outcome. So an ordinary transport retry
+   would mint a second row — and a replay declaring a **different** retention class would mint a row
+   asserting a `declared`/`stored` pair **that was never decided for the persisted artifact**, since
+   nothing in that call wrote anything. The row alone cannot distinguish the two cases, so the
+   mutator now returns an explicit `replayed` boolean (the one production consumer is
+   `artifact-commit.ts`) and `:388` drops the intent on a replay. The `logger.warn` is deliberately
+   kept: a worker re-declaring a class the control plane does not honour is still worth seeing
+   operationally; it is just not a new *decision*.
+
+2. **The selection append took its seq from a `max(seq)` read, which collides on the legacy arm.**
+   The first draft copied `markRunHandedOffToDistributed`'s max-based form. That is correct *there*
+   — it sits outside `executeRun` and cannot see the in-process counter — and wrong *here*. At the
+   append site the counter is already `2` (the "run started" lifecycle event consumed `1`) while the
+   durable max is `1`, so `projectionSeqBase(1) + 1` **also** yields `2` and leaves the counter
+   untouched; the next `seq++` event reuses `2`. `(run_id, seq)` is a **non-unique** index, so
+   nothing errors — the rows silently interleave and a resume-by-seq reader can drop one, which is
+   exactly what `projectionSeqBase`'s own doc comment was written about. ★ It bites **only the legacy
+   arm**, because the distributed arm returns at the suppression seam and never appends again — i.e.
+   precisely the arm this change adds. Fixed to `seq++`, which also removes a DB round-trip.
+
+Each fix carries a new arm, **observed RED against the unfixed code before the fix was restored**:
+the replay arm asserts one row across three commits of the same artifact (the third declaring a
+different class), and the seq arm asserts the call site uses `seq++` and **not** `projectionSeqBase`
+— with an anti-vacuity control that `markRunHandedOffToDistributed` genuinely still uses the
+max-based form, so the arm asserts a *difference between two real call sites* rather than a property
+no site has.
+
+★ **One process note, recorded because it is the same failure class again.** The first attempt at
+this register edit was written through a shell command whose backticks were **substituted by the
+shell**, silently deleting the words `` `replayed` `` from the middle of a sentence — leaving
+"*the mutator now reports  and artifact-commit.ts…*". It was caught by reading the landed bytes
+back rather than trusting the "0 anchors missed" report. **An anchor that matched is not a
+replacement that landed.**
 
 #### NOT DONE, and left open
 

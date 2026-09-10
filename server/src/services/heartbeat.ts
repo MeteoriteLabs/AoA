@@ -5369,14 +5369,23 @@ export function heartbeatService(
         // "cutover selection AND rollback transitions" — and the ROLLBACK conjunct
         // stays vacuous: `createDistributedExecutionDrain` has zero production
         // callers, so no rollback transition occurs and none can be recorded.
+        //
+        // ★ IT TAKES ITS SEQ FROM THE IN-PROCESS COUNTER (`seq++`), NOT FROM A
+        // `max(seq)` READ — Codex P2 on PR #409, verified at source. The first
+        // draft copied `markRunHandedOffToDistributed`'s max-based read, which is
+        // right THERE (that function is outside `executeRun` and cannot see the
+        // counter) and WRONG HERE. At this point `seq` is already 2 — the "run
+        // started" lifecycle event consumed 1 — while the durable max is 1, so
+        // `projectionSeqBase(1) + 1` also yields 2 and leaves the local counter
+        // untouched. The very next `seq++` event would then reuse 2.
+        // `heartbeat_run_events` carries only a NON-UNIQUE `(run_id, seq)` index,
+        // so nothing errors: the two rows silently interleave and a
+        // resume-by-seq reader can drop one. That is the exact failure
+        // `projectionSeqBase`'s own doc comment was written for. Note this bites
+        // ONLY the legacy arm — the distributed arm returns at the suppression
+        // seam and never appends again — i.e. precisely the arm this change adds.
         try {
-          const selectionEvent = buildCutoverSelectionEvent(canaryExecutionOwner);
-          const selectionMaxSeq = await db
-            .select({ value: sql<number | null>`max(${heartbeatRunEvents.seq})` })
-            .from(heartbeatRunEvents)
-            .where(eq(heartbeatRunEvents.runId, run.id))
-            .then((rows) => rows[0]?.value ?? null);
-          await appendRunEvent(run, projectionSeqBase(selectionMaxSeq) + 1, selectionEvent);
+          await appendRunEvent(run, seq++, buildCutoverSelectionEvent(canaryExecutionOwner));
         } catch (selectionErr) {
           logger.warn(
             { err: selectionErr, runId: run.id },

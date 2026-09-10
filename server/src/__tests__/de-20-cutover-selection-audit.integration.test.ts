@@ -15,9 +15,9 @@
  *     inside `markRunHandedOffToDistributed`;
  *   - a LEGACY selection wrote NOTHING DURABLE. `canaryExecutionOwner` was
  *     assigned at `heartbeat.ts:5315-5336` (base), `shouldSuppressLegacyExecution`
- *     (`:5399` base -> `:5448` now) returned false, and control fell through to
- *     `adapter.execute` (`:5453` base -> `:5502` now). The only trace was a
- *     `logger.info` line. The new append is at `:5373`.
+ *     (`:5399` base -> `:5457` now) returned false, and control fell through to
+ *     `adapter.execute` (`:5453` base -> `:5511` now). The only trace was a
+ *     `logger.info` line. The new append is at `:5388`.
  * Both base line numbers were re-verified at source rather than inherited from the
  * register, and both were exact; the post-change numbers were re-measured after.
  *
@@ -323,6 +323,38 @@ integration("DE-20 (selection half) — BOTH arms of the cutover leave a durable
     // is precisely how one arm ends up audited and the other does not.
     const callSites = source.split("buildCutoverSelectionEvent(").length - 1;
     expect(callSites).toBe(1);
+  });
+
+  it("★★★ THE SEQ COMES FROM THE IN-PROCESS COUNTER, NOT A `max(seq)` READ — a max-based append would silently collide with the very next lifecycle event on the LEGACY arm", () => {
+    // Codex P2 on PR #409, verified at source and fixed. At the append site the
+    // local counter is already 2 (the "run started" lifecycle event consumed 1)
+    // while the durable max is 1, so `projectionSeqBase(max) + 1` ALSO yields 2 and
+    // leaves the counter untouched — the next `seq++` event reuses 2.
+    // `heartbeat_run_events` carries only a NON-UNIQUE `(run_id, seq)` index, so
+    // nothing errors: two rows silently interleave and a resume-by-seq reader can
+    // drop one. It bites ONLY the legacy arm, because the distributed arm returns
+    // at the suppression seam and never appends again — i.e. exactly the arm this
+    // change adds. Asserted structurally, for the same reason the position is.
+    const source = readFileSync(HEARTBEAT_SOURCE, "utf8");
+    const appendIdx = source.indexOf("buildCutoverSelectionEvent(canaryExecutionOwner)");
+    expect(appendIdx).toBeGreaterThan(-1);
+    const stmtStart = source.lastIndexOf("await appendRunEvent(", appendIdx);
+    expect(stmtStart).toBeGreaterThan(-1);
+    const stmt = source.slice(stmtStart, appendIdx);
+    // It takes the shared counter...
+    expect(stmt).toContain("seq++");
+    // ...and NOT a per-append max read, which is right in
+    // `markRunHandedOffToDistributed` (outside `executeRun`, no counter in scope)
+    // and wrong here.
+    expect(stmt).not.toContain("projectionSeqBase");
+
+    // ANTI-VACUITY — `markRunHandedOffToDistributed` really does still use the
+    // max-based form, so this arm asserts a DIFFERENCE between two real call sites
+    // rather than a property no site has.
+    const handoffIdx = source.indexOf('eventType: "distributed_execution_handoff"');
+    expect(handoffIdx).toBeGreaterThan(-1);
+    const handoffStmt = source.slice(source.lastIndexOf("await appendRunEvent(", handoffIdx), handoffIdx);
+    expect(handoffStmt).toContain("projectionSeqBase");
   });
 
   it("★★★ THE ROLLBACK CONJUNCT IS STILL VACUOUS, AND THAT IS PINNED BY A REAL CENSUS — `createDistributedExecutionDrain` still has ZERO production callers, so DE-20 does NOT close", () => {

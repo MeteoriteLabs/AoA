@@ -11,11 +11,11 @@
  *     `heartbeat_run_events` row (`heartbeat.ts:6986`, inside
  *     `markRunHandedOffToDistributed`);
  *   - a LEGACY selection wrote NOTHING DURABLE AT ALL. `canaryExecutionOwner`
- *     resolves at `heartbeat.ts:5315-5364`, `shouldSuppressLegacyExecution` (`:5448`)
+ *     resolves at `heartbeat.ts:5315-5364`, `shouldSuppressLegacyExecution` (`:5457`)
  *     is false, and control falls straight through to `adapter.execute` at
- *     `heartbeat.ts:5502`. The only trace was a `logger.info` line. (Those three
+ *     `heartbeat.ts:5511`. The only trace was a `logger.info` line. (Those three
  *     read `:5315-5336`, `:5399` and `:5453` at the base commit `6b39c77f6`; the
- *     append this module feeds, at `:5373`, is what shifted them, and re-measuring
+ *     append this module feeds, at `:5388`, is what shifted them, and re-measuring
  *     rather than reciting is the whole point of the note.)
  *
  * So "the cutover selected legacy for this run" was INDISTINGUISHABLE, in the

@@ -649,6 +649,51 @@ integration("DE-11 (retention half) — a control-plane retention override is du
     expect(rows[0]!.details?.control).toContain("artifact-commit.ts");
   });
 
+  it("★★★ AN IDEMPOTENT REPLAY DECIDES NOTHING, SO IT AUDITS NOTHING — the SAME artifact re-committed answers `committed` again and writes NO second row, even when the replay declares a DIFFERENT class", async () => {
+    // Codex P2 on PR #409, verified at source and fixed. commitArtifactVersion
+    // answers `committed` in two cases — it inserted the row, or the artifact was
+    // already committed and it returned the existing one unchanged. Without the
+    // mutator's `replayed` signal, an outcome check alone duplicates the record on
+    // every ordinary transport retry, and the SECOND provocation below is the
+    // serious half: a replay declaring a different class would mint a row
+    // asserting a declared/stored pair that was never decided for the stored row.
+    const { app } = ctx();
+    const offer = await activateLease();
+    const svc = createArtifactCommitService({ appDb: app.db, storage: makeStubStorage() });
+    const artifactId = crypto.randomUUID();
+
+    // (1) The genuine first commit, with an override. ONE row.
+    const first = commitRequest(offer, { artifactId, retention: "audit" });
+    expect((await svc.commit({ auth: auth(`rp1-${crypto.randomUUID()}`), request: first.request })).outcome)
+      .toBe("committed");
+    expect(await retentionRowsFor(artifactId)).toHaveLength(1);
+    expect(await storedRetentionFor(artifactId)).toBe("run");
+
+    // (2) The same artifact, replayed under the same live fence with the SAME
+    // declaration — an ordinary transport retry.
+    const replay = commitRequest(offer, { artifactId, retention: "audit" });
+    const res2 = await svc.commit({ auth: auth(`rp2-${crypto.randomUUID()}`), request: replay.request });
+    // REACHABILITY CONTROL, asserted FIRST: if the replay stopped answering
+    // `committed` it would no longer exercise the branch and this arm would pass
+    // by vacuity.
+    expect(res2.outcome).toBe("committed");
+    expect(await retentionRowsFor(artifactId)).toHaveLength(1);
+
+    // (3) ★ THE SERIOUS HALF — a replay declaring a DIFFERENT class. Still
+    // `committed`, still no new row: nothing about the stored artifact changed, so
+    // no record may claim a decision was made about it.
+    const drift = commitRequest(offer, { artifactId, retention: "ephemeral" });
+    const res3 = await svc.commit({ auth: auth(`rp3-${crypto.randomUUID()}`), request: drift.request });
+    expect(res3.outcome).toBe("committed");
+    expect(await retentionRowsFor(artifactId)).toHaveLength(1);
+    // ...and the ONE row still describes the decision that actually happened.
+    const rows = await retentionRowsFor(artifactId);
+    expect(rows[0]!.details?.declaredRetention).toBe("audit");
+    expect(rows[0]!.details?.declaredRetention).not.toBe("ephemeral");
+    // The stored value never moved either — the replay wrote nothing at all.
+    expect(await storedRetentionFor(artifactId)).toBe("run");
+  });
+
   it("★ THE NAMESPACE IS RESERVED — a caller-supplied `action` cannot forge a retention record through the two writers that accept one", () => {
     // Forgery matters here for the same reason it matters in the denial
     // namespace: if any board client could POST a row saying the control plane

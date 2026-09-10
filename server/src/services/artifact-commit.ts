@@ -367,6 +367,26 @@ export function createArtifactCommitService(input: {
           throw error;
         }
 
+        // ★ DE-11 — AN IDEMPOTENT REPLAY DECIDED NOTHING, SO IT AUDITS NOTHING
+        // (Codex P2 on PR #409, verified at source). `commitArtifactVersion`
+        // answers a committed row in TWO cases: it INSERTED it
+        // (`job-control.ts:3148`), or the artifact was ALREADY committed and it
+        // returned the existing row unchanged (`:3160`). Both answer the worker
+        // `outcome: "committed"`, and the row alone cannot tell them apart — which
+        // is why the mutator now reports `replayed` rather than leaving the caller
+        // to guess.
+        //
+        // On the replay THIS CALL WROTE NOTHING. The stored retention was decided
+        // by the earlier transaction under whatever manifest THAT one carried, so
+        // recording here would (a) duplicate the record on every ordinary
+        // transport retry and (b) — the serious half — let a replay declaring a
+        // DIFFERENT retention mint a row asserting a declared/stored pair that was
+        // never decided for the persisted artifact. Dropping the intent is
+        // deliberate: the `logger.warn` above still fires, because a worker
+        // re-declaring a class the control plane does not honour is still worth
+        // seeing operationally; it is just not a NEW retention decision.
+        if (row.replayed) retention.intent = null;
+
         // ★ DAT-011 — also on SUCCESS, deliberately. Success is the common event, so it
         // gives far more collection opportunities than refusals alone, and the sweep is a
         // no-op when nothing has expired. This is what keeps the residual to "the org's last
@@ -444,6 +464,18 @@ export function createArtifactCommitService(input: {
       // path: recording it would assert a stored retention that does not exist,
       // and would let a worker flood the audit with manifests it never intended
       // to commit. `recordRetentionDecision` never throws.
+      //
+      // ★ AND AN IDEMPOTENT REPLAY RECORDS NOTHING EITHER (Codex P2 on PR #409,
+      // verified at source). `commitArtifactVersion` answers `committed` in TWO
+      // cases: it inserted the row, or the artifact was already committed and it
+      // returned the existing row unchanged (`job-control.ts:3148` vs `:3160`).
+      // On the replay this call WROTE NOTHING — the stored retention was decided
+      // by the earlier transaction, under whatever manifest THAT one carried. So
+      // an outcome check alone would duplicate the record on every ordinary
+      // transport retry, and a replay declaring a DIFFERENT retention would mint a
+      // row asserting a declared/stored pair that was never decided for the
+      // persisted artifact. `replayed` is the mutator's own answer; the caller
+      // cannot infer it from the row.
       if (retention.intent && response.outcome === "committed") {
         await recordRetentionDecision(input.appDb, retention.intent);
       }

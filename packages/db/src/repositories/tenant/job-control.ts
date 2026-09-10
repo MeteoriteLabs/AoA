@@ -628,7 +628,18 @@ export interface JobControlRepository {
       prefixValid: boolean;
       tenantValid: boolean;
     },
-  ): Promise<JobArtifact>;
+    /**
+     * ★ `replayed` DISTINGUISHES A GENUINE FIRST COMMIT FROM AN IDEMPOTENT REPLAY,
+     * and the caller cannot infer it (Codex P2 on PR #409, verified). Both cases
+     * return a committed row and both answer the worker `outcome: "committed"`,
+     * but on a replay this call WROTE NOTHING — the returned row was committed by
+     * an earlier transaction, under whatever manifest that one carried. A caller
+     * that audits per-commit needs to know which happened: DE-11's retention
+     * record would otherwise fire again on every ordinary transport retry, and a
+     * replay carrying a DIFFERENT declared retention would mint a row asserting a
+     * declared/stored pair that was never decided for the persisted artifact.
+     */
+  ): Promise<JobArtifact & { replayed: boolean }>;
   /**
    * DAT-003 — the fenced apply/review of a COMMITTED `workspace_patch`. Runs
    * `guardActiveFence` FIRST (a stale/terminal/revoked fence throws `JobFenceError`
@@ -3145,7 +3156,10 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         target: [jobArtifacts.organizationId, jobArtifacts.jobId, jobArtifacts.attempt, jobArtifacts.identifier],
         where: sql`status = 'committed'`,
       }).returning();
-      if (inserted[0]) return inserted[0];
+      // `replayed: false` — THIS transaction wrote the row, so its retention,
+      // object key and hashes are the ones this call decided. DE-11's retention
+      // audit keys on exactly this.
+      if (inserted[0]) return { ...inserted[0], replayed: false };
 
       // Conflict → the artifact was already committed (idempotent replay): return the
       // existing committed row unchanged (same result, no second version).
@@ -3157,7 +3171,9 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         eq(jobArtifacts.status, "committed"),
       )).limit(1);
       if (!existing) throw new ArtifactCommitRejection("tenant_mismatch");
-      return existing;
+      // `replayed: true` — the row predates this call. Nothing here decided its
+      // retention, so nothing here may audit one.
+      return { ...existing, replayed: true };
     },
 
     async recordPatchApplyState(input) {
