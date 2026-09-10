@@ -1808,7 +1808,7 @@ matched pair the prose warned about was unguarded by the artefact the prose name
    `ORDER BY` the reader emits against `pg_indexes.indexdef` — the index's own rendering, not a
    third transcription. All three surfaces now carry the corrected, per-drift claim.
 
-This is the [checks-that-nothing-runs](../../../architecture/decisions.md) class in its exact form:
+This is the `checks-that-nothing-runs` class in its exact form:
 **a false claim of enforcement is worse than a missing check.** The distinguishing detail worth
 carrying forward is that the guard's *inputs* were the copy, not its assertions — the assertions
 were right, the subject was wrong. A guard that reads its subject from a literal is a guard against
