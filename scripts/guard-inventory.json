@@ -126,6 +126,10 @@
       "status": "ci",
       "reason": "invoked by a workflow"
     },
+    "scripts/check-schema-migration-drift.mjs": {
+      "status": "ci",
+      "reason": "invoked by a workflow — the migrations job's E8-F005 schema↔migration drift gate"
+    },
     "scripts/check-secret-resolve-vectors.mjs": {
       "status": "ci",
       "reason": "invoked by a workflow"

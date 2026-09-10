@@ -130,6 +130,11 @@
       "workflow": "pr.yml",
       "step": "Sandbox fake provider dependency boundary"
     },
+    "scripts/check-schema-migration-drift.test.mjs": {
+      "status": "runs",
+      "workflow": "pr.yml",
+      "step": "Schema↔migration drift gate self-test (E8-F005 decision logic + wiring)"
+    },
     "scripts/check-secret-resolve-vectors.test.mjs": {
       "status": "runs",
       "workflow": "pr.yml",
