@@ -369,9 +369,10 @@ export function createArtifactCommitService(input: {
 
         // ★ DE-11 — AN IDEMPOTENT REPLAY DECIDED NOTHING, SO IT AUDITS NOTHING
         // (Codex P2 on PR #409, verified at source). `commitArtifactVersion`
-        // answers a committed row in TWO cases: it INSERTED it
-        // (`job-control.ts:3148`), or the artifact was ALREADY committed and it
-        // returned the existing row unchanged (`:3160`). Both answer the worker
+        // answers a committed row in TWO cases: it INSERTED it (the
+        // `replayed: false` return in `commitArtifactVersion`), or the artifact
+        // was ALREADY committed and it returned the existing row unchanged (the
+        // `replayed: true` return). Both answer the worker
         // `outcome: "committed"`, and the row alone cannot tell them apart — which
         // is why the mutator now reports `replayed` rather than leaving the caller
         // to guess.
@@ -468,7 +469,8 @@ export function createArtifactCommitService(input: {
       // ★ AND AN IDEMPOTENT REPLAY RECORDS NOTHING EITHER (Codex P2 on PR #409,
       // verified at source). `commitArtifactVersion` answers `committed` in TWO
       // cases: it inserted the row, or the artifact was already committed and it
-      // returned the existing row unchanged (`job-control.ts:3148` vs `:3160`).
+      // returned the existing row unchanged — `commitArtifactVersion`'s
+      // `replayed: false` vs `replayed: true` returns.
       // On the replay this call WROTE NOTHING — the stored retention was decided
       // by the earlier transaction, under whatever manifest THAT one carried. So
       // an outcome check alone would duplicate the record on every ordinary

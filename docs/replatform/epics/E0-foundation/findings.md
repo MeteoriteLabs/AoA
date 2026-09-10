@@ -1912,7 +1912,9 @@ enrolment, no cohort count struck.
   control-plane retention decision called at `artifact-commit.ts:272` and branched on at `:276`.
   That branch previously emitted a `logger.warn` whose own comment said *"This is a LOG LINE, not an
   audit record — DE-11 claims retention is audited and nothing audits it"*. It now captures a record
-  intent (`:295`) drained after the tenant transaction closes, on the pool handle, at `:480` —
+  intent (`:295`) drained after the tenant transaction closes, on the pool handle, at the
+  `recordRetentionDecision(input.appDb, retention.intent)` call in the outer drain (`:482` at this
+  PR's HEAD — the call is the citation, the number only a hint) —
   gated on `response.outcome === "committed"`, because the decision runs *before* the mutator and
   three refusal branches sit after it. Recorder: `artifact-retention-audit.ts`, writing one
   `activity_log` row per OVERRIDE carrying company (the locked lease's), organization
@@ -1954,7 +1956,16 @@ FK-valid company, and a company-less retention decision should be refused by the
 
 #### Reds observed, each against a named positive control
 
-- **DE-11**: checking `artifact-commit.ts` out at base **reds 3 recording arms, 6 controls green**.
+Each suite carries **10 arms** at this PR's HEAD (`de-11-retention-audit.integration.test.ts` and
+`de-20-cutover-selection-audit.integration.test.ts`). Both were 9 at `ede424371`; the Codex-fix
+commit added the tenth to each — and in each case **the tenth arm is the one that proves that
+commit's fix**. Re-counted at HEAD on external review, because the register row for each was edited
+in the same commit that added the arm and was not re-counted then.
+
+- **DE-11**: checking `artifact-commit.ts` out at base **reds 3 recording arms, 6 controls green**
+  — a complete account of the suite **as it stood for that run** (9 arms). The tenth (the
+  idempotent-replay arm) was added afterwards and was **not** re-run against base; it was observed
+  RED against the unfixed post-review code, which is the narrower claim.
   Dropping the `committed` gate reds **only** the refused-commit arm. Moving the action into
   `security.denied.` reds **only** the three namespace-asserting arms. The pre-existing DE-06 suite's
   *"a COMMITTED artifact writes NO denial row"* arm stays green as the regression control.
@@ -1967,11 +1978,11 @@ FK-valid company, and a company-less retention decision should be refused by the
 Re-measuring at source found that **the Decision 1 paper's own corrected citations are already
 stale**, including one its correction table marked *"✔ EXACT"*:
 
-| Cited | Where the paper put it | Where it is at `6b39c77f6` |
+| Cited | Where the paper put it | Where it is now (`6b39c77f6` unless a row says otherwise) |
 |---|---|---|
 | upload-prefix deny | `artifact-transfer-grant.ts:113` → paper: `:180-184` | `:187` |
 | download committed-row check | `:201-202` → paper: `:295`/`:300`/`:302` | `:296`/`:299`/`:304`/`:306` |
-| `wrong_prefix`/`tenant_mismatch` | `job-control.ts:2750`/`:2751` — **paper: "✔ EXACT"** | `:3109`/`:3110` (359-line drift) |
+| `wrong_prefix`/`tenant_mismatch` — the two guards at the head of `commitArtifactVersion` | `job-control.ts:2750`/`:2751` — **paper: "✔ EXACT"** | `:3109`/`:3110` at `6b39c77f6` (359-line drift), and `:3120`/`:3121` at this PR's HEAD — **moved again by this unit's own JSDoc.** ★ Cite the two guards, not the numbers |
 | the "LOG LINE" comment | register: `artifact-commit.ts:172-173` → paper: `:259-260` | `:263-265` (now removed) |
 | suppression gate / return / execute | register: `:5399`/`:5451`/`:5453` | `:5457`/`:5509`/`:5511` — **shifted by this unit's own edit** |
 | lease-candidate eligibility, `offerLease`, CHECK | register: `:1947`, `:2318-2328`, `job_attempts.ts:95-112` | `:2306`, `:2669`+`:2680-2687`, `:95-135` |
@@ -1994,13 +2005,15 @@ Neither was a style note; both were defects in this unit's own new code, and bot
 
 1. **An idempotent commit replay would have duplicated the retention record — and worse.**
    `commitArtifactVersion` answers `outcome: "committed"` in **two** cases: it inserted the row
-   (`job-control.ts:3162`), or the artifact was **already** committed and it returned the existing
-   row unchanged (`:3176`). The first gate checked only the outcome. So an ordinary transport retry
+   (its `replayed: false` return, `job-control.ts:3162` at this PR's HEAD), or the artifact was
+   **already** committed and it returned the existing row unchanged (its `replayed: true` return,
+   `:3176`). The first gate checked only the outcome. So an ordinary transport retry
    would mint a second row — and a replay declaring a **different** retention class would mint a row
    asserting a `declared`/`stored` pair **that was never decided for the persisted artifact**, since
    nothing in that call wrote anything. The row alone cannot distinguish the two cases, so the
    mutator now returns an explicit `replayed` boolean (the one production consumer is
-   `artifact-commit.ts`) and `:388` drops the intent on a replay. The `logger.warn` is deliberately
+   `artifact-commit.ts`) and its `if (row.replayed) retention.intent = null` statement (`:389` at
+   this PR's HEAD) drops the intent on a replay. The `logger.warn` is deliberately
    kept: a worker re-declaring a class the control plane does not honour is still worth seeing
    operationally; it is just not a new *decision*.
 
@@ -2028,6 +2041,18 @@ shell**, silently deleting the words `` `replayed` `` from the middle of a sente
 "*the mutator now reports  and artifact-commit.ts…*". It was caught by reading the landed bytes
 back rather than trusting the "0 anchors missed" report. **An anchor that matched is not a
 replacement that landed.**
+
+★★ **And the closing claim of that same commit was false, which is worse than the defect it was
+closing.** Commit `030e71152`'s message ends *"Citations shifted by these fixes were re-measured
+across all five surfaces that carry them"*, and the PR body carried the same sentence. **They were
+not.** `artifact-commit.ts` kept `job-control.ts:3148`/`:3160` in three places — the pre-JSDoc
+numbers — while the register, in the same commit, had the post-JSDoc `:3162`/`:3176` right. So the
+tree disagreed with itself, and the sentence asserting the sweep is the reason nobody looked. **A
+FALSE CLAIM OF VERIFICATION IS WORSE THAN A MISSING ONE**: an unmeasured citation invites the next
+reader to measure it; one asserted as re-measured tells them not to bother. Corrected on external
+review 2026-09-10; the commit message is immutable, so this paragraph and the PR body are the
+retraction. Every citation this unit touched is now stated **by symbol**, with the line kept only
+as a hint.
 
 #### NOT DONE, and left open
 
