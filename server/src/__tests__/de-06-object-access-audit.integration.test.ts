@@ -31,10 +31,21 @@
  *       untouched here. DE-06's register `deliveryStatus` stays `partial`.
  *
  * ★ WHY THIS IS NOT A READ-BACK. Nothing here constructs an audit row. Every arm
- * drives the REAL service — a real enrolled worker, a real polled + acked lease,
- * a real live fence, a real commit for the download arm — and then asserts the
- * row the successful operation itself left behind. A read-back verifies what was
- * DECLARED, never what is ENFORCED (the measured lesson of DE-08).
+ * ABOUT THE RECORD drives the REAL service — a real enrolled worker, a real
+ * polled + acked lease, a real live fence, a real commit for the download arm —
+ * and then asserts the row the successful operation itself left behind. A
+ * read-back verifies what was DECLARED, never what is ENFORCED (the measured
+ * lesson of DE-08).
+ *   ★ TWO ARMS ARE DELIBERATELY NOT SERVICE-DRIVEN, and they are named here so
+ *   this paragraph is not read as covering them. The NAMESPACE RESERVATION arm
+ *   is a pure predicate check — there is no service path that could reach
+ *   `assertUnreservedActivityNamespace` with this prefix, which is the property
+ *   it asserts. The FAILURE-PATH REDACTION arm calls `recordObjectAccessGrant`
+ *   DIRECTLY, because the thing under test is what the recorder logs when its
+ *   INSERT fails, and no legal request through the service can make that insert
+ *   fail — the company is the locked lease's and is FK-valid by construction.
+ *   It still uses a REAL constraint violation rather than a stub, so the catch
+ *   branch is entered for the reason it exists for.
  *
  * ★ ATTRIBUTION IS THE ASSERTION, and it is asserted per question, because a row
  * saying "an object was accessed" satisfies no crossing in this class:
