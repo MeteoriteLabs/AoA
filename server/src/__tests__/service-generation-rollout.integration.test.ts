@@ -69,6 +69,11 @@ let setupError: unknown = null;
 const DEFINITION = { command: "node", args: ["queue-worker.js"], gracefulStopSeconds: 30 };
 const NEXT_DEFINITION = { command: "node", args: ["queue-worker.js", "--v2"], gracefulStopSeconds: 45 };
 
+/** SVC-007b (#414) made `createService` audit its own mutation, so the operator identity is now
+ *  a REQUIRED input rather than an optional one. This suite only needs a service to exist; the
+ *  audit row it now also writes is SVC-007b's assertion, not this suite's. */
+const OPERATOR = { actorType: "user" as const, actorId: "a6900000-0000-4000-8000-0000000000aa" };
+
 /** Both windows short and far apart, so a back-dated age sits unambiguously between them.
  *  Never the shipped defaults: a suite using those could not tell a policy that is READ from
  *  one that is hardcoded. Copied from SVC-003b's suite for exactly that reason. */
@@ -141,6 +146,7 @@ async function createRunningService(): Promise<string> {
     definition: DEFINITION,
     desiredState: "running",
     createdBy: "svc-005a-operator",
+    actor: OPERATOR,
   });
   if (!created) throw new Error("create returned null");
   return created.serviceId;

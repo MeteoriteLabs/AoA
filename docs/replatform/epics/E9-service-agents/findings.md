@@ -784,6 +784,186 @@ fact*, and the durable half of that is now closed — but the clause it sits und
 `telemetry explains every transition` (SVC-006), and a column with no reader and no receipt does not
 explain a transition. Half a conjunction is not the conjunction.
 
+> ★ **PARTIAL CORRECTION FROM `E9-F010`, 2026-09-10.** §3's measurement — *"no repository method
+> under `packages/db/src/repositories/tenant/` writes `activity_log` at all"* — is RE-MEASURED AND
+> STILL TRUE at this commit, and SVC-007b did not change it. But the conclusion drawn beside it,
+> that an `activity_log` write from the distributed path would be "a new convention entering the
+> layer through its least prominent door", holds only for the REPOSITORY layer. In the SERVICE
+> layer the convention already exists and now has three users: `stageJobInputFiles`
+> (`server/src/services/job-input-staging.ts`), `jobAuditBridge`, and SVC-007b's
+> `service-control-audit.ts`. This finding's own remedy is unaffected — a liveness sweep runs
+> inside a repository method and has no service-layer caller to hang an audit on — but a reader
+> should not carry §3 across as "the distributed path cannot write `activity_log`".
+
+---
+
+## E9-F010 — the recorded reason these routes write no `activity_log` row is refuted at source: the fence is `jobAuditBridge`'s requirement, not the table's
+
+**Status:** `open` — **HALF RESOLVED** 2026-09-10 by **SVC-007b**
+(`tickets/SVC-007b-result.md`) · **Severity:** MED
+**Filed:** 2026-09-10, by SVC-007b, whose whole assignment was to verify the claim before building
+on it. Filed although half of it is resolved in the same commit, because the OTHER half — three
+sibling mutations on the same router — is still silent for the same refuted reason, and because a
+false "X is blocked" is the class this programme gets wrong most.
+**Affected tickets:** SVC-007 (filed and half-resolved it), JOB-008 (owns `drain`/`revoke`),
+JOB-013 (owns the fenced bridge; unchanged by this).
+**Blocks gate:** no. It bounds what AGENTS.md §9's *"Write activity log entries for mutations"* may
+be read to guarantee on the distributed-execution router.
+
+### 1. The claim, quoted rather than paraphrased
+
+`SVC-007a-result.md` §4a(iii) declined an `activity_log` row for its four new service routes and
+explicitly gave a mechanical reason rather than a scope preference:
+
+> *"the shipped distributed-execution audit path is `jobAuditBridge.recordAcceptedActivity`, and its
+> input contract **requires** `fence: ActiveFenceRequest` … **A service CREATE has no attempt, and a
+> desired-state change has no fence** … So that bridge is structurally unusable here, and writing
+> `activity_log` directly would create a SECOND, unguarded audit path that JOB-013's exactly-once
+> machinery does not cover."*
+
+§7 restates it as *"not merely unwritten, it is currently **unwritable** from here"*.
+
+### 2. What is true, re-verified at source
+
+The FIRST half is exactly right and is not disputed. `RecordAcceptedActivityInput.fence` is a
+required, non-optional field (`server/src/services/job-audit-bridge.ts`), and the bridge uses it
+TWICE — `repos.jobControl.lockActiveFence(input.fence)` for the TOCTOU serialization, and
+`recordGovernedProjection({...input.fence, projection})` for the receipt. No service control has a
+lease, an attempt or a fence. **That bridge genuinely cannot be called from these routes.**
+
+### 3. What is false — three independent measurements
+
+1. **The fence is the BRIDGE's admission requirement, not the TABLE's.** `insertActivityLog`
+   (`server/src/services/activity-log.ts`) takes a plain `Db` — a transaction handle is one — and
+   requires no lease, no attempt and no fence. The bridge calls it that way itself, on `tx`.
+
+2. **`aoa_app` may write the table, with no exemption.** `GRANT SELECT, INSERT ON "activity_log" TO
+   "aoa_app"` — `packages/db/src/migrations/0213_e2_serving_role_correction.sql:98`, re-affirmed at
+   `0214_e2_serving_role_hardening.sql:166`. No migration enables RLS on `activity_log`, and
+   `0245_job_activity_audit_rls.sql`'s own header says so: *"`activity_log` and `hub_audit` are
+   deliberately NOT touched here: both are CAV-005 legacy, non-forced, app-layer-company-scoped
+   tables (table-level grants to aoa_app — activity_log SELECT+INSERT …) — already cover the
+   transactional audit writes."*
+
+3. **★ A FENCELESS TRANSACTIONAL `activity_log` WRITE ALREADY SHIPS ON THE DISTRIBUTED PATH.**
+   `stageJobInputFiles` (`server/src/services/job-input-staging.ts`) writes one bundle-level audit
+   row via `insertActivity(tx, …)` inside `runInTenant`, with `leaseId` and `fenceToken` NULL and no
+   receipt — and its own comment forbids repairing that: *"NO LEASE, NO FENCE … do not 'tidy' this
+   behind `guardActiveFence`, which cannot be satisfied here and would remove the capability rather
+   than secure it."* Measured with the register's own `countProductionCallers` at base
+   `c27feeea8` AND re-measured at this commit's head — unchanged by this unit: `stageJobInputFiles`
+   **2** production callers (reached from `server/src/index.ts:1269`), `jobAuditBridge` **0**. So
+   the direct transactional write is not "a SECOND path" — it is the FIRST one, and the fenced
+   bridge is the one nothing calls.
+
+★ The inversion is worth naming because it is the general shape: the exceptional, unreached
+mechanism was mistaken for the norm, and the norm for a deviation from it.
+
+### 4. Why the receipt is not needed here, rather than merely unavailable
+
+JOB-013's header states its own premise: *"insertActivityLog has NO native dedup. On a **replay** the
+JOB-005 receipt identity … is the guard."* The bridge audits an accepted mutation on a distributed
+attempt delivered **at-least-once**: the same `acceptedEventId` can arrive twice, the mutation may
+already have been applied by the earlier delivery, and the audit insert would then be the only new
+write in its transaction — nothing else pins it, so it needs an identity-keyed receipt.
+
+A service control action is **re-requested, not replayed**. There is no redelivery machinery in front
+of these routes, and `SVC-007a-result.md` §7 says of the mutation itself that *"two POSTs create two
+services"*. Two services must leave two audit rows; a receipt keyed on a client id would make the
+audit under-report exactly where the mutation over-produced. So the guard here is the TRANSACTION:
+the audit row is written inside the same tenant transaction as the mutation, so a commit yields
+exactly one of each and a rollback yields neither. That is stronger than reconciling two things that
+can be written apart, because they cannot be written apart.
+
+### 5. What SVC-007b resolved, and what it did NOT
+
+**RESOLVED — the two MUTATING service routes.** `POST …/services` and
+`POST …/services/:serviceId/desired-state` each write one `activity_log` row
+(`service.create` / `service.desired_state`) inside the mutation's own tenant transaction, through
+`server/src/services/service-control-audit.ts`. Pinned by T14–T18 in
+`service-management.integration.test.ts` (real embedded PostgreSQL, `aoa_app` pool) and B1–B10 in
+`service-control-audit.test.ts`; twelve mutants, all killed, listed in `SVC-007b-result.md` §4.
+(The other two service routes are GETs and mutate nothing.)
+
+**★ NOT RESOLVED, WHICH IS WHY THIS FINDING STAYS OPEN.** Three mutating endpoints on the SAME
+router still write nothing durable — `POST …/companies/:companyId/jobs`,
+`POST …/companies/:companyId/jobs/:jobId/drain`, and
+`POST …/organizations/:organizationId/workers/:workerId/revoke`. Measured at this commit: neither
+`server/src/services/job-submission.ts` nor `server/src/services/job-operations.ts` contains any
+`activityLog` / `insertActivity` / `logActivity` reference, so the handler's logger line is the
+whole record. They are unaudited because nobody wired them — NOT because they are blocked. The split
+is written into `jobControlRoutes`' own header so a reader of those handlers sees it.
+
+**NOT TOUCHED:** `jobAuditBridge` keeps its zero production callers, and DE-01 is unaffected — its
+`audit` clause is *"query and policy-denial events recorded in the control-plane audit log"*, which
+is a different clause from AGENTS.md's mutating-action invariant. Nothing here closes DE-01.
+
+**Resolve** = wire the three remaining mutations (the same shape, one call each, no new mechanism),
+then flip this Status and DELETE the manifest key in the SAME commit.
+
+---
+
+## E9-F011 — a create whose generation insert conflicts COMMITS a service with no generation, and the docstring says it rolls back
+
+**Status:** `open` · `unowned` · **Severity:** LOW (unreachable by construction today; the RECORD
+is what is wrong)
+**Filed:** 2026-09-10, by **SVC-007b**, found while deciding where the create's audit row belongs —
+the question "what is audited when the create returns `null`?" is what exposed it.
+**Affected tickets:** SVC-007 (owns the create path), SVC-005 (owns generation rollout, and will
+add the first REACHABLE conflict).
+**Blocks gate:** no.
+
+### 1. The contradiction, at source
+
+`createServiceWithinTenant` (`server/src/services/service-management.ts`) documented its `null`
+return as *"the caller turns it into a definite refusal and the transaction rolls back"*, and the
+route's own comment calls the case *"Unreachable by construction; reported as a definite refusal
+rather than retried"*.
+
+Returning `null` does not roll anything back. Three facts compose:
+
+* `insertServiceGeneration` catches its `23505` **on a SAVEPOINT**
+  (`packages/db/src/repositories/tenant/job-control.ts`), explicitly so the OUTER transaction stays
+  alive and the caller can answer — its own comment says so.
+* `runInTenant` is `withTenantTx`; a callback that RETURNS commits. Only a throw rolls back.
+* the route's `throw new HttpError(409, …)` runs **after** `createService` has already returned, so
+  it cannot reach the transaction.
+
+So on that path the `services` row COMMITS with no `service_generations` row — precisely the
+permanent `no_generation` wedge the same function's docstring calls "not a partial success", and
+which every reconcile pass then stalls on forever with no route able to repair it (this unit mints
+generation 1 only, and 1 is taken). It also commits with NO audit row, since SVC-007b writes one
+only on success.
+
+### 2. Why it is LOW rather than a live defect
+
+`service_generations_service_generation_uq` is on `(service_id, generation)`, and the service id is
+minted by the `repos.services.insert` call immediately above it, in the same function and the same
+transaction. `(fresh uuid, 1)` cannot already exist, so the
+`null` branch is unreachable from the shipped caller. **The defect filed here is the FALSE RECORD**,
+which is this programme's dominant failure class: a reader repairing or extending this function
+would be reasoning from a rollback that does not happen.
+
+### 3. When it becomes reachable
+
+SVC-005's generation rollout mints generation **N+1** on a service id that ALREADY EXISTS, where a
+`(service_id, generation)` conflict is a genuine concurrent-rollout outcome rather than an
+impossibility. A rollout composed on this function's stated contract would commit half of itself.
+
+### 4. What SVC-007b did instead of fixing it
+
+Corrected the docstring in place — it now states that the transaction commits, names the SAVEPOINT
+as the reason, and points here. NOT fixed, because the fix changes what the function RETURNS (throw
+rather than `null`, or an explicit rollback signal), which changes the route's 409 path and needs its
+own observed red. `unowned`: SVC-007 has a `-result.md` on disk so it counts as completed, and
+naming it would be owning an open finding with shipped work (E4-F013); SVC-005 has no file on disk
+at all, so naming it would fail the guard's existence bar.
+
+**Resolve** = make the `null` branch roll back (throw from `createServiceWithinTenant`, or have
+`createService` re-throw inside the transaction), with a test that drives a REAL `(service_id,
+generation)` conflict — which SVC-005's rollout makes constructible for the first time. Then flip
+this Status and DELETE the manifest key in the SAME commit.
+
 ---
 
 ## E9-F012 — a generation rollout cannot prove the old generation's PROCESS stopped, so SVC-005's acceptance clause has an un-closeable half

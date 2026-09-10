@@ -254,6 +254,19 @@ the other half is declined WITH ITS REASON.**
   **discarded it on every transition to `running`**. A stop carries it into
   `job_control_commands.body` through `requestCancellation`, but a resume reached no sink at all —
   a field the caller was forced to supply went nowhere. It is now on the structured audit line.
+* **★★★ CORRECTION, 2026-09-10 (`E9-F010`, `SVC-007b-result.md`). THE DECLINE BELOW IS HALF
+  RIGHT AND HALF MEASURED FALSE, and the bullet is left standing rather than rewritten so the
+  shape of the miss stays legible.** The `fence` requirement on `recordAcceptedActivity` is
+  real and re-verified — that bridge genuinely cannot be called from here. What does NOT
+  follow is that the TABLE is unwritable: `insertActivityLog` takes a plain `Db` and needs no
+  fence, `aoa_app` holds `GRANT SELECT, INSERT ON activity_log` (`0213:98`, re-affirmed
+  `0214:166`) under no RLS (`0245`'s own header says so), and a fenceless transactional write
+  of that table ALREADY SHIPS on the distributed path — `stageJobInputFiles`, **2** production
+  callers against `jobAuditBridge`'s **0**. So the fenced bridge was the deviation and the
+  direct transactional write the norm, not the other way round. SVC-007b wires the two
+  MUTATING routes of this ticket; the three JOB-008/submission mutations on the same router
+  stay silent, which is why `E9-F010` stays OPEN. **§7's sentence "it is currently unwritable
+  from here" is withdrawn.**
 * **DECLINED, and this is a mechanical reason rather than a scope preference:** the shipped
   distributed-execution audit path is `jobAuditBridge.recordAcceptedActivity`, and its input
   contract **requires** `fence: ActiveFenceRequest` — *"the LIVE distributed attempt to bind the
@@ -397,12 +410,20 @@ addressed to SVC-005, no** — and the two were never the same half.
   not here.
 * **No `activity_log` row is written for a control action** — not by this one and not by the
   JOB-008 mutations beside it. `jobAuditBridge` still has zero production callers; already on the
-  register under DE-01. **And it is not merely unwritten, it is currently unwritable from here**:
-  `recordAcceptedActivity` requires `fence: ActiveFenceRequest`, and a service create has no
-  attempt while a desired-state change has no fence (§4a(iii)). The audit is structured logger
-  lines with `action: "service.create"` / `"service.desired_state"`, and the operator's `reason`
-  is on the latter. **AGENTS.md's "Activity logging for all mutating actions" invariant is NOT met
-  by these routes** — stated, not claimed.
+  register under DE-01. ~~**And it is not merely unwritten, it is currently unwritable from
+  here**: `recordAcceptedActivity` requires `fence: ActiveFenceRequest`, and a service create has
+  no attempt while a desired-state change has no fence (§4a(iii)).~~ The audit is structured
+  logger lines with `action: "service.create"` / `"service.desired_state"`, and the operator's
+  `reason` is on the latter. **AGENTS.md's "Activity logging for all mutating actions" invariant
+  is NOT met by these routes** — stated, not claimed.
+
+  > ★★★ **SUPERSEDED 2026-09-10 BY `SVC-007b` — `E9-F010`.** The struck sentence is measured
+  > false: the fence is `jobAuditBridge`'s requirement, not `activity_log`'s. SVC-007b writes
+  > one row per mutating service control INSIDE the mutation's own tenant transaction, over the
+  > same `aoa_app` pool, with no fence and no receipt. **So the last sentence above is no longer
+  > true of THIS ticket's two mutating routes** — it remains true of the three JOB-008/submission
+  > mutations beside them, which is the half that keeps `E9-F010` open. See §4a(iii)'s correction
+  > and `service-control-audit.ts`'s header.
 * **No `E10-REALTIME-FOUNDATION` claim is made.** SVC-007's Depends-on names it and its Acceptance
   says control actions are *"reflected through durable event catch-up"*. This unit's view is a
   plain read with no realtime channel, so that half of the Acceptance is **not delivered** and the

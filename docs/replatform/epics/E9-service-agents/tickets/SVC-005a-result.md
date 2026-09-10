@@ -98,7 +98,14 @@ measurement of **this branch**, taken at base `c27feeea8` and again at head, not
 other branch: `grep -n 'activity_log\|activityLog'` over `server/src/routes/job-control.ts` and
 `server/src/services/service-management.ts` returns **comments only, no writer**, at both revisions.
 If a sibling ticket lands an audit write on those routes, this sentence goes stale by that landing
-and not before. Second: E9-F009 §3 measured that **no** repository method in that layer writes
+and not before. ★★★ **IT WENT STALE EXACTLY THAT WAY, on 2026-09-10, when this branch merged
+`origin/docs/replatform-program` carrying SVC-007b (#414, `3065f2869`).** Both sibling controls —
+`service.create` and `service.desired_state` — now write an `activity_log` row in their own tenant
+transaction, so of the three mutating service routes on this router TWO are audited and the roll is
+the one that is not. The reason above therefore no longer holds; what remains is the second reason
+plus the rule that a merge resolution does not add behaviour. The roll route now sits squarely in
+the unaudited-route class **`E9-F010`** tracks as its still-open half (there alongside job
+submission, `drain` and worker `revoke`), and wiring it is FOLLOW-UP, not merge work. Second: E9-F009 §3 measured that **no** repository method in that layer writes
 `activity_log` at all, and declined to introduce the convention through its least prominent door. Nothing in this
 unit's records claims the roll is audited — the DE-12 append says in terms that a `logger.info` line
 is not a durable record.
@@ -249,4 +256,6 @@ queues no command and emits no event, which is E9-F006 and is exactly why the ro
 attempt-terminal backstop.
 
 **Findings claimed by this unit: E9-F012** (filed). **E9-F009** is updated with a delivered/not-
-delivered split and **stays OPEN**. E9-F001–F008 are untouched.
+delivered split and **stays OPEN**. E9-F001–F008 are untouched, and so are **E9-F010** and
+**E9-F011**, which arrived in the same 2026-09-10 merge of SVC-007b (#414) and which SVC-005a
+neither opened nor moved.
