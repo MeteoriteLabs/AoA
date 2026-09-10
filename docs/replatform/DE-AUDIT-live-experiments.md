@@ -598,13 +598,23 @@ Write it as a new `tests/d1/e6f-15-target-generation-replacement.test.mjs` on th
 
 **Delivered** for the fence = step 2 is 200 **and** steps 4/5 are `target_revoked`.
 
-### The convergence leg (the unwired half)
+### The convergence leg (now WIRED — the thing to measure)
 
-After step 3, wait past one intended fanout interval and query the lease and revocation rows.
-**Predicted from source:** the lease stays `offered`/`active` **forever** and the revocation row
-stays `pending`, because nothing calls `createExecutionTargetRevocationFanout` — leaving the
-attached job stranded non-terminal with its organization concurrency slot still held. A holding
-prediction is a live confirmation of `E0-F014` item 1. If the revocation is issued through the
+★ **Updated:** the fanout is no longer unwired. PR #418 constructs
+`createExecutionTargetRevocationFanout` (`server/src/index.ts:1352`) and ticks it on the shared
+MIG-002 convergence timer (`server/src/index.ts:1424`), **inside the distributed-execution flag
+block** — so a **flag-off default boot runs no convergence at all** (flag-off allocates no
+`aoa_app` pool, so `runInTenant` has nothing to open), while a flag-on boot drains the same
+durable `status:'pending'` `execution_target_revocations` rows the live producer writes.
+
+So this leg is now a **live measurement, not a holding prediction**: with the flag **ON**, after
+step 3 wait past one convergence interval and assert the wired fanout actually **retires** the
+revocation — the stale lease moves off `offered`/`active` (its capacity released, the pinned job
+cancelled) and the revocation row leaves `pending`. That end-to-end convergence is exactly what
+DE-18's `deliveryStatus` awaits, and it has not yet been observed live; **do not record it as
+proven from the wiring alone** — the point of the run is to see the durable rows change. With the
+flag **OFF** (the default), assert the opposite: no convergence runs, so the row stays `pending`,
+confirming the fanout is correctly gated. If the revocation is issued through the
 `POST …/execution-targets/:id/revoke` route instead, additionally assert that **no**
 `execution_target_revocations` row is created at all — the second, undocumented revoke path.
 
@@ -778,8 +788,11 @@ object-store keys, and spend authorization. Follow `REL-003-dr-rehearsal-runbook
    `headObject` = the live `StorageProvider.headObject`; assert verdict `recovered`.
 7. Inject the DR04 fault (delete one authoritative object, flip a byte in another) and assert
    verdict `failed`, with those two in `quarantined`/`missing` and **neither in `promoted`**.
-8. Rolling-deploy at parallelism 1; re-enrol one worker, revoke one, and **hand-tick** the
-   revocation fanout — no production scheduler exists.
+8. Rolling-deploy at parallelism 1; re-enrol one worker, revoke one, and drive the revocation
+   fanout. A production scheduler now exists — PR #418 ticks the fanout on the shared MIG-002
+   convergence timer inside the distributed-execution flag block (`server/src/index.ts:1424`), so
+   with the flag **on** the deployed boot converges it on its own; **hand-tick only if the
+   rehearsal runs flag-off** (default), where no convergence timer starts.
 9. Timed rollback, asserting that **marker-row deletion alone is not a rollback**.
 
 Record RPO ≤ 15min and RTO ≤ 4h against D5-DR02/DR03.

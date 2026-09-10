@@ -1715,6 +1715,17 @@ export function evaluateDurableRecord(workflowText, opts = {}) {
 // REQUIRES this form. It is the shape a real DE-08 control would have to take, and it is
 // exactly the shape nobody has measured.
 //
+// ★★★ WHY THIS ARM IS NOW CIDRs/IPs ONLY (the domain was dropped after two UNRUN dispatches).
+// A prior revision carried a third `allowOut` entry, `example.com` as a `kind:"hostname"`
+// observation. A HOSTNAME in `allowOut` forces E2B's `validateEgressRules` to require
+// `0.0.0.0/0` in `denyOut` AND routes the sandbox through the tcpproxy (L7) path — which
+// reproducibly 500s at create ("failed to place") on this tier. Both prior dispatches
+// therefore returned UNRUN and measured NOTHING (see the runbook §13.7 record). Removing the
+// domain leaves `allowOut = ["8.8.8.0/24","1.1.1.1"]` — CIDRs/IPs only — which routes down the
+// plain iptables path and should place, finally measuring whether E2B egress enforces. This is
+// the single change from the shape that would not place; the differential and anti-vacuity
+// reasoning below are otherwise unchanged.
+//
 // ★ THE RUNBOOK ALREADY KNEW THE MECHANISM AND FILED IT AS A HAZARD. §2 records that "any
 // `allowOut` entry flips the whole policy to default-deny", and treated that as the STOP
 // CONDITION to avoid — because carving the guest's DNS resolver out of a deny set is
@@ -1770,15 +1781,16 @@ export const ALLOWLIST_ALLOW_SET = Object.freeze([
       "the arm's POSITIVE CONTROL destination: a stable anycast public address that answers HTTPS and needs NO name " +
       "resolution, so it separates `the allowlist permits what it names` from `DNS happens to work`.",
   }),
-  Object.freeze({
-    value: "example.com",
-    kind: "hostname",
-    why:
-      "an OBSERVATION only, never load-bearing. The SDK types accept hostnames in an egress list " +
-      "(`SandboxNetworkSelector` = CIDR blocks, IP addresses, or hostnames) and E2B's docs say domains are unsupported " +
-      "in DENY lists specifically. Whether a hostname allow entry actually works is unmeasured; this row reports it and " +
-      "no verdict rests on it.",
-  }),
+  // ★★★ THE ALLOW SET IS CIDRs/IPs ONLY — NO HOSTNAME — AND THAT IS THE ONE THING THIS
+  // REVISION CHANGED. A prior shape carried a third entry, `example.com` as `kind:"hostname"`,
+  // as an unmeasured OBSERVATION. It was not load-bearing, but it was not free either: a
+  // hostname in `allowOut` forces E2B's `validateEgressRules` to require `0.0.0.0/0` in
+  // `denyOut` AND routes the sandbox through the tcpproxy L7 path, which reproducibly 500s at
+  // create ("failed to place") on this tier — so BOTH prior dispatches (§13.7) returned UNRUN
+  // and measured NOTHING. Dropping the domain leaves `allowOut = ["8.8.8.0/24","1.1.1.1"]`,
+  // which routes down the plain iptables path and can actually place, so the arm finally
+  // measures whether egress enforces instead of failing to be created. "Change one thing":
+  // the domain is the thing.
 ]);
 
 /** Just the strings, in declaration order — the shape `allowOut` takes. */
@@ -1811,14 +1823,12 @@ export const ALLOWLIST_HTTP_TARGETS = Object.freeze([
       "IN the allowlist, by IP literal, so no name resolution is involved. MUST be REACHED. If it is not, the arm is " +
       "BROKEN and no enforcement verdict may be read from it, however cleanly the denied rows failed.",
   }),
-  Object.freeze({
-    id: "allow_host",
-    role: "observation",
-    url: "https://example.com/",
-    why:
-      "IN the allowlist by HOSTNAME. Reported, never load-bearing: it answers whether hostname allow entries work, and a " +
-      "failure here is a fact about hostname support, not about enforcement.",
-  }),
+  // ★ THE `allow_host` (`https://example.com/`) TARGET IS GONE ALONG WITH THE HOSTNAME ALLOW
+  // ENTRY. With no hostname in `allowOut`, example.com is no longer allowlisted — it would be
+  // DENIED — so a target that asserted it as an allowed observation would be measuring the
+  // opposite of what its row implied. It was a pure `role:"observation"`, never in the
+  // positive-control or denied sets and never consulted by the verdict, so removing it is
+  // clean: nothing in the expectation-building or classifier referenced its id.
   Object.freeze({
     id: "deny_metadata",
     role: "question",
@@ -1896,10 +1906,12 @@ export function allowlistDeniedAddresses() {
  * was wrong and the sandbox ran some other shape.
  *
  * ★★ AND IT FIRES ONLY ON A POSITIVE CONTRADICTION. `getInfo()`'s `allowOut` shape is
- * UNMEASURED at this tier: it may normalise `1.1.1.1` to `1.1.1.1/32`, drop the hostname entry
- * (an observation, never load-bearing), or carry no network object at all. Reading any of
- * those as a mismatch would spend the operator's single authorised run on formatting — a false
- * BROKEN costs a run, so it is cheap, but not free, and it must not be manufactured.
+ * UNMEASURED at this tier: it may normalise `1.1.1.1` to `1.1.1.1/32`, reorder the CIDR/IP
+ * entries, or carry no network object at all. Reading any of those as a mismatch would spend
+ * the operator's single authorised run on formatting — a false BROKEN costs a run, so it is
+ * cheap, but not free, and it must not be manufactured. (The allow set is now CIDRs/IPs only;
+ * the `entry.kind !== "hostname"` filter below is retained defensively so a future hostname
+ * observation could never be treated as load-bearing.)
  */
 export function allowlistReadBackProblem({ readBack } = {}) {
   if (!readBack || readBack.ok !== true) return null;
@@ -2013,9 +2025,17 @@ export const ALLOWLIST_OUTCOME_IS_A_VERDICT = Object.freeze({
  */
 export function classifyAllowlistArm({ arm } = {}) {
   const rowOf = (id) => arm?.rows?.[id] ?? null;
+  // ★★★ THE SUMMARY ROW STRING READS THROUGH `classifyReachEvidence`, NOT `classifyHttpRow`.
+  // `classifyHttpRow` answers "did the transfer complete", and prints "blocked" for a
+  // reached-then-broke row (curl 35/56) — the exact transfer-completion reading its own
+  // docstring forbids an enforcement claim from resting on. This string sits next to the
+  // arm's verdict in the durable record, and a recorder read `deny_public_ip=blocked/curl-35`
+  // as "the allowlist blocked public egress" when the row was REACHED-then-broke (INERT). The
+  // summary now speaks the enforcement classifier's own vocabulary, so it can never again say
+  // "blocked" for a destination that was reached. `no-result` still marks a missing row.
   const shown = ALLOWLIST_HTTP_TARGETS.map((t) => {
     const r = rowOf(t.id);
-    return `${t.id}=${classifyHttpRow(r)}/${blockShape(r)}`;
+    return `${t.id}=${classifyReachEvidence(r)}/${blockShape(r)}`;
   }).join(" ");
   const dns = classifyDnsRow(arm?.dnsRow);
   const resolverNote = `dns_lookup=${dns}`;
@@ -2153,8 +2173,8 @@ export function classifyAllowlistArm({ arm } = {}) {
   // ★ The tier stores what it is given, so a read-back that DIFFERS means the request was
   // wrong and the run measured some other shape. It fires only on a positive contradiction:
   // `getInfo()`'s `allowOut` shape is UNMEASURED at this tier, and treating a normalisation
-  // (`1.1.1.1` → `1.1.1.1/32`) or a dropped hostname entry as a mismatch would spend the
-  // operator's authorisation on formatting.
+  // (`1.1.1.1` → `1.1.1.1/32`) or a reordering of the CIDR/IP entries as a mismatch would spend
+  // the operator's authorisation on formatting.
   const readBackProblem = allowlistReadBackProblem({ readBack: arm?.readBack });
   if (readBackProblem !== null) {
     return out(
