@@ -89,8 +89,8 @@ Migration `0276` adds a **partial** index — `(created_at DESC, id DESC) WHERE 
 
 | Drift on this endpoint | What actually happens | Caught by |
 |---|---|---|
-| Change the **action prefix** | The `WHERE` no longer implies the partial predicate; the plan reverts to `Sort <- Seq Scan`. | The plan arms (5 of 7 red). |
-| Change the **sort direction** | The index cannot be walked in that order; the `Sort` returns. | The plan arms (4 of 7 red). |
+| Change the **action prefix** | The `WHERE` no longer implies the partial predicate; the plan reverts to `Sort <- Seq Scan`. | The plan arms, and 5 of 7 arms in total — the reader also stops returning the seeded rows at all. |
+| Change the **sort direction** | The index cannot be walked in that order; the `Sort` returns. | The plan arms, and 4 of 7 arms in total (the positive control's *restore* assertion reds too: there is no good plan left to restore to). |
 | Drop the **`id` tiebreaker** from the sort | **The plan does not change.** `created_at DESC` alone is a *prefix* of the index key order, so Postgres keeps using the index and keeps `Limit <- Index Scan`. What silently breaks is the total order the keyset cursor needs: pages lose rows on a `created_at` tie, with a `200` and no error. | Only the matched-pair arm, which compares the reader's emitted `ORDER BY` against `pg_indexes.indexdef` (1 of 7 red). |
 
 The earlier draft said all three "silently revert it to `Sort <- Seq Scan` with no error and no failing test". The third row of that claim is false, and — until this was fixed — the "no failing test" half was true of *every* row, because the test transcribed the endpoint's SQL by hand instead of deriving it. Dropping the tiebreaker left both suites 23/23 green. See `docs/replatform/epics/E0-foundation/findings.md`.
