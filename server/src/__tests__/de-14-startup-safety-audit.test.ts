@@ -260,6 +260,81 @@ describe("DE-14 — the entrypoint records the outcome in both directions", () =
     expect(cap.info).toHaveLength(0);
   });
 
+  it("REACHABILITY — every refusal reason is reachable through the REAL loadConfig", async () => {
+    const { loadConfig } = await import("../config.js");
+    const keys = [
+      "AOA_DISTRIBUTED_EXECUTION_ENABLED",
+      "AOA_APP_DATABASE_URL",
+      "AOA_OPERATOR_DATABASE_URL",
+      "AOA_DISTRIBUTED_PUBLIC_SERVICE_INGRESS_ENABLED",
+      "AOA_DISTRIBUTED_CLOUD_PLUGIN_EXECUTION_ENABLED",
+      "AOA_ALLOW_UNSANDBOXED_MULTITENANT",
+      "AOA_DEPLOYMENT_MODE",
+    ];
+    const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+    const refuse = (env: Record<string, string>): unknown => {
+      for (const k of keys) delete process.env[k];
+      Object.assign(process.env, env);
+      try {
+        loadConfig();
+        return null;
+      } catch (err) {
+        return err;
+      }
+    };
+
+    try {
+      // ★ THE ARM THAT WAS MISSING, AND THE DEFECT IT NOW PINS. `loadConfig` used
+      // to call `readDistributedExecutionDeploymentFlag` on its own line BEFORE
+      // the assertion, so this exact input refused with a PLAIN Error one line
+      // too early and `env_flag_unparseable` was a reason code no production path
+      // could ever emit. Asserting the four reasons against the module that
+      // OWNS them would not have caught it; only driving the real `loadConfig`
+      // does. (Found by external review on PR #416.)
+      const unparseable = refuse({ AOA_DISTRIBUTED_EXECUTION_ENABLED: "banana" });
+      expect(unparseable).toBeInstanceOf(HostedExecutionStartupUnsafeError);
+      expect((unparseable as HostedExecutionStartupUnsafeError).reason).toBe("env_flag_unparseable");
+      expect((unparseable as HostedExecutionStartupUnsafeError).envName).toBe(
+        DISTRIBUTED_EXECUTION_ENABLED_ENV,
+      );
+
+      const excluded = refuse({ [DISTRIBUTED_CLOUD_PLUGIN_EXECUTION_ENV]: "1" });
+      expect(excluded).toBeInstanceOf(HostedExecutionStartupUnsafeError);
+      expect((excluded as HostedExecutionStartupUnsafeError).reason).toBe("excluded_surface_enabled");
+
+      const missingUrl = refuse({ AOA_DISTRIBUTED_EXECUTION_ENABLED: "1" });
+      expect(missingUrl).toBeInstanceOf(HostedExecutionStartupUnsafeError);
+      expect((missingUrl as HostedExecutionStartupUnsafeError).reason).toBe(
+        "distributed_database_url_missing",
+      );
+
+      const unsandboxed = refuse({
+        AOA_DEPLOYMENT_MODE: "cloud_auth",
+        [UNSANDBOXED_MULTITENANT_OPT_IN_ENV]: "1",
+      });
+      expect(unsandboxed).toBeInstanceOf(HostedExecutionStartupUnsafeError);
+      expect((unsandboxed as HostedExecutionStartupUnsafeError).reason).toBe(
+        "unsandboxed_multitenant_in_cloud_auth",
+      );
+
+      // ANTI-VACUITY: with none of them set, `loadConfig` must NOT refuse, and its
+      // reported flag must be the one the assertion actually read.
+      for (const k of keys) delete process.env[k];
+      const ok = loadConfig();
+      expect(ok.hostedExecutionStartupSafety.outcome).toBe("passed");
+      expect(ok.distributedExecutionEnabled).toBe(false);
+      process.env[DISTRIBUTED_EXECUTION_ENABLED_ENV] = "1";
+      process.env.AOA_APP_DATABASE_URL = "postgres://app@localhost:5432/aoa";
+      process.env.AOA_OPERATOR_DATABASE_URL = "postgres://operator@localhost:5432/aoa";
+      const on = loadConfig();
+      expect(on.distributedExecutionEnabled).toBe(true);
+      expect(on.hostedExecutionStartupSafety.distributedExecutionEnabled).toBe(true);
+    } finally {
+      for (const k of keys) delete process.env[k];
+      for (const [k, v] of Object.entries(saved)) if (v !== undefined) process.env[k] = v;
+    }
+  });
+
   it("ARMING PATH — the entrypoint's single startup load goes through this recorder", async () => {
     const { readFile } = await import("node:fs/promises");
     const entry = await readFile(new URL("../index.ts", import.meta.url), "utf8");

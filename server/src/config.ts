@@ -25,7 +25,6 @@ import {
 } from "./home-paths.js";
 import {
   assertHostedExecutionStartupSafe,
-  readDistributedExecutionDeploymentFlag,
   type HostedExecutionStartupSafetyOutcome,
 } from "./config/distributed-execution.js";
 
@@ -203,11 +202,23 @@ export function loadConfig(): Config {
   // startup in every mode; the process-wide unsandboxed override is rejected in
   // cloud_auth. Neither branch starts a scheduler, adapter, distributed route, or
   // worker — the reserved distributed routes stay unregistered when absent/false.
-  const distributedExecutionEnabled = readDistributedExecutionDeploymentFlag(process.env);
+  // ★ DE-14 — THE FLAG IS READ *THROUGH* THE ASSERTION, NOT BESIDE IT, and the
+  // order matters. This line used to be a separate
+  // `readDistributedExecutionDeploymentFlag(process.env)` call sitting BEFORE the
+  // assertion. That reader throws a PLAIN `Error` on a non-boolean value, so
+  // `AOA_DISTRIBUTED_EXECUTION_ENABLED=banana` refused startup one line too early
+  // — before the assertion could classify it — and the recorder at the entrypoint
+  // saw an unrelated load failure and wrote no
+  // `distributed_execution.startup_safety.refused` line. The classified
+  // `env_flag_unparseable` branch was therefore PRODUCTION-UNREACHABLE for this
+  // one flag: a reason code that nothing could emit. Found by external review on
+  // PR #416. The assertion already reads the same flag and now RETURNS it, so
+  // there is exactly one read and the refusal cannot outrun the record.
   const hostedExecutionStartupSafety = assertHostedExecutionStartupSafe({
     deploymentMode,
     env: process.env,
   });
+  const distributedExecutionEnabled = hostedExecutionStartupSafety.distributedExecutionEnabled;
   const deploymentExposureFromEnvRaw = process.env.AOA_DEPLOYMENT_EXPOSURE;
   const deploymentExposureFromEnv =
     deploymentExposureFromEnvRaw &&

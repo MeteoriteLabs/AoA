@@ -620,18 +620,38 @@ class and moves no other blocker — not the separate-transaction lifecycle, not
 not any Group B/C/D item. It also does not touch DE-14's other clauses, so **DE-14 stays `partial`
 in the register**, exactly as DE-19 and DE-06 do.
 
-**Proven, not declared.** `server/src/__tests__/de-14-startup-safety-audit.test.ts`, NINE arms.
-Observed RED against the unchanged tree — the whole suite failed to collect, because neither the
-recorder module nor the assertion's new exports existed — and then killed by four mutants applied
-one at a time to the shipped source and reverted with an md5-verified restore, each with named
-survivors: **delete the pass log** → exactly the 2 pass arms red, 7 green including the PRECISION
-CONTROL and the refusal arm; **stamp a constant reason** on one branch → exactly the distinctness
-arm red, 8 green; **widen the refusal guard to `instanceof Error`** → exactly the PRECISION CONTROL
-red, 8 green; **restore the bare `loadConfig()` at the entrypoint** → exactly the ARMING PATH arm
-red, 8 green. The pre-existing `distributed-execution-policy.test.ts` (17 arms, message- and
-throw-shape assertions over the same function) is the named regression control and stayed green
-throughout. Enrolled as `E0-de14-startup-safety-audit` in `scripts/gate-clause-wiring.json` in the
-same commit.
+**★ ONE CODEX P2 ON PR #416, REAL AND FIXED IN THE SAME BRANCH — and it is this programme's own
+failure class, inside a unit whose subject is that failure class.** As first shipped, `loadConfig`
+called `readDistributedExecutionDeploymentFlag(process.env)` on its own line **before** the
+assertion. That reader throws a **plain `Error`** on a non-boolean value, so
+`AOA_DISTRIBUTED_EXECUTION_ENABLED=banana` refused startup ONE LINE TOO EARLY, the entrypoint's
+recorder saw an unrelated load failure, and no `…startup_safety.refused` line was written. **The
+`env_flag_unparseable` reason code was therefore PRODUCTION-UNREACHABLE for that flag** — a
+classified branch nothing could emit, shipped inside the unit that exists to stop exactly that.
+Fixed STRUCTURALLY rather than by reordering two independent reads: the assertion already reads the
+flag and now RETURNS it, and `loadConfig` derives `distributedExecutionEnabled` from that returned
+outcome, so **there is exactly one read** and a refusal cannot outrun its own record.
+**Why nothing caught it:** every reason-code arm asserted against the module that OWNS the codes,
+where all four are trivially reachable. Only driving the REAL `loadConfig` can see the ordering.
+That arm now exists and is the tenth.
+
+**Proven, not declared.** `server/src/__tests__/de-14-startup-safety-audit.test.ts`, **TEN arms —
+RE-COUNTED AT HEAD after the review fix, because this paragraph is being edited in the same commit
+that changed the thing it counts.** Observed RED against the unchanged tree — the whole suite failed
+to collect, because neither the recorder module nor the assertion's new exports existed — and then
+killed by **five** mutants applied one at a time to the shipped source and reverted with an
+md5-verified restore, each with named survivors: **delete the pass log** → exactly the 2 pass arms
+red, 7 green including the PRECISION CONTROL and the refusal arm; **stamp a constant reason** on one
+branch → exactly the distinctness arm red, 8 green; **widen the refusal guard to `instanceof
+Error`** → exactly the PRECISION CONTROL red, 8 green; **restore the bare `loadConfig()` at the
+entrypoint** → exactly the ARMING PATH arm red, 8 green. *(Those four were run against the
+nine-arm file, which is what it held at that moment, and are recorded at that count rather than
+restated at ten.)* The fifth was run at TEN arms, against the post-review code: **restore the
+separate pre-assertion flag read** → exactly the REACHABILITY arm red, **9 green**. The pre-existing
+`distributed-execution-policy.test.ts` (17 arms, message- and throw-shape assertions over the same
+function) is the named regression control and stayed green throughout, and `config.test.ts`
+(18 arms over the real `loadConfig`) is green at HEAD. Enrolled as `E0-de14-startup-safety-audit` in
+`scripts/gate-clause-wiring.json` in the same commit.
 
 ## E0-F011 — Four crossings are defended by a control whose ARMING PATH is dead: two have zero production callers, one is enabled by an environment variable set in no manifest, and one is gated on a database column with no writer
 
