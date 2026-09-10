@@ -193,7 +193,7 @@ Reconciled verdicts, each cited to source in that doc:
   renewal), **3.4 matchable hello** (WRK-011 — real `self/hello` route + provisioned matchable hello +
   the `profile_snapshot` update channel), **3.5 self-model read** (WRK-008 slice 1 server +
   slice 2b daemon `readWorkerSelfModel`), **3.6 loop composition** (WRK-008 slice 2b —
-  `composeDispatchRuntime.start()` calls `pollLoop.run()`; `bin/worker-daemon.ts:531` — WAVE-4's "no
+  `composeDispatchRuntime.start()` calls `pollLoop.run()`; `bin/worker-daemon.ts:567` — WAVE-4's "no
   start seam" is stale).
 - **STILL unowned / unbuilt** — the true TIER-0 remainder as of the reconciliation, **three links**: **3.1
   container identity** (`MountedSecretKeyStore` has zero prod constructors; a container never enrols) → ticket
