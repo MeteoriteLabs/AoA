@@ -110,9 +110,14 @@ cases.
 **NAMED POSITIVE CONTROL: `T8 POSITIVE CONTROL — the batch attempt/job projection is
 byte-identical`.** The JOB-005 batch path: `attempt_started` drives attempt `leased→running` and
 job `queued→running`, `terminal` completes the attempt, and both receipts are written. **Green
-before, green after, and green under all thirteen mutants** — including mutant 12, which reds seven
-of the eight service cases. Without it, several cases above could pass because ingest had stopped
-projecting anything at all.
+before, green after, and green under all seventeen mutants** — including mutant 12, which reds **10
+of the 26 cases**. Without it, several cases above could pass because ingest had stopped projecting
+anything at all.
+
+★ This paragraph read "thirteen mutants" and "seven of the eight service cases" until the review
+fixes, which added four mutants and four cases and updated the table row and the header four lines
+below — and not this sentence. A measurement claim about the positive control that contradicts the
+table beneath it is worse than a stale line number, because nothing about it looks stale.
 
 **SEVENTEEN mutants over 26 cases** (10 pure + 8 integration originally; +5 pure and +3 integration
 added by the review fixes in §4a). Counts below are the FINAL figures, re-measured on the shipped
