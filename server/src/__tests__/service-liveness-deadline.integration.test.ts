@@ -469,6 +469,95 @@ suite("SVC-003b — a silent worker's instance is terminalized and replaced", ()
     expect(await liveInstanceIds()).toEqual([]);
   }, 120_000);
 
+  // ── L-T13 — the tick REPORTS each terminalization, and does not back off after one ────
+  //
+  // Both halves came out of external review of PR #413 and both are measured here rather than
+  // asserted in prose.
+  //
+  // (a) `onTerminalized` fires once PER INSTANCE with the row's identity and the status it was
+  //     driven out of. A per-tick COUNT cannot tell an operator which service died, and a
+  //     `lost` row records the status without the author (E9-F008 — the DURABLE half of this
+  //     is deliberately NOT built, and this case does not claim it).
+  // (b) `nextDelayMs` treats a terminalization as convergence work. If the sweep consumes the
+  //     tick budget the convergence pages are skipped entirely, so `created` is 0 on a tick
+  //     that has just made known work available — and the ORIGINAL `created > 0 ? active :
+  //     idle` backed off to 30 s at exactly that moment.
+  //
+  // MUTANT L19: revert `nextDelayMs` to `result.created > 0`. MUTANT L20: drop the
+  // `onTerminalized` loop.
+  it("★ L-T13 — each terminalization is reported by instance, and shortens the next delay", async () => {
+    await seedService();
+    const { seeded } = await f().activateLease(913);
+    const stale = await seedInstance({ status: "healthy", seeded });
+    await backdate(stale, { observedSecondsAgo: 120, createdSecondsAgo: 3_600 });
+
+    const reported: Array<{ serviceInstanceId: string; serviceId: string; fromStatus: string }> = [];
+    const reconciler = createServiceReconciler({
+      appDb: f().app.db,
+      listAdmittedOrganizationIds: async () => [ORG],
+      livenessPolicy: POLICY,
+      tickBudgetMs: 5_000,
+      activeDelayMs: 2_000,
+      idleDelayMs: 30_000,
+      onTerminalized: (entry) => reported.push(entry),
+    });
+    const result = await reconciler.tick();
+
+    expect(reported).toHaveLength(1);
+    expect(reported[0]).toMatchObject({
+      organizationId: ORG, serviceInstanceId: stale, serviceId: SERVICE, fromStatus: "healthy",
+    });
+    // (b) driven on a SYNTHETIC result with `created: 0`, because a real tick here also
+    // creates the replacement — and a case that could not separate the two would pass under
+    // the reverted `created > 0` for the wrong reason.
+    expect(reconciler.nextDelayMs({ ...result, created: 0, livenessTerminalized: 1 })).toBe(2_000);
+    expect(reconciler.nextDelayMs({ ...result, created: 0, livenessTerminalized: 0 })).toBe(30_000);
+  }, 120_000);
+
+  // ── L-T12 — THE BOUNDED BATCH MUST NOT STARVE ────────────────────────────────────────
+  //
+  // ★★★ THIS IS A REGRESSION CASE FOR A DEFECT THIS PR SHIPPED AND EXTERNAL REVIEW CAUGHT.
+  // The first version ordered the sweep by `created_at`. A HEALTHY instance never leaves the
+  // live set, so for a tenant with more live instances than one batch holds, the oldest-created
+  // healthy rows filled every batch on every tick and a silent instance created AFTER them was
+  // never inspected — a stuck service the deadline cannot see, which is precisely the failure
+  // this ticket exists to remove. It is the same starvation bug review found in
+  // `listReconcilableServices` on PR #406, rebuilt one function along.
+  //
+  // The shape is chosen to red under the old ordering and pass under the new one: FOUR live
+  // instances, a batch limit of THREE, the silent one created LAST. Under `ORDER BY created_at`
+  // the three fresh ones fill the window and the silent one is never scanned. Under
+  // least-recently-heard-from it is first.
+  //
+  // MUTANT L18: revert the ORDER BY to `asc(createdAt)`.
+  it("★★★ L-T12 — a silent instance created LAST is still found when the batch is full", async () => {
+    // Four services, because `service_instances_live_service_uq` permits one live instance per
+    // (organization, service) — four live instances means four services.
+    const services = [1, 2, 3, 4].map((n) => `a6900000-0000-4000-8000-00000000000${n}`);
+    for (const id of services) await seedService(id);
+    const fresh: string[] = [];
+    for (const id of services.slice(0, 3)) {
+      const instanceId = await seedInstance({ status: "healthy", serviceId: id });
+      // Created long ago, observed seconds ago — a normal long-running healthy service.
+      await backdate(instanceId, { observedSecondsAgo: 5, createdSecondsAgo: 7_200 });
+      fresh.push(instanceId);
+    }
+    // The silent one: created most recently of all, and heard from longest ago.
+    const silent = await seedInstance({ status: "healthy", serviceId: services[3]! });
+    await backdate(silent, { observedSecondsAgo: 600, createdSecondsAgo: 60 });
+
+    const result = await sweepOrganizationServiceLiveness(f().app.db, {
+      organizationId: ORG,
+      limit: 3,
+      policy: POLICY,
+    });
+
+    expect(result.scanned).toBe(3);
+    expect(result.terminalized.map((t) => t.serviceInstanceId)).toEqual([silent]);
+    expect((await rowOf(silent)).status).toBe("lost");
+    for (const id of fresh) expect((await rowOf(id)).status).toBe("healthy");
+  }, 120_000);
+
   // ── L-T11 — THE DEADLINE WRITES EXACTLY ONE TABLE ────────────────────────────────────
   //
   // ★★★ E9's acceptance for SVC-003 opens "health events do not extend ownership without a

@@ -149,14 +149,39 @@ const EXPECTED_UNGUARDED = [
   // here. The duplicate-placement invariant they uphold lives in the partial unique index
   // `service_instances_live_service_uq`, not in a fence.
   //
-  // `attributeServiceInstance` writes only `job_id` / `attempt_id`, never `status`:
-  // `recordServiceHealth` stays the sole (and guarded) writer of instance status.
+  // `attributeServiceInstance` writes only `job_id` / `attempt_id`, never `status`.
+  //
+  // ★ THE SENTENCE THAT USED TO FOLLOW HERE — "`recordServiceHealth` stays the sole (and
+  // guarded) writer of instance status" — WAS TRUE AT SVC-002 AND IS NOT TRUE NOW, and it is
+  // corrected rather than left as a comment describing a tree that moved underneath it.
+  // SVC-003a made `applyServiceProjectionForFence` a second author (inside `acceptEvent`,
+  // which IS a guarded mutator, so it adds no method to this surface), and SVC-003b adds a
+  // third below. All three funnel through ONE writer, `writeServiceInstanceStatus`, which is
+  // an inner function rather than a repository method and so is likewise not on this surface.
   "lockServiceForReconcile",
   "countNonTerminalInstances",
   "insertServiceInstance",
   "attributeServiceInstance",
   "listReconcilableServices",
   "findServiceGenerationDefinition",
+  // ★★★ SVC-003b — the liveness deadline's sweep, UNGUARDED, and classified in the SAME
+  // commit that adds it (this test fails closed, and it is what caught the omission).
+  //
+  // It is the SAME SPECIES as `reapExpiredLeases`, `recordOrphanQuarantine` and
+  // `classifyLeaseTruth`: it acts precisely WHEN the fence is gone. `guardActiveFence` demands
+  // an ACTIVE lease for a named (job, attempt, lease) triple, and the deadline has no lease id
+  // and no worker to name — it has an organization and a clock, and it exists exactly because
+  // the worker has stopped saying anything. A guard here would be unsatisfiable, not stricter,
+  // and would make the deadline a dead lever.
+  //
+  // ITS SAFETY IS ELSEWHERE, and stated so this classification is not read as "unchecked":
+  // (1) the population is the shared `nonTerminalServiceInstanceStatus()` predicate, so it can
+  // only ever see live rows; (2) it takes `FOR UPDATE SKIP LOCKED`, so a row an ingest is
+  // projecting onto right now is skipped rather than raced; (3) the frozen predecessor set is
+  // computed SERVER-SIDE and enforced here independently of the caller's decider; and (4) the
+  // write is conditional on the status read under the lock, through the same single
+  // `writeServiceInstanceStatus` the two fenced authors use.
+  "sweepServiceInstanceLiveness",
 ];
 
 function parse(path: string): ts.SourceFile {

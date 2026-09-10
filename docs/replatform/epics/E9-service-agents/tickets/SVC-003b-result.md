@@ -110,10 +110,10 @@ the server suite resolves `@armyofagents/db` through `dist` while vitest prints 
 
 **NAMED POSITIVE CONTROL: `L-T9 POSITIVE CONTROL — SVC-002's convergence is untouched by the
 deadline`.** A service with no instance converges to exactly one, through the unchanged reconciler,
-on a tick that also runs the sweep. **Green before, green after, and green under sixteen of the
-seventeen mutants — L7 is the exception and is not a survival, it is a non-run:** that mutant makes
-the module throw at load, so neither suite collects and no case executes, the control included. Said
-this way rather than as "green under all seventeen", because a control that did not run is not a
+on a tick that also runs the sweep. **Green before, green after, and green under nineteen of the
+twenty mutants — L7 is the exception and is not a survival, it is a non-run:** that mutant makes the
+module throw at load, so neither suite collects and no case executes, the control included. Said
+this way rather than as "green under all twenty", because a control that did not run is not a
 control that held.
 
 ★ **AND ITS FIRST VERSION WAS NOT A CONTROL, WHICH IS THE LESSON OF THIS UNIT'S OWN CAMPAIGN.** It
@@ -123,21 +123,22 @@ under a mutant it is supposed to survive is not a control; it is a second case w
 it would have made L10's result unreadable. The liveness counters moved to `L-T1`, where they
 belong.
 
-**SEVENTEEN mutants over 26 cases** (15 pure + 11 integration). ★ The figures below were
-**re-measured in one campaign after the last edit**, and that re-measurement is not a formality: an
-earlier pass ran while the suite held 25 cases, and `L1` reported **10** red there against **11**
-here — the eleventh being `L-T11`, added afterwards. A count taken before the last edit is a stale
-count that does not look stale. `BASELINE: 0 red of 26` before the campaign and
-`FINAL BASELINE: 0 red of 26` after it.
+**TWENTY mutants over 28 cases** (15 pure + 13 integration). ★ The figures below were **re-measured
+in one campaign after the last edit**, and that re-measurement is not a formality — it has now
+corrected this table TWICE. An earlier pass ran while the suite held 25 cases and reported `L1` at
+**10** red; after `L-T11` it was **11**; after the review fixes in §4b added `L-T12` and `L-T13` it
+is **13**. The same pass moved `L6` from "1 red — and ONLY L-T1" to **2**. A count taken before the
+last edit is a stale count that does not look stale. `BASELINE: 0 red of 28` before the campaign and
+`FINAL BASELINE: 0 red of 28` after it.
 
 | # | Mutant | Result |
 |---|---|---|
-| L1 | Invert the liveness comparison | **11 red** |
+| L1 | Invert the liveness comparison | **13 red** |
 | L2 | `>=` instead of `>` on the liveness window | **1 red** — P3, the strictness boundary |
-| L3 | Let the OBSERVED arm consult `createdAgeMs` too | **2 red** — ★ P4: a week-old healthy service is condemned by its age |
+| L3 | Let the OBSERVED arm consult `createdAgeMs` too | **3 red** — ★ P4: a week-old healthy service is condemned by its age |
 | **L4** | **Judge a never-observed instance under the SHORT window** (classifier) | **3 red** — ★★★ the collapse; L-T3 + P5 + P8 |
 | **L5** | **Treat a missing observation as infinitely stale** | **5 red** — ★★★ the opposite collapse; P6 is "kill a brand-new instance on tick one" |
-| **L6** | **Delete the sweep call site in `runTick`** | **1 red — and ONLY L-T1.** ★ the arming discrimination |
+| **L6** | **Delete the sweep call site in `runTick`** | **2 red — L-T1 and L-T13, and nothing else.** ★ the arming discrimination: the only two cases that drive the real tick |
 | L7 | Retarget the deadline at `stopped` | **HARD RED** — see below |
 | L8 | Liveness default = the health-tick interval | **1 red** — P14 |
 | L9 | Swap the two defaults | **1 red** — P15 |
@@ -145,10 +146,13 @@ count that does not look stale. `BASELINE: 0 red of 26` before the campaign and
 | **L11** | **Move the stamp BELOW the `noop_same_status` return** | **1 red** — ★★★ L-T5: a working service's steady-state tick stops refreshing liveness |
 | **L12** | **Move the stamp ABOVE the generation fence** | **1 red** — L-T6: a rolled-past worker holds its instance alive forever |
 | L13 | Drop `nonTerminalServiceInstanceStatus()` from the sweep's WHERE | **1 red** — L-T7 |
-| **L14** | **Delete the sweep's independent legality gate** | **1 red** — L-T10. ★ **it killed NOTHING on the first campaign; see below** |
-| **L15** | **`COALESCE(last_observed_at, created_at)` in the sweep's SQL** | **1 red** — ★★★ L-T3; the same collapse as L4, one layer down |
-| L16 | Ignore the injected decider; terminalize every live instance | **3 red** |
+| **L14** | **Delete the sweep's independent legality gate** | **1 red** — L-T10. ★ **it killed NOTHING on the first campaign; see §4a** |
+| **L15** | **`COALESCE(last_observed_at, created_at)` in the sweep's SELECT** | **1 red** — ★★★ L-T3; the same collapse as L4, one layer down |
+| L16 | Ignore the injected decider; terminalize every live instance | **4 red** |
 | **L17** | **Expire the instance's lease alongside the status write** | **1 red** — ★★★ L-T11, the ownership clause |
+| **L18** | **Revert the sweep's ORDER BY to `created_at`** (the pre-review state) | **1 red** — ★★★ L-T12, the starvation §4b(i) describes |
+| **L19** | **Revert `nextDelayMs` to `created > 0`** (the pre-review state) | **1 red** — L-T13 |
+| **L20** | **Drop the per-instance `onTerminalized` loop** | **1 red** — L-T13 |
 
 **L7 is a HARD RED and is reported as one rather than as a count.** It retargets the deadline at
 `stopped`, whose sole frozen predecessor is `stopping`, and the module's load-time coverage
@@ -180,9 +184,85 @@ for its composite idempotency key, which the reconciler likewise cannot reach �
 exactly that one case.
 
 **Suites:** `server/src/__tests__/service-liveness-deadline.test.ts` (15 pure cases) and
-`server/src/__tests__/service-liveness-deadline.integration.test.ts` (11 cases: real embedded
+`server/src/__tests__/service-liveness-deadline.integration.test.ts` (13 cases: real embedded
 PostgreSQL, real poll/ACK-minted ACTIVE fence, the real shipped `reapExpiredLeases`, the real
 `createServiceReconciler().tick()`).
+
+---
+
+## 4b. ★★★ CI AND REVIEW BOTH FOUND REAL DEFECTS IN THIS DIFF
+
+CI's fail-closed fence-surface guard caught one **(0)**. External review of PR #413 raised three
+more; **all three were verified against source before being believed. One was a real defect and is
+fixed; one was a real observation whose proposed fix is not taken and is filed instead; one was a
+real smaller defect and is fixed.**
+
+**(i) ★★★ THE BOUNDED SWEEP STARVED, and it is PR #406's bug rebuilt one function along.** No
+finding is filed for it: the defect existed only in this diff and is gone from it, and nothing else
+in the tree carries it. What is worth recording is how it got there. The sweep read
+`ORDER BY created_at ASC LIMIT 64`. A HEALTHY instance
+NEVER LEAVES THE LIVE SET, so for a tenant with more than `limit` live instances the oldest-created
+healthy rows filled the batch on every tick and **a silent instance created after them was never
+inspected** — a stuck service the deadline itself cannot see, which is the exact failure the ticket
+exists to remove.
+
+★ **AND MY OWN COMMENT ASSERTED THE OPPOSITE**: *"Ordered oldest-created first so a tenant with more
+stale instances than one batch holds makes deterministic progress instead of re-reading the same
+window."* That is true only of rows that LEAVE the population when handled, and healthy rows never
+do. It is the identical error `listReconcilableServices` shipped and review caught on PR #406, whose
+own correction note is in this very file — *"a converged service stays `desired_state='running'`
+forever, so the same lowest-id rows filled every page on every tick and every later service was
+NEVER reconciled — silently"*. I read that note while writing this function and rebuilt the bug
+beside it. **A lesson recorded in a neighbouring comment is not a lesson applied.**
+
+The fix is `ORDER BY COALESCE(last_observed_at, created_at) ASC`: a healthy instance is refreshed
+every ~10 s and sinks to the back, while an instance that has gone quiet floats to the front within
+one tick. No cursor, and — importantly — **no second copy of the policy**. ★ The `COALESCE` here is
+an ORDERING, not a verdict, and that distinction is precisely mutant L15's: L15 collapses the two
+instants in the SELECT, the value the decider judges, and kills starting services; this one decides
+only which row is looked at first, and the verdict still reads the two ages separately (`L-T3` still
+holds). `L-T12` is the regression case and `L18` is the mutant that restores the defect.
+
+**(ii) A `lost` row records the STATUS and not the AUTHOR.** True, and now materially so: SVC-003b
+creates a SECOND author for `lost`, and a worker-reported loss leaves a `job_projection_receipts`
+row while a deadline kill leaves nothing. The reviewed fix — an `activity_log` write from the sweep
+— is **not taken**: measured, **no repository method under `packages/db/src/repositories/tenant/`
+writes `activity_log` at all**, so it would be a new convention entering the layer through its least
+prominent door. The instance-specific half IS delivered (`onTerminalized`, one call per condemned
+instance, logged at the composition root with the row's identity and the status it left). **The
+durable half is not, and is filed as E9-F008** with the in-house route named — a `db:generate`
+widening of `job_projection_receipts_projection_kind_check`, exactly as SVC-003a's `0277` widened it,
+with `deadline:{serviceInstanceId}` as the source identity. Half a clause is not the clause, so
+nothing is claimed closed.
+
+**(0) ★★★ AND BEFORE THOSE THREE, CI CAUGHT SOMETHING NO REVIEWER DID, AND THE LESSON IS ABOUT
+WHAT I RAN.** `verify (1)` went red on
+`server/src/__tests__/job-fence-surface.contract.test.ts` — *"keeps the returned repository object a
+CLOSED method surface (fail-closed on new methods)"*. Adding `sweepServiceInstanceLiveness` to
+`JobControlRepository` without classifying it in that test's `EXPECTED_UNGUARDED` list is exactly
+what the guard exists to refuse, and it refused it. **The guard worked; my local verification did
+not**, because I ran the suites I wrote plus their neighbours rather than the guards a new
+repository method trips. *In a tree with fail-closed inventory guards, running the suites you touched
+is not running the suites your change touches.*
+
+The method is now classified with its reason: it is the SAME SPECIES as `reapExpiredLeases`,
+`recordOrphanQuarantine` and `classifyLeaseTruth` — it acts precisely WHEN the fence is gone, has no
+lease id or worker to name, and a `guardActiveFence` on it would be unsatisfiable rather than
+stricter, i.e. a dead lever. Its safety is the live-set predicate, `FOR UPDATE SKIP LOCKED`, the
+server-computed frozen predecessor set, and the conditional write through the one shared writer.
+
+★ **AND THE SAME EDIT CORRECTED A COMMENT THAT HAD GONE FALSE.** That list carried
+*"`recordServiceHealth` stays the sole (and guarded) writer of instance status"*, true when SVC-002
+wrote it and untrue since SVC-003a. There are now three authors, all funnelling through one inner
+writer. Left uncorrected it would have been another record disagreeing with the code it describes.
+
+**(iii) A terminalizing tick backed off to the IDLE delay.** `nextDelayMs` read only
+`result.created`. If the sweep consumes the tick budget the convergence pages are skipped entirely,
+so `created` is 0 on a tick that has just made known work available — and the loop waited 30 s. It
+cannot busy-loop the other way: a terminalized row has left the live set, so the next tick condemns
+it never again. `L-T13`(b) drives it on a synthetic result with `created: 0`, deliberately, because
+a real tick here also creates the replacement and a case that could not separate the two would pass
+under the reverted predicate for the wrong reason. Mutants `L19` and `L20`.
 
 ---
 
@@ -328,9 +408,19 @@ service. It is not claimed here.
   reformatting; the guard reports OK with 15 wired clauses.
 - `docs/replatform/epics/E9-service-agents/findings.md`: **E9-F006 FILED** (`open`/`unowned`, HIGH —
   the worker is not fenced); **E9-F007 FILED** (`open`/`unowned`, MED — three frozen command kinds
-  with zero producers). No existing finding's status changed.
-- `scripts/finding-ownership.json`: **E9-F006 and E9-F007 keys ADDED** (`unowned`, each with its
-  residual and resolve criterion). No key deleted — this unit closes nothing.
+  with zero producers); **E9-F008 FILED** (`open`/`unowned`, MED — a `lost` row records the status
+  and not the author; the durable half of what review asked for, deliberately not built here). No
+  existing finding's status changed.
+- `scripts/finding-ownership.json`: **E9-F006, E9-F007 and E9-F008 keys ADDED** (`unowned`, each
+  with its residual and resolve criterion). No key deleted — this unit closes nothing.
 - `docs/replatform/epics/E9-service-agents/README.md`: one paragraph, above the exit-gate line.
 - `packages/db/src/migrations/0278_service_instance_last_observed_at.sql` + `meta/` +
   `_journal.json` — `db:generate` output, renamed, with a C14 class (a) guard appended.
+- `server/src/__tests__/job-fence-surface.contract.test.ts`: `sweepServiceInstanceLiveness`
+  classified `UNGUARDED` with its reason (§4b(0)), and the stale
+  *"`recordServiceHealth` stays the sole (and guarded) writer of instance status"* comment
+  corrected. This is a REGISTER edit, not a test relaxation: the guard's equality still fails
+  closed on the next unclassified method.
+- `packages/db/src/__tests__/migration-idempotency.test.ts`: a named double-apply case for `0278`
+  beside `0275`'s, asserting the column stays NULLABLE with no default. Observed red (42701) with
+  the `IF NOT EXISTS` guard removed.

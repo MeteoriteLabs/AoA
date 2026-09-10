@@ -621,3 +621,61 @@ A producer for `graceful_stop` (SVC-005's operator stop/pause, and the fencing h
 plus the widening of `GovernedControlCommandInput` that a producer needs; a producer for `drain`
 (SVC-005); and for `checkpoint`, a migration widening `job_control_commands_kind_check` before any
 producer is possible (SVC-004). The docstring is corrected by whichever of those lands first.
+
+---
+
+## E9-F008 — a `lost` instance records the STATUS and not the AUTHOR, so a deadline kill and a worker-reported loss are indistinguishable after the fact
+
+**Status:** `open` · `unowned` · **Severity:** MED
+**Filed:** 2026-09-10, by **SVC-003b**, after external review of PR #413 raised it. The observation
+was verified against source and is right; the fix review proposed (an `activity_log` write from the
+sweep) is not taken, for the reason in §3.
+**Affected tickets:** SVC-003 (created the second author), SVC-007 (the evidence experience that
+must display it), JOB-013 (owns the `activity_audit` projection kind).
+**Blocks gate:** no. E9's gate does say *"telemetry explains every transition"* (SVC-006), so this
+is on that clause's path.
+
+### 1. The gap, verified at source
+
+`service_instances` carries `status` and `updated_at` and nothing that says WHO moved the row. Two
+different authorities can now write `lost`:
+
+* a worker's own `service_instance_lost` observation, through
+  `applyServiceProjectionForFence` — which DOES leave a durable trace, a
+  `job_projection_receipts` row with `projection_kind = 'service_instance_status'` keyed on the
+  driving event's identity; and
+* SVC-003b's liveness deadline, through `sweepServiceInstanceLiveness` — which writes **only** the
+  status. There is no event, so there is no `sourceIdentity`, so there is no receipt.
+
+After the fact the two are indistinguishable in the database. An operator asking *"did the service
+report itself gone, or did the control plane give up on it?"* — a materially different question,
+because the second means the worker may still be running (E9-F006) — cannot answer it from durable
+state.
+
+### 2. What SVC-003b did deliver, so this is not read as nothing
+
+The sweep returns `terminalized[]` with the instance id, the service id and the status each row was
+driven out of, and `createServiceReconciler` now calls `onTerminalized` once **per instance**; the
+composition root logs each one. That makes the record instance-specific rather than an aggregate
+per-tick count. **It is not durable, and a log line is not a record** — which is the half this
+finding is about.
+
+### 3. Why the reviewed fix was not taken
+
+Review proposed an `activity_log` write inside the sweep's transaction. Measured: **no repository
+method under `packages/db/src/repositories/tenant/` writes `activity_log` at all** — not
+`applyServiceProjectionForFence`, not `reapExpiredLeases`, not SVC-002's reconciler. Introducing one
+from a liveness sweeper would be a new convention entering the layer through its least prominent
+door, and a convention nothing else in the layer follows is the kind of thing that is correct once
+and wrong thereafter.
+
+### 4. What would close it
+
+The in-house mechanism already exists and is one migration away: a `job_projection_receipts` row
+with a new `projection_kind` (the CHECK is `job_projection_receipts_projection_kind_check`, widened
+by `db:generate` exactly as SVC-003a's `0277` widened it for `service_instance_status`), a
+deterministic `source_identity` — `deadline:{serviceInstanceId}` is unique by construction, since a
+terminal instance can never be terminalized twice — and the instance's own `job_id`/`attempt_id`,
+which attribution already guarantees are present. Alternatively JOB-013's `activity_audit` kind, if
+whoever owns that decides the deadline belongs on the activity trail. Either way it is a migration
+plus a write, and it should land with SVC-007's evidence surface so the record has a reader.

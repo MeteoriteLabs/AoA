@@ -2446,8 +2446,30 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
       };
       // The LIVE set, through the one shared predicate every reader of "is there a live
       // instance" uses — so the sweep population and the partial unique index's population
-      // cannot drift. Ordered oldest-created first so a tenant with more stale instances than
-      // one batch holds makes deterministic progress instead of re-reading the same window.
+      // cannot drift.
+      //
+      // ★★★ ORDERED BY LEAST-RECENTLY-HEARD-FROM, AND THAT ORDERING IS WHAT KEEPS THE BOUNDED
+      // BATCH FROM STARVING. The first version of this query ordered by `created_at`, which is
+      // the SAME STARVATION BUG review found in `listReconcilableServices` on PR #406, rebuilt
+      // one function along: a HEALTHY instance never leaves the live set, so for a tenant with
+      // more than `limit` live instances the oldest-created healthy rows fill every batch on
+      // every tick and a silent instance created after them is NEVER INSPECTED — a stuck
+      // service the deadline cannot see, which is the exact failure this ticket exists to
+      // remove. Caught by external review of PR #413; `L-T12` is the regression case.
+      //
+      // Sorting by the least-recent instant fixes it WITHOUT a cursor and without a second
+      // copy of the policy: a healthy instance is refreshed every ~10 s (SVC-008b's tick) and
+      // therefore sinks to the BACK of the ordering, while an instance that has gone quiet
+      // floats to the FRONT within one tick and stays there until it is terminalized. The
+      // window is therefore always the most-likely-condemned rows, and a condemned row leaves
+      // the live set, so every batch is real work.
+      //
+      // ★ THE `COALESCE` HERE IS AN ORDERING, NOT A VERDICT, and the distinction is exactly
+      // mutant L15's. L15 collapses the two instants in the SELECT — the value the decider
+      // judges — and that kills starting services. This one decides only WHICH ROW IS LOOKED
+      // AT FIRST; the two ages are still projected separately below and the verdict still reads
+      // them separately, so a never-observed row that sorts first is still judged under the
+      // admission window (`L-T3`).
       const rows = await tx.select({
         serviceInstanceId: serviceInstances.id,
         serviceId: serviceInstances.serviceId,
@@ -2464,7 +2486,10 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
       }).from(serviceInstances).where(and(
         eq(serviceInstances.organizationId, input.organizationId),
         nonTerminalServiceInstanceStatus(),
-      )).orderBy(asc(serviceInstances.createdAt), asc(serviceInstances.id))
+      )).orderBy(
+        sql`COALESCE(${serviceInstances.lastObservedAt}, ${serviceInstances.createdAt}) ASC`,
+        asc(serviceInstances.id),
+      )
         .limit(bounded)
         .for("update", { skipLocked: true });
 

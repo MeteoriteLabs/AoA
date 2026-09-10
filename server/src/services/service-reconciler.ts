@@ -455,6 +455,22 @@ export function createServiceReconciler(input: {
   livenessPolicy?: ServiceLivenessPolicy;
   livenessBatchLimit?: number;
   onLivenessFailure?: (error: unknown, context: { organizationId: string }) => void;
+  /**
+   * ★ SVC-003b — one call PER TERMINALIZED INSTANCE, not per tick.
+   *
+   * Review of PR #413 asked why an operator cannot tell a deadline kill from a worker-reported
+   * one, and the observation was right: a `lost` row records the STATUS and not the AUTHOR, and
+   * an aggregate per-tick count names no instance. This hook is the instance-specific half. It
+   * is NOT the durable half — a log line is not a record — and that residual is filed as
+   * E9-F008 with the `job_projection_receipts` route named, rather than closed here by
+   * inventing an `activity_log` convention no neighbouring writer in this layer has.
+   */
+  onTerminalized?: (entry: {
+    organizationId: string;
+    serviceInstanceId: string;
+    serviceId: string;
+    fromStatus: string;
+  }) => void;
 }): ServiceReconciler {
   const enabled = input.enabled ?? true;
   const livenessPolicy: ServiceLivenessPolicy = input.livenessPolicy ?? {
@@ -545,6 +561,11 @@ export function createServiceReconciler(input: {
         });
         result.livenessScanned += swept.scanned;
         result.livenessTerminalized += swept.terminalized.length;
+        // Per INSTANCE, so the operator record names the row and the status it was driven out
+        // of — see `onTerminalized`'s docstring for what this is and is not.
+        for (const entry of swept.terminalized) {
+          input.onTerminalized?.({ organizationId, ...entry });
+        }
         // A non-empty `refusedIllegal` means the server's derived predecessor set and the
         // frozen table disagree — a defect, not a state — so it is surfaced rather than
         // folded into a count. `livenessDeadlineAllowedFromStatuses`'s load-time assertion
@@ -636,7 +657,15 @@ export function createServiceReconciler(input: {
       return current;
     },
     nextDelayMs(result) {
-      return result.created > 0 ? activeDelayMs : idleDelayMs;
+      // ★ SVC-003b — a TERMINALIZATION is convergence work too, and it must shorten the delay
+      // for a reason review measured rather than guessed: if the liveness sweep consumes the
+      // tick budget, the convergence pages below it are skipped ENTIRELY on that tick, so the
+      // replacement for a just-terminalized instance has not been created yet — and a
+      // `created === 0` result would back the loop off to the IDLE delay (30 s by default)
+      // exactly when there is known work waiting. It cannot busy-loop: a terminalized row has
+      // left the live set, so the next tick's sweep terminalizes it again never, and a tick
+      // that condemns nothing and creates nothing returns to the idle delay.
+      return result.created > 0 || result.livenessTerminalized > 0 ? activeDelayMs : idleDelayMs;
     },
   };
 }
