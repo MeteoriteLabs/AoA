@@ -75,6 +75,49 @@ export const activityLog = pgTable(
     runIdIdx: index("activity_log_run_id_idx").on(table.runId),
     entityIdx: index("activity_log_entity_type_id_idx").on(table.entityType, table.entityId),
     organizationIdx: index("activity_log_organization_idx").on(table.organizationId),
+    /**
+     * ★ THE DENIAL-PREFIX INDEX — E0-F013 Decision 2, acceptance condition (a),
+     * second half. Filed NOT-DONE by the unit that shipped the reader because
+     * this file was that wave's other unit's; that collision is over (`0274`
+     * landed), so it is paid here.
+     *
+     * WHY THIS SHAPE, and not `(action)`. The reader
+     * (`activityService.securityDenials`) is `WHERE action LIKE
+     * 'security.denied.%'` under a TOTAL order `created_at DESC, id DESC`, and
+     * it pages by a row-value keyset over that same pair. A plain `(action)`
+     * btree cannot serve `LIKE 'prefix%'` under the C locale as a range without
+     * `text_pattern_ops`, and even where it could it would still leave the Sort
+     * in place. Putting the namespace in the index PREDICATE instead of the key
+     * makes the predicate free, and keying on `(created_at DESC, id DESC)` makes
+     * the ordering free too — so the plan becomes an ordered index scan feeding
+     * the LIMIT directly, with no Sort and no Seq Scan.
+     *
+     * ★ IT IS ONLY REACHED WHEN THE PLANNER CAN PROVE THE PREDICATE. Postgres
+     * matches a partial index by implication against the query's own WHERE, and
+     * the reader emits the identical `action LIKE 'security.denied.%'` literal,
+     * so the match holds. That literal is the value of
+     * `SECURITY_DENIAL_ACTION_PREFIX` — the same constant the CHECK below is
+     * written against and that `activity-reserved-namespace.test.ts` pins, so
+     * the index, the CHECK and the reader cannot drift apart silently.
+     *
+     * ★ WHAT IT DOES NOT DO. It does not make the reader safe, cheap for
+     * non-denial queries, or smaller: it indexes ONLY denial rows, so every
+     * ordinary product row costs nothing to maintain and is invisible to it.
+     * The measured plan change is pasted in
+     * `docs/replatform/epics/E0-foundation/findings.md`.
+     *
+     * ★ `nullsFirst()` IS LOAD BEARING, AND IT IS NOT COSMETIC. Postgres will
+     * only walk an index to satisfy an ORDER BY when the NULLS ordering matches
+     * too, and bare `DESC` in a query means `DESC NULLS FIRST` while drizzle's
+     * bare `.desc()` emits `DESC NULLS LAST` for an index. The first generated
+     * version of this index used the default and was measured: the planner
+     * still put a `Sort` on top, so it removed the Seq Scan and left the O(n
+     * log n) behind. Both columns are NOT NULL so no row's placement changes —
+     * this exists solely so the ordering MATCHES `securityDenials`' ORDER BY.
+     */
+    denialCreatedIdx: index("activity_log_denial_created_idx")
+      .on(table.createdAt.desc().nullsFirst(), table.id.desc().nullsFirst())
+      .where(sql`action LIKE 'security.denied.%'`),
     // ★ The retained NOT NULL. `action` is the only column that identifies the
     // denial namespace, and the prefix is the literal value of
     // `SECURITY_DENIAL_ACTION_PREFIX` (`server/src/services/activity-namespace.ts`);

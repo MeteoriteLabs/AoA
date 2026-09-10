@@ -1553,7 +1553,10 @@ than implied. (A `since` bound does narrow it — the planner reaches
 `activity_log_company_created_idx` for the `created_at >=` predicate — but the default
 incident-response call has no `since`.)
 
-**NOT DONE — the missing index, and why it is NOT added here.** `activity_log` wants a partial index
+**NOT DONE — the missing index, and why it is NOT added here.** ★ **RESOLVED 2026-09-10 by Unit B-2
+below (migration `0276`), which is where the measured before/after plans are.** The paragraph is kept
+as written because its reasoning — *why* it was deferred, and to whom — is the record of a deliberate
+hand-off rather than an oversight, and the hand-off completed. `activity_log` wants a partial index
 supporting the denial prefix in newest-first order, e.g. on `(created_at DESC)`
 `WHERE action LIKE 'security.denied.%'`. It is not added in this unit because
 `packages/db/src/schema/activity_log.ts` is **Unit A's file this wave** — Unit A is editing that
@@ -1638,3 +1641,258 @@ planted row**, which is what makes "we hid it" distinguishable from "we lost it"
 missing denial-prefix index, filed above and owned by the wave that owns the schema file — the
 reader is correct and does a seq scan per page. No finding, crossing or register entry is closed or
 amended by this unit.
+
+> ★ **STATUS OF THOSE TWO, 2026-09-10.** (ii) is **DONE** — Unit B-2 below, migration `0276`, with
+> the plan change measured and pasted. (i) is **STILL OPEN and unchanged**: `inspectMarketplaceReconciliation`
+> is contained by downstream exact-`action` equality, not scoped, and Unit B-2 did not touch it.
+
+### ★ UNIT B-2, 2026-09-10 — the two acceptance conditions Unit B owed, discharged; and the premise for one of them was already stale
+
+Unit B shipped the reader and scoped `forIssue`. It left two items, and this unit was briefed to do
+both. ★ **ONE OF THEM WAS ALREADY DONE, AND SAYING SO IS THE FIRST DELIVERABLE.** The brief for this
+unit described the tail defect — *"no `before`/cursor bound; past 500 matching rows the oldest
+incident evidence is unreachable"* — as outstanding. It is not. It was raised as a P1 **during**
+review of PR #402 and fixed inside that same PR: `before`/`beforeId`, a total order
+(`created_at DESC, id DESC`), an emitted microsecond `cursor`, and a `400` on half a cursor are all
+present at `743c30f08` and covered by three arms. The squashed commit message still carries the
+pre-review body, which is where the stale premise came from. ★ **The stale artefact is a COMMIT
+MESSAGE that describes the first commit of a PR rather than the PR** — worth naming as a defect
+shape, because it will recur on every squash-merged PR that is fixed under review.
+
+**So this unit did not rebuild it.** It verified it instead — the cursor arms were run and are green,
+and the mutation table below leaves them alone. An exoneration needs more evidence than a
+conviction, so the verification is a run, not a reading of the diff.
+
+#### (a), second half — THE INDEX. Migration `0276`.
+
+A **partial** index, `(created_at DESC, id DESC) WHERE action LIKE 'security.denied.%'`, generated
+by `pnpm db:generate` from `packages/db/src/schema/activity_log.ts`. The only hand edit is
+`IF NOT EXISTS` — C14 class (a), exemplars 0189/0195/0240/0274. Drizzle reported *"No schema
+changes, nothing to migrate"* on a re-run, so the snapshot and the schema agree.
+
+★ **THE NAMESPACE RIDES THE PREDICATE, NOT THE KEY.** Indexing `(action)` would not serve
+`LIKE 'prefix%'` as a range without `text_pattern_ops`, and even where it could it would leave the
+`Sort` in place. Putting the namespace in the index predicate makes the filter free; keying on the
+reader's own total order makes the ordering free.
+
+★ **`nullsFirst()` IS LOAD BEARING, AND IT WAS NEARLY SHIPPED WRONG.** Bare `DESC` in a query means
+`DESC NULLS FIRST`; drizzle's bare `.desc()` emits `DESC NULLS LAST` **for an index**. The first
+generated version of `0276` used the default. Measured, that version removes the Seq Scan and
+**keeps the Sort** — a half-fix that looks like a fix in every summary that says "the index is
+used". The counterfactual plan is pasted below so the next person does not re-learn it.
+
+**MEASURED ON REAL POSTGRES** (embedded-pg + the committed migration chain; 60,300 rows — 60,000
+ordinary product rows and 300 denials; `ANALYZE`d). The query is the one
+`activityService.securityDenials` emits.
+
+```
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM activity_log WHERE action LIKE 'security.denied.%'
+ORDER BY created_at DESC, id DESC LIMIT 100;
+
+-- BEFORE (no denial index) -------------------------------------------------
+Limit  (cost=1862.87..1863.12 rows=100 width=192) (actual time=5.487..5.495 rows=100.00 loops=1)
+  Buffers: shared hit=1098
+  ->  Sort  (cost=1862.87..1863.60 rows=291 width=192) (actual time=5.486..5.490 rows=100.00 loops=1)
+        Sort Key: created_at DESC, id DESC
+        Sort Method: top-N heapsort  Memory: 50kB
+        ->  Seq Scan on activity_log  (cost=0.00..1851.75 rows=291 width=192) (actual time=5.396..5.434 rows=300.00 loops=1)
+              Filter: (action ~~ 'security.denied.%'::text)
+              Rows Removed by Filter: 60000
+              Buffers: shared hit=1098
+Execution Time: 5.516 ms
+
+-- AFTER (migration 0276, DESC NULLS FIRST) ---------------------------------
+Limit  (cost=0.27..176.48 rows=100 width=192) (actual time=0.005..0.017 rows=100.00 loops=1)
+  Buffers: shared hit=6
+  ->  Index Scan using activity_log_denial_created_idx on activity_log  (cost=0.27..470.75 rows=267 width=192) (actual time=0.004..0.013 rows=100.00 loops=1)
+        Index Searches: 1
+        Buffers: shared hit=6
+Execution Time: 0.026 ms
+
+-- COUNTERFACTUAL (same index, drizzle's DEFAULT `.desc()` = DESC NULLS LAST) --
+Limit  (cost=556.62..556.87 rows=100 width=192) (actual time=0.081..0.087 rows=100.00 loops=1)
+  ->  Sort  (cost=556.62..557.40 rows=314 width=192) (actual time=0.080..0.082 rows=100.00 loops=1)
+        Sort Key: created_at DESC, id DESC
+        Sort Method: top-N heapsort  Memory: 50kB
+        ->  Index Scan using activity_log_denial_created_idx on activity_log  (... rows=300.00 loops=1)
+```
+
+★ **THE DEEP PAGE — the plan the NOT-DONE entry was actually about.** "Deep paging is O(table) per
+page" was a claim about the *cursor* query, not the first page, so that is the one that had to
+change. The keyset row-value comparison moves from a per-row `Filter` to an `Index Cond` — a seek:
+
+```
+... AND (created_at, id) < ('2026-09-09T19:16:28.765028Z'::timestamptz, '96c006b0-…'::uuid)
+
+-- BEFORE ------------------------------------------------------------------
+Limit → Sort → Seq Scan on activity_log
+  Filter: ((action ~~ 'security.denied.%') AND (ROW(created_at, id) < ROW(…)))
+  Rows Removed by Filter: 60251
+  Buffers: shared hit=1098          Execution Time: 3.208 ms
+
+-- AFTER -------------------------------------------------------------------
+Limit → Index Scan using activity_log_denial_created_idx on activity_log
+  Index Cond: (ROW(created_at, id) < ROW(…))
+  Buffers: shared hit=2 read=2      Execution Time: 0.034 ms
+```
+
+**What the index does NOT do,** stated because the previous version of this claim was overstated in
+five places: it does not make the reader *safe*, it does not bound the result set (`clampDenialLimit`
+does), and `CREATE INDEX` is not free — a partial index still scans the whole heap to build, holding
+a `SHARE` lock that blocks writes to `activity_log` for the duration. `CONCURRENTLY` is unavailable
+because drizzle's migrator runs each file in a transaction. That is written into `0276` rather than
+omitted.
+
+#### (c), the tenantless half — the case that could not be tested before, and can be now
+
+Unit B proved (c) against a **tenant-B** row. That row is excluded because `company_id = $A` is
+**false** for it. A **tenantless** row is excluded for a different reason — `company_id = $A` is
+**NULL**, and SQL's three-valued logic drops it. Unit B's shipped comment asserted that difference
+(*"a NULL `company_id` never satisfies `company_id = $1`"*) and no arm exercised it, because
+`company_id` was still `NOT NULL` when it was written: the tenantless namespace was **empty**, so
+any such arm would have passed vacuously. `0274` made the column nullable, so the arm can now fail,
+which is the only thing that makes it worth adding.
+
+Six arms added to `e0-f013-denial-disclosure-path.integration.test.ts`, all against a row planted
+through the **real** `recordSecurityDenial` with `companyId: null`, typed `issue` against tenant A's
+issue id:
+
+1. the plant, with a positive control asserting `company_id IS NULL` in the table by raw SQL;
+2. ★ the tenantless provocation — `GET /issues/:id/activity` does not disclose it;
+3. the **second** company-scoped door, `GET /companies/:companyId/activity`, does not either
+   (fencing one reader is not fencing the room);
+4. ★ **the complement** — the operator reader **does** return it. "Invisible everywhere" would be a
+   failure, not a success: that is evidence written and unreachable, the exact defect condition (a)
+   exists to prevent. Hidden and reachable are asserted against the **same** row;
+5. narrowing the operator reader to one tenant **excludes** the tenantless row rather than adopting
+   it — an `OR company_id IS NULL` "be helpful" filter would attribute an unattributable refusal to
+   a named tenant;
+6. ★ **DE-06's invariant re-asserted rather than assumed** — the **probed** tenant (A, the target of
+   both probes) still owns **zero** denial rows. Nothing here adds a per-company denial feed.
+
+**No arm depends on any unlanded unit.** `0274` is in the committed chain at this commit and
+`recordSecurityDenial`'s `companyId` is already typed `string | null`, so every row these arms need
+can be written today.
+
+#### ★★★ THE FALSE CLAIM OF ENFORCEMENT THIS UNIT SHIPPED, AND WHAT REPAIRED IT
+
+**The defect.** The first version of this unit put the same causal sentence on three surfaces —
+`docs/api/activity.md`, the `securityDenials` comment in `server/src/services/activity.ts`, and the
+plan file's own header — saying in effect: *changing the action prefix, the sort columns or the sort
+direction silently reverts the plan to `Sort <- Seq Scan` with no error and **no failing test**,
+which is why the plan file asserts the plan.* The header additionally claimed the file planned *"the
+two queries the reader really emits"*.
+
+**The measurement. It did not.** Dropping `desc(activityLog.id)` from `securityDenials`' `ORDER BY`
+— the exact "sort columns" drift the sentence names, and the loss of the total order both the keyset
+cursor and the index shape depend on — left **both suites 23/23 GREEN**. Neither file noticed. The
+plan file never imported `activityService`: `FIRST_PAGE_SQL` and `deepPageSql()` were
+**hand-transcribed string literals**. It was EXPLAINing a **copy** of the reader's query, and after
+any drift the copy is no longer the query — which is precisely the moment the guard is needed. The
+matched pair the prose warned about was unguarded by the artefact the prose named as its guard.
+
+**Two things were wrong, not one.**
+
+1. *The guard.* Fixed by derivation: the plan file now builds both plans from
+   `activityService(db).securityDenials(...)` via drizzle's `getSQL()`/`toSQL()`, so there is no
+   second copy to drift away from. (Parameterized `EXPLAIN` is sound here because node-postgres
+   issues one-shot extended-protocol queries, so Postgres plans with the values bound and folds them
+   to constants before testing predicate implication — and the positive control proves that
+   empirically rather than by argument.)
+2. *The claim.* The sentence was also **factually wrong about one of its three drifts**, and
+   deriving the SQL does not fix that. Measured: dropping the `id` tiebreaker **does not change the
+   plan at all** — `created_at DESC` alone is a *prefix* of the index key order, so Postgres keeps
+   `Limit <- Index Scan`. What silently breaks is the total order the cursor needs. A plan assertion
+   cannot see it, however faithfully derived. So a **MATCHED PAIR** arm was added, comparing the
+   `ORDER BY` the reader emits against `pg_indexes.indexdef` — the index's own rendering, not a
+   third transcription. All three surfaces now carry the corrected, per-drift claim.
+
+This is the `checks-that-nothing-runs` class in its exact form:
+**a false claim of enforcement is worse than a missing check.** The distinguishing detail worth
+carrying forward is that the guard's *inputs* were the copy, not its assertions — the assertions
+were right, the subject was wrong. A guard that reads its subject from a literal is a guard against
+the literal.
+
+#### Proof — observed red, per arm, with the positive controls named
+
+24 green on the shipped tree (17 in the disclosure file, 7 in the plan file, which gained the matched
+-pair arm). Mutants, each reding the arms it should and no others:
+
+| # | Mutation | Result |
+|---|---|---|
+| 1 | `forIssue`: `company_id = $1` → `OR company_id IS NULL` | **1 failed / 16 passed** — *only* the tenantless provocation. ★ Unit B's cross-tenant provocation stayed **GREEN**, which is the proof the new arm tests a property the existing 11 did not. |
+| 2 | `forIssue`: drop the company predicate entirely | 2 failed / 15 passed — both provocations, nothing else. |
+| 3 | `securityDenials`: `companyId` filter widened with `OR IS NULL` | 1 failed / 16 passed — *only* "narrowing … excludes the tenantless row". |
+| 4 | `securityDenials`: add `company_id IS NOT NULL` to the base predicate | 1 failed / 16 passed — *only* "★ THE TENANTLESS ROW IS REACHABLE". |
+| 5 | remove migration `0276` (the `.sql` file) | 7 failed / 0 passed in the plan file — `applyPendingMigrations` throws on the missing file, so `assertSetupOk` reds every arm. (It was 4/2 when `0275` was the tail of the chain and the failure was the absent index rather than an absent file. Recorded because the *shape* of the red changed and only the reason makes it legible.) |
+| 6 | `0276`: `DESC NULLS FIRST` → drizzle's default `DESC NULLS LAST` | 4 failed / 3 passed — the half-fix is caught, now by the matched-pair arm as well as the plan arms. |
+| **7** | ★★★ **`securityDenials`: drop `desc(activityLog.id)` from the `ORDER BY`** | **BEFORE the fix: 0 failed / 23 passed — the defect above.** AFTER: **1 failed / 23 passed in the plan file — *only* the matched-pair arm**, with the message `reader: created_at desc` / `index : created_at desc, id desc`. ★ The **drop-and-degrade positive control stayed GREEN** under this mutant, which is what proves the two are not wrongly coupled: the plan really is unchanged, and the arm that reds is the one that reads the two artefacts against each other. |
+| 8 | `securityDenials`: sort direction `desc(created_at), desc(id)` → `asc, asc` | **BEFORE: 0 failed / 6 passed.** AFTER: 4 failed / 3 passed — the plan arms and the matched pair. The positive control's final "restored" assertion also reds, honestly: an `ASC` reader cannot walk this index at all, so there is no good plan to restore to. |
+| 9 | `securityDenials`: action prefix `security.denied.` → `security.refused.` | **BEFORE: 0 failed / 6 passed.** AFTER: 5 failed / 2 passed. |
+
+★ **Mutants 7, 8 and 9 are the three drifts the prose claims to guard, and MEASURED, ALL THREE WERE
+UNGUARDED** — each was run against the pre-fix file, restored from git, and each came back
+**6/6 green** (7 additionally green across both suites, 23/23). Not two of three: three of three. The
+first draft of this entry guessed that mutant 8 was "guarded by accident because the transcription
+pinned the direction"; that guess was **wrong and was corrected by running it**, which is the same
+discipline the entry is about. The transcribed literal is inert with respect to *every* reader-side
+change, because the file did not import the reader at all. What the pre-fix file did guard is the
+INDEX side only — mutants 5 and 6.
+
+★★★ **A PHANTOM MUTANT, RECORDED BECAUSE IT WENT GREEN AND SHOULD NOT HAVE.** Mutant 5 was first
+attempted by deleting the index migration's entry from `packages/db/src/migrations/meta/_journal.json`. **The
+suite passed all 6 arms with the entry gone.** Two separate reasons, both worth knowing:
+
+- `@armyofagents/db` resolves through `dist/` in some paths, and `dist/migrations` is a **copy** made
+  by the package's `build` script. Editing `src/migrations` leaves the copy the suite reads untouched
+  — the mutation was inert and the green was phantom.
+- After removing the entry from **both** journals it *still* passed. Removing the `.sql` **file** is
+  what finally reds it. ★ **A JOURNAL ENTRY IS NOT WHAT MAKES A MIGRATION APPLY** — `applyPendingMigrations`
+  falls through to a manual reconcile that picks the file up from the folder. Anyone mutating a
+  migration to observe red must delete the **file**, and must delete it from whichever tree the
+  suite actually loads.
+
+This is the same failure class as *a check that nothing runs*: an unobserved mutation is not
+evidence, and the only reason it was caught here is that the mutant was expected to red and did not.
+
+#### The plan guard, and why it cannot pass vacuously
+
+`server/src/__tests__/e0-f013-denial-index-plan.integration.test.ts` asserts the **plan** rather than
+a wall-clock time (a timing threshold on a shared runner is a flake generator, and a fast query
+proves nothing about a table two orders of magnitude larger). Its arms assert the **absence** of
+`Seq Scan` and `Sort`, and an absence assertion is worthless unless the presence is achievable on
+that data on that machine. So one arm **drops the index, re-plans the identical query on the
+identical rows, and requires the documented bad plan to appear**, then restores the index from the
+definition Postgres itself reports. If the good and bad plans were indistinguishable at 40,000 rows,
+that arm fails and the file certifies nothing.
+
+★ **AND ITS SUBJECT IS THE READER, NOT A COPY OF THE READER.** Both plans are built from
+`activityService(db).securityDenials(...)` through drizzle's `getSQL()`, and the deep page is built
+by handing the reader back its own emitted `cursor` + `id` — which is how a client pages. The file
+holds no SQL literal for the query under test. See the false-claim section above for what happened
+when it did.
+
+One mechanical note, recorded because it cost a run: a drizzle query builder is a **thenable**, so
+returning one from an `async` helper makes `await` execute it and hand back **rows**. The deep-page
+helper returns the builder boxed in an object for that reason. A helper that silently turns a query
+into a result set is the same defect class in miniature.
+
+#### NOT DONE, and left open
+
+- **(i) `inspectMarketplaceReconciliation` is still contained, not scoped.** Unchanged by this unit.
+  It remains a site fix, not a class fix, and this unit did not widen it into one.
+- **The index's BUILD cost is unmeasured at production scale.** A partial index still scans the whole
+  `activity_log` heap to build, holding a `SHARE` lock that blocks writes for the duration;
+  `CONCURRENTLY` is unavailable because drizzle's migrator runs each file in a transaction. Only the
+  resulting *plan* is measured, never the build.
+- **The plan guard runs against embedded-postgres at 40,000 rows, not production scale.** The
+  degradation arm proves the plans are distinguishable *at that size on that machine*; it does not
+  extrapolate.
+- **Other `activity_log` readers outside this router were not audited.** This unit's claims cover
+  `activityService.list`, `forIssue` and `securityDenials`. Whether any other reader of that table
+  has the same shape of defect is not answered here.
+- **Decision 3 is not pre-empted.** No per-company denial feed was added; the probed tenant still
+  learns nothing, and arm 6 above is what holds that line.
+- **No finding is closed, no crossing changes status, no cohort count is struck, and no
+  `deliveryStatus` is upgraded by this unit.** E0-F013 stays open.

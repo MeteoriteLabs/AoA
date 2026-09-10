@@ -604,5 +604,249 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         });
       expect(ok.status, JSON.stringify(ok.body)).toBe(200);
     });
+
+    /**
+     * ═══════════════════════════════════════════════════════════════════════
+     * ★ THE TENANTLESS CASE — the half of condition (c) that could not be
+     * tested when (c) was first proved, and can be now.
+     * ═══════════════════════════════════════════════════════════════════════
+     *
+     * ★ WHY IT WAS DEFERRED, AND WHY THE REASON HAS EXPIRED. When the arms above
+     * were written, `activity_log.company_id` was still NOT NULL: the tenantless
+     * namespace was EMPTY, so a reader or a fence built against it could not be
+     * made to go red and any arm asserting "the tenantless row is not disclosed"
+     * would have passed vacuously — there was no such row to disclose. Migration
+     * `0274` (E0-F013 Decision 2, ruled option (a2)) made the column NULLABLE
+     * behind a partial CHECK, so the row can now exist and the arm can now fail.
+     * These arms are worth exactly as much as that difference.
+     *
+     * ★ WHAT IS ACTUALLY UNDER TEST, AND WHY IT IS NOT THE SAME PROPERTY AS THE
+     * ARMS ABOVE. The provocation at the top of this file plants a row belonging
+     * to ANOTHER company: it is excluded because `company_id = $A` is false for
+     * it. A tenantless row is excluded for a DIFFERENT reason — `company_id = $A`
+     * is not false but NULL, and SQL's three-valued logic drops it from a WHERE.
+     * The claim in the shipped comment ("a NULL `company_id` never satisfies
+     * `company_id = $1`") is a claim about SQL semantics that the existing arms
+     * never exercised. These drive it against real Postgres instead.
+     *
+     * ★ AND THE COMPLEMENT, WHICH IS THE POINT OF CONDITION (a). "Invisible
+     * everywhere" is not the goal and would be a failure: a denial written into a
+     * namespace no reader can reach is EVIDENCE WRITTEN AND UNREACHABLE, the
+     * exact defect condition (a) exists to prevent. So the same planted row is
+     * asserted UNREACHABLE from every company surface and REACHABLE from the
+     * operator surface. Asserting both against ONE row is what distinguishes "we
+     * fenced it" from "we lost it".
+     *
+     * ★ NO DEPENDENCE ON ANY UNLANDED UNIT. Every arm below runs against the
+     * committed migration chain at this commit. `0274` is in it, so the nullable
+     * column and the partial CHECK are present; the row is planted through the
+     * REAL `recordSecurityDenial`, whose `companyId` field is already typed
+     * `string | null`. Nothing here waits on a wiring unit to land.
+     */
+
+    /** The tenantless probe's action slug, kept distinct from the tenant-B one. */
+    const TENANTLESS_ACTION = "security.denied.tenantless_disclosure_probe";
+    let tenantlessId = "";
+
+    it("plants a TENANTLESS probe through the REAL recorder: company_id NULL, typed `issue` against tenant A's issue id", async () => {
+      assertSetupOk();
+
+      const id = await recordSecurityDenial(db, {
+        // ★ THE WHOLE POINT. Not tenant B, not tenant A — NO tenant. This is the
+        // sink `0274` opened, and before it this insert violated a NOT NULL.
+        companyId: null,
+        crossing: "E0-F013",
+        surface: "tenantless_disclosure_probe",
+        reason: "tenantless_cross_tenant_probe",
+        actorType: "system",
+        actorId: "prober-tenantless",
+        // Still caller-supplied free text, still aimed at tenant A's issue.
+        entityType: "issue",
+        entityId: issueA,
+        control: "server/src/__tests__/e0-f013-denial-disclosure-path.integration.test.ts",
+        details: { note: "planted by the tenantless half of acceptance condition (c)" },
+      });
+
+      // POSITIVE CONTROL — the row exists AND its company_id really is NULL.
+      // Without this, every "it is not returned" assertion below would pass just
+      // as well if the insert had been rejected by the CHECK, and the file would
+      // be green while proving nothing at all.
+      expect(
+        id,
+        "recordSecurityDenial returned null — the tenantless probe was never planted, so nothing below is a test",
+      ).toBeTruthy();
+      tenantlessId = id as string;
+      const planted = rowsOf<{ n: string }>(
+        await db.execute(sql`
+          SELECT count(*)::text AS n FROM activity_log
+          WHERE id = ${tenantlessId} AND company_id IS NULL
+            AND action = ${TENANTLESS_ACTION} AND entity_type = 'issue' AND entity_id = ${issueA}`),
+      );
+      expect(
+        planted[0]?.n,
+        "the planted row is missing or its company_id is not NULL — the tenantless sink did not take it",
+      ).toBe("1");
+    });
+
+    it("★ THE TENANTLESS PROVOCATION: a NULL-company denial row is not disclosed by GET /issues/:id/activity", async () => {
+      assertSetupOk();
+
+      const res = await request(appAsMemberOf(coA)).get(`/api/issues/${issueA}/activity`);
+
+      // POSITIVE CONTROL — route reachable and authorized, not a 403/404 that
+      // would empty the body for the wrong reason.
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      const rows = res.body as ActivityRow[];
+
+      expect(
+        rows.map((r) => r.id),
+        "GET /issues/:id/activity returned the TENANTLESS denial row — a NULL company_id passed a company predicate, so the fence does not hold for the sink `0274` opened",
+      ).not.toContain(tenantlessId);
+      expect(
+        rows.map((r) => r.action),
+        "GET /issues/:id/activity disclosed a tenantless `security.denied.*` row",
+      ).not.toContain(TENANTLESS_ACTION);
+      // Directly: no row without a tenant may reach a tenant surface.
+      expect(
+        rows.filter((r) => r.companyId === null),
+        "GET /issues/:id/activity returned a row with no company at all",
+      ).toEqual([]);
+
+      // POSITIVE CONTROL — the legitimate same-tenant row still comes back. A
+      // reader scoped to NOTHING passes all three assertions above.
+      expect(
+        rows.map((r) => r.action),
+        "the same-tenant activity row vanished too — the reader was scoped to nothing, not to the company",
+      ).toContain("issue.created");
+    });
+
+    /**
+     * The SECOND company-scoped reader on this router. `forIssue` is not the only
+     * door into `activity_log` from a tenant surface, and fencing one door is not
+     * fencing the room — `activityService.list` behind
+     * `GET /companies/:companyId/activity` is the other one, and it is where a
+     * tenantless row would surface as "an event in my company" if its predicate
+     * were ever written as anything but equality.
+     */
+    it("the tenantless row is not disclosed by the company activity feed either", async () => {
+      assertSetupOk();
+
+      const res = await request(appAsMemberOf(coA)).get(`/api/companies/${coA}/activity`);
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      const rows = res.body as ActivityRow[];
+
+      expect(
+        rows.map((r) => r.id),
+        "GET /companies/:companyId/activity returned the tenantless denial row",
+      ).not.toContain(tenantlessId);
+      expect(rows.filter((r) => r.companyId === null)).toEqual([]);
+
+      // POSITIVE CONTROL — the feed is not simply empty.
+      expect(
+        rows.map((r) => r.action),
+        "the company activity feed returned nothing at all — the assertions above are vacuous",
+      ).toContain("issue.created");
+    });
+
+    /**
+     * ★ THE COMPLEMENT. Everything above proves the row is hidden. This proves it
+     * is not LOST. A tenantless denial that no production reader can reach is the
+     * failure acceptance condition (a) exists to prevent, and it is the failure
+     * mode a fence is most likely to cause.
+     */
+    it("★ (a) THE TENANTLESS ROW IS REACHABLE: the operator reader returns the row no tenant surface would", async () => {
+      assertSetupOk();
+
+      const res = await request(appAsOperator())
+        .get("/api/instance/security-denials")
+        .query({ crossing: "E0-F013" });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      const rows = res.body as (ActivityRow & { details: Record<string, unknown> | null })[];
+
+      const probe = rows.find((r) => r.id === tenantlessId);
+      expect(
+        probe,
+        "the operator reader did not return the tenantless denial row — the evidence is written and unreachable, which is exactly the defect condition (a) exists to prevent",
+      ).toBeTruthy();
+
+      // The attribution that SURVIVES having no tenant. `companyId` is null by
+      // construction here, so the remaining questions must still be answerable
+      // or the row is a bare count rather than evidence.
+      expect(probe?.companyId, "a tenantless row must arrive AS tenantless, not as someone else's").toBe(null);
+      expect(probe?.entityType, "WHICH RESOURCE (kind)").toBe("issue");
+      expect(probe?.entityId, "WHICH RESOURCE (id)").toBe(issueA);
+      expect(probe?.details?.reason, "WHY").toBe("tenantless_cross_tenant_probe");
+    });
+
+    /**
+     * The `companyId` FILTER on the operator reader is a filter, never a scope —
+     * but it must still NARROW. A NULL company matches no company, so asking for
+     * one tenant's refusals must not sweep the tenantless row in with them.
+     * Without this arm, a filter implemented as `company_id = $1 OR company_id IS
+     * NULL` — an easy "be helpful" mistake — would go unnoticed, and it would
+     * attribute an unattributable refusal to a named tenant.
+     */
+    it("(a) narrowing to one tenant excludes the tenantless row rather than adopting it", async () => {
+      assertSetupOk();
+
+      for (const [label, companyId] of [
+        ["tenant A", coA],
+        ["tenant B", coB],
+      ] as const) {
+        const res = await request(appAsOperator())
+          .get("/api/instance/security-denials")
+          .query({ companyId });
+        expect(res.status, JSON.stringify(res.body)).toBe(200);
+        const rows = res.body as ActivityRow[];
+        expect(
+          rows.map((r) => r.id),
+          `narrowing the denial reader to ${label} returned the TENANTLESS row — the filter widened instead of narrowing, and an unattributable refusal is now attributed to a named tenant`,
+        ).not.toContain(tenantlessId);
+        expect(rows.every((r) => r.companyId === companyId)).toBe(true);
+      }
+
+      // POSITIVE CONTROL — narrowing to tenant B still returns tenant B's own
+      // planted denial, so the two assertions above are not passing on an empty
+      // result set.
+      const bRows = (
+        await request(appAsOperator())
+          .get("/api/instance/security-denials")
+          .query({ companyId: coB })
+      ).body as ActivityRow[];
+      expect(
+        bRows.map((r) => r.action),
+        "narrowing to tenant B returned nothing — the arm above is vacuous",
+      ).toContain("security.denied.disclosure_path_probe");
+    });
+
+    /**
+     * ★ DE-06's INVARIANT, RE-ASSERTED AGAINST THE NEW ROW RATHER THAN ASSUMED.
+     * DE-06 asserts that a PROBED tenant's `activity_log` stays EMPTY — a refusal
+     * is attributed to the ACTOR's tenant, never to the tenant that was probed,
+     * so being probed is not itself disclosed to the victim. Nothing in this unit
+     * adds a per-company denial feed, and the tenantless row is attributed to no
+     * tenant at all, so tenant A — the tenant whose issue id both probes aimed at
+     * — must still hold ZERO denial rows of its own.
+     */
+    it("the PROBED tenant stays blind: tenant A owns no denial row despite being the target of both probes", async () => {
+      assertSetupOk();
+
+      const mine = rowsOf<{ n: string }>(
+        await db.execute(sql`
+          SELECT count(*)::text AS n FROM activity_log
+          WHERE company_id = ${coA} AND action LIKE 'security.denied.%'`),
+      );
+      expect(
+        mine[0]?.n,
+        "a denial row was attributed to the PROBED tenant — DE-06's invariant is broken and the probed tenant now learns it was probed",
+      ).toBe("0");
+
+      // POSITIVE CONTROL — tenant A does have ordinary activity, so the zero
+      // above is about the denial namespace and not about an empty table.
+      const any = rowsOf<{ n: string }>(
+        await db.execute(sql`SELECT count(*)::text AS n FROM activity_log WHERE company_id = ${coA}`),
+      );
+      expect(Number(any[0]?.n)).toBeGreaterThan(0);
+    });
   },
 );

@@ -81,15 +81,24 @@ export const SECURITY_DENIAL_MAX_LIMIT = 500;
  * rather than meaning "no limit".
  *
  * ★ WHAT THIS DOES NOT DO, stated because the earlier version of this comment
- * claimed it did. It bounds the RESULT SET, not the scan. `activity_log` carries
- * indexes on `(company_id, created_at)`, `(run_id)` and `(entity_type,
- * entity_id)` and NOTHING on `action` or on `created_at` alone, so the default
- * cross-tenant denial query is planned as
- * `Limit <- Sort (created_at DESC) <- Seq Scan on activity_log`. Measured on
- * real Postgres over 60,300 rows (60,000 product rows, 300 denials):
- * `Rows Removed by Filter: 60000`. The plan is pasted in
- * `docs/replatform/epics/E0-foundation/findings.md`. The missing index is filed
- * there as NOT-DONE and is owned by the wave that owns the schema file.
+ * claimed it did. It bounds the RESULT SET, not the scan. The scan is bounded by
+ * an INDEX, and that is a separate mechanism that this function knows nothing
+ * about — see below.
+ *
+ * ★ THE SCAN CLAIM, UPDATED BECAUSE IT IS NOW FALSE AS PREVIOUSLY WRITTEN. This
+ * comment used to say the denial query "is planned as
+ * `Limit <- Sort <- Seq Scan on activity_log`" and that the missing index was
+ * filed NOT-DONE. Migration `0276` added it — a PARTIAL index on
+ * `(created_at DESC, id DESC) WHERE action LIKE 'security.denied.%'` — so the
+ * plan is now `Limit <- Index Scan using activity_log_denial_created_idx`, with
+ * no Sort and no Seq Scan, and the keyset cursor's row-value comparison becomes
+ * an `Index Cond` rather than a per-row `Filter`. Measured on real Postgres over
+ * 60,300 rows: `Rows Removed by Filter: 60000` and 1,098 shared buffers before,
+ * 6 buffers after; on the deep page, 1,098 buffers before and 4 after. Both
+ * plans are pasted in `docs/replatform/epics/E0-foundation/findings.md`, and
+ * `e0-f013-denial-index-plan.integration.test.ts` asserts the plan — of the
+ * query `securityDenials` actually builds, not of a copy of it — so this
+ * paragraph cannot go stale silently again.
  */
 export function clampDenialLimit(limit: number | undefined): number {
   if (limit === undefined || !Number.isFinite(limit)) return SECURITY_DENIAL_DEFAULT_LIMIT;
@@ -371,10 +380,36 @@ export function activityService(db: Db) {
      * would have skipped 19 of them without erroring. `cursor` carries the same
      * instant as microsecond-precision UTC text and casts back exactly.
      *
-     * ★ IT DOES NOT MAKE THE SCAN CHEAPER. See `clampDenialLimit`: with no index
-     * on `action` this is a seq scan + sort per page, so deep paging is O(table)
-     * each time. The cursor makes the evidence REACHABLE; the missing index is
-     * filed separately and is not fixed here.
+     * ★ AND IT IS NOW CHEAP AS WELL AS REACHABLE — the second half of the same
+     * acceptance condition, previously filed NOT-DONE here. When this comment
+     * was written there was no index on `action`, so every page was a seq scan
+     * plus a sort and deep paging was O(table) EACH TIME: the cursor made the
+     * evidence reachable and re-read the whole table to reach it. Migration
+     * `0276` adds a partial index on `(created_at DESC, id DESC)
+     * WHERE action LIKE 'security.denied.%'`, which the predicate and the ORDER
+     * BY here are written to match exactly.
+     *
+     * ★ HOW THAT MATCH IS HELD, STATED PRECISELY BECAUSE THE PREVIOUS VERSION OF
+     * THIS PARAGRAPH OVERSTATED IT. It used to say "change either and the
+     * planner silently stops using it". Measured, that is true of the ACTION
+     * PREFIX (the WHERE stops implying the index predicate) and of the SORT
+     * DIRECTION (the index cannot be walked that way), and FALSE of dropping
+     * `desc(activityLog.id)` below: `created_at DESC` alone is a PREFIX of the
+     * index key order, so the planner keeps the Index Scan and the plan does not
+     * change at all. What breaks then is the TOTAL ORDER the keyset cursor
+     * needs — pages lose rows on a `created_at` tie, with a 200 and no error.
+     *
+     * `e0-f013-denial-index-plan.integration.test.ts` covers both halves, and
+     * covers them by building its plans from THIS FUNCTION (`getSQL()` off
+     * `securityDenials`) rather than from a transcription of its SQL. That is
+     * load bearing: while it held hand-copied literals, dropping the tiebreaker
+     * left it and its sibling suite 23/23 GREEN, because it was planning a copy
+     * of this query rather than this query. Its MATCHED PAIR arm additionally
+     * compares the ORDER BY emitted here against `pg_indexes.indexdef`, and that
+     * arm is the only thing that sees the TIEBREAKER drift — the one the plan
+     * arms cannot see, because dropping `id` leaves a prefix of the index key
+     * order and the plan is unchanged. The action-prefix and direction drifts
+     * are caught by the plan arms (a changed prefix reds 5 of the 7).
      */
     securityDenials: (filters: SecurityDenialQuery = {}) => {
       const conditions = [
