@@ -850,9 +850,13 @@ export function createJobLeasingService(input: {
       const request = parsedRequest.data;
       const digest = semanticAckDigest(ackInput.auth, request);
       // ★ DE-03 — THIS SITE IS NOT WIRED, AND THE REASON IS A FROZEN CONTRACT, NOT
-      // AN OVERSIGHT. `job-leasing.ts:816`'s `recordProof` refusal is one of the
-      // crossing's seven organization-attested sites, and it is the ONE this unit
-      // could not record. The refusal THROWS out of `runInTenant`, so the row must
+      // AN OVERSIGHT. The `recordProof` refusal INSIDE THIS `ack` METHOD — cited by
+      // SYMBOL AND WITH NO LINE NUMBER AT ALL, because this comment carried
+      // `job-leasing.ts:816` until 2026-09-10, by which time the call had drifted
+      // well past it, and the commit that corrected it moved the call again by the
+      // length of this very paragraph. A number here cannot survive its own edit —
+      // is one of the crossing's seven organization-attested sites, and it is the
+      // ONE this unit could not record. The refusal THROWS out of `runInTenant`, so the row must
       // be drained on the pool handle after the transaction unwinds — and every
       // drain point is closed here:
       //   * inside the callback → a nested pool borrow while the tenant transaction
@@ -871,6 +875,15 @@ export function createJobLeasingService(input: {
       // this unit does not take. The arm in
       // `de-03-worker-replay-denial-audit.integration.test.ts` PINS that this site
       // records nothing, asserting the throw FIRST so the pin cannot pass by vacuity.
+      // ★ 2026-09-10 — ALL OF THE ABOVE WAS RE-MEASURED, NOT INHERITED, and the
+      // amendment is now a filed decision request rather than an open question:
+      // `docs/replatform/DECISION-REQUEST-job-003-ack-drain-amendment.md`. Adding a
+      // `.finally(…)` here does red the contract (`builder:trusted-service-authority-guard`,
+      // 1 of 20). But the OBVIOUS amendment — teaching `exactAckReturnDominance` to
+      // accept the drain shape — is MEASURABLY UNSAFE: `collectAckEffects` walks the
+      // `runInTenant` CALLBACK's body, so a protected ack effect placed inside the
+      // `.finally` callback leaves the contract fully GREEN. A safe amendment must
+      // also sweep the drain callback. Do not take the one-line version.
       return runInTenant(input.appDb, ackInput.auth.organizationId, async (repos) => {
         const databaseNow = await repos.jobControl.currentDatabaseTime();
         await repos.workerEnrollment.cleanupExpiredProofs(databaseNow, 100);

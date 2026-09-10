@@ -14,8 +14,12 @@ import { SECURITY_DENIAL_ACTION_PREFIX } from "./activity-namespace.js";
  * anything durable was written, so a refused cross-tenant read, a replayed
  * credential and a shed submission were all INDISTINGUISHABLE FROM TRAFFIC THAT
  * NEVER HAPPENED (`E0-F010`, `E0-F013`). This is the first writer for that
- * class. It closes ONE of the seventeen — DE-19's `memory.get` half — and the
- * remaining sixteen are enumerated in the finding, not here.
+ * class. It closes ONE of the seventeen — DE-19's `memory.get` half. ★ NO COUNT
+ * OF THE REST IS STATED HERE, and the figure that used to be ("the remaining
+ * sixteen") had already gone stale twice by 2026-09-10, when DE-06 and DE-14
+ * closed. The open set is enumerated in `E0-F013`'s Status block
+ * (`docs/replatform/epics/E0-foundation/findings.md`), which declares itself the
+ * one authoritative count; a second copy of it in source can only drift.
  *
  * ★ ATTRIBUTION IS THE CONTRACT. The crossings do not assert "a denial is
  * counted"; they assert denials are ATTRIBUTABLE. A count-only, id-free metric
