@@ -201,7 +201,7 @@ embedded in a fixture; every string the pack emits passes through its own redact
 | **N** anti-vacuity | `denyOut: [198.51.100.0/24]` (RFC 5737 TEST-NET-2) | **the control that makes a deny result attributable.** It differs from P in exactly one thing — *which* addresses are denied — not in whether a network config exists at all |
 | **U** reuse | none at create, then `updateNetwork(denyOut: …)` | (d) |
 | **P6** IPv6 | the P set **plus** `fe80::/10, fd00::/8, ::ffff:0:0/96` | an **observation**, not a verdict: does the API even accept IPv6 deny entries? |
-| **A** allowlist *(W10B-B)* | `denyOut: ({ allTraffic }) => [allTraffic]` **plus** `allowOut: ["8.8.8.0/24", "1.1.1.1", "example.com"]` | **§13.** The shape E2B DOCUMENTS as the control, which arms P/N/U/P6 do not test. Its own vocabulary — ENFORCES / INERT / BROKEN — and **no vote in `DISPOSITION`**. ★ **On both 2026-09-09 dispatches this arm's sandbox failed to place (`500 … please retry`) and the arm returned `UNRUN` — no verdict — while P and N placed seconds apart. §13.7.** |
+| **A** allowlist *(W10B-B)* | `denyOut: ({ allTraffic }) => [allTraffic]` **plus** `allowOut: ["8.8.8.0/24", "1.1.1.1"]` — **CIDRs/IPs only, no domain** | **§13.** The shape E2B DOCUMENTS as the control, which arms P/N/U/P6 do not test. Its own vocabulary — ENFORCES / INERT / BROKEN — and **no vote in `DISPOSITION`**. ★ **The domain-bearing shape (`…, "example.com"`) failed to place its sandbox on BOTH 2026-09-09 dispatches (`500 … please retry`) and returned `UNRUN` — no verdict — while P and N placed seconds apart (§13.7). A hostname in `allowOut` forces `validateEgressRules` to require `0.0.0.0/0` in `denyOut` AND routes the sandbox through the tcpproxy L7 path, which 500s at create on this tier; dropping the domain routes down the plain iptables path so the arm can finally place and measure.** |
 
 > ★★ **Loopback (`127.0.0.0/8`) and CGNAT (`100.64.0.0/10`) are deliberately NOT in the deny set.**
 > A `systemd-resolved` stub listens on `127.0.0.53`, and cloud fabrics use CGNAT for infrastructure the
@@ -560,6 +560,18 @@ form. It is the shape a real `DE-08` control would take, and it is unmeasured. *
 unmeasured after two dispatches** — see §13.7; the arm was never created, so nothing about
 enforcement was observed either way.
 
+★★★ **WHY THE ARM IS NOW CIDRs/IPs ONLY (the domain was dropped).** The two failed dispatches
+(§13.7) both carried a third `allowOut` entry, `example.com` as an unmeasured hostname
+observation. A **hostname** in `allowOut` forces E2B's `validateEgressRules` to require
+`0.0.0.0/0` in `denyOut` **and** routes the sandbox through the **tcpproxy** (L7) path — which
+reproducibly **500s at create ("failed to place")** on this tier. That is why both dispatches
+returned `UNRUN`. The allow set above is now exactly `["8.8.8.0/24", "1.1.1.1"]` — CIDRs/IPs
+only, no domain — which routes down the **plain iptables** path and should place. This is the
+single change from the shape that would not place; the resolver rationale (§13.2), the
+differential (§13.3) and the verdict vocabulary (§13.4) are otherwise unchanged. The
+observation of *whether a hostname allow entry works* is deferred — it is not worth an
+authorised run that cannot even be created.
+
 ★ **§2 already knew the mechanism and filed it as a hazard**, correctly: "any `allowOut` entry flips
 the whole policy to default-deny", which for the deny-set probe would have starved the guest's
 resolver and broken the experiment. The flip is only fatal while the resolver is **unnameable**.
@@ -595,7 +607,6 @@ all:
 | **THE TEST** | `deny_metadata` → `http://169.254.169.254/…` | no | **REFUSED.** Measured reachable (401) under a deny set naming its own range and in the anti-vacuity arm, so a refusal here is attributable. |
 | **THE TEST** | `deny_public_ip` → `https://9.9.9.9/` | no | **REFUSED.** Its partner is `allow_ip`: same sandbox, same instant, same kind of destination, differing only in whether the allowlist names it. A **within-arm** differential, which is tighter than any cross-sandbox one. |
 | **RESOLVER** | `dns_lookup` | — | `resolved`. `resolve-failed` means the allowlist did **not** admit the resolver and the arm starved its own experiment. |
-| observation | `allow_host` → `https://example.com/` | **yes**, by **hostname** | reported only — does a hostname allow entry work? No verdict rests on it. |
 | observation | `deny_public_host` → `https://registry.npmjs.org/` | no | its curl exit separates *resolution failed* (6) from *resolved, connect denied* (7/28). |
 | apparatus | RFC-2606 `.invalid` | no | **FAILS**, or the arm is not reading the network and nothing may be read. |
 
@@ -735,3 +746,9 @@ A third run is only worth an authorisation if something has changed. In order:
    CIDRs), or drop to a single IP-literal allow entry. A run that changes two things answers nothing.
 3. **Do not** re-fire the identical body expecting a different answer. Two attempts already say what
    that costs.
+
+> ★ **Item 2 is now implemented** (branch `e2b-cidr-only-probe`): the probe's `ALLOWLIST_ALLOW_SET`
+> and this runbook's §13 body were narrowed to `allowOut: ["8.8.8.0/24", "1.1.1.1"]` — the single
+> change of dropping the `example.com` hostname entry (see §13.1). The `example.com` shape recorded
+> above is retained as the record of the two UNRUN dispatches; the next dispatch, if authorised, is
+> the CIDR-only body.

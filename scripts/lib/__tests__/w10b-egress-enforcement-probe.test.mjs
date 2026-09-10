@@ -1008,7 +1008,6 @@ function allowlistArmFixture(overrides = {}) {
     readBack: { ok: true, denyOut: ["0.0.0.0/0"], network: {}, detail: "" },
     rows: {
       allow_ip: reached("allow_ip"),
-      allow_host: reached("allow_host"),
       deny_metadata: timedOut("deny_metadata"),
       deny_public_ip: refused("deny_public_ip"),
       deny_public_host: refused("deny_public_host"),
@@ -1376,10 +1375,10 @@ test("★ a read-back that CONTRADICTS the request is BROKEN: the shape under te
 test("a read-back that merely NORMALISES, or cannot be taken at all, does not manufacture a BROKEN", () => {
   // ★ The other half of the asymmetry: a false BROKEN costs a run, so the read-back gate fires
   // only on a positive CONTRADICTION. `getInfo()`'s shape for `allowOut` is UNMEASURED at this
-  // tier — it may normalise `1.1.1.1` to `1.1.1.1/32`, drop the hostname entry (which is an
-  // observation, never load-bearing), or carry no network object at all. None of those is a
-  // contradiction, and treating them as one would burn the operator's authorisation on
-  // formatting.
+  // tier — it may normalise `1.1.1.1` to `1.1.1.1/32`, reorder the CIDR/IP entries, or carry
+  // no network object at all. None of those is a contradiction, and treating them as one would
+  // burn the operator's authorisation on formatting. (The allow set is now CIDRs/IPs only; no
+  // hostname entry remains to be dropped.)
   const normalised = allowlistArmFixture({
     readBack: { ok: true, denyOut: ["0.0.0.0/0"], network: { denyOut: ["0.0.0.0/0"], allowOut: ["1.1.1.1/32", "8.8.8.0/24"] }, detail: "" },
   });
