@@ -568,7 +568,13 @@ export interface JobControlRepository {
   }): Promise<{ lease: Lease; body: Record<string, unknown> }>;
   acceptEvent(
     input: ActiveFenceRequest & { batch?: AcceptEventBatchInput },
-  ): Promise<GuardedFenceResult & { ingest?: EventIngestOutcome }>;
+  ): Promise<GuardedFenceResult & {
+    ingest?: EventIngestOutcome;
+    /** SVC-003 — one entry per event that CARRIED a decided service projection, in
+     *  batch order, whether or not it moved a row. Returned so a refusal is observable
+     *  (the ingest logs it) instead of being a silent no-write. */
+    serviceProjections?: readonly { eventId: string; result: ServiceProjectionOutcome }[];
+  }>;
   authorizeArtifactCommit(
     input: ActiveFenceRequest & { identifier: string },
   ): Promise<JobArtifact>;
@@ -849,8 +855,48 @@ export interface JobControlRepository {
 /** JOB-004 terminal attempt statuses a governed completion may drive an attempt to. */
 export type TerminalCompletionStatus = "succeeded" | "failed" | "cancelled" | "expired";
 
-/** JOB-004 non-`pending` service-instance health a governed health record may set. */
-export type ServiceHealthStatus = "healthy" | "stopped" | "lost" | "interrupted";
+/**
+ * SVC-003 — the service-instance statuses a WORKER HEALTH OBSERVATION may assert.
+ *
+ * ★ THIS LIST CLOSES E9-F001, AND BOTH HALVES OF THAT FINDING'S RESOLUTION ARE HERE.
+ * It previously read `"healthy" | "stopped" | "lost" | "interrupted"`. `interrupted` was
+ * never a member of the frozen `SERVICE_INSTANCE_STATUSES` and migration `0264` narrowed
+ * `service_instances_status_check` to the frozen nine, so `recordServiceHealth({
+ * healthStatus: "interrupted" })` typechecked and failed at runtime with a `23514`. It is
+ * deleted here. The second half — the missing subset assertion against the frozen
+ * authority — is the PURE suite `server/src/__tests__/service-health-projection.test.ts`
+ * — specifically its describe block, whose name is kept UNWRAPPED here so it greps:
+ * "SVC-003 — E9-F001: the health-status domain is reconciled with the frozen authority".
+ * It imports BOTH this constant and `SERVICE_INSTANCE_STATUSES` and asserts the subset in
+ * both directions. It needs no database: the drift is decidable from the two lists, so
+ * the reconciliation is a pure test, not an integration one. `packages/db` cannot import
+ * `worker-protocol` (see the schema headers), which is exactly why the reconciliation has
+ * to be a server-side test and why the drift happened at all.
+ *
+ * ★ IT IS FIVE OF THE FROZEN NINE, NOT ALL NINE, AND THE FOUR OMISSIONS ARE THE POINT.
+ * `SVC-001-design.md` §3.2 CORRECTION 6a reserved any WIDENING of this governed mutator's
+ * input domain for SVC-003; this is that widening, and it is bounded by what an observation
+ * can actually witness:
+ *   * `pending`  — written by the reconciler's INSERT. A worker cannot observe a row into
+ *                  existence, and admitting it would let a worker rewind its own instance.
+ *   * `leased`   — the control plane's fact, projected from `attempt_started` (which is the
+ *                  worker asserting it holds the attempt), never from a service event.
+ *   * `stopping` — a stop REQUEST, not an observation. `service_graceful_stop_observed`
+ *                  carries only `{ref, deadline}` and SVC-008b's emitter docstring says in
+ *                  terms that it "claims nothing about the process". SVC-005 owns the
+ *                  request side.
+ *   * `failed`   — no worker event means it. The supervisor emits exactly one of
+ *                  `service_instance_stopped` / `_lost` and then the attempt `terminal`;
+ *                  attempt failure is the attempt's own projection, not the instance's.
+ */
+export const SERVICE_HEALTH_ASSERTABLE_STATUSES = [
+  "starting",
+  "healthy",
+  "unhealthy",
+  "stopped",
+  "lost",
+] as const;
+export type ServiceHealthStatus = (typeof SERVICE_HEALTH_ASSERTABLE_STATUSES)[number];
 
 /** The result of a governed mutator whose durable storage is not yet built
  * (JOB-005/006/011). It proves ONLY that the active-fence guard admitted the
@@ -1176,7 +1222,95 @@ export interface AcceptEventInput {
   occurredAt: Date;
   payload: Record<string, unknown>;
   terminalStatus: TerminalCompletionStatus | null;
+  /**
+   * SVC-003 — the DECIDED service-instance projection this event drives, or `null` when
+   * it drives none. Computed SERVER-SIDE (`server/src/services/job-events.ts`), never here.
+   *
+   * ★ WHY IT IS DECIDED BY THE CALLER. The legality of a status move is the FROZEN
+   * `SERVICE_INSTANCE_TRANSITIONS` table in `packages/worker-protocol`, and `packages/db`
+   * deliberately does not depend on that package (see the `services` / `service_instances`
+   * schema headers — it is why the CHECK and the partial-index predicate are hand-written
+   * copies). Re-deriving the table here would make a FIFTH copy of a frozen list. So the
+   * server, which owns the frozen helper, hands down `allowedFromStatuses` and this
+   * repository applies it as a predicate. Same shape as `commitArtifactVersion`'s
+   * pre-evaluated `prefixValid`/`tenantValid`.
+   */
+  serviceProjection: ServiceInstanceProjectionInput | null;
 }
+
+/**
+ * SVC-003 — ONE decided service-instance status projection.
+ *
+ * `serviceInstanceId` / `serviceId` / `generation` are the values the WORKER put in the
+ * event payload. They are claims, not authority: the projection resolves the instance from
+ * `service_instances.job_id`/`.attempt_id` (written by SVC-002's reconciler inside its own
+ * transaction) and then REQUIRES all three to match. See {@link ServiceProjectionOutcome}.
+ */
+export interface ServiceInstanceProjectionInput {
+  /**
+   * What the worker's event payload SAYS this event is about, or `null` when the event
+   * makes no service claim at all.
+   *
+   * ★ `null` IS NOT A BYPASS, AND THE ONE EVENT THAT USES IT IS WHY. Only `attempt_started`
+   * maps to a null claim: its frozen payload is `{sandboxId}` and carries no service ref, so
+   * there is no assertion to check. The target row is still fixed by (job, attempt)
+   * attribution, and the only status a null-claim projection may drive is `leased`, whose
+   * sole legal predecessor in the frozen table is `pending`. A worker therefore cannot use
+   * it to escape a terminal status, to skip a generation, or to touch a row it was not
+   * already leased. What it records is the control plane's OWN fact, read off its own
+   * guard: `guardActiveFence` has just proven an ACTIVE lease for this attempt, which is
+   * exactly what `leased` means.
+   */
+  claim: { serviceInstanceId: string; serviceId: string; generation: number } | null;
+  /** The status this observation asserts. */
+  toStatus: ServiceHealthStatus | "leased";
+  /**
+   * Every status from which `toStatus` is a LEGAL move, derived by the caller from the
+   * frozen `SERVICE_INSTANCE_TRANSITIONS`. An empty array is a caller bug and is treated as
+   * "no legal predecessor", which refuses rather than admits.
+   */
+  allowedFromStatuses: readonly string[];
+  /**
+   * SVC-003 — what to report when the instance is ALREADY in a frozen terminal status.
+   *
+   * `"refuse"` (the default, and what EVERY service event uses) reports `illegal_transition`:
+   * a late `service_health healthy` on an instance that reached `lost` is the split-brain
+   * attempt and must be visible as a refusal.
+   *
+   * `"noop"` is set by the attempt-terminal backstop ALONE. On the normal path the instance is
+   * already `stopped`/`lost` by the time the attempt terminal arrives, and calling that a
+   * refusal would put one on the happy path of every service run — drowning the real ones in
+   * the operator log. ★ It changes only the REPORTED outcome: no write happens under either
+   * value, so it can never admit a transition `"refuse"` would have blocked.
+   */
+  whenAlreadyTerminal?: "refuse" | "noop";
+}
+
+/**
+ * SVC-003 — why a service projection did or did not move the row. Every arm is DISTINCT
+ * on purpose: a single boolean would collapse "there is no such instance" (an unreadable
+ * observation) into "the transition was illegal" (a readable observation refused), and
+ * SVC-008b's lesson is that a definite answer for an unreadable observation is a fail-open.
+ */
+export type ServiceProjectionOutcome =
+  /** The row moved. */
+  | { outcome: "applied"; fromStatus: string; toStatus: string }
+  /** The row already carried `toStatus`. Idempotent replay; no write. */
+  | { outcome: "noop_same_status"; fromStatus: string }
+  /** The row is already in a frozen terminal status and the caller asked for `"noop"` rather
+   *  than a refusal — the attempt-terminal backstop's normal path. No write. */
+  | { outcome: "noop_already_terminal"; fromStatus: string }
+  /** ★ UNKNOWN, NOT ABSENT. No `service_instances` row is attributed to this (job, attempt),
+   *  so nothing here can say what this observation is about. Nothing is written. */
+  | { outcome: "unattributed" }
+  /** The payload named a different instance/service than the one attributed to this
+   *  attempt. E9-F003's mislabel made load-bearing: the worker's claim is refused. */
+  | { outcome: "identity_mismatch"; attributedInstanceId: string }
+  /** ★ THE FENCE SVC-002 HANDED OVER. The payload's generation is not the instance's. */
+  | { outcome: "stale_generation"; instanceGeneration: number }
+  /** The frozen lifecycle forbids this move — including every move OUT of a terminal
+   *  status, which is the split-brain refusal (see `applyServiceProjectionForFence`). */
+  | { outcome: "illegal_transition"; fromStatus: string; toStatus: string };
 
 /** A contiguous, in-order batch (validated + digest-checked by the service). */
 export interface AcceptEventBatchInput {
@@ -1488,6 +1622,189 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         jobProjectionReceipts.sourceIdentity,
       ],
     });
+  }
+
+  // ── SVC-003 — the service-instance status projection ──────────────────────────────────
+  //
+  // ★★★ WHAT THIS IS. Before SVC-003, `service_instance_started` / `service_health` /
+  // `service_instance_stopped` / `service_instance_lost` were ingested, digest-verified and
+  // durably appended to `job_events` — and PROJECTED NO STATE CHANGE. `recordServiceHealth`
+  // was the only writer of `service_instances.status` and it had no consumer, so SVC-002's
+  // reconciler converged zero instances to one and then went quiescent forever: nothing
+  // could ever drive an instance terminal, so nothing could ever be replaced. This function
+  // is that consumer. It runs INSIDE `acceptEvent`, under the fence guard that already
+  // admitted, in the SAME transaction as the durable append — so an event is never
+  // acknowledged as accepted while its projection is lost, and a projection can never
+  // outlive a refused append.
+  //
+  // ★★★ THE WORKER'S PAYLOAD IS A CLAIM, NEVER AN AUTHORITY, AND THIS IS THE WHOLE FENCE.
+  // `serviceReconcileSourceSchema` carries no `serviceInstanceId` (adding it is a Protocol
+  // Custodian STOP, SVC-002-design §10.2), so the lease envelope's `executionPrincipal`
+  // names the SERVICE under the kind `service_instance` while the workload carries a
+  // different instance id — E9-F003. A projection that trusted `payload.serviceInstanceId`
+  // would promote that unauthorized value into a status write on any row in the tenant.
+  // So the AUTHORITY is `service_instances.job_id`/`.attempt_id`, which SVC-002's reconciler
+  // wrote inside its own transaction ("without this the instance row is UNATTRIBUTABLE and
+  // SVC-003 has nothing to fence against" — service-reconciler.ts, step 6b). The payload's
+  // three identity fields are then REQUIRED TO MATCH that row, and a mismatch refuses.
+  //
+  // ★★★ EVERY REFUSAL IS A DISTINCT OUTCOME, AND THE UNREADABLE CASE IS DRIVEN EXPLICITLY.
+  // `unattributed` is NOT `illegal_transition` and neither is a silent `false`. When no row
+  // is attributed to this (job, attempt) the observation is UNREADABLE — nothing here can
+  // say what it is about — and the honest answer is to write nothing and say so, exactly as
+  // SVC-002's `no_generation` stall does and for the same reason SVC-008b refuses to
+  // synthesize `healthy` from a status read that could not answer.
+  //
+  // ★ WHAT IT DELIBERATELY DOES NOT TOUCH: `leases`. E9's acceptance for SVC-003 opens
+  // "health events do not extend ownership without a successful lease renewal", and the
+  // mechanism for that clause is that this function writes exactly one table. Ownership is
+  // extended by `renewLease` and by nothing else. T5 pins it.
+  async function applyServiceProjectionForFence(
+    fence: ActiveFenceRequest,
+    projection: ServiceInstanceProjectionInput,
+    sourceIdentity: string,
+    sourceDigest: string,
+  ): Promise<ServiceProjectionOutcome> {
+    // (1) AUTHORITY: the instance attributed to THIS attempt, locked for the rest of the
+    // transaction. `FOR UPDATE` and not a bare read: two events for one instance inside one
+    // batch are applied in order, and a concurrent reconciler pass that is about to read the
+    // observed state waits rather than racing a half-applied projection.
+    const [instance] = await tx.select({
+      id: serviceInstances.id,
+      serviceId: serviceInstances.serviceId,
+      generation: serviceInstances.generation,
+      status: serviceInstances.status,
+    }).from(serviceInstances).where(and(
+      eq(serviceInstances.organizationId, fence.organizationId),
+      eq(serviceInstances.companyId, fence.companyId),
+      eq(serviceInstances.jobId, fence.jobId),
+      eq(serviceInstances.attemptId, fence.attemptId),
+    )).for("update").limit(1);
+    // ★ The unreadable case. A batch job's `attempt_started` lands here too (the caller
+    // cannot know a job is a service job without this very read), and for it this arm is the
+    // correct and only answer: there is no instance, so there is nothing to project.
+    if (!instance) return { outcome: "unattributed" };
+
+    // (2) IDENTITY: the worker's claim must name the row the control plane attributed.
+    const claim = projection.claim;
+    if (claim && (instance.id !== claim.serviceInstanceId || instance.serviceId !== claim.serviceId)) {
+      return { outcome: "identity_mismatch", attributedInstanceId: instance.id };
+    }
+
+    // (3) ★ THE GENERATION FENCE — the piece SVC-002 scoped out in its own words
+    // ("SVC-002 reads generation under a row lock and never bumps it; the fence is
+    // SVC-003's"). A worker still running generation N whose service has rolled to N+1
+    // may not write status onto the instance. Note WHICH generation is authoritative: the
+    // INSTANCE's, not `services.generation` — the instance's generation is what it was
+    // placed at, and comparing against the service would refuse every event the moment
+    // SVC-005 bumps, including events from the instance that is legitimately being drained.
+    if (claim && instance.generation !== claim.generation) {
+      return { outcome: "stale_generation", instanceGeneration: instance.generation };
+    }
+
+    // (4) Idempotent replay of the SAME event: the row already carries the asserted status.
+    // Distinguished from `applied` so a caller can tell a real move from a no-op, and
+    // deliberately checked BEFORE legality — `healthy → healthy` is not an edge in the frozen
+    // table (no status transitions to itself), so a repeated health tick would otherwise be
+    // reported as an illegal transition, which is false and would drown the real signal.
+    if (instance.status === projection.toStatus) {
+      return { outcome: "noop_same_status", fromStatus: instance.status };
+    }
+
+    // (4b) The attempt-terminal backstop landing on an instance that is ALREADY terminal —
+    // which is the NORMAL path, since the supervisor emits `_stopped`/`_lost` before the
+    // attempt terminal whenever it got that far. Reporting `illegal_transition` here would put
+    // a refusal on the happy path of every service run. ★ Reachable only when the CALLER asked
+    // for it (`whenAlreadyTerminal: "noop"`), which only the attempt-terminal arm does; every
+    // service event keeps the default `"refuse"`, so the split-brain refusal is untouched. No
+    // write happens under either value, so this can never admit a move `"refuse"` would block.
+    // ★ Reuses SVC-002's frozen list — the SAME `as const` the live-instance index predicate
+    // and the observed-state count are derived from — rather than a fifth hand-written copy.
+    if (projection.whenAlreadyTerminal === "noop"
+      && (TERMINAL_SERVICE_INSTANCE_STATUSES as readonly string[]).includes(instance.status)) {
+      return { outcome: "noop_already_terminal", fromStatus: instance.status };
+    }
+
+    // (5) ★★★ LEGALITY, AND THE SPLIT-BRAIN REFUSAL IT EXISTS FOR. `allowedFromStatuses` is
+    // the frozen table's predecessor set for `toStatus`, computed by the server. The three
+    // terminal statuses (`stopped`/`failed`/`lost`) have NO outgoing edges, so they appear
+    // in no predecessor set and every move out of them is refused here.
+    //
+    // That is not tidiness — it is the DE-12 crossing. `service_instances_live_service_uq`
+    // is unique on (organization_id, service_id) WHERE status NOT IN the three terminals. An
+    // instance that reached `lost` has LEFT that index and SVC-002's reconciler has already
+    // created its replacement. A late event from the old worker resurrecting it to `healthy`
+    // would put TWO live rows under one partial-unique key: at best a 23505 that fails the
+    // whole ingest transaction and makes the worker replay a batch forever, and — if the
+    // predicate were ever widened — two live instances for one service, which is the split
+    // brain itself. An empty `allowedFromStatuses` refuses, so a caller that computed
+    // nothing gets a refusal rather than an unconditional write.
+    if (!projection.allowedFromStatuses.includes(instance.status)) {
+      return { outcome: "illegal_transition", fromStatus: instance.status, toStatus: projection.toStatus };
+    }
+
+    // (6) The write. Conditional on the exact status read under the lock, so even if the
+    // lock were lost this cannot overwrite a status some other writer landed first.
+    const moved = await writeServiceInstanceStatus({
+      organizationId: fence.organizationId,
+      serviceInstanceId: instance.id,
+      status: projection.toStatus,
+      expectedFromStatus: instance.status,
+    });
+    if (!moved) return { outcome: "illegal_transition", fromStatus: instance.status, toStatus: projection.toStatus };
+
+    // (7) The receipt, on the SAME (kind, sourceIdentity) uniqueness every other projection
+    // uses. `aggregateKind` is what makes `target_aggregate_id` readable: the column is
+    // shared with attempt projections, which leave the kind NULL because their target is
+    // always the attempt they already name.
+    await tx.insert(jobProjectionReceipts).values({
+      organizationId: fence.organizationId,
+      companyId: fence.companyId,
+      projectionKind: "service_instance_status",
+      sourceIdentity,
+      sourceDigest,
+      jobId: fence.jobId,
+      attemptId: fence.attemptId,
+      sourceFence: fence.fence,
+      status: "applied",
+      targetAggregateId: instance.id,
+      aggregateKind: "service_instance",
+      appliedAt: sql`clock_timestamp()`,
+      createdAt: sql`clock_timestamp()`,
+    }).onConflictDoNothing({
+      target: [
+        jobProjectionReceipts.organizationId,
+        jobProjectionReceipts.companyId,
+        jobProjectionReceipts.projectionKind,
+        jobProjectionReceipts.sourceIdentity,
+      ],
+    });
+    return { outcome: "applied", fromStatus: instance.status, toStatus: projection.toStatus };
+  }
+
+  /**
+   * SVC-003 — THE ONE WRITER of `service_instances.status`, and the only place that column
+   * is assigned outside the reconciler's INSERT.
+   *
+   * Both governed entry points funnel here — the fenced `recordServiceHealth` mutator and
+   * the event projection above — so the conditional-on-observed-status shape cannot drift
+   * between them. Returns whether a row moved.
+   */
+  async function writeServiceInstanceStatus(input: {
+    organizationId: string;
+    serviceInstanceId: string;
+    status: string;
+    expectedFromStatus: string;
+  }): Promise<boolean> {
+    const rows = await tx.update(serviceInstances).set({
+      status: input.status,
+      updatedAt: sql`clock_timestamp()`,
+    }).where(and(
+      eq(serviceInstances.organizationId, input.organizationId),
+      eq(serviceInstances.id, input.serviceInstanceId),
+      eq(serviceInstances.status, input.expectedFromStatus),
+    )).returning({ id: serviceInstances.id });
+    return rows.length > 0;
   }
 
   // JOB-006 job aggregate terminal states (distinct from attempt terminal states).
@@ -2963,6 +3280,10 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
       if (!input.batch) return { leaseId: lease.id, attemptId: attempt.id, guarded: true };
       const events = input.batch.events;
       const guarded = { leaseId: lease.id, attemptId: attempt.id, guarded: true as const };
+      // SVC-003 — collected across the new tail and returned so a refused projection is
+      // OBSERVABLE. A projection that silently declined to write would be indistinguishable
+      // from one that was never attempted, which is how a dead arming path stays invisible.
+      const serviceProjections: { eventId: string; result: ServiceProjectionOutcome }[] = [];
 
       // Prior accepted state for THIS attempt, read under the guard's attempt lock
       // (no concurrent appender can interleave: guardActiveFence holds FOR UPDATE).
@@ -3054,12 +3375,31 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
               transition: { kind: "attempt_terminal", terminalStatus: event.terminalStatus },
             });
           }
+          // SVC-003 — the service-instance projection, applied AFTER the attempt projection
+          // for the same event. Order is load-bearing for `attempt_started`, which carries
+          // BOTH: the attempt must be `running` before the instance is called `leased`,
+          // because the instance's status is a claim about a run the attempt row owns.
+          if (event.serviceProjection) {
+            serviceProjections.push({
+              eventId: event.eventId,
+              result: await applyServiceProjectionForFence(
+                input,
+                event.serviceProjection,
+                event.eventId,
+                event.recomputedDigest,
+              ),
+            });
+          }
         }
       }
       const newAcceptedThroughSeq = newEvents.length > 0
         ? events[events.length - 1]!.sequence
         : acceptedThroughSeq;
-      return { ...guarded, ingest: { status: "accepted", acceptedThroughSeq: newAcceptedThroughSeq } };
+      return {
+        ...guarded,
+        ingest: { status: "accepted", acceptedThroughSeq: newAcceptedThroughSeq },
+        serviceProjections,
+      };
     },
 
     async authorizeArtifactCommit(input) {
@@ -3562,13 +3902,29 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
 
     async recordServiceHealth(input) {
       await guardActiveFence(input);
-      const [row] = await tx.update(serviceInstances).set({
-        status: input.healthStatus,
-        updatedAt: sql`clock_timestamp()`,
-      }).where(and(
+      // SVC-003 — the read is now UNDER the guard and UNDER a row lock, and the write goes
+      // through the one shared writer, because this method and the event projection must not
+      // be able to drift into two different ideas of a legal status move.
+      const [current] = await tx.select({
+        id: serviceInstances.id,
+        status: serviceInstances.status,
+      }).from(serviceInstances).where(and(
         eq(serviceInstances.organizationId, input.organizationId),
         eq(serviceInstances.id, input.serviceInstanceId),
-      )).returning();
+      )).for("update").limit(1);
+      if (!current) throw new Error("service_instance_not_found");
+      if (current.status !== input.healthStatus) {
+        await writeServiceInstanceStatus({
+          organizationId: input.organizationId,
+          serviceInstanceId: current.id,
+          status: input.healthStatus,
+          expectedFromStatus: current.status,
+        });
+      }
+      const [row] = await tx.select().from(serviceInstances).where(and(
+        eq(serviceInstances.organizationId, input.organizationId),
+        eq(serviceInstances.id, input.serviceInstanceId),
+      )).limit(1);
       if (!row) throw new Error("service_instance_not_found");
       return row;
     },

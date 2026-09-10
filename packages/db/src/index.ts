@@ -58,6 +58,9 @@ export type {
   EventIngestOutcome,
   ProjectionInput,
   ProjectionTransition,
+  // SVC-003 — the decided service-instance projection and its per-event outcome.
+  ServiceInstanceProjectionInput,
+  ServiceProjectionOutcome,
   JobControlCommandKind,
   GovernedProjectionKind,
   GovernedProjectionInput,
