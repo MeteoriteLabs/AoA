@@ -1896,3 +1896,108 @@ into a result set is the same defect class in miniature.
   learns nothing, and arm 6 above is what holds that line.
 - **No finding is closed, no crossing changes status, no cohort count is struck, and no
   `deliveryStatus` is upgraded by this unit.** E0-F013 stays open.
+
+---
+
+### Unit W20-B — the two clause-halves Decision 1 measured as deliverable, wired (`E0-F013`). Neither finding closes.
+
+**Date:** 2026-09-10. **Base:** `6b39c77f6`. **Scope:** DE-11 conjunct 5b (retention audit) and
+DE-20 conjunct 4a (cutover selection audit). **Production code + two integration suites + register
+evidence.** No clause text amended, no ownership moved, no `deliveryStatus` upgraded, no gate-clause
+enrolment, no cohort count struck.
+
+#### What the code now does
+
+- **DE-11 (5b).** `resolveStoredRetention` (`artifact-retention-authority.ts:49-58`) is a live
+  control-plane retention decision called at `artifact-commit.ts:272` and branched on at `:276`.
+  That branch previously emitted a `logger.warn` whose own comment said *"This is a LOG LINE, not an
+  audit record — DE-11 claims retention is audited and nothing audits it"*. It now captures a record
+  intent (`:295`) drained after the tenant transaction closes, on the pool handle, at `:448` —
+  gated on `response.outcome === "committed"`, because the decision runs *before* the mutator and
+  three refusal branches sit after it. Recorder: `artifact-retention-audit.ts`, writing one
+  `activity_log` row per OVERRIDE carrying company (the locked lease's), organization
+  (token-attested), worker, artifact, kind, **and both `declaredRetention` and `storedRetention`**.
+- **DE-20 (4a).** One `appendRunEvent` at `heartbeat.ts:5373`, placed AFTER `canaryExecutionOwner`
+  is assigned and BEFORE `shouldSuppressLegacyExecution` (`:5448`) reads it, writing a
+  `distributed_execution_selection` event for **both** arms. Before this, a distributed selection
+  wrote a `distributed_execution_handoff` row and a legacy selection wrote **nothing durable** — so
+  "the cutover selected legacy" was indistinguishable, in the database, from "this run was never a
+  cutover candidate". The builder (`cutover-selection-audit.ts`) is total over `RunExecutionOwner`,
+  so "both arms are audited" is a property of the type, not of a reviewer remembering a second call
+  site. Best-effort, because that `try`'s only handler is a `finally` and a throw would reach
+  `executeRun`'s outer catch, which promotes a deferred wake — an audit write must never become a
+  double-execution lever.
+
+#### The namespace decision, stated because it was a real choice
+
+A retention override is **not a refusal**. Filing it under `security.denied.` would make *"count the
+denial rows"* stop answering *"count the refusals"* — the exact property the denial reservation in
+`activity-namespace.ts` exists to hold. So it gets its own reserved prefix, `security.retention.`,
+enforced at the same two writers that accept a caller-supplied `action`. The partial CHECK from
+migration `0274` does **not** cover the new prefix, deliberately: a retention row always has an
+FK-valid company, and a company-less retention decision should be refused by the database.
+
+#### ★★★ NEITHER FINDING CLOSES, and both are conjunctions
+
+- **DE-11 stays `partial`, on two independent grounds.** (i) Its clause is *"sensitive-artifact
+  ACCESS **and** RETENTION are audited"* and only the retention half is delivered; the access half's
+  missing piece is **DE-06's** own open successful-put/get conjunct. (ii) **The coverage caveat:**
+  nothing in production uploads `browser_cookie_state`/`browser_storage_state` (BRW-003 unbuilt), so
+  the record is live but has never once been about a credential-bearing kind. The proving test
+  provokes that kind **by hand** and pins it as test-provoked in the arm title.
+- **DE-20 stays `partial`.** Its clause is *"cutover selection **and** rollback transitions"*. The
+  rollback conjunct is **vacuous and untouched**: `createDistributedExecutionDrain`
+  (`job-distributed-drain.ts:114`) still has **zero production callers**, re-measured by a
+  comment-stripping census over `server/src`. That conjunct is **Decision 1's to rule on** and
+  `E0-F014`'s to own; this unit did not amend it, did not touch the separately-amended `revocation`
+  clause, and did not move DE-20 out of any cohort.
+
+#### Reds observed, each against a named positive control
+
+- **DE-11**: checking `artifact-commit.ts` out at base **reds 3 recording arms, 6 controls green**.
+  Dropping the `committed` gate reds **only** the refused-commit arm. Moving the action into
+  `security.denied.` reds **only** the three namespace-asserting arms. The pre-existing DE-06 suite's
+  *"a COMMITTED artifact writes NO denial row"* arm stays green as the regression control.
+- **DE-20**: dropping the legacy `reason` reds the legacy arm with the distributed arm green;
+  replacing the builder call reds **only** the position arm; **relocating** the append to after the
+  suppression branch reds **only** the append-before-suppression assertion.
+
+#### ★★★ Citation staleness, measured — and this unit shipped the defect once itself
+
+Re-measuring at source found that **the Decision 1 paper's own corrected citations are already
+stale**, including one its correction table marked *"✔ EXACT"*:
+
+| Cited | Where the paper put it | Where it is at `6b39c77f6` |
+|---|---|---|
+| upload-prefix deny | `artifact-transfer-grant.ts:113` → paper: `:180-184` | `:187` |
+| download committed-row check | `:201-202` → paper: `:295`/`:300`/`:302` | `:296`/`:299`/`:304`/`:306` |
+| `wrong_prefix`/`tenant_mismatch` | `job-control.ts:2750`/`:2751` — **paper: "✔ EXACT"** | `:3109`/`:3110` (359-line drift) |
+| the "LOG LINE" comment | register: `artifact-commit.ts:172-173` → paper: `:259-260` | `:263-265` (now removed) |
+| suppression gate / return / execute | register: `:5399`/`:5451`/`:5453` | `:5448`/`:5500`/`:5502` — **shifted by this unit's own edit** |
+| lease-candidate eligibility, `offerLease`, CHECK | register: `:1947`, `:2318-2328`, `job_attempts.ts:95-112` | `:2306`, `:2669`+`:2680-2687`, `:95-135` |
+
+All corrected in the register, with the correction itself recorded there rather than silently applied.
+
+★ **And the failure class caught this unit in the act.** The first draft of the DE-20 rollback arm
+asserted `heartbeat.ts` does not contain `createDistributedExecutionDrain` — and it went **red
+against this very PR**, because the wiring's own comment names the symbol while explaining that it
+has no callers. **A prose match is not a caller census.** Replaced with a comment-stripping census
+carrying its own anti-vacuity control. Separately, the byte scan caught a **U+200B** this unit had
+inserted into a comment to avoid closing a block comment — the invisible-byte defect, found before
+push rather than after.
+
+#### NOT DONE, and left open
+
+- **DE-11's access half.** Untouched. It rides DE-06's existing put/get obligation.
+- **DE-20's rollback conjunct (4b).** Untouched, and deliberately left for Decision 1 / `E0-F014`.
+- **An AGREEING retention declaration writes nothing.** Exception-based auditing by design (the
+  stored value is on `job_artifacts.retention`), but it means "no row" must not be read as "no
+  commit". Stated in the recorder header and asserted by its own arm.
+- **Neither writer has ever run in a deployment.** DE-20's cutover has zero deployment hits and the
+  browser upload path does not exist; both records are proven in CI only.
+- **The DE-06 and DE-28 rows carry the same stale `artifact-transfer-grant.ts:113` citation.** Not
+  corrected here — this unit measured DE-11 and DE-20 and will not amend rows it did not audit.
+- **The register's `E0-F013` Group-D arithmetic is untouched.** Whether DE-11 or DE-20 leave any
+  cohort is Decision 1's call, not this unit's.
+- **No finding is closed, no crossing changes status, no cohort count is struck, and no**
+  **`deliveryStatus` is upgraded by this unit. E0-F013 stays open.**
