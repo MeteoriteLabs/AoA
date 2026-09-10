@@ -301,7 +301,12 @@ measured rather than inherited:
   **DE-14 is struck (2026-09-10):** its clause — "the startup safety-assertion outcome is logged" —
   is SINGLE-CONJUNCT and both DIRECTIONS of the outcome are now recorded at the entrypoint's one
   startup load. See the DE-14 table row above and the register row. It stays `partial` in the
-  register for its other clauses, which is the DE-19 and DE-06 shape. ★ **AND IT PROVES NOTHING
+  register for its other clauses — ★ but **NOT for DE-19's and DE-06's reason**, and an earlier
+  draft of this bullet said it did. Those two rows each had a MULTI-clause `audit` requirement and
+  closed it whole; DE-14's row names exactly **ONE** absent clause — `audit` — and it is the one
+  this unit delivered, so `partial` here is about clauses OTHER than audit. The analogy fails, and
+  the correction is recorded in the register row and in the gate-clause enrolment as well as here.
+  ★ **AND IT PROVES NOTHING
   ABOUT THE OTHER SIX.** DE-14 was always the cheapest member of this class and `E0-F013` said so
   in terms — it is the one row whose clause asks for a LOG rather than an attributable durable
   record, and the assertion fires before any database pool exists, so a durable row is
