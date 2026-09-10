@@ -506,7 +506,7 @@ export async function setServiceDesiredStateWithinTenant(
  *
  * Split out of {@link setServiceDesiredStateWithinTenant} by SVC-007 Unit B for ONE reason:
  * ★ this function has SEVEN `return` statements (counted at head, not remembered) and the
- * audit must fire on exactly two of the four VERDICT values — `updated` and `unchanged` —
+ * audit must fire on exactly two of the five VERDICT values — `updated` and `unchanged` —
  * which between them are reached from four of those seven exits, and only AFTER the
  * cancellation and the terminalization so the row can record what happened to the live
  * instance. Auditing at each exit would be four call sites to keep in step and an eighth exit

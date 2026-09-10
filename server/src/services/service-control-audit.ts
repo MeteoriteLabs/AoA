@@ -87,9 +87,10 @@
 //     whose `audit` clause is about "query and policy-denial events" — a different clause
 //     from AGENTS.md's "activity logging for all mutating actions", which is the one this
 //     file is about.
-//   * It does NOT audit the JOB-008 sibling mutations (`drain`, `revoke`) on the same router.
-//     They are still silent. That is SVC-007a's observation and it remains true; see
-//     `SVC-007b-result.md`.
+//   * It does NOT audit the THREE sibling mutations on the same router — job submission
+//     (`POST …/jobs`, pre-dating JOB-008) plus JOB-008's `drain` and `revoke`. All three are
+//     still silent, which is why `E9-F010` stays OPEN rather than resolving here. That is
+//     SVC-007a's observation and it remains true; see `SVC-007b-result.md`.
 //   * It does NOT audit a REFUSED control action. An `illegal` or `conflict` verdict mutates
 //     nothing, and an `absent` one returns a uniform 404 precisely so an unauthorized reader
 //     cannot distinguish "no such service" from "another tenant's service" — auditing it

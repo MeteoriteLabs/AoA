@@ -62,9 +62,13 @@ the norm for a deviation from it. Writing `activity_log` directly is not "a SECO
 path" — measured over non-test sources, `logActivity` has **283** production callers and
 `insertActivity`/`insertActivityLog` **6**/**5**, and there are **36** direct
 `.insert(activityLog)` sites in `server/src` — tracked files, excluding `__tests__` and excluding
-COMMENT lines. ★ The exclusions are the measurement: a plain `grep` answers **42**, and six of those
-are prose ABOUT the sites rather than sites, which is the bare-figure trap. `packages` contributes
-**0**, so this is the same scope `activity-namespace.ts`'s own "THIRTY-FOUR … in `server/src`" used
+COMMENT lines. ★ The exclusions are the measurement, and each excluded occurrence is accounted for
+rather than waved at: a plain `grep` answers **42** occurrences over **41** lines; **4** are in
+`__tests__` (all in `e0-f013-unattributable-denial-sink.integration.test.ts`) and **2** are prose
+ABOUT the sites rather than sites — both on the single comment line `activity-namespace.ts:23`,
+which names `db.insert(activityLog)` and `tx.insert(activityLog)` in one breath. 42 − 4 − 2 = **36**,
+and reporting the bare 42 is the trap. `packages` contributes **0**, so this is the same scope
+`activity-namespace.ts`'s own "THIRTY-FOUR … in `server/src`" used
 — two more than when that sentence was written, and it is left alone rather than edited from here.
 `jobAuditBridge` has **0**. The direct write is the first path; the fenced bridge is the one nothing
 calls.
