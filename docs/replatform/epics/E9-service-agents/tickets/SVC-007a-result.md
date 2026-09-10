@@ -90,7 +90,7 @@ base `053f90fc8` vs head:
 | **`canTransitionServiceDesiredState`** | **0** | **1** | ★ the one that matters — see below |
 | `lockServiceForReconcile` | **3** | **4** | the control REUSES SVC-002's per-service advisory lock rather than minting a second key |
 | `decideServiceProjection` | **1** | **2** | the control-plane backstop reads its mapping from the worker path's own decider |
-| `findServiceGenerationDefinition` | **3** | **4** | T4 reads the stored definition back through SVC-002's own reader |
+| `findServiceGenerationDefinition` | **3** | **4** | the fourth is `readService` — the operator view resolves the CURRENT generation's definition through SVC-002's own reader rather than a second query. (`T4` reads it back too, but the counter excludes tests, so it is not the delta.) |
 | `createStartupReconciler` (the cautionary neighbour) | **0** | **0** | untouched; still zero |
 | `createServiceReconciler` | **2** | **2** | untouched |
 
