@@ -286,6 +286,15 @@ the first time. Full statement in `../findings.md`.
 * **The audit is not a UI.** `E9-F009` §4 asks for a durable record "with a reader" and names
   SVC-007's evidence surface as where it should land. This is a durable record for two CONTROL
   actions; it is not the instance-transition receipt that finding wants, and it does not close it.
+* **★ THE ROW REACHES THE PRODUCT ACTIVITY FEED, AND RENDERS UNDECORATED — checked, not
+  assumed.** `activity_log` is served to a company through `GET /companies/:companyId/activity`,
+  so a `service.create` row is visible to that company's board today. Both UI switches on
+  `entityType` have a `default` arm — `entityBorderColor`
+  (`ui/src/components/settings/sections/ActivitySection.tsx`) returns `transparent` and
+  `entityLink` (`ui/src/lib/activityFormat.ts`) returns `null` — so `"service"` degrades to a
+  plain, unlinked row rather than crashing or blanking. **That is fail-soft, not finished:**
+  there is no `/services/:id` route to link to, because SVC-007's UI is item 9 of the exit gate
+  and is not delivered. Adding the entity to those two switches belongs with that UI, not here.
 
 ---
 
