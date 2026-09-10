@@ -447,8 +447,12 @@ asserts every row is in ONE OF THE TWO reserved audit namespaces, with a named p
 the object-access namespace is genuinely represented so the widening is not dead allowance. That
 file's `denialRowsFor` helper was also narrowed to the denial prefix: it was **action-blind**
 (`WHERE entity_id = $1` and nothing else) while all of its call sites read it as "the denial rows"
-— harmless only while the denial recorder was the sole artifact-keyed writer. Its other 20 arms
-stayed green throughout as the regression control; the full denial-audit family is **141/141 green
+— harmless only while the denial recorder was the sole artifact-keyed writer. That file holds **21**
+arms and this unit amended **two** of them, so its **other NINETEEN** stayed green throughout as the
+regression control — the whole rejected-key conjunct, untouched. *(An earlier draft of this sentence
+said "its other 20 arms", which was the count while only the FIRST of the two had been amended and
+was stale the moment the second was. Re-counted at HEAD: 21 total, 2 amended, 19 untouched.)* The
+full denial-audit family is **141/141 green
 across twelve suites**, re-run and RE-COUNTED after this unit's last edit: `de-06-object-access-audit`,
 `de-06-artifact-denial-audit`, `de-03-worker-replay-denial-audit`, `de-11-retention-audit`,
 `de-19-memory-denial-audit`, `de-21-live-events-upgrade-denial-audit`, `artifact-transfer-commit`,
