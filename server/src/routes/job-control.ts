@@ -374,6 +374,10 @@ export function jobControlRoutes(opts: { db: Db; appDb: Db; operatorDb: Db }) {
   //                                              (on `updated` and `unchanged` only —
   //                                               `illegal`/`conflict`/`absent` mutate nothing)
   //
+  //   OUT OF SCOPE OF THE INVARIANT — SVC-007's other two routes are GETs and mutate
+  //   nothing, so they write no row and are not expected to:
+  //     GET  …/services   ·   GET …/services/:serviceId
+  //
   //   NOT AUDITED — structured logger lines only, which do not outlive the process. Measured
   //   at this commit: neither `jobSubmissionService` nor `createJobOperationsService` contains
   //   any `activityLog` / `insertActivity` / `logActivity` reference, so the handler's logger
