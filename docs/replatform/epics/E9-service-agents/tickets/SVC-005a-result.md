@@ -124,7 +124,7 @@ memory: `R-T1`, `R-T2`, `R-T3`, `R-T3b`, `R-T4`, `R-T5`, `R-T6`, `R-T7`, `R-T7b`
 `R-T9`, `R-T9b`, `R-T10`; `T-P1`, `T-P2`, `T-P3`, `T-P3b`, `T-P3c`, `T-P3d`, `T-P4`, `T-P5`,
 `T-P5b`, `T-P6`.
 
-**Mutants observed, each with a named positive control that stayed green:**
+**Ten mutants observed, each with a named positive control that stayed green** (counted from the table below after the last edit, not from memory)**:**
 
 | Mutant | Killed by | Positive control |
 |---|---|---|
