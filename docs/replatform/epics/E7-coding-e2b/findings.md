@@ -973,7 +973,9 @@ met**: "exit 78" is now recorded on the attempt; "with a named cause on stderr" 
 ## E7-F015 — The task-outputs endpoint is forgeable: a board POST supplies `createdByRunId` with no producer check (★ NARROWED 2026-09-11 — no longer flips `capabilityProven`)
 
 **Status:** open · **Owner:** CLI-008 (Unit F — terrain filed, **no fix designed**)
-**Severity:** LOW (★ NARROWED 2026-09-11 from MEDIUM — see note) · **Filed:** 2026-09-03, by CLI-008
+**Severity:** MEDIUM (★ NARROWED 2026-09-11 — the `capabilityProven` flip is CLOSED, but the forged
+field still feeds clause 4's leak scan, a forged false-failure path; the LOW downgrade was withdrawn per
+a Codex P2 on PR #426 — see note) · **Filed:** 2026-09-03, by CLI-008
 Unit F's terrain pass, before designing anything that would make an operator start trusting this gate.
 
 ★ **NARROWED 2026-09-11 — the `capabilityProven` flip is CLOSED; the forgeable endpoint is the
@@ -990,9 +992,12 @@ change: arm 2 of `countProducedOutputs` no longer reads `taskOutputs.createdByRu
   (`server/src/services/job-output-bridge.ts`), which writes it in the same tenant transaction as the
   output under a live fence (`recordGovernedProjection` → `guardActiveFence`). No HTTP caller can forge
   an applied, attempt-bound receipt, so a board POST can no longer move arm 2 or flip
-  `capabilityProven`. The old `created_by_run_id = run.id` predicate survives ONLY in the secret-scan
-  surface enumerator (`listRunSecretScanSurfaces` arm 2b), which is E7-F030's axis, not the capability
-  counter.
+  `capabilityProven`. **BUT the old `created_by_run_id = run.id` predicate survives in the secret-scan
+  surface enumerator `listRunSecretScanSurfaces` arm 2b (`e7-distributed-run-verifier-store.ts:390`,
+  `.where(eq(taskOutputs.createdByRunId, run.id))`), and clause 4 STILL READS IT** — E7-F030
+  deliberately kept it (`:386`: *"deliberately stopped counting these; clause 4 must NOT stop scanning
+  them"*). So the forged field is NOT unread: it still feeds clause 4's leak scan. See "What survives"
+  (a forged false-failure path, caught by a Codex P2 on PR #426, 2026-09-11).
 
 - **What survives — the endpoint is still forgeable (finding stays OPEN).**
   `POST /api/issues/:issueId/outputs` (`server/src/routes/task-outputs.ts:45-54`, mounted
@@ -1001,13 +1006,22 @@ change: arm 2 of `countProducedOutputs` no longer reads `taskOutputs.createdByRu
   only guard is still `assertCompanyOwnedRef(db, heartbeatRuns, input.createdByRunId, companyId, …)`
   (`server/src/services/task-outputs.ts:123`) — a company-ownership check, NOT a producer check. A
   caller can still stamp any company-owned run id onto a task-output row with no proof that run produced
-  anything. That is a **low-value integrity gap** now that the forged field no longer feeds the
-  capability bar.
+  anything. ★ **And the forged field still feeds a hard gate — clause 4 (the secret scanner).** A
+  company-scoped actor can POST a `task_outputs` row stamping a company-owned run's `createdByRunId`
+  with hard-leak-shaped text in a scanned field; `listRunSecretScanSurfaces` arm 2b selects it
+  (`e7-distributed-run-verifier-store.ts:390`) and the verifier adds a clause-4 failure
+  (`e7-distributed-run-verifier.ts:613-623`), making `e7VerifyExitCode` return 1 — a **forged
+  false-failure path** on another run's verify verdict. (Cross-tenant it is blocked by
+  `assertCompanyOwnedRef`; within a company it is not.)
 
-- **Severity: MEDIUM → LOW.** The MEDIUM was justified by the forgeable capability verdict; that
-  consequence is closed by E7-F020's receipt predicate. The residual — an accepted-but-unverified
-  provenance field on a task-output row that no gate reads — is LOW. If a future round wires a gate off
-  `task_outputs.created_by_run_id`, re-price.
+- **Severity: stays MEDIUM (the LOW downgrade is withdrawn — Codex P2, PR #426).** The `capabilityProven`
+  flip IS closed by E7-F020's receipt predicate, which is a real narrowing of KIND. But the residual is
+  NOT "a field no gate reads": the forged `createdByRunId` still feeds **clause 4**, where it can force a
+  false leak-failure (above). Like the capability counter, clause 4 is part of the E7-1 verifier that
+  certifies nothing in production today (`--require-capability` off by default, referenced by no
+  workflow), so the LIVE blast radius is bounded — but a hard gate consuming a forgeable, producer-unchecked
+  field is a MEDIUM integrity gap, not LOW. Any fix must add a producer check to the route OR bind clause
+  4's scan surface to the same fenced receipt arm 2 uses.
 
 Everything BELOW this note is the original 2026-09-03 terrain as filed, kept for its writer census and
 its refuted-fix record. Where the original text asserts the `capabilityProven` flip as a live
