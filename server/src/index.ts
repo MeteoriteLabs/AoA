@@ -1320,9 +1320,14 @@ if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
   // the operator is told the cancel failed, and with `"skip"` the batch continues
   // and the run stays `running` — both honest, and neither writes a terminal for
   // a worker that is still live (4-D1).
-  const [{ createJobReconciliationService }, { createJobControlSweeper }] = await Promise.all([
+  const [
+    { createJobReconciliationService },
+    { createJobControlSweeper },
+    { createExecutionTargetRevocationFanout },
+  ] = await Promise.all([
     import("./services/job-reconciliation.js"),
     import("./services/job-control-sweeper.js"),
+    import("./services/execution-target-revocation-fanout.js"),
   ]);
   const jobReconciliationForCancel = createJobReconciliationService({ appDb });
 
@@ -1352,6 +1357,46 @@ if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
       ? (signal) => onAttemptTerminal(signal as Parameters<typeof onAttemptTerminal>[0])
       : undefined,
   });
+
+  // ── DE-18 — the execution-target revocation fanout, on the SAME running timer ────────────
+  // `createExecutionTargetRevocationFanout` (JOB-007) shipped complete-but-unwired: the real
+  // `POST .../workers/:workerId/revoke` route already writes durable `status:'pending'`
+  // `execution_target_revocations` rows via `revokeExecutionTarget`, and the committed
+  // generation cutoff already DENIES old-generation governed effects immediately — but the
+  // convergence half (mark stale leases `revoked`, release their capacity, cancel the pinned
+  // job) never ran, because nothing ticked it. It drains the same durable records the live
+  // producer writes, so this is honest wiring, not a count-flip.
+  //
+  // Reuses the MIG-002 timer rather than adding a second one, and lives INSIDE this flag block
+  // for MIG-002's reason at :1340-1346: flag-off allocates no `aoa_app` pool, so `runInTenant`
+  // (which the fanout's per-tenant convergence needs) would have nothing to open — unconditional
+  // registration would be a throw, not a safety net.
+  //
+  // The fanout wants a page-free `() => Promise<string[]>`; the shared enumerator is paginated
+  // (bounded 32/page, asc by id), so drain every page here into one deduped, ascending list.
+  const revocationFanout = createExecutionTargetRevocationFanout({
+    appDb,
+    operatorDb: distributedExecutionDatabases.operatorDb,
+    reconciliation: jobReconciliationForCancel,
+    listAdmittedOrganizationIds: async (): Promise<string[]> => {
+      const all: string[] = [];
+      let after: string | null = null;
+      // Bounded drain: the enumerator caps the page at 32, so a page shorter than that is the
+      // last one. The org set is finite; this terminates when a short (or empty) page returns.
+      for (;;) {
+        const page = await listAdmittedOrganizationIds!({
+          afterOrganizationId: after,
+          limit: 32,
+          statementTimeoutMs: 750,
+        });
+        all.push(...page);
+        if (page.length < 32) break;
+        after = page[page.length - 1]!;
+      }
+      return [...new Set(all)];
+    },
+  });
+
   let convergenceStopped = false;
   let convergenceTimer: NodeJS.Timeout | undefined;
   const convergenceTick = async (): Promise<void> => {
@@ -1371,6 +1416,20 @@ if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
             finalized: result.finalized, projected: result.projected,
           },
           "[mig-002] lease reaper converged expired distributed work",
+        );
+      }
+      // DE-18 — converge target revocations on the same tick, under the same try/catch and the
+      // same running timer. Drains durable `execution_target_revocations` the live revoke route
+      // writes; a throw here is caught alongside the reaper's and the timer re-arms below.
+      const revocation = await revocationFanout.tick();
+      if (revocation.leasesRevoked > 0 || revocation.cancellations > 0 || revocation.completed > 0) {
+        logger.info(
+          {
+            records: revocation.records, organizations: revocation.organizations,
+            leasesRevoked: revocation.leasesRevoked, cancellations: revocation.cancellations,
+            completed: revocation.completed,
+          },
+          "[de-18] target revocation fanout converged stale distributed work",
         );
       }
     } catch (err) {

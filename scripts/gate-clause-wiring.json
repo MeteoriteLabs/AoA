@@ -77,9 +77,9 @@
     },
     "E3-18-revocation": {
       "epic": "E3",
-      "status": "unwired",
+      "status": "wired",
       "symbol": "createExecutionTargetRevocationFanout",
-      "reason": "revokeExecutionTarget writes a pending row, but the fanout that ACTS on it has zero callers, so a revoked target is not actively torn down. Needs a scheduler/consumer; sequence with Sprint 3 (dispatch live) since it only bites once workers run."
+      "reason": "PROMOTED ON EVIDENCE — DE-18. The fanout is now composed at the server composition root (server/src/index.ts, inside the config.distributedExecutionEnabled && distributedExecutionDatabases block, via the flag-gated dynamic import so it never enters the flag-off bootstrap graph) and its tick() runs inside the ALREADY-RUNNING MIG-002 convergenceTick body, under the same try/catch and the same unref'd timer — no second scheduler. It is fed the operator pool (drives the durable execution_target_revocations records), the shared jobReconciliationForCancel (the same cancel path the reaper uses), and a page-draining wrapper over the paginated listAdmittedOrganizationIds. The producer is live: POST .../workers/:workerId/revoke -> revokeExecutionTarget writes the status:'pending' rows this tick drains. Convergence BEHAVIOUR (stale lease -> revoked, capacity released once, target_revoked cancellation, record -> completed, crash-resume idempotence) is proven end-to-end against embedded Postgres in server/src/__tests__/worker-revocation.integration.test.ts. The wiring itself is guarded red-when-removed by server/src/__tests__/de-18-revocation-fanout-wiring.test.ts (the 'ticks the fanout inside the convergence tick' case reddens when the await revocationFanout.tick() call is deleted). The full distributed teardown over a live E2B fence rides the same E7-1 substrate that remains unbuilt."
     },
     "E4-1-leases-through-protocol": {
       "epic": "E4",
