@@ -155,11 +155,22 @@ export const serviceInstances = pgTable(
       "service_instances_status_check",
       sql`status IN ('pending', 'leased', 'starting', 'healthy', 'unhealthy', 'stopping', 'stopped', 'failed', 'lost')`,
     ),
-    // SVC-005a: the three authors, spelled once in the database. Hand-written here for the
+    // SVC-005a: all four authors, spelled once in the database. Hand-written here for the
     // same reason `service_instances_status_check` is (packages/db does not depend on
     // worker-protocol), and reconciled against the server-side constant
-    // `SERVICE_INSTANCE_TERMINAL_AUTHORS` by an assertion that asserts set EQUALITY, so an
-    // author added on one side and not the other is caught rather than silently storable.
+    // `SERVICE_INSTANCE_TERMINAL_AUTHORS` by `T-P5c` in
+    // server/src/__tests__/service-generation-rollout.test.ts, which reads THIS literal as
+    // source text and asserts set EQUALITY, so an author added on one side and not the other
+    // is caught rather than silently storable. `T-P5` asserts the same equality against the
+    // applied DDL of migration 0279, and `T-P5d` against each other.
+    //
+    // ★ WHAT T-P5c DOES NOT PROVE, because this comment previously claimed an enforcement
+    // that did not exist and external review of PR #415 caught it: reading this literal says
+    // nothing about the constraint any deployed database is actually running — 0279 is
+    // immutable once applied and T-P5 is what covers it. What this copy governs is the DDL
+    // `db:generate` would emit NEXT for this table, which is why a divergence here is worth
+    // catching even though today's deployment would not notice it.
+    //
     // NULL is admitted by a CHECK on a nullable column and is the pre-column / not-yet-
     // terminal state; the fence reads it as NOT-A-WITNESS.
     terminalizedByValid: check(

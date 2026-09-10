@@ -87,7 +87,7 @@
 // ticket does not overturn it. So SVC-005a delivers "no two generations are PLACED while the
 // older one is un-drained or unwitnessed", which is the fenceable half of the acceptance
 // clause. It does NOT deliver "no two generations perform external effects simultaneously" in
-// full, and **the clause is not claimed**. See SVC-005a-result.md §2 and E9-F010.
+// full, and **the clause is not claimed**. See SVC-005a-result.md §2 and E9-F012.
 //
 // ── WHAT THIS FILE DELIBERATELY DOES NOT WEAKEN ─────────────────────────────────────────
 //

@@ -28,11 +28,23 @@ definition for the new generation is minted in the same transaction.
 **NOT CLAIMED:** *no two generations perform external effects simultaneously* — E9's acceptance
 clause for SVC-005. A closed fence stops the old worker **writing**, not its **process**, and no
 control-plane fact can prove a remote process stopped. E9-F007 §3 already established this for the
-same-generation case; **E9-F010** files it for the rollout case. The clause is a conjunction and
+same-generation case; **E9-F012** files it for the rollout case. The clause is a conjunction and
 **half of it is not it**, so it is left OPEN rather than upgraded.
 
 The rollout route answers **202, not 200**, for exactly this reason: it reports that generation N+1
 was minted and a stop was *requested*, never that the old generation stopped.
+
+★ **Why `E9-F012` and not `E9-F010`, recorded so the gap in the sequence is not read as a lost
+finding.** This finding was first written as `E9-F010`. `check-register-id-uniqueness` is green on a
+single branch by construction and reds only on whichever collides second, so the collision was
+found by review rather than by CI. **First-filed keeps the id**: the sibling pull request that had
+already taken it was opened at `2026-09-10T11:10:24Z` against this one's `2026-09-10T11:14:29Z`.
+Measured rather than assumed, and pinned to the revision measured: at that PR's head `2b890c2d1`,
+`docs/replatform/epics/E9-service-agents/findings.md` carries `## E9-F010` **and** `## E9-F011`, so
+the next free id was **`E9-F012`** and renumbering to `F011` would have rebuilt the same collision
+one number along. Nothing else about that branch is asserted here, and its ids may move; what is
+fixed is that this unit's finding no longer claims one of them. Content and ordinal position are
+otherwise unchanged — it remains the last section of `findings.md`.
 
 ---
 
@@ -79,12 +91,48 @@ shape as SVC-003a's own recorded near-miss (*"the only end-to-end case drove `se
 the one status reachable from everything"*) — pointed the other way.
 
 **The P2 (no `activity_log` row for a generation roll) is real and is NOT closed here**, for two
-measured reasons: neither sibling control on this router writes one either and SVC-007a's result
-already declares that open by name under **DE-01**, so closing one of three would make the gap less
-visible; and E9-F009 §3 measured that **no** repository method in that layer writes `activity_log` at
-all, and declined to introduce the convention through its least prominent door. Nothing in this
+measured reasons. First: **neither sibling control on this router writes one either** — SVC-007a's
+service *create* and its *desired-state* stop/resume — and SVC-007a's result already declares that
+open by name under **DE-01**, so closing one of three would make the gap less visible. ★ That is a
+measurement of **this branch**, taken at base `c27feeea8` and again at head, not a claim about any
+other branch: `grep -n 'activity_log\|activityLog'` over `server/src/routes/job-control.ts` and
+`server/src/services/service-management.ts` returns **comments only, no writer**, at both revisions.
+If a sibling ticket lands an audit write on those routes, this sentence goes stale by that landing
+and not before. Second: E9-F009 §3 measured that **no** repository method in that layer writes
+`activity_log` at all, and declined to introduce the convention through its least prominent door. Nothing in this
 unit's records claims the roll is audited — the DE-12 append says in terms that a `logger.info` line
 is not a durable record.
+
+## 3c. ★★★ A SECOND review round found a FALSE CLAIM OF ENFORCEMENT, which is worse than a missing check
+
+The `terminalized_by` author list is spelled in **three** places — the TypeScript constant, the
+Drizzle `check()` literal in `packages/db/src/schema/service_instances.ts`, and the DDL of migration
+`0279`. Three separate records described that as a reconciled set: the migration's own header, the
+constant's docstring, and the schema comment beside the literal. **Only two of the three copies were
+reconciled.** `T-P5` read the migration SQL and compared it to the constant; **nothing in the tree
+read the Drizzle literal at all**, so the schema comment's *"reconciled … by an assertion that
+asserts set EQUALITY"* was simply false.
+
+★ **That is worse than having no check**, and the reason is behavioural rather than technical: a
+reader who arrives at that literal and sees a sentence saying it is reconciled has been given a
+reason **not** to write the assertion. A missing check invites one; a false claim of one forecloses
+it. The same review round found the sibling defect in the same comment — it said **three** authors
+over an `IN`-list holding **four**, the token `worker_event` having been swept while the bare word
+`three` was not.
+
+**Both are fixed, and the enforcement half was made TRUE rather than merely re-worded.** `T-P5c`
+reads the Drizzle literal as source text and asserts set equality against the constant; `T-P5d`
+asserts the two DDL copies against each other. Mutant **P2a** — a fifth author added to the Drizzle
+literal **alone** — was observed **red on `T-P5c` and `T-P5d` with `T-P5` staying green**, which is
+the exact divergence that was invisible before; **P2b**, the same author added to the constant alone,
+reds `T-P5` and `T-P5c` while `T-P5d` stays green. Both restores were md5-verified.
+
+★ **What `T-P5c` does NOT prove, stated so this comment does not repeat the defect it fixes.** It
+reads source text and says nothing about the constraint any deployed database is running — `0279`
+is immutable once applied and `T-P5` is what covers that. What the Drizzle copy governs is the DDL
+`db:generate` would emit **next** for this table, so a divergence there plants the wrong list in a
+future migration rather than breaking today's deployment. Both statements are now written at the
+literal itself.
 
 ## 4. What was NOT weakened
 
@@ -101,8 +149,18 @@ is not a durable record.
 
 ## 5. Evidence
 
-**24 cases, all green** — 14 integration + 10 pure — plus **72 in the six neighbouring E9
-suites re-run at HEAD**: **96 total across 8 files**, measured after the last edit.
+**26 cases, all green** — 14 integration + 12 pure — plus **72 in the six neighbouring E9
+suites re-run at HEAD**: **98 total across 8 files**, measured after the last edit.
+
+★ **The eight files are enumerated rather than counted from memory**, because "the six
+neighbouring suites" is exactly the kind of unnamed set whose total nobody can re-derive:
+`service-generation-rollout.integration` (14) + `service-generation-rollout` (12) — this unit —
+plus `service-liveness-deadline` (15), `service-health-projection` (15),
+`service-liveness-deadline.integration` (13), `service-health-projection.integration` (11),
+`service-desired-state-schema.integration` (10) and `job-fence-surface.contract` (8) = **98**.
+A wider run of **every** E9 service suite, adding `service-management` (18),
+`service-reconciler.integration` (17) and `service-management.integration` (13) — SVC-002's and
+SVC-007a's, untouched here — is **146 green across 11 files**, also measured at HEAD.
 
 | Case | What it pins |
 |---|---|
@@ -117,14 +175,16 @@ suites re-run at HEAD**: **96 total across 8 files**, measured after the last ed
 | `R-T7c` | ★★★ a worker's `lost` event is NOT a witness — the PR #415 P1 regression |
 | `R-T8` | SVC-003a's fence still refuses, in both directions, after a real bump |
 | `R-T9` / `R-T9b` / `R-T10` | refusals; `stopped` is rollable; forward-by-one |
-| `T-P1`, `T-P2`, `T-P3`/`b`/`c`/`d`, `T-P4`, `T-P5`/`b`, `T-P6` | the witness classification, NULL, the fail-closed default, and the 0279 CHECK reconciliation |
+| `T-P1`, `T-P2`, `T-P3`/`b`/`c`/`d`, `T-P4`, `T-P6` | the witness classification, NULL, and the fail-closed default |
+| `T-P5` / `T-P5b` | the 0279 CHECK reconciliation, and its NULL arm |
+| `T-P5c` / `T-P5d` | ★★★ the **Drizzle `check()` literal** reconciled too — the copy that had a claim of enforcement and no enforcer |
 
-**14 integration cases + 10 pure cases = 24**, counted from the case list above rather than from
+**14 integration cases + 12 pure cases = 26**, counted from the case list above rather than from
 memory: `R-T1`, `R-T2`, `R-T3`, `R-T3b`, `R-T4`, `R-T5`, `R-T6`, `R-T7`, `R-T7b`, `R-T7c`, `R-T8`,
 `R-T9`, `R-T9b`, `R-T10`; `T-P1`, `T-P2`, `T-P3`, `T-P3b`, `T-P3c`, `T-P3d`, `T-P4`, `T-P5`,
-`T-P5b`, `T-P6`.
+`T-P5b`, `T-P5c`, `T-P5d`, `T-P6`.
 
-**Ten mutants observed, each with a named positive control that stayed green** (counted from the table below after the last edit, not from memory)**:**
+**Twelve mutants observed, each with a named positive control that stayed green** (counted from the table below after the last edit, not from memory)**:**
 
 | Mutant | Killed by | Positive control |
 |---|---|---|
@@ -138,6 +198,8 @@ memory: `R-T1`, `R-T2`, `R-T3`, `R-T3b`, `R-T4`, `R-T5`, `R-T6`, `R-T7`, `R-T7b`
 | R8′ drop fence condition (2) — the witness test, SQL site only | **`R-T7b` only** (and nothing at all before `R-T7b` existed) | `R-T4`, `R-T6`, `R-T7` |
 | R8″ vacuous witness test at BOTH sites | `R-T7`, `R-T7b` | `R-T6` |
 | **P1** collapse the two worker authors back into one — **the defect external review found** | **`R-T7c` only** | **`R-T7` green — the asymmetry that let it ship** |
+| **P2a** add a fifth author to the **Drizzle `check()` literal only** | **`T-P5c` + `T-P5d`** | **`T-P5` green — and that is the point: this divergence was invisible to the whole tree until `T-P5c`** |
+| **P2b** add a fifth author to the **TypeScript constant only** | `T-P5` + `T-P5c` | `T-P5d` green (the two DDL copies still agree with each other), `T-P4` green (fail-closed by construction) |
 
 ★ **A PREDICTION THAT WAS WRONG, RECORDED RATHER THAN QUIETLY FIXED.** `R-T7`'s first comment named
 mutant **R8** (vacuous `isWitnessedTerminalAuthor`) as its killer. **Measured: it is not.** The
@@ -178,7 +240,7 @@ dropped; **hard runtime/spend limits** not delivered (`ttl_seconds` is written N
 generation writers, deliberately, because nothing enforces it); **stuck-stop force-kill** not
 delivered (no control-plane channel to SVC-008a's `signalProcess`); **"budget/TTL stop is auditable
 and cannot be overridden by the worker"** vacuous today; **"no two generations perform external
-effects simultaneously"** — the fenceable half only, E9-F010.
+effects simultaneously"** — the fenceable half only, E9-F012.
 
 **No service job is leased anywhere in this unit's suites** (E9-F002), so the daemon half of the
 rollout — a real worker collecting a real graceful stop — is unexercised. `R-T3` measures and states
@@ -186,5 +248,5 @@ what actually happens instead: the unleased path takes `requestCancellation`'s F
 queues no command and emits no event, which is E9-F006 and is exactly why the roll must call the
 attempt-terminal backstop.
 
-**Findings claimed by this unit: E9-F010** (filed). **E9-F009** is updated with a delivered/not-
+**Findings claimed by this unit: E9-F012** (filed). **E9-F009** is updated with a delivered/not-
 delivered split and **stays OPEN**. E9-F001–F008 are untouched.

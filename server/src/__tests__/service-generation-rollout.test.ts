@@ -137,28 +137,58 @@ describe("SVC-005a — who counts as a witness that the old generation stopped",
   });
 });
 
-// ── T-P5 — the THIRD copy: migration 0279's CHECK ────────────────────────────────────────
+// ── T-P5 / T-P5c — the OTHER TWO copies of the author list ───────────────────────────────
 //
-// `SERVICE_INSTANCE_TERMINAL_AUTHORS` (TypeScript), the schema's `check(...)` and the emitted
-// migration DDL are three copies of one list, for the reason `service_instances_status_check`
-// already has three: `packages/db` does not depend on `worker-protocol`, and SQL imports
-// nothing. SVC-001 answered this by asserting the reconciliation server-side; so does this.
+// `SERVICE_INSTANCE_TERMINAL_AUTHORS` (TypeScript), the Drizzle schema's `check(...)` literal
+// and the emitted migration DDL are three copies of one list, for the reason
+// `service_instances_status_check` already has three: `packages/db` does not depend on
+// `worker-protocol`, and SQL imports nothing. SVC-001 answered this by asserting the
+// reconciliation server-side; so does this.
+//
+// ★★★ AND IT IS THREE-WAY BECAUSE EXTERNAL REVIEW OF PR #415 CAUGHT IT NOT BEING SO. This
+// block shipped with T-P5 alone — the constant against the MIGRATION — while three records
+// (this comment, the Drizzle schema's own comment, and the migration header) each described a
+// reconciliation of "the CHECK". Nothing in the tree read the Drizzle `check()` literal, so
+// the schema copy's claim of enforcement was FALSE, which is worse than a missing check: a
+// reader who saw the sentence had no reason to add the assertion. T-P5c is that assertion.
+//
+// WHAT EACH ONE ACTUALLY COVERS, so neither is over-read:
+//   T-P5  — the constant vs the APPLIED DDL. This is the copy the database enforces; a
+//           divergence here is a 23514 at write time from inside a transaction that had
+//           already done work.
+//   T-P5c — the constant vs the DRIZZLE LITERAL, read as source text. Migration 0279 is
+//           immutable once applied, so this copy is what `db:generate` would emit into the
+//           NEXT migration touching this table: a divergence here does not break today's
+//           deployment, it silently plants the wrong list in tomorrow's DDL. It is a
+//           source-text assertion and it proves nothing about any deployed constraint —
+//           that is T-P5's half.
 //
 // SET EQUALITY, not containment, in BOTH directions — an EXTRA value in the CHECK is a value
 // the fence has never classified, and an extra value in TypeScript is one the database will
-// refuse at write time with a 23514 from inside a transaction that had already done work.
+// refuse at write time.
 describe("SVC-005a — the author list agrees with the DDL that stores it", () => {
   const MIGRATION = fileURLToPath(
     new URL("../../../packages/db/src/migrations/0279_service_instance_terminalized_by.sql", import.meta.url),
   );
+  const SCHEMA = fileURLToPath(
+    new URL("../../../packages/db/src/schema/service_instances.ts", import.meta.url),
+  );
+
+  // The IN-list of the `terminalized_by` CHECK, wherever it is spelled. `terminalized_by IN (`
+  // occurs exactly once in each of the two files — the sibling `status` CHECK is anchored on a
+  // different column name, and the column's prose docstring names the authors without ever
+  // spelling this SQL fragment.
+  function authorsFrom(path: string, label: string): string[] {
+    const text = readFileSync(path, "utf8");
+    const match = /terminalized_by IN \(([^)]*)\)/.exec(text);
+    expect(match, `the CHECK's IN-list was not found in ${label} — was it renamed or reworded?`)
+      .not.toBeNull();
+    return [...match![1]!.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]!);
+  }
 
   it("★★★ T-P5 — migration 0279's CHECK admits EXACTLY the frozen author list", () => {
-    const sql = readFileSync(MIGRATION, "utf8");
-    const match = /terminalized_by IN \(([^)]*)\)/.exec(sql);
-    expect(match, "the CHECK's IN-list was not found in 0279 — did the migration get renamed?")
-      .not.toBeNull();
-    const fromDdl = [...match![1]!.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]!);
-    expect([...fromDdl].sort()).toEqual([...SERVICE_INSTANCE_TERMINAL_AUTHORS].sort());
+    expect(authorsFrom(MIGRATION, "0279").sort())
+      .toEqual([...SERVICE_INSTANCE_TERMINAL_AUTHORS].sort());
   });
 
   // The NULL arm is the fail-closed half of the CHECK and is easy to lose in an edit: without
@@ -166,6 +196,19 @@ describe("SVC-005a — the author list agrees with the DDL that stores it", () =
   // constraint, which would make the migration itself unappliable on a deployment with history.
   it("★ T-P5b — the CHECK admits NULL", () => {
     expect(readFileSync(MIGRATION, "utf8")).toContain("terminalized_by IS NULL OR");
+    expect(readFileSync(SCHEMA, "utf8")).toContain("terminalized_by IS NULL OR");
+  });
+
+  it("★★★ T-P5c — the DRIZZLE schema literal admits EXACTLY the frozen author list", () => {
+    expect(authorsFrom(SCHEMA, "packages/db/src/schema/service_instances.ts").sort())
+      .toEqual([...SERVICE_INSTANCE_TERMINAL_AUTHORS].sort());
+  });
+
+  // ★ AND THE TWO DDL COPIES AGREE WITH EACH OTHER. Implied by the two assertions above, and
+  // asserted anyway because it is the failure a reader of either one alone would miss: it is
+  // the only case that names both files in its diff.
+  it("★ T-P5d — the Drizzle literal and the applied migration are the same list", () => {
+    expect(authorsFrom(SCHEMA, "schema").sort()).toEqual(authorsFrom(MIGRATION, "0279").sort());
   });
 });
 

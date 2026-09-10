@@ -92,7 +92,7 @@ a rollout instead of by a same-generation replacement.
 
 ★ **The residual, not claimed closed.** A closed fence stops the old worker **writing**. It does not
 stop its **process**, and no control-plane fact can — E9-F007 §3 says so and this unit does not
-overturn it. Filed as **E9-F010**.
+overturn it. Filed as **E9-F012**.
 
 ---
 
@@ -145,7 +145,7 @@ fail-closed direction and both are pinned (`T-P2`, `T-P4`).
 
 | File | What |
 |---|---|
-| `packages/db/src/schema/service_instances.ts` | `terminalized_by` + its CHECK |
+| `packages/db/src/schema/service_instances.ts` | `terminalized_by` + its CHECK, and the CHECK literal is reconciled against the constant by `T-P5c` |
 | `packages/db/src/migrations/0279_service_instance_terminalized_by.sql` | `db:generate` output + C14 class (a) guards only |
 | `packages/db/src/repositories/tenant/job-control.ts` | the author constants; `writeServiceInstanceStatus` gains required `author` and all four call sites classify; `bumpServiceGeneration`; `listUnwitnessedGenerationPredecessors` |
 | `packages/db/src/index.ts` | barrel exports for the author constants |
@@ -154,15 +154,15 @@ fail-closed direction and both are pinned (`T-P2`, `T-P4`).
 | `server/src/services/service-management.ts` | `CANCELLED_ATTEMPT_PROJECTION` exported so the roll's drain shares ONE mapping |
 | `server/src/routes/job-control.ts` | `POST …/services/:serviceId/generation` |
 | `server/src/__tests__/job-fence-surface.contract.test.ts` | both new repository methods classified in the same commit |
-| `server/src/__tests__/service-generation-rollout.test.ts` | 10 pure cases |
+| `server/src/__tests__/service-generation-rollout.test.ts` | 12 pure cases |
 | `server/src/__tests__/service-generation-rollout.integration.test.ts` | 14 cases over embedded PostgreSQL |
 | `scripts/gate-clause-wiring.json` | `E9-5-service-generation-rollout` |
-| `scripts/finding-ownership.json` | **E9-F010** registered `unowned` with its resolve condition — required, and `check-distributed-execution-foundation.mjs` failed the policy gate until it was there (a cited finding must be owned) |
+| `scripts/finding-ownership.json` | **E9-F012** registered `unowned` with its resolve condition — required, and `check-distributed-execution-foundation.mjs` failed the policy gate until it was there (a cited finding must be owned) |
 | `docs/architecture/distributed-execution-threat-controls.json` | DE-12 dated correction; **`deliveryStatus` unchanged** |
 | `packages/db/src/migrations/meta/_journal.json` | the `0279` journal entry (tag renamed from drizzle-kit's generated slug) |
 | `packages/db/src/migrations/meta/0279_snapshot.json` | `db:generate` output, unedited |
 | `docs/replatform/epics/E9-service-agents/README.md` | the SVC-005a paragraph |
-| `docs/replatform/epics/E9-service-agents/findings.md` | **E9-F010** filed; **E9-F009** gains a delivered/not-delivered split and stays OPEN |
+| `docs/replatform/epics/E9-service-agents/findings.md` | **E9-F012** filed; **E9-F009** gains a delivered/not-delivered split and stays OPEN |
 | `SVC-005a-design.md` | this document |
 | `SVC-005a-result.md` | the result note |
 
@@ -209,7 +209,7 @@ conjunct:
 * **"Budget/TTL stop is auditable and cannot be overridden by the worker"** — **not delivered**, and
   vacuous today since there is no budget/TTL stop.
 * **"No two generations may perform external effects simultaneously"** — **the fenceable half only.**
-  See §2, §3 and E9-F010. **The clause is not claimed.**
+  See §2, §3 and E9-F012. **The clause is not claimed.**
 
 **E9's exit gate is NOT moved and is NOT claimed.** No service job is leased anywhere in this
 unit's suites (E9-F002), so the daemon half is unexercised, exactly as SVC-007a and SVC-003b both

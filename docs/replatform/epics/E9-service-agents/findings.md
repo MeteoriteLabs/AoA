@@ -786,7 +786,7 @@ explain a transition. Half a conjunction is not the conjunction.
 
 ---
 
-## E9-F010 — a generation rollout cannot prove the old generation's PROCESS stopped, so SVC-005's acceptance clause has an un-closeable half
+## E9-F012 — a generation rollout cannot prove the old generation's PROCESS stopped, so SVC-005's acceptance clause has an un-closeable half
 
 **Status:** `open` · `unowned` · **Severity:** HIGH
 **Filed:** 2026-09-10, by **SVC-005a**, in the commit that makes generation rollout possible —
