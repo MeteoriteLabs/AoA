@@ -179,9 +179,12 @@ export function buildSandboxInvocation(input: {
   const hasInstructions = input.instructions !== null;
   switch (input.adapterType) {
     case "claude_local":
+      // `--dangerously-skip-permissions` is required for unattended sandbox execution
+      // (E7-F021, founder-authorized 2026-09-11): a distributed run has no human to answer
+      // claude's permission prompt, and the flag is scoped to this throwaway sandbox only.
       script = hasInstructions
-        ? `${guard}; exec "$0" --print - --output-format stream-json --verbose --append-system-prompt-file "$2" < "$1"`
-        : `${guard}; exec "$0" --print - --output-format stream-json --verbose < "$1"`;
+        ? `${guard}; exec "$0" --print - --dangerously-skip-permissions --output-format stream-json --verbose --append-system-prompt-file "$2" < "$1"`
+        : `${guard}; exec "$0" --print - --dangerously-skip-permissions --output-format stream-json --verbose < "$1"`;
       break;
     case "codex_local":
       // No `--append-system-prompt-file` equivalent exists, so the bundle is concatenated
@@ -199,9 +202,14 @@ export function buildSandboxInvocation(input: {
       //
       // A pipeline's exit status is its LAST command's, so the invocation still reports codex's
       // exit code, not `cat`'s.
+      // `--skip-git-repo-check` and `--dangerously-bypass-approvals-and-sandbox` are required
+      // for unattended sandbox execution (E7-F027, founder-authorized 2026-09-11): a distributed
+      // run has no human to answer codex's approval prompt, and both flags are scoped to this
+      // throwaway sandbox only. They are options of the `exec` subcommand, so they sit after
+      // `exec --json` and before the `-` stdin positional (codex-local/src/server/execute.ts:553-566).
       script = hasInstructions
-        ? `${guard}; { cat "$2"; echo; cat "$1"; } | "$0" exec --json -`
-        : `${guard}; exec "$0" exec --json - < "$1"`;
+        ? `${guard}; { cat "$2"; echo; cat "$1"; } | "$0" exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox -`
+        : `${guard}; exec "$0" exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox - < "$1"`;
       break;
     default:
       return null;

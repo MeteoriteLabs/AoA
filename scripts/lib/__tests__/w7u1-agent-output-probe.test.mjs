@@ -73,7 +73,20 @@ const CODEX_NO_BUNDLE = 'exec "$0" exec --json - < "$1"';
 // The premise, and the anchors A2 rewrites
 // ─────────────────────────────────────────────────────────────────────────────
 
-test("W7U1's premise holds: NONE of the four production script literals carries a permission posture", () => {
+// ★ PREMISE REFUTED — 2026-09-11. W7U1's chartering question ("does the distributed
+// emitter carry a permission posture?") has been ANSWERED by the source: the founder
+// authorized the posture change on 2026-09-11 and `buildSandboxInvocation` now emits
+// `--dangerously-skip-permissions` (claude) and `--skip-git-repo-check
+// --dangerously-bypass-approvals-and-sandbox` (codex) on both branches each (E7-F021
+// resolved, E7-F027 narrowed). This test was formerly "the premise holds: NONE …
+// carries a posture"; it is inverted to a POSITIVE assertion over the same four literals
+// so the record shows the answer, not a probe of an answered question. The live
+// red-when-removed guard for the posture now lives in
+// server/src/__tests__/task-run-batch-workload.test.ts (exact-script assertions +
+// posture cases, proven to red when the flags are removed). The W7U1 output-probe
+// apparatus is now premised on a refuted question and is tracked for retirement in
+// docs/replatform/epics/E7-coding-e2b/findings.md (E7-F035).
+test("W7U1's premise is now REFUTED: the production emitter carries a permission posture (posture shipped 2026-09-11)", () => {
   const source = readFileSync(INVOCATION_MODULE, "utf8");
   // The switch body is where the four literals live; the file's prose header discusses
   // the legacy adapters, so scope the search to the emitter.
@@ -82,21 +95,53 @@ test("W7U1's premise holds: NONE of the four production script literals carries 
   assert.ok(start > 0 && end > start, "could not locate the adapter switch in the production module");
   const emitter = source.slice(start, end);
 
-  for (const flag of [
-    "--dangerously-skip-permissions",
-    "--dangerously-bypass-approvals-and-sandbox",
-    "--allowedTools",
-    "--settings",
-  ]) {
+  // Assert over the actual emitted SCRIPT tails, not raw `.includes` over the whole
+  // slice — the emitter's own comments name these flags, so a substring/count over the
+  // slice would conflate prose with code. The two claude branches and the two codex
+  // branches each carry the posture.
+  const claudeTails = [
+    'exec "$0" --print - --dangerously-skip-permissions --output-format stream-json --verbose --append-system-prompt-file "$2" < "$1"',
+    'exec "$0" --print - --dangerously-skip-permissions --output-format stream-json --verbose < "$1"',
+  ];
+  const codexTails = [
+    '{ cat "$2"; echo; cat "$1"; } | "$0" exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox -',
+    'exec "$0" exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox - < "$1"',
+  ];
+  for (const tail of claudeTails) {
     assert.ok(
-      !emitter.includes(flag),
-      `PREMISE REFUTED: the production emitter now contains ${flag}. W7U1 was chartered on its absence — ` +
-        "report the refutation; do not keep probing a question the source has answered.",
+      emitter.includes(tail),
+      `the refutation is that the posture is PRESENT: claude branch no longer emits ${JSON.stringify(tail)}`,
     );
+    assert.ok(tail.includes("--dangerously-skip-permissions"));
+  }
+  for (const tail of codexTails) {
+    assert.ok(
+      emitter.includes(tail),
+      `the refutation is that the posture is PRESENT: codex branch no longer emits ${JSON.stringify(tail)}`,
+    );
+    assert.ok(tail.includes("--skip-git-repo-check"));
+    assert.ok(tail.includes("--dangerously-bypass-approvals-and-sandbox"));
   }
 });
 
-test("production script literals still match the shapes this file feeds the A2 transform", () => {
+// ★ RETIRED — 2026-09-11. This test asserted the four BARE production literals (no
+// posture) still matched the inputs the A2 differential feeds `withPermissionPosture`.
+// The A2 differential was A1 = production-bare vs A2 = production + posture; with the
+// posture now SHIPPED into production (founder-authorized 2026-09-11 — see the refutation
+// test above and server/src/services/task-run-sandbox-invocation.ts), the production
+// literals carry the posture and no longer match these bare inputs BY DESIGN. Worse, the
+// A2 transform is self-contradictory against a postured production: `withPermissionPosture`
+// asserts it THROWS on already-postured input ("A2 REFUSES … an already-postured script
+// must refuse", below), so A2 could not run against the shipped literals even if the
+// shapes were re-derived. This is a genuine obsolescence of the A2 differential, not a
+// stale-constant swap. It is retired VISIBLY (skipped, not deleted) rather than inverted,
+// because the whole W7U1 output-probe apparatus premised on the absent-posture question is
+// now scheduled for retirement/rework — tracked in
+// docs/replatform/epics/E7-coding-e2b/findings.md (E7-F035). The BARE fixtures
+// (CLAUDE_WITH_BUNDLE …) are retained ONLY as inputs to the A2-transform unit tests below,
+// which document the transform's historical contract against local fixtures (not the
+// production module) and remain live.
+test.skip("[RETIRED 2026-09-11] production script literals still match the shapes this file feeds the A2 transform — A2 differential obsoleted by shipped posture (E7-F035)", () => {
   const source = readFileSync(INVOCATION_MODULE, "utf8");
   for (const [name, literal] of [
     ["claude with bundle", CLAUDE_WITH_BUNDLE],

@@ -271,13 +271,15 @@ describe("CLI-008 Unit B · Task 1 — byte-source ceilings, measured", () => {
     MEASURED.submissionHeadroomBytes = SUBMISSION_MAX_INPUT_BYTES - workloadBytes;
 
     expect(SUBMISSION_MAX_INPUT_BYTES).toBe(65_536);
-    // ★ 790 UNTIL UNIT D, 295 AFTER IT — and the drop IS the change. The workload used to
-    // carry the whole assembled prompt as an argv positional; it now carries a fixed `sh -c`
-    // script plus the binary and two constant paths, and the prompt rides Unit B's staging
-    // channel as bytes. That is E7-F008 closed, visible as a number: the submission payload no
-    // longer grows with the task.
-    expect(workloadBytes).toBe(295);
-    expect(MEASURED.submissionHeadroomBytes).toBe(65_241);
+    // ★ 790 UNTIL UNIT D, 295 AFTER IT, 326 AFTER THE F021/F027 POSTURE — and each drop/rise IS
+    // the change. The workload used to carry the whole assembled prompt as an argv positional; it
+    // now carries a fixed `sh -c` script plus the binary and two constant paths, and the prompt
+    // rides Unit B's staging channel as bytes (E7-F008 closed). The F021/F027 posture PR then added
+    // a FIXED +31 bytes to that script (`--dangerously-skip-permissions` on claude; the codex
+    // flags on the other adapter) — still a constant, so the invariant this test protects holds:
+    // the submission payload does NOT grow with the task, it grew once by the posture flags.
+    expect(workloadBytes).toBe(326);
+    expect(MEASURED.submissionHeadroomBytes).toBe(65_210);
 
     // ★ And the headroom is UNUSABLE. `buildJobEnvelope` sets `workload: input.job.input`
     // (job-leasing.ts) — the submission `input` IS the batch workload — and
