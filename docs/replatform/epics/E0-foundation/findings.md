@@ -1777,17 +1777,19 @@ paying for. (4) means the desktop supply-chain control stops at the release dire
 faith — the in-place correction it names was made in good faith and improved the record. The defect
 is that nothing could tell the difference.
 
-- **Affected crossings:** DE-18, DE-20, DE-22 *(closed 2026-09-09)*, DE-24, DE-28.
+- **Affected crossings:** DE-18 *(resolved 2026-09-10)*, DE-20, DE-22 *(closed 2026-09-09)*, DE-24, DE-28.
 - **Disposition:** `unowned`, and unevenly. (3) was the cheapest and is **done** — it went exactly
-  the predicted way. (1), (2) and (5) need composition-root wiring no ticket on disk carries.
+  the predicted way. ★ **(1) DE-18 is now also done (PR #418, 2026-09-10) — see item 1's amendment.**
+  (2) and (5) need composition-root wiring no ticket on disk carries.
   (4) needs a host binary that does not exist. NOT `accepted`: HIGH may never be accepted.
-- **★ Next, for whoever picks this up (grouped, so it needs no re-measuring).** *Cheap — no new
-  mechanism:* **(1) DE-18** needs a scheduler that drains `execution_target_revocations` where
-  `status='pending'`; ★ it is a **garbage collector, not a deny** — the authz cutoff already fires
-  at `job-control.ts:1177`, which the code states at `:1127-1130` (*"the recheck is the gate, the
-  fanout is only convergence"*), so wiring it as a security control would duplicate a live one.
-  ★ **The clause amendment this bullet asked for is DONE (2026-09-09); only the scheduler is
-  owed.** **(2) DE-20**'s
+- **★ Next, for whoever picks this up (grouped, so it needs no re-measuring).** ★ **(1) DE-18 is
+  DONE — do NOT redo it (PR #418, 2026-09-10).** The scheduler this bullet asked for was wired: the
+  fanout ticks inside the running MIG-002 `convergenceTick` (a garbage collector draining
+  `execution_target_revocations`, not a deny — the authz cutoff already fires at
+  `job-control.ts:1177`, stated at `:1127-1130`), and review additionally fixed the lease-less
+  pinned-attempt gap. Nothing about (1) is owed. *(Historical, kept because the correction is only
+  legible against it: it needed a scheduler draining `status='pending'` rows; the clause amendment
+  was already done 2026-09-09.)* **(2) DE-20**'s
   lever AND its store are complete (`job-distributed-drain-store.ts:68` ships real SQL post-MIG-009)
   — it needs a real trigger on the rollout-dial-off path that actually invokes `drainAll`;
   ★ `GO-BOOK.md:2901` forbids composing it in `index.ts` merely to move the caller count.
@@ -1800,7 +1802,8 @@ is that nothing could tell the difference.
   `admitted`/`compatible`/`healthConfirmed` are injected booleans — wiring it as-is would be a
   vacuous green.
 - **Resolution condition:** each lever gets a production caller and a test that goes red when the
-  caller is removed, or the clause it arms is AMENDED. **(3) met this on 2026-09-09; four remain,
+  caller is removed, or the clause it arms is AMENDED. **(3) met this on 2026-09-09 and (1) met it
+  on 2026-09-10 (PR #418 — production caller + red-when-removed test); THREE remain (items 2, 4, 5),
   so this finding stays open.** Resolve = flip this Status and delete the `E0-F014` key in
   `scripts/finding-ownership.json` in the SAME commit.
 
