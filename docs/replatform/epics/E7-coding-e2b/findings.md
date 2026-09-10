@@ -970,13 +970,50 @@ value asserted the wrong thing. Carrying the cause text is **output capture — 
 is unbuilt; no separate finding is filed because the silence is an enforced architectural boundary
 with an owner, not an undocumented constraint. Unit D's acceptance criterion 5 is therefore **half
 met**: "exit 78" is now recorded on the attempt; "with a named cause on stderr" is not.
-## E7-F015 — The capability bar is forgeable: one board POST flips `capabilityProven` with no agent, no worker and no sandbox
+## E7-F015 — The task-outputs endpoint is forgeable: a board POST supplies `createdByRunId` with no producer check (★ NARROWED 2026-09-11 — no longer flips `capabilityProven`)
 
 **Status:** open · **Owner:** CLI-008 (Unit F — terrain filed, **no fix designed**)
-**Severity:** MEDIUM · **Filed:** 2026-09-03, by CLI-008 Unit F's terrain pass, before designing
-anything that would make an operator start trusting this gate.
+**Severity:** LOW (★ NARROWED 2026-09-11 from MEDIUM — see note) · **Filed:** 2026-09-03, by CLI-008
+Unit F's terrain pass, before designing anything that would make an operator start trusting this gate.
 
-**What.** `capabilityProven` — the programme's headline capability verdict — is an OR over two
+★ **NARROWED 2026-09-11 — the `capabilityProven` flip is CLOSED; the forgeable endpoint is the
+residual, and the finding stays OPEN on it.** E7-F020 (now closed, PR #422) shipped the W21 predicate
+change: arm 2 of `countProducedOutputs` no longer reads `taskOutputs.createdByRunId`. Verified at HEAD
+`db0edd932`:
+
+- **The flip is gone.** Arm 2 now inner-joins `job_projection_receipts` on
+  `target_aggregate_id = task_outputs.id` and requires `projection_kind = 'output_projection'`,
+  `aggregate_kind = 'task_outputs'`, `status = 'applied'`, bound on BOTH
+  `job_id = run.distributed_job_id` AND `attempt_id = run.distributed_attempt_id`
+  (`server/src/services/e7-distributed-run-verifier-store.ts` — `countProducedOutputs` arm 2). The
+  sole writer of that receipt is `jobOutputBridge.projectAcceptedOutput`
+  (`server/src/services/job-output-bridge.ts`), which writes it in the same tenant transaction as the
+  output under a live fence (`recordGovernedProjection` → `guardActiveFence`). No HTTP caller can forge
+  an applied, attempt-bound receipt, so a board POST can no longer move arm 2 or flip
+  `capabilityProven`. The old `created_by_run_id = run.id` predicate survives ONLY in the secret-scan
+  surface enumerator (`listRunSecretScanSurfaces` arm 2b), which is E7-F030's axis, not the capability
+  counter.
+
+- **What survives — the endpoint is still forgeable (finding stays OPEN).**
+  `POST /api/issues/:issueId/outputs` (`server/src/routes/task-outputs.ts:45-54`, mounted
+  `app.ts:566`) still forwards `req.body` to `svc.upsertForIssue`; `upsertTaskOutputSchema` still
+  admits caller-supplied `createdByRunId` (`packages/shared/src/validators/task-output.ts:50`); and the
+  only guard is still `assertCompanyOwnedRef(db, heartbeatRuns, input.createdByRunId, companyId, …)`
+  (`server/src/services/task-outputs.ts:123`) — a company-ownership check, NOT a producer check. A
+  caller can still stamp any company-owned run id onto a task-output row with no proof that run produced
+  anything. That is a **low-value integrity gap** now that the forged field no longer feeds the
+  capability bar.
+
+- **Severity: MEDIUM → LOW.** The MEDIUM was justified by the forgeable capability verdict; that
+  consequence is closed by E7-F020's receipt predicate. The residual — an accepted-but-unverified
+  provenance field on a task-output row that no gate reads — is LOW. If a future round wires a gate off
+  `task_outputs.created_by_run_id`, re-price.
+
+Everything BELOW this note is the original 2026-09-03 terrain as filed, kept for its writer census and
+its refuted-fix record. Where the original text asserts the `capabilityProven` flip as a live
+consequence, it is superseded by this note — that flip no longer occurs.
+
+**What (original filing — flip since CLOSED, see NARROWED note above).** `capabilityProven` — the programme's headline capability verdict — is an OR over two
 counters (`server/src/services/e7-distributed-run-verifier.ts:506`, `:522`). One of the two arms is
 writable over HTTP by any company-scoped actor, with no provenance check anywhere on the path.
 
@@ -1006,7 +1043,10 @@ The chain, verified link by link at `d0b75be19`:
    Nothing checks that the caller *is* that run, that the run produced anything, or that the run is
    distributed at all.
 
-So `{"type":"external_link","title":"x","createdByRunId":"<the canary run>"}` satisfies clause 6.
+So `{"type":"external_link","title":"x","createdByRunId":"<the canary run>"}` satisfies clause 6. [★
+NARROWED 2026-09-11: NO LONGER TRUE at HEAD — arm 2 was moved onto the attempt-bound receipt join
+(E7-F020/W21), so this body no longer flips `capabilityProven`; the forged POST still writes an
+unverified `createdByRunId`, which is the residual integrity gap this finding now stands on.]
 
 **Reachability.** MEDIUM, and stated honestly rather than inflated. `--require-capability` is OFF by
 default (`server/src/cli/verify-e7-1-distributed-run.ts:65`), no workflow or script runs the
@@ -1093,10 +1133,13 @@ producer converts a forgeable gate into an **unpassable** one, which is CLI-008 
 inverted. **That pressure is exactly what drove the refuted widening**, and it remains unrelieved
 (design §1.8, §6).
 
-**Current disposition: OPEN, unfixed, and with no mechanism.** CLI-008 Unit F is the owner and its
-supply mechanism is not yet designed (design §4). The reach stays bounded meanwhile —
-`--require-capability` is off by default and no workflow runs the verifier — and it stays bounded
-precisely as long as nobody makes the bar flippable.
+**Current disposition: OPEN on the residual, capability-flip consequence CLOSED (★ NARROWED
+2026-09-11).** The `capabilityProven` flip this finding was filed on is closed by E7-F020's W21 receipt
+predicate — arm 2 no longer reads `created_by_run_id`, so no board POST can move the bar. What keeps the
+finding OPEN is narrower: the `POST /api/issues/:issueId/outputs` endpoint still accepts a
+caller-supplied `createdByRunId` with only a company-ownership check and no producer check, a low-value
+integrity gap. CLI-008 Unit F remains the owner; no fix is designed. The forgeability of the endpoint
+is unchanged from the original filing — only its consequence shrank.
 
 ## E7-F016 — Clause 6's operator-facing text misdescribes its own subject: four blamed links (three of which flip neither counter), and a verdict named for more than it proves
 
