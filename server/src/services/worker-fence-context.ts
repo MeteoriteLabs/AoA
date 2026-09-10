@@ -21,7 +21,7 @@ import {
   type VerifiedWorkerOperation,
 } from "./job-leasing.js";
 import { normalizePlacementRegistryTarget } from "./execution-target-resolver.js";
-import type { WorkerFenceDenialSink } from "./worker-fence-denial-audit.js";
+import { workerProofReplayIntent, type WorkerDenialSink } from "./worker-denial-audit.js";
 
 export interface ResolvedFenceContext {
   fenceIdentity: ActiveFenceRequest;
@@ -57,22 +57,70 @@ export interface ResolvedDeviceContext {
  * A returned context means the worker is authenticated and the fence identity is
  * fully pinned; whether the fence must additionally be ACTIVE is the caller's call.
  *
- * ★ DE-06, audit clause — `denialSink` (REQUIRED). Of the six throw sites below,
- * exactly ONE has an FK-valid company in hand: the post-resolution tuple-integrity
- * branch, where the lease has already joined `job_attempts` on `company_id`. That
- * branch records an intent into `denialSink` before it throws, and the CALLER
- * drains it on a pool handle once this transaction has unwound. The other five
- * carry `organization_id` only and write nothing — see
- * `worker-fence-denial-audit.ts` and `E0-F013`'s Decision 2. The parameter is
- * required so a new caller cannot silently inherit an undrained refusal.
+ * ★ DE-06 + DE-03, audit clauses — `denialSink` (REQUIRED). ALL SIX throw sites
+ * below now record into it, and the CALLER drains it on a pool handle once this
+ * transaction has unwound. Exactly ONE of the six has an FK-valid company in
+ * hand — the post-resolution tuple-integrity branch, where the lease has already
+ * inner-joined `job_attempts` on `company_id`. The other five hold a
+ * TOKEN-ATTESTED organization and no company, and until `E0-F013` Decision 2 was
+ * ruled option (a2) they could not be written at all (`activity_log.company_id`
+ * was `NOT NULL`). They now write an organization-attributed, company-null row.
+ * The SEVENTH throw — the absent-column split at `:144` — is deliberately NOT
+ * recorded: there the company is null BY HYPOTHESIS and there is nothing to
+ * attribute beyond what the sibling sites already carry.
+ * See `worker-denial-audit.ts`. The parameter is required so a new caller
+ * cannot silently inherit an undrained refusal.
+ *
+ * ★ NEITHER CROSSING CLOSES ON THIS. DE-06's audit clause is a conjunction and
+ * its `object put/get` half — a SUCCESSFUL grant — still writes nothing. DE-03's
+ * is a conjunction too and only its replay-rejection third is wired.
  */
 export async function resolveWorkerFenceContext(
   repos: TenantRepositories,
   auth: VerifiedWorkerOperation,
   presented: { leaseId: string; jobId: string; attempt: number; fenceToken: string },
   maxHeartbeatAgeMs: number,
-  denialSink: WorkerFenceDenialSink,
+  denialSink: WorkerDenialSink,
 ): Promise<ResolvedFenceContext> {
+  // ★ DE-06/DE-03 — the attribution the five ORGANIZATION-ONLY throws below
+  // share. `companyId` is `null` because nothing in scope resolves one: `workers`
+  // and `execution_targets` carry `organization_id` only, and the lease — the one
+  // row with a `company_id` — is either not looked up yet or is exactly what
+  // failed to resolve. Resolving it from the caller-supplied `presented.jobId`
+  // was option (c) of the ruling and was NOT taken.
+  const orgOnly = (
+    reason: "proof_replayed" | "authority_missing" | "authority_not_current"
+      | "target_inactive" | "profile_drift" | "lease_unresolved",
+    entityType: string,
+    entityId: string,
+    extra: Record<string, unknown> = {},
+  ): void => {
+    denialSink.intent = {
+      reason,
+      companyId: null,
+      organizationId: auth.organizationId,
+      // The proof-replay throw serves BOTH crossings: it is DE-06's `:75` fence
+      // throw AND DE-03's `worker-fence-context.ts:68` `recordProof` site.
+      crossings: reason === "proof_replayed" ? ["DE-03", "DE-06"] : ["DE-06"],
+      entityType,
+      entityId,
+      details: {
+        workerId: auth.workerId,
+        targetId: auth.targetId,
+        targetGeneration: auth.targetGeneration,
+        deviceThumbprint: auth.deviceThumbprint,
+        proofId: auth.proofId,
+        // What the worker PRESENTED. All four are the caller's own claim and
+        // disclose nothing across the boundary — that is the point: an operator
+        // reading this row can see which lease the refused worker reached for.
+        presentedLeaseId: presented.leaseId,
+        presentedJobId: presented.jobId,
+        presentedAttempt: presented.attempt,
+        ...extra,
+      },
+    };
+  };
+
   const databaseNow = await repos.jobControl.currentDatabaseTime();
   await repos.workerEnrollment.cleanupExpiredProofs(databaseNow, 100);
   await repos.jobControl.cleanupExpiredOperationReceipts(databaseNow, 100);
@@ -83,7 +131,10 @@ export async function resolveWorkerFenceContext(
     issuedAt: auth.proofIssuedAt,
     expiresAt: auth.sessionExpiresAt,
   });
-  if (!proofRecorded) throw new JobLeasingError("unauthorized");
+  if (!proofRecorded) {
+    orgOnly("proof_replayed", "worker_proof", auth.proofId);
+    throw new JobLeasingError("unauthorized");
+  }
 
   const authority = await repos.jobControl.lockWorkerLeaseAuthority({
     workerId: auth.workerId,
@@ -97,15 +148,33 @@ export async function resolveWorkerFenceContext(
     databaseNow: authorityNow,
     maxHeartbeatAgeMs,
     platformPhysicalHeartbeatAt: null,
-  })) throw new JobLeasingError(authority ? "target_revoked" : "unauthorized");
+  })) {
+    // ONE site, TWO codes — and therefore two reasons. The wire answer already
+    // discriminates them (`unauthorized` vs `target_revoked`); the audit row now
+    // does too, so a locked-but-stale authority is not filed as a missing one.
+    orgOnly(
+      authority ? "authority_not_current" : "authority_missing",
+      "execution_target",
+      auth.targetId,
+    );
+    throw new JobLeasingError(authority ? "target_revoked" : "unauthorized");
+  }
 
   const target = await normalizePlacementRegistryTarget(authority.target);
-  if (!target || target.status !== "active") throw new JobLeasingError("target_revoked");
+  if (!target || target.status !== "active") {
+    orgOnly("target_inactive", "execution_target", auth.targetId, {
+      targetStatus: target?.status ?? null,
+    });
+    throw new JobLeasingError("target_revoked");
+  }
   if (!await repos.jobControl.touchWorkerLeaseProfile({
     workerId: auth.workerId,
     targetId: auth.targetId,
     targetGeneration: auth.targetGeneration,
-  })) throw new JobLeasingError("target_revoked");
+  })) {
+    orgOnly("profile_drift", "execution_target", auth.targetId);
+    throw new JobLeasingError("target_revoked");
+  }
 
   const context = await repos.jobControl.lockLeaseAckContext({
     organizationId: auth.organizationId,
@@ -118,7 +187,13 @@ export async function resolveWorkerFenceContext(
     attemptNumber: presented.attempt,
     fence: presented.fenceToken,
   });
-  if (!context) throw new JobLeasingError("stale_fence");
+  if (!context) {
+    // The RESOURCE is the lease the worker presented — unresolved, and named as
+    // such. `entity_id` has no FK, so recording an id that matched no row is
+    // safe and is the only evidence of what was reached for.
+    orgOnly("lease_unresolved", "job_lease", presented.leaseId);
+    throw new JobLeasingError("stale_fence");
+  }
 
   // ★ DE-06 — THE TUPLE-INTEGRITY BRANCH, SPLIT INTO ITS TWO KINDS. This was one
   // eleven-disjunct `||`; it is now the same eleven conditions in the same
@@ -168,7 +243,10 @@ export async function resolveWorkerFenceContext(
     denialSink.intent = {
       reason: "fence_tuple_mismatch",
       companyId: leaseCompanyId,
-      leaseId: context.lease.id,
+      organizationId: auth.organizationId,
+      crossings: ["DE-06"],
+      entityType: "job_lease",
+      entityId: context.lease.id,
       mismatched,
       details: {
         // What the worker PRESENTED, and the job/attempt the lease actually
@@ -214,11 +292,20 @@ export async function resolveWorkerFenceContext(
  * (authority not current / target inactive / profile drift / bumped generation). It NEVER
  * throws `stale_fence` (there is no fence): staleness is precisely why an orphan is
  * quarantined, so it can never be a refusal here.
+ *
+ * ★ DE-03, audit clause — `denialSink` (REQUIRED). ONLY the `recordProof` refusal
+ * records into it: that is the site DE-03 enumerates as
+ * `worker-fence-context.ts:162`. The THREE authority throws below it write
+ * NOTHING — they are the same shape as the fence resolver's siblings, but they
+ * are not in DE-03's enumeration and not on DE-06's artifact-broker path, so this
+ * unit neither wired nor claimed them. The parameter is required so a third
+ * caller cannot silently inherit an undrained refusal.
  */
 export async function resolveWorkerDeviceContext(
   repos: TenantRepositories,
   auth: VerifiedWorkerOperation,
   maxHeartbeatAgeMs: number,
+  denialSink: WorkerDenialSink,
 ): Promise<ResolvedDeviceContext> {
   const databaseNow = await repos.jobControl.currentDatabaseTime();
   await repos.workerEnrollment.cleanupExpiredProofs(databaseNow, 100);
@@ -230,7 +317,16 @@ export async function resolveWorkerDeviceContext(
     issuedAt: auth.proofIssuedAt,
     expiresAt: auth.sessionExpiresAt,
   });
-  if (!proofRecorded) throw new JobLeasingError("unauthorized");
+  if (!proofRecorded) {
+    // ★ DE-03 — `worker-fence-context.ts:162` in the crossing's enumeration: the
+    // SECOND `recordProof` refusal in this file. Only this throw is wired here;
+    // the three AUTHORITY throws below are the same shape as the fence
+    // resolver's siblings but are NOT in DE-03's enumeration and are NOT part of
+    // DE-06's artifact-broker path, so they still write nothing and this unit
+    // does not claim them.
+    denialSink.intent = workerProofReplayIntent(auth);
+    throw new JobLeasingError("unauthorized");
+  }
 
   const authority = await repos.jobControl.lockWorkerLeaseAuthority({
     workerId: auth.workerId,

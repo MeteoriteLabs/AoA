@@ -199,7 +199,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       const service = await seedService(org, company);
       const instance = (
         await client<{ id: string }[]>`
-          INSERT INTO service_instances (organization_id, service_id) VALUES (${org}, ${service}) RETURNING id`
+          INSERT INTO service_instances (organization_id, company_id, service_id) VALUES (${org}, ${company}, ${service}) RETURNING id`
       )[0]!.id;
       expect(await countById("service_instances", instance)).toBe(1);
 

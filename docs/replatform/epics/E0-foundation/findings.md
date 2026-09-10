@@ -282,6 +282,25 @@ measured rather than inherited:
   Amending is a founder decision and is not taken here. Resolve = flip this Status and delete the
   `E0-F010` key in `scripts/finding-ownership.json` in the SAME commit. **All eight are still open,
   DE-06 included; a HALF-delivered conjunctive clause closes nothing.**
+- **2026-09-10, Unit A — two rows moved and the cohort did NOT.** The wave that the ruling on
+  `E0-F013` Decision 2 unblocked wired the organization-attributable denial sinks: **DE-06**'s five
+  remaining `resolveWorkerFenceContext` throws (`:86` proof replay, `:100` in both of its codes,
+  `:103`, `:108`, `:121`) and **SIX of DE-03's seven** organization-attested `recordProof`
+  refusals (`job-control-ack.ts:93`, `job-events.ts:169`, `job-fencing.ts:133`,
+  `job-leasing.ts:546`, `worker-fence-context.ts:68` and `:162`). **`job-leasing.ts:816` (ack) was
+  NOT wired** — the frozen JOB-003 ack-flow contract (`job-leasing-contract.test.ts`,
+  `exactAckReturnDominance`) leaves no drain point outside the transaction, and amending it is a
+  decision this unit did not take; the proving file PINS that site as recording nothing rather than
+  dropping it from the count. Both rows' full per-site evidence, the four DE-06 sites actually
+  PROVOKED versus the two pinned as structurally unreachable, and the mutation matrix are in
+  `docs/architecture/distributed-execution-threat-controls.json`.
+  **NEITHER CROSSING CLOSES AND THE COHORT STAYS AT EIGHT.** DE-06's clause is
+  "object put/get **AND** rejected-key attempts", and the put/get half — a SUCCESSFUL grant — still
+  writes nothing at the tree's only production `presignGet` call site. DE-03's clause is
+  "enrollment, session issue, **AND** replay-rejection", and only replay-rejection is wired. Two of
+  DE-03's nine `recordProof` sites (`worker-enrollment.ts:315`,
+  `middleware/worker-session-auth.ts:151`) stay DOUBLY NULL and were deliberately not wired and are
+  not claimed. A larger fraction of a conjunction is not a closure.
 
 ## E0-F011 — Four crossings are defended by a control whose ARMING PATH is dead: two have zero production callers, one is enabled by an environment variable set in no manifest, and one is gated on a database column with no writer
 
@@ -868,6 +887,43 @@ state twelve, not seventeen.
    `docs/architecture/distributed-execution-threat-controls.json` to what the programme actually
    intends, or charter the missing machinery. **A mechanism that closes twelve while the register
    still asserts seventeen reads as a solved class and is a false claim of enforcement.**
+   ★ **OPTIONS PAPER, 2026-09-10:
+   [`docs/replatform/DECISION-REQUEST-undeliverable-clause-halves.md`](../../DECISION-REQUEST-undeliverable-clause-halves.md).**
+   It re-measured all six at source rather than inheriting this list, decomposed each clause into
+   its CONJUNCTS, and reports **three results that contradict the framing above**, each evidenced at
+   a file:line. **(1) TWO OF THE SIX ARE NOT BLOCKED FOR THE STATED REASON.** DE-01's read half:
+   the `BYPASSRLS` premise is already measured FALSE in this very entry's own inline correction, so
+   the half is deliverable and the objection is a DESIGN cost (a comparator on the hot path of every
+   tenant read), not an impossibility. DE-11: the premise *"nothing decides, so there is nothing to
+   record"* is **stale** — `resolveStoredRetention` is a live control-plane retention decision at
+   `artifact-commit.ts:253`, branched on at `:257`, with `input.appDb` and `ctx.companyId` in scope
+   and `recordSecurityDenial` already imported at `:46`; its own comment at `:259-260` records a
+   DEFERRAL, not a blocker. ★ **DE-17 IS NOT A THIRD, AND THE PAPER SAYS SO AGAINST ITS OWN FIRST
+   DRAFT.** The v1 protocol freeze is genuinely **not** its blocker (`extensions[]` is on the frozen
+   worker-EVENT schema, `events.ts:347`, and V1 recognises no critical namespaces, so a
+   `critical:false` extension is additive UNDER the freeze) — but the paper's first draft then
+   concluded DE-17 was therefore deliverable and recommended a split by channel, and **that was
+   withdrawn on review** (Codex P1, PR #407, verified at source). **DE-17 has two harder blockers:**
+   the fenced worker-event ingest gates on `guardActiveFence` BEFORE any append
+   (`job-events.ts` header; `job-control.ts:2592`, in `acceptEvent` at `:2588`, under the
+   closed-mutator invariant at `:2585-2587`) and DE-17's scenario is post-fence BY
+   DEFINITION, so that carrier rejects exactly the case the row names; and `OwnedLabelsCapability`
+   has no operation or scope field while `execute` shares `gateOwnedOp` with `cancel`/`kill`/`destroy`
+   (`server.ts:89-98`, `:153-155`), so the only wire denial available is an ownership mismatch and
+   auditing it yields a generic authorization log, not a denied-escalation record. **Disproving one
+   blocker is not proving deliverability** — and the paper had to relearn that on its own page.
+   **(2) TWO CONJUNCT MISCOUNTS, in this
+   list's own direction of error.** DE-12's audit clause is a **three**-way conjunction (partition,
+   drain, generation changes) and **all three** are vacuous — this list queues one of three, so an
+   amendment scoped to "the change half" would leave two vacuous conjuncts standing in a Critical
+   row. And DE-20's OTHER conjunct (legacy cutover selection) is **closable today** in
+   `heartbeat.ts` and should be named as excluded from the ruling, not swept in with the rollback
+   half. **(3) THE ARITHMETIC ABOVE IS OFF BY ONE.** 17 − 6 = 11, not 12: the sentence subtracts
+   *five* and then adds DE-17 as *a sixth* without re-subtracting. **DE-17 does make it eleven.**
+   The paper's §7 shows the working and enumerates the eleven. **It changes no status, no
+   `deliveryStatus`, no ownership, no clause text and no gate-clause enrolment, and wires nothing** —
+   it exists so this decision can be signed PER CLAUSE, and so that three of the six are not amended
+   away on a blocker that measurement does not support.
 2. **Where a company-less denial goes.** `activity_log.company_id` is NOT NULL with a cascade FK.
    DE-03 (unenrolled worker), DE-21 (attacker-supplied path segment), DE-01 (wrong or absent org
    GUC) and two of DE-16's sinks can all produce denials with **no resolvable company**. Either

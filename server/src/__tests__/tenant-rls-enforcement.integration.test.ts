@@ -203,8 +203,8 @@ beforeAll(async () => {
         1, 'rls-key-platform', ${"e".repeat(64)}, ${"f".repeat(64)}, now()) RETURNING id`));
     serviceA = firstId(await db.execute(sql`INSERT INTO services (organization_id, company_id) VALUES (${ORG_A}, ${CO_A}) RETURNING id`));
     const serviceB = firstId(await db.execute(sql`INSERT INTO services (organization_id, company_id) VALUES (${ORG_B}, ${CO_B}) RETURNING id`));
-    await db.execute(sql`INSERT INTO service_instances (organization_id, service_id) VALUES (${ORG_A}, ${serviceA})`);
-    await db.execute(sql`INSERT INTO service_instances (organization_id, service_id) VALUES (${ORG_B}, ${serviceB})`);
+    await db.execute(sql`INSERT INTO service_instances (organization_id, company_id, service_id) VALUES (${ORG_A}, ${CO_A}, ${serviceA})`);
+    await db.execute(sql`INSERT INTO service_instances (organization_id, company_id, service_id) VALUES (${ORG_B}, ${CO_B}, ${serviceB})`);
     await db.execute(sql`INSERT INTO job_artifacts (organization_id, job_id, identifier) VALUES (${ORG_A}, ${jobA}, 'ida')`);
     await db.execute(sql`INSERT INTO job_artifacts (organization_id, job_id, identifier) VALUES (${ORG_B}, ${jobB}, 'idb')`);
     await db.execute(sql`INSERT INTO job_secret_handles (organization_id, job_id, handle) VALUES (${ORG_A}, ${jobA}, 'ha')`);

@@ -233,6 +233,7 @@ async function seedGraph(g: TenantGraph): Promise<void> {
       n.serviceInstances.map((si) => ({
         id: si.id,
         organizationId: si.organizationId,
+        companyId: si.companyId,
         serviceId: si.serviceId,
       })),
     ),

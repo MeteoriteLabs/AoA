@@ -567,8 +567,8 @@ integration("JOB-004 lease renewal and active-fence enforcement", () => {
       VALUES (${ORG}, ${seeded.jobId}, 'sh-stale')`;
     await admin`INSERT INTO services (id, organization_id, company_id, desired_state, generation)
       VALUES (${SERVICE}, ${ORG}, ${COMPANY}, 'running', 1)`;
-    await admin`INSERT INTO service_instances (id, organization_id, service_id, generation, status)
-      VALUES (${SERVICE_INSTANCE}, ${ORG}, ${SERVICE}, 1, 'pending')`;
+    await admin`INSERT INTO service_instances (id, organization_id, company_id, service_id, generation, status)
+      VALUES (${SERVICE_INSTANCE}, ${ORG}, ${COMPANY}, ${SERVICE}, 1, 'pending')`;
     // Make the fence stale by expiring the lease.
     await admin`UPDATE leases SET ack_deadline = clock_timestamp() - interval '2 seconds',
       expires_at = clock_timestamp() - interval '1 second' WHERE id = ${identity.leaseId}`;
@@ -602,8 +602,8 @@ integration("JOB-004 lease renewal and active-fence enforcement", () => {
       VALUES (${ORG}, ${seeded.jobId}, 'sh-active')`;
     await admin`INSERT INTO services (id, organization_id, company_id, desired_state, generation)
       VALUES (${SERVICE}, ${ORG}, ${COMPANY}, 'running', 1)`;
-    await admin`INSERT INTO service_instances (id, organization_id, service_id, generation, status)
-      VALUES (${SERVICE_INSTANCE}, ${ORG}, ${SERVICE}, 1, 'pending')`;
+    await admin`INSERT INTO service_instances (id, organization_id, company_id, service_id, generation, status)
+      VALUES (${SERVICE_INSTANCE}, ${ORG}, ${COMPANY}, ${SERVICE}, 1, 'pending')`;
 
     // Stub-storage surfaces (JOB-005/006/011) admit the active fence.
     for (const name of ["acceptEvent", "applyProjectionReceipt", "ackControlCommand"]) {

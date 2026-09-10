@@ -318,5 +318,38 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       `;
       expect(privileges.map((row) => row.privilege_type)).toEqual(["INSERT", "SELECT"]);
     });
+
+    it("re-executes SVC-002's 0275 twice with no error, and the live-instance index survives", async () => {
+      // NECESSARY for the same reason as the 0264 case above, and one statement more so:
+      // 0275 carries ADD COLUMN, DROP CONSTRAINT and ADD CONSTRAINT, none of which the
+      // static guard in this file can see (it matches only CREATE TABLE/INDEX). The one
+      // statement it CAN see -- the partial unique index -- is the ticket's whole
+      // duplicate-placement authority, so a replay that dropped or duplicated it would be
+      // the worst possible silent failure.
+      if (setupError) throw new Error(`embedded-postgres setup failed: ${String(setupError)}`);
+      if (!admin) throw new Error("database client unavailable");
+      for (let pass = 0; pass < 2; pass += 1) {
+        const sql = readFileSync(join(MIGRATIONS_DIR, "0275_service_instance_reconciler.sql"), "utf8");
+        for (const statement of splitStatements(sql)) {
+          await admin.unsafe(statement);
+        }
+      }
+      const indexes = await admin<{ indexdef: string }[]>`
+        SELECT indexdef FROM pg_indexes
+        WHERE tablename = 'service_instances' AND indexname = 'service_instances_live_service_uq'
+      `;
+      expect(indexes).toHaveLength(1);
+      expect(indexes[0]?.indexdef).toContain("UNIQUE");
+      // The widened parent FK must survive the replay as the SOLE service FK: the old pair
+      // constraint is gone and the triple is present exactly once.
+      const constraints = await admin<{ conname: string }[]>`
+        SELECT con.conname FROM pg_constraint con JOIN pg_class rel ON rel.oid = con.conrelid
+        WHERE rel.relname = 'service_instances' AND con.contype = 'f'
+        ORDER BY con.conname
+      `;
+      const names = constraints.map((row) => row.conname);
+      expect(names).toContain("service_instances_org_company_service_fk");
+      expect(names).not.toContain("service_instances_org_service_fk");
+    });
   },
 );

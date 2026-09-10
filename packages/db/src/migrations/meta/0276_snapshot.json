@@ -1,6 +1,6 @@
 {
-  "id": "82e9194a-60c1-4aed-962c-2dab15108b84",
-  "prevId": "a53edf70-0caa-4dcb-84d2-0a2160b8e518",
+  "id": "3ad159d5-37e9-40ea-9654-68f2a02da60b",
+  "prevId": "82e9194a-60c1-4aed-962c-2dab15108b84",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -153,6 +153,28 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "activity_log_denial_created_idx": {
+          "name": "activity_log_denial_created_idx",
+          "columns": [
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "first"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "first"
+            }
+          ],
+          "isUnique": false,
+          "where": "action LIKE 'security.denied.%'",
           "concurrently": false,
           "method": "btree",
           "with": {}

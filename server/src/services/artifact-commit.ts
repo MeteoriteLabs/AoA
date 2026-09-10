@@ -50,9 +50,9 @@ import {
   ARTIFACT_COMMIT_DENIAL_SURFACE,
 } from "./artifact-denial-audit.js";
 import {
-  createWorkerFenceDenialSink,
-  drainWorkerFenceDenial,
-} from "./worker-fence-denial-audit.js";
+  createWorkerDenialSink,
+  drainWorkerDenial,
+} from "./worker-denial-audit.js";
 import type { StorageProvider } from "../storage/types.js";
 import type { JobControlMetrics } from "./job-control-metrics.js";
 
@@ -127,8 +127,9 @@ export function createArtifactCommitService(input: {
       // after the tenant transaction closes. The `intent` parameter is REQUIRED, so
       // a future refusal branch that forgets to audit does not compile.
       // ★ That compiler property is about `rejected`, NOT about refusals in
-      // general: `resolveWorkerFenceContext` below THROWS out of `runInTenant`
-      // and its refusals are NOT recorded (artifact-denial-audit.ts).
+      // general: `resolveWorkerFenceContext` below THROWS out of `runInTenant`,
+      // so its refusals never pass through `rejected` and are carried by the
+      // SEPARATE sink declared just below (worker-denial-audit.ts).
       // A one-field holder rather than a bare `let`: TypeScript narrows a `let`
       // from its initializer and cannot see the assignment inside `rejected`, so
       // a bare `let` reads back as `null` (and `if (…)` as `never`) at the drain
@@ -138,9 +139,13 @@ export function createArtifactCommitService(input: {
 
       // ★ DE-06 — the THROWING refusal's own holder, separate from `denial`
       // because it is filled inside `resolveWorkerFenceContext` and drained even
-      // when `runInTenant` rejects. Only the tuple-integrity branch fills it; the
-      // other five fence throws still write nothing (worker-fence-denial-audit.ts).
-      const fenceDenial = createWorkerFenceDenialSink();
+      // when `runInTenant` rejects. ALL SIX of that function's throw sites now
+      // fill it (worker-denial-audit.ts): the tuple-integrity branch with an
+      // FK-valid company, the other five with a token-attested organization and
+      // a null company, which `E0-F013` Decision 2 (a2) made storable. This
+      // comment previously said the other five wrote nothing; that is no longer
+      // true and is corrected rather than left to mislead an audit.
+      const fenceDenial = createWorkerDenialSink();
 
       const rejected = (
         reason: string,
@@ -338,14 +343,13 @@ export function createArtifactCommitService(input: {
         // trailing statement because `runInTenant` REJECTS on a fence refusal, so
         // the code below never runs on that path; and `.finally` awaits a
         // thenable callback, so the row is written before the caller sees the
-        // `JobLeasingError`. `drainWorkerFenceDenial` is a no-op when nothing was
+        // `JobLeasingError`. `drainWorkerDenial` is a no-op when nothing was
         // recorded and `recordSecurityDenial` never throws, so this cannot alter
         // the outcome or convert a refusal into a 500.
         .finally(async () => {
-          await drainWorkerFenceDenial(input.appDb, fenceDenial, {
+          await drainWorkerDenial(input.appDb, fenceDenial, {
             control: "server/src/services/worker-fence-context.ts:resolveWorkerFenceContext",
             workerId: auth.workerId,
-            organizationId: auth.organizationId,
             operation: "artifact_commit",
           });
         });

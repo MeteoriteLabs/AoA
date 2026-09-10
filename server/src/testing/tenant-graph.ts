@@ -96,6 +96,10 @@ export interface ServiceDescriptor {
 export interface ServiceInstanceDescriptor {
   id: string;
   organizationId: string;
+  // SVC-002 added `service_instances.company_id` NOT NULL, bound to the service's own
+  // company by the triple composite FK. It must therefore be the SERVICE's company, not a
+  // freely chosen one, or the seed fails the FK rather than the RLS property under test.
+  companyId: string;
   serviceId: string;
 }
 export interface JobArtifactDescriptor {
@@ -233,6 +237,7 @@ export function generateTenantGraph(seed: number, opts?: GenerateTenantGraphOpti
     const serviceInstances: ServiceInstanceDescriptor[] = services.map((service) => ({
       id: nextUuid(rand),
       organizationId: org.id,
+      companyId: service.companyId,
       serviceId: service.id,
     }));
 

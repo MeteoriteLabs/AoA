@@ -5429,6 +5429,22 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
       "packages/db/src/client.ts#reconcilePendingMigrationHistory:.unsafe:dae5b792be39",
       "packages/db/src/client.ts#reconcilePendingMigrationHistory:.unsafe:e1e4403341c7",
       "packages/db/src/client.ts#recordMigrationHistoryEntry:.unsafe:6a9fa2fe3ca4",
+      // SVC-002 — the live-instance predicate, inlined as SQL LITERALS on purpose.
+      //
+      // WHY IT IS `raw` AT ALL, since this inventory exists to make every dynamic SQL site a
+      // reviewed decision: drizzle's `notInArray` emits the three terminal statuses as `$n`
+      // BIND PARAMETERS, and once postgres-js's prepared statement is promoted to a GENERIC
+      // plan PostgreSQL can no longer prove that `status NOT IN ($1,$2,$3)` implies the
+      // LITERAL predicate of the partial index `service_instances_live_service_uq` — so the
+      // index drops out and the plan sequentially scans `service_instances`. Reproduced on
+      // PostgreSQL 18 in review of PR #406.
+      //
+      // WHY IT IS SAFE, and this is a mechanism rather than an assurance: the interpolated
+      // text is built ONLY from `TERMINAL_SERVICE_INSTANCE_STATUSES`, a frozen `as const`
+      // array of three literals in the same module, and a MODULE-LOAD guard beside the helper
+      // throws unless every one matches /^[a-z_]+$/. No caller input reaches it — the helper
+      // takes no arguments at all.
+      "packages/db/src/repositories/tenant/job-control.ts#nonTerminalServiceInstanceStatus:.raw:b1ca4eadcba6",
       "packages/db/src/schema/company_brain_edges.ts#<module>:.raw:04b29159c874",
       "packages/db/src/schema/company_brain_edges.ts#<module>:.raw:30517078e05a",
       "packages/db/src/schema/company_brain_edges.ts#<module>:.raw:9e956052e63f",

@@ -5,6 +5,9 @@
 -- second index migration would have collided with 0274 on both the hunk and the
 -- migration number. 0274 has landed, so the collision is over and this is paid.
 --
+-- (Numbered 0276, not 0275: 0275_service_instance_reconciler landed on the base
+-- branch first. The DDL below is re-generated output, not a renamed file.)
+--
 -- WHAT IT IS FOR. `activityService.securityDenials` is the only production
 -- reader of the reserved `security.denied.` namespace. It filters
 -- `action LIKE 'security.denied.%'` under a TOTAL order (`created_at DESC,
@@ -47,5 +50,6 @@
 -- until it finishes. On a large instance that is a real write pause on the audit
 -- table, and it is accepted here for the same reason the rest of the chain
 -- accepts it. Rebuilding it `CONCURRENTLY` out of band is the escape hatch if
--- that pause is ever measured to matter.
+-- that pause is ever measured to matter. The build cost is UNMEASURED at
+-- production scale; only the resulting plan is measured.
 CREATE INDEX IF NOT EXISTS "activity_log_denial_created_idx" ON "activity_log" USING btree ("created_at" DESC NULLS FIRST,"id" DESC NULLS FIRST) WHERE action LIKE 'security.denied.%';

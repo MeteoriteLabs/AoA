@@ -47,6 +47,11 @@ import {
   type VerifiedWorkerOperation,
 } from "./job-leasing.js";
 import { normalizePlacementRegistryTarget } from "./execution-target-resolver.js";
+import {
+  createWorkerDenialSink,
+  drainWorkerDenial,
+  workerProofReplayIntent,
+} from "./worker-denial-audit.js";
 import { logger } from "../middleware/logger.js";
 import { bindJobTraceLogger } from "./job-trace-log.js";
 
@@ -162,6 +167,11 @@ export function createJobEventIngestService(input: {
       // CLI-006: captured INSIDE the tx, fired AFTER it commits (see the hook doc).
       let terminalSignal: AttemptTerminalSignal | null = null;
 
+      // ★ DE-03, replay-rejection conjunct — the refusal below THROWS out of
+      // `runInTenant`, so its record is collected as an INTENT and drained on the
+      // pool handle once the transaction has unwound.
+      const proofDenial = createWorkerDenialSink();
+
       const response = await runInTenant(input.appDb, auth.organizationId, async (repos) => {
         const databaseNow = await repos.jobControl.currentDatabaseTime();
         await repos.workerEnrollment.cleanupExpiredProofs(databaseNow, 100);
@@ -173,7 +183,10 @@ export function createJobEventIngestService(input: {
           issuedAt: auth.proofIssuedAt,
           expiresAt: auth.sessionExpiresAt,
         });
-        if (!proofRecorded) throw new JobLeasingError("unauthorized");
+        if (!proofRecorded) {
+          proofDenial.intent = workerProofReplayIntent(auth);
+          throw new JobLeasingError("unauthorized");
+        }
 
         const authority = await repos.jobControl.lockWorkerLeaseAuthority({
           workerId: auth.workerId,
@@ -320,7 +333,17 @@ export function createJobEventIngestService(input: {
               : {}),
           },
         });
-      });
+      })
+        // ★ DE-03 — drain the THROWING replay refusal on the POOL handle after the
+        // tenant transaction has closed. `recordSecurityDenial` never throws, so a
+        // broken recorder cannot turn a refusal into a 500.
+        .finally(async () => {
+          await drainWorkerDenial(input.appDb, proofDenial, {
+            control: "server/src/services/job-events.ts:ingest",
+            workerId: auth.workerId,
+            operation: "event_upload",
+          });
+        });
 
       // AFTER COMMIT ONLY. The attempt's durable terminal is already persisted; the
       // heartbeat-side projection is a downstream read of it, so a projection failure
