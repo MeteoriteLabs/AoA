@@ -375,10 +375,18 @@ export interface SetServiceDesiredStateInput {
 /**
  * Move one service's desired state, inside ONE already-open tenant transaction.
  *
- * ★ IT REUSES `lockServiceForReconcile` DELIBERATELY. That method takes the per-service
- * advisory transaction lock AND pins the row with `SELECT … FOR UPDATE`, and SVC-002's design
- * named this control by name as one of the writers it interlocks with. A second lock helper
- * with its own key would serialize against nothing — two locks are one lock fewer.
+ * ★ IT REUSES `lockServiceForReconcile` DELIBERATELY, AND THE REASON IS NOT THE ONE IT LOOKS
+ * LIKE. SVC-002's design names this control by name — but as a CAUTIONARY example, one of "the
+ * writers that would forget" the advisory lock, which is precisely why it located the
+ * duplicate-placement guarantee in the partial unique index instead. Nothing requires this
+ * function to take that lock, and the index remains the authority for duplicate placement.
+ *
+ * It takes it anyway, for the job SVC-002's design gives step 2's `SELECT … FOR UPDATE`:
+ * serializing a read-modify-write on `services`. This function READS `desired_state`, decides
+ * legality from it, and then writes — and a concurrent reconcile pass reads the same row. On
+ * the SAME key rather than a new one, because a second lock helper would serialize against
+ * nothing; two locks are one lock fewer. The compare-and-set on the repository write is the
+ * belt to that braces, for a future caller that does forget.
  *
  * The frozen `canTransitionServiceDesiredState` is the legality authority. It had ZERO
  * production callers before this function; its table was a lifecycle nothing enforced.

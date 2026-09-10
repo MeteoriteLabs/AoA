@@ -250,9 +250,18 @@ rediscovered a third time.
   cancellation second: reversed, a reconciler tick between them would replace the instance the
   operator just stopped. The cancellation half therefore also runs on the `unchanged` verdict, so
   a stop whose cancellation failed is retryable — mutant 12 is that property.
-* **The desired-state control reuses `lockServiceForReconcile`.** SVC-002's design named this
-  control by name as a writer it interlocks with. A second lock helper with its own key would
-  serialize against nothing.
+* **The desired-state control reuses `lockServiceForReconcile`, and NOT for the reason it looks
+  like.** ★ An earlier draft of this result and of the module docstring said SVC-002's design
+  "named this control as a writer it interlocks with". **That was a misreading of SVC-002's own
+  words and is corrected here.** SVC-002-design.md names SVC-007's control as a CAUTIONARY
+  example — one of *"the writers that would forget"* the advisory lock — which is exactly why it
+  located the duplicate-placement guarantee in `service_instances_live_service_uq` rather than in
+  the lock; and it gives step 2's `FOR UPDATE` a different stated job, *"interlocking with
+  SVC-005's generation bump"*. Nothing requires this control to take that lock, and the index
+  remains the duplicate-placement authority. It takes it anyway because it performs a
+  read-modify-write on `services.desired_state` that a concurrent reconcile pass also reads, and
+  on the SAME key because a second helper would serialize against nothing. The compare-and-set on
+  the repository write is the belt to that braces, for a future caller that does forget (T12(b)).
 * **Clause (d)'s limit is inherited verbatim** from `service-job-config.ts`: "no public
   port/ingress configuration is accepted" governs DECLARATIVE CONFIGURATION and NOT reachability.
   E2B serves arbitrary in-sandbox ports publicly at a URL derivable from the sandbox id, so a
