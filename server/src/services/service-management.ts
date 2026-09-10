@@ -397,8 +397,13 @@ export async function createServiceWithinTenant(
 }
 
 /**
- * Create one service, opening (and on failure ROLLING BACK) its own tenant transaction, and
- * publishing the audit event only once that transaction has committed.
+ * Create one service in its own tenant transaction, publishing the audit event only once that
+ * transaction has committed.
+ *
+ * ★ A THROW rolls the transaction back — the service row, its generation and the audit row
+ * together. A `null` RETURN does NOT; see `createServiceWithinTenant`'s correction note and
+ * `E9-F011`. The earlier one-line docstring here said "on failure ROLLING BACK", which
+ * conflated the two.
  */
 export async function createService(
   appDb: Db,
@@ -500,9 +505,12 @@ export async function setServiceDesiredStateWithinTenant(
  * The control's decision and writes, with no audit of its own.
  *
  * Split out of {@link setServiceDesiredStateWithinTenant} by SVC-007 Unit B for ONE reason:
- * this function has six exits and the audit must happen on exactly two of them, AFTER the
- * cancellation and the terminalization so it can record what happened to the live instance.
- * Six audit call sites would be six chances to add a seventh exit and forget.
+ * ★ this function has SEVEN `return` statements (counted at head, not remembered) and the
+ * audit must fire on exactly two of the four VERDICT values — `updated` and `unchanged` —
+ * which between them are reached from four of those seven exits, and only AFTER the
+ * cancellation and the terminalization so the row can record what happened to the live
+ * instance. Auditing at each exit would be four call sites to keep in step and an eighth exit
+ * away from silently writing nothing.
  */
 async function applyServiceDesiredState(
   repos: TenantRepositories,
