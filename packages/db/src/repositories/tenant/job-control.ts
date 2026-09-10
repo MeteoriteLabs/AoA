@@ -2086,9 +2086,13 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
    * SVC-003 — THE ONE WRITER of `service_instances.status`, and the only place that column
    * is assigned outside the reconciler's INSERT.
    *
-   * Both governed entry points funnel here — the fenced `recordServiceHealth` mutator and
-   * the event projection above — so the conditional-on-observed-status shape cannot drift
-   * between them. Returns whether a row moved.
+   * FOUR entry points funnel here, counted at this merge rather than left at SVC-003a's two:
+   * the fenced `recordServiceHealth` mutator, the event projection above,
+   * SVC-003b's `sweepServiceInstanceLiveness` (the liveness deadline, which has no fence to
+   * hold because it acts precisely when the worker has gone quiet), and SVC-007a's
+   * `terminalizeServiceInstanceForCancelledAttempt`. They funnel here so the
+   * conditional-on-observed-status shape cannot drift between them, and so a fifth author
+   * cannot arrive with a fifth idea of a legal move. Returns whether a row moved.
    */
   async function writeServiceInstanceStatus(input: {
     organizationId: string;
