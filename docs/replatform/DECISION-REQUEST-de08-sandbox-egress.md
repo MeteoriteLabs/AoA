@@ -246,23 +246,36 @@ exist at this tier.
 
 ---
 
-## ▢ DECISION — DE-08 / E8-F003, sandbox egress
+## ▣ DECISION — DE-08 / E8-F003, sandbox egress
 
-- ▢ **Option 1 ★ (part of RECOMMENDED)** — Amend `confidentiality`/`authorization`/`integrity`/`control`
+**★ RULED 2026-09-11 (founder): 1 + 3 + 4.** Options 1 (amend the clauses to name the
+credential-taxonomy control at the managed-shared tier), 3 (ratify the existing threat-model
+exclusion as the terminal, disclosed disposition; `REL-001` treats DE-08 as an accepted residual
+rather than a blocking gate) and 4 (egress denial scoped OUT at managed-shared and REQUIRED at the
+self-hosted/tenant-hosted boundary) are **ADOPTED**; **Option 2 and Hold open are NOT adopted.** This
+ruling is APPLIED (register-amend unit, docs-only): `distributed-execution-threat-controls.json` DE-08
+has its `confidentiality`/`authorization`/`integrity`/`control` clauses amended with the §2 Option 1
+`★ AMENDED` blocks dated 2026-09-11 (`revocation`/`audit` left as-is; severity stays **Critical**;
+`deliveryStatus` stays **not-delivered**); the DE-08 residual entry in
+`distributed-execution-threat-model.md` is ratified as terminal; and `E8-F003` is narrowed (not
+closed). The credential-taxonomy airtightness that now carries confidentiality is filed as follow-up
+`E8-F012` (`scripts/finding-ownership.json`, unowned).
+
+- ☑ **Option 1 ★ (RULED — part of RECOMMENDED)** — Amend `confidentiality`/`authorization`/`integrity`/`control`
   to name the credential taxonomy as the operative control at the managed-shared tier (exact text in
   §2, Option 1). Keep `revocation`/`audit` as-is. Retain Critical severity and `not-delivered`.
-- ▢ **Option 2** — Charter in-guest enforcement. *As chartered (BRW-004 slice (f)) it covers browser
+- ☒ **Option 2 (NOT adopted)** — Charter in-guest enforcement. *As chartered (BRW-004 slice (f)) it covers browser
   sessions only, not the shared sandbox path; re-scoping it to that path invents a new owner, and the
   in-guest layer is measured not-a-boundary. Choose only if provider-tier egress denial being off the
   table is unacceptable and a non-agent-writable in-guest point is judged buildable.*
-- ▢ **Option 3 ★ (part of RECOMMENDED)** — Ratify the EXISTING threat-model exclusion
+- ☑ **Option 3 ★ (RULED — part of RECOMMENDED)** — Ratify the EXISTING threat-model exclusion
   (`threat-model.md:300`) as the terminal disposition; amend `REL-001` to treat DE-08 as an accepted,
   disclosed residual rather than a blocking gate. *Honest only if Option 1 is also taken, else the
   register names a control (egress denial) that the exclusion concedes absent.*
-- ▢ **Option 4 ★ (scoping, part of RECOMMENDED)** — Scope the egress-denial obligation to the
+- ☑ **Option 4 ★ (RULED — scoping, part of RECOMMENDED)** — Scope the egress-denial obligation to the
   self-hosted/tenant-hosted boundary and exclude it at the managed-shared tier, in the shape of DE-27's
   deployment-mode split.
-- ▢ **Hold open** — Take none of the above; leave `DE-08` `not-delivered`, `E8-F003` open, and the
+- ☒ **Hold open (NOT adopted)** — Take none of the above; leave `DE-08` `not-delivered`, `E8-F003` open, and the
   ruling un-taken until the provider tier changes. *The status quo the finding calls "a founder decision
   that has not been taken."*
 
