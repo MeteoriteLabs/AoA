@@ -241,6 +241,11 @@ creator for a platform-scoped `kind = "e2b"` execution target ships **and** the 
 contradiction is resolved by a successor decision to `PLACEMENT_MATRIX`. Neither is owned by any
 ticket on disk today, which is why this is `unowned` and not `owned`.
 
+**Product plan (non-dispositional).** A founder-confirmed feature intended to relieve the product
+need here is designed in `docs/replatform/design/per-tenant-managed-execution-and-devices.md` (see
+its §5). That design neither amends this finding nor changes any gate; this finding stays `open` and
+`unowned` until a founder/protocol decision closes it.
+
 ## E11-F005 — nothing in the enrolment protocol identifies a machine, so "two distinct owner-desktop devices" is unverifiable from any surface, projected or not
 
 **Status:** `open` · Severity: **HIGH** · Filed 2026-09-08 by W18 (provability wave, gate-naming unit).
@@ -313,6 +318,12 @@ which the system CAN evidence), or the enrolment protocol grows a machine-bindin
 a `WorkerHelloV1` field change against a FROZEN v1 schema, i.e. a protocol decision, not a ticket
 line. No ticket on disk owns either, hence `unowned`.
 
+**Product plan (non-dispositional).** A founder-confirmed feature intended to relieve the product
+need here is designed in `docs/replatform/design/per-tenant-managed-execution-and-devices.md` (see
+its §5 and §4.4). That design records device enrolments as a layer above the frozen protocol; it does
+not add machine attestation, does not amend this finding, and changes no gate. This finding stays
+`open` and `unowned` until a founder/protocol decision closes it.
+
 ## E11-F006 — the D6-04 evidence contract has no device column, so two owner-desktop devices collapse into one matrix row
 
 **Status:** `open` · Severity: **HIGH** · Filed 2026-09-08 by W18 (provability wave, gate-naming unit).
@@ -345,6 +356,12 @@ The NOT-ADOPTED substitute in `E11-D01` avoids the gap by not claiming per-devic
 **What would close it.** A founder decision either (i) adding a device/enrolment dimension to D6-04
 with its own probe and denial floors, or (ii) recording that per-device coverage is deliberately
 out of the matrix's scope. Neither is owned by a ticket on disk, hence `unowned`.
+
+**Product plan (non-dispositional).** A founder-confirmed feature intended to relieve the product
+need here is designed in `docs/replatform/design/per-tenant-managed-execution-and-devices.md` (see
+its §5 and §6). That design supplies the device inventory a future D6-04 dimension could reference but
+writes no gate text and adds no column; it neither amends this finding nor changes any gate. This
+finding stays `open` and `unowned` until a founder gate decision closes it.
 
 ## E11-F007 — cross-target handoff has no mechanism in either direction, and re-placement is declared out of scope in the source
 
