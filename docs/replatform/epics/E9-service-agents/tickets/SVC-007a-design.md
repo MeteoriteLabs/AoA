@@ -99,21 +99,39 @@ leaves an operator with a spend loop and no lever.
 **And the off switch has to switch something off.** `services.desired_state = 'stopped'` alone
 stops the reconciler CREATING a replacement — SVC-002's own header says the loop has no channel
 to a running instance. A control that flipped only that column would be a Stop button that
-provably does not stop. So it composes `requestCancellation({graceful:true})` against the live
-instance's job, reached through the SAME `jobOperations.drainJob` the JOB-008 `drain` route
-uses. Nothing new is built; an existing audited channel is reused.
+provably does not stop. So it composes JOB-006's `requestCancellation` (graceful) against the
+live instance's job. Nothing new is built; the shipped channel the JOB-008 `drain` route uses is
+reused — though the ROUTE-level `jobOperations.drainJob` wrapper is not, because it opens its own
+transaction and §2.3 needs the service lock held across the call.
 
-### 2.3 The order of the two writes is load-bearing
+### 2.3 The stop is ONE transaction, and ordering alone was not enough
 
-Desired state FIRST, cancellation SECOND. Reversed, a reconciler tick landing between them
-would observe the instance going terminal while `desired_state` still read `running` and would
-immediately mint a REPLACEMENT of the thing the operator just stopped.
+> ★★★ **THIS SECTION IS A CORRECTION.** As designed and first shipped, the stop was TWO
+> transactions ordered desired-state-FIRST, cancellation-second — reversed, a reconciler tick
+> landing between them would observe the instance going terminal while `desired_state` still read
+> `running` and mint a REPLACEMENT of the thing the operator just stopped. External review of
+> PR #412 (P1) showed that ordering closes only the RECONCILER interleaving: a concurrent
+> `stopped → running` committing in the same gap leaves the older stop draining a job the operator
+> has **already resumed**. The design was wrong and the review was right; it is recorded here
+> rather than rewritten as if it had always said this.
 
-In the shipped order the worst outcome of a crash between the two is a service marked stopped
-that is still running — visible, and repaired by re-issuing the same request. Which is why the
-cancellation half **also runs on the `unchanged` verdict**: without that arm, a stop whose
-cancellation failed can never be retried, because the second request short-circuits on
-"already stopped" and the button reports success while doing nothing, permanently.
+The shipped control performs the desired-state write, the graceful cancellation and the instance
+terminalization in **ONE transaction, under the service's own row lock**. A resume cannot commit
+between the read of `desired_state` and the cancellation, because it cannot acquire the row. That
+also removes the split outcome the two-transaction shape had to report: a cancellation failure
+now rolls the desired-state write back with it.
+
+**The lock order is stated rather than assumed**, because `requestCancellation`'s own header warns
+that getting it wrong deadlocks (40P01): service advisory lock + `services` row FIRST, then that
+method's untouched `lease → attempt → job` hierarchy, then `service_instances`. Nothing in the
+tree takes a job-side lock and THEN the service advisory lock — SVC-002's reconciler takes the
+service locks first exactly as this does, and the JOB-005 ingest takes no service lock at all and
+reaches `service_instances` only while already holding the attempt, the same direction as this.
+
+The cancellation **still runs on the `unchanged` verdict**, and survives the rewrite for a
+DIFFERENT reason than the two-transaction design gave: *"already stopped" does not imply "nothing
+is running"* — a reconcile pass that began before an earlier stop can commit an instance after
+that stop moved the column, and without this arm the operator could never reach it.
 
 ### 2.4 The definition boundary
 
@@ -158,8 +176,13 @@ whose semantics SVC-005 owns.
 * **Authority** is `assertOrgAdmin` — the same `execution_target:manage` org owner/admin gate
   every JOB-008 operator mutation on this router uses, run FIRST on every route so a caller
   without it gets a uniform 403 whether or not the org, company or service exists.
-* **The definition is validated AFTER the gate**, so an unauthorized caller cannot tell a
-  malformed definition from a valid one. Same ordering constraint BRW-001 established.
+* **The WHOLE BODY is validated AFTER the gate** — the definition and the request schema alike.
+  ★ The first revision put the request schema in `validate(...)` middleware, which runs BEFORE the
+  handler and therefore before `assertOrgAdmin`; external review of PR #412 (P2) pointed out that
+  the route's own "authority first" sentence was then false, since an unauthorized caller with a
+  malformed body got a 400 about their body. These four routes now carry no `validate` middleware
+  and parse the schema inside the handler; a thrown `ZodError` reaches the same error handler, so
+  only the ORDER moved. Same ordering constraint BRW-001 established.
 * **The org/company pair is proven by `services_org_company_fk`**, not by an app-layer read: a
   second query to check the pair would itself be a cross-tenant existence oracle. The 23503 is
   mapped to the SAME uniform 404 an absent company produces.
