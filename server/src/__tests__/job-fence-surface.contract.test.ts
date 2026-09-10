@@ -219,6 +219,33 @@ const EXPECTED_UNGUARDED = [
   // `writeServiceInstanceStatus`, conditional on the exact status read under that lock. It is
   // not worker-reachable: no wire operation resolves to it (E9-F006).
   "terminalizeServiceInstanceForCancelledAttempt",
+  // ★★★ SVC-005a — the generation rollout's TWO methods, classified in the SAME commit that
+  // adds them (this test fails closed, and it is what caught the omission — again).
+  //
+  // `bumpServiceGeneration` is the writer `services.generation` never had. It is outside the
+  // fence for SVC-002's reason and more strongly: it touches `services` and nothing else, runs
+  // in the control plane's own tenant transaction under the service's advisory + row lock, and
+  // NO WORKER CAN REACH IT AT ALL — no wire operation resolves to it and `services` is not a
+  // table any fenced mutator writes. `guardActiveFence` demands an ACTIVE lease for a named
+  // (job, attempt, lease) triple; a rollout has no lease and names no worker, so a guard here
+  // would be unsatisfiable rather than stricter.
+  //
+  // WHAT STANDS IN FOR THE FENCE, and it is three things: (1) the caller must already hold the
+  // service's row lock, and the write is a COMPARE-AND-SET on `expectedGeneration` so a caller
+  // that forgot the lock still cannot overwrite a generation it did not read; (2) it can only
+  // move FORWARD BY ONE — both the expected and the next value are derived from a single
+  // parameter, so no caller can express a skip or a rewind; (3) its only production caller
+  // reaches it through `rollServiceGeneration`, which runs `assertAdmissibleOrganization`
+  // first (FND-007, Decision #121).
+  "bumpServiceGeneration",
+  // `listUnwitnessedGenerationPredecessors` is a READ. It writes nothing, so there is no
+  // mutation for a fence to gate, and it is listed here for the same reason
+  // `findLiveServiceInstance` and `listReconcilableServices` are: this surface is closed, so a
+  // read that is not classified fails the suite. Its own safety property is the opposite of a
+  // permission: it must be FAIL-CLOSED in the sense of returning MORE rows rather than fewer —
+  // a row it fails to return is a placement admitted on no evidence — which is why its NULL
+  // arm is spelled out explicitly and why the join to `job_attempts` is LEFT rather than INNER.
+  "listUnwitnessedGenerationPredecessors",
 ];
 
 function parse(path: string): ts.SourceFile {

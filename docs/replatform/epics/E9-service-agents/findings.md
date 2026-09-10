@@ -757,3 +757,103 @@ terminal instance can never be terminalized twice — and the instance's own `jo
 which attribution already guarantees are present. Alternatively JOB-013's `activity_audit` kind, if
 whoever owns that decides the deadline belongs on the activity trail. Either way it is a migration
 plus a write, and it should land with SVC-007's evidence surface so the record has a reader.
+
+### 5. ★ What SVC-005a delivered of this, and what it did NOT
+
+**DELIVERED — the instance's own author, durably.** `service_instances.terminalized_by` (migration
+`0279`) records WHO drove a row terminal: `worker_event`, `liveness_deadline` or
+`control_plane_backstop`. It is written at the single chokepoint `writeServiceInstanceStatus`, whose
+`author` parameter is REQUIRED so a fifth author cannot arrive unclassified. So the question §1 says
+an operator cannot answer from durable state — *"did the service report itself gone, or did the
+control plane give up on it?"* — is now answerable for any instance terminalized after `0279`.
+SVC-005a needed it as a FENCE INPUT rather than as telemetry, which is why it landed here.
+
+**NOT DELIVERED — the projection-receipt route §4 names, and the reader.** No
+`job_projection_receipts` row, no new `projection_kind`, no `activity_log` write; §3's reason for
+declining a repository-layer `activity_log` write stands unchanged. And a pre-`0279` terminal row
+still carries NULL — correctly, since inventing an author for a row nobody witnessed is the forged
+attribution the column exists to prevent. There is still no operator surface that displays it
+(SVC-007's evidence experience).
+
+**THIS FINDING STAYS OPEN.** Its title is about a `lost` instance being unattributable *after the
+fact*, and the durable half of that is now closed — but the clause it sits under is
+`telemetry explains every transition` (SVC-006), and a column with no reader and no receipt does not
+explain a transition. Half a conjunction is not the conjunction.
+
+---
+
+## E9-F010 — a generation rollout cannot prove the old generation's PROCESS stopped, so SVC-005's acceptance clause has an un-closeable half
+
+**Status:** `open` · `unowned` · **Severity:** HIGH
+**Filed:** 2026-09-10, by **SVC-005a**, in the commit that makes generation rollout possible —
+i.e. in the commit that makes this residual reachable, exactly as SVC-003b filed E9-F007 in the
+commit that created its condition.
+**Affected tickets:** SVC-005 (owns the clause), SVC-003 (created the same residual one ticket
+early, as E9-F007), SVC-008 (the daemon side that could witness a stop), SVC-006 (the canary that
+would have to observe it).
+**Blocks gate:** no — E9's exit gate is unmet for several larger reasons already on record. It does
+bound what SVC-005a may be read to claim, and that is why it is filed rather than left implied.
+
+### 1. The clause, and the half that is delivered
+
+E9's acceptance for SVC-005 reads:
+
+> No two generations may perform external effects simultaneously unless a later approved
+> architecture decision explicitly permits overlap and defines its fencing and idempotency policy.
+
+SVC-005a delivers: **no two generations are PLACED while the older one is un-drained or
+unwitnessed.** Two mechanisms, both verified at source:
+
+* **Un-drained** — `service_instances_live_service_uq` permits exactly ONE non-terminal instance per
+  `(organization, service)`, and `listReconcilableServices` filters on the byte-identical predicate.
+  So the reconciler cannot place generation N+1 while generation N's instance is live, whatever
+  `services.generation` says. Replace-after-stop is structural.
+* **Unwitnessed** — step 4b of `reconcileServiceWithinTenant` refuses a CROSS-generation placement
+  while a previous generation's instance is terminal-by-assumption (`terminalized_by` not
+  `worker_event`, NULL included) AND its attempt is non-terminal. `R-T4` pins the refusal; `R-T5`
+  pins that it clears.
+
+### 2. The half that is NOT delivered, and why no control-plane fact can close it
+
+**A closed fence stops the old worker WRITING. It does not stop its PROCESS.**
+
+The recovery condition SVC-005a uses — the old attempt reaching a terminal status — is a real and
+verifiable fact with a real consequence: `classifyFence`
+(`packages/db/src/repositories/tenant/job-fence.ts`) returns `attempt_terminal` BEFORE any other
+test, so from that instant the old worker cannot write anything through the fenced ingest. That is
+genuinely stronger than "we asked it to stop". It is still not the clause.
+
+Nothing in the control plane observes a remote process. E9-F007 §3 already established the same
+thing for the same-generation case and named the two authorities that would close it — the deadline
+gaining the right to revoke a fence (which needs a ruling against E9's own acceptance sentence about
+ownership), or a `graceful_stop` issued to the old lease at the moment of terminalization (which
+needs a producer, and **E9-F008** records that no producer for `graceful_stop` or `drain` exists
+anywhere in the tree, and that `queueGovernedControlCommand` is narrowed at the TYPE level against
+both). SVC-005a adds a third and stronger candidate that is equally unavailable today: SVC-008a's
+`processStatus`/`signalProcess` port, reached from the control plane, would let a stop be
+**witnessed** rather than requested — but there is no channel from the control plane to that port,
+and building one is not this unit's work.
+
+### 3. Why the honest stall was taken instead
+
+The alternative to stalling is bumping and placing anyway, which is *"a rollout that assumes the old
+generation stopped because we asked it to"* — the fail-open SVC-008b's stop-verdict work exists to
+refuse. The alternative to a RECOVERY CONDITION is a stall that never clears, which is the permanent
+wedge this epic keeps meeting and is strictly worse than the overlap. So the shape is: refuse while
+the evidence is absent, clear on the strongest available evidence, and **state the residual rather
+than let a green suite imply it is gone**.
+
+### 4. What would close it
+
+Any ONE of: (a) a control-plane-reachable `processStatus` over SVC-008a's port, so a stop is
+witnessed rather than assumed; (b) a `graceful_stop` producer plus an ACK the worker cannot forge,
+so the old generation's exit is attributable — which needs E9-F008 closed first; (c) an approved
+architecture decision that PERMITS overlap and defines its fencing and idempotency policy, which the
+clause's own final sentence explicitly contemplates and which would convert this from a gap into a
+documented allowance. (c) is the cheapest and is a founder/Protocol-Custodian call, not an
+engineering one.
+
+**Affected clause text, so nobody re-derives it:** the DE-12 register row's `deliveryStatus` is
+deliberately left at `partial` by SVC-005a, and its audit conjunction (`partition, drain, and
+generation changes are audited`) gains no whole conjunct — a `logger.info` line is not a durable
+record.

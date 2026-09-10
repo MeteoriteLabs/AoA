@@ -139,6 +139,46 @@ export const TERMINAL_SERVICE_INSTANCE_STATUSES = Object.freeze([
 export const LIVE_SERVICE_INSTANCE_INDEX = "service_instances_live_service_uq";
 
 /**
+ * SVC-005a — WHO may be recorded as having driven a service instance terminal, and it is a
+ * FENCE INPUT rather than telemetry.
+ *
+ * ONE of these is a WITNESS and two are ASSUMPTIONS, and the generation rollout fence turns
+ * on exactly that split:
+ *
+ *   `worker_event`             the worker's own attributed, generation-fenced observation
+ *                              moved the row through `applyServiceProjectionForFence` or the
+ *                              fenced `recordServiceHealth`. The worker SAID it stopped.
+ *   `liveness_deadline`        SVC-003b's clock condemned it because nothing had been heard.
+ *                              The worker may still be running (E9-F007).
+ *   `control_plane_backstop`   SVC-007a's cancelled-attempt projection moved a stranded
+ *                              instance because its ATTEMPT was terminal.
+ *
+ * Mirrored by `service_instances_terminalized_by_check` (migration 0279); the reconciliation
+ * asserts set EQUALITY server-side, exactly as SVC-001 did for the status CHECK, so an author
+ * added on one side and not the other is caught rather than silently storable.
+ */
+export const SERVICE_INSTANCE_TERMINAL_AUTHORS = Object.freeze([
+  "worker_event",
+  "liveness_deadline",
+  "control_plane_backstop",
+] as const);
+
+export type ServiceInstanceTerminalAuthor = (typeof SERVICE_INSTANCE_TERMINAL_AUTHORS)[number];
+
+/**
+ * SVC-005a — the SUBSET of {@link SERVICE_INSTANCE_TERMINAL_AUTHORS} that constitutes a
+ * WITNESS that the worker stopped.
+ *
+ * ★ DERIVED BY EXCLUSION, so the fail-closed direction is the default. A new author added to
+ * the frozen list above is NOT a witness unless it is named here too — which means the fence
+ * STALLS for an author nobody has classified, rather than admitting a placement on the
+ * strength of a name it does not recognise.
+ */
+export const WITNESSED_SERVICE_INSTANCE_TERMINAL_AUTHORS = Object.freeze([
+  "worker_event",
+] as const);
+
+/**
  * SVC-003b — one live instance, as the liveness sweep sees it.
  *
  * Both ages are milliseconds measured by the DATABASE's `clock_timestamp()` at read time, so
@@ -535,6 +575,12 @@ export interface JobControlRepository {
    * Deliberately does NOT touch `generation`: minting a new generation is a rollout, and a
    * rollout without SVC-005's "no two generations perform external effects simultaneously"
    * fence is exactly the overlap E9's acceptance forbids. See SVC-007a-design.md section 4.
+   *
+   * ★ SVC-005a UPDATE, so this paragraph is not read as a live gap it no longer is: the
+   * rollout writer now exists ({@link JobControlRepository.bumpServiceGeneration}) and this
+   * method still does not touch `generation` — the two controls stay separate. What SVC-005a
+   * does NOT claim is the whole clause; see `listUnwitnessedGenerationPredecessors` for which
+   * half is fenced and which residual (E9-F007) stays open.
    */
   updateServiceDesiredState(input: {
     organizationId: string;
@@ -638,6 +684,92 @@ export interface JobControlRepository {
     createdAt: Date;
     updatedAt: Date;
   } | null>;
+  /**
+   * SVC-005a — ★★★ THE WRITER `services.generation` HAS NEVER HAD, as a compare-and-set.
+   *
+   * Until this method the column was `notNull().default(1)` and was READ as a WHERE predicate
+   * in exactly one place (`serviceSourceIsAdmitted`) and pinned under a row lock in another
+   * (`lockServiceForReconcile`). `update(services)` for `generation` appeared ZERO times in
+   * the tree, which is why DE-12's audit clause was ruled VACUOUS by founder decision
+   * E0-F013: "no generation ever changes". This is the writer that makes it changeable, and
+   * SVC-002 and SVC-007a each scoped it out to SVC-005 by name.
+   *
+   * ★ THE CALLER MUST ALREADY HOLD THE SERVICE'S ROW LOCK (`lockServiceForReconcile`). The
+   * `expectedGeneration` predicate is belt to that braces, on the same argument
+   * `updateServiceDesiredState` makes for its own compare-and-set: a future caller that
+   * forgets the lock still cannot overwrite a generation it did not read.
+   *
+   * ★ IT ONLY EVER GOES FORWARD BY ONE. `expectedGeneration` and `expectedGeneration + 1` are
+   * both computed here from the single parameter rather than accepted as two, so no caller can
+   * ask for a skip or a rewind. A rewind would be the worse of the two: `service_generations`
+   * is immutable and its (service, generation) uniqueness means generation N's definition
+   * already exists, so rolling BACK to N would silently re-point the service at a definition
+   * whose instances have already run and been reconciled against — and the instance-level
+   * generation fence (`applyServiceProjectionForFence` step 3) would then stop refusing events
+   * it currently refuses.
+   *
+   * Returns `null` when nothing matched: the generation moved between the caller's read and
+   * this write, which under the row lock means a writer that did not take it.
+   */
+  bumpServiceGeneration(input: {
+    organizationId: string;
+    companyId: string;
+    serviceId: string;
+    expectedGeneration: number;
+  }): Promise<{ generation: number } | null>;
+  /**
+   * SVC-005a — ★★★ THE GENERATION ROLLOUT FENCE'S READ: instances of a PREVIOUS generation
+   * that ended WITHOUT A WITNESS and whose worker may therefore still be running.
+   *
+   * WHAT IT ANSWERS, and it is a claim about the WORLD rather than about a column. E9's
+   * acceptance for SVC-005 is "no two generations may perform external effects
+   * simultaneously". Placement overlap is already impossible —
+   * `service_instances_live_service_uq` permits exactly one non-terminal instance per service,
+   * so the reconciler cannot place generation N+1 while N is live. The hole is E9-F007: an
+   * instance driven terminal BY A CLOCK has left that index while its worker may still be
+   * running and still performing external effects. Placing N+1 on the strength of such a row
+   * is precisely the overlap the clause forbids.
+   *
+   * So this returns the rows for which the control plane does NOT know the old generation
+   * stopped, under THREE conjunctive conditions, all of them database facts:
+   *
+   *   (1) `generation <> currentGeneration` — a DIFFERENT generation. Same-generation
+   *       replacement is NOT returned, deliberately: E9-F007 §3 ruled that overlap the smaller
+   *       harm against the permanent wedge of never terminalizing, and SVC-005a does not
+   *       reopen that ruling. The acceptance clause is about two GENERATIONS.
+   *   (2) `terminalized_by` is not one of
+   *       {@link WITNESSED_SERVICE_INSTANCE_TERMINAL_AUTHORS} — including NULL, which is a row
+   *       terminalized before migration 0279 and is UNKNOWN, hence not a witness. Fail-closed.
+   *   (3) the instance's ATTEMPT has not reached a terminal status. This is the RECOVERY
+   *       CONDITION, and without it the stall would be a permanent wedge — the failure class
+   *       this epic keeps meeting. A terminal attempt closes the fence: `classifyFence`
+   *       (packages/db/src/repositories/tenant/job-fence.ts) returns `attempt_terminal` before
+   *       any other test, so the old worker can no longer write ANYTHING through the ingest.
+   *       An instance with no `attempt_id` at all has no fence to close and is treated as
+   *       satisfying (3) — it was never leased, so no worker ever ran for it.
+   *
+   * ★ WHAT THIS DOES NOT PROVE, stated here because the clause is about external effects and
+   * this method cannot see them. A closed fence stops the old worker WRITING; it does not stop
+   * its PROCESS. No control-plane fact can, and E9-F007 §3 says so. The residual is real,
+   * bounded by the lease TTL and the reaper interval, and is NOT claimed closed.
+   *
+   * Bounded by `limit`, and a non-empty answer is all the fence needs — the caller stalls on
+   * the first row. The rows are returned rather than a boolean so the stall can NAME what
+   * blocked it.
+   */
+  listUnwitnessedGenerationPredecessors(input: {
+    organizationId: string;
+    serviceId: string;
+    currentGeneration: number;
+    limit: number;
+  }): Promise<Array<{
+    serviceInstanceId: string;
+    generation: number;
+    status: string;
+    terminalizedBy: string | null;
+    attemptId: string | null;
+    attemptStatus: string | null;
+  }>>;
   insertJobOnce(values: NewJob): Promise<Job | null>;
   findSubmission(input: {
     organizationId: string;
@@ -2050,6 +2182,12 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
       serviceInstanceId: instance.id,
       status: projection.toStatus,
       expectedFromStatus: instance.status,
+      // SVC-005a — THE WITNESS. This is the only one of the four authors that is one: the
+      // move is driven by the worker's own event, and it reached here only after attribution,
+      // identity and the generation fence above. Those three checks are what make it evidence
+      // about THIS row rather than an unauthorized assertion, and they are the reason this
+      // author may be trusted where a clock may not.
+      author: "worker_event",
     });
     if (!moved) return { outcome: "illegal_transition", fromStatus: instance.status, toStatus: projection.toStatus };
 
@@ -2093,15 +2231,38 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
    * `terminalizeServiceInstanceForCancelledAttempt`. They funnel here so the
    * conditional-on-observed-status shape cannot drift between them, and so a fifth author
    * cannot arrive with a fifth idea of a legal move. Returns whether a row moved.
+   *
+   * ★★★ SVC-005a — `author` IS REQUIRED, AND THAT IS THE MECHANISM, not a convenience. This
+   * is the ONE writer of `status`, so it is the only place that can observe a row becoming
+   * terminal, and making the parameter required means a FIFTH author cannot arrive without
+   * classifying itself: the omission is a typecheck failure rather than a silently
+   * unattributable terminal row. `terminalized_by` is written ONLY when the status being
+   * written is one of the frozen terminals — a non-terminal move leaves it NULL, so the
+   * column never claims an authorship for a row that has not ended. Both writes are one
+   * UPDATE on a row this caller already holds locked.
+   *
+   * Why the fence needs it, in one sentence: a terminal row authored by `worker_event` is the
+   * worker SAYING it stopped, and a terminal row authored by a clock is the control plane
+   * GIVING UP on a worker that may still be running (E9-F007) — and the generation rollout
+   * fence must refuse to place a NEW generation on the strength of the second. See
+   * {@link SERVICE_INSTANCE_TERMINAL_AUTHORS}.
    */
   async function writeServiceInstanceStatus(input: {
     organizationId: string;
     serviceInstanceId: string;
     status: string;
     expectedFromStatus: string;
+    author: ServiceInstanceTerminalAuthor;
   }): Promise<boolean> {
+    const terminal = (TERMINAL_SERVICE_INSTANCE_STATUSES as readonly string[])
+      .includes(input.status);
     const rows = await tx.update(serviceInstances).set({
       status: input.status,
+      // Conditional rather than unconditional: stamping an author onto a `pending → leased`
+      // move would make `terminalized_by` a "last writer" column, and the fence reads it as
+      // "who ENDED this instance". Those are different questions and only one of them is
+      // answerable from a status write.
+      ...(terminal ? { terminalizedBy: input.author } : {}),
       updatedAt: sql`clock_timestamp()`,
     }).where(and(
       eq(serviceInstances.organizationId, input.organizationId),
@@ -2699,6 +2860,14 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
           serviceInstanceId: candidate.serviceInstanceId,
           status: input.toStatus,
           expectedFromStatus: candidate.status,
+          // SVC-005a — AN ASSUMPTION, AND THE MOST DANGEROUS OF THE THREE. Nothing witnessed
+          // this instance ending; a clock condemned it precisely BECAUSE the worker had gone
+          // silent, and E9-F007 records that the deadline terminalizes the INSTANCE without
+          // fencing the WORKER — whose process may still be running and still performing
+          // external effects. A generation rollout that treated this row as proof the old
+          // generation had stopped would be the fail-open E9's acceptance clause forbids, so
+          // the author is recorded honestly and the fence reads it as NOT-A-WITNESS.
+          author: "liveness_deadline",
         });
         if (!moved) {
           result.lostRace += 1;
@@ -2879,6 +3048,16 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         serviceInstanceId: instance.id,
         status: input.toStatus,
         expectedFromStatus: instance.status,
+        // SVC-005a — AN ASSUMPTION, though a better-founded one than the deadline's. Its
+        // precondition, re-read from the database under this row's lock at step (2), is that
+        // the ATTEMPT is already terminal and did not succeed — and a terminal attempt closes
+        // the fence (`classifyFence` returns `attempt_terminal`, packages/db/src/repositories/
+        // tenant/job-fence.ts), so the old worker can no longer write anything. That is a real
+        // and verifiable control-plane fact, and it is still NOT a witness that the PROCESS
+        // stopped, which is why this author is excluded from
+        // `WITNESSED_SERVICE_INSTANCE_TERMINAL_AUTHORS` rather than folded in with the worker's
+        // own event.
+        author: "control_plane_backstop",
       });
       if (!moved) {
         return { outcome: "illegal_transition", serviceInstanceId: instance.id, fromStatus: instance.status };
@@ -2908,6 +3087,79 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
           input.afterServiceId ? gt(services.id, input.afterServiceId) : undefined,
         ))
         .orderBy(asc(services.id))
+        .limit(bounded);
+    },
+
+    async bumpServiceGeneration(input) {
+      // ONE forward step, derived here from the single `expectedGeneration` parameter rather
+      // than accepted as a second one, so no caller can ask for a skip or a rewind. See the
+      // interface docstring for why a rewind is the worse of the two.
+      const next = input.expectedGeneration + 1;
+      const [row] = await tx
+        .update(services)
+        .set({ generation: next, updatedAt: sql`clock_timestamp()` })
+        .where(and(
+          eq(services.id, input.serviceId),
+          eq(services.organizationId, input.organizationId),
+          eq(services.companyId, input.companyId),
+          // The compare-and-set. Belt to the caller's row lock, exactly as
+          // `updateServiceDesiredState`'s `expectedDesiredState` predicate is.
+          eq(services.generation, input.expectedGeneration),
+        ))
+        .returning({ generation: services.generation });
+      return row ?? null;
+    },
+
+    async listUnwitnessedGenerationPredecessors(input) {
+      const bounded = Math.max(1, Math.min(64, Math.floor(input.limit)));
+      return tx
+        .select({
+          serviceInstanceId: serviceInstances.id,
+          generation: serviceInstances.generation,
+          status: serviceInstances.status,
+          terminalizedBy: serviceInstances.terminalizedBy,
+          attemptId: serviceInstances.attemptId,
+          attemptStatus: jobAttempts.status,
+        })
+        .from(serviceInstances)
+        // LEFT, not INNER: an instance with no `attempt_id` must still be SEEN by this read.
+        // An INNER join would silently drop it, and dropping a row from a fail-closed fence's
+        // population is the direction that admits a placement rather than refusing one. Such a
+        // row is then classified below as satisfying condition (3) — it was never leased, so
+        // no worker ever ran for it and there is no fence to close.
+        .leftJoin(jobAttempts, and(
+          eq(jobAttempts.organizationId, serviceInstances.organizationId),
+          eq(jobAttempts.id, serviceInstances.attemptId),
+        ))
+        .where(and(
+          eq(serviceInstances.organizationId, input.organizationId),
+          eq(serviceInstances.serviceId, input.serviceId),
+          // (1) A DIFFERENT generation. Same-generation replacement is out of scope by
+          // E9-F007 §3's standing ruling, which SVC-005a does not reopen.
+          ne(serviceInstances.generation, input.currentGeneration),
+          // (2) NOT A WITNESS — including NULL, which `notInArray` would NOT match (SQL
+          // three-valued logic: `NULL NOT IN (...)` is UNKNOWN, not TRUE), so the NULL arm is
+          // spelled out explicitly. Omitting it is the whole-fence fail-open: every row
+          // terminalized before migration 0279 would silently read as witnessed.
+          or(
+            isNull(serviceInstances.terminalizedBy),
+            notInArray(
+              serviceInstances.terminalizedBy,
+              [...WITNESSED_SERVICE_INSTANCE_TERMINAL_AUTHORS],
+            ),
+          ),
+          // (3) THE RECOVERY CONDITION: the attempt has NOT reached a terminal status, so the
+          // old worker's fence is still open. `isNull` is the never-leased arm and is joined
+          // by OR so it is EXCLUDED from the blocking population — a row with no attempt has
+          // no fence to close, so it can never block a roll, and the stall cannot become a
+          // permanent wedge on a row that was never placed.
+          and(
+            isNotNull(serviceInstances.attemptId),
+            isNotNull(jobAttempts.status),
+            notInArray(jobAttempts.status, [...TERMINAL_ATTEMPT_STATUSES]),
+          ),
+        ))
+        .orderBy(asc(serviceInstances.createdAt))
         .limit(bounded);
     },
 
@@ -4488,6 +4740,13 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
           serviceInstanceId: current.id,
           status: input.healthStatus,
           expectedFromStatus: current.status,
+          // SVC-005a — A WITNESS, for the same reason the event projection is: this mutator
+          // runs UNDER `guardActiveFence`, so the caller is the worker that currently holds
+          // the lease and fence for this instance's attempt. Its `healthStatus` is not itself
+          // a terminal status today, so this call stamps nothing in practice; the author is
+          // supplied anyway rather than defaulted, because a required parameter that some
+          // callers may omit is the drift this chokepoint exists to prevent.
+          author: "worker_event",
         });
       }
       const [row] = await tx.select().from(serviceInstances).where(and(

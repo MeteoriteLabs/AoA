@@ -62,6 +62,9 @@ import {
   SERVICE_LIVENESS_DEADLINE_TO_STATUS,
   type ServiceLivenessPolicy,
 } from "./service-liveness-deadline.js";
+// SVC-005a — the cross-generation placement fence's pure classifier. The reconciler consults
+// it; the rollout writer that makes a second generation possible lives in the same module.
+import { findBlockingPredecessor } from "./service-generation-rollout.js";
 
 /**
  * Fixed, never-rotate namespace UUID for deriving a service reconciliation's identity
@@ -135,7 +138,20 @@ export type ServiceReconcileNoneReason =
    *  return this SAME value, which is what "idempotent" means here. */
   | "instance_present"
   /** Organization budget hard-stop or concurrency cap; the transaction rolled back whole. */
-  | "quota_denied";
+  | "quota_denied"
+  /**
+   * ★★★ SVC-005a — THE GENERATION ROLLOUT FENCE REFUSED THIS PLACEMENT. An instance of a
+   * PREVIOUS generation ended without a witness — a clock condemned it, or its author is
+   * unknown — and its attempt has not reached a terminal status, so the old worker's fence is
+   * still open and it may still be performing external effects (E9-F007). Placing the new
+   * generation beside it is the overlap E9's acceptance for SVC-005 forbids.
+   *
+   * ★ IT IS A STALL, NOT A WEDGE, and the difference is the recovery condition: it clears the
+   * moment that attempt reaches a terminal status, which lease expiry plus `reapExpiredLeases`
+   * reaches without any cooperation from the worker. See
+   * `service-generation-rollout.ts`'s header, §5.
+   */
+  | "predecessor_generation_unwitnessed";
 
 export type ServiceReconcileOutcome =
   | {
@@ -222,6 +238,42 @@ export async function reconcileServiceWithinTenant(
     serviceId: input.serviceId,
   });
   if (live >= 1) return { action: "none", reason: "instance_present" };
+
+  // ★★★ 4b: SVC-005a — THE GENERATION ROLLOUT FENCE. This is where E9's SVC-005 acceptance
+  // clause is actually enforced, and it is here rather than at the bump because the bump
+  // performs no external effect: the dangerous moment is a generation N+1 instance STARTING
+  // beside a generation-N worker that never stopped.
+  //
+  // WHY STEP 4 IS NOT ALREADY ENOUGH. `countNonTerminalInstances` proves no instance is LIVE.
+  // It does not prove the previous generation's WORKER is gone, and E9-F007 is exactly that
+  // gap: SVC-003b's liveness deadline drives an instance `lost` BY A CLOCK when its worker has
+  // gone silent, the row leaves `service_instances_live_service_uq` — so step 4 reads zero —
+  // while "its supervised PROCESS may still be running and still performing external effects"
+  // (E9-F007 §1). Before SVC-005a that produced only a same-generation replacement, which
+  // E9-F007 §3 ruled the smaller harm and which is NOT re-litigated here. Once a rollout can
+  // move `services.generation`, the SAME hole produces a CROSS-generation overlap, and that is
+  // the one the acceptance clause names.
+  //
+  // ★ ONLY CROSS-GENERATION. The repository read filters `generation <> service.generation`,
+  // so a replacement at the SAME generation is unaffected and SVC-003b's behaviour is
+  // byte-for-byte unchanged. `R-T6` is the pin that this fence does not slow a same-generation
+  // replacement down.
+  //
+  // ★ IT COSTS ONE QUERY ON A PATH THAT IS ABOUT TO INSERT A ROW AND SUBMIT A JOB, and it runs
+  // ONLY after step 4 has already established there is nothing live — i.e. only on the passes
+  // that are about to place something. A service that has never rolled has no instance at any
+  // other generation, so the read returns empty and the fence is invisible.
+  const unwitnessed = await repos.jobControl.listUnwitnessedGenerationPredecessors({
+    organizationId: input.organizationId,
+    serviceId: input.serviceId,
+    currentGeneration: service.generation,
+    limit: 8,
+  });
+  // The pure classifier re-derives the WITNESS condition the SQL already applied — belt to
+  // that braces, so a future widening of the query cannot admit a witnessed row by accident.
+  if (findBlockingPredecessor(unwitnessed) !== null) {
+    return { action: "none", reason: "predecessor_generation_unwitnessed" };
+  }
 
   // 5: mint the instance FIRST, because the frozen workload carries `serviceInstanceId` and
   // the derived idempotency identity is a function of it. RANDOM, not derived: a

@@ -86,6 +86,15 @@ export type {
   AuthorizedSecretResolution,
 } from "./repositories/tenant/job-control.js";
 export { computeRetryBackoffMs } from "./repositories/tenant/job-control.js";
+// SVC-005a — WHO drove a service instance terminal. Exported from the barrel because the
+// generation rollout fence in `server/src/services/service-generation-rollout.ts` classifies
+// against these, and because the set-EQUALITY reconciliation against migration 0279's CHECK
+// is asserted server-side (the same pattern SVC-001 used for the status CHECK).
+export {
+  SERVICE_INSTANCE_TERMINAL_AUTHORS,
+  WITNESSED_SERVICE_INSTANCE_TERMINAL_AUTHORS,
+  type ServiceInstanceTerminalAuthor,
+} from "./repositories/tenant/job-control.js";
 // DEP-011 reaper Slice B (B1) — the read-only lease-truth classification surface.
 export { classifyLeaseTruthRow, type LeaseTruthVerdict, type LeaseTruthRow } from "./repositories/tenant/lease-truth.js";
 // JOB-004: the ONE common active-fence predicate + the CLOSED governed-mutator

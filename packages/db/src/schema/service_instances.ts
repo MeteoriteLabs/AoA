@@ -105,6 +105,34 @@ export const serviceInstances = pgTable(
     // reconciler creating a row is not the worker being seen — and would erase the very
     // distinction above.
     lastObservedAt: timestamp("last_observed_at", { withTimezone: true }),
+    // ★★★ SVC-005a — WHO drove this row terminal, and it is a FENCE INPUT rather than
+    // telemetry.
+    //
+    // E9-F009 recorded the gap: `service_instances` carried `status` and `updated_at` and
+    // nothing that said WHO moved the row, so a worker that reported itself gone and a
+    // control plane that GAVE UP on a worker it could not reach were indistinguishable in
+    // durable state. E9-F009 §2 called that the "durable half" and left it open. This column
+    // is that half, and SVC-005a needs it because the distinction is load-bearing for the
+    // generation rollout fence, not merely informative:
+    //
+    //   'worker_event'  the worker's own attributed, fenced observation moved the row. The
+    //                   worker SAID it stopped. A WITNESS.
+    //   'liveness_deadline'  SVC-003b's clock condemned it because nothing had been heard.
+    //                   The worker may still be running (E9-F007). AN ASSUMPTION.
+    //   'control_plane_backstop'  SVC-007a's cancelled-attempt projection moved it because
+    //                   the ATTEMPT was terminal and the instance was stranded. Also an
+    //                   assumption about the process, though a better-founded one.
+    //
+    // ★ WRITTEN ONLY WHEN THE STATUS BEING WRITTEN IS TERMINAL, at the single chokepoint
+    // `writeServiceInstanceStatus` — the ONE writer of `status`, which all four authors
+    // already funnel through. A non-terminal move leaves it NULL, so the column never claims
+    // an authorship for a row that has not ended.
+    //
+    // NULLABLE, and no default. NULL means "this row has not been terminalized" for a live
+    // row, and for a terminal row it means "terminalized before this column existed" — a
+    // state the fence must read as UNKNOWN and therefore as NOT-A-WITNESS, which is the
+    // fail-closed direction. A default would forge an author.
+    terminalizedBy: text("terminalized_by"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -119,6 +147,17 @@ export const serviceInstances = pgTable(
     statusValid: check(
       "service_instances_status_check",
       sql`status IN ('pending', 'leased', 'starting', 'healthy', 'unhealthy', 'stopping', 'stopped', 'failed', 'lost')`,
+    ),
+    // SVC-005a: the three authors, spelled once in the database. Hand-written here for the
+    // same reason `service_instances_status_check` is (packages/db does not depend on
+    // worker-protocol), and reconciled against the server-side constant
+    // `SERVICE_INSTANCE_TERMINAL_AUTHORS` by an assertion that asserts set EQUALITY, so an
+    // author added on one side and not the other is caught rather than silently storable.
+    // NULL is admitted by a CHECK on a nullable column and is the pre-column / not-yet-
+    // terminal state; the fence reads it as NOT-A-WITNESS.
+    terminalizedByValid: check(
+      "service_instances_terminalized_by_check",
+      sql`terminalized_by IS NULL OR terminalized_by IN ('worker_event', 'liveness_deadline', 'control_plane_backstop')`,
     ),
     // SVC-001: this table previously had NO unique constraint at all, so nothing could
     // bind a composite tenant FK to an instance. Every child table SVC-002/003 needs was
