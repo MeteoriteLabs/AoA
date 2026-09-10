@@ -64,7 +64,10 @@ placement, health, restart, checkpoint, drain, budgets, UI and a 72-hour D4 cana
 ## 3. The arming path, counted rather than asserted
 
 Measured with the register's own `countProductionCallers`, in a detached worktree at base
-`053f90fc8` versus this head. Every figure re-run after the last edit.
+`053f90fc8` versus this ticket's head. Every figure re-run after the last edit — and RE-RUN
+AGAIN at the MERGED head after this branch took in `7f95b1ae8` (SVC-007a). The merge moved
+exactly ONE of these sixteen figures, `writeServiceInstanceStatus`, and the row says so; the
+other fifteen are byte-identical at both heads.
 
 | Symbol | Base | Head | What the head count is |
 |---|---|---|---|
@@ -77,7 +80,7 @@ Measured with the register's own `countProductionCallers`, in a detached worktre
 | `SERVICE_LIVENESS_DEADLINE_TO_STATUS` | 0 | 3 | the sweep, the predecessor derivation, the assertion's message |
 | `SERVICE_LIVENESS_DEADLINE_MS_DEFAULT` | 0 | 1 | the reconciler's default policy |
 | `SERVICE_ADMISSION_DEADLINE_MS_DEFAULT` | 0 | 1 | the same |
-| **`writeServiceInstanceStatus`** | **2** | **3** | ★ the deadline is the THIRD entry point onto the ONE writer of that column, so it cannot drift into a fourth idea of a legal move |
+| **`writeServiceInstanceStatus`** | **2** | **3** — **4 at the merged head** | ★ the deadline is the THIRD entry point onto the ONE writer of that column. SVC-007a's `terminalizeServiceInstanceForCancelledAttempt`, merged in after this ticket's head was measured, is the FOURTH — which is the point of funnelling them: four entry points, still ONE writer and one idea of a legal move |
 | `predecessorsOf` | 1 | 2 | SVC-003a's decider, and now the deadline |
 | `applyServiceProjectionForFence` | 1 | 1 | UNCHANGED |
 | `createServiceReconciler` | 2 | 2 | UNCHANGED — the tick gained a pass, not a composition site |
@@ -439,7 +442,9 @@ service. It is not claimed here.
 
 - `scripts/gate-clause-wiring.json`: **added** `E9-4-service-liveness-deadline`, `wired`, symbol
   `sweepOrganizationServiceLiveness` (1 production caller, base 0). Six insert lines, no
-  reformatting; the guard reports OK with 15 wired clauses.
+  reformatting; the guard reported OK with 15 wired clauses at this ticket's head and reports
+  **16** at the merged head, SVC-007a's `E9-4-service-create-and-desired-state` being the
+  sixteenth.
 - `docs/replatform/epics/E9-service-agents/findings.md`: **E9-F007 FILED** (`open`/`unowned`, HIGH —
   the worker is not fenced); **E9-F008 FILED** (`open`/`unowned`, MED — three frozen command kinds
   with zero producers); **E9-F009 FILED** (`open`/`unowned`, MED — a `lost` row records the status

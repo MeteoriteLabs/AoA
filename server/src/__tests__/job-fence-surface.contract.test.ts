@@ -201,8 +201,9 @@ const EXPECTED_UNGUARDED = [
   "findServiceForCompany",
   "listServicesForCompany",
   "findLiveServiceInstance",
-  // ★★★ THE SIXTH IS THE ONE THAT NEEDS ITS OWN PARAGRAPH, because it is a THIRD entry point
-  // onto `writeServiceInstanceStatus` and it is UNGUARDED.
+  // ★★★ THE SIXTH IS THE ONE THAT NEEDS ITS OWN PARAGRAPH, because it is a FOURTH entry point
+  // onto `writeServiceInstanceStatus` and it is UNGUARDED. (SVC-007a wrote THIRD, which was
+  // true on its own branch; SVC-003b's sweep above is the third in the merged tree.)
   //
   // WHY A FENCE CANNOT GUARD IT. Its precondition is that the attempt this instance is
   // attributed to is ALREADY TERMINAL — that is the only state it acts in. A terminal attempt
