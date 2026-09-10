@@ -173,12 +173,21 @@ clean — see §3's warning about exactly that.)*
 - **Decision 1** (`bd334ff50`) — the clause-halves that cannot be delivered as written. Per clause:
   amend the register wording, or charter the machinery. ★ Its own arithmetic was **off by one**
   (eleven closable, not twelve). DE-01 and DE-11 were measured **deliverable**; DE-17 withdrawn.
-- **Decision 2** (`bb0572f19`) — where a denial with no FK-valid tenant goes. **OPEN.** Option (a2) +
-  partial CHECK is the paper's recommendation, **not a ratification**. What *has* shipped is Unit C,
-  which wired the two "needs a unit, not a ruling" groups (DE-06's `:122` tuple-integrity throw and
-  DE-21's `:395` plus `:376`'s tenant-mismatch arm); the paper's own addendum says that **changes
-  nothing this decision owns.** DE-03 in full, five of DE-06's six fence throws and DE-15 are still
-  behind the ruling. ★ **Read its remaining owed items before assuming it is done.**
+- **Decision 2** (`bb0572f19`) — where a denial with no FK-valid tenant goes.
+  ★★★ **RULED AND SHIPPED, BUT THE PAPER DOES NOT SAY SO — VERIFY AGAINST THE TREE, NOT THE PAPER.**
+  The founder ratified option (a2) + the partial CHECK in conversation on 2026-09-09, and it
+  **shipped**: `packages/db/src/migrations/0274_activity_log_denial_sink.sql`, merge `0c908cf6b`.
+  Measured in the tree at `a5d27555b`: `activity_log.companyId` carries **no `.notNull()`**,
+  `organizationId` exists with its FK and index, and the partial CHECK is declared in
+  `packages/db/src/schema/activity_log.ts`. **The paper's `Status:` field was simply never updated
+  to record the ruling.** Fix that field; do not re-litigate the decision.
+  ★ **THIS IS A THIRD DRIFT SHAPE AND IT IS THE INVERSE OF THE USUAL ONE.** A verifier reading the
+  paper concluded the decision was still open *because the record was stale in the direction of
+  understating delivery*. Both directions exist. **When a record and the tree disagree, measure the
+  tree** — including when the record is the more cautious of the two.
+  What is still genuinely owed under this ruling: **DE-03 in full, five of DE-06's six fence throws,
+  and DE-15** — the wiring, not the storage. And its acceptance conditions: re-read them before
+  assuming the decision is discharged.
 - **Decision 3** (`a68575f5f`) — retention and disclosure. **OPEN; all three choices in its decision
   block are unchecked.** **Fourteen deny sites are queued behind it — do NOT let a unit wire them.**
   The paper **recommends** keeping the de facto precedent (attribute to the ACTOR's tenant) for
@@ -220,9 +229,21 @@ they are reproduced exactly as filed.)*
 `denyOut` *only when `allowOut` contains domains*, so a CIDR-only body goes straight down the plain
 iptables path and never touches the proxy. **Change one thing. Do not re-fire an identical body.**
 
-**Also testable without the vendor:** `updateNetwork()` replaces egress rules on a *running* sandbox
-— create plain, then apply the policy. And `allowInternetAccess: false` is a coarse on/off that may
-be the control we can actually adopt: **a blunt control that works beats a precise one that doesn't.**
+★★★ **`updateNetwork()` IS NOT A WORKAROUND — IT IS ALREADY REFUTED.** An earlier draft of this
+handoff proposed creating a sandbox plain and then applying the policy to it. That was already
+probed in a keyed run, and the measured result is verbatim: *"updateNetwork on warm resume — **NO**
+— returned success; target still REACHED after a real pause/resume."* It fails exactly the way
+`denyOut` does: accepted, acknowledged, **inert**. Do not re-run it expecting a different answer.
+
+★ **Why that error is recorded here rather than quietly deleted:** the result lived in a durable
+record and the author did not re-read it before writing a recommendation about it. **An inherited
+gap in recall produced a confident new claim** — the same shape as a stale citation, one level up,
+inside the document whose entire subject is that. Re-read the durable record before recommending
+anything it already covers.
+
+**What is genuinely UNPROBED** — neither promising nor refuted — is `allowInternetAccess: false`,
+the coarse on/off. If the fine-grained control cannot be made to work, **a blunt control that works
+beats a precise one that doesn't** — but it has never been exercised, so it is not a known fallback.
 
 ★ **If the CIDR-only body also fails or is inert, that is NOT yet the answer** — the coarse
 `allowInternetAccess: false` switch above has **never been exercised**, and neither have the other
