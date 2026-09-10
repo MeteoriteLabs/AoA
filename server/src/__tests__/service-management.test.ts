@@ -13,7 +13,7 @@
 // sample is not proven over the table.
 // -----------------------------------------------------------------------------
 
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   SERVICE_DESIRED_STATES,
   canTransitionServiceDesiredState,
@@ -22,23 +22,14 @@ import {
 } from "@armyofagents/worker-protocol";
 import { SERVICE_INGRESS_DENY_KEYS } from "../services/service-job-config.js";
 import { decideServiceProjection } from "../services/service-health-projection.js";
-
-const runInTenant = vi.fn();
-const runInTenantReadOnly = vi.fn();
-vi.mock("../db/tenant-context.js", () => ({
-  runInTenant: (...args: unknown[]) => runInTenant(...args),
-  runInTenantReadOnly: (...args: unknown[]) => runInTenantReadOnly(...args),
-}));
-
-const {
+import {
   CONTROLLABLE_DESIRED_STATES,
   CREATABLE_DESIRED_STATES,
   SERVICE_CONTROL_PLANE_OWNED_WORKLOAD_FIELDS,
   SERVICE_DEFINITION_FIELDS,
   normalizeServiceDefinition,
-  setServiceDesiredState,
   setServiceDesiredStateWithinTenant,
-} = await import("../services/service-management.js");
+} from "../services/service-management.js";
 
 const ORG = "b1000000-0000-4000-8000-000000000001";
 const COMPANY = "b1000000-0000-4000-8000-000000000002";
@@ -145,12 +136,26 @@ describe("SVC-007 — the create definition boundary", () => {
 });
 
 // ── The desired-state control, over a repository stub ─────────────────────────────────────
+//
+// ★ NO `vi.mock` OF THE TENANT CONTEXT ANY MORE, and that is a consequence of the review fix
+// rather than a style change. The control is now ONE transaction, so `setServiceDesiredState`
+// is a two-line wrapper and every decision — verdict, cancellation, terminalization — lives in
+// `setServiceDesiredStateWithinTenant`, which takes `repos` directly. A stub repository is the
+// whole harness.
 
-function stubRepos(input: {
+interface StubOptions {
   service: { desiredState: string; generation: number } | null;
   updateReturns?: { desiredState: string; generation: number } | null;
-}) {
+  instance?: { serviceInstanceId: string; status: string; jobId: string | null } | null;
+  cancellation?: { status: string };
+  cancelThrows?: boolean;
+  terminalize?: { outcome: string };
+}
+
+function stubRepos(input: StubOptions) {
   const updates: unknown[] = [];
+  const cancellations: unknown[] = [];
+  const terminalizations: unknown[] = [];
   const repos = {
     jobControl: {
       async lockServiceForReconcile() {
@@ -162,54 +167,73 @@ function stubRepos(input: {
           ? { desiredState: (values as { desiredState: string }).desiredState, generation: input.service?.generation ?? 1 }
           : input.updateReturns;
       },
+      async findLiveServiceInstance() {
+        return input.instance ?? null;
+      },
+      async currentDatabaseTime() {
+        return new Date("2026-09-10T12:00:00.000Z");
+      },
+      async requestCancellation(values: unknown) {
+        cancellations.push(values);
+        if (input.cancelThrows) throw new Error("cancellation channel unavailable");
+        return input.cancellation ?? { status: "cancelled", command: null };
+      },
+      async terminalizeServiceInstanceForCancelledAttempt(values: unknown) {
+        terminalizations.push(values);
+        return input.terminalize ?? { outcome: "applied" };
+      },
     },
   };
-  return { repos, updates };
+  return { repos, updates, cancellations, terminalizations };
+}
+
+async function control(repos: unknown, desiredState: string, reason = "operator") {
+  return setServiceDesiredStateWithinTenant(repos as never, {
+    organizationId: ORG, companyId: COMPANY, serviceId: SERVICE,
+    desiredState: desiredState as ServiceDesiredState, reason,
+  });
 }
 
 describe("SVC-007 — the desired-state control is fenced by the FROZEN transition table", () => {
   // MUTANT: return `absent` as a thrown 500, or resolve a missing service to a default state.
-  it("P8a — an absent service is a definite `absent`, and nothing is written", async () => {
-    const { repos, updates } = stubRepos({ service: null });
-    const verdict = await setServiceDesiredStateWithinTenant(repos as never, {
-      organizationId: ORG, companyId: COMPANY, serviceId: SERVICE, desiredState: "stopped",
-    });
-    expect(verdict).toEqual({ outcome: "absent" });
-    expect(updates).toEqual([]);
+  it("P8a — an absent service is a definite `absent`, and nothing is written or cancelled", async () => {
+    const s = stubRepos({ service: null, instance: { serviceInstanceId: "i", status: "pending", jobId: "j" } });
+    const result = await control(s.repos, "stopped");
+    expect(result.verdict).toEqual({ outcome: "absent" });
+    expect(result.stop).toBeNull();
+    expect(s.updates).toEqual([]);
+    expect(s.cancellations).toEqual([]);
   });
 
   // MUTANT: delete the same-state short-circuit. The FROZEN table has NO self-edges, so
   // running->running would then answer `illegal` — a satisfiable request refused, and the
-  // retry path in `setServiceDesiredState` (which re-issues the graceful stop) unreachable.
-  it("P8b — re-issuing the current state is `unchanged` and writes nothing", async () => {
-    const { repos, updates } = stubRepos({ service: { desiredState: "stopped", generation: 4 } });
-    const verdict = await setServiceDesiredStateWithinTenant(repos as never, {
-      organizationId: ORG, companyId: COMPANY, serviceId: SERVICE, desiredState: "stopped",
-    });
-    expect(verdict).toEqual({ outcome: "unchanged", state: "stopped", generation: 4 });
-    expect(updates).toEqual([]);
+  // re-issue path that re-requests the cancellation (P10b) unreachable.
+  it("P8b — re-issuing the current state is `unchanged` and writes no desired-state row", async () => {
+    const s = stubRepos({ service: { desiredState: "stopped", generation: 4 } });
+    const result = await control(s.repos, "stopped");
+    expect(result.verdict).toEqual({ outcome: "unchanged", state: "stopped", generation: 4 });
+    expect(s.updates).toEqual([]);
   });
 
   // MUTANT: drop the compare-and-set predicate's failure branch (treat `null` as success).
   it("P8c — a compare-and-set that matched no row is a reported `conflict`, never a silent success", async () => {
-    const { repos } = stubRepos({
+    const s = stubRepos({
       service: { desiredState: "running", generation: 1 },
       updateReturns: null,
+      instance: { serviceInstanceId: "i", status: "pending", jobId: "j" },
     });
-    const verdict = await setServiceDesiredStateWithinTenant(repos as never, {
-      organizationId: ORG, companyId: COMPANY, serviceId: SERVICE, desiredState: "stopped",
-    });
-    expect(verdict).toEqual({ outcome: "conflict", from: "running", to: "stopped" });
+    const result = await control(s.repos, "stopped");
+    expect(result.verdict).toEqual({ outcome: "conflict", from: "running", to: "stopped" });
+    expect(result.stop, "a conflict must not cancel anything").toBeNull();
+    expect(s.cancellations).toEqual([]);
   });
 
   // MUTANT: pass an unrecognised stored state straight to the frozen predicate as a cast.
   it("P8d — a stored desired_state outside the frozen list has NO legal move", async () => {
-    const { repos, updates } = stubRepos({ service: { desiredState: "zombie", generation: 1 } });
-    const verdict = await setServiceDesiredStateWithinTenant(repos as never, {
-      organizationId: ORG, companyId: COMPANY, serviceId: SERVICE, desiredState: "running",
-    });
-    expect(verdict).toEqual({ outcome: "illegal", from: "zombie", to: "running" });
-    expect(updates).toEqual([]);
+    const s = stubRepos({ service: { desiredState: "zombie", generation: 1 } });
+    const result = await control(s.repos, "running");
+    expect(result.verdict).toEqual({ outcome: "illegal", from: "zombie", to: "running" });
+    expect(s.updates).toEqual([]);
   });
 
   // ★ MUTANT: replace `canTransitionServiceDesiredState` with `() => true`, or with a
@@ -220,20 +244,18 @@ describe("SVC-007 — the desired-state control is fenced by the FROZEN transiti
     const seen: string[] = [];
     for (const from of SERVICE_DESIRED_STATES) {
       for (const to of CONTROLLABLE_DESIRED_STATES) {
-        const { repos, updates } = stubRepos({ service: { desiredState: from, generation: 2 } });
-        const verdict = await setServiceDesiredStateWithinTenant(repos as never, {
-          organizationId: ORG, companyId: COMPANY, serviceId: SERVICE, desiredState: to,
-        });
-        seen.push(`${from}->${to}:${verdict.outcome}`);
+        const s = stubRepos({ service: { desiredState: from, generation: 2 } });
+        const result = await control(s.repos, to);
+        seen.push(`${from}->${to}:${result.verdict.outcome}`);
         if (from === to) {
-          expect(verdict.outcome, `${from}->${to}`).toBe("unchanged");
-          expect(updates, `${from}->${to}`).toEqual([]);
+          expect(result.verdict.outcome, `${from}->${to}`).toBe("unchanged");
+          expect(s.updates, `${from}->${to}`).toEqual([]);
           continue;
         }
         const legal = canTransitionServiceDesiredState(from as ServiceDesiredState, to);
-        expect(verdict.outcome, `${from}->${to} (frozen says ${legal})`)
+        expect(result.verdict.outcome, `${from}->${to} (frozen says ${legal})`)
           .toBe(legal ? "updated" : "illegal");
-        expect(updates.length, `${from}->${to} writes`).toBe(legal ? 1 : 0);
+        expect(s.updates.length, `${from}->${to} writes`).toBe(legal ? 1 : 0);
       }
     }
     // Anti-vacuity: the table must contain BOTH answers, or a predicate stuck on one of them
@@ -246,83 +268,39 @@ describe("SVC-007 — the desired-state control is fenced by the FROZEN transiti
   });
 });
 
-// ── The composition: desired state, THEN the graceful stop ────────────────────────────────
+// ── The stop side effects, in the SAME transaction as the verdict ─────────────────────────
 
 describe("SVC-007 — the stop control reaches the shipped cancellation channel", () => {
-  beforeEach(() => {
-    runInTenant.mockReset();
-    runInTenantReadOnly.mockReset();
-  });
-
-  function arrange(input: {
-    verdict: unknown;
-    instance?: { serviceInstanceId: string; jobId: string | null } | null;
-    stopThrows?: boolean;
-    terminalize?: unknown;
-  }) {
-    // `runInTenant` is used TWICE by the composition — once for the desired-state verdict and
-    // once for the control-plane attempt-terminal backstop — so the stub answers by call
-    // ordinal rather than returning one value for both. A single-value stub would have made
-    // the backstop's return indistinguishable from the verdict's.
-    const terminalizeCalls: unknown[] = [];
-    let tenantCalls = 0;
-    runInTenant.mockImplementation(async (_db: unknown, _org: unknown, fn: unknown) => {
-      tenantCalls += 1;
-      if (tenantCalls === 1) return input.verdict;
-      const repos = {
-        jobControl: {
-          async terminalizeServiceInstanceForCancelledAttempt(values: unknown) {
-            terminalizeCalls.push(values);
-            return input.terminalize ?? { outcome: "applied" };
-          },
-        },
-      };
-      return (fn as (r: unknown) => Promise<unknown>)(repos);
-    });
-    runInTenantReadOnly.mockImplementation(async () => input.instance ?? null);
-    const calls: unknown[] = [];
-    const requestGracefulStop = async (stop: unknown) => {
-      calls.push(stop);
-      if (input.stopThrows) throw new Error("cancellation channel unavailable");
-      return { status: "cancel_requested" };
-    };
-    return { calls, terminalizeCalls, deps: { appDb: {} as never, requestGracefulStop } };
-  }
-
-  // ★ MUTANT: delete the `requestGracefulStop` call. The desired-state column still moves,
+  // ★ MUTANT: delete the `requestCancellation` call. The desired-state column still moves,
   // every verdict assertion above stays green, and `stop` becomes a button that does nothing.
-  it("P10a — stopping a service with a live instance asks THAT instance's job to stop", async () => {
-    const { calls, deps } = arrange({
-      verdict: { outcome: "updated", from: "running", to: "stopped", generation: 1 },
-      instance: { serviceInstanceId: "inst-1", jobId: "job-1" },
+  it("P10a — stopping a service with a live instance asks THAT instance's job to stop, gracefully", async () => {
+    const s = stubRepos({
+      service: { desiredState: "running", generation: 1 },
+      instance: { serviceInstanceId: "inst-1", status: "pending", jobId: "job-1" },
     });
-    const result = await setServiceDesiredState(deps, {
-      organizationId: ORG, companyId: COMPANY, serviceId: SERVICE,
-      desiredState: "stopped", reason: "budget",
+    const result = await control(s.repos, "stopped", "budget");
+    expect(s.cancellations).toHaveLength(1);
+    expect(s.cancellations[0]).toMatchObject({
+      organizationId: ORG, companyId: COMPANY, jobId: "job-1", reason: "budget", graceful: true,
     });
-    expect(calls).toEqual([{ organizationId: ORG, companyId: COMPANY, jobId: "job-1", reason: "budget" }]);
     expect(result.stop).toEqual({
       status: "requested", serviceInstanceId: "inst-1", jobId: "job-1",
-      cancellation: "cancel_requested", instance: "applied",
+      cancellation: "cancelled", instance: "applied",
     });
   });
 
   // ★★★ MUTANT: delete the `terminalizeServiceInstanceForCancelledAttempt` call. Every
   // assertion about the desired-state column and the cancellation stays green, and the
   // instance is stranded non-terminal inside `service_instances_live_service_uq` forever —
-  // so a later resume converges NOTHING on every tick. That wedge is invisible from any test
-  // that stops at "the stop request was made".
+  // so a later resume converges NOTHING on every tick (E9-F006).
   it("★ P10a2 — the stop ALSO drives the control-plane attempt-terminal backstop, with the frozen mapping", async () => {
-    const { terminalizeCalls, deps } = arrange({
-      verdict: { outcome: "updated", from: "running", to: "stopped", generation: 1 },
-      instance: { serviceInstanceId: "inst-1", jobId: "job-1" },
+    const s = stubRepos({
+      service: { desiredState: "running", generation: 1 },
+      instance: { serviceInstanceId: "inst-1", status: "pending", jobId: "job-1" },
     });
-    await setServiceDesiredState(deps, {
-      organizationId: ORG, companyId: COMPANY, serviceId: SERVICE,
-      desiredState: "stopped", reason: "budget",
-    });
-    expect(terminalizeCalls).toHaveLength(1);
-    const call = terminalizeCalls[0] as { toStatus: string; allowedFromStatuses: string[]; jobId: string };
+    await control(s.repos, "stopped");
+    expect(s.terminalizations).toHaveLength(1);
+    const call = s.terminalizations[0] as { toStatus: string; allowedFromStatuses: string[]; jobId: string };
     expect(call.jobId).toBe("job-1");
     // The mapping is READ from the worker path's own decider, so it must equal what that
     // decider answers for the same attempt status — not a value restated here.
@@ -333,88 +311,71 @@ describe("SVC-007 — the stop control reaches the shipped cancellation channel"
     expect(call.allowedFromStatuses.length).toBeGreaterThan(0);
   });
 
-  // ★ MUTANT: short-circuit the cancellation on `unchanged`. This is the RETRY property: the
-  // two writes are in separate transactions, so a stop whose cancellation half failed leaves
-  // desired_state already `stopped`. Without this arm the operator can never reach the
-  // cancellation again and the button reports success while doing nothing, permanently.
+  // ★ MUTANT: short-circuit the cancellation on `unchanged`. "Already stopped" does not imply
+  // "nothing is running": a reconcile pass that began before an earlier stop can commit an
+  // instance after that stop moved the column. Without this arm the operator has no way to
+  // reach such an instance again and the button reports success while doing nothing.
   it("★ P10b — re-issuing a stop that changed nothing STILL re-requests the cancellation", async () => {
-    const { calls, deps } = arrange({
-      verdict: { outcome: "unchanged", state: "stopped", generation: 1 },
-      instance: { serviceInstanceId: "inst-1", jobId: "job-1" },
+    const s = stubRepos({
+      service: { desiredState: "stopped", generation: 1 },
+      instance: { serviceInstanceId: "inst-1", status: "pending", jobId: "job-1" },
     });
-    const result = await setServiceDesiredState(deps, {
-      organizationId: ORG, companyId: COMPANY, serviceId: SERVICE,
-      desiredState: "stopped", reason: "retry",
-    });
-    expect(calls).toHaveLength(1);
+    const result = await control(s.repos, "stopped", "retry");
+    expect(s.updates, "no desired-state write").toEqual([]);
+    expect(s.cancellations, "but the cancellation IS re-issued").toHaveLength(1);
     expect(result.stop?.status).toBe("requested");
   });
 
   // MUTANT: run the cancellation for every target state.
-  it("P10c — resuming never cancels anything, and an illegal or absent verdict never does either", async () => {
-    for (const verdict of [
-      { outcome: "updated", from: "stopped", to: "running", generation: 1 },
-      { outcome: "unchanged", state: "running", generation: 1 },
-    ]) {
-      const { calls, deps } = arrange({ verdict, instance: { serviceInstanceId: "i", jobId: "j" } });
-      const result = await setServiceDesiredState(deps, {
-        organizationId: ORG, companyId: COMPANY, serviceId: SERVICE,
-        desiredState: "running", reason: "resume",
+  it("P10c — resuming never cancels anything, and a refused verdict never does either", async () => {
+    for (const from of ["stopped", "running"]) {
+      const s = stubRepos({
+        service: { desiredState: from, generation: 1 },
+        instance: { serviceInstanceId: "i", status: "pending", jobId: "j" },
       });
-      expect(calls).toEqual([]);
-      expect(result.stop).toBeNull();
+      const result = await control(s.repos, "running", "resume");
+      expect(s.cancellations, from).toEqual([]);
+      expect(result.stop, from).toBeNull();
     }
-    for (const verdict of [
-      { outcome: "illegal", from: "deleted", to: "stopped" },
-      { outcome: "absent" },
-      { outcome: "conflict", from: "running", to: "stopped" },
-    ]) {
-      const { calls, deps } = arrange({ verdict, instance: { serviceInstanceId: "i", jobId: "j" } });
-      const result = await setServiceDesiredState(deps, {
-        organizationId: ORG, companyId: COMPANY, serviceId: SERVICE,
-        desiredState: "stopped", reason: "x",
-      });
-      expect(calls).toEqual([]);
-      expect(result.stop).toBeNull();
-    }
+    // …and `deleted` has no outgoing edge, so a stop from there is refused before any effect.
+    const refused = stubRepos({
+      service: { desiredState: "deleted", generation: 1 },
+      instance: { serviceInstanceId: "i", status: "pending", jobId: "j" },
+    });
+    const result = await control(refused.repos, "stopped");
+    expect(result.verdict).toMatchObject({ outcome: "illegal" });
+    expect(refused.cancellations).toEqual([]);
+    expect(refused.terminalizations).toEqual([]);
   });
 
-  // MUTANT: let the cancellation error propagate. The desired-state write is already
-  // committed, so a 5xx would tell the operator the whole request failed while half of it
-  // succeeded — and they would have no way to know which half.
-  it("P10d — a failing cancellation is REPORTED, not thrown, and not disguised as success", async () => {
-    const { deps } = arrange({
-      verdict: { outcome: "updated", from: "running", to: "stopped", generation: 1 },
-      instance: { serviceInstanceId: "inst-1", jobId: "job-1" },
-      stopThrows: true,
+  // ★★★ MUTANT: catch the cancellation error and return a partial success. Under ONE
+  // transaction a throw here rolls the desired-state write back with it, which is the whole
+  // point of the review fix (PR #412, P1): the operator gets one definite answer instead of
+  // "the column moved but the thing is still running". Swallowing it would re-create exactly
+  // the split outcome the single transaction removed.
+  it("★ P10d — a failing cancellation PROPAGATES, so the desired-state write rolls back with it", async () => {
+    const s = stubRepos({
+      service: { desiredState: "running", generation: 1 },
+      instance: { serviceInstanceId: "inst-1", status: "pending", jobId: "job-1" },
+      cancelThrows: true,
     });
-    const result = await setServiceDesiredState(deps, {
-      organizationId: ORG, companyId: COMPANY, serviceId: SERVICE,
-      desiredState: "stopped", reason: "x",
-    });
-    expect(result.verdict).toMatchObject({ outcome: "updated" });
-    expect(result.stop).toEqual({ status: "failed", serviceInstanceId: "inst-1", jobId: "job-1" });
+    await expect(control(s.repos, "stopped")).rejects.toThrow("cancellation channel unavailable");
+    expect(s.terminalizations, "nothing runs after the failure").toEqual([]);
   });
 
   // MUTANT: treat a missing `job_id` as "already stopped". An instance whose attribution
   // write has not committed yet has no job to cancel, and saying so is the honest answer.
   it("P10e — no live instance, and an instance with no job, are distinct reported answers", async () => {
-    const none = arrange({
-      verdict: { outcome: "updated", from: "running", to: "stopped", generation: 1 },
-      instance: null,
-    });
-    expect((await setServiceDesiredState(none.deps, {
-      organizationId: ORG, companyId: COMPANY, serviceId: SERVICE, desiredState: "stopped", reason: "x",
-    })).stop).toEqual({ status: "no_instance" });
-    expect(none.calls).toEqual([]);
+    const none = stubRepos({ service: { desiredState: "running", generation: 1 }, instance: null });
+    expect((await control(none.repos, "stopped")).stop).toEqual({ status: "no_instance" });
+    expect(none.cancellations).toEqual([]);
 
-    const unattributed = arrange({
-      verdict: { outcome: "updated", from: "running", to: "stopped", generation: 1 },
-      instance: { serviceInstanceId: "inst-9", jobId: null },
+    const unattributed = stubRepos({
+      service: { desiredState: "running", generation: 1 },
+      instance: { serviceInstanceId: "inst-9", status: "pending", jobId: null },
     });
-    expect((await setServiceDesiredState(unattributed.deps, {
-      organizationId: ORG, companyId: COMPANY, serviceId: SERVICE, desiredState: "stopped", reason: "x",
-    })).stop).toEqual({ status: "no_job", serviceInstanceId: "inst-9" });
-    expect(unattributed.calls).toEqual([]);
+    expect((await control(unattributed.repos, "stopped")).stop)
+      .toEqual({ status: "no_job", serviceInstanceId: "inst-9" });
+    expect(unattributed.cancellations).toEqual([]);
   });
 });

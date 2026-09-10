@@ -24,8 +24,9 @@ boundary that refuses ingress keys (from SVC-001's own shipped deny-set), contro
 identity fields, unknown fields and anything the frozen `serviceWorkloadV1Schema` rejects.
 `setServiceDesiredState` moves `desired_state` through the FROZEN
 `SERVICE_DESIRED_TRANSITIONS` table under SVC-002's own per-service row lock, and a stop also
-reaches the SHIPPED `requestCancellation({graceful:true})` channel — the same one JOB-008's
-`drain` route uses — then terminalizes the instance that cancellation orphaned. Four routes on
+reaches JOB-006's shipped `requestCancellation` (graceful) and then terminalizes the instance that
+cancellation orphaned — **all three writes in ONE transaction, under that same lock**, which is
+the fix for the P1 external review raised (§4a(i)). Four routes on
 `jobControlRoutes` compose it, behind the same `execution_target:manage` gate every other
 operator mutation on that router uses. Zero wire change; zero new relations; zero migrations.
 
@@ -92,13 +93,15 @@ register's own `countProductionCallers`, base `053f90fc8` vs head:
 | `updateServiceDesiredState` | — | **3** | same shape |
 | `terminalizeServiceInstanceForCancelledAttempt` | — | **3** | same shape |
 | `findServiceForCompany` / `listServicesForCompany` | — | **3** each | same shape |
-| `findLiveServiceInstance` | — | **4** | declaration + implementation + two call sites (`setServiceDesiredState`, `readService`) |
+| `findLiveServiceInstance` | — | **4** | declaration + implementation + two call sites (`setServiceDesiredStateWithinTenant`, `readService`) |
 | **`canTransitionServiceDesiredState`** | **0** | **1** | ★ the one that matters — see below |
 | `lockServiceForReconcile` | **3** | **4** | the control REUSES SVC-002's per-service advisory lock rather than minting a second key |
 | `decideServiceProjection` | **1** | **2** | the control-plane backstop reads its mapping from the worker path's own decider |
 | `findServiceGenerationDefinition` | **3** | **4** | the fourth is `readService` — the operator view resolves the CURRENT generation's definition through SVC-002's own reader rather than a second query. (`T4` reads it back too, but the counter excludes tests, so it is not the delta.) |
 | `createStartupReconciler` (the cautionary neighbour) | **0** | **0** | untouched; still zero |
 | `createServiceReconciler` | **2** | **2** | untouched |
+| `requestCancellation` | **17** | **18** | the stop reaches JOB-006's shipped repository mutator directly, INSIDE the control's transaction — not through `jobOperations.drainJob`, which opens its own (§4a(i)) |
+| `currentDatabaseTime` | **20** | **21** | the cancellation is anchored to a FRESH database clock, never JavaScript time, exactly as every other caller does it |
 
 `repos.services.insert` is a property access the counter cannot see. Measured by grep over
 non-test sources: **0** production call sites at base, **1** at head
@@ -148,29 +151,33 @@ applied by a harness that
 **NAMED POSITIVE CONTROL: `★ T9 POSITIVE CONTROL — a service with no generation still stalls at
 no_generation`.** A hand-inserted `services` row with no generation converges NOTHING and
 reports `{action:"none", reason:"no_generation"}` — the exact state the whole tree was in at
-base. **Green before, green after, and green under all seventeen mutants.** Without it, every
+base. **Green before, green after, and green under all nineteen mutants.** Without it, every
 convergence assertion in this suite could be made green a second way: by weakening the
 reconciler until it starts a service with no readable definition. If T9 ever reds, a green T2 was
 measuring a broken reconciler rather than a working writer.
 
-**SEVENTEEN mutants over 30 cases** (18 pure + 12 integration). Counts are the FINAL figures,
-re-measured on the shipped source after the last edit — not the numbers from the first pass,
-which were taken over 29 cases before `T12` was added.
+**NINETEEN mutants over 31 cases** (18 pure + 13 integration). ★ Counts are the FINAL figures,
+re-measured on the shipped source AFTER the review fixes of §4a — not the first campaign's, which
+ran seventeen mutants over 30 cases against a control that was still two transactions. The two
+extra mutants (9b, 12b) exist because the single-transaction rewrite created two new ways to be
+wrong.
 
 | # | Mutant | Result |
 |---|---|---|
-| 1 | Delete the generation writer entirely — **the BASE-TREE state** (`service_generations` had zero writers) | **9 red**, positive control green |
-| 2 | Store the definition under different key names (`cmd`/`argv`/`stopSeconds`) | **6 red** |
+| 1 | Delete the generation writer entirely — **the BASE-TREE state** (`service_generations` had zero writers) | **10 red**, positive control green |
+| 2 | Store the definition under different key names (`cmd`/`argv`/`stopSeconds`) | **7 red** |
 | 3 | Ignore the requested `desiredState` and always create `running` | **1 red** — T3 |
 | 4 | Write a `ttl_seconds` nothing enforces | **1 red** — T4 |
 | 5 | Delete the ingress deny-set loop | **1 red** — P2 |
 | 6 | Delete the control-plane-owned field loop | **1 red** — P3, on the REASON (the fields still fall through to `unknown_field`, so collapsing the two reasons would let the loop be deleted with nothing red) |
-| 7 | Replace the FROZEN desired-state predicate with `true` | **3 red** |
-| 8 | Delete the same-state short-circuit | **3 red** — the frozen table has no self-edges, so a satisfiable request answers `illegal` |
-| 9 | Delete the graceful-stop call | **4 red** — the Stop button that moves a column and nothing else |
+| 7 | Replace the FROZEN desired-state predicate with `true` | **4 red** |
+| 8 | Delete the same-state short-circuit | **4 red** — the frozen table has no self-edges, so a satisfiable request answers `illegal` |
+| 9 | Delete the graceful-stop call | **5 red** — the Stop button that moves a column and nothing else |
+| **9b** | Cancel NON-gracefully (`graceful: false`) | **1 red** — P10a. The definition's `gracefulStopSeconds` would become a number nothing honours |
 | 10 | Delete the control-plane attempt-terminal backstop (**E9-F006**) | **2 red** — including T6's resume leg |
-| 11 | Run the backstop with an EMPTY predecessor set | **2 red** — the fail-closed shape is load-bearing |
-| 12 | Short-circuit the cancellation on `unchanged` | **1 red** — ★ P10b, the retry property |
+| 11 | Run the backstop with an EMPTY predecessor set | **3 red** — the fail-closed shape is load-bearing |
+| 12 | Short-circuit the stop on `unchanged` | **1 red** — ★ P10b |
+| **12b** | Cancel on a RESUME too | **2 red** — P10c and T6. A resume would kill the instance it is about to want |
 | 13 | Drop the `companyId` predicate from `findServiceForCompany` | **1 red** — T8 |
 | 14 | Delete the "attempt must already be terminal and not succeeded" gate | **1 red** — T10 |
 | 15 | Widen the generation-conflict catch to a bare `catch { return null }` | **1 red** — T12(a) |
@@ -190,13 +197,76 @@ generation already exists", the CAS so a caller that forgets the lock cannot ove
 did not read.
 
 ★ **MUTANT 1 IS THE ONE TO READ.** It reproduces the base tree exactly — no generation writer —
-and nine of the twelve integration cases go red, including the sweeper case and the
-create→reconcile→stop→resume chain. That is the size of the seam this unit closes.
+and TEN of the thirteen integration cases go red, including the sweeper case, the
+create→reconcile→stop→resume chain and the single-transaction rollback probe. That is the size of the seam this unit closes.
 
 **Suites:** `server/src/__tests__/service-management.test.ts` (18 pure cases, including a walk of
 the WHOLE 4×3 desired-state table against the frozen predicate with an anti-vacuity check that
-both answers occur) and `server/src/__tests__/service-management.integration.test.ts` (12 cases,
+both answers occur) and `server/src/__tests__/service-management.integration.test.ts` (13 cases,
 real embedded PostgreSQL, run with `AOA_RUN_WIN_INTEGRATION=1`).
+
+---
+
+## 4a. ★★★ EXTERNAL REVIEW RAISED THREE THINGS. TWO WERE REAL DEFECTS AND ARE FIXED
+
+Recorded rather than folded in silently, because the shape of each miss is the lesson. Every one
+was verified against source before it was believed.
+
+**(i) P1 — THE STOP COULD OVERTAKE A RESUME. REAL, AND FIXED.** The first revision committed the
+desired-state write, **released the service lock**, and only then looked up the live instance and
+cancelled its job in a second transaction. The ordering was deliberate — state first, so a
+reconciler tick between the two could not mint a replacement of the thing being stopped — and the
+review's point was that ordering is not enough: a concurrent `stopped → running` landing in the
+same gap means the older stop still drains a job the operator has **already resumed**, taking the
+service down until the reconciler's next tick replaces it.
+
+★ **The fix is the whole control in ONE transaction under the service's own row lock**, reaching
+`repos.jobControl.requestCancellation` (graceful) directly instead of `jobOperations.drainJob`,
+which opens its own. A resume cannot commit between the read of `desired_state` and the
+cancellation, because it cannot acquire the row. It also removes a split outcome the first
+revision had to report: a cancellation failure now rolls the desired-state write back with it, so
+the operator gets ONE definite answer instead of *"the column moved but the thing is still
+running, please retry"* — and the `status:"failed"` variant is gone from the result type.
+
+★ **THE LOCK ORDER IS STATED RATHER THAN ASSUMED**, because `requestCancellation`'s own header
+warns that getting it wrong deadlocks (40P01). This transaction takes the per-service advisory
+lock and the `services` row FIRST, then `requestCancellation`'s untouched `lease → attempt → job`
+hierarchy, then `service_instances`. Nothing in the tree takes a job-side lock and THEN the
+service advisory lock: SVC-002's reconciler takes the service locks first exactly as this does,
+and the JOB-005 ingest takes `lease → attempt → service_instances` with no service lock at all —
+and both it and this reach `service_instances` only while already holding the attempt, so the two
+agree on direction. **T13 is the rollback probe that pins the single transaction**; mutant 12b
+pins that a resume still cancels nothing.
+
+**(ii) P2 — AUTHORIZATION DID NOT ACTUALLY RUN FIRST. REAL, AND FIXED.** `validate(schema)` is
+express middleware, so it ran BEFORE the handler and therefore before `assertOrgAdmin` — meaning
+an unauthorized caller with a malformed body got a 400 about their body while the same caller
+with a well-shaped body got the 403. The routes' own comment claimed "authority first". The
+schema is now parsed INSIDE the handler after `assertOrgAdmin`; a thrown `ZodError` reaches the
+same error handler `validate` relied on, so **only the order moves and the 400 body is
+unchanged**. The sibling JOB-008 mutations (`drain`, `revoke`) still use the middleware and have
+the same ordering; changing them is not this ticket's, and is noted rather than done silently.
+
+**(iii) P1 — "persist audits for service mutations". HALF REAL. The half that was real is fixed;
+the other half is declined WITH ITS REASON.**
+
+* **REAL AND FIXED:** the desired-state route REQUIRED a `reason` (min 1 char) and then
+  **discarded it on every transition to `running`**. A stop carries it into
+  `job_control_commands.body` through `requestCancellation`, but a resume reached no sink at all —
+  a field the caller was forced to supply went nowhere. It is now on the structured audit line.
+* **DECLINED, and this is a mechanical reason rather than a scope preference:** the shipped
+  distributed-execution audit path is `jobAuditBridge.recordAcceptedActivity`, and its input
+  contract **requires** `fence: ActiveFenceRequest` — *"the LIVE distributed attempt to bind the
+  audit to (composite FK + fence)"* — because JOB-013 makes the `activity_audit` receipt the sole
+  replay guard for an `insertActivityLog` that has no native dedup. **A service CREATE has no
+  attempt, and a desired-state change has no fence** (the job is typically queued and unleased).
+  So that bridge is structurally unusable here, and writing `activity_log` directly would create a
+  SECOND, unguarded audit path that JOB-013's exactly-once machinery does not cover and that DE-01
+  would then have to reconcile. `jobAuditBridge` still has **zero production callers** — the gap is
+  already on the register under DE-01, it is shared with the sibling JOB-008 mutations, and it is
+  named in §7 rather than quietly closed here. AGENTS.md's *"Activity logging for all mutating
+  actions"* invariant is therefore **not met by these routes, and that is stated rather than
+  claimed**.
 
 ---
 
@@ -281,10 +351,15 @@ addressed to SVC-005, no** — and the two were never the same half.
 * **`deleted` is not a controllable state.** Terminal in the frozen table, and the
   `service_generations` RESTRICT FK makes a service with any generation undeletable, so it is an
   irreversible tombstone. SVC-005.
-* **The stop's two writes are ordered, and the order is load-bearing.** Desired state first,
-  cancellation second: reversed, a reconciler tick between them would replace the instance the
-  operator just stopped. The cancellation half therefore also runs on the `unchanged` verdict, so
-  a stop whose cancellation failed is retryable — mutant 12 is that property.
+* **The whole stop is ONE transaction under the service's row lock** — the desired-state write,
+  the graceful cancellation and the instance terminalization. The first revision ordered two
+  transactions (state first, so a reconciler tick between them could not mint a replacement) and
+  §4a(i) records why ordering was not enough. T13 is the rollback probe.
+* **The stop still runs on the `unchanged` verdict**, and that survives the single-transaction
+  fix for a different reason than the first revision gave: *"already stopped" does not imply
+  "nothing is running"* — a reconcile pass that began before an earlier stop can commit an
+  instance after that stop moved the column, and without this arm the operator could never reach
+  it. Mutant 12 is that property.
 * **The desired-state control reuses `lockServiceForReconcile`, and NOT for the reason it looks
   like.** ★ An earlier draft of this result and of the module docstring said SVC-002's design
   "named this control as a writer it interlocks with". **That was a misreading of SVC-002's own
@@ -320,10 +395,14 @@ addressed to SVC-005, no** — and the two were never the same half.
 * **Nothing bounds how many services an organization may create.** Spend is bounded downstream by
   the org concurrency cap and budget hard-stop that the reconciler's submission passes through,
   not here.
-* **No `activity_log` row is written for a control action** — not by this one and not by the JOB-008
-  mutations beside it. `jobAuditBridge` still has zero production callers; already on the register
-  under DE-01. The audit is structured logger lines with `action: "service.create"` /
-  `"service.desired_state"`.
+* **No `activity_log` row is written for a control action** — not by this one and not by the
+  JOB-008 mutations beside it. `jobAuditBridge` still has zero production callers; already on the
+  register under DE-01. **And it is not merely unwritten, it is currently unwritable from here**:
+  `recordAcceptedActivity` requires `fence: ActiveFenceRequest`, and a service create has no
+  attempt while a desired-state change has no fence (§4a(iii)). The audit is structured logger
+  lines with `action: "service.create"` / `"service.desired_state"`, and the operator's `reason`
+  is on the latter. **AGENTS.md's "Activity logging for all mutating actions" invariant is NOT met
+  by these routes** — stated, not claimed.
 * **No `E10-REALTIME-FOUNDATION` claim is made.** SVC-007's Depends-on names it and its Acceptance
   says control actions are *"reflected through durable event catch-up"*. This unit's view is a
   plain read with no realtime channel, so that half of the Acceptance is **not delivered** and the
@@ -337,10 +416,10 @@ addressed to SVC-005, no** — and the two were never the same half.
 | File | Change |
 |---|---|
 | `server/src/services/service-management.ts` | new — the definition boundary, the create, the desired-state control and the operator read |
-| `server/src/routes/job-control.ts` | four routes on the existing distributed-execution router, behind its existing `assertOrgAdmin` gate |
+| `server/src/routes/job-control.ts` | four routes on the existing distributed-execution router, behind its existing `assertOrgAdmin` gate — with NO `validate(...)` middleware, so the gate runs before body validation (§4a(ii)) |
 | `packages/db/src/repositories/tenant/job-control.ts` | `insertServiceGeneration`, `updateServiceDesiredState`, `findServiceForCompany`, `listServicesForCompany`, `findLiveServiceInstance`, `terminalizeServiceInstanceForCancelledAttempt`, plus `SERVICE_GENERATION_INDEX` and its narrow conflict detector |
 | `server/src/__tests__/service-management.test.ts` | new — 18 pure cases |
-| `server/src/__tests__/service-management.integration.test.ts` | new — 12 integration cases |
+| `server/src/__tests__/service-management.integration.test.ts` | new — 13 integration cases |
 | `server/src/__tests__/job-fence-surface.contract.test.ts` | the six new repository methods CLASSIFIED on the closed method surface — that contract fails closed on any unclassified addition, and it went red on this diff before they were added. One of the six, `terminalizeServiceInstanceForCancelledAttempt`, gets its own paragraph there, because it is a THIRD unguarded entry point onto `writeServiceInstanceStatus` and the four things that stand in for the fence had to be written down. A stale sentence already on that list — *"`recordServiceHealth` stays the sole (and guarded) writer of instance status"*, made false by SVC-003a and invisible to the test because both writers are inner functions — is CORRECTED in the same edit rather than deleted. |
 | `docs/replatform/epics/E9-service-agents/findings.md` | E9-F006 filed and resolved |
 | `docs/replatform/epics/E9-service-agents/README.md` | SVC-007a's paragraph |

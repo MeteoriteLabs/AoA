@@ -516,6 +516,16 @@ control-plane terminalizer meets it again.
 budget stop will terminalize the same way), JOB-006 (the cancellation branch).
 **Blocks gate:** no — but it would have wedged the stop/resume loop of the ticket that found it.
 
+> ★★★ **ID COLLISION WITH A CONCURRENT BRANCH — READ BEFORE MERGING EITHER.** PR **#413**
+> (`svc-003b-liveness`, SVC-003b's liveness deadline) files its own **`E9-F006`** *and* an
+> `E9-F007`, against the same base. This finding is a DIFFERENT defect with the same id. The two
+> branches are independent and neither can see the other's register, so `check-register-id-
+> uniqueness` is green on each alone and will go **RED on whichever merges second** — which is the
+> guard doing exactly its job, and is a detectable blocking failure rather than a silent one.
+> **Resolution by first-filed order: PR #412 (this one, opened 06:11Z) keeps `E9-F006`; PR #413
+> (opened 06:29Z) renumbers.** Recorded here rather than resolved unilaterally, because a record
+> that renumbers itself mid-flight leaves its own commit messages disagreeing with the tree.
+
 ### 1. The path, verified at `053f90fc8` plus this diff
 
 `repos.jobControl.requestCancellation` has a branch — `if (!lease || !attempt || !lease.workerId ||

@@ -358,15 +358,25 @@ export function jobControlRoutes(opts: { db: Db; appDb: Db; operatorDb: Db }) {
     return false;
   }
 
+  // ★ NO `validate(...)` MIDDLEWARE ON THESE TWO ROUTES, and the omission is the point.
+  // `validate` runs BEFORE the handler, so it would answer an unauthorized caller with a 400
+  // describing their body while a well-shaped request from the same caller got the 403 — which
+  // contradicts the "authority first" sentence above it. Raised by external review of PR #412
+  // (P2). The schema is parsed INSIDE the handler, AFTER `assertOrgAdmin`; a thrown `ZodError`
+  // reaches the same error handler `validate` relied on, so the 400 body is unchanged and only
+  // the ORDER moves. The sibling JOB-008 mutations still use the middleware; changing them is
+  // not this ticket's, and is noted rather than done silently.
   router.post(
     "/organizations/:organizationId/companies/:companyId/services",
-    validate(createServiceBodySchema),
     async (req, res, next) => {
       try {
         const organizationId = uuid.parse(req.params.organizationId);
         const companyId = uuid.parse(req.params.companyId);
         await assertOrgAdmin(req, organizationId);
-        const body = req.body as { definition: unknown; desiredState?: string };
+        const body = createServiceBodySchema.parse(req.body) as {
+          definition: unknown;
+          desiredState?: string;
+        };
         const definition = normalizeServiceDefinition(body.definition);
         if (!definition.ok) {
           res.status(400).json({ error: "Service definition rejected", reason: definition.reason });
@@ -411,26 +421,24 @@ export function jobControlRoutes(opts: { db: Db; appDb: Db; operatorDb: Db }) {
 
   router.post(
     "/organizations/:organizationId/companies/:companyId/services/:serviceId/desired-state",
-    validate(serviceDesiredStateBodySchema),
     async (req, res, next) => {
       try {
         const organizationId = uuid.parse(req.params.organizationId);
         const companyId = uuid.parse(req.params.companyId);
         const serviceId = uuid.parse(req.params.serviceId);
         await assertOrgAdmin(req, organizationId);
-        const { desiredState, reason } = req.body as {
+        const { desiredState, reason } = serviceDesiredStateBodySchema.parse(req.body) as {
           desiredState: "running" | "paused" | "stopped";
           reason: string;
         };
+        // The whole control — the desired-state write, the graceful cancellation of the live
+        // instance's job, and the instance terminalization — runs in ONE tenant transaction
+        // under the service's row lock. It reaches `requestCancellation` (graceful) directly
+        // rather than through `operations.drainJob`, which opens its own transaction: holding
+        // the lock across the cancellation is what stops a concurrent resume from being
+        // overtaken by an in-flight stop (external review of PR #412, P1).
         const result = await setServiceDesiredState(
-          {
-            appDb: opts.appDb,
-            // The SHIPPED graceful-cancellation channel, reused rather than rebuilt: this is
-            // the exact call the `drain` route above makes. A service "stop" that did not
-            // reach it would move a column and nothing else.
-            requestGracefulStop: (stop) =>
-              operations.drainJob(stop.organizationId, stop.companyId, stop.jobId, stop.reason),
-          },
+          { appDb: opts.appDb },
           { organizationId, companyId, serviceId, desiredState, reason },
         );
         if (result.verdict.outcome === "absent") {
@@ -456,24 +464,17 @@ export function jobControlRoutes(opts: { db: Db; appDb: Db; operatorDb: Db }) {
             outcome: result.verdict.outcome,
             stopStatus: result.stop?.status ?? null,
             stopInstance: result.stop?.status === "requested" ? result.stop.instance : null,
+            // ★ THE OPERATOR'S REASON, RECORDED. Raised by external review of PR #412 (P1): the
+            // route REQUIRED a reason and then discarded it on every transition to `running`.
+            // A stop carries it into `job_control_commands.body` through `requestCancellation`,
+            // but a resume reached no durable sink at all — so a field the caller was forced to
+            // supply went nowhere. It is bounded to 1000 characters by the body schema.
+            reason,
             operatorUserId: operatorUserId(req),
             reasonCode: "service_desired_state_set",
           },
           "service desired state set",
         );
-        if (result.stop?.status === "failed") {
-          logger.warn(
-            {
-              action: "service.desired_state",
-              organizationId,
-              companyId,
-              serviceId,
-              jobId: result.stop.jobId,
-              reasonCode: "service_graceful_stop_failed",
-            },
-            "service desired state moved but the graceful stop request failed; re-issue to retry",
-          );
-        }
         res.status(200).json({ ...result.verdict, stop: result.stop });
       } catch (error) {
         next(error);

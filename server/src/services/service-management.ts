@@ -33,13 +33,15 @@
 // composes the SHIPPED cancellation channel (`requestCancellation`, graceful) against the
 // live instance's job, exactly as this router's JOB-008 `drain` route already does.
 //
-// ★ THE ORDER OF THOSE TWO WRITES IS LOAD-BEARING. Desired state moves FIRST, cancellation
-// second. Reversed, a reconciler tick landing between them would observe the instance going
-// terminal while `desired_state` still read `running` and would immediately mint a
-// REPLACEMENT of the thing the operator just stopped. In the shipped order the worst outcome
-// of a crash between the two writes is a service that is marked stopped and still running —
-// visible, and fixed by re-issuing the same request, which is why the cancellation half also
-// runs on the `unchanged` verdict (§ `setServiceDesiredStateWithinTenant`).
+// ★★★ AND ALL OF IT IS ONE TRANSACTION UNDER THE SERVICE'S OWN ROW LOCK. The first revision of
+// this file committed the desired-state write, released the lock, and then cancelled in a
+// second transaction — with the writes ordered state-first, because a reconciler tick landing
+// between them the other way round would have replaced the instance the operator just stopped.
+// EXTERNAL REVIEW OF PR #412 FOUND THAT ORDERING WAS NOT ENOUGH (P1): a concurrent
+// `stopped → running` landing in the same gap means the older stop still drains a job the
+// operator has already resumed. Under one lock that interleaving is unrepresentable. See
+// `setServiceDesiredState`'s docstring for the lock order, which is stated rather than assumed
+// because `requestCancellation`'s own header warns that getting it wrong deadlocks.
 //
 // ── WHAT THIS FILE DELIBERATELY DOES NOT DO ──────────────────────────────────────────────
 //
@@ -60,6 +62,7 @@
 //     service is visible in the list read and stoppable by the control shipped here. Recorded
 //     in SVC-007a-result.md §7 rather than hidden.
 
+import { randomUUID } from "node:crypto";
 import type { Db, TenantRepositories } from "@armyofagents/db";
 import {
   SERVICE_DESIRED_STATES,
@@ -372,6 +375,10 @@ export interface SetServiceDesiredStateInput {
   desiredState: ServiceDesiredState;
 }
 
+export interface ServiceControlDependencies {
+  appDb: Db;
+}
+
 /**
  * Move one service's desired state, inside ONE already-open tenant transaction.
  *
@@ -393,55 +400,102 @@ export interface SetServiceDesiredStateInput {
  */
 export async function setServiceDesiredStateWithinTenant(
   repos: TenantRepositories,
-  input: SetServiceDesiredStateInput,
-): Promise<SetServiceDesiredStateVerdict> {
+  input: SetServiceDesiredStateInput & { reason: string },
+): Promise<SetServiceDesiredStateResult> {
   const service = await repos.jobControl.lockServiceForReconcile({
     organizationId: input.organizationId,
     companyId: input.companyId,
     serviceId: input.serviceId,
   });
-  if (!service) return { outcome: "absent" };
+  if (!service) return { verdict: { outcome: "absent" }, stop: null };
   const from = service.desiredState;
+  let verdict: SetServiceDesiredStateVerdict;
   if (from === input.desiredState) {
-    return { outcome: "unchanged", state: input.desiredState, generation: service.generation };
+    verdict = { outcome: "unchanged", state: input.desiredState, generation: service.generation };
+  } else {
+    // `from` is read from a column governed by `services_desired_state_check`, but the CHECK is
+    // a hand-written copy of the frozen list, so an unrecognised value is treated as "no legal
+    // move from here" rather than passed to the frozen predicate as an unchecked cast.
+    const known = (SERVICE_DESIRED_STATES as readonly string[]).includes(from);
+    if (!known || !canTransitionServiceDesiredState(from as ServiceDesiredState, input.desiredState)) {
+      return { verdict: { outcome: "illegal", from, to: input.desiredState }, stop: null };
+    }
+    const updated = await repos.jobControl.updateServiceDesiredState({
+      organizationId: input.organizationId,
+      companyId: input.companyId,
+      serviceId: input.serviceId,
+      expectedDesiredState: from,
+      desiredState: input.desiredState,
+    });
+    if (!updated) return { verdict: { outcome: "conflict", from, to: input.desiredState }, stop: null };
+    verdict = {
+      outcome: "updated",
+      from: from as ServiceDesiredState,
+      to: input.desiredState,
+      generation: updated.generation,
+    };
   }
-  // `from` is read from a column governed by `services_desired_state_check`, but the CHECK is
-  // a hand-written copy of the frozen list, so an unrecognised value is treated as "no legal
-  // move from here" rather than passed to the frozen predicate as an unchecked cast.
-  const known = (SERVICE_DESIRED_STATES as readonly string[]).includes(from);
-  if (!known || !canTransitionServiceDesiredState(from as ServiceDesiredState, input.desiredState)) {
-    return { outcome: "illegal", from, to: input.desiredState };
+
+  // Resuming stops nothing; the reconciler converges on its next tick.
+  if (input.desiredState === "running") return { verdict, stop: null };
+
+  // ★ THE STOP RUNS ON `unchanged` TOO, AND THAT IS NOT SLOPPINESS. A reconcile pass that began
+  // before this stop can commit an instance AFTER a previous stop already moved the column, so
+  // "already stopped" does not imply "nothing is running". `requestCancellation` is idempotent
+  // per lease (its command lookup keys on `(organization, lease, 'cancel')`, not on the command
+  // id), so re-issuing is free.
+  const instance = await repos.jobControl.findLiveServiceInstance({
+    organizationId: input.organizationId,
+    serviceId: input.serviceId,
+  });
+  if (!instance) return { verdict, stop: { status: "no_instance" } };
+  if (!instance.jobId) {
+    return { verdict, stop: { status: "no_job", serviceInstanceId: instance.serviceInstanceId } };
   }
-  const updated = await repos.jobControl.updateServiceDesiredState({
+  const jobId = instance.jobId;
+  const now = await repos.jobControl.currentDatabaseTime();
+  const cancellation = await repos.jobControl.requestCancellation({
     organizationId: input.organizationId,
     companyId: input.companyId,
-    serviceId: input.serviceId,
-    expectedDesiredState: from,
-    desiredState: input.desiredState,
+    jobId,
+    reason: input.reason,
+    graceful: true,
+    commandId: randomUUID(),
+    now,
   });
-  if (!updated) return { outcome: "conflict", from, to: input.desiredState };
+  // ★ ALWAYS ATTEMPTED, NEVER GATED ON THE CANCELLATION'S REPORTED STATUS. The precondition
+  // that matters — "the attempt this instance is attributed to is terminal and did not
+  // succeed" — is a DATABASE fact the repository re-reads under the instance's row lock, so
+  // matching on a returned string here would be a second, weaker gate. When a live worker was
+  // drained rather than finalized, the attempt is still running and this answers
+  // `attempt_not_terminal`: a no-op, with the worker's own event doing the projection.
+  const terminalized = await repos.jobControl.terminalizeServiceInstanceForCancelledAttempt({
+    organizationId: input.organizationId,
+    companyId: input.companyId,
+    jobId,
+    toStatus: CANCELLED_ATTEMPT_PROJECTION.toStatus,
+    allowedFromStatuses: CANCELLED_ATTEMPT_PROJECTION.allowedFromStatuses,
+  });
   return {
-    outcome: "updated",
-    from: from as ServiceDesiredState,
-    to: input.desiredState,
-    generation: updated.generation,
+    verdict,
+    stop: {
+      status: "requested",
+      serviceInstanceId: instance.serviceInstanceId,
+      jobId,
+      cancellation: cancellation.status,
+      instance: terminalized.outcome,
+    },
   };
-}
-
-export interface ServiceStopRequest {
-  organizationId: string;
-  companyId: string;
-  jobId: string;
-  reason: string;
 }
 
 export interface SetServiceDesiredStateResult {
   verdict: SetServiceDesiredStateVerdict;
   /**
    * What happened to the LIVE instance, if any. `null` when the target state is `running`
-   * (nothing to stop) or when the service has no live instance. `no_job` when an instance
-   * exists but carries no `job_id` — reachable only in the window before SVC-002's
-   * attribution write commits, and reported rather than silently treated as stopped.
+   * (nothing to stop), when the verdict wrote nothing, or when the service has no live
+   * instance. `no_job` when an instance exists but carries no `job_id` — reachable only in the
+   * window before SVC-002's attribution write commits, and reported rather than silently
+   * treated as stopped.
    */
   stop:
     | null
@@ -457,98 +511,42 @@ export interface SetServiceDesiredStateResult {
          *  when a live worker was drained instead of finalized — that instance will be moved
          *  by the worker's own event through the ingest, not from here. */
         instance: string;
-      }
-    | { status: "failed"; serviceInstanceId: string; jobId: string };
-}
-
-export interface ServiceControlDependencies {
-  appDb: Db;
-  /**
-   * The SHIPPED graceful-cancellation channel, injected rather than imported so this module
-   * does not pull the job-reconciliation graph into a flag-off boot. In production this is
-   * `jobOperations.drainJob`, i.e. `requestCancellation({graceful:true})` — the same call
-   * the JOB-008 `drain` route makes.
-   */
-  requestGracefulStop: (input: ServiceStopRequest) => Promise<{ status: string }>;
+      };
 }
 
 /**
- * Move one service's desired state and, when the operator asked for it to stop running, ask
- * the live instance's job to stop.
+ * Move one service's desired state and, when the operator asked for it to stop running, stop
+ * the live instance — ALL OF IT IN ONE TRANSACTION, under the service's own row lock.
  *
- * ★ THE CANCELLATION RUNS ON `unchanged` TOO, AND THAT IS NOT SLOPPINESS. The two writes are
- * in separate transactions (the cancellation opens its own), so a failure between them leaves
- * a service marked `stopped` with a live instance. If the retry short-circuited on
- * `unchanged` the operator could never reach the cancellation again — the button would
- * report success and do nothing, permanently. `requestCancellation` is idempotent per lease,
- * so re-issuing is free.
+ * ★★★ THE SINGLE TRANSACTION IS A FIX, NOT TIDINESS, AND EXTERNAL REVIEW FOUND WHAT IT COSTS.
+ * The first revision committed the desired-state write, RELEASED the lock, and only then looked
+ * up the instance and cancelled its job. Review of PR #412 (P1) named the race exactly: a
+ * concurrent `stopped → running` landing in that gap means the older stop still drains a job the
+ * operator has already resumed, taking the service down until the reconciler's next tick
+ * replaces it. Under one lock that interleaving is unrepresentable — a resume cannot commit
+ * between this function's read of `desired_state` and its cancellation, because it cannot
+ * acquire the row.
+ *
+ * It also removes the split-outcome the first revision had to report: a cancellation failure now
+ * rolls the desired-state write back with it, so the operator gets ONE definite answer instead of
+ * "the column moved but the thing is still running, please retry".
+ *
+ * ★ LOCK ORDER, stated rather than assumed, because `requestCancellation`'s own header warns
+ * that getting it wrong deadlocks. This transaction takes: the per-service advisory lock and the
+ * `services` row FIRST, then `requestCancellation`'s own `lease → attempt → job` hierarchy
+ * untouched, then `service_instances`. Nothing else in the tree takes a job-side lock and THEN
+ * the service advisory lock: SVC-002's reconciler takes the service locks first exactly as this
+ * does, and the JOB-005 ingest takes `lease → attempt → service_instances` with no service lock
+ * at all — and both it and this reach `service_instances` only while already holding the attempt,
+ * so the two agree on direction. No cycle is constructible.
  */
 export async function setServiceDesiredState(
   deps: ServiceControlDependencies,
   input: SetServiceDesiredStateInput & { reason: string },
 ): Promise<SetServiceDesiredStateResult> {
   assertAdmissibleOrganization(input.organizationId);
-  const verdict = await runInTenant(deps.appDb, input.organizationId, (repos) =>
+  return runInTenant(deps.appDb, input.organizationId, (repos) =>
     setServiceDesiredStateWithinTenant(repos, input));
-
-  const stateMoved = verdict.outcome === "updated" || verdict.outcome === "unchanged";
-  if (!stateMoved || input.desiredState === "running") return { verdict, stop: null };
-
-  const instance = await runInTenantReadOnly(deps.appDb, input.organizationId, (repos) =>
-    repos.jobControl.findLiveServiceInstance({
-      organizationId: input.organizationId,
-      serviceId: input.serviceId,
-    }));
-  if (!instance) return { verdict, stop: { status: "no_instance" } };
-  if (!instance.jobId) {
-    return { verdict, stop: { status: "no_job", serviceInstanceId: instance.serviceInstanceId } };
-  }
-  const jobId = instance.jobId;
-  // The try covers the CANCELLATION ONLY. A failure here means the instance may still be
-  // running, which is the thing the operator asked to stop, so it is the one that must be
-  // reported as `failed` — and reported rather than rethrown, because the desired-state write
-  // is already committed and a 5xx would say the whole request failed while half succeeded.
-  let cancellation: string;
-  try {
-    cancellation = (await deps.requestGracefulStop({
-      organizationId: input.organizationId,
-      companyId: input.companyId,
-      jobId,
-      reason: input.reason,
-    })).status;
-  } catch {
-    return {
-      verdict,
-      stop: { status: "failed", serviceInstanceId: instance.serviceInstanceId, jobId },
-    };
-  }
-  // ★ ALWAYS ATTEMPTED, NEVER GATED ON THE CANCELLATION'S REPORTED STATUS. The precondition
-  // that matters — "the attempt this instance is attributed to is terminal and did not
-  // succeed" — is a DATABASE fact the repository re-reads under the instance's row lock, so
-  // matching on a returned string here would be a second, weaker gate. When a live worker was
-  // drained rather than finalized, the attempt is still running and this answers
-  // `attempt_not_terminal`: a no-op, with the worker's own event doing the projection.
-  //
-  // OUTSIDE the try above on purpose. A throw here is a genuine error and must NOT be
-  // laundered into `failed`, which names a cancellation that did not happen — this one did.
-  const terminalized = await runInTenant(deps.appDb, input.organizationId, (repos) =>
-    repos.jobControl.terminalizeServiceInstanceForCancelledAttempt({
-      organizationId: input.organizationId,
-      companyId: input.companyId,
-      jobId,
-      toStatus: CANCELLED_ATTEMPT_PROJECTION.toStatus,
-      allowedFromStatuses: CANCELLED_ATTEMPT_PROJECTION.allowedFromStatuses,
-    }));
-  return {
-    verdict,
-    stop: {
-      status: "requested",
-      serviceInstanceId: instance.serviceInstanceId,
-      jobId,
-      cancellation,
-      instance: terminalized.outcome,
-    },
-  };
 }
 
 export interface ServiceView {

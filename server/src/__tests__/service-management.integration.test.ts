@@ -24,8 +24,8 @@
 // tenant FK, `service_generations_service_generation_uq`, the partial unique index
 // `service_instances_live_service_uq`, the shipped `createService` / `setServiceDesiredState`
 // / `readService` entry points the route calls, SVC-002's `reconcileService`, and JOB-006's
-// `requestCancellation` reached through the SAME `createJobOperationsService.drainJob` the
-// route injects — not a stub.
+// JOB-006's own `repos.jobControl.requestCancellation` (graceful), reached exactly as the route
+// reaches it — not a stub.
 //
 // NOT REAL, and it is stated rather than hidden: no worker ever leases the service job this
 // creates. `E9-F002` keeps `workload.service` unofferable on a fleet like this fixture's, and
@@ -39,7 +39,6 @@ import { randomUUID } from "node:crypto";
 
 import { setupJobControlFixture, type JobControlFixture, ORG, COMPANY } from "./helpers/job-control-fixture.js";
 import { runInTenant } from "../db/tenant-context.js";
-import { createJobOperationsService } from "../services/job-operations.js";
 import { reconcileService } from "../services/service-reconciler.js";
 import {
   createService,
@@ -47,6 +46,7 @@ import {
   listServices,
   readService,
   setServiceDesiredState,
+  setServiceDesiredStateWithinTenant,
 } from "../services/service-management.js";
 
 let fixture: JobControlFixture | null = null;
@@ -64,14 +64,18 @@ function f(): JobControlFixture {
   return fixture;
 }
 
-/** The graceful-stop channel EXACTLY as `jobControlRoutes` injects it. */
+/**
+ * The control's dependencies EXACTLY as `jobControlRoutes` passes them.
+ *
+ * ★ IT IS JUST THE POOL NOW. The first revision injected a `requestGracefulStop` callback
+ * bound to `jobOperations.drainJob`, which opens its OWN transaction — and external review of
+ * PR #412 (P1) showed that releasing the service lock before that call lets a concurrent
+ * resume be overtaken by an in-flight stop. The control now reaches
+ * `repos.jobControl.requestCancellation` inside the SAME transaction, under the same lock, so
+ * there is nothing left to inject.
+ */
 function controlDeps() {
-  const operations = createJobOperationsService({ appDb: f().app.db, operatorDb: f().operator.db });
-  return {
-    appDb: f().app.db,
-    requestGracefulStop: (stop: { organizationId: string; companyId: string; jobId: string; reason: string }) =>
-      operations.drainJob(stop.organizationId, stop.companyId, stop.jobId, stop.reason),
-  };
+  return { appDb: f().app.db };
 }
 
 async function create(overrides?: {
@@ -455,6 +459,45 @@ suite("SVC-007 — creating a service, and the loop it unblocks", () => {
     expect(failClosed).toMatchObject({ outcome: "illegal_transition", fromStatus: "pending" });
     expect((await instanceRows(serviceId))[0]!.status).toBe("pending");
   }, 120_000);
+
+  // ── T13 — ★ THE WHOLE STOP IS ONE TRANSACTION, UNDER THE SERVICE'S OWN LOCK ─────────────
+  //
+  // ★★★ THE REVIEW FIX, PINNED. The first revision committed the desired-state write, RELEASED
+  // the lock, and then cancelled in a second transaction. External review of PR #412 named the
+  // race that leaves: a concurrent `stopped -> running` landing in the gap means the older stop
+  // still drains a job the operator has already resumed. Under one lock that interleaving is
+  // unrepresentable — a resume cannot commit between the read of `desired_state` and the
+  // cancellation, because it cannot acquire the row.
+  //
+  // The rollback probe is what distinguishes ONE transaction from two: the desired-state write,
+  // the cancellation and the terminalization all vanish together, and a second transaction
+  // would have committed its own half.
+  //
+  // MUTANT: give the cancellation or the terminalization its own `runInTenant` again.
+  it("★ T13 — the desired-state write, the cancellation and the terminalization roll back TOGETHER", async () => {
+    const created = await create();
+    const serviceId = created!.serviceId;
+    const first = await reconcileService(f().app.db, { organizationId: ORG, companyId: COMPANY, serviceId });
+    expect(first).toMatchObject({ action: "created" });
+    if (first.action !== "created") return;
+
+    await expect(runInTenant(f().app.db, ORG, async (repos) => {
+      const inner = await setServiceDesiredStateWithinTenant(repos, {
+        organizationId: ORG, companyId: COMPANY, serviceId,
+        desiredState: "stopped", reason: "rollback probe",
+      });
+      // Everything must have HAPPENED inside the transaction before it is rolled back —
+      // otherwise this probe would pass over a control that did nothing at all.
+      expect(inner.verdict).toMatchObject({ outcome: "updated", from: "running", to: "stopped" });
+      expect(inner.stop).toMatchObject({ status: "requested", instance: "applied" });
+      throw new Error("deliberate rollback");
+    })).rejects.toThrow("deliberate rollback");
+
+    expect((await serviceRows())[0]!.desired_state, "the desired-state write must not survive").toBe("running");
+    expect((await serviceJobs())[0]!.status, "the cancellation must not survive").toBe("queued");
+    expect(await attemptStatuses(first.jobId)).toEqual(["pending"]);
+    expect((await instanceRows(serviceId))[0]!.status, "the terminalization must not survive").toBe("pending");
+  }, 180_000);
 
   // ── T12 — the two narrow guards, driven directly because no shipped caller can reach them ─
   //
