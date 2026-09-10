@@ -115,8 +115,15 @@ export const serviceInstances = pgTable(
     // is that half, and SVC-005a needs it because the distinction is load-bearing for the
     // generation rollout fence, not merely informative:
     //
-    //   'worker_event'  the worker's own attributed, fenced observation moved the row. The
-    //                   worker SAID it stopped. A WITNESS.
+    //   'worker_stopped'  the worker's own attributed, fenced observation that the PROCESS WAS
+    //                   SEEN GONE. The ONLY witness.
+    //   'worker_unconfirmed'  the worker's own attributed, fenced event, but one that does NOT
+    //                   assert an observed stop -- `service_instance_lost`, which the daemon
+    //                   emits when `inspect` could not describe the sandbox OR when "a full
+    //                   stop ladder ended with the process still observed `running`"
+    //                   (packages/worker-daemon/src/supervisor/service-lifecycle.ts). Fenced
+    //                   and authentic, and still NOT evidence that anything stopped. Splitting
+    //                   this off the witness was external review of PR #415's P1.
     //   'liveness_deadline'  SVC-003b's clock condemned it because nothing had been heard.
     //                   The worker may still be running (E9-F007). AN ASSUMPTION.
     //   'control_plane_backstop'  SVC-007a's cancelled-attempt projection moved it because
@@ -157,7 +164,7 @@ export const serviceInstances = pgTable(
     // terminal state; the fence reads it as NOT-A-WITNESS.
     terminalizedByValid: check(
       "service_instances_terminalized_by_check",
-      sql`terminalized_by IS NULL OR terminalized_by IN ('worker_event', 'liveness_deadline', 'control_plane_backstop')`,
+      sql`terminalized_by IS NULL OR terminalized_by IN ('worker_stopped', 'worker_unconfirmed', 'liveness_deadline', 'control_plane_backstop')`,
     ),
     // SVC-001: this table previously had NO unique constraint at all, so nothing could
     // bind a composite tenant FK to an instance. Every child table SVC-002/003 needs was

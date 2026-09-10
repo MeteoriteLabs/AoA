@@ -1,5 +1,5 @@
 {
-  "id": "7a113fa5-4bc8-440a-9fa9-fdab75a4b523",
+  "id": "d62c73fd-6d37-4559-afd5-ac78001200f8",
   "prevId": "209cde33-7147-43a2-a7bc-6ef5a461b31a",
   "version": "7",
   "dialect": "postgresql",
@@ -34042,7 +34042,7 @@
         },
         "service_instances_terminalized_by_check": {
           "name": "service_instances_terminalized_by_check",
-          "value": "terminalized_by IS NULL OR terminalized_by IN ('worker_event', 'liveness_deadline', 'control_plane_backstop')"
+          "value": "terminalized_by IS NULL OR terminalized_by IN ('worker_stopped', 'worker_unconfirmed', 'liveness_deadline', 'control_plane_backstop')"
         }
       },
       "isRLSEnabled": false

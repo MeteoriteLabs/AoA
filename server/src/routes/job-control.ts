@@ -520,6 +520,29 @@ export function jobControlRoutes(opts: { db: Db; appDb: Db; operatorDb: Db }) {
    *
    * ★ NO `validate(...)` MIDDLEWARE, for the reason the two routes above state: it runs BEFORE
    * the handler and would answer an unauthorized caller with a 400 describing their body.
+   *
+   * ★★★ THIS ROUTE WRITES NO `activity_log` ROW, AND THAT IS A REAL GAP RATHER THAN A CHOICE
+   * THIS ROUTE MADE. Raised by external review of PR #415 (P2), and it is right that
+   * `AGENTS.md` §3 lists "Activity logging for all mutating actions" as a control-plane
+   * invariant. It is NOT closed here, for two measured reasons:
+   *
+   *   (1) IT IS PRE-EXISTING AND ALREADY DECLARED. Neither sibling control on this router —
+   *       SVC-007a's service create nor its desired-state stop/resume — writes one either
+   *       (`grep activity_log` over this file and `service-management.ts` returns nothing), and
+   *       SVC-007a's result already declares it open BY NAME: "no `activity_log` row is written
+   *       for a control action (DE-01)". Closing it for one of three sibling routes and leaving
+   *       the other two would make the gap LESS visible, not smaller.
+   *   (2) THE LAYER HAS NO SUCH WRITER AT ALL. E9-F009 §3 measured that NO repository method
+   *       under `packages/db/src/repositories/tenant/` writes `activity_log` — not the JOB-005
+   *       ingest, not `reapExpiredLeases`, not SVC-002's reconciler — and declined to introduce
+   *       one from a liveness sweeper because "a convention nothing else in the layer follows is
+   *       the kind of thing that is correct once and wrong thereafter". The same argument holds
+   *       here and that ruling is not overturned by this unit.
+   *
+   * ★ SO NOTHING IN THIS UNIT'S RECORDS CLAIMS THE ROLL IS AUDITED. The DE-12 register row is
+   * left at `deliveryStatus: "partial"` and its append says in terms that a `logger.info` line
+   * is not a durable record and that "generation changes are audited" is NOT delivered. The
+   * structured line below is operator telemetry, not an audit trail. Owner: DE-01.
    */
   router.post(
     "/organizations/:organizationId/companies/:companyId/services/:serviceId/generation",

@@ -142,23 +142,44 @@ export const LIVE_SERVICE_INSTANCE_INDEX = "service_instances_live_service_uq";
  * SVC-005a — WHO may be recorded as having driven a service instance terminal, and it is a
  * FENCE INPUT rather than telemetry.
  *
- * ONE of these is a WITNESS and two are ASSUMPTIONS, and the generation rollout fence turns
+ * ONE of these is a WITNESS and three are ASSUMPTIONS, and the generation rollout fence turns
  * on exactly that split:
  *
- *   `worker_event`             the worker's own attributed, generation-fenced observation
- *                              moved the row through `applyServiceProjectionForFence` or the
- *                              fenced `recordServiceHealth`. The worker SAID it stopped.
+ *   `worker_stopped`           the worker's own attributed, generation-fenced observation that
+ *                              the PROCESS WAS SEEN GONE. The only witness.
+ *   `worker_unconfirmed`       the worker's own attributed, generation-fenced observation that
+ *                              it can NO LONGER ACCOUNT FOR the process. See the ★ below.
  *   `liveness_deadline`        SVC-003b's clock condemned it because nothing had been heard.
  *                              The worker may still be running (E9-F007).
  *   `control_plane_backstop`   SVC-007a's cancelled-attempt projection moved a stranded
  *                              instance because its ATTEMPT was terminal.
+ *
+ * ★★★ WHY THE WORKER'S OWN EVENT IS SPLIT IN TWO, AND WHY COLLAPSING IT IS A FAIL-OPEN. The
+ * first revision of this constant had a single `worker_event` author covering every terminal
+ * move the ingest applied, on the reasoning that an attributed, fenced event is evidence. It is
+ * evidence — but of WHAT depends on the event, and the daemon says so in its own header
+ * (`packages/worker-daemon/src/supervisor/service-lifecycle.ts`):
+ *
+ *     service_instance_stopped  <- an observation of `exited` or `gone`.
+ *     service_instance_lost     <- `inspect` could not describe the sandbox, or A FULL STOP
+ *                                  LADDER ENDED WITH THE PROCESS STILL OBSERVED `running`.
+ *
+ * So `service_instance_lost` is the worker reporting that it COULD NOT CONFIRM THE STOP, and in
+ * the worst case that the process SURVIVED CANCEL AND KILL — the supervisor's own comment at
+ * that site reads "what is not established is that the PROCESS stopped, and this is where that
+ * distinction is preserved". Treating it as a witness would let the rollout fence place
+ * generation N+1 precisely when the generation-N process is KNOWN to be alive: the exact
+ * overlap E9's SVC-005 acceptance forbids, admitted by the mechanism built to refuse it.
+ * Raised by external review of PR #415 (P1), verified at that source, and fixed here rather
+ * than in the fence, because the fence is right and the AUTHOR was lying.
  *
  * Mirrored by `service_instances_terminalized_by_check` (migration 0279); the reconciliation
  * asserts set EQUALITY server-side, exactly as SVC-001 did for the status CHECK, so an author
  * added on one side and not the other is caught rather than silently storable.
  */
 export const SERVICE_INSTANCE_TERMINAL_AUTHORS = Object.freeze([
-  "worker_event",
+  "worker_stopped",
+  "worker_unconfirmed",
   "liveness_deadline",
   "control_plane_backstop",
 ] as const);
@@ -175,7 +196,7 @@ export type ServiceInstanceTerminalAuthor = (typeof SERVICE_INSTANCE_TERMINAL_AU
  * strength of a name it does not recognise.
  */
 export const WITNESSED_SERVICE_INSTANCE_TERMINAL_AUTHORS = Object.freeze([
-  "worker_event",
+  "worker_stopped",
 ] as const);
 
 /**
@@ -2182,12 +2203,25 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
       serviceInstanceId: instance.id,
       status: projection.toStatus,
       expectedFromStatus: instance.status,
-      // SVC-005a — THE WITNESS. This is the only one of the four authors that is one: the
-      // move is driven by the worker's own event, and it reached here only after attribution,
-      // identity and the generation fence above. Those three checks are what make it evidence
-      // about THIS row rather than an unauthorized assertion, and they are the reason this
-      // author may be trusted where a clock may not.
-      author: "worker_event",
+      // ★★★ SVC-005a — THE ONLY WITNESS IN THE TREE, AND IT IS NARROWER THAN "A WORKER EVENT".
+      //
+      // Attribution, identity and the generation fence above are what make this event evidence
+      // about THIS row rather than an unauthorized assertion — but they establish the
+      // AUTHORITY of the claim, not its CONTENT. `stopped` is the only terminal status the
+      // frozen mapping reaches from an OBSERVATION that the process is gone
+      // (`decideServiceProjection`: `service_instance_stopped -> stopped`, "the process was
+      // OBSERVED gone"). `lost` is `service_instance_lost`, which the daemon emits when it
+      // COULD NOT CONFIRM the stop — including when "a full stop ladder ended with the process
+      // still observed `running`" — and `failed` is not reached by a service event at all.
+      //
+      // So the author is derived from the STATUS BEING WRITTEN, and everything that is not an
+      // observed stop is `worker_unconfirmed`. Deriving it the other way — trusting the caller
+      // because it is fenced — is the fail-open external review of PR #415 found (P1): it
+      // would let the rollout place generation N+1 exactly when generation N's process is
+      // KNOWN to have survived cancel and kill. Fail-closed by DEFAULT: a terminal status added
+      // to the frozen list later is `worker_unconfirmed` until someone deliberately widens
+      // this, which stalls a rollout rather than admitting one.
+      author: projection.toStatus === "stopped" ? "worker_stopped" : "worker_unconfirmed",
     });
     if (!moved) return { outcome: "illegal_transition", fromStatus: instance.status, toStatus: projection.toStatus };
 
@@ -4740,13 +4774,16 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
           serviceInstanceId: current.id,
           status: input.healthStatus,
           expectedFromStatus: current.status,
-          // SVC-005a — A WITNESS, for the same reason the event projection is: this mutator
-          // runs UNDER `guardActiveFence`, so the caller is the worker that currently holds
-          // the lease and fence for this instance's attempt. Its `healthStatus` is not itself
-          // a terminal status today, so this call stamps nothing in practice; the author is
-          // supplied anyway rather than defaulted, because a required parameter that some
-          // callers may omit is the drift this chokepoint exists to prevent.
-          author: "worker_event",
+          // SVC-005a — THE FAIL-CLOSED AUTHOR, deliberately, even though this mutator runs
+          // UNDER `guardActiveFence` and its caller is therefore the worker that holds the
+          // lease and fence. `healthStatus` is a HEALTH status (`healthy`/`unhealthy`), not an
+          // observation that a process is gone, so this path can never assert the one thing a
+          // witness asserts — and today it writes no terminal status at all, so it stamps
+          // nothing in practice. The author is supplied rather than defaulted because a
+          // required parameter that some callers may omit is the drift this chokepoint exists
+          // to prevent, and it is the UNCONFIRMED value so that if this path ever did reach a
+          // terminal status it would stall a rollout rather than admit one.
+          author: "worker_unconfirmed",
         });
       }
       const [row] = await tx.select().from(serviceInstances).where(and(

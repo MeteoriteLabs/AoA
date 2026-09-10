@@ -30,7 +30,7 @@
 // route calls, SVC-002's own `reconcileService`, SVC-003b's own `sweepOrganizationServiceLiveness`
 // (so `terminalized_by = 'liveness_deadline'` is written by the SHIPPED sweep, not by a
 // hand-written UPDATE), the poll/ACK-minted ACTIVE lease fence, and `acceptEvent`'s durable
-// append plus SVC-003a's projection (so `terminalized_by = 'worker_event'` is written by the
+// append plus SVC-003a's projection (so `terminalized_by = 'worker_stopped'` is written by the
 // SHIPPED ingest).
 //
 // NOT REAL, and stated rather than hidden: no worker ever leases a SERVICE job. E9-F002 keeps
@@ -509,7 +509,7 @@ suite("SVC-005a — the generation rollout fence", () => {
   //
   // The other side of R-T4, and the case that keeps the fence from being a fence that always
   // refuses. The generation-1 worker's OWN event drives its instance terminal through the
-  // SHIPPED ingest — `terminalized_by = 'worker_event'` — and generation 2 is then placed
+  // SHIPPED ingest — `terminalized_by = 'worker_stopped'` — and generation 2 is then placed
   // immediately, with the old attempt still non-terminal. That last clause is the point: the
   // witness alone is sufficient, so condition (3) is a recovery route for the UNWITNESSED case
   // and not a second gate on every rollout.
@@ -537,7 +537,7 @@ suite("SVC-005a — the generation rollout fence", () => {
     expect(projections[0]?.outcome, `projection said ${JSON.stringify(projections[0])}`).toBe("applied");
     const [witnessed] = await instanceRows(serviceId);
     expect(witnessed!.status).toBe("stopped");
-    expect(witnessed!.terminalized_by, "written by the SHIPPED ingest projection").toBe("worker_event");
+    expect(witnessed!.terminalized_by, "written by the SHIPPED ingest projection").toBe("worker_stopped");
 
     // The old attempt is deliberately STILL non-terminal, so only the witness can be doing the
     // work here.
@@ -550,6 +550,53 @@ suite("SVC-005a — the generation rollout fence", () => {
     const outcome = await reconcile(serviceId);
     expect(outcome.action, `reconcile answered ${JSON.stringify(outcome)}`).toBe("created");
     expect((await instanceRows(serviceId)).filter((r) => r.generation === 2)).toHaveLength(1);
+  }, 90_000);
+
+  // ── R-T7c — ★★★ THE P1 REGRESSION: A `lost` WORKER EVENT IS NOT A WITNESS ───────────
+  //
+  // ★★★ EXTERNAL REVIEW OF PR #415 FOUND THIS AND IT WAS A REAL FAIL-OPEN IN THE VERY CLAUSE
+  // THIS TICKET IS ABOUT. The first revision stamped `worker_event` for EVERY terminal move the
+  // ingest applied. But `service_instance_lost` is what the daemon emits when `inspect` could
+  // not describe the sandbox OR when "a full stop ladder ended with the process still observed
+  // `running`" (`packages/worker-daemon/src/supervisor/service-lifecycle.ts`, whose comment at
+  // that site reads "what is not established is that the PROCESS stopped"). So the fence would
+  // have read the worker's own report that THE PROCESS SURVIVED CANCEL AND KILL as proof that
+  // it stopped, and placed generation N+1 beside it.
+  //
+  // This drives a REAL `service_instance_lost` through the REAL fenced ingest — same authority,
+  // same digest, same decider as R-T7's `service_instance_stopped` — and the ONLY difference is
+  // the event. The author must be `worker_unconfirmed` and the placement must STALL.
+  //
+  // MUTANT: collapse the two authors back to one (`author: "worker_event"` unconditionally, or
+  // equivalently make the ternary in `applyServiceProjectionForFence` constant) — THIS case reds
+  // and `R-T7` stays green, which is exactly the asymmetry that let the defect ship in the first
+  // revision with a fully green suite.
+  it("★★★ R-T7c — a worker's `lost` event is NOT a witness, and the rollout stalls on it", async () => {
+    const serviceId = await createRunningService();
+    const { seeded, offer, identity } = await f().activateLease(708);
+    const instanceId = await seedInstance({ serviceId, status: "healthy", generation: 1, seeded });
+    const { projections } = await ingestDirect(identity, [
+      event(offer, 1, "service_instance_lost", {
+        serviceId, serviceInstanceId: instanceId, generation: 1,
+      }),
+    ]);
+    expect(projections[0]?.outcome, `projection said ${JSON.stringify(projections[0])}`).toBe("applied");
+
+    const [row] = await instanceRows(serviceId);
+    expect(row!.status).toBe("lost");
+    expect(
+      row!.terminalized_by,
+      "a `lost` event says the stop could NOT be confirmed — it must not be recorded as a witness",
+    ).toBe("worker_unconfirmed");
+
+    // The attempt is still non-terminal, so the old worker's fence is still open.
+    await roll(serviceId);
+    const outcome = await reconcile(serviceId);
+    expect(outcome).toEqual({ action: "none", reason: "predecessor_generation_unwitnessed" });
+    expect(
+      (await instanceRows(serviceId)).filter((r) => r.generation === 2),
+      "generation 2 must not be placed beside a process the worker could not confirm stopped",
+    ).toEqual([]);
   }, 90_000);
 
   // ── R-T7b — ★★★ THE SQL HALF OF THE WITNESS TEST, PINNED ON ITS OWN ─────────────────
@@ -574,7 +621,7 @@ suite("SVC-005a — the generation rollout fence", () => {
     const { seeded } = await f().activateLease(707);
     const witnessed = await seedInstance({ serviceId, status: "leased", generation: 1, seeded });
     await f().admin`UPDATE service_instances
-      SET status = 'stopped', terminalized_by = 'worker_event' WHERE id = ${witnessed}`;
+      SET status = 'stopped', terminalized_by = 'worker_stopped' WHERE id = ${witnessed}`;
     const assumed = await seedInstance({ serviceId, status: "leased", generation: 1, seeded });
     await f().admin`UPDATE service_instances
       SET status = 'lost', terminalized_by = 'liveness_deadline' WHERE id = ${assumed}`;

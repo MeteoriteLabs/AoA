@@ -4,9 +4,21 @@
 -- E9-F009 recorded the gap and named this half open: `service_instances` carried `status`
 -- and `updated_at` and nothing that said WHO moved the row, so a worker that REPORTED itself
 -- gone and a control plane that GAVE UP on a worker it could not reach were indistinguishable
--- in durable state. That distinction is load-bearing for the generation rollout fence: only
--- the first is a WITNESS that the old generation stopped; the second leaves E9-F007's window
--- open, where the old worker may still be running and performing external effects.
+-- in durable state. That distinction is load-bearing for the generation rollout fence: only an
+-- OBSERVED STOP is a WITNESS that the old generation stopped; everything else leaves E9-F007's
+-- window open, where the old worker may still be running and performing external effects.
+--
+-- ★★★ FOUR AUTHORS AND NOT THREE, AND THE FOURTH IS A P1 FIX. The first revision of this
+-- migration had a single `worker_event` author covering every terminal move the ingest
+-- applied. External review of PR #415 showed that is a FAIL-OPEN: the daemon emits
+-- `service_instance_lost` when `inspect` could not describe the sandbox OR when "a full stop
+-- ladder ended with the process still observed `running`"
+-- (packages/worker-daemon/src/supervisor/service-lifecycle.ts, whose own comment reads "what is
+-- not established is that the PROCESS stopped"). A fenced, authentic, attributed event is
+-- evidence of its AUTHORITY, not of its CONTENT -- so treating `lost` as a witness would let
+-- the rollout place generation N+1 exactly when generation N's process is KNOWN to have
+-- survived cancel and kill. `worker_stopped` and `worker_unconfirmed` keep that distinction in
+-- durable state, which is where the fence reads it.
 --
 -- ONE nullable column and ONE CHECK. Everything below is `db:generate` output apart from the
 -- C14 class (a) idempotency guards, which drizzle-kit cannot emit and which this file needs
@@ -27,7 +39,7 @@
 -- NO BACKFILL, and it is safe to omit rather than merely convenient. `service_instances` had
 -- ZERO production writers until SVC-002 (0275) and no route could create a service until
 -- SVC-007a, so a deployment that has run neither has an EMPTY table; and where rows do exist,
--- NULL is the correct and conservative value for them -- inventing 'worker_event' for a row
+-- NULL is the correct and conservative value for them -- inventing `worker_stopped` for a row
 -- nobody witnessed is exactly the forged author this column exists to prevent.
 --
 -- NO NEW INDEX. The fence's read is per (organization_id, service_id) over that service's
@@ -37,11 +49,11 @@
 -- history (SVC-004 owns that); the fix would be one db:generate index on
 -- (organization_id, service_id, generation).
 ALTER TABLE "service_instances" ADD COLUMN IF NOT EXISTS "terminalized_by" text;--> statement-breakpoint
--- The three authors, spelled once in the database. Reconciled against the server-side
--- constant `SERVICE_INSTANCE_TERMINAL_AUTHORS` by an assertion that asserts set EQUALITY, so
--- an author added on one side and not the other is caught rather than silently storable.
+-- The four authors, spelled once in the database. Reconciled against the server-side constant
+-- `SERVICE_INSTANCE_TERMINAL_AUTHORS` by an assertion that asserts set EQUALITY, so an author
+-- added on one side and not the other is caught rather than silently storable.
 DO $$ BEGIN
- ALTER TABLE "service_instances" ADD CONSTRAINT "service_instances_terminalized_by_check" CHECK (terminalized_by IS NULL OR terminalized_by IN ('worker_event', 'liveness_deadline', 'control_plane_backstop'));
+ ALTER TABLE "service_instances" ADD CONSTRAINT "service_instances_terminalized_by_check" CHECK (terminalized_by IS NULL OR terminalized_by IN ('worker_stopped', 'worker_unconfirmed', 'liveness_deadline', 'control_plane_backstop'));
 EXCEPTION
  -- 0275's lesson, applied to a CHECK rather than a FK: catch BOTH codes. A CHECK replay
  -- raises duplicate_object (42710); duplicate_table (42P07) is caught too because catching

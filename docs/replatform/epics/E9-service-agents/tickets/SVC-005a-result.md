@@ -51,6 +51,41 @@ extend, since lease expiry plus `reapExpiredLeases` reaches it without the worke
 
 ---
 
+## 3b. ★★★ The P1 external review found, and it was real
+
+**External review of PR #415 found a genuine fail-open in the very clause this ticket is about,
+and it is recorded rather than folded in silently.**
+
+The first revision had ONE terminal author, `worker_event`, covering every terminal move the fenced
+ingest applied — on the reasoning that an attributed, generation-fenced event is evidence. It is
+evidence **of its authority, not of its content**, and the daemon says so in its own header:
+`service_instance_lost` is emitted when `inspect` could not describe the sandbox **or when "a full
+stop ladder ended with the process still observed `running`"**, with the comment at that site reading
+*"what is not established is that the PROCESS stopped, and this is where that distinction is
+preserved"*. The fence would therefore have read **the worker's own report that the process survived
+cancel and kill** as proof that it stopped, and placed generation N+1 beside it.
+
+**Fixed in the AUTHOR, not the fence** — the fence was right; the author was lying. `worker_event`
+became `worker_stopped` (an observed stop; the only witness) and `worker_unconfirmed` (everything
+else the ingest terminalizes), derived from the status being written so the default is fail-closed
+for any terminal status added later. `recordServiceHealth` was moved to the unconfirmed value for
+the same reason.
+
+★ **Why a fully green suite shipped it.** `R-T7` drove `service_instance_stopped` only — the one
+event where the collapsed author happens to be correct. `R-T7c` drives `service_instance_lost`
+through the same fence, same digest, same decider, with the event as the only difference; it **reds
+on the original defect while `R-T7` stays green**. That asymmetry is the finding, and it is the same
+shape as SVC-003a's own recorded near-miss (*"the only end-to-end case drove `service_instance_lost`,
+the one status reachable from everything"*) — pointed the other way.
+
+**The P2 (no `activity_log` row for a generation roll) is real and is NOT closed here**, for two
+measured reasons: neither sibling control on this router writes one either and SVC-007a's result
+already declares that open by name under **DE-01**, so closing one of three would make the gap less
+visible; and E9-F009 §3 measured that **no** repository method in that layer writes `activity_log` at
+all, and declined to introduce the convention through its least prominent door. Nothing in this
+unit's records claims the roll is audited — the DE-12 append says in terms that a `logger.info` line
+is not a durable record.
+
 ## 4. What was NOT weakened
 
 * **SVC-003a's stale-generation refusal is untouched.** It compares against the **instance's**
@@ -66,8 +101,8 @@ extend, since lease expiry plus `reapExpiredLeases` reaches it without the worke
 
 ## 5. Evidence
 
-**23 cases, all green**, plus 72 in the six neighbouring E9 suites re-run at head (95 total across
-8 files).
+**24 cases, all green** — 14 integration + 10 pure — plus **72 in the six neighbouring E9
+suites re-run at HEAD**: **96 total across 8 files**, measured after the last edit.
 
 | Case | What it pins |
 |---|---|
@@ -79,14 +114,15 @@ extend, since lease expiry plus `reapExpiredLeases` reaches it without the worke
 | `R-T5` | ★★★ the stall CLEARS when the old attempt goes terminal — a stall, not a wedge |
 | `R-T6` | ★★★ a SAME-generation replacement is unaffected (positive control) |
 | `R-T7` / `R-T7b` | a witnessed predecessor does not stall; the SQL half pinned alone |
+| `R-T7c` | ★★★ a worker's `lost` event is NOT a witness — the PR #415 P1 regression |
 | `R-T8` | SVC-003a's fence still refuses, in both directions, after a real bump |
 | `R-T9` / `R-T9b` / `R-T10` | refusals; `stopped` is rollable; forward-by-one |
 | `T-P1`, `T-P2`, `T-P3`/`b`/`c`/`d`, `T-P4`, `T-P5`/`b`, `T-P6` | the witness classification, NULL, the fail-closed default, and the 0279 CHECK reconciliation |
 
-**13 integration cases + 10 pure cases = 23**, counted from the case list above rather than from
-memory: `R-T1`, `R-T2`, `R-T3`, `R-T3b`, `R-T4`, `R-T5`, `R-T6`, `R-T7`, `R-T7b`, `R-T8`, `R-T9`,
-`R-T9b`, `R-T10`; `T-P1`, `T-P2`, `T-P3`, `T-P3b`, `T-P3c`, `T-P3d`, `T-P4`, `T-P5`, `T-P5b`,
-`T-P6`.
+**14 integration cases + 10 pure cases = 24**, counted from the case list above rather than from
+memory: `R-T1`, `R-T2`, `R-T3`, `R-T3b`, `R-T4`, `R-T5`, `R-T6`, `R-T7`, `R-T7b`, `R-T7c`, `R-T8`,
+`R-T9`, `R-T9b`, `R-T10`; `T-P1`, `T-P2`, `T-P3`, `T-P3b`, `T-P3c`, `T-P3d`, `T-P4`, `T-P5`,
+`T-P5b`, `T-P6`.
 
 **Mutants observed, each with a named positive control that stayed green:**
 
@@ -101,6 +137,7 @@ memory: `R-T1`, `R-T2`, `R-T3`, `R-T3b`, `R-T4`, `R-T5`, `R-T6`, `R-T7`, `R-T7b`
 | R8 vacuous `isWitnessedTerminalAuthor` (pure site only) | `T-P1`, `T-P3b`, `T-P3c`, `T-P4` — and **nothing** in the integration suite | `R-T4`–`R-T8` all green: the finding, not the control |
 | R8′ drop fence condition (2) — the witness test, SQL site only | **`R-T7b` only** (and nothing at all before `R-T7b` existed) | `R-T4`, `R-T6`, `R-T7` |
 | R8″ vacuous witness test at BOTH sites | `R-T7`, `R-T7b` | `R-T6` |
+| **P1** collapse the two worker authors back into one — **the defect external review found** | **`R-T7c` only** | **`R-T7` green — the asymmetry that let it ship** |
 
 ★ **A PREDICTION THAT WAS WRONG, RECORDED RATHER THAN QUIETLY FIXED.** `R-T7`'s first comment named
 mutant **R8** (vacuous `isWitnessedTerminalAuthor`) as its killer. **Measured: it is not.** The

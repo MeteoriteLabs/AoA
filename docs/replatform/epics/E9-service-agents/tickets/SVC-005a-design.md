@@ -103,19 +103,41 @@ The fence needs to tell "the worker said it stopped" from "we gave up on it". E9
 and called that the "durable half" it deliberately left open. Migration **0279** is that half.
 
 One nullable column, one CHECK, written **only when the status being written is terminal**, at the
-single chokepoint `writeServiceInstanceStatus` — the one writer of `status`, which all four authors
-already funnel through. `author` is a **required** parameter, so a fifth author cannot arrive
-without classifying itself: the omission is a typecheck failure.
+single chokepoint `writeServiceInstanceStatus` — the one writer of `status`, which all **four call
+sites** already funnel through (`applyServiceProjectionForFence`, `recordServiceHealth`,
+`sweepServiceInstanceLiveness`, `terminalizeServiceInstanceForCancelledAttempt`). `author` is a
+**required** parameter, so a fifth call site cannot arrive without classifying itself: the omission
+is a typecheck failure.
 
 | Author | Who | Witness? |
 |---|---|---|
-| `worker_event` | the worker's own attributed, generation-fenced observation | **yes** |
+| `worker_stopped` | the worker's own fenced observation that the process **was seen gone** (`service_instance_stopped → stopped`) | **yes — the only one** |
+| `worker_unconfirmed` | the worker's own fenced event that it **cannot account for** the process (`service_instance_lost`) | no — see below |
 | `liveness_deadline` | SVC-003b's clock | no — E9-F007 |
 | `control_plane_backstop` | SVC-007a's cancelled-attempt projection | no — its terminal attempt closes the fence, which is not the process stopping |
 
-★ **`WITNESSED_...` is derived by exclusion**, so a fourth author that nobody classifies makes the
-fence **stall** rather than admit. NULL — a row terminalized before 0279 — is UNKNOWN and therefore
-not a witness. Both are the fail-closed direction and both are pinned (`T-P2`, `T-P4`).
+★★★ **THE WORKER'S EVENT IS SPLIT IN TWO, AND THE FIRST REVISION GOT THIS WRONG.** It had a single
+`worker_event` author covering every terminal move the ingest applied, reasoning that an attributed,
+fenced event is evidence. It is evidence — **of its authority, not of its content.** The daemon's own
+header says what the two service terminals mean
+(`packages/worker-daemon/src/supervisor/service-lifecycle.ts`):
+
+> `service_instance_stopped` ← an observation of `exited` or `gone`.
+> `service_instance_lost` ← `inspect` could not describe the sandbox, or **a full stop ladder ended
+> with the process still observed `running`**.
+
+So `service_instance_lost` is the worker reporting that **it could not confirm the stop** — in the
+worst case that the process **survived cancel and kill**. Treating it as a witness would place
+generation N+1 exactly when generation N's process is **known to be alive**: the overlap this fence
+exists to refuse, admitted by the fence itself. **Found by external review of PR #415 (P1)**,
+verified at that source, and fixed in the **author** rather than in the fence — the fence was right;
+the author was lying. `R-T7c` is the regression case and it reds on the original defect while `R-T7`
+stays green, which is exactly the asymmetry that let a fully green suite ship it.
+
+★ **`WITNESSED_...` is derived by exclusion**, so a fifth author that nobody classifies makes the
+fence **stall** rather than admit — and that held when the fourth author arrived: `T-P4` needed no
+edit. NULL — a row terminalized before 0279 — is UNKNOWN and therefore not a witness. Both are the
+fail-closed direction and both are pinned (`T-P2`, `T-P4`).
 
 ---
 
@@ -133,7 +155,7 @@ not a witness. Both are the fail-closed direction and both are pinned (`T-P2`, `
 | `server/src/routes/job-control.ts` | `POST …/services/:serviceId/generation` |
 | `server/src/__tests__/job-fence-surface.contract.test.ts` | both new repository methods classified in the same commit |
 | `server/src/__tests__/service-generation-rollout.test.ts` | 10 pure cases |
-| `server/src/__tests__/service-generation-rollout.integration.test.ts` | 13 cases over embedded PostgreSQL |
+| `server/src/__tests__/service-generation-rollout.integration.test.ts` | 14 cases over embedded PostgreSQL |
 | `scripts/gate-clause-wiring.json` | `E9-5-service-generation-rollout` |
 | `scripts/finding-ownership.json` | **E9-F010** registered `unowned` with its resolve condition — required, and `check-distributed-execution-foundation.mjs` failed the policy gate until it was there (a cited finding must be owned) |
 | `docs/architecture/distributed-execution-threat-controls.json` | DE-12 dated correction; **`deliveryStatus` unchanged** |

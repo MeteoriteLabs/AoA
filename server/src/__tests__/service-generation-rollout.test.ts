@@ -15,8 +15,15 @@
 //       admit exactly the placement this fence exists to refuse.
 //
 // ★ THE FAIL-CLOSED DIRECTION IS ASSERTED, NOT ASSUMED. `WITNESSED_...` is a SUBSET derived by
-// naming, so a fourth author added to the frozen list without being named a witness makes the
-// fence STALL rather than pass. T-P4 pins that by construction rather than by inspection.
+// naming, so a FIFTH author added to the frozen list (there are four) without being named a
+// witness makes the fence STALL rather than pass. T-P4 pins that by construction rather than by
+// inspection.
+//
+// ★★★ AND THE FOURTH AUTHOR EXISTS BECAUSE OF A P1. External review of PR #415 found that a
+// single `worker_event` author was a fail-open: `service_instance_lost` is a fenced, authentic,
+// attributed worker event that asserts the stop COULD NOT BE CONFIRMED — in the worst case that
+// the process survived cancel and kill. `worker_stopped` / `worker_unconfirmed` is that fix, and
+// T-P1 is where it is pinned.
 // -----------------------------------------------------------------------------
 
 import { describe, expect, it } from "vitest";
@@ -48,12 +55,21 @@ function predecessor(overrides: Partial<GenerationPredecessor>): GenerationPrede
 describe("SVC-005a — who counts as a witness that the old generation stopped", () => {
   // ── T-P1 — the one author that IS a witness ────────────────────────────────────────────
   //
-  // MUTANT: add `"control_plane_backstop"` to `WITNESSED_SERVICE_INSTANCE_TERMINAL_AUTHORS`.
-  // It is tempting because its precondition (a terminal attempt) really does close the fence —
-  // but a closed fence stops the old worker WRITING, not its PROCESS (E9-F007 §3), and the
-  // acceptance clause is about external effects. This case and T-P3 red under it.
-  it("★ T-P1 — only the worker's own event is a witness", () => {
-    expect(isWitnessedTerminalAuthor("worker_event")).toBe(true);
+  // ★★★ `worker_unconfirmed` IS THE P1 EXTERNAL REVIEW OF PR #415 FOUND, and it is asserted
+  // here rather than only in the integration suite. The first revision had ONE `worker_event`
+  // author covering every terminal move the ingest applied — but the daemon emits
+  // `service_instance_lost` when `inspect` could not describe the sandbox OR when "a full stop
+  // ladder ended with the process still observed `running`", so a fenced, authentic, attributed
+  // event can be the worker saying THE PROCESS SURVIVED CANCEL AND KILL. Reading that as a
+  // witness would place generation N+1 exactly when generation N is KNOWN to be alive.
+  //
+  // MUTANT: add `"worker_unconfirmed"` back into the witness list (i.e. revert to the single
+  // `worker_event`). This case reds. MUTANT: add `"control_plane_backstop"` — tempting because
+  // its precondition (a terminal attempt) really does close the fence, but a closed fence stops
+  // the old worker WRITING, not its PROCESS (E9-F007 §3). This case reds for that too.
+  it("★★★ T-P1 — only an OBSERVED STOP is a witness; an unconfirmed worker event is not", () => {
+    expect(isWitnessedTerminalAuthor("worker_stopped")).toBe(true);
+    expect(isWitnessedTerminalAuthor("worker_unconfirmed")).toBe(false);
     expect(isWitnessedTerminalAuthor("liveness_deadline")).toBe(false);
     expect(isWitnessedTerminalAuthor("control_plane_backstop")).toBe(false);
   });
@@ -80,7 +96,7 @@ describe("SVC-005a — who counts as a witness that the old generation stopped",
   });
 
   it("★ T-P3b — a witnessed predecessor does NOT block", () => {
-    expect(findBlockingPredecessor([predecessor({ terminalizedBy: "worker_event" })])).toBeNull();
+    expect(findBlockingPredecessor([predecessor({ terminalizedBy: "worker_stopped" })])).toBeNull();
   });
 
   // The first UNWITNESSED row wins, not the first row. A scan that returned `candidates[0]`
@@ -88,7 +104,7 @@ describe("SVC-005a — who counts as a witness that the old generation stopped",
   // a real stall.
   it("★ T-P3c — a witnessed row ahead of an unwitnessed one does not mask it", () => {
     const found = findBlockingPredecessor([
-      predecessor({ terminalizedBy: "worker_event", serviceInstanceId: "aaaaaaaa-0000-4000-8000-000000000001" }),
+      predecessor({ terminalizedBy: "worker_stopped", serviceInstanceId: "aaaaaaaa-0000-4000-8000-000000000001" }),
       predecessor({ terminalizedBy: null, serviceInstanceId: "aaaaaaaa-0000-4000-8000-000000000002" }),
     ]);
     expect(found?.serviceInstanceId).toBe("aaaaaaaa-0000-4000-8000-000000000002");
@@ -100,11 +116,11 @@ describe("SVC-005a — who counts as a witness that the old generation stopped",
 
   // ── T-P4 — ★★★ AN UNCLASSIFIED AUTHOR STALLS ─────────────────────────────────────────
   //
-  // The property, stated over the frozen list rather than over three hand-written names: every
-  // author that is NOT explicitly named a witness must classify as one, so adding a fourth
-  // author to `SERVICE_INSTANCE_TERMINAL_AUTHORS` without naming it a witness makes the fence
-  // refuse rather than admit. Written as a loop over the SHIPPED list so it keeps holding
-  // after that fourth author exists.
+  // The property, stated over the frozen list rather than over hand-written names: every author
+  // that is NOT explicitly named a witness must classify as one, so adding a FIFTH author to
+  // `SERVICE_INSTANCE_TERMINAL_AUTHORS` without naming it a witness makes the fence refuse
+  // rather than admit. Written as a loop over the SHIPPED list so it kept holding when the
+  // fourth author (`worker_unconfirmed`) arrived — which it did, and this case needed no edit.
   it("★★★ T-P4 — every author not named a witness classifies as NOT a witness", () => {
     const witnesses = new Set<string>(WITNESSED_SERVICE_INSTANCE_TERMINAL_AUTHORS);
     for (const author of SERVICE_INSTANCE_TERMINAL_AUTHORS) {
