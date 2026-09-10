@@ -1607,11 +1607,38 @@ question this finding deliberately does not answer — it belongs with whoever s
 it is recorded here so that it is asked rather than rediscovered. No code unit owns this today, and
 inventing one would be a false ownership claim.
 
-## E7-F020 — Arm 2 of `capabilityProven` reads non-zero from an ordinary heartbeat code path, with no agent output, no forgery and no authenticated caller (NARROWED W21 — platform-write path closed at the predicate; residual below)
+## E7-F020 — Arm 2 of `capabilityProven` can count a platform-minted `task_outputs` row through an unexercised UPSERT collision on a reused platform `external_id` (the ordinary-heartbeat-path defect was FIXED at the predicate by W21; the residual is gated on the unbuilt E7-1 producer)
 
-**Status:** open · **Owner:** CLI-008 · **Severity:** HIGH · **Filed:** 2026-09-06 (W4U3-R3), measured
+**Status:** open · **Owner:** CLI-008 · **Severity:** MEDIUM · **Filed:** 2026-09-06 (W4U3-R3), measured
 at `75920ef9a`. Found by an auditor re-deriving E7-F018's arm-2 analysis; every line number below was
 re-read by hand in this worktree before filing.
+
+---
+
+### ★ re-measured 2026-09-10 at `3223eba74`: FALLEN — the headline defect is FIXED; severity corrected HIGH → MEDIUM, finding stays OPEN on the residual
+
+The defect this finding was FILED on — arm 2 reading non-zero from an ordinary heartbeat path via
+`eq(taskOutputs.createdByRunId, run.id)`, with no agent output — is **CLOSED at HEAD**. Re-read by hand:
+arm 2's count is now an `innerJoin` from `task_outputs` to `job_projection_receipts`, keyed on
+`jobProjectionReceipts.jobId = run.distributedJobId` **AND** `jobProjectionReceipts.attemptId =
+run.distributedAttemptId`, `projectionKind = "output_projection"`, `aggregateKind = "task_outputs"`,
+`status = "applied"`, company-scoped, and short-circuits when either distributed id is null
+(`server/src/services/e7-distributed-run-verifier-store.ts:579-604`). `created_by_run_id` is no longer
+read by this arm. The platform-write path is closed **at the predicate**, and the receipt has exactly
+one admissible writer — `jobOutputBridge.projectAcceptedOutput`
+(`server/src/services/job-output-bridge.ts:250`), fence-guarded via `recordGovernedProjection`.
+
+**Why MEDIUM, not HIGH, at HEAD.** The HIGH argument as filed rested on "no actor, no question, on the
+DEFAULT configuration, before the handoff" — a defect that removed the reviewer's question. That path
+no longer exists. The LIVE residual (below) is a **bounded, unexercised** UPSERT collision that needs a
+real fenced accepted-output event, which the sole writer `projectAcceptedOutput` **cannot emit today**
+(zero production callers, verified at HEAD), i.e. it is gated on the unbuilt E7-1 producer. A bounded,
+unexercised, producer-gated residual on a gate that certifies nothing today (`--require-capability`
+off by default, referenced by no workflow) is MEDIUM, not HIGH. The finding stays OPEN and `owned` by
+CLI-008: the residual belongs with whoever ships the producer. (This severity field is the one the
+ownership guard reads; the AS-FILED "Severity — HIGH, argued both directions" paragraph below is kept
+verbatim as the historical measurement that sized the fix, and its em-dash form is not re-read by the
+guard.)
 
 ---
 
@@ -3321,12 +3348,38 @@ into a settled one for every later reader, which is the same failure mode
 
 ---
 
-## E7-F033 — the widened secret scanner hard-fails a clean run: a credential-free `postgres://localhost` dev-service URL trips `connection_string`
+## E7-F033 — the widened secret scanner's `connection_string` matcher (the scheme-only false-FAIL on a credential-free `postgres://localhost` was FIXED at the predicate by W21D) — residual: a standing precision-AND-recall suite obligation, and two still-over-matching hard matchers (`provider_key`, `e2b_api_key_assignment`)
 
-**Status:** open · **Owner:** CLI-008 · **Severity:** HIGH · **Filed:** 2026-09-08 (W21D), by a blind
+**Status:** open · **Owner:** CLI-008 · **Severity:** MEDIUM · **Filed:** 2026-09-08 (W21D), by a blind
 review panel and confirmed by writing the precision test FIRST and running it at `4c7327b33` with
 production code untouched. **Fixed at the predicate in the same unit**; the entry stays open for the
 standing obligation it puts on the suite, not for an outstanding repair.
+
+---
+
+### ★ re-measured 2026-09-10 at `3223eba74`: FALLEN — the false-FAIL is FIXED; severity corrected HIGH → MEDIUM, finding stays OPEN on the residual
+
+The defect this finding was FILED on — the `connection_string` hard matcher failing a clean run because
+it matched **any** URI of a database scheme, so a credential-free `postgres://localhost:5432/dev`
+dev-service URL hard-failed clause 4 — is **FIXED at HEAD**. Re-read by hand: the `connection_string`
+matcher (`server/src/services/e7-distributed-run-verifier.ts:408-411`, in `HARD_LEAK_MATCHERS` at
+`:365`) is narrowed to **(a)** URI userinfo carrying a password component (`scheme://user:pass@host`,
+including the password-only `scheme://:pass@host`; a bare `scheme://user@host` is deliberately not
+matched) **OR (b)** a credential-bearing query parameter (`[?&](password|passwd|pwd|token|secret|
+api[-_]?key|access[-_]?token|auth)=`). It is no longer scheme-only, so `postgres://localhost:5432/dev`
+does not trip it; precision and recall arms are pinned in the finding's integration test.
+
+**Why MEDIUM, not HIGH, at HEAD.** The HIGH mirror-of-F020 framing — a false FAIL landing on the runs
+the campaign tries first — described the scheme-only matcher, which is gone. The LIVE residual is (1) a
+standing suite obligation (precision AND recall for every scanned column) and (2) two hard matchers that
+still over-match on contrived-but-plausible benign text — `provider_key` (`/\bsk-(?:ant-)?[A-Za-z0-9_-]{12,}\b/`,
+which fires on a branch name like `sk-antenna-refactor`) and `e2b_api_key_assignment`
+(`/E2B_API_KEY\s*[=:]/`, which fires on `E2B_API_KEY: (unset)`). Both residual matchers are contrived
+rather than observed on a real surface, and no gate certifies off this scanner in a way that would
+weaponize the false-FAIL today; a standing-obligation-plus-contrived-over-match residual is MEDIUM. The
+finding stays OPEN and `owned` by CLI-008 for the obligation, not for an outstanding repair. (This
+severity field is the one the ownership guard reads; the AS-FILED "Severity" reasoning below, where it
+appears, is kept verbatim.)
 
 ---
 
