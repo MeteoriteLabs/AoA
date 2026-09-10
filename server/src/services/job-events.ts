@@ -54,6 +54,7 @@ import {
 } from "./worker-denial-audit.js";
 import { logger } from "../middleware/logger.js";
 import { bindJobTraceLogger } from "./job-trace-log.js";
+import { decideServiceProjectionForEvent } from "./service-health-projection.js";
 
 function sha256Hex(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
@@ -79,6 +80,10 @@ function toAcceptInputs(batch: WorkerEventBatchV1): AcceptEventInput[] {
       occurredAt: new Date(event.occurredAt),
       payload: event as unknown as Record<string, unknown>,
       terminalStatus,
+      // SVC-003 — decided HERE because the frozen `SERVICE_INSTANCE_TRANSITIONS` table lives
+      // in worker-protocol and `packages/db` deliberately does not depend on it. The
+      // repository applies the decision under the fence; it never re-derives it.
+      serviceProjection: decideServiceProjectionForEvent(event),
     };
   });
 }
@@ -260,6 +265,11 @@ export function createJobEventIngestService(input: {
         let status: "accepted" | "gap" | "hash_mismatch" | "stale_fence" | "terminal";
         let acceptedThroughSeq: number;
         let rejectedEventId: string | undefined;
+        // SVC-003 — projections that were ATTEMPTED and REFUSED. Collected so a refusal is
+        // visible in the operator log instead of being an invisible no-write: a stale
+        // generation, a worker naming another instance, or a late event trying to resurrect
+        // a terminal instance are all security-relevant and all otherwise silent.
+        let refusedProjections: { eventId: string; outcome: string }[] = [];
         try {
           const result = await repos.jobControl.acceptEvent({
             ...fenceIdentity,
@@ -270,6 +280,13 @@ export function createJobEventIngestService(input: {
           status = ack.status;
           acceptedThroughSeq = ack.acceptedThroughSeq;
           rejectedEventId = ack.rejectedEventId;
+          refusedProjections = (result.serviceProjections ?? [])
+            .filter((entry) => entry.result.outcome !== "applied"
+              && entry.result.outcome !== "noop_same_status"
+              // A batch job's `attempt_started` is `unattributed` by construction (there is
+              // no service instance), which is the correct answer and not a refusal.
+              && entry.result.outcome !== "unattributed")
+            .map((entry) => ({ eventId: entry.eventId, outcome: entry.result.outcome }));
         } catch (error) {
           if (!(error instanceof DbJobFenceError)) throw error;
           // The active-fence guard refused BEFORE any append: report the cumulative
@@ -300,7 +317,12 @@ export function createJobEventIngestService(input: {
             fence: fenceIdentity.fence,
             sequence: acceptedThroughSeq,
             executionSourceKind: "distributed_worker",
-          }).debug({ status }, "job_events ingest");
+          }).debug(
+            refusedProjections.length > 0
+              ? { status, refusedServiceProjections: refusedProjections }
+              : { status },
+            "job_events ingest",
+          );
         } catch {
           // Best-effort trace binding INSIDE the tenant tx: a logger throw must NEVER
           // propagate and roll back the committed acceptEvent append (invariant #8).

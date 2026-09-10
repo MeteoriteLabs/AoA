@@ -7,10 +7,24 @@ filing here is a transcription of that wording plus the verification re-run for 
 
 ## E9-F001 — `ServiceHealthStatus` still carries `"interrupted"` while the DB CHECK forbids it, and a shipped result document says the edit was made
 
-**Status:** `open` · **Severity:** MED · **Owner:** `unowned`
+**Status:** `resolved` 2026-09-10 by **SVC-003a** (`tickets/SVC-003a-result.md`) · **Severity:** MED
 **Filed:** 2026-09-08, by SVC-002 terrain mapping (§5.1); re-verified at `921b2c1f9`.
-**Affected tickets:** SVC-003 (owns the fix), SVC-001 (source of the false claim).
-**Blocks gate:** no. Latent today; live the moment SVC-003 wires health.
+**Affected tickets:** SVC-003 (owned the fix), SVC-001 (source of the false claim).
+**Blocks gate:** no. Latent until resolution; it would have gone live the moment SVC-003 wired health,
+which is the same commit that closed it.
+
+> **★ CLOSED ON BOTH CONJUNCTS, AND THAT IS THE ONLY WAY IT COULD BE CLOSED.** §3's resolution is a
+> conjunction — delete the literal **and** add the missing subset assertion — and half of it is not
+> it. Both are in the closing commit: `| "interrupted"` is gone (the type is now derived from a new
+> `SERVICE_HEALTH_ASSERTABLE_STATUSES` constant, and the only two `"interrupted"` strings left in the
+> tree are inside that constant's own docstring explaining the finding), and
+> `server/src/__tests__/service-health-projection.test.ts` carries the reconciliation the finding
+> asked for, in both directions, plus a third case pinning that every status the projection can
+> actually drive is storable. Observed RED under a mutant that re-adds `"interrupted"` — which is
+> literally the base-tree state — killing 2 cases. §3's "do not fix it by widening to all nine" is
+> honoured: the domain is FIVE of the nine, with a recorded reason for each of the four omissions,
+> and a test that pins the set so a later widening has to be a decision. The
+> `scripts/finding-ownership.json` key is deleted in the same commit.
 
 ### 1. The contradiction
 
@@ -346,6 +360,24 @@ and persist it as the executor principal"* — is not available to SVC-002:
 and `.attempt_id` (migration 0275), written in the same transaction, correlate the instance with
 the job **from the instance side**. That is the attribution SVC-003 needs for its own rows. What
 remains missing is the job-side and envelope-side identity, which is this finding.
+
+### 2a. ★ 2026-09-10 — SVC-003a consumed that attribution, and the finding is NOT closed by it
+
+SVC-003a (`tickets/SVC-003a-result.md`) built the projection §1's last sentence anticipated, and it
+resolves the instance **exactly** the way §2 says it must: from `service_instances.job_id`/
+`.attempt_id`, never from the envelope's `executionPrincipal` and never from the workload's
+caller-controlled `serviceInstanceId`. The payload's instance id is treated as a CLAIM that must
+match the attributed row, and a mismatch is refused (`identity_mismatch`, pinned by T4 and killed by
+a mutant that drops the comparison).
+
+**That narrows the blast radius; it does not close the finding, and the difference matters.** What
+SVC-003a proves is that ONE consumer does not depend on the mislabel. The mislabel itself is
+unchanged: `jobs.executor_principal_id` for a `service_reconcile` job still holds a **service** id
+under the kind `service_instance`, and the lease envelope still carries it. Any future reader that
+takes `executionPrincipal.principalId` for an instance id is still wrong, and the fix is still
+either the frozen-wire ruling of §2(1) or a redefinition of what that column means for this source
+kind — neither of which SVC-003a made. **Status stays `open`; owner stays `unowned`** (SVC-003a is
+shipped, and an open finding owned by shipped work is owned by nothing — E4-F013).
 
 ### 3. Why `unowned`, and what would close it
 
