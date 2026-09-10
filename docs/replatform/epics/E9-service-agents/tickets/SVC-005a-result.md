@@ -167,7 +167,16 @@ plus `service-liveness-deadline` (15), `service-health-projection` (15),
 `service-desired-state-schema.integration` (10) and `job-fence-surface.contract` (8) = **98**.
 A wider run of **every** E9 service suite, adding `service-management` (18),
 `service-reconciler.integration` (17) and `service-management.integration` (13) — SVC-002's and
-SVC-007a's, untouched here — is **146 green across 11 files**, also measured at HEAD.
+SVC-007a's, untouched here — was **146 green across 11 files** at this unit's own head.
+
+★ **RE-COUNTED AFTER THE 2026-09-10 MERGE of SVC-007b (#414), because the merge moved this
+number and a merge-moved count that is not re-counted is this programme's most frequent defect.**
+The eight files above are **unchanged at 98** — #414 touched none of them. The wider set is now
+**161 green across 12 files**: `service-management.integration` went 13 → **18** (#414's five audit
+cases, including the two rollback probes it extended to count audit rows), the new
+`service-control-audit` (**10**) joins as the twelfth file, and `service-management` (18) and
+`service-reconciler.integration` (17) are unmoved. 98 + 18 + 18 + 17 + 10 = **161**. Measured at the
+merge commit after the last edit, with `AOA_RUN_WIN_INTEGRATION=1`.
 
 | Case | What it pins |
 |---|---|
