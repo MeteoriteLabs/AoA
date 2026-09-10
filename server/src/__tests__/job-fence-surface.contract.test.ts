@@ -151,13 +151,16 @@ const EXPECTED_UNGUARDED = [
   //
   // `attributeServiceInstance` writes only `job_id` / `attempt_id`, never `status`.
   //
-  // ★ THE SENTENCE THAT USED TO FOLLOW HERE — "`recordServiceHealth` stays the sole (and
-  // guarded) writer of instance status" — WAS TRUE AT SVC-002 AND IS NOT TRUE NOW, and it is
-  // corrected rather than left as a comment describing a tree that moved underneath it.
-  // SVC-003a made `applyServiceProjectionForFence` a second author (inside `acceptEvent`,
-  // which IS a guarded mutator, so it adds no method to this surface), and SVC-003b adds a
-  // third below. All three funnel through ONE writer, `writeServiceInstanceStatus`, which is
-  // an inner function rather than a repository method and so is likewise not on this surface.
+  // ★ CORRECTION (SVC-007a, extended by SVC-003b). The sentence that stood here —
+  // "`recordServiceHealth` stays the sole (and guarded) writer of instance status" — was
+  // already FALSE at `053f90fc8`: SVC-003a introduced `writeServiceInstanceStatus` as the ONE
+  // writer of that column and gave it TWO entry points, `recordServiceHealth` and the fenced
+  // `applyServiceProjectionForFence` (the latter lives inside `acceptEvent`, itself a guarded
+  // mutator, so it adds no method to this surface). SVC-003b's liveness deadline adds a THIRD
+  // entry point below, and SVC-007a's cancelled-attempt backstop a FOURTH. All of them are
+  // inner functions rather than members of this surface, so the drift was invisible to this
+  // test. It is corrected rather than quietly deleted, because a stale comment on a
+  // fail-closed list is the thing that makes the list read as more than it proves.
   "lockServiceForReconcile",
   "countNonTerminalInstances",
   "insertServiceInstance",
@@ -182,6 +185,39 @@ const EXPECTED_UNGUARDED = [
   // write is conditional on the status read under the lock, through the same single
   // `writeServiceInstanceStatus` the two fenced authors use.
   "sweepServiceInstanceLiveness",
+  // SVC-007a — the service CREATE, the desired-state control and the operator read, classified
+  // in the SAME commit that adds them.
+  //
+  // Five of SVC-007a's six are outside the fence for SVC-002's reason above (its "six" is a
+  // different set — the six-method block SVC-002 classified, above `lockServiceForReconcile`,
+  // and no longer the block immediately preceding this one now that SVC-003b's sweep sits
+  // between them): they run in the
+  // control plane's own tenant transaction and mostly BEFORE any job exists, so there is no
+  // fence to guard against and `guardActiveFence` would be unsatisfiable rather than stricter.
+  // `insertServiceGeneration` writes an immutable row that no worker can reach at all
+  // (`aoa_app` holds only SELECT and INSERT on `service_generations`).
+  "insertServiceGeneration",
+  "updateServiceDesiredState",
+  "findServiceForCompany",
+  "listServicesForCompany",
+  "findLiveServiceInstance",
+  // ★★★ THE SIXTH IS THE ONE THAT NEEDS ITS OWN PARAGRAPH, because it is a THIRD entry point
+  // onto `writeServiceInstanceStatus` and it is UNGUARDED.
+  //
+  // WHY A FENCE CANNOT GUARD IT. Its precondition is that the attempt this instance is
+  // attributed to is ALREADY TERMINAL — that is the only state it acts in. A terminal attempt
+  // has no active lease, so `guardActiveFence` would refuse EVERY real call. That is exactly
+  // the reaper/quarantine/`classifyLeaseTruth` reasoning above: a method that acts precisely
+  // WHEN the fence is gone cannot be gated on the fence being present.
+  //
+  // WHAT STANDS IN FOR THE FENCE, and it is four things, not a promise: (1) the attempt's
+  // terminal, non-`succeeded` status is RE-READ from the database under the instance's row
+  // lock, so the caller cannot assert it; (2) an already-terminal instance is a no-op; (3)
+  // legality is the frozen `SERVICE_INSTANCE_TRANSITIONS` predecessor set computed by the
+  // server, and an EMPTY set REFUSES rather than writing; (4) the write itself goes through
+  // `writeServiceInstanceStatus`, conditional on the exact status read under that lock. It is
+  // not worker-reachable: no wire operation resolves to it (E9-F006).
+  "terminalizeServiceInstanceForCancelledAttempt",
 ];
 
 function parse(path: string): ts.SourceFile {

@@ -27,8 +27,8 @@ that remain, and delivers **one** of them.
 |---|---|---|---|
 | 1 | service health | delivered by SVC-003a | untouched |
 | 2 | **liveness deadline** | **not built** | **DELIVERED** |
-| 3 | graceful stop | request path has no producer | measured, **not built** — E9-F007 |
-| 4 | checkpoint request | not persistable, no producer | measured, **not built** — E9-F007 |
+| 3 | graceful stop | request path has no producer | measured, **not built** — E9-F008 |
+| 4 | checkpoint request | not persistable, no producer | measured, **not built** — E9-F008 |
 | 5 | bounded lease renewal | per-renewal extent bounded; total unbounded | measured, **not changed** |
 
 ### 1.1 Two corrections to SVC-003a's own record, found by re-measuring
@@ -45,7 +45,7 @@ memory/context acceptance clause remains **NOT BUILDABLE**, for the reason SVC-0
 number corrected.
 
 **(ii) "graceful stop — SVC-005 owns the request side" understates it.** SVC-003a's phrasing reads
-as a scope handoff. The measurement is stronger and is filed as **E9-F007**: `graceful_stop` is a
+as a scope handoff. The measurement is stronger and is filed as **E9-F008**: `graceful_stop` is a
 frozen `CONTROL_COMMAND_KINDS` member, it is permitted by `job_control_commands_kind_check`,
 `renewLease` surfaces it, and the daemon classifies it — and **nothing in the tree produces one**.
 The only general-purpose producer, `queueGovernedControlCommand`, is narrowed at the TYPE level to
@@ -191,7 +191,7 @@ mocked clock that does not resemble production.
   the live index and SVC-002's unchanged reconciler does the rest. WHETHER a service that keeps
   dying should be replaced at all, and with what backoff, is the crash-loop clause and this unit has
   no opinion.
-* **Fencing the worker is not done, and the residual is filed (E9-F006).** The sweep writes exactly
+* **Fencing the worker is not done, and the residual is filed (E9-F007).** The sweep writes exactly
   one table, because E9's own acceptance sentence makes ownership `renewLease`'s and the reaper's.
   The replacement row is protected by SVC-003a's split-brain refusal; the old worker's external
   effects are not, and that is SVC-005's overlap clause reached one ticket early.

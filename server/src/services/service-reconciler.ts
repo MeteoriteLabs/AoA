@@ -462,7 +462,7 @@ export function createServiceReconciler(input: {
    * one, and the observation was right: a `lost` row records the STATUS and not the AUTHOR, and
    * an aggregate per-tick count names no instance. This hook is the instance-specific half. It
    * is NOT the durable half — a log line is not a record — and that residual is filed as
-   * E9-F008 with the `job_projection_receipts` route named, rather than closed here by
+   * E9-F009 with the `job_projection_receipts` route named, rather than closed here by
    * inventing an `activity_log` convention no neighbouring writer in this layer has.
    */
   onTerminalized?: (entry: {

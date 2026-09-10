@@ -3,8 +3,8 @@
 **Epic:** E9 · **Lane:** B · **Base:** `053f90fc8` (branched from `docs/replatform-program`)
 **Terrain + design:** [`SVC-003b-design.md`](./SVC-003b-design.md) · **Predecessor:**
 [`SVC-003a-result.md`](./SVC-003a-result.md)
-**Register:** gate clause `E9-4-service-liveness-deadline` enrolled `wired`. **`E9-F006`, `E9-F007`
-and `E9-F008` FILED (`open`/`unowned`). NO finding is closed. SVC-003 STAYS OPEN.**
+**Register:** gate clause `E9-4-service-liveness-deadline` enrolled `wired`. **`E9-F007`, `E9-F008`
+and `E9-F009` FILED (`open`/`unowned`). NO finding is closed. SVC-003 STAYS OPEN.**
 
 ---
 
@@ -52,7 +52,7 @@ placement, health, restart, checkpoint, drain, budgets, UI and a 72-hour D4 cana
   exactly ONE table — `L-T11` asserts the lease's `status`, `expires_at` and `fence` are unchanged
   across a terminalization, and mutant **L17** reds it. That restraint is E9's own acceptance
   sentence (*"health events do not extend ownership without a successful lease renewal"*) applied to
-  a second writer. The cost is real and is **filed as E9-F006, not implied**: a silent-but-still-
+  a second writer. The cost is real and is **filed as E9-F007, not implied**: a silent-but-still-
   renewing worker keeps its fence while its replacement starts. The replacement's ROW is protected
   (SVC-003a's split-brain refusal returns `illegal_transition` for the old worker's late events, so
   two live rows under one partial-unique key stay impossible); the old worker's EXTERNAL EFFECTS are
@@ -106,9 +106,12 @@ baseline measured immediately before and immediately after the campaign.
 "original" and stack mutants. (ii) Every failure path restores BEFORE reporting, and `restore`
 byte-verifies the file equals the backup before deleting it — SVC-003a's harness threw after
 writing, leaving a mutant on disk while the driver said `APPLY FAILED`. Each anchor is tried in
-**both line-ending forms** and a miss THROWS before any write; this matters here, measured rather
-than assumed: `service-reconciler.ts` and `job-control.ts` are **CRLF** and the new
-`service-liveness-deadline.ts` is **LF**. Repository mutants rebuild `dist` before the run, because
+**both line-ending forms** and a miss THROWS before any write. ★ An earlier revision of this note
+said `service-reconciler.ts` and `job-control.ts` were CRLF while the new
+`service-liveness-deadline.ts` was LF. Re-measured at head with `git ls-files --eol`, **all three
+are `i/lf` in the index and `w/crlf` in a Windows checkout** — the difference the note described
+was the authoring checkout's own disk, not the tree. The both-forms attempt stays, because the
+harness has to hold on either checkout. Repository mutants rebuild `dist` before the run, because
 the server suite resolves `@armyofagents/db` through `dist` while vitest prints `src` paths.
 
 **NAMED POSITIVE CONTROL: `L-T9 POSITIVE CONTROL — SVC-002's convergence is untouched by the
@@ -233,7 +236,7 @@ row while a deadline kill leaves nothing. The reviewed fix — an `activity_log`
 writes `activity_log` at all**, so it would be a new convention entering the layer through its least
 prominent door. The instance-specific half IS delivered (`onTerminalized`, one call per condemned
 instance, logged at the composition root with the row's identity and the status it left). **The
-durable half is not, and is filed as E9-F008** with the in-house route named — a `db:generate`
+durable half is not, and is filed as E9-F009** with the in-house route named — a `db:generate`
 widening of `job_projection_receipts_projection_kind_check`, exactly as SVC-003a's `0277` widened it,
 with `deadline:{serviceInstanceId}` as the source identity. Half a clause is not the clause, so
 nothing is claimed closed.
@@ -353,7 +356,7 @@ Re-measured from `program-design.md`'s SVC-003 node at source, not inherited fro
 Outcome is a five-way conjunction: health (SVC-003a), liveness deadline (this unit), graceful stop,
 checkpoint request, bounded lease renewal. **SVC-003 STAYS OPEN.**
 
-1. **Graceful stop — NOT BUILT, and it is BLOCKED, not merely deferred.** Filed as **E9-F007**.
+1. **Graceful stop — NOT BUILT, and it is BLOCKED, not merely deferred.** Filed as **E9-F008**.
    `graceful_stop` is a frozen `CONTROL_COMMAND_KINDS` member, `job_control_commands_kind_check`
    permits it, `renewLease` surfaces it in both `cancelRequested` and the `dev.aoa.job/control-v1`
    extension, and the daemon's `control-commands.ts` classifies it — and **nothing in the tree
@@ -364,7 +367,7 @@ checkpoint request, bounded lease renewal. **SVC-003 STAYS OPEN.**
 2. **Checkpoint request — STRUCTURALLY UNAVAILABLE, confirmed at source.**
    `job_control_commands_kind_check` permits five of the six frozen kinds and omits `checkpoint`
    entirely, so the row cannot be written at all. Widening the CHECK must precede any producer.
-   SVC-004. Also E9-F007.
+   SVC-004. Also E9-F008.
 3. **Bounded lease renewal — NOT CHANGED, and measured rather than restated.** Each renewal's EXTENT
    is bounded and always was (`renewLease` sets `expires_at = clock_timestamp() + leaseDurationMs`;
    `createJobLeaseRenewalService` clamps that to ≥ 1 s and defaults it to 300 s, and the repository
@@ -386,10 +389,13 @@ network-partition test likewise stays unbuildable — no replica identity or par
 anywhere in the tree.
 
 **No finding is closed.** E9-F002, E9-F003 and E9-F004 are untouched and stay `open`/`unowned`.
-E9-F005 stays `resolved`. **E9-F001 is unaffected.** Two findings are OPENED: **E9-F006** (the
-deadline terminalizes the instance and does not fence the worker) and **E9-F007** (three frozen
-control-command kinds have zero producers, one of them unstorable, and a repository docstring says
-otherwise).
+E9-F005 stays `resolved`, and **E9-F006 belongs to SVC-007a** and is untouched. **E9-F001 is
+unaffected.** **THREE findings are OPENED** — the same three the header and §8 list, said here in
+full rather than as a pair: **E9-F007** (the deadline terminalizes the instance and does not fence
+the worker), **E9-F008** (three frozen control-command kinds have zero producers, one of them
+unstorable, and a repository docstring says otherwise) and **E9-F009** (a `lost` row records the
+STATUS and not the AUTHOR, so a deadline kill and a worker-reported loss are indistinguishable
+after the fact).
 
 ---
 
@@ -434,12 +440,12 @@ service. It is not claimed here.
 - `scripts/gate-clause-wiring.json`: **added** `E9-4-service-liveness-deadline`, `wired`, symbol
   `sweepOrganizationServiceLiveness` (1 production caller, base 0). Six insert lines, no
   reformatting; the guard reports OK with 15 wired clauses.
-- `docs/replatform/epics/E9-service-agents/findings.md`: **E9-F006 FILED** (`open`/`unowned`, HIGH —
-  the worker is not fenced); **E9-F007 FILED** (`open`/`unowned`, MED — three frozen command kinds
-  with zero producers); **E9-F008 FILED** (`open`/`unowned`, MED — a `lost` row records the status
+- `docs/replatform/epics/E9-service-agents/findings.md`: **E9-F007 FILED** (`open`/`unowned`, HIGH —
+  the worker is not fenced); **E9-F008 FILED** (`open`/`unowned`, MED — three frozen command kinds
+  with zero producers); **E9-F009 FILED** (`open`/`unowned`, MED — a `lost` row records the status
   and not the author; the durable half of what review asked for, deliberately not built here). No
   existing finding's status changed.
-- `scripts/finding-ownership.json`: **E9-F006, E9-F007 and E9-F008 keys ADDED** (`unowned`, each
+- `scripts/finding-ownership.json`: **E9-F007, E9-F008 and E9-F009 keys ADDED** (`unowned`, each
   with its residual and resolve criterion). No key deleted — this unit closes nothing.
 - `docs/replatform/epics/E9-service-agents/README.md`: one paragraph, above the exit-gate line.
 - `packages/db/src/migrations/0278_service_instance_last_observed_at.sql` + `meta/` +

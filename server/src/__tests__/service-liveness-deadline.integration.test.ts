@@ -476,7 +476,7 @@ suite("SVC-003b — a silent worker's instance is terminalized and replaced", ()
   //
   // (a) `onTerminalized` fires once PER INSTANCE with the row's identity and the status it was
   //     driven out of. A per-tick COUNT cannot tell an operator which service died, and a
-  //     `lost` row records the status without the author (E9-F008 — the DURABLE half of this
+  //     `lost` row records the status without the author (E9-F009 — the DURABLE half of this
   //     is deliberately NOT built, and this case does not claim it).
   // (b) `nextDelayMs` treats a terminalization as convergence work. If the sweep consumes the
   //     tick budget the convergence pages are skipped entirely, so `created` is 0 on a tick
@@ -568,7 +568,7 @@ suite("SVC-003b — a silent worker's instance is terminalized and replaced", ()
   // not this function's authority. Ownership is `renewLease`'s and the reaper's, and nothing
   // else's.
   //
-  // ★ AND THE RESIDUAL THIS LEAVES IS FILED, NOT HIDDEN (E9-F006). Because the lease survives,
+  // ★ AND THE RESIDUAL THIS LEAVES IS FILED, NOT HIDDEN (E9-F007). Because the lease survives,
   // a worker that is silent-but-still-renewing keeps its fence while its replacement starts,
   // so two workers can briefly execute one service. What protects the REPLACEMENT is
   // SVC-003a's split-brain refusal: the old worker's late events land on a terminal row and

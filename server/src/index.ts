@@ -1419,7 +1419,7 @@ if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
     },
     // SVC-003b — one line PER INSTANCE the deadline condemned, naming the row and the status it
     // was driven out of, so an operator can tell a deadline kill from a worker-reported one. A
-    // log line is not a durable record; the durable half is E9-F008 and is not built.
+    // log line is not a durable record; the durable half is E9-F009 and is not built.
     onTerminalized: (entry) => {
       logger.warn(entry, "[svc-003b] liveness deadline terminalized a service instance");
     },
