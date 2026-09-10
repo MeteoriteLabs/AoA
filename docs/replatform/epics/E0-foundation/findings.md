@@ -1985,7 +1985,7 @@ stale**, including one its correction table marked *"✔ EXACT"*:
 | `wrong_prefix`/`tenant_mismatch` — the two guards at the head of `commitArtifactVersion` | `job-control.ts:2750`/`:2751` — **paper: "✔ EXACT"** | `:3109`/`:3110` at `6b39c77f6` (359-line drift), and `:3120`/`:3121` at this PR's HEAD — **moved again by this unit's own JSDoc.** ★ Cite the two guards, not the numbers |
 | the "LOG LINE" comment | register: `artifact-commit.ts:172-173` → paper: `:259-260` | `:263-265` (now removed) |
 | suppression gate / return / execute | register: `:5399`/`:5451`/`:5453` | `:5457`/`:5509`/`:5511` — **shifted by this unit's own edit** |
-| lease-candidate eligibility, `offerLease`, CHECK | register: `:1947`, `:2318-2328`, `job_attempts.ts:95-112` | `:2306`, `:2669`+`:2680-2687`, `:95-135` |
+| lease-candidate eligibility, `offerLease`, CHECK — cite the `eq(jobAttempts.placementLeaseEligible, true)` terms and the `if (!attempt) return null`, not the numbers | register: `:1947`, `:2318-2328`, `job_attempts.ts:95-112` | `:2306`, `:2669`+`:2680-2687` at `6b39c77f6`; `:2317`, `:2680`+`:2691-2698` at this PR's HEAD — **shifted again by this unit's own JSDoc**, which moved every line in `job-control.ts` below `:631`. `job_attempts.ts:95-135` unmoved |
 
 All corrected in the register, with the correction itself recorded there rather than silently applied.
 
