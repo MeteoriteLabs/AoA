@@ -137,8 +137,9 @@ export function DevicesSection() {
               Connected devices<span className="text-brand">.</span>
             </h2>
             <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-              The machines enrolled to this organization for agent execution. Read-only: this lists
-              what has connected — it does not enroll, rename, or revoke devices.
+              The device enrolments connected to this organization for agent execution — each row is
+              one enrolment, not necessarily a distinct machine. Read-only: this lists what has
+              connected; it does not enroll, rename, or revoke devices.
             </p>
           </div>
           <Button
