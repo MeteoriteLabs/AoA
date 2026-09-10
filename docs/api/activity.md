@@ -83,11 +83,21 @@ Without paging, only the newest `limit` matching refusals are reachable at all: 
 
 `limit` bounds the **result set**, not the scan. The scan is bounded by an index, which is a different mechanism.
 
-Migration `0275` adds a **partial** index — `(created_at DESC, id DESC) WHERE action LIKE 'security.denied.%'` — matching this endpoint's predicate and its total order exactly. The default cross-tenant query is now planned as `Limit <- Index Scan`, with no `Sort` and no `Seq Scan`, and a cursor page's row-value comparison becomes an `Index Cond` (a seek) instead of a per-row `Filter`. Measured on real Postgres over 60,300 rows, the first page went from 1,098 shared buffers to 6, and a deep cursor page from 1,098 to 4; `Rows Removed by Filter: 60000` disappears. Because the index is partial it holds denial rows only, so ordinary product rows cost nothing to maintain and are invisible to it.
+Migration `0276` adds a **partial** index — `(created_at DESC, id DESC) WHERE action LIKE 'security.denied.%'` — matching this endpoint's predicate and its total order exactly. The default cross-tenant query is now planned as `Limit <- Index Scan`, with no `Sort` and no `Seq Scan`, and a cursor page's row-value comparison becomes an `Index Cond` (a seek) instead of a per-row `Filter`. Measured on real Postgres over 60,300 rows, the first page went from 1,098 shared buffers to 6, and a deep cursor page from 1,098 to 4; `Rows Removed by Filter: 60000` disappears. Because the index is partial it holds denial rows only, so ordinary product rows cost nothing to maintain and are invisible to it.
 
-**This is a matched pair, not a free win.** The planner uses the index only while the query's `WHERE` still implies the index predicate and its `ORDER BY` still matches the index ordering. Changing the action prefix, the sort columns, or the sort direction on this endpoint silently reverts it to `Sort <- Seq Scan` with no error and no failing test — which is why `server/src/__tests__/e0-f013-denial-index-plan.integration.test.ts` asserts the **plan** rather than only the rows.
+**This is a matched pair, not a free win** — and the three ways it can come apart do *not* all look the same, which an earlier draft of this paragraph got wrong. Each was measured against `server/src/__tests__/e0-f013-denial-index-plan.integration.test.ts`, which builds both of its plans from `activityService.securityDenials` itself rather than from a copy of its SQL:
 
-Before `0275` this section said deep paging re-scanned the table per page. That was accurate then and is not now.
+| Drift on this endpoint | What actually happens | Caught by |
+|---|---|---|
+| Change the **action prefix** | The `WHERE` no longer implies the partial predicate; the plan reverts to `Sort <- Seq Scan`. | The plan arms (5 of 7 red). |
+| Change the **sort direction** | The index cannot be walked in that order; the `Sort` returns. | The plan arms (4 of 7 red). |
+| Drop the **`id` tiebreaker** from the sort | **The plan does not change.** `created_at DESC` alone is a *prefix* of the index key order, so Postgres keeps using the index and keeps `Limit <- Index Scan`. What silently breaks is the total order the keyset cursor needs: pages lose rows on a `created_at` tie, with a `200` and no error. | Only the matched-pair arm, which compares the reader's emitted `ORDER BY` against `pg_indexes.indexdef` (1 of 7 red). |
+
+The earlier draft said all three "silently revert it to `Sort <- Seq Scan` with no error and no failing test". The third row of that claim is false, and — until this was fixed — the "no failing test" half was true of *every* row, because the test transcribed the endpoint's SQL by hand instead of deriving it. Dropping the tiebreaker left both suites 23/23 green. See `docs/replatform/epics/E0-foundation/findings.md`.
+
+Before `0276` this section said deep paging re-scanned the table per page. That was accurate then and is not now.
+
+**Not measured:** the index's *build* cost at production scale (a partial index still scans the whole heap to build, holding a `SHARE` lock that blocks writes to `activity_log`), and the plan guard runs against embedded-postgres at 40,000 rows, not production volumes.
 
 ## Issue Heartbeat Runs
 

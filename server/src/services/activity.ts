@@ -88,7 +88,7 @@ export const SECURITY_DENIAL_MAX_LIMIT = 500;
  * ★ THE SCAN CLAIM, UPDATED BECAUSE IT IS NOW FALSE AS PREVIOUSLY WRITTEN. This
  * comment used to say the denial query "is planned as
  * `Limit <- Sort <- Seq Scan on activity_log`" and that the missing index was
- * filed NOT-DONE. Migration `0275` added it — a PARTIAL index on
+ * filed NOT-DONE. Migration `0276` added it — a PARTIAL index on
  * `(created_at DESC, id DESC) WHERE action LIKE 'security.denied.%'` — so the
  * plan is now `Limit <- Index Scan using activity_log_denial_created_idx`, with
  * no Sort and no Seq Scan, and the keyset cursor's row-value comparison becomes
@@ -96,7 +96,8 @@ export const SECURITY_DENIAL_MAX_LIMIT = 500;
  * 60,300 rows: `Rows Removed by Filter: 60000` and 1,098 shared buffers before,
  * 6 buffers after; on the deep page, 1,098 buffers before and 4 after. Both
  * plans are pasted in `docs/replatform/epics/E0-foundation/findings.md`, and
- * `e0-f013-denial-index-plan.integration.test.ts` asserts the plan so this
+ * `e0-f013-denial-index-plan.integration.test.ts` asserts the plan — of the
+ * query `securityDenials` actually builds, not of a copy of it — so this
  * paragraph cannot go stale silently again.
  */
 export function clampDenialLimit(limit: number | undefined): number {
@@ -384,12 +385,28 @@ export function activityService(db: Db) {
      * was written there was no index on `action`, so every page was a seq scan
      * plus a sort and deep paging was O(table) EACH TIME: the cursor made the
      * evidence reachable and re-read the whole table to reach it. Migration
-     * `0275` adds a partial index on `(created_at DESC, id DESC)
+     * `0276` adds a partial index on `(created_at DESC, id DESC)
      * WHERE action LIKE 'security.denied.%'`, which the predicate and the ORDER
-     * BY here are written to match exactly — change either and the planner
-     * silently stops using it, which is why
-     * `e0-f013-denial-index-plan.integration.test.ts` asserts the PLAN and not
-     * just the answer.
+     * BY here are written to match exactly.
+     *
+     * ★ HOW THAT MATCH IS HELD, STATED PRECISELY BECAUSE THE PREVIOUS VERSION OF
+     * THIS PARAGRAPH OVERSTATED IT. It used to say "change either and the
+     * planner silently stops using it". Measured, that is true of the ACTION
+     * PREFIX (the WHERE stops implying the index predicate) and of the SORT
+     * DIRECTION (the index cannot be walked that way), and FALSE of dropping
+     * `desc(activityLog.id)` below: `created_at DESC` alone is a PREFIX of the
+     * index key order, so the planner keeps the Index Scan and the plan does not
+     * change at all. What breaks then is the TOTAL ORDER the keyset cursor
+     * needs — pages lose rows on a `created_at` tie, with a 200 and no error.
+     *
+     * `e0-f013-denial-index-plan.integration.test.ts` covers both halves, and
+     * covers them by building its plans from THIS FUNCTION (`getSQL()` off
+     * `securityDenials`) rather than from a transcription of its SQL. That is
+     * load bearing: while it held hand-copied literals, dropping the tiebreaker
+     * left it and its sibling suite 23/23 GREEN, because it was planning a copy
+     * of this query rather than this query. Its MATCHED PAIR arm additionally
+     * compares the ORDER BY emitted here against `pg_indexes.indexdef`, which is
+     * the only thing that sees the prefix drift.
      */
     securityDenials: (filters: SecurityDenialQuery = {}) => {
       const conditions = [
