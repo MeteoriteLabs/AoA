@@ -502,6 +502,27 @@ are themselves absent (`E8-F011`). Nothing decides, so there is nothing to recor
 | 5a | **"sensitive-artifact access … audited"** | **ABSENT, but DECISIONS EXIST and some already record.** | Access is gated and **denies** in `server/src/services/artifact-transfer-grant.ts` — upload key must be under this org's attempt prefix (`:180-184`, `deny("foreign_object_prefix")`); download requires a committed row for this tenant (`:295` `findCommitted` → `:300` `deny("artifact_not_committed")`, with the key compare at `:302` and the download prefix guard at `:290-292`) — and at `packages/db/src/repositories/tenant/job-control.ts:2750` `wrong_prefix` / `:2751` `tenant_mismatch`. ★ **Refusals at that surface ALREADY write `security.denied.artifact_transfer_grant` rows**: `recordSecurityDenial(input.appDb, { crossing: "DE-06", surface: ARTIFACT_TRANSFER_GRANT_DENIAL_SURFACE, … })` at `artifact-transfer-grant.ts:354-357`, the slug declared at `server/src/services/artifact-denial-audit.ts:67`, wired by DE-06's Unit C. What is missing is the **successful** access record — which is precisely `DE-06`'s open "object put/get" conjunct, i.e. **already-scheduled work, not a decision.** |
 | 5b | **"… retention are audited"** | ★★ **ABSENT, AND DELIVERABLE TODAY, CHEAPLY.** | `resolveStoredRetention` (`server/src/services/artifact-retention-authority.ts:49`) is a **live control-plane retention decision**, called at `server/src/services/artifact-commit.ts:253`, that overrides a worker's declared class. It returns `declarationIgnored: boolean`, and `artifact-commit.ts:257` branches on it. **The code's own comment at `:259-260` says: "This is a LOG LINE, not an audit record — DE-11 claims retention is audited and nothing audits it; this ticket does not pretend to close that."** That is a **deferral**, not an impossibility. |
 
+★ **BOTH CONJUNCTS NOW HAVE A LIVE WRITER (2026-09-10), AND DE-11 STILL DOES NOT CLOSE — so this
+section's recommendation is UNCHANGED and is merely no longer waiting on other people's work.**
+**5b** was wired by W20-B (`recordRetentionDecision`, `server/src/services/artifact-retention-audit.ts`);
+the "LOG LINE, not an audit record" comment this row quotes is gone. **5a** was wired by the
+object-access unit, exactly as this row predicted — it *was* `DE-06`'s put/get conjunct, and it was
+scheduled work rather than a decision. A successful download grant now writes a
+`security.object_access.artifact_download_grant` row carrying `details.kind` and
+`details.sensitivity`, **read from the committed `job_artifacts` row**, so the record says WHICH
+KIND became reachable rather than only that a transfer happened. ★ **WHAT STILL HOLDS DE-11 OPEN IS
+A GROUND THIS PAPER DID NOT MEASURE:** nothing in production uploads `browser_cookie_state` or
+`browser_storage_state` (BRW-003 unbuilt), so neither record has ever been about a
+credential-bearing kind — both proving suites provoke one BY HAND and pin it as test-provoked.
+That is a **coverage** gap, not a decision, and it does not restore DE-11 to the six: this paper's
+verdict that DE-11's stated blocker is stale stands, and is now demonstrated rather than argued.
+Two further measurements, stated so a later reader does not re-derive them: on the **upload** arm
+`kind`/`sensitivity` are `null`, because the artifact does not exist yet and the frozen grant
+request carries neither field (both are first declared in the COMMIT manifest) — a true answer, not
+a missing one; and `sensitivity` is **not a discriminator at all in v1**
+(`artifactSensitivitySchema` is `z.literal("restricted")` and `RESTRICTED_ARTIFACT_KINDS ===
+ARTIFACT_KINDS`), so `kind` is the only field separating a credential-bearing artifact from a log.
+
 ### ★★★ CITATION NOTE — 5a's file:lines were INHERITED, and two of them were stale
 
 **The method promise in §1 was broken here.** 5a's citation list read, in the first draft,
@@ -733,6 +754,16 @@ recorded*. Two findings carry it:
 
 **Closed: one.** `DE-19` (2026-09-08), scoped to `memory.get`. `DE-06` and `DE-21` each received a
 *fraction* of a conjunction in Unit C (2026-09-09) and **neither closed**. **Open: sixteen.**
+
+★ **AMENDED 2026-09-10, AFTER THIS PAPER WAS MERGED — CLOSED: TWO, OPEN: FIFTEEN.** `DE-06`'s
+audit clause is now whole: the object-access unit delivered the *"object put/get"* conjunct — the
+one §6.1's row 5a names as *"already-scheduled work, not a decision"* — so `DE-06` leaves
+`E0-F010`'s cohort, which drops from eight to seven. `E0-F013`'s nine are unchanged. **This changes
+NO ruling this paper asks for and no recommendation in it:** `DE-06` was never one of the six
+undeliverable halves, and the ceiling table below already counted it among the eleven closable.
+`DE-21` is unchanged and still carries a fraction. The count is amended here rather than left to
+stand because a decision paper whose central complaint is an over-stated count must not carry a
+stale one of its own.
 
 **Now the count E0-F013 states.** Its own words:
 

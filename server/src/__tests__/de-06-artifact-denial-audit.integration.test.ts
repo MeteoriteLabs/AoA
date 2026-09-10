@@ -16,14 +16,23 @@
  * DE-06, and closing THE REJECTED-KEY HALF of it is what this file proves.
  *
  * ★ WHAT THIS FILE DOES NOT PROVE, first, because the clause is CONJUNCTIVE and
- * only one conjunct is delivered. DE-06's clause is verbatim "object put/get AND
- * rejected-key attempts are audited".
+ * this file proves only one conjunct. DE-06's clause is verbatim "object put/get
+ * AND rejected-key attempts are audited".
  *   - "rejected-key attempts" — delivered and proven below.
- *   - "object put/get" — NOT delivered. A SUCCESSFUL download grant
- *     (`artifact-transfer-grant.ts`, the sole production `presignGet` call site)
- *     presigns, parses and returns while writing no audit record at all, and no
- *     arm here asserts one. So DE-06's audit clause is HALF delivered, DE-06
- *     stays in `E0-F010`'s open cohort, and no record may say otherwise.
+ *   - "object put/get" — delivered on 2026-09-10, and NOT HERE. It is proven, arm
+ *     by arm, in `de-06-object-access-audit.integration.test.ts`: a SUCCESSFUL
+ *     upload or download grant writes an attributable `security.object_access.*`
+ *     row. Two arms in THIS file were amended by that unit and are marked where
+ *     they sit — the granted-upload positive control (which asserted "nothing at
+ *     all was appended", i.e. exactly that conjunct's absence) and the whole-log
+ *     namespace sweep. **Nothing in this file closes DE-06**, and no record may
+ *     cite it as the closure; what closes the clause is the two files together.
+ *     DE-06 stays `partial` in the threat register for its separately-absent
+ *     `authentication` clause (`E0-F012`).
+ *     *(Superseded text, kept so the correction is visible: "NOT delivered. A
+ *     SUCCESSFUL download grant … presigns, parses and returns while writing no
+ *     audit record at all, and no arm here asserts one. So DE-06's audit clause
+ *     is HALF delivered, DE-06 stays in `E0-F010`'s open cohort".)*
  *   - The fence-AUTH refusals are now ALL SIX recorded, and that still does not
  *     move DE-06. Only the post-resolution tuple-integrity branch has an
  *     FK-valid company in hand; the other five carry a token-attested
@@ -284,12 +293,23 @@ integration("DE-06 — a refused artifact object operation is durable and attrib
     };
   }
 
+  /**
+   * ★ NARROWED TO THE DENIAL NAMESPACE (2026-09-10, the put/get unit). This
+   * helper was action-BLIND — `WHERE entity_id = $1` and nothing else — so it
+   * answered "any audit row about this artifact", while every one of its ~20
+   * call sites reads it as "the denial rows". That was harmless only while the
+   * denial recorder was the sole writer keyed on an artifact id; the
+   * OBJECT-ACCESS recorder is a second one, and an unnarrowed helper would have
+   * made this file's refusal arms start counting successful grants. Narrowing
+   * cannot lose a row any existing arm asserts on: every row they assert is a
+   * `security.denied.*` row.
+   */
   async function denialRowsFor(artifactId: string): Promise<DenialRow[]> {
     const { admin } = ctx();
     return (await admin<DenialRow[]>`
       SELECT company_id, organization_id, actor_type, actor_id, action, entity_type, entity_id, details
       FROM activity_log
-      WHERE entity_id = ${artifactId}
+      WHERE entity_id = ${artifactId} AND action LIKE 'security.denied.%'
       ORDER BY created_at`) as unknown as DenialRow[];
   }
 
@@ -1100,7 +1120,7 @@ integration("DE-06 — a refused artifact object operation is durable and attrib
   });
 
   it("POSITIVE CONTROL — a GRANTED upload writes NO denial row (so 'always write a denial' fails this file)", async () => {
-    const { app } = ctx();
+    const { app, admin } = ctx();
     const offer = await activateLease();
     const svc = createArtifactTransferGrantService({ appDb: app.db, storage: makeStubStorage() });
     const before = await activityRowCount(COMPANY);
@@ -1109,8 +1129,20 @@ integration("DE-06 — a refused artifact object operation is durable and attrib
     const res = await svc.grant({ auth: auth(`ok-${crypto.randomUUID()}`), request });
     expect(res.outcome).toBe("upload_granted");
     expect(await denialRowsFor(artifactId)).toHaveLength(0);
-    // ...and nothing at all was appended to the tenant's audit stream.
-    expect(await activityRowCount(COMPANY)).toBe(before);
+    // ★ AMENDED 2026-09-10 BY THE PUT/GET UNIT, and the amendment is the point.
+    // This arm used to assert `toBe(before)` — "nothing at all was appended" —
+    // which was TRUE and was exactly DE-06's other open conjunct: a successful
+    // grant left no trace. It now appends ONE row, in the OBJECT-ACCESS
+    // namespace and NOT in the denial namespace, so the control this arm exists
+    // for ("always write a denial" must fail this file) still holds and is
+    // asserted directly rather than inferred from a total count.
+    expect(await activityRowCount(COMPANY)).toBe(before + 1);
+    const appended = await admin<{ action: string }[]>`
+      SELECT action FROM activity_log
+      WHERE company_id = ${COMPANY} AND entity_id = ${artifactId}`;
+    expect(appended).toHaveLength(1);
+    expect(appended[0]!.action).toBe("security.object_access.artifact_upload_grant");
+    expect(appended[0]!.action.startsWith("security.denied.")).toBe(false);
   });
 
   // ───────────────────────────────────────────────────────────────────────────
@@ -1282,7 +1314,27 @@ integration("DE-06 — a refused artifact object operation is durable and attrib
     const rows = await admin<{ action: string; company_id: string | null; organization_id: string | null }[]>`
       SELECT action, company_id, organization_id FROM activity_log ORDER BY created_at`;
     expect(rows.length).toBeGreaterThanOrEqual(6);
+    // ★ AMENDED 2026-09-10 BY THE PUT/GET UNIT. This loop asserted that EVERY row
+    // in `activity_log` is a `security.denied.` row. That was true while a
+    // refusal was the only thing this file could produce; the granted-upload
+    // positive control above now also writes an OBJECT-ACCESS row. The property
+    // this arm exists for is unchanged and is now stated exactly: every row is in
+    // ONE OF THE TWO reserved audit namespaces, and a row in neither still fails.
+    // The `security.object_access.` rows are then excluded from the denial-shape
+    // assertions below, which are about denials.
+    const reserved = ["security.denied.", "security.object_access."];
     for (const row of rows) {
+      expect(
+        reserved.some((prefix) => row.action.startsWith(prefix)),
+        `row action ${row.action} is in neither reserved audit namespace`,
+      ).toBe(true);
+    }
+    // A NAMED POSITIVE CONTROL for the widening: the object-access namespace is
+    // genuinely represented here, so the extra prefix is not dead allowance.
+    expect(rows.some((r) => r.action.startsWith("security.object_access."))).toBe(true);
+    const denialRows = rows.filter((r) => r.action.startsWith("security.denied."));
+    expect(denialRows.length).toBeGreaterThanOrEqual(6);
+    for (const row of denialRows) {
       expect(row.action.startsWith("security.denied.")).toBe(true);
       // Two shapes and NO third: a company-attributed row in THIS company, or a
       // tenantless row in THIS organization. A row naming another tenant, or one

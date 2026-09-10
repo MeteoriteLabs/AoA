@@ -20,11 +20,18 @@
 //
 // ★ WHAT IT DOES NOT DO — read this before citing it as a closure.
 //   * DE-06 is a CONJUNCTION: "object put/get AND rejected-key attempts are
-//     audited". A SUCCESSFUL download grant still presigns, parses and returns
-//     from `artifact-transfer-grant.ts` writing NOTHING, at the tree's only
-//     production `presignGet` call site. That conjunct is untouched here, so
-//     DE-06 does not close, and clause (a) — the "scoped service identity"
-//     authentication half, `E0-F012` — is untouched as well.
+//     audited". That conjunct is untouched HERE and this module still does not
+//     close DE-06 — but ★ it is no longer OPEN: on 2026-09-10
+//     `artifact-object-access-audit.ts` began recording a SUCCESSFUL upload or
+//     download grant as an attributable `security.object_access.*` row, so both
+//     conjuncts of the audit clause hold and DE-06 has left `E0-F010`'s cohort.
+//     Clause (a) — the "scoped service identity" authentication half,
+//     `E0-F012` — is untouched by BOTH units, which is why DE-06's register row
+//     stays `partial`.
+//     *(Superseded text, kept so the correction is visible: "A SUCCESSFUL
+//     download grant still presigns, parses and returns from
+//     `artifact-transfer-grant.ts` writing NOTHING, at the tree's only
+//     production `presignGet` call site … so DE-06 does not close".)*
 //   * DE-03 is a CONJUNCTION too: "enrollment, session issue, and
 //     replay-rejection are audited". Only the replay-rejection conjunct is
 //     wired here. Enrollment and session issue write nothing.
