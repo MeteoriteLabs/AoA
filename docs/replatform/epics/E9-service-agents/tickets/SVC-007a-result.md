@@ -424,6 +424,11 @@ addressed to SVC-005, no** — and the two were never the same half.
 | `docs/replatform/epics/E9-service-agents/findings.md` | E9-F006 filed and resolved |
 | `docs/replatform/epics/E9-service-agents/README.md` | SVC-007a's paragraph |
 | `scripts/gate-clause-wiring.json` | `E9-4-service-create-and-desired-state`, `wired` |
+| `docs/.../tickets/SVC-007a-design.md` | new — terrain + design, because SVC-007 had no files on disk |
+| `docs/.../tickets/SVC-007a-result.md` | new — this document |
+
+**Eleven files, and the table above is all eleven** — counted against `git diff --stat` at head
+rather than listed from memory.
 
 **No migration.** No schema change was needed: SVC-001 built both tables and granted `aoa_app`
 exactly the rights this unit uses (INSERT on `service_generations`; INSERT/UPDATE on `services`).
