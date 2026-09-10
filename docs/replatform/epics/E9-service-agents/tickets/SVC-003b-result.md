@@ -26,9 +26,9 @@ SAME tick. One migration, `db:generate` output plus a C14 class (a) guard, addin
 
 ## 2. ★★★ WHAT IS NOW TRUE THAT WAS NOT, AND WHAT IS STILL NOT TRUE
 
-**Now true.** SVC-003a stated the gap exactly and it is no longer accurate: *"a worker that goes
-silent WITHOUT EMITTING ANYTHING is still only reaped at the LEASE level, and nothing terminalizes
-its instance."* Measured at base and re-measured at head: `reapExpiredLeases` revokes the lease,
+**Now true.** SVC-003a stated the gap exactly, and that sentence is no longer a true description of
+the tree: *"a worker that goes silent WITHOUT EMITTING ANYTHING is still only reaped at the LEASE
+level, and nothing terminalizes its instance."* Measured at base and re-measured at head: `reapExpiredLeases` revokes the lease,
 releases the capacity slot and terminalizes the ATTEMPT and the JOB, and contains **no write to
 `service_instances` at all**. `L-T8` drives the real shipped reaper and measures that, then shows
 the deadline converting the orphan into a replaceable state. The harder variant is closed too, and
@@ -110,8 +110,11 @@ the server suite resolves `@armyofagents/db` through `dist` while vitest prints 
 
 **NAMED POSITIVE CONTROL: `L-T9 POSITIVE CONTROL — SVC-002's convergence is untouched by the
 deadline`.** A service with no instance converges to exactly one, through the unchanged reconciler,
-on a tick that also runs the sweep. **Green before, green after, and green under all seventeen
-mutants.**
+on a tick that also runs the sweep. **Green before, green after, and green under sixteen of the
+seventeen mutants — L7 is the exception and is not a survival, it is a non-run:** that mutant makes
+the module throw at load, so neither suite collects and no case executes, the control included. Said
+this way rather than as "green under all seventeen", because a control that did not run is not a
+control that held.
 
 ★ **AND ITS FIRST VERSION WAS NOT A CONTROL, WHICH IS THE LESSON OF THIS UNIT'S OWN CAMPAIGN.** It
 also asserted `livenessScanned === 0` — an ORDERING fact, not a convergence one — so mutant **L10**
@@ -159,7 +162,10 @@ a survivor.
 
 **L14 killed nothing.** The sweep applies an independent legality gate — the same check
 `applyServiceProjectionForFence` applies to a worker's payload, pointed at the control plane's own
-verdict — and deleting it left all 25 cases green.
+verdict — and deleting it left all **24** cases of the suite as it then stood green. (24, not 26:
+`L-T10` and `L-T11` did not exist yet. The number is stated as measured at that moment rather than
+back-filled from the final suite size, because that is exactly the substitution §4's note about
+`L1` warns about.)
 
 The reason is structural, not an oversight in coverage: `lost` is reachable from **all six**
 non-terminal statuses in the frozen table, and the sweep's population is exactly those six, so
