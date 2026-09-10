@@ -138,6 +138,14 @@ export const TERMINAL_SERVICE_INSTANCE_STATUSES = Object.freeze([
 /** The partial unique index that is SVC-002's duplicate-placement authority. */
 export const LIVE_SERVICE_INSTANCE_INDEX = "service_instances_live_service_uq";
 
+/**
+ * SVC-007 — the (service, generation) uniqueness that stands in for the deliberately absent
+ * `services.current_generation_id` (schema/service_generations.ts header). It is what makes
+ * "the current generation resolves by lookup" a constraint rather than a convention, and it
+ * is therefore the one constraint the generation writer may resolve into a definite answer.
+ */
+export const SERVICE_GENERATION_INDEX = "service_generations_service_generation_uq";
+
 // Fail at module load rather than at query time: `nonTerminalServiceInstanceStatus` below
 // interpolates these values into SQL text with `sql.raw`, so anything but a bare lowercase
 // identifier would be a defect the moment someone edited the frozen list. They come from a
@@ -195,6 +203,28 @@ function isLiveServiceInstanceConflict(error: unknown): boolean {
   for (let depth = 0; depth < 8 && current && typeof current === "object"; depth += 1) {
     const record = current as { code?: unknown; constraint_name?: unknown; cause?: unknown };
     if (record.code === "23505" && record.constraint_name === LIVE_SERVICE_INSTANCE_INDEX) {
+      return true;
+    }
+    current = record.cause;
+  }
+  return false;
+}
+
+/**
+ * SVC-007 — is this error a lost race against {@link SERVICE_GENERATION_INDEX}?
+ *
+ * NARROW FOR THE SAME REASON {@link isLiveServiceInstanceConflict} is narrow: the sibling
+ * constraints on this insert are the triple-composite tenant FK
+ * (`service_generations_org_company_service_fk`, which is what proves the generation's
+ * company matches its SERVICE's company) and the organization FK. Swallowing either of those
+ * into "a generation already exists" would report a definite, wrong answer for a tenant
+ * mismatch — the fail-open shape this epic keeps refusing.
+ */
+function isServiceGenerationConflict(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 8 && current && typeof current === "object"; depth += 1) {
+    const record = current as { code?: unknown; constraint_name?: unknown; cause?: unknown };
+    if (record.code === "23505" && record.constraint_name === SERVICE_GENERATION_INDEX) {
       return true;
     }
     current = record.cause;
@@ -369,6 +399,150 @@ export interface JobControlRepository {
     serviceId: string;
     generation: number;
   }): Promise<{ definition: Record<string, unknown>; ttlSeconds: number | null; checkpointArtifactId: string | null } | null>;
+  /**
+   * SVC-007 — the FIRST writer `service_generations` has ever had.
+   *
+   * ★ WHY THIS METHOD EXISTS AT ALL. `findServiceGenerationDefinition` above says in its own
+   * words that this table "has ZERO writers in the tree", so the reconciler answered
+   * `no_generation` for every service on every real deployment and E9 could not start
+   * anything. This is the other half of that read.
+   *
+   * IMMUTABILITY IS A GRANT, NOT A TRIGGER (schema/service_generations.ts header): `aoa_app`
+   * holds SELECT and INSERT here and no UPDATE or DELETE. So this repository deliberately
+   * exposes ONLY an insert — there is no update method to write, because the role could not
+   * execute one. A caller that wants to change a definition mints the NEXT generation.
+   *
+   * Returns `null` on a 23505 against `service_generations_service_generation_uq`, which is
+   * the (service, generation) uniqueness that stands in for the absent
+   * `services.current_generation_id`. A definite `null` rather than a throw, because the
+   * create path composes this with the `services` insert inside ONE transaction and a raised
+   * 23505 would abort the whole transaction (25P02 on every later statement) — the same
+   * lesson `insertServiceInstance` records above. The savepoint is the mechanism, for the
+   * same reason it is there.
+   */
+  insertServiceGeneration(values: {
+    organizationId: string;
+    companyId: string;
+    serviceId: string;
+    generation: number;
+    definition: Record<string, unknown>;
+    createdBy: string | null;
+  }): Promise<{ id: string; generation: number } | null>;
+  /**
+   * SVC-007 — the desired-state control's WRITE, as a compare-and-set on `desired_state`.
+   *
+   * The caller must already hold this service's row lock (`lockServiceForReconcile`), so the
+   * `expectedDesiredState` predicate is belt to that braces rather than the authority: it
+   * exists so that a future caller which forgets the lock still cannot overwrite a state it
+   * did not read. Returns `null` when nothing matched — an absent service and a state that
+   * moved are the same answer here, and the locked caller has already distinguished them.
+   *
+   * Deliberately does NOT touch `generation`: minting a new generation is a rollout, and a
+   * rollout without SVC-005's "no two generations perform external effects simultaneously"
+   * fence is exactly the overlap E9's acceptance forbids. See SVC-007a-design.md section 4.
+   */
+  updateServiceDesiredState(input: {
+    organizationId: string;
+    companyId: string;
+    serviceId: string;
+    expectedDesiredState: string;
+    desiredState: string;
+  }): Promise<{ desiredState: string; generation: number } | null>;
+  /**
+   * SVC-007 — the company-scoped read behind the operator view. Company scoping is
+   * necessarily app-layer (`aoa.organization_id` is the only GUC), so the company predicate
+   * is stated here and not left to RLS.
+   */
+  findServiceForCompany(input: {
+    organizationId: string;
+    companyId: string;
+    serviceId: string;
+  }): Promise<{
+    serviceId: string;
+    desiredState: string;
+    generation: number;
+    createdAt: Date;
+    updatedAt: Date;
+  } | null>;
+  /**
+   * SVC-007 — ★★★ THE CONTROL-PLANE HALF OF THE ATTEMPT-TERMINAL BACKSTOP, and it closes a
+   * PERMANENT WEDGE that the worker-side backstop structurally cannot reach.
+   *
+   * `requestCancellation` has a branch (`if (!lease || !attempt || …)`) that FINALIZES a
+   * cancellation directly — attempt and job both driven to `cancelled` under the locks it
+   * already holds — precisely because there is no fenced worker to drain. That is the normal
+   * case for a service the operator stops before its job was ever leased, which today is
+   * every service, since `E9-F002` keeps `workload.service` unofferable on most fleets.
+   *
+   * On that branch NO worker event is ever emitted, so SVC-003a's attempt-terminal backstop
+   * — which lives in the event decider and fires only from an ingested `terminal` — never
+   * runs. The instance stays `pending` inside `service_instances_live_service_uq` forever,
+   * and `countNonTerminalInstances` therefore answers 1 for the rest of the service's life:
+   * a later `stopped → running` resume converges NOTHING, reporting `instance_present` on
+   * every tick. Stop-then-resume would silently never restart. That is E9-F005's wedge
+   * reached through the control plane instead of through the daemon.
+   *
+   * ★ IT IS NOT A NEW SEMANTIC. The caller derives `toStatus`/`allowedFromStatuses` from THE
+   * SAME `decideServiceProjection` the worker path uses, for THE SAME attempt status, so the
+   * two paths cannot drift into two ideas of what a cancelled attempt means. `packages/db`
+   * does not depend on `worker-protocol`, which is why the frozen predecessor set arrives as
+   * a parameter here exactly as it does on `ServiceInstanceProjectionInput`.
+   *
+   * ★ THE DATABASE IS THE AUTHORITY, NOT THE CALLER. The attempt this instance is attributed
+   * to must ALREADY be terminal and NOT `succeeded`, read under the instance's row lock. So
+   * this method cannot terminalize a live instance even if a future caller asks it to, and a
+   * `succeeded` attempt (which emitted its own `_stopped`) is refused rather than overruled —
+   * the same two bounds the worker-side backstop states for itself.
+   *
+   * NO PROJECTION RECEIPT IS WRITTEN, and that is forced rather than chosen:
+   * `job_projection_receipts.source_fence` is NOT NULL and this path has no fence, by
+   * definition. Idempotency comes from the conditional write plus the already-terminal no-op,
+   * which is what makes a repeated stop request free.
+   */
+  terminalizeServiceInstanceForCancelledAttempt(input: {
+    organizationId: string;
+    companyId: string;
+    jobId: string;
+    toStatus: string;
+    allowedFromStatuses: readonly string[];
+  }): Promise<
+    | { outcome: "applied"; serviceInstanceId: string; fromStatus: string; toStatus: string }
+    | { outcome: "noop_already_terminal"; serviceInstanceId: string; fromStatus: string }
+    | { outcome: "attempt_not_terminal"; serviceInstanceId: string; attemptStatus: string | null }
+    | { outcome: "illegal_transition"; serviceInstanceId: string; fromStatus: string }
+    | { outcome: "unattributed" }
+  >;
+  /** SVC-007 — one page of a company's services, ordered by id, for the operator list. */
+  listServicesForCompany(input: {
+    organizationId: string;
+    companyId: string;
+    afterServiceId: string | null;
+    limit: number;
+  }): Promise<Array<{
+    serviceId: string;
+    desiredState: string;
+    generation: number;
+    createdAt: Date;
+    updatedAt: Date;
+  }>>;
+  /**
+   * SVC-007 — the LIVE instance for a service, i.e. the one row
+   * `service_instances_live_service_uq` permits to exist in a non-terminal status. Returns
+   * `null` when the service has none, which is the normal state for a `paused`/`stopped`
+   * service and for a `running` one the reconciler has not converged yet.
+   */
+  findLiveServiceInstance(input: {
+    organizationId: string;
+    serviceId: string;
+  }): Promise<{
+    serviceInstanceId: string;
+    status: string;
+    generation: number;
+    jobId: string | null;
+    attemptId: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+  } | null>;
   insertJobOnce(values: NewJob): Promise<Job | null>;
   findSubmission(input: {
     organizationId: string;
@@ -2363,6 +2537,175 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         ttlSeconds: row.ttlSeconds,
         checkpointArtifactId: row.checkpointArtifactId,
       };
+    },
+
+    async insertServiceGeneration(values) {
+      try {
+        // Same SAVEPOINT mechanism, and for the same reason, as `insertServiceInstance`:
+        // this insert shares ONE transaction with the `services` insert that precedes it, so
+        // a raised 23505 would abort that transaction whole and the caller could not answer.
+        const row = await tx.transaction(async (savepoint) => {
+          const [inserted] = await savepoint
+            .insert(serviceGenerations)
+            .values({
+              organizationId: values.organizationId,
+              companyId: values.companyId,
+              serviceId: values.serviceId,
+              generation: values.generation,
+              definition: values.definition,
+              // ttl_seconds and checkpoint_artifact_id are left NULL on purpose. Nothing
+              // enforces a TTL (SVC-005) and nothing restores a checkpoint (SVC-004), so a
+              // stored value would be a bound no code keeps. See SVC-007a-design.md §5.
+              createdBy: values.createdBy,
+            })
+            .returning({ id: serviceGenerations.id, generation: serviceGenerations.generation });
+          return inserted!;
+        });
+        return row;
+      } catch (error) {
+        if (!isServiceGenerationConflict(error)) throw error;
+        return null;
+      }
+    },
+
+    async updateServiceDesiredState(input) {
+      const [row] = await tx
+        .update(services)
+        .set({ desiredState: input.desiredState, updatedAt: sql`clock_timestamp()` })
+        .where(and(
+          eq(services.id, input.serviceId),
+          eq(services.organizationId, input.organizationId),
+          eq(services.companyId, input.companyId),
+          eq(services.desiredState, input.expectedDesiredState),
+        ))
+        .returning({ desiredState: services.desiredState, generation: services.generation });
+      return row ?? null;
+    },
+
+    async findServiceForCompany(input) {
+      const [row] = await tx
+        .select({
+          serviceId: services.id,
+          desiredState: services.desiredState,
+          generation: services.generation,
+          createdAt: services.createdAt,
+          updatedAt: services.updatedAt,
+        })
+        .from(services)
+        .where(and(
+          eq(services.id, input.serviceId),
+          eq(services.organizationId, input.organizationId),
+          eq(services.companyId, input.companyId),
+        ))
+        .limit(1);
+      return row ?? null;
+    },
+
+    async terminalizeServiceInstanceForCancelledAttempt(input) {
+      // (1) AUTHORITY: the instance attributed to THIS job, locked for the rest of the
+      // transaction — the same step-(1) shape `applyServiceProjectionForFence` uses, and for
+      // the same reason: a concurrent reconciler pass about to read the observed state waits
+      // rather than racing a half-applied terminalization.
+      const [instance] = await tx.select({
+        id: serviceInstances.id,
+        status: serviceInstances.status,
+        attemptId: serviceInstances.attemptId,
+      }).from(serviceInstances).where(and(
+        eq(serviceInstances.organizationId, input.organizationId),
+        eq(serviceInstances.companyId, input.companyId),
+        eq(serviceInstances.jobId, input.jobId),
+      )).for("update").limit(1);
+      if (!instance) return { outcome: "unattributed" };
+
+      // (2) The attempt must ALREADY be terminal and NOT `succeeded`. Read here rather than
+      // trusted from the caller, so this method's precondition is a database fact.
+      const [attempt] = instance.attemptId
+        ? await tx.select({ status: jobAttempts.status }).from(jobAttempts).where(and(
+          eq(jobAttempts.organizationId, input.organizationId),
+          eq(jobAttempts.companyId, input.companyId),
+          eq(jobAttempts.id, instance.attemptId),
+        )).limit(1)
+        : [];
+      const attemptStatus = attempt?.status ?? null;
+      const terminalNonSuccess = attemptStatus !== null
+        && attemptStatus !== "succeeded"
+        && (TERMINAL_ATTEMPT_STATUSES as readonly string[]).includes(attemptStatus);
+      if (!terminalNonSuccess) {
+        return { outcome: "attempt_not_terminal", serviceInstanceId: instance.id, attemptStatus };
+      }
+
+      // (3) Already terminal is the NORMAL path when a worker did emit its own stop before
+      // the control plane got here. A no-op, never a refusal on the happy path.
+      if ((TERMINAL_SERVICE_INSTANCE_STATUSES as readonly string[]).includes(instance.status)) {
+        return { outcome: "noop_already_terminal", serviceInstanceId: instance.id, fromStatus: instance.status };
+      }
+
+      // (4) LEGALITY, from the frozen table's predecessor set as the caller computed it. An
+      // empty set refuses, so a caller that computed nothing gets a refusal and never an
+      // unconditional write — the same failure-closed shape as the projection's step (5).
+      if (!input.allowedFromStatuses.includes(instance.status)) {
+        return { outcome: "illegal_transition", serviceInstanceId: instance.id, fromStatus: instance.status };
+      }
+
+      // (5) THE ONE WRITER, conditional on the exact status read under the lock.
+      const moved = await writeServiceInstanceStatus({
+        organizationId: input.organizationId,
+        serviceInstanceId: instance.id,
+        status: input.toStatus,
+        expectedFromStatus: instance.status,
+      });
+      if (!moved) {
+        return { outcome: "illegal_transition", serviceInstanceId: instance.id, fromStatus: instance.status };
+      }
+      return {
+        outcome: "applied",
+        serviceInstanceId: instance.id,
+        fromStatus: instance.status,
+        toStatus: input.toStatus,
+      };
+    },
+
+    async listServicesForCompany(input) {
+      const bounded = Math.max(1, Math.min(200, Math.floor(input.limit)));
+      return tx
+        .select({
+          serviceId: services.id,
+          desiredState: services.desiredState,
+          generation: services.generation,
+          createdAt: services.createdAt,
+          updatedAt: services.updatedAt,
+        })
+        .from(services)
+        .where(and(
+          eq(services.organizationId, input.organizationId),
+          eq(services.companyId, input.companyId),
+          input.afterServiceId ? gt(services.id, input.afterServiceId) : undefined,
+        ))
+        .orderBy(asc(services.id))
+        .limit(bounded);
+    },
+
+    async findLiveServiceInstance(input) {
+      const [row] = await tx
+        .select({
+          serviceInstanceId: serviceInstances.id,
+          status: serviceInstances.status,
+          generation: serviceInstances.generation,
+          jobId: serviceInstances.jobId,
+          attemptId: serviceInstances.attemptId,
+          createdAt: serviceInstances.createdAt,
+          updatedAt: serviceInstances.updatedAt,
+        })
+        .from(serviceInstances)
+        .where(and(
+          eq(serviceInstances.organizationId, input.organizationId),
+          eq(serviceInstances.serviceId, input.serviceId),
+          // The SAME shared predicate the sweep window, the observed-state count and the
+          // lost-race re-read use, so this reader cannot drift from the index it relies on.
+          nonTerminalServiceInstanceStatus(),
+        ))
+        .limit(1);
+      return row ?? null;
     },
 
     async insertJobOnce(values) {
