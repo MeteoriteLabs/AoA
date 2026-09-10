@@ -761,9 +761,13 @@ plus a write, and it should land with SVC-007's evidence surface so the record h
 ### 5. ★ What SVC-005a delivered of this, and what it did NOT
 
 **DELIVERED — the instance's own author, durably.** `service_instances.terminalized_by` (migration
-`0279`) records WHO drove a row terminal: `worker_event`, `liveness_deadline` or
-`control_plane_backstop`. It is written at the single chokepoint `writeServiceInstanceStatus`, whose
-`author` parameter is REQUIRED so a fifth author cannot arrive unclassified. So the question §1 says
+`0279`) records WHO drove a row terminal, in **four** values: `worker_stopped` (the worker saw the
+process go — the only witness), `worker_unconfirmed` (the worker's own `service_instance_lost`, i.e.
+it could NOT confirm the stop), `liveness_deadline` and `control_plane_backstop`. ★ The split of the
+worker's own event into two was external review of PR #415's P1: a single author would have read
+*"the process survived cancel and kill"* as proof that it stopped. It is written at the single
+chokepoint `writeServiceInstanceStatus`, whose `author` parameter is REQUIRED so a fifth call site
+cannot arrive unclassified. So the question §1 says
 an operator cannot answer from durable state — *"did the service report itself gone, or did the
 control plane give up on it?"* — is now answerable for any instance terminalized after `0279`.
 SVC-005a needed it as a FENCE INPUT rather than as telemetry, which is why it landed here.
@@ -810,8 +814,9 @@ unwitnessed.** Two mechanisms, both verified at source:
   `services.generation` says. Replace-after-stop is structural.
 * **Unwitnessed** — step 4b of `reconcileServiceWithinTenant` refuses a CROSS-generation placement
   while a previous generation's instance is terminal-by-assumption (`terminalized_by` not
-  `worker_event`, NULL included) AND its attempt is non-terminal. `R-T4` pins the refusal; `R-T5`
-  pins that it clears.
+  `worker_stopped` — NULL and the worker's own `worker_unconfirmed` both included) AND its attempt
+  is non-terminal. `R-T4` pins the refusal; `R-T5` pins that it clears; `R-T7c` pins that a worker's
+  `lost` report is NOT a witness.
 
 ### 2. The half that is NOT delivered, and why no control-plane fact can close it
 

@@ -2275,11 +2275,13 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
    * column never claims an authorship for a row that has not ended. Both writes are one
    * UPDATE on a row this caller already holds locked.
    *
-   * Why the fence needs it, in one sentence: a terminal row authored by `worker_event` is the
-   * worker SAYING it stopped, and a terminal row authored by a clock is the control plane
-   * GIVING UP on a worker that may still be running (E9-F007) — and the generation rollout
-   * fence must refuse to place a NEW generation on the strength of the second. See
-   * {@link SERVICE_INSTANCE_TERMINAL_AUTHORS}.
+   * Why the fence needs it, in one sentence: a terminal row authored by `worker_stopped` is the
+   * worker SAYING IT SAW THE PROCESS GO, and every other author — a clock, a control-plane
+   * backstop, or the worker's own `worker_unconfirmed` report that it could NOT confirm the
+   * stop — leaves a process that may still be running (E9-F007). The generation rollout fence
+   * must refuse to place a NEW generation on the strength of any of those. See
+   * {@link SERVICE_INSTANCE_TERMINAL_AUTHORS}, whose header records why the worker's own event
+   * is split in two and why collapsing it was a fail-open.
    */
   async function writeServiceInstanceStatus(input: {
     organizationId: string;
