@@ -11,8 +11,10 @@
  * edit SHIFTS the lines it cites and a unit that moves a line and then recites the
  * old number is exactly how this register went stale twice.
  *   - a DISTRIBUTED selection wrote one `distributed_execution_handoff`
- *     `heartbeat_run_events` row (`heartbeat.ts:6937` at base -> `:6986` now),
- *     inside `markRunHandedOffToDistributed`;
+ *     `heartbeat_run_events` row — the `appendRunEvent(...)` call inside
+ *     `markRunHandedOffToDistributed` (`heartbeat.ts`, ~`:6994` at HEAD).
+ *     ★ CITED BY SYMBOL: the `:6986` this line used to carry was itself stale,
+ *     computed as base + a delta rather than measured;
  *   - a LEGACY selection wrote NOTHING DURABLE. `canaryExecutionOwner` was
  *     assigned at `heartbeat.ts:5315-5336` (base), `shouldSuppressLegacyExecution`
  *     (`:5399` base -> `:5457` now) returned false, and control fell through to

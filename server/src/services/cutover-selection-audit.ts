@@ -7,16 +7,23 @@
  * SELECTION conjunct was delivered and half was not, and the missing half was
  * the one an operator needs most:
  *
+ *   ★ CITED BY SYMBOL, LINE AS A HINT ONLY. Line numbers rot — twice inside this
+ *   very PR — and the symbol is the handle. Every hint below was re-measured at
+ *   HEAD, not carried from the base commit.
+ *
  *   - a DISTRIBUTED selection writes one `distributed_execution_handoff`
- *     `heartbeat_run_events` row (`heartbeat.ts:6986`, inside
- *     `markRunHandedOffToDistributed`);
- *   - a LEGACY selection wrote NOTHING DURABLE AT ALL. `canaryExecutionOwner`
- *     resolves at `heartbeat.ts:5315-5364`, `shouldSuppressLegacyExecution` (`:5457`)
- *     is false, and control falls straight through to `adapter.execute` at
- *     `heartbeat.ts:5511`. The only trace was a `logger.info` line. (Those three
- *     read `:5315-5336`, `:5399` and `:5453` at the base commit `6b39c77f6`; the
- *     append this module feeds, at `:5388`, is what shifted them, and re-measuring
- *     rather than reciting is the whole point of the note.)
+ *     `heartbeat_run_events` row: the `appendRunEvent(...)` call inside
+ *     `markRunHandedOffToDistributed` (`heartbeat.ts`, ~`:6994`);
+ *   - a LEGACY selection wrote NOTHING DURABLE AT ALL. The
+ *     `canaryExecutionOwner = canaryWorkload.ok ? … : { owner: "legacy", … }`
+ *     assignment resolves it (~`:5316-5337`), `shouldSuppressLegacyExecution`
+ *     (~`:5457`) is false, and control falls straight through to
+ *     `adapter.execute` (~`:5511`). The only trace was a `logger.info` line.
+ *
+ *   ★ THE NOTE THIS REPLACES ASSERTED A CAUSAL SHIFT THAT DID NOT HAPPEN: it
+ *   claimed the append this module feeds shifted those three lines. The append
+ *   sits BELOW the assignment and moved it not at all; the drift came from
+ *   elsewhere in the file. Reciting a delta is not measuring one.
  *
  * So "the cutover selected legacy for this run" was INDISTINGUISHABLE, in the
  * database, from "this run was never a cutover candidate at all" — which is the
