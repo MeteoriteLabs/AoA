@@ -17,8 +17,14 @@
 // conditional no-op once applied), so it converges every matching tenant lease
 // exactly once no matter how many times it runs.
 
-import { and, asc, eq, inArray, lte, sql } from "drizzle-orm";
-import { executionTargetRevocations, leases, type Db } from "@armyofagents/db";
+import { and, asc, eq, inArray, lte, notExists, notInArray, sql } from "drizzle-orm";
+import {
+  executionTargetRevocations,
+  jobAttempts,
+  leases,
+  TERMINAL_ATTEMPT_STATUSES,
+  type Db,
+} from "@armyofagents/db";
 import { runInTenant } from "../db/tenant-context.js";
 import { releaseAttemptCapacity } from "./org-concurrency.js";
 import { ensureExecutionTargetCutoff } from "./execution-targets.js";
@@ -117,6 +123,72 @@ export function createExecutionTargetRevocationFanout(input: {
         // already-`revoked` lease resumed after a Phase-2 crash.
         if (lease.companyId && lease.jobId) {
           jobs.push({ companyId: lease.companyId, jobId: lease.jobId });
+        }
+      }
+
+      // Phase 1b (SAME tx): the lease pass above converges ONLY attempts that still
+      // have a live offered/active/revoked lease. It cannot see a LEASE-LESS attempt
+      // pinned to the revoked target — precisely the row the MIG-002 reaper mints when
+      // it reaps an expired lease and `allocateRetry` copies the revoked target's
+      // placement (placementTargetId/placementTargetGeneration) VERBATIM into a NEW
+      // `pending`, lease-less attempt, minted `capacityClaimState:'held'` when the
+      // reaped attempt was held. That successor can never lease (offerLease pins the
+      // stored generation; the resolver returns null for the bumped/disabled target),
+      // so guardActiveFence's `target_revoked` never fires, and countHeldAttemptsForOrg
+      // — which counts `held` with NO status filter — pins an org slot forever. Nothing
+      // else reaps a lease-less nonterminal attempt. Converge those here: terminalize to
+      // `cancelled` (mirroring the reaper's cancel terminal), release the held slot with
+      // the SAME helper the lease pass uses, and hand the job to the SAME Phase-2
+      // cancellation. The `notExists` live-lease filter excludes every attempt the lease
+      // pass already handled, so capacity is never double-released. FOR UPDATE SKIP
+      // LOCKED gives the same idempotence/crash-safety as the lease pass; a resumed tick
+      // no longer sees the now-`cancelled` (terminal) attempt, so each converges once.
+      const stranded = await tx
+        .select({
+          id: jobAttempts.id,
+          companyId: jobAttempts.companyId,
+          jobId: jobAttempts.jobId,
+        })
+        .from(jobAttempts)
+        .where(and(
+          eq(jobAttempts.organizationId, input2.organizationId),
+          eq(jobAttempts.placementTargetId, input2.targetId),
+          lte(jobAttempts.placementTargetGeneration, input2.revokedGeneration),
+          notInArray(jobAttempts.status, [...TERMINAL_ATTEMPT_STATUSES]),
+          notExists(
+            tx
+              .select({ one: sql`1` })
+              .from(leases)
+              .where(and(
+                eq(leases.organizationId, input2.organizationId),
+                eq(leases.attemptId, jobAttempts.id),
+                inArray(leases.status, ["offered", "active", "revoked"]),
+              )),
+          ),
+        ))
+        .for("update", { skipLocked: true });
+      for (const attempt of stranded) {
+        // Terminalize FIRST under the same nonterminal guard the reaper uses — the
+        // conditional makes it a no-op for any attempt a concurrent/resumed pass already
+        // terminalized, so the capacity release below runs exactly once per real flip.
+        const [terminalized] = await tx
+          .update(jobAttempts)
+          .set({ status: "cancelled", updatedAt: sql`clock_timestamp()` })
+          .where(and(
+            eq(jobAttempts.id, attempt.id),
+            eq(jobAttempts.organizationId, input2.organizationId),
+            notInArray(jobAttempts.status, [...TERMINAL_ATTEMPT_STATUSES]),
+          ))
+          .returning({ id: jobAttempts.id });
+        if (!terminalized) continue;
+        // Release the held Organization slot (idempotent 'held' -> 'released'); the same
+        // helper the lease pass calls, so the exactly-once release semantics hold.
+        await releaseAttemptCapacity(tx, {
+          attemptId: attempt.id,
+          organizationId: input2.organizationId,
+        });
+        if (attempt.companyId && attempt.jobId) {
+          jobs.push({ companyId: attempt.companyId, jobId: attempt.jobId });
         }
       }
       return { revoked, jobs };

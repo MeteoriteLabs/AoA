@@ -18,7 +18,7 @@ import { randomUUID } from "node:crypto";
 import { createExecutionTargetRevocationFanout } from "../services/execution-target-revocation-fanout.js";
 import { ensureExecutionTargetCutoff, revokeExecutionTarget } from "../services/execution-targets.js";
 import { createJobReconciliationService } from "../services/job-reconciliation.js";
-import { admitAttemptCapacity } from "../services/org-concurrency.js";
+import { admitAttemptCapacity, countHeldAttemptsForOrg } from "../services/org-concurrency.js";
 import { runInTenant } from "../db/tenant-context.js";
 import {
   COMPANY,
@@ -289,6 +289,59 @@ integration("JOB-007 worker/target revocation via generation cutoff", () => {
     // non-terminal forever (the reaper only scans offered/active leases).
     const resumed = await fanout().tick();
     expect(resumed.cancellations).toBeGreaterThanOrEqual(1);
+    const [job] = await f.admin<{ status: string }[]>`SELECT status FROM jobs WHERE id = ${seeded.jobId}`;
+    expect(job?.status).toBe("cancelled");
+    const [rec] = await f.admin<{ status: string }[]>`
+      SELECT status FROM execution_target_revocations WHERE target_id = ${TARGET}`;
+    expect(rec?.status).toBe("completed");
+  }, 60_000);
+
+  it("converges a LEASE-LESS held retry successor pinned to the revoked target (MIG-002 strand)", async () => {
+    const f = ctx();
+    await clearRevocations();
+
+    // Build the strand the MIG-002 reaper mints WITHOUT a lease: `allocateRetry` copies
+    // the revoked target's placement (placementTargetId/placementTargetGeneration=1)
+    // VERBATIM into a NEW `pending` attempt and, since the reaped attempt was held,
+    // stamps it `capacityClaimState:'held'`. Reproduce that shape directly: a placed,
+    // NONTERMINAL, LEASE-LESS attempt holding an Organization capacity slot.
+    await f.resetRuntimeRows();
+    const seeded = await f.seedPlacedJob(7_207);
+    await runInTenant(f.app.db, ORG, async (_repos, tx) => admitAttemptCapacity(tx, {
+      organizationId: ORG, companyId: COMPANY, workloadType: "batch", attemptId: seeded.attemptId,
+    }));
+
+    // Precondition: the attempt is pending, holds a slot, and has NO lease row of any kind.
+    const [before] = await f.admin<{ status: string; state: string }[]>`
+      SELECT status, capacity_claim_state AS state FROM job_attempts WHERE id = ${seeded.attemptId}`;
+    expect(before).toMatchObject({ status: "pending", state: "held" });
+    const [leaseCount] = await f.admin<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM leases WHERE attempt_id = ${seeded.attemptId}`;
+    expect(Number(leaseCount!.n)).toBe(0);
+    // countHeldAttemptsForOrg reads under RLS, so run it inside the org tenant context.
+    const heldBefore = await runInTenant(f.app.db, ORG, async (_repos, tx) =>
+      countHeldAttemptsForOrg(tx as unknown as typeof f.app.db, ORG));
+    expect(heldBefore).toBe(1);
+
+    await revokeExecutionTarget({
+      appDb: f.app.db, operatorDb: f.operator.db, targetId: TARGET, organizationId: ORG,
+    });
+
+    // ONE tick. The lease pass finds no lease for this attempt, but the attempt-convergence
+    // pass locates it by its pinned placement, terminalizes it, releases the held slot, and
+    // hands the job to Phase-2 cancellation. Without that pass the job is never collected
+    // (no live lease), so the record completes while the attempt strands `held` forever.
+    const result = await fanout().tick();
+    expect(result).toMatchObject({ records: 1, completed: 1 });
+    expect(result.cancellations).toBeGreaterThanOrEqual(1);
+
+    const [attempt] = await f.admin<{ status: string; state: string }[]>`
+      SELECT status, capacity_claim_state AS state FROM job_attempts WHERE id = ${seeded.attemptId}`;
+    expect(attempt).toMatchObject({ status: "cancelled", state: "released" });
+    const heldAfter = await runInTenant(f.app.db, ORG, async (_repos, tx) =>
+      countHeldAttemptsForOrg(tx as unknown as typeof f.app.db, ORG));
+    expect(heldAfter).toBe(0);
+
     const [job] = await f.admin<{ status: string }[]>`SELECT status FROM jobs WHERE id = ${seeded.jobId}`;
     expect(job?.status).toBe("cancelled");
     const [rec] = await f.admin<{ status: string }[]>`
