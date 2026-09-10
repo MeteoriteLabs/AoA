@@ -755,15 +755,21 @@ recorded*. Two findings carry it:
 **Closed: one.** `DE-19` (2026-09-08), scoped to `memory.get`. `DE-06` and `DE-21` each received a
 *fraction* of a conjunction in Unit C (2026-09-09) and **neither closed**. **Open: sixteen.**
 
-★ **AMENDED 2026-09-10, AFTER THIS PAPER WAS MERGED — CLOSED: TWO, OPEN: FIFTEEN.** `DE-06`'s
-audit clause is now whole: the object-access unit delivered the *"object put/get"* conjunct — the
-one §6.1's row 5a names as *"already-scheduled work, not a decision"* — so `DE-06` leaves
-`E0-F010`'s cohort, which drops from eight to seven. `E0-F013`'s nine are unchanged. **This changes
-NO ruling this paper asks for and no recommendation in it:** `DE-06` was never one of the six
-undeliverable halves, and the ceiling table below already counted it among the eleven closable.
-`DE-21` is unchanged and still carries a fraction. The count is amended here rather than left to
-stand because a decision paper whose central complaint is an over-stated count must not carry a
-stale one of its own.
+★ **AMENDED 2026-09-10, AFTER THIS PAPER WAS MERGED — CLOSED: THREE, OPEN: FOURTEEN.** Two
+crossings closed that day, in two separate units, and the amendment is stated once at its final
+figure rather than twice at two intermediate ones. `DE-06`'s audit clause is now whole: the
+object-access unit delivered the *"object put/get"* conjunct — the one §6.1's row 5a names as
+*"already-scheduled work, not a decision"*. `DE-14`'s clause — *"the startup safety-assertion
+outcome is logged"* — is SINGLE-CONJUNCT and both directions of the outcome are now logged at the
+entrypoint's one startup load, so it closed later the same day. **Both leave `E0-F010`'s cohort,
+which drops from eight to SIX**; `E0-F013`'s nine are unchanged. **This changes NO ruling this
+paper asks for and no recommendation in it:** neither crossing was one of the six undeliverable
+halves, and the ceiling table below already counted **both** among the eleven closable — so the
+"closable, ever" ceiling of eleven is untouched and the "more closable" figure drops from ten to
+**eight**. `DE-21` is unchanged and still carries a fraction. The count is amended here rather than
+left to stand because a decision paper whose central complaint is an over-stated count must not
+carry a stale one of its own. **The authoritative class-wide count lives in `E0-F013`'s Status
+block** (`docs/replatform/epics/E0-foundation/findings.md`), not here.
 
 **Now the count E0-F013 states.** Its own words:
 
@@ -787,8 +793,11 @@ ELEVEN TOTAL.** The slip is visible inside the sentence itself: it subtracts **f
 ("Five clause-halves are not") and then adds `DE-17` as **a sixth** without re-subtracting.
 17 − 5 = 12; 17 − 6 = 11. **Yes — DE-17 makes it eleven.**
 
-Enumerated, so the eleven can be checked one at a time: `DE-03`, `DE-04`, `DE-06`, `DE-13`, `DE-14`,
-`DE-15`, `DE-16`, `DE-18`, `DE-19` *(closed)*, `DE-21`, `DE-29`.
+Enumerated, so the eleven can be checked one at a time: `DE-03`, `DE-04`, `DE-06` *(closed
+2026-09-10)*, `DE-13`, `DE-14` *(closed 2026-09-10)*, `DE-15`, `DE-16`, `DE-18`, `DE-19` *(closed
+2026-09-08)*, `DE-21`, `DE-29`. *(The "already closed = 1" and "more closable = 10" rows above are
+the 2026-09-08 derivation and are left at their own date; the current figures are three closed and
+eight more closable — see the amendment at the head of this section.)*
 
 **★ AND THIS PAPER'S OWN MEASUREMENT MOVES IT AGAIN — which is why no single number is handed over.**
 Under §2 and §6.1, **two** of the six are not blocked as filed. **DE-17 is not one of them**: §6.2's

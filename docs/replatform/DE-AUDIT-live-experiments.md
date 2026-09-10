@@ -469,6 +469,18 @@ held: `cloud_auth` + `"0"`, `cloud_auth` unset, `local_trusted` + `"1"` and `aut
 The only absent clause is `audit` ("the startup safety-assertion outcome is logged"), and that
 is settled in source: the module imports no logger and contains no logging call at all.
 
+★ **AMENDED 2026-09-10 — THAT CLAUSE IS NO LONGER ABSENT, AND THIS SECTION STILL OWES NOTHING.**
+`assertHostedExecutionStartupSafe` now returns an outcome on the pass and throws a typed error
+carrying its branch's own machine reason on the refusal, and `loadConfigWithStartupSafetyAudit`
+(`server/src/config/hosted-execution-startup-audit.ts`) — the entrypoint's single production
+caller — logs both directions before rethrowing the refusal unchanged. Both config modules are
+still logger-free; the sink is injected. Nothing here becomes a live experiment: the clause asks
+for a **log**, the assertion fires before any database pool exists, and no live access was ever
+required to settle it. **The paragraph above is kept because the correction is only legible
+against it**, and the reason it says "no `try/catch`" is not the reason DE-14 stayed open — a
+top-level call is not an uncatchable call. See "★ DE-14 IS CLOSED" under `E0-F010` in
+`docs/replatform/epics/E0-foundation/findings.md`.
+
 ---
 
 ## DE-15 — Image registry ↔ worker runtime (Critical)

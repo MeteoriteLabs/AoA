@@ -390,6 +390,11 @@ measured rather than inherited:
 
 ### ★ THE OBJECT-ACCESS UNIT, 2026-09-10 — DE-06's put/get conjunct, and the FIRST closure in this cohort
 
+★ **SUPERSEDED LATER THE SAME DAY by the startup-audit unit: the class stands at THREE closed
+(DE-19, DE-06, DE-14) and FOURTEEN open, and THIS cohort is SIX, not seven. The paragraph below was
+correct at the moment it was written and is kept because the DE-14 section is only legible against
+it. The authoritative count is `E0-F013`'s Status block.**
+
 **The count first, because a skim must not read this as the class being solved.** Of the SEVENTEEN
 crossings in the denial-audit class (`E0-F010`'s eight plus `E0-F013`'s nine), **TWO now have a
 whole audit clause — DE-19 (2026-09-08) and DE-06 (2026-09-10) — and FIFTEEN remain open.** This
@@ -617,8 +622,22 @@ never re-derived from the same environment. `loadConfigWithStartupSafetyAudit`
 assertion fires during config load, before any database pool exists, so a durable attributable row
 is structurally impossible at that point and none is written. This closes the cheapest row in the
 class and moves no other blocker — not the separate-transaction lifecycle, not the tenantless sink,
-not any Group B/C/D item. It also does not touch DE-14's other clauses, so **DE-14 stays `partial`
-in the register**, exactly as DE-19 and DE-06 do.
+not any Group B/C/D item. It also does not touch DE-14's other clauses, and **DE-14 stays `partial`
+in the register**.
+
+★ **BUT NOT FOR DE-19's AND DE-06's REASON, AND THIS SENTENCE SAID IT DID.** As first written it
+read "exactly as DE-19 and DE-06 do", and the register row and the gate-clause enrolment said the
+same. Re-read at HEAD, the analogy fails: DE-19 and DE-06 each carry a SECOND clause that was
+MEASURED ABSENT and is owned by another finding (`E0-F016`'s, and `E0-F012`'s `authentication`).
+**DE-14's row names exactly ONE absent clause — `audit` — and it is the one this unit just
+delivered.** What actually holds the row at `partial` is the register's finding-citation contract:
+`scripts/check-distributed-execution-foundation.mjs` clause 4 refuses `delivered` for any crossing
+whose id appears as a literal token in a live finding-ownership entry, and `E0-F010`'s entry names
+DE-14 throughout. **No status change is taken and none is implied** — whether a Critical row whose
+every audited clause now holds should become `delivered` is entangled with `E0-F010`'s own
+resolution and with `REL-005` (zero files on disk, declared deferred), and is for whoever resolves
+that finding. Recorded in all three places rather than only here, so the machine-readable records
+are not weaker than the prose.
 
 **★ ONE CODEX P2 ON PR #416, REAL AND FIXED IN THE SAME BRANCH — and it is this programme's own
 failure class, inside a unit whose subject is that failure class.** As first shipped, `loadConfig`
@@ -874,23 +893,62 @@ tenant-scoped, i.e. the blast radius the clause exists to bound is unbounded.
 ## E0-F013 — The audit class, second cohort: nine more crossings assert that denials are audited, and on eight of the nine the denial is still not recorded durably — DE-19 was closed on 2026-09-08 and the remaining eight are enumerated below
 
 - **Status:** open — **8 of 9 remaining in THIS cohort; DE-19 CLOSED 2026-09-08. This cohort is
-  UNCHANGED by the 2026-09-10 object-access unit, which closed DE-06 — a member of `E0-F010`'s
-  cohort, not this one.**
-- ★ **THE AUTHORITATIVE CLASS-WIDE COUNT, as of 2026-09-10, stated once here because five dated
+  UNCHANGED by BOTH 2026-09-10 units — the object-access unit closed DE-06 and the startup-audit
+  unit closed DE-14, and both are members of `E0-F010`'s cohort, not this one.**
+- ★ **THE AUTHORITATIVE CLASS-WIDE COUNT, as of 2026-09-10, stated once here because the dated
   snapshots below say "ONE closed and SIXTEEN open" and every one of them was correct on its own
   date.** The denial-audit class is **SEVENTEEN** crossings — `E0-F010`'s eight plus this cohort's
-  nine. **TWO have a whole `audit` clause: DE-19 (2026-09-08) and DE-06 (2026-09-10). FIFTEEN
-  remain open** — DE-01, DE-03, DE-04, DE-11, DE-12, DE-13, DE-14 in `E0-F010`, and DE-15, DE-16,
-  DE-17, DE-18, DE-20, DE-21, DE-27, DE-29 here. **Of those FIFTEEN, exactly FOUR carry a delivered
-  fraction of a conjunction and none of them counts as closed:** DE-03 (replay-rejection wired;
-  enrollment and session-issue not), DE-11 (both halves now have a live writer, but the coverage
-  caveat holds it open — see the Group D bullet below), DE-20 (cutover selection wired; the rollback
-  conjunct is vacuous), and DE-21 (five deny disjuncts across two of seven branches; the subscribe
-  and replay conjuncts have no writer at all). **A larger fraction of a conjunction is still not a
-  closure; what moved DE-06 was the OTHER conjunct.** *(DE-06 is not one of the fifteen and is not
-  counted among the four. Its register row nevertheless stays `partial`, because its
-  `authentication` clause is a DIFFERENT clause carried by `E0-F012` — the same shape as DE-19,
-  whose row stays `partial` under `E0-F016`.)*
+  nine. **THREE have a whole `audit` clause: DE-19 (2026-09-08), DE-06 (2026-09-10) and DE-14
+  (2026-09-10, later the same day). FOURTEEN remain open** — DE-01, DE-03, DE-04, DE-11, DE-12,
+  DE-13 in `E0-F010`, and DE-15, DE-16, DE-17, DE-18, DE-20, DE-21, DE-27, DE-29 here. **Of those
+  FOURTEEN, exactly FOUR carry a delivered fraction of a conjunction and none of them counts as
+  closed:** DE-03 (replay-rejection and the organization-attested worker-authentication refusals
+  wired; enrollment and session-issue have no writer at all), DE-11 (both halves now have a live
+  writer, but the coverage caveat holds it open — see the Group D bullet below and the DE-11
+  re-measurement in `E0-F010`), DE-20 (cutover selection wired; the rollback conjunct is vacuous),
+  and DE-21 (five deny disjuncts across two of seven branches; the subscribe and replay conjuncts
+  have no writer at all).
+- ★ **THAT "FOUR" WAS RE-COUNTED AT HEAD, NOT DECREMENTED BY ONE.** DE-14 was never among the four —
+  its clause is single-conjunct, so it had no fraction of a conjunction to carry — so its closure
+  moves the open count and leaves the fraction count where it was. That is an observation, not an
+  adjustment. **The method: enumerate every module in the tree at this commit that WRITES one of
+  this class's audit records — the reserved `security.denied.` / `security.object_access.`
+  namespaces and the crossing-specific record points — and map each to the crossing whose `audit`
+  clause it serves**, rather than re-reading the previous count. (The generic product writer
+  `activity-log.ts` is the sink they all insert through and is not one of them.) All ten, named so
+  the enumeration can be checked and not merely trusted —
+  `server/src/services/security-denial-audit.ts` (DE-19's deny half, and the shared sink),
+  `memory-retrieval-audit.ts` (DE-19's retrieval half, pre-existing),
+  `artifact-denial-audit.ts` and `artifact-object-access-audit.ts` (DE-06),
+  `worker-denial-audit.ts` (DE-06's fence throws and DE-03's replay/authentication refusals),
+  `artifact-retention-audit.ts` (DE-11), `cutover-selection-audit.ts` (DE-20),
+  `server/src/realtime/live-events-denial-audit.ts` (DE-21),
+  `server/src/config/hosted-execution-startup-audit.ts` (DE-14), and
+  `job-audit-bridge.ts` — **which serves NO crossing's audit clause, because its writer still has
+  ZERO production callers** (the Disposition bullet in `E0-F010` says so and it was re-checked
+  here; only a type import survives). Every other module was checked for a production caller, not
+  merely for existence. Subtract the three closed crossings and the four above are what is left:
+  **no other crossing in the class has a writer at all**, so there is no fifth fraction to find.
+  ★ **DE-15 is the row to check twice, and it is still NOT wired:** the Decision 2 ruling removed
+  its STORAGE blocker and its register row says in terms that the wiring did not follow, and the
+  drain return in `job-leasing.ts` still writes no row — this unit's own comment at that site pins
+  it. A count-only, id-free metric — the DE-29 shape — is not a fraction of an `audit` clause and
+  is not counted as one. **A larger fraction of a conjunction is still not a closure; what moved
+  DE-06 was the OTHER conjunct, and what moved DE-14 was the only conjunct it had.** *(DE-06 and
+  DE-14 are not among the fourteen and are not counted among the four. Both register rows
+  nevertheless stay `partial`, and ★ **the two do NOT stay `partial` for the same reason, though
+  DE-14's register row said they did until this commit corrected it there too.** DE-06 carries a
+  DIFFERENT clause that is separately absent — `authentication`, under `E0-F012` — which is the
+  DE-19 shape exactly (DE-19's row stays `partial` under `E0-F016`).
+  **DE-14 does not.** Its evidence names exactly ONE absent clause, `audit`, and that clause is now
+  delivered; what holds its row at `partial` is the register's finding-citation contract, which
+  REFUSES `delivered` for any crossing a live finding names as a literal token
+  (`check-distributed-execution-foundation.mjs` clause 4), and `E0-F010`'s ownership entry names
+  DE-14 throughout. **No status change is taken here and none should be inferred:** whether a
+  Critical row whose every audited clause now holds should become `delivered` is a separate
+  question, it is entangled with `E0-F010`'s own resolution and with `REL-005` (zero files on disk,
+  deferred), and it is recorded rather than answered so the next unit does not have to re-derive
+  it.)*
 - **Severity:** HIGH
 - **Filed:** 2026-09-08, by W20B (the recovered-audit landing unit). Every citation below was
   measured at tip `4d5507a80` by the landing unit itself, not inherited from the auditor.

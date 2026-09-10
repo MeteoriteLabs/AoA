@@ -211,8 +211,12 @@ The absent halves cluster into a small number of classes, each filed as a findin
 than left in prose. W20 named three; W20B's sixteen fell into the same three (as siblings,
 so each finding's count stays true to the cohort it measured) plus one more:
 
-- **`E0-F010`** — eight crossings assert that denials are *audited*; on all eight the deny
-  path returns before anything durable is written.
+- **`E0-F010`** — eight crossings assert that denials are *audited*; on all eight, as filed, the
+  deny path returned before anything durable was written. ★ **As at 2026-09-10, SIX still do:**
+  DE-06's and DE-14's audit clauses closed that day and both are struck from the cohort. Across
+  the whole class — this cohort plus `E0-F013`'s — **three of seventeen are closed and fourteen
+  are open;** the authoritative count is `E0-F013`'s Status block in
+  `docs/replatform/epics/E0-foundation/findings.md`, and no count is stated twice here.
 - **`E0-F013`** — the same class, second cohort: **nine more** crossings, of which five
   record nothing at all and four record the *success* path and not the refusal. ★ DE-27's
   clause is not merely unwritten but **unwritable**: it says "cross-replica", and the tree
