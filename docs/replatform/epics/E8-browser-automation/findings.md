@@ -622,6 +622,11 @@ supporting the same conclusion. The enforcement gap stands, and it now stands wi
 provider-level control at this tier** on either construction. `E8-F008` §9,
 `W10B-egress-enforcement-result.md` §15, runbook §13.8.
 
+**See also (does not move this finding):** the measured enforcement question is now written up as a
+founder decision-request — `docs/replatform/DECISION-REQUEST-de08-sandbox-egress.md`. That paper
+proposes options and a recommendation and takes no ruling; it moves no `deliveryStatus` and edits no
+clause here.
+
 ---
 
 ## E8-F004 — A distributed runtime decision has no stranded-answer sweep, and the exclusion is invisible
