@@ -505,3 +505,69 @@ split-brain case.
 **Left for SVC-004:** `failed` is the honest instance status for a run that ended badly, but WHETHER
 such an instance should be restarted, and with what backoff, is SVC-004's crash-loop clause. SVC-003a
 has no opinion about it.
+
+## E9-F006 — a cancellation that FINALIZES rather than drains emits no worker event, so SVC-003a's attempt-terminal backstop cannot fire and the instance is stranded
+
+**Status:** `resolved` 2026-09-10 by **SVC-007a** (`tickets/SVC-007a-result.md`) · **Severity:** MED
+**Filed:** 2026-09-10, by SVC-007a, while building the stop control. Filed although it is resolved in
+the same commit, because the JOB-006 behaviour that causes it is unchanged and every future
+control-plane terminalizer meets it again.
+**Affected tickets:** SVC-007 (resolved it), SVC-003 (owns the worker-side half), SVC-005 (TTL and
+budget stop will terminalize the same way), JOB-006 (the cancellation branch).
+**Blocks gate:** no — but it would have wedged the stop/resume loop of the ticket that found it.
+
+### 1. The path, verified at `053f90fc8` plus this diff
+
+`repos.jobControl.requestCancellation` has a branch — `if (!lease || !attempt || !lease.workerId ||
+!lease.attemptNumber)`, `packages/db/src/repositories/tenant/job-control.ts` (~:4465 at head) —
+whose own comment says why it exists:
+
+> *"No fenced worker to drain: the reaper's expired-lease scan never reaches an unleased attempt …
+> Finalize the cancellation DIRECTLY."*
+
+It drives the attempt and the job to `cancelled` under the locks it already holds. **No worker event
+is emitted, because there is no worker.**
+
+SVC-003a's attempt-terminal backstop lives in `decideServiceProjection`'s `terminal` arm
+(`server/src/services/service-health-projection.ts` ~:216) and fires only from an INGESTED event. On
+this branch it never runs. So `service_instances.status` stays `pending`, the row stays inside
+`service_instances_live_service_uq`, and `countNonTerminalInstances` answers 1 forever.
+
+### 2. What that costs, and why it is not theoretical
+
+SVC-002's reconciler short-circuits on the observed state — `if (live >= 1) return { action:
+"none", reason: "instance_present" }` (`server/src/services/service-reconciler.ts` ~:211). So after
+a stop, a later `stopped → running` resume converges **nothing, on every tick, for the rest of the
+service's life**. The operator sees `desired_state = 'running'` and no instance, with no error
+anywhere.
+
+This is the E9-F004/E9-F005 wedge reached through the control plane instead of the daemon, and it is
+on the happy path of the stop control SVC-007a ships — not an edge case. It is also the **normal**
+path today rather than a rare one: `E9-F002` keeps `workload.service` unofferable on most fleets, so
+a service job is typically never leased, and every stop takes the finalize branch.
+
+### 3. How SVC-007a resolved it
+
+`setServiceDesiredState` calls a new
+`repos.jobControl.terminalizeServiceInstanceForCancelledAttempt` after the cancellation, deriving
+`toStatus` and `allowedFromStatuses` from **`decideServiceProjection` itself**, for the same attempt
+status (`cancelled`) — so the control-plane path and the worker path cannot drift into two ideas of
+what a cancelled attempt means. Four bounds keep it a backstop:
+
+* the attempt it is attributed to must ALREADY be terminal and NOT `succeeded`, re-read under the
+  instance's row lock, so a live instance can never be terminalized;
+* an already-terminal instance is a `noop`, never a refusal on the happy path;
+* legality is the frozen predecessor set, and an EMPTY set refuses rather than writing;
+* the write goes through `writeServiceInstanceStatus`, the ONE writer of that column, conditional on
+  the status read under the lock.
+
+**No projection receipt is written**, and that is forced rather than chosen:
+`job_projection_receipts.source_fence` is `NOT NULL` and this path has no fence, by definition.
+Idempotency comes from the conditional write plus the already-terminal no-op.
+
+### 4. What is NOT closed by this
+
+The **JOB-006 behaviour is unchanged**: `requestCancellation` still finalizes silently and still
+emits nothing. Any other control-plane path that terminalizes a service job — SVC-005's TTL stop and
+budget stop are the named ones — will strand its instance the same way unless it makes the same call.
+That is a residual on SVC-005, stated here so it is not rediscovered a third time.

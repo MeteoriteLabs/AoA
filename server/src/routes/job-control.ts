@@ -9,6 +9,15 @@ import { organizationAccessService } from "../services/organization-access.js";
 import { jobSubmissionService, type AuthenticatedJobPrincipal } from "../services/job-submission.js";
 import { createJobOperationsService } from "../services/job-operations.js";
 import { TenantAdmissionDeniedError } from "../services/tenant-admission.js";
+import {
+  CONTROLLABLE_DESIRED_STATES,
+  CREATABLE_DESIRED_STATES,
+  createService,
+  listServices,
+  normalizeServiceDefinition,
+  readService,
+  setServiceDesiredState,
+} from "../services/service-management.js";
 import { logger } from "../middleware/logger.js";
 
 const uuid = z.string().uuid();
@@ -16,6 +25,33 @@ const uuid = z.string().uuid();
 /** JOB-008 operator mutation body: a bounded human-readable reason. */
 const operatorReasonSchema = z
   .object({ reason: z.string().min(1).max(1000) })
+  .strict();
+
+/**
+ * SVC-007 create body. `definition` is deliberately `unknown` here and validated by
+ * `normalizeServiceDefinition` INSIDE the handler, after the authority gate — so an
+ * unauthorized caller cannot tell a malformed definition from a valid one, which is the
+ * ordering constraint BRW-001 established and `service-job-config.ts` restates.
+ *
+ * The desired-state enum comes from the shipped constant rather than a second literal list,
+ * so the route cannot admit a state the service layer refuses.
+ */
+const createServiceBodySchema = z
+  .object({
+    definition: z.unknown(),
+    desiredState: z
+      .enum(CREATABLE_DESIRED_STATES as unknown as [string, ...string[]])
+      .optional(),
+  })
+  .strict();
+
+/** SVC-007 desired-state control body: the target state plus the same bounded reason every
+ *  other operator mutation on this router carries into its audit line. */
+const serviceDesiredStateBodySchema = z
+  .object({
+    desiredState: z.enum(CONTROLLABLE_DESIRED_STATES as unknown as [string, ...string[]]),
+    reason: z.string().min(1).max(1000),
+  })
   .strict();
 
 function principalFor(req: Request, companyId: string, organizationId: string): AuthenticatedJobPrincipal | null {
@@ -285,6 +321,197 @@ export function jobControlRoutes(opts: { db: Db; appDb: Db; operatorDb: Db }) {
           reason: result.reason,
           revokedGeneration: result.revokedGeneration,
         });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  // ── SVC-007 service management (create + desired-state control + the operator view) ──
+  //
+  // ★ THIS ROUTER IS THE COMPOSITION ROOT FOR THE E9 CONTROL PLANE, and these four routes are
+  // the first ones that let a human reach it. Before them `repos.services.insert` had ZERO
+  // production callers and `service_generations` had ZERO writers, so SVC-002's reconciler
+  // read an empty window on every tick and SVC-003a's projection had no instance to move —
+  // both shipped, both unreachable. `jobControlRoutes` is mounted by `createApp` inside the
+  // `opts.distributedExecutionEnabled` block over the non-owner `aoa_app` pool, which is why
+  // the create path needs no flag check of its own: flag-off, this router is never built.
+  //
+  // Authority is `assertOrgAdmin` — the SAME `execution_target:manage` org-owner/admin gate
+  // every JOB-008 operator mutation above uses, run FIRST so a caller without it gets a
+  // uniform 403 whether or not the org, company or service exists.
+
+  /**
+   * The tenant-pair FK. A create whose `companyId` does not belong to `organizationId` fails
+   * `services_org_company_fk` at the database — which is the fail-closed answer, since
+   * `aoa.organization_id` is the only GUC and no app-layer read could prove the pair without
+   * a second query that would itself be an existence oracle. Mapped to the SAME uniform 404
+   * an absent company would produce, so the two are indistinguishable to the caller.
+   */
+  function isTenantPairViolation(error: unknown): boolean {
+    let current: unknown = error;
+    for (let depth = 0; depth < 8 && current && typeof current === "object"; depth += 1) {
+      const record = current as { code?: unknown; constraint_name?: unknown; cause?: unknown };
+      if (record.code === "23503" && record.constraint_name === "services_org_company_fk") return true;
+      current = record.cause;
+    }
+    return false;
+  }
+
+  router.post(
+    "/organizations/:organizationId/companies/:companyId/services",
+    validate(createServiceBodySchema),
+    async (req, res, next) => {
+      try {
+        const organizationId = uuid.parse(req.params.organizationId);
+        const companyId = uuid.parse(req.params.companyId);
+        await assertOrgAdmin(req, organizationId);
+        const body = req.body as { definition: unknown; desiredState?: string };
+        const definition = normalizeServiceDefinition(body.definition);
+        if (!definition.ok) {
+          res.status(400).json({ error: "Service definition rejected", reason: definition.reason });
+          return;
+        }
+        const created = await createService(opts.appDb, {
+          organizationId,
+          companyId,
+          definition: definition.value,
+          desiredState: (body.desiredState ?? "running") as "running" | "paused",
+          createdBy: operatorUserId(req),
+        }).catch((error: unknown) => {
+          if (isTenantPairViolation(error)) throw notFound("Company not found");
+          throw error;
+        });
+        if (!created) {
+          // The generation insert lost a race against
+          // `service_generations_service_generation_uq` for a service id minted moments
+          // earlier. Unreachable by construction; reported as a definite refusal rather than
+          // retried, because a reachable version of it would mean the id was not fresh.
+          throw new HttpError(409, "Service generation already exists");
+        }
+        logger.info(
+          {
+            action: "service.create",
+            organizationId,
+            companyId,
+            serviceId: created.serviceId,
+            generation: created.generation,
+            desiredState: created.desiredState,
+            operatorUserId: operatorUserId(req),
+            reasonCode: "service_created",
+          },
+          "service created",
+        );
+        res.status(201).json(created);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.post(
+    "/organizations/:organizationId/companies/:companyId/services/:serviceId/desired-state",
+    validate(serviceDesiredStateBodySchema),
+    async (req, res, next) => {
+      try {
+        const organizationId = uuid.parse(req.params.organizationId);
+        const companyId = uuid.parse(req.params.companyId);
+        const serviceId = uuid.parse(req.params.serviceId);
+        await assertOrgAdmin(req, organizationId);
+        const { desiredState, reason } = req.body as {
+          desiredState: "running" | "paused" | "stopped";
+          reason: string;
+        };
+        const result = await setServiceDesiredState(
+          {
+            appDb: opts.appDb,
+            // The SHIPPED graceful-cancellation channel, reused rather than rebuilt: this is
+            // the exact call the `drain` route above makes. A service "stop" that did not
+            // reach it would move a column and nothing else.
+            requestGracefulStop: (stop) =>
+              operations.drainJob(stop.organizationId, stop.companyId, stop.jobId, stop.reason),
+          },
+          { organizationId, companyId, serviceId, desiredState, reason },
+        );
+        if (result.verdict.outcome === "absent") {
+          // Uniform 404, no audit line — absent is indistinguishable from cross-tenant.
+          throw notFound("Service not found");
+        }
+        if (result.verdict.outcome === "illegal") {
+          throw new HttpError(
+            409,
+            `Service desired state cannot move from ${result.verdict.from} to ${result.verdict.to}`,
+          );
+        }
+        if (result.verdict.outcome === "conflict") {
+          throw new HttpError(409, "Service desired state changed concurrently");
+        }
+        logger.info(
+          {
+            action: "service.desired_state",
+            organizationId,
+            companyId,
+            serviceId,
+            desiredState,
+            outcome: result.verdict.outcome,
+            stopStatus: result.stop?.status ?? null,
+            stopInstance: result.stop?.status === "requested" ? result.stop.instance : null,
+            operatorUserId: operatorUserId(req),
+            reasonCode: "service_desired_state_set",
+          },
+          "service desired state set",
+        );
+        if (result.stop?.status === "failed") {
+          logger.warn(
+            {
+              action: "service.desired_state",
+              organizationId,
+              companyId,
+              serviceId,
+              jobId: result.stop.jobId,
+              reasonCode: "service_graceful_stop_failed",
+            },
+            "service desired state moved but the graceful stop request failed; re-issue to retry",
+          );
+        }
+        res.status(200).json({ ...result.verdict, stop: result.stop });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.get(
+    "/organizations/:organizationId/companies/:companyId/services",
+    async (req, res, next) => {
+      try {
+        const organizationId = uuid.parse(req.params.organizationId);
+        const companyId = uuid.parse(req.params.companyId);
+        await assertOrgAdmin(req, organizationId);
+        const after = req.query.after === undefined ? null : uuid.parse(req.query.after);
+        res.json(await listServices(opts.appDb, {
+          organizationId,
+          companyId,
+          afterServiceId: after,
+          limit: 100,
+        }));
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.get(
+    "/organizations/:organizationId/companies/:companyId/services/:serviceId",
+    async (req, res, next) => {
+      try {
+        const organizationId = uuid.parse(req.params.organizationId);
+        const companyId = uuid.parse(req.params.companyId);
+        const serviceId = uuid.parse(req.params.serviceId);
+        await assertOrgAdmin(req, organizationId);
+        const view = await readService(opts.appDb, { organizationId, companyId, serviceId });
+        if (!view) throw notFound("Service not found");
+        res.json(view);
       } catch (error) {
         next(error);
       }

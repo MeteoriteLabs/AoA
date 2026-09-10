@@ -149,14 +149,52 @@ const EXPECTED_UNGUARDED = [
   // here. The duplicate-placement invariant they uphold lives in the partial unique index
   // `service_instances_live_service_uq`, not in a fence.
   //
-  // `attributeServiceInstance` writes only `job_id` / `attempt_id`, never `status`:
-  // `recordServiceHealth` stays the sole (and guarded) writer of instance status.
+  // `attributeServiceInstance` writes only `job_id` / `attempt_id`, never `status`.
+  //
+  // ★ CORRECTION (SVC-007a). The sentence that stood here — "`recordServiceHealth` stays the
+  // sole (and guarded) writer of instance status" — was already FALSE at `053f90fc8`: SVC-003a
+  // introduced `writeServiceInstanceStatus` as the ONE writer of that column and gave it TWO
+  // entry points, `recordServiceHealth` and the fenced `applyServiceProjectionForFence`. Both
+  // are inner functions rather than members of this surface, so the drift was invisible to this
+  // test. It is corrected rather than quietly deleted, because a stale comment on a fail-closed
+  // list is the thing that makes the list read as more than it proves.
   "lockServiceForReconcile",
   "countNonTerminalInstances",
   "insertServiceInstance",
   "attributeServiceInstance",
   "listReconcilableServices",
   "findServiceGenerationDefinition",
+  // SVC-007a — the service CREATE, the desired-state control and the operator read, classified
+  // in the SAME commit that adds them.
+  //
+  // Five of SVC-007a's six are outside the fence for SVC-002's reason above (its "six" is a
+  // different set — the block immediately preceding this one): they run in the
+  // control plane's own tenant transaction and mostly BEFORE any job exists, so there is no
+  // fence to guard against and `guardActiveFence` would be unsatisfiable rather than stricter.
+  // `insertServiceGeneration` writes an immutable row that no worker can reach at all
+  // (`aoa_app` holds only SELECT and INSERT on `service_generations`).
+  "insertServiceGeneration",
+  "updateServiceDesiredState",
+  "findServiceForCompany",
+  "listServicesForCompany",
+  "findLiveServiceInstance",
+  // ★★★ THE SIXTH IS THE ONE THAT NEEDS ITS OWN PARAGRAPH, because it is a THIRD entry point
+  // onto `writeServiceInstanceStatus` and it is UNGUARDED.
+  //
+  // WHY A FENCE CANNOT GUARD IT. Its precondition is that the attempt this instance is
+  // attributed to is ALREADY TERMINAL — that is the only state it acts in. A terminal attempt
+  // has no active lease, so `guardActiveFence` would refuse EVERY real call. That is exactly
+  // the reaper/quarantine/`classifyLeaseTruth` reasoning above: a method that acts precisely
+  // WHEN the fence is gone cannot be gated on the fence being present.
+  //
+  // WHAT STANDS IN FOR THE FENCE, and it is four things, not a promise: (1) the attempt's
+  // terminal, non-`succeeded` status is RE-READ from the database under the instance's row
+  // lock, so the caller cannot assert it; (2) an already-terminal instance is a no-op; (3)
+  // legality is the frozen `SERVICE_INSTANCE_TRANSITIONS` predecessor set computed by the
+  // server, and an EMPTY set REFUSES rather than writing; (4) the write itself goes through
+  // `writeServiceInstanceStatus`, conditional on the exact status read under that lock. It is
+  // not worker-reachable: no wire operation resolves to it (E9-F006).
+  "terminalizeServiceInstanceForCancelledAttempt",
 ];
 
 function parse(path: string): ts.SourceFile {
