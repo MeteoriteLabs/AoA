@@ -405,8 +405,11 @@ export function activityService(db: Db) {
      * load bearing: while it held hand-copied literals, dropping the tiebreaker
      * left it and its sibling suite 23/23 GREEN, because it was planning a copy
      * of this query rather than this query. Its MATCHED PAIR arm additionally
-     * compares the ORDER BY emitted here against `pg_indexes.indexdef`, which is
-     * the only thing that sees the prefix drift.
+     * compares the ORDER BY emitted here against `pg_indexes.indexdef`, and that
+     * arm is the only thing that sees the TIEBREAKER drift — the one the plan
+     * arms cannot see, because dropping `id` leaves a prefix of the index key
+     * order and the plan is unchanged. The action-prefix and direction drifts
+     * are caught by the plan arms (a changed prefix reds 5 of the 7).
      */
     securityDenials: (filters: SecurityDenialQuery = {}) => {
       const conditions = [
