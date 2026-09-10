@@ -236,6 +236,38 @@ rediscovered a third time.
 
 ---
 
+## 5a. ★ THE HANDOFF, ANSWERED IN ITS OWN TERMS — which half is taken and which is not
+
+SVC-002's design closes with an explicit scope-out list, and the generation writer appears in it
+**TWICE, in two different bullets, handed to two different tickets**. Read carefully, because the
+distinction is the whole answer:
+
+> *"**Pause / drain of a running instance / generation rollout / budget / TTL → SVC-005.** SVC-002
+> reads `generation` under a row lock and never bumps it; `services.generation` still has no
+> writer after this ticket."*
+>
+> *"**Create/update/pause/resume/stop controls and any UI → SVC-007.** SVC-002 adds **no routes**.
+> There is still no way for a human to create a service; `repos.services.insert` keeps its zero
+> production callers. **The reconciler reconciles rows only a test can create.**"*
+
+**TAKEN.** The `service_generations` writer — SVC-007's half, reached through the create control.
+`insertServiceGeneration` is the first writer that table has ever had, and it writes generation
+**1**, in the same transaction as the `services` row that owns it. That is what makes
+`findServiceGenerationDefinition` answer something other than `null` on a real deployment, and it
+is what "the reconciler reconciles rows only a test can create" stops being true because of.
+
+**NOT TAKEN, and it was never handed here.** The **`services.generation` BUMP** — SVC-002 hands
+that to **SVC-005**, in the bullet whose subject is generation ROLLOUT, alongside pause, drain,
+budget and TTL. `updateServiceDesiredState` deliberately does not touch `generation`, and this
+unit mints no generation N+1. Taking that half without SVC-005's *"no two generations may perform
+external effects simultaneously"* fence would be shipping the overlap E9's acceptance forbids
+under the name of an update.
+
+So the answer to *"are you taking it?"* is: **the half addressed to SVC-007, yes; the half
+addressed to SVC-005, no** — and the two were never the same half.
+
+---
+
 ## 6. Decisions this unit made, and what it refused
 
 * **`update` (generation rollout) is NOT here.** SVC-005's acceptance forbids two generations
