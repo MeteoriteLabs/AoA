@@ -400,6 +400,116 @@ suite("SVC-003 — service events project onto the instance row, under the fence
     expect(await liveInstanceIds(SERVICE)).toEqual([replacement]);
   }, 180_000);
 
+  // ── T5b — ★★★ E9-F004: THE NORMAL STOP, which my first version refused ───────────────
+  //
+  // T5 drives `service_instance_lost`, and the frozen table makes `lost` reachable from
+  // everything — so T5 passed over a `predecessorsOf` that made `stopped` reachable ONLY from
+  // `stopping`, a status no event can assert. Every NORMAL service exit
+  // (`service-lifecycle.ts:293`, from `healthy`) was refused as `illegal_transition`, the
+  // instance stayed live, and the reconciler could never replace it. Caught by review; this is
+  // the case that would have caught it.
+  //
+  // MUTANT: revert `predecessorsOf` to the direct-edge filter.
+  it("★★★ T5b — a service that EXITS from healthy goes `stopped`, and is replaced", async () => {
+    await seedService(SERVICE);
+    const { seeded, offer, identity } = await f().activateLease(709);
+    const first = await attributedInstance({ seeded });
+
+    await ingestDirect(identity, [
+      event(offer, 1, "attempt_started", { sandboxId: "sbx-1" }),
+      event(offer, 2, "service_instance_started", { ...ref(first), providerResourceId: "sbx-1" }),
+      event(offer, 3, "service_health", { ...ref(first), status: "healthy", detail: null }),
+    ]);
+    expect(await statusOf(first)).toBe("healthy");
+
+    // The observed exit — emitted directly from `healthy`, with no `stopping` in between.
+    const stop = await ingestDirect(identity, [
+      event(offer, 4, "service_instance_stopped", { ...ref(first), exitCode: 0 }),
+    ]);
+    expect(stop.projections).toEqual([
+      { outcome: "applied", fromStatus: "healthy", toStatus: "stopped" },
+    ]);
+    expect(await statusOf(first)).toBe("stopped");
+    expect(await liveInstanceIds(SERVICE)).toEqual([]);
+
+    const outcome = await reconcileService(f().app.db, {
+      organizationId: ORG, companyId: COMPANY, serviceId: SERVICE,
+    });
+    expect(outcome.action).toBe("created");
+  }, 180_000);
+
+  // ── T5c — ★★★ E9-F005: the attempt-terminal backstop ─────────────────────────────────
+  //
+  // `service-lifecycle.ts:166`: a launch that resolves no handle emits NO
+  // `service_instance_started`, so "the instance never leaves `leased` and the attempt fails".
+  // Without the backstop the attempt is terminal while the instance sits `leased` inside the
+  // live unique index forever.
+  //
+  // MUTANT: delete the `terminal` arm from the decider.
+  it("★★★ T5c — a FAILED attempt with no service event still terminalizes the instance", async () => {
+    await seedService(SERVICE);
+    const { seeded, offer, identity } = await f().activateLease(710);
+    const stranded = await attributedInstance({ seeded });
+
+    await ingestDirect(identity, [event(offer, 1, "attempt_started", { sandboxId: "sbx-1" })]);
+    expect(await statusOf(stranded)).toBe("leased"); // exactly the stranded state
+
+    // The launch threw: no `service_instance_started`, straight to a failed terminal.
+    const result = await runInTenant(f().app.db, ORG, async (repos) => {
+      const wire = event(offer, 2, "terminal", {
+        status: "failed", exitCode: 1, errorCode: "start_failed", errorMessage: "no handle",
+      });
+      const accepted = await repos.jobControl.acceptEvent({
+        ...identity,
+        batch: { events: [{ ...acceptInput(wire), terminalStatus: "failed" as const }] },
+      });
+      return (accepted.serviceProjections ?? []).map((entry) => entry.result);
+    });
+    expect(result).toEqual([{ outcome: "applied", fromStatus: "leased", toStatus: "failed" }]);
+    expect(await statusOf(stranded)).toBe("failed");
+    expect(await liveInstanceIds(SERVICE)).toEqual([]);
+
+    const outcome = await reconcileService(f().app.db, {
+      organizationId: ORG, companyId: COMPANY, serviceId: SERVICE,
+    });
+    expect(outcome.action).toBe("created");
+  }, 180_000);
+
+  // ── T5d — the backstop is a BACKSTOP, and it does not shout on the happy path ─────────
+  //
+  // On the normal path `service_instance_stopped` has already landed when the attempt terminal
+  // arrives. Reporting `illegal_transition` there would put a refusal on the happy path of
+  // every service run and drown the real ones. ★ The assertion that separates the arms is the
+  // SECOND one: `whenAlreadyTerminal:"noop"` must not leak onto service events, or T5's
+  // split-brain refusal silently becomes a benign no-op.
+  //
+  // MUTANT: default `whenAlreadyTerminal` to `"noop"` in the decider's `project`.
+  it("★ T5d — an attempt terminal after an observed stop is a NO-OP, but a late health event is not", async () => {
+    await seedService(SERVICE);
+    const { seeded, offer, identity } = await f().activateLease(711);
+    const instanceId = await attributedInstance({ seeded });
+
+    await ingestDirect(identity, [
+      event(offer, 1, "attempt_started", { sandboxId: "sbx-1" }),
+      event(offer, 2, "service_instance_started", { ...ref(instanceId), providerResourceId: "sbx-1" }),
+      event(offer, 3, "service_instance_stopped", { ...ref(instanceId), exitCode: 3 }),
+    ]);
+    expect(await statusOf(instanceId)).toBe("stopped");
+
+    const terminal = await runInTenant(f().app.db, ORG, async (repos) => {
+      const wire = event(offer, 4, "terminal", {
+        status: "failed", exitCode: 3, errorCode: "service_exited", errorMessage: null,
+      });
+      const accepted = await repos.jobControl.acceptEvent({
+        ...identity,
+        batch: { events: [{ ...acceptInput(wire), terminalStatus: "failed" as const }] },
+      });
+      return (accepted.serviceProjections ?? []).map((entry) => entry.result);
+    });
+    expect(terminal).toEqual([{ outcome: "noop_already_terminal", fromStatus: "stopped" }]);
+    expect(await statusOf(instanceId)).toBe("stopped");
+  }, 180_000);
+
   // ── T6 — health does not extend ownership ────────────────────────────────────────────
   //
   // E9's acceptance for SVC-003 opens with exactly this clause. The mechanism is that the

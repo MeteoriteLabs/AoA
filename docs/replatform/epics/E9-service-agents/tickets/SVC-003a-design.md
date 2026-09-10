@@ -152,8 +152,9 @@ This is the Outcome's actual content, so every line carries its justification.
 | `service_health` `unhealthy` | `unhealthy` | Same source, other verdict. |
 | `service_instance_stopped` | `stopped` | *"the process was OBSERVED gone"* — never a stop request, never a signal's return value. |
 | `service_instance_lost` | `lost` | The instance can no longer be accounted for. |
+| `terminal` (non-succeeded) | `failed` | ★ **THE BACKSTOP, added after review — E9-F005.** `service-lifecycle.ts:166` says a launch resolving no handle emits NO `service_instance_started`, so *"the instance never leaves `leased` and the attempt fails"*. Without this arm the attempt is terminal while the instance sits live forever. A `succeeded` terminal projects NOTHING (the service already emitted `_stopped`). |
 
-**And the six that project nothing, each for a reason rather than by omission:**
+**And the five that project nothing, each for a reason rather than by omission:**
 
 * `service_graceful_stop_observed` — a stop **request**, not an observation. Its frozen payload is
   `{ref, deadline}` and SVC-008b's emitter says it *"claims nothing about the process"*. Moving the
@@ -165,10 +166,44 @@ This is the Outcome's actual content, so every line carries its justification.
 * `service_provider_interrupted` / `_resumed` — **no emitter exists** and none can:
   `SandboxState` has no suspended inhabitant (SVC-008b §6.3). A consumer of something nothing can
   produce is vacuously true and untestable end to end.
-* `terminal` and the rest — attempt-scoped, not instance-scoped.
+* `log` / `progress` / `usage` / `artifact_prepared` / … — attempt-scoped, not instance-scoped.
 
 A worker therefore has **no event** that produces an instance status it cannot witness. That is
 the property; it is not an accident of coverage.
+
+### 5.1 — ★★★ WHAT A LEGAL MOVE IS, and the frozen-table gap review exposed (E9-F004)
+
+The first revision of this design derived the legal-predecessor set as the **direct edges** of the
+frozen table. That was wrong, and it was wrong in the one place that mattered:
+
+> `SERVICE_INSTANCE_TRANSITIONS` gives `stopped` exactly one predecessor — `stopping` — and **no
+> frozen worker event can assert `stopping`**. The supervisor emits `service_instance_stopped`
+> directly on an observed exit, **from `healthy`** (`service-lifecycle.ts:293`, and `:362` after the
+> graceful ladder), and `service_graceful_stop_observed` cannot supply it because it observes a
+> REQUEST.
+
+So a direct-edge derivation refused **every normal service stop**, leaving the instance `healthy`
+inside `service_instances_live_service_uq` where the reconciler could never replace it — the exact
+opposite of this ticket's purpose. It passed a suite with a named positive control and thirteen
+killed mutants, because the one end-to-end case drove `service_instance_lost`, which the frozen
+table makes reachable from everything. *A lifecycle table proven over the transitions a suite
+happens to exercise is not proven over the table.*
+
+**The rule that replaces it, in one sentence: a worker may skip only the states it cannot witness.**
+`predecessorsOf(to)` admits every status from which `to` is reachable by a legal path whose every
+INTERMEDIATE step is a status no event can project (`pending`, `stopping`).
+
+* It is **not** plain reachability. That would also make `starting` reachable from `pending` via
+  `leased` — and `leased` IS projectable (`attempt_started` asserts it), so admitting it would
+  delete a real ordering guarantee to fix an unrelated gap. `predecessorsOf("starting")` stays
+  exactly `["leased"]`.
+* **The safety property is untouched at any path length**, which is why this is safe: the three
+  terminals have no outgoing edges, so no path of any length leaves one, so none is ever in a
+  predecessor set. `stopping` is deliberately not terminal, so traversing through it cannot smuggle
+  a terminal in.
+* **The residual is real and is on the register** (E9-F004): `stopped` is now admitted from
+  `leased` too, wider than the table permits in one hop. Closing it properly means SVC-005 writing
+  `stopping`, or a frozen-table amendment.
 
 ---
 
@@ -181,6 +216,7 @@ SVC-008b's whole stop-verdict work exists to preserve.
 |---|---|
 | `applied` | The row moved. |
 | `noop_same_status` | Idempotent replay. Checked BEFORE legality: no status has a self-edge in the frozen table, so a repeated health tick would otherwise be reported `illegal_transition`, which is false and would drown the real refusals. |
+| `noop_already_terminal` | ★ The attempt-terminal backstop landing on an instance that is already terminal — the NORMAL path. Reachable **only** when the caller passes `whenAlreadyTerminal: "noop"`, which only the `terminal` arm does; every service event keeps `"refuse"`, so the split-brain refusal is untouched. No write happens under either value, so it can never admit a move `"refuse"` would block. |
 | **`unattributed`** | ★ **UNKNOWN, NOT ABSENT.** No instance is attributed to this (job, attempt), so nothing here can say what the observation is about. Writes nothing. A batch job's `attempt_started` lands here too, and for it this is the correct and only answer. |
 | `identity_mismatch` | The payload named an instance the control plane did not attribute to this attempt. E9-F003 made load-bearing (§7). |
 | `stale_generation` | ★ The fence (§3). |

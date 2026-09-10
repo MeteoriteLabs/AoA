@@ -397,3 +397,109 @@ kind from `service_instance` to `service` so the label stops lying. Either way t
 different things on purpose. Then flip this Status and DELETE the
 `scripts/finding-ownership.json` key in the SAME commit.
 
+
+## E9-F004 — the frozen lifecycle makes `stopping` the sole predecessor of `stopped`, and NO frozen worker event can assert `stopping`
+
+**Status:** `open` · **Severity:** MED · **Owner:** `unowned`
+**Filed:** 2026-09-10, by SVC-003a, after external review of PR #410 caught the consequence in the
+shipped diff. **Found by ARMING a symbol that had zero production callers** — the gap had existed
+since the table was frozen and nothing could see it, because nothing consumed the table.
+**Affected tickets:** SVC-005 (owns the stop-request side and is the natural place for a `stopping`
+writer), SVC-003 (first consumer), SVC-008 (the emitter side).
+**Blocks gate:** no — SVC-003a works around it. Yes for any clause asserting the instance lifecycle
+is traversed edge-by-edge as the frozen table models it.
+
+### 1. The contradiction, verified at `6b39c77f6`
+
+`SERVICE_INSTANCE_TRANSITIONS` (`packages/worker-protocol/src/states.ts`) gives `stopped` exactly
+one predecessor:
+
+```
+  starting:  [... "stopping" ...]      healthy: [... "stopping" ...]
+  unhealthy: [... "stopping" ...]      leased:  [... "stopping" ...]
+  stopping:  ["stopped", "failed", "lost"]
+```
+
+**No frozen worker event can assert `stopping`.** The five service events are
+`service_instance_started` (`starting`), `service_health` (`healthy`/`unhealthy`),
+`service_instance_stopped`, `service_instance_lost`, and `service_graceful_stop_observed` — whose
+payload is `{ref, deadline}` and which observes a REQUEST, so projecting a process fact from it is
+the E7-F034 fail-open SVC-008a exists to refuse. And the shipped supervisor does not pass through
+it either: `packages/worker-daemon/src/supervisor/service-lifecycle.ts:293` emits
+`service_instance_stopped` directly on an observed `exited`/`gone` — **from `healthy`** — and `:362`
+does the same after the graceful ladder.
+
+### 2. What it cost, and why it was invisible
+
+SVC-003a's first revision derived its legality predicate as the DIRECT edges of the frozen table.
+Under that derivation **every normal service stop** was refused as `illegal_transition`: the
+instance stayed `healthy` inside `service_instances_live_service_uq`, so SVC-002's reconciler could
+never replace it — a permanent wedge, and the exact opposite of the ticket's purpose.
+
+**It passed a suite with a named positive control and thirteen killed mutants.** The end-to-end
+case drove `service_instance_lost`, which the frozen table makes reachable from every non-terminal
+status, so the one status with an unreachable predecessor was the one status never driven. *A
+lifecycle table proven over the transitions a suite happens to exercise is not proven over the
+table.*
+
+### 3. The workaround SVC-003a shipped, and the residual it leaves
+
+`predecessorsOf` admits every status from which the target is reachable by a legal path whose every
+INTERMEDIATE step is a status no event can project (`pending`, `stopping`). In one sentence: *a
+worker may skip only the states it cannot witness.* The safety property is untouched at any path
+length — the three terminals have no outgoing edges, so no path leaves one and none is ever a
+predecessor.
+
+**The residual is real and is why this stays open.** `stopped` is now admitted from `leased` as
+well as from the live states, which is wider than the frozen table permits in one hop. The
+projection cannot distinguish "skipped `stopping` because nothing writes it" from "skipped
+`starting` and `healthy` too", so a service that never started can be reported `stopped`. Nothing
+downstream depends on that distinction today; SVC-004's restart policy might.
+
+### 4. What would close it
+
+Either (a) **SVC-005 writes `stopping`** when it issues the graceful stop — a control-plane write
+from the request side, which is legitimate because the request IS the control plane's own fact,
+unlike a worker asserting it; or (b) a **frozen-table amendment** removing `stopping` from the
+`stopped` path, which is a v1 wire change and a Protocol Custodian call. `unowned` because SVC-005
+has **no file on disk** and naming it would fail the guard's existence bar (E4-F013). Not
+`accepted`: a lifecycle model with an unassertable mandatory state is not something to accept.
+
+## E9-F005 — the daemon emits an attempt terminal with NO service event on the no-handle path, stranding the instance
+
+**Status:** `resolved` 2026-09-10 by **SVC-003a** (`tickets/SVC-003a-result.md`) · **Severity:** MED
+**Filed:** 2026-09-10, by SVC-003a, after external review of PR #410. Filed although it is resolved
+in the same commit, because the DAEMON behaviour is unchanged and SVC-004's restart policy will meet
+it again.
+**Affected tickets:** SVC-003 (resolved it), SVC-004 (restart policy), SVC-008 (the emitter).
+**Blocks gate:** no.
+
+### 1. The path
+
+`packages/worker-daemon/src/supervisor/service-lifecycle.ts:166` says it in its own words:
+
+> *"No handle ⇒ NO `service_instance_started`. The instance never leaves `leased` and the attempt
+> fails."*
+
+So a launch whose `startProcess` throws — and a workload rejected before the supervise loop — emits
+`attempt_started` and then a failed `terminal`, with **no service event at all**. The attempt is
+terminal while the instance sits `leased` (or `pending`, if `attempt_started` never landed either)
+**inside** `service_instances_live_service_uq`, where SVC-002's reconciler can never replace it. It
+is E9-F004's permanent wedge reached through a different door, and SVC-008b's own accounting —
+*"emits exactly one of `service_instance_stopped` / `service_instance_lost` before the attempt
+`terminal`"* — is true only of the paths that got that far.
+
+### 2. How SVC-003a resolved it, and the bound it carries
+
+A **non-succeeded** attempt `terminal` drives the instance to `failed`. Three bounds keep it a
+backstop rather than a second opinion: a `succeeded` terminal projects nothing (the service already
+emitted `_stopped`, and re-asserting would be the projection overruling an observation); it carries
+no claim, so the target is fixed by (job, attempt) attribution; and it is the ONLY projection with
+`whenAlreadyTerminal: "noop"`, so on the normal path — where the instance is already terminal — it
+is a no-op rather than a refusal on the happy path of every service run. Every service event keeps
+`"refuse"`, so the split-brain refusal is untouched; a mutant that flips that default reds the
+split-brain case.
+
+**Left for SVC-004:** `failed` is the honest instance status for a run that ended badly, but WHETHER
+such an instance should be restarted, and with what backoff, is SVC-004's crash-loop clause. SVC-003a
+has no opinion about it.

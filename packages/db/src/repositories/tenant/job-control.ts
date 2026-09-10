@@ -1255,6 +1255,20 @@ export interface ServiceInstanceProjectionInput {
    * "no legal predecessor", which refuses rather than admits.
    */
   allowedFromStatuses: readonly string[];
+  /**
+   * SVC-003 — what to report when the instance is ALREADY in a frozen terminal status.
+   *
+   * `"refuse"` (the default, and what EVERY service event uses) reports `illegal_transition`:
+   * a late `service_health healthy` on an instance that reached `lost` is the split-brain
+   * attempt and must be visible as a refusal.
+   *
+   * `"noop"` is set by the attempt-terminal backstop ALONE. On the normal path the instance is
+   * already `stopped`/`lost` by the time the attempt terminal arrives, and calling that a
+   * refusal would put one on the happy path of every service run — drowning the real ones in
+   * the operator log. ★ It changes only the REPORTED outcome: no write happens under either
+   * value, so it can never admit a transition `"refuse"` would have blocked.
+   */
+  whenAlreadyTerminal?: "refuse" | "noop";
 }
 
 /**
@@ -1268,6 +1282,9 @@ export type ServiceProjectionOutcome =
   | { outcome: "applied"; fromStatus: string; toStatus: string }
   /** The row already carried `toStatus`. Idempotent replay; no write. */
   | { outcome: "noop_same_status"; fromStatus: string }
+  /** The row is already in a frozen terminal status and the caller asked for `"noop"` rather
+   *  than a refusal — the attempt-terminal backstop's normal path. No write. */
+  | { outcome: "noop_already_terminal"; fromStatus: string }
   /** ★ UNKNOWN, NOT ABSENT. No `service_instances` row is attributed to this (job, attempt),
    *  so nothing here can say what this observation is about. Nothing is written. */
   | { outcome: "unattributed" }
@@ -1677,6 +1694,20 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
     // reported as an illegal transition, which is false and would drown the real signal.
     if (instance.status === projection.toStatus) {
       return { outcome: "noop_same_status", fromStatus: instance.status };
+    }
+
+    // (4b) The attempt-terminal backstop landing on an instance that is ALREADY terminal —
+    // which is the NORMAL path, since the supervisor emits `_stopped`/`_lost` before the
+    // attempt terminal whenever it got that far. Reporting `illegal_transition` here would put
+    // a refusal on the happy path of every service run. ★ Reachable only when the CALLER asked
+    // for it (`whenAlreadyTerminal: "noop"`), which only the attempt-terminal arm does; every
+    // service event keeps the default `"refuse"`, so the split-brain refusal is untouched. No
+    // write happens under either value, so this can never admit a move `"refuse"` would block.
+    // ★ Reuses SVC-002's frozen list — the SAME `as const` the live-instance index predicate
+    // and the observed-state count are derived from — rather than a fifth hand-written copy.
+    if (projection.whenAlreadyTerminal === "noop"
+      && (TERMINAL_SERVICE_INSTANCE_STATUSES as readonly string[]).includes(instance.status)) {
+      return { outcome: "noop_already_terminal", fromStatus: instance.status };
     }
 
     // (5) ★★★ LEGALITY, AND THE SPLIT-BRAIN REFUSAL IT EXISTS FOR. `allowedFromStatuses` is

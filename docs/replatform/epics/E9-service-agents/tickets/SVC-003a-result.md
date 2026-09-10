@@ -114,11 +114,15 @@ before, green after, and green under all thirteen mutants** — including mutant
 of the eight service cases. Without it, several cases above could pass because ingest had stopped
 projecting anything at all.
 
+**SEVENTEEN mutants over 26 cases** (10 pure + 8 integration originally; +5 pure and +3 integration
+added by the review fixes in §4a). Counts below are the FINAL figures, re-measured on the shipped
+source after those fixes — not the pre-review numbers.
+
 | # | Mutant | Result |
 |---|---|---|
-| 1 | Delete the `attempt_started → leased` arm | **2 red** — ★ without it `pending` is a dead end (the frozen table's only edge into `starting` is from `leased`, and nothing else writes `leased`), so the whole projection is production-unreachable while every other pure case stays green |
-| 2 | Map `service_instance_started` to `healthy` | **1 red** |
-| 3 | Return the transition table unfiltered | **4 red** — including the whole-table "no terminal is ever a predecessor" property |
+| 1 | Delete the `attempt_started → leased` arm | **10 red** — ★ without it `pending` is a dead end (the frozen table's only edge into `starting` is from `leased`, and nothing else writes `leased`) |
+| 2 | Map `service_instance_started` to `healthy` | **5 red** |
+| 3 | Return the transition table unfiltered | **7 red** — including the whole-table "no terminal is ever a predecessor" property |
 | 4 | Project `stopping` from `service_graceful_stop_observed` | **1 red** |
 | 5 | Default an unreadable health verdict to `healthy` | **2 red** |
 | 6 | Reinstate `"interrupted"` (**the base-tree state**) | **2 red** |
@@ -127,8 +131,12 @@ projecting anything at all.
 | 9 | Delete the generation fence | **1 red** — T3 |
 | 10 | Return a definite `applied` for an unattributed observation | **1 red** — T7 |
 | 11 | Have the projection bump `leases.expires_at` | **1 red** — T6, E9's "health does not extend ownership" clause |
-| 12 | Delete the call site in `acceptEvent` | **7 of 8 red**, positive control green |
+| 12 | Delete the call site in `acceptEvent` | **10 red**, positive control green |
 | 13 | `serviceProjection: null` in `toAcceptInputs` | **1 red — and ONLY T1** |
+| **14** | **Revert `predecessorsOf` to the direct-edge filter** (the pre-review state) | **3 red** — E9-F004, T5b, T5d |
+| **15** | **Delete the attempt-terminal backstop** (the pre-review state) | **3 red** — E9-F005, T5c, T5d |
+| **16** | **Default `whenAlreadyTerminal` to `"noop"`** | **2 red** — and one of them is **T5**, the split-brain case, which is exactly the leak this pins |
+| **17** | Walk back through PROJECTABLE states too (plain reachability) | **3 red** |
 
 ★ **Mutant 13 is the arming discrimination, and it is why T1 goes through the full
 `createJobEventIngestService` rather than through `acceptEvent` directly.** Under it the feature is
@@ -136,9 +144,52 @@ wired to nothing and every case that hands `acceptEvent` a hand-built projection
 the case that drives the real wire path can see it. A suite built entirely on the direct path would
 have declared this feature proven while it reached production code never.
 
-**Suites:** `server/src/__tests__/service-health-projection.test.ts` (10 pure cases over the whole
+**Suites:** `server/src/__tests__/service-health-projection.test.ts` (15 pure cases over the whole
 9×9 transition table) and `server/src/__tests__/service-health-projection.integration.test.ts`
-(8 cases, real embedded PostgreSQL, real poll/ACK-minted ACTIVE fence).
+(11 cases, real embedded PostgreSQL, real poll/ACK-minted ACTIVE fence).
+
+---
+
+## 4a. ★★★ REVIEW FOUND TWO REAL DEFECTS IN THIS DIFF, AND BOTH WERE PERMANENT WEDGES
+
+External review of PR #410 raised two P1s. **Both were real, both were verified against source
+before being believed, and both are fixed here.** They are recorded rather than folded in silently,
+because the shape of the miss is the lesson.
+
+**(i) E9-F004 — the direct-edge legality predicate refused EVERY NORMAL SERVICE STOP.**
+`SERVICE_INSTANCE_TRANSITIONS` makes `stopping` the sole predecessor of `stopped`, and **no frozen
+worker event can assert `stopping`** — the supervisor emits `service_instance_stopped` directly from
+`healthy` (`service-lifecycle.ts:293`, and `:362` after the graceful ladder), and
+`service_graceful_stop_observed` observes a REQUEST. So an ordinary service exit was refused as
+`illegal_transition`, the instance stayed `healthy` inside `service_instances_live_service_uq`, and
+SVC-002's reconciler could never replace it. **That is the exact opposite of this ticket's purpose.**
+
+★ **HOW IT SURVIVED A NAMED POSITIVE CONTROL AND THIRTEEN KILLED MUTANTS.** The one end-to-end case
+drove `service_instance_lost` — and `lost` is the one status the frozen table makes reachable from
+every non-terminal status. Every mutant was measured against a suite whose only terminal transition
+was the one with no reachability problem. *A lifecycle table proven over the transitions a suite
+happens to exercise is not proven over the table.* The fix is `predecessorsOf` walking back through
+statuses no event can project; the residual is filed as **E9-F004** and stays open, because closing
+it properly needs SVC-005 to write `stopping` or a frozen-table amendment.
+
+**(ii) E9-F005 — a failed attempt with no service event stranded the instance.**
+`service-lifecycle.ts:166` says it in its own words: a launch resolving no handle emits NO
+`service_instance_started`, so *"the instance never leaves `leased` and the attempt fails"*. The
+attempt went terminal while the instance sat live forever — E9-F004's wedge through another door.
+Fixed with the attempt-terminal backstop (§5.7), filed as **E9-F005**, resolved in this commit.
+
+**Both fixes were observed RED under mutants 14–16 that restore the exact pre-fix behaviour**, and
+mutant 16 is the one that matters most: it reds **T5**, the split-brain case, proving that letting
+`whenAlreadyTerminal: "noop"` leak onto service events would have silently converted the DE-12
+refusal into a benign no-op.
+
+★ **AND THE HARNESS FAILED A SECOND WAY DURING THE RE-RUN, recorded for the same reason as the
+first.** `apply` mutates the file and *then* rebuilds `dist`. One rebuild exited non-zero, the
+harness threw AFTER writing the mutation, and the driver reported `APPLY FAILED` — while the mutant
+was still on disk. The next unmutated run came back 10-red and could have been read as a real
+regression. It was caught because the backup file was still present when it should not have been.
+*Report a mutant as not-applied only when the file is provably unchanged, not when the apply step
+merely threw.*
 
 ---
 
@@ -183,6 +234,15 @@ a worker naming another instance, and a late event refused for illegality are al
 security-relevant and would otherwise be silent no-writes. `unattributed` is deliberately excluded
 from that log line: a batch job's `attempt_started` is unattributed by construction, and logging it
 would bury the real refusals under one line per batch job.
+
+**5.7 — the attempt-terminal backstop, added by review (§4a(ii)).** A NON-succeeded `terminal`
+drives the instance to `failed`. Three bounds keep it a backstop: `succeeded` projects nothing (the
+service already emitted `_stopped`; re-asserting would be the projection overruling an
+observation); it carries no claim, so the target is fixed by attribution; and it is the ONLY
+projection with `whenAlreadyTerminal: "noop"`. That flag changes only the REPORTED outcome — no
+write happens under either value — so it can never admit a move `"refuse"` would block, and mutant
+16 pins that it does not leak onto service events. **Left for SVC-004:** whether such an instance
+should be RESTARTED, and with what backoff, is its crash-loop clause; this unit has no opinion.
 
 **5.6 — `noop_same_status` is checked BEFORE legality.** No status has a self-edge in the frozen
 table, so a repeated health tick (the common case: SVC-008b ticks every 10–60 s for the life of the
@@ -251,9 +311,12 @@ until SVC-007 gives a human a way to create a service. It is not claimed here.
 - `scripts/gate-clause-wiring.json`: **added** `E9-3-service-health-projection`, `wired`, symbol
   `applyServiceProjectionForFence` (1 production caller, base 0). Six insert lines, no reformatting.
 - `docs/replatform/epics/E9-service-agents/findings.md`: **E9-F001 → `resolved`**, with the
-  both-conjuncts note; **E9-F003 gained §2a**, status and owner unchanged.
+  both-conjuncts note; **E9-F003 gained §2a**, status and owner unchanged; **E9-F004 FILED**
+  (`open`/`unowned` — the frozen table's unassertable `stopping`); **E9-F005 FILED** (`resolved`
+  here, filed anyway because the daemon behaviour is unchanged and SVC-004 will meet it again).
 - `scripts/finding-ownership.json`: **E9-F001 key DELETED**, in the same commit, as its own
-  resolution instruction required.
+  resolution instruction required; **E9-F004 key ADDED** (`unowned`, with its residual and resolve
+  criterion). E9-F005 needs no key — the guard accounts only for open findings.
 - `scripts/test-inventory.json`: unchanged — the guard reports OK at head (2773 files across 22
   trees); its `server` entry is a floor this diff does not cross.
 - `packages/db/src/migrations/0277_service_health_projection.sql` + `meta/` — `db:generate` output.

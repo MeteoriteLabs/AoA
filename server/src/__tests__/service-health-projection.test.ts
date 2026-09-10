@@ -33,16 +33,44 @@ const ref = {
 };
 
 describe("SVC-003 — predecessorsOf is derived from the frozen transition table", () => {
-  // MUTANT: replace the `canTransitionServiceInstanceStatus` filter with a hand-written
-  // list, or invert the argument order (`canTransition(to, from)`).
-  it("agrees with the frozen helper for every (from, to) pair in the table", () => {
+  // The derivation is a walk BACKWARDS over the frozen table, so it must (a) admit every
+  // direct edge and (b) admit nothing that is not connected to `to` by a legal path at all.
+  // Both directions, over the whole 9x9 table.
+  //
+  // MUTANT: invert the argument order (`canTransition(to, from)`), or replace the frozen
+  // helper with a hand-written list.
+  it("admits every DIRECT frozen edge, and nothing the frozen table does not connect", () => {
+    // Legal reachability, computed independently of the implementation.
+    const reaches = new Map<string, Set<string>>();
+    for (const from of SERVICE_INSTANCE_STATUSES) {
+      const seen = new Set<string>();
+      let frontier = [from as string];
+      while (frontier.length > 0) {
+        const next: string[] = [];
+        for (const cur of frontier) {
+          for (const to of SERVICE_INSTANCE_STATUSES) {
+            if (!canTransitionServiceInstanceStatus(cur as never, to)) continue;
+            if (seen.has(to)) continue;
+            seen.add(to);
+            next.push(to);
+          }
+        }
+        frontier = next;
+      }
+      reaches.set(from, seen);
+    }
     for (const to of SERVICE_INSTANCE_STATUSES) {
-      const derived = new Set(predecessorsOf(to));
+      const derived = new Set<string>(predecessorsOf(to));
       for (const from of SERVICE_INSTANCE_STATUSES) {
-        expect(
-          derived.has(from),
-          `predecessorsOf(${to}) disagrees with canTransition(${from} -> ${to})`,
-        ).toBe(canTransitionServiceInstanceStatus(from, to));
+        if (canTransitionServiceInstanceStatus(from, to)) {
+          expect(derived.has(from), `predecessorsOf(${to}) drops the DIRECT edge ${from} -> ${to}`).toBe(true);
+        }
+        if (derived.has(from)) {
+          expect(
+            reaches.get(from)!.has(to),
+            `predecessorsOf(${to}) admits ${from}, which the frozen table cannot reach ${to} from at all`,
+          ).toBe(true);
+        }
       }
     }
   });
@@ -73,8 +101,37 @@ describe("SVC-003 — predecessorsOf is derived from the frozen transition table
   // MUTANT: return `SERVICE_INSTANCE_STATUSES` unfiltered.
   it("is not the trivial all-statuses answer", () => {
     expect(predecessorsOf("healthy")).toEqual(["starting", "unhealthy"]);
-    expect(predecessorsOf("starting")).toEqual(["leased"]);
     expect(predecessorsOf("leased")).toEqual(["pending"]);
+  });
+
+  // ★★★ E9-F004 — THE CASE REVIEW CAUGHT AND MY FIRST VERSION SHIPPED BROKEN.
+  //
+  // `SERVICE_INSTANCE_TRANSITIONS` makes `stopping` the SOLE predecessor of `stopped`, and no
+  // frozen worker event can assert `stopping`: the supervisor emits `service_instance_stopped`
+  // directly on an observed exit, from `healthy` (`service-lifecycle.ts:293`, and `:362` after
+  // the graceful ladder), and `service_graceful_stop_observed` observes a REQUEST so projecting
+  // a process fact from it is the E7-F034 fail-open. With a DIRECT-EDGE predecessor set, every
+  // normal service stop was refused as `illegal_transition`, leaving the instance `healthy`
+  // inside `service_instances_live_service_uq` where the reconciler can never replace it — the
+  // exact opposite of this ticket's purpose. It was invisible because the only end-to-end case
+  // drove `service_instance_lost`, which the frozen table makes reachable from everything.
+  //
+  // MUTANT: revert `predecessorsOf` to the direct-edge filter.
+  it("★★★ E9-F004 — `stopped` is reachable from the live states, through unprojectable `stopping`", () => {
+    expect(predecessorsOf("stopped")).toEqual(["leased", "starting", "healthy", "unhealthy", "stopping"]);
+  });
+
+  // ★ The other half of the rule: traversal goes through states a worker CANNOT witness, never
+  // through one it could have sent an event for. `leased` is projectable (`attempt_started`),
+  // so `starting` stays reachable only from `leased` — which is what keeps the
+  // `attempt_started -> leased` arm load-bearing instead of optional.
+  //
+  // MUTANT: drop the `UNPROJECTABLE_STATUSES` condition so the walk-back is plain reachability
+  // (`starting` then becomes reachable from `pending` too, and mutant 1 below stops killing).
+  it("★ does NOT traverse through a status a worker could have asserted", () => {
+    expect(predecessorsOf("starting")).toEqual(["leased"]);
+    expect(predecessorsOf("healthy")).not.toContain("pending");
+    expect(predecessorsOf("healthy")).not.toContain("leased");
   });
 });
 
@@ -107,19 +164,79 @@ describe("SVC-003 — the observation -> status mapping", () => {
   // MUTANT: project `stopping` from `service_graceful_stop_observed`. That event's frozen
   // payload is `{ref, deadline}` — a stop REQUEST — and asserting a process fact from a
   // request is exactly the E7-F034 fail-open SVC-008a exists to refuse.
-  it("★ projects NOTHING for the six events that witness no process fact", () => {
+  it("★ projects NOTHING for the five events that witness no process fact", () => {
     for (const eventType of [
       "service_graceful_stop_observed",
       "service_checkpoint_prepared",
       "service_checkpoint_restored",
       "service_provider_interrupted",
       "service_provider_resumed",
-      "terminal",
     ]) {
       expect(
         decideServiceProjection({ eventType, payload: { ...ref, deadline: "2026-01-01T00:00:00.000Z" } }),
         `${eventType} must project no instance status`,
       ).toBeNull();
+    }
+  });
+
+  // ★★★ E9-F005 — THE SECOND CASE REVIEW CAUGHT. `service-lifecycle.ts:166` says in terms that
+  // a launch which resolves no handle emits NO `service_instance_started`, so "the instance
+  // never leaves `leased` and the attempt fails". Without this arm the attempt is terminal
+  // while the instance sits `leased` inside the live unique index forever and the reconciler
+  // can never replace it — E9-F004's permanent wedge through a different door.
+  //
+  // MUTANT: delete the `terminal` arm (return null for it, as the first version did).
+  it("★★★ E9-F005 — a NON-SUCCEEDED attempt terminal is the backstop that terminalizes the instance", () => {
+    for (const status of ["failed", "cancelled", "expired"]) {
+      const decided = decideServiceProjection({
+        eventType: "terminal",
+        payload: { status, exitCode: 1, errorCode: null, errorMessage: null },
+      });
+      expect(decided, `terminal(${status}) must drive the instance terminal`).toMatchObject({
+        toStatus: "failed",
+        claim: null,
+        whenAlreadyTerminal: "noop",
+      });
+      // `leased` and `pending` — the two stranded states — must both be admitted.
+      expect(decided!.allowedFromStatuses).toContain("leased");
+      expect(decided!.allowedFromStatuses).toContain("pending");
+    }
+  });
+
+  // ★ The three bounds that make it a BACKSTOP rather than a second opinion.
+  //
+  // MUTANT: project `failed` for a `succeeded` terminal too — the projection would then
+  // overrule the `service_instance_stopped` observation that already landed.
+  it("★ a SUCCEEDED terminal projects nothing, and an unreadable one stalls", () => {
+    expect(decideServiceProjection({
+      eventType: "terminal",
+      payload: { status: "succeeded", exitCode: 0, errorCode: null, errorMessage: null },
+    })).toBeNull();
+    expect(decideServiceProjection({ eventType: "terminal", payload: { status: "weird" } })).toBeNull();
+    expect(decideServiceProjection({ eventType: "terminal", payload: null })).toBeNull();
+  });
+
+  // ★★★ `whenAlreadyTerminal: "noop"` IS SET ON EXACTLY ONE ARM. If a service event ever
+  // carried it, a late `service_health healthy` on a `lost` instance would report a benign
+  // no-op instead of the split-brain refusal — gutting the integration suite's T5 while every
+  // other case stayed green.
+  //
+  // MUTANT: default `whenAlreadyTerminal` to `"noop"` in `project`.
+  it("★★★ no SERVICE event may carry whenAlreadyTerminal:\"noop\"", () => {
+    for (const event of [
+      { eventType: "attempt_started", payload: { sandboxId: "s" } },
+      { eventType: "service_instance_started", payload: { ...ref, providerResourceId: "s" } },
+      { eventType: "service_health", payload: { ...ref, status: "healthy", detail: null } },
+      { eventType: "service_health", payload: { ...ref, status: "unhealthy", detail: null } },
+      { eventType: "service_instance_stopped", payload: { ...ref, exitCode: 0 } },
+      { eventType: "service_instance_lost", payload: { ...ref, reason: "r" } },
+    ]) {
+      const decided = decideServiceProjection(event);
+      expect(decided, `${event.eventType} projects nothing`).not.toBeNull();
+      expect(
+        decided!.whenAlreadyTerminal,
+        `${event.eventType} must REFUSE on an already-terminal instance`,
+      ).toBe("refuse");
     }
   });
 

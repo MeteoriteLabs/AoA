@@ -69,16 +69,74 @@ import {
 import type { ServiceInstanceProjectionInput } from "@armyofagents/db";
 
 /**
- * Every status from which `to` is a LEGAL move, read off the frozen transition table.
+ * ★★★ THE STATUSES NO FROZEN WORKER EVENT CAN ASSERT — and `stopping` being one of them is a
+ * REAL CONTRACT MISMATCH between the frozen lifecycle and the shipped daemon (E9-F004).
  *
- * ★ The three terminal statuses (`stopped` / `failed` / `lost`) have no outgoing edges, so
- * they are in NO predecessor set and every move out of one is refused downstream. That is the
- * split-brain refusal: an instance that reached `lost` has left
- * `service_instances_live_service_uq` and SVC-002's reconciler has already replaced it, so a
- * late event resurrecting it would put two live rows under one partial-unique key.
+ * The four here are the complement of §"THE MAPPING" above: `pending` (the reconciler's
+ * INSERT), `stopping`, `failed` and — for a while — nothing else. `stopping` is the dangerous
+ * one, and it was caught by review rather than by me:
+ *
+ *   `SERVICE_INSTANCE_TRANSITIONS` makes `stopping` the **sole** predecessor of `stopped`.
+ *   The shipped supervisor never passes through it: `service-lifecycle.ts:293` emits
+ *   `service_instance_stopped` directly on an observed `exited`/`gone` — from `healthy` — and
+ *   `:362` does the same after the graceful ladder. `service_graceful_stop_observed` cannot
+ *   supply it either: its payload is `{ref, deadline}`, it observes a REQUEST, and projecting
+ *   a process fact from it is the E7-F034 fail-open this module refuses.
+ *
+ * So a DIRECT-EDGE predecessor set would refuse **every normal service stop** as
+ * `illegal_transition`, leaving the instance `healthy` inside
+ * `service_instances_live_service_uq` where SVC-002's reconciler can never replace it. That is
+ * the exact opposite of this ticket's purpose, and the first version of this file shipped it —
+ * invisible because the only end-to-end case drove `service_instance_lost`, which the frozen
+ * table makes reachable from everything.
+ */
+const UNPROJECTABLE_STATUSES: readonly ServiceInstanceStatus[] = ["pending", "stopping"];
+
+/**
+ * Every status from which `to` is reachable by a legal path whose EVERY INTERMEDIATE STEP is a
+ * status no event can project. In one sentence: **a worker may skip only the states it cannot
+ * witness.**
+ *
+ * ★ WHY NOT PLAIN REACHABILITY. Unbounded transitive closure would also make `starting`
+ * reachable from `pending` (via `leased`), and `leased` IS projectable — `attempt_started`
+ * asserts it. Admitting that would make the `attempt_started -> leased` arm optional, i.e. it
+ * would delete a real ordering guarantee to fix an unrelated gap. Traversing only through
+ * unprojectable states is the narrowest rule that closes E9-F004: it says the worker may not
+ * skip a state it had an event for.
+ *
+ * ★ THE SAFETY PROPERTY IS UNAFFECTED, AND THAT IS WHY THIS IS SAFE AT ANY PATH LENGTH. The
+ * three terminal statuses (`stopped`/`failed`/`lost`) have NO OUTGOING EDGES, so no path of any
+ * length leaves one, so none of them is ever in a predecessor set. That is the split-brain
+ * refusal: an instance that reached `lost` has left `service_instances_live_service_uq` and
+ * SVC-002's reconciler has already replaced it, so a late event resurrecting it would put two
+ * live rows under one partial-unique key. `stopping` is deliberately NOT terminal, so
+ * traversing through it cannot smuggle a terminal in.
  */
 export function predecessorsOf(to: ServiceInstanceStatus): readonly ServiceInstanceStatus[] {
-  return SERVICE_INSTANCE_STATUSES.filter((from) => canTransitionServiceInstanceStatus(from, to));
+  const reached = new Set<ServiceInstanceStatus>();
+  // Breadth-first BACKWARDS from `to`. A frontier entry is a status already known reachable-to;
+  // we admit its direct predecessors, and keep walking back only THROUGH unprojectable ones.
+  let frontier: ServiceInstanceStatus[] = [to];
+  const walkedBack = new Set<ServiceInstanceStatus>();
+  while (frontier.length > 0) {
+    const next: ServiceInstanceStatus[] = [];
+    for (const target of frontier) {
+      for (const from of SERVICE_INSTANCE_STATUSES) {
+        if (!canTransitionServiceInstanceStatus(from, target)) continue;
+        if (!reached.has(from)) reached.add(from);
+        // Walk back through it ONLY if a worker could never have asserted it directly.
+        if (UNPROJECTABLE_STATUSES.includes(from) && !walkedBack.has(from)) {
+          walkedBack.add(from);
+          next.push(from);
+        }
+      }
+    }
+    frontier = next;
+  }
+  // `to` itself is never its own predecessor: no status has a self-edge, and a same-status
+  // replay is handled upstream as `noop_same_status`.
+  reached.delete(to);
+  return SERVICE_INSTANCE_STATUSES.filter((status) => reached.has(status));
 }
 
 /** The service-instance ref every service event payload carries (`serviceInstanceRefShape`). */
@@ -115,6 +173,7 @@ export function decideServiceProjection(event: {
   const project = (
     toStatus: ServiceInstanceStatus,
     claim: ServiceRefPayload | null,
+    whenAlreadyTerminal: "refuse" | "noop" = "refuse",
   ): ServiceInstanceProjectionInput => ({
     claim: claim
       ? {
@@ -125,10 +184,43 @@ export function decideServiceProjection(event: {
       : null,
     toStatus: toStatus as ServiceInstanceProjectionInput["toStatus"],
     allowedFromStatuses: predecessorsOf(toStatus),
+    whenAlreadyTerminal,
   });
 
   // The one arm with no claim to read — see the module header and `claim`'s docstring.
   if (event.eventType === "attempt_started") return project("leased", null);
+
+  // ★★★ THE ATTEMPT-TERMINAL BACKSTOP, and the gap it closes is a REAL one (E9-F005).
+  //
+  // The supervisor emits exactly one of `_stopped`/`_lost` before the attempt `terminal` —
+  // WHEN IT GOT THAT FAR. It does not always: `service-lifecycle.ts:166` says in terms that a
+  // launch which resolves no handle emits NO `service_instance_started`, so *"the instance
+  // never leaves `leased` and the attempt fails"*. Same for a workload rejected before the
+  // loop. In those paths the attempt is terminal while the instance sits `pending`/`leased`
+  // INSIDE `service_instances_live_service_uq` forever, and SVC-002's reconciler can never
+  // replace it — the same permanent wedge as E9-F004, reached by a different door.
+  //
+  // So a NON-SUCCEEDED attempt terminal drives the instance to `failed`. Three bounds make
+  // this a backstop rather than a second opinion:
+  //   * `succeeded` projects NOTHING. A service that exited cleanly already emitted
+  //     `_stopped`, and re-asserting would be the projection overruling an observation.
+  //   * it carries NO claim (the frozen terminal payload has no service ref), so the target is
+  //     fixed by (job, attempt) attribution exactly like `attempt_started`.
+  //   * `whenAlreadyTerminal: "noop"` — on the NORMAL path the instance is already `stopped`
+  //     or `lost` when this arrives, and reporting `illegal_transition` there would be a
+  //     refusal on the happy path that drowns the real ones. ★ It is set HERE and NOWHERE
+  //     ELSE: every service event keeps `"refuse"`, so the split-brain refusal is untouched.
+  if (event.eventType === "terminal") {
+    // The null guard is not decoration: `payload` is typed `unknown` here and a bare
+    // `(payload as {status}).status` THROWS on null, which inside `toAcceptInputs` would turn
+    // a malformed event into a 500 for the whole batch instead of a stall.
+    if (!event.payload || typeof event.payload !== "object") return null;
+    const status = (event.payload as { status?: unknown }).status;
+    if (status === "succeeded") return null;
+    // An unreadable terminal status is a stall, not an assumed failure.
+    if (status !== "failed" && status !== "cancelled" && status !== "expired") return null;
+    return project("failed", null, "noop");
+  }
 
   const claim = claimOf(event.payload);
   if (!claim) return null;
