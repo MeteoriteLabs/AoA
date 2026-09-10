@@ -163,14 +163,27 @@ claim at source *before* building around it.
 Three options papers are merged and signable **per clause**. *(All three shas confirmed present at
 `a5d27555b`, and each commit subject says what is claimed for it here.)*
 
+★★★ **ALL THREE ARE STILL `Status: OPEN — awaiting a founder ruling` AT `a5d27555b`.** Everything
+below is the paper's **recommendation**, not a ruling. **Nothing here authorizes a unit to implement
+a retention, disclosure or attribution behaviour.** *(Corrected on the way in: this section
+originally reported Decision 3's precedent as "ratified"/"overturned" and Decision 2 as "RATIFIED AND
+SHIPPED". Neither is signed. Codex #417 caught the Decision 3 half; the Decision 2 half it passed
+clean — see §3's warning about exactly that.)*
+
 - **Decision 1** (`bd334ff50`) — the clause-halves that cannot be delivered as written. Per clause:
   amend the register wording, or charter the machinery. ★ Its own arithmetic was **off by one**
   (eleven closable, not twelve). DE-01 and DE-11 were measured **deliverable**; DE-17 withdrawn.
-- **Decision 2** (`bb0572f19`) — **RATIFIED AND SHIPPED** as option (a2) + partial CHECK. Two
-  acceptance conditions were discharged; ★ **read its remaining owed items before assuming it is done.**
-- **Decision 3** (`a68575f5f`) — retention and disclosure. **Fourteen deny sites are queued behind
-  it — do NOT let a unit wire them.** The de facto precedent (attribute to the ACTOR's tenant) is
-  ratified for attribution and **overturned** for disclosure to the actor's own tenant.
+- **Decision 2** (`bb0572f19`) — where a denial with no FK-valid tenant goes. **OPEN.** Option (a2) +
+  partial CHECK is the paper's recommendation, **not a ratification**. What *has* shipped is Unit C,
+  which wired the two "needs a unit, not a ruling" groups (DE-06's `:122` tuple-integrity throw and
+  DE-21's `:395` plus `:376`'s tenant-mismatch arm); the paper's own addendum says that **changes
+  nothing this decision owns.** DE-03 in full, five of DE-06's six fence throws and DE-15 are still
+  behind the ruling. ★ **Read its remaining owed items before assuming it is done.**
+- **Decision 3** (`a68575f5f`) — retention and disclosure. **OPEN; all three choices in its decision
+  block are unchecked.** **Fourteen deny sites are queued behind it — do NOT let a unit wire them.**
+  The paper **recommends** keeping the de facto precedent (attribute to the ACTOR's tenant) for
+  attribution and **overturning** it for disclosure to the actor's own tenant. Recommended, not
+  ruled — a successor must not implement either half off this page.
   ★ It also settled a real hazard: `companies.ts`'s `tx.delete(activityLog)` runs on a pool the code
   names `ownerDb`, so **a company delete takes its own denial history with it.**
 
@@ -211,9 +224,16 @@ iptables path and never touches the proxy. **Change one thing. Do not re-fire an
 — create plain, then apply the policy. And `allowInternetAccess: false` is a coarse on/off that may
 be the control we can actually adopt: **a blunt control that works beats a precise one that doesn't.**
 
-★ **If the CIDR-only body also fails or is inert, that is the answer.** Record it: E2B egress is not
-a control this programme can rely on, amend DE-08's clause to what is true, and design around it.
-**Do not leave E7-F034 NARROWED forever waiting for someone who is not going to write back.**
+★ **If the CIDR-only body also fails or is inert, that is NOT yet the answer** — the coarse
+`allowInternetAccess: false` switch above has **never been exercised**, and neither have the other
+provider tiers (`E8-F008` §6). **Test the coarse switch before amending anything.** Only when *both*
+the CIDR-only body and the coarse switch have failed may you record that E2B egress is not a control
+this programme can rely on, amend DE-08's clause to what is true, and design around it.
+**Do not leave the egress findings NARROWED forever waiting for someone who is not going to write
+back.** ★ Those findings are **`E8-F003`** (the Critical control recorded delivered with no
+enforcement) and **`E8-F008`** (deny set accepted, read back verbatim, INERT). *(Corrected on the
+way in: this paragraph originally named `E7-F034`, which is the unrelated `RealE2bTransport.signal`
+cleanup-ladder finding. Codex #417.)*
 
 ---
 
@@ -224,9 +244,14 @@ a control this programme can rely on, amend DE-08's clause to what is true, and 
    sees it."* **SVC-008b widened `SUPERVISABLE_WORKLOAD_CAPABILITIES` to include
    `workload.service`** — confirmed at `a5d27555b` in
    `packages/worker-daemon/src/enrollment/hello-provisioning.ts`, and the register already carries
-   the finding as `open`, **NARROWED**. Its §1.5 says the constant is *the smallest of five
-   blockers*, so read the other four before declaring the gate closer. Cheap, and it is the
-   six-for-six class.
+   the finding as `open`, **NARROWED**. ★ **§1.6 has already done the re-measurement: FOUR of the
+   five blockers are CLOSED and only §1.5(3) remains** — the effect authority is never re-minted, so
+   a service tears down at `capExpiresAt - RUN_TEARDOWN_HEADROOM_MS` and **a service is 240 seconds
+   long.** Do not re-audit the closed four, and **do not close this finding by re-confirming that
+   dispatch works**: its resolve criterion is a conjunction requiring blocker (3) *answered* (SVC-008
+   §9.1 is UNRULED) **or** E9's acceptance language amended. Neither disjunct holds.
+   *(Corrected on the way in: this item originally said "read the other four", from the pre-narrowing
+   account. Codex #417.)*
 2. **The dead-arming-path cohorts — `E0-F011` + `E0-F014`, nine crossings.** Levers with zero
    production callers, an env var in no manifest, a column with no writer. This programme's most
    repeatedly-proven class, and several are probably cheap.
