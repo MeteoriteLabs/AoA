@@ -3,8 +3,8 @@
 **Epic:** E9 · **Lane:** B · **Base:** `053f90fc8` (branched from `docs/replatform-program`)
 **Terrain + design:** [`SVC-003b-design.md`](./SVC-003b-design.md) · **Predecessor:**
 [`SVC-003a-result.md`](./SVC-003a-result.md)
-**Register:** gate clause `E9-4-service-liveness-deadline` enrolled `wired`. **`E9-F006` and
-`E9-F007` FILED (`open`/`unowned`). NO finding is closed. SVC-003 STAYS OPEN.**
+**Register:** gate clause `E9-4-service-liveness-deadline` enrolled `wired`. **`E9-F006`, `E9-F007`
+and `E9-F008` FILED (`open`/`unowned`). NO finding is closed. SVC-003 STAYS OPEN.**
 
 ---
 
@@ -15,9 +15,12 @@ A live `service_instances` row whose worker has stopped being observed is now dr
 nullable `service_instances.last_observed_at` for every observation that survived attribution,
 identity and generation — including the ones that move no status, which is the steady state of a
 healthy service. A new repository method `sweepServiceInstanceLiveness` reads the tenant's LIVE
-instances `FOR UPDATE SKIP LOCKED`, computes both ages with the database's own `clock_timestamp()`,
-asks an injected pure policy about each, and terminalizes the condemned ones through the same single
-writer every other status move goes through. That sweep runs inside `createServiceReconciler`'s own
+instances `FOR UPDATE SKIP LOCKED` **least-recently-heard-from first** — an ordering that is a
+correctness property rather than a preference, because a bounded batch over a population healthy
+rows never leave would otherwise starve its tail (§4b(i), §6 of the design) — computes both ages
+with the database's own `clock_timestamp()`, asks an injected pure policy about each, and
+terminalizes the condemned ones through the same single writer every other status move goes through.
+That sweep runs inside `createServiceReconciler`'s own
 tick, **ahead of the convergence pages**, so a terminalized instance leaves
 `service_instances_live_service_uq` and SVC-002's unchanged reconciler creates its replacement in the
 SAME tick. One migration, `db:generate` output plus a C14 class (a) guard, adding one column.
@@ -392,6 +395,18 @@ test nobody runs. What is real is everything the sweep touches: the constraints,
 index, the `FOR UPDATE SKIP LOCKED` read, the database-computed ages, the single writer, the real
 `reapExpiredLeases`, the real ingest path for the stamp, and the whole
 `createServiceReconciler().tick()`.
+
+**★ `FOR UPDATE SKIP LOCKED` IS NOT DRIVEN BY A CONCURRENT TRANSACTION.** No case here holds a
+second transaction's lock on an instance while the sweep reads. The clause it buys — "a row an
+ingest is projecting onto right now is skipped, not raced" — is therefore argued in §5.7 and
+enforced by PostgreSQL, not demonstrated. It is the cheapest thing to add next, alongside §4a's
+observation that a gate no test can reach is a clause that is vacuously true.
+
+**The starvation case is scaled down, deliberately and visibly.** `L-T12` uses FOUR live instances
+against a batch limit of THREE, not sixty-five against sixty-four. The property is about the batch
+BOUNDARY and not about an absolute count, and a case that seeded sixty-five instances would take
+minutes to prove the same thing. Mutant `L18` is what makes the scaling honest: it restores the real
+defect and the scaled case still reds.
 
 **★ THE END-TO-END STORY IS STILL NOT JOINED, AND SAYING SO IS THE POINT.** SVC-008b proves a
 service job is offered to a daemon and supervised as a service. SVC-003a proves those events project.
