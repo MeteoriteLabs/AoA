@@ -54,6 +54,32 @@ export const MARKETPLACE_RECONCILIATION_ACTION_PREFIX =
  */
 export const SECURITY_DENIAL_ACTION_PREFIX = "security.denied.";
 
+/**
+ * Reserved `action` prefix for CONTROL-PLANE RETENTION DECISIONS (DE-11's
+ * `audit` clause, "sensitive-artifact access and retention are audited").
+ *
+ * ★ WHY THIS IS A SEPARATE NAMESPACE FROM `security.denied.`, AND NOT A
+ * CONVENIENCE. A retention override is NOT a refusal. `resolveStoredRetention`
+ * ignores a worker's declared class and stores the derived one; the authority's
+ * own doc comment says why that is not an attack — "a worker declaring a SHORTER
+ * class than derived is not an attack, but it is the same bug class". Filing
+ * those rows under `security.denied.` would make "count the denial rows" answer
+ * a different question than "count the refusals", which is precisely the
+ * property the denial reservation above exists to protect. So: a distinct
+ * prefix, a distinct recorder (`artifact-retention-audit.ts`), and a distinct
+ * reservation, enforced at the same two caller-supplied-`action` writers.
+ *
+ * ★ THE PARTIAL CHECK DOES NOT COVER THIS PREFIX, DELIBERATELY.
+ * `activity_log_company_or_denial_check` (migration `0274`) reads
+ * `company_id IS NOT NULL OR action LIKE 'security.denied.%'`. A retention row
+ * is written from `artifact-commit.ts` inside a LOCKED LEASE, so `ctx.companyId`
+ * is always an FK-valid company and the row satisfies the NOT NULL arm. If a
+ * future caller ever tries to write a company-less retention row the database
+ * refuses it, which is the correct answer: a retention decision with no tenant
+ * is not a record anyone can act on.
+ */
+export const SECURITY_RETENTION_ACTION_PREFIX = "security.retention.";
+
 export class ReservedActivityNamespaceError extends Error {
   constructor(message?: string) {
     super(
@@ -76,6 +102,11 @@ export function assertUnreservedActivityNamespace(input: {
   if (input.action.startsWith(SECURITY_DENIAL_ACTION_PREFIX)) {
     throw new ReservedActivityNamespaceError(
       "Security-denial audit events are reserved for the security-denial recorder",
+    );
+  }
+  if (input.action.startsWith(SECURITY_RETENTION_ACTION_PREFIX)) {
+    throw new ReservedActivityNamespaceError(
+      "Retention-decision audit events are reserved for the retention recorder",
     );
   }
 }

@@ -163,6 +163,7 @@ import {
   shouldSuppressLegacyExecution,
   type RunExecutionOwner,
 } from "./run-execution-owner.js";
+import { buildCutoverSelectionEvent } from "./cutover-selection-audit.js";
 import { buildTaskRunBatchWorkload } from "./task-run-batch-workload.js";
 import { resolveTaskRunInstructionsBundle } from "./task-run-instructions-bundle.js";
 import { SANDBOX_INVOCATION_BINARY_ARG_INDEX } from "./task-run-sandbox-invocation.js";
@@ -5334,6 +5335,63 @@ export function heartbeatService(
                 ? canaryWorkload.reason
                 : `instructions_${canaryInstructions.reason}: ${canaryInstructions.detail}`,
             };
+
+        // ── DE-20 (audit, conjunct 4a) — THE CUTOVER SELECTION RECORD ─────────
+        // ★ THE ONE SITE, FOR BOTH ARMS, AND THAT POSITION IS THE FIX.
+        // Before this, a DISTRIBUTED selection wrote a
+        // `distributed_execution_handoff` row (`markRunHandedOffToDistributed`
+        // below) and a LEGACY selection wrote NO DURABLE ROW AT ALL — it fell
+        // through the suppression guard to `adapter.execute`. So "the cutover
+        // selected legacy" was indistinguishable, in the database, from "this run
+        // was never a cutover candidate", which is the same blindness the comment
+        // directly below names for the LOG.
+        //
+        // This sits AFTER the assignment and BEFORE `shouldSuppressLegacyExecution`
+        // reads it, so it is unconditional over the decision: there is no arm of
+        // the cutover that can reach the executor without leaving this row.
+        // `buildCutoverSelectionEvent` is total over `RunExecutionOwner`, so the
+        // "both arms" property is carried by the type and not by a reviewer
+        // remembering the second call site.
+        // `de-20-cutover-selection-audit.integration.test.ts` asserts that
+        // position structurally, because `executeRun` cannot be instantiated
+        // in-process (the standing CLI-003/005/006 limitation).
+        //
+        // ★ BEST-EFFORT, exactly like the handoff lifecycle event below. This is
+        // visibility about a decision that has already been made and stored in
+        // `canaryExecutionOwner`; a failed append must not throw into a `try`
+        // whose only handler is a `finally`, because `executeRun`'s outer catch
+        // would then write `adapter_failed` AND call
+        // `releaseIssueExecutionAndPromote` — promoting a deferred wake into a
+        // second executor on the same issue. An audit write must never become a
+        // double-execution lever.
+        //
+        // ★ DE-20 DOES NOT CLOSE ON THIS. Its `audit` clause is a CONJUNCTION —
+        // "cutover selection AND rollback transitions" — and the ROLLBACK conjunct
+        // stays vacuous: `createDistributedExecutionDrain` has zero production
+        // callers, so no rollback transition occurs and none can be recorded.
+        //
+        // ★ IT TAKES ITS SEQ FROM THE IN-PROCESS COUNTER (`seq++`), NOT FROM A
+        // `max(seq)` READ — Codex P2 on PR #409, verified at source. The first
+        // draft copied `markRunHandedOffToDistributed`'s max-based read, which is
+        // right THERE (that function is outside `executeRun` and cannot see the
+        // counter) and WRONG HERE. At this point `seq` is already 2 — the "run
+        // started" lifecycle event consumed 1 — while the durable max is 1, so
+        // `projectionSeqBase(1) + 1` also yields 2 and leaves the local counter
+        // untouched. The very next `seq++` event would then reuse 2.
+        // `heartbeat_run_events` carries only a NON-UNIQUE `(run_id, seq)` index,
+        // so nothing errors: the two rows silently interleave and a
+        // resume-by-seq reader can drop one. That is the exact failure
+        // `projectionSeqBase`'s own doc comment was written for. Note this bites
+        // ONLY the legacy arm — the distributed arm returns at the suppression
+        // seam and never appends again — i.e. precisely the arm this change adds.
+        try {
+          await appendRunEvent(run, seq++, buildCutoverSelectionEvent(canaryExecutionOwner));
+        } catch (selectionErr) {
+          logger.warn(
+            { err: selectionErr, runId: run.id },
+            "[DE-20] cutover selection audit event failed — the selection itself is unaffected",
+          );
+        }
 
         // ★ A NEW REASON ALONE IS INVISIBLE. Before this, `reason`/`detail` was
         // never logged or persisted anywhere: all nine `canaryExecutionOwner`

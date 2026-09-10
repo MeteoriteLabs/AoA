@@ -45,6 +45,10 @@ import { JobLeasingError, type VerifiedWorkerOperation } from "./job-leasing.js"
 import { resolveWorkerFenceContext } from "./worker-fence-context.js";
 import { recordSecurityDenial } from "./security-denial-audit.js";
 import {
+  createRetentionAuditSink,
+  recordRetentionDecision,
+} from "./artifact-retention-audit.js";
+import {
   type ArtifactDenialIntent,
   type ArtifactDenialReason,
   ARTIFACT_COMMIT_DENIAL_SURFACE,
@@ -146,6 +150,16 @@ export function createArtifactCommitService(input: {
       // comment previously said the other five wrote nothing; that is no longer
       // true and is corrected rather than left to mislead an audit.
       const fenceDenial = createWorkerDenialSink();
+
+      // ★ DE-11 — the RETENTION half of "sensitive-artifact access and retention
+      // are audited". Filled at the retention decision below, INSIDE the tenant
+      // transaction, and drained after it closes on the pool handle — the same
+      // shape and the same reason as `denial` above. A retention record written
+      // inside this transaction is rolled back by any later refusal branch, so
+      // the one refusal that matters most (a worker whose declaration was
+      // overridden AND whose commit then failed verification) would erase its
+      // own record.
+      const retention = createRetentionAuditSink();
 
       const rejected = (
         reason: string,
@@ -260,9 +274,38 @@ export function createArtifactCommitService(input: {
           declared: manifest.retention,
         });
         if (retentionDecision.declarationIgnored) {
-          // Observed, not swallowed: a disagreement means a buggy worker or an attempted
-          // downgrade. This is a LOG LINE, not an audit record — DE-11 claims retention is
-          // audited and nothing audits it; this ticket does not pretend to close that.
+          // ★ DE-11 — THIS IS NOW AN AUDIT RECORD AND NOT ONLY A LOG LINE. The
+          // comment that stood here said: "This is a LOG LINE, not an audit record
+          // — DE-11 claims retention is audited and nothing audits it; this ticket
+          // does not pretend to close that." That deferral is discharged: the
+          // intent captured here is drained into `activity_log` after this
+          // transaction closes (`artifact-retention-audit.ts`).
+          //
+          // ★ WHAT THAT DOES *NOT* DO, kept next to the code so it cannot drift
+          // into a closure claim: DE-11's clause is a CONJUNCTION — access AND
+          // retention — and its ACCESS half is DE-06's still-open successful
+          // put/get obligation. And nothing in production uploads
+          // browser_cookie_state / browser_storage_state today (BRW-003 unbuilt),
+          // so this record is live but has never once been about a
+          // credential-bearing kind. DE-11 STAYS `partial`.
+          //
+          // The `logger.warn` is KEPT rather than replaced: it is the operational
+          // signal on the hot path, it survives a database that is refusing
+          // writes, and the durable row is a different consumer's answer.
+          retention.intent = {
+            // The LOCKED LEASE's company, never the manifest's self-asserted one —
+            // the same value `deny` above attributes with, and for the same reason.
+            companyId: ctx.companyId,
+            organizationId: auth.organizationId,
+            workerId: auth.workerId,
+            artifactId: manifest.artifactId,
+            kind: manifest.kind,
+            declaredRetention: manifest.retention,
+            storedRetention: retentionDecision.retention,
+            jobId: payload.jobId,
+            attempt: payload.attempt,
+            leaseId: payload.leaseId,
+          };
           logger.warn(
             {
               artifactId: manifest.artifactId,
@@ -323,6 +366,27 @@ export function createArtifactCommitService(input: {
           }
           throw error;
         }
+
+        // ★ DE-11 — AN IDEMPOTENT REPLAY DECIDED NOTHING, SO IT AUDITS NOTHING
+        // (Codex P2 on PR #409, verified at source). `commitArtifactVersion`
+        // answers a committed row in TWO cases: it INSERTED it (the
+        // `replayed: false` return in `commitArtifactVersion`), or the artifact
+        // was ALREADY committed and it returned the existing row unchanged (the
+        // `replayed: true` return). Both answer the worker
+        // `outcome: "committed"`, and the row alone cannot tell them apart — which
+        // is why the mutator now reports `replayed` rather than leaving the caller
+        // to guess.
+        //
+        // On the replay THIS CALL WROTE NOTHING. The stored retention was decided
+        // by the earlier transaction under whatever manifest THAT one carried, so
+        // recording here would (a) duplicate the record on every ordinary
+        // transport retry and (b) — the serious half — let a replay declaring a
+        // DIFFERENT retention mint a row asserting a declared/stored pair that was
+        // never decided for the persisted artifact. Dropping the intent is
+        // deliberate: the `logger.warn` above still fires, because a worker
+        // re-declaring a class the control plane does not honour is still worth
+        // seeing operationally; it is just not a NEW retention decision.
+        if (row.replayed) retention.intent = null;
 
         // ★ DAT-011 — also on SUCCESS, deliberately. Success is the common event, so it
         // gives far more collection opportunities than refusals alone, and the sweep is a
@@ -389,6 +453,33 @@ export function createArtifactCommitService(input: {
           control: "server/src/services/artifact-commit.ts:commit",
           details: pending.details,
         });
+      }
+
+      // ★ DE-11 — drain the retention decision, on the POOL handle after the
+      // tenant transaction has closed, for the transaction-discipline reason
+      // stated on `retention` above and in `artifact-retention-audit.ts`.
+      //
+      // ★ GATED ON `committed`, DELIBERATELY. `resolveStoredRetention` runs
+      // BEFORE the mutator and three refusal branches sit after it, so an intent
+      // can survive a commit that was then REFUSED. Nothing was stored on that
+      // path: recording it would assert a stored retention that does not exist,
+      // and would let a worker flood the audit with manifests it never intended
+      // to commit. `recordRetentionDecision` never throws.
+      //
+      // ★ AND AN IDEMPOTENT REPLAY RECORDS NOTHING EITHER (Codex P2 on PR #409,
+      // verified at source). `commitArtifactVersion` answers `committed` in TWO
+      // cases: it inserted the row, or the artifact was already committed and it
+      // returned the existing row unchanged — `commitArtifactVersion`'s
+      // `replayed: false` vs `replayed: true` returns.
+      // On the replay this call WROTE NOTHING — the stored retention was decided
+      // by the earlier transaction, under whatever manifest THAT one carried. So
+      // an outcome check alone would duplicate the record on every ordinary
+      // transport retry, and a replay declaring a DIFFERENT retention would mint a
+      // row asserting a declared/stored pair that was never decided for the
+      // persisted artifact. `replayed` is the mutator's own answer; the caller
+      // cannot infer it from the row.
+      if (retention.intent && response.outcome === "committed") {
+        await recordRetentionDecision(input.appDb, retention.intent);
       }
       return response;
     },

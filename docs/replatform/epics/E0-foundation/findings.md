@@ -1896,3 +1896,176 @@ into a result set is the same defect class in miniature.
   learns nothing, and arm 6 above is what holds that line.
 - **No finding is closed, no crossing changes status, no cohort count is struck, and no
   `deliveryStatus` is upgraded by this unit.** E0-F013 stays open.
+
+---
+
+### Unit W20-B — the two clause-halves Decision 1 measured as deliverable, wired (`E0-F013`). Neither finding closes.
+
+**Date:** 2026-09-10. **Base:** `6b39c77f6`. **Scope:** DE-11 conjunct 5b (retention audit) and
+DE-20 conjunct 4a (cutover selection audit). **Production code + two integration suites + register
+evidence.** No clause text amended, no ownership moved, no `deliveryStatus` upgraded, no gate-clause
+enrolment, no cohort count struck.
+
+#### What the code now does
+
+- **DE-11 (5b).** `resolveStoredRetention` (`artifact-retention-authority.ts:49-58`) is a live
+  control-plane retention decision called at `artifact-commit.ts:272` and branched on at `:276`.
+  That branch previously emitted a `logger.warn` whose own comment said *"This is a LOG LINE, not an
+  audit record — DE-11 claims retention is audited and nothing audits it"*. It now captures a record
+  intent (`:295`) drained after the tenant transaction closes, on the pool handle, at the
+  `recordRetentionDecision(input.appDb, retention.intent)` call in the outer drain (`:482` at this
+  PR's HEAD — the call is the citation, the number only a hint) —
+  gated on `response.outcome === "committed"`, because the decision runs *before* the mutator and
+  three refusal branches sit after it. Recorder: `artifact-retention-audit.ts`, writing one
+  `activity_log` row per OVERRIDE carrying company (the locked lease's), organization
+  (token-attested), worker, artifact, kind, **and both `declaredRetention` and `storedRetention`**.
+- **DE-20 (4a).** One `appendRunEvent` at `heartbeat.ts:5388` (seq from the in-process counter), placed AFTER `canaryExecutionOwner`
+  is assigned and BEFORE `shouldSuppressLegacyExecution` (`:5457`) reads it, writing a
+  `distributed_execution_selection` event for **both** arms. Before this, a distributed selection
+  wrote a `distributed_execution_handoff` row and a legacy selection wrote **nothing durable** — so
+  "the cutover selected legacy" was indistinguishable, in the database, from "this run was never a
+  cutover candidate". The builder (`cutover-selection-audit.ts`) is total over `RunExecutionOwner`,
+  so "both arms are audited" is a property of the type, not of a reviewer remembering a second call
+  site. Best-effort, because that `try`'s only handler is a `finally` and a throw would reach
+  `executeRun`'s outer catch, which promotes a deferred wake — an audit write must never become a
+  double-execution lever.
+
+#### The namespace decision, stated because it was a real choice
+
+A retention override is **not a refusal**. Filing it under `security.denied.` would make *"count the
+denial rows"* stop answering *"count the refusals"* — the exact property the denial reservation in
+`activity-namespace.ts` exists to hold. So it gets its own reserved prefix, `security.retention.`,
+enforced at the same two writers that accept a caller-supplied `action`. The partial CHECK from
+migration `0274` does **not** cover the new prefix, deliberately: a retention row always has an
+FK-valid company, and a company-less retention decision should be refused by the database.
+
+#### ★★★ NEITHER FINDING CLOSES, and both are conjunctions
+
+- **DE-11 stays `partial`, on two independent grounds.** (i) Its clause is *"sensitive-artifact
+  ACCESS **and** RETENTION are audited"* and only the retention half is delivered; the access half's
+  missing piece is **DE-06's** own open successful-put/get conjunct. (ii) **The coverage caveat:**
+  nothing in production uploads `browser_cookie_state`/`browser_storage_state` (BRW-003 unbuilt), so
+  the record is live but has never once been about a credential-bearing kind. The proving test
+  provokes that kind **by hand** and pins it as test-provoked in the arm title.
+- **DE-20 stays `partial`.** Its clause is *"cutover selection **and** rollback transitions"*. The
+  rollback conjunct is **vacuous and untouched**: `createDistributedExecutionDrain`
+  (`job-distributed-drain.ts:114`) still has **zero production callers**, re-measured by a
+  comment-stripping census over `server/src`. That conjunct is **Decision 1's to rule on** and
+  `E0-F014`'s to own; this unit did not amend it, did not touch the separately-amended `revocation`
+  clause, and did not move DE-20 out of any cohort.
+
+#### Reds observed, each against a named positive control
+
+Each suite carries **10 arms** at this PR's HEAD (`de-11-retention-audit.integration.test.ts` and
+`de-20-cutover-selection-audit.integration.test.ts`). Both were 9 at `ede424371`; the Codex-fix
+commit added the tenth to each — and in each case **the tenth arm is the one that proves that
+commit's fix**. Re-counted at HEAD on external review, because the register row for each was edited
+in the same commit that added the arm and was not re-counted then.
+
+- **DE-11**: checking `artifact-commit.ts` out at base **reds 3 recording arms, 6 controls green**
+  — a complete account of the suite **as it stood for that run** (9 arms). The tenth (the
+  idempotent-replay arm) was added afterwards and was **not** re-run against base; it was observed
+  RED against the unfixed post-review code, which is the narrower claim.
+  Dropping the `committed` gate reds **only** the refused-commit arm. Moving the action into
+  `security.denied.` reds **only** the three namespace-asserting arms. The pre-existing DE-06 suite's
+  *"a COMMITTED artifact writes NO denial row"* arm stays green as the regression control.
+- **DE-20**: dropping the legacy `reason` reds the legacy arm with the distributed arm green;
+  replacing the builder call reds **only** the position arm; **relocating** the append to after the
+  suppression branch reds **only** the append-before-suppression assertion.
+
+#### ★★★ Citation staleness, measured — and this unit shipped the defect once itself
+
+Re-measuring at source found that **the Decision 1 paper's own corrected citations are already
+stale**, including one its correction table marked *"✔ EXACT"*:
+
+| Cited | Where the paper put it | Where it is now (`6b39c77f6` unless a row says otherwise) |
+|---|---|---|
+| upload-prefix deny | `artifact-transfer-grant.ts:113` → paper: `:180-184` | `:187` |
+| download committed-row check | `:201-202` → paper: `:295`/`:300`/`:302` | `:296`/`:299`/`:304`/`:306` |
+| `wrong_prefix`/`tenant_mismatch` — the two guards at the head of `commitArtifactVersion` | `job-control.ts:2750`/`:2751` — **paper: "✔ EXACT"** | `:3109`/`:3110` at `6b39c77f6` (359-line drift), and `:3120`/`:3121` at this PR's HEAD — **moved again by this unit's own JSDoc.** ★ Cite the two guards, not the numbers |
+| the "LOG LINE" comment | register: `artifact-commit.ts:172-173` → paper: `:259-260` | `:263-265` (now removed) |
+| suppression gate / return / execute | register: `:5399`/`:5451`/`:5453` | `:5457`/`:5509`/`:5511` — **shifted by this unit's own edit** |
+| lease-candidate eligibility, `offerLease`, CHECK — cite the `eq(jobAttempts.placementLeaseEligible, true)` terms and the `if (!attempt) return null`, not the numbers | register: `:1947`, `:2318-2328`, `job_attempts.ts:95-112` | `:2306`, `:2669`+`:2680-2687` at `6b39c77f6`; `:2317`, `:2680`+`:2691-2698` at this PR's HEAD — **shifted again by this unit's own JSDoc**, which moved every line in `job-control.ts` below `:631`. `job_attempts.ts:95-135` unmoved |
+
+All corrected in the register, with the correction itself recorded there rather than silently applied.
+
+★ **And the failure class caught this unit in the act.** The first draft of the DE-20 rollback arm
+asserted `heartbeat.ts` does not contain `createDistributedExecutionDrain` — and it went **red
+against this very PR**, because the wiring's own comment names the symbol while explaining that it
+has no callers. **A prose match is not a caller census.** Replaced with a comment-stripping census
+carrying its own anti-vacuity control. Separately, the byte scan caught a **U+200B** this unit had
+inserted into a comment to avoid closing a block comment — the invisible-byte defect, found before
+push rather than after.
+
+
+#### Post-review: two Codex P2 findings, both real, both fixed with their own observed-red arms
+
+Neither was a style note; both were defects in this unit's own new code, and both are in the
+"a check that passes for the wrong reason" family this programme keeps re-learning.
+
+1. **An idempotent commit replay would have duplicated the retention record — and worse.**
+   `commitArtifactVersion` answers `outcome: "committed"` in **two** cases: it inserted the row
+   (its `replayed: false` return, `job-control.ts:3162` at this PR's HEAD), or the artifact was
+   **already** committed and it returned the existing row unchanged (its `replayed: true` return,
+   `:3176`). The first gate checked only the outcome. So an ordinary transport retry
+   would mint a second row — and a replay declaring a **different** retention class would mint a row
+   asserting a `declared`/`stored` pair **that was never decided for the persisted artifact**, since
+   nothing in that call wrote anything. The row alone cannot distinguish the two cases, so the
+   mutator now returns an explicit `replayed` boolean (the one production consumer is
+   `artifact-commit.ts`) and its `if (row.replayed) retention.intent = null` statement (`:389` at
+   this PR's HEAD) drops the intent on a replay. The `logger.warn` is deliberately
+   kept: a worker re-declaring a class the control plane does not honour is still worth seeing
+   operationally; it is just not a new *decision*.
+
+2. **The selection append took its seq from a `max(seq)` read, which collides on the legacy arm.**
+   The first draft copied `markRunHandedOffToDistributed`'s max-based form. That is correct *there*
+   — it sits outside `executeRun` and cannot see the in-process counter — and wrong *here*. At the
+   append site the counter is already `2` (the "run started" lifecycle event consumed `1`) while the
+   durable max is `1`, so `projectionSeqBase(1) + 1` **also** yields `2` and leaves the counter
+   untouched; the next `seq++` event reuses `2`. `(run_id, seq)` is a **non-unique** index, so
+   nothing errors — the rows silently interleave and a resume-by-seq reader can drop one, which is
+   exactly what `projectionSeqBase`'s own doc comment was written about. ★ It bites **only the legacy
+   arm**, because the distributed arm returns at the suppression seam and never appends again — i.e.
+   precisely the arm this change adds. Fixed to `seq++`, which also removes a DB round-trip.
+
+Each fix carries a new arm, **observed RED against the unfixed code before the fix was restored**:
+the replay arm asserts one row across three commits of the same artifact (the third declaring a
+different class), and the seq arm asserts the call site uses `seq++` and **not** `projectionSeqBase`
+— with an anti-vacuity control that `markRunHandedOffToDistributed` genuinely still uses the
+max-based form, so the arm asserts a *difference between two real call sites* rather than a property
+no site has.
+
+★ **One process note, recorded because it is the same failure class again.** The first attempt at
+this register edit was written through a shell command whose backticks were **substituted by the
+shell**, silently deleting the words `` `replayed` `` from the middle of a sentence — leaving
+"*the mutator now reports  and artifact-commit.ts…*". It was caught by reading the landed bytes
+back rather than trusting the "0 anchors missed" report. **An anchor that matched is not a
+replacement that landed.**
+
+★★ **And the closing claim of that same commit was false, which is worse than the defect it was
+closing.** Commit `030e71152`'s message ends *"Citations shifted by these fixes were re-measured
+across all five surfaces that carry them"*, and the PR body carried the same sentence. **They were
+not.** `artifact-commit.ts` kept `job-control.ts:3148`/`:3160` in three places — the pre-JSDoc
+numbers — while the register, in the same commit, had the post-JSDoc `:3162`/`:3176` right. So the
+tree disagreed with itself, and the sentence asserting the sweep is the reason nobody looked. **A
+FALSE CLAIM OF VERIFICATION IS WORSE THAN A MISSING ONE**: an unmeasured citation invites the next
+reader to measure it; one asserted as re-measured tells them not to bother. Corrected on external
+review 2026-09-10; the commit message is immutable, so this paragraph and the PR body are the
+retraction. Every citation this unit touched is now stated **by symbol**, with the line kept only
+as a hint.
+
+#### NOT DONE, and left open
+
+- **DE-11's access half.** Untouched. It rides DE-06's existing put/get obligation.
+- **DE-20's rollback conjunct (4b).** Untouched, and deliberately left for Decision 1 / `E0-F014`.
+- **An AGREEING retention declaration writes nothing.** Exception-based auditing by design (the
+  stored value is on `job_artifacts.retention`), but it means "no row" must not be read as "no
+  commit". Stated in the recorder header and asserted by its own arm.
+- **Neither writer has ever run in a deployment.** DE-20's cutover has zero deployment hits and the
+  browser upload path does not exist; both records are proven in CI only.
+- **The DE-06 and DE-28 rows carry the same stale `artifact-transfer-grant.ts:113` citation.** Not
+  corrected here — this unit measured DE-11 and DE-20 and will not amend rows it did not audit.
+- **The register's `E0-F013` Group-D arithmetic is untouched.** Whether DE-11 or DE-20 leave any
+  cohort is Decision 1's call, not this unit's.
+- **No finding is closed, no crossing changes status, no cohort count is struck, and no**
+  **`deliveryStatus` is upgraded by this unit. E0-F013 stays open.**
