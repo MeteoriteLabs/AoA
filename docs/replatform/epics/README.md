@@ -15,6 +15,15 @@ healthy, and runs the E6F conformance suite live (`AOA_D1_CAMPAIGN=foundation`, 
 **now UNBLOCKS JOB-004..014 and WRK-005..007** (and, transitively, most of E5). Next critical-path
 step: E3/E4 remaining tickets.
 
+> ⚠️ **This status table lags the reconciled ground truth (as of 2026-09-10).** The rows below
+> are the pre-reconciliation view (E3/E4 mid-flight, E5/E7–E11 `backlog`). The authoritative
+> current status is **GO-BOOK §1 "★ CURRENT STATUS" (reconciled 2026-08-28 and later)**: E0–E6
+> are DONE (the whole mechanism), with substantial E7–E11 progress (E7 CLI-001..007, E10-desktop
+> DSK-001..004 + realtime foundation, E8 Lane-B, E9 SVC-001, several E11 items) — what remains is
+> breadth, two owed live-infra runs (E7-1 staging canary, REL-003 DR), and the DE threat-control
+> audit. The formal cells here are intentionally NOT flipped to `complete`: per the governance
+> note below, only the Integration Gate Owner does that, on a committed `pass` QA + handoff.
+
 | Epic | Status | Depends on | Ticket range | Exit gate |
 |---|---|---|---|---|
 | [E0 Foundation](E0-foundation/) | `complete` | approved program design | FND-001–FND-008 | foundation checker, current-main crosswalk, cloud-plugin exclusion, focused config tests, repository verification |
