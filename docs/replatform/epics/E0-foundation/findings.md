@@ -2112,10 +2112,14 @@ that owns the schema file. Until then the reader is correct and slow, which is s
     (slice 1).** The founder ruled best-practice throughout
     (`docs/replatform/DECISION-REQUEST-denial-retention-and-disclosure.md`, ★ RULED block): Q1 ratify
     actor-attribution + probed tenant stays blind; **Q3 — also do NOT disclose a `security.denied.*`
-    row to the actor's OWN tenant.** This PR implements Q3 for the four tenant-facing `activity_log`
-    readers the paper's §3 census named — `activityService.list`, `homeService.summary`,
-    `cockpitTeammatesActivity`, `morningDigest` — through ONE shared `notDenialNamespace()` predicate
-    exported beside `SECURITY_DENIAL_ACTION_PREFIX` (`server/src/services/activity-namespace.ts`),
+    row to the actor's OWN tenant.** This PR implements Q3 for **five** tenant-facing `activity_log`
+    readers — the four the paper's §3 census named (`activityService.list`, `homeService.summary`,
+    `cockpitTeammatesActivity`, `morningDigest`) PLUS `activityService.forIssue` (GET
+    `/issues/:id/activity`), added after a Codex P2 on PR #429 flagged it as a fifth tenant reader:
+    `recordSecurityDenial` accepts `entityType:'issue'`, so the disclosure boundary must not depend on
+    "no writer files a denial under an issue" — all five now go through ONE shared
+    `notDenialNamespace()` predicate exported beside `SECURITY_DENIAL_ACTION_PREFIX`
+    (`server/src/services/activity-namespace.ts`),
     proven RED-first per reader by
     `server/src/__tests__/e0-f013-denial-own-tenant-disclosure.integration.test.ts`. The operator
     reader (`activityService.securityDenials` / `GET /instance/security-denials`) is deliberately

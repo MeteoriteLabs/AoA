@@ -205,6 +205,12 @@ export function activityService(db: Db) {
             eq(activityLog.companyId, companyId),
             eq(activityLog.entityType, "issue"),
             eq(activityLog.entityId, issueId),
+            // E0-F013 Decision 3 (Q3), founder-ruled 2026-09-11: this is a tenant-facing
+            // reader of `activity_log`, so it excludes the `security.denied.*` namespace too.
+            // `recordSecurityDenial` accepts `entityType:'issue'`, so the disclosure boundary
+            // must not depend on "no writer happens to file a denial under an issue" (Codex P2,
+            // PR #429). The operator reader `securityDenials` still returns them.
+            notDenialNamespace(),
           ),
         )
         .orderBy(desc(activityLog.createdAt)),

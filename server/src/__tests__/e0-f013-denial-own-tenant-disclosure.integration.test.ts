@@ -280,6 +280,42 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       ).toContain(NORMAL_ACTION);
     });
 
+    it("5. activityService.forIssue (GET /issues/:id/activity) does not return a denial filed under an issue (Codex P2)", async () => {
+      assertSetupOk();
+      // recordSecurityDenial ACCEPTS entityType:'issue', so the disclosure boundary must
+      // cover this 5th tenant-facing reader too — not depend on "no writer files a denial
+      // under an issue". Plant a denial under an issue in tenant A, plus an ordinary issue
+      // row as the positive control, and read the issue's activity as a member of A.
+      const issueId = firstId(await db.execute<{ id: string }>(sql`SELECT gen_random_uuid() AS id`));
+      const issueDenialId =
+        (await recordSecurityDenial(db, {
+          companyId: coA,
+          crossing: "DE-19",
+          surface: "own_tenant_probe",
+          reason: "cross_tenant_probe",
+          actorType: "user",
+          actorId: "prober-human",
+          entityType: "issue",
+          entityId: issueId,
+          control: "server/src/__tests__/e0-f013-denial-own-tenant-disclosure.integration.test.ts",
+          details: { requestedCompanyId: "some-other-tenant" },
+        })) ?? "";
+      expect(issueDenialId, "the issue-scoped denial was never planted").toBeTruthy();
+      await db.execute(sql`
+        INSERT INTO activity_log (id, company_id, actor_type, actor_id, action, entity_type, entity_id)
+        VALUES (gen_random_uuid(), ${coA}, 'user', 'teammate-user', ${NORMAL_ACTION}, 'issue', ${issueId})`);
+
+      const rows = await activityService(db).forIssue(coA, issueId);
+      const actions = rows.map((r) => r.action);
+      expect(
+        actions,
+        "forIssue returned a `security.denied.*` row to a member of the row's own tenant — the 5th reader leaks",
+      ).not.toContain(DENIAL_ACTION);
+      expect(rows.map((r) => r.id)).not.toContain(issueDenialId);
+      // POSITIVE CONTROL — the issue's ordinary activity IS still returned.
+      expect(actions, "forIssue returned nothing — the assertion above is vacuous").toContain(NORMAL_ACTION);
+    });
+
     it("★ THE COMPLEMENT: the operator reader STILL returns the row every tenant reader hid (hidden, not lost)", async () => {
       assertSetupOk();
       const rows = await activityService(db).securityDenials({});
