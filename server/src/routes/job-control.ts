@@ -18,6 +18,10 @@ import {
   readService,
   setServiceDesiredState,
 } from "../services/service-management.js";
+import {
+  SERVICE_CREATE_ACTION,
+  SERVICE_DESIRED_STATE_ACTION,
+} from "../services/service-control-audit.js";
 import { logger } from "../middleware/logger.js";
 
 const uuid = z.string().uuid();
@@ -358,6 +362,40 @@ export function jobControlRoutes(opts: { db: Db; appDb: Db; operatorDb: Db }) {
     return false;
   }
 
+  // ★★★ WHAT ON THIS ROUTER IS AUDITED DURABLY, AND WHAT IS STILL ONLY LOGGED.
+  //
+  // AGENTS.md §9 requires an activity-log entry for every mutating endpoint. Read this before
+  // adding a mutation here, because the router is currently SPLIT and the split is not
+  // obvious from any one handler:
+  //
+  //   AUDITED (one `activity_log` row, in the mutation's OWN tenant transaction):
+  //     POST …/services                       → `service.create`
+  //     POST …/services/:serviceId/desired-state → `service.desired_state`
+  //                                              (on `updated` and `unchanged` only —
+  //                                               `illegal`/`conflict`/`absent` mutate nothing)
+  //
+  //   NOT AUDITED — structured logger lines only, which do not outlive the process. Measured
+  //   at this commit: neither `jobSubmissionService` nor `createJobOperationsService` contains
+  //   any `activityLog` / `insertActivity` / `logActivity` reference, so the handler's logger
+  //   line is the whole record.
+  //     POST …/companies/:companyId/jobs                  → logs a line with NO `action` at
+  //                                                          all (`reasonCode:
+  //                                                          "job_submission_created"`)
+  //     POST …/companies/:companyId/jobs/:jobId/drain     → logs `job.drain.requested` only
+  //     POST …/organizations/:organizationId/workers/:workerId/revoke
+  //                                                       → logs `worker.revoke.requested` only
+  //
+  // ★ THE REASON THE SECOND GROUP IS SILENT IS NOT THE REASON THAT WAS RECORDED FOR IT.
+  // `SVC-007a-result.md` §4a(iii)/§7 said an `activity_log` row was "currently unwritable
+  // from here" because `jobAuditBridge.recordAcceptedActivity` requires an
+  // `ActiveFenceRequest`. That reason is refuted at source in `service-control-audit.ts`'s
+  // header (and filed as `E9-F010`): the fence is the BRIDGE's requirement, not the TABLE's,
+  // `aoa_app` holds `SELECT, INSERT ON activity_log` under no RLS, and a fenceless
+  // transactional write of that table already ships on the distributed path
+  // (`stageJobInputFiles`). So the JOB-008 mutations are unaudited because nobody has wired
+  // them, and wiring them is a small, unblocked job — not a blocked one. It is left OPEN as
+  // `E9-F010`'s remaining conjunct rather than done here, because each needs its own red.
+  //
   // ★ NO `validate(...)` MIDDLEWARE ON THESE TWO ROUTES, and the omission is the point.
   // `validate` runs BEFORE the handler, so it would answer an unauthorized caller with a 400
   // describing their body while a well-shaped request from the same caller got the 403 — which
@@ -388,6 +426,10 @@ export function jobControlRoutes(opts: { db: Db; appDb: Db; operatorDb: Db }) {
           definition: definition.value,
           desiredState: (body.desiredState ?? "running") as "running" | "paused",
           createdBy: operatorUserId(req),
+          // SVC-007 Unit B — WHO the durable `activity_log` row attributes this to.
+          // `assertOrgAdmin` above has already refused any caller without a board `userId`,
+          // so `operatorUserId` is a real user id here and never its `"board"` fallback.
+          actor: { actorType: "user", actorId: operatorUserId(req) },
         }).catch((error: unknown) => {
           if (isTenantPairViolation(error)) throw notFound("Company not found");
           throw error;
@@ -401,7 +443,9 @@ export function jobControlRoutes(opts: { db: Db; appDb: Db; operatorDb: Db }) {
         }
         logger.info(
           {
-            action: "service.create",
+            // The SAME constant the durable `activity_log` row carries, so the structured log
+            // line and the audit row cannot drift into two names for one act.
+            action: SERVICE_CREATE_ACTION,
             organizationId,
             companyId,
             serviceId: created.serviceId,
@@ -439,7 +483,15 @@ export function jobControlRoutes(opts: { db: Db; appDb: Db; operatorDb: Db }) {
         // overtaken by an in-flight stop (external review of PR #412, P1).
         const result = await setServiceDesiredState(
           { appDb: opts.appDb },
-          { organizationId, companyId, serviceId, desiredState, reason },
+          {
+            organizationId,
+            companyId,
+            serviceId,
+            desiredState,
+            reason,
+            // SVC-007 Unit B — see the create route above.
+            actor: { actorType: "user", actorId: operatorUserId(req) },
+          },
         );
         if (result.verdict.outcome === "absent") {
           // Uniform 404, no audit line — absent is indistinguishable from cross-tenant.
@@ -456,7 +508,8 @@ export function jobControlRoutes(opts: { db: Db; appDb: Db; operatorDb: Db }) {
         }
         logger.info(
           {
-            action: "service.desired_state",
+            // See the create route: one constant, shared with the durable audit row.
+            action: SERVICE_DESIRED_STATE_ACTION,
             organizationId,
             companyId,
             serviceId,
@@ -468,7 +521,9 @@ export function jobControlRoutes(opts: { db: Db; appDb: Db; operatorDb: Db }) {
             // route REQUIRED a reason and then discarded it on every transition to `running`.
             // A stop carries it into `job_control_commands.body` through `requestCancellation`,
             // but a resume reached no durable sink at all — so a field the caller was forced to
-            // supply went nowhere. It is bounded to 1000 characters by the body schema.
+            // supply went nowhere. It is bounded to 1000 characters by the body schema. SVC-007
+            // Unit B puts it on the DURABLE `activity_log` row too; this line is the process
+            // log, which does not outlive the process.
             reason,
             operatorUserId: operatorUserId(req),
             reasonCode: "service_desired_state_set",

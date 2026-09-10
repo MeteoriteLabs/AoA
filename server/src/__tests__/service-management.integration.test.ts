@@ -34,8 +34,9 @@
 // NOT exercised here. E9's exit gate is not claimed — see `SVC-007a-result.md` §7.
 // -----------------------------------------------------------------------------
 
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
+import { sql } from "drizzle-orm";
 
 import { setupJobControlFixture, type JobControlFixture, ORG, COMPANY } from "./helpers/job-control-fixture.js";
 import { runInTenant } from "../db/tenant-context.js";
@@ -78,6 +79,22 @@ function controlDeps() {
   return { appDb: f().app.db };
 }
 
+/**
+ * SVC-007 Unit B — the operator identity every mutating control now attributes its
+ * `activity_log` row to. A real user id, because `assertOrgAdmin` has already refused any
+ * caller without one before a control action can exist.
+ */
+const OPERATOR = { actorType: "user" as const, actorId: "a6900000-0000-4000-8000-0000000000aa" };
+
+/**
+ * The audit context for a DIRECT `...WithinTenant` call — the shape the two rollback probes
+ * need, since they open the transaction themselves. `published` is drained by the caller after
+ * commit; a probe that rolls back never drains it, which is the point.
+ */
+function auditCtx(tx: Parameters<typeof createServiceWithinTenant>[2]["tx"]) {
+  return { tx, actor: OPERATOR, published: [] };
+}
+
 async function create(overrides?: {
   organizationId?: string;
   companyId?: string;
@@ -88,6 +105,7 @@ async function create(overrides?: {
     organizationId: overrides?.organizationId ?? ORG,
     companyId: overrides?.companyId ?? COMPANY,
     definition: overrides?.definition ?? DEFINITION,
+    actor: OPERATOR,
     desiredState: overrides?.desiredState ?? "running",
     createdBy: "svc-007-operator",
   });
@@ -120,6 +138,26 @@ async function serviceJobs() {
     SELECT id, status, workload_type, input, source_kind FROM jobs WHERE workload_type = 'service' ORDER BY created_at`;
 }
 
+/**
+ * SVC-007 Unit B — the durable audit rows, read with the ADMIN connection.
+ *
+ * ★ READ AS ADMIN DELIBERATELY. `aoa_app` holds `SELECT, INSERT ON activity_log` and the table
+ * carries no RLS, so the app role could read these back — but a suite that verified the write
+ * through the same role and session that made it could not tell "committed" from "visible
+ * inside my own open transaction". The admin connection is a different session, so a row it
+ * can see is a row that COMMITTED.
+ */
+async function auditRows(companyId = COMPANY) {
+  return f().admin<Array<{
+    id: string; company_id: string | null; actor_type: string; actor_id: string;
+    action: string; entity_type: string; entity_id: string;
+    agent_id: string | null; run_id: string | null; details: Record<string, unknown> | null;
+  }>>`
+    SELECT id, company_id, actor_type, actor_id, action, entity_type, entity_id,
+           agent_id, run_id, details
+    FROM activity_log WHERE company_id = ${companyId} ORDER BY created_at, id`;
+}
+
 async function attemptStatuses(jobId: string) {
   const rows = await f().admin<Array<{ status: string }>>`
     SELECT status FROM job_attempts WHERE job_id = ${jobId}`;
@@ -127,6 +165,7 @@ async function attemptStatuses(jobId: string) {
 }
 
 async function clearServiceState(): Promise<void> {
+  await f().admin`DELETE FROM activity_log`;
   await f().admin`DELETE FROM job_outbox`;
   await f().admin`DELETE FROM job_control_commands`;
   await f().admin`DELETE FROM job_events`;
@@ -185,16 +224,23 @@ suite("SVC-007 — creating a service, and the loop it unblocks", () => {
     expect(await generationRows()).toHaveLength(1);
 
     await clearServiceState();
-    await expect(runInTenant(f().app.db, ORG, async (repos) => {
+    await expect(runInTenant(f().app.db, ORG, async (repos, tx) => {
       const inner = await createServiceWithinTenant(repos, {
         organizationId: ORG, companyId: COMPANY, definition: DEFINITION,
         desiredState: "running", createdBy: "rollback-probe",
-      });
+      }, auditCtx(tx));
       expect(inner, "the probe must have written both rows before rolling back").not.toBeNull();
       throw new Error("deliberate rollback");
     })).rejects.toThrow("deliberate rollback");
     expect(await serviceRows(), "the services row must not survive the rollback").toEqual([]);
     expect(await generationRows(), "the generation must not survive the rollback").toEqual([]);
+    // ★ SVC-007 Unit B — THE AUDIT IS PART OF THE SAME ATOMIC UNIT, and this is the assertion
+    // that says so. The audit row was written inside the transaction (T15 proves a committed
+    // create leaves exactly one), so if it survived here it would be on a second connection —
+    // which is the mutant "move the audit insert outside the transaction". An audit row for a
+    // service that does not exist is worse than no row: it is a record of an act that was
+    // undone.
+    expect(await auditRows(), "the audit row must not survive the rollback either").toEqual([]);
   }, 90_000);
 
   // ── T2 — ★ THE CHAIN, and the sentence it makes false ──────────────────────────────────
@@ -318,6 +364,7 @@ suite("SVC-007 — creating a service, and the loop it unblocks", () => {
 
     const stopped = await setServiceDesiredState(controlDeps(), {
       organizationId: ORG, companyId: COMPANY, serviceId, desiredState: "stopped", reason: "operator stop",
+      actor: OPERATOR,
     });
     expect(stopped.verdict).toMatchObject({ outcome: "updated", from: "running", to: "stopped" });
     expect(stopped.stop).toMatchObject({ status: "requested", jobId: first.jobId });
@@ -343,6 +390,7 @@ suite("SVC-007 — creating a service, and the loop it unblocks", () => {
     // and the service would never run again.
     const resumed = await setServiceDesiredState(controlDeps(), {
       organizationId: ORG, companyId: COMPANY, serviceId, desiredState: "running", reason: "operator resume",
+      actor: OPERATOR,
     });
     expect(resumed.verdict).toMatchObject({ outcome: "updated", from: "stopped", to: "running" });
     expect(resumed.stop, "resuming cancels nothing").toBeNull();
@@ -366,11 +414,13 @@ suite("SVC-007 — creating a service, and the loop it unblocks", () => {
     const serviceId = created!.serviceId;
     await setServiceDesiredState(controlDeps(), {
       organizationId: ORG, companyId: COMPANY, serviceId, desiredState: "stopped", reason: "stop",
+      actor: OPERATOR,
     });
     expect((await serviceRows())[0]!.desired_state).toBe("stopped");
 
     const illegal = await setServiceDesiredState(controlDeps(), {
       organizationId: ORG, companyId: COMPANY, serviceId, desiredState: "paused", reason: "pause",
+      actor: OPERATOR,
     });
     expect(illegal.verdict).toEqual({ outcome: "illegal", from: "stopped", to: "paused" });
     expect(illegal.stop).toBeNull();
@@ -378,11 +428,13 @@ suite("SVC-007 — creating a service, and the loop it unblocks", () => {
 
     const unchanged = await setServiceDesiredState(controlDeps(), {
       organizationId: ORG, companyId: COMPANY, serviceId, desiredState: "stopped", reason: "again",
+      actor: OPERATOR,
     });
     expect(unchanged.verdict).toMatchObject({ outcome: "unchanged", state: "stopped" });
 
     const absent = await setServiceDesiredState(controlDeps(), {
       organizationId: ORG, companyId: COMPANY, serviceId: randomUUID(), desiredState: "stopped", reason: "x",
+      actor: OPERATOR,
     });
     expect(absent.verdict).toEqual({ outcome: "absent" });
   }, 120_000);
@@ -481,11 +533,12 @@ suite("SVC-007 — creating a service, and the loop it unblocks", () => {
     expect(first).toMatchObject({ action: "created" });
     if (first.action !== "created") return;
 
-    await expect(runInTenant(f().app.db, ORG, async (repos) => {
+    const auditBefore = (await auditRows()).length;
+    await expect(runInTenant(f().app.db, ORG, async (repos, tx) => {
       const inner = await setServiceDesiredStateWithinTenant(repos, {
         organizationId: ORG, companyId: COMPANY, serviceId,
         desiredState: "stopped", reason: "rollback probe",
-      });
+      }, auditCtx(tx));
       // Everything must have HAPPENED inside the transaction before it is rolled back —
       // otherwise this probe would pass over a control that did nothing at all.
       expect(inner.verdict).toMatchObject({ outcome: "updated", from: "running", to: "stopped" });
@@ -497,6 +550,11 @@ suite("SVC-007 — creating a service, and the loop it unblocks", () => {
     expect((await serviceJobs())[0]!.status, "the cancellation must not survive").toBe("queued");
     expect(await attemptStatuses(first.jobId)).toEqual(["pending"]);
     expect((await instanceRows(serviceId))[0]!.status, "the terminalization must not survive").toBe("pending");
+    // ★ SVC-007 Unit B — the audit row rolls back with the other three. `auditBefore` is the
+    // create's own row from `create()` above, so this asserts the DELTA is zero rather than
+    // that the table is empty — which would have been a weaker assertion that a create writing
+    // nothing would also satisfy.
+    expect((await auditRows()).length - auditBefore, "the audit row must roll back too").toBe(0);
   }, 180_000);
 
   // ── T12 — the two narrow guards, driven directly because no shipped caller can reach them ─
@@ -601,4 +659,165 @@ suite("SVC-007 — creating a service, and the loop it unblocks", () => {
     expect(await instanceRows(serviceId)).toEqual([]);
     expect(await serviceJobs()).toEqual([]);
   }, 90_000);
+
+  // ─────────────────────────────────────────────────────────────────────────────────────────
+  // SVC-007 UNIT B — THE DURABLE AUDIT, over the real table, the real grant and the real role.
+  //
+  // ★★★ WHAT THESE FIVE CASES ARE FOR, AND WHY THEY CANNOT BE PURE. `SVC-007a-result.md`
+  // §4a(iii)/§7 concluded that an `activity_log` row was "currently unwritable" from these
+  // routes because `jobAuditBridge.recordAcceptedActivity` requires an `ActiveFenceRequest`.
+  // That is a claim about what the DATABASE and the app ROLE permit, so a stub cannot settle
+  // it. These cases settle it: the writes below go through the `aoa_app` pool inside
+  // `runInTenant`, with no lease, no attempt, no fence and no projection receipt, and the rows
+  // are read back on the ADMIN connection — a different session, so a visible row is a
+  // COMMITTED row. See `E9-F010`.
+  //
+  // Each case names the mutant that must re-red it; `SVC-007b-result.md` records which did.
+  // ─────────────────────────────────────────────────────────────────────────────────────────
+
+  // MUTANT: delete the `recordServiceCreateActivity` call from `createServiceWithinTenant` —
+  // the BASE-TREE state, in which these routes wrote nothing durable at all.
+  it("★ T14 — a create writes exactly ONE durable audit row, with no fence and no receipt", async () => {
+    const created = await create();
+    const rows = await auditRows();
+    expect(rows, "one control action is one row").toHaveLength(1);
+    const row = rows[0]!;
+    expect(row.action).toBe("service.create");
+    expect(row.entity_type).toBe("service");
+    expect(row.entity_id).toBe(created!.serviceId);
+    expect(row.company_id).toBe(COMPANY);
+    expect(row.actor_type).toBe("user");
+    expect(row.actor_id).toBe(OPERATOR.actorId);
+    expect(row.run_id, "run_id FKs heartbeat_runs and there is no heartbeat run here").toBeNull();
+    expect(row.agent_id).toBeNull();
+    expect(row.details).toMatchObject({ generation: 1, desiredState: "running" });
+
+    // ★ THE OTHER HALF OF THE CLAIM, ASSERTED RATHER THAN ASSUMED: this path writes NO
+    // JOB-005 projection receipt, because it has no fence to guard one with and
+    // `job_projection_receipts.source_fence` is NOT NULL. If a row ever appeared here, the
+    // audit would have acquired a second, fenced identity nobody designed.
+    const receipts = await f().admin<Array<{ n: number }>>`
+      SELECT count(*)::int AS n FROM job_projection_receipts WHERE projection_kind = 'activity_audit'`;
+    expect(receipts[0]!.n).toBe(0);
+  }, 120_000);
+
+  // MUTANT: skip the audit on `unchanged`, or drop `reason` from the details.
+  //
+  // ★ THE RESUME LEG IS THE ONE THAT MATTERS. A stop already carried the operator's reason
+  // into `job_control_commands.body` through `requestCancellation`; a RESUME reached no
+  // durable sink at all before this unit — external review of PR #412 raised exactly that, and
+  // SVC-007a fixed only the process log. This case reads the resume's reason back out of the
+  // database.
+  it("★ T15 — stop, re-issued stop and resume each leave one durable row carrying the reason", async () => {
+    const created = await create();
+    const serviceId = created!.serviceId;
+
+    const stopped = await setServiceDesiredState(controlDeps(), {
+      organizationId: ORG, companyId: COMPANY, serviceId,
+      desiredState: "stopped", reason: "audit-stop", actor: OPERATOR,
+    });
+    expect(stopped.verdict).toMatchObject({ outcome: "updated" });
+
+    const again = await setServiceDesiredState(controlDeps(), {
+      organizationId: ORG, companyId: COMPANY, serviceId,
+      desiredState: "stopped", reason: "audit-restop", actor: OPERATOR,
+    });
+    expect(again.verdict).toMatchObject({ outcome: "unchanged" });
+
+    const resumed = await setServiceDesiredState(controlDeps(), {
+      organizationId: ORG, companyId: COMPANY, serviceId,
+      desiredState: "running", reason: "audit-resume", actor: OPERATOR,
+    });
+    expect(resumed.verdict).toMatchObject({ outcome: "updated", from: "stopped", to: "running" });
+
+    const rows = await auditRows();
+    expect(rows.map((r) => r.action)).toEqual([
+      "service.create", "service.desired_state", "service.desired_state", "service.desired_state",
+    ]);
+    const controls = rows.slice(1).map((r) => r.details as Record<string, unknown>);
+    expect(controls[0]).toMatchObject({ outcome: "updated", from: "running", to: "stopped", reason: "audit-stop" });
+    expect(controls[1]).toMatchObject({ outcome: "unchanged", from: null, to: "stopped", reason: "audit-restop" });
+    expect(controls[2], "the RESUME's reason is the one that reached nothing durable before")
+      .toMatchObject({ outcome: "updated", from: "stopped", to: "running", reason: "audit-resume" });
+  }, 180_000);
+
+  // MUTANT: audit unconditionally, on every exit of the control.
+  it("★ T16 — a refused control writes NO durable row", async () => {
+    const created = await create();
+    const serviceId = created!.serviceId;
+    await setServiceDesiredState(controlDeps(), {
+      organizationId: ORG, companyId: COMPANY, serviceId,
+      desiredState: "stopped", reason: "park it", actor: OPERATOR,
+    });
+    const beforeRefusals = (await auditRows()).length;
+
+    // `stopped -> paused` is not an edge in the FROZEN table.
+    const illegal = await setServiceDesiredState(controlDeps(), {
+      organizationId: ORG, companyId: COMPANY, serviceId,
+      desiredState: "paused", reason: "illegal", actor: OPERATOR,
+    });
+    expect(illegal.verdict.outcome).toBe("illegal");
+
+    // A service that is not there. The route answers a UNIFORM 404 so a caller cannot tell it
+    // from another tenant's service; a row here would be a record of a mutation that did not
+    // happen.
+    const absent = await setServiceDesiredState(controlDeps(), {
+      organizationId: ORG, companyId: COMPANY, serviceId: randomUUID(),
+      desiredState: "stopped", reason: "absent", actor: OPERATOR,
+    });
+    expect(absent.verdict.outcome).toBe("absent");
+
+    expect((await auditRows()).length - beforeRefusals, "two refusals must add nothing").toBe(0);
+  }, 150_000);
+
+  // MUTANT: write the audit row on the ADMIN pool, or outside `runInTenant`.
+  //
+  // ★ THE ROLE IS THE POINT. `SVC-007a-result.md` called this write blocked; the block, if
+  // there were one, would be a missing privilege on the non-owner serving role. This case
+  // proves the privilege by exercising it: the row below is written by `aoa_app` — the pool
+  // `jobControlRoutes` is mounted over — through `createService`, and nothing about it is
+  // elevated. `activity_log` carries table-level `SELECT, INSERT` for `aoa_app` (migration
+  // `0213`, re-affirmed by `0214`) and no RLS, which migration `0245`'s own header states.
+  it("★ T17 — the row is written by the non-owner `aoa_app` serving role itself", async () => {
+    const created = await create();
+    const viaApp = await runInTenant(f().app.db, ORG, async (_repos, tx) => {
+      const rows = await tx.execute(
+        // Read back through the SAME role that wrote it. `current_user` is asserted so a
+        // future change of pool cannot make this case pass for the wrong reason.
+        sql`SELECT current_user::text AS role, count(*)::int AS n FROM activity_log
+            WHERE company_id = ${COMPANY} AND action = 'service.create'`,
+      );
+      return (rows as unknown as Array<{ role: string; n: number }>)[0]!;
+    });
+    expect(viaApp.role, "the serving role, not the owner").toBe("aoa_app");
+    expect(viaApp.n).toBe(1);
+    expect((await auditRows())[0]!.entity_id).toBe(created!.serviceId);
+  }, 120_000);
+
+  // MUTANT: drop the after-commit drain (`publishServiceControlActivity`) from `createService`.
+  //
+  // ★ WHAT THIS CASE PROVES AND WHAT IT DOES NOT, stated so it is not over-read. It proves
+  // that a COMMITTED create pokes the live feed exactly once, with the `activity.logged`
+  // payload the durable row carries, and that the row is durable by the time the caller
+  // returns. It does NOT prove the poke happened AFTER the commit rather than just before it:
+  // the poke leaves no database trace, and a second connection reading at the instant of the
+  // poke would block until commit and then answer "visible" either way, so no observation from
+  // here can separate the two. That ordering is held by construction — the drain sits after
+  // `runInTenant` has returned, so a mid-transaction throw never reaches it — and by `B5` in
+  // `service-control-audit.test.ts`, which pins that recording publishes nothing at all and
+  // that publishing is a separate call the transaction's owner makes.
+  it("★ T18 — a committed create pokes the live feed exactly once, and the row is already durable", async () => {
+    const live = await import("../services/live-events.js");
+    const spy = vi.spyOn(live, "publishLiveEvent").mockImplementation(() => {});
+    try {
+      const created = await create();
+      expect(spy, "a committed create must poke the feed exactly once").toHaveBeenCalledTimes(1);
+      expect(spy.mock.calls[0]![0]).toMatchObject({ companyId: COMPANY, type: "activity.logged" });
+      const rows = await auditRows();
+      expect(rows, "the row is durable by the time the caller returns").toHaveLength(1);
+      expect(rows[0]!.entity_id).toBe(created!.serviceId);
+    } finally {
+      spy.mockRestore();
+    }
+  }, 120_000);
 });

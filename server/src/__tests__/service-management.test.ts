@@ -187,11 +187,32 @@ function stubRepos(input: StubOptions) {
   return { repos, updates, cancellations, terminalizations };
 }
 
+/**
+ * SVC-007 Unit B — the audit context the control now REQUIRES.
+ *
+ * ★ The recorder is deliberately not asserted on in THIS file. What each verdict does to the
+ * audit is `service-control-audit.test.ts`'s subject (B7-B9); this file's subject is the
+ * verdict itself, and the two are kept apart so a change to one cannot quietly re-green the
+ * other. The `tx` implements exactly the chain `insertActivityLog` uses and nothing else.
+ */
+function auditContext() {
+  const tx = {
+    insert() {
+      return { values() { return { async returning() { return [{ id: "activity-stub" }]; } }; } };
+    },
+  };
+  return {
+    tx: tx as never,
+    actor: { actorType: "user" as const, actorId: "operator-1" },
+    published: [],
+  };
+}
+
 async function control(repos: unknown, desiredState: string, reason = "operator") {
   return setServiceDesiredStateWithinTenant(repos as never, {
     organizationId: ORG, companyId: COMPANY, serviceId: SERVICE,
     desiredState: desiredState as ServiceDesiredState, reason,
-  });
+  }, auditContext());
 }
 
 describe("SVC-007 — the desired-state control is fenced by the FROZEN transition table", () => {
