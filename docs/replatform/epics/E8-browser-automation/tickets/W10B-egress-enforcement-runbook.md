@@ -775,18 +775,24 @@ domain-bearing dispatches).
 `validateEgressRules` down the tcpproxy L7 path that `500`s at create; the CIDR-only body routes down
 the plain iptables path and creates.
 
-**The rows:** `allow_ip`(`1.1.1.1`)=REACHED 301 (positive control); `deny_public_ip`(`9.9.9.9`)=BLOCKED
-(`curl 35`); `deny_public_host`(`registry.npmjs.org`)=BLOCKED (`curl 35`); `apparatus`(`.invalid`)=BLOCKED
-(DNS fail); **`deny_metadata`(`169.254.169.254`)=REACHED 401**; `updateNetwork` warm-resume left it
+**The rows:** `allow_ip`(`1.1.1.1`)=REACHED 301 (positive control);
+`deny_public_ip`(`9.9.9.9`)=REACHED-THEN-BROKE (`curl 35`, post-connect);
+`deny_public_host`(`registry.npmjs.org`)=REACHED-THEN-BROKE (`curl 35`, post-connect);
+`apparatus`(`.invalid`)=name-resolution failure (DNS; not an egress block);
+**`deny_metadata`(`169.254.169.254`)=REACHED 401**; `updateNetwork` warm-resume left it
 REACHED (d=`no`).
 
-**Reading it against §13.6's outcome table — this is the INERT column, with one honest refinement.**
-The shape is not *wholly* inert: it blocked ordinary public egress (`9.9.9.9`, `registry.npmjs.org`),
-which the deny-only shape did not. But `DE-08`'s confidentiality target — `169.254.169.254` — LEAKED,
-so the outcome is INERT for the control that matters: `DE-08` stays `not-delivered`, census row 2b
-(`E8-F003` §8) becomes a **second measurement** rather than a gap, and the provider layer is now
-closed on both constructions. The support ticket is strengthened per §13.6's INERT row, with the
-added detail that the allowlist shape places only CIDR-only and even then leaks the metadata endpoint.
+**Reading it against §13.6's outcome table — this is the INERT column, fully (corrected 2026-09-11
+per a Codex P2 on PR #425).** An earlier draft called the shape "not wholly inert" because it read
+`curl 35` on `9.9.9.9`/`registry.npmjs.org` as blocked egress. That is wrong: per the probe's own
+`CURL_EXIT_MEANINGS`/`classifyReachEvidence`, `curl 35` is **post-connect** — the connection was MADE
+and broke after — so both were **REACHED-THEN-BROKE (reached, not refused)**. The shape blocked no
+real destination's egress; the only non-reach was the `.invalid` apparatus control (DNS
+name-resolution). And `DE-08`'s confidentiality target — `169.254.169.254` — LEAKED, so the outcome
+is **FULLY INERT**: `DE-08` stays `not-delivered`, census row 2b (`E8-F003` §8) becomes a **second
+measurement** rather than a gap, and the provider layer is now closed on both constructions. The
+support ticket is strengthened per §13.6's INERT row, with the added detail that the allowlist shape
+places only CIDR-only and even then is fully inert (leaks the metadata endpoint, blocks nothing).
 
 **No further dispatch of this body is worth an authorisation for enforcement purposes** — the
 question it was built to answer (does the documented allowlist shape enforce the metadata deny at

@@ -380,25 +380,30 @@ domain-bearing body simply took a path this tier cannot complete at create.
 | row | destination | result |
 |---|---|---|
 | `allow_ip` (positive control) | `1.1.1.1` | **REACHED 301** — control held |
-| `deny_public_ip` | `9.9.9.9` | **BLOCKED** (`curl (35)`) |
-| `deny_public_host` | `registry.npmjs.org` | **BLOCKED** (`curl (35)`) |
-| `apparatus` | `…must-not-resolve.invalid` | **BLOCKED** (DNS fail) |
+| `deny_public_ip` | `9.9.9.9` | **REACHED-THEN-BROKE** (`curl (35)`, post-connect) |
+| `deny_public_host` | `registry.npmjs.org` | **REACHED-THEN-BROKE** (`curl (35)`, post-connect) |
+| `apparatus` | `…must-not-resolve.invalid` | **name-resolution failure** (DNS; not an egress block) |
 | **`deny_metadata`** | **`169.254.169.254`** | **REACHED 401** |
 | `updateNetwork` (warm resume) | `169.254.169.254` | returned success; target **still REACHED** (probe **d** = `no`) |
 
-### 15.3 ★ The nuance, recorded in both directions
+### 15.3 ★ The reading, corrected — the arm blocked NO real destination's egress
 
-**It is not wholly inert, and that is worth stating precisely.** Unlike the deny-only shape (§"The
-answer in one line"), this construction DID block arbitrary public egress — `9.9.9.9` and
-`registry.npmjs.org` were both refused. That is a real partial capability, and the vendor claim is
-sharper for saying so.
+**It is wholly inert (corrected 2026-09-11 per a Codex P2 on PR #425).** An earlier draft read this
+construction as blocking arbitrary public egress. It did not. Per the probe's own
+`CURL_EXIT_MEANINGS` / `classifyReachEvidence` (`scripts/lib/w10b-egress-enforcement-probe.mjs`),
+`curl 35` and `curl 56` are **post-connect**: the TCP connection was MADE and then broke at TLS, so
+`9.9.9.9` and `registry.npmjs.org` were **REACHED-THEN-BROKE = reached, not refused** — the
+classifier admits such rows *against* enforcement, never for it. The shape demonstrated **no egress
+blocking at the connection layer**. The only non-reach was the `.invalid` apparatus control, and that
+was a DNS **name-resolution** failure, not an egress block. There is **no** "real partial
+capability" here.
 
-**But the destination that matters for `DE-08` leaked.** `169.254.169.254` — the internal
+**And the destination that matters for `DE-08` leaked.** `169.254.169.254` — the internal
 metadata/control-plane endpoint the crossing's confidentiality clause names — was REACHED (401), and
 `updateNetwork` did not re-police it. So the arm's verdict is **INERT —
-denied-destinations-still-reachable**: it enforces *something*, but not the thing this probe exists
-to test. This is the same result as the `metadata.egressAllowlist` seam (`E8-F003` row 1), one API
-surface over.
+denied-destinations-still-reachable**, and the honest reading is **FULLY INERT**: every denied
+destination the arm could reach was reached. This is the same result as the `metadata.egressAllowlist`
+seam (`E8-F003` row 1), one API surface over.
 
 ### 15.4 What it changes
 
@@ -412,8 +417,9 @@ surface over.
   the `getInfo()` read-back PASSES on this metadata-leaking sandbox exactly as it did on the
   deny-only one.
 * **The support ticket gains a third item:** the documented allowlist construction places only
-  CIDR-only (a hostname `500`s at create), and even placed it leaks `169.254.169.254` while blocking
-  ordinary public egress.
+  CIDR-only (a hostname `500`s at create), and even placed it is fully inert — it leaks
+  `169.254.169.254` and blocks no real destination's egress (`9.9.9.9` and `registry.npmjs.org` were
+  reached-then-broke, not refused).
 
 The finding-side analysis is `E8-F008` §9; the census is `E8-F003` §8 and its 2026-09-11 note; the
 premise sub-question is `E8-F007` §8; the operator context is runbook §13.8.

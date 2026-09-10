@@ -1320,6 +1320,24 @@ test("★ INERT, not ENFORCES: curl 35 and 56 PROVE the denied destination was r
   assert.equal(r.isVerdict, false);
 });
 
+test("★★★ the arm-summary row string spells a curl-35 denied row REACHED-THEN-BROKE, never 'blocked'", () => {
+  // ★★★ THE DURABLE RECORD MUST NOT CONTRADICT ITS OWN VERDICT. The `rows` summary once read
+  // through `classifyHttpRow`, which prints "blocked" for a reached-then-broke row (curl 35),
+  // and a recorder copied `deny_public_ip=blocked/curl-35` into the docs as "the allowlist
+  // blocked public egress" — the opposite of what curl 35 (post-connect) means. The summary
+  // now reads through `classifyReachEvidence`, so a reached-then-broke row can never again be
+  // labelled "blocked" in the string that sits beside the INERT verdict. Red-when-reverted.
+  const arm = allowlistArmFixture();
+  arm.rows.deny_metadata = row("deny_metadata", 35, "curl: (35) TLS handshake failure");
+  arm.rows.deny_public_ip = row("deny_public_ip", 35, "curl: (35) TLS handshake failure");
+  arm.rows.deny_public_host = row("deny_public_host", 56, "curl: (56) failure receiving data");
+  const r = classifyAllowlistArm({ arm });
+  assert.equal(r.outcome, "inert", "curl 35/56 on the denied rows must read INERT");
+  assert.match(r.rows, /deny_public_ip=reached-then-broke\/curl-35/, `summary must spell curl-35 reached-then-broke: ${r.rows}`);
+  assert.match(r.rows, /deny_public_host=reached-then-broke\/curl-56/, `summary must spell curl-56 reached-then-broke: ${r.rows}`);
+  assert.doesNotMatch(r.rows, /deny_public_(ip|host)=blocked/, `no denied row may read 'blocked' for a reached-then-broke exit: ${r.rows}`);
+});
+
 test("★ an exit code the pack does not model is BROKEN — it never defaults to refused", () => {
   // 127 is `curl: not found`: the row measured the TEMPLATE, not the network. Defaulting an
   // unmodelled exit to "refused" is the same error as defect 2 with a wider blast radius,

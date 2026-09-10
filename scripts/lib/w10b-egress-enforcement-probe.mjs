@@ -2025,9 +2025,17 @@ export const ALLOWLIST_OUTCOME_IS_A_VERDICT = Object.freeze({
  */
 export function classifyAllowlistArm({ arm } = {}) {
   const rowOf = (id) => arm?.rows?.[id] ?? null;
+  // ★★★ THE SUMMARY ROW STRING READS THROUGH `classifyReachEvidence`, NOT `classifyHttpRow`.
+  // `classifyHttpRow` answers "did the transfer complete", and prints "blocked" for a
+  // reached-then-broke row (curl 35/56) — the exact transfer-completion reading its own
+  // docstring forbids an enforcement claim from resting on. This string sits next to the
+  // arm's verdict in the durable record, and a recorder read `deny_public_ip=blocked/curl-35`
+  // as "the allowlist blocked public egress" when the row was REACHED-then-broke (INERT). The
+  // summary now speaks the enforcement classifier's own vocabulary, so it can never again say
+  // "blocked" for a destination that was reached. `no-result` still marks a missing row.
   const shown = ALLOWLIST_HTTP_TARGETS.map((t) => {
     const r = rowOf(t.id);
-    return `${t.id}=${classifyHttpRow(r)}/${blockShape(r)}`;
+    return `${t.id}=${classifyReachEvidence(r)}/${blockShape(r)}`;
   }).join(" ");
   const dns = classifyDnsRow(arm?.dnsRow);
   const resolverNote = `dns_lookup=${dns}`;

@@ -544,7 +544,7 @@ measured half keeps its verdict unchanged; the unmeasured half is now its own ro
 |---|---|---|
 | **1. Provider — `metadata.egressAllowlist`** (what AoA actually sends) | INERT | §2. MEASURED, real E2B, run `33857218680`, both controls held. |
 | **2. Provider — `network.denyOut` / `updateNetwork`, DENY-ONLY** (a `denyOut` CIDR list with no `allowOut`; the surface `E8-F007` found and AoA has never called) | ACCEPTED, VALIDATED, ECHOED, **INERT** | MEASURED, real E2B, run `34085130892`. `E8-F008`. |
-| **2b. Provider — default-deny + `allowOut` allowlist** (`denyOut: ({allTraffic}) => [allTraffic]` plus an allow list — the construction E2B's own docs present as the fine-grained control, and the only one that supports domains) | **INERT — MEASURED 2026-09-11** (metadata `169.254.169.254` REACHED 401; but it DID block `9.9.9.9` and `registry.npmjs.org`) | ★★★ MEASURED 2026-09-11, run [`34528397309`](https://github.com/MeteoriteLabs/AoA/actions/runs/34528397309) (ref `e2b-cidr-only-probe` @ `8f2c2b7d8`, template `aoa-base`), CIDR-only body `allowOut: ["8.8.8.0/24","1.1.1.1"]`. The arm PLACED (sandbox `ipm63v4ubgmzbik13v653`) — dropping the hostname routed it down the plain-iptables path, per §7's `validateEgressRules` insight. `getInfo()` echoed the policy back exactly (probe b=YES). The shape blocked ordinary public egress (`9.9.9.9` and `registry.npmjs.org` both `curl 35`) — a real partial capability the deny-only shape lacked — **but the metadata endpoint `169.254.169.254` LEAKED (REACHED 401)**, and `updateNetwork` on a warm resume left it reachable (d=no). Verdict INERT — denied-destinations-still-reachable. **The provider `network` surface is now closed on BOTH constructions** (deny-only, row 2, and this allowlist), on measurement rather than inference. `DE-08` stays `not-delivered`; nothing here is evidence of delivery. `E8-F008` §9, `W10B-egress-enforcement-result.md` §15. **History, preserved:** ★ ADDED 2026-09-09 (W10B-B). Row 2 was being read as covering this, which it does not: it tests the opposite construction. The arm is BUILT (`keyed-w10b-egress-enforcement-probe.test.ts`, arm `A/allowlist`; runbook §13). ★★ **UPDATED same day: DISPATCHED TWICE** — runs `34328502574` and `34328780645`, three minutes apart, both `UNRUN — arm-was-never-created`. `Sandbox.create` failed to place the body (`500: Failed to place sandbox … please retry`) while the policy and anti-vacuity arms placed seconds apart on the same template, so **the documented shape reproducibly fails to place at this tier** (cause unknown; not a validation refusal — contrast the IPv6 arm's `400: invalid denied CIDR` — and not transient). **The sandbox never existed, so this row is still UNMEASURED and must NEVER be read as INERT.** `E8-F008` §8. **This row does not soften the census.** An unmeasured candidate is not a promising one — nothing in the product passes a `network` body, `DE-08` reads `not-delivered`, and E8-F008 §6.2 already recorded that reasoning from the deny result to the allow shape is "an argument, **not a measurement**". |
+| **2b. Provider — default-deny + `allowOut` allowlist** (`denyOut: ({allTraffic}) => [allTraffic]` plus an allow list — the construction E2B's own docs present as the fine-grained control, and the only one that supports domains) | **INERT — MEASURED 2026-09-11** (FULLY inert: metadata `169.254.169.254` REACHED 401, and `9.9.9.9`/`registry.npmjs.org` were reached-then-broke — no egress blocked) | ★★★ MEASURED 2026-09-11, run [`34528397309`](https://github.com/MeteoriteLabs/AoA/actions/runs/34528397309) (ref `e2b-cidr-only-probe` @ `8f2c2b7d8`, template `aoa-base`), CIDR-only body `allowOut: ["8.8.8.0/24","1.1.1.1"]`. The arm PLACED (sandbox `ipm63v4ubgmzbik13v653`) — dropping the hostname routed it down the plain-iptables path, per §7's `validateEgressRules` insight. `getInfo()` echoed the policy back exactly (probe b=YES). The shape blocked NO real destination's egress: `9.9.9.9` and `registry.npmjs.org` both returned `curl 35`, which per the probe's own `CURL_EXIT_MEANINGS`/`classifyReachEvidence` is **post-connect = reached-then-broke** (the connection was MADE and broke after → reached, not refused — a Codex P2 on PR #425 caught this being misread as "blocked"); the only non-reach was the `.invalid` apparatus control (DNS name-resolution, not an egress block). **The metadata endpoint `169.254.169.254` LEAKED (REACHED 401)**, and `updateNetwork` on a warm resume left it reachable (d=no). Verdict INERT — denied-destinations-still-reachable. **The provider `network` surface is now closed on BOTH constructions** (deny-only, row 2, and this allowlist), on measurement rather than inference. `DE-08` stays `not-delivered`; nothing here is evidence of delivery. `E8-F008` §9, `W10B-egress-enforcement-result.md` §15. **History, preserved:** ★ ADDED 2026-09-09 (W10B-B). Row 2 was being read as covering this, which it does not: it tests the opposite construction. The arm is BUILT (`keyed-w10b-egress-enforcement-probe.test.ts`, arm `A/allowlist`; runbook §13). ★★ **UPDATED same day: DISPATCHED TWICE** — runs `34328502574` and `34328780645`, three minutes apart, both `UNRUN — arm-was-never-created`. `Sandbox.create` failed to place the body (`500: Failed to place sandbox … please retry`) while the policy and anti-vacuity arms placed seconds apart on the same template, so **the documented shape reproducibly fails to place at this tier** (cause unknown; not a validation refusal — contrast the IPv6 arm's `400: invalid denied CIDR` — and not transient). **The sandbox never existed, so this row is still UNMEASURED and must NEVER be read as INERT.** `E8-F008` §8. **This row does not soften the census.** An unmeasured candidate is not a promising one — nothing in the product passes a `network` body, `DE-08` reads `not-delivered`, and E8-F008 §6.2 already recorded that reasoning from the deny result to the allow shape is "an argument, **not a measurement**". |
 | **3. In-guest** — a proxy, or anything the login shell can reach | NOT A BOUNDARY against this workload | **MIXED, and the weakest row here — read the note below it.** Proxy half: REPRODUCED locally (see ★). Shell half: STRUCTURAL — `buildE2bLoginShellScript` (`sandbox-provider-runtime.ts:647-655`) sources `/etc/profile`, `$HOME/.profile` and `$HOME/.bashrc` from an **agent-writable** home before `exec env … claude`, so anything the guest can edit, the agent can edit. |
 | **4. Control-plane deny** — `classifyEgressDestination` / `createFenceAwareEgressProxy` | INSPECTS ZERO PACKETS | STRUCTURAL, by caller count: §3 point 3 — `egress-proxy.ts` is imported by exactly one file in the tree, an integration test. A classifier the sandbox's traffic never traverses cannot deny anything, whatever it computes. Tracked as `E5-6-denied-egress` → `unwired` in `scripts/gate-clause-wiring.json`, printed on every green run. |
 | **5. Fail-closed on "no policy applied"** — refuse to run a sandbox whose egress policy could not be applied | **DISSOLVED** | DERIVED from row 2, and marked as derivation rather than measurement: the discriminator such a design would branch on is the read-back, and the read-back **passes** on an unpoliced sandbox (`E8-F008` §3). There is no observable that separates "policy applied" from "policy stored and ignored", so there is nothing for a fail-closed branch to test. |
@@ -599,13 +599,18 @@ with the CIDR-only body `allowOut: ["8.8.8.0/24", "1.1.1.1"]` — the one-thing-
 the hostname) prescribed after the two 2026-09-09 `UNRUN` dispatches. **It PLACED** (sandbox
 `ipm63v4ubgmzbik13v653`; the hostname-free body routes down the plain iptables path rather than the
 tcpproxy L7 path that `500`d before), `getInfo()` echoed the policy back exactly, and the arm's
-verdict is **INERT — denied-destinations-still-reachable**: the shape DID block ordinary public
-egress (`9.9.9.9` and `registry.npmjs.org` both `curl 35`) but the metadata endpoint
-`169.254.169.254` **LEAKED (REACHED 401)**, and `updateNetwork` on a warm resume left it reachable.
+verdict is **INERT — denied-destinations-still-reachable**: `9.9.9.9` and `registry.npmjs.org` both
+returned `curl 35`, which per the probe's own `CURL_EXIT_MEANINGS`/`classifyReachEvidence` is
+**post-connect** (the connection was MADE and broke after) → **reached-then-broke = reached, not
+blocked**, and the metadata endpoint `169.254.169.254` **LEAKED (REACHED 401)**, with `updateNetwork`
+on a warm resume leaving it reachable. The arm blocked no real destination's egress at the
+connection layer; the only non-reach was the `.invalid` apparatus control, a DNS name-resolution
+failure, not an egress block.
 
-**Both directions, neither over-read.** That this shape blocks arbitrary public egress is a real
-partial capability the deny-only shape lacked — recorded so the vendor claim is precise. It does
-**not** deliver `DE-08`, whose confidentiality clause is specifically about the internal
+**The honest reading is FULLY INERT.** An earlier draft read `curl 35` as "blocked ordinary public
+egress" — a misinterpretation a Codex P2 on PR #425 caught: post-connect exits cannot support a
+"blocked egress" claim. There is **no** real partial capability here. The shape does **not** deliver
+`DE-08`, whose confidentiality clause is specifically about the internal
 metadata/control-plane range, and that range is exactly what leaked. **The consequence for this
 census:** the provider `network` option is now closed on **both** the deny-only shape (row 2,
 measured `34085130892`) **and** the documented default-deny + `allowOut` allowlist shape (row 2b,
@@ -1028,10 +1033,12 @@ and been measured. Run
 `e2b-cidr-only-probe` @ `8f2c2b7d8`, template `aoa-base`, 2026-09-10), CIDR-only body: the sandbox
 created (`ipm63v4ubgmzbik13v653`), `getInfo()` returned the declared policy verbatim, and the
 metadata endpoint `169.254.169.254` was **REACHED (401)** under it — so the allowlist shape **also
-materializes as a capability and fails to enforce the destination that matters**. It differs from
-the deny-only shape in one respect worth recording precisely: it *did* block arbitrary public egress
-(`9.9.9.9`, `registry.npmjs.org`), so it is not wholly inert — but that is not the `DE-08` control,
-and the capability-vs-enforcement gap this finding names holds on both constructions.
+materializes as a capability and fails to enforce the destination that matters**. Unlike an earlier
+draft, it does **not** differ from the deny-only shape by blocking arbitrary public egress: `9.9.9.9`
+and `registry.npmjs.org` returned `curl 35`, which is **post-connect = reached-then-broke** (reached,
+not refused) per the probe's `classifyReachEvidence` — a Codex P2 on PR #425 caught the misread. The
+shape is **wholly inert**, and the capability-vs-enforcement gap this finding names holds on both
+constructions.
 
 **What moves and what does not.** This settles the last open sub-question in §7's item (2) *for the
 tier this key reaches*: adoption remains contraindicated, now on two measured constructions rather
@@ -1327,7 +1334,7 @@ including what would have to change before a third dispatch is worth an authoris
 not red a lane that answered every question it was dispatched for, and — the direction that matters
 more — a sandbox that never existed did not report as enforcement.
 
-### 9. ★★★ MEASURED 2026-09-11 — the allowlist arm PLACED at last (CIDR-only), and it is INERT for the metadata endpoint though it DID block ordinary public egress
+### 9. ★★★ MEASURED 2026-09-11 — the allowlist arm PLACED at last (CIDR-only), and it is FULLY INERT: no destination's egress was blocked (curl-35 is post-connect = reached-then-broke, corrected per Codex P2 on PR #425)
 
 §8 recorded the allowlist arm as `UNRUN` after two dispatches: the domain-bearing body
 (`allowOut: [… , "example.com"]`) reproducibly failed to place with a `500`. Runbook §13.7 item 2
@@ -1354,19 +1361,24 @@ sandbox `ipm63v4ubgmzbik13v653`. The arm's prior `UNRUN` status is resolved.
 | row | destination | result |
 |---|---|---|
 | `allow_ip` (positive control) | `1.1.1.1` | **REACHED 301** — the control held |
-| `deny_public_ip` | `9.9.9.9` | **BLOCKED** (`curl (35)`) |
-| `deny_public_host` | `registry.npmjs.org` | **BLOCKED** (`curl (35)`) |
-| `apparatus` | `…must-not-resolve.invalid` | **BLOCKED** (DNS fail) |
+| `deny_public_ip` | `9.9.9.9` | **REACHED-THEN-BROKE** (`curl (35)`, post-connect) |
+| `deny_public_host` | `registry.npmjs.org` | **REACHED-THEN-BROKE** (`curl (35)`, post-connect) |
+| `apparatus` | `…must-not-resolve.invalid` | **name-resolution failure** (DNS; not an egress block) |
 | **`deny_metadata`** | **`169.254.169.254`** | **REACHED 401** |
 
-**★ THE NUANCE, both directions, neither over-claimed.** The default-deny + `allowOut` shape DID
-block arbitrary public egress — `9.9.9.9` and `registry.npmjs.org` were refused (`curl 35`), a real
-partial capability the deny-only shape (§1–2) lacked entirely. **BUT the confidentiality-critical
-metadata endpoint `169.254.169.254` LEAKED under it** (REACHED 401), and that is the denied
-destination that matters for `DE-08`. So the arm's verdict is **INERT —
-denied-destinations-still-reachable**: the shape enforces *something*, but not the thing this
-crossing exists to protect. `updateNetwork` on a warm resume returned success and the target was
-**still REACHED** (probe question d = no). This is the same result as the `metadata.egressAllowlist`
+**★ THE READING, corrected — the arm blocked NO real destination's egress.** Per the probe's own
+`CURL_EXIT_MEANINGS` / `classifyReachEvidence` (`scripts/lib/w10b-egress-enforcement-probe.mjs`),
+`curl 35` and `curl 56` are **post-connect**: the TCP connection was MADE and then broke at TLS, so
+the destination was **REACHED-THEN-BROKE = reached, not refused** — the classifier admits such rows
+*against* enforcement, never for it. `9.9.9.9` and `registry.npmjs.org` were therefore **reached**,
+not blocked; the shape demonstrated **no egress blocking at the connection layer**. The only
+non-reach was the `.invalid` apparatus control, and that was a DNS **name-resolution** failure — not
+an egress block. Reading `curl 35` as "blocked public egress" was the misinterpretation a Codex P2
+on PR #425 caught; there is no "real partial capability" here. **The confidentiality-critical
+metadata endpoint `169.254.169.254` was also REACHED (401)** — the denied destination that matters
+for `DE-08`. So the shape is **FULLY INERT**, verdict **INERT — denied-destinations-still-reachable**:
+every denied destination the arm could reach was reached. `updateNetwork` on a warm resume returned
+success and the target was **still REACHED** (probe question d = no). This is the same result as the `metadata.egressAllowlist`
 seam (`E8-F003` row 1), one API surface over.
 
 **Overall disposition of the run:** `measured — a=no b=yes c=no d=no e=no regression=no`;
