@@ -781,26 +781,62 @@ all four read as shipped.
    move**: the destroy half still fails on the worker-side code gap regardless, and the register
    row (`DE-10`, `deliveryStatus: partial`) was corrected in the same direction on the same day —
    this item is the derived half of that correction, and it was missed on the first pass.
-4. **DE-12 (Critical) — the generation fence is production-unreachable and has no writer.** The
-   deny exists (`job-control.ts:1667-1679`, `eq(services.generation, input.generation)` at `:1675`)
-   and is taken at `server/src/services/job-submission.ts:229` (`if (!executionPrincipal) throw
-   denial();`, closing the `service_reconcile` arm opened at `:222`). But that arm sits behind a
-   requester-kind gate — `SOURCE_REQUESTER_KINDS.service_reconcile = ["system"]`
-   (`job-submission.ts:99`), checked at `:164` and refused at `:166`, i.e. **one gate earlier than
-   the generation check** — and the only `system` principal producer in the tree is
-   `server/src/services/one-shot-sandbox-cli.ts:293`,
-   which submits `one_shot`. Even if it were reachable, `services.generation` has **no writer**:
-   `repos.services` exposes `insert` / `getById` / `listForCompany` and no update
-   (`packages/db/src/repositories/tenant/index.ts:215-226`), and there is no `update(services)`
-   call anywhere in the tree. A generation rollover cannot be performed, so the fence cannot fire.
+4. **DE-12 (Critical) — the submit-time generation deny still cannot refuse in production; its
+   "no writer" and "nothing submits `service_reconcile`" premises have since fallen.**
+   ★ **Amended 2026-09-10 — re-measured at `a5d27555b`. Two of this item's original premises are
+   now FALSE; the item stays OPEN because the deny is still unreachable-as-a-refusal, for a NEW
+   reason.** The deny is `serviceSourceIsAdmitted`
+   (`packages/db/src/repositories/tenant/job-control.ts:2718`, predicate
+   `eq(services.generation, input.generation)` at `:2726`, returning `null` on mismatch), taken at
+   `server/src/services/job-submission.ts:229` (`if (!executionPrincipal) throw denial();`, closing
+   the `service_reconcile` arm opened at `:222`). *(The originally-cited `job-control.ts:1667-1679`
+   / `:1675` deny is stale — no such deny is there at HEAD.)*
+   **Premise (i) FELL — `services.generation` now HAS a writer.** `repos.jobControl.bumpServiceGeneration`
+   (`job-control.ts:3135`, `.update(services).set({ generation })` as a compare-and-set gated on
+   `eq(services.generation, input.expectedGeneration)`), reached from
+   `rollServiceGenerationWithinTenant` / `rollServiceGeneration`
+   (`server/src/services/service-generation-rollout.ts:274,391`, calling the repo at `:316`) via
+   `POST /organizations/:organizationId/companies/:companyId/services/:serviceId/generation` on
+   `jobControlRoutes`, mounted at `server/src/app.ts:498` under `distributedExecutionEnabled`
+   (SVC-005a). The original sentence looked at the wrong namespace: `repos.services` still exposes no
+   `update` (`packages/db/src/repositories/tenant/index.ts:215-226`), but the writer lives on
+   `repos.jobControl`. There is now a second `update(services)` too — `updateServiceDesiredState`
+   (`job-control.ts:3004`, SVC-007a).
+   **Premise (ii) FELL — a `system` principal now submits `service_reconcile`.**
+   `reconcileServiceWithinTenant` (`server/src/services/service-reconciler.ts:301`) calls
+   `submitJobWithinTenant` with `principal: { kind: "system", id: companyId }` (:309) and
+   `source.kind: "service_reconcile"` (:313); `createServiceReconciler` is armed on a timer at
+   `server/src/index.ts:1413-1440` inside the same `distributedExecutionEnabled` block. So the
+   `service_reconcile` arm at `job-submission.ts:222-229` IS reached in production, refuting the old
+   "the only `system` producer is `one-shot-sandbox-cli.ts:293`, which submits `one_shot`." The
+   requester-kind gate itself is unchanged (`SOURCE_REQUESTER_KINDS.service_reconcile = ["system"]`,
+   `job-submission.ts:99`, enforced `:164`/`:166`).
+   **What SURVIVES — the deny still cannot fire.** The sole production submitter (the reconciler)
+   reads `services.generation` under a `SELECT ... FOR UPDATE` row lock (`lockServiceForReconcile`,
+   `job-control.ts:2746`) and submits the matching `source.generation` in the SAME transaction, so
+   the predicate always matches — the mismatch→null→denial branch is never taken. `serviceSourceIsAdmitted`'s
+   own docstring states its residual value lives "entirely in the OTHER callers: a replayed
+   submission, SVC-007's future controls, a direct call," none of which are production submitters
+   today. So the deny is unreachable-as-a-refusal for a NEW reason (one always-matching internal
+   caller), not the old one (no caller at all). *(Note: SVC-005a also added a separate,
+   genuinely-reachable cross-generation PLACEMENT fence — `predecessor_generation_unwitnessed`,
+   `service-reconciler.ts:266-276` — but that is not the submit-time deny DE-12 item 4 cites, so it
+   does not flip this clause.)* **This item stays OPEN**: DE-12's live residual is the undelivered
+   AUDIT clause ("partition, drain, and generation changes are audited") — a generation roll emits
+   only a `logger.info` line, no durable `activity_log`/`job_projection_receipts` row (see register
+   DE-12 and E9-F012 / E9-F009 §3). The register row was already corrected in this direction on
+   2026-09-10 and needs no change.
 
 **Why each is HIGH.** (1) and (3) are silent data/resource losses — a late result is dropped rather
 than quarantined, and an orphan sandbox is billable. (2) meant, as filed, that the only revocation
 story for a resolved execution secret was fence expiry; ★ **as of the 2026-09-09 ruling the
 operator lever is `revokeWorker`, which is real but DEVICE-GRAINED** — an operator who learns one
 handle is compromised must revoke the whole device — and (2) stays HIGH on its broker-refresh
-half. (4) means DE-12's `failureMode` — *"two service instances act as active simultaneously"* —
-has no control at all, only a gate that nothing can reach.
+half. (4) ★ **re-measured 2026-09-10:** DE-12's `failureMode` — *"two service instances act as
+active simultaneously"* — now HAS controls that exist and run (the armed reconciler, the
+`services.generation` writer, and the cross-generation placement fence); what is undelivered is the
+AUDIT trail for the generation change, not the control itself. (Previously stated as "no control at
+all, only a gate that nothing can reach" — that was true at filing and is false at HEAD.)
 
 **What it is NOT.** None of the four is a *wrong* implementation. Each ticket's own result document
 is honest about its scope (`WRK-007-result.md`: *"inert-until-wired (E4-D12)"*;
