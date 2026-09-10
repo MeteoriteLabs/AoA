@@ -175,8 +175,13 @@ whose semantics SVC-005 owns.
 ### 4.1 A create path with no caller
 
 This is the programme's signature defect and this ticket is the likeliest place to ship it —
-`repos.services.insert` reads exactly like `createStartupReconciler` and the reaper, both
-already on the register as dead arming paths. Stopped by composing the route in
+`repos.services.insert` reads exactly like `createStartupReconciler`, `createResultCommitter`
+and `jobAuditBridge` — all three MEASURED at **0** production callers at head with the
+register's own counter, all three named in the gate-clause guard's own header as capabilities
+that shipped inside epics reported `complete`. **★ The brief that opened this unit also named
+"the reaper" as such a path, and that is WRONG: `reapOrganization` measures 4 production callers
+and `reapExpiredLeases` 3. Corrected rather than repeated — an orchestrator's given is an
+unverified claim.** Stopped by composing the route in
 `jobControlRoutes` (mounted by `createApp` inside the `distributedExecutionEnabled` block) and
 by counting callers base vs head with the register's own counter rather than asserting them.
 

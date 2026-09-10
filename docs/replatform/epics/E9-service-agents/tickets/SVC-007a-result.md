@@ -74,9 +74,12 @@ budget and restart history are all absent. Half of a conjunction is not it.
 ## 3. The arming path, counted rather than asserted
 
 The brief's warning was that this is the unit most likely to ship a create path with no caller —
-`repos.services.insert` reads exactly like `createStartupReconciler` and the reaper, both already
-on the register as dead arming paths. Measured with the register's own `countProductionCallers`,
-base `053f90fc8` vs head:
+`repos.services.insert` reads exactly like `createStartupReconciler`, `createResultCommitter` and
+`jobAuditBridge` — all three MEASURED at **0** production callers at head. (★ The brief also named
+"the reaper" as such a path. It is not one: `reapOrganization` measures **4** production callers
+and `reapExpiredLeases` **3**. Recorded because an orchestrator's given is an unverified claim,
+and repeating it would have put a false measurement in a result document.) Measured with the
+register's own `countProductionCallers`, base `053f90fc8` vs head:
 
 | Symbol | Base | Head | What the head count is |
 |---|---|---|---|
