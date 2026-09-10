@@ -159,7 +159,8 @@ because the shape of the miss is the lesson.
 **(i) E9-F004 — the direct-edge legality predicate refused EVERY NORMAL SERVICE STOP.**
 `SERVICE_INSTANCE_TRANSITIONS` makes `stopping` the sole predecessor of `stopped`, and **no frozen
 worker event can assert `stopping`** — the supervisor emits `service_instance_stopped` directly from
-`healthy` (`service-lifecycle.ts:293`, and `:362` after the graceful ladder), and
+`healthy` (`runServiceLifecycle`'s `case "process_exited"` arm, `service-lifecycle.ts` ~:293, and
+`gracefulStop`'s `verdict === "stopped"` branch ~:362 after the graceful ladder), and
 `service_graceful_stop_observed` observes a REQUEST. So an ordinary service exit was refused as
 `illegal_transition`, the instance stayed `healthy` inside `service_instances_live_service_uq`, and
 SVC-002's reconciler could never replace it. **That is the exact opposite of this ticket's purpose.**
@@ -173,7 +174,8 @@ statuses no event can project; the residual is filed as **E9-F004** and stays op
 it properly needs SVC-005 to write `stopping` or a frozen-table amendment.
 
 **(ii) E9-F005 — a failed attempt with no service event stranded the instance.**
-`service-lifecycle.ts:166` says it in its own words: a launch resolving no handle emits NO
+`runServiceLifecycle`'s §4.2a launch comment (`service-lifecycle.ts`, ~:166) says it in its own
+words: a launch resolving no handle emits NO
 `service_instance_started`, so *"the instance never leaves `leased` and the attempt fails"*. The
 attempt went terminal while the instance sat live forever — E9-F004's wedge through another door.
 Fixed with the attempt-terminal backstop (§5.7), filed as **E9-F005**, resolved in this commit.
@@ -298,6 +300,15 @@ point of the attribution SVC-002 wrote, and T4 is the case that pins it. Everyth
 suite is real: the constraints, the partial unique index, the poll/ACK-minted ACTIVE fence,
 `guardActiveFence`, `acceptEvent`'s durable append, SVC-002's own two instance writers, and
 SVC-002's real `reconcileService` for T5's replacement leg.
+
+**★ THE PRODUCTION WIRE IS PROVEN BY EXACTLY ONE ARM, AND THAT IS THIN — SAID PLAINLY.** T1 is the
+only case in either suite that drives `createJobEventIngestService`; every other case hands
+`acceptEvent` a projection directly. The measurement agrees rather than the prose: mutant 13
+(`serviceProjection: null` in `toAcceptInputs`) reds **T1 and nothing else** — one arm stands
+between "the feature reaches production code" and "the feature is wired to nothing and 25 cases
+still pass". Nothing here should be read as broader wire coverage than that. A second ingest-driven
+case (a refusal path through the real ingest, so the arm is not a single point) is the cheapest
+thing to add next, and it is not added here.
 
 **So the leg this suite does not cover is SVC-008b's, and SVC-008b covers it** — its suite proves a
 service job is offered to a daemon and supervised as a service, emitting exactly these events.

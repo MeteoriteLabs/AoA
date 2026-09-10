@@ -425,8 +425,9 @@ one predecessor:
 `service_instance_stopped`, `service_instance_lost`, and `service_graceful_stop_observed` — whose
 payload is `{ref, deadline}` and which observes a REQUEST, so projecting a process fact from it is
 the E7-F034 fail-open SVC-008a exists to refuse. And the shipped supervisor does not pass through
-it either: `packages/worker-daemon/src/supervisor/service-lifecycle.ts:293` emits
-`service_instance_stopped` directly on an observed `exited`/`gone` — **from `healthy`** — and `:362`
+it either: in `packages/worker-daemon/src/supervisor/service-lifecycle.ts`, `runServiceLifecycle`'s
+`case "process_exited"` arm (~:293) emits `service_instance_stopped` directly on an observed
+`exited`/`gone` — **from `healthy`** — and `gracefulStop`'s `verdict === "stopped"` branch (~:362)
 does the same after the graceful ladder.
 
 ### 2. What it cost, and why it was invisible
@@ -476,7 +477,8 @@ it again.
 
 ### 1. The path
 
-`packages/worker-daemon/src/supervisor/service-lifecycle.ts:166` says it in its own words:
+`runServiceLifecycle`'s §4.2a launch comment, in
+`packages/worker-daemon/src/supervisor/service-lifecycle.ts` (~:166), says it in its own words:
 
 > *"No handle ⇒ NO `service_instance_started`. The instance never leaves `leased` and the attempt
 > fails."*

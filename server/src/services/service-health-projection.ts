@@ -77,9 +77,11 @@ import type { ServiceInstanceProjectionInput } from "@armyofagents/db";
  * one, and it was caught by review rather than by me:
  *
  *   `SERVICE_INSTANCE_TRANSITIONS` makes `stopping` the **sole** predecessor of `stopped`.
- *   The shipped supervisor never passes through it: `service-lifecycle.ts:293` emits
+ *   The shipped supervisor never passes through it: in `service-lifecycle.ts`,
+ *   `runServiceLifecycle`'s `case "process_exited"` arm (~:293) emits
  *   `service_instance_stopped` directly on an observed `exited`/`gone` — from `healthy` — and
- *   `:362` does the same after the graceful ladder. `service_graceful_stop_observed` cannot
+ *   `gracefulStop`'s `verdict === "stopped"` branch (~:362) does the same after the graceful
+ *   ladder. `service_graceful_stop_observed` cannot
  *   supply it either: its payload is `{ref, deadline}`, it observes a REQUEST, and projecting
  *   a process fact from it is the E7-F034 fail-open this module refuses.
  *
@@ -193,7 +195,8 @@ export function decideServiceProjection(event: {
   // ★★★ THE ATTEMPT-TERMINAL BACKSTOP, and the gap it closes is a REAL one (E9-F005).
   //
   // The supervisor emits exactly one of `_stopped`/`_lost` before the attempt `terminal` —
-  // WHEN IT GOT THAT FAR. It does not always: `service-lifecycle.ts:166` says in terms that a
+  // WHEN IT GOT THAT FAR. It does not always: `runServiceLifecycle`'s §4.2a launch comment
+  // (`service-lifecycle.ts`, ~:166) says in terms that a
   // launch which resolves no handle emits NO `service_instance_started`, so *"the instance
   // never leaves `leased` and the attempt fails"*. Same for a workload rejected before the
   // loop. In those paths the attempt is terminal while the instance sits `pending`/`leased`

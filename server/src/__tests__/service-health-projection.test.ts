@@ -108,8 +108,9 @@ describe("SVC-003 — predecessorsOf is derived from the frozen transition table
   //
   // `SERVICE_INSTANCE_TRANSITIONS` makes `stopping` the SOLE predecessor of `stopped`, and no
   // frozen worker event can assert `stopping`: the supervisor emits `service_instance_stopped`
-  // directly on an observed exit, from `healthy` (`service-lifecycle.ts:293`, and `:362` after
-  // the graceful ladder), and `service_graceful_stop_observed` observes a REQUEST so projecting
+  // directly on an observed exit, from `healthy` (`runServiceLifecycle`'s `case "process_exited"`
+  // arm, `service-lifecycle.ts` ~:293, and `gracefulStop`'s `verdict === "stopped"` branch ~:362
+  // after the graceful ladder), and `service_graceful_stop_observed` observes a REQUEST so projecting
   // a process fact from it is the E7-F034 fail-open. With a DIRECT-EDGE predecessor set, every
   // normal service stop was refused as `illegal_transition`, leaving the instance `healthy`
   // inside `service_instances_live_service_uq` where the reconciler can never replace it — the
@@ -179,7 +180,8 @@ describe("SVC-003 — the observation -> status mapping", () => {
     }
   });
 
-  // ★★★ E9-F005 — THE SECOND CASE REVIEW CAUGHT. `service-lifecycle.ts:166` says in terms that
+  // ★★★ E9-F005 — THE SECOND CASE REVIEW CAUGHT. `runServiceLifecycle`'s §4.2a launch comment
+  // (`service-lifecycle.ts`, ~:166) says in terms that
   // a launch which resolves no handle emits NO `service_instance_started`, so "the instance
   // never leaves `leased` and the attempt fails". Without this arm the attempt is terminal
   // while the instance sits `leased` inside the live unique index forever and the reconciler

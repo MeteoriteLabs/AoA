@@ -853,10 +853,13 @@ export type TerminalCompletionStatus = "succeeded" | "failed" | "cancelled" | "e
  * `service_instances_status_check` to the frozen nine, so `recordServiceHealth({
  * healthStatus: "interrupted" })` typechecked and failed at runtime with a `23514`. It is
  * deleted here. The second half — the missing subset assertion against the frozen
- * authority — is `service-health-status-domain.integration.test.ts`, which imports BOTH
- * this constant and `SERVICE_INSTANCE_STATUSES` and asserts the subset in both directions.
- * `packages/db` cannot import `worker-protocol` (see the schema headers), which is exactly
- * why the reconciliation has to be a server-side test and why the drift happened at all.
+ * authority — is the PURE suite `server/src/__tests__/service-health-projection.test.ts`
+ * (describe: "E9-F001: the health-status domain is reconciled with the frozen authority"),
+ * which imports BOTH this constant and `SERVICE_INSTANCE_STATUSES` and asserts the subset
+ * in both directions. It needs no database: the drift is decidable from the two lists, so
+ * the reconciliation is a pure test, not an integration one. `packages/db` cannot import
+ * `worker-protocol` (see the schema headers), which is exactly why the reconciliation has
+ * to be a server-side test and why the drift happened at all.
  *
  * ★ IT IS FIVE OF THE FROZEN NINE, NOT ALL NINE, AND THE FOUR OMISSIONS ARE THE POINT.
  * `SVC-001-design.md` §3.2 CORRECTION 6a reserved any WIDENING of this governed mutator's

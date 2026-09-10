@@ -152,7 +152,7 @@ This is the Outcome's actual content, so every line carries its justification.
 | `service_health` `unhealthy` | `unhealthy` | Same source, other verdict. |
 | `service_instance_stopped` | `stopped` | *"the process was OBSERVED gone"* — never a stop request, never a signal's return value. |
 | `service_instance_lost` | `lost` | The instance can no longer be accounted for. |
-| `terminal` (non-succeeded) | `failed` | ★ **THE BACKSTOP, added after review — E9-F005.** `service-lifecycle.ts:166` says a launch resolving no handle emits NO `service_instance_started`, so *"the instance never leaves `leased` and the attempt fails"*. Without this arm the attempt is terminal while the instance sits live forever. A `succeeded` terminal projects NOTHING (the service already emitted `_stopped`). |
+| `terminal` (non-succeeded) | `failed` | ★ **THE BACKSTOP, added after review — E9-F005.** `runServiceLifecycle`'s §4.2a launch comment (`service-lifecycle.ts`, ~:166) says a launch resolving no handle emits NO `service_instance_started`, so *"the instance never leaves `leased` and the attempt fails"*. Without this arm the attempt is terminal while the instance sits live forever. A `succeeded` terminal projects NOTHING (the service already emitted `_stopped`). |
 
 **And the five that project nothing, each for a reason rather than by omission:**
 
@@ -178,8 +178,9 @@ frozen table. That was wrong, and it was wrong in the one place that mattered:
 
 > `SERVICE_INSTANCE_TRANSITIONS` gives `stopped` exactly one predecessor — `stopping` — and **no
 > frozen worker event can assert `stopping`**. The supervisor emits `service_instance_stopped`
-> directly on an observed exit, **from `healthy`** (`service-lifecycle.ts:293`, and `:362` after the
-> graceful ladder), and `service_graceful_stop_observed` cannot supply it because it observes a
+> directly on an observed exit, **from `healthy`** (`runServiceLifecycle`'s `case "process_exited"`
+> arm, `service-lifecycle.ts` ~:293, and `gracefulStop`'s `verdict === "stopped"` branch ~:362 after
+> the graceful ladder), and `service_graceful_stop_observed` cannot supply it because it observes a
 > REQUEST.
 
 So a direct-edge derivation refused **every normal service stop**, leaving the instance `healthy`

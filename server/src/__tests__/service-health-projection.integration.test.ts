@@ -9,7 +9,7 @@
 // instances to one and went quiescent forever — nothing could drive an instance terminal, so
 // nothing could ever be replaced. Every case below is about that seam.
 //
-// EVERY CASE NAMES THE MUTANT THAT MUST RE-RED IT, and `SVC-003-result.md` records which did.
+// EVERY CASE NAMES THE MUTANT THAT MUST RE-RED IT, and `SVC-003a-result.md` records which did.
 //
 // ── WHAT IS REAL HERE AND WHAT IS NOT, SAID BEFORE THE FIRST ASSERTION ──────────────────
 //
@@ -22,7 +22,7 @@
 // NOT REAL, and it is deliberate rather than hidden: the leased attempt is a placed BATCH
 // job, not a service job. Leasing a real service job needs the fleet to advertise
 // `workload.service` with a free service slot AND the reconciler's submission to be placed by
-// the placement loop — machinery this unit does not build (see `SVC-003-result.md` §7).
+// the placement loop — machinery this unit does not build (see `SVC-003a-result.md` §7).
 // It does not weaken any assertion below, because the projection keys on
 // `service_instances.job_id`/`.attempt_id` attribution and never on the job's workload type;
 // that independence is itself the point of the attribution SVC-002 wrote.
@@ -405,7 +405,8 @@ suite("SVC-003 — service events project onto the instance row, under the fence
   // T5 drives `service_instance_lost`, and the frozen table makes `lost` reachable from
   // everything — so T5 passed over a `predecessorsOf` that made `stopped` reachable ONLY from
   // `stopping`, a status no event can assert. Every NORMAL service exit
-  // (`service-lifecycle.ts:293`, from `healthy`) was refused as `illegal_transition`, the
+  // (`runServiceLifecycle`'s `case "process_exited"` arm, `service-lifecycle.ts` ~:293, from
+  // `healthy`) was refused as `illegal_transition`, the
   // instance stayed live, and the reconciler could never replace it. Caught by review; this is
   // the case that would have caught it.
   //
@@ -440,7 +441,8 @@ suite("SVC-003 — service events project onto the instance row, under the fence
 
   // ── T5c — ★★★ E9-F005: the attempt-terminal backstop ─────────────────────────────────
   //
-  // `service-lifecycle.ts:166`: a launch that resolves no handle emits NO
+  // `runServiceLifecycle`'s §4.2a launch comment (`service-lifecycle.ts`, ~:166): a launch that
+  // resolves no handle emits NO
   // `service_instance_started`, so "the instance never leaves `leased` and the attempt fails".
   // Without the backstop the attempt is terminal while the instance sits `leased` inside the
   // live unique index forever.
