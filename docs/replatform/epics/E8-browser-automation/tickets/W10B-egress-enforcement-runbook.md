@@ -752,3 +752,43 @@ A third run is only worth an authorisation if something has changed. In order:
 > change of dropping the `example.com` hostname entry (see §13.1). The `example.com` shape recorded
 > above is retained as the record of the two UNRUN dispatches; the next dispatch, if authorised, is
 > the CIDR-only body.
+
+### 13.8 ★★★ THE RESULT OF THE CIDR-ONLY DISPATCH — 2026-09-10, PLACED, verdict INERT
+
+**The CIDR-only body was dispatched and it placed.** This is the arm's first successful create on this
+tier, and it supersedes §13.7's `UNRUN` status (which is kept above as the record of the two
+domain-bearing dispatches).
+
+| | |
+|---|---|
+| **Run** | [`34528397309`](https://github.com/MeteoriteLabs/AoA/actions/runs/34528397309) |
+| **Date** | 2026-09-10 |
+| **Ref / commit** | `e2b-cidr-only-probe` @ `8f2c2b7d8` |
+| **Template** | `aoa-base` |
+| **Body sent** | `denyOut: ({ allTraffic }) => [allTraffic]` + `allowOut: ["8.8.8.0/24", "1.1.1.1"]` |
+| **Placement** | **PLACED** — sandbox `ipm63v4ubgmzbik13v653` |
+| **Read-back** | `getInfo().network = {"allowOut":["8.8.8.0/24","1.1.1.1"],"denyOut":["0.0.0.0/0"],"allowPublicTraffic":true}` (probe **b** = `yes`) |
+| **Verdict** | **INERT — denied-destinations-still-reachable** |
+| **Disposition** | `measured — a=no b=yes c=no d=no e=no regression=no` · `abandon (denyout-is-inert-at-this-tier)` |
+
+**Why it placed:** §13.1's prediction held. The hostname in the earlier body forced
+`validateEgressRules` down the tcpproxy L7 path that `500`s at create; the CIDR-only body routes down
+the plain iptables path and creates.
+
+**The rows:** `allow_ip`(`1.1.1.1`)=REACHED 301 (positive control); `deny_public_ip`(`9.9.9.9`)=BLOCKED
+(`curl 35`); `deny_public_host`(`registry.npmjs.org`)=BLOCKED (`curl 35`); `apparatus`(`.invalid`)=BLOCKED
+(DNS fail); **`deny_metadata`(`169.254.169.254`)=REACHED 401**; `updateNetwork` warm-resume left it
+REACHED (d=`no`).
+
+**Reading it against §13.6's outcome table — this is the INERT column, with one honest refinement.**
+The shape is not *wholly* inert: it blocked ordinary public egress (`9.9.9.9`, `registry.npmjs.org`),
+which the deny-only shape did not. But `DE-08`'s confidentiality target — `169.254.169.254` — LEAKED,
+so the outcome is INERT for the control that matters: `DE-08` stays `not-delivered`, census row 2b
+(`E8-F003` §8) becomes a **second measurement** rather than a gap, and the provider layer is now
+closed on both constructions. The support ticket is strengthened per §13.6's INERT row, with the
+added detail that the allowlist shape places only CIDR-only and even then leaks the metadata endpoint.
+
+**No further dispatch of this body is worth an authorisation for enforcement purposes** — the
+question it was built to answer (does the documented allowlist shape enforce the metadata deny at
+this tier?) is answered: **no**. Record: `W10B-egress-enforcement-result.md` §15, finding `E8-F008`
+§9, census `E8-F003` §8.
