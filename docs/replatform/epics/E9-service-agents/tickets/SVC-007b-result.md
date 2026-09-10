@@ -241,7 +241,8 @@ callback that RETURNS commits; and the route's `throw new HttpError(409, …)` r
 the permanent `no_generation` wedge the same docstring calls "not a partial success" — and no audit
 row.
 
-It is **unreachable by construction today** (the service id is minted two lines above, so
+It is **unreachable by construction today** (the service id is minted by the `repos.services.insert`
+call immediately above, in the same function, so
 `(fresh uuid, 1)` cannot collide), which is why the severity is LOW and why the fix is not taken
 here: it changes what the function returns and needs its own observed red. **The defect filed is the
 FALSE RECORD.** The docstring is corrected in place and points at the finding. SVC-005's generation

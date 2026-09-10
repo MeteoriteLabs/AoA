@@ -912,7 +912,8 @@ only on success.
 ### 2. Why it is LOW rather than a live defect
 
 `service_generations_service_generation_uq` is on `(service_id, generation)`, and the service id is
-minted by the `repos.services.insert` two lines above. `(fresh uuid, 1)` cannot already exist, so the
+minted by the `repos.services.insert` call immediately above it, in the same function and the same
+transaction. `(fresh uuid, 1)` cannot already exist, so the
 `null` branch is unreachable from the shipped caller. **The defect filed here is the FALSE RECORD**,
 which is this programme's dominant failure class: a reader repairing or extending this function
 would be reasoning from a rollback that does not happen.
