@@ -207,7 +207,9 @@ describe("the per-adapter argv shapes (CLI-008 Unit D)", () => {
     expect(result.ok && result.workload.command).toBe("sh");
     expect(result.ok && result.workload.args).toEqual([
       "-c",
-      expect.stringContaining('exec "$0" --print - --output-format stream-json --verbose < "$1"'),
+      expect.stringContaining(
+        'exec "$0" --print - --dangerously-skip-permissions --output-format stream-json --verbose < "$1"',
+      ),
       "claude",
       STAGED_PROMPT_PATH,
     ]);
@@ -219,11 +221,42 @@ describe("the per-adapter argv shapes (CLI-008 Unit D)", () => {
     );
     expect(result.ok && result.workload.args).toEqual([
       "-c",
-      expect.stringContaining('exec "$0" exec --json - < "$1"'),
+      expect.stringContaining(
+        'exec "$0" exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox - < "$1"',
+      ),
       "codex",
       STAGED_PROMPT_PATH,
     ]);
     expect(result.ok && result.workload.args.join(" ")).not.toContain("--append-system-prompt-file");
+  });
+
+  // ★ THE UNATTENDED-RUN POSTURE (E7-F021 / E7-F027, founder-authorized 2026-09-11). A distributed
+  // run has no human at the terminal, so the CLI must not stop on a permission/approval prompt.
+  // These assertions go RED the instant a posture flag is dropped from the emitted script — which
+  // is the whole point of asserting the flag by exact byte here rather than trusting the source.
+  it.each([
+    ["claude_local", "claude", undefined],
+    ["claude_local", "claude", "# Be excellent"],
+  ])("the %s script skips permission prompts for unattended execution (instructions: %s)", (adapterType, binary, instructions) => {
+    const result = buildTaskRunBatchWorkload(
+      input({ adapterType, runtimeCommandSpec: { command: binary }, instructions }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.workload.args[1]).toContain("--dangerously-skip-permissions");
+  });
+
+  it.each([
+    ["codex_local", "codex", undefined],
+    ["codex_local", "codex", "# Be excellent"],
+  ])("the %s script bypasses approvals for unattended execution (instructions: %s)", (adapterType, binary, instructions) => {
+    const result = buildTaskRunBatchWorkload(
+      input({ adapterType, runtimeCommandSpec: { command: binary }, instructions }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.workload.args[1]).toContain("--skip-git-repo-check");
+    expect(result.workload.args[1]).toContain("--dangerously-bypass-approvals-and-sandbox");
   });
 
   // ★ THE ASSERTION THIS DESCRIBE EXISTS FOR, and it is not example-based. Every absolute path
@@ -284,7 +317,9 @@ describe("the instructions bundle (CLI-008 Unit D)", () => {
     const result = buildTaskRunBatchWorkload(
       input({ adapterType: "codex_local", runtimeCommandSpec: { command: "codex" }, instructions: INSTRUCTIONS }),
     );
-    expect(result.ok && result.workload.args[1]).toContain('{ cat "$2"; echo; cat "$1"; } | "$0" exec --json -');
+    expect(result.ok && result.workload.args[1]).toContain(
+      '{ cat "$2"; echo; cat "$1"; } | "$0" exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox -',
+    );
   });
 
   // ★★★ THE SEPARATOR, ASSERTED ON WHAT THE CLI RECEIVES — NOT ON THE SCRIPT'S TEXT.
@@ -307,7 +342,8 @@ describe("the instructions bundle (CLI-008 Unit D)", () => {
   function stdinFromScript(script: string, bundle: string, prompt: string): string {
     if (script.includes('{ cat "$2"; echo; cat "$1"; } | "$0"')) return `${bundle}\n${prompt}`;
     if (script.includes('cat "$2" "$1" | "$0"')) return `${bundle}${prompt}`;
-    if (script.includes('exec "$0" exec --json - < "$1"')) return prompt;
+    if (script.includes('exec "$0" exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox - < "$1"'))
+      return prompt;
     throw new Error(`stdinFromScript does not understand this script: ${script}`);
   }
 

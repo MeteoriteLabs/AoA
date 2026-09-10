@@ -1905,7 +1905,7 @@ is still necessary.
 
 ## E7-F021 — The distributed sandbox invocation carries NO permission posture, and the shipped product treats that flag as required for unattended runs
 
-**Status:** open · **Owner:** CLI-008 (`epics/E7-coding-e2b/tickets/CLI-008-unit-f-design.md`, no result doc)
+**Status:** **resolved** · **Resolved by:** the F021/F027 posture PR, 2026-09-11 (founder-authorized), which adds `--dangerously-skip-permissions` to BOTH claude literals in `buildSandboxInvocation` (`server/src/services/task-run-sandbox-invocation.ts`), immediately after `--print -`, on the bundle (`:183`→`:186`) and no-bundle (`:184`→`:187`) branches. The W12 differential named the absent flag as the cause (A1 exited 0 and wrote nothing at `permissionMode:"default"`; A2 wrote at `permissionMode:"bypassPermissions"`); the founder asked to see this diff before it landed and has now authorized it (2026-09-11). The security-review condition the finding held the remedy behind is discharged, and the remedy is exactly the one the finding named. Guarded RED-when-removed by `server/src/__tests__/task-run-batch-workload.test.ts` — both the exact-script assertion for the claude shape and a dedicated `skips permission prompts for unattended execution` case go red if the flag is dropped from either branch. The codex half of the same four literals is E7-F027 and stays OPEN (narrowed) — a posture-only fix would not have closed it, which is why the two were filed apart. **Owner (historical):** CLI-008 (`epics/E7-coding-e2b/tickets/CLI-008-unit-f-design.md`, no result doc)
 **Severity:** HIGH
 **Filed:** W6U1, 2026-09-06, by re-verification of the 26-agent output-decision wave against source at `31d33a3b0`.
 **Cross-links:** E7-F003 (the run reaches the agent through argv only), E7-F018 (nothing in the distributed path runs today), E7-F027 (codex is blocked by something else entirely), E7-F028 (the probe's own codex verdict over-claims its cause).
@@ -2510,7 +2510,13 @@ completeness claim is still false.
 
 ## E7-F027 — The distributed codex invocation is refused by codex's own trusted-directory gate before any model call, and the frozen workload cannot supply the missing input at all
 
-**Status:** open · **Owner:** CLI-008 (`epics/E7-coding-e2b/tickets/CLI-008-unit-f-design.md`, no result doc)
+**Status:** open · **NARROWED 2026-09-11** (founder-authorized) · **Owner:** CLI-008 (`epics/E7-coding-e2b/tickets/CLI-008-unit-f-design.md`, no result doc)
+
+> ★ **NARROWED — 2026-09-11, the F021/F027 posture PR (founder-authorized).** The **trusted-directory / argv-posture** half of this finding is now shipped: `buildSandboxInvocation` (`server/src/services/task-run-sandbox-invocation.ts`) adds BOTH `--skip-git-repo-check` and `--dangerously-bypass-approvals-and-sandbox` to the codex argv — options of the `exec` subcommand, placed after `exec --json` and before the `-` stdin positional (matching `codex-local/src/server/execute.ts:553-566`) — on the bundle (`:203`→`:203`, the `{ cat …; } | "$0" exec --json …` pipeline) and no-bundle (`:204`, the `exec "$0" exec --json …` shape) branches. That is the exact remedy the "What" section names: the argv is the only channel the frozen `.strict()` workload leaves, and the change lives in the same literals. Guarded RED-when-removed by `server/src/__tests__/task-run-batch-workload.test.ts` (the exact codex-shape assertions, a dedicated `bypasses approvals for unattended execution` case, and the anti-vacuity `stdinFromScript` control) — dropping either flag reds the suite.
+>
+> ★★★ **THIS FINDING IS NOT CLOSED, because it has a conjunct the source edit cannot discharge.** What stays open is the finding's own explicitly-unresolved remainder: **codex's write CAPABILITY under the production argv is UNMEASURED.** A2 in the W12 run carried `--dangerously-bypass-approvals-and-sandbox` (the same flag now shipped), cleared the trusted-directory gate (`thread.started`), and then hit **four `401 Unauthorized` reconnects** against `wss://api.openai.com/v1/responses`; the 900-char stdout cap truncated the record mid-token, so whether it ever wrote is not determinable. The two cheap arms in **WHAT WOULD IDENTIFY THE REMAINDER** are still owed, and the 401's own cause (the probe's `OPENAI_API_KEY` env delivery vs the product's redeemed execution-secret handle) is a separate measurement, deliberately not filed as a product defect. A source edit cannot answer "does codex write once past the gate" — only an authorized keyed run can — so the finding stays OPEN and its ownership key is retained. Close it when a keyed run shows codex reaching a model and producing output under the shipped argv.
+
+**Owner (original filing):** CLI-008 (`epics/E7-coding-e2b/tickets/CLI-008-unit-f-design.md`, no result doc)
 **Severity:** MEDIUM
 **Filed:** W12, 2026-09-07, from workflow run
 [`34087197668`](https://github.com/MeteoriteLabs/AoA/actions/runs/34087197668) at `1c447fa8a`,
@@ -3767,3 +3773,51 @@ reason is in the last block. Every claim below cites a test that runs in the NO-
 **What a closer must do:** run T8's keyed arm once against a real E2B account (Linux CI with a key, or
 Windows with `AOA_RUN_WIN_INTEGRATION=1`), record the run id here, then flip Status and delete the
 `finding-ownership.json` key in the same commit.
+
+## E7-F035 — the W7U1 output-probe apparatus is now premised on a REFUTED question (the permission posture shipped 2026-09-11) and must be retired or reworked
+
+**Status:** open · **Owner:** unowned (see reason)
+**Severity:** MEDIUM
+**Filed:** 2026-09-11, on branch `f021-f027-sandbox-posture`, by the F021/F027 posture PR.
+
+**The refutation.** The W7U1 output-probe pack exists to answer a single differential question: *does the
+distributed sandbox invocation carry a permission posture, and if not, does adding one change whether the
+agent writes a file?* Its A1 arm was **production-bare**; its A2 arm was **production +
+`withPermissionPosture`**. The F021/F027 posture PR (founder-authorized 2026-09-11, this branch) ships the
+posture INTO production: `buildSandboxInvocation` (`server/src/services/task-run-sandbox-invocation.ts`)
+now emits `--dangerously-skip-permissions` (claude, both branches) and `--skip-git-repo-check
+--dangerously-bypass-approvals-and-sandbox` (codex, both branches). That answers W7U1's chartering
+question at the source, and it makes the A2 transform **self-contradictory**: `withPermissionPosture`
+asserts it THROWS on already-postured input (`w7u1-agent-output-probe.test.mjs` → "A2 REFUSES … an
+already-postured script must refuse — the premise has collapsed and that is the finding"), so A2 can no
+longer be run against the shipped literals at all. This is a genuine obsolescence, not a constants swap.
+
+**What this PR already did (the honest guards).** In `scripts/lib/__tests__/w7u1-agent-output-probe.test.mjs`:
+the former premise test ("NONE of the four production literals carries a posture") is INVERTED to a
+positive assertion that the posture is now PRESENT on all four literals, with a dated refutation note; and
+the "production literals still match the A2-transform shapes" test is RETIRED VISIBLY (`test.skip`, dated
+retirement note) because the A2 differential is obsoleted by the shipped posture. The live red-when-removed
+guard for the posture itself now lives in `server/src/__tests__/task-run-batch-workload.test.ts` (exact-
+script assertions + posture cases). The A2-transform UNIT tests (which operate on local bare fixtures, not
+the production module) are untouched — they document the transform's historical contract and still pass.
+
+**The debt this finding TRACKS (not touched by this PR).** The rest of the apparatus is still premised on
+the refuted question and must be retired or reworked in a follow-up:
+- `scripts/lib/w7u1-agent-output-probe.mjs` — the `withPermissionPosture` A2 transform and its supporting
+  A1/A2 differential machinery.
+- `.github/workflows/keyed-e2b-w7u1-output-probe.yml` — the keyed probe lane, plus its wiring in `pr.yml`.
+- `docs/replatform/epics/E7-coding-e2b/W7U1-output-probe-runbook.md` and `…/W7U1-output-probe-result.md`.
+- `test-execution-census.json` / `workflow-verdict-manifest.json` entries that register the probe lane.
+- Cross-linked **E7-F028** dependency (the probe's codex verdict over-claims its cause) — its rework is
+  entangled with the same retirement.
+
+**Why unowned.** Retiring/reworking a keyed CI lane, a runbook, a result doc, and two manifests is not a
+code unit any live E7 ticket carries — CLI-008 owns the posture literals (now shipped) but not the probe
+apparatus, and pointing this at CLI-008 would be E7-F018's false-ownership shape (CLI-008 could close in
+full and this would not move). Recorded unowned so the next Track A / E7 pass reads it before quoting a
+W7U1 lane result. If a parallel branch files the same apparatus-retirement debt under a different id,
+first-filed keeps the id.
+
+**What a closer must do:** delete or rework the debt enumerated above (retire the keyed lane + its pr.yml
+wiring, the runbook, the result doc, and the manifest entries; either delete `withPermissionPosture` or
+re-charter it), then flip Status and delete the `finding-ownership.json` key in the same commit.
