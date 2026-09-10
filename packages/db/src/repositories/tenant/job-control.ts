@@ -854,9 +854,10 @@ export type TerminalCompletionStatus = "succeeded" | "failed" | "cancelled" | "e
  * healthStatus: "interrupted" })` typechecked and failed at runtime with a `23514`. It is
  * deleted here. The second half — the missing subset assertion against the frozen
  * authority — is the PURE suite `server/src/__tests__/service-health-projection.test.ts`
- * (describe: "E9-F001: the health-status domain is reconciled with the frozen authority"),
- * which imports BOTH this constant and `SERVICE_INSTANCE_STATUSES` and asserts the subset
- * in both directions. It needs no database: the drift is decidable from the two lists, so
+ * — specifically its describe block, whose name is kept UNWRAPPED here so it greps:
+ * "SVC-003 — E9-F001: the health-status domain is reconciled with the frozen authority".
+ * It imports BOTH this constant and `SERVICE_INSTANCE_STATUSES` and asserts the subset in
+ * both directions. It needs no database: the drift is decidable from the two lists, so
  * the reconciliation is a pure test, not an integration one. `packages/db` cannot import
  * `worker-protocol` (see the schema headers), which is exactly why the reconciliation has
  * to be a server-side test and why the drift happened at all.
