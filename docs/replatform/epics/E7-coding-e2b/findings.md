@@ -1609,36 +1609,24 @@ inventing one would be a false ownership claim.
 
 ## E7-F020 — Arm 2 of `capabilityProven` can count a platform-minted `task_outputs` row through an unexercised UPSERT collision on a reused platform `external_id` (the ordinary-heartbeat-path defect was FIXED at the predicate by W21; the residual is gated on the unbuilt E7-1 producer)
 
-**Status:** open · **Owner:** CLI-008 · **Severity:** MEDIUM · **Filed:** 2026-09-06 (W4U3-R3), measured
+**Status:** **resolved** · **Resolved by:** W21 (headline, at the predicate) + review of PR #422 (residual refuted), 2026-09-11 · **Owner (while open):** CLI-008 · **Severity (while open):** was HIGH, corrected to MEDIUM before closing · **Filed:** 2026-09-06 (W4U3-R3), measured
 at `75920ef9a`. Found by an auditor re-deriving E7-F018's arm-2 analysis; every line number below was
 re-read by hand in this worktree before filing.
 
 ---
 
-### ★ re-measured 2026-09-10 at `3223eba74`: FALLEN — the headline defect is FIXED; severity corrected HIGH → MEDIUM, finding stays OPEN on the residual
+### ★ RESOLVED 2026-09-11 at `3223eba74` — the headline defect is FIXED (W21 predicate) AND the residual is REFUTED (not a defect). Both halves gone → closed.
 
-The defect this finding was FILED on — arm 2 reading non-zero from an ordinary heartbeat path via
-`eq(taskOutputs.createdByRunId, run.id)`, with no agent output — is **CLOSED at HEAD**. Re-read by hand:
-arm 2's count is now an `innerJoin` from `task_outputs` to `job_projection_receipts`, keyed on
+Two things had to be true for this to stay open: (1) the FILED headline defect, and (2) the UPSERT-collision residual an earlier 2026-09-10 amendment preserved. Both are gone.
+
+**(1) Headline — CLOSED at the predicate (W21).** Arm 2 no longer reads `eq(taskOutputs.createdByRunId, run.id)`. It is an `innerJoin` from `task_outputs` to `job_projection_receipts`, keyed on
 `jobProjectionReceipts.jobId = run.distributedJobId` **AND** `jobProjectionReceipts.attemptId =
 run.distributedAttemptId`, `projectionKind = "output_projection"`, `aggregateKind = "task_outputs"`,
-`status = "applied"`, company-scoped, and short-circuits when either distributed id is null
-(`server/src/services/e7-distributed-run-verifier-store.ts:579-604`). `created_by_run_id` is no longer
-read by this arm. The platform-write path is closed **at the predicate**, and the receipt has exactly
-one admissible writer — `jobOutputBridge.projectAcceptedOutput`
-(`server/src/services/job-output-bridge.ts:250`), fence-guarded via `recordGovernedProjection`.
+`status = "applied"`, company-scoped, short-circuiting on a null distributed id
+(`server/src/services/e7-distributed-run-verifier-store.ts:579-604`). The receipt has exactly one
+admissible writer — `jobOutputBridge.projectAcceptedOutput` (`server/src/services/job-output-bridge.ts:250`), fence-guarded via `recordGovernedProjection`.
 
-**Why MEDIUM, not HIGH, at HEAD.** The HIGH argument as filed rested on "no actor, no question, on the
-DEFAULT configuration, before the handoff" — a defect that removed the reviewer's question. That path
-no longer exists. The LIVE residual (below) is a **bounded, unexercised** UPSERT collision that needs a
-real fenced accepted-output event, which the sole writer `projectAcceptedOutput` **cannot emit today**
-(zero production callers, verified at HEAD), i.e. it is gated on the unbuilt E7-1 producer. A bounded,
-unexercised, producer-gated residual on a gate that certifies nothing today (`--require-capability`
-off by default, referenced by no workflow) is MEDIUM, not HIGH. The finding stays OPEN and `owned` by
-CLI-008: the residual belongs with whoever ships the producer. (This severity field is the one the
-ownership guard reads; the AS-FILED "Severity — HIGH, argued both directions" paragraph below is kept
-verbatim as the historical measurement that sized the fix, and its em-dash form is not re-read by the
-guard.)
+**(2) Residual — REFUTED by review of PR #422 (Codex P2), confirmed at source.** The earlier amendment kept this open on "a reused-`external_id` UPSERT collision could count a platform-minted row." That is **not a false-provenance defect**: on collision `upsertTaskOutputForIssue` runs `.set({ ...values })` (`server/src/services/task-outputs.ts:172`) — it **overwrites the row's content** with the caller's `values` ("updates CONTENT but is PROMOTE-ONLY for the primary flag"). And for arm 2 to count the row, an `applied`/attempt-bound `output_projection` receipt must exist, which only the bridge writes — in the SAME transaction as an upsert whose `values` are built from the accepted event's own output (`job-output-bridge.ts:279-312`, fields from `input.output.*`; duplicate events short-circuit as `replayed`). So every row arm 2 counts necessarily holds genuine agent output that reached AoA under a live fence; the stable row id / creation timestamp do not invalidate the capability claim. There is **no field that preserves falsely-countable platform-generated evidence** in a counted row. The residual was therefore phantom debt — keeping the finding open on it was itself the "records disagreeing with code" error, one level up. Closed. (The AS-FILED "Severity — HIGH, argued both directions" paragraph below is kept verbatim as the historical measurement that sized the W21 fix.)
 
 ---
 
