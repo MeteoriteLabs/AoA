@@ -624,8 +624,31 @@ one exists. Do not close it by deleting the join — the join is right; the miss
 
 ## E8-F005 — Nothing in CI compares the Drizzle schema to the migrations, so a narrowing can be silently reverted
 
-**Status:** open · **Owner:** `unowned`
+**Status:** resolved · **Owner:** — (closed; the `finding-ownership.json` entry is deleted in this commit)
 **Severity:** MED
+
+> ★ **RESOLVED 2026-09-11 by the schema↔migration drift gate.** `scripts/check-schema-migration-drift.mjs`
+> is now a step in the `migrations` job of `.github/workflows/pr.yml` ("Schema↔migration drift gate
+> (E8-F005)"), with its decision logic + wiring proven by `scripts/check-schema-migration-drift.test.mjs`
+> ("… self-test"). The check is the class-wide regenerate-and-diff the Disposition demanded, NOT a
+> per-column pin: it copies the committed `src/migrations` (SQL + meta) into a throwaway scratch dir,
+> runs `drizzle-kit generate` against it (DB-free — no database is contacted), and FAILS on any new
+> migration file, because `generate` emits one only when the compiled schema diverges from the latest
+> meta snapshot.
+>
+> **C14-safe by construction (CLAUDE.md rule 1 / Decision #122).** The assertion is schema-vs-SNAPSHOT
+> emptiness. Hand-appended idempotency guards + data backfills (0189, 0195) and delta-free `--custom`
+> cluster/security DDL (0211, 0213, 0214, 0261, 0267, 0279) do not change the snapshot, so they produce
+> NO delta and cannot false-fail — proven GREEN on the unmodified HEAD tree.
+>
+> **Red-when-broken, both directions measured.** GREEN on HEAD (`generate` produced no delta). RED on
+> the exact BRW-004 mutation E5: reverting `agentRuntimeTrustRules.agentId`'s `.notNull()` in
+> `packages/db/src/schema/agent_runtime_decisions.ts` while leaving migration `0273` in place made the
+> gate emit `ALTER TABLE "agent_runtime_trust_rules" ALTER COLUMN "agent_id" DROP NOT NULL` and exit 1 —
+> the precise drift E8-F005 was filed against. Restoring the token returns the gate to GREEN.
+>
+> **Branch state, not landed.** True on `f005-schema-drift-gate`. The resolution is carried by the commit
+> that lands the gate; if the PR does not merge, this reverts to `open`.
 **Filed:** 2026-09-04, by BRW-004 while closing E8-F002's tenth null-hazard. MEASURED by mutation,
 not inferred.
 

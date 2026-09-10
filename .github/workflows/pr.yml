@@ -1308,6 +1308,17 @@ jobs:
       - name: Build packages/db (drizzle config reads from dist/)
         run: pnpm --filter @armyofagents/db build
 
+      # E8-F005: the schema and the migrations are two statements of the same truth, and
+      # nothing here compared them — reverting a `.notNull()` while leaving its migration in
+      # place shipped CI-green. This DB-free step regenerates into a scratch dir and fails on
+      # any non-empty schema-vs-snapshot delta. C14-safe: hand-authored idempotency guards and
+      # `--custom` cluster/security DDL do not change the snapshot, so they produce no delta.
+      - name: Schema↔migration drift gate (E8-F005)
+        run: node scripts/check-schema-migration-drift.mjs
+
+      - name: Schema↔migration drift gate self-test (E8-F005 decision logic + wiring)
+        run: node --test scripts/check-schema-migration-drift.test.mjs
+
       - name: Apply all migrations from scratch
         env:
           DATABASE_URL: postgres://aoa_test:aoa_test@localhost:5432/aoa_test

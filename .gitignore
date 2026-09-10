@@ -103,6 +103,11 @@ server/diagnose-*.ts
 # transient local CI/watch logs (not for commit)
 _*.log
 
+# scratch dir + config written by scripts/check-schema-migration-drift.mjs (E8-F005);
+# always cleaned in its finally, but ignored so an interrupted run leaves nothing committable
+packages/db/.schema-drift-scratch/
+packages/db/.schema-drift.config.ts
+
 # stray onboarding e2e artifacts (were committed by accident)
 test-results/
 local-connectors.json
