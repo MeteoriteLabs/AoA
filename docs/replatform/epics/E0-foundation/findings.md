@@ -1658,6 +1658,12 @@ with the flow-analysis guard, not the grep one.
   `.github/workflows/pr.yml` (step *"Evidence-ledger immutability (QA/handoff records are
   write-once)"*) on every non-draft pull request. Do not read this line as movement on the other
   four — nothing about them changed.
+  ★ **Progress (2026-09-10): item 1 (DE-18) is now RESOLVED by PR #418 (`2ad742051`) — two of
+  five closed, items 2, 4 and 5 remain and this finding STAYS OPEN.** The lever gained a real
+  production caller and a red-when-removed test (see item 1's 2026-09-10 amendment below). This is
+  the dead-arming-path resolution the finding demanded, not a founder clause amendment. Do not read
+  it as movement on items 2/4/5 — nothing about them changed, and the DE-18 register row's own
+  clauses were not re-measured here.
 
 **The class, as `E0-F011` states it.** The receiving half of the control is built, tested and
 correct, and the half that would ever arm it does not run in any deployment.
@@ -1677,6 +1683,23 @@ correct, and the half that would ever arm it does not run in any deployment.
    is the gate, the fanout is only convergence"* — so no old-generation effect executes while the
    work sits stranded. What the fanout would add is retirement of that stranded work and release of
    the held slot. Wiring it is a **garbage collector, not a security control**.
+   ★ **RESOLVED 2026-09-10 by PR #418 (`2ad742051`).** The lever now has a production caller: the
+   fanout is composed inside the `distributedExecutionEnabled && distributedExecutionDatabases`
+   block and `await revocationFanout.tick()` runs INSIDE the already-running MIG-002
+   `convergenceTick` (`server/src/index.ts`) — reusing that timer, driven by a real producer (the
+   live `POST .../workers/:workerId/revoke` route writes the `status:'pending'`
+   `execution_target_revocations` rows it drains), so it is honest wiring, not a GO-BOOK-forbidden
+   count-flip. Guarded red-when-removed by `de-18-revocation-fanout-wiring.test.ts`; convergence
+   behaviour proven end-to-end in `worker-revocation.integration.test.ts`. ★ Review of PR #418 also
+   surfaced and fixed a **pre-existing JOB-007 completeness gap** the wiring would otherwise have
+   made live (Codex P1): the fanout converged only by live lease, so a reaper-minted lease-less
+   retry pinned to the revoked target (via `allocateRetry`, minted `capacityClaimState:'held'`) was
+   stranded — record marked `completed` while it held an org slot forever. The fanout now converges
+   by pinned ATTEMPT too (nonterminal attempts pinned to `placementTargetGeneration <=
+   revokedGeneration` with no live lease → terminalize + release capacity + cancel job
+   `target_revoked`), with its own red→green integration case. `E3-18-revocation` in
+   `scripts/gate-clause-wiring.json` was promoted `unwired → wired` on that evidence. **This item's
+   dead-arming-path concern is closed; `E0-F014` stays OPEN on items 2, 4 and 5.**
 2. **DE-20 (Critical) — the rollback lever cannot be pulled, and the row's own word is "atomically".**
    `createDistributedExecutionDrain` (`server/src/services/job-distributed-drain.ts:114`) has **zero
    production callers** — declaration, two test files, and the same `gate-clause-wiring.mjs:10`
