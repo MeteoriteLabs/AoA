@@ -138,6 +138,46 @@ export const TERMINAL_SERVICE_INSTANCE_STATUSES = Object.freeze([
 /** The partial unique index that is SVC-002's duplicate-placement authority. */
 export const LIVE_SERVICE_INSTANCE_INDEX = "service_instances_live_service_uq";
 
+/**
+ * SVC-003b — one live instance, as the liveness sweep sees it.
+ *
+ * Both ages are milliseconds measured by the DATABASE's `clock_timestamp()` at read time, so
+ * they are free of app/database clock skew (see `sweepServiceInstanceLiveness`).
+ */
+export interface ServiceInstanceLivenessRow {
+  serviceInstanceId: string;
+  serviceId: string;
+  status: string;
+  /**
+   * ★ `null` MEANS THE WORKER HAS NEVER BEEN OBSERVED — not "observed a very long time ago".
+   * The deadline may not age a liveness window against an observation that does not exist.
+   */
+  observedAgeMs: number | null;
+  /** Age of the CONTROL PLANE's own row. A fact about when it started waiting, never an
+   *  observation of the worker, and used only under the separate admission window. */
+  createdAgeMs: number;
+}
+
+/** SVC-003b — what one liveness sweep did, per instance and in aggregate. */
+export interface ServiceInstanceLivenessSweepResult {
+  /** Live instances actually inspected (rows another transaction held locked are skipped). */
+  scanned: number;
+  /** Instances the decider condemned AND the frozen lifecycle permitted to move. */
+  terminalized: Array<{ serviceInstanceId: string; serviceId: string; fromStatus: string }>;
+  /**
+   * Condemned, but the frozen predecessor set does not contain the observed status — so
+   * nothing was written. Distinct from `terminalized` because a non-empty list here means the
+   * server's derived set and the frozen table disagree, which is a defect, not a state.
+   */
+  refusedIllegal: Array<{ serviceInstanceId: string; fromStatus: string }>;
+  /**
+   * Condemned and legal, but the conditional write matched no row: something else moved the
+   * status between the lock and the write. Reported rather than retried — the next tick
+   * re-reads the row's real status.
+   */
+  lostRace: number;
+}
+
 // Fail at module load rather than at query time: `nonTerminalServiceInstanceStatus` below
 // interpolates these values into SQL text with `sql.raw`, so anything but a bare lowercase
 // identifier would be a defect the moment someone edited the frozen list. They come from a
@@ -316,6 +356,61 @@ export interface JobControlRepository {
     jobId: string;
     attemptId: string;
   }): Promise<ServiceInstance | null>;
+  /**
+   * ★★★ SVC-003b — THE LIVENESS DEADLINE'S TRANSACTIONAL HALF. Read the tenant's LIVE
+   * instances under a row lock, ask the caller's pure decider about each, and terminalize the
+   * ones it condemns through the same single writer every other status move goes through.
+   *
+   * ── WHY THE DECIDER IS INJECTED (and this is not indirection for its own sake) ──────────
+   *
+   * Two authorities the decision needs live in packages this one cannot import.
+   * `SERVICE_INSTANCE_TRANSITIONS` is in `@armyofagents/worker-protocol` (`packages/db`
+   * deliberately does not depend on it — the status CHECK and the live-instance index
+   * predicate are hand-written copies for exactly that reason), and the deadline windows are
+   * operator POLICY, which is not a repository's to hold. Re-deriving either here would be a
+   * fourth copy of a frozen list plus a policy constant buried in a data-access layer. So the
+   * server computes both and hands them down — the same shape `renewLease` already uses for
+   * `projectControlExtensions`, and `applyServiceProjectionForFence` for `allowedFromStatuses`.
+   *
+   * ── `FOR UPDATE SKIP LOCKED`, AND SKIPPING IS CORRECT RATHER THAN MERELY CONVENIENT ─────
+   *
+   * A row another transaction holds locked is one an event ingest is projecting onto RIGHT
+   * NOW, which is positive evidence that its worker is alive. Skipping it cannot be a false
+   * negative in the dangerous direction: the sweep never terminalizes an instance it could not
+   * inspect, and a genuinely silent instance is never locked, so it is picked up on this tick
+   * or the next one.
+   *
+   * ── THE AGES ARE COMPUTED IN SQL, NOT IN JAVASCRIPT ─────────────────────────────────────
+   *
+   * `last_observed_at` is written with `clock_timestamp()`, so ageing it against a JavaScript
+   * `Date.now()` would measure the SKEW between the app process and the database on top of the
+   * elapsed time. A control plane whose clock ran a few minutes ahead of its database would
+   * terminalize healthy services; one running behind would never terminalize anything. Both
+   * ages come out of the same `clock_timestamp()` that wrote the column, so neither can happen.
+   *
+   * ★ `observedAgeMs` IS `null`, NEVER A LARGE NUMBER, when the worker has never been
+   * observed. The two cases must stay distinguishable all the way to the decider — collapsing
+   * them (a `COALESCE` onto `created_at`, or a sentinel `Infinity`) applies the SHORT liveness
+   * window to an instance whose worker has simply not polled yet, and kills services that are
+   * merely starting.
+   */
+  sweepServiceInstanceLiveness(input: {
+    organizationId: string;
+    /** Batch bound, clamped to 1..256. */
+    limit: number;
+    /**
+     * The status a condemned instance is driven to, and the frozen predecessor set for it,
+     * both computed by the server from `SERVICE_INSTANCE_TRANSITIONS`.
+     *
+     * The legality gate is enforced HERE and not only in the decider, deliberately: it is the
+     * same independent check `applyServiceProjectionForFence` applies, so a decider bug can no
+     * more drive an illegal move than a worker's payload can. An empty set refuses everything.
+     */
+    toStatus: string;
+    allowedFromStatuses: readonly string[];
+    /** The caller's pure liveness policy. Returns `true` to terminalize this instance. */
+    decide: (row: ServiceInstanceLivenessRow) => boolean;
+  }): Promise<ServiceInstanceLivenessSweepResult>;
   /**
    * SVC-002 — the sweep window: services in this tenant that DIVERGE from their desired
    * state, ordered by id from a rotating cursor.
@@ -1702,6 +1797,37 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
       return { outcome: "stale_generation", instanceGeneration: instance.generation };
     }
 
+    // (3b) ★★★ SVC-003b — THE LIVENESS STAMP, AND ITS POSITION IN THIS FUNCTION IS THE
+    // DESIGN, not an implementation detail.
+    //
+    // WHY HERE, AFTER THE THREE FENCES. Attribution, identity and generation are what make an
+    // event EVIDENCE ABOUT THIS ROW. An unattributed event says nothing about any instance; a
+    // mismatched claim is an unauthorized assertion (E9-F003); a stale-generation event comes
+    // from a worker the control plane has already rolled past. Stamping liveness from any of
+    // those would let an event that is refused for every other purpose still hold an instance
+    // alive past its deadline — the deadline's own fail-open.
+    //
+    // WHY BEFORE THE THREE NO-WRITE ARMS BELOW, which is the half that is easy to get wrong.
+    // The steady state of a HEALTHY service is `service_health healthy` arriving every ~10 s
+    // (SVC-008b's `SERVICE_HEALTH_TICK_MS_DEFAULT`) onto a row that is already `healthy` —
+    // i.e. `noop_same_status`, forever. A stamp written only alongside a real status move
+    // would therefore go stale on every WORKING service, and the deadline would terminalize
+    // exactly the instances it exists to protect. `noop_already_terminal` and
+    // `illegal_transition` also stamp: both are readable, authenticated evidence that this
+    // worker is alive, whatever the control plane decides to do with what it said.
+    //
+    // ★ SEPARATE FROM `status`, NOT FOLDED INTO `writeServiceInstanceStatus`. That writer is
+    // conditional on the observed status and returns whether a row MOVED; liveness must be
+    // recorded on exactly the events that move nothing. Two writes to one row inside one
+    // already-held `FOR UPDATE` lock, in a fixed order.
+    await tx.update(serviceInstances).set({
+      lastObservedAt: sql`clock_timestamp()`,
+      updatedAt: sql`clock_timestamp()`,
+    }).where(and(
+      eq(serviceInstances.organizationId, fence.organizationId),
+      eq(serviceInstances.id, instance.id),
+    ));
+
     // (4) Idempotent replay of the SAME event: the row already carries the asserted status.
     // Distinguished from `applied` so a caller can tell a real move from a no-op, and
     // deliberately checked BEFORE legality — `healthy → healthy` is not an edge in the frozen
@@ -2311,6 +2437,77 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         ))
         .returning();
       return row ?? null;
+    },
+
+    async sweepServiceInstanceLiveness(input) {
+      const bounded = Math.max(1, Math.min(256, Math.floor(input.limit)));
+      const result: ServiceInstanceLivenessSweepResult = {
+        scanned: 0, terminalized: [], refusedIllegal: [], lostRace: 0,
+      };
+      // The LIVE set, through the one shared predicate every reader of "is there a live
+      // instance" uses — so the sweep population and the partial unique index's population
+      // cannot drift. Ordered oldest-created first so a tenant with more stale instances than
+      // one batch holds makes deterministic progress instead of re-reading the same window.
+      const rows = await tx.select({
+        serviceInstanceId: serviceInstances.id,
+        serviceId: serviceInstances.serviceId,
+        status: serviceInstances.status,
+        // Milliseconds, from the database clock, NULL-preserving. `null` here is the
+        // never-observed case and must survive as `null`; a COALESCE onto `created_at` would
+        // apply the short liveness window to an instance that is merely still starting.
+        observedAgeMs: sql<
+          number | null
+        >`CASE WHEN ${serviceInstances.lastObservedAt} IS NULL THEN NULL ELSE EXTRACT(EPOCH FROM (clock_timestamp() - ${serviceInstances.lastObservedAt})) * 1000 END`,
+        createdAgeMs: sql<
+          number
+        >`EXTRACT(EPOCH FROM (clock_timestamp() - ${serviceInstances.createdAt})) * 1000`,
+      }).from(serviceInstances).where(and(
+        eq(serviceInstances.organizationId, input.organizationId),
+        nonTerminalServiceInstanceStatus(),
+      )).orderBy(asc(serviceInstances.createdAt), asc(serviceInstances.id))
+        .limit(bounded)
+        .for("update", { skipLocked: true });
+
+      for (const row of rows) {
+        result.scanned += 1;
+        // `EXTRACT` comes back as a numeric string on postgres-js; Number() it once, here,
+        // so the injected decider always sees real numbers and `null` only ever means
+        // never-observed.
+        const candidate: ServiceInstanceLivenessRow = {
+          serviceInstanceId: row.serviceInstanceId,
+          serviceId: row.serviceId,
+          status: row.status,
+          observedAgeMs: row.observedAgeMs === null ? null : Number(row.observedAgeMs),
+          createdAgeMs: Number(row.createdAgeMs),
+        };
+        if (!input.decide(candidate)) continue;
+        // The SAME independent legality gate `applyServiceProjectionForFence` applies to a
+        // worker's claim, applied to the control plane's own verdict. A decider is not more
+        // trusted than a payload.
+        if (!input.allowedFromStatuses.includes(candidate.status)) {
+          result.refusedIllegal.push({
+            serviceInstanceId: candidate.serviceInstanceId, fromStatus: candidate.status,
+          });
+          continue;
+        }
+        // Through the ONE writer, conditional on the status read under this lock.
+        const moved = await writeServiceInstanceStatus({
+          organizationId: input.organizationId,
+          serviceInstanceId: candidate.serviceInstanceId,
+          status: input.toStatus,
+          expectedFromStatus: candidate.status,
+        });
+        if (!moved) {
+          result.lostRace += 1;
+          continue;
+        }
+        result.terminalized.push({
+          serviceInstanceId: candidate.serviceInstanceId,
+          serviceId: candidate.serviceId,
+          fromStatus: candidate.status,
+        });
+      }
+      return result;
     },
 
     async listReconcilableServices(input) {

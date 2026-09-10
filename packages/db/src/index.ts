@@ -61,6 +61,9 @@ export type {
   // SVC-003 — the decided service-instance projection and its per-event outcome.
   ServiceInstanceProjectionInput,
   ServiceProjectionOutcome,
+  // SVC-003b — the liveness sweep's row shape and its result.
+  ServiceInstanceLivenessRow,
+  ServiceInstanceLivenessSweepResult,
   JobControlCommandKind,
   GovernedProjectionKind,
   GovernedProjectionInput,

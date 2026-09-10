@@ -1411,6 +1411,12 @@ if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
     onPassFailure: (err, context) => {
       logger.warn({ err, ...context }, "[svc-002] service reconcile pass failed");
     },
+    // SVC-003b — the liveness deadline runs inside this same tick, ahead of the convergence
+    // pages. Its failures are logged separately from a reconcile pass's so a deadline that
+    // stops running is visible as itself rather than as a quieter reconciler.
+    onLivenessFailure: (err, context) => {
+      logger.warn({ err, ...context }, "[svc-003b] service liveness sweep failed");
+    },
   });
   let serviceReconcileStopped = false;
   let serviceReconcileTimer: NodeJS.Timeout | undefined;
@@ -1422,11 +1428,20 @@ if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
       // Same discipline as the convergence sweeper above: the backoff is only real if the
       // composition root reads it.
       delay = serviceReconciler.nextDelayMs(result);
-      if (result.created > 0 || result.failed > 0) {
+      if (
+        result.created > 0 || result.failed > 0
+        || result.livenessTerminalized > 0 || result.livenessFailed > 0
+      ) {
         logger.info(
           {
             organizations: result.organizations, services: result.services,
             created: result.created, unchanged: result.unchanged, failed: result.failed,
+            // SVC-003b — a terminalized instance is the OTHER half of convergence, and it is
+            // reported on the same line so an operator reading "created 1" can see whether it
+            // was a first start or a replacement of something the deadline condemned.
+            livenessScanned: result.livenessScanned,
+            livenessTerminalized: result.livenessTerminalized,
+            livenessFailed: result.livenessFailed,
           },
           "[svc-002] service reconciler converged desired state",
         );

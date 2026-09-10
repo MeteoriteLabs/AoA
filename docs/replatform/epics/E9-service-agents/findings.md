@@ -505,3 +505,119 @@ split-brain case.
 **Left for SVC-004:** `failed` is the honest instance status for a run that ended badly, but WHETHER
 such an instance should be restarted, and with what backoff, is SVC-004's crash-loop clause. SVC-003a
 has no opinion about it.
+
+---
+
+## E9-F006 — the liveness deadline terminalizes the INSTANCE and does not fence the WORKER, so a silent-but-renewing worker overlaps its own replacement
+
+**Status:** `open` · `unowned` · **Severity:** HIGH
+**Filed:** 2026-09-10, by **SVC-003b**, in the commit that creates the condition. Filed rather than
+folded into the design note because it is a real overlap window with external effects on one side of
+it, and because the ticket that must close it (SVC-005) already owns the clause it belongs to.
+**Affected tickets:** SVC-003 (created it), SVC-005 (owns the clause), SVC-004 (restart policy).
+**Blocks gate:** no — E9's exit gate is not met for several larger reasons already on record. It
+does bound what SVC-003b's clause may be read to claim.
+
+### 1. The mechanism, verified at source
+
+SVC-003b's sweep (`sweepServiceInstanceLiveness`, `packages/db/src/repositories/tenant/job-control.ts`)
+writes exactly ONE table. That is deliberate and pinned: E9's acceptance for SVC-003 opens *"health
+events do not extend ownership without a successful lease renewal"*, and a sweeper that revoked or
+expired a lease would be a second authority over ownership beside `renewLease` and
+`reapExpiredLeases`. `L-T11` asserts the lease's `status`, `expires_at` and `fence` are byte-identical
+across a terminalization, and mutant `L17` (expire the lease alongside the status write) reds it.
+
+The consequence is that the WORKER is untouched. The dangerous case is exactly the one the deadline
+exists for: `runServiceLifecycle`'s supervise loop handles an unanswerable `processStatus` read with
+`unknown ⇒ EMIT NOTHING` (`packages/worker-daemon/src/supervisor/service-lifecycle.ts`), while
+`lease-renewal.ts` renews on a separate driver. So the worker emits nothing, keeps renewing, keeps
+its fence — and its supervised PROCESS may still be running and still performing external effects —
+while the deadline drives its instance `lost` and SVC-002's reconciler starts a replacement.
+
+### 2. What IS protected, and what is not
+
+**Protected:** the replacement's instance row. The old worker's late events land on a row that has
+reached a frozen terminal status, and SVC-003a's split-brain refusal returns `illegal_transition`
+rather than resurrecting it — the three terminal statuses have no outgoing edges, so they appear in
+no predecessor set. Two live rows under one partial-unique key remains impossible.
+
+**Not protected:** the old worker's EXTERNAL EFFECTS. Two processes for one service can overlap for
+as long as the old lease survives, which is bounded only by the lease TTL and the reaper's interval,
+not by anything this ticket added. That is precisely SVC-005's acceptance clause — *"no two
+generations may perform external effects simultaneously unless a later approved architecture decision
+explicitly permits overlap and defines its fencing and idempotency policy"* — reached one ticket
+early, by a same-generation route rather than a rollout.
+
+### 3. Why it was not fixed here, and what would close it
+
+The alternative to accepting the overlap is not terminalizing at all, which is the permanent wedge
+SVC-003b exists to remove and is strictly worse: a stuck service no code notices. So the overlap is
+the smaller harm and is taken deliberately.
+
+Closing it needs an authority this ticket does not have: either the deadline gains the right to
+revoke a fence (a second ownership writer, which needs a ruling against E9's own acceptance
+sentence), or SVC-005's stop/drain path is issued to the old lease at the moment of terminalization
+— which needs a `graceful_stop` producer, and E9-F007 records that no such producer exists anywhere
+in the tree. Until one of those lands, the window is real and is stated in
+`SVC-003b-result.md` §2 rather than implied.
+
+---
+
+## E9-F007 — three of the six frozen control-command kinds have ZERO producers, one of them cannot be persisted at all, and a repository docstring says otherwise
+
+**Status:** `open` · `unowned` · **Severity:** MED
+**Filed:** 2026-09-10, by **SVC-003b**, while measuring SVC-003's graceful-stop and checkpoint-request
+outcome clauses. Filed rather than recorded in the result note because it is the reason two of
+SVC-003's five outcome conjuncts cannot be delivered by any ticket that does not first add a
+producer, and because part of it is a record disagreeing with the code it describes.
+**Affected tickets:** SVC-003 (blocked by it), SVC-004 (checkpoint), SVC-005 (graceful stop, drain),
+JOB-006 (the docstring).
+**Blocks gate:** no.
+
+### 1. The measurement, at `053f90fc8` and re-measured at this ticket's head
+
+`CONTROL_COMMAND_KINDS` (`packages/worker-protocol/src/transport.ts`) freezes six kinds:
+`cancel`, `product_approval_result`, `runtime_decision_result`, `checkpoint`, `graceful_stop`,
+`drain`. Only three of them are ever produced:
+
+| Kind | Persistable? | Producers in the tree |
+|---|---|---|
+| `cancel` | yes | 2 literals, both inside `requestCancellation` |
+| `product_approval_result` | yes | 1, via `queueGovernedControlCommand` from `job-approval-bridge.ts` |
+| `runtime_decision_result` | yes | 1, same path |
+| `graceful_stop` | yes | **none** |
+| `drain` | yes | **none** |
+| `checkpoint` | **no** | **none** |
+
+`checkpoint` is additionally excluded by `job_control_commands_kind_check`
+(`packages/db/src/schema/job_control_commands.ts`), which permits five of the six — so a checkpoint
+command cannot be written at all, not merely is not written. SVC-003a recorded that half already;
+this finding adds the other two kinds and the type-level obstruction below.
+
+### 2. The generic queuer is narrowed at the TYPE level, so this is not a one-line gap
+
+`queueGovernedControlCommand` is the only general-purpose producer, and its input type
+(`GovernedControlCommandInput.commandKind`, `packages/db/src/repositories/tenant/job-control.ts`)
+admits exactly `"product_approval_result" | "runtime_decision_result"`. A `graceful_stop` cannot be
+handed to it without widening a repository interface. The worker end is complete: the frozen
+transport defines the command, the DB CHECK admits it, `renewLease` surfaces it in
+`cancelRequested` and in the `dev.aoa.job/control-v1` extension, and the daemon's
+`control-commands.ts` classifies it. The channel is finished at both ends and has nothing entering
+it.
+
+### 3. ★ The record that disagrees with the code
+
+`JobControlCommandKind`'s docstring says *"JOB-006 issues `cancel`/`drain`/`graceful_stop` from the
+reaper/cancellation"*. Measured at head: `requestCancellation` hard-codes `commandKind: "cancel"` at
+both of its insert sites, and `reapExpiredLeases` contains no insert into `job_control_commands` at
+all. Two of the three kinds that sentence names are issued by nothing. It is the same failure class
+this programme keeps meeting — a comment describing an intention as a fact — and it is left in place
+rather than silently corrected, because correcting the prose without adding the producer would make
+the gap invisible again.
+
+### 4. What would close it
+
+A producer for `graceful_stop` (SVC-005's operator stop/pause, and the fencing half of E9-F006),
+plus the widening of `GovernedControlCommandInput` that a producer needs; a producer for `drain`
+(SVC-005); and for `checkpoint`, a migration widening `job_control_commands_kind_check` before any
+producer is possible (SVC-004). The docstring is corrected by whichever of those lands first.

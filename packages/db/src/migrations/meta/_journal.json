@@ -1947,6 +1947,13 @@
       "when": 1789004678842,
       "tag": "0277_service_health_projection",
       "breakpoints": true
+    },
+    {
+      "idx": 278,
+      "version": "7",
+      "when": 1789017627848,
+      "tag": "0278_service_instance_last_observed_at",
+      "breakpoints": true
     }
   ]
 }

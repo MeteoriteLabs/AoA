@@ -44,11 +44,24 @@
 //     E9-F002 stays open on its other conjunct and a supervised service is bounded at 240 s.
 
 import { createHash, randomUUID } from "node:crypto";
-import type { Db, TenantRepositories } from "@armyofagents/db";
+import type {
+  Db,
+  ServiceInstanceLivenessSweepResult,
+  TenantRepositories,
+} from "@armyofagents/db";
 import { HttpError } from "../errors.js";
 import { runInTenant } from "../db/tenant-context.js";
 import { assertAdmissibleOrganization } from "./tenant-admission.js";
 import { submitJobWithinTenant } from "./job-submission.js";
+import {
+  classifyServiceInstanceLiveness,
+  livenessDeadlineAllowedFromStatuses,
+  livenessVerdictTerminalizes,
+  SERVICE_ADMISSION_DEADLINE_MS_DEFAULT,
+  SERVICE_LIVENESS_DEADLINE_MS_DEFAULT,
+  SERVICE_LIVENESS_DEADLINE_TO_STATUS,
+  type ServiceLivenessPolicy,
+} from "./service-liveness-deadline.js";
 
 /**
  * Fixed, never-rotate namespace UUID for deriving a service reconciliation's identity
@@ -333,16 +346,75 @@ export async function reconcileService(
   }
 }
 
+/**
+ * ★★★ SVC-003b — ONE ORGANIZATION'S LIVENESS SWEEP, and the answer to "where does the
+ * deadline live" is this function's location.
+ *
+ * THREE PLACES WERE AVAILABLE AND TWO OF THEM CANNOT WORK.
+ *
+ *   * NOT IN THE PROJECTION (SVC-003a). `applyServiceProjectionForFence` is edge-triggered by
+ *     an accepted worker event. The entire failure is the ABSENCE of events, and a consumer
+ *     that only runs when an event arrives is structurally unable to notice that none did.
+ *   * NOT BESIDE THE LEASE REAPER. Two reasons, and the first alone settles it. (a) The
+ *     dangerous case is invisible to a lease: `lease-renewal.ts` renews on its own driver,
+ *     separate from the supervise loop, so a worker whose supervision has gone silent while
+ *     renewal continues holds a lease that never expires and `reapExpiredLeases` never sees
+ *     it. (b) `reapExpiredLeases` is a `packages/db` repository method, and the legality
+ *     authority `SERVICE_INSTANCE_TRANSITIONS` lives in `@armyofagents/worker-protocol`, which
+ *     `packages/db` deliberately does not depend on — putting the terminalization there means
+ *     a fourth hand-written copy of a frozen list, which is precisely what SVC-003a refused.
+ *   * HERE, BESIDE THE RECONCILER AND INSIDE ITS TICK. The deadline is the OBSERVED side of
+ *     the same convergence loop this file already drives on the INTENDED side, and it needs
+ *     exactly what a server-side sweeper has: a clock, the frozen table, and the admitted-org
+ *     enumeration this tick already performs. ★ And running it AHEAD of the convergence pages
+ *     in the SAME tick is what makes the loop provable in one pass: the sweep drives a silent
+ *     instance to `lost`, the row leaves `service_instances_live_service_uq`, and
+ *     `listReconcilableServices` — which filters on exactly that index's predicate — returns
+ *     its service in the very next statement. Terminalize-then-replace is one tick, not two
+ *     timers with an unbounded gap between them.
+ *
+ * ★ WHAT IT DOES NOT DECIDE. Whether a terminalized instance SHOULD be replaced, and with what
+ * backoff, is SVC-004's crash-loop clause. This function terminalizes; replacement is whatever
+ * SVC-002's unchanged reconciler already does with a service that has no live instance.
+ */
+export async function sweepOrganizationServiceLiveness(
+  appDb: Db,
+  input: { organizationId: string; limit: number; policy: ServiceLivenessPolicy },
+): Promise<ServiceInstanceLivenessSweepResult> {
+  assertAdmissibleOrganization(input.organizationId);
+  const allowedFromStatuses = livenessDeadlineAllowedFromStatuses();
+  return runInTenant(appDb, input.organizationId, (repos) =>
+    repos.jobControl.sweepServiceInstanceLiveness({
+      organizationId: input.organizationId,
+      limit: input.limit,
+      toStatus: SERVICE_LIVENESS_DEADLINE_TO_STATUS,
+      allowedFromStatuses,
+      // The pure policy, injected. The repository holds the row lock and the write; it holds
+      // no opinion about what "silent" means, and this file holds no SQL.
+      decide: (row) =>
+        livenessVerdictTerminalizes(classifyServiceInstanceLiveness(row, input.policy)),
+    }));
+}
+
 export interface ServiceReconcilerTickResult {
   organizations: number;
   services: number;
   created: number;
   unchanged: number;
   failed: number;
+  /** SVC-003b — live instances inspected by the liveness sweep across this tick. */
+  livenessScanned: number;
+  /** SVC-003b — instances the deadline drove terminal this tick. Each one leaves the live
+   *  index, so each one is a service the convergence pass below can now replace. */
+  livenessTerminalized: number;
+  /** SVC-003b — sweeps that threw. Counted separately from `failed` (a convergence pass
+   *  failure) so a broken deadline cannot hide inside a reconciler-pass statistic. */
+  livenessFailed: number;
 }
 
 const ZERO_TICK: ServiceReconcilerTickResult = {
   organizations: 0, services: 0, created: 0, unchanged: 0, failed: 0,
+  livenessScanned: 0, livenessTerminalized: 0, livenessFailed: 0,
 };
 
 export interface ServiceReconciler {
@@ -377,8 +449,19 @@ export function createServiceReconciler(input: {
   activeDelayMs?: number;
   monotonicNow?: () => number;
   onPassFailure?: (error: unknown, context: { organizationId: string; serviceId: string }) => void;
+  /** SVC-003b — the two deadline windows. Injected whole, never half: a caller that could
+   *  supply one and inherit the other could silently pair a short admission window with a long
+   *  liveness one, which is the collapse the two-window split exists to prevent. */
+  livenessPolicy?: ServiceLivenessPolicy;
+  livenessBatchLimit?: number;
+  onLivenessFailure?: (error: unknown, context: { organizationId: string }) => void;
 }): ServiceReconciler {
   const enabled = input.enabled ?? true;
+  const livenessPolicy: ServiceLivenessPolicy = input.livenessPolicy ?? {
+    livenessDeadlineMs: SERVICE_LIVENESS_DEADLINE_MS_DEFAULT,
+    admissionDeadlineMs: SERVICE_ADMISSION_DEADLINE_MS_DEFAULT,
+  };
+  const livenessBatchLimit = Math.max(1, Math.min(256, Math.floor(input.livenessBatchLimit ?? 64)));
   const maxOrganizations = Math.max(1, Math.min(64, Math.floor(input.maxOrganizationShards ?? 32)));
   const serviceBatchLimit = Math.max(1, Math.min(256, Math.floor(input.serviceBatchLimit ?? 32)));
   const tickBudgetMs = Math.max(1, Math.min(5_000, Math.floor(input.tickBudgetMs ?? 1_000)));
@@ -446,6 +529,39 @@ export function createServiceReconciler(input: {
       // Advance on admission, not completion, so a slow tenant cannot pin the rotation.
       cursor = organizationId;
       result.organizations += 1;
+      // ★★★ SVC-003b — THE LIVENESS SWEEP, AND IT RUNS FIRST. An instance the deadline drives
+      // `lost` leaves `service_instances_live_service_uq` inside this transaction, so the
+      // convergence pages below — whose window predicate IS that index's — see its service as
+      // divergent on this very tick. Ordering it after the pages would make every replacement
+      // one whole tick late for no reason.
+      //
+      // Best-effort and counted, exactly like a convergence pass: a tenant whose sweep throws
+      // must not cost the rest of the tick, and must not be reported as a reconcile failure.
+      try {
+        const swept = await sweepOrganizationServiceLiveness(input.appDb, {
+          organizationId,
+          limit: livenessBatchLimit,
+          policy: livenessPolicy,
+        });
+        result.livenessScanned += swept.scanned;
+        result.livenessTerminalized += swept.terminalized.length;
+        // A non-empty `refusedIllegal` means the server's derived predecessor set and the
+        // frozen table disagree — a defect, not a state — so it is surfaced rather than
+        // folded into a count. `livenessDeadlineAllowedFromStatuses`'s load-time assertion
+        // should make it unreachable; this is what would say so if it were not.
+        for (const refused of swept.refusedIllegal) {
+          input.onLivenessFailure?.(
+            new Error(
+              `SVC-003b: liveness deadline refused as illegal from '${refused.fromStatus}' ` +
+                `for instance ${refused.serviceInstanceId}`,
+            ),
+            { organizationId },
+          );
+        }
+      } catch (error) {
+        result.livenessFailed += 1;
+        input.onLivenessFailure?.(error, { organizationId });
+      }
       // Page through this tenant's running services from its own cursor until the budget is
       // out or the tenant is exhausted. Each window is read in its own short tenant
       // transaction; each PASS then opens its own, so one service's failure cannot roll back

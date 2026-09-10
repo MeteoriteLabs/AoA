@@ -351,5 +351,32 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(names).toContain("service_instances_org_company_service_fk");
       expect(names).not.toContain("service_instances_org_service_fk");
     });
+
+    it("re-executes SVC-003b's 0278 twice with no error, and the column stays NULLABLE", async () => {
+      // NECESSARY, not belt-and-braces: 0278 is a single bare `ADD COLUMN`, and the static
+      // guard in this file matches only CREATE TABLE/INDEX — so nothing else in the tree
+      // would notice a missing `IF NOT EXISTS` until a re-apply raised 42701 in production.
+      //
+      // ★ AND THE NULLABILITY IS ASSERTED, not just the absence of an error. SVC-003b's whole
+      // two-window design rests on NULL meaning "the worker has never been observed": a
+      // DEFAULT or a NOT NULL here would forge an observation at INSERT time and let the short
+      // liveness window judge an instance that is merely still starting.
+      if (setupError) throw new Error(`embedded-postgres setup failed: ${String(setupError)}`);
+      if (!admin) throw new Error("database client unavailable");
+      for (let pass = 0; pass < 2; pass += 1) {
+        const sql = readFileSync(join(MIGRATIONS_DIR, "0278_service_instance_last_observed_at.sql"), "utf8");
+        for (const statement of splitStatements(sql)) {
+          await admin.unsafe(statement);
+        }
+      }
+      const columns = await admin<{ is_nullable: string; column_default: string | null; data_type: string }[]>`
+        SELECT is_nullable, column_default, data_type FROM information_schema.columns
+        WHERE table_name = 'service_instances' AND column_name = 'last_observed_at'
+      `;
+      expect(columns).toHaveLength(1);
+      expect(columns[0]?.is_nullable).toBe("YES");
+      expect(columns[0]?.column_default).toBeNull();
+      expect(columns[0]?.data_type).toBe("timestamp with time zone");
+    });
   },
 );
