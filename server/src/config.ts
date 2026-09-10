@@ -26,6 +26,7 @@ import {
 import {
   assertHostedExecutionStartupSafe,
   readDistributedExecutionDeploymentFlag,
+  type HostedExecutionStartupSafetyOutcome,
 } from "./config/distributed-execution.js";
 
 const AOA_ENV_FILE_PATH = resolveAoaEnvPath();
@@ -47,6 +48,14 @@ export interface Config {
    * `assertHostedExecutionStartupSafe`.
    */
   distributedExecutionEnabled: boolean;
+  /**
+   * DE-14: what `assertHostedExecutionStartupSafe` DECIDED on this load, carried
+   * out so the entrypoint records the assertion's own outcome instead of
+   * re-deriving it from the same environment. A refusal never reaches here — it
+   * throws out of `loadConfig` and is recorded by
+   * `loadConfigWithStartupSafetyAudit` on the way past.
+   */
+  hostedExecutionStartupSafety: HostedExecutionStartupSafetyOutcome;
   deploymentExposure: DeploymentExposure;
   host: string;
   port: number;
@@ -195,7 +204,10 @@ export function loadConfig(): Config {
   // cloud_auth. Neither branch starts a scheduler, adapter, distributed route, or
   // worker — the reserved distributed routes stay unregistered when absent/false.
   const distributedExecutionEnabled = readDistributedExecutionDeploymentFlag(process.env);
-  assertHostedExecutionStartupSafe({ deploymentMode, env: process.env });
+  const hostedExecutionStartupSafety = assertHostedExecutionStartupSafe({
+    deploymentMode,
+    env: process.env,
+  });
   const deploymentExposureFromEnvRaw = process.env.AOA_DEPLOYMENT_EXPOSURE;
   const deploymentExposureFromEnv =
     deploymentExposureFromEnvRaw &&
@@ -287,6 +299,7 @@ export function loadConfig(): Config {
   return {
     deploymentMode,
     distributedExecutionEnabled,
+    hostedExecutionStartupSafety,
     deploymentExposure,
     host: process.env.HOST ?? fileConfig?.server.host ?? "127.0.0.1",
     port: Number(process.env.PORT) || fileConfig?.server.port || 3100,

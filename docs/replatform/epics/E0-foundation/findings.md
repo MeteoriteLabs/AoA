@@ -138,9 +138,11 @@ New findings use IDs `E0-F001`, `E0-F002`, and so on, and retain their resolutio
 - **Affected tickets:** FND-008 (facade code — `plugins.ts`), FND-006/008 test flip (`plugin-broker-cloud.integration.test.ts`). Both files were reviewed at their ticket revisions; this is a Task-9-gate scoped-defect repair (the plan Task 9 explicitly permits "Modify only if verification exposes a scoped defect").
 - **Disposition:** **Fixed and re-verified green** (86/86 across the 7 E0 integration files on embedded PG; server typecheck 0; dependency-free checker + mutations pass; E0 unit suites unchanged). Lesson: for cloud-execution-boundary code, run the DB-backed integration tests on a short-path embedded-PG worktree before the gate — unit + typecheck + review are necessary but not sufficient.
 
-## E0-F010 — Eight trust crossings asserted that denials are audited and recorded nothing on the deny path; DE-06's audit clause was completed on 2026-09-10 and the remaining SEVEN are enumerated below, so a refused cross-tenant read, a replayed credential and a shed submission are still indistinguishable from traffic that never happened
+## E0-F010 — Eight trust crossings asserted that denials are audited and recorded nothing on the deny path; DE-06's and DE-14's audit clauses were completed on 2026-09-10 and the remaining SIX are enumerated below, so a refused cross-tenant read, a replayed credential and a shed submission are still indistinguishable from traffic that never happened
 
-- **Status:** open — **7 of 8 remain. DE-06's audit clause is DELIVERED IN FULL (2026-09-10) and
+- **Status:** open — **6 of 8 remain. DE-14's audit clause is DELIVERED IN FULL (2026-09-10) — it
+  is single-conjunct and both directions of the outcome are logged at the entrypoint; see the
+  DE-14 table row. DE-06's audit clause is DELIVERED IN FULL (2026-09-10) and
   DE-06 is struck from this cohort; see "★ THE OBJECT-ACCESS UNIT" at the end of this entry, and
   read the correction there before trusting the older sentence in this entry that adds `E0-F012`'s
   authentication clause to DE-06's exit condition — that sentence contradicts this finding's own
@@ -177,7 +179,7 @@ with **no row, no metric and no log line** recording that a security control fir
 | DE-11 (High) | "sensitive-artifact access and retention are audited" | — (the controls themselves are absent; see `E8-F011`) | **Nothing**, and the code says so: `server/src/services/artifact-commit.ts:172-173`. |
 | DE-12 (Critical) | "partition, drain, and generation changes are audited" | `packages/db/src/repositories/tenant/job-control.ts:1667-1679` (the generation gate) | **Nothing**, and nothing could: `services.generation` has **no writer anywhere in the tree** (`grep -rn "update(services)"` returns zero hits outside comments), so no generation change exists to audit. |
 | DE-13 (High) | "admission, throttle, and quota-breach events are audited" | `server/src/services/org-concurrency.ts:248` (capacity) and `server/src/services/worker-admission-rate-limit.ts:139` (`over_cap`). | **Nothing for the throttle.** `server/src/routes/worker-control.ts:414-416` returns the 429 through the same silent `sendWorkerOperationProtocolError`. The capacity 429 (`server/src/services/job-submission.ts:353`) surfaces only a generic `job_submission_rejected` reason code carrying neither cap nor usage. |
-| DE-14 (Critical) | "the startup safety-assertion outcome is logged" | `server/src/config/distributed-execution.ts:72` — measured throwing (see the DE-14 register evidence). | **Nothing, in either direction.** `server/src/config/distributed-execution.ts` imports no logger and contains no `logger`/`console` call at all — its only import is `import type { DeploymentMode }` at `:1`. The failure surfaces as an unhandled module-eval crash trace; the success outcome is never recorded. |
+| ~~DE-14 (Critical)~~ — **AUDIT CLAUSE COMPLETE 2026-09-10; STRUCK FROM THIS COHORT** | "the startup safety-assertion outcome is logged" | `assertHostedExecutionStartupSafe` (`server/src/config/distributed-execution.ts`) — measured throwing over a seven-case matrix by W20, and re-measured refusing on all four branches by the unit that closed this row. | **BOTH DIRECTIONS DELIVERED.** The assertion now RETURNS a `HostedExecutionStartupSafetyOutcome` on the pass and throws a `HostedExecutionStartupUnsafeError` carrying its own branch's `reason`/`envName` on the refusal; `loadConfigWithStartupSafetyAudit` (`server/src/config/hosted-execution-startup-audit.ts`) is the single production caller at the entrypoint and turns both into log lines — `distributed_execution.startup_safety.passed` at info, `distributed_execution.startup_safety.refused` at error, then RETHROWN unchanged so the process still dies before serving. **The clause is single-conjunct, so this closes it whole.** *(Historical, kept because the correction is only legible against it:)* **Nothing, in either direction.** `server/src/config/distributed-execution.ts` imported no logger and contained no `logger`/`console` call at all — its only import was `import type { DeploymentMode }` at `:1`. The failure surfaced as an unhandled module-eval crash trace; the success outcome was never recorded. |
 
 **Why this is HIGH and not cosmetic.** Seven of the eight crossings are the ones an operator would
 have to reconstruct an incident from. A cross-tenant read denied by RLS produces no error at all —
@@ -295,8 +297,17 @@ measured rather than inherited:
    `server/src/services/artifact-denial-audit.ts` and is a live constraint for every remaining
    crossing in this class.
 
-- **Affected crossings:** DE-01, DE-03, DE-04, DE-11, DE-12, DE-13, DE-14 — **seven remaining.**
-  **DE-06 is struck (2026-09-10):** both conjuncts of its audit clause are delivered — rejected-key
+- **Affected crossings:** DE-01, DE-03, DE-04, DE-11, DE-12, DE-13 — **six remaining.**
+  **DE-14 is struck (2026-09-10):** its clause — "the startup safety-assertion outcome is logged" —
+  is SINGLE-CONJUNCT and both DIRECTIONS of the outcome are now recorded at the entrypoint's one
+  startup load. See the DE-14 table row above and the register row. It stays `partial` in the
+  register for its other clauses, which is the DE-19 and DE-06 shape. ★ **AND IT PROVES NOTHING
+  ABOUT THE OTHER SIX.** DE-14 was always the cheapest member of this class and `E0-F013` said so
+  in terms — it is the one row whose clause asks for a LOG rather than an attributable durable
+  record, and the assertion fires before any database pool exists, so a durable row is
+  structurally impossible there. Closing it removes a row from the count; it does not move the
+  separate-transaction lifecycle, the tenantless-sink question, or any Group B/C/D blocker.
+  **DE-06 was struck (2026-09-10):** both conjuncts of its audit clause are delivered — rejected-key
   attempts (every returning refusal on both artifact services, plus all six
   `resolveWorkerFenceContext` throws) AND object put/get (a successful upload or download grant).
   It stays `partial` in the register for `E0-F012`'s separately-absent `authentication` clause,
@@ -307,7 +318,22 @@ measured rather than inherited:
   the coverage caveat holds it open (see the object-access unit below and `E0-F013`'s Group D DE-11
   bullet).
   (DE-11's is carried in detail by `E8-F011`; it is listed here so the class is complete.)
-- **Disposition:** `unowned`. No ticket on disk owns "record a denial" for these seven. The
+  ★ **DE-11's TWO GROUNDS WERE RE-MEASURED AT SOURCE ON 2026-09-10** by the unit that closed DE-14,
+  because an orchestration brief carried the premise that DE-06's closure was DE-11's ONLY
+  remaining blocker and that DE-11 could therefore now close whole. **It cannot, and the premise
+  was one ground short.** Ground (i) — the access half's missing piece being DE-06's own open
+  put/get conjunct — IS discharged, and the register row already said so. Ground (ii) is untouched
+  and is what holds DE-11 open: re-run whole-tree at this commit, `browser_cookie_state` and
+  `browser_storage_state` appear in `server/` and `packages/` ONLY as a frozen-protocol
+  vocabulary entry (`packages/worker-protocol/src/artifacts.ts`), a retention classifier
+  (`server/src/services/browser-artifact-retention.ts`), a quarantine type union
+  (`packages/worker-daemon/src/lease/quarantine.ts`) and prose. **There is no producer**: no
+  production path uploads or commits a credential-bearing kind, `BRW-003c` is design-only with no
+  result file on disk, and both the access record and the retention record can therefore only ever
+  be about a `log`, a `workspace_patch` or a `screenshot` today. The register was RIGHT and the
+  inherited framing was stale — recorded here because the reverse has been true four waves running
+  and the direction of the error is not something a reader should have to re-derive.
+- **Disposition:** `unowned`. No ticket on disk owns "record a denial" for these six. The
   nearest candidate, `jobAuditBridge`, exists and is caller-less; wiring it is not a code-motion
   task, because the DE-01 case has **no error to intercept** (a filtered read is a successful empty
   read), so a denial-observation point would have to be built rather than connected. Minimum work
@@ -315,10 +341,12 @@ measured rather than inherited:
 - **Resolution condition:** each *remaining* row's `audit` clause is either delivered against a
   named record point with a production caller, or AMENDED to state what the programme intends.
   Amending is a founder decision and is not taken here. Resolve = flip this Status and delete the
-  `E0-F010` key in `scripts/finding-ownership.json` in the SAME commit. **SEVEN are still open; a
+  `E0-F010` key in `scripts/finding-ownership.json` in the SAME commit. **SIX are still open; a
   HALF-delivered conjunctive clause closes nothing, and the reason DE-06 left on 2026-09-10 is that
-  BOTH of its audit conjuncts hold — not that a larger fraction of one does.** The `E0-F010` key
-  stays in `scripts/finding-ownership.json`: seven crossings remain and this finding is open.
+  BOTH of its audit conjuncts hold — not that a larger fraction of one does. DE-14 left on the same
+  day for the narrower reason that its clause has only one conjunct and both of its DIRECTIONS are
+  now recorded.** The `E0-F010` key stays in `scripts/finding-ownership.json`: six crossings remain
+  and this finding is open.
 - **2026-09-10, Unit A — two rows moved and the cohort did NOT.** The wave that the ruling on
   `E0-F013` Decision 2 unblocked wired the organization-attributable denial sinks: **DE-06**'s five
   remaining `resolveWorkerFenceContext` throws (`:86` proof replay, `:100` in both of its codes,
@@ -328,7 +356,24 @@ measured rather than inherited:
   NOT wired** — the frozen JOB-003 ack-flow contract (`job-leasing-contract.test.ts`,
   `exactAckReturnDominance`) leaves no drain point outside the transaction, and amending it is a
   decision this unit did not take; the proving file PINS that site as recording nothing rather than
-  dropping it from the count. Both rows' full per-site evidence, the four DE-06 sites actually
+  dropping it from the count.
+  ★ **THAT AMENDMENT IS NOW MEASURED AND FILED (2026-09-10):**
+  [`docs/replatform/DECISION-REQUEST-job-003-ack-drain-amendment.md`](../../DECISION-REQUEST-job-003-ack-drain-amendment.md).
+  Three results, each run at `c27feeea8` against a 20/20 green baseline and then reverted.
+  **(i) The blocker is real and was re-measured, not inherited** — a `.finally(…)` on ack's outer
+  return reds the contract with `builder:trusted-service-authority-guard`.
+  **(ii) ★ THE OBVIOUS AMENDMENT IS MEASURABLY UNSAFE.** Teaching `exactAckReturnDominance` to
+  accept `runInTenant(…).finally(fn)` turns the drain shape green — and ALSO silently stops
+  policing the drain callback: a call to one of the four protected ack effects placed inside that
+  `.finally` leaves the contract **fully GREEN**, because `collectAckEffects` walks the
+  `runInTenant` CALLBACK's body and the drain callback is a sibling scope it never enters. The
+  relaxation would have opened a hole in the guard it was relaxing, and it would have shipped
+  green. It was caught only by provoking the safety claim instead of arguing it.
+  **(iii) A hardened amendment is proven** — extending that same sweep into the drain callback reds
+  the protected-effect case while the benign drain stays 20/20, and both evasions (a chained second
+  `.finally`, a `return` inside the drain) red without new machinery.
+  **The ruling is not taken here**, and note that DE-03 cannot close on it either way: its clause is
+  a THREE-way conjunction and neither enrollment nor session-issue has any writer at all. Both rows' full per-site evidence, the four DE-06 sites actually
   PROVOKED versus the two pinned as structurally unreachable, and the mutation matrix are in
   `docs/architecture/distributed-execution-threat-controls.json`.
   **NEITHER CROSSING CLOSES AND THE COHORT STAYS AT EIGHT.** DE-06's clause is
@@ -528,6 +573,65 @@ that is hard; none of it is five lines; and doing it in the same PR as a new wri
 success path would be two properties in one diff, which is the shape the Decision 2 sink slice
 explicitly refused. **DE-14 stays in this cohort, unchanged, and the count above already reflects
 that.** What changes is only that the next unit will not be told it is free.
+
+### ★ DE-14 IS CLOSED (2026-09-10) — the unit was taken, and measurement 4 above was WRONG
+
+The section above was the correct call: DE-14 was a unit and it has now been done as one. Three of
+its four measurements were re-verified at HEAD by the closing unit and each one SHAPED the design.
+**The fourth is refuted, and it is refuted by construction rather than by argument.**
+
+- **1 and 2 STAND, and they are why the recorder is not inside `loadConfig`.** `loadConfig`
+  (`server/src/config.ts`) still has no cache — re-read at HEAD — so the assertion still re-runs on
+  every call from every route and service. The closing design therefore instruments **the
+  entrypoint's single startup call and nothing else**: `loadConfig` gained no logging, so the
+  per-request re-runs stay silent and "exactly once" needs no once-only latch, no memoisation and
+  no silent default. The call-site census is not restated here because it is not load-bearing for
+  that design; measurement 1 alone is.
+- **3 STANDS and is why the sink is a parameter.** `server/src/middleware/logger.ts` still has
+  module-level side effects — `fs.mkdirSync(logDir, {recursive:true})` at `:26` and a
+  `pino.transport(…)` at `:54` — re-measured at HEAD. `config.ts` and
+  `config/distributed-execution.ts` are both still logger-free and stay that way: the logger is
+  INJECTED at the one call site in `server/src/index.ts`, which already imports it statically.
+- **4 IS WRONG.** *"The failure outcome cannot be moved to the entrypoint. `server/src/index.ts`
+  calls `loadConfig()` at module top level with no `try`/`catch`, so a refusal is an unhandled
+  module-eval error and no line after it ever runs."* Every clause of that is a true observation
+  about the tree AS IT WAS, and the conclusion does not follow: **a top-level call is not an
+  uncatchable call.** `const config = loadConfigWithStartupSafetyAudit({ load: loadConfig, log:
+  logger })` is still one top-level statement, and the `try`/`catch` lives inside the function it
+  calls — which logs the refusal and **rethrows it unchanged**, so the module-eval error, the crash
+  trace and the refusal to serve are all byte-for-byte what they were. Nothing needed to move; the
+  handler needed a frame. The absence of a `try`/`catch` was read as a property of the call site
+  rather than of the code, which is the same shape as a zero-caller symbol read as an
+  impossibility.
+
+**What was built.** `assertHostedExecutionStartupSafe` now RETURNS a
+`HostedExecutionStartupSafetyOutcome` on the pass, and throws a `HostedExecutionStartupUnsafeError`
+carrying that branch's own `reason` and `envName` on the refusal — four branches, four codes,
+`instanceof Error` and every existing message unchanged. `loadConfig` carries the pass outcome out
+on `Config.hostedExecutionStartupSafety` so the record is read off the assertion's return value and
+never re-derived from the same environment. `loadConfigWithStartupSafetyAudit`
+(`server/src/config/hosted-execution-startup-audit.ts`) is the single production caller and logs
+`distributed_execution.startup_safety.passed` at info and `…refused` at error.
+
+**What it does NOT claim.** DE-14's clause asks for a **log** and that is all this delivers: the
+assertion fires during config load, before any database pool exists, so a durable attributable row
+is structurally impossible at that point and none is written. This closes the cheapest row in the
+class and moves no other blocker — not the separate-transaction lifecycle, not the tenantless sink,
+not any Group B/C/D item. It also does not touch DE-14's other clauses, so **DE-14 stays `partial`
+in the register**, exactly as DE-19 and DE-06 do.
+
+**Proven, not declared.** `server/src/__tests__/de-14-startup-safety-audit.test.ts`, NINE arms.
+Observed RED against the unchanged tree — the whole suite failed to collect, because neither the
+recorder module nor the assertion's new exports existed — and then killed by four mutants applied
+one at a time to the shipped source and reverted with an md5-verified restore, each with named
+survivors: **delete the pass log** → exactly the 2 pass arms red, 7 green including the PRECISION
+CONTROL and the refusal arm; **stamp a constant reason** on one branch → exactly the distinctness
+arm red, 8 green; **widen the refusal guard to `instanceof Error`** → exactly the PRECISION CONTROL
+red, 8 green; **restore the bare `loadConfig()` at the entrypoint** → exactly the ARMING PATH arm
+red, 8 green. The pre-existing `distributed-execution-policy.test.ts` (17 arms, message- and
+throw-shape assertions over the same function) is the named regression control and stayed green
+throughout. Enrolled as `E0-de14-startup-safety-audit` in `scripts/gate-clause-wiring.json` in the
+same commit.
 
 ## E0-F011 — Four crossings are defended by a control whose ARMING PATH is dead: two have zero production callers, one is enabled by an environment variable set in no manifest, and one is gated on a database column with no writer
 
@@ -947,7 +1051,8 @@ services, and the other six are compiled but unprovoked here. Stated rather than
 
 ### ★ RE-TRIAGE, 2026-09-09, by the denial-audit batch (the unit that HALF-delivered DE-06)
 
-★ **SUPERSEDED 2026-09-10: the class now stands at TWO closed (DE-19, DE-06) and FIFTEEN open.
+★ **SUPERSEDED 2026-09-10: the class now stands at THREE closed (DE-19, DE-06, DE-14) and
+FOURTEEN open — DE-14's closure is later the same day than DE-06's; see "★ DE-14 IS CLOSED" above.
 See the authoritative count in this finding's Status block. The paragraph below was correct on
 2026-09-09 and is kept because the corrections beneath it are only legible against it.**
 
@@ -1149,6 +1254,13 @@ own failure class.**
   safety-assertion outcome is **logged**"). `assertHostedExecutionStartupSafe` fires at
   `config.ts:198` during config load, **before any DB pool exists**, so a durable row is
   structurally impossible. ~5 lines. Take it as a freebie; it proves nothing about the mechanism.
+  *(★ CLOSED 2026-09-10, and BOTH halves of this bullet were wrong in opposite directions. "~5
+  lines / a freebie" was corrected on the same day by the object-access unit, which measured
+  `loadConfig` as un-memoised with many call sites and the obvious logger as un-importable there;
+  and that correction's own fourth measurement — "the failure outcome cannot be moved to the
+  entrypoint" — was then refuted by the unit that closed it, because a top-level call is not an
+  uncatchable call. What survives unchanged is the FIRST clause: the clause asks only for a log,
+  and only a log was delivered. See "★ DE-14 IS CLOSED" under `E0-F010`.)*
 
 **Honest arithmetic: of the seventeen, ONE is closed and at most ELEVEN more are closable end to
 end. Five clause-halves are not, and DE-17 is a sixth behind the protocol freeze.** Any plan must

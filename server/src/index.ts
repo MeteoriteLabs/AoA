@@ -40,6 +40,7 @@ import {
 import { tenantIsolationEnforced } from "./config/deployment-mode.js";
 import { reconcileCloudBlockedPlugins } from "./services/plugin-lifecycle.js";
 import { loadConfig } from "./config.js";
+import { loadConfigWithStartupSafetyAudit } from "./config/hosted-execution-startup-audit.js";
 import { loadControlPlaneSigningKey } from "./config/control-plane-signing-key.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
@@ -161,7 +162,13 @@ type EmbeddedPostgresCtor = new (opts: {
   onError?: (message: unknown) => void;
 }) => EmbeddedPostgresInstance;
 
-const config = loadConfig();
+// DE-14 — "the startup safety-assertion outcome is logged". This is the one
+// production call site that records it, in BOTH directions: a pass logs what
+// `assertHostedExecutionStartupSafe` returned, and a refusal logs its reason and
+// is rethrown unchanged so the process still dies before serving. The logger is
+// injected because `config.ts` and `config/distributed-execution.ts` are
+// deliberately logger-free; this module already imports the logger statically.
+const config = loadConfigWithStartupSafetyAudit({ load: loadConfig, log: logger });
 
 // Dev/sandbox affordance (opt-in via AOA_STRIP_CC_ENV=1): when AoA is launched
 // from inside a Claude Code session — especially a staging session — the inherited
