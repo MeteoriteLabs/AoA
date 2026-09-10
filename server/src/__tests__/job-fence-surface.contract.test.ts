@@ -151,24 +151,47 @@ const EXPECTED_UNGUARDED = [
   //
   // `attributeServiceInstance` writes only `job_id` / `attempt_id`, never `status`.
   //
-  // ★ CORRECTION (SVC-007a). The sentence that stood here — "`recordServiceHealth` stays the
-  // sole (and guarded) writer of instance status" — was already FALSE at `053f90fc8`: SVC-003a
-  // introduced `writeServiceInstanceStatus` as the ONE writer of that column and gave it TWO
-  // entry points, `recordServiceHealth` and the fenced `applyServiceProjectionForFence`. Both
-  // are inner functions rather than members of this surface, so the drift was invisible to this
-  // test. It is corrected rather than quietly deleted, because a stale comment on a fail-closed
-  // list is the thing that makes the list read as more than it proves.
+  // ★ CORRECTION (SVC-007a, extended by SVC-003b). The sentence that stood here —
+  // "`recordServiceHealth` stays the sole (and guarded) writer of instance status" — was
+  // already FALSE at `053f90fc8`: SVC-003a introduced `writeServiceInstanceStatus` as the ONE
+  // writer of that column and gave it TWO entry points, `recordServiceHealth` and the fenced
+  // `applyServiceProjectionForFence` (the latter lives inside `acceptEvent`, itself a guarded
+  // mutator, so it adds no method to this surface). SVC-003b's liveness deadline adds a THIRD
+  // entry point below, and SVC-007a's cancelled-attempt backstop a FOURTH. All of them are
+  // inner functions rather than members of this surface, so the drift was invisible to this
+  // test. It is corrected rather than quietly deleted, because a stale comment on a
+  // fail-closed list is the thing that makes the list read as more than it proves.
   "lockServiceForReconcile",
   "countNonTerminalInstances",
   "insertServiceInstance",
   "attributeServiceInstance",
   "listReconcilableServices",
   "findServiceGenerationDefinition",
+  // ★★★ SVC-003b — the liveness deadline's sweep, UNGUARDED, and classified in the SAME
+  // commit that adds it (this test fails closed, and it is what caught the omission).
+  //
+  // It is the SAME SPECIES as `reapExpiredLeases`, `recordOrphanQuarantine` and
+  // `classifyLeaseTruth`: it acts precisely WHEN the fence is gone. `guardActiveFence` demands
+  // an ACTIVE lease for a named (job, attempt, lease) triple, and the deadline has no lease id
+  // and no worker to name — it has an organization and a clock, and it exists exactly because
+  // the worker has stopped saying anything. A guard here would be unsatisfiable, not stricter,
+  // and would make the deadline a dead lever.
+  //
+  // ITS SAFETY IS ELSEWHERE, and stated so this classification is not read as "unchecked":
+  // (1) the population is the shared `nonTerminalServiceInstanceStatus()` predicate, so it can
+  // only ever see live rows; (2) it takes `FOR UPDATE SKIP LOCKED`, so a row an ingest is
+  // projecting onto right now is skipped rather than raced; (3) the frozen predecessor set is
+  // computed SERVER-SIDE and enforced here independently of the caller's decider; and (4) the
+  // write is conditional on the status read under the lock, through the same single
+  // `writeServiceInstanceStatus` the two fenced authors use.
+  "sweepServiceInstanceLiveness",
   // SVC-007a — the service CREATE, the desired-state control and the operator read, classified
   // in the SAME commit that adds them.
   //
   // Five of SVC-007a's six are outside the fence for SVC-002's reason above (its "six" is a
-  // different set — the block immediately preceding this one): they run in the
+  // different set — the six-method block SVC-002 classified, above `lockServiceForReconcile`,
+  // and no longer the block immediately preceding this one now that SVC-003b's sweep sits
+  // between them): they run in the
   // control plane's own tenant transaction and mostly BEFORE any job exists, so there is no
   // fence to guard against and `guardActiveFence` would be unsatisfiable rather than stricter.
   // `insertServiceGeneration` writes an immutable row that no worker can reach at all
@@ -178,8 +201,9 @@ const EXPECTED_UNGUARDED = [
   "findServiceForCompany",
   "listServicesForCompany",
   "findLiveServiceInstance",
-  // ★★★ THE SIXTH IS THE ONE THAT NEEDS ITS OWN PARAGRAPH, because it is a THIRD entry point
-  // onto `writeServiceInstanceStatus` and it is UNGUARDED.
+  // ★★★ THE SIXTH IS THE ONE THAT NEEDS ITS OWN PARAGRAPH, because it is a FOURTH entry point
+  // onto `writeServiceInstanceStatus` and it is UNGUARDED. (SVC-007a wrote THIRD, which was
+  // true on its own branch; SVC-003b's sweep above is the third in the merged tree.)
   //
   // WHY A FENCE CANNOT GUARD IT. Its precondition is that the attempt this instance is
   // attributed to is ALREADY TERMINAL — that is the only state it acts in. A terminal attempt

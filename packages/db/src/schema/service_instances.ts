@@ -30,6 +30,16 @@ import { services } from "./services.js";
 // `last_health_at` (SVC-003 — the lease is minted after SVC-002's transaction has
 // committed, and health is the only writer of the last two); `restart_count` /
 // `backoff_until` (SVC-004); `paused_at` / `budget_*` / `ttl_deadline_at` (SVC-005).
+//
+// SVC-003b took the first of those and RENAMED it, which is a deviation worth stating rather
+// than quietly shipping. SVC-002 reserved `last_health_at` on the assumption that
+// `service_health` would be its only writer. It is not: EVERY attributed service observation
+// witnesses that the worker is alive, and the liveness deadline must age against the last
+// time the worker was seen AT ALL — not the last time it happened to send the one event type
+// whose name is "health". A column called `last_health_at` written by
+// `service_instance_started` and `attempt_started` too would be a lie in its own name, so the
+// column is `last_observed_at`. `started_at` stays unadded (SVC-004's restart history needs
+// it; nothing in this ticket reads it).
 export const serviceInstances = pgTable(
   "service_instances",
   {
@@ -75,6 +85,26 @@ export const serviceInstances = pgTable(
     // non-null before commit, so a committed reconciler-authored row always carries them.
     jobId: uuid("job_id"),
     attemptId: uuid("attempt_id"),
+    // ★★★ SVC-003b — THE LIVENESS DEADLINE'S ONLY INPUT, and its NULLABILITY is the whole
+    // safety property rather than an omission.
+    //
+    // Written by `applyServiceProjectionForFence` for every observation that survived
+    // attribution + identity + generation — INCLUDING the ones that move no status. The
+    // common case for a healthy service is `service_health healthy` arriving every 10 s onto
+    // an already-`healthy` row (`noop_same_status`), so a stamp written only on a real status
+    // move would go stale on every working service and the deadline would kill all of them.
+    //
+    // NULL is NOT "very old". NULL means THE WORKER HAS NEVER BEEN OBSERVED, and the deadline
+    // may not age a liveness window against an observation it does not have — that is the
+    // fail-open SVC-008b's stop-verdict work exists to refuse, pointed at the opposite
+    // outcome. A never-observed instance is aged against `created_at` under a SEPARATE and
+    // deliberately longer admission deadline instead, and the two windows never substitute for
+    // each other. `classifyServiceInstanceLiveness` is where that split lives.
+    //
+    // No default: `defaultNow()` here would forge an observation at INSERT time — the
+    // reconciler creating a row is not the worker being seen — and would erase the very
+    // distinction above.
+    lastObservedAt: timestamp("last_observed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
