@@ -624,10 +624,25 @@ one exists. Do not close it by deleting the join — the join is right; the miss
 
 ## E8-F005 — Nothing in CI compares the Drizzle schema to the migrations, so a narrowing can be silently reverted
 
-**Status:** resolved · **Owner:** — (closed; the `finding-ownership.json` entry is deleted in this commit)
+**Status:** open (NARROWED) · **Owner:** unowned (see `finding-ownership.json`)
 **Severity:** MED
 
-> ★ **RESOLVED 2026-09-11 by the schema↔migration drift gate.** `scripts/check-schema-migration-drift.mjs`
+> ★ **NARROWED 2026-09-11 — the gate landed and covers ONE of the two directions.** The
+> schema↔migration drift gate (`scripts/check-schema-migration-drift.mjs`) ships in the `migrations`
+> job and now catches the **schema-vs-snapshot** direction: the measured BRW-004 mutation E5 (reverting
+> `agentRuntimeTrustRules.agentId`'s `.notNull()`) is caught red-when-removed (proven: with the source
+> mutation the gate compiles the schema first and emits
+> `ALTER TABLE "agent_runtime_trust_rules" ALTER COLUMN "agent_id" DROP NOT NULL`, exit 1). But
+> `drizzle-kit generate` diffs the compiled schema against the meta **snapshot**, not against the
+> committed SQL, so the **SQL-file-tampering** direction is STILL UNDETECTED: an edited or gutted
+> committed migration file, while the schema and the meta snapshot both stay unchanged, produces no
+> delta and passes the gate (measured: emptying a committed `0279_*.sql` → exit 0). Catching that
+> requires APPLYING the SQL to a real database and introspecting the result — a DB-backed check, a
+> distinct and heavier class that would break this gate's deliberate DB-free / policy-lane property.
+> **E8-F005 stays OPEN on that residual** (the SQL-tampering direction), narrowed to it; the
+> schema-ahead half is done. Original resolution note preserved below for the covered half.
+>
+> ★ **Covered half — the schema↔migration drift gate.** `scripts/check-schema-migration-drift.mjs`
 > is now a step in the `migrations` job of `.github/workflows/pr.yml` ("Schema↔migration drift gate
 > (E8-F005)"), with its decision logic + wiring proven by `scripts/check-schema-migration-drift.test.mjs`
 > ("… self-test"). The check is the class-wide regenerate-and-diff the Disposition demanded, NOT a

@@ -30,8 +30,9 @@
  *   schema↔snapshot divergence.
  *
  * HOW IT RUNS.
- *   1. Requires `packages/db/dist/schema/*.js` (drizzle.config.ts reads compiled schema).
- *      Builds `@armyofagents/db` if dist is missing, so the check is correct standalone.
+ *   1. COMPILES `packages/db/src/schema/*.ts` → `dist/schema/*.js` first, UNCONDITIONALLY
+ *      (drizzle.config.ts reads the compiled schema; a stale dist would diff the OLD schema
+ *      and false-pass — E8-F005 P2). `tsc` is deterministic + DB-free.
  *   2. Copies the committed `src/migrations` (SQL + meta) into a throwaway scratch dir
  *      INSIDE packages/db, and writes a scratch drizzle config pointing `out` at it.
  *      RELATIVE paths, cwd = packages/db: drizzle-kit silently no-ops on a Windows
@@ -119,19 +120,51 @@ function distSchemaPresent() {
   }
 }
 
-function buildDbPackage() {
-  const isWin = process.platform === "win32";
+/**
+ * Compile `packages/db/src/schema/*.ts` → `dist/schema/*.js` BEFORE generating.
+ *
+ * WHY UNCONDITIONAL (E8-F005 P2). drizzle.config.ts reads the COMPILED schema, so a
+ * stale `dist` makes the gate diff the OLD schema against the committed snapshot — it
+ * false-passes the exact `.notNull()` relaxation it targets (measured: reverting
+ * `agentRuntimeTrustRules.agentId` in src without rebuilding shipped exit 0). Compiling
+ * first makes the check self-contained: it always compares the schema on disk NOW.
+ *
+ * This mirrors the FIRST half of the db package's own `generate` script
+ * (`tsc -p tsconfig.json && drizzle-kit generate`) — the half the gate previously skipped.
+ * `tsc` is deterministic and DB-free (pure TS→JS emit, no database contact), preserving
+ * the gate's policy-lane property.
+ */
+function compileDbSchema() {
+  const bin = resolveTscBin();
   const result = spawnSync(
-    isWin ? "pnpm.cmd" : "pnpm",
-    ["--filter", "@armyofagents/db", "build"],
-    { cwd: ROOT, encoding: "utf8", stdio: "inherit", shell: isWin },
+    process.execPath,
+    [bin, "-p", "tsconfig.json"],
+    { cwd: DB_DIR, encoding: "utf8", stdio: "inherit" },
   );
-  if (result.status !== 0) {
+  if (result.error) {
     throw new Error(
-      `Could not build @armyofagents/db (exit ${result.status}). The drift check needs ` +
-        `dist/schema/*.js because drizzle.config.ts reads the compiled schema.`,
+      `Could not spawn tsc to compile @armyofagents/db: ${result.error.message}. Run \`pnpm install\`.`,
     );
   }
+  if (result.status !== 0) {
+    throw new Error(
+      `Could not compile @armyofagents/db schema (tsc exit ${result.status}). The drift check ` +
+        `needs a FRESH dist/schema/*.js because drizzle.config.ts reads the compiled schema.`,
+    );
+  }
+}
+
+function resolveTscBin() {
+  const candidates = [
+    path.join(DB_DIR, "node_modules", "typescript", "bin", "tsc"),
+    path.join(ROOT, "node_modules", "typescript", "bin", "tsc"),
+  ];
+  for (const c of candidates) {
+    if (existsSync(c)) return c;
+  }
+  throw new Error(
+    "Could not locate typescript/bin/tsc under packages/db or the repo root. Run `pnpm install`.",
+  );
 }
 
 function resolveDrizzleKitBin() {
@@ -153,13 +186,13 @@ function main() {
     process.exit(1);
   }
 
+  // Compile-first, UNCONDITIONALLY: a stale dist would diff the OLD schema and false-pass
+  // (E8-F005 P2). tsc is deterministic + DB-free, so this stays a policy-lane check.
+  console.log("Compiling @armyofagents/db schema (tsc) so the gate reads the current schema…");
+  compileDbSchema();
   if (!distSchemaPresent()) {
-    console.log("dist/schema not built — building @armyofagents/db first…");
-    buildDbPackage();
-    if (!distSchemaPresent()) {
-      console.error(`FAIL: ${DIST_SCHEMA} still has no compiled schema after build.`);
-      process.exit(1);
-    }
+    console.error(`FAIL: ${DIST_SCHEMA} still has no compiled schema after tsc.`);
+    process.exit(1);
   }
 
   const scratchDir = path.join(DB_DIR, SCRATCH_DIRNAME);
