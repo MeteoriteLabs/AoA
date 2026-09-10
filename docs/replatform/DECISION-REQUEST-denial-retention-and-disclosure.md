@@ -28,9 +28,12 @@ tenant's `activity_log` is empty. That half is right and should be ratified.
 **2. ★ THE HALF NOBODY MEASURED: actor-attribution DISCLOSES THE DETECTION TO THE PROBER.**
 `activityService.list` (`server/src/services/activity.ts:113-152`) applies **no action-prefix
 filter**, and `GET /companies/:companyId/activity` (`server/src/routes/activity.ts:95-109`) gates on
-`assertCompanyAccess` — **any company member**. So a `security.denied.*` row filed under the actor's
-tenant is returned, today, in the ordinary company Activity feed that `ui/src/api/activity.ts:59`
-already consumes. The precedent protects the probed tenant and hands the attacker a read receipt.
+`assertCompanyAccess` — **any company member**. ★ **And it is not one reader** (corrected on review):
+`homeService.summary` (`home.ts:167-189`) selects the last 24h of company activity with no action
+filter and returns the row's full `details` (`:178`, `:319-322`) behind the same gate
+(`routes/dashboard.ts:22-24`); the cockpit feed (`cockpit.ts:504-517`) carries the reason code; and
+Commander's proactive check (`proactive.ts:476-484`) takes every column. So a `security.denied.*`
+row filed under the actor's tenant is returned today through several live surfaces. The precedent protects the probed tenant and hands the attacker a read receipt.
 Decision 2's paper measured the missing filter and read it as a *coverage* fact; it is a
 *disclosure* fact, and it is the disclosure Decision 3's own text does not mention.
 
@@ -157,9 +160,33 @@ agent/actor/entity filters and a hidden-issue join. There is no `action` predica
 route (`routes/activity.ts:95-109`) calls `assertCompanyAccess` and nothing else — not
 `assertRole(founder)`, not the operator gate.
 
-**Therefore, today:** a denial row filed under tenant A is returned by `GET /companies/A/activity`
-to every member of tenant A, with `details.requestedCompanyId`, `details.keyId`, `details.reason`
-and the actor id intact, through a UI path that already exists (`ui/src/api/activity.ts:59`).
+★ **AND IT IS NOT ONE READER. CORRECTED ON REVIEW — Codex P1 on PR #408, verified at source.** The
+first draft of this section, and of §5.2 and §8, named `activityService.list` alone. That is a HALF,
+and this programme's own rule is that half of a conjunction is not it. The tenant-facing read
+surface, censused at `6b39c77f6` over all fifteen `.from(activityLog)` sites outside tests:
+
+| Reader | Consumer / gate | Action filter | Carries `details`? |
+|---|---|---|---|
+| `activityService.list` (`activity.ts:113-152`) | `GET /companies/:cid/activity` — `assertCompanyAccess` (`routes/activity.ts:95-109`) | **none** | **yes** |
+| ★ `homeService.summary` (`home.ts:167-189`) | `GET /companies/:cid/home` — `assertCompanyAccess` (`routes/dashboard.ts:22-24`) | **none** | ★ **yes** — projected at `:178`, returned at `:319-322` |
+| `cockpit.ts:504-517` | `GET /companies/:cid/cockpit*` | **none** | no — `action`/`entity_type`/`entity_id` only; scoped founder-or-lead-department at `:491-502` |
+| ★ `proactive.ts:476-484` | Commander's overnight check — bare `select()`, every column | **none** | ★ **yes**, and it feeds an LLM rather than a screen |
+| `productivity-review.ts:225-248` | churn COUNTs keyed `entity_type='issue'` + one issue id | none | no — inflates a count, discloses no content |
+| `costs.ts:230-244` | INNER JOIN requiring `entity_type='issue'` **and** `run_id IS NOT NULL` | none | no |
+| `memory-feedback.ts:54-62`, `github.ts:72-83`, `marketplace-reconcile.ts:1649-1656` | exact-`action` equality | **contained by construction** | n/a |
+| `activity.ts:190-201` `forIssue` | company-scoped since #402 | none | contained by `company_id` alone |
+
+★ **The three of the fifteen not in the table, named so the census is complete rather than
+selective:** `activity.ts:266-284` (`issuesForRun`, keyed `run_id` + `entity_type='issue'` with an
+INNER JOIN to `issues` — a denial row carries no `run_id` today, but the recorder does not forbid
+one); `activity.ts:414-470` (`securityDenials`, the operator reader — the intended consumer, §2.3);
+and `dev/seed-commander-review.ts:270`, a dev seed that is not a production surface.
+
+**Therefore, today:** a denial row filed under tenant A is returned to every member of tenant A —
+with `details.requestedCompanyId`, `details.keyId`, `details.reason` and the actor id intact —
+through **at least two** live routes (`/activity` via `ui/src/api/activity.ts:59`, and `/home`), a
+third that hands the reason code to founders and leads (`/cockpit`), and a fourth that hands the
+whole row to Commander.
 
 **What that means for Q1.** Under actor-attribution, a cross-tenant probe mounted from inside tenant
 A produces a durable, readable notice **inside tenant A** that the probe was detected, when, against
@@ -249,8 +276,10 @@ is the finding that reshapes the options: (a) is a null for this whole cohort.
 - **Covers:** Class 1 only. **Zero of the fourteen.**
 - **Cost:** zero — it is shipped.
 - **What it discloses:** §3. Under today's `list`, the prober's own colleagues, and the prober,
-  read the detection. Closing that costs one `notLike` predicate in `activityService.list` plus a
-  provocation test; it is not a schema change and not a new surface.
+  read the detection. ★ **Closing it is NOT one predicate** (corrected on review): it is a predicate
+  at every tenant-facing reader in §3's census — `list`, `home.ts:182-187`, `cockpit.ts:515` and
+  `proactive.ts:479-484` at minimum — each with its own provocation. Still no schema change and no
+  new surface, but four call sites and four tests, not one.
 - **Attacker:** with the `list` gap open, a full-fidelity oracle. With it closed, nothing.
 - **Defender:** the probed tenant cannot defend itself (§6).
 
@@ -445,10 +474,20 @@ Ratify: the row is filed under the tenant that owns the refusing credential; the
 stays empty; `entity_id` names the company that was reached for. This is what three suites already
 assert and what #402's reader was built on.
 
-Close Q3: add a `security.denied.` exclusion to `activityService.list`
-(`services/activity.ts:113-152`) so the reserved namespace is reachable **only** through the
-operator plane — with a **provocation**: write a real denial row under company A through the real
-recorder, and assert `GET /companies/A/activity` does not return it, observed RED first.
+Close Q3: exclude the `security.denied.` namespace from **every tenant-facing `activity_log`
+reader**, not from `activityService.list` alone. ★ **This sentence named one reader in the first
+draft, and that was a half** — Codex P1 on PR #408, verified at source, corrected here rather than
+footnoted (§3 carries the census). At minimum: `activity.ts:113-152`, `home.ts:167-189`,
+`cockpit.ts:504-517` and `proactive.ts:476-484`. The cheapest correct shape is ONE shared
+`notDenialNamespace()` predicate exported beside `SECURITY_DENIAL_ACTION_PREFIX`, so that a future
+reader which omits it is a visible omission rather than an invisible one; four independent
+predicates drift.
+
+**With a provocation PER READER**, each observed RED first: write one real denial row under company
+A through the real recorder, then assert it is absent from `GET /companies/A/activity`, from
+`GET /companies/A/home` **including its `details` payload**, from the cockpit feed, and from the
+proactive check's input. ★ **A single test against `/activity` would have passed while `/home`
+returned the whole row** — which is precisely the shape of defect this condition exists to catch.
 
 > **★ THE STRONGEST ARGUMENT AGAINST.** *It blinds the one party who has a legitimate,
 > non-adversarial need for the row.* A founder whose agent key was stolen and is being refused
@@ -521,11 +560,13 @@ it is unbounded and nothing says so.
 ### ▢ **DECISION 3.1 — CLASS 1: the already-attributed sites**
 
 - ▢ **★ RECOMMENDED** — **Ratify actor-attribution**, and **close Q3 in the same wave**: exclude the
-  `security.denied.` namespace from `activityService.list`, with a provocation observed RED first.
+  `security.denied.` namespace from **every tenant-facing `activity_log` reader** — at minimum
+  `activity.ts:113-152`, `home.ts:167-189`, `cockpit.ts:504-517` and `proactive.ts:476-484` —
+  through ONE shared predicate, **with a provocation per reader**, each observed RED first.
 - ▢ **(alt)** Ratify attribution, and expose the namespace to **founders of the owning tenant only**
   instead of excluding it. *Keeps tenant self-service; leaves the oracle open to a compromised
   founder session.*
-- ▢ **(alt)** Ratify attribution and leave `list` unchanged. *Explicitly accepts that the prober
+- ▢ **(alt)** Ratify attribution and leave the readers unchanged. *Explicitly accepts that the prober
   reads its own detection. Choose only with that written into the register.*
 
 ### ▢ **DECISION 3.2 — CLASS 2: the fourteen sites**
