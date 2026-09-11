@@ -110,8 +110,15 @@ import { runInTenant } from "../db/tenant-context.js";
 import { assertAdmissibleOrganization } from "./tenant-admission.js";
 import {
   CANCELLED_ATTEMPT_PROJECTION,
+  type ServiceControlAuditContext,
   type ServiceDefinition,
 } from "./service-management.js";
+import type { PreparedActivityEvent } from "./activity-log.js";
+import {
+  publishServiceControlActivity,
+  recordServiceGenerationRollActivity,
+  type ServiceControlActor,
+} from "./service-control-audit.js";
 
 /**
  * The desired states a generation roll may be issued against.
@@ -246,6 +253,15 @@ export interface RollServiceGenerationInput {
   /** The bounded operator reason, carried into the drain's control command. */
   reason: string;
   createdBy: string | null;
+  /**
+   * WHO performed the roll — the durable `activity_log` row's attribution (SVC-005a / DE-12
+   * conjunct 3c). REQUIRED, not optional, for the same reason `createService`'s actor is: a
+   * mutating control action with nowhere to record who took it is the invariant AGENTS.md §3
+   * names, and an optional parameter would leave that invariant as unenforced as a convention.
+   * `jobControlRoutes.assertOrgAdmin` has already refused any caller without a board user id
+   * before a roll can be requested, so this is always a real user id.
+   */
+  actor: ServiceControlActor;
 }
 
 /**
@@ -274,6 +290,7 @@ export interface RollServiceGenerationInput {
 export async function rollServiceGenerationWithinTenant(
   repos: TenantRepositories,
   input: RollServiceGenerationInput,
+  audit: ServiceControlAuditContext,
 ): Promise<RollServiceGenerationResult> {
   const service = await repos.jobControl.lockServiceForReconcile({
     organizationId: input.organizationId,
@@ -336,51 +353,78 @@ export async function rollServiceGenerationWithinTenant(
   // through `setServiceDesiredStateWithinTenant`, because a roll must NOT move `desired_state`
   // — a rolled `running` service must stay `running` so the reconciler places N+1 the moment
   // the old instance leaves the live index.
-  const instance = await repos.jobControl.findLiveServiceInstance({
-    organizationId: input.organizationId,
-    serviceId: input.serviceId,
-  });
-  if (!instance) return { verdict, drain: { status: "no_instance" } };
-  if (!instance.jobId) {
-    return { verdict, drain: { status: "no_job", serviceInstanceId: instance.serviceInstanceId } };
-  }
-  const jobId = instance.jobId;
-  const now = await repos.jobControl.currentDatabaseTime();
-  const cancellation = await repos.jobControl.requestCancellation({
-    organizationId: input.organizationId,
-    companyId: input.companyId,
-    jobId,
-    reason: input.reason,
-    graceful: true,
-    commandId: randomUUID(),
-    now,
-  });
-  // ★ ALWAYS ATTEMPTED, NEVER GATED ON THE CANCELLATION'S REPORTED STATUS — SVC-007a's
-  // reasoning, unchanged: the precondition that matters ("the attempt is terminal and did not
-  // succeed") is a DATABASE fact the repository re-reads under the instance's row lock, so
-  // matching on a returned string here would be a second, weaker gate. E9-F006 is the failure
-  // this closes on the roll path too: `requestCancellation` FINALIZES rather than drains when
-  // there is no fenced worker, emitting no event, so without this call the instance would stay
-  // non-terminal inside `service_instances_live_service_uq` forever and generation N+1 would
-  // never be placed. That is the residual E9-F006 §4 warned SVC-005 about BY NAME.
-  const terminalized = await repos.jobControl.terminalizeServiceInstanceForCancelledAttempt({
-    organizationId: input.organizationId,
-    companyId: input.companyId,
-    jobId,
-    toStatus: CANCELLED_ATTEMPT_PROJECTION.toStatus,
-    allowedFromStatuses: CANCELLED_ATTEMPT_PROJECTION.allowedFromStatuses,
-  });
-  return {
-    verdict,
-    drain: {
+  //
+  // ★ COMPUTED INTO A LOCAL RATHER THAN RETURNED AT EACH EXIT, so the audit row below can fire
+  // ONCE after it, carrying the drain's outcome, on every `rolled` path. The three drain exits
+  // are all the SAME `rolled` verdict; recording the audit at each would be three call sites to
+  // keep in step, the shape SVC-007b split `applyServiceDesiredState` out to avoid.
+  const drain: RollDrainResult = await (async (): Promise<RollDrainResult> => {
+    const instance = await repos.jobControl.findLiveServiceInstance({
+      organizationId: input.organizationId,
+      serviceId: input.serviceId,
+    });
+    if (!instance) return { status: "no_instance" };
+    if (!instance.jobId) {
+      return { status: "no_job", serviceInstanceId: instance.serviceInstanceId };
+    }
+    const jobId = instance.jobId;
+    const now = await repos.jobControl.currentDatabaseTime();
+    const cancellation = await repos.jobControl.requestCancellation({
+      organizationId: input.organizationId,
+      companyId: input.companyId,
+      jobId,
+      reason: input.reason,
+      graceful: true,
+      commandId: randomUUID(),
+      now,
+    });
+    // ★ ALWAYS ATTEMPTED, NEVER GATED ON THE CANCELLATION'S REPORTED STATUS — SVC-007a's
+    // reasoning, unchanged: the precondition that matters ("the attempt is terminal and did not
+    // succeed") is a DATABASE fact the repository re-reads under the instance's row lock, so
+    // matching on a returned string here would be a second, weaker gate. E9-F006 is the failure
+    // this closes on the roll path too: `requestCancellation` FINALIZES rather than drains when
+    // there is no fenced worker, emitting no event, so without this call the instance would stay
+    // non-terminal inside `service_instances_live_service_uq` forever and generation N+1 would
+    // never be placed. That is the residual E9-F006 §4 warned SVC-005 about BY NAME.
+    const terminalized = await repos.jobControl.terminalizeServiceInstanceForCancelledAttempt({
+      organizationId: input.organizationId,
+      companyId: input.companyId,
+      jobId,
+      toStatus: CANCELLED_ATTEMPT_PROJECTION.toStatus,
+      allowedFromStatuses: CANCELLED_ATTEMPT_PROJECTION.allowedFromStatuses,
+    });
+    return {
       status: "requested",
       serviceInstanceId: instance.serviceInstanceId,
       generation: instance.generation,
       jobId,
       cancellation: cancellation.status,
       instance: terminalized.outcome,
-    },
-  };
+    };
+  })();
+
+  // (4) ★★★ THE DURABLE AUDIT — DE-12 conjunct 3c ("generation changes are audited").
+  //
+  // Recorded ONLY here, on the `rolled` verdict, and INSIDE this transaction, so it commits with
+  // the mint and the bump or not at all — the same transaction-as-replay-guard SVC-007b relies
+  // on for create and desired-state (`service-control-audit.ts`). A NO-OP roll never reaches
+  // this line: `absent`, `desired_state_forbids`, `generation_exists` and `conflict` all return
+  // above the bump, and none of them moves the column, so none is audited — a generation-change
+  // record is written exactly when a generation changed. The `logger.info` line the route still
+  // emits is process telemetry; THIS row is the record.
+  audit.published.push(await recordServiceGenerationRollActivity(audit.tx, {
+    actor: audit.actor,
+    companyId: input.companyId,
+    organizationId: input.organizationId,
+    serviceId: input.serviceId,
+    from,
+    to: bumped.generation,
+    reason: input.reason,
+    desiredState: service.desiredState,
+    drainStatus: drain?.status ?? null,
+  }));
+
+  return { verdict, drain };
 }
 
 export interface ServiceRolloutDependencies {
@@ -397,6 +441,13 @@ export async function rollServiceGeneration(
   // (FND-007, Decision #121). THROWS rather than returning a refusal — a sentinel org here is
   // a programming error, not a state a caller can be in.
   assertAdmissibleOrganization(input.organizationId);
-  return runInTenant(deps.appDb, input.organizationId, (repos) =>
-    rollServiceGenerationWithinTenant(repos, input));
+  // ★ THE AUDIT SINK, DRAINED AFTER COMMIT. Identical shape to `createService` and
+  // `setServiceDesiredState`: the prepared `activity.logged` event is collected inside the
+  // transaction and published only once it has committed. A mid-transaction throw exits
+  // `runInTenant` and never reaches the publish, so a rollback announces nothing.
+  const published: PreparedActivityEvent[] = [];
+  const result = await runInTenant(deps.appDb, input.organizationId, (repos, tx) =>
+    rollServiceGenerationWithinTenant(repos, input, { tx, actor: input.actor, published }));
+  publishServiceControlActivity(published);
+  return result;
 }

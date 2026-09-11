@@ -22,8 +22,8 @@ turns out to be deliverable; on the third — DE-17 — a different and harder b
 |---|---|---|---|
 | 1 | **DE-01** `audit`, read-denial conjunct | "needs a `BYPASSRLS` comparator, the privilege `client.ts:325` forbids" | ★ **THE BLOCKER IS FALSE** — already refuted in-tree and in CI. Deliverable. The residual objection is a **design** cost, not an impossibility. |
 | 2 | **DE-27** `audit`, cross-replica + partition conjuncts | "the system has no replica identity; the clause is unsatisfiable" | **SPLIT.** The *partition* conjunct is genuinely vacuous. The *cross-replica admission* conjunct is **ambiguous, not unsatisfiable** — under the weaker of its two readings it is ordinary Group B/C work. |
-| 3 | **DE-12** `audit`, generation-change conjunct | "`services.generation` has no writer" | **CONFIRMED undeliverable — and WORSE than filed.** The clause has **three** conjuncts and **all three** are vacuous, not one. |
-| 4 | **DE-20** `audit`, rollback conjunct | "`createDistributedExecutionDrain` has zero production callers" | **CONFIRMED undeliverable** for the rollback conjunct. ★ But the *other* conjunct (legacy selection) is **closable today** and does not belong in this decision at all. |
+| 3 | **DE-12** `audit`, generation-change conjunct | "`services.generation` has no writer" | **PARTLY undeliverable.** The clause has **three** conjuncts. ★ **FACT CORRECTION 2026-09-11 (see §4):** conjunct 3c ("generation changes are audited") is **now DELIVERED** — `services.generation` has a writer (`bumpServiceGeneration`) and a roll writes a durable `activity_log` row. Only **3a (partition)** and **3b (drain)** remain vacuous; those are the amend targets. Row stays `partial`. |
+| 4 | **DE-20** `audit`, rollback conjunct | "`createDistributedExecutionDrain` has zero production callers" | **CONFIRMED undeliverable** for the rollback conjunct (4b). ★ **FACT CORRECTION 2026-09-11 (see §5):** the *other* conjunct (4a, cutover selection) is **now DELIVERED at HEAD** for BOTH arms (`cutover-selection-audit.ts`) — it was "closable today" at branch point and has since been closed. Only 4b remains, and it does not belong in this decision. |
 | 5 | **DE-11** `audit` (whole clause) | "the controls themselves are absent; nothing decides, so there is nothing to record" | ★★ **THE PREMISE IS STALE.** Something *does* decide, at a named line, with a tenant and a live DB handle already in scope. **Deliverable, cheaply.** |
 | 6 | **DE-17** `audit` (whole clause) | "needs a wire hop, and `worker-protocol` is v1-FROZEN" | ★ **STILL BLOCKED — but not by the freeze, and the real blocker is HARDER.** ★★ **CORRECTED ON REVIEW, see §6.2.** The extension container *is* additive under the freeze and *is* a real carrier — but the worker-event **ingest** path is fence-guarded and the adapter-manager's wire capability is **not authority-typed**, so neither channel reaches DE-17's post-fence boundary. |
 
@@ -275,6 +275,33 @@ sentence, which the text in §3.4 does.
 
 ## 4. DE-12 (Critical) — the generation-change conjunct, and the two the finding did not count
 
+> ★★★ **FACT CORRECTION, 2026-09-11 — this section was written at branch point `743c30f08`
+> and one of its three conjuncts has moved. THE DECISION REMAINS UNRULED; this is a
+> measurement update, not a ruling, and it changes no option and no signature below.**
+>
+> At the branch point, `services.generation` had **no writer**, so this section judged all
+> three conjuncts vacuous. That is now stale for **conjunct 3c**:
+>
+> - **A writer EXISTS.** `bumpServiceGeneration` (`packages/db/src/repositories/tenant/job-control.ts`)
+>   is a compare-and-set on `services.generation`, reached from `rollServiceGenerationWithinTenant`
+>   (`server/src/services/service-generation-rollout.ts`) via
+>   `POST /organizations/:organizationId/companies/:companyId/services/:serviceId/generation`. So a
+>   generation **can** change, and `update(services)` for generation is no longer zero-hit.
+> - **3c is DELIVERED.** An actual roll now writes a durable `service.generation_roll` `activity_log`
+>   row inside the roll's own tenant transaction (`recordServiceGenerationRollActivity`,
+>   `server/src/services/service-control-audit.ts`; the SERVICE-layer path SVC-007b uses for create
+>   and desired-state), exercised RED-first by `service-generation-rollout.integration.test.ts` R-T11.
+>   So **"generation changes are audited" is no longer vacuous — it is met.**
+> - **3a (partition) and 3b (drain) are UNCHANGED and still vacuous** — no replica identity / no
+>   partition detector; no service-drain producer (E9-F008). **They are the DE-12 amend targets now,
+>   not all three.** DE-12 stays `partial`.
+>
+> ★ **This correction edits the ANALYSIS below (§4.2's 3c row, §4.4's recommendation) and the §0/§7
+> summary cells only.** The Options in §4.3 and the Decision block in §8 still literally read
+> "all three conjuncts" — that is the proposed amendment TEXT a founder would enact, and re-drafting
+> it (to drop only 3a + 3b, and to note 3c delivered) belongs to whoever RULES this decision, not to
+> this fact-correction. See the DE-12 `deliveryEvidence` in the register for the delivered-3c note.
+
 ### 4.1 The clause, verbatim
 
 > `"audit": "partition, drain, and generation changes are audited"`
@@ -285,13 +312,15 @@ sentence, which the text in §3.4 does.
 |---|---|---|---|
 | 3a | **"partition … audited"** | **UNDELIVERABLE — vacuous.** ★ Not queued by `E0-F013`. | Same measurement as `DE-27` 2b: no replica identity, no partition detector, whole-tree zero hits. |
 | 3b | **"drain … audited"** | **UNDELIVERABLE — vacuous.** ★ Not queued by `E0-F013`. | There is no service drain. The register's own evidence says it: *"There is no reconciler file, no instance fence, no drain."* |
-| 3c | **"generation changes are audited"** | **UNDELIVERABLE — vacuous.** The one queued. | `services.generation` has **no writer**. Re-measured whole-tree at tip: `update(services)` returns **zero hits anywhere** (including tests); `insert(services)` returns exactly two (`packages/db/src/repositories/tenant/index.ts:217`, one adversarial test). `generation` is `integer().notNull().default(1)` (`packages/db/src/schema/services.ts:26`) and its only reader is a `WHERE` predicate at `packages/db/src/repositories/tenant/job-control.ts:1675`. **No generation ever changes, so no change event exists.** |
+| 3c | **"generation changes are audited"** | ★ **DELIVERED at HEAD (2026-09-11).** ~~UNDELIVERABLE — vacuous.~~ The one queued. | **At branch point `743c30f08`:** `services.generation` had **no writer** — `update(services)` returned zero hits whole-tree, so no generation ever changed and no change event existed. **At HEAD:** `bumpServiceGeneration` (`packages/db/src/repositories/tenant/job-control.ts`) writes the column, reached from `rollServiceGenerationWithinTenant` (`server/src/services/service-generation-rollout.ts`) via `POST .../services/:serviceId/generation`, and an actual roll writes a durable `service.generation_roll` `activity_log` row (`recordServiceGenerationRollActivity`, `server/src/services/service-control-audit.ts`). **A generation can change, and the change is audited.** |
 
 **★ This is the conjunct-level correction this paper owes.** `E0-F013` files "DE-12's change half"
-as one of five. Measured, it is **three of three** — the row's entire audit clause is vacuous, and
-calling it a "half" understates it by two conjuncts. That matters for the amendment text: an
-amendment that drops only "generation changes" leaves two vacuous conjuncts standing in a
-**Critical** row.
+as one of five. At the branch point, measured, it was **three of three** — the whole audit clause
+was vacuous, and calling it a "half" understated it by two conjuncts. ★ **Corrected 2026-09-11:**
+conjunct **3c is now DELIVERED** (see the banner at the head of §4), so the remaining vacuous
+conjuncts are **two, not three** — 3a (partition) and 3b (drain). An amendment must now drop those
+two and record 3c as met, leaving DE-12 `partial`; it must **not** drop all three, which was the
+branch-point recommendation.
 
 ### 4.3 Options
 
@@ -357,11 +386,20 @@ the first draft's, and a better-evidenced one.
 **(c) THIRD PATH — none worth naming.** There is no conjunct here to split off and close; splitting
 requires at least one deliverable side, and all three are vacuous.
 
-### 4.4 ★ RECOMMENDATION — **(a), covering all three conjuncts, not one**
+### 4.4 ★ RECOMMENDATION — **(a), covering the two conjuncts still vacuous (3a + 3b)**
 
-`DE-12` is the clearest case in this paper. Drop all three, keep the row `partial`, keep `E0-F011`
-as its owner, and make the amendment say in terms that the *control* is unbuilt so the audit clause
-has no subject.
+> ★ **CORRECTED 2026-09-11.** As written at branch point this recommendation was "**(a), covering
+> all three conjuncts, not one**" — drop all three. Conjunct **3c is now DELIVERED** (§4 banner),
+> so the recommendation is now: amend **(a)** to drop only **3a (partition)** and **3b (drain)** as
+> vacuous, **record 3c as met**, keep the row `partial`, keep `E0-F011` as its owner. The reasoning
+> below still holds for 3a and 3b; where it says "all three", read "3a and 3b". The decision
+> **remains UNRULED** and the §4.3 option text / §8 signature block are unchanged — re-drafting the
+> proposed amendment to this scope is the ruling founder's, not this correction's.
+
+`DE-12` remains a clear case for **(a)** on its two still-vacuous conjuncts. Drop 3a and 3b, record
+3c as delivered, keep the row `partial`, keep `E0-F011` as its owner for the unbuilt control the
+remaining two conjuncts depend on, and make the amendment say in terms that partition detection and
+service drain are unbuilt so those two audit conjuncts have no subject.
 
 **★★★ DOES THIS RECOMMENDATION SURVIVE THE CORRECTED CENSUS? YES — AND HERE IS WHY IT SURVIVES
 WITHOUT IT.** The correction is stated first and the conclusion is re-derived from scratch, because
@@ -374,14 +412,21 @@ directory. Re-run independently at `743c30f08`, each on its own:
 
 - `update(services)` → **zero hits** whole-tree, tests included. `insert(services)` → exactly two
   (`packages/db/src/repositories/tenant/index.ts`, one adversarial test). So **no generation ever
-  changes.**
+  changes.** ★ **STALE AT HEAD (2026-09-11):** `bumpServiceGeneration` now writes `services.generation`
+  from `rollServiceGenerationWithinTenant`, so a generation **does** change and conjunct 3c is
+  delivered — this bullet is the branch-point measurement, kept for provenance, not the current one.
 - No service-reconciler source file exists under `server/` or `packages/`
   (`packages/adapter-manager/src/reconcile-reaper.ts` is the orphan-**sandbox** reaper, a different
-  mechanism on a different boundary).
-- `replicaId|replica_id|AOA_CONTROL_PLANE_REPLICA|controlPlaneId` → **zero hits.**
+  mechanism on a different boundary). *(3b: drain still has no producer — unchanged at HEAD.)*
+- `replicaId|replica_id|AOA_CONTROL_PLANE_REPLICA|controlPlaneId` → **zero hits.** *(3a: partition
+  still has no detector — unchanged at HEAD.)*
 
-**A design document is not a writer.** 954 lines of `SVC-002` change none of those three numbers,
-and the amendment they justify is unchanged: all three conjuncts assert events that cannot occur.
+**A design document is not a writer** — but a shipped roll path **is one**. 954 lines of `SVC-002`
+changed none of those numbers, and at branch point all three conjuncts asserted events that could
+not occur. ★ **Corrected 2026-09-11:** the generation writer arrived after this section was written
+(not from `SVC-002`, which still scopes it out, but from the roll path in
+`service-generation-rollout.ts`), so **3c's event now occurs and is audited**; only **3a and 3b**
+still assert events that cannot occur. The amendment (a) justifies is therefore scoped to those two.
 
 **What the census DID support was the rejection of option (b)** — *"does the programme intend to
 build it?"* — and **on the corrected evidence (b) is rejected more firmly, not less.** The first
@@ -424,7 +469,7 @@ weakening it:** there is now a live, serious design to attach an escalation to, 
 
 | # | Conjunct | Verdict | Why, measured at tip |
 |---|---|---|---|
-| 4a | **"cutover selection … audited"** | ★ **HALF DELIVERED, and the missing half is CLOSABLE TODAY. Not a Decision 1 item.** | A **distributed** selection writes one `distributed_execution_handoff` heartbeat-run event (`server/src/services/heartbeat.ts:6937`). A **legacy** selection — the other arm of the same decision — writes nothing: the non-suppressed path falls straight to `adapter.execute` at `heartbeat.ts:5453`. Both arms sit in `heartbeat.ts`, which is on the control plane, holds a db handle, is async, and already owns the event writer. **This is a wiring job in the same file, not a decision.** |
+| 4a | **"cutover selection … audited"** | ★ **DELIVERED at HEAD (2026-09-11).** ~~HALF DELIVERED, missing half CLOSABLE TODAY.~~ Not a Decision 1 item. | **At branch point:** a **distributed** selection wrote one `distributed_execution_handoff` heartbeat-run event; a **legacy** selection wrote **nothing** (the non-suppressed path fell straight to `adapter.execute`), so the missing half was a wiring job in `heartbeat.ts`. **At HEAD that wiring is done:** `buildCutoverSelectionEvent` (`server/src/services/cutover-selection-audit.ts`), appended at the single site after `canaryExecutionOwner` is assigned in `heartbeat.ts` (`appendRunEvent(run, seq++, buildCutoverSelectionEvent(canaryExecutionOwner))`), writes a `distributed_execution_selection` heartbeat-run-event row for **BOTH** the distributed and legacy arms. The legacy-selection blindness this cell named is closed. |
 | 4b | **"… rollback transitions are audited"** | **UNDELIVERABLE — vacuous.** | Re-measured whole-tree at tip: `createDistributedExecutionDrain` has **zero production callers** — the census returns its declaration (`server/src/services/job-distributed-drain.ts:114`), two test files, and nothing else. Removing an organization from the rollout dial cancels nothing in flight; it only changes what the **next** wake resolves. **There is no rollback transition, so there is no transition event.** |
 
 **★ Conjunct 4a does not belong in Decision 1.** `E0-F013` files "DE-20's rollback half" — correctly
@@ -466,6 +511,14 @@ when `E0-F014` rules on whether the drain gets a caller. Cost: the row keeps a c
 its amended `revocation` clause and its unamended `audit` clause for however long that takes.
 
 ### 5.4 ★ RECOMMENDATION — **(a), scoped to 4b only, with 4a named as excluded**
+
+> ★ **FACT CORRECTION 2026-09-11 (decision UNRULED).** This recommendation's scope — **4b only,
+> 4a excluded** — is unchanged and reinforced. At branch point 4a was "half delivered, missing half
+> closable today"; **at HEAD the missing half is closed** (`cutover-selection-audit.ts`
+> `buildCutoverSelectionEvent`, wired in `heartbeat.ts` for both arms — see §5.2). So 4a is now not
+> merely *excluded from* this decision but *delivered*, which removes any temptation to sweep it
+> into a 4b amendment. The proposed amendment text in §5.3 and the §8 signature block are unchanged;
+> re-drafting them to note 4a delivered is the ruling founder's.
 
 The 2026-09-09 `revocation` amendment already made this call for the control; leaving the audit
 clause asserting the opposite in the same row is the kind of internal contradiction a register
@@ -818,6 +871,14 @@ read "eleven."** Everything else in this table is a disposition the founder has 
 
 ★ **The withdrawn row is kept struck rather than deleted**, on this programme's own convention: a
 paper whose central complaint is an over-stated count must not quietly restate its own.
+
+★ **FACT CHECK 2026-09-11 — the HEAD deliveries above do NOT move these counts, and here is why.**
+`DE-12`'s conjunct **3c** and `DE-20`'s conjunct **4a (legacy arm)** were both delivered after this
+paper's branch point (§4, §5). Neither moves the "hard-blocked" set: `DE-12` stays hard-blocked on
+its still-vacuous **3a + 3b**, and `DE-20` stays hard-blocked on its still-vacuous **4b (rollback)** —
+each row was counted here on the strength of the conjunct that is *still* vacuous, not the one now
+delivered. So both rows remain in the `(4)`/ceiling-13 measurement unchanged. The deliveries close
+sub-conjuncts, not crossings; the ruling this paper requests is unchanged and **UNRULED**.
 
 **One drift noted in passing, changing nothing here.** `E0-F013` records Decision 2's acceptance
 condition **(a)** — a production reader of `security.denied.*` — as **OPEN**. At this branch point
