@@ -42,6 +42,10 @@ import {
   recordUpgradeDenial,
   type LiveEventsUpgradeDenialReason,
 } from "./live-events-denial-audit.js";
+import {
+  recordTenantlessUpgradeDenial,
+  type LiveEventsUpgradeUnattributedReason,
+} from "./live-events-tenantless-denial-audit.js";
 import { permissionService } from "../services/permissions.js";
 import { hubItemsService } from "../services/hub-items.js";
 import {
@@ -124,6 +128,18 @@ function parseCompanyId(pathname: string) {
   } catch {
     return null;
   }
+}
+
+/**
+ * The COARSE source key for the tenant-less upgrade denial bound: the socket's
+ * remote address. It is the one identifier on a refused upgrade an attacker
+ * cannot cheaply rotate per request (unlike the caller-supplied company path
+ * segment). `null` when the transport does not expose one — those hits share a
+ * single bucket per surface, which is the strongest bound.
+ */
+function upgradeSourceKey(req: IncomingMessage): string | null {
+  const addr = req.socket?.remoteAddress;
+  return typeof addr === "string" && addr.length > 0 ? addr : null;
 }
 
 function parseBearerToken(rawAuth: string | string[] | undefined) {
@@ -274,6 +290,28 @@ export async function authorizeUpgrade(
   const authToken = parseBearerToken(req.headers.authorization);
   const token = authToken ?? (queryToken.length > 0 ? queryToken : null);
 
+  // ★ DE-21 / E0-F013 Decision 3.2 — the operator-only sink for the SIX branches
+  // below that resolve no actor tenant. `companyId` is the caller-supplied path
+  // segment (evidence in `entity_id`, never attribution — the row is `company_id
+  // NULL`). Bounded per (surface, remote-address) so a flood cannot grow the
+  // operator's evidence table; never throws. The agent-key branches further down
+  // are Class 1 and keep `recordUpgradeDenial` — do NOT route them here.
+  const denyTenantless = (
+    reason: LiveEventsUpgradeUnattributedReason,
+    actorType: "user" | "agent",
+    actorId: string,
+    details?: Record<string, unknown>,
+  ): Promise<void> =>
+    recordTenantlessUpgradeDenial(db, {
+      reason,
+      requestedCompanyId: companyId,
+      actorType,
+      actorId,
+      sourceKey: upgradeSourceKey(req),
+      control: "server/src/realtime/live-events-ws.ts:authorizeUpgrade",
+      details,
+    });
+
   // Browser board context has no bearer token in local_trusted and authenticated modes.
   if (!token) {
     if (opts.deploymentMode === "local_trusted") {
@@ -294,6 +332,10 @@ export async function authorizeUpgrade(
         opts.deploymentMode !== "cloud_auth") ||
       !opts.resolveSessionFromHeaders
     ) {
+      await denyTenantless("board_no_session_resolver", "user", "anonymous", {
+        deploymentMode: opts.deploymentMode,
+        hasSessionResolver: Boolean(opts.resolveSessionFromHeaders),
+      });
       return null;
     }
 
@@ -305,6 +347,9 @@ export async function authorizeUpgrade(
     // already trusts the board origin.
     const origin = req.headers.origin;
     if (!origin || !(opts.trustedOrigins ?? []).includes(origin)) {
+      await denyTenantless("board_untrusted_origin", "user", "anonymous", {
+        origin: origin ?? null,
+      });
       return null;
     }
 
@@ -312,7 +357,10 @@ export async function authorizeUpgrade(
       headersFromIncomingMessage(req)
     );
     const userId = session?.user?.id;
-    if (!userId) return null;
+    if (!userId) {
+      await denyTenantless("board_no_user", "user", "anonymous");
+      return null;
+    }
 
     if (opts.deploymentMode === "cloud_auth") {
       // Mirror authorizeCompanyUpgrade (services/upgrade-auth.ts) tenant-isolation
@@ -323,7 +371,10 @@ export async function authorizeUpgrade(
       // authenticated branch below keeps its own instance_admin rule. Extracted
       // into hasActiveCloudMembership so the connection membership-sweep can
       // re-run the exact same predicate against already-open sockets.
-      if (!(await hasActiveCloudMembership(db, companyId, userId))) return null;
+      if (!(await hasActiveCloudMembership(db, companyId, userId))) {
+        await denyTenantless("board_no_cloud_membership", "user", userId);
+        return null;
+      }
 
       return {
         companyId,
@@ -367,9 +418,16 @@ export async function authorizeUpgrade(
     // holder with no memberships at all — so there is often no FK-valid company
     // here whatsoever; and (b) when it is non-empty the ids are the actor's OTHER
     // tenants, none of which was asked for anything or refused anything, so
-    // picking one is an attribution rule, not a wiring gap. This branch therefore
-    // stays open under `E0-F013`'s Decision 3. See `live-events-denial-audit.ts`.
-    if (!roleRow && !hasCompanyMembership) return null;
+    // picking one is an attribution rule, not a wiring gap. E0-F013's Decision 3.2
+    // (slice 2) closes it by recording to the OPERATOR-ONLY sink (`company_id
+    // NULL`) instead of attributing to one of the actor's other memberships. See
+    // `live-events-tenantless-denial-audit.ts`.
+    if (!roleRow && !hasCompanyMembership) {
+      await denyTenantless("board_no_membership", "user", userId, {
+        membershipCount: memberships.length,
+      });
+      return null;
+    }
 
     return {
       companyId,
@@ -394,9 +452,13 @@ export async function authorizeUpgrade(
   if (!key) {
     // NO DB-RESOLVED COMPANY EXISTS HERE. An unknown, revoked or malformed token
     // matched no `agent_api_keys` row, so the only company in hand is the
-    // caller-supplied path segment — the dominant probe case, and the one that
-    // cannot be attributed without a ruling. Nothing durable is written; this arm
-    // belongs to `E0-F013`'s Decision 3, with the board/session branches above.
+    // caller-supplied path segment — the dominant probe case. E0-F013's Decision
+    // 3.2 (slice 2) records it to the OPERATOR-ONLY sink (`company_id NULL`,
+    // requested company in `entity_id`), bounded so an unknown-token flood cannot
+    // grow the operator's evidence table. The raw token is NEVER stored.
+    await denyTenantless("agent_key_unknown", "agent", "unknown", {
+      tokenPresented: true,
+    });
     return null;
   }
   if (key.companyId !== companyId) {

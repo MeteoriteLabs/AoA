@@ -2130,6 +2130,29 @@ that owns the schema file. Until then the reader is correct and slow, which is s
     tamper-resistant delete, **pending slice 3**) — are unshipped, and `DE-16`/`DE-21` remain
     `partial` in their cohorts with their conjuncts (subscribe/replay, reconciliations) untouched.
     No count is struck and no crossing status changes.
+  - ★ **UPDATE 2026-09-11 — Decision 3.2 (Q3-sites) IMPLEMENTED — slice 2 (`decision3-tenantless-sink`).**
+    The **fourteen** tenant-less deny sites now record to the OPERATOR-ONLY sink (`company_id NULL`,
+    caller-supplied company in `entity_id`) with the founder's required write bound. Sites: the six
+    `authorizeUpgrade` board/session/`!key` branches
+    (`server/src/realtime/live-events-ws.ts`, via `live-events-tenantless-denial-audit.ts`, surface
+    `security.denied.live_events_upgrade_unattributed`) and the eight plugin-cloud-gate branches
+    (seven `rejectBlockedCloudExecution` caller-supplied-company sites in `server/src/routes/plugins.ts`
+    + `server/src/routes/company-plugins.ts` rollback, via `cloud-plugin-denial-audit.ts`, surface
+    `security.denied.cloud_plugin_execution`). The bound (`server/src/services/bounded-denial-recorder.ts`)
+    caps rows per `(surface, coarse-source-key)` window and aggregates the remainder into a
+    suppressed-count row; the coarse key is the remote address (hashed), **never** the caller-supplied
+    company/entity id an attacker varies at will. Memory is bounded (`maxKeys` eviction flushes pending
+    counts). M1 is in-memory / process-local (resets on restart; a durable / cross-replica bound is the
+    named follow-up). Proven RED-first by `server/src/__tests__/bounded-denial-recorder.test.ts` (flood
+    M≫N → ≤ N+1 rows + a recorded suppressed count) and
+    `server/src/__tests__/decision3-tenantless-sink.integration.test.ts` (each site writes a real
+    operator-sink row against Postgres; the operator reader surfaces them; the tenant feed does not).
+    ★ **NARROW — this closes NOTHING else.** `E0-F013` stays **open** (slice 3 retention Q4/Q5 pending).
+    `DE-21` stays `partial`: its `subscribe`/`replay` conjuncts still have no writer, and the five
+    agent-key branches were already Class 1. `DE-16` stays `partial`: its `reconciliations` conjunct is
+    untouched, the **nine** no-company residue sinks are Decision 2's already-ruled remainder (not wired
+    here), `plugin-lifecycle.ts:506` still needs a unit, and the four untraced sinks (§4.3) remain
+    unmeasured. No count is struck and no crossing status changes.
 - **Why an operator query rather than a UI** (the ruling invited the narrower answer): the evidence
   is instance-wide and its audience is one operator working an incident. A company-scoped UI is the
   one shape that would answer Decision 3 by accident, in the direction that discloses. Documented at
