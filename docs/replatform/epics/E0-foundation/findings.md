@@ -2108,6 +2108,28 @@ that owns the schema file. Until then the reader is correct and slow, which is s
   it adds **no per-company denial feed**, so the probed tenant still learns nothing about having
   been probed or by whom. Whether a probed tenant is *entitled* to know is Decision 3's question and
   is **not** pre-empted here.
+  - ★ **UPDATE 2026-09-11 — Decision 3 RULED (founder); Q3 IMPLEMENTED for the tenant-facing readers
+    (slice 1).** The founder ruled best-practice throughout
+    (`docs/replatform/DECISION-REQUEST-denial-retention-and-disclosure.md`, ★ RULED block): Q1 ratify
+    actor-attribution + probed tenant stays blind; **Q3 — also do NOT disclose a `security.denied.*`
+    row to the actor's OWN tenant.** This PR implements Q3 for **five** tenant-facing `activity_log`
+    readers — the four the paper's §3 census named (`activityService.list`, `homeService.summary`,
+    `cockpitTeammatesActivity`, `morningDigest`) PLUS `activityService.forIssue` (GET
+    `/issues/:id/activity`), added after a Codex P2 on PR #429 flagged it as a fifth tenant reader:
+    `recordSecurityDenial` accepts `entityType:'issue'`, so the disclosure boundary must not depend on
+    "no writer files a denial under an issue" — all five now go through ONE shared
+    `notDenialNamespace()` predicate exported beside `SECURITY_DENIAL_ACTION_PREFIX`
+    (`server/src/services/activity-namespace.ts`),
+    proven RED-first per reader by
+    `server/src/__tests__/e0-f013-denial-own-tenant-disclosure.integration.test.ts`. The operator
+    reader (`activityService.securityDenials` / `GET /instance/security-denials`) is deliberately
+    untouched and still returns the row. **This closes ONLY the "prober is informed via its own
+    tenant's feeds" corner of the disclosure axis.** It does **not** close `E0-F013`, which stays
+    **open**: Decision 3's other slices — the fourteen tenant-less deny sites (Q3-sites, an
+    operator-only sink WITH a write bound, **pending slice 2**) and retention (Q4 lifetime + Q5
+    tamper-resistant delete, **pending slice 3**) — are unshipped, and `DE-16`/`DE-21` remain
+    `partial` in their cohorts with their conjuncts (subscribe/replay, reconciliations) untouched.
+    No count is struck and no crossing status changes.
 - **Why an operator query rather than a UI** (the ruling invited the narrower answer): the evidence
   is instance-wide and its audience is one operator working an incident. A company-scoped UI is the
   one shape that would answer Decision 3 by accident, in the direction that discloses. Documented at

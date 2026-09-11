@@ -1,3 +1,6 @@
+import { notLike, type SQL } from "drizzle-orm";
+import { activityLog } from "@armyofagents/db";
+
 export const MARKETPLACE_RECONCILIATION_ENTITY_TYPE =
   "marketplace_reconciliation";
 export const MARKETPLACE_RECONCILIATION_ACTION_PREFIX =
@@ -53,6 +56,41 @@ export const MARKETPLACE_RECONCILIATION_ACTION_PREFIX =
  * Reserving entityType too would force a synthetic type and lose that.
  */
 export const SECURITY_DENIAL_ACTION_PREFIX = "security.denied.";
+
+/**
+ * ★ THE READ-SIDE COMPLEMENT OF THE WRITE RESERVATION ABOVE — E0-F013 Decision 3
+ * (Q3), founder-ruled 2026-09-11, best-practice throughout.
+ *
+ * The reservation above keeps forged denial rows OUT of the namespace on the
+ * WRITE path. This keeps genuine denial rows out of every TENANT-FACING feed on
+ * the READ path. They answer two different halves of one property: a
+ * `security.denied.*` row is evidence that a control refused something, and the
+ * founder's ruling is that such evidence is disclosed to NO tenant — not the
+ * probed tenant (already true: no per-company denial feed exists), and now not
+ * the ACTOR's OWN tenant either. A cross-tenant probe mounted from inside tenant
+ * A files its refusal under tenant A (actor-attribution, ratified as Q1), so
+ * before this predicate the prober's own colleagues — and the prober — read the
+ * detection through `/activity`, `/home`, `/cockpit` and Commander's digest. The
+ * audit record was a feedback channel to the attacker. This closes it.
+ *
+ * ★ ONE PREDICATE, FOUR READERS, SO THEY CANNOT DRIFT. Every tenant-facing
+ * reader of `activity_log` adds this to its WHERE, and a future reader that omits
+ * it is a VISIBLE omission (a missing call to a named helper) rather than an
+ * invisible one (four hand-copied `notLike`s, three of which quietly rot). The
+ * operator plane (`activityService.securityDenials` / `GET
+ * /instance/security-denials`) deliberately does NOT use this — it is the one
+ * surface that still sees the whole namespace, gated on the operator, not on
+ * company membership.
+ *
+ * ★ IT IS THE `security.denied.` NAMESPACE ONLY, DELIBERATELY. The sibling
+ * `security.retention.` and `security.object_access.` namespaces are DE-11's and
+ * DE-06's audit clauses, are written only under a locked lease with an FK-valid
+ * company, and are NOT what Decision 3 rules over. Widening this predicate to
+ * them would answer a question the founder did not sign.
+ */
+export function notDenialNamespace(): SQL {
+  return notLike(activityLog.action, `${SECURITY_DENIAL_ACTION_PREFIX}%`);
+}
 
 /**
  * Reserved `action` prefix for CONTROL-PLANE RETENTION DECISIONS (DE-11's

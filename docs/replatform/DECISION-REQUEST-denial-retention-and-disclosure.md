@@ -4,12 +4,40 @@
 (`docs/replatform/epics/E0-foundation/findings.md:1073-1076`).
 **Date:** 2026-09-10. **Measured at:** `6b39c77f6` (PR #404, the denial-prefix index + tenantless
 disclosure unit).
-**Status:** OPEN — awaiting a founder ruling, **signable per class, not as one blanket ruling.**
+**Status:** ★ **RULED 2026-09-11 (founder)** — best-practice throughout, per class. See the ruling
+block immediately below. The decision is implemented in slices; **slice 1 (Q2/Q3 — disclosure to the
+actor's own tenant) is shipped by this PR**, the remaining classes are marked pending their slices.
+The un-ruled framing below (`"What this document changes: NOTHING"`, `§9`) is the record of the
+paper AS SUBMITTED and is left intact; the ruling block is the amendment.
 
-**What this document changes: NOTHING.** No finding status, no `deliveryStatus`, no ownership, no
+---
+
+## ★ RULED 2026-09-11 (founder)
+
+Signed by the founder on 2026-09-11, **best-practice throughout** — i.e. the ★ RECOMMENDED option in
+each of the three decision sub-blocks. The five questions of §1, and where each is delivered:
+
+| # | Question | Ruling | Delivery |
+|---|---|---|---|
+| **Q1** | Attribution + disclosure to the **probed** tenant | **RATIFY** actor-tenant attribution; a cross-tenant refusal is filed under the **actor's own** tenant and the **probed** tenant is never told (no per-company denial feed). This is already the code's behaviour and what three suites assert. | already true; **slice 1** re-asserts it (the probed tenant stays blind). |
+| **Q2 / Q3** | Disclosure to the **actor's OWN** tenant | ★ **RECOMMENDED (Decision 3.1)** — also do **NOT** disclose a `security.denied.*` row to the actor's own tenant. Exclude the denial namespace from **every tenant-facing `activity_log` reader** through ONE shared `notDenialNamespace()` predicate, with a provocation per reader observed RED first. The operator plane (`GET /instance/security-denials`) still sees everything. | ★ **IMPLEMENTED BY THIS PR (slice 1).** Readers: `activityService.list`, `homeService.summary`, `cockpitTeammatesActivity`, `morningDigest`. |
+| **Q3-sites** | The **fourteen** tenant-less deny sites (six `authorizeUpgrade` + eight plugin cloud gate) | ★ **RECOMMENDED (Decision 3.2, option (c))** — an **operator-only sink**: `company_id` NULL, caller-supplied company in `entity_id`, readable only via the operator reader, **WITH a bound on the write** (per-source cap / sampling / aggregation) landing alongside it. | **pending slice 2.** |
+| **Q4** | Lifetime of a denial record | ★ **RECOMMENDED (Decision 3.3)** — rule it **explicitly** (today it is unbounded and nothing records that): a bounded retention window whose purge itself leaves a record. | **pending slice 3.** |
+| **Q5** | Tamper — can a suspect delete it? | ★ **RECOMMENDED (Decision 3.3)** — `security.denied.*` denial history **survives a company delete**: the `company_id` FK moves to `ON DELETE set null` (by `db:generate`) and `companyService.remove` nulls rather than deletes them, making the company axis agree with `organization_id`'s existing `restrict`. | **pending slice 3.** |
+
+**Slice map.** Slice 1 = Q2/Q3 (this PR). Slice 2 = Q3-sites operator-only sink + write bound. Slice
+3 = Q4 (retention window) + Q5 (tamper-resistant delete). The strongest arguments-against recorded in
+§8 are accepted by the founder as the known costs of the best-practice choice, and each later slice
+owes the provocation §8 names (the write bound for slice 2; the `set null` / undeletable-company case
+for slice 3).
+
+---
+
+**What this document changed AS SUBMITTED: NOTHING** (the paper below is preserved verbatim; the
+ruling above is the amendment). No finding status, no `deliveryStatus`, no ownership, no
 clause text in `docs/architecture/distributed-execution-threat-controls.json`, no
 `scripts/gate-clause-wiring.json` enrolment, no production code. **Amending the register IS the
-decision being requested**, so this paper does not pre-empt it by making the amendment.
+decision being requested**, so this paper did not pre-empt it by making the amendment.
 
 **Method.** Nothing below is inherited — not from `E0-F013`, not from the Decision 1 paper
 (`bd334ff50`), not from the Decision 2 paper (`bb0572f19`), not from the register's
@@ -591,48 +619,48 @@ it is unbounded and nothing says so.
 
 ---
 
-### ▢ **DECISION 3.1 — CLASS 1: the already-attributed sites**
+### ☑ **DECISION 3.1 — CLASS 1: the already-attributed sites** — ★ RULED 2026-09-11 (founder): RECOMMENDED. **Implemented by this PR (slice 1).**
 
-- ▢ **★ RECOMMENDED** — **Ratify actor-attribution**, and **close Q3 in the same wave**: exclude the
+- ☑ **★ RECOMMENDED — CHOSEN** — **Ratify actor-attribution**, and **close Q3 in the same wave**: exclude the
   `security.denied.` namespace from **every tenant-facing `activity_log` reader** — at minimum, by
   symbol, `activityService.list`, `homeService.summary`, `cockpitTeammatesActivity` and
   `morningDigest` — through ONE shared predicate, **with a provocation per reader**, each observed
-  RED first.
-- ▢ **(alt)** Ratify attribution, and expose the namespace to **founders of the owning tenant only**
+  RED first. **← shipped by this PR: `notDenialNamespace()` in `activity-namespace.ts`, wired into all four readers, four RED-first provocations in `e0-f013-denial-own-tenant-disclosure.integration.test.ts`.**
+- ▢ **(alt, not chosen)** Ratify attribution, and expose the namespace to **founders of the owning tenant only**
   instead of excluding it. *Keeps tenant self-service; leaves the oracle open to a compromised
   founder session.*
-- ▢ **(alt)** Ratify attribution and leave the readers unchanged. *Explicitly accepts that the prober
+- ▢ **(alt, not chosen)** Ratify attribution and leave the readers unchanged. *Explicitly accepts that the prober
   reads its own detection. Choose only with that written into the register.*
 
-### ▢ **DECISION 3.2 — CLASS 2: the fourteen sites**
+### ☑ **DECISION 3.2 — CLASS 2: the fourteen sites** — ★ RULED 2026-09-11 (founder): (c) with a write bound. **Pending slice 2.**
 
-- ▢ **★ RECOMMENDED — (c)** an operator-only sink: `company_id` NULL, the caller-supplied company in
+- ☑ **★ RECOMMENDED — (c) — CHOSEN** an operator-only sink: `company_id` NULL, the caller-supplied company in
   `entity_id`, readable only via `GET /instance/security-denials`. **Conditional on a bound on the
-  write** (per-source cap, sampling, or aggregation) landing with it.
-- ▢ **(e)** Record nothing for these fourteen, and **amend `DE-21.audit` and `DE-16.audit`** in
-  `distributed-execution-threat-controls.json` to say so. *Mandatory if (c)'s write bound will not
+  write** (per-source cap, sampling, or aggregation) landing with it. **← pending slice 2; the write bound is required by the ruling.**
+- ▢ **(e, not chosen)** Record nothing for these fourteen, and **amend `DE-21.audit` and `DE-16.audit`** in
+  `distributed-execution-threat-controls.json` to say so. *Mandatory only if (c)'s write bound will not
   be funded.*
-- ▢ **(b)** Both tenants, probed copy redacted or delayed. *Requires a per-company denial feed and a
+- ▢ **(b, not chosen)** Both tenants, probed copy redacted or delayed. *Requires a per-company denial feed and a
   delay mechanism `activity_log` has no column for; `aoa_app` holds no UPDATE on the table.*
-- ▢ **(d) REJECTED unless explicitly overridden** — the probed company id is caller-supplied and
+- ▢ **(d) REJECTED** — the probed company id is caller-supplied and
   unvalidated at the sink; this lets a prober choose whose log absorbs the record, with no RLS
   narrowing available.
 
-### ▢ **DECISION 3.3 — CLASS 3: retention**
+### ☑ **DECISION 3.3 — CLASS 3: retention** — ★ RULED 2026-09-11 (founder): RECOMMENDED (Q5 set-null + Q4 explicit window). **Pending slice 3.**
 
-- ▢ **★ RECOMMENDED — Q5:** `security.denied.*` rows survive a company delete. `company_id` FK moves
+- ☑ **★ RECOMMENDED — Q5 — CHOSEN:** `security.denied.*` rows survive a company delete. `company_id` FK moves
   to `ON DELETE set null` (by `db:generate`) and `companyService.remove` nulls rather than deletes
-  them, making the company axis agree with `organization_id`'s existing `restrict` (§7.4).
-- ▢ **Q4:** rule the lifetime explicitly. Today it is **unbounded** and nothing records that.
-  ▢ unbounded, stated · ▢ bounded at ______ days, with a purge that itself leaves a record.
-- ▢ **(alt)** Leave the cascade. *Records that a founder may delete the evidence of their own
+  them, making the company axis agree with `organization_id`'s existing `restrict` (§7.4). **← pending slice 3.**
+- ☑ **Q4 — CHOSEN:** rule the lifetime explicitly. Today it is **unbounded** and nothing records that.
+  ▢ unbounded, stated · ☑ **bounded**, with a purge that itself leaves a record. **← pending slice 3.**
+- ▢ **(alt, not chosen)** Leave the cascade. *Records that a founder may delete the evidence of their own
   probing, and that the operator plane holds no second copy.*
-- ▢ **Record either way:** the `aoa_app` `SELECT, INSERT`-only grant on `activity_log`
+- ☑ **Recorded either way:** the `aoa_app` `SELECT, INSERT`-only grant on `activity_log`
   (`0213:98`, `0214:166`) is **not** an exoneration — `services/companies.ts:656` runs on the
   `createDb(config.databaseUrl)` pool, the same connection string `ensureMigrations` applies DDL
   through (`server/src/index.ts:398-400`). §7.3 has the working.
 >
-> Signed: ____________________  Date: ____________
+> Signed: **founder** — Date: **2026-09-11** (best-practice throughout; see the ★ RULED block at the top of this paper)
 
 ---
 

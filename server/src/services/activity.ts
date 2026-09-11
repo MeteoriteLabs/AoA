@@ -4,6 +4,7 @@ import { activityLog, heartbeatRuns, issues } from "@armyofagents/db";
 import {
   SECURITY_DENIAL_ACTION_PREFIX,
   assertUnreservedActivityNamespace,
+  notDenialNamespace,
 } from "./activity-namespace.js";
 
 export interface ActivityFilters {
@@ -111,7 +112,15 @@ export function activityService(db: Db) {
   const issueIdAsText = sql<string>`${issues.id}::text`;
   return {
     list: (filters: ActivityFilters) => {
-      const conditions = [eq(activityLog.companyId, filters.companyId)];
+      // E0-F013 Decision 3 (Q3), founder-ruled 2026-09-11: a `security.denied.*`
+      // row is disclosed to NO tenant, including the actor's own. This is a
+      // tenant-facing reader (`GET /companies/:cid/activity`, gated on plain
+      // company membership), so it excludes the denial namespace. The operator
+      // reader `securityDenials` below deliberately does not.
+      const conditions = [
+        eq(activityLog.companyId, filters.companyId),
+        notDenialNamespace(),
+      ];
 
       if (filters.agentId) {
         conditions.push(eq(activityLog.agentId, filters.agentId));
@@ -196,6 +205,12 @@ export function activityService(db: Db) {
             eq(activityLog.companyId, companyId),
             eq(activityLog.entityType, "issue"),
             eq(activityLog.entityId, issueId),
+            // E0-F013 Decision 3 (Q3), founder-ruled 2026-09-11: this is a tenant-facing
+            // reader of `activity_log`, so it excludes the `security.denied.*` namespace too.
+            // `recordSecurityDenial` accepts `entityType:'issue'`, so the disclosure boundary
+            // must not depend on "no writer happens to file a denial under an issue" (Codex P2,
+            // PR #429). The operator reader `securityDenials` still returns them.
+            notDenialNamespace(),
           ),
         )
         .orderBy(desc(activityLog.createdAt)),
