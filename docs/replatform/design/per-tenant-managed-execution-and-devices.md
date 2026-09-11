@@ -157,6 +157,16 @@ This is the crux the feature turns on, and the code answers it cleanly.
   Membership is `company_memberships` (per CLAUDE.md, the AoA primary tenant).
 - **BYO keys are per-company.** `runtime_provider_keys.companyId -> companies.id`
   (`packages/db/src/schema/runtime_provider_keys.ts`).
+  - ★ **DECIDED 2026-09-11 (founder): BYO stays company-only; org- and agent-level BYO are DEFERRED
+    as later follow-ups.** Company-level BYO is shipped and sufficient for now (the one-step "Add E2B
+    key" flow, PR #436). There is **no** org-scoped or agent-scoped provider key today, and none is to
+    be added speculatively. **When org-level BYO is eventually built, it MUST use a dedicated
+    org-scoped secret store — NOT by reusing `company_secrets` under a designated owner company**,
+    because `secretService.resolveSecretValue` hard-enforces `secret.companyId === companyId` as a
+    company-isolation tenancy boundary, and the founder explicitly declined to weaken it for a
+    convenience feature (grounded: no org-secret store exists today — every secret table is
+    `companyId`-anchored). Resolution order if/when built: **company key -> org key -> platform
+    fallback**. This is a deferral of scope, not a change to the R1 grain above.
 - **Execution targets and devices are per-org, down to owner.**
   `execution_targets.organizationId` + `ownerUserId` (`packages/db/src/schema/execution_targets.ts`)
   - there is **no `companyId`** on the target or on `workers`.
