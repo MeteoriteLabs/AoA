@@ -627,6 +627,25 @@ founder decision-request — `docs/replatform/DECISION-REQUEST-de08-sandbox-egre
 proposes options and a recommendation and takes no ruling; it moves no `deliveryStatus` and edits no
 clause here.
 
+**★ RULED 2026-09-11 (founder) — the disposition question this finding raised is now settled; the
+finding is NARROWED, not closed.** The founder ruled options **1 + 3 + 4** of
+`DECISION-REQUEST-de08-sandbox-egress.md`: DE-08's confidentiality/authorization/integrity/control
+clauses are amended so confidentiality at the **managed-shared** tier is carried by the **credential
+taxonomy** (host/operator/cross-tenant secrets never enter the VM; blast radius = one company's own
+data and own provider key), NOT by provider egress denial; and the existing threat-model residual
+entry (`distributed-execution-threat-model.md`, "Residual risks and release exclusions") is RATIFIED
+as the terminal, disclosed exclusion at that tier, so `REL-001` gates on it as an accepted residual
+rather than an absent control. **What the ruling SETTLES:** the standing "what to do about a Critical
+control that cannot be enforced at any available layer" question (§8) — at the managed-shared tier the
+answer is a disclosed, scoped release exclusion. **What STAYS OPEN, and why this finding is not
+closed:** (1) egress denial is still **required at the self-hosted/tenant-hosted boundary**, and no
+owner ticket names that enforcement test; (2) the confidentiality guarantee now **RESTS ON** the
+credential taxonomy's airtightness, which is load-bearing and unverified — filed as follow-up
+`E8-F012`; (3) the enforcement gap itself is **conceded, not fixed** — `deliveryStatus` stays
+`not-delivered`, severity stays HIGH here and Critical on the crossing. The census (§8), the clause
+`deliveryStatus`, and every measurement are untouched; this note records a disposition, not a new
+measurement.
+
 ---
 
 ## E8-F004 — A distributed runtime decision has no stranded-answer sweep, and the exclusion is invisible
@@ -1874,3 +1893,52 @@ moves off `partial` on a recorded measurement; or (b) the DE-11 clauses are AMEN
 the programme actually intends to build, which is a founder decision and is not taken here.
 Resolve = flip this Status **and** delete the `E8-F011` key in `scripts/finding-ownership.json` in
 the SAME commit.
+
+## E8-F012 — DE-08's confidentiality guarantee was relocated onto the credential taxonomy by the 2026-09-11 founder ruling, and the taxonomy's airtightness — that no host or cross-tenant secret ever reaches a sandbox — is now load-bearing for a Critical control and is not verified as an enforced, CI-run invariant across every sandbox stage-in path
+
+**Status:** open · **Owner:** `unowned` (no owner ticket names the taxonomy-airtightness verification; the follow-up the decision paper flagged as its own strongest counter-argument)
+**Severity:** HIGH
+**Filed:** 2026-09-11, as the recorded consequence of the founder ruling on `DE-08` / `E8-F003`
+(options 1 + 3 + 4 of `docs/replatform/DECISION-REQUEST-de08-sandbox-egress.md`).
+
+**Why this is filed.** The 2026-09-11 founder ruling amended `DE-08`'s
+`confidentiality`/`authorization`/`integrity`/`control` clauses so that, at the managed-shared E2B
+tier, the confidentiality of a **Critical** SSRF control is no longer carried by provider egress
+denial (measured absent on all three constructions — `E8-F003`, `E8-F007`, `E8-F008`) but by the
+**credential taxonomy**: `docs/aoa/plans/2026-08-05-cloud-execution-isolation-e2b-spec.md:149-155`
+(§9) states that host/operator/cross-tenant secrets (`DATABASE_URL`, the secrets master key,
+`GITHUB_PAT`, `BETTER_AUTH_SECRET`/`AOA_AGENT_JWT_SECRET`, `REDIS_URL`, the embeddings key, the
+operator `~/.claude` login and its env forms, and any host-ambient provider key that is not the
+tenant company's own) **never enter the VM**, only the company's own runtime credentials do, and the
+compromised-VM blast radius is that one company's own data and own provider key. That relocation is
+sound only if the taxonomy actually holds for **every** sandbox stage-in path.
+
+**What is load-bearing and unverified.** The taxonomy's enforcement is the spec's §10 env-allowlist
+unit test — "asserts the never-in-VM set is **absent**". This finding does **not** claim that test is
+missing or failing; it records that **nobody has verified**, as an enforced and CI-run invariant, that
+the from-scratch allowlist (U5) is applied on every VM run (org heartbeat, crew, Commander, U13
+extraction, warm resume) and that the never-in-VM set is absent from each — the spec's own §5/U5 audit
+notes that the scrub was **opt-in** ("fires only for connector runs and crew") before the flip, which
+is exactly the kind of per-path gap that would leave a host secret in a VM that can reach the metadata
+endpoint. Until that is a single, exhaustive, CI-gated assertion over all stage-in paths, the
+confidentiality of a Critical control rests on an assumption, not a measurement.
+
+**The residual this sits on, stated so it is not read away.** `169.254.169.254` is **reachable** from
+inside the guest on every measured construction (`E8-F003`, `E8-F008`), and what a token-bearing caller
+would extract from the provider metadata service is **unmeasured** (`E8-F003` §2 scope). The taxonomy
+bounds the blast radius only to the extent that the VM holds nothing worth exfiltrating; a single host
+or cross-tenant secret leaking into VM env on any path turns a conceded metadata reachability into a
+cross-boundary exposure with no other layer to catch it, because — per the ruling — none exists at this
+tier.
+
+**Resolution condition.** Either (a) an enforced, CI-run invariant is built that asserts BOTH: (a-i)
+across **every** sandbox stage-in path, that the §9 never-in-VM set is absent from VM env (the §10
+env-absence test generalised from opt-in to exhaustive and gated); **AND (a-ii) that the reachable
+metadata service (`169.254.169.254`) yields no infrastructure or cross-tenant credential a token-bearing
+guest could use to cross a boundary** — because env-absence alone is INSUFFICIENT (Codex P1, PR #432):
+a clean VM env still leaves the measured-reachable metadata endpoint as a second credential-egress
+path, so an env-only invariant can pass while an IMDS token returns a usable infra/cross-tenant secret.
+Only when BOTH hold does DE-08's amended `confidentiality` clause rest on a measurement rather than a
+design assertion; or (b) the founder amends DE-08 again to state a narrower guarantee. Not `accepted`: HIGH may never be accepted, and this
+carries the confidentiality of a Critical control. Resolve = flip this Status **and** delete the
+`E8-F012` key in `scripts/finding-ownership.json` in the SAME commit.
