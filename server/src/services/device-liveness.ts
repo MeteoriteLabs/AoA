@@ -2,8 +2,9 @@
 //
 // E11 M2 — DEVICE LIVENESS, computed at read time. What it means for an enrolled
 // device to be "healthy", "stale", or "never seen", derived from `workers.lastSeenAt`
-// alone. No column, no migration: the verdict is a pure function of two timestamps and
-// a deadline, evaluated inside `listDesktopDevices`.
+// against the current enrolment (`enrolledAt`, so a superseded generation's check-in does
+// not count). No column, no migration: the verdict is a pure function of three timestamps
+// and a deadline, evaluated inside `listDesktopDevices`.
 //
 // ── WHY NOT `workers.status` ──────────────────────────────────────────────────────────
 //
@@ -88,22 +89,37 @@ export function resolveDeviceLivenessDeadlineMs(
 }
 
 /**
- * The whole policy, as one pure function of two timestamps and a deadline.
+ * The whole policy, as one pure function of three timestamps (`lastSeenAt`, `enrolledAt`,
+ * `now`) and a deadline.
  *
  * `now` is INJECTED — the caller (`listDesktopDevices`) feeds it from the DATABASE clock
  * (`clock_timestamp()`), never `Date.now()`, so the classification cannot introduce
  * app/database clock skew and the row's `lastSeenAt` (a DB timestamp) is compared against a
  * DB-sourced `now`. Keeping the function pure is what lets the unit test drive every arm —
- * null, recent, exactly-at-deadline, old — with a fabricated `now`.
+ * null, recent, exactly-at-deadline, old, and a pre-enrolment (re-enrolled) `lastSeenAt` —
+ * with fabricated timestamps.
  */
 export function classifyDeviceLiveness(input: {
   lastSeenAt: Date | null;
+  enrolledAt: Date | null;
   now: Date;
   deadlineMs: number;
 }): DeviceLivenessStatus {
   // ★ THE FAIL-OPEN ARM. No check-in has ever been recorded, so there is no liveness fact
   // to age. `never_seen`, and specifically NOT `stale`.
   if (input.lastSeenAt === null) return "never_seen";
+  // ★ THE GENERATION BOUNDARY. A re-enrolment (`rotateWorker`) installs a NEW device key on
+  // the SAME worker row — bumping `deviceGeneration` and `enrolledAt` — but PRESERVES the
+  // prior generation's `lastSeenAt` (measured: `rotateWorker` never writes `lastSeenAt`). A
+  // `lastSeenAt` that predates the current `enrolledAt` therefore belongs to a SUPERSEDED
+  // key; the current generation has not checked in, so it is `never_seen`, never `healthy`
+  // off its predecessor's heartbeat. This is the design's "compute liveness from
+  // `lastSeenAt` AND the enrolment `deviceGeneration`, to flag silent re-enrolment". A null
+  // `enrolledAt` (defensive — enrolled rows always carry one) skips the boundary and falls
+  // through to age-based classification.
+  if (input.enrolledAt !== null && input.lastSeenAt.getTime() < input.enrolledAt.getTime()) {
+    return "never_seen";
+  }
   const ageMs = input.now.getTime() - input.lastSeenAt.getTime();
   // ★ STRICT `>`: an age exactly equal to the deadline is still healthy. A future
   // `lastSeenAt` (negative age, e.g. mild clock skew) is likewise healthy, never stale.

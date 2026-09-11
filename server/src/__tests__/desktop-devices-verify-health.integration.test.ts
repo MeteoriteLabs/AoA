@@ -4,7 +4,8 @@
 //
 // What this pins that the unit tests cannot:
 //   • HEALTH is computed against the DB clock inside `listDesktopDevices` and appears per row
-//     (recent -> healthy, old -> stale, null -> never_seen).
+//     (recent -> healthy, old -> stale, null -> never_seen, and a re-enrolled row whose
+//     last_seen_at predates its new enrolled_at -> never_seen, not healthy off the old key).
 //   • VERIFY re-derives over the STORED key material: a consistent device verifies true; a
 //     device whose stored thumbprint does NOT match its stored key (a record the DB CHECK
 //     still admits) verifies false.
@@ -39,12 +40,14 @@ const T_OLD = "82000000-0000-4000-8000-000000000002";
 const T_NEVER = "82000000-0000-4000-8000-000000000003";
 const T_MISMATCH = "82000000-0000-4000-8000-000000000004";
 const T_CROSS = "82000000-0000-4000-8000-000000000005";
+const T_REENROLL = "82000000-0000-4000-8000-000000000006";
 
 const D_RECENT = "83000000-0000-4000-8000-000000000001";
 const D_OLD = "83000000-0000-4000-8000-000000000002";
 const D_NEVER = "83000000-0000-4000-8000-000000000003";
 const D_MISMATCH = "83000000-0000-4000-8000-000000000004";
 const D_CROSS = "83000000-0000-4000-8000-000000000005";
+const D_REENROLL = "83000000-0000-4000-8000-000000000006";
 
 const PROFILE_HASH = "a".repeat(64);
 
@@ -97,15 +100,17 @@ async function seedDesktopTarget(sql: Sql, id: string, orgId: string, slug: stri
 
 async function seedWorker(sql: Sql, input: {
   id: string; orgId: string; targetId: string; label: string;
-  publicKey: string; thumbprint: string; lastSeenAt: Date | null;
+  publicKey: string; thumbprint: string; enrolledAt: Date; lastSeenAt: Date | null;
+  deviceGeneration?: number;
 }) {
   await sql`INSERT INTO workers
     (id, scope, organization_id, owner_user_id, execution_target_id, target_authority_key,
      device_public_key, device_thumbprint, device_generation, profile_hash, enrolled_at,
      last_seen_at, label, status)
     VALUES (${input.id}, 'organization', ${input.orgId}, NULL, ${input.targetId},
-      ${`organization:${input.orgId}`}, ${input.publicKey}, ${input.thumbprint}, 1,
-      ${PROFILE_HASH}, now(), ${input.lastSeenAt}, ${input.label}, 'enrolled')`;
+      ${`organization:${input.orgId}`}, ${input.publicKey}, ${input.thumbprint},
+      ${input.deviceGeneration ?? 1},
+      ${PROFILE_HASH}, ${input.enrolledAt}, ${input.lastSeenAt}, ${input.label}, 'enrolled')`;
 }
 
 beforeAll(async () => {
@@ -140,39 +145,54 @@ beforeAll(async () => {
     const never = ed25519();
     const mismatch = ed25519();
     const cross = ed25519();
+    const reenroll = ed25519();
 
     await seedDesktopTarget(admin, T_RECENT, ORG_A, "e11m2-recent");
     await seedDesktopTarget(admin, T_OLD, ORG_A, "e11m2-old");
     await seedDesktopTarget(admin, T_NEVER, ORG_A, "e11m2-never");
     await seedDesktopTarget(admin, T_MISMATCH, ORG_A, "e11m2-mismatch");
     await seedDesktopTarget(admin, T_CROSS, ORG_B, "e11m2-cross");
+    await seedDesktopTarget(admin, T_REENROLL, ORG_A, "e11m2-reenroll");
 
     const now = Date.now();
+    // A normally-behaving device enrols, THEN checks in — so `enrolled_at` PRECEDES
+    // `last_seen_at`. (An earlier draft set enrolled_at = now() with lastSeenAt in the past,
+    // which is exactly the re-enrolled-but-unseen state the generation boundary now catches.)
+    const enrolledLongAgo = new Date(now - 60 * 60_000); // 1 h ago
     await seedWorker(admin, {
       id: D_RECENT, orgId: ORG_A, targetId: T_RECENT, label: "Recent laptop",
       publicKey: recent.publicKey, thumbprint: recent.thumbprint,
-      lastSeenAt: new Date(now - 60_000), // 1 min ago -> healthy
+      enrolledAt: enrolledLongAgo, lastSeenAt: new Date(now - 60_000), // seen 1 min ago -> healthy
     });
     await seedWorker(admin, {
       id: D_OLD, orgId: ORG_A, targetId: T_OLD, label: "Old laptop",
       publicKey: old.publicKey, thumbprint: old.thumbprint,
-      lastSeenAt: new Date(now - 2 * 24 * 60 * 60_000), // 2 days ago -> stale
+      enrolledAt: new Date(now - 3 * 24 * 60 * 60_000), // enrolled 3 days ago
+      lastSeenAt: new Date(now - 2 * 24 * 60 * 60_000), // last seen 2 days ago -> stale
     });
     await seedWorker(admin, {
       id: D_NEVER, orgId: ORG_A, targetId: T_NEVER, label: "Never-seen laptop",
       publicKey: never.publicKey, thumbprint: never.thumbprint,
-      lastSeenAt: null, // -> never_seen
+      enrolledAt: enrolledLongAgo, lastSeenAt: null, // -> never_seen
     });
     await seedWorker(admin, {
       id: D_MISMATCH, orgId: ORG_A, targetId: T_MISMATCH, label: "Mismatched-key laptop",
       publicKey: mismatch.publicKey,
       thumbprint: "0".repeat(64), // valid key, WRONG stored thumbprint (CHECK still admits it)
-      lastSeenAt: new Date(now - 60_000),
+      enrolledAt: enrolledLongAgo, lastSeenAt: new Date(now - 60_000),
     });
     await seedWorker(admin, {
       id: D_CROSS, orgId: ORG_B, targetId: T_CROSS, label: "Org-B laptop",
       publicKey: cross.publicKey, thumbprint: cross.thumbprint,
-      lastSeenAt: new Date(now - 60_000),
+      enrolledAt: enrolledLongAgo, lastSeenAt: new Date(now - 60_000),
+    });
+    // ★ Re-enrolled (gen 2): `rotateWorker` bumped enrolled_at to 30 s ago while the prior
+    // generation's last_seen_at (60 s ago) was preserved. The new key has NOT checked in, so
+    // health must be never_seen — NOT healthy off the superseded key's heartbeat (Codex P2).
+    await seedWorker(admin, {
+      id: D_REENROLL, orgId: ORG_A, targetId: T_REENROLL, label: "Re-enrolled laptop",
+      publicKey: reenroll.publicKey, thumbprint: reenroll.thumbprint, deviceGeneration: 2,
+      enrolledAt: new Date(now - 30_000), lastSeenAt: new Date(now - 60_000), // seen BEFORE re-enrol
     });
   } catch (error) {
     setupError = error;
@@ -195,14 +215,14 @@ function guard() {
 describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")(
   "E11 M2 — desktop device health + verify (integration)",
   () => {
-    it("positive control: all five seeded workers exist before the assertions", async () => {
+    it("positive control: all six seeded workers exist before the assertions", async () => {
       const { admin } = guard();
       const rows = await admin<{ id: string }[]>`SELECT id FROM workers
-        WHERE id IN (${D_RECENT}, ${D_OLD}, ${D_NEVER}, ${D_MISMATCH}, ${D_CROSS})`;
-      expect(rows).toHaveLength(5);
+        WHERE id IN (${D_RECENT}, ${D_OLD}, ${D_NEVER}, ${D_MISMATCH}, ${D_CROSS}, ${D_REENROLL})`;
+      expect(rows).toHaveLength(6);
     });
 
-    it("GET desktop-devices returns org A's four devices with per-row computed health", async () => {
+    it("GET desktop-devices returns org A's five devices with per-row computed health", async () => {
       guard();
       const res = await request(makeApp())
         .get(`/api/organizations/${ORG_A}/desktop-devices`)
@@ -211,11 +231,14 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       const byId = new Map<string, { health: string }>(
         (res.body as { deviceId: string; health: string }[]).map((d) => [d.deviceId, d]),
       );
-      expect(res.body).toHaveLength(4); // ORG_A only — the ORG_B device is not visible
+      expect(res.body).toHaveLength(5); // ORG_A only — the ORG_B device is not visible
       expect(byId.get(D_RECENT)?.health).toBe("healthy");
       expect(byId.get(D_OLD)?.health).toBe("stale");
       expect(byId.get(D_NEVER)?.health).toBe("never_seen");
       expect(byId.get(D_MISMATCH)?.health).toBe("healthy"); // liveness is independent of key integrity
+      // ★ Re-enrolled (gen 2): last_seen_at predates the new enrolled_at, so the current key
+      // has not checked in — never_seen, not healthy off the superseded key (Codex P2).
+      expect(byId.get(D_REENROLL)?.health).toBe("never_seen");
       // The ORG_B device never appears in ORG_A's listing.
       expect(byId.has(D_CROSS)).toBe(false);
     });

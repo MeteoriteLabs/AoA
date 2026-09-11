@@ -290,7 +290,15 @@ export function DevicesSection() {
         ) : (
           <div className="divide-y divide-border-soft rounded-lg border border-border bg-card">
             {devices.map((device) => (
-              <DeviceRow key={device.deviceId} device={device} organizationId={organizationId!} />
+              // Key by deviceId AND generation (Codex P2): a re-enrolment reuses the same
+              // deviceId but installs a new key/generation. Including the generation remounts
+              // the row on rotation, clearing a stale "Verify enrolment key" verdict that
+              // belonged to the superseded key.
+              <DeviceRow
+                key={`${device.deviceId}:${device.deviceGeneration}`}
+                device={device}
+                organizationId={organizationId!}
+              />
             ))}
           </div>
         )}

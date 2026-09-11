@@ -564,7 +564,12 @@ export async function listDesktopDevices(db: Db, organizationId: string | null) 
   // `health` is computed here (not a column) and injected into the row before projection.
   return rows.map((row) => {
     const now = row.dbNow instanceof Date ? row.dbNow : new Date(String(row.dbNow));
-    const health = classifyDeviceLiveness({ lastSeenAt: row.lastSeenAt, now, deadlineMs });
+    const health = classifyDeviceLiveness({
+      lastSeenAt: row.lastSeenAt,
+      enrolledAt: row.enrolledAt,
+      now,
+      deadlineMs,
+    });
     return projectDesktopDevice({ ...row, health } as never);
   });
 }
