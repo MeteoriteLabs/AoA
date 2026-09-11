@@ -3,6 +3,7 @@ import type { Environment } from "@armyofagents/shared";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import {
   assertWithinPlatformExecutionLimit,
+  PlatformExecutionLimitExceededError,
   type PlatformExecutionLimitCheck,
 } from "../services/platform-execution-limit.js";
 
@@ -179,6 +180,44 @@ describe("M1 — platform execution-limit seam at the managed dispatch entry (R2
     // wire M4 into a call site that is not there.
     expect(platformExecutionLimit).toHaveBeenCalledTimes(1);
     expect(platformExecutionLimit).toHaveBeenCalledWith({ companyId: COMPANY, organizationId: ORG });
+  });
+
+  it("REJECTS the acquire when the seam denies — M4's deny path is enforced at the call site now (Codex P2)", async () => {
+    // M1's default seam never returns { allowed: false }; this proves the ENFORCEMENT is
+    // wired so M4 changes only the checker, not this call site. Removing the `if (!allowed)
+    // throw` at the acquire branch turns this red — a discarded decision would let a denied
+    // run acquire a sandbox anyway.
+    const platformExecutionLimit = vi.fn<PlatformExecutionLimitCheck>(
+      (input) => ({ allowed: false, organizationId: input.organizationId }),
+    );
+    const providerAcquireLease = vi.fn(async () => ({
+      providerLeaseId: "e2b-lease-denied",
+      metadata: { provider: "e2b", remoteCwd: "/workspace" },
+    }));
+
+    const runtime = environmentRuntimeService(makeChainDb([{ organizationId: ORG }]), {
+      environments: {
+        acquireLease: vi.fn(async () => ({ id: "lease", provider: "e2b" })),
+        releaseLease: vi.fn(),
+        releaseLeasesForRun: vi.fn(),
+      },
+      sandboxProviders: makeE2bProvider(providerAcquireLease),
+      runtimeProviderKeys: { resolveCredential: vi.fn(async () => "sk-company-byo") } as never,
+      platformExecutionLimit,
+    } as never);
+
+    await expect(
+      runtime.acquireRunLease({
+        companyId: COMPANY,
+        environment: makeE2bEnvironment(),
+        issueId: null,
+        heartbeatRunId: "run-denied",
+        persistedExecutionWorkspace: null,
+      }),
+    ).rejects.toThrow(PlatformExecutionLimitExceededError);
+
+    // The sandbox was NOT acquired — the deny stopped it before provider acquisition.
+    expect(providerAcquireLease).not.toHaveBeenCalled();
   });
 
   it("does NOT invoke the platform seam for a local (non-managed) run", async () => {

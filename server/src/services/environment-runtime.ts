@@ -11,6 +11,7 @@ import type {
 import { environmentService, type EnvironmentService } from "./environments.js";
 import {
   assertWithinPlatformExecutionLimit,
+  PlatformExecutionLimitExceededError,
   type PlatformExecutionLimitCheck,
 } from "./platform-execution-limit.js";
 import {
@@ -485,7 +486,14 @@ function createSandboxDockerEnvironmentDriver(
         //      fallback — resolved immediately below by `resolveRuntimeProviderConfig`
         //      (UNCHANGED; already wired). Every managed E2B run reaches this branch.
         const organizationId = await resolveCompanyOrganizationIdSafely(db, input.companyId);
-        platformExecutionLimit({ companyId: input.companyId, organizationId });
+        // M1 seam is a no-op (always allows), so this throw never fires today. It is wired
+        // NOW so M4 changes ONLY the checker to deny — this call site already enforces it
+        // (Codex P2, PR #431: the decision must not be discarded, or M4 would have to edit
+        // here too and the single-hook property is lost).
+        const platformLimit = platformExecutionLimit({ companyId: input.companyId, organizationId });
+        if (!platformLimit.allowed) {
+          throw new PlatformExecutionLimitExceededError(input.companyId, organizationId);
+        }
 
         const providerConfig = await resolveRuntimeProviderConfig({
           companyId: input.companyId,

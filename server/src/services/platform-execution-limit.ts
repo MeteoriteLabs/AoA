@@ -60,3 +60,25 @@ export function assertWithinPlatformExecutionLimit(
 }
 
 export type PlatformExecutionLimitCheck = typeof assertWithinPlatformExecutionLimit;
+
+/**
+ * Thrown at the managed dispatch entry when the platform execution limit DENIES a run.
+ *
+ * In M1 this never fires — the seam always returns `{ allowed: true }`. It exists so the
+ * call site ENFORCES the decision now: M4 changes only the checker to return
+ * `{ allowed: false }` when a tenant is over its subscription ceiling, and this rejection
+ * (already wired at the acquire branch) stops the acquire. That is what makes the seam a
+ * single hook — M4 does not have to also edit the call site (Codex P2, PR #431).
+ */
+export class PlatformExecutionLimitExceededError extends Error {
+  readonly companyId: string;
+  readonly organizationId: string | null;
+  constructor(companyId: string, organizationId: string | null) {
+    super(
+      `Platform execution limit exceeded for organization ${organizationId ?? "(unresolved)"} (company ${companyId})`,
+    );
+    this.name = "PlatformExecutionLimitExceededError";
+    this.companyId = companyId;
+    this.organizationId = organizationId;
+  }
+}
