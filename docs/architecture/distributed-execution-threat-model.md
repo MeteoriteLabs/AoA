@@ -218,9 +218,14 @@ so each finding's count stays true to the cohort it measured) plus one more:
   are open;** the authoritative count is `E0-F013`'s Status block in
   `docs/replatform/epics/E0-foundation/findings.md`, and no count is stated twice here.
 - **`E0-F013`** — the same class, second cohort: **nine more** crossings, of which five
-  record nothing at all and four record the *success* path and not the refusal. ★ DE-27's
-  clause is not merely unwritten but **unwritable**: it says "cross-replica", and the tree
-  has no replica identity of any kind.
+  record nothing at all and four record the *success* path and not the refusal. ★ **AMENDED
+  2026-09-11 by E0-F013 Decision 1:** DE-27's clause is NOT unwritable. The ruling adopted the
+  WEAK reading (1.2c) — it drops the partition conjunct as vacuous and classifies the
+  cross-replica-admission conjunct as ordinary Group B/C audit-write wiring (durably record the two
+  admission refusals), which needs NO replica identity; the earlier "unwritable / no replica
+  identity of any kind" was the STRONG reading the ruling did not adopt. DE-20's audit clause was
+  also resolved by amendment (it left the cohort). Authoritative post-ruling counts live in
+  `E0-F013`'s Status block.
 - **`E0-F011`** — four crossings are defended by a control whose **arming path is dead**:
   two with zero production callers, one enabled by an environment variable set in no
   manifest, one gated on a database column with no writer.

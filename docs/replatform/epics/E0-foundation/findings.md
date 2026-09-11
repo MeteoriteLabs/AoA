@@ -931,7 +931,7 @@ tenant-scoped, i.e. the blast radius the clause exists to bound is unbounded.
   actually enforce. Amendment is a founder decision and is not taken here. Resolve = flip this
   Status and delete the `E0-F012` key in `scripts/finding-ownership.json` in the SAME commit.
 
-## E0-F013 — The audit class, second cohort: nine more crossings assert that denials are audited, and on eight of the nine the denial is still not recorded durably — DE-19 was closed on 2026-09-08 and the remaining SEVEN are enumerated below (DE-20's audit clause was RESOLVED BY AMENDMENT 2026-09-11 under Decision 1 and is struck)
+## E0-F013 — The audit class, second cohort: nine more crossings assert that denials are audited, and on seven of the nine the denial is still not recorded durably — DE-19 was closed on 2026-09-08 and DE-20's audit clause was resolved by amendment on 2026-09-11 (Decision 1); the remaining SEVEN are enumerated below
 
 - **Status:** open — **7 of 9 remaining in THIS cohort (DE-20 struck 2026-09-11: 4a delivered + 4b amended vacuous by Decision 1); DE-19 CLOSED 2026-09-08. This cohort is
   UNCHANGED by BOTH 2026-09-10 units — the object-access unit closed DE-06 and the startup-audit
