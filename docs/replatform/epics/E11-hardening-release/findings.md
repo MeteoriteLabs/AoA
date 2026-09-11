@@ -324,7 +324,7 @@ its §5 and §4.4). That design records device enrolments as a layer above the f
 not add machine attestation, does not amend this finding, and changes no gate. This finding stays
 `open` and `unowned` until a founder/protocol decision closes it.
 
-**M2 shipped (2026-09-11, non-dispositional).** The design's M2 milestone landed (PR
+**M2 shipped (2026-09-11, non-dispositional).** The design's M2 milestone landed (PR #435,
 `e11-m2-verify-health`): read-time liveness health plus a read-only "Verify enrolment key" action
 that re-derives `sha256(SPKI DER)` from the STORED public key and checks the stored thumbprint and
 Ed25519 structure. Verify reads ENROLMENT-RECORD key integrity only — it explicitly does NOT prove a

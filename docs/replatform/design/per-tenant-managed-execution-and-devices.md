@@ -278,7 +278,7 @@ execution-target `kind`; any gate text; cross-device placement; device verify/he
 
 ### M2 - Device verify + health (R3 completion)
 
-> ★ **M2 shipped by PR e11-m2-verify-health** — read-time computed liveness health
+> ★ **M2 shipped by PR #435 (`e11-m2-verify-health`)** — read-time computed liveness health
 > (`classifyDeviceLiveness` in `server/src/services/device-liveness.ts`, mirroring
 > SVC-003b's null-fail-open and strict-`>` boundary; deadline
 > `DEVICE_LIVENESS_DEADLINE_MS_DEFAULT = 30 min`, a conservative multiple of the 15-min
