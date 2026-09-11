@@ -317,6 +317,9 @@ export const queryKeys = {
   executionTargets: {
     list: (organizationId: string) => ["executionTargets", organizationId] as const,
   },
+  desktopDevices: {
+    list: (organizationId: string) => ["desktopDevices", organizationId] as const,
+  },
   jobControl: {
     jobs: (organizationId: string, companyId: string) =>
       ["job-control", organizationId, companyId, "jobs"] as const,
