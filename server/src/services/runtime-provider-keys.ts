@@ -87,23 +87,40 @@ export function runtimeProviderKeyService(
    * name surfaces as `secretService.create`'s `conflict(409)` unchanged (a clean
    * 409, not a 500) because the transaction re-throws it as-is.
    */
-  async function createWithSecret(companyId: string, input: CreateRuntimeProviderKeyWithSecret) {
+  async function createWithSecret(
+    companyId: string,
+    input: CreateRuntimeProviderKeyWithSecret,
+    // Actor is threaded to `secretService.create` so the generated secret carries
+    // its creator (`company_secrets.created_by_user_id`), matching the normal
+    // secret-create route. Without it the one-step path would mint a credential
+    // with NULL creator provenance (Codex P1). Structurally `{ userId?, agentId? }`
+    // to avoid importing the non-exported `Actor` type from secrets.ts.
+    actor?: { userId?: string | null; agentId?: string | null },
+  ) {
     return db.transaction(async (tx) => {
       // `tx as unknown as Db` is the repo-wide idiom for handing a transaction to
       // a `(db: Db)` factory (the callback tx lacks `Db`'s `$client`). Both
       // services then share the outer transaction, so the whole write is atomic.
       const txDb = tx as unknown as Db;
-      const secret = await secretService(txDb).create(companyId, {
-        name: input.secretName ?? input.displayName,
-        value: input.value,
-        provider: "local_encrypted",
-      });
-      return runtimeProviderKeyService(txDb).create(companyId, {
+      const secret = await secretService(txDb).create(
+        companyId,
+        {
+          name: input.secretName ?? input.displayName,
+          value: input.value,
+          provider: "local_encrypted",
+        },
+        actor,
+      );
+      const providerKey = await runtimeProviderKeyService(txDb).create(companyId, {
         provider: input.provider,
         displayName: input.displayName,
         secretId: secret.id,
         isDefault: input.isDefault ?? true,
       });
+      // Return BOTH rows so the route can audit `secret.created` alongside
+      // `runtime_provider_key.created`. Neither row carries the raw key value
+      // (the material lives in company_secret_versions), so this is safe to return.
+      return { secret, providerKey };
     });
   }
 

@@ -17,6 +17,11 @@ interface ProviderKeysTabProps {
   actionErrorMessage?: string | null;
   onCreate: (input: CreateRuntimeProviderKey) => Promise<unknown>;
   onCreateWithSecret: (input: CreateRuntimeProviderKeyWithSecret) => Promise<unknown>;
+  // Fired when the quick-add dialog opens/closes so the parent can reset the
+  // quick-add mutation on close (Codex P2) — otherwise a failed quick-add's error
+  // lingers at the tab AND inside the unrelated existing-secret dialog, which
+  // shares this `actionErrorMessage`, until the next quick-add submission.
+  onQuickAddOpenChange?: (open: boolean) => void;
   onUpdate: (id: string, input: UpdateRuntimeProviderKey) => Promise<unknown>;
   onRemove: (id: string) => Promise<unknown>;
 }
@@ -28,6 +33,7 @@ export function ProviderKeysTab({
   actionErrorMessage,
   onCreate,
   onCreateWithSecret,
+  onQuickAddOpenChange,
   onUpdate,
   onRemove,
 }: ProviderKeysTabProps) {
@@ -135,7 +141,10 @@ export function ProviderKeysTab({
       <ProviderKeyQuickAddDialog
         open={quickAddOpen}
         errorMessage={actionErrorMessage}
-        onOpenChange={setQuickAddOpen}
+        onOpenChange={(open) => {
+          setQuickAddOpen(open);
+          onQuickAddOpenChange?.(open);
+        }}
         onSubmit={async (input) => {
           await onCreateWithSecret(input);
           setQuickAddOpen(false);

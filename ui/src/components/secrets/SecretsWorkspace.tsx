@@ -477,6 +477,12 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
               createRuntimeProviderKeyWithSecret.reset();
               return createRuntimeProviderKeyWithSecret.mutateAsync(input);
             }}
+            onQuickAddOpenChange={(open) => {
+              // Reset the quick-add mutation when its dialog closes (Codex P2), so a
+              // failed quick-add error does not linger at the tab or leak into the
+              // existing-secret dialog that shares this action error.
+              if (!open) createRuntimeProviderKeyWithSecret.reset();
+            }}
             onUpdate={(id, input) => updateRuntimeProviderKey.mutateAsync({ id, input })}
             onRemove={(id) => deleteRuntimeProviderKey.mutateAsync(id)}
           />

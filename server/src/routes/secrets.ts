@@ -188,17 +188,33 @@ export function secretRoutes(db: Db) {
       assertBoard(req);
       const companyId = req.params.companyId as string;
       await assertCompanyAccess(db, req, companyId);
-      const created = await runtimeKeysSvc.createWithSecret(companyId, req.body);
+      const { secret, providerKey } = await runtimeKeysSvc.createWithSecret(
+        companyId,
+        req.body,
+        { userId: req.actor.userId ?? "board", agentId: null },
+      );
+      // Audit BOTH mutations, matching the two-step path (Codex P1): the generated
+      // secret gets its own `secret.created` event so a one-step credential has the
+      // same provenance as a normally-created secret. The raw value is never logged.
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "secret.created",
+        entityType: "secret",
+        entityId: secret.id,
+        details: { name: secret.name, provider: secret.provider },
+      });
       await logActivity(db, {
         companyId,
         actorType: "user",
         actorId: req.actor.userId ?? "board",
         action: "runtime_provider_key.created",
         entityType: "runtime_provider_key",
-        entityId: created.id,
-        details: { provider: created.provider, displayName: created.displayName, isDefault: created.isDefault },
+        entityId: providerKey.id,
+        details: { provider: providerKey.provider, displayName: providerKey.displayName, isDefault: providerKey.isDefault },
       });
-      res.status(201).json(created);
+      res.status(201).json(providerKey);
     },
   );
 

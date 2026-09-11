@@ -142,19 +142,26 @@ describe("runtimeProviderKeyService.createWithSecret", () => {
       inserts: [[created]], // provider-key insert
     });
 
-    const result = await runtimeProviderKeyService(db).createWithSecret(COMPANY, {
-      provider: "e2b",
-      displayName: "Prod E2B",
-      value: "e2b_live_secret",
-      isDefault: true,
-    });
+    const actor = { userId: "user-1", agentId: null };
+    const result = await runtimeProviderKeyService(db).createWithSecret(
+      COMPANY,
+      {
+        provider: "e2b",
+        displayName: "Prod E2B",
+        value: "e2b_live_secret",
+        isDefault: true,
+      },
+      actor,
+    );
 
     expect(db.calls.transactions).toBe(1);
-    expect(secretCreateSpy).toHaveBeenCalledWith(COMPANY, {
-      name: "Prod E2B",
-      value: "e2b_live_secret",
-      provider: "local_encrypted",
-    });
+    // ★ Codex P1: the actor is threaded to secretService.create so the generated
+    // secret carries its creator (createdByUserId), not NULL.
+    expect(secretCreateSpy).toHaveBeenCalledWith(
+      COMPANY,
+      { name: "Prod E2B", value: "e2b_live_secret", provider: "local_encrypted" },
+      actor,
+    );
     expect(db.calls.insertValues[0]).toMatchObject({
       companyId: COMPANY,
       provider: "e2b",
@@ -163,7 +170,9 @@ describe("runtimeProviderKeyService.createWithSecret", () => {
       isDefault: true,
       status: "active",
     });
-    expect(result).toEqual(created);
+    // Returns BOTH rows so the route can audit secret.created + rpk.created.
+    expect(result.providerKey).toEqual(created);
+    expect(result.secret).toMatchObject({ id: SECRET });
   });
 
   it("uses secretName for the secret when provided, and displayName for the key", async () => {
@@ -174,19 +183,24 @@ describe("runtimeProviderKeyService.createWithSecret", () => {
       inserts: [[makeProviderKey()]],
     });
 
-    await runtimeProviderKeyService(db).createWithSecret(COMPANY, {
-      provider: "e2b",
-      displayName: "Team E2B",
-      value: "e2b_live_secret",
-      isDefault: true,
-      secretName: "E2B_PROD_KEY",
-    });
+    const actor = { userId: "user-2", agentId: null };
+    await runtimeProviderKeyService(db).createWithSecret(
+      COMPANY,
+      {
+        provider: "e2b",
+        displayName: "Team E2B",
+        value: "e2b_live_secret",
+        isDefault: true,
+        secretName: "E2B_PROD_KEY",
+      },
+      actor,
+    );
 
-    expect(secretCreateSpy).toHaveBeenCalledWith(COMPANY, {
-      name: "E2B_PROD_KEY",
-      value: "e2b_live_secret",
-      provider: "local_encrypted",
-    });
+    expect(secretCreateSpy).toHaveBeenCalledWith(
+      COMPANY,
+      { name: "E2B_PROD_KEY", value: "e2b_live_secret", provider: "local_encrypted" },
+      actor,
+    );
   });
 
   it("rolls back (rejects) when the provider-key insert throws, after the secret was created", async () => {

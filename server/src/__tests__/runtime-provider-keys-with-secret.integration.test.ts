@@ -98,14 +98,24 @@ describe.skipIf(!RUN)("POST /runtime-provider-keys/with-secret (real PG)", () =>
     // The raw value is never echoed back.
     expect(JSON.stringify(res.body)).not.toContain("e2b_live_ONE");
 
-    const secret = rows(await db.execute(sql`SELECT id, status FROM company_secrets WHERE company_id = ${companyId} AND name = 'E2B_ONE'`))[0];
+    const secret = rows(await db.execute(sql`SELECT id, status, created_by_user_id FROM company_secrets WHERE company_id = ${companyId} AND name = 'E2B_ONE'`))[0];
     expect(secret).toBeTruthy();
     expect(secret.status).toBe("active");
+    // ★ Codex P1: the generated secret carries its creator, not NULL — the actor
+    // is threaded through createWithSecret, matching the two-step secret-create.
+    expect(secret.created_by_user_id).toBe("u-1");
     const version = rows(await db.execute(sql`SELECT status FROM company_secret_versions WHERE secret_id = ${secret.id} AND status = 'current'`));
     expect(version).toHaveLength(1);
     const key = rows(await db.execute(sql`SELECT is_default, secret_id FROM runtime_provider_keys WHERE company_id = ${companyId} AND provider = 'e2b' AND is_default IS TRUE`));
     expect(key).toHaveLength(1);
     expect(key[0].secret_id).toBe(secret.id);
+    // ★ Codex P1: BOTH audit events are recorded — the secret's own secret.created
+    // alongside runtime_provider_key.created — so a one-step credential is as
+    // auditable as a normally-created one.
+    const secretCreated = rows(await db.execute(sql`SELECT id FROM activity_log WHERE company_id = ${companyId} AND action = 'secret.created' AND entity_id = ${secret.id}`));
+    expect(secretCreated).toHaveLength(1);
+    const keyCreated = rows(await db.execute(sql`SELECT id FROM activity_log WHERE company_id = ${companyId} AND action = 'runtime_provider_key.created' AND entity_id = ${res.body.id}`));
+    expect(keyCreated).toHaveLength(1);
 
     const resolved = await runtimeProviderKeyService(db).resolveCredential(
       companyId,
