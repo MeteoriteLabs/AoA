@@ -216,7 +216,12 @@ so each finding's count stays true to the cohort it measured) plus one more:
   DE-06's and DE-14's audit clauses closed that day and both are struck from the cohort. Across
   the whole class — this cohort plus `E0-F013`'s — **three of seventeen are closed and fourteen
   are open;** the authoritative count is `E0-F013`'s Status block in
-  `docs/replatform/epics/E0-foundation/findings.md`, and no count is stated twice here.
+  `docs/replatform/epics/E0-foundation/findings.md`, and no count is stated twice here. ★ **2026-09-11
+  (E0-F013 Decision 1):** E0-F010 is now **FIVE** (DE-12's audit clause was resolved by amendment and
+  struck) and the whole-class open count is **TWELVE** (DE-12 and DE-20 both resolved by amendment,
+  leaving three whole-delivered + two amended-resolved). The `1 delivered / 25 partial / 4
+  not-delivered` register tally is unchanged — no `deliveryStatus` flipped. The post-ruling "closable
+  ever" ceiling is convention-dependent and deferred; see the decision paper §7 / §8 1.7.
 - **`E0-F013`** — the same class, second cohort: **nine more** crossings, of which five
   record nothing at all and four record the *success* path and not the refusal. ★ **AMENDED
   2026-09-11 by E0-F013 Decision 1:** DE-27's clause is NOT unwritable. The ruling adopted the

@@ -944,9 +944,9 @@ tenant-scoped, i.e. the blast radius the clause exists to bound is unbounded.
   2026-09-11 under E0-F013 Decision 1 — DE-12 (`E0-F010`) and DE-20 (this cohort):** each has one
   conjunct delivered and its remaining conjunct(s) amended as vacuous, so each LEAVES its audit-gap
   cohort while staying `partial` in the register. Resolution-by-amendment is a SEPARATE category
-  from whole delivery — the "three whole" count is unchanged — and it does NOT change the "closable
-  ever" ceiling (both stay `partial` crossings, so the §7 ceiling and the §8 1.7 count are
-  untouched). **FIVE audit clauses are therefore no longer open (three whole + two amended), and
+  from whole delivery — the "three whole" count is unchanged. The effect on the "closable ever"
+  ceiling is CONVENTION-DEPENDENT and is DEFERRED here, consistent with the decision paper §7 and
+  §8 1.7 (do not treat `partial` status as decisive). **FIVE audit clauses are therefore no longer open (three whole + two amended), and
   TWELVE remain open** — DE-01, DE-03, DE-04, DE-11, DE-13 in `E0-F010`, and DE-15, DE-16, DE-17,
   DE-18, DE-21, DE-27, DE-29 here. **Of those TWELVE, exactly THREE carry a delivered fraction of a
   conjunction and none of them counts as closed:** DE-03 (replay-rejection and the
@@ -958,9 +958,14 @@ tenant-scoped, i.e. the blast radius the clause exists to bound is unbounded.
   amendment and it has left the open set.)*
 - ★ **THE DERIVATION BELOW IS THE 2026-09-10 RE-COUNT OF THE FRACTIONS; UPDATED 2026-09-11:** DE-20
   has since left the fraction set — its audit clause is now RESOLVED BY AMENDMENT (E0-F013 Decision
-  1), so the current fraction count is **THREE** (DE-03, DE-11, DE-21) and `cutover-selection-audit.ts`
-  now serves a resolved clause rather than a fraction. The method and the ten-writer enumeration
-  below remain valid. ★ **THAT "FOUR" WAS RE-COUNTED AT HEAD, NOT DECREMENTED BY ONE.** DE-14 was never among the four —
+  1). The three named fractions above (DE-03, DE-11, DE-21) are facts, but the EXHAUSTIVENESS proof
+  below — the ten-module writer census concluding "no other open crossing carries a fraction" — is
+  PRE-RULING and is NOT re-derived here: it predates `server/src/services/service-control-audit.ts`
+  (`recordServiceGenerationRollActivity`, which writes DE-12's `service.generation_roll` / 3c row),
+  so the current inventory is ELEVEN modules, not ten, and DE-12/DE-20 have both left the cohort.
+  The post-ruling writer inventory and fraction recount are DEFERRED to the dedicated count
+  re-derivation; the enumeration below is kept as the 2026-09-10 derivation, not the current one.
+  ★ **THAT "FOUR" WAS RE-COUNTED AT HEAD, NOT DECREMENTED BY ONE (the 2026-09-10 derivation, retained below).** DE-14 was never among the four —
   its clause is single-conjunct, so it had no fraction of a conjunction to carry — so its closure
   moves the open count and leaves the fraction count where it was. That is an observation, not an
   adjustment. **The method: enumerate every module in the tree at this commit that WRITES one of
