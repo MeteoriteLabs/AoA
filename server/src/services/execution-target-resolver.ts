@@ -219,7 +219,15 @@ export function chooseExecutionTargetRow(input: {
   // never a throw. A `dedicated_worker` row can ONLY normalize as `organization_dedicated`
   // (TARGET_KIND_BY_CLASS above), so this arm can never reach an `owner_desktop` target; the
   // owner-misrouting class the pin/personal_subscription branches guard stays excluded here too.
-  if (input.executionTargetSlug) {
+  //
+  // SCOPED TO THE NULL-CREDENTIAL (canary) SHAPE — `!input.credentialKind`. The canary binding
+  // carries a slug with NO credentialKind; this arm exists for exactly that. A CREDENTIALED
+  // slug-bearing binding (e.g. a `company_api_key` heartbeat binding, which `toExecutionTargetHint`
+  // can emit with `executionTargetSlug = execution_target_id`) intentionally FALLS THROUGH to the
+  // shared `pooled_gvisor` pool below — its pre-E11-F004 behaviour — so this arm cannot silently
+  // divert a keyed/business binding off the pool. (No current writer produces such a binding, but
+  // scoping it here keeps the arm's blast radius exactly the canary and matches its stated intent.)
+  if (!input.credentialKind && input.executionTargetSlug) {
     return active.find((t) => t.kind === "dedicated_worker" && t.slug === input.executionTargetSlug) ?? null;
   }
   // company_api_key (business key) -> shared pool

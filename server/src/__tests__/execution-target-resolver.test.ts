@@ -159,6 +159,18 @@ describe("chooseExecutionTargetRow — E11-F004 canary slug arm (route a named o
     expect(chosen?.id).toBe("t-pool");
   });
 
+  it("REGRESSION (P3 scope): a CREDENTIALED (company_api_key) binding carrying a slug still hits the pool, NOT the canary arm", () => {
+    // The arm is scoped to the null-credential canary shape (`!credentialKind`). A
+    // company_api_key heartbeat binding can carry executionTargetSlug (= execution_target_id);
+    // it must fall through to the shared pool exactly as it did pre-E11-F004 — the arm must
+    // NOT divert it to a dedicated_worker slug-match (or to null when none matches).
+    const chosen = chooseExecutionTargetRow({
+      credentialKind: "company_api_key", pinnedTargetId: null, executionTargetSlug: canarySlug,
+      targets: [pooled, canaryDedicated],
+    });
+    expect(chosen?.id).toBe("t-pool");
+  });
+
   it("REGRESSION: a personal_subscription binding still routes to its dedicated target by slug", () => {
     const chosen = chooseExecutionTargetRow({
       credentialKind: "personal_subscription", pinnedTargetId: null, executionTargetSlug: "hetzner-owner",

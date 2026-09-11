@@ -305,7 +305,11 @@ providerConstraintProfile = {
   maxContinuousRuntimeSeconds, maxIdleSeconds,
   resourceCeiling: { cpuMillis, memoryMiB, pids, diskMiB },
   maxConcurrentOperations,
-  supportedOperations: ["create","execute", …],   // must cover the demand: create + execute
+  supportedOperations: ["create","execute","cancel","kill","destroy","list","inspect","reconcile_cleanup"],
+  // ★ ALL 8 CORE_PROVIDER_OPERATIONS are MANDATORY (providerConstraintProfileV1Schema
+  // `.min(8)` + superRefine), NOT just the job's demand. A missing core op fails ratify
+  // with the opaque `invalid_execution_target_placement_profile` (the field-level reason
+  // is swallowed by safeParse), so list all eight verbatim.
   localityTags: ["transfer_allowed"],              // must include the dataLocalityCeiling above
   checkpointMode: "none", healthMode: "none",
   digest: sha256(canonicalProviderConstraintProfileDigestInputV1(<unsigned profile>))
