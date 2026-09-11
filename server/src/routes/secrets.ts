@@ -4,6 +4,7 @@ import {
   SECRET_PROVIDERS,
   type SecretProvider,
   createRuntimeProviderKeySchema,
+  createRuntimeProviderKeyWithSecretSchema,
   createSecretBindingSchema,
   createSecretProviderConfigSchema,
   createSecretSchema,
@@ -163,6 +164,31 @@ export function secretRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       await assertCompanyAccess(db, req, companyId);
       const created = await runtimeKeysSvc.create(companyId, req.body);
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "runtime_provider_key.created",
+        entityType: "runtime_provider_key",
+        entityId: created.id,
+        details: { provider: created.provider, displayName: created.displayName, isDefault: created.isDefault },
+      });
+      res.status(201).json(created);
+    },
+  );
+
+  // One-step "Add E2B key": create the company secret (from the pasted raw key)
+  // AND its default provider key atomically. Mirrors the two-step POST above for
+  // auth + activity logging; the raw `value` is stored encrypted by
+  // `createWithSecret` and is NEVER logged or echoed in the response.
+  router.post(
+    "/companies/:companyId/runtime-provider-keys/with-secret",
+    validate(createRuntimeProviderKeyWithSecretSchema),
+    async (req, res) => {
+      assertBoard(req);
+      const companyId = req.params.companyId as string;
+      await assertCompanyAccess(db, req, companyId);
+      const created = await runtimeKeysSvc.createWithSecret(companyId, req.body);
       await logActivity(db, {
         companyId,
         actorType: "user",

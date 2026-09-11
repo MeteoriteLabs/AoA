@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   getById: vi.fn(),
   list: vi.fn(),
   create: vi.fn(),
+  createWithSecret: vi.fn(),
   update: vi.fn(),
   remove: vi.fn(),
   logActivity: vi.fn(async () => undefined),
@@ -24,6 +25,7 @@ vi.mock("../services/runtime-provider-keys.js", () => ({
     getById: mocks.getById,
     list: mocks.list,
     create: mocks.create,
+    createWithSecret: mocks.createWithSecret,
     update: mocks.update,
     remove: mocks.remove,
   })),
@@ -106,6 +108,69 @@ describe("runtime provider key routes", () => {
         details: expect.objectContaining({ provider: "e2b", displayName: "Default E2B" }),
       }),
     );
+  });
+
+  it("creates an E2B key in one step (with-secret) and never returns or logs the raw value", async () => {
+    mocks.createWithSecret.mockResolvedValue({
+      id: "key-1",
+      companyId,
+      provider: "e2b",
+      displayName: "Default E2B",
+      secretId,
+      isDefault: true,
+    });
+
+    const res = await request(app())
+      .post(`/companies/${companyId}/runtime-provider-keys/with-secret`)
+      .send({ provider: "e2b", displayName: "Default E2B", value: "e2b_live_topsecret", isDefault: true });
+
+    expect(res.status).toBe(201);
+    // Response must not carry the raw key back.
+    expect(JSON.stringify(res.body)).not.toContain("e2b_live_topsecret");
+    expect(mocks.createWithSecret).toHaveBeenCalledWith(companyId, expect.objectContaining({
+      provider: "e2b",
+      displayName: "Default E2B",
+      value: "e2b_live_topsecret",
+      isDefault: true,
+    }));
+    // Activity log records the create but NEVER the value.
+    const activityCall = mocks.logActivity.mock.calls.find(
+      ([, entry]) => (entry as { action?: string }).action === "runtime_provider_key.created",
+    );
+    expect(activityCall).toBeTruthy();
+    expect(JSON.stringify(activityCall)).not.toContain("e2b_live_topsecret");
+  });
+
+  it("applies schema defaults (provider e2b, isDefault true) for a minimal with-secret payload", async () => {
+    mocks.createWithSecret.mockResolvedValue({
+      id: "key-2",
+      companyId,
+      provider: "e2b",
+      displayName: "Minimal",
+      secretId,
+      isDefault: true,
+    });
+
+    const res = await request(app())
+      .post(`/companies/${companyId}/runtime-provider-keys/with-secret`)
+      .send({ displayName: "Minimal", value: "e2b_live_min" });
+
+    expect(res.status).toBe(201);
+    expect(mocks.createWithSecret).toHaveBeenCalledWith(companyId, expect.objectContaining({
+      provider: "e2b",
+      displayName: "Minimal",
+      value: "e2b_live_min",
+      isDefault: true,
+    }));
+  });
+
+  it("rejects a with-secret payload missing the raw value", async () => {
+    const res = await request(app())
+      .post(`/companies/${companyId}/runtime-provider-keys/with-secret`)
+      .send({ provider: "e2b", displayName: "No value" });
+
+    expect(res.status).toBe(400);
+    expect(mocks.createWithSecret).not.toHaveBeenCalled();
   });
 
   it("rejects invalid provider key payloads", async () => {
