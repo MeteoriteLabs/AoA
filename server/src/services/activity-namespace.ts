@@ -93,6 +93,36 @@ export function notDenialNamespace(): SQL {
 }
 
 /**
+ * ★ THE EXPLICIT RETENTION WINDOW for `security.denied.*` audit rows — E0-F013
+ * Decision 3.3 (Q4), founder-ruled 2026-09-11 ("rule the lifetime explicitly …
+ * bounded, with a purge that itself leaves a record").
+ *
+ * 365 days is the best-practice default for a security-denial audit trail: long
+ * enough to survive a quarterly incident-response cycle and an annual review,
+ * bounded so evidence does not accumulate without limit. This constant is the
+ * NAMED, RECORDED policy the founder's ruling requires — it replaces "unbounded,
+ * and nothing says so" with "365 days, stated here".
+ *
+ * ★ IT IS A POLICY DECLARATION, NOT AN ENFORCEMENT. Nothing reads this constant
+ * to purge yet, and this file does NOT wire a sweeper. Slice 3 ships Q4 as an
+ * explicit, recorded window and DEFERS the bounded purge to a follow-up, because
+ * the founder's "a purge that itself leaves a record" half collides with the
+ * partial CHECK (`activity_log_company_or_denial_check`): an instance-wide purge
+ * has no single company, so its durable purge-audit row would carry a NULL
+ * `company_id` under a NON-`security.denied.` action, which the CHECK REJECTS.
+ * Making the record-leaving purge legal needs either a further CHECK change on
+ * `activity_log` or a separate operator-audit store — a decision beyond wiring a
+ * cron, filed as E0-F018 (`docs/replatform/epics/E0-foundation/findings.md`).
+ * A FALSE CLAIM OF ENFORCEMENT IS WORSE THAN A MISSING CHECK: this window is
+ * declared and unenforced, and both the constant and E0-F018 say so plainly.
+ *
+ * ★ SCOPE, when the purge IS wired: it may delete ONLY `security.denied.*` rows
+ * OLDER than this window (`created_at < now() - 365d`), in capped batches, and
+ * NEVER a row younger than the window nor any other namespace.
+ */
+export const SECURITY_DENIAL_RETENTION_DAYS = 365;
+
+/**
  * Reserved `action` prefix for CONTROL-PLANE RETENTION DECISIONS (DE-11's
  * `audit` clause, "sensitive-artifact access and retention are audited").
  *

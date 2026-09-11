@@ -1,4 +1,4 @@
-import { and, asc, eq, count, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, count, inArray, isNull, like, sql } from "drizzle-orm";
 import { isDeepStrictEqual } from "node:util";
 import type { Db } from "@armyofagents/db";
 import { memoryFoldersService, seedCompanyRootFolder } from "./memory-folders.js";
@@ -59,6 +59,7 @@ import {
   userRoles,
 } from "@armyofagents/db";
 import { notCrewAssigned } from "./issue-crew-scope.js";
+import { SECURITY_DENIAL_ACTION_PREFIX, notDenialNamespace } from "./activity-namespace.js";
 // Type-only (mirrors Fix 5's `import type { organizationAccessService }`): lets
 // `createWithOperator` accept a `buildAccess` factory typed against the access
 // service WITHOUT a runtime companies↔access import cycle.
@@ -653,7 +654,34 @@ export function companyService(db: Db) {
         await tx.delete(companySkills).where(eq(companySkills.companyId, id));
         // === Top-level: agents, activity log ===
         await tx.delete(agents).where(eq(agents.companyId, id));
-        await tx.delete(activityLog).where(eq(activityLog.companyId, id));
+        // ★ E0-F013 Decision 3.3 (Q5), founder-ruled 2026-09-11 — denial evidence
+        // survives a company delete. A `security.denied.*` row is the operator
+        // plane's ONLY copy of a refusal; a founder deleting their own tenant must
+        // not be able to erase their own probing with it. So do NOT blanket-delete
+        // this company's activity_log rows. Instead:
+        //   (1) NULL the reserved `security.denied.*` rows. The partial CHECK
+        //       `company_id IS NOT NULL OR action LIKE 'security.denied.%'` admits a
+        //       null company for EXACTLY these, so the nulled row stays legal and is
+        //       still returned by the operator reader `securityDenials` (company_id
+        //       is a filter there, never a scope).
+        //   (2) Delete the REMAINING (ordinary + retention/object-access) rows.
+        // The null-BEFORE-delete ordering is load-bearing given the FK is now
+        // `ON DELETE set null` (Decision 3.3): after (1)+(2) NO row still references
+        // this company, so the company delete's set-null fires on nothing. Nulling a
+        // NON-denial row would violate the CHECK and make the company undeletable —
+        // deleting the ordinary rows first is what prevents that.
+        await tx
+          .update(activityLog)
+          .set({ companyId: null })
+          .where(
+            and(
+              eq(activityLog.companyId, id),
+              like(activityLog.action, `${SECURITY_DENIAL_ACTION_PREFIX}%`),
+            ),
+          );
+        await tx
+          .delete(activityLog)
+          .where(and(eq(activityLog.companyId, id), notDenialNamespace()));
         const rows = await tx
           .delete(companies)
           .where(eq(companies.id, id))

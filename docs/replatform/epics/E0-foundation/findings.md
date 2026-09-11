@@ -2153,6 +2153,34 @@ that owns the schema file. Until then the reader is correct and slow, which is s
     untouched, the **nine** no-company residue sinks are Decision 2's already-ruled remainder (not wired
     here), `plugin-lifecycle.ts:506` still needs a unit, and the four untraced sinks (§4.3) remain
     unmeasured. No count is struck and no crossing status changes.
+  - ★ **UPDATE 2026-09-11 — Decision 3.3 (retention): Q5 IMPLEMENTED WHOLE, Q4 PARTIAL (window recorded, enforcing purge deferred to E0-F018) — slice 3 (`decision3-retention`).**
+    **Q5 (tamper) is delivered WHOLE.** A `security.denied.*` denial record now SURVIVES the deletion of
+    the company it incriminates — a founder can no longer erase the operator plane's only copy of their
+    own probing by deleting their own tenant. Two changes: (1) the `activity_log.company_id` FK moves
+    from `ON DELETE cascade` to `ON DELETE set null`
+    (`packages/db/src/schema/activity_log.ts`, migration `0280_classy_warstar.sql` — activity_log FK ONLY,
+    by `db:generate`), making the COMPANY axis agree with `organization_id`'s existing `restrict`; (2)
+    `companyService.remove` (`server/src/services/companies.ts`) no longer blanket-deletes the company's
+    `activity_log` rows — it NULLs the `security.denied.*` rows (the partial CHECK
+    `company_id IS NOT NULL OR action LIKE 'security.denied.%'` admits a null company for exactly these)
+    and deletes the ordinary rows BEFORE the company delete, so the FK's set-null never fires on a
+    non-denial row (which would violate the CHECK and make the company undeletable). Proven RED-first by
+    `server/src/__tests__/e0-f013-denial-retention-survives-delete.integration.test.ts`: a company with
+    BOTH a real (recorder-planted) denial row and an ordinary row is deleted; the denial row survives with
+    `company_id NULL` and is still returned by `activityService.securityDenials`, the ordinary row is gone,
+    and the delete succeeds. Observed RED against the pre-slice-3 blanket delete (the denial-survival and
+    operator-reader arms both failed). **Q4 (lifetime) is delivered AS A RECORDED WINDOW, purge DEFERRED.**
+    `SECURITY_DENIAL_RETENTION_DAYS = 365` is now a named, documented policy constant
+    (`server/src/services/activity-namespace.ts`) — the explicit window the founder's ruling required,
+    replacing "unbounded, and nothing says so". The bounded, record-leaving purge is NOT wired here: a
+    recurring host exists (the sweeper block in `server/src/index.ts`), but the founder's "a purge that
+    itself leaves a record" half collides with the partial CHECK — an instance-wide purge has no single
+    company, so its durable purge-audit row carries a NULL `company_id` under a NON-`security.denied.`
+    action, which the CHECK rejects. Making that record legal is a further schema sub-decision, filed as
+    **E0-F018** (unowned) rather than half-built. The constant is declared-and-unenforced and says so.
+    ★ **NARROW — this closes NOTHING else.** `E0-F013` stays **open**: `DE-16`/`DE-21` remain `partial`
+    with their conjuncts untouched, and the fourteen tenant-less sinks (slice 2) plus the disclosure
+    readers (slice 1) are unaffected here. No count is struck and no crossing status changes.
 - **Why an operator query rather than a UI** (the ruling invited the narrower answer): the evidence
   is instance-wide and its audience is one operator working an incident. A company-scoped UI is the
   one shape that would answer Decision 3 by accident, in the direction that discloses. Documented at
@@ -2646,3 +2674,50 @@ as a hint.
   cohort is Decision 1's call, not this unit's.
 - **No finding is closed, no crossing changes status, no cohort count is struck, and no**
   **`deliveryStatus` is upgraded by this unit. E0-F013 stays open.**
+
+## E0-F018 — Decision 3.3 Q4's retention window is declared but NOT enforced: `SECURITY_DENIAL_RETENTION_DAYS = 365` names the bound, and nothing purges `security.denied.*` rows past it, because the founder-required "purge that itself leaves a record" collides with the partial CHECK
+
+- **Status:** open
+- **Severity:** MEDIUM
+- **Filed:** 2026-09-11, by the Decision 3 slice 3 unit (`decision3-retention`), which shipped Q4 as
+  a recorded window and Q5 whole (see the Decision 3.3 slice-3 update above).
+- **Blocks gate:** No — a retention-enforcement gap, not an enforcement-of-denial gap. Denial
+  evidence is now durably recorded (slices 1/2) and tamper-resistant against a company delete (Q5,
+  this slice); what is missing is the periodic *bounding* of how long it lives.
+
+**What was shipped, and what was not.** The founder ruled Q4 explicitly (2026-09-11): the lifetime of
+a `security.denied.*` record is **bounded**, "with a purge that itself leaves a record." Slice 3
+delivered the **window** — `SECURITY_DENIAL_RETENTION_DAYS = 365`, a named + documented policy
+constant in `server/src/services/activity-namespace.ts` — replacing the prior "unbounded, and nothing
+says so." It did **not** deliver the **purge**. The constant is declared-and-unenforced, and both it
+and this finding say so; A FALSE CLAIM OF ENFORCEMENT IS WORSE THAN A MISSING CHECK, so nothing reads
+the constant to delete rows yet.
+
+**Why the purge was deferred rather than bolted on.** It is not "wire a cron" — a suitable recurring
+host already exists (the sweeper block in `server/src/index.ts` that schedules `scheduleTtlSweeper` /
+`scheduleCleanupRetrySweeper` / `registerHeartbeatWatchdogSweeper`; the orphaned
+`startPluginLogRetention` in `plugin-log-retention.ts` is the exact batched-delete-past-a-window
+shape to copy). The blocker is the founder's **"a purge that itself leaves a record"** half. A purge
+of `security.denied.*` rows older than the window is an instance-wide operation with **no single
+company**, so its durable purge-audit row would carry a NULL `company_id` under a
+NON-`security.denied.` action — and the partial CHECK `activity_log_company_or_denial_check`
+(`company_id IS NOT NULL OR action LIKE 'security.denied.%'`, migration `0274`) **rejects** exactly
+that row. Making the record legal needs one of: (a) a further CHECK change on `activity_log` admitting
+a company-less purge/retention namespace, or (b) a separate operator-audit store for
+purge events. Both are schema/audit-namespace sub-decisions beyond this slice's scope, and (a) is
+adjacent to the Decision-2 CHECK the founder has already ruled on — so it is filed, not guessed.
+
+**Also unaddressed by the window alone:** M1 of any purge is process-local like the slice-2 write
+bound; a durable/cross-replica retention job (one leader, not one-per-replica) is part of the same
+follow-up.
+
+- **Disposition:** `unowned`. No shipped ticket owns the `activity_log` retention sweeper or the
+  purge-record CHECK question; naming a completed ticket would be the false-ownership claim `E4-F013`
+  exists to refuse. It waits on a decision on HOW a company-less purge leaves a durable record (CHECK
+  amendment vs. separate store), then the batched sweeper wired into the existing host.
+- **Resolution condition:** a bounded purge of `security.denied.*` rows with `created_at` older than
+  `SECURITY_DENIAL_RETENTION_DAYS`, in capped batches, hooked into a recurring host, that (1) purges a
+  row older than the window, (2) keeps a row younger than it, (3) purges NOTHING outside the
+  `security.denied.` namespace, and (4) writes a durable record of the purge — each proven RED-first —
+  plus the schema decision that makes (4) legal under the partial CHECK. Resolve = flip this Status and
+  delete the `E0-F018` key in `scripts/finding-ownership.json` in the SAME commit.

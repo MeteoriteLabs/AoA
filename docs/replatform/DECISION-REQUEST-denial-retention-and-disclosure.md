@@ -6,7 +6,9 @@
 disclosure unit).
 **Status:** ★ **RULED 2026-09-11 (founder)** — best-practice throughout, per class. See the ruling
 block immediately below. The decision is implemented in slices; **slice 1 (Q2/Q3 — disclosure to the
-actor's own tenant) is shipped by this PR**, the remaining classes are marked pending their slices.
+actor's own tenant) is shipped by this PR**; slice 2 (Q3-sites) by `decision3-tenantless-sink`; and
+slice 3 by `decision3-retention` (Q5 — tamper-resistant delete — **WHOLE**; Q4 — retention window
+**RECORDED**, enforcing purge **DEFERRED** to E0-F018).
 The un-ruled framing below (`"What this document changes: NOTHING"`, `§9`) is the record of the
 paper AS SUBMITTED and is left intact; the ruling block is the amendment.
 
@@ -22,15 +24,23 @@ each of the three decision sub-blocks. The five questions of §1, and where each
 | **Q1** | Attribution + disclosure to the **probed** tenant | **RATIFY** actor-tenant attribution; a cross-tenant refusal is filed under the **actor's own** tenant and the **probed** tenant is never told (no per-company denial feed). This is already the code's behaviour and what three suites assert. | already true; **slice 1** re-asserts it (the probed tenant stays blind). |
 | **Q2 / Q3** | Disclosure to the **actor's OWN** tenant | ★ **RECOMMENDED (Decision 3.1)** — also do **NOT** disclose a `security.denied.*` row to the actor's own tenant. Exclude the denial namespace from **every tenant-facing `activity_log` reader** through ONE shared `notDenialNamespace()` predicate, with a provocation per reader observed RED first. The operator plane (`GET /instance/security-denials`) still sees everything. | ★ **IMPLEMENTED BY THIS PR (slice 1).** Readers: `activityService.list`, `homeService.summary`, `cockpitTeammatesActivity`, `morningDigest`. |
 | **Q3-sites** | The **fourteen** tenant-less deny sites (six `authorizeUpgrade` + eight plugin cloud gate) | ★ **RECOMMENDED (Decision 3.2, option (c))** — an **operator-only sink**: `company_id` NULL, caller-supplied company in `entity_id`, readable only via the operator reader, **WITH a bound on the write** (per-source cap / sampling / aggregation) landing alongside it. | ★ **IMPLEMENTED BY SLICE 2** (`decision3-tenantless-sink`): all 14 sites now call the bounded recorder into the operator-only sink. |
-| **Q4** | Lifetime of a denial record | ★ **RECOMMENDED (Decision 3.3)** — rule it **explicitly** (today it is unbounded and nothing records that): a bounded retention window whose purge itself leaves a record. | **pending slice 3.** |
-| **Q5** | Tamper — can a suspect delete it? | ★ **RECOMMENDED (Decision 3.3)** — `security.denied.*` denial history **survives a company delete**: the `company_id` FK moves to `ON DELETE set null` (by `db:generate`) and `companyService.remove` nulls rather than deletes them, making the company axis agree with `organization_id`'s existing `restrict`. | **pending slice 3.** |
+| **Q4** | Lifetime of a denial record | ★ **RECOMMENDED (Decision 3.3)** — rule it **explicitly** (today it is unbounded and nothing records that): a bounded retention window whose purge itself leaves a record. | ★ **PARTIAL (slice 3) — explicit window RECORDED (Q4a); enforcing purge NOT shipped (Q4b → E0-F018).** `SECURITY_DENIAL_RETENTION_DAYS = 365` is named + documented in `activity-namespace.ts` (the recorded window), but nothing reads it to purge — rows past 365 days are retained indefinitely. The record-leaving purge is NOT wired (it collides with the partial CHECK — a company-less purge-audit row is rejected outside the denial namespace) and is filed as **E0-F018** (unowned). The window is **declared, not enforced.** |
+| **Q5** | Tamper — can a suspect delete it? | ★ **RECOMMENDED (Decision 3.3)** — `security.denied.*` denial history **survives a company delete**: the `company_id` FK moves to `ON DELETE set null` (by `db:generate`) and `companyService.remove` nulls rather than deletes them, making the company axis agree with `organization_id`'s existing `restrict`. | ★ **IMPLEMENTED BY SLICE 3** (`decision3-retention`): FK → `ON DELETE set null` (migration `0280`); `companyService.remove` NULLs the `security.denied.*` rows and deletes the ordinary rows before the company delete; proven RED-first by `e0-f013-denial-retention-survives-delete.integration.test.ts`. |
 
 **Slice map.** Slice 1 = Q2/Q3 (this PR). Slice 2 = Q3-sites operator-only sink + write bound
-(**shipped** by `decision3-tenantless-sink`). Slice 3 = Q4 (retention window) + Q5 (tamper-resistant
-delete). The strongest arguments-against recorded in
-§8 are accepted by the founder as the known costs of the best-practice choice, and each later slice
-owes the provocation §8 names (the write bound for slice 2; the `set null` / undeletable-company case
-for slice 3).
+(**shipped** by `decision3-tenantless-sink`). Slice 3 = Q5 (tamper-resistant delete, **WHOLE**) + Q4
+(retention window **RECORDED**, enforcing purge **DEFERRED** to E0-F018), by `decision3-retention`:
+**Q5 whole** (FK `ON DELETE set null`, migration `0280`; `companyService.remove` nulls the denial rows
+then deletes the ordinary rows), and **Q4 as a recorded-but-unenforced window**
+(`SECURITY_DENIAL_RETENTION_DAYS = 365`, which nothing yet reads to purge) with the record-leaving
+purge **deferred** to **E0-F018** because it collides with the partial CHECK (a company-less
+purge-audit row is rejected outside the denial namespace — a further schema decision, not a
+cron-wiring). The strongest
+arguments-against recorded in §8 are accepted by the founder as the known costs of the best-practice
+choice, and each later slice owes the provocation §8 names (the write bound for slice 2; the
+`set null` / undeletable-company case for slice 3 — the latter is discharged by
+`e0-f013-denial-retention-survives-delete.integration.test.ts` seeding an ordinary row alongside the
+denial row and asserting the delete still succeeds).
 
 ---
 
@@ -657,13 +667,33 @@ it is unbounded and nothing says so.
   unvalidated at the sink; this lets a prober choose whose log absorbs the record, with no RLS
   narrowing available.
 
-### ☑ **DECISION 3.3 — CLASS 3: retention** — ★ RULED 2026-09-11 (founder): RECOMMENDED (Q5 set-null + Q4 explicit window). **Pending slice 3.**
+### ☑ **DECISION 3.3 — CLASS 3: retention** — ★ RULED 2026-09-11 (founder): RECOMMENDED (Q5 set-null + Q4 explicit window). ★ **slice 3** (`decision3-retention`): **Q5 WHOLE**; **Q4 PARTIAL** — explicit window recorded, enforcing purge deferred to E0-F018 (declared, not enforced).
 
 - ☑ **★ RECOMMENDED — Q5 — CHOSEN:** `security.denied.*` rows survive a company delete. `company_id` FK moves
   to `ON DELETE set null` (by `db:generate`) and `companyService.remove` nulls rather than deletes
-  them, making the company axis agree with `organization_id`'s existing `restrict` (§7.4). **← pending slice 3.**
+  them, making the company axis agree with `organization_id`'s existing `restrict` (§7.4). **← SHIPPED
+  by slice 3:** `packages/db/src/schema/activity_log.ts` FK is `ON DELETE set null` (migration
+  `0280_classy_warstar.sql`, activity_log FK only); `server/src/services/companies.ts remove()` NULLs the
+  `security.denied.*` rows (the partial CHECK admits null there) and deletes the ordinary rows BEFORE
+  the company delete, so the FK's set-null never fires on a non-denial row. Proven RED-first by
+  `server/src/__tests__/e0-f013-denial-retention-survives-delete.integration.test.ts`: a company with
+  BOTH a real denial row and an ordinary row is deleted; the denial row survives with `company_id NULL`
+  and is still returned by `activityService.securityDenials`, the ordinary row is gone, and the delete
+  succeeds (no CHECK violation) — the undeletable-company case §8 names is discharged by the ordinary
+  row's presence.
 - ☑ **Q4 — CHOSEN:** rule the lifetime explicitly. Today it is **unbounded** and nothing records that.
-  ▢ unbounded, stated · ☑ **bounded**, with a purge that itself leaves a record. **← pending slice 3.**
+  ▢ unbounded, stated · ☑ **bounded**, with a purge that itself leaves a record. **← SHIPPED by slice 3
+  AS A RECORDED WINDOW, purge DEFERRED:** `SECURITY_DENIAL_RETENTION_DAYS = 365` is the named,
+  documented policy constant (`server/src/services/activity-namespace.ts`) — the explicit window the
+  ruling requires, replacing "unbounded and nothing says so". The bounded, record-leaving purge is NOT
+  wired in this slice: a suitable recurring host exists (the sweeper block in `server/src/index.ts`),
+  but the founder's "a purge that itself leaves a record" half collides with the partial CHECK
+  `activity_log_company_or_denial_check` — an instance-wide purge has no single company, so its durable
+  purge-audit row would carry a NULL `company_id` under a NON-`security.denied.` action, which the CHECK
+  rejects. Making that record legal needs a further CHECK change or a separate operator-audit store — a
+  schema sub-decision beyond wiring a cron — so it is filed as **E0-F018** (unowned) rather than
+  half-built. A FALSE CLAIM OF ENFORCEMENT IS WORSE THAN A MISSING CHECK: the constant and E0-F018 both
+  state plainly that the window is declared and not yet enforced.
 - ▢ **(alt, not chosen)** Leave the cascade. *Records that a founder may delete the evidence of their own
   probing, and that the operator plane holds no second copy.*
 - ☑ **Recorded either way:** the `aoa_app` `SELECT, INSERT`-only grant on `activity_log`
