@@ -1961,6 +1961,13 @@
       "when": 1789039634296,
       "tag": "0279_service_instance_terminalized_by",
       "breakpoints": true
+    },
+    {
+      "idx": 280,
+      "version": "7",
+      "when": 1789093541700,
+      "tag": "0280_classy_warstar",
+      "breakpoints": true
     }
   ]
 }

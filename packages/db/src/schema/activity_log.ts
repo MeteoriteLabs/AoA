@@ -51,7 +51,27 @@ export const activityLog = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     // NULLABLE since E0-F013 Decision 2 (a2). Null is admissible ONLY for rows
     // in the reserved `security.denied.` namespace — see `companyOrDenial` below.
-    companyId: uuid("company_id").references(() => companies.id, { onDelete: "cascade" }),
+    //
+    // ★ ON DELETE set null since E0-F013 Decision 3.3 (Q5), founder-ruled
+    // 2026-09-11. A `security.denied.*` denial record must SURVIVE the deletion of
+    // the company it incriminates — otherwise a hostile founder erases the operator
+    // plane's only copy of their own probing by deleting their own tenant (§7.2 of
+    // `docs/replatform/DECISION-REQUEST-denial-retention-and-disclosure.md`). Under
+    // the previous `cascade`, deleting the company destroyed every denial row filed
+    // under it. `set null` makes the COMPANY axis agree with the ORGANIZATION axis's
+    // existing `restrict` (§7.4): on both, denial evidence outlives the tenant.
+    //
+    // ★ WHY `set null` AND NOT `restrict` HERE. `restrict` on the company axis would
+    // make ANY company holding a denial row UNDELETABLE, breaking the product's
+    // erasure mechanism. `set null` keeps the company deletable while orphaning (not
+    // destroying) the denial evidence. It is safe ONLY because the partial CHECK
+    // below confines a null company_id to the `security.denied.` namespace: a null
+    // set on a NON-denial row would violate the CHECK and make the delete fail. So
+    // `companyService.remove` deletes ordinary rows BEFORE the company delete (and
+    // nulls the denial rows itself, belt-and-suspenders), leaving no non-denial row
+    // for the FK's set-null to touch. Any future writer that lands a non-denial row
+    // on this FK path owes that same ordering, or the company becomes undeletable.
+    companyId: uuid("company_id").references(() => companies.id, { onDelete: "set null" }),
     // The second tenant axis. Null on ~100% of rows by design: no product writer
     // populates it, and it exists so an organization-only denial is attributable
     // to something rather than to nothing. `restrict` (not `cascade`) mirrors
