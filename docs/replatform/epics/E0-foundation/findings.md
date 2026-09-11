@@ -176,7 +176,7 @@ with **no row, no metric and no log line** recording that a security control fir
 | DE-04 (Critical) | "claim, fence-generation, and stale-claim rejection are audited" | `packages/db/src/repositories/tenant/job-control.ts:1167` / `:1177` / `:1185` / `:1187` (`guardActiveFence`, 11+ governed mutators call it). | **Nothing.** The one table that looks like it records rejections, `worker_lease_rejections`, is an eligibility-certificate cache whose own header excludes exactly this class — *"Dynamic capacity, liveness, lock, parsing, and **authority failures** are deliberately excluded"* (`packages/db/src/schema/worker_lease_rejections.ts:16-18`), and its single writer (`job-control.ts:2127`) inserts placement certificates, not fence refusals. |
 | ~~DE-06 (Critical)~~ — **AUDIT CLAUSE COMPLETE 2026-09-10; STRUCK FROM THIS COHORT** | "object put/get **and** rejected-key attempts are audited" | `server/src/services/artifact-transfer-grant.ts` (upload key outside this org's prefix; download), the `wrong_prefix`/`tenant_mismatch` guards at the head of `commitArtifactVersion` (commit). | **BOTH CONJUNCTS DELIVERED.** ★ *"object put/get"* — a SUCCESSFUL grant now writes one attributable `activity_log` row under the reserved `security.object_access.` namespace: `…artifact_upload_grant` on a granted PUT, `…artifact_download_grant` on a granted GET, carrying WHO (`actor_id` = the authenticated `workerId`), TENANT (the LOCKED LEASE's company), RESOURCE (`job_artifact` + `details.objectKey`, the key that was actually SIGNED) and the exposure window (`details.grantExpiresAt`); the download row additionally carries `details.kind`/`details.sensitivity` read from the committed row, which is DE-11's access half. Writer: `artifact-object-access-audit.ts` `recordObjectAccessGrant`, drained on the POOL handle after the tenant transaction closes. **The record is of ISSUANCE, not REDEMPTION**, and it therefore OVER-reports — the control plane never observes the transfer and no wiring creates a second observation point. ★ *"rejected-key attempts"* — unchanged and delivered as described below. **DE-06 leaves this cohort. It stays `partial` in the register** for its separately-absent `authentication` clause (`E0-F012`), which is the same shape as DE-19. Full evidence, the hot-path bound and the six-mutant matrix are in "★ THE OBJECT-ACCESS UNIT" at the end of this entry and in the register row. *(Historical, kept because the corrections are only legible against it:)* **Half.** ★ The clause is CONJUNCTIVE and only the second conjunct was wired. **Delivered — "rejected-key attempts":** every refusal that RETURNS a `rejected` outcome on either path now writes one attributable row to `activity_log` — `security.denied.artifact_transfer_grant` / `security.denied.artifact_commit` — carrying WHO (the refused `workerId`), TENANT (the LOCKED LEASE's company, never the request's or the manifest's), RESOURCE (`job_artifact` + `details.requestedObjectKey`) and WHY (a per-BRANCH machine code behind the unchanged coarse wire `malformed`). Proven by provocation against real PostgreSQL: `server/src/__tests__/de-06-artifact-denial-audit.integration.test.ts`, observed 9-RED / 4-PASS against the unchanged tree and 13/13 green after, four mutants killed (the file now holds 15 arms: those 13 plus the two that pin the fence-auth gap, both observed RED in their aspirational form before being pinned); the central provocation is CROSS-TENANT at the `organizations` level and the probed tenant's own `activity_log` is asserted empty. **NOT delivered — "object put/get":** a SUCCESSFUL download grant (`artifact-transfer-grant.ts:288-315`, the sole production `presignGet` call site in the tree) presigns, parses and returns while writing NOTHING; a successful upload grant leaves only the operational `recordArtifactGrantIntent` row. The disclosure-relevant event for an object-key threat is exactly the successful GET. **ALSO NOT delivered:** the fence-AUTH refusals — `resolveWorkerFenceContext` throws `JobLeasingError` out of `runInTenant` on both paths and nothing records it (pinned, with the reachability control, by two arms in the same test file). **DE-06 stays `partial`** in the register and stays in this cohort. The historical measurement is kept below because it is what the half-closure was built against. |
 | *(DE-06, as measured 2026-09-08)* | — | — | **Partly — and this is the one row in the table where "nothing" would be wrong.** A rejected *commit* does emit a **count-only** metric: `metrics?.artifactOp({operation:"commit", outcome:"rejected", count:1})` (`server/src/services/artifact-commit.ts:246-250`), and the sink is genuinely wired in production (`createPinoJobControlMetrics`, `server/src/index.ts:657-660`). It is **not an audit record**: by deliberate design it carries no organization, no object key, no reason and no actor (`job-control-metrics.ts:15-17` — high-cardinality ids ride the logger spine, never a metric label), so a breach cannot be attributed or reconstructed from it. The *grant* rejections emit nothing at all: `rejected()` (`artifact-transfer-grant.ts:76-85`) only constructs a parsed response object, and although `ArtifactOpOperation` includes `"transfer_grant"` (`job-control-metrics.ts:30`), the sole production `artifactOp` caller is the commit path. |
-| DE-11 (High) | "sensitive-artifact access and retention are audited" | — (the controls themselves are absent; see `E8-F011`) | **Nothing**, and the code says so: `server/src/services/artifact-commit.ts:172-173`. |
+| DE-11 (High) | "sensitive-artifact access and retention are audited" | ★ corrected 2026-09-11 — the audit controls are NOT absent: retention via `recordRetentionDecision` (`artifact-retention-audit.ts`, drained at `artifact-commit.ts:482`) and access via `recordObjectAccessGrant` (`artifact-object-access-audit.ts`, riding DE-06). `E8-F011` still owns the NON-audit clauses. | ~~**Nothing**, and the code says so: `server/src/services/artifact-commit.ts:172-173`.~~ ★ **CORRECTED 2026-09-11 (E0-F013 Decision 1): BOTH audit halves now have a LIVE WRITER** — retention (`recordRetentionDecision`, drained at `artifact-commit.ts:482`) and access (`recordObjectAccessGrant`, `artifact-object-access-audit.ts`, riding DE-06). The `:172-173` / "LOG LINE" citation is STALE: that range is the generic `deny` rejection-helper closure (`:168-176`), not the retention path, and the actual retention branch at `:277` now reads *"THIS IS NOW AN AUDIT RECORD AND NOT ONLY A LOG LINE."* DE-11 stays in this cohort and stays `partial` for the COVERAGE reason (no production `browser_cookie_state`/`browser_storage_state` producer until BRW-003) plus its non-audit clauses (`E8-F011`: purge-on-completion measured absent; encryption/TTL UNKNOWN) — NOT because the audit controls are absent. Mirrors the corrected narrative at the DE-03/DE-11 re-statement above and the `E0-F013` Group D DE-11 bullet. |
 | ~~DE-12 (Critical)~~ — **AUDIT CLAUSE RESOLVED BY AMENDMENT 2026-09-11 (E0-F013 Decision 1); STRUCK FROM THIS COHORT** | "partition, drain, and generation changes are audited" | `packages/db/src/repositories/tenant/job-control.ts:2726` (the `serviceSourceIsAdmitted` generation gate; the older `:1667-1679` cite is stale) | **Nothing** — but ★ corrected 2026-09-10: the old justification (*"no writer anywhere in the tree, `grep -rn "update(services)"` returns zero hits"*) is now FALSE. A writer EXISTS — `bumpServiceGeneration` (`:3135`, a compare-and-set reached via the SVC-005a roll route), joined by `updateServiceDesiredState` (`:3004`) — so generation changes DO occur. ★ FURTHER CORRECTED 2026-09-11 (E0-F013 Decision 1): a roll is now AUDITED — it writes exactly ONE durable `service.generation_roll` `activity_log` row (`company_id` set) via `recordServiceGenerationRollActivity` (`server/src/services/service-control-audit.ts:317`) on the `rolled` verdict only, proven RED-first by `service-generation-rollout.integration.test.ts` R-T11 — so DE-12 conjunct **3c (generation changes are audited) is DELIVERED** and the `logger.info`-only justification above is stale. The clause stays undelivered on its OTHER two conjuncts, **3a (partition)** and **3b (drain)**, vacuous for the narrow reason that a partition detector (3a) and a reconciler-driven producer of the frozen drain/graceful_stop control-command kinds (3b; E9-F008) do not exist — NOT because the reconciler or fences are unbuilt (SVC-002/SVC-003a/SVC-005a shipped). `E0-F011` stays OPEN for those still-absent detector/producer mechanisms (see item 4). Row stays `partial`. ★ DE-12 LEAVES THIS COHORT 2026-09-11: its audit clause is now honest (3c delivered; 3a/3b amended as vacuous by Decision 1). This is resolution BY AMENDMENT, not a whole delivery like DE-06/DE-14 — the crossing stays `partial` in the register and E0-F011 stays open for the unbuilt partition-detector (3a) and drain-producer (3b). |
 | DE-13 (High) | "admission, throttle, and quota-breach events are audited" | `server/src/services/org-concurrency.ts:248` (capacity) and `server/src/services/worker-admission-rate-limit.ts:139` (`over_cap`). | **Nothing for the throttle.** `server/src/routes/worker-control.ts:414-416` returns the 429 through the same silent `sendWorkerOperationProtocolError`. The capacity 429 (`server/src/services/job-submission.ts:353`) surfaces only a generic `job_submission_rejected` reason code carrying neither cap nor usage. |
 | ~~DE-14 (Critical)~~ — **AUDIT CLAUSE COMPLETE 2026-09-10; STRUCK FROM THIS COHORT** | "the startup safety-assertion outcome is logged" | `assertHostedExecutionStartupSafe` (`server/src/config/distributed-execution.ts`) — measured throwing over a seven-case matrix by W20, and re-measured refusing on all four branches by the unit that closed this row. | **BOTH DIRECTIONS DELIVERED.** The assertion now RETURNS a `HostedExecutionStartupSafetyOutcome` on the pass and throws a `HostedExecutionStartupUnsafeError` carrying its own branch's `reason`/`envName` on the refusal; `loadConfigWithStartupSafetyAudit` (`server/src/config/hosted-execution-startup-audit.ts`) is the single production caller at the entrypoint and turns both into log lines — `distributed_execution.startup_safety.passed` at info, `distributed_execution.startup_safety.refused` at error, then RETHROWN unchanged so the process still dies before serving. **The clause is single-conjunct, so this closes it whole.** *(Historical, kept because the correction is only legible against it:)* **Nothing, in either direction.** `server/src/config/distributed-execution.ts` imported no logger and contained no `logger`/`console` call at all — its only import was `import type { DeploymentMode }` at `:1`. The failure surfaced as an unhandled module-eval crash trace; the success outcome was never recorded. |
@@ -677,7 +677,7 @@ function) is the named regression control and stayed green throughout, and `conf
 (18 arms over the real `loadConfig`) is green at HEAD. Enrolled as `E0-de14-startup-safety-audit` in
 `scripts/gate-clause-wiring.json` in the same commit.
 
-## E0-F011 — Four crossings are defended by a control whose ARMING PATH is dead: two have zero production callers, one is enabled by an environment variable set in no manifest, and one is gated on a database column with no writer
+## E0-F011 — Four crossings are defended by a control whose ARMING PATH is dead: two have zero production callers, one is enabled by an environment variable set in no manifest, and one has a deny that is unreachable-as-a-refusal (its DB column now HAS a writer, but the sole production submitter always supplies a matching generation)
 
 - **Status:** open
 - **Severity:** HIGH
@@ -821,11 +821,17 @@ all four read as shipped.
    caller), not the old one (no caller at all). *(Note: SVC-005a also added a separate,
    genuinely-reachable cross-generation PLACEMENT fence — `predecessor_generation_unwitnessed`,
    `service-reconciler.ts:266-276` — but that is not the submit-time deny DE-12 item 4 cites, so it
-   does not flip this clause.)* **This item stays OPEN**: DE-12's live residual is the undelivered
-   AUDIT clause ("partition, drain, and generation changes are audited") — a generation roll emits
-   only a `logger.info` line, no durable `activity_log`/`job_projection_receipts` row (see register
-   DE-12 and E9-F012 / E9-F009 §3). The register row was already corrected in this direction on
-   2026-09-10 and needs no change.
+   does not flip this clause.)* **This item stays OPEN** for the still-absent partition-detector (3a) and drain-producer (3b)
+   mechanisms. ★ **CORRECTED 2026-09-11 (E0-F013 Decision 1):** the earlier claim that DE-12's
+   residual AUDIT clause ("partition, drain, and generation changes are audited") is a
+   `logger.info`-only line is STALE. Conjunct **3c (generation changes) is DELIVERED** — a roll writes
+   exactly ONE durable `service.generation_roll` `activity_log` row via
+   `recordServiceGenerationRollActivity` (`service-control-audit.ts:317`, called at
+   `service-generation-rollout.ts:415`), proven RED-first by R-T11. DE-12's live audit residual is now
+   only **3a (partition)** and **3b (drain)**, amended as VACUOUS by Decision 1 for want of a partition
+   detector (3a) and a reconciler-driven producer of the frozen drain/graceful_stop control-command
+   kinds (3b; E9-F008; see register DE-12 and E9-F012 / E9-F009 §3). The register row was FURTHER
+   corrected in this direction on 2026-09-11.
 
 **Why each is HIGH.** (1) and (3) are silent data/resource losses — a late result is dropped rather
 than quarantined, and an orphan sandbox is billable. (2) meant, as filed, that the only revocation
@@ -834,8 +840,10 @@ operator lever is `revokeWorker`, which is real but DEVICE-GRAINED** — an oper
 handle is compromised must revoke the whole device — and (2) stays HIGH on its broker-refresh
 half. (4) ★ **re-measured 2026-09-10:** DE-12's `failureMode` — *"two service instances act as
 active simultaneously"* — now HAS controls that exist and run (the armed reconciler, the
-`services.generation` writer, and the cross-generation placement fence); what is undelivered is the
-AUDIT trail for the generation change, not the control itself. (Previously stated as "no control at
+`services.generation` writer, and the cross-generation placement fence); ★ **CORRECTED 2026-09-11:** the
+generation-change audit (conjunct 3c) is now DELIVERED (`recordServiceGenerationRollActivity`,
+R-T11); what remains undelivered is the PARTITION (3a) and DRAIN (3b) audit, amended as vacuous by
+Decision 1 — not the control itself. (Previously stated as "no control at
 all, only a gate that nothing can reach" — that was true at filing and is false at HEAD.)
 
 **What it is NOT.** None of the four is a *wrong* implementation. Each ticket's own result document
@@ -944,9 +952,14 @@ tenant-scoped, i.e. the blast radius the clause exists to bound is unbounded.
   2026-09-11 under E0-F013 Decision 1 — DE-12 (`E0-F010`) and DE-20 (this cohort):** each has one
   conjunct delivered and its remaining conjunct(s) amended as vacuous, so each LEAVES its audit-gap
   cohort while staying `partial` in the register. Resolution-by-amendment is a SEPARATE category
-  from whole delivery — the "three whole" count is unchanged. The effect on the "closable ever"
-  ceiling is CONVENTION-DEPENDENT and is DEFERRED here, consistent with the decision paper §7 and
-  §8 1.7 (do not treat `partial` status as decisive). **FIVE audit clauses are therefore no longer open (three whole + two amended), and
+  from whole delivery — the "three whole" count is unchanged. The "closable ever"
+  ceiling is SIXTEEN under convention (ii) — the convention this class already applies, since DE-06
+  and DE-14 count as closable though their register rows stay `partial`. An amended-honest clause is
+  resolved for ceiling purposes; the unbuilt underlying controls are charged to E0-F011/E0-F014, not
+  to this ceiling. 17 − 1 (DE-17, whose 6b escalation half is blocked on an unbuilt post-fence
+  carrier / authority-typing mechanism) = 16. This ceiling is DISTINCT from the open count below
+  (12 open); of the 16 closable, 5 are already resolved, so 11 more remain closable. `partial`
+  status is not decisive — see decision paper §7 and §8 1.7. **FIVE audit clauses are therefore no longer open (three whole + two amended), and
   TWELVE remain open** — DE-01, DE-03, DE-04, DE-11, DE-13 in `E0-F010`, and DE-15, DE-16, DE-17,
   DE-18, DE-21, DE-27, DE-29 here. **Of those TWELVE, exactly THREE carry a delivered fraction of a
   conjunction and none of them counts as closed:** DE-03 (replay-rejection and the
@@ -1026,7 +1039,7 @@ them was wrong.)*
 closed DE-19.** Both were found by re-measuring the citations rather than re-reading the prose.
 
 1. **The title's clause "on the other four the success path is recorded and the refusal is not" is
-   FALSE for DE-16.** It holds for DE-18, DE-19 and DE-20. On DE-16 what is recorded is the
+   FALSE for DE-16.** It holds for DE-18. *(★ DE-19 has since closed (2026-09-08) and DE-20's legacy 'refusal' arm is now recorded per Decision 1 — `buildCutoverSelectionEvent`, both arms; see the DE-20 row.)* On DE-16 what is recorded is the
    **refusal itself** — `recordCloudPluginBlock` (`server/src/services/cloud-plugin-execution.ts:225-247`)
    emits a `logger.warn` on the deny path carrying `pluginId`, `companyId`, `activationSource`,
    `sink` and `reasonCode` — and the *success* path is not recorded at all. This finding's own
@@ -1072,15 +1085,19 @@ no discrete refusal event to intercept).
 | ~~DE-19 (Critical)~~ **CLOSED 2026-09-08** | "context retrieval and denials are recorded in the retrieval audit" | `read-tools.ts:339` / `:342` / `:351`, all via the `denyMemoryGet` closure at `:297`. | **Was: Half** — retrieval *was* recorded (`recordMemoryRetrievals` runs after the gate) and **both deny returns sat before it**, so a refused memory read wrote nothing. **Now:** each deny awaits `recordSecurityDenial` (`security-denial-audit.ts:125`), writing one attributable `security.denied.memory_read` row to `activity_log` (WHO/TENANT/RESOURCE/WHY) before returning the same non-disclosing message. Proven by provocation at `de-19-memory-denial-audit.integration.test.ts:298`/`:322`/`:337`. `memory.search`'s refusals remain uncovered — they are the DE-01 empty-read shape. |
 | ~~DE-20 (Critical)~~ — **AUDIT CLAUSE RESOLVED BY AMENDMENT 2026-09-11 (Decision 1); STRUCK FROM THIS COHORT** | "cutover selection and rollback transitions are audited" | `buildCutoverSelectionEvent` append at `server/src/services/heartbeat.ts:5388`, before the `shouldSuppressLegacyExecution` gate (cited by symbol; the older `:5399`→`:5451` line numbers were stale). | **RESOLVED BY AMENDMENT (Decision 1).** 4a (cutover selection): DELIVERED for BOTH arms — one unconditional append at heartbeat.ts:5388 (buildCutoverSelectionEvent, TOTAL over RunExecutionOwner, W20-B 2026-09-10) writes a distributed_execution_selection row for distributed AND legacy. 4b (rollback transitions): AMENDED as VACUOUS — createDistributedExecutionDrain (job-distributed-drain.ts:114) has zero production callers, so no rollback transition occurs. Audit clause resolved; DE-20 leaves this cohort and stays `partial` in the register (its revocation clause still has no chartered exit — E0-F014/REL-005). |
 | DE-21 (High) | "subscribe, replay, and denial events are audited" | `server/src/realtime/live-events-ws.ts:1077-1079`; the deny decisions are `authorizeUpgrade`'s seven `return null` branches. | **★ PARTLY, since 2026-09-09 (Unit C) — FIVE deny DISJUNCTS, across TWO of the seven branches (and one of those two only by half), and neither of the other two conjuncts.** Now recorded: `:376`'s `key.companyId !== companyId` arm (one of that branch's two arms) and all four `:395` disjuncts, each writing one attributable `security.denied.live_events_upgrade` row filed under the KEY's own company (`agent_api_keys.company_id`, NOT NULL + FK), never the probed one. Still **nothing**: `:376`'s `!key` arm (no key row → no DB-resolved company: Decision 3), the five board/session branches (`:293`/`:304`/`:311`/`:322`/`:358` — `:358` measured and excluded, see Unit C below), and the "subscribe" and "replay" conjuncts, which are not denial events at all and have no writer. **Was, and still is the shape of everything above:** the 403 calls `rejectUpgrade`, whose entire body (`:106-112`) writes an HTTP status line to the socket and destroys it. The file *does* import `logger` (`:15`) and call it at eight sites — including `logger.error` at `:1090`, which fires only when the authorization function **threw**. So an internal fault is loud and an unknown-token probe is still silent. |
-| DE-27 (High) | "cross-replica admission and partition events are audited" | `server/src/services/worker-admission-rate-limit.ts:138-140`; `server/src/services/org-concurrency.ts:247-249`. | **Nothing, and the clause is unsatisfiable as written.** The `over_cap` deny returns through `sendWorkerOperationProtocolError`, whose whole body is a status-and-json write (`worker-protocol-http.ts:83-93`); `org-concurrency.ts` emits nothing at all. ★ A whole-tree sweep of `server/src` for `replicaId\|replica_id\|AOA_CONTROL_PLANE_REPLICA\|controlPlaneId` returns **zero hits** — the system has no replica identity, so no admission record could name a replica even if one were written, and there is no partition detector to produce a partition event. |
+| DE-27 (High) | "cross-replica admission and partition events are audited" | `server/src/services/worker-admission-rate-limit.ts:138-140`; `server/src/services/org-concurrency.ts:247-249`. | **Nothing recorded yet.** The `over_cap` deny returns through `sendWorkerOperationProtocolError`, whose whole body is a status-and-json write (`worker-protocol-http.ts:83-93`); `org-concurrency.ts` emits nothing at all. A whole-tree sweep of `server/src` for `replicaId\|replica_id\|AOA_CONTROL_PLANE_REPLICA\|controlPlaneId` returns **zero hits** — the system has no replica identity and there is no partition detector. ★ **AMENDED 2026-09-11 (E0-F013 Decision 1.2c):** the clause is NOT unsatisfiable — the WEAK reading is adopted. The cross-replica **admission** conjunct is ordinary Group B/C audit-write wiring (durably record the `over_cap` refusal at `worker-admission-rate-limit.ts:138-140` and the capacity refusal at `org-concurrency.ts:247-249`); admission is DB-serialized, so no replica identity is required or implied. The **partition** conjunct is DROPPED as vacuous. It stays UNWRITTEN (hence `partial`), but it is writable, not unsatisfiable. |
 | DE-29 (Critical) | "grant routing and wrong-owner denials are audited" | `packages/db/src/repositories/tenant/job-control.ts:3122`. | **Nothing, by ordering.** The audit UPDATE is `job-control.ts:3139` — *after* the throw at `:3122` — so on a denial it never runs and the transaction rolls back. The only trace is an anonymous `secretRead{outcome,count}` metric tick carrying no handle, owner, company or reason, which makes a **wrong-owner denial forensically indistinguishable from a stale fence**. |
 
 *(Nine rows; DE-24's audit clause is absent too, but for a different reason — there is no host-side
 event to record because there is no host-side updater. It is carried by `E0-F014`.)*
 
 **Why HIGH.** Two of these are worse than the `E0-F010` cohort rather than merely more of it.
-DE-27's clause names a fact about the system — "cross-replica" — **that the system has no vocabulary
-to express**: it is not unwritten, it is unwritable, and it cannot be closed by adding a logger call.
+DE-27's clause names a fact about the system — "cross-replica". ★ **AMENDED 2026-09-11 (E0-F013
+Decision 1.2c):** under the adopted WEAK reading it is **not unwritable** — it is unwritten but
+WRITABLE. DE-27's cross-replica **admission** conjunct is ordinary Group B/C audit-write wiring
+(record the `over_cap` + capacity refusals at the two deny sites), needs no replica identity, and CAN
+be closed by wiring those deny sites; the **partition** conjunct is dropped as vacuous. DE-27 is HIGH
+because both admission refusals are currently UNRECORDED, not because the clause is impossible.
 DE-21 ships the counter-example to its own gap in one file: the code knows how to log, and the one
 path it does not log is the security refusal.
 
@@ -1344,14 +1361,31 @@ own failure class.**
   the policy and diffing — i.e. a `BYPASSRLS`/owner connection, exactly the privilege
   `packages/db/src/client.ts:325` throws at boot to forbid and `server/src/app.ts:490` calls
   "owner fallback is forbidden". `pgaudit` does not rescue it (it logs statements, not policy
-  verdicts) and appears nowhere in this tree. **Recommend AMENDING the clause, not building it.** ★ **CORRECTION, 2026-09-09 (`docs/replatform/MEASUREMENT-de-01-read-half-does-not-need-bypassrls.md`): the words "i.e. a `BYPASSRLS`/owner connection, exactly the privilege `client.ts:325` throws at boot to forbid" are MEASURED FALSE. A cross-tenant read needs no `BYPASSRLS`. Two shapes deliver one with the serving pool's `rolbypassrls=false` and `client.ts:325` still passing — **and they are NOT interchangeable, so read the precondition before adopting either**: (a) a role-targeted `CREATE POLICY ... TO "aoa_operator"` (the `0233` shape, on a FORCE-RLS table) — **no precondition, no privileged role anywhere; this is the portable one**; (b) a narrow `SECURITY DEFINER` function granted to `aoa_operator` alone (the `0268` shape) — **admissible against a FORCE-RLS relation ONLY where the function's owner is itself `SUPERUSER` or `BYPASSRLS`. "Owner-owned" is NOT sufficient: under `FORCE ROW LEVEL SECURITY` the table owner is not exempt from its own policies, and the IDENTICAL function owned by a `NOSUPERUSER NOBYPASSRLS` owner of the same table returns ZERO ROWS — measured as control `ALT-A(iii)`. That failure is SILENT (an empty result, not an error), so a unit that adopts (b) without asserting the precondition in its own test ships a comparator that reports "no divergence" forever. A plain view is (b) in different spelling, with the same precondition (`ALT-A(iv)`).** Amending that guard is WITHDRAWN as a recommendation — and it would falsify DE-01's own `revocation` clause ("the role holds no BYPASSRLS"). What stays true is that a serving-path comparator is undesirable on its own merits, so this clause-half remains undelivered and Decision 1 below is still the open question. Status and disposition unchanged.**
+  verdicts) and appears nowhere in this tree. **Recommend AMENDING the clause, not building it.** ★ **CORRECTION, 2026-09-09 (`docs/replatform/MEASUREMENT-de-01-read-half-does-not-need-bypassrls.md`): the words "i.e. a `BYPASSRLS`/owner connection, exactly the privilege `client.ts:325` throws at boot to forbid" are MEASURED FALSE. A cross-tenant read needs no `BYPASSRLS`. Two shapes deliver one with the serving pool's `rolbypassrls=false` and `client.ts:325` still passing — **and they are NOT interchangeable, so read the precondition before adopting either**: (a) a role-targeted `CREATE POLICY ... TO "aoa_operator"` (the `0233` shape, on a FORCE-RLS table) — **no precondition, no privileged role anywhere; this is the portable one**; (b) a narrow `SECURITY DEFINER` function granted to `aoa_operator` alone (the `0268` shape) — **admissible against a FORCE-RLS relation ONLY where the function's owner is itself `SUPERUSER` or `BYPASSRLS`. "Owner-owned" is NOT sufficient: under `FORCE ROW LEVEL SECURITY` the table owner is not exempt from its own policies, and the IDENTICAL function owned by a `NOSUPERUSER NOBYPASSRLS` owner of the same table returns ZERO ROWS — measured as control `ALT-A(iii)`. That failure is SILENT (an empty result, not an error), so a unit that adopts (b) without asserting the precondition in its own test ships a comparator that reports "no divergence" forever. A plain view is (b) in different spelling, with the same precondition (`ALT-A(iv)`).** Amending that guard is WITHDRAWN as a recommendation — and it would falsify DE-01's own `revocation` clause ("the role holds no BYPASSRLS"). What stays true is that a serving-path comparator is undesirable on its own merits, so this clause-half remains undelivered and Decision 1 was RULED 2026-09-11 (1.1c): conjunct 3 (read-side) is amended to a documented DECLINE — a filtered read is a legal empty result, so there is no inline event to record — with a narrow offline verifier chartered-but-unfunded. The clause-half stays undelivered (1a/1b unblocked-but-unwritten) and DE-01 stays `partial` in this cohort.**
   The same shape covers `memory.search` under DE-19 and is why DE-19's closure is scoped to
   `memory.get`.
 - **DE-27's cross-replica and partition halves** — `replicaId|replica_id|AOA_CONTROL_PLANE_REPLICA|controlPlaneId`
-  returns **zero hits** across `server/src`. The clause names a fact the system has no vocabulary
-  to express. Needs a replica identity built first, or amendment.
-- **DE-12's "generation changes" half** — `services.generation` has **no writer anywhere**, so
-  there is no change to audit. Vacuous until one exists.
+  returns **zero hits** across `server/src`. ★ **AMENDED 2026-09-11 (E0-F013 Decision 1.2c) — the
+  weak reading was adopted; the "no vocabulary / needs a replica identity built first" framing is
+  SUPERSEDED and the bullet splits into two conjuncts with different dispositions:** (i) the
+  **cross-replica admission** conjunct is ordinary Group B/C audit-write wiring — record the
+  `over_cap` refusal (`worker-admission-rate-limit.ts:138-140`, Group C via
+  `sendWorkerOperationProtocolError`) and the capacity refusal (`org-concurrency.ts:247-249`, Group B
+  in-transaction throw); admission is DB-serialized, so no replica identity is required or implied. It
+  moves OUT of Group D into the Group B/C work already enumerated and is NOT undeliverable. (ii) the
+  **partition** conjunct is DROPPED as vacuous (no partition detector). The consequent effect on this
+  section's "Honest arithmetic" is handled at the class-wide settled ceiling (see below and the
+  decision paper §7 / §8 1.7); it is not restated per-bullet here.
+- **DE-12's "generation changes" half** — ~~`services.generation` has **no writer anywhere**, so
+  there is no change to audit. Vacuous until one exists.~~ ★ **CORRECTED 2026-09-11 (E0-F013 Decision
+  1): the writer now EXISTS and the change is AUDITED.** `bumpServiceGeneration`
+  (`job-control.ts:3135`, the SVC-005a roll route) writes `services.generation`, and a roll writes
+  exactly one durable `service.generation_roll` `activity_log` row via
+  `recordServiceGenerationRollActivity` (`service-control-audit.ts:317`, called at
+  `service-generation-rollout.ts:415`, proven RED-first by R-T11) — so conjunct **3c (generation
+  changes are audited) is DELIVERED**, not vacuous. Only **3a (partition)** and **3b (drain)** remain
+  vacuous (no partition detector; no reconciler-driven drain producer, E9-F008) and were amended as
+  vacuous by Decision 1.
 - **DE-20's rollback half** — `createDistributedExecutionDrain` has **zero production callers**
   (`E0-F014`), so there is no rollback transition. Selection is recordable; rollback is prose.
 - **DE-11** — ~~the sensitive-artifact access and retention controls are themselves absent
@@ -1380,11 +1414,19 @@ own failure class.**
   log. **DE-11's non-audit gaps are entirely untouched** and remain `E8-F011`'s: purge on job
   completion in particular still has no writer. A mechanism that has never been exercised on its
   subject is not coverage, and a discharged ground is not a discharged clause.
-- **DE-17** — technically possible, practically blocked. `packages/adapter-manager` and
+- **DE-17** — ~~technically possible, practically blocked. `packages/adapter-manager` and
   `packages/worker-daemon` run **off the control plane** and hold no control-plane DB handle, so a
   durable row from a `CleanupAuthorityDeniedError` needs a **wire hop** — and
   `packages/worker-protocol` is v1-FROZEN behind a hash-pinned cross-version conformance test. Its
-  own ticket, with its own freeze decision.
+  own ticket, with its own freeze decision.~~ ★ **UN-BUNDLED 2026-09-11 (E0-F013 Decision 1.6): the
+  v1 freeze is NOT the blocker** (`extensions[]` is on the worker-event schema at `events.ts:347`, and
+  a `critical:false` extension is additive under the freeze). DE-17 splits: **6a (post-fence cleanup
+  audit) is deliverable NOW** as DE-19-shaped audit-wiring INDEPENDENT of `E0-F014` — it needs no wire
+  hop, because the CP-side drain (`drainWorkerDenial`→`recordSecurityDenial`,
+  `worker-denial-audit.ts:227`, migration `0274`) lives on the control plane and is already
+  production-wired on the non-fence-guarded quarantine-finalize path (`quarantine-finalize.ts:159`).
+  Only **6b (denied escalations)** remains hard, blocked on either `E0-F014` authority-typing OR an
+  unbuilt worker self-report carrier.
 - **DE-14** — recordable only as a **log**, and that is all its clause asks ("the startup
   safety-assertion outcome is **logged**"). `assertHostedExecutionStartupSafe` fires at
   `config.ts:198` during config load, **before any DB pool exists**, so a durable row is
@@ -1398,8 +1440,15 @@ own failure class.**
   and only a log was delivered. See "★ DE-14 IS CLOSED" under `E0-F010`.)*
 
 **Honest arithmetic: of the seventeen, ONE is closed and at most ELEVEN more are closable end to
-end. Five clause-halves are not, and DE-17 is a sixth behind the protocol freeze.** Any plan must
-state twelve, not seventeen.
+end. Five clause-halves are not, and DE-17 is a sixth ~~behind the protocol freeze~~.** ~~Any plan must
+state twelve, not seventeen.~~ ★ **RECONCILED 2026-09-11/12 (E0-F013 Decision 1.6 + the settled
+ceiling):** "behind the protocol freeze" is refuted — DE-17 is UN-BUNDLED and the v1 freeze is not
+its blocker (`extensions[]` is additive under it, `events.ts:347`); its 6a half is deliverable now
+and only 6b remains hard-blocked. The pre-ruling "twelve, not seventeen" is superseded: under
+convention (ii) — the one §7 already applies to DE-06/DE-14 — the **closable-ever ceiling is
+SIXTEEN** (17 − DE-17, the sole audit clause still blocked on an unbuilt mechanism), DISTINCT from
+the open count of **TWELVE** (see the class-wide count above and the decision paper §7 / §8 1.7).
+Never quote seventeen as achievable.
 
 ### Decisions this slice did not take
 
@@ -1409,6 +1458,13 @@ state twelve, not seventeen.
    `docs/architecture/distributed-execution-threat-controls.json` to what the programme actually
    intends, or charter the missing machinery. **A mechanism that closes twelve while the register
    still asserts seventeen reads as a solved class and is a false claim of enforcement.**
+   ★ **RULED 2026-09-11 (E0-F013 Decision 1)** — see the enacted register + Status block. DE-01
+   read-denial conjunct amended to a documented DECLINE (blocker false; offline verifier
+   chartered-but-unfunded; stays `partial`); DE-27 weak-reading kept as open Group B/C + partition
+   dropped vacuous; DE-12 3c delivered / 3a+3b vacuous; DE-20 4a delivered / 4b vacuous; DE-11
+   rescheduled (live writer exists); DE-17 un-bundled (6a deliverable now, 6b the sole hard half).
+   The historical deferral framing above (including the "DE-12's change half" phrasing) is kept as
+   the reasoning trail; the per-clause dispositions here govern.
    ★ **OPTIONS PAPER, 2026-09-10:
    [`docs/replatform/DECISION-REQUEST-undeliverable-clause-halves.md`](../../DECISION-REQUEST-undeliverable-clause-halves.md).**
    It re-measured all six at source rather than inheriting this list, decomposed each clause into
@@ -1425,7 +1481,13 @@ state twelve, not seventeen.
    worker-EVENT schema, `events.ts:347`, and V1 recognises no critical namespaces, so a
    `critical:false` extension is additive UNDER the freeze) — but the paper's first draft then
    concluded DE-17 was therefore deliverable and recommended a split by channel, and **that was
-   withdrawn on review** (Codex P1, PR #407, verified at source). **DE-17 has two harder blockers:**
+   withdrawn on review** (Codex P1, PR #407, verified at source). **DE-17 has two harder blockers:** ★ **UN-BUNDLED
+   2026-09-11 (E0-F013 Decision 1.6): these two blockers gate 6b (denied escalations) ONLY. 6a
+   (post-fence cleanup audit) is deliverable NOW — the CP-side drain exists in production
+   (`drainWorkerDenial`→`recordSecurityDenial`, `worker-denial-audit.ts:227`, migration `0274`) and is
+   already wired on the non-fence-guarded quarantine-finalize path (`quarantine-finalize.ts:159`),
+   independent of `E0-F014`; it sidesteps the fenced worker-event ingest entirely. Only 6b needs a NEW
+   mechanism (`E0-F014` authority-typing OR a worker self-report carrier).**
    the fenced worker-event ingest gates on `guardActiveFence` BEFORE any append
    (`job-events.ts` header; `job-control.ts:2592`, in `acceptEvent` at `:2588`, under the
    closed-mutator invariant at `:2585-2587`) and DE-17's scenario is post-fence BY
@@ -1438,10 +1500,18 @@ state twelve, not seventeen.
    list's own direction of error.** DE-12's audit clause is a **three**-way conjunction (partition,
    drain, generation changes) and **all three** are vacuous — this list queues one of three, so an
    amendment scoped to "the change half" would leave two vacuous conjuncts standing in a Critical
-   row. And DE-20's OTHER conjunct (legacy cutover selection) is **closable today** in
-   `heartbeat.ts` and should be named as excluded from the ruling, not swept in with the rollback
-   half. **(3) THE ARITHMETIC ABOVE IS OFF BY ONE.** 17 − 6 = 11, not 12: the sentence subtracts
-   *five* and then adds DE-17 as *a sixth* without re-subtracting. **DE-17 does make it eleven.**
+   row. ★ **CORRECTED 2026-09-11 (E0-F013 Decision 1): conjunct 3c (generation changes) is now
+   DELIVERED (`recordServiceGenerationRollActivity`, R-T11); only 3a (partition) and 3b (drain) are
+   vacuous — Decision 1 dropped 3a+3b as vacuous and recorded 3c delivered.** And DE-20's OTHER
+   conjunct (legacy cutover selection) is ~~**closable today** in `heartbeat.ts`~~ and should be named
+   as excluded from the ruling, not swept in with the rollback half. ★ **UPDATE 2026-09-11: it is now
+   DELIVERED at HEAD (W20-B, `buildCutoverSelectionEvent`, `heartbeat.ts:5388`, both arms) — it was
+   excluded from the ruling and has since closed.** **(3) THE ARITHMETIC ABOVE IS OFF BY ONE.** 17 − 6 = 11, not 12: the sentence subtracts
+   *five* and then adds DE-17 as *a sixth* without re-subtracting. **DE-17 does make it eleven.** ★ **(These are
+   the PRE-RULING closable figures behind the options-paper's own arithmetic correction; the
+   post-ruling closable-ever ceiling is settled at SIXTEEN under convention (ii) — see the reconciled
+   Honest-arithmetic note above and the decision paper §7 / §8 1.7 — distinct from the twelve-open
+   count.)**
    The paper's §7 shows the working and enumerates the eleven. **It changes no status, no
    `deliveryStatus`, no ownership, no clause text and no gate-clause enrolment, and wires nothing** —
    it exists so this decision can be signed PER CLAUSE, and so that three of the six are not amended

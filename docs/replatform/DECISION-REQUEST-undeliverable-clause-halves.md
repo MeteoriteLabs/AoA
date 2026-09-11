@@ -20,7 +20,7 @@ turns out to be deliverable; on the third — DE-17 — a different and harder b
 
 | # | Clause-half | E0-F013's stated blocker | Measured verdict |
 |---|---|---|---|
-| 1 | **DE-01** `audit`, read-denial conjunct | "needs a `BYPASSRLS` comparator, the privilege `client.ts:325` forbids" | ★ **THE BLOCKER IS FALSE** — already refuted in-tree and in CI. Deliverable. The residual objection is a **design** cost, not an impossibility. |
+| 1 | **DE-01** `audit`, read-denial conjunct | "needs a `BYPASSRLS` comparator, the privilege `client.ts:325` forbids" | ★ **THE BLOCKER IS FALSE** — already refuted in-tree and in CI. Deliverable. The residual objection is a **design** cost, not an impossibility. ★ **RULED 2026-09-11 (Decision 1.1c):** the read-denial conjunct is AMENDED to a documented DECLINE — a filtered read is a legal empty result, so there is no inline event to record at any privilege; the blocker stays false; a narrow offline verifier is chartered but UNFUNDED (read as (a)-plain, not coverage); conjuncts 1a/1b stay unblocked-but-unwritten; DE-01 stays `partial` and in E0-F010's cohort. |
 | 2 | **DE-27** `audit`, cross-replica + partition conjuncts | "the system has no replica identity; the clause is unsatisfiable" | **SPLIT.** The *partition* conjunct is genuinely vacuous. The *cross-replica admission* conjunct is **ambiguous, not unsatisfiable** — under the weaker of its two readings it is ordinary Group B/C work. |
 | 3 | **DE-12** `audit`, generation-change conjunct | "`services.generation` has no writer" | **PARTLY undeliverable.** The clause has **three** conjuncts. ★ **FACT CORRECTION 2026-09-11 (see §4):** conjunct 3c ("generation changes are audited") is **now DELIVERED** — `services.generation` has a writer (`bumpServiceGeneration`) and a roll writes a durable `activity_log` row. Only **3a (partition)** and **3b (drain)** remain vacuous; those are the amend targets. Row stays `partial`. ★ **RULED 2026-09-11:** (a) CORRECTED — drop ONLY 3a+3b as vacuous and RECORD 3c DELIVERED (enacted in the register). The §4.3 "drop all three" text and its "SVC-003/SVC-005 zero files" census are STALE-FALSE at HEAD; see the §4.3 SUPERSEDED banner. |
 | 4 | **DE-20** `audit`, rollback conjunct | "`createDistributedExecutionDrain` has zero production callers" | **CONFIRMED undeliverable** for the rollback conjunct (4b). ★ **FACT CORRECTION 2026-09-11 (see §5):** the *other* conjunct (4a, cutover selection) is **now DELIVERED at HEAD** for BOTH arms (`cutover-selection-audit.ts`) — it was "closable today" at branch point and has since been closed. Only 4b remains, and it does not belong in this decision. |
@@ -492,7 +492,7 @@ That is an argument for ruling on 4b now rather than deferring it.
 
 **(a) AMEND 4b only.** Exact replacement text:
 
-> `"audit": "cutover selection and rollback transitions are audited. ★ AMENDED <date> by founder ruling (E0-F013 Decision 1), consistent with the 2026-09-09 amendment to this row's revocation clause. (1) 'cutover selection': UNCHANGED and still an open obligation. A distributed selection writes one distributed_execution_handoff heartbeat_run_event (server/src/services/heartbeat.ts:6937); a LEGACY selection writes no durable row, and that gap is ordinary wiring in the same file, NOT covered by this amendment. (2) 'rollback transitions': DROPPED AS VACUOUS. createDistributedExecutionDrain (server/src/services/job-distributed-drain.ts:114) has ZERO PRODUCTION CALLERS, so no org-wide rollback transition occurs and none can be recorded. This matches the revocation clause's own amendment. ★ WHAT IS LOST: nothing that exists -- there is no rollback to fail to record. WHAT REMAINS TRUE AND MUST NOT BE READ AWAY: an operator removing an organization from the rollout dial gets NO record because NOTHING HAPPENS, not because the recording is missing; in-flight distributed runs continue and must be stopped one at a time via POST /organizations/:organizationId/companies/:companyId/jobs/:jobId/drain. The absent control is owned by E0-F014."`
+> `"audit": "cutover selection and rollback transitions are audited. ★ AMENDED <date> by founder ruling (E0-F013 Decision 1), consistent with the 2026-09-09 amendment to this row's revocation clause. (1) 'cutover selection': DELIVERED FOR BOTH ARMS (W20-B). buildCutoverSelectionEvent (server/src/services/cutover-selection-audit.ts) is appended once at server/src/services/heartbeat.ts:5388 before shouldSuppressLegacyExecution and is TOTAL over RunExecutionOwner, so it writes a distributed_execution_selection heartbeat_run_event for the DISTRIBUTED arm AND the LEGACY arm. NOT covered by this amendment, which scopes 4b only. (2) 'rollback transitions': DROPPED AS VACUOUS. createDistributedExecutionDrain (server/src/services/job-distributed-drain.ts:114) has ZERO PRODUCTION CALLERS, so no org-wide rollback transition occurs and none can be recorded. This matches the revocation clause's own amendment. ★ WHAT IS LOST: nothing that exists -- there is no rollback to fail to record. WHAT REMAINS TRUE AND MUST NOT BE READ AWAY: an operator removing an organization from the rollout dial gets NO record because NOTHING HAPPENS, not because the recording is missing; in-flight distributed runs continue and must be stopped one at a time via POST /organizations/:organizationId/companies/:companyId/jobs/:jobId/drain. The absent control is owned by E0-F014."`
 
 - **What is lost, and who is harmed.** Nothing real is lost by 4b. The danger is misreading: an
   operator could take the dropped conjunct as "rollback is fine, just unlogged". The replacement
@@ -742,6 +742,25 @@ wire — but this paper first reproduced it in support of conjunct **6b** ("deni
 which it does not support. That is precisely the inheritance §1 forbids, committed in the document
 that forbids it.
 
+★★ **CORRECTION BANNER — RECONCILED TO E0-F013 DECISION 1.6 (RULED 2026-09-11, UN-BUNDLED).** The
+freeze-refutation this section carries STANDS (the v1 protocol freeze is not the blocker), and the
+two-channel refutation below (channel 1 fence-guarded on ingest, channel 2 wrong-typed at the wire)
+STANDS for those two channels. **What is SUPERSEDED is the conclusion that a CP-side drain is "a
+design obligation this paper cannot discharge and did not measure a route to."** A CP-side drain
+EXISTS in production: `drainWorkerDenial` (`server/src/services/worker-denial-audit.ts:227`) →
+`recordSecurityDenial` writes attributable `security.denied.*` rows (migration
+`0274_activity_log_denial_sink.sql`), and it is already wired on the **non-fence-guarded**
+quarantine-finalize path (`server/src/services/quarantine-finalize.ts:159`, plus other CP paths) —
+so it sidesteps BOTH the fenced worker-event ingest and the untyped adapter-manager wire.
+**Therefore 6a (post-fence cleanup audited) is DELIVERABLE NOW as DE-19-shaped audit-wiring,
+INDEPENDENT of `E0-F014`.** Only **6b (denied escalations)** remains hard-blocked, and it is DEFERRED
+with **two routes** (`E0-F014` authority-typing OR an unbuilt worker self-report carrier) — not a
+strict one-way `E0-F014` prerequisite. Under this ruling, the "What is genuinely missing" paragraph,
+option **(c)**, the **★ RECOMMENDATION — (c)**, the **(b)** "the audit conjunct cannot be chartered
+ahead of the authorization one" reasoning, and the closing "**blocked for two different and harder
+reasons**" are all SUPERSEDED **for 6a** (they continue to describe 6b's blockers correctly). The
+original reasoning is preserved below as the trail that produced the ruling.
+
 **What is genuinely missing, then, restated after the refutation:** a **catch point** (nothing
 catches `CleanupAuthorityDeniedError` today), **an authority-typed carrier that is not fence-guarded**
 — neither of which exists — and a **CP-side drain**. The first is code; **the second is a design
@@ -826,7 +845,7 @@ left to stand because a decision paper whose central complaint is an over-stated
 carry a stale one of its own. **The authoritative class-wide count lives in `E0-F013`'s Status
 block** (`docs/replatform/epics/E0-foundation/findings.md`), not here.
 
-★ **FURTHER AMENDED 2026-09-11 BY E0-F013 DECISION 1 — RESOLVED-BY-AMENDMENT: TWO; OPEN: TWELVE.** DE-12 and DE-20's audit clauses were resolved by AMENDMENT (each: one conjunct delivered, the remaining conjunct(s) amended as vacuous), so each leaves its audit-gap cohort (E0-F010 6→5; this-cohort/E0-F013 8→7) while staying `partial` in the register. WHOLE-DELIVERED stays THREE (DE-06/DE-14/DE-19); resolved-by-amendment is a separate category. ★ THE EFFECT ON THE "CLOSABLE EVER" CEILING BELOW IS CONVENTION-DEPENDENT AND IS DEFERRED, NOT ASSERTED. Two conventions are in play and the ruling did not settle which governs the ceiling: (i) the §7 table and the FACT CHECK below treat DE-12/DE-20 — and, before the ruling, DE-27 — as STILL hard-blocked on the conjuncts now amended-vacuous, because the controls those conjuncts would audit are unbuilt, which leaves the ceiling at eleven-to-thirteen; (ii) the audit-gap-cohort convention just used above — the SAME one under which the ceiling already counts DE-06 and DE-14 as closable though their register rows stay `partial` — treats an amended-honest clause as RESOLVED, and under it DE-12, DE-20 and DE-27 (weak reading) all leave the hard-blocked set, leaving DE-17 as essentially the sole audit clause blocked on an unbuilt mechanism and raising the ceiling toward sixteen (and whether DE-17's 6b is even hard-blocked is itself open — the re-audit found it has a buildable worker-self-report route). ★ THE EXACT POST-RULING CEILING FIGURE IS THEREFORE NOT STATED HERE; it is deferred to a dedicated count re-derivation that first settles the convention. The undisputed post-ruling facts: the audit-gap cohorts dropped (E0-F010 6→5, E0-F013 8→7), and DE-17 is the only Group-D clause still blocked on an unbuilt mechanism under either convention.
+★ **FURTHER AMENDED 2026-09-11 BY E0-F013 DECISION 1 — RESOLVED-BY-AMENDMENT: TWO; OPEN: TWELVE.** DE-12 and DE-20's audit clauses were resolved by AMENDMENT (each: one conjunct delivered, the remaining conjunct(s) amended as vacuous), so each leaves its audit-gap cohort (E0-F010 6→5; this-cohort/E0-F013 8→7) while staying `partial` in the register. WHOLE-DELIVERED stays THREE (DE-06/DE-14/DE-19); resolved-by-amendment is a separate category. ★ THE EFFECT ON THE "CLOSABLE EVER" CEILING BELOW TURNED ON WHICH CONVENTION GOVERNS — the ruling itself did not settle that, and it is now SETTLED at the note below. Two conventions were in play: (i) the §7 table and the FACT CHECK below treat DE-12/DE-20 — and, before the ruling, DE-27 — as STILL hard-blocked on the conjuncts now amended-vacuous, because the controls those conjuncts would audit are unbuilt, which leaves the ceiling at eleven-to-thirteen; (ii) the audit-gap-cohort convention just used above — the SAME one under which the ceiling already counts DE-06 and DE-14 as closable though their register rows stay `partial` — treats an amended-honest clause as RESOLVED, and under it DE-12, DE-20 and DE-27 (weak reading) all leave the hard-blocked set, leaving DE-17 as essentially the sole audit clause blocked on an unbuilt mechanism and raising the ceiling toward sixteen (and whether DE-17's 6b is even hard-blocked is itself open — the re-audit found it has a buildable worker-self-report route). ★ CONVENTION SETTLED 2026-09-12 (methodological, not a new founder disposition): convention (ii) governs, because §7 ALREADY applies it — it counts DE-06 and DE-14 among the closable eleven though both register rows stay `partial`, so `partial` is not the ceiling criterion and an amended-honest clause is RESOLVED for ceiling purposes exactly as a whole-delivered one is. The unbuilt underlying controls (DE-12's partition detector / drain producer, DE-20's dead rollback drain) are charged to E0-F011 / E0-F014, NOT to this audit-class ceiling; charging them here too is the double-count convention (i) commits. Under convention (ii) the sole crossing whose audit clause is still blocked on an unbuilt mechanism is DE-17 — its 6b (denied escalations) half, deferred behind E0-F014 authority-typing OR an unbuilt worker self-report carrier, a NEW mechanism rather than ordinary audit-write wiring at an existing deny point (which is why 6a is closable now but the whole clause is not). THE POST-RULING CLOSABLE-EVER CEILING IS THEREFORE SIXTEEN: 17 − 1 (DE-17). Equivalently, the eleven originally enumerated + the five the ruling freed (DE-01, DE-11, DE-12, DE-20, DE-27) = 16. This is the ceiling, a DIFFERENT figure from the open count: five are already resolved (three whole — DE-06/DE-14/DE-19; two amended — DE-12/DE-20), so eleven MORE are closable. Never quote seventeen as achievable. (Conditional upper edge: 17 only if DE-17's buildable self-report route is later chartered or 6b is amended to an honest decline — a future disposition, not a co-equal reading.) The undisputed post-ruling facts: the audit-gap cohorts dropped (E0-F010 6→5, E0-F013 8→7), and DE-17 is the only Group-D clause still blocked on an unbuilt mechanism under either convention.
 
 **Now the count E0-F013 states.** Its own words:
 
@@ -866,12 +885,21 @@ blocker, but it has two harder ones).
 | `E0-F013`'s Group D as written | `DE-01`, `DE-11`, `DE-12`, `DE-17`, `DE-20`, `DE-27` (6) | **11** |
 | This paper's measurement (DE-11 rescheduled; DE-01 deliverable at a declined cost; **DE-17 stays blocked**) | `DE-12`, `DE-17`, `DE-20`, `DE-27` (4) | **13** |
 | ~~This paper's first draft (DE-17 also rescheduled)~~ | ~~`DE-12`, `DE-20`, `DE-27` (3)~~ | ~~14~~ — **WITHDRAWN**, see §6.2 |
+| ★ Enacted ruling (2026-09-11) under convention (ii) — DE-01/DE-11/DE-12/DE-20/DE-27 freed (amended-honest or ordinary work); DE-17 sole hard-block | `DE-17` (1) | **16** |
 
-**The number a plan may state depends on this ruling, and on nothing else.** State it as a band with
-its premise attached — *"eleven under the current dispositions; up to thirteen if Decision 1
-reschedules DE-11 and funds DE-01's read half"* — and **never** as seventeen. The only figure here
-that is pure arithmetic rather than judgement is the correction above: **`E0-F013`'s "twelve" should
-read "eleven."** Everything else in this table is a disposition the founder has not yet signed.
+**The number a plan states was SETTLED by this ruling (enacted 2026-09-11) and the 2026-09-12
+convention reconciliation.** ★ **SETTLED:** under convention (ii) — the one §7 already applies to
+DE-06/DE-14 (both `partial`, both counted closable) — the post-ruling **closable-ever ceiling is
+SIXTEEN** (17 − DE-17, the sole audit clause still blocked on an unbuilt mechanism). The pre-ruling
+band *"eleven under the current dispositions; up to thirteen if Decision 1 reschedules DE-11 and
+funds DE-01's read half"* is SUPERSEDED: the ruling **declined** to fund DE-01's read half (an
+offline verifier chartered-but-unfunded) yet still freed DE-01/DE-11/DE-12/DE-20/DE-27 under
+convention (ii), so all five leave the hard-blocked set. **Never state seventeen.** *(The pre-ruling
+arithmetic point — that `E0-F013`'s "twelve" should have read "eleven" — was about the closable count
+under the OLD Group-D-as-written premise; it is superseded by the settled ceiling above.)* The
+closable-ever ceiling of SIXTEEN is DISTINCT from the open count of TWELVE (5 already resolved: 3
+whole + 2 amended; 11 more closable). The dispositions in this table were signed and enacted
+2026-09-11.
 
 ★ **The withdrawn row is kept struck rather than deleted**, on this programme's own convention: a
 paper whose central complaint is an over-stated count must not quietly restate its own.
@@ -885,9 +913,10 @@ delivered. So both rows remain in the `(4)`/ceiling-13 measurement unchanged. Th
 sub-conjuncts, not crossings; the ruling this paper requests is unchanged and **UNRULED**. ★ **SUPERSEDED
 2026-09-11:** the ruling has since been made, and it AMENDED 3a+3b (DE-12) and 4b (DE-20) as vacuous
 and adopted DE-27's weak reading. This FACT CHECK describes only the pre-ruling effect of the 3c/4a
-deliveries, which alone did not move the set; whether DE-12/DE-20/DE-27 stay in the hard-blocked set
-after the ruling's amendments is CONVENTION-DEPENDENT and the exact figure is DEFERRED — see the
-post-ruling ceiling note at the head of this section.
+deliveries, which alone did not move the set; under convention (ii) — the convention §7
+already applies to DE-06/DE-14 — DE-12, DE-20 and DE-27 all LEAVE the hard-blocked set (audit clauses
+amended-honest or reclassified as ordinary Group B/C work), so the post-ruling closable-ever ceiling
+is SIXTEEN with DE-17 the sole hard-block. See the settled note at the head of this section.
 
 **One drift noted in passing, changing nothing here.** `E0-F013` records Decision 2's acceptance
 condition **(a)** — a production reader of `security.denied.*` — as **OPEN**. At this branch point
@@ -965,12 +994,12 @@ vacuous.
 **★ RULED 2026-09-11 (founder direction, on the independent re-audit at HEAD `bd21e1abc`):** (a) scoped to 4b only — rollback conjunct dropped vacuous; cutover-selection (4a) is DELIVERED for both arms (W20-B, heartbeat.ts:5388) and left untouched by this amendment.
 
 - ▢ **(a) ★ RECOMMENDED, SCOPED TO 4b ONLY** — Amend the *rollback* conjunct as vacuous (exact text
-  in §5.3), explicitly leaving the *cutover selection* conjunct untouched and open.
+  in §5.3), explicitly leaving the *cutover selection* conjunct untouched (4a since DELIVERED at HEAD — W20-B, `heartbeat.ts:5388`).
 - ▢ **(c)** Do not amend; move 4b **behind `E0-F014`** and rule when `E0-F014` rules on the dead
   drain. *Keeps the row's current internal contradiction visible.*
 
-**Also record:** conjunct 4a's missing legacy-selection record is **closable today** in
-`heartbeat.ts` and is **not** a Decision 1 item.
+**Also record:** conjunct 4a's legacy-selection record is DELIVERED at HEAD (`buildCutoverSelectionEvent`,
+`heartbeat.ts:5388`, both arms; W20-B 2026-09-10) and was **not** a Decision 1 item.
 
 ---
 
@@ -1027,12 +1056,14 @@ wired ownership-denial log as DE-17 closing.**
 
 ### ▢ **DECISION 1.7 — THE COUNT**
 
-**★ RULED 2026-09-11 (founder direction, on the independent re-audit at HEAD `bd21e1abc`):** RULED -- the ruling fired 1.5 (DE-11 rescheduled), 1.1 (DE-01 read-half DECLINED, not funded), 1.3 (DE-12 amended-resolved), 1.4 (DE-20 amended-resolved), 1.2(c) (DE-27 weak reading = ordinary Group B/C work) and 1.6 (DE-17 un-bundled: 6a deliverable-now, 6b the sole hard half). The undisputed consequence: of E0-F013's SIX Group-D clause-halves, FIVE are now resolved or reclassified as achievable/ordinary work, leaving DE-17 (its 6b escalation-typed half) as essentially the ONLY audit clause still blocked on an unbuilt mechanism. ★ THE EXACT CLOSABLE FIGURE IS CONVENTION-DEPENDENT AND IS NOT STATED HERE. §7's table treats the amended-vacuous-pending-controls conjuncts (DE-12/DE-20's 3a/3b/4b) as still hard-blocked (ceiling ~eleven-to-thirteen); the audit-gap-cohort convention -- the one that already counts DE-06/DE-14 as closable though their crossings stay `partial` -- treats amended-honest clauses as resolved (ceiling toward sixteen); and whether DE-17's 6b is hard-blocked at all is itself open (the re-audit found a buildable worker-self-report route). The ruling did not settle these conventions. State any plan number as a band with its premise AND convention attached, defer the single figure to a dedicated count re-derivation, and never quote seventeen.
+**★ RULED 2026-09-11 (founder direction, on the independent re-audit at HEAD `bd21e1abc`):** RULED -- the ruling fired 1.5 (DE-11 rescheduled), 1.1 (DE-01 read-half DECLINED, not funded), 1.3 (DE-12 amended-resolved), 1.4 (DE-20 amended-resolved), 1.2(c) (DE-27 weak reading = ordinary Group B/C work) and 1.6 (DE-17 un-bundled: 6a deliverable-now, 6b the sole hard half). The undisputed consequence: of E0-F013's SIX Group-D clause-halves, FIVE are now resolved or reclassified as achievable/ordinary work, leaving DE-17 (its 6b escalation-typed half) as essentially the ONLY audit clause still blocked on an unbuilt mechanism. ★ CONVENTION SETTLED 2026-09-12 (methodological): convention (ii) governs — the SAME one §7 already applies by counting DE-06/DE-14 among the closable eleven though their crossings stay `partial`. An amended-honest audit clause is resolved for the ceiling; the unbuilt underlying controls are E0-F011/E0-F014's concern, not this ceiling's. So DE-12, DE-20 and DE-27 leave the hard-blocked set, leaving DE-17 (its 6b escalation half — deferred behind an unbuilt authority-typing/self-report mechanism, not ordinary wiring) as the SOLE hard-block. THE CLOSABLE-EVER CEILING IS SIXTEEN (17 − DE-17). The open count is separate and unchanged: 12 open / 5 resolved (3 whole + 2 amended). A plan states SIXTEEN (with the note that DE-17 rises into it only if its 6b carrier is chartered or 6b is amended to an honest decline) and never quotes seventeen.
 
 - ▢ **★ RECOMMENDED** — Record that `E0-F013`'s **"twelve"** is **eleven** under its own groupings
   (working in §7), and that any plan states the number **as a band with its premise attached** —
   *eleven under current dispositions, up to thirteen if 1.5 reschedules DE-11 and 1.1 funds the read
-  half* — **never seventeen**.
+  half* — **never seventeen**. ★ **SUPERSEDED 2026-09-12** by the settled ceiling in the RULED banner
+  above: under convention (ii) the closable-ever ceiling is **SIXTEEN** (distinct from the twelve-open
+  count); this pre-ruling band is kept only as the reasoning trail.
 - ★ **The ceiling read fourteen in this paper's first draft**, on the strength of DE-17 also being
   rescheduled. **That was withdrawn on review** (§6.2, §7), and the struck row is kept visible in
   §7's table: a paper complaining about an over-stated count does not get to quietly restate its own.

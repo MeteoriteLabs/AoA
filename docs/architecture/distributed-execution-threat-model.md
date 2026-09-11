@@ -221,7 +221,10 @@ so each finding's count stays true to the cohort it measured) plus one more:
   struck) and the whole-class open count is **TWELVE** (DE-12 and DE-20 both resolved by amendment,
   leaving three whole-delivered + two amended-resolved). The `1 delivered / 25 partial / 4
   not-delivered` register tally is unchanged — no `deliveryStatus` flipped. The post-ruling "closable
-  ever" ceiling is convention-dependent and deferred; see the decision paper §7 / §8 1.7.
+  ever" ceiling is SIXTEEN under convention (ii) (17 − DE-17, the sole audit clause still blocked on
+  an unbuilt mechanism) — the same convention that already counts DE-06/DE-14 as closable though
+  their crossings stay `partial`. The closable-ever ceiling is not the register status; the tally
+  above is unchanged. See the decision paper §7 / §8 1.7.
 - **`E0-F013`** — the same class, second cohort: **nine more** crossings, of which five
   record nothing at all and four record the *success* path and not the refusal. ★ **AMENDED
   2026-09-11 by E0-F013 Decision 1:** DE-27's clause is NOT unwritable. The ruling adopted the
@@ -233,7 +236,8 @@ so each finding's count stays true to the cohort it measured) plus one more:
   `E0-F013`'s Status block.
 - **`E0-F011`** — four crossings are defended by a control whose **arming path is dead**:
   two with zero production callers, one enabled by an environment variable set in no
-  manifest, one gated on a database column with no writer.
+  manifest, one gated on a deny that is unreachable-as-a-refusal (its DB column now HAS a writer, but
+  the sole production submitter always supplies a matching generation).
 - **`E0-F014`** — the same class, second cohort: **five more**, including the rollback DE-20
   calls "atomic" (zero callers) and the immutability check for the QA/handoff evidence
   ledger — whose rule this repository has already broken three times, CI-green.
@@ -248,15 +252,20 @@ so each finding's count stays true to the cohort it measured) plus one more:
   capabilities narrow "immediately" except for the one principal whose role rides a
   ten-minute token, and DE-19's "context authority ends with the lease" over a lane where
   no line reads run status at all.
-- **`E8-F011`** — DE-11 specifically: **the application implements none of its four named
-  controls**, and two sub-properties are measured absent outright — purge on job completion,
-  and the retention audit record. *(Amended 2026-09-09 by W22B. This line read "all four of
-  its named controls are absent" until the register recorded that DE-11's encryption clause,
-  its TTL clause and the TTL-expiry half of its purge clause are `UNKNOWN` pending an
-  artifact-bucket inspection: source shows the application never asks for them, which is not
-  the same as the bucket not providing them. The other half of the purge clause and the audit
-  clause are unaffected — no bucket setting can observe job completion or write an application
-  audit record.)* DE-11's `deliveryStatus` is unchanged at `partial`.
+- **`E8-F011`** — DE-11 specifically: ★ **CORRECTED 2026-09-11 (E0-F013 Decision 1): the audit
+  control is now PARTIALLY IMPLEMENTED** — the retention override is durably recorded by
+  `recordRetentionDecision` (`artifact-retention-audit.ts`, drained at `artifact-commit.ts:482`) and
+  a successful object-access grant by `recordObjectAccessGrant` (`artifact-object-access-audit.ts`,
+  access half riding DE-06). The one sub-property still measured absent outright is **purge on job
+  completion**; the retention audit record is now WRITTEN. DE-11 stays `partial` for the DE-06
+  access-half dependency, the BRW-003 coverage gap, and the still-absent purge-on-completion clause
+  plus the `UNKNOWN` encryption + TTL clauses. *(Amended 2026-09-09 by W22B. This line read "all four
+  of its named controls are absent" until the register recorded that DE-11's encryption clause, its
+  TTL clause and the TTL-expiry half of its purge clause are `UNKNOWN` pending an artifact-bucket
+  inspection: source shows the application never asks for them, which is not the same as the bucket
+  not providing them. The other half of the purge clause is unaffected — no bucket setting can
+  observe job completion; the application audit record, by contrast, is now written by the retention
+  and object-access writers above.)* DE-11's `deliveryStatus` is unchanged at `partial`.
 
 `scripts/check-threat-control-audit-debt.mjs` pins the unaudited count as a **ceiling that
 can only fall**, and that pin is now **zero** — so the ratchet's live work is its other two
