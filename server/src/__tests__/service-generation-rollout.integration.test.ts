@@ -162,6 +162,9 @@ function roll(serviceId: string, definition = NEXT_DEFINITION) {
       definition,
       reason: "rolling to v2",
       createdBy: "svc-005a-operator",
+      // SVC-005a / DE-12 conjunct 3c made the roll audit its own mutation, so the operator
+      // identity is now a REQUIRED input (the durable `activity_log` row's attribution).
+      actor: OPERATOR,
     },
   );
 }
@@ -229,7 +232,29 @@ function reconcile(serviceId: string) {
   return reconcileService(f().app.db, { organizationId: ORG, companyId: COMPANY, serviceId });
 }
 
+/**
+ * SVC-005a / DE-12 conjunct 3c — the durable roll-audit rows, read with the ADMIN connection.
+ *
+ * ★ READ AS ADMIN, and FILTERED TO THE ROLL ACTION. `createService` writes a `service.create`
+ * row of its own (SVC-007b), so the table is not empty after a service exists; filtering on
+ * `service.generation_roll` isolates what THIS unit writes. The admin connection is a different
+ * session, so a row it can see is a row that COMMITTED — mirroring SVC-007b's `auditRows`.
+ */
+async function rollAuditRows() {
+  return f().admin<Array<{
+    id: string; company_id: string | null; actor_type: string; actor_id: string;
+    action: string; entity_type: string; entity_id: string;
+    agent_id: string | null; run_id: string | null; details: Record<string, unknown> | null;
+  }>>`
+    SELECT id, company_id, actor_type, actor_id, action, entity_type, entity_id,
+           agent_id, run_id, details
+    FROM activity_log
+    WHERE company_id = ${COMPANY} AND action = 'service.generation_roll'
+    ORDER BY created_at, id`;
+}
+
 async function clearServiceState(): Promise<void> {
+  await f().admin`DELETE FROM activity_log`;
   await f().admin`DELETE FROM job_outbox`;
   await f().admin`DELETE FROM job_control_commands`;
   await f().admin`DELETE FROM job_events`;
@@ -315,11 +340,11 @@ suite("SVC-005a — the generation rollout fence", () => {
   // the same reason — the half-states here are a wedge, not a partial success.
   it("★ R-T2 — the mint and the bump commit together, or neither does", async () => {
     const serviceId = await createRunningService();
-    await expect(runInTenant(f().app.db, ORG, async (repos) => {
+    await expect(runInTenant(f().app.db, ORG, async (repos, tx) => {
       const inner = await rollServiceGenerationWithinTenant(repos, {
         organizationId: ORG, companyId: COMPANY, serviceId,
-        definition: NEXT_DEFINITION, reason: "probe", createdBy: "rollback-probe",
-      });
+        definition: NEXT_DEFINITION, reason: "probe", createdBy: "rollback-probe", actor: OPERATOR,
+      }, { tx, actor: OPERATOR, published: [] });
       expect(inner.verdict.outcome, "the probe must have rolled before rolling back").toBe("rolled");
       throw new Error("deliberate rollback");
     })).rejects.toThrow("deliberate rollback");
@@ -728,5 +753,57 @@ suite("SVC-005a — the generation rollout fence", () => {
     expect((await roll(serviceId, DEFINITION)).verdict).toMatchObject({ from: 2, to: 3 });
     expect((await serviceRow(serviceId))?.generation).toBe(3);
     expect((await generationRows(serviceId)).map((g) => g.generation)).toEqual([1, 2, 3]);
+  }, 90_000);
+
+  // ── R-T11 — ★★★ THE DURABLE GENERATION-ROLL AUDIT — DE-12 conjunct 3c ─────────────────
+  //
+  // A roll writes ONE `service.generation_roll` `activity_log` row, inside the roll's own tenant
+  // transaction (SVC-007b's SERVICE-layer audit path, used a third time). Before this unit the
+  // roll emitted only a `logger.info` line, which is why the DE-12 register left conjunct 3c
+  // ("generation changes are audited") NOT delivered — this case is the delivery.
+  //
+  // ★ AND A NO-OP ROLL WRITES NONE. A `generation_exists` verdict means a concurrent roll
+  // already minted N+1 and the column did NOT move, so no generation-change record may be
+  // written. It is driven by resetting `services.generation` back to N while
+  // `service_generations` still holds N+1 — exactly the `(service_id, generation)` conflict
+  // `generation_exists` reports, reached through the SHIPPED path rather than a hand-built one.
+  //
+  // MUTANT AUDIT-1: delete the `recordServiceGenerationRollActivity` call — the roll arm reds
+  // (zero rows). MUTANT AUDIT-2: record on every verdict, not only `rolled` — the no-op arm reds
+  // (a second row where there must be none). RED-FIRST: before the write existed, the roll arm
+  // found zero rows.
+  it("★★★ R-T11 — a roll writes exactly ONE durable audit row; a NO-OP roll writes NONE", async () => {
+    const serviceId = await createRunningService();
+    // The create's own `service.create` row is not a roll row; the filtered read excludes it.
+    expect(await rollAuditRows(), "no roll has happened yet").toHaveLength(0);
+
+    const rolled = await roll(serviceId);
+    expect(rolled.verdict.outcome).toBe("rolled");
+
+    const rows = await rollAuditRows();
+    expect(rows, "one generation change is one durable row").toHaveLength(1);
+    const row = rows[0]!;
+    expect(row.action).toBe("service.generation_roll");
+    expect(row.entity_type).toBe("service");
+    expect(row.entity_id, "the audited entity is the service").toBe(serviceId);
+    expect(row.company_id, "a mutating control row carries its company").toBe(COMPANY);
+    expect(row.actor_type).toBe("user");
+    expect(row.actor_id).toBe(OPERATOR.actorId);
+    expect(row.run_id, "run_id FKs heartbeat_runs and there is no heartbeat run here").toBeNull();
+    expect(row.agent_id, "a roll is an operator act, not an agent one").toBeNull();
+    expect(row.details).toMatchObject({
+      organizationId: ORG, serviceId, fromGeneration: 1, toGeneration: 2,
+    });
+
+    // ★ THE NO-OP ARM. Reset the column to 1 while generation 2's immutable definition still
+    // exists, so the next roll's mint conflicts and the verdict is `generation_exists`.
+    await f().admin`UPDATE services SET generation = 1 WHERE id = ${serviceId}`;
+    const noop = await roll(serviceId);
+    expect(noop.verdict).toEqual({ outcome: "generation_exists", generation: 2 });
+
+    expect(
+      await rollAuditRows(),
+      "a NO-OP roll changed no generation, so it writes no generation-change record",
+    ).toHaveLength(1);
   }, 90_000);
 });

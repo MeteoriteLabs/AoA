@@ -123,6 +123,17 @@ export const SERVICE_CREATE_ACTION = "service.create";
 export const SERVICE_DESIRED_STATE_ACTION = "service.desired_state";
 
 /**
+ * The audited action for a generation ROLL. Also the route's structured-log `action`, so the
+ * `logger.info` line and the durable row read the same string and cannot drift into two names
+ * for one act — exactly the discipline the two constants above enforce for create and stop.
+ *
+ * ★ A PLAIN OPERATIONAL ACTION, NOT A RESERVED `security.denied.` ONE. A roll is a mutating
+ * control action, not a denial, so it carries a company id and a non-reserved namespace — which
+ * is precisely what `activity_log_company_or_denial_check` requires of every product row.
+ */
+export const SERVICE_GENERATION_ROLL_ACTION = "service.generation_roll";
+
+/**
  * WHO performed the control action.
  *
  * ★ `actorId` IS NOT NULLABLE AND DOES NOT NEED A FALLBACK. `activity_log.actor_id` is NOT
@@ -251,6 +262,75 @@ export async function recordServiceDesiredStateActivity(
       reason: input.reason,
       stopStatus: input.stopStatus,
       stopInstance: input.stopInstance,
+    },
+  });
+}
+
+export interface ServiceGenerationRollAuditInput {
+  actor: ServiceControlActor;
+  companyId: string;
+  organizationId: string;
+  serviceId: string;
+  /** The generation the service moved OFF. */
+  from: number;
+  /** The generation the service moved ON to — always `from + 1`. */
+  to: number;
+  /**
+   * The operator's bounded reason, already length-limited by the route body schema. Recorded
+   * durably for the SAME reason SVC-007a's P1 fix recorded the desired-state reason: the roll
+   * route REQUIRES a `reason` and, before this row, carried it only into a `logger.info` line
+   * that does not outlive the process. A field the caller is forced to supply must reach a
+   * durable sink.
+   */
+  reason: string;
+  /** The desired state the roll left UNCHANGED (a roll never moves it), mirroring the route's
+   *  structured log line so the durable row and the process log carry the same facts. */
+  desiredState: string;
+  /** What the roll did to the old generation's live instance, if it had one — the same
+   *  `RollDrainResult.status` the route logs. `null` when there was no drain to attempt. */
+  drainStatus: string | null;
+}
+
+/**
+ * SVC-005a / DE-12 conjunct 3c — record that an operator ROLLED a service to its next
+ * generation, INSIDE the transaction that performed the roll.
+ *
+ * ★ THIS IS THE DURABLE HALF DE-12's `audit` clause NAMES BY "generation changes are audited".
+ * Before this, a roll emitted only a `logger.info` line — ephemeral, and not a record. The
+ * register's DE-12 row and the roll route's own comment cited E9-F009 §3 as the standing reason
+ * a durable row was not written; that reason is a REPOSITORY-layer measurement (no method under
+ * `packages/db/src/repositories/tenant/` writes `activity_log`), and this write is a
+ * SERVICE-layer one — the same convention SVC-007b established for create and desired-state,
+ * which E9-F010's own partial correction says a reader must not carry the §3 measurement across
+ * to. So there is ONE audit path here, used a third time, not a second one.
+ *
+ * ★ ONLY AN ACTUAL GENERATION CHANGE IS AUDITED. The caller records this ONLY on the `rolled`
+ * verdict — never on `absent`, `desired_state_forbids`, `generation_exists` or `conflict`, none
+ * of which move the column. A `generation_exists` outcome is a NO-OP roll (a concurrent roll
+ * already minted N+1); auditing it would say a generation changed when none did. The invariant
+ * is over MUTATING actions, exactly as `recordServiceDesiredStateActivity` audits only the two
+ * verdicts that mutate.
+ *
+ * Returns the prepared event so the transaction's OWNER can publish it AFTER commit — not here,
+ * because a pre-commit poke would announce a roll a later rollback un-does.
+ */
+export async function recordServiceGenerationRollActivity(
+  tx: Db,
+  input: ServiceGenerationRollAuditInput,
+): Promise<PreparedActivityEvent> {
+  return insertServiceControlActivity(tx, {
+    actor: input.actor,
+    companyId: input.companyId,
+    action: SERVICE_GENERATION_ROLL_ACTION,
+    serviceId: input.serviceId,
+    details: {
+      organizationId: input.organizationId,
+      serviceId: input.serviceId,
+      fromGeneration: input.from,
+      toGeneration: input.to,
+      reason: input.reason,
+      desiredState: input.desiredState,
+      drainStatus: input.drainStatus,
     },
   });
 }

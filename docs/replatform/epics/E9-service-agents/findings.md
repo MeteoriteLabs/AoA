@@ -795,6 +795,22 @@ explain a transition. Half a conjunction is not the conjunction.
 > inside a repository method and has no service-layer caller to hang an audit on — but a reader
 > should not carry §3 across as "the distributed path cannot write `activity_log`".
 
+> ★ **NARROWING NOTE, 2026-09-11, by the `de12-generation-audit` unit — and this does NOT
+> resolve the finding.** The DE-12 register row and the generation-roll route comment both cited
+> this finding's **§3** as the standing reason a durable `activity_log` row was not written for a
+> **generation roll**. That dependency is now removed: a roll writes a durable
+> `service.generation_roll` row inside its own tenant transaction
+> (`recordServiceGenerationRollActivity`, `server/src/services/service-control-audit.ts`, pushed
+> from `rollServiceGenerationWithinTenant`), delivering DE-12 conjunct **3c**. That is a
+> **SERVICE-layer** write, exactly the convention the E9-F010 correction above says §3's
+> **repository-layer** measurement must not be carried across to — so it neither overturns §3 nor
+> touches the sweep §3 is about. **This finding's OWN concern is unchanged and STAYS OPEN:** the
+> liveness-deadline `lost` instance still has no `job_projection_receipts` receipt and no reader
+> (§4, §5's "NOT DELIVERED" half), which needs the `job_projection_receipts_projection_kind_check`
+> widening — a `db:generate` migration this unit did not do. The generation-roll audit is a
+> *different* record from the one this finding names; it is cross-referenced here so the register
+> and the route no longer read as leaning on §3, not because §4's remedy has landed.
+
 ---
 
 ## E9-F010 — the recorded reason these routes write no `activity_log` row is refuted at source: the fence is `jobAuditBridge`'s requirement, not the table's
