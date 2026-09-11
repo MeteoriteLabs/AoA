@@ -826,6 +826,8 @@ left to stand because a decision paper whose central complaint is an over-stated
 carry a stale one of its own. **The authoritative class-wide count lives in `E0-F013`'s Status
 block** (`docs/replatform/epics/E0-foundation/findings.md`), not here.
 
+★ **FURTHER AMENDED 2026-09-11 BY E0-F013 DECISION 1 — RESOLVED-BY-AMENDMENT: TWO; OPEN: TWELVE.** DE-12 and DE-20's audit clauses were resolved by AMENDMENT (each: one conjunct delivered, the remaining conjunct(s) amended as vacuous), so each leaves its audit-gap cohort (E0-F010 6→5; this-cohort/E0-F013 8→7) while staying `partial` in the register. WHOLE-DELIVERED stays THREE (DE-06/DE-14/DE-19); resolved-by-amendment is a separate category. ★ THIS DOES NOT CHANGE THE "CLOSABLE EVER" CEILING BELOW: DE-12 and DE-20 remain `partial` crossings (their non-audit controls are unbuilt), so the ceiling of eleven-to-thirteen and the §8 1.7 count are untouched — only the audit-gap cohort counts move.
+
 **Now the count E0-F013 states.** Its own words:
 
 > *"of the seventeen, ONE is closed and at most ELEVEN more are closable end to end. Five
