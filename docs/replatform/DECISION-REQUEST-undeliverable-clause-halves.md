@@ -955,7 +955,7 @@ vacuous.
 
 ### ▢ **DECISION 1.4 — DE-20 (Critical), `audit`**
 
-**★ RULED 2026-09-11 (founder direction, on the independent re-audit at HEAD `bd21e1abc`):** (a) scoped to 4b only — rollback conjunct dropped vacuous; cutover-selection (4a) left open and untouched.
+**★ RULED 2026-09-11 (founder direction, on the independent re-audit at HEAD `bd21e1abc`):** (a) scoped to 4b only — rollback conjunct dropped vacuous; cutover-selection (4a) is DELIVERED for both arms (W20-B, heartbeat.ts:5388) and left untouched by this amendment.
 
 - ▢ **(a) ★ RECOMMENDED, SCOPED TO 4b ONLY** — Amend the *rollback* conjunct as vacuous (exact text
   in §5.3), explicitly leaving the *cutover selection* conjunct untouched and open.
@@ -1020,7 +1020,7 @@ wired ownership-denial log as DE-17 closing.**
 
 ### ▢ **DECISION 1.7 — THE COUNT**
 
-**★ RULED 2026-09-11 (founder direction, on the independent re-audit at HEAD `bd21e1abc`):** RULED — record ELEVEN under current dispositions; state any plan number as a band ("eleven under current dispositions, up to thirteen if 1.5 reschedules DE-11 and 1.1 funds the read half"), never seventeen.
+**★ RULED 2026-09-11 (founder direction, on the independent re-audit at HEAD `bd21e1abc`):** RULED -- the ruling has now fired 1.5 (DE-11 rescheduled) and 1.1 (DE-01 read-half DECLINED, not funded), so the pre-ruling "eleven under current dispositions" is superseded. Under the enacted dispositions the floor is TWELVE (DE-11 rescheduled = +1 over E0-F013's corrected eleven; DE-01's declined read-half is not funded = +0 under this band's convention), rising to THIRTEEN only if the DE-01 offline verifier is funded in a named wave. State any plan number as this band with its premise attached; never seventeen. NB §7's ceiling table reaches thirteen by a DIFFERENT convention -- counting DE-01 as "deliverable at a declined cost" (+1 for the decline itself) -- so §7 and this band differ ONLY on whether a decline counts as closure, not on any code fact; reconcile the convention before quoting a single figure.
 
 - ▢ **★ RECOMMENDED** — Record that `E0-F013`'s **"twelve"** is **eleven** under its own groupings
   (working in §7), and that any plan states the number **as a band with its premise attached** —
