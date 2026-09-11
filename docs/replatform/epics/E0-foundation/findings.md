@@ -140,7 +140,7 @@ New findings use IDs `E0-F001`, `E0-F002`, and so on, and retain their resolutio
 
 ## E0-F010 — Eight trust crossings asserted that denials are audited and recorded nothing on the deny path; DE-06's and DE-14's audit clauses were completed on 2026-09-10 and the remaining FIVE are enumerated below (DE-12's audit clause was RESOLVED BY AMENDMENT 2026-09-11 under E0-F013 Decision 1 and is struck), so a refused cross-tenant read, a replayed credential and a shed submission are still indistinguishable from traffic that never happened
 
-- **Status:** open — **6 of 8 remain. DE-14's audit clause is DELIVERED IN FULL (2026-09-10) — it
+- **Status:** open — **5 of 8 remain (DE-12 also struck 2026-09-11 by amendment under Decision 1). DE-14's audit clause is DELIVERED IN FULL (2026-09-10) — it
   is single-conjunct and both directions of the outcome are logged at the entrypoint; see the
   DE-14 table row. DE-06's audit clause is DELIVERED IN FULL (2026-09-10) and
   DE-06 is struck from this cohort; see "★ THE OBJECT-ACCESS UNIT" at the end of this entry, and
@@ -307,7 +307,7 @@ measured rather than inherited:
   this unit delivered, so `partial` here is about clauses OTHER than audit. The analogy fails, and
   the correction is recorded in the register row and in the gate-clause enrolment as well as here.
   ★ **AND IT PROVES NOTHING
-  ABOUT THE OTHER SIX.** DE-14 was always the cheapest member of this class and `E0-F013` said so
+  ABOUT THE OTHER FIVE.** DE-14 was always the cheapest member of this class and `E0-F013` said so
   in terms — it is the one row whose clause asks for a LOG rather than an attributable durable
   record, and the assertion fires before any database pool exists, so a durable row is
   structurally impossible there. Closing it removes a row from the count; it does not move the
@@ -338,7 +338,7 @@ measured rather than inherited:
   be about a `log`, a `workspace_patch` or a `screenshot` today. The register was RIGHT and the
   inherited framing was stale — recorded here because the reverse has been true four waves running
   and the direction of the error is not something a reader should have to re-derive.
-- **Disposition:** `unowned`. No ticket on disk owns "record a denial" for these six. The
+- **Disposition:** `unowned`. No ticket on disk owns "record a denial" for these five. The
   nearest candidate, `jobAuditBridge`, exists and is caller-less; wiring it is not a code-motion
   task, because the DE-01 case has **no error to intercept** (a filtered read is a successful empty
   read), so a denial-observation point would have to be built rather than connected. Minimum work
@@ -350,7 +350,7 @@ measured rather than inherited:
   HALF-delivered conjunctive clause closes nothing, and the reason DE-06 left on 2026-09-10 is that
   BOTH of its audit conjuncts hold — not that a larger fraction of one does. DE-14 left on the same
   day for the narrower reason that its clause has only one conjunct and both of its DIRECTIONS are
-  now recorded.** The `E0-F010` key stays in `scripts/finding-ownership.json`: six crossings remain
+  now recorded.** The `E0-F010` key stays in `scripts/finding-ownership.json`: five crossings remain
   and this finding is open.
 - **2026-09-10, Unit A — two rows moved and the cohort did NOT.** The wave that the ruling on
   `E0-F013` Decision 2 unblocked wired the organization-attributable denial sinks: **DE-06**'s five
@@ -1643,8 +1643,10 @@ with the flow-analysis guard, not the grep one.
 - **Affected crossings:** DE-15, DE-16, DE-17, DE-18, DE-21, DE-27, DE-29 — **seven
   remaining** (DE-20 struck 2026-09-11, audit clause resolved by amendment under Decision 1). DE-19 is closed (above) and is no longer carried by this finding.
 - **Disposition:** `unowned`, for the reason `E0-F010` gives — no ticket on disk owns "record a
-  denial" for the remaining seven (DE-20 struck 2026-09-11), and DE-27's case additionally needs a replica identity that does
-  not exist. NOT `accepted`: HIGH may never be accepted.
+  denial" for the remaining seven (DE-20 struck 2026-09-11). DE-27's remaining work, under the WEAK
+  reading adopted by Decision 1.2(c), is ordinary Group B/C audit-write wiring (durably record the
+  two admission refusals) and does NOT need a replica identity — the strong reading would have
+  required one, but the ruling did not adopt it. NOT `accepted`: HIGH may never be accepted.
 - **Resolution condition:** each remaining row's `audit` clause is either delivered against a named
   record point with a production caller, or AMENDED to state what the programme intends (DE-27's is
   the one most likely to need amending). Resolve = flip this Status and delete the `E0-F013` key in
