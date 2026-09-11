@@ -1931,10 +1931,14 @@ or cross-tenant secret leaking into VM env on any path turns a conceded metadata
 cross-boundary exposure with no other layer to catch it, because — per the ruling — none exists at this
 tier.
 
-**Resolution condition.** Either (a) an enforced, CI-run invariant is built that asserts, across
-**every** sandbox stage-in path, that the §9 never-in-VM set is absent from VM env (the §10 env-absence
-test generalised from opt-in to exhaustive and gated), at which point DE-08's amended
-`confidentiality` clause rests on a measurement rather than a design assertion; or (b) the founder
-amends DE-08 again to state a narrower guarantee. Not `accepted`: HIGH may never be accepted, and this
+**Resolution condition.** Either (a) an enforced, CI-run invariant is built that asserts BOTH: (a-i)
+across **every** sandbox stage-in path, that the §9 never-in-VM set is absent from VM env (the §10
+env-absence test generalised from opt-in to exhaustive and gated); **AND (a-ii) that the reachable
+metadata service (`169.254.169.254`) yields no infrastructure or cross-tenant credential a token-bearing
+guest could use to cross a boundary** — because env-absence alone is INSUFFICIENT (Codex P1, PR #432):
+a clean VM env still leaves the measured-reachable metadata endpoint as a second credential-egress
+path, so an env-only invariant can pass while an IMDS token returns a usable infra/cross-tenant secret.
+Only when BOTH hold does DE-08's amended `confidentiality` clause rest on a measurement rather than a
+design assertion; or (b) the founder amends DE-08 again to state a narrower guarantee. Not `accepted`: HIGH may never be accepted, and this
 carries the confidentiality of a Critical control. Resolve = flip this Status **and** delete the
 `E8-F012` key in `scripts/finding-ownership.json` in the SAME commit.
