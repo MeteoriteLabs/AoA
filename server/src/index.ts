@@ -1053,6 +1053,9 @@ const liveEventsWss = setupLiveEventsWebSocketServer(server, db as any, {
   deploymentMode: config.deploymentMode,
   resolveSessionFromHeaders,
   trustedOrigins: effectiveTrustedOrigins,
+  // Resolve the WS denial source key from the trusted-proxy client IP exactly as
+  // the REST paths resolve `req.ip` — same `trust proxy` setting app.ts installs.
+  trustProxy: config.trustProxy,
 }) as ReturnType<typeof setupLiveEventsWebSocketServer> & {
   deliverDurableEvent?: (companyId: string, event: import("@armyofagents/shared").LiveEvent) => void;
   activeCompanies?: () => Iterable<string>;

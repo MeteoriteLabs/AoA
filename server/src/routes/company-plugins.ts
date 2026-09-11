@@ -34,6 +34,7 @@ import {
   projectCloudPluginPolicyState,
   recordCloudPluginBlock,
 } from "../services/cloud-plugin-execution.js";
+import { recordCloudPluginDenial } from "../services/cloud-plugin-denial-audit.js";
 
 export function companyPluginRoutes(
   db: Db,
@@ -335,6 +336,21 @@ export function companyPluginRoutes(
         companyId,
         source: "direct",
         sink: "loader",
+      });
+      // ★ DE-16 / E0-F013 Decision 3.2 (slice 2): `companyId` is the caller-supplied
+      // path segment and `assertCompanyAccess` runs AFTER this point, so it is
+      // untrusted — record a bounded operator-only denial (`company_id NULL`, the
+      // requested id in `entity_id`). Best-effort; never blocks or fails the 503.
+      void recordCloudPluginDenial(db, {
+        requestedCompanyId: companyId,
+        pluginId,
+        sink: "loader",
+        source: "direct",
+        actorId: req.actor?.userId ?? "board",
+        sourceKey: req.ip ?? req.socket?.remoteAddress ?? null,
+        control: "server/src/routes/company-plugins.ts:upgrade/rollback",
+      }).catch(() => {
+        // recordCloudPluginDenial never throws; guards against unhandled rejection.
       });
       res.status(503).json(cloudPluginExecutionBlockedEnvelope());
       return;

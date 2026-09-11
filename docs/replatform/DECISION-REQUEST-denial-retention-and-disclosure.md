@@ -21,12 +21,13 @@ each of the three decision sub-blocks. The five questions of §1, and where each
 |---|---|---|---|
 | **Q1** | Attribution + disclosure to the **probed** tenant | **RATIFY** actor-tenant attribution; a cross-tenant refusal is filed under the **actor's own** tenant and the **probed** tenant is never told (no per-company denial feed). This is already the code's behaviour and what three suites assert. | already true; **slice 1** re-asserts it (the probed tenant stays blind). |
 | **Q2 / Q3** | Disclosure to the **actor's OWN** tenant | ★ **RECOMMENDED (Decision 3.1)** — also do **NOT** disclose a `security.denied.*` row to the actor's own tenant. Exclude the denial namespace from **every tenant-facing `activity_log` reader** through ONE shared `notDenialNamespace()` predicate, with a provocation per reader observed RED first. The operator plane (`GET /instance/security-denials`) still sees everything. | ★ **IMPLEMENTED BY THIS PR (slice 1).** Readers: `activityService.list`, `homeService.summary`, `cockpitTeammatesActivity`, `morningDigest`. |
-| **Q3-sites** | The **fourteen** tenant-less deny sites (six `authorizeUpgrade` + eight plugin cloud gate) | ★ **RECOMMENDED (Decision 3.2, option (c))** — an **operator-only sink**: `company_id` NULL, caller-supplied company in `entity_id`, readable only via the operator reader, **WITH a bound on the write** (per-source cap / sampling / aggregation) landing alongside it. | **pending slice 2.** |
+| **Q3-sites** | The **fourteen** tenant-less deny sites (six `authorizeUpgrade` + eight plugin cloud gate) | ★ **RECOMMENDED (Decision 3.2, option (c))** — an **operator-only sink**: `company_id` NULL, caller-supplied company in `entity_id`, readable only via the operator reader, **WITH a bound on the write** (per-source cap / sampling / aggregation) landing alongside it. | ★ **IMPLEMENTED BY SLICE 2** (`decision3-tenantless-sink`): all 14 sites now call the bounded recorder into the operator-only sink. |
 | **Q4** | Lifetime of a denial record | ★ **RECOMMENDED (Decision 3.3)** — rule it **explicitly** (today it is unbounded and nothing records that): a bounded retention window whose purge itself leaves a record. | **pending slice 3.** |
 | **Q5** | Tamper — can a suspect delete it? | ★ **RECOMMENDED (Decision 3.3)** — `security.denied.*` denial history **survives a company delete**: the `company_id` FK moves to `ON DELETE set null` (by `db:generate`) and `companyService.remove` nulls rather than deletes them, making the company axis agree with `organization_id`'s existing `restrict`. | **pending slice 3.** |
 
-**Slice map.** Slice 1 = Q2/Q3 (this PR). Slice 2 = Q3-sites operator-only sink + write bound. Slice
-3 = Q4 (retention window) + Q5 (tamper-resistant delete). The strongest arguments-against recorded in
+**Slice map.** Slice 1 = Q2/Q3 (this PR). Slice 2 = Q3-sites operator-only sink + write bound
+(**shipped** by `decision3-tenantless-sink`). Slice 3 = Q4 (retention window) + Q5 (tamper-resistant
+delete). The strongest arguments-against recorded in
 §8 are accepted by the founder as the known costs of the best-practice choice, and each later slice
 owes the provocation §8 names (the write bound for slice 2; the `set null` / undeletable-company case
 for slice 3).
@@ -632,11 +633,21 @@ it is unbounded and nothing says so.
 - ▢ **(alt, not chosen)** Ratify attribution and leave the readers unchanged. *Explicitly accepts that the prober
   reads its own detection. Choose only with that written into the register.*
 
-### ☑ **DECISION 3.2 — CLASS 2: the fourteen sites** — ★ RULED 2026-09-11 (founder): (c) with a write bound. **Pending slice 2.**
+### ☑ **DECISION 3.2 — CLASS 2: the fourteen sites** — ★ RULED 2026-09-11 (founder): (c) with a write bound. ★ **IMPLEMENTED — slice 2** (`decision3-tenantless-sink`).
 
 - ☑ **★ RECOMMENDED — (c) — CHOSEN** an operator-only sink: `company_id` NULL, the caller-supplied company in
   `entity_id`, readable only via `GET /instance/security-denials`. **Conditional on a bound on the
-  write** (per-source cap, sampling, or aggregation) landing with it. **← pending slice 2; the write bound is required by the ruling.**
+  write** (per-source cap, sampling, or aggregation) landing with it. **← SHIPPED by slice 2:** the six
+  `authorizeUpgrade` tenant-less branches (`live-events-tenantless-denial-audit.ts`,
+  surface `security.denied.live_events_upgrade_unattributed`) and the eight plugin-cloud-gate
+  sites (`cloud-plugin-denial-audit.ts`, surface `security.denied.cloud_plugin_execution`) call the
+  bounded recorder (`bounded-denial-recorder.ts`). The bound is a per-`(surface, coarse-source-key)`
+  window cap with aggregation of the remainder into a suppressed-count row; the coarse key is the
+  remote address (hashed), NEVER the caller-supplied company/entity id. M1 is in-memory /
+  process-local (resets on restart; a durable / cross-replica bound is the follow-up). Proven by
+  `bounded-denial-recorder.test.ts` (flood M≫N → ≤ N+1 rows + suppressed count, RED-first) and
+  `decision3-tenantless-sink.integration.test.ts` (each site writes a real operator-sink row, and the
+  operator reader surfaces them while the tenant feed does not).
 - ▢ **(e, not chosen)** Record nothing for these fourteen, and **amend `DE-21.audit` and `DE-16.audit`** in
   `distributed-execution-threat-controls.json` to say so. *Mandatory only if (c)'s write bound will not
   be funded.*

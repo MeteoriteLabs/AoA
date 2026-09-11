@@ -42,6 +42,10 @@ import {
   recordUpgradeDenial,
   type LiveEventsUpgradeDenialReason,
 } from "./live-events-denial-audit.js";
+import {
+  recordTenantlessUpgradeDenial,
+  type LiveEventsUpgradeUnattributedReason,
+} from "./live-events-tenantless-denial-audit.js";
 import { permissionService } from "../services/permissions.js";
 import { hubItemsService } from "../services/hub-items.js";
 import {
@@ -87,6 +91,80 @@ const { WebSocket, WebSocketServer } = require("ws") as {
   WebSocket: { OPEN: number };
   WebSocketServer: new (opts: { noServer: boolean }) => WsServer;
 };
+// proxy-addr is the exact resolver Express uses for `req.ip`. The WS upgrade
+// handler runs on the raw Node `req` (it never passes through the Express
+// request pipeline, so there is no `req.ip`), so we resolve the client IP here
+// with the SAME library + the SAME `trust proxy` setting the REST paths use.
+const proxyAddr = require("proxy-addr") as {
+  (
+    req: IncomingMessage,
+    trust: (addr: string, i: number) => boolean,
+  ): string | undefined;
+  compile(val: string | string[]): (addr: string, i: number) => boolean;
+};
+
+/**
+ * AoA's `trust proxy` setting (`config.trustProxy`: boolean | number | CIDR
+ * list) is the value `app.set("trust proxy", …)` installs in app.ts. This
+ * mirrors Express's own `compileTrust` (express/lib/utils.js) EXACTLY so the
+ * client IP derived on the WS upgrade equals the `req.ip` the REST denial paths
+ * use:
+ *   - a function → used as-is
+ *   - `true`            → trust every hop (the forwarded chain's original client)
+ *   - a hop count `N`   → trust the first N hops from the socket
+ *   - a string / CIDR[] → proxy-addr subnet trust
+ *   - anything falsy (`false` / `0` / `[]` / unset) → trust NOTHING, i.e. the
+ *     socket address with X-Forwarded-For IGNORED. This is the security-critical
+ *     default: with no configured trusted proxy an attacker MUST NOT be able to
+ *     forge the source key via a spoofed X-Forwarded-For.
+ */
+function compileTrustProxy(
+  trustProxy: unknown,
+): (addr: string, i: number) => boolean {
+  if (typeof trustProxy === "function") {
+    return trustProxy as (addr: string, i: number) => boolean;
+  }
+  if (trustProxy === true) return () => true;
+  if (typeof trustProxy === "number") {
+    const hops = trustProxy;
+    return (_addr, i) => i < hops;
+  }
+  const list =
+    typeof trustProxy === "string"
+      ? trustProxy.split(/ *, */)
+      : Array.isArray(trustProxy)
+        ? (trustProxy as string[])
+        : [];
+  return proxyAddr.compile(list);
+}
+
+/**
+ * Resolve a request's client IP under the configured trust-proxy policy, exactly
+ * as Express `req.ip` does. Compiled trust functions are memoized per setting
+ * value (the process's `config.trustProxy` is stable) so a denial flood does not
+ * re-parse the CIDR list on every hit.
+ */
+let cachedTrust: {
+  key: unknown;
+  fn: (addr: string, i: number) => boolean;
+} | null = null;
+function resolveClientIp(
+  req: IncomingMessage,
+  trustProxy: unknown,
+): string | null {
+  try {
+    if (!cachedTrust || cachedTrust.key !== trustProxy) {
+      cachedTrust = { key: trustProxy, fn: compileTrustProxy(trustProxy) };
+    }
+    const addr = proxyAddr(req, cachedTrust.fn);
+    if (typeof addr === "string" && addr.length > 0) return addr;
+  } catch {
+    // A malformed X-Forwarded-For (or any resolver hiccup) must not defeat the
+    // deny path or its bound — fall back to the raw socket address.
+  }
+  const raw = req.socket?.remoteAddress;
+  return typeof raw === "string" && raw.length > 0 ? raw : null;
+}
 
 export type UpgradeContext = UpgradeSocketActorContext;
 
@@ -124,6 +202,28 @@ function parseCompanyId(pathname: string) {
   } catch {
     return null;
   }
+}
+
+/**
+ * The COARSE source key for the tenant-less upgrade denial bound: the refused
+ * upgrade's CLIENT IP, resolved under the configured trust-proxy policy exactly
+ * as Express `req.ip` does. Behind Cloudflare/ALB/nginx the socket's
+ * `remoteAddress` is the PROXY's address — so keying on it would collapse every
+ * WS denial (from every client) into ONE per-surface bucket, letting a single
+ * caller consume the whole per-source allowance for everyone. We therefore
+ * resolve the trusted-proxy client IP (`X-Forwarded-For`) — but ONLY when a
+ * trusted proxy is configured; with none, we key on the socket address and
+ * IGNORE `X-Forwarded-For` so an attacker cannot forge the source key to evade
+ * the per-source cap. It remains the one identifier on a refused upgrade an
+ * attacker cannot cheaply rotate (unlike the caller-supplied company path
+ * segment). `null` when the transport exposes nothing — those hits share a
+ * single bucket per surface, the strongest bound.
+ */
+export function upgradeSourceKey(
+  req: IncomingMessage,
+  trustProxy: unknown,
+): string | null {
+  return resolveClientIp(req, trustProxy);
 }
 
 function parseBearerToken(rawAuth: string | string[] | undefined) {
@@ -268,11 +368,39 @@ export async function authorizeUpgrade(
      * for the CSWSH Origin check below.
      */
     trustedOrigins?: string[];
+    /**
+     * The app's `trust proxy` setting (`config.trustProxy`), used to resolve the
+     * client IP for the tenant-less denial source key exactly as Express
+     * `req.ip` does. Absent/falsy ⇒ trust nothing ⇒ the socket address.
+     */
+    trustProxy?: boolean | number | string[];
   }
 ): Promise<UpgradeContext | null> {
   const queryToken = url.searchParams.get("token")?.trim() ?? "";
   const authToken = parseBearerToken(req.headers.authorization);
   const token = authToken ?? (queryToken.length > 0 ? queryToken : null);
+
+  // ★ DE-21 / E0-F013 Decision 3.2 — the operator-only sink for the SIX branches
+  // below that resolve no actor tenant. `companyId` is the caller-supplied path
+  // segment (evidence in `entity_id`, never attribution — the row is `company_id
+  // NULL`). Bounded per (surface, remote-address) so a flood cannot grow the
+  // operator's evidence table; never throws. The agent-key branches further down
+  // are Class 1 and keep `recordUpgradeDenial` — do NOT route them here.
+  const denyTenantless = (
+    reason: LiveEventsUpgradeUnattributedReason,
+    actorType: "user" | "agent",
+    actorId: string,
+    details?: Record<string, unknown>,
+  ): Promise<void> =>
+    recordTenantlessUpgradeDenial(db, {
+      reason,
+      requestedCompanyId: companyId,
+      actorType,
+      actorId,
+      sourceKey: upgradeSourceKey(req, opts.trustProxy),
+      control: "server/src/realtime/live-events-ws.ts:authorizeUpgrade",
+      details,
+    });
 
   // Browser board context has no bearer token in local_trusted and authenticated modes.
   if (!token) {
@@ -294,6 +422,10 @@ export async function authorizeUpgrade(
         opts.deploymentMode !== "cloud_auth") ||
       !opts.resolveSessionFromHeaders
     ) {
+      await denyTenantless("board_no_session_resolver", "user", "anonymous", {
+        deploymentMode: opts.deploymentMode,
+        hasSessionResolver: Boolean(opts.resolveSessionFromHeaders),
+      });
       return null;
     }
 
@@ -305,6 +437,9 @@ export async function authorizeUpgrade(
     // already trusts the board origin.
     const origin = req.headers.origin;
     if (!origin || !(opts.trustedOrigins ?? []).includes(origin)) {
+      await denyTenantless("board_untrusted_origin", "user", "anonymous", {
+        origin: origin ?? null,
+      });
       return null;
     }
 
@@ -312,7 +447,10 @@ export async function authorizeUpgrade(
       headersFromIncomingMessage(req)
     );
     const userId = session?.user?.id;
-    if (!userId) return null;
+    if (!userId) {
+      await denyTenantless("board_no_user", "user", "anonymous");
+      return null;
+    }
 
     if (opts.deploymentMode === "cloud_auth") {
       // Mirror authorizeCompanyUpgrade (services/upgrade-auth.ts) tenant-isolation
@@ -323,7 +461,10 @@ export async function authorizeUpgrade(
       // authenticated branch below keeps its own instance_admin rule. Extracted
       // into hasActiveCloudMembership so the connection membership-sweep can
       // re-run the exact same predicate against already-open sockets.
-      if (!(await hasActiveCloudMembership(db, companyId, userId))) return null;
+      if (!(await hasActiveCloudMembership(db, companyId, userId))) {
+        await denyTenantless("board_no_cloud_membership", "user", userId);
+        return null;
+      }
 
       return {
         companyId,
@@ -367,9 +508,16 @@ export async function authorizeUpgrade(
     // holder with no memberships at all — so there is often no FK-valid company
     // here whatsoever; and (b) when it is non-empty the ids are the actor's OTHER
     // tenants, none of which was asked for anything or refused anything, so
-    // picking one is an attribution rule, not a wiring gap. This branch therefore
-    // stays open under `E0-F013`'s Decision 3. See `live-events-denial-audit.ts`.
-    if (!roleRow && !hasCompanyMembership) return null;
+    // picking one is an attribution rule, not a wiring gap. E0-F013's Decision 3.2
+    // (slice 2) closes it by recording to the OPERATOR-ONLY sink (`company_id
+    // NULL`) instead of attributing to one of the actor's other memberships. See
+    // `live-events-tenantless-denial-audit.ts`.
+    if (!roleRow && !hasCompanyMembership) {
+      await denyTenantless("board_no_membership", "user", userId, {
+        membershipCount: memberships.length,
+      });
+      return null;
+    }
 
     return {
       companyId,
@@ -394,9 +542,13 @@ export async function authorizeUpgrade(
   if (!key) {
     // NO DB-RESOLVED COMPANY EXISTS HERE. An unknown, revoked or malformed token
     // matched no `agent_api_keys` row, so the only company in hand is the
-    // caller-supplied path segment — the dominant probe case, and the one that
-    // cannot be attributed without a ruling. Nothing durable is written; this arm
-    // belongs to `E0-F013`'s Decision 3, with the board/session branches above.
+    // caller-supplied path segment — the dominant probe case. E0-F013's Decision
+    // 3.2 (slice 2) records it to the OPERATOR-ONLY sink (`company_id NULL`,
+    // requested company in `entity_id`), bounded so an unknown-token flood cannot
+    // grow the operator's evidence table. The raw token is NEVER stored.
+    await denyTenantless("agent_key_unknown", "agent", "unknown", {
+      tokenPresented: true,
+    });
     return null;
   }
   if (key.companyId !== companyId) {
@@ -495,6 +647,13 @@ export function setupLiveEventsWebSocketServer(
       headers: Headers
     ) => Promise<BetterAuthSessionResult | null>;
     trustedOrigins?: string[];
+    /**
+     * The app's `trust proxy` setting (`config.trustProxy`). Threaded to
+     * `authorizeUpgrade` so the tenant-less denial source key is the
+     * trusted-proxy-resolved client IP (Express `req.ip` parity), not the proxy
+     * socket address.
+     */
+    trustProxy?: boolean | number | string[];
   }
 ) {
   const wss = new WebSocketServer({ noServer: true });
@@ -1132,6 +1291,7 @@ export function setupLiveEventsWebSocketServer(
       deploymentMode: opts.deploymentMode,
       resolveSessionFromHeaders: opts.resolveSessionFromHeaders,
       trustedOrigins: opts.trustedOrigins,
+      trustProxy: opts.trustProxy,
     })
       .then((context) => {
         if (!context) {

@@ -83,6 +83,7 @@ import {
   projectCloudPluginPolicyState,
   recordCloudPluginBlock,
 } from "../services/cloud-plugin-execution.js";
+import { recordCloudPluginDenial } from "../services/cloud-plugin-denial-audit.js";
 function respondIfCloudPluginBlocked(error: unknown, res: Response): boolean {
   if (!(error instanceof CloudPluginExecutionBlockedError)) return false;
   res.status(503).json(cloudPluginExecutionBlockedEnvelope());
@@ -364,7 +365,12 @@ export function pluginRoutes(
       companyId?: string;
       source?: "direct" | "marketplace";
       sink?: "worker-manager" | "loader";
-    }
+    },
+    // ★ DE-16 / E0-F013 Decision 3.2 (slice 2): passed ONLY at the caller-supplied-
+    // company call sites so their block records to the operator-only sink. The
+    // no-company residue sites (Decision 2's remainder) omit it and are not
+    // recorded here.
+    req?: Request
   ): boolean {
     // FND-006/FND-008 (Decision #103 amendment): `isCloudPluginExecutionBlocked`
     // fails closed for EVERY sink on `cloud_auth`, so this helper short-circuits
@@ -373,11 +379,29 @@ export function pluginRoutes(
     // clarity + metrics only; the decision does not depend on it.
     if (!isCloudPluginExecutionBlocked(context.sink ?? "worker-manager"))
       return false;
-    recordCloudPluginBlock({
-      ...context,
-      source: context.source ?? "direct",
-      sink: context.sink ?? "worker-manager",
-    });
+    const source = context.source ?? "direct";
+    const sink = context.sink ?? "worker-manager";
+    recordCloudPluginBlock({ ...context, source, sink });
+    // ★ DE-16 / E0-F013 Decision 3.2: when the caller NAMED a company (the abuse
+    // surface), record a durable operator-only denial row — `company_id NULL`, the
+    // caller-supplied id in `entity_id` (untrusted; `assertCompanyAccess` runs
+    // AFTER this on several of these routes). Bounded per (surface, remote-IP) so a
+    // board caller cannot flood the operator's evidence table; best-effort and
+    // never blocks or fails the 503 (the recorder never throws).
+    if (req && typeof context.companyId === "string" && context.companyId.length > 0) {
+      void recordCloudPluginDenial(db, {
+        requestedCompanyId: context.companyId,
+        pluginId: context.pluginId,
+        sink,
+        source,
+        actorId: req.actor?.userId ?? "board",
+        sourceKey: req.ip ?? req.socket?.remoteAddress ?? null,
+        control: "server/src/routes/plugins.ts:rejectBlockedCloudExecution",
+      }).catch(() => {
+        // recordCloudPluginDenial never throws; this is belt-and-suspenders so a
+        // rejected promise cannot become an unhandled rejection.
+      });
+    }
     res.status(503).json(cloudPluginExecutionBlockedEnvelope());
     return true;
   }
@@ -681,10 +705,14 @@ export function pluginRoutes(
       return;
     }
     if (
-      rejectBlockedCloudExecution(res, {
-        pluginId: "plugin-ui-contributions",
-        companyId,
-      })
+      rejectBlockedCloudExecution(
+        res,
+        {
+          pluginId: "plugin-ui-contributions",
+          companyId,
+        },
+        req
+      )
     ) {
       return;
     }
@@ -796,13 +824,17 @@ export function pluginRoutes(
     assertBoard(req);
 
     if (
-      rejectBlockedCloudExecution(res, {
-        pluginId: "plugin-tool-dispatch",
-        companyId:
-          typeof req.body?.runContext?.companyId === "string"
-            ? req.body.runContext.companyId
-            : undefined,
-      })
+      rejectBlockedCloudExecution(
+        res,
+        {
+          pluginId: "plugin-tool-dispatch",
+          companyId:
+            typeof req.body?.runContext?.companyId === "string"
+              ? req.body.runContext.companyId
+              : undefined,
+        },
+        req
+      )
     ) {
       return;
     }
@@ -1157,13 +1189,17 @@ export function pluginRoutes(
     assertBoard(req);
 
     if (
-      rejectBlockedCloudExecution(res, {
-        pluginId: req.params.pluginId,
-        companyId:
-          typeof req.body?.companyId === "string"
-            ? req.body.companyId
-            : undefined,
-      })
+      rejectBlockedCloudExecution(
+        res,
+        {
+          pluginId: req.params.pluginId,
+          companyId:
+            typeof req.body?.companyId === "string"
+              ? req.body.companyId
+              : undefined,
+        },
+        req
+      )
     ) {
       return;
     }
@@ -1249,13 +1285,17 @@ export function pluginRoutes(
     assertBoard(req);
 
     if (
-      rejectBlockedCloudExecution(res, {
-        pluginId: req.params.pluginId,
-        companyId:
-          typeof req.body?.companyId === "string"
-            ? req.body.companyId
-            : undefined,
-      })
+      rejectBlockedCloudExecution(
+        res,
+        {
+          pluginId: req.params.pluginId,
+          companyId:
+            typeof req.body?.companyId === "string"
+              ? req.body.companyId
+              : undefined,
+        },
+        req
+      )
     ) {
       return;
     }
@@ -1346,13 +1386,17 @@ export function pluginRoutes(
     assertBoard(req);
 
     if (
-      rejectBlockedCloudExecution(res, {
-        pluginId: req.params.pluginId,
-        companyId:
-          typeof req.body?.companyId === "string"
-            ? req.body.companyId
-            : undefined,
-      })
+      rejectBlockedCloudExecution(
+        res,
+        {
+          pluginId: req.params.pluginId,
+          companyId:
+            typeof req.body?.companyId === "string"
+              ? req.body.companyId
+              : undefined,
+        },
+        req
+      )
     ) {
       return;
     }
@@ -1436,13 +1480,17 @@ export function pluginRoutes(
     assertBoard(req);
 
     if (
-      rejectBlockedCloudExecution(res, {
-        pluginId: req.params.pluginId,
-        companyId:
-          typeof req.body?.companyId === "string"
-            ? req.body.companyId
-            : undefined,
-      })
+      rejectBlockedCloudExecution(
+        res,
+        {
+          pluginId: req.params.pluginId,
+          companyId:
+            typeof req.body?.companyId === "string"
+              ? req.body.companyId
+              : undefined,
+        },
+        req
+      )
     ) {
       return;
     }
@@ -1532,13 +1580,17 @@ export function pluginRoutes(
     assertBoard(req);
 
     if (
-      rejectBlockedCloudExecution(res, {
-        pluginId: req.params.pluginId,
-        companyId:
-          typeof req.query.companyId === "string"
-            ? req.query.companyId
-            : undefined,
-      })
+      rejectBlockedCloudExecution(
+        res,
+        {
+          pluginId: req.params.pluginId,
+          companyId:
+            typeof req.query.companyId === "string"
+              ? req.query.companyId
+              : undefined,
+        },
+        req
+      )
     ) {
       return;
     }

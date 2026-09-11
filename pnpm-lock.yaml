@@ -940,6 +940,9 @@ importers:
       postgres:
         specifier: ^3.4.5
         version: 3.4.8(patch_hash=bxuu2dmirjyj7xcwlawfg3rpny)
+      proxy-addr:
+        specifier: ^2.0.7
+        version: 2.0.7
       ws:
         specifier: ^8.21.0
         version: 8.21.0
