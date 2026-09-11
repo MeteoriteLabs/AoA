@@ -18,6 +18,61 @@ first-try verifier-PASS.
 
 ---
 
+## ★★★ BLOCKER — read before you spend money: the canary cannot route to a leasable target today
+
+**Do not run this procedure expecting a distributed (verifier-PASS) run until a code
+change lands.** The fleet boots and the task runs, but it runs on the **legacy** executor,
+not distributed — so it burns real E2B budget and proves nothing. This is
+[`E11-F004`](epics/E11-hardening-release/findings.md) (HIGH, open), re-confirmed here against
+the E7-1 canary composition specifically. The chain, verified link by link at HEAD:
+
+1. The canary presents a **four-null** placement credential binding — `resolveCanaryCredentialBinding`
+   (`server/src/services/canary-credential-binding.ts:73-89`), wired as the production
+   `resolveCredentialBinding` at `server/src/index.ts:1254`. All four fields are null by design.
+2. With all four null (and `submitJob` hard-coding `requestedTarget: null`), target routing
+   `chooseExecutionTargetRow` takes neither the pin nor the personal-subscription branch and
+   falls through to `active.find(t => t.kind === "pooled_gvisor")`
+   (`server/src/services/execution-target-resolver.ts:206-208`). It can select **only** a
+   `pooled_gvisor` row — never the org's `dedicated_worker`.
+3. A `pooled_gvisor` row normalizes **only** as `targetClass: "managed_cloud"`
+   (`TARGET_KIND_BY_CLASS`, `execution-target-resolver.ts:52-56`, enforced at `:150`).
+4. `managed_cloud` pins `targetScope: "platform"` (`PLACEMENT_MATRIX`,
+   `packages/worker-protocol/src/job.ts:88-94`); `platform` scope requires a **null organization**
+   (`registeredTargetProfileV1Schema`, `packages/worker-protocol/src/capabilities.ts:300-303`),
+   and normalization requires the row's `targetAuthorityKey === "platform"`
+   (`execution-target-resolver.ts:156-161`).
+5. The **only** execution-target create route mints `scope = ownerUserId ? "owner" : "organization"`
+   with `targetAuthorityKey = organization:${orgId}` — never `platform`/`pooled_gvisor`
+   (`server/src/routes/execution-targets.ts:174-188`). The tenant placement-profile ratify route
+   refuses `target.scope === "platform"` outright (`server/src/services/execution-targets.ts:130`);
+   the platform ratify route (`PUT /operator/execution-targets/:targetId/placement-profile`) needs a
+   platform row that no create route produces. The only null-org/`platform` insert in the tree,
+   `ensureControlPlaneExecutionTarget` (`server/src/services/execution-targets.ts:436-451`),
+   hard-codes `kind: "local_host"` with no placement profile, so it never becomes a placement candidate.
+
+So there is **no create + ratify sequence an operator can run** that yields the
+`pooled_gvisor` / `managed_cloud` / `platform`-scoped, profile-ratified target the four-null canary
+binding routes to. (Independently, the overlay's campaign worker enrolls with
+`AOA_WORKER_TARGET_SCOPE: "organization"`, but a `platform` target only accepts a `platform`-scoped
+worker as a candidate — `job-placement-transaction.ts:61-63` — so even a hand-inserted platform
+target would have no eligible worker.)
+
+**Failure mode if you proceed anyway:** routing resolves no target → `normalizeSubmittedJobPlacementFacts`
+returns `unmapped_execution_target` → placement is not lease-eligible →
+`run-execution-owner.ts` returns `placement_not_leasable` → the run falls back to **legacy**. The
+`[CLI-006] canary execution owner = LEGACY` line appears in the control-plane log (§9), and the §10
+verifier's `execution_owner === "distributed"` clause fails.
+
+**What is needed to unblock (a code change, out of this doc's scope):** either (a) a supported way
+to create + ratify a `pooled_gvisor`/`managed_cloud`/`platform` target *and* enroll a
+`platform`-scoped worker on it, or (b) a change to the canary routing so a keyed run can target an
+`organization_dedicated` (`dedicated_worker`) target the tenant create route *can* mint. Until one
+lands, steps §7 onward describe the plumbing but the run will not go distributed. The rest of this
+runbook is retained so the fleet, keypair, DB, and rollout wiring can be validated in advance and
+so the eventual first real run is a single edit away.
+
+---
+
 ## 0. What you are deploying, and what a green proves
 
 A campaign-minimal fleet, four services, layered over the base staging manifest:
@@ -78,6 +133,16 @@ half-wired pair boots CLEAN on both sides and then collapses every gated create 
 uniform `ResourceNotAvailableError` — byte-indistinguishable from a legitimate
 ownership denial. This is the maximally silent failure; the smoke probe is the only
 thing that catches it.
+
+Run every command in this runbook **from the repo root** (the same directory the
+`docker compose -f docker-compose.staging.yml …` invocation is run from). This matters
+for the keypair: the overlay mounts the keys as compose file-secrets whose source paths
+Compose resolves against the **project directory = the repo root** (the first `-f` file's
+directory), NOT against `docker/campaign/`. So the three `AOA_CAMPAIGN_*_FILE` values in
+`.env.campaign` are `./docker/campaign/secrets/…`, and the create + verify commands below
+write and read that **identical** `docker/campaign/secrets/` location. Keep all three in
+sync — a path that resolves elsewhere passes the probe here and then fails at
+`docker compose up` when the secret source does not exist.
 
 ```
 mkdir -p docker/campaign/secrets
@@ -206,6 +271,13 @@ A NULL there kills the canary with no log line.
 
 ## 7. Enroll the one worker (ticket, not raw code), then bring it up
 
+> ★ This step assumes a registered, placement-profile-ratified campaign target with a
+> `<TARGET_ID>`. **See the BLOCKER at the top of this runbook:** the canary's four-null
+> credential binding routes only to a `pooled_gvisor`/`managed_cloud`/`platform` target that
+> no operator create + ratify sequence can produce today, so a run enrolled here executes on
+> the legacy path, not distributed. Do the enrollment plumbing to validate the fleet, but do
+> not expect a §10 verifier-PASS until the blocker is resolved by a code change.
+
 Mint an enrollment on the control plane for the campaign target; you get back a raw
 `aoa_enr_…` code with a **10-minute server-side TTL**. The worker's
 `AOA_WORKER_ENROLLMENT_CODE_FILE` needs an **enrollment TICKET**, not the raw code:
@@ -277,9 +349,29 @@ Capture the `runId`.
 
 ## 10. Verify
 
+The verifier reads its connection from **`DATABASE_URL`** in its own environment — NOT
+from `--env-file` (that flag only configures Compose), and NOT from
+`AOA_CAMPAIGN_DATABASE_URL`. Absent, it exits `2` (`"DATABASE_URL is required"`,
+`verify-e7-1-distributed-run.ts:157-160`). Export it explicitly before running:
+
 ```
+# The OWNER login from .env.campaign (AOA_CAMPAIGN_DATABASE_URL), pointed at a
+# host-reachable Postgres endpoint — pnpm runs on the HOST, where the in-compose
+# `postgres:5432` hostname does not resolve; use the host form (e.g. the published
+# port or an external host) with the SAME owner credentials.
+export DATABASE_URL="postgresql://OWNER_USER:OWNER_PASSWORD@<host-reachable-postgres>/aoa"
 pnpm verify:e7-1-distributed-run <runId>
 ```
+
+★ **It MUST be the OWNER connection, not a narrowed serving role.** The distributed-kernel
+evidence tables (`job_attempts`, `leases`, `job_events`, the `attempt_terminal` projection
+receipt) carry **FORCE ROW LEVEL SECURITY**, and the verifier opens a plain connection with
+**no tenant GUC set** (`e7-distributed-run-verifier-store.ts:17-20`). The `aoa_app` /
+`aoa_operator` serving-role logins are subject to FORCE RLS and, with no tenant context, see
+**none** of the run's org-scoped rows — the verdict then fails **safe-closed** (missing
+corroboration → refuse to bless; never a false PASS), which reads as a spurious FAIL. The
+owner role (the Postgres superuser that ran the migrations) bypasses RLS and sees the
+evidence. Use it, and only for this read-only verification.
 
 Expect `PASS (mechanism) — distributed journey corroborated`. The five `ok` clauses:
 (1) `execution_owner === "distributed"`; (2) both `distributed_job_id` +
