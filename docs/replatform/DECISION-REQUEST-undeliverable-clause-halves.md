@@ -43,7 +43,7 @@ does not. **Disproving one blocker is not proving deliverability** — and this 
 that on its own page.
 
 **And the arithmetic in the finding is off by one, in the direction that flatters it.** §7 shows the
-working: under `E0-F013`'s *own* groupings the number is **ELEVEN**, not twelve.
+working: under `E0-F013`'s *own* groupings the number is **ELEVEN**, not twelve. *(That is E0-F013's pre-ruling baseline. After the 2026-09-11 ruling freed five of the six Group-D halves, §7 settles the post-ruling **closable-ever ceiling at SIXTEEN** — a different figure, and distinct again from the current **twelve-open** count.)*
 
 ---
 
