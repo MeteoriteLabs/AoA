@@ -229,13 +229,31 @@ export function createBoundedDenialRecorder(
 
         let bucket = buckets.get(key);
         if (bucket && nowMs - bucket.windowStartMs >= windowMs) {
-          // Window rolled over: flush the prior window's suppressed tail, then
-          // reset this bucket into the new window.
-          await emitAggregate(db, bucket);
+          // ★ CLAIM-THEN-AWAIT. Window rolled over. The reset MUST happen
+          // synchronously — in this same tick, before any `await` — or the bound
+          // is bypassed under concurrency: `await emitAggregate` yields the event
+          // loop, and every other denial that arrived after the window expired
+          // would observe the SAME still-expired bucket, each roll it over, each
+          // emit an aggregate AND each claim a fresh full-row slot (with cap 1, N
+          // concurrent rollovers → N aggregates + N full rows). So we SNAPSHOT the
+          // prior window's tail into a local, put the SHARED bucket into the new
+          // window immediately (no await between the check and the reset), and only
+          // THEN await the aggregate off the private snapshot. A concurrent caller
+          // now sees `windowStartMs === nowMs` and does not roll over — exactly one
+          // rollover happens, so at most one aggregate + at most `maxRowsPerWindow`
+          // full rows are written per bucket per window even under N parallel calls.
+          const priorWindow: Bucket = {
+            windowStartMs: bucket.windowStartMs,
+            written: bucket.written,
+            suppressed: bucket.suppressed,
+            sample: bucket.sample,
+            sourceKeyHash: bucket.sourceKeyHash,
+          };
           bucket.windowStartMs = nowMs;
           bucket.written = 0;
           bucket.suppressed = 0;
           bucket.sample = null;
+          await emitAggregate(db, priorWindow);
         }
 
         if (!bucket) {
@@ -254,12 +272,19 @@ export function createBoundedDenialRecorder(
         buckets.set(key, bucket);
 
         if (bucket.written < maxRowsPerWindow) {
+          // ★ CLAIM-THEN-AWAIT (full-row path). The slot is claimed SYNCHRONOUSLY
+          // — `written` is incremented BEFORE the `await`, so a concurrent
+          // invocation that runs its own synchronous prefix during this await sees
+          // the already-incremented count and cannot also claim the same slot. The
+          // cap therefore holds even when N calls race the boundary.
           bucket.written += 1;
           const id = await sink(db, stripSourceKey(input));
           return { outcome: "recorded", id };
         }
 
-        // Over the cap: count into the aggregate instead of writing a row.
+        // Over the cap: count into the aggregate instead of writing a row. The
+        // suppressed increment is likewise synchronous (no await), so a race adds
+        // to the same counter rather than minting extra aggregate rows.
         bucket.suppressed += 1;
         if (!bucket.sample) {
           bucket.sample = {

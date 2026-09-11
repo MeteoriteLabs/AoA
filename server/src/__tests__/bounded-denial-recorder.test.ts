@@ -180,6 +180,53 @@ describe("bounded-denial-recorder — the write bound (E0-F013 Decision 3.2)", (
     expect((aggregate.details as Record<string, unknown>)?.suppressedCount).toBe(3);
   });
 
+  it("★ CONCURRENCY PROOF: N parallel rollovers across a window boundary write ≤ cap+1 rows per bucket (claim-then-await), NOT N", async () => {
+    const { sink, writes } = fakeSink();
+    let clock = 0;
+    const cap = 1;
+    const recorder = createBoundedDenialRecorder({
+      maxRowsPerWindow: cap,
+      windowMs: 1_000,
+      now: () => clock,
+      sink,
+    });
+
+    // Prime the bucket in window 1 with a pending suppressed tail. This matters:
+    // it makes the rollover branch actually reach `await emitAggregate` (which is
+    // only awaited when there is a suppressed sample), which is the exact yield
+    // the pre-fix code straddled. First hit → 1 full row; second → over cap →
+    // suppressed=1, sample set.
+    await recorder.record(DB, baseInput());
+    await recorder.record(DB, baseInput());
+    const writesAfterPriming = writes.length;
+    expect(writesAfterPriming).toBe(1); // only the single full row so far
+
+    // Advance PAST the window, then fire N denials for the SAME (surface, source)
+    // bucket concurrently. Every one observes the expired bucket. Under the old
+    // await-before-reset ordering they ALL rolled over → N aggregate rows + N full
+    // rows (2N total, cap bypassed). With claim-then-await the shared bucket is
+    // reset synchronously before any await, so exactly one call rolls over and the
+    // rest see the fresh window.
+    clock = 2_000;
+    const N = 50;
+    await Promise.all(
+      Array.from({ length: N }, () => recorder.record(DB, baseInput())),
+    );
+
+    const batchWrites = writes.length - writesAfterPriming;
+    // The invariant: per (surface, source) bucket per window, at most `cap` full
+    // rows + at most ONE aggregate row — even under N concurrent calls straddling
+    // the boundary. NOT N. (Pre-fix this was 2N = 100.)
+    expect(batchWrites).toBeLessThanOrEqual(cap + 1);
+    expect(batchWrites).toBeLessThan(N);
+
+    // And the prior window's suppressed tail was preserved (one aggregate carrying
+    // the suppressed count), never lost to the race.
+    const aggregates = writes.filter((w) => w.reason === SUPPRESSED_DENIALS_REASON);
+    expect(aggregates).toHaveLength(1);
+    expect((aggregates[0]?.details as Record<string, unknown>)?.suppressedCount).toBe(1);
+  });
+
   it("★ MEMORY IS BOUNDED: past maxKeys, the oldest bucket is evicted, flushing its suppressed count first (no evidence loss)", async () => {
     const { sink, writes } = fakeSink();
     const recorder = createBoundedDenialRecorder({
