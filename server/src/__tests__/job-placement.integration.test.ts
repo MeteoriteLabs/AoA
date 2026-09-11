@@ -19,6 +19,10 @@ import {
 } from "@armyofagents/worker-protocol";
 import * as resolverNamespace from "../services/execution-target-resolver.js";
 import * as placementNamespace from "../services/job-placement.js";
+import {
+  CANARY_EXECUTION_TARGET_SLUG,
+  resolveCanaryCredentialBinding,
+} from "../services/canary-credential-binding.js";
 import { provisionTenantAppRoleLoginSql } from "../db/rls-tenant.js";
 import { runInTenant } from "../db/tenant-context.js";
 import { getDeploymentMode, setDeploymentMode } from "../config/deployment-mode.js";
@@ -39,6 +43,7 @@ const TARGET_PLATFORM = "92000000-0000-4000-8000-000000000003";
 const TARGET_OWNER_A = "92000000-0000-4000-8000-000000000004";
 const TARGET_OWNER_B = "92000000-0000-4000-8000-000000000005";
 const TARGET_PLATFORM_ALT = "92000000-0000-4000-8000-000000000006";
+const TARGET_CANARY = "92000000-0000-4000-8000-0000000000e4";
 const COMPANY_A = "96000000-0000-4000-8000-000000000001";
 const COMPANY_B = "96000000-0000-4000-8000-000000000002";
 const WORKER_A = "97000000-0000-4000-8000-000000000001";
@@ -46,6 +51,7 @@ const WORKER_PLATFORM = "97000000-0000-4000-8000-000000000002";
 const WORKER_OWNER_A = "97000000-0000-4000-8000-000000000003";
 const WORKER_OWNER_B = "97000000-0000-4000-8000-000000000004";
 const WORKER_PLATFORM_ALT = "97000000-0000-4000-8000-000000000005";
+const WORKER_CANARY = "97000000-0000-4000-8000-0000000000e4";
 const OWNER_A = "job-009-owner-a";
 const PASSWORD = "job-009-role-password";
 const POLICY_HASH = "a".repeat(64);
@@ -112,6 +118,24 @@ function organizationProfile(provider: ProviderConstraintProfileV1): RegisteredT
     trustCeiling: "organization_isolated",
     credentialCeiling: "organization_brokered",
     dataLocalityCeiling: "organization_target_only",
+    deviceGeneration: 1,
+  };
+}
+
+// E11-F004 — the org `dedicated_worker` a keyed E7-1 canary routes to. `organization_dedicated`,
+// scope organization, `credentialCeiling: "none"` + `dataLocalityCeiling: "transfer_allowed"`
+// (the matrix-legal "none" ceiling the RUNBOOK prescribes: placement mints/verifies no real
+// credential, which is fine for the first distributed proof).
+function canaryOrgProfile(provider: ProviderConstraintProfileV1): RegisteredTargetProfileV1 {
+  return {
+    ...registeredProfile(provider),
+    targetId: TARGET_CANARY,
+    targetClass: "organization_dedicated",
+    scope: "organization",
+    organizationId: ORG_A,
+    trustCeiling: "organization_isolated",
+    credentialCeiling: "none",
+    dataLocalityCeiling: "transfer_allowed",
     deviceGeneration: 1,
   };
 }
@@ -1421,5 +1445,87 @@ integration("JOB-009 slice A schema and role boundaries", () => {
     expect(decision).toMatchObject({ disposition: "selected", leaseEligible: true });
     const handles = await admin`SELECT id FROM job_secret_handles WHERE job_id = ${job}`;
     expect(handles.length).toBe(0);
+  });
+
+  // ── E11-F004 — the canary org-routing unblock (this PR) ────────────────────────
+  //
+  // The E7-1 canary now presents its production binding: three null credential fields
+  // plus the well-known `CANARY_EXECUTION_TARGET_SLUG`. That slug routes it — through the
+  // resolver's new arm — to a tenant-creatable org `dedicated_worker`, so a keyed run
+  // produces a REAL distributed placement (execution_owner "distributed", lease-eligible)
+  // instead of the RUNBOOK's blocker chain: four-null → `pooled_gvisor` (no operator
+  // create+ratify path) → `placement_not_leasable` → legacy.
+  it("[E11-F004] a canary slug binding places DISTRIBUTED on the org dedicated_worker, not the platform pool", async () => {
+    const { admin } = guard();
+    const provider = providerProfile();
+    const profile = canaryOrgProfile(provider);
+    // The tenant-creatable org dedicated_worker, seeded with the WELL-KNOWN canary slug +
+    // `credentialCeiling: "none"` (the RUNBOOK shape), plus an enrolled+active org worker.
+    await admin`INSERT INTO execution_targets
+      (id, organization_id, owner_user_id, slug, kind, trust_class, status, capabilities, config,
+       scope, target_authority_key, device_generation, registered_profile,
+       registered_profile_hash, provider_constraint_profile, last_seen_at)
+      VALUES (${TARGET_CANARY}, ${ORG_A}, NULL, ${CANARY_EXECUTION_TARGET_SLUG}, 'dedicated_worker',
+        'dedicated_tenant', 'active', '{}', '{}', 'organization', ${`organization:${ORG_A}`}, 1,
+        ${profile}, ${sha256(canonicalizeJsonV1(profile))}, ${provider},
+        ${new Date("2026-08-10T10:00:00.000Z")})`;
+    const hello = { ...workerHello(), workerId: WORKER_CANARY, targetId: TARGET_CANARY };
+    await admin`INSERT INTO workers
+      (id, scope, organization_id, owner_user_id, execution_target_id, target_authority_key,
+       device_public_key, device_thumbprint, device_generation, profile_hash, profile_snapshot,
+       enrolled_at, last_seen_at, label, status)
+      VALUES (${WORKER_CANARY}, 'organization', ${ORG_A}, NULL, ${TARGET_CANARY}, ${`organization:${ORG_A}`},
+        'e11f004-canary-key', ${"c".repeat(64)}, 1, ${sha256(JSON.stringify(hello))}, ${hello},
+        ${new Date("2026-08-10T09:59:00.000Z")}, ${new Date("2026-08-10T10:00:00.000Z")},
+        'E11-F004 canary worker', 'enrolled')`;
+
+    // A v1 coding agent for the DAT-008 mint — proves the mint still fires on an
+    // `organization_dedicated` placement (it is not `owner_desktop`, so ownerAuthoritiesAgree).
+    const canaryAgent = "9a000000-0000-4000-8000-0000000000e4";
+    await admin`INSERT INTO agents (id, company_id, name, adapter_type, adapter_config)
+      VALUES (${canaryAgent}, ${COMPANY_A}, 'E11-F004 canary coding agent', 'claude_local', ${{}})`;
+
+    const jobId = "98000000-0000-4000-8000-0000000000e4";
+    const attemptId = "99000000-0000-4000-8000-0000000000e4";
+    await seedJob({ jobId, attemptId });
+    await admin`UPDATE jobs SET executor_principal_kind = 'worker', executor_principal_id = ${canaryAgent}
+      WHERE id = ${jobId}`;
+
+    // The REAL production binding: three null credential fields + the well-known slug.
+    const canaryBinding = resolveCanaryCredentialBinding();
+    expect(canaryBinding.executionTargetSlug).toBe(CANARY_EXECUTION_TARGET_SLUG);
+    expect(canaryBinding.credentialKind).toBeNull();
+    expect(canaryBinding.pinnedTargetId).toBeNull();
+
+    const decision = await placeCanary({
+      jobId,
+      attemptId,
+      mintCredentialAuthority: "company_api_key",
+      binding: canaryBinding,
+    });
+
+    // ★ THE RED-FIRST DISTRIBUTED-PLACEMENT PROOF. A real distributed placement on the
+    // tenant-creatable org dedicated_worker — NOT placement_not_leasable / legacy. At HEAD
+    // (no slug arm) the SAME binding + seed IGNORED the slug and fell through to
+    // `active.find(t => t.kind === "pooled_gvisor")` → TARGET_PLATFORM (managed_cloud /
+    // platform), so targetId/targetClass/owner below all fail RED at HEAD.
+    expect(decision, JSON.stringify(decision)).toMatchObject({
+      disposition: "selected",
+      owner: "organization_dedicated",
+      targetId: TARGET_CANARY,
+      targetClass: "organization_dedicated",
+      targetScope: "organization",
+      targetGeneration: 1,
+      leaseEligible: true,
+    });
+    // Explicitly the OPPOSITE of the RUNBOOK blocker's legacy / not-leasable outcome.
+    expect(decision.disposition).not.toBe("legacy");
+    expect(decision.leaseEligible).toBe(true);
+    expect(decision.targetId).not.toBe(TARGET_PLATFORM);
+
+    // Bonus: the DAT-008 mint issued a Company provider_key handle on the org placement.
+    const handles = await admin`SELECT ref_kind, use_policy FROM job_secret_handles WHERE job_id = ${jobId}`;
+    expect(handles.length).toBe(1);
+    expect(handles[0]).toMatchObject({ ref_kind: "provider_key", use_policy: "sandbox_local_only" });
   });
 });

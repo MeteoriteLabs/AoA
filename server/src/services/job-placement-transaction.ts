@@ -376,8 +376,8 @@ export async function placeJobAttemptTransaction(
             // the job's own credential-binding resolution, not the routed target's
             // profile that produced `decision.owner`. CLI-007 (E7-F001): a canary rides
             // its preflight-ESTABLISHED Company authority (`input.mintCredentialAuthority`,
-            // "company_api_key") instead of the four-null binding, so the mint can issue a
-            // Company `provider_key` handle — WITHOUT that authority ever touching the
+            // "company_api_key") instead of the binding's null credentialKind, so the mint can
+            // issue a Company `provider_key` handle — WITHOUT that authority ever touching the
             // digest (it is read here, after the decision is persisted) or the binding
             // (unchanged, so replay stays byte-stable). Still independent of Authority A
             // (`decision.owner`), so `ownerAuthoritiesAgree` stays a real cross-check.

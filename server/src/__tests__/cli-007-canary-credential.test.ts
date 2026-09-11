@@ -3,17 +3,20 @@
 // Sprint 5 filed E7-F001: a composed canary placement mints NO execution-secret
 // handle, so the canary sandbox gets no provider credential — the coding CLI cannot
 // authenticate, on real E2B just as on the D1 fake provider. The block is a single
-// guard: the four-null canary binding presents `credentialKind: null`, which trips
+// guard: the canary binding presents `credentialKind: null`, which trips
 // the DAT-008 mint's owner-authority gate (execution-secret-handle-mint.ts
 // ownerAuthoritiesAgree) → `owner_authority_disagreement` → no handle.
 //
 // CLI-007 gives the canary a LEGITIMATE Company ownership authority
 // ("company_api_key"), established by the MIG-008 preflight (which already verifies
 // the Company holds provider-control authority) and threaded to the mint OUT OF BAND
-// from the placement credential binding. The binding stays four-null, so:
+// from the placement credential binding. The binding keeps all three credential
+// fields (`credentialId`/`credentialKind`/`pinnedTargetId`) null, so:
 //   * the placement REPLAY digest is byte-identical across attempts (the binding is
-//     the only credential input the digest hashes), and
-//   * target routing is unchanged (four nulls → pooled_gvisor → managed_cloud), and
+//     the only credential input the digest hashes; E11-F004's routing-only slug is a
+//     stable constant, so it does not rotate the digest), and
+//   * target routing stays off owner_desktop (E11-F004 routes the canary to an
+//     `organization_dedicated` `dedicated_worker`, never `owner_desktop`), and
 //   * the mint's owner-authority gate is UNCHANGED in strength (the canary now
 //     presents a real Authority B; a genuine disagreement still refuses).
 //
@@ -35,15 +38,15 @@ import { toSecretHandleRefs } from "../services/execution-secret-handle-envelope
 import type { ProviderKeyTarget } from "../services/providers/provider-key.js";
 
 describe("CLI-007 — mintCredentialKindFor (out-of-band canary mint authority)", () => {
-  // The canary: the preflight-established Company authority OVERRIDES the four-null
-  // binding's credentialKind AT THE MINT ONLY — never at the digest or routing, which
-  // read the binding directly.
+  // The canary: the preflight-established Company authority OVERRIDES the binding's null
+  // credentialKind AT THE MINT ONLY — never at the digest or routing, which read the
+  // binding directly.
   it("uses the canary authority when present (the fix)", () => {
     expect(mintCredentialKindFor("company_api_key", null)).toBe("company_api_key");
   });
 
-  // Fail-closed default: no canary authority + the four-null binding → null → the mint
-  // refuses (owner_authority_disagreement) → no handle → the run degrades to legacy.
+  // Fail-closed default: no canary authority + the binding's null credentialKind → null →
+  // the mint refuses (owner_authority_disagreement) → no handle → the run degrades to legacy.
   it("falls back to the binding's null when no authority is supplied (fail-closed)", () => {
     expect(mintCredentialKindFor(undefined, null)).toBeNull();
     expect(mintCredentialKindFor(null, null)).toBeNull();
@@ -70,15 +73,17 @@ describe("CLI-007 — the canary mint delivers a REFERENCE, never a value (Decis
   };
   // The exact shape a REAL canary coding run presents at the mint once CLI-007 supplies the
   // authority: cloud sandbox, a `worker` executor (the real kind a task_run is stamped with,
-  // NOT the phantom "agent" — Decision #121), a v1 adapter, managed_cloud placement,
-  // company_api_key authority, no per-agent override.
+  // NOT the phantom "agent" — Decision #121), a v1 adapter, an `organization_dedicated`
+  // placement (E11-F004 routes the canary slug to an org `dedicated_worker`; the mint gate
+  // reads owner-agreement, and `organization_dedicated` is not `owner_desktop`, so it mints
+  // identically to the old managed_cloud shape), company_api_key authority, no per-agent override.
   const canaryMintInput: ExecutionSecretMintInput = {
     deploymentMode: "cloud_auth",
     adapterType: "claude_local",
     executorPrincipalKind: "worker",
     providerKeyTarget: CLAUDE_TARGET,
     providerBinding: null,
-    placementOwner: "managed_cloud",
+    placementOwner: "organization_dedicated",
     credentialKind: CANARY_CREDENTIAL_AUTHORITY,
     targetGeneration: 7,
   };

@@ -5,6 +5,10 @@ import {
   chooseExecutionTargetRow,
   executionTargetToAdapterConfig,
 } from "../services/execution-target-resolver.js";
+import {
+  CANARY_CREDENTIAL_BINDING,
+  CANARY_EXECUTION_TARGET_SLUG,
+} from "../services/canary-credential-binding.js";
 
 describe("executionTargetToAdapterConfig hardening (P5 review gap #1, deployment-mode-aware)", () => {
   const weakenedTenant = {
@@ -79,6 +83,96 @@ describe("chooseExecutionTargetRow (route by credential kind)", () => {
   it("returns null (fallback to local) when no targets exist", () => {
     const chosen = chooseExecutionTargetRow({ credentialKind: "company_api_key", pinnedTargetId: null, executionTargetSlug: null, targets: [] });
     expect(chosen).toBeNull();
+  });
+});
+
+// E11-F004 — a non-subscription binding that NAMES an execution target routes to the org's
+// tenant-creatable `dedicated_worker` of that slug (the E7-1 canary unblock), or to null.
+// Never the pooled_gvisor fallthrough, never a throw, never a non-dedicated_worker kind.
+describe("chooseExecutionTargetRow — E11-F004 canary slug arm (route a named org dedicated_worker)", () => {
+  const canarySlug = CANARY_EXECUTION_TARGET_SLUG;
+  const canaryDedicated = {
+    id: "t-canary", slug: canarySlug, kind: "dedicated_worker",
+    trustClass: "dedicated_tenant", status: "active", organizationId: "org-1",
+  };
+  const canaryPooledSameSlug = {
+    id: "t-pool-canary", slug: canarySlug, kind: "pooled_gvisor",
+    trustClass: "shared_multitenant", status: "active", organizationId: null,
+  };
+  const canaryLocalSameSlug = {
+    id: "t-local-canary", slug: canarySlug, kind: "local_host",
+    trustClass: "local_trusted", status: "active", organizationId: "org-1",
+  };
+
+  it("routes the null-credential canary slug binding to the org dedicated_worker of that slug", () => {
+    // RED-first: before this arm, a null-credential binding IGNORED the slug and fell
+    // through to `active.find(t => t.kind === "pooled_gvisor")` — here it would have
+    // returned t-pool, not the org dedicated_worker.
+    const chosen = chooseExecutionTargetRow({
+      credentialKind: null, pinnedTargetId: null, executionTargetSlug: canarySlug,
+      targets: [pooled, canaryDedicated],
+    });
+    expect(chosen?.id).toBe("t-canary");
+  });
+
+  it("resolves through the ACTUAL production canary binding constant", () => {
+    // Compose the resolver with the real four-field binding, proving the production
+    // binding + the arm route to the org target end-to-end (not just a hand-built input).
+    const chosen = chooseExecutionTargetRow({
+      credentialKind: CANARY_CREDENTIAL_BINDING.credentialKind,
+      pinnedTargetId: CANARY_CREDENTIAL_BINDING.pinnedTargetId,
+      executionTargetSlug: CANARY_CREDENTIAL_BINDING.executionTargetSlug,
+      targets: [pooled, canaryDedicated],
+    });
+    expect(chosen?.id).toBe("t-canary");
+  });
+
+  it("returns NULL — not the pooled_gvisor fallthrough, not a throw — when no active dedicated_worker matches the slug", () => {
+    // Only a pool present with the canary slug: the arm is dedicated_worker-restricted, so
+    // it must resolve NOTHING rather than silently broadening to the pool (DE-29).
+    expect(chooseExecutionTargetRow({
+      credentialKind: null, pinnedTargetId: null, executionTargetSlug: canarySlug,
+      targets: [pooled, canaryPooledSameSlug],
+    })).toBeNull();
+  });
+
+  it("does not select a local_host of the same slug (arm is dedicated_worker-only)", () => {
+    expect(chooseExecutionTargetRow({
+      credentialKind: null, pinnedTargetId: null, executionTargetSlug: canarySlug,
+      targets: [canaryLocalSameSlug],
+    })).toBeNull();
+  });
+
+  it("ignores an inactive dedicated_worker of the slug and returns null (no fallthrough)", () => {
+    const inactive = { ...canaryDedicated, status: "draining" };
+    expect(chooseExecutionTargetRow({
+      credentialKind: null, pinnedTargetId: null, executionTargetSlug: canarySlug,
+      targets: [pooled, inactive],
+    })).toBeNull();
+  });
+
+  it("REGRESSION: a truly-null binding (no slug) still hits the pooled_gvisor fallthrough", () => {
+    const chosen = chooseExecutionTargetRow({
+      credentialKind: null, pinnedTargetId: null, executionTargetSlug: null,
+      targets: [pooled, canaryDedicated],
+    });
+    expect(chosen?.id).toBe("t-pool");
+  });
+
+  it("REGRESSION: a personal_subscription binding still routes to its dedicated target by slug", () => {
+    const chosen = chooseExecutionTargetRow({
+      credentialKind: "personal_subscription", pinnedTargetId: null, executionTargetSlug: "hetzner-owner",
+      targets: [pooled, dedicated],
+    });
+    expect(chosen?.id).toBe("t-ded");
+  });
+
+  it("REGRESSION: an explicit pin still wins over the slug arm", () => {
+    const chosen = chooseExecutionTargetRow({
+      credentialKind: null, pinnedTargetId: "t-pool", executionTargetSlug: canarySlug,
+      targets: [pooled, canaryDedicated],
+    });
+    expect(chosen?.id).toBe("t-pool");
   });
 });
 

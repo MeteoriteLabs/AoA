@@ -4,16 +4,20 @@
 // DAT-008 execution-secret mint.
 //
 // A canary run is a Company-authority run BY CONSTRUCTION: its placement credential
-// binding is four explicit nulls (`canary-credential-binding.ts`), which structurally
-// route it to the shared `pooled_gvisor` pool — normalizing as `managed_cloud`, never
-// `owner_desktop` — and never to a `personal_subscription` credential. So the ownership
-// CLASS a canary rides is the invariant `"company_api_key"` (the Company model-provider
-// key, Decision #104), never a personal subscription.
+// binding names no credential — `credentialId`/`credentialKind`/`pinnedTargetId` are all
+// null (`canary-credential-binding.ts`; E11-F004 set the fourth field,
+// `executionTargetSlug`, to a routing-only well-known constant). With all three
+// credential-shaped fields null, target routing takes neither the pin nor the
+// personal_subscription branch: it takes the E11-F004 slug arm, which resolves ONLY a
+// `dedicated_worker` (normalizing as `organization_dedicated`) or null — never
+// `owner_desktop`, and never a `personal_subscription` credential. So the ownership CLASS a
+// canary rides is the invariant `"company_api_key"` (the Company model-provider key,
+// Decision #104), never a personal subscription.
 //
 // The problem E7-F001 filed: the mint's owner-authority gate
 // (`execution-secret-handle-mint.ts` `ownerAuthoritiesAgree`) refuses when the job's
-// `credentialKind` (Authority B) is null, and the four-null binding presents exactly
-// that. The FIX must NOT enrich the binding — the binding is the sole credential input
+// `credentialKind` (Authority B) is null, and the binding presents exactly that null
+// credential kind. The FIX must NOT enrich the binding — the binding is the sole credential input
 // to the placement REPLAY digest and to target routing, and a rotating or
 // owner-routing value there breaks one or the other. Instead the Company ownership
 // authority is:

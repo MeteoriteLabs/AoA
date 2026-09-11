@@ -18,58 +18,49 @@ first-try verifier-PASS.
 
 ---
 
-## ★★★ BLOCKER — read before you spend money: the canary cannot route to a leasable target today
+## Canary target routing — the former blocker, now resolved for the E7-1 path
 
-**Do not run this procedure expecting a distributed (verifier-PASS) run until a code
-change lands.** The fleet boots and the task runs, but it runs on the **legacy** executor,
-not distributed — so it burns real E2B budget and proves nothing. This is
-[`E11-F004`](epics/E11-hardening-release/findings.md) (HIGH, open), re-confirmed here against
-the E7-1 canary composition specifically. The chain, verified link by link at HEAD:
+**This was the ★★★ blocker; option (b) below has landed.** The E7-1 canary now routes to a
+**tenant-creatable `organization_dedicated` (`dedicated_worker`)** execution target, so a keyed run
+produces a real distributed placement instead of falling through to a platform `pooled_gvisor`
+target no operator can create. This narrows — but does **not** close —
+[`E11-F004`](epics/E11-hardening-release/findings.md) (HIGH, still open): the broader "managed E2B
+platform target is inexpressible" concern (Reading 1 / option A) remains. See its dated update.
 
-1. The canary presents a **four-null** placement credential binding — `resolveCanaryCredentialBinding`
-   (`server/src/services/canary-credential-binding.ts:73-89`), wired as the production
-   `resolveCredentialBinding` at `server/src/index.ts:1254`. All four fields are null by design.
-2. With all four null (and `submitJob` hard-coding `requestedTarget: null`), target routing
-   `chooseExecutionTargetRow` takes neither the pin nor the personal-subscription branch and
-   falls through to `active.find(t => t.kind === "pooled_gvisor")`
-   (`server/src/services/execution-target-resolver.ts:206-208`). It can select **only** a
-   `pooled_gvisor` row — never the org's `dedicated_worker`.
-3. A `pooled_gvisor` row normalizes **only** as `targetClass: "managed_cloud"`
-   (`TARGET_KIND_BY_CLASS`, `execution-target-resolver.ts:52-56`, enforced at `:150`).
-4. `managed_cloud` pins `targetScope: "platform"` (`PLACEMENT_MATRIX`,
-   `packages/worker-protocol/src/job.ts:88-94`); `platform` scope requires a **null organization**
-   (`registeredTargetProfileV1Schema`, `packages/worker-protocol/src/capabilities.ts:300-303`),
-   and normalization requires the row's `targetAuthorityKey === "platform"`
-   (`execution-target-resolver.ts:156-161`).
-5. The **only** execution-target create route mints `scope = ownerUserId ? "owner" : "organization"`
-   with `targetAuthorityKey = organization:${orgId}` — never `platform`/`pooled_gvisor`
-   (`server/src/routes/execution-targets.ts:174-188`). The tenant placement-profile ratify route
-   refuses `target.scope === "platform"` outright (`server/src/services/execution-targets.ts:130`);
-   the platform ratify route (`PUT /operator/execution-targets/:targetId/placement-profile`) needs a
-   platform row that no create route produces. The only null-org/`platform` insert in the tree,
-   `ensureControlPlaneExecutionTarget` (`server/src/services/execution-targets.ts:436-451`),
-   hard-codes `kind: "local_host"` with no placement profile, so it never becomes a placement candidate.
+**What used to happen (the chain, at the pre-fix HEAD).** The canary presented a **four-null**
+credential binding, so `chooseExecutionTargetRow` fell through to
+`active.find(t => t.kind === "pooled_gvisor")`. A `pooled_gvisor` row normalizes **only** as
+`targetClass: "managed_cloud"`, which pins `targetScope: "platform"`, which requires a **null
+organization**. But the **only** execution-target create route mints `scope = organization`/`owner`
+with `targetAuthorityKey = organization:${orgId}` — never `platform`/`pooled_gvisor` — and the tenant
+ratify route refuses `scope === "platform"`. So there was **no create + ratify sequence an operator
+could run** that yielded the target the four-null binding routed to → `unmapped_execution_target` →
+not lease-eligible → `run-execution-owner.ts` returned `placement_not_leasable` → the run fell back
+to **legacy** (the `[CLI-006] canary execution owner = LEGACY` line, §9).
 
-So there is **no create + ratify sequence an operator can run** that yields the
-`pooled_gvisor` / `managed_cloud` / `platform`-scoped, profile-ratified target the four-null canary
-binding routes to. (Independently, the overlay's campaign worker enrolls with
-`AOA_WORKER_TARGET_SCOPE: "organization"`, but a `platform` target only accepts a `platform`-scoped
-worker as a candidate — `job-placement-transaction.ts:61-63` — so even a hand-inserted platform
-target would have no eligible worker.)
+**What happens now (option (b), this PR).** The production canary binding
+(`resolveCanaryCredentialBinding`, `server/src/services/canary-credential-binding.ts`, wired at
+`server/src/index.ts:1254`) keeps its three credential fields null but sets `executionTargetSlug`
+to the well-known constant **`CANARY_EXECUTION_TARGET_SLUG` = `aoa-canary-e2b`**. With the three
+credential fields null, `chooseExecutionTargetRow` takes neither the pin nor the
+personal-subscription branch; it takes a new arm that resolves
+`active.find(t => t.kind === "dedicated_worker" && t.slug === slug) ?? null`
+(`server/src/services/execution-target-resolver.ts`). Placement requirements are **derived from the
+resolved target's ratified profile** (`job-placement.ts` `normalizeSubmittedJobPlacementFacts`), so
+routing to an `organization_dedicated` target makes the requirements org-scoped automatically and the
+run places distributed and lease-eligible (`execution_owner="distributed"`). The arm is
+`dedicated_worker`-restricted and returns `null` on a miss — never the `pooled_gvisor` fallthrough,
+never `owner_desktop` (DE-29 preserved). §7 gives the create + ratify + enroll steps.
 
-**Failure mode if you proceed anyway:** routing resolves no target → `normalizeSubmittedJobPlacementFacts`
-returns `unmapped_execution_target` → placement is not lease-eligible →
-`run-execution-owner.ts` returns `placement_not_leasable` → the run falls back to **legacy**. The
-`[CLI-006] canary execution owner = LEGACY` line appears in the control-plane log (§9), and the §10
-verifier's `execution_owner === "distributed"` clause fails.
+**The routing change did NOT flip the E7-1 gate.** Green E7-1 still proves the MECHANISM, not agent
+capability (§0, §11). And the frozen `E7-1-coding-journey` gate flip still waits on the real keyed
+`runId` **and** a separate prose PR (§11). `credentialCeiling: "none"` on the ratified profile (§7)
+means placement mints/verifies **no real credential** — fine for the first distributed proof; the
+model credential still reaches the sandbox out of band via the DAT-008 mint (§8, SK-7).
 
-**What is needed to unblock (a code change, out of this doc's scope):** either (a) a supported way
-to create + ratify a `pooled_gvisor`/`managed_cloud`/`platform` target *and* enroll a
-`platform`-scoped worker on it, or (b) a change to the canary routing so a keyed run can target an
-`organization_dedicated` (`dedicated_worker`) target the tenant create route *can* mint. Until one
-lands, steps §7 onward describe the plumbing but the run will not go distributed. The rest of this
-runbook is retained so the fleet, keypair, DB, and rollout wiring can be validated in advance and
-so the eventual first real run is a single edit away.
+**Per-org caveat (E11-F008, filed, not built).** `CANARY_EXECUTION_TARGET_SLUG` is a single global
+constant, so **every** canary org must name its `dedicated_worker` target with this exact slug. A
+per-org slug (or per-org binding resolver) so multiple orgs can canary concurrently is a follow-up.
 
 ---
 
@@ -269,14 +260,70 @@ A NULL there kills the canary with no log line.
 
 ---
 
-## 7. Enroll the one worker (ticket, not raw code), then bring it up
+## 7. Create + ratify the org `dedicated_worker` target, then enroll the one worker onto it
 
-> ★ This step assumes a registered, placement-profile-ratified campaign target with a
-> `<TARGET_ID>`. **See the BLOCKER at the top of this runbook:** the canary's four-null
-> credential binding routes only to a `pooled_gvisor`/`managed_cloud`/`platform` target that
-> no operator create + ratify sequence can produce today, so a run enrolled here executes on
-> the legacy path, not distributed. Do the enrollment plumbing to validate the fleet, but do
-> not expect a §10 verifier-PASS until the blocker is resolved by a code change.
+The canary routes to an org `dedicated_worker` whose slug is **exactly `aoa-canary-e2b`**
+(`CANARY_EXECUTION_TARGET_SLUG`). Do all three sub-steps against THAT target — a platform
+`pooled_gvisor` target is neither needed nor creatable (see the routing section at the top).
+
+**(a) Create the target** (org founder/admin session; `POST /organizations/:orgId/execution-targets`):
+
+```
+POST /api/organizations/<ORG_UUID>/execution-targets
+{ "slug": "aoa-canary-e2b", "kind": "dedicated_worker", "trustClass": "dedicated_tenant", "status": "active" }
+```
+
+The response returns the new `<TARGET_ID>` and a one-time `workerToken` (needed by the daemon).
+`scope` is minted `organization` and `targetAuthorityKey` `organization:<ORG_UUID>` automatically
+(the create route computes both). `trustClass` MUST be `dedicated_tenant` — normalization requires
+`LEGACY_TRUST_BY_CLASS[organization_dedicated] === "dedicated_tenant"`.
+
+**(b) Ratify its placement profile** (`PUT /organizations/:orgId/execution-targets/:targetId/placement-profile`,
+body `{ registeredProfile, providerConstraintProfile }`). The registered profile is a full
+`RegisteredTargetProfileV1`; `normalizePlacementRegistryTarget` fails the ratify closed unless every
+field agrees with the row, so set:
+
+```
+registeredProfile = {
+  protocolVersion: 1,
+  targetId: "<TARGET_ID>",              // MUST equal the row id
+  targetClass: "organization_dedicated",
+  scope: "organization",                 // matrix scope for the class; must equal the row scope
+  organizationId: "<ORG_UUID>",          // MUST equal the row org
+  ownerPrincipalId: null,                // organization_dedicated is not owner-bound
+  trustCeiling: "organization_isolated", // PLACEMENT_MATRIX.organization_dedicated.trustClass
+  credentialCeiling: "none",             // matrix-legal for the class; mints/verifies no real credential
+  dataLocalityCeiling: "transfer_allowed",
+  providerConstraints: { profileId, version, digest },  // MUST ref the providerConstraintProfile below
+  capabilityCeiling: ["workload.batch", "sandbox.process_isolated"],
+  deviceGeneration: <the row's device_generation, 1 for a fresh target>,
+  revokedAt: null,
+  policyHash: "<64-hex>"                  // MUST equal the worker's synced policyHash (step c)
+}
+providerConstraintProfile = {
+  profileId, version,
+  maxContinuousRuntimeSeconds, maxIdleSeconds,
+  resourceCeiling: { cpuMillis, memoryMiB, pids, diskMiB },
+  maxConcurrentOperations,
+  supportedOperations: ["create","execute", …],   // must cover the demand: create + execute
+  localityTags: ["transfer_allowed"],              // must include the dataLocalityCeiling above
+  checkpointMode: "none", healthMode: "none",
+  digest: sha256(canonicalProviderConstraintProfileDigestInputV1(<unsigned profile>))
+}
+```
+
+The `digest` is computed over the UNSIGNED provider profile (all fields except `digest`) and both
+`registeredProfile.providerConstraints.{profileId,version,digest}` and the row must reference it —
+`verifyAndBrandProviderConstraintProfileV1` recomputes and rejects a mismatch. A successful ratify
+returns the stored `registeredProfileHash`.
+
+**(c) Enroll the org-scope campaign worker onto `<TARGET_ID>`.** The overlay's worker already sets
+`AOA_WORKER_TARGET_SCOPE: "organization"`, which matches this target's scope (the candidate join
+requires the worker scope to equal the target scope). Its synced `policyHash` MUST equal the
+`policyHash` you ratified in (b) — `workerSatisfiesRequirements` refuses otherwise.
+
+> ★ The four-null blocker is gone for this path, but a green run still proves the MECHANISM, not
+> agent capability, and the gate flip still waits on §11.
 
 Mint an enrollment on the control plane for the campaign target; you get back a raw
 `aoa_enr_…` code with a **10-minute server-side TTL**. The worker's
