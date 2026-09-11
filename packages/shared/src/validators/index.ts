@@ -216,6 +216,7 @@ export {
   remoteSecretImportPreviewSchema,
   remoteSecretImportCommitSchema,
   updateRuntimeProviderKeySchema,
+  createRuntimeProviderKeyWithSecretSchema,
   type CreateSecret,
   type RotateSecret,
   type UpdateSecret,
@@ -226,6 +227,7 @@ export {
   type RemoteSecretImportCommit,
   type CreateRuntimeProviderKey,
   type UpdateRuntimeProviderKey,
+  type CreateRuntimeProviderKeyWithSecret,
 } from "./secret.js";
 
 export {
