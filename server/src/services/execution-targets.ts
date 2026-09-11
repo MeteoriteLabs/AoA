@@ -17,6 +17,11 @@ import {
 import { runInTenant } from "../db/tenant-context.js";
 import { normalizePlacementRegistryTarget, type ExecutionTargetRow } from "./execution-target-resolver.js";
 import { projectDesktopDevice } from "./desktop-device-projection.js";
+import {
+  classifyDeviceLiveness,
+  resolveDeviceLivenessDeadlineMs,
+} from "./device-liveness.js";
+import { verifyDeviceEnrolmentKey, type DeviceKeyVerification } from "./device-verify.js";
 
 // Rotatable worker credential (Finding #3). The row id is NOT a credential;
 // this token is. Only its hash is persisted (execution_targets.worker_token_hash);
@@ -531,6 +536,11 @@ export async function registerWorkerHeartbeat(
 export async function listDesktopDevices(db: Db, organizationId: string | null) {
   // A null org sees nothing, and must not even scan — same rule as the sibling below.
   if (organizationId == null) return [];
+  // E11 M2 — `dbNow` is `clock_timestamp()` selected alongside the rows so liveness is
+  // classified against the DATABASE clock, never the app's `Date.now()`. `lastSeenAt` is a
+  // DB timestamp; comparing it to a DB-sourced `now` keeps the verdict skew-free, the same
+  // discipline SVC-003b's sweep uses.
+  const deadlineMs = resolveDeviceLivenessDeadlineMs();
   const rows = await db
     .select({
       deviceId: workers.id,
@@ -540,6 +550,7 @@ export async function listDesktopDevices(db: Db, organizationId: string | null) 
       deviceGeneration: workers.deviceGeneration,
       enrolledAt: workers.enrolledAt,
       lastSeenAt: workers.lastSeenAt,
+      dbNow: sql<Date>`clock_timestamp()`,
     })
     .from(executionTargets)
     .innerJoin(workers, eq(workers.executionTargetId, executionTargets.id))
@@ -550,7 +561,57 @@ export async function listDesktopDevices(db: Db, organizationId: string | null) 
   // The projection is applied even though the SELECT is already narrow. The select list
   // is an implementation detail a future edit can widen; `projectDesktopDevice` is the
   // allowlist, and routing every row through it is what makes the canary test meaningful.
-  return rows.map((row) => projectDesktopDevice(row as never));
+  // `health` is computed here (not a column) and injected into the row before projection.
+  return rows.map((row) => {
+    const now = row.dbNow instanceof Date ? row.dbNow : new Date(String(row.dbNow));
+    const health = classifyDeviceLiveness({
+      lastSeenAt: row.lastSeenAt,
+      enrolledAt: row.enrolledAt,
+      now,
+      deadlineMs,
+    });
+    return projectDesktopDevice({ ...row, health } as never);
+  });
+}
+
+/**
+ * E11 M2 — VERIFY one enrolled desktop device's enrolment key, org-scoped.
+ *
+ * Built from the org's OWN targets outward, exactly like `listDesktopDevices` above and for
+ * the same F31 reason: a worker-first query has no safe way back to the owning org. The
+ * WHERE pins `organization_id` AND `kind = 'desktop'` AND the device id, so an admin of one
+ * org cannot reach another org's device — a cross-org lookup simply returns no row, and the
+ * route turns that into a 404 (never a 403 that would confirm the device exists elsewhere).
+ *
+ * Returns `null` when no such device exists under this org; otherwise a read-only
+ * re-derivation over the STORED key material (`verifyDeviceEnrolmentKey`). Reads no clock,
+ * writes nothing, and the raw key material never leaves this function — only the boolean
+ * verdict does.
+ */
+export async function verifyDesktopDeviceEnrolmentKey(
+  db: Db,
+  organizationId: string | null,
+  deviceId: string,
+): Promise<DeviceKeyVerification | null> {
+  if (organizationId == null) return null;
+  const rows = await db
+    .select({
+      devicePublicKey: workers.devicePublicKey,
+      deviceThumbprint: workers.deviceThumbprint,
+    })
+    .from(executionTargets)
+    .innerJoin(workers, eq(workers.executionTargetId, executionTargets.id))
+    .where(and(
+      eq(executionTargets.organizationId, organizationId),
+      eq(executionTargets.kind, "desktop"),
+      eq(workers.id, deviceId),
+    ));
+  const row = rows[0];
+  if (!row) return null;
+  return verifyDeviceEnrolmentKey({
+    devicePublicKey: row.devicePublicKey,
+    deviceThumbprint: row.deviceThumbprint,
+  });
 }
 
 export async function listExecutionTargets(db: Db, organizationId: string | null) {

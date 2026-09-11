@@ -45,6 +45,8 @@ const row = {
   deviceGeneration: 3,
   enrolledAt: new Date("2026-08-01T00:00:00.000Z"),
   lastSeenAt: new Date("2026-08-21T00:00:00.000Z"),
+  // E11 M2 — computed liveness verdict, injected by listDesktopDevices before projection.
+  health: "stale" as const,
   // every one of these must never reach the response
   ownerUserId: `${CANARY}owner`,
   executionTargetId: `${CANARY}targetid`,

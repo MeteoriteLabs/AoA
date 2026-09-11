@@ -278,6 +278,19 @@ execution-target `kind`; any gate text; cross-device placement; device verify/he
 
 ### M2 - Device verify + health (R3 completion)
 
+> ★ **M2 shipped by PR #435 (`e11-m2-verify-health`)** — read-time computed liveness health
+> (`classifyDeviceLiveness` in `server/src/services/device-liveness.ts`, mirroring
+> SVC-003b's null-fail-open and strict-`>` boundary; deadline
+> `DEVICE_LIVENESS_DEADLINE_MS_DEFAULT = 30 min`, a conservative multiple of the 15-min
+> session TTL, overridable via `AOA_DEVICE_LIVENESS_DEADLINE_MS`) plus a read-only
+> **enrolment-key verify** action (`verifyDeviceEnrolmentKey` in
+> `server/src/services/device-verify.ts`, reusing the factored-out `deriveDeviceThumbprint`;
+> route `POST /organizations/:orgId/desktop-devices/:deviceId/verify`). Verify re-derives
+> `sha256(SPKI DER)` from the STORED key and checks it against the stored thumbprint and that
+> the key is a valid Ed25519 SPKI — it describes the enrolment record's key integrity only.
+> **No migration, no protocol change.** Machine attestation (E11-F005 / open question Q2)
+> remains **open and NOT closed** — verify is explicitly not a machine attestation.
+
 - **Verify:** re-verify a device's proof on demand using the existing
   `verifyDeviceProof` (`server/src/services/worker-device-proof.ts`), which re-derives
   `sha256(SPKI DER)` from the presented public key. Surface a verify action in the Devices section.
