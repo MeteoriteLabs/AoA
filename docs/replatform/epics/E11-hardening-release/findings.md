@@ -246,6 +246,29 @@ need here is designed in `docs/replatform/design/per-tenant-managed-execution-an
 its §5). That design neither amends this finding nor changes any gate; this finding stays `open` and
 `unowned` until a founder/protocol decision closes it.
 
+**Update 2026-09-11 — the E7-1-canary reachability half is unblocked (option (b)); this finding stays
+`open`.** The E7-1 keyed-run canary no longer depends on the inexpressible platform/`managed_cloud`
+target. Its production credential binding (`resolveCanaryCredentialBinding`,
+`server/src/services/canary-credential-binding.ts`) now carries a well-known routing slug
+`CANARY_EXECUTION_TARGET_SLUG` = `aoa-canary-e2b` (its three credential fields stay null), and
+`chooseExecutionTargetRow` gained an arm that routes a non-subscription slug-bearing binding to
+`active.find(t => t.kind === "dedicated_worker" && t.slug === slug) ?? null`
+(`server/src/services/execution-target-resolver.ts`). An operator **can** create + ratify an
+`organization_dedicated` (`dedicated_worker`) target at organization scope — links 4–7 above never
+barred THAT, only the platform/`managed_cloud`/`e2b` shape — so a keyed run now yields a real
+distributed, lease-eligible placement (`execution_owner="distributed"`) instead of
+`placement_not_leasable` → legacy. The RUNBOOK's ★★★ blocker section is rewritten accordingly, and
+`docs/replatform/RUNBOOK-e7-1-keyed-run.md` §7 gives the create/ratify/enroll steps.
+
+This is option (b) of this finding's own "What would close it" (route the canary to a tenant-creatable
+`organization_dedicated` target), applied to the E7-1 path. It does **not** close E11-F004: the
+review's clause and Reading 1 (a `kind = "e2b"` / `managed_cloud` platform target) remain
+structurally inexpressible (links 1–7 unchanged), option (a) is still unbuilt, and the `PLACEMENT_MATRIX`
+org-binding contradiction is untouched. The arm is server-only, `dedicated_worker`-restricted, and
+returns `null` on a miss (DE-29 preserved — no `owner_desktop` reachability, no `pooled_gvisor`
+fall-through). No gate was flipped (the frozen `E7-1-coding-journey` gate still awaits a real keyed
+`runId` + a separate prose PR). Follow-up **E11-F008** (per-org canary slug) is filed below.
+
 ## E11-F005 — nothing in the enrolment protocol identifies a machine, so "two distinct owner-desktop devices" is unverifiable from any surface, projected or not
 
 **Status:** `open` · Severity: **HIGH** · Filed 2026-09-08 by W18 (provability wave, gate-naming unit).
@@ -416,3 +439,36 @@ honest D6-05 posture is `disabled` with negative evidence, which is what the gat
 **MIG-004 has NO file on disk** — `find docs/replatform/epics -name "MIG-004*"` returns zero, so it
 is not a `findTicketIds` ticket and declaring it as owner would red `owner_ticket_missing`. Hence
 `unowned`. (MIG-001, also named by the E11 README as a desktop precondition, is likewise zero files.)
+
+## E11-F008 — the canary execution-target slug is a single global constant, so every canary org must name its dedicated_worker target identically
+
+**Status:** `open` · Severity: LOW · Filed 2026-09-11 by the E11-F004 canary org-routing unblock.
+
+The E7-1 canary org-routing unblock (E11-F004 update, 2026-09-11) gave the production canary
+credential binding a well-known routing slug so it resolves a tenant-creatable
+`organization_dedicated` target. That slug is a **single module constant**:
+
+- `CANARY_EXECUTION_TARGET_SLUG = "aoa-canary-e2b"` (`server/src/services/canary-credential-binding.ts`).
+- The binding resolver (`resolveCanaryCredentialBinding`) takes **no inputs, no `db` handle and reads
+  no config/env** — that no-inputs property is load-bearing for placement replay (the binding is
+  hashed into the placement digest; a per-attempt-varying value would throw `placement_already_decided`)
+  and is deliberately preserved. So the slug **cannot be per-organization today** without a broader
+  change to how the binding is resolved.
+
+**Consequence.** Every organization that runs an E7-1-style canary must create + ratify its
+`dedicated_worker` execution target with **exactly** the slug `aoa-canary-e2b`. Two canary orgs
+cannot use distinct target slugs, and a canary org that names its target anything else routes to
+`null` (the arm is `dedicated_worker` + slug-exact) → `unmapped_execution_target` → legacy. This is
+adequate for the first distributed proof (one operator, one org) but not for concurrent multi-org
+canarying.
+
+**What would close it.** A per-org canary slug or a per-org binding resolver that preserves the
+replay-stability + no-side-effect properties (e.g. a slug derived deterministically from the
+organization id, still constant across a run's attempts, still read from no mutable source). This is
+a deliberate follow-up, not a regression: the single-slug design is the minimal change that unblocked
+the E7-1 keyed run.
+
+**Not `owned`.** No ticket on disk carries multi-org canary slugging. LOW may be `accepted` in
+principle, but it is filed `open`/`unowned` so the multi-org limitation stays visible rather than
+implicit. Resolve = a per-org slug/resolver ships (or a decision records single-slug canarying as
+deliberate); then flip this Status + DELETE the `finding-ownership.json` key in the SAME commit.

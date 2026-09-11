@@ -203,6 +203,33 @@ export function chooseExecutionTargetRow(input: {
     if (!match) throw new Error(`No dedicated execution target matches credential target "${input.executionTargetSlug}".`);
     return match;
   }
+  // A non-subscription binding that NAMES an execution target (slug set; not a
+  // personal_subscription credential, guaranteed by the early return above) routes to
+  // the org's tenant-creatable `dedicated_worker` of that slug. This is the E7-1 canary
+  // path (E11-F004): the canary presents a null-credential binding plus a well-known slug
+  // (CANARY_EXECUTION_TARGET_SLUG), and an operator CAN create + ratify a `dedicated_worker`
+  // at organization scope — whereas the `pooled_gvisor`/`managed_cloud`/`platform` target a
+  // null-credential binding used to fall through to has NO tenant create+ratify path at all.
+  // Placement requirements are derived from the resolved target's ratified profile, so
+  // routing here makes them org-scoped automatically and a keyed run yields a real
+  // distributed placement instead of `placement_not_leasable` → legacy.
+  //
+  // `dedicated_worker`-restricted + `?? null` on purpose (DE-29, "no silent broadening"):
+  // a named-but-absent target resolves to NOTHING — never the `pooled_gvisor` fallthrough,
+  // never a throw. A `dedicated_worker` row can ONLY normalize as `organization_dedicated`
+  // (TARGET_KIND_BY_CLASS above), so this arm can never reach an `owner_desktop` target; the
+  // owner-misrouting class the pin/personal_subscription branches guard stays excluded here too.
+  //
+  // SCOPED TO THE NULL-CREDENTIAL (canary) SHAPE — `!input.credentialKind`. The canary binding
+  // carries a slug with NO credentialKind; this arm exists for exactly that. A CREDENTIALED
+  // slug-bearing binding (e.g. a `company_api_key` heartbeat binding, which `toExecutionTargetHint`
+  // can emit with `executionTargetSlug = execution_target_id`) intentionally FALLS THROUGH to the
+  // shared `pooled_gvisor` pool below — its pre-E11-F004 behaviour — so this arm cannot silently
+  // divert a keyed/business binding off the pool. (No current writer produces such a binding, but
+  // scoping it here keeps the arm's blast radius exactly the canary and matches its stated intent.)
+  if (!input.credentialKind && input.executionTargetSlug) {
+    return active.find((t) => t.kind === "dedicated_worker" && t.slug === input.executionTargetSlug) ?? null;
+  }
   // company_api_key (business key) -> shared pool
   const pool = active.find((t) => t.kind === "pooled_gvisor");
   return pool ?? null; // null => caller falls back to local (self-hosted single tenant)
