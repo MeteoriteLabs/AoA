@@ -2153,7 +2153,7 @@ that owns the schema file. Until then the reader is correct and slow, which is s
     untouched, the **nine** no-company residue sinks are Decision 2's already-ruled remainder (not wired
     here), `plugin-lifecycle.ts:506` still needs a unit, and the four untraced sinks (§4.3) remain
     unmeasured. No count is struck and no crossing status changes.
-  - ★ **UPDATE 2026-09-11 — Decision 3.3 (retention) IMPLEMENTED — slice 3 (`decision3-retention`).**
+  - ★ **UPDATE 2026-09-11 — Decision 3.3 (retention): Q5 IMPLEMENTED WHOLE, Q4 PARTIAL (window recorded, enforcing purge deferred to E0-F018) — slice 3 (`decision3-retention`).**
     **Q5 (tamper) is delivered WHOLE.** A `security.denied.*` denial record now SURVIVES the deletion of
     the company it incriminates — a founder can no longer erase the operator plane's only copy of their
     own probing by deleting their own tenant. Two changes: (1) the `activity_log.company_id` FK moves
