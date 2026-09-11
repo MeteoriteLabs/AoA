@@ -257,9 +257,10 @@ so each finding's count stays true to the cohort it measured) plus one more:
   `recordRetentionDecision` (`artifact-retention-audit.ts`, drained at `artifact-commit.ts:482`) and
   a successful object-access grant by `recordObjectAccessGrant` (`artifact-object-access-audit.ts`,
   access half riding DE-06). The one sub-property still measured absent outright is **purge on job
-  completion**; the retention audit record is now WRITTEN. DE-11 stays `partial` for the DE-06
-  access-half dependency, the BRW-003 coverage gap, and the still-absent purge-on-completion clause
-  plus the `UNKNOWN` encryption + TTL clauses. *(Amended 2026-09-09 by W22B. This line read "all four
+  completion**; the retention audit record is now WRITTEN. DE-11 stays `partial` for the BRW-003
+  coverage gap (neither audit half has fired on a genuinely sensitive kind yet), the still-absent
+  purge-on-completion clause, and the `UNKNOWN` encryption + TTL clauses — NOT for a DE-06 access-half
+  dependency, which is discharged (DE-06's object-access unit delivered the access record 2026-09-10). *(Amended 2026-09-09 by W22B. This line read "all four
   of its named controls are absent" until the register recorded that DE-11's encryption clause, its
   TTL clause and the TTL-expiry half of its purge clause are `UNKNOWN` pending an artifact-bucket
   inspection: source shows the application never asks for them, which is not the same as the bucket
