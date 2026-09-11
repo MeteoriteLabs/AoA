@@ -9,18 +9,23 @@
 // explicit `kind === "desktop"` refusal to compensate. A structural test in
 // `desktop-disabled.negative.test.ts` asserts the mount stays inside.
 //
-// A LISTING IS A READ. There is no revoke, rename, or re-enrol here. Device mutation is
-// DSK-003's story, and adding a write to the first flag-gated surface would widen it
-// before anything has exercised the read.
+// A LISTING IS A READ, and so is VERIFY. There is no revoke, rename, or re-enrol here.
+// Device MUTATION is DSK-003's story, and adding a write to the first flag-gated surface
+// would widen it before anything has exercised the read. The E11 M2 verify action added
+// below changes NO state: it re-derives `sha256(SPKI DER)` from the STORED public key and
+// checks it against the stored thumbprint. It reads enrolment facts; it is not a mutation.
 
 import { Router, type Request } from "express";
 
 import type { Db } from "@armyofagents/db";
 
-import { listDesktopDevices } from "../services/execution-targets.js";
+import {
+  listDesktopDevices,
+  verifyDesktopDeviceEnrolmentKey,
+} from "../services/execution-targets.js";
 import { organizationAccessService } from "../services/organization-access.js";
 import { assertBoard } from "./authz.js";
-import { forbidden } from "../errors.js";
+import { forbidden, notFound } from "../errors.js";
 import { z } from "zod";
 
 const uuidParam = z.string().uuid();
@@ -52,6 +57,33 @@ export function desktopDeviceRoutes(opts: { db: Db }): Router {
       next(err);
     }
   });
+
+  /**
+   * E11 M2 — VERIFY ENROLMENT KEY. Org-admin, read-only. Re-derives the stored key's
+   * thumbprint and confirms it matches the stored thumbprint and that the key is a
+   * structurally valid Ed25519 SPKI. Changes no state and asserts nothing about the
+   * device being live or a distinct physical machine (machine attestation is E11-F005 /
+   * open Q2, and is NOT built).
+   *
+   * The device lookup is scoped to `:orgId` in SQL, so an admin of one org verifying a
+   * device that belongs to ANOTHER org gets a 404 — the org-admin gate on `:orgId` is not
+   * enough on its own; the row must also belong to that org.
+   */
+  router.post(
+    "/organizations/:orgId/desktop-devices/:deviceId/verify",
+    async (req, res, next) => {
+      try {
+        const orgId = uuidParam.parse(req.params.orgId);
+        const deviceId = uuidParam.parse(req.params.deviceId);
+        await assertOrgAdmin(req, orgId);
+        const result = await verifyDesktopDeviceEnrolmentKey(opts.db, orgId, deviceId);
+        if (result === null) throw notFound("Device not found");
+        res.json(result);
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
 
   return router;
 }

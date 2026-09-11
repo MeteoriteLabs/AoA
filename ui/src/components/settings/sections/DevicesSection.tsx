@@ -1,7 +1,13 @@
-import { useQuery } from "@tanstack/react-query";
-import { HardDrive, Laptop, RefreshCw, Server, Cloud } from "lucide-react";
+import { useState } from "react";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { HardDrive, Laptop, RefreshCw, Server, Cloud, ShieldCheck, ShieldAlert } from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
-import { desktopDevicesApi, type DesktopDevice } from "@/api/desktop-devices";
+import {
+  desktopDevicesApi,
+  type DesktopDevice,
+  type DeviceHealth,
+  type DeviceKeyVerification,
+} from "@/api/desktop-devices";
 import { isForbidden } from "@/api/client";
 import { queryKeys } from "@/lib/queryKeys";
 import { timeAgo } from "@/lib/timeAgo";
@@ -64,27 +70,113 @@ function relative(iso: string | null): string {
   }
 }
 
-function DeviceRow({ device }: { device: DesktopDevice }) {
+// E11 M2 — the read-time liveness verdict, mapped to an HONEST operator label. This is
+// "have we heard from this enrolment lately?" (from `lastSeenAt`), NOT "is the machine up
+// right now?". Deliberately distinct from `status`, which never advances past enrolled.
+const HEALTH_LABELS: Record<DeviceHealth, string> = {
+  healthy: "Live",
+  stale: "Stale",
+  never_seen: "Never checked in",
+};
+
+function healthTone(health: DeviceHealth): string {
+  switch (health) {
+    case "healthy":
+      return "border-emerald-500/35 bg-emerald-500/8 text-emerald-100";
+    case "stale":
+      return "border-amber-500/40 bg-amber-500/8 text-amber-200";
+    default:
+      // never_seen — enrolled but no check-in recorded yet
+      return "border-border bg-card text-muted-foreground";
+  }
+}
+
+function HealthPill({ health }: { health: DeviceHealth }) {
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
-      <div className="flex min-w-0 items-center gap-3">
-        <HardDrive className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+    <span
+      title="Enrolment liveness — derived from the last check-in, not a claim the machine is up right now."
+      className={cn(
+        "shrink-0 rounded-sm border px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.08em]",
+        healthTone(health),
+      )}
+    >
+      {HEALTH_LABELS[health] ?? health}
+    </span>
+  );
+}
+
+function DeviceRow({
+  device,
+  organizationId,
+}: {
+  device: DesktopDevice;
+  organizationId: string;
+}) {
+  const [result, setResult] = useState<DeviceKeyVerification | null>(null);
+  const verifyMutation = useMutation({
+    mutationFn: () => desktopDevicesApi.verify(organizationId, device.deviceId),
+    onSuccess: (res) => setResult(res),
+  });
+  // A silent re-enrolment (the failure this whole surface is organised around) shows up as
+  // a device generation past the first. Surfaced as a light hint, not over-built.
+  const reEnrolled = device.deviceGeneration > 1;
+
+  return (
+    <div className="flex flex-wrap items-start justify-between gap-3 px-4 py-3">
+      <div className="flex min-w-0 items-start gap-3">
+        <HardDrive className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
         <div className="min-w-0">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="truncate text-sm font-medium">{device.label}</span>
             <StatusPill status={device.status} />
+            <HealthPill health={device.health} />
           </div>
           <div className="mt-0.5 text-xs text-muted-foreground">
             <span className="font-mono">{device.targetSlug}</span>
             {" · "}
             gen {device.deviceGeneration}
+            {reEnrolled && (
+              <span className="ml-1 text-amber-300/90" title="Re-enrolled at least once (device generation > 1).">
+                (re-enrolled)
+              </span>
+            )}
             {" · enrolled "}
             {relative(device.enrolledAt)}
-            {" · last seen "}
+            {" · last check-in "}
             {relative(device.lastSeenAt)}
           </div>
+          {verifyMutation.isError && (
+            <div className="mt-1.5 text-xs text-destructive">
+              Could not verify the enrolment key. Please try again.
+            </div>
+          )}
+          {result && (
+            <div
+              className={cn(
+                "mt-1.5 flex items-start gap-1.5 text-xs",
+                result.verified ? "text-emerald-300" : "text-amber-300",
+              )}
+            >
+              {result.verified ? (
+                <ShieldCheck className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+              ) : (
+                <ShieldAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+              )}
+              <span>{result.reason}</span>
+            </div>
+          )}
         </div>
       </div>
+      <Button
+        variant="outline"
+        size="sm"
+        className="shrink-0"
+        onClick={() => verifyMutation.mutate()}
+        disabled={verifyMutation.isPending}
+        title="Re-derive the stored key's thumbprint and check it against the enrolment record. Read-only; does not prove the device is live."
+      >
+        {verifyMutation.isPending ? "Verifying…" : "Verify enrolment key"}
+      </Button>
     </div>
   );
 }
@@ -198,7 +290,7 @@ export function DevicesSection() {
         ) : (
           <div className="divide-y divide-border-soft rounded-lg border border-border bg-card">
             {devices.map((device) => (
-              <DeviceRow key={device.deviceId} device={device} />
+              <DeviceRow key={device.deviceId} device={device} organizationId={organizationId!} />
             ))}
           </div>
         )}

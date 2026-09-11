@@ -20,8 +20,12 @@ vi.mock("@/context/CompanyContext", () => ({
 }));
 
 const listMock = vi.fn();
+const verifyMock = vi.fn();
 vi.mock("@/api/desktop-devices", () => ({
-  desktopDevicesApi: { list: (...args: unknown[]) => listMock(...args) },
+  desktopDevicesApi: {
+    list: (...args: unknown[]) => listMock(...args),
+    verify: (...args: unknown[]) => verifyMock(...args),
+  },
 }));
 
 import { DevicesSection } from "../DevicesSection";
@@ -35,6 +39,7 @@ function device(over: Partial<DesktopDevice> = {}): DesktopDevice {
     deviceGeneration: 2,
     enrolledAt: "2026-08-01T00:00:00.000Z",
     lastSeenAt: "2026-09-01T00:00:00.000Z",
+    health: "healthy",
     ...over,
   };
 }
@@ -85,12 +90,30 @@ describe("DevicesSection", () => {
   });
 
   it("shows a never-seen device without crashing on a null lastSeenAt", async () => {
-    listMock.mockResolvedValueOnce([device({ lastSeenAt: null, enrolledAt: null })]);
+    listMock.mockResolvedValueOnce([
+      device({ lastSeenAt: null, enrolledAt: null, health: "never_seen" }),
+    ]);
     renderSection();
 
     expect(await screen.findByText("Alex's MacBook")).toBeInTheDocument();
-    // "last seen never" is rendered from the null timestamp.
-    expect(screen.getByText(/last seen never/)).toBeInTheDocument();
+    // "last check-in never" is rendered from the null timestamp.
+    expect(screen.getByText(/last check-in never/)).toBeInTheDocument();
+    // E11 M2 — the computed liveness pill renders its honest label.
+    expect(screen.getByText("Never checked in")).toBeInTheDocument();
+  });
+
+  it("renders the health pill and a read-only verify action per device (E11 M2)", async () => {
+    listMock.mockResolvedValueOnce([
+      device({ health: "healthy" }),
+      device({ deviceId: "dev-2", label: "Stale box", health: "stale" }),
+    ]);
+    renderSection();
+
+    expect(await screen.findByText("Alex's MacBook")).toBeInTheDocument();
+    expect(screen.getByText("Live")).toBeInTheDocument();
+    expect(screen.getByText("Stale")).toBeInTheDocument();
+    // One verify button per device row; the action is read-only.
+    expect(screen.getAllByRole("button", { name: /verify enrolment key/i })).toHaveLength(2);
   });
 
   it("does not fetch and shows a guard when the company has no organization", async () => {

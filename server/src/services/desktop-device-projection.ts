@@ -20,11 +20,18 @@
 // column out of the response — which is exactly why D17 calls that construction safe
 // where a generic worker join is not.
 
+import type { DeviceLivenessStatus } from "./device-liveness.js";
+
 /**
- * The frozen allowlist. Seven fields, chosen so an operator can answer "which of my
+ * The frozen allowlist. Eight fields, chosen so an operator can answer "which of my
  * machines are enrolled, are they alive, and has any been re-enrolled behind my back" —
  * and nothing else. `deviceGeneration` is here for that last question specifically: a
  * silent re-enrolment is the failure this whole ticket is organised around.
+ *
+ * `health` (E11 M2) is the ONE COMPUTED field, not a column: it is the read-time liveness
+ * verdict `classifyDeviceLiveness` derives from `lastSeenAt` against the DB clock. It is
+ * emitted here rather than `status` because `workers.status` never advances past
+ * `enrolled`/`revoked` and so says nothing about liveness (see `device-liveness.ts`).
  */
 export const DESKTOP_DEVICE_PROJECTION_KEYS = [
   "deviceId",
@@ -34,6 +41,7 @@ export const DESKTOP_DEVICE_PROJECTION_KEYS = [
   "deviceGeneration",
   "enrolledAt",
   "lastSeenAt",
+  "health",
 ] as const;
 
 export type DesktopDeviceProjectionKey = (typeof DESKTOP_DEVICE_PROJECTION_KEYS)[number];
@@ -110,6 +118,9 @@ export interface DesktopDeviceProjection {
   readonly deviceGeneration: number;
   readonly enrolledAt: string | null;
   readonly lastSeenAt: string | null;
+  /** Read-time liveness verdict from `classifyDeviceLiveness` (E11 M2). Computed by the
+   *  caller and passed through — never a column. */
+  readonly health: DeviceLivenessStatus;
 }
 
 /** The joined row this projection is built from. Deliberately wider than the output. */
@@ -121,6 +132,9 @@ export interface DesktopDeviceRow {
   readonly deviceGeneration: number;
   readonly enrolledAt: Date | null;
   readonly lastSeenAt: Date | null;
+  /** Injected by the caller (`listDesktopDevices`) after classifying liveness against the
+   *  DB clock. Not a column on `workers`/`execution_targets`. */
+  readonly health: DeviceLivenessStatus;
   readonly [column: string]: unknown;
 }
 
@@ -143,6 +157,7 @@ export function projectDesktopDevice(row: DesktopDeviceRow): DesktopDeviceProjec
     deviceGeneration: row.deviceGeneration,
     enrolledAt: row.enrolledAt ? row.enrolledAt.toISOString() : null,
     lastSeenAt: row.lastSeenAt ? row.lastSeenAt.toISOString() : null,
+    health: row.health,
   };
 }
 

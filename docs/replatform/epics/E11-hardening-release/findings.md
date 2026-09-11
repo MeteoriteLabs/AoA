@@ -324,6 +324,15 @@ its §5 and §4.4). That design records device enrolments as a layer above the f
 not add machine attestation, does not amend this finding, and changes no gate. This finding stays
 `open` and `unowned` until a founder/protocol decision closes it.
 
+**M2 shipped (2026-09-11, non-dispositional).** The design's M2 milestone landed (PR
+`e11-m2-verify-health`): read-time liveness health plus a read-only "Verify enrolment key" action
+that re-derives `sha256(SPKI DER)` from the STORED public key and checks the stored thumbprint and
+Ed25519 structure. Verify reads ENROLMENT-RECORD key integrity only — it explicitly does NOT prove a
+device is live-right-now or a distinct physical machine, and its UI label and reason strings say so.
+No protocol change, no migration, no new gate. **E11-F005 is NOT closed by M2**: the machine-binding
+attestation this finding turns on (open question Q2) is still unbuilt, so this stays `open` and
+`unowned`.
+
 ## E11-F006 — the D6-04 evidence contract has no device column, so two owner-desktop devices collapse into one matrix row
 
 **Status:** `open` · Severity: **HIGH** · Filed 2026-09-08 by W18 (provability wave, gate-naming unit).

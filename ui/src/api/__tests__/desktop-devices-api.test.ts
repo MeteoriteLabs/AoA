@@ -4,7 +4,7 @@ vi.mock("../client", async () => {
   const actual = await vi.importActual<typeof import("../client")>("../client");
   return {
     ...actual,
-    api: { get: vi.fn() },
+    api: { get: vi.fn(), post: vi.fn() },
   };
 });
 
@@ -12,7 +12,7 @@ import { api } from "../client";
 import { desktopDevicesApi, type DesktopDevice } from "../desktop-devices";
 
 /**
- * A REAL projection row, matching the seven fields
+ * A REAL projection row, matching the eight fields
  * `projectDesktopDevice` (server/src/services/desktop-device-projection.ts)
  * emits — never a hand-cast partial, so a widening of the shape here would
  * force this fixture (and the assertion below) to change with it.
@@ -26,6 +26,7 @@ function device(over: Partial<DesktopDevice> = {}): DesktopDevice {
     deviceGeneration: 2,
     enrolledAt: "2026-08-01T00:00:00.000Z",
     lastSeenAt: "2026-09-01T00:00:00.000Z",
+    health: "healthy",
     ...over,
   };
 }
@@ -55,6 +56,7 @@ describe("desktopDevicesApi.list", () => {
       deviceGeneration: 2,
       enrolledAt: "2026-08-01T00:00:00.000Z",
       lastSeenAt: "2026-09-01T00:00:00.000Z",
+      health: "healthy",
     });
     // A never-seen device carries a null lastSeenAt through unflattened.
     expect(res[1].status).toBe("enrolled");
@@ -65,5 +67,33 @@ describe("desktopDevicesApi.list", () => {
     vi.mocked(api.get).mockResolvedValueOnce([]);
     const res = await desktopDevicesApi.list("org-1");
     expect(res).toEqual([]);
+  });
+});
+
+describe("desktopDevicesApi.verify", () => {
+  it("POSTs the org- and device-scoped verify route with an empty body", async () => {
+    vi.mocked(api.post).mockResolvedValueOnce({
+      verified: true,
+      thumbprintMatches: true,
+      keyValid: true,
+      reason: "ok",
+    });
+    await desktopDevicesApi.verify("org-1", "dev-1");
+    expect(api.post).toHaveBeenCalledWith(
+      "/organizations/org-1/desktop-devices/dev-1/verify",
+      {},
+    );
+  });
+
+  it("returns the verification verdict unchanged", async () => {
+    const verdict = {
+      verified: false,
+      thumbprintMatches: false,
+      keyValid: true,
+      reason: "The stored device thumbprint does not match the SHA-256 of the stored public key.",
+    };
+    vi.mocked(api.post).mockResolvedValueOnce(verdict);
+    const res = await desktopDevicesApi.verify("org-1", "dev-1");
+    expect(res).toEqual(verdict);
   });
 });

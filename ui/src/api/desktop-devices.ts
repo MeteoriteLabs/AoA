@@ -11,12 +11,16 @@
 // the route is mounted inside that block and does not exist otherwise).
 import { api } from "./client";
 
+/** The read-time liveness verdict `classifyDeviceLiveness` computes server-side (E11 M2). */
+export type DeviceHealth = "never_seen" | "healthy" | "stale";
+
 /**
  * One enrolled desktop device, exactly as `projectDesktopDevice`
- * (server/src/services/desktop-device-projection.ts) returns it. Seven
+ * (server/src/services/desktop-device-projection.ts) returns it. Eight
  * allowlisted fields — no credential, owner, or join key. Kept in lockstep with
  * `DESKTOP_DEVICE_PROJECTION_KEYS`; do not widen this shape without widening the
- * server allowlist (which is deliberately gated).
+ * server allowlist (which is deliberately gated). `health` is computed at read time
+ * from `lastSeenAt`, not a column.
  */
 export interface DesktopDevice {
   deviceId: string;
@@ -26,9 +30,28 @@ export interface DesktopDevice {
   deviceGeneration: number;
   enrolledAt: string | null;
   lastSeenAt: string | null;
+  health: DeviceHealth;
+}
+
+/**
+ * The result of the read-only "Verify enrolment key" action (E11 M2). It describes the
+ * ENROLMENT RECORD's key integrity only — it does NOT claim the device is live, reachable,
+ * or a distinct machine (machine attestation is E11-F005, not built).
+ */
+export interface DeviceKeyVerification {
+  verified: boolean;
+  thumbprintMatches: boolean;
+  keyValid: boolean;
+  reason: string;
 }
 
 export const desktopDevicesApi = {
   list: (organizationId: string) =>
     api.get<DesktopDevice[]>(`/organizations/${organizationId}/desktop-devices`),
+  // Read-only re-derivation over stored key material. Changes no state.
+  verify: (organizationId: string, deviceId: string) =>
+    api.post<DeviceKeyVerification>(
+      `/organizations/${organizationId}/desktop-devices/${deviceId}/verify`,
+      {},
+    ),
 };
