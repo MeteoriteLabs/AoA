@@ -1,8 +1,8 @@
 # Universe — consolidated planning readiness and final review packet
 
-**September 13, 2026. Current verdict: planning reviewed; full baseline run exposed one remaining backup-fixture timeout. Base adoption and Universe implementation remain unapproved.**
+**September 13, 2026. Current verdict: planning reviewed; repaired baseline typecheck, full suite and build passed. Source integration/base adoption and Universe implementation remain unapproved.**
 
-[Completed author review and bounded F4 checks](f4-repair-results.md) supersede the earlier proposed Claude handoff for this round. No new independent review is claimed. The 31-slice planning assessment below remains. The [full baseline results](full-baseline-qualification-results.md) now confirm F4 in the complete workload, but F5 setup timed out: 24,258 tests passed, 76 ordinary skips, two backup cases blocked, and build correctly withheld. Full baseline acceptance and base adoption remain open. The subsequent [F5 diagnostic](f5-attribution-results.md) passed, with measured storage waits; it does not clear that failure.
+[F5 repair and completed baseline qualification](f5-repair-results.md) now verify the exact local repaired candidate: 24,276 tests passed, 76 unchanged ordinary skips, repository typecheck and build passed. The earlier failure and interrupted shard attempt remain preserved. No additional Claude review is required for this author-reviewed round. The candidate has not been published/landed or adopted into Universe; newer upstream guard and production fence-audit changes require integration checks.
 
 The product scope and per-slice plan packet are assembled. No new general product-design round is recommended. The remaining work is a finite set of execution prerequisites and integration bindings, identified below. They must not be called completed merely because their qualification procedure is written. Conversely, runtime tests that can only exist after implementation are not requirements to rewrite the entire plan before starting any slice.
 
@@ -34,7 +34,7 @@ Reviewed the slice/coding indexes, start conditions, shared producer order, late
 
 | Slice | Release | Planning disposition / first dependency and completion boundary |
 |---|---|---|
-| [E0.1](coding-plans/e0-1.md) | V1 | Base/integration procedure complete for review; full corrected baseline, actual landing/adoption and source delta review remain open. Existing Universe branch must be reused, not recreated. |
+| [E0.1](coding-plans/e0-1.md) | V1 | Base/integration procedure complete for review; corrected baseline passed; actual landing/adoption and source delta review remain open. Existing Universe branch must be reused, not recreated. |
 | [E1.0](coding-plans/e1-0.md) | V1 | Accepted intent and missing-state inventory documented. Complete affected-state visual consistency before affected UI coding; actual-host regression after implementation. |
 | [E1.1](coding-plans/e1-1.md) | V1 | First UI foundation after BASE/DESIGN disposition: single registry/frame, pointer/resize/maximize/history. Qualify React Flow version and actual host; fixture content does not close task/browser routes. |
 | [E1.2](coding-plans/e1-2.md) | V1 | E1.1 producer; revisioned layout/receipts/checkpoints. Exact schema-role binding and multi-tab recovery tests required. |
@@ -70,9 +70,9 @@ Reviewed the slice/coding indexes, start conditions, shared producer order, late
 
 | Gate | Current fact | Exact next deliverable | Blocks |
 |---|---|---|---|
-| BASE/F4 | [Targeted and full-suite F4 checks passed](full-baseline-qualification-results.md); commit 4aebfa0f4 stays local | Preserve the passing lifecycle/task evidence while resolving F5 | F4 itself no longer fails this baseline; overall BASE acceptance remains open |
-| BASE/F5 | [Setup timeout reproduced in full qualification](full-baseline-qualification-results.md); last target output is initialization syncing to disk; two tests blocked | [Attribution completed](f5-attribution-results.md); Correction and conditional qualification approved; [Docker startup blocks preflight](f5-execution-preflight.md), then targeted checks and clean qualification | Full baseline acceptance and gated build; no unchanged general-plan review or blind timeout increase |
-| BASE/integration | Universe still 183e46; corrections b5 local on candidate 9200a66 | Green full typecheck/four shards/build, source review, exact replatform landing/adoption proposal and TK decision | Changing the implementation base; not documentation review |
+| BASE/F4 | Targeted and complete-suite checks passed at the [repaired candidate](f5-repair-results.md) | Preserve evidence during integration | No remaining F4 test failure on this candidate |
+| BASE/F5 | Three-file fixture repair, 16 lifecycle tests, both real backup cases and full qualification passed | Preserve evidence and verify actual integrated tree | F5 qualification closed for `fcab5a112`; no automatic base adoption |
+| BASE/integration | Universe remains `183e46`; corrected candidate `fcab5a112` passed; remote `06a373452` includes new guard/workflow and production fence-audit changes | Propose exact source publication/landing and base choice; verify that integrated tree, then obtain TK base-adoption decision | Changing the implementation base; not documentation review |
 | DESIGN | Accepted UI intent and written extra states; missing attributable visual/host proof | Identify renderings for first-batch loading/error/narrow/focus states; compare to accepted intent and bring only material departures to TK. Preserve task regression and settings inventory | Affected UI coding/acceptance; runtime behavior tested during its implementation, not before it exists |
 | CMD | Existing/shadow paths do not certify distributed Commander | Production routing, user credential, admission/cancellation/result-return identities and actual upstream evidence | Distributed E2.2, dependent voice/actions/publication/browser/follow-ups; not manual task replies or original uploads |
 | Voice/media authority | Product privacy choice settled; design corrections reviewed | Exact credential resolver/mutation/export coverage, shared Budget reservation writers, session lock/unique constraints, provider evidence and accepted applicable policy amendment | Enabled E3 and media generation; not visual blob/chat or personal appearance settings |
@@ -86,7 +86,7 @@ Codex prepares the concrete evidence and delta; TK accepts scope and material ex
 ## Finite route from here
 
 1. **Completed:** TK chose author review instead of Claude for this round. Codex reviewed the packet, completed bounded F4 repair/checks, and ran the subsequently approved full baseline. F4 passed; F5 setup timed out; build was blocked. Results are linked above.
-2. **Next:** the [self-reviewed F5 correction plan](f5-fixture-correction-plan.md) defines the three-file source batch and checks; the diagnostic allowance is spent. Do not repeat the spent full-run allowance or increase timeouts blindly. Planning is ready; the remaining baseline defect is now observed, not hypothetical.
+2. **Completed:** the approved [F5 source correction and qualification](f5-repair-results.md) passed. No further baseline retry or general plan review is proposed. The interrupted shard-3 attempt remains recorded separately; resumed verification kept the original budget.
 3. **After baseline qualification:** present the exact base integration/adoption action. Close the first-batch DESIGN consistency disposition; actual React Flow/host tests stay in implementation acceptance. Then request approval for the small E1.1 registry/frame batch and the personal preference contract it consumes. This is not approval for every V1 integration.
 4. **During approved V1 delivery:** close each qualified binding before its consumer, implement/test/review slices, update only material affected plan sections as upstream changes. Progress other V1 work when an integration waits. Do not switch to V2.
 

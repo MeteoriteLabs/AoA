@@ -1,5 +1,7 @@
 # Universe — full corrected-baseline qualification
 
+**Later disposition:** The approved [F5 repair and full qualification](f5-repair-results.md) are complete and passing. The dated record below is historical evidence, not the current execution status.
+
 **Subsequent diagnostic:** [F5 attribution completed](f5-attribution-results.md) with a passing instrumented shard and measured storage waits. It does not supersede the failed qualification below. The proposed diagnostic allowance in this historical report has now been used.
 
 **September 13, 2026. Verdict: not qualified. One backup-fixture setup failure remains; build was correctly blocked. The Universe plan does not need another general review round.**

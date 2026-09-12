@@ -1,5 +1,7 @@
 # F5 approved execution — runtime preflight blocker
 
+**Later disposition:** The approved [F5 repair and full qualification](f5-repair-results.md) are complete and passing. The dated record below is historical evidence, not the current execution status.
+
 **September 13, 2026. Approved batch not yet executable.** TK approved the three-file fixture correction, targeted checks and conditional full baseline verification after those pass. That approval remains valid; no repeat approval is needed to resume the same scope.
 
 ## Work completed

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** Use `superpowers:executing-plans` for the approved source batch. This is a self-reviewed source proposal; unchecked steps are not execution evidence.
 
-**Execution update:** TK approved source authoring, targeted checks and conditional full qualification. [Runtime preflight](f5-execution-preflight.md) currently blocks the first test; no approval needs repeating. The proposal wording below is historical and does not revoke that approval.
+**Execution update:** The approved three-file correction, targeted checks and conditional full verification are completed; see [F5 results](f5-repair-results.md). Unchecked proposal steps below are historical planning text; the result ledger is execution evidence. Source publication/landing, base adoption and Universe implementation remain separate.
 
 **Goal:** Give real backup tests a bounded startup policy and cleanup ownership that survives setup expiry, while preserving both backup/restore assertions.
 

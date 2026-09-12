@@ -1,5 +1,7 @@
 # F5 backup initialization attribution — diagnostic result
 
+**Later disposition:** The approved [F5 repair and full qualification](f5-repair-results.md) are complete and passing. The dated record below is historical evidence, not the current execution status.
+
 **September 13, 2026. Diagnostic complete; no source correction or baseline acceptance.** The single authorized full-shard diagnostic passed: **6,043 tests passed, three unchanged skips, zero failures**. Both original backup/restore assertions ran and passed. The 6,046 test identities exactly match the [previous failed shard](full-baseline-qualification-results.md). This successful instrumented sample does not replace that failed qualification.
 
 ## What was measured
