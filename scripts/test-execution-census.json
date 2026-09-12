@@ -110,6 +110,11 @@
       "workflow": "pr.yml",
       "step": "Validate split-image deps stages (DEP-001)"
     },
+    "scripts/check-register-citation-integrity.test.mjs": {
+      "status": "runs",
+      "workflow": "pr.yml",
+      "step": "Register citation integrity (source citations must not silently rot)"
+    },
     "scripts/check-release-admission.test.mjs": {
       "status": "runs",
       "workflow": "pr.yml",
