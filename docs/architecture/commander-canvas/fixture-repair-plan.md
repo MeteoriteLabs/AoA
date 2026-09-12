@@ -2,7 +2,7 @@
 
 > **For agentic workers:** Use `superpowers:executing-plans` after explicit approval of the named stage. Steps use checkboxes for work not yet executed.
 
-**Status:** planning and static review only. No new source edit, test run, container start, branch creation or base adoption occurred in this planning round.
+**Current status:** TK approved Stage A after independent review. [Diagnostic results](fixture-diagnostic-results.md) record both completed invocations: backup passed twice, but seven unrelated suites failed collection due to an omitted SDK build, limiting the workload comparison. The runtime is stopped. The source repair and full qualification stages remain unapproved. The unchecked steps below preserve the reviewed proposal; actual execution evidence is in the results record.
 
 **Goal:** resolve F4/F5 without hiding failing assertions, weakening baseline qualification or guessing why backup setup timed out.
 
