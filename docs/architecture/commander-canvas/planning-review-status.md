@@ -1,6 +1,6 @@
 # Universe — independent planning review status
 
-September 12, 2026. **Current workflow: TK will obtain Claude's review after the detailed plans and author self-review are complete.** No independent verdict exists yet. The failed CLI attempt below is historical and is no longer a blocker.
+September 12, 2026. **Current workflow: TK supplied Claude's independent review of f63b844.** Its verdict is planning-stage pass with corrections, not coding-ready. [The author response](independent-review-response.md) records all 22 findings, evidence and documentation corrections; material changes await re-review. The failed CLI attempt below is historical and is no longer a blocker.
 
 ## Historical unsuccessful CLI attempt
 
@@ -25,4 +25,4 @@ Local document-link and count validation is recorded with the handoff. Runtime t
 
 ## Completed author review packet
 
-See [detailed plans](coding-plans/README.md), [shared bindings](implementation-bindings.md), [self-review](planning-self-review.md) and [Claude handoff](claude-review-handoff.md). This is the complete review target, superseding the earlier process-only packet. No independent verdict is claimed.
+See [detailed plans](coding-plans/README.md), [shared bindings](implementation-bindings.md), [self-review](planning-self-review.md) and [Claude handoff](claude-review-handoff.md). This is the complete review target, superseding the earlier process-only packet. The [external report](independent-review-report.md) is preserved separately from the author response; no second independent verdict is claimed.

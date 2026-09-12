@@ -83,3 +83,7 @@ Permission revocation disables affected actions and invalidates data bindings. A
 - New panel versions migrate safely or retain a usable previous version.
 
 The artifact contract and format matrix specify the related ingestion/preview lifecycle. This proposed capability bridge remains unimplemented; its acceptance tests must run against the integrated host and isolated renderer.
+
+## Geometry history and stable ordering
+
+E1.1 owns [the explicit undo/redo contract](coding-plans/e1-1.md#undo-and-redo-contract): one entry per completed geometry gesture, 50-entry bound, scope/generation/current-rect fences, redo invalidation on new edits, and a new E1.2 CAS operation for each replay. Content/actions never enter layout history. `openedOrdinal` orders overview tiles independently of z-order; E1.2's persisted allocator never rewinds on undo. Client and server coordinate bounds both use ±1,000,000.

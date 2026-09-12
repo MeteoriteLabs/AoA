@@ -1,5 +1,7 @@
 # Commander Canvas — code evidence and implementation dependencies
 
+**Historical evidence note (independent review):** source revisions below identify the investigation when recorded. The current reviewed source pin is `183e46a9c65fc3105c7e3d125629276814df7dbb`; use symbols plus that base for implementation binding, and refresh changed files before coding. Historical checks are not new qualification runs. See [current bindings](implementation-bindings.md) and [review response](independent-review-response.md).
+
 Checked September 10, 2026. Companion to [master scope](master-scope.md). This is a bounded source/reachability review plus the targeted test runs below, not a complete security audit or production certification.
 
 ## Revision and branch evidence

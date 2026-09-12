@@ -16,7 +16,7 @@
 - No new DB schema, API authority, provider credential or task execution route belongs to this slice. Company checking in the reducer is defense in depth, never authorization. Resolve content through existing authorized clients before passing it in.
 - No mock inline handlers, copied preview controls, nested window shells or unrelated Home layout storage. Preview is a read-only projection of registry metadata/content.
 - All new files below are currently absent in replatform; recheck collisions at execution. Add package manifest and generated lockfile together. No production branch has been created in this planning pass.
-- Numeric defaults are initial qualification values: zoom 0.25–2, finite coordinates bounded to ±10,000,000 canvas units and sizes 1–8192 canvas units. Renderer minimums are stronger and viewport-aware. These guards prevent corrupt state; they do not advertise supported performance limits.
+- Numeric defaults are initial qualification values: zoom 0.25–2, finite coordinates bounded to ±1,000,000 canvas units and sizes 1–8192 canvas units. Renderer minimums are stronger and viewport-aware. These guards prevent corrupt state; they do not advertise supported performance limits.
 
 ## Planned file map
 
@@ -50,11 +50,11 @@ export type Rect = { x: number; y: number; width: number; height: number };
 export type Scope = { companyId: string; userId: string; conversationId: string };
 export type Ref = { companyId: string; kind: "task" | "artifact" | "browser"; id: string; version?: string };
 export type Panel = {
-  key: string; generation: number; ref: Ref; title: string; rect: Rect;
+  key: string; generation: number; openedOrdinal: number; ref: Ref; title: string; rect: Rect;
   minimized: boolean; pinned: boolean;
 };
 export type State = {
-  scope: Scope; nextGeneration: number; panels: Record<string, Panel>; order: string[];
+  scope: Scope; nextGeneration: number; nextOpenedOrdinal: number; panels: Record<string, Panel>; order: string[];
   selected: string | null; maximized: string | null;
 };
 export type Action =
@@ -67,11 +67,11 @@ export const panelKey = (scope: Scope, ref: Ref): string =>
   JSON.stringify([scope.companyId, scope.userId, scope.conversationId, ref.kind, ref.id, ref.version ?? null]);
 
 export const initialState = (scope: Scope): State =>
-  ({ scope, nextGeneration: 1, panels: {}, order: [], selected: null, maximized: null });
+  ({ scope, nextGeneration: 1, nextOpenedOrdinal: 1, panels: {}, order: [], selected: null, maximized: null });
 
 const validRect = (r: Rect): boolean =>
   [r.x, r.y, r.width, r.height].every(Number.isFinite) &&
-  Math.abs(r.x) <= 1e7 && Math.abs(r.y) <= 1e7 &&
+  Math.abs(r.x) <= 1e6 && Math.abs(r.y) <= 1e6 &&
   r.width >= 1 && r.height >= 1 && r.width <= 8192 && r.height <= 8192;
 
 function foreground(s: State, key: string): State {
@@ -91,10 +91,13 @@ export function panelReducer(s: State, a: Action): State {
     if (a.ref.companyId !== s.scope.companyId || !a.ref.id || !validRect(a.rect)) return s;
     const key = panelKey(s.scope, a.ref);
     const existing = s.panels[key];
+    if (!existing && (!Number.isSafeInteger(s.nextOpenedOrdinal) || s.nextOpenedOrdinal < 1 ||
+      s.nextOpenedOrdinal >= Number.MAX_SAFE_INTEGER)) return s;
     const panel: Panel = existing
       ? { ...existing, minimized: false }
-      : { key, generation: s.nextGeneration, ref: { ...a.ref }, title: a.title, rect: { ...a.rect }, minimized: false, pinned: false };
+      : { key, generation: s.nextGeneration, openedOrdinal: s.nextOpenedOrdinal, ref: { ...a.ref }, title: a.title, rect: { ...a.rect }, minimized: false, pinned: false };
     return foreground({ ...s, nextGeneration: existing ? s.nextGeneration : s.nextGeneration + 1,
+      nextOpenedOrdinal: existing ? s.nextOpenedOrdinal : s.nextOpenedOrdinal + 1,
       panels: { ...s.panels, [key]: panel } }, key);
   }
   const panel = s.panels[a.key];
@@ -177,6 +180,12 @@ Minimize from maximized returns that panel to its preserved normal geometry when
 
 The reducer does not mutate transcript/draft/session state, request camera movement, or authorize a Commander command. A Commander layout adapter checks pins and active user interaction before dispatch; its source marker is a behavioral distinction, not a security credential.
 
+## Stable opening order and undo contract
+
+`openedOrdinal` is independent of generation and focus order. The reference reducer allocates local optimistic ordinals from `nextOpenedOrdinal`; E1.2 owns authoritative allocation under the layout row lock and returns the canonical mapping in its acknowledgement. Hydration loads persisted ordinals/counter before admitting new opens. An acknowledgement reconciles optimistic order without replacing geometry or incarnation identity; a stale acknowledgement must not apply to a closed/reopened instance. Repeated open of an existing panel and minimize/restore retain ordinal; close/reopen allocates a new one. Never decrement or recycle the persisted counter, including after undo; reject overflow beyond Number.MAX_SAFE_INTEGER before allocating. Cross-tab conflicts rebase against the current counter, not a guessed timestamp. Add tests for A/B open→focus A (overview remains A/B), close/reopen A (B/A), two concurrent opens, repeated receipt, reload, and stale ack after reopen. Coordinate bounds are ±1,000,000 in reducer, validators and persistence.
+
+[The E1.1 addendum's undo contract](e1-1.md#undo-and-redo-contract) specifies one entry per completed gesture, generation fences and CAS-safe recovery; it is part of E1.1/1, not an optional runtime feature.
+
 ## Task 2 — frame and React Flow binding
 
 - [ ] Qualify/install the candidate package in the isolated implementation tree; regenerate the lockfile and verify a frozen install. Inspect installed declaration types against this plan before connecting callbacks.
@@ -258,13 +267,34 @@ export type ContentEntry = {
   title: string;
   render: (onClose: () => void) => ReactNode;
 };
+export type AuthorizedLayoutSnapshot = {
+  scope: Scope; schemaVersion: 1; revision: number; nextOpenedOrdinal: number;
+  panels: Array<{ref:Ref;title:string;rect:Rect;openedOrdinal:number;
+    minimized:boolean;pinned:boolean}>;
+  order: string[]; selected: string|null; maximized: string|null;
+};
+export type PendingOpen = {
+  operationId:string;operationIndex:number;key:string;generation:number;
+};
+export type OpeningAck = {
+  operationId:string;revision:number;nextOpenedOrdinal:number;
+  opened:Array<{operationIndex:number;key:string;openedOrdinal:number}>;
+};
+// Proposed additional panel-state.ts exports; implemented/tested in E1.1/1:
+export declare function hydrateLayout(current:State,snapshot:AuthorizedLayoutSnapshot):State;
+export declare function reconcileOpeningAck(current:State,ack:OpeningAck,
+  pending:readonly PendingOpen[]):State;
 export type WorkspaceProps = {
   scope: Scope;
-  initialPanels: Array<{ ref: Ref; title: string; rect: Rect }>;
+  initialLayout: AuthorizedLayoutSnapshot;
   content: Record<string, ContentEntry>;
   onStateChange?: (state: State) => void;
 };
 ```
+
+Hydration validates matching scope, schema, safe-integer revision/counter, unique keys/ordinals, bounded geometry, exact order membership and visible selected/maximized references. The counter must exceed every persisted ordinal. Hydrate directly from that authorized snapshot; never replay persisted panels through fresh open actions. Give hydrated instances fresh local generations starting at current.nextGeneration so old closures cannot affect them; preserve saved ordinal/geometry/minimized/pin/order. Initialize only after authorized loading, or through explicit clean-state replacement after pending edits resolve. Routine snapshot refresh uses E1.2 reconciliation and cannot overwrite dirty state by calling hydrateLayout.
+
+Before sending a layout patch, E1.2 records PendingOpen for each open operation, including its batch index and the local generation at that moment. The receipt contains one opened mapping for every open operation in input order, including repeated existing opens; close→reopen of one key in the same batch therefore has distinct operation indexes. reconcileOpeningAck matches operationId+operationIndex+key and only changes the ordinal of the still-matching local generation. Missing/old journal identity cannot update a reopened panel; fetch/reconcile canonical state instead. Never change geometry, selection or generation from an ordinal acknowledgement. Keep nextOpenedOrdinal at least the acknowledged counter and above all still-optimistic ordinals; E1.2 owns the separate authoritative counter/revision and ignores client allocation claims. Repeated receipts are inert; stale scope/unknown receipt is rejected. Test hydration nonsequential ordinals, refresh with pending edits, same-batch close/reopen, stale receipt after reopen and two-tab reconciliation.
 
 content is keyed by panelKey; its absence renders an unavailable/loading body while frame controls continue to function. Key the top workspace provider by company/user/conversation to discard old private view state; E1.2–3 restore only authorized snapshots. Every launch path calls the same open action, never queries a DOM element by title.
 

@@ -4,15 +4,15 @@
 
 **First implementation batch:** [verified planning base and preparation result](first-batch-readiness.md), [remaining state designs](ui-state-review.md), [concrete panel-controller plan](coding-plans/e1-1-canvas-controller.md). The release grouping and slice-branch methodology are accepted; runtime implementation has not begun. The remaining UI states are specified in writing, with visual and actual-host acceptance still pending.
 
-**Current release-planning draft:** [V1/V2 recommendation](release-plans/README.md) assigns all 31 existing slices exactly once; [individual plans](slice-plans/README.md) define their 69 delivery increments. Allocation is proposed, not approved. The user has agreed that all V1 must be complete and verified before V2 implementation starts. This supersedes earlier statements that release allocation has not yet been drafted; all unresolved qualification and coding gates remain open.
+**Accepted release allocation:** [V1/V2 plan](release-plans/README.md) assigns all 31 existing slices exactly once (30 V1; E3.4 only V2); [individual plans](slice-plans/README.md) define their 69 delivery increments. The user has agreed that all V1 must be complete and verified before V2 implementation starts. This supersedes earlier statements that release allocation has not yet been drafted; all unresolved qualification and coding gates remain open.
 
 Latest dependency and task-planning pass: [readiness review](readiness-review.md) and [per-epic preparation plans](implementation-plans/README.md). This supersedes earlier baseline/readiness summaries where newer evidence is explicitly identified; locked product decisions remain unchanged.
 
 Current planning checkpoint: [consolidated technical plan and delivery grouping](technical-plan-summary.md). The core UI direction is now documented in [consolidated experience decisions](ui-review-decisions.md) and [motion/interaction acceptance](motion-and-interaction.md), mapped into [epics and slices](epics-and-slices.md#ui-decision-traceability). Remaining design states, detailed coding plans and verified integration gates remain prerequisites to implementation and release; the mock is not a completed runtime.
 
-See the [integration decision review](integration-decision-review.md) for the verified branch baseline, provisional dependencies and pre-grooming process. No implementation branch or version allocation is approved by this scope.
+See the [integration decision review](integration-decision-review.md) for the verified branch baseline, provisional dependencies and pre-grooming process. The subsequent [publication record](planning-publication.md) records codex/universe-interface from the pinned replatform base; the release allocation is accepted, while runtime implementation remains unauthorized.
 
-The [epic and slice grooming draft](epics-and-slices.md) maps this scope to outcomes, dependencies and acceptance checks. Detailed coding plans and release allocations follow grooming.
+The [epic and slice grooming draft](epics-and-slices.md) maps this scope to outcomes, dependencies and acceptance checks. The [coding plans](coding-plans/README.md) and accepted release allocation now supersede that earlier grooming stage.
 
 The [integration contracts](integration-contracts.md) define voice submission, read-only request recovery, browser control ownership and reconnect ordering. Live transport compatibility and replatform cutover remain explicit engineering gates. Complete technical planning first, then review UI designs before UI implementation.
 
@@ -26,7 +26,7 @@ The [integration contracts](integration-contracts.md) define voice submission, r
 
 Support multiple independent browser sessions, one per task by default, with multiple tabs where useful. Display task, account, execution location and current controller. Pausing one session affects only that session; hiding its panel does not end execution. Saved profile reuse does not imply a shared live session or simultaneous controllers. On worker disconnect, show unavailable/stale state, reject input until ownership and session state are revalidated, and do not silently create a replacement session or replay pending input. Local access requires the machine and worker to remain online. Transport selection and measurable latency/recovery limits remain engineering work; this capability is planned, not implemented.
 
-**Voice scope clarification:** implement OpenAI Realtime first using a direct provider connection behind the voice adapter. Gemini Live and ElevenLabs realtime conversation integration are also in the intended scope, not merely optional research alternatives. Separate speech-recognition/synthesis pipelines and local speech remain later planned approaches. All share the Commander conversation and governed request contract. Assign providers and approaches to versions and epics during dependency planning; no V1/V2 allocation is fixed by this ordering. Supporting a provider does not imply every model or feature combination is validated.
+**Voice scope clarification:** implement OpenAI Realtime first using a direct provider connection behind the voice adapter. Gemini Live and ElevenLabs realtime conversation integration are also in the intended scope, not merely optional research alternatives. Separate speech-recognition/synthesis pipelines and local speech remain later planned approaches. All share the Commander conversation and governed request contract. The accepted [release allocation](release-plans/README.md) places OpenAI/Gemini/ElevenLabs realtime in V1 and E3.4 split/local speech in V2; implementation order does not change that allocation. Supporting a provider does not imply every model or feature combination is validated.
 
 **Voice lifecycle direction:** microphone mute stops outgoing audio; silencing replies stops audio playback while text/work continue; ending voice closes the audio connection without cancelling authorized jobs. Reconnect checks original requests before retry. Conversation switching stops old audio and establishes the new destination before resuming; late results stay attached to their originating conversation. Muting alone must not be represented as disconnecting or guaranteeing zero provider usage.
 
@@ -40,7 +40,7 @@ Updated September 11, 2026 following the scope review, repository investigation 
 
 This is the canonical scope for subsequent planning. It replaces conflicting recommendations in the chronological experience and technical discussion records. It defines the intended product, not shipped functionality or a claim that all integrations work. Repository-wide locked decisions remain controlling; implementation must reconcile the applicable replatform amendments rather than copying outdated main-branch wording.
 
-The full intended experience remains in scope. Epics, release allocation and dates follow dependency and acceptance planning; this document does not assign features to version one or two.
+The full intended experience remains in scope. The accepted [release allocation](release-plans/README.md) is controlling: all 30 V1 slices must complete before E3.4 V2 implementation; dates depend on qualification.
 
 ## 1. Decisions and status
 
@@ -151,7 +151,7 @@ Use bounded isolated converters, no macro execution, archive/path/expansion limi
 
 ## 9. Voice and browser decisions
 
-**Voice:** implement OpenAI Realtime first through a direct connection behind the provider adapter. Gemini and ElevenLabs realtime integrations remain intended scope; speech pipelines and local speech follow later. Version allocation remains open. Use capability declarations and tested combinations. LiveKit and Pipecat are alternatives if transport requirements justify them, not selected mandatory dependencies. See [provider research](voice-provider-research.md); the accepted scope here supersedes earlier shortlist language.
+**Voice:** implement OpenAI Realtime first through a direct connection behind the provider adapter. Gemini and ElevenLabs realtime integrations remain intended scope; speech pipelines and local speech follow later. Version allocation is accepted: realtime providers in V1, E3.4 speech pipelines/local speech in V2; see [release plan](release-plans/README.md). Use capability declarations and tested combinations. LiveKit and Pipecat are alternatives if transport requirements justify them, not selected mandatory dependencies. See [provider research](voice-provider-research.md); the accepted scope here supersedes earlier shortlist language.
 
 Voice receives recent conversation, authorized selected context and confirmed work state; deeper retrieval remains with Commander. Reconcile what was actually heard on interruption, invalidate late audio, rotate/expire provider sessions without losing conversation identity, and retain typing after failure. Provider fallback must not send data to an unapproved service. Measure end-to-end latency, turn accuracy, interruption, language behavior, reconnect and cost during implementation; a separate prototype is not a prerequisite for continuing planning.
 

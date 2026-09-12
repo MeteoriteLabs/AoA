@@ -1,5 +1,7 @@
 # Universe — engineering gate disposition
 
+**Historical evidence note (independent review):** source revisions below identify the investigation when recorded. The current reviewed source pin is `183e46a9c65fc3105c7e3d125629276814df7dbb`; use symbols plus that base for implementation binding, and refresh changed files before coding. Historical checks are not new qualification runs. See [current bindings](implementation-bindings.md) and [review response](independent-review-response.md).
+
 Latest follow-up: the [readiness review](readiness-review.md) checks replatform at `f09230f3e331c5156eacfe8396755e2911e2152b`. It retains Commander and Browser Use qualification gates and adds the newer cloud tier ruling, credential-boundary verification, browser approval/recovery and sensitive-profile evidence requirements. The September 11 policy ruling is not proof of egress enforcement; the source inspection below is an earlier snapshot, not the latest release verdict.
 
 September 11, 2026. Source inspection at replatform `72479410be1e7a3ff4c55eaf5942c27f87144490`; no runtime deployment or provider qualification performed. This closes the investigation pass, not the implementation gates.

@@ -4,32 +4,33 @@ September 12, 2026. **Planning and self-review candidate; implementation is not 
 
 Each addendum contains source evidence, proposed files/interfaces, ordered increment steps, tests or qualification protocols, failure/recovery, UI/settings, limits and rollback. Code is representative planning material, not a compiled patch. For missing upstream contracts, the complete deliverable here is a conditional qualification procedure; exact runtime binding remains blocked. Neither this index nor a self-review certifies implementation readiness.
 
-Read [master scope](../master-scope.md), [accepted UI decisions](../ui-review-decisions.md), [settings](../settings-contract.md), [motion](../motion-and-interaction.md), [shared source/interface bindings](../implementation-bindings.md), then the relevant slice and addendum. Shared binding decisions override illustrative aliases in the older E1.1 reference. [Self-review](../planning-self-review.md) records corrections and remaining gates. [Branch procedure](../planning-branch-proposal.md) governs publication after self-review. TK manages the later Claude review.
+Read [master scope](../master-scope.md), [accepted UI decisions](../ui-review-decisions.md), [settings](../settings-contract.md), [motion](../motion-and-interaction.md), [shared source/interface bindings](../implementation-bindings.md), then the relevant slice and addendum. Shared binding decisions override illustrative aliases in the older E1.1 reference. [Self-review](../planning-self-review.md) records corrections and remaining gates. [Branch procedure](../planning-branch-proposal.md) governs publication after self-review. TK supplied the independent Claude review of f63b844; the [finding-by-finding response](../independent-review-response.md) records this correction round, its qualifications and re-review requirements.
 
 ## Implementation order after approval
 
 These are internal sequencing groups within the accepted release, not smaller product releases. Dependencies apply to increments, so a blocked producer does not freeze unrelated V1 work.
 
 ```text
-E0.1 base + source/authority bindings
-  |-- E1.0 UI state qualification
-  |-- E8.1/1 shared preferences contract
-  |-- E1.1 shared panel controller --> E1.2 layout/checkpoints --> E1.3 drafts
-  |                                     |                         |
-  |                                     +--> E1.4 tray             +--> E2.4 task chat
-  |                                     +--> E1.5 surfaces <----------+
-  |                                     +--> E1.6 viewport/motion
-  |-- E2.1 context --> E2.2 outcomes/admission --> E2.3 reconciliation
-  |                       |-- E3.1/E3.3 qualification --> E3.2 voice lifecycle
-  |                       |-- E4.3 generation (after E4.1 originals/E4.2 formats)
-  |                       |-- E5.1 blocks --> E5.2 isolated host
-  |                       +-- E7.1 routines --> E7.2 follow-ups --> E7.3 attention
-  |-- E6.0 browser qualification --> E6.1 authority --> E6.2 cloud / E6.3 local
-  |                                                         +--> E6.4 files/profiles
-  +-- E8.1/2 settings UI completes alongside each consumer
-          all V1 increments + real qualifications --> E8.2 integrated acceptance
-                                                        |
-                                                   V2 E3.4 afterward
+E0.1 BASE / E1.0 DESIGN / E8.1/1 preferences contract
+  E1.1 registry + measured viewport
+    -> E1.2 layout/checkpoints -> E1.3/1 draft snapshot contract
+    -> E2.1/1 context projection (also consumes E1.3/1)
+         -> E1.6 navigation/motion (with E1.4 tray + E1.5 surfaces)
+         -> E2.2/1 read-only outcomes -> E1.3/2 recovery
+
+E8.1/1 -> E7.3/1 authorized attention projection
+E1.2 + E2.2/1 + E7.3/1 -> E2.3 integrated reconciliation
+
+Qualified E2.2 execution + E3.1/E3.3 -> E3.2 voice lifecycle
+E4.1 original/status contract -> E4.2 formats/index -> E4.1/2 index acceptance
+E4.1/E4.2 + E2.2 -> E4.3 generation
+E1.2/E1.3 + E2.1/E2.2 + E4 references -> E5.1 blocks -> E5.2 HOST
+E7.1 routines -> E7.2 terminal-owner-qualified follow-ups -> attention integration
+E6.0 qualification -> E6.1 authority -> E6.2 cloud / E6.3 local -> E6.4 profiles/files
+
+E8.1/2 settings UI completes alongside its consumers
+All required V1 increments + qualifications + UAT -> E8.2 accepted complete V1
+                                                   -> V2 E3.4 afterward
 ```
 
 The diagram shows major producer edges, not permission to ignore slice start conditions. E1.3 draft submission recovery consumes E2.2 while its text persistence can be specified earlier. E2.4 manual replies do not depend on distributed CMD cutover. E4.1 manual originals do not depend on generation, although new ledger access and storage recovery need their own qualification. E7.3 source-backed attention can precede follow-up-trigger integration. E8.1/1 is a contract producer; requiring every consumer before that contract would create a cycle. Voice/browser/profile/HOST/terminal-owner bindings must close before their dependent runtime code and full V1 acceptance.
@@ -43,6 +44,8 @@ The diagram shows major producer edges, not permission to ignore slice start con
 5. At release, run repository typecheck/tests/build plus real provider/worker/security/UI qualification. Document Windows skips and authoritative Linux results separately. Close the complete V1 only after all accepted flows and rollback pass and the user accepts release readiness.
 
 Numeric bounds in addenda are explicit proposals for qualification, not measured promises or quiet reductions in accepted scope. Changes that affect accepted experience, policy or cost return to TK. Routine engineering corrections can be proposed and reviewed in this packet; no correction authorizes coding.
+
+[Formal UAT and per-slice acceptance records](../user-acceptance-plan.md#per-slice-acceptance-register) complement automated checks; all runs remain not_run. The accepted scope is unchanged by reconciliation.
 
 ## Slice navigation
 

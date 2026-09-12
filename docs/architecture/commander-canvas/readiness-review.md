@@ -2,6 +2,10 @@
 
 September 11, 2026. Read together with the [master scope](master-scope.md), [UI specification](ui-review-decisions.md), [motion acceptance](motion-and-interaction.md) and [epic/task plans](implementation-plans/README.md). This is the completed readiness/planning pass, not permission to begin production work or a claim that gated integrations are ready. The per-epic plans name work packages, file ownership, dependencies and acceptance; provider/worker implementation details remain explicitly gated on qualification instead of invented signatures.
 
+## Current authority after independent review
+
+The historical September 11 evidence/results below remain dated records. Current published baseline is `183e46a9c65fc3105c7e3d125629276814df7dbb`; `codex/universe-interface` already holds the reviewed documentation commit. V1 allocation and branch/methodology are agreed; runtime approval, qualification and named reviewers are not. See [review response](independent-review-response.md), [publication](planning-publication.md) and [accepted release plan](release-plans/README.md). Historical component test passes are not newly run tests or Universe acceptance.
+
 ## Fresh evidence baseline
 
 Fetched origin during this review; no checkout/rebase/merge or implementation branch created.
@@ -55,11 +59,11 @@ The register is not an exhaustive replatform release audit. E8.2 also consumes t
 5. **Breadth:** E3.3 Gemini/ElevenLabs, E5.2 isolated tools, E7.2 proactive triggers and generation-provider expansion. Independent work need not wait for every step in the earlier wave; dependencies, not list position, decide.
 6. **Later:** E3.4 pipeline/local speech; multi-screen feature reconsidered after desktop app, outside these 31 slices.
 
-Recommendation for discussion: internal Core milestone first, then a release candidate with voice and qualified local/cloud browsing. Retain all providers in scope; V1/V2 allocation is not decided here. Browser/profile/cloud-policy gaps block specific capabilities, not the entire Universe project.
+Recommendation for discussion: internal Core milestone first, then a release candidate with voice and qualified local/cloud browsing. Retain all three realtime providers and local/cloud browsers in the accepted 30-slice V1; E3.4 alone is V2. This supersedes the earlier unallocated recommendation. Browser/profile/cloud-policy gaps block specific capabilities, not the entire Universe project.
 
 ## Merge, integration and rollback
 
-- At execution start, verify ancestry and accepted revision again. Use an isolated codex-prefixed Universe integration branch off that revision; reviewable task branches merge into it. No branch created now.
+- At execution start, verify ancestry and accepted revision again. Use the existing codex/universe-interface branch created from the recorded base; any later source update requires ancestry/contract review. Runtime implementation still requires explicit approval.
 - Changes to shared replatform routing/credential/approval contracts belong upstream. Universe contributes consumer tests and tracks their merge/base requirements; avoid copying upstream mechanisms into new canvas services.
 - Before each task merge, integrate necessary upstream changes and run affected contract/component/integration checks. Before release run the repository typecheck, tests and build plus connected journeys on the combined tree. Do not count isolated fixture success as real integration success.
 - After replatform lands, inspect actual squash/preserved ancestry before reconciling with main. Do not blindly merge duplicate histories. Data migrations are additive/generated and compatible with existing readers.
@@ -67,7 +71,7 @@ Recommendation for discussion: internal Core milestone first, then a release can
 
 ## Questions for the next discussion
 
-Follow-on planning now supplies a [V1/V2 allocation recommendation](release-plans/README.md) and [31 individual slice plans](slice-plans/README.md). Review that explicit draft rather than re-inferring a version cut from the sequencing waves. The user has agreed to complete and verify V1 before V2 implementation; commercial ownership remains separate.
+Follow-on planning now supplies the accepted [V1/V2 allocation](release-plans/README.md) and [31 individual slice plans](slice-plans/README.md). Use that accepted allocation rather than re-inferring a version cut from the sequencing waves. The user has agreed to complete and verify V1 before V2 implementation; commercial ownership remains separate.
 
 No user answer blocks this readiness package. Two later product decisions remain: public release grouping (all providers/both browser locations at first public launch versus staged releases), and managed/customer-connected cloud rollout/commercial ownership. Recommendation: staged internal milestones; defer public packaging and commercial commitment until qualification evidence. Engineering questions about final APIs, timing and screen bounds belong to the named qualification tasks; do not ask the user to select implementation internals.
 
@@ -78,3 +82,21 @@ Fresh source/ancestry review completed. Existing Commander input and task-focus 
 Final targeted results: `ui/src/lib/__tests__/hub-toast-bridge.test.ts` passed five tests and `server/src/__tests__/commander-multi-chat-schema.test.ts` passed three. Together with the five component tests, **13 existing tests passed across four files**. No proposed Universe tests were run because production files and tests are not created by these preparation plans.
 
 Documentation verification: 18 documents checked for relative links/heading anchors and whitespace; nine epic plans contain exactly the 31 unique slice work packages in the epic register. No coverage or link errors. Preparation-plan placeholder scan found no unresolved placeholder markers. This structural check does not turn qualification-dependent work packages into executable coding plans.
+
+## Reconciled readiness boundaries
+
+These are parts of the accepted V1, not a smaller ship-ready V1:
+- Foundation/presentation work can progress after explicit approval and BASE/DESIGN/preference-contract readiness: E1 controller/layout/tray/surfaces, E2.1 context, E2.4 manual task replies and corresponding E8.1 controls.
+- Manual E4.1 intake additionally requires its ledger data-class/publication decision. E5.1 local rendering can progress separately, but full block persistence/actions require E1.2 checkpoints, E1.3 drafts and E2.2 outcomes. Neither whole slice is presently certified.
+- E2.3 snapshot core consumes E1.2/E2.2/1; integrated attention consumes E7.3/1. E7.3/1 publishes authorized read projection using existing canonical reads/replay and E8.1/1 preference contract; it does not depend on E2.3's aggregate snapshot. E8.1/2 binds its UI after consumers.
+- E4.2 converter/indexing and E4.3 media generation need named runtime/distribution/policy qualification. Indexing retains private destination authorization through search/context and is not implicit company Memory ingestion.
+- E7.2 has an explicit terminal-writer inventory/transaction gate: choose complete per-writer markers or a proven canonical transactional outbox/chokepoint. Routine-run qualification may precede issue-source qualification, but both remain V1.
+- CMD/BROWSER/CLOUD/PROFILE/APPROVAL/VOICE/HOST remain open for their affected increments. BASE is an accepted source pin plus still-open execution refresh/authority review, not a claim that replatform is fully stable. DESIGN/UAT remains separate from engineering gates.
+
+Before coding a gated increment, record an accountable engineer and reviewer, source/protocol evidence, acceptance test and dependency commit in its binding record. Workstream labels are not named ownership, and this correction assigns no people. Ledger A/B/C authority choice, media execution/credential policy, terminal transaction design, host/converter qualification and premature-draft disposition remain explicit review items. Recommend company-scoped same-role publication for human intake only if the security reviewer verifies that boundary; no non-owner grant expansion or owner fallback is adopted by this plan.
+
+The report's fixed-750ms routine-tick claim is incorrect: pinned index.ts uses config.heartbeatSchedulerIntervalMs for the routine timer. E7.1's bounded in-flight guard/export tests follow that actual seam. #104's August 8 cloud credential amendment narrows the older keyless principle; new media API permission still requires qualification and cannot be inferred.
+
+### Formal user acceptance
+
+[The UAT plan](user-acceptance-plan.md) maps U01–U10, all master connected journeys and every slice to numbered human acceptance scripts and a pass/fail/blocked/not-run record. E8.2 aggregates per-slice results. Developer tests cannot substitute for TK or a designated product tester's recorded acceptance. No UAT is claimed executed here.

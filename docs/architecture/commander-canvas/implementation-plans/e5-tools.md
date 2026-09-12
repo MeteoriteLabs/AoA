@@ -32,8 +32,8 @@
 
 **Proposed files / test ownership:**
 - `packages/shared/src/validators/universe-blocks.ts`
-- `ui/src/components/universe/blocks/registry.ts`
-- `ui/src/components/universe/blocks/__tests__/registry.test.ts`
+- `ui/src/components/universe/blocks/registry.tsx`
+- `ui/src/components/universe/blocks/__tests__/registry.test.tsx`
 
 **Interface boundary:** Consumes schema-validated data and granted reference context; emits checkpoint/context/action intent with stable identity. Model data never registers privileged code.
 

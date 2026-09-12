@@ -4,11 +4,11 @@
 
 First-batch preparation is now recorded in [baseline and readiness](first-batch-readiness.md), [remaining UI state designs](ui-state-review.md) and the [canvas/controller coding plan](coding-plans/e1-1-canvas-controller.md). Written states and reference-controller checks are complete; visual review and real React Flow/host qualification remain distinct gates.
 
-**Latest decision:** The [V1/V2 grouping](release-plans/README.md) remains accepted. The same Universe branch will start from a verified replatform revision after detailed planning/self-review; implementation approval remains open. Earlier statements that first-slice execution was accepted were incorrect and are superseded by the user's explicit planning-only correction.
+**Latest decision:** The [V1/V2 grouping](release-plans/README.md) remains accepted. The same Universe branch codex/universe-interface now exists from the verified replatform revision, carrying planning documents; implementation approval remains open. Earlier statements that first-slice execution was accepted were incorrect and are superseded by the user's explicit planning-only correction.
 
 Latest release planning: [V1/V2 allocation recommendation](release-plans/README.md) and [31 individual slice plans](slice-plans/README.md). The accepted allocation retains 30 slices in V1 and places E3.4 later speech modes in V2. The agreed execution rule is to finish and verify all V1 before starting V2 implementation. Individual plans define delivery increments; exact coding bindings remain gated as described in [coding readiness](slice-plans/coding-readiness.md).
 
-**Latest planning packet:** [31 detailed coding plans](coding-plans/README.md), [source/interface bindings](implementation-bindings.md), [whole-packet self-review](planning-self-review.md), [publication and Claude handoff](claude-review-handoff.md). All 69 increments have concrete steps or conditional qualification protocols. Independent review and runtime qualification remain open.
+**Latest planning packet:** [31 detailed coding plans](coding-plans/README.md), [source/interface bindings](implementation-bindings.md), [whole-packet self-review](planning-self-review.md), [publication and Claude handoff](claude-review-handoff.md). All 69 increments have concrete steps or conditional qualification protocols. [Claude's independent review](independent-review-report.md) is now received. The [author reconciliation](independent-review-response.md) addresses it; re-review and runtime qualification remain open. [Formal UAT](user-acceptance-plan.md) maps every slice to future product acceptance; no runs are claimed.
 
 Start with the [master scope](master-scope.md), then the [code evidence and dependency map](code-evidence.md).
 
