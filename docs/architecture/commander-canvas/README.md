@@ -12,6 +12,8 @@ Latest release planning: [V1/V2 allocation recommendation](release-plans/README.
 
 **Latest accepted direction:** human uploads use selected A, canonical company-scoped assets with actor/destination access. Independent processing preserves originals and private source boundaries. See [updated decisions](final-planning-decisions.md) and [E4.1](coding-plans/e4-1.md); [Claude's focused review of abbfc3c7e](human-intake-review-report.md) is received and author-verified: no material findings for selected A. This closes that focused planning round, not engineering qualification.
 
+**Next technical proposal:** [Worker publication](worker-publication-plan.md) records the recommended application/worker boundary, durable output copy, receipt identity, cancellation and private indexing. Owning E4/E5 plans are reconciled; independent/security acceptance and named source qualifications remain open. This is not a new implementation authorization.
+
 Start with the [master scope](master-scope.md), then the [code evidence and dependency map](code-evidence.md).
 
 Latest planning pass: [implementation readiness review](readiness-review.md) and [nine per-epic preparation plans](implementation-plans/README.md), covering all 31 slices with a freshly checked replatform baseline. These distinguish planned work from executable coding readiness and do not close the upstream gates.

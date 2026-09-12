@@ -69,3 +69,7 @@ Retention and deletion follow company policy and canonical references, including
 12. Long-session media/document rendering remains bounded while background processing continues.
 
 The scope synthesis and replatform dependency map are now recorded in master-scope.md and code-evidence.md. Existing rendering tests do not validate this new processing pipeline. Implementation and its stage-recovery tests remain outstanding.
+
+## Proposed worker-to-canonical publication boundary
+
+The [worker-publication addendum](worker-publication-plan.md) recommends existing non-owner committed worker outputs feeding a separately authorized application publisher. It verifies exact admitted output identity, promotes permitted bytes into durable canonical storage, and commits one result/receipt/audit. Worker version numbers are not application version identity; temporary object retention is not canonical retention. Application processing/index/receipt state is proposed company/actor/destination-scoped; this needs independent/security acceptance. Cancellation, revocation, cleanup and result repair are explicitly specified there. Human intake A, task attachment authority and private-source guarantees remain unchanged.

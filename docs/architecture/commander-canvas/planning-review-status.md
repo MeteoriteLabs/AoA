@@ -28,3 +28,7 @@ Local document-link and count validation is recorded with the handoff. Runtime t
 ## Completed author review packet
 
 See [detailed plans](coding-plans/README.md), [shared bindings](implementation-bindings.md), [self-review](planning-self-review.md) and [Claude handoff](claude-review-handoff.md). This is the complete review target, superseding the earlier process-only packet. The [initial external report](independent-review-report.md) and [received focused re-review](focused-review-report.md) are preserved separately from the author response. Review closure is specific to the reviewed contracts; no runtime, UAT or implementation approval is claimed.
+
+## Worker-publication proposal awaiting review
+
+The [new addendum](worker-publication-plan.md) and owning E4/E5 plans recommend application-scoped processing/index/publication/grant records while retaining existing non-owner job authority, with durable verified-copy and publication receipt reconciliation. The author traced the pinned committed identity, canonical writers, grant restrictions, retention and frozen source kinds and reviewed propagation. This is not yet independently reviewed or security-accepted. Human-intake review closure stands for its unchanged scope; new proposal gates do not invalidate it. TK-managed review prompt is in the handoff.

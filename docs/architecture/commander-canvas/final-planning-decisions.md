@@ -51,7 +51,7 @@ The current non-owner aoa_app grants for assets/artifacts/artifact_versions are 
 | B — organization-owned ledger plus reviewed write grants | Could compose permitted writes in one non-owner transaction | Requires privilege expansion, exact role trace and separate security migration/review |
 | C — organization-owned ledger plus durable publication protocol | Preserves existing legacy grants | Two-transaction intent/receipt recovery, cancellation and crash protocol must be fully specified |
 
-**Accepted planning choice:** A for human original intake only. If a distributed derivative/index or executable-host grant ledger must be organization-owned, prefer investigating C before expanding grants under B. The human-intake choice is selected; the distributed-ledger preference remains an investigation direction, not a selected implementation for every ledger.
+**Accepted planning choice:** A for human original intake only. If a distributed derivative/index or executable-host grant ledger must be organization-owned, prefer investigating C before expanding grants under B. The human-intake choice is selected. The subsequent [worker-publication proposal](worker-publication-plan.md) recommends application-owned derivative/index/receipt and tool-grant records, reusing the existing organization-owned committed job ledger across a C-style reconciliation boundary. This avoids adding organization-owned projections solely because a worker produces their input. It is a concrete technical recommendation awaiting independent/security acceptance, not an accepted blanket A/C decision.
 
 The security decision must classify each store separately: original-intake records, derivatives, asset index, generation/publication receipts, E5 grant ledger. Record company versus organization ownership, actor/destination access, actual connection role, canonical writer, source lineage, retention, migration and recovery protocol. E1 personal UI tables remain their already-planned company/user scope; do not apply a blanket RLS retrofit or modify the frozen grant manifest.
 
@@ -152,7 +152,7 @@ These decisions can be discussed together, but each gets an explicit outcome, ow
 
 ## Next planning deliverables after the human-intake review
 
-1. Finish the distributed processing/publication proposal for E4.2/E4.3/E5: classify each store, name its authorized writer and define durable receipts, cancellation, crash recovery and private-source access. Keep ordinary human intake independent.
+1. Review the now-drafted [worker-publication proposal](worker-publication-plan.md): per-store authority, verified durable copy, receipts, cancellation and recovery are specified and propagated to E4/E5. Exact processor admission, accepted output binding, revocation coordination and retention qualification remain open. Keep ordinary human intake independent.
 2. Prepare the concrete D3 speech/media policy and provider contract packet, researching current official vendor contracts before recommending credentials, SDKs or retention terms. Present material product/cost/privacy decisions to TK; do not run providers.
 3. Complete the reviewer/responsibility record with actual accepted identities. Do not invent assignments or treat the author as an independent reviewer.
 4. Prepare the bounded BASE/DESIGN qualification proposal: exact replatform SHA, environment, commands, expected evidence and inherited-failure handling. Bring the concrete scope to TK before any execution; qualifications do not authorize coding.

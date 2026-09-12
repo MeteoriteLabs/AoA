@@ -102,3 +102,7 @@ The report's fixed-750ms routine-tick claim is incorrect: pinned index.ts uses c
 ### Formal user acceptance
 
 [The UAT plan](user-acceptance-plan.md) maps U01–U10, all master connected journeys and every slice to numbered human acceptance scripts and a pass/fail/blocked/not-run record. E8.2 aggregates per-slice results. Developer tests cannot substitute for TK or a designated product tester's recorded acceptance. No UAT is claimed executed here.
+
+## Worker-publication readiness update
+
+The [worker-publication proposal](worker-publication-plan.md) replaces generic alternatives with a concrete per-store recommendation and recovery protocol. E4.2/2 owns its common producer; E4.3/1 and E5.2 consume relevant boundaries. It does not close runtime readiness: exact processor admission under frozen source kinds, accepted output-slot mapping, permission-revocation serialization, retention/promotion policy, application security classification and HOST evidence still need qualified bindings/owners. No new slice/increment or V1 reduction is proposed.

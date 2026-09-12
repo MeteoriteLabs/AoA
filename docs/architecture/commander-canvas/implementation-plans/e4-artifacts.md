@@ -115,3 +115,7 @@ pnpm build
 Unit/DB integration tests must use repository fixtures and authentic tenant/actor construction; browser integration tests use the real configured test application. Run only the commands relevant to the task under review; full combined checks precede runtime handoff. Provider and worker qualification requires a separately authorized configured environment. Missing runtime qualification cannot be replaced by source inspection.
 
 This plan defines work and its acceptance. It deliberately does not fabricate complete implementation code or provider signatures for open gates. BASE binding and relevant qualification produce those executable coding details before production implementation. All boxes remain unchecked because this pass changes documentation only.
+
+## Worker-publication planning follow-up
+
+Consume the [worker-publication design and addendum](../worker-publication-plan.md). E4.2/2 owns the proposed common application receipt/coordinator; E4.3/1 integrates immutable artifact/version writing. Existing job/output records remain non-owner tenant-owned. Application derivative/index/receipt records and E5.2 grant/action-link records are proposed company/actor/destination-scoped, pending independent/security review. The addendum replaces generic A/B/C alternatives for these proposed stores with a concrete recommendation; exact admission, accepted-output, revocation, retention and HOST qualifications remain open. No implementation approval or new increment/release allocation is implied.

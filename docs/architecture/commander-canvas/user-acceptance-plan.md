@@ -137,6 +137,9 @@ Each script below has a defined role, setup, actions and pass criteria. Run vari
 2. Export through authorized controls and inspect source/version provenance.
 3. Lose the result acknowledgement during permitted generation; read canonical outcome before retry. Verify one paid/admitted result where the contract can prove it and honest uncertainty otherwise.
 
+4. With the separately authorized failure fixture from [worker publication](worker-publication-plan.md), interrupt publication after durable copy and after canonical commit. Restore the view: one result is recovered without new generation; a delayed reply repairs to the same version.
+5. Cancel before publication, then after publication. The first prevents a new result; the second preserves the saved result. Expire the temporary worker source after successful publication and confirm the canonical download still works. Revoke source access during processing and verify no late private preview/index disclosure. Record simulated versus real evidence distinctly.
+
 **Pass:** immutable identity and source links survive comparison/export/recovery. Execute only generation supported by locked Decision #104 and E4.3's approved scope; blocked upstream generation cannot be certified through a fake preview or broadened extraction path.
 
 ### UAT-12 — Reviewed blocks and isolated tools
