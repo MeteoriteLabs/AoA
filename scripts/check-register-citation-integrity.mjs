@@ -92,7 +92,7 @@
  *   node scripts/check-register-citation-integrity.mjs --root <fixture-dir>   # tests only
  */
 
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
@@ -175,6 +175,15 @@ export const KNOWN_REPO_ROOTS = new Set([
  */
 const ANCHOR_RADIUS = 5;
 
+/** The violation categories a grandfather entry may excuse (one per entry). */
+export const VIOLATION_CATEGORIES = new Set([
+  "missing-file",
+  "out-of-range",
+  "blank-line",
+  "missing-anchor",
+  "anchor-not-found",
+]);
+
 /** A backtick anchor immediately AFTER `path:LINE` (optionally wrapped in `(`). */
 const ANCHOR_AFTER_RE = /^\s*\(?\s*`([^`\n]{1,80})`/;
 /** A backtick anchor immediately BEFORE the path (e.g. `` `admit()` at path:LINE ``). */
@@ -226,7 +235,11 @@ export function parseCitations(text) {
 function anchorFor(text, start, end) {
   const after = ANCHOR_AFTER_RE.exec(text.slice(end, end + 90));
   if (after) return after[1].trim();
-  const before = ANCHOR_BEFORE_RE.exec(text.slice(Math.max(0, start - 40), start));
+  // ★ CODEX P2 (:230) — slice enough for the 80-char token ANCHOR_BEFORE_RE accepts. At 40 chars
+  // a before-style anchor longer than ~34 chars lost its opening backtick from the window and
+  // parsed as null (a false RED). 90 = 80-char token + two backticks + the small ` at `/` in `/`,`
+  // delimiters the regex allows before the citation.
+  const before = ANCHOR_BEFORE_RE.exec(text.slice(Math.max(0, start - 90), start));
   if (before) return before[1].trim();
   return null;
 }
@@ -252,12 +265,32 @@ export function anchorVariants(token) {
   return [...out];
 }
 
-/** Does any variant of `token` appear within ±ANCHOR_RADIUS lines of [lo, hi]? */
+/**
+ * Does the anchor `token` appear in `hay`?
+ *
+ * ★ CODEX P2 (:251) — the call-name variant must match at an IDENTIFIER BOUNDARY followed by call
+ * syntax, NOT as an arbitrary substring. Under plain `includes`, a moved `admit()` was satisfied by
+ * an unrelated `admittedUserRequester` sitting in the window — the stripped name `admit` is a
+ * substring of it. The raw anchor still matches verbatim (it may contain operators/spaces, so a
+ * substring test is right for it); only the `foo()`→`foo` spelling is boundary-and-call gated.
+ */
+export function anchorMatches(hay, token) {
+  const raw = String(token || "").trim();
+  if (raw.length < 2) return false;
+  if (hay.includes(raw)) return true;
+  const call = /^([A-Za-z_$][\w$.]*)\s*\(/.exec(raw);
+  if (call && call[1].length >= 3) {
+    const name = call[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(?<![A-Za-z0-9_$.])${name}\\s*\\(`).test(hay);
+  }
+  return false;
+}
+
+/** Does the anchor `token` appear within ±ANCHOR_RADIUS lines of [lo, hi]? */
 function anchorNearby(lines, lo, hi, token) {
   const from = Math.max(0, lo - 1 - ANCHOR_RADIUS);
   const to = Math.min(lines.length, hi + ANCHOR_RADIUS);
-  const hay = lines.slice(from, to).join("\n");
-  return anchorVariants(token).some((v) => hay.includes(v));
+  return anchorMatches(lines.slice(from, to).join("\n"), token);
 }
 
 /** Is `p` repo-root-anchored — path with a `/` whose first segment is a known repo root? */
@@ -327,22 +360,22 @@ export function collect(root) {
 }
 
 /**
- * The set of repo-root names used to decide anchoring: the STATIC KNOWN_REPO_ROOTS unioned with
- * whatever directories currently exist at `root`. The static half guarantees a citation under a
- * DELETED root is still classified anchored (so it reds on file-exists rather than being skipped);
- * the dynamic half picks up a NEW top-level directory a later PR adds. Anchoring therefore never
- * DEPENDS on a cited root existing at HEAD — that is exactly the false-negative this closes.
+ * The set of repo-root names used to decide anchoring: the STATIC KNOWN_REPO_ROOTS, and ONLY that.
+ *
+ * ★ CODEX P2 (:340) — DO NOT union in the directories that happen to exist at `root`. An earlier
+ * version did, and it made classification depend on the filesystem in a way that was inconsistent
+ * across a directory's lifetime: a top-level dir NOT in the static list was classified anchored
+ * while it existed (picked up by the dynamic scan) but silently reclassified UNANCHORED once
+ * deleted (dropped from the scan, never in the static list) — so a citation into a since-deleted
+ * root skipped instead of red-ing on file-exists. Anchoring is now a pure function of the static
+ * allowlist, so it never changes when the tree does: a deleted KNOWN root still classifies anchored
+ * and reds via file-exists. The list is the explicit, reviewed record of the repo's roots — a NEW
+ * top-level source directory must be ADDED here (a deliberate, reviewed act), exactly as an
+ * allowlist is meant to be maintained. `root` is accepted for API stability and intentionally
+ * unused.
  */
-export function computeRepoRoots(root) {
-  const set = new Set(KNOWN_REPO_ROOTS);
-  try {
-    for (const e of readdirSync(root, { withFileTypes: true })) {
-      if (e.isDirectory()) set.add(e.name);
-    }
-  } catch {
-    // A missing/unreadable root leaves the static set — never fewer roots than the static list.
-  }
-  return set;
+export function computeRepoRoots(_root) {
+  return new Set(KNOWN_REPO_ROOTS);
 }
 
 /**
@@ -380,13 +413,19 @@ export function evaluateCitationIntegrity(input) {
     );
     return { errors, notes };
   }
-  const grandfatherSigs = new Map(); // sig -> reason
+  // ★ CODEX P2 (:468) — a grandfather entry excuses ONE violation CATEGORY, not the signature
+  // wholesale. Before, an entry keyed only on crossing|path|line suppressed ANY violation there,
+  // so a citation grandfathered for "can't be anchored" (missing-anchor) would ALSO silently mask
+  // a NEW missing-file or out-of-range at the same line. Each entry now declares the exact category
+  // it excuses, and only that category is suppressed; any other failure at that signature still reds.
+  const grandfatherSigs = new Map(); // "sig|category" -> reason
+  const grandfatherKeys = new Map(); // "sig|category" -> {crossing,p,line,category,reason} for stale reporting
   for (const [i, e] of entries.entries()) {
     if (e == null || typeof e !== "object" || Array.isArray(e)) {
       errors.push(`${GRANDFATHER_JSON}: entry #${i} is not an object`);
       continue;
     }
-    const { crossing, path: p, line, reason } = e;
+    const { crossing, path: p, line, reason, category } = e;
     if (typeof crossing !== "string" || typeof p !== "string" || typeof line !== "string") {
       errors.push(`${GRANDFATHER_JSON}: entry #${i} must carry string "crossing", "path", and "line" (got ${JSON.stringify(e)})`);
       continue;
@@ -395,14 +434,23 @@ export function evaluateCitationIntegrity(input) {
       errors.push(`${GRANDFATHER_JSON}: entry for ${crossing} ${p}:${line} needs a non-empty "reason" — a grandfather without a reason is silent debt`);
       continue;
     }
-    grandfatherSigs.set(citationSignature(crossing, p, line), reason);
+    if (typeof category !== "string" || !VIOLATION_CATEGORIES.has(category)) {
+      errors.push(
+        `${GRANDFATHER_JSON}: entry for ${crossing} ${p}:${line} needs a "category" naming the SINGLE violation it excuses ` +
+          `(one of ${[...VIOLATION_CATEGORIES].join(", ")}); a category-less grandfather would mask unrelated new failures at the same line.`,
+      );
+      continue;
+    }
+    const key = `${citationSignature(crossing, p, line)}|${category}`;
+    grandfatherSigs.set(key, reason);
+    grandfatherKeys.set(key, { crossing, p, line, category, reason });
   }
 
   // --- compute raw violations (ignoring the grandfather list) --------------------------
   // Group the in-scope occurrences by signature: N occurrences of the same citation collapse to
   // one verdict, and the citation is anchored if ANY occurrence carries a verifying anchor (so a
   // repeated citation need only be anchored once).
-  const rawViolations = new Map(); // sig -> message
+  const rawViolations = new Map(); // sig -> { message, category }
   const bySig = new Map(); // sig -> occurrences[]
   const bestEffort = { bare: 0, unanchored: 0, filenameOnly: 0 };
 
@@ -425,55 +473,59 @@ export function evaluateCitationIntegrity(input) {
     const f = files[c.path];
 
     if (!f || !f.exists) {
-      rawViolations.set(sig, `${cite}: cited file does not exist at HEAD (moved, renamed, or deleted).`);
+      rawViolations.set(sig, { category: "missing-file", message: `${cite}: cited file does not exist at HEAD (moved, renamed, or deleted).` });
       continue;
     }
     const [lo, hi] = lineBounds(c.line);
     if (!Number.isInteger(lo) || lo < 1 || !Number.isInteger(hi) || hi < lo || hi > f.lines.length) {
-      rawViolations.set(
-        sig,
-        `${cite}: line ${c.line} is outside the file, which has ${f.lines.length} lines (the file shifted or shrank under a citation that did not move).`,
-      );
+      rawViolations.set(sig, {
+        category: "out-of-range",
+        message: `${cite}: line ${c.line} is outside the file, which has ${f.lines.length} lines (the file shifted or shrank under a citation that did not move).`,
+      });
       continue;
     }
     // (c) reaches-real-code: a single-line code citation must not land on a blank line.
     if (CODE_EXT_RE.test(c.path) && lo === hi && (f.lines[lo - 1] ?? "").trim() === "") {
-      rawViolations.set(sig, `${cite}: cites a BLANK line — the citation has drifted onto whitespace and reaches no code.`);
+      rawViolations.set(sig, { category: "blank-line", message: `${cite}: cites a BLANK line — the citation has drifted onto whitespace and reaches no code.` });
       continue;
     }
     // (d) REQUIRED anchor: every enforced citation must carry an adjacent backtick anchor.
     const tokens = [...new Set(occs.map((o) => o.anchorToken).filter((t) => typeof t === "string" && t.trim() !== ""))];
     if (tokens.length === 0) {
-      rawViolations.set(
-        sig,
-        `${cite}: MISSING anchor — every enforced citation must carry an adjacent backtick anchor naming a ` +
+      rawViolations.set(sig, {
+        category: "missing-anchor",
+        message:
+          `${cite}: MISSING anchor — every enforced citation must carry an adjacent backtick anchor naming a ` +
           `distinctive symbol/snippet on the cited line, e.g. \`${c.path}:${c.line} (\`someDistinctiveSymbol\`)\`. ` +
           "Cite by symbol: the anchor is the source of truth, the line is a hint.",
-      );
+      });
       continue;
     }
     // (e) VERIFY anchor: at least one anchor must appear within ±N lines of the cited line/range.
     if (!tokens.some((t) => anchorNearby(f.lines, lo, hi, t))) {
-      rawViolations.set(
-        sig,
-        `${cite}: anchor ${tokens.map((t) => "`" + t + "`").join(" / ")} does not appear within ±${ANCHOR_RADIUS} lines of ` +
+      rawViolations.set(sig, {
+        category: "anchor-not-found",
+        message:
+          `${cite}: anchor ${tokens.map((t) => "`" + t + "`").join(" / ")} does not appear within ±${ANCHOR_RADIUS} lines of ` +
           `line ${c.line} — the construct moved (re-point the line) or was deleted/renamed (re-anchor).`,
-      );
+      });
       continue;
     }
   }
 
-  // --- apply grandfather, then flag stale grandfather entries --------------------------
-  for (const [sig, message] of [...rawViolations].sort()) {
-    if (grandfatherSigs.has(sig)) continue; // legitimately grandfathered
-    errors.push(message);
+  // --- apply grandfather (per category), then flag stale grandfather entries -----------
+  for (const [sig, v] of [...rawViolations].sort()) {
+    if (grandfatherSigs.has(`${sig}|${v.category}`)) continue; // this exact category is excused
+    errors.push(v.message);
   }
-  for (const [sig, reason] of [...grandfatherSigs].sort()) {
-    if (!rawViolations.has(sig)) {
-      const [crossing, p, line] = sig.split("|");
+  for (const [key, meta] of [...grandfatherKeys].sort()) {
+    const v = rawViolations.get(citationSignature(meta.crossing, meta.p, meta.line));
+    if (!v || v.category !== meta.category) {
       errors.push(
-        `${GRANDFATHER_JSON}: the entry for ${crossing} ${p}:${line} is STALE — that citation no longer violates any check ` +
-          `(reason on file: ${JSON.stringify(reason)}). Remove the entry in the commit that fixed the citation; a grandfather that outlives its reason is silent debt.`,
+        `${GRANDFATHER_JSON}: the entry for ${meta.crossing} ${meta.p}:${meta.line} (category "${meta.category}") is STALE — ` +
+          `that citation no longer produces a "${meta.category}" violation` +
+          `${v ? ` (it now produces "${v.category}", which this entry does NOT excuse)` : ""} ` +
+          `(reason on file: ${JSON.stringify(meta.reason)}). Remove or re-categorise the entry; a grandfather that outlives its reason is silent debt.`,
       );
     }
   }

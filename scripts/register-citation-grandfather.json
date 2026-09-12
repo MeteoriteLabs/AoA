@@ -6,7 +6,8 @@
       "crossing": "DE-12",
       "path": "packages/db/src/repositories/tenant/job-control.ts",
       "line": "2799",
-      "reason": "Historical reference: the prose pins this line to a SPECIFIC PAST COMMIT ('one update(services) at job-control.ts:2799 OF THAT COMMIT' — SVC-007a, 7f95b1ae8), so it names a construct as it stood then, not at HEAD; it cannot be anchored to the current tree and must not be re-pointed."
+      "category": "missing-anchor",
+      "reason": "Historical reference: the prose pins this line to a SPECIFIC PAST COMMIT ('one update(services) at job-control.ts:2799 OF THAT COMMIT' — SVC-007a, 7f95b1ae8), so it names a construct as it stood then, not at HEAD; it cannot be anchored to the current tree and must not be re-pointed. Only the missing-anchor is excused — a new missing-file/out-of-range/blank failure at this line would still red."
     }
   ]
 }

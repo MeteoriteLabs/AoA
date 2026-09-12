@@ -23,6 +23,7 @@ import {
   evaluateCitationIntegrity,
   parseCitations,
   anchorVariants,
+  anchorMatches,
   isAnchored,
   computeRepoRoots,
   splitPhysicalLines,
@@ -234,16 +235,46 @@ test("NEGATIVE CONTROL: an unanchored/relative path does NOT red (out of scope)"
 test("GRANDFATHER: a grandfathered violation passes; removing the entry re-reds", () => {
   const citations = [cit({ crossingId: "DE-05", path: "server/src/legacy.ts", line: "500", anchorToken: null })];
   const files = { "server/src/legacy.ts": { exists: true, lines: ["only one line"] } };
-  const withGf = evaluateCitationIntegrity(makeInput({ citations, files, entries: [{ crossing: "DE-05", path: "server/src/legacy.ts", line: "500", reason: "frozen historical block; code since moved" }] }));
+  const withGf = evaluateCitationIntegrity(makeInput({ citations, files, entries: [{ crossing: "DE-05", path: "server/src/legacy.ts", line: "500", category: "out-of-range", reason: "frozen historical block; code since moved" }] }));
   assert.deepEqual(withGf.errors, [], report(withGf.errors));
   assert.ok(hasError(evaluateCitationIntegrity(makeInput({ citations, files })).errors, "is outside the file"));
+});
+
+test("GRANDFATHER (bug 3, category-scoped): a missing-anchor entry does NOT mask a missing-FILE at the same signature", () => {
+  // The citation now fails with a DIFFERENT category (missing-file) than the entry excuses.
+  const citations = [cit({ crossingId: "DE-05", path: "server/src/legacy.ts", line: "500", anchorToken: null })];
+  const files = { "server/src/legacy.ts": { exists: false, lines: [] } }; // missing file, not missing-anchor
+  const { errors } = evaluateCitationIntegrity(makeInput({
+    citations,
+    files,
+    entries: [{ crossing: "DE-05", path: "server/src/legacy.ts", line: "500", category: "missing-anchor", reason: "excuses only the anchor" }],
+  }));
+  assert.ok(hasError(errors, "cited file does not exist at HEAD"), report(errors)); // the missing-file is NOT masked
+  assert.ok(hasError(errors, "is STALE"), report(errors)); // and the mis-categorised entry is flagged stale
+});
+
+test("GRANDFATHER (bug 3): the matching category IS suppressed", () => {
+  const citations = [cit({ crossingId: "DE-05", path: "server/src/legacy.ts", line: "500", anchorToken: null })];
+  const files = { "server/src/legacy.ts": { exists: false, lines: [] } };
+  const { errors } = evaluateCitationIntegrity(makeInput({
+    citations, files,
+    entries: [{ crossing: "DE-05", path: "server/src/legacy.ts", line: "500", category: "missing-file", reason: "the file is legitimately gone" }],
+  }));
+  assert.deepEqual(errors, [], report(errors));
+});
+
+test("GRANDFATHER: an entry with NO category reds (a category-less grandfather would mask unrelated failures)", () => {
+  const citations = [cit({ crossingId: "DE-05", path: "server/src/legacy.ts", line: "500", anchorToken: null })];
+  const files = { "server/src/legacy.ts": { exists: true, lines: ["x"] } };
+  const { errors } = evaluateCitationIntegrity(makeInput({ citations, files, entries: [{ crossing: "DE-05", path: "server/src/legacy.ts", line: "500", reason: "no category" }] }));
+  assert.ok(hasError(errors, 'needs a "category"'), report(errors));
 });
 
 test("GRANDFATHER: a STALE entry (its citation no longer violates) reds — self-cleaning", () => {
   const input = makeInput({
     citations: [cit({ crossingId: "DE-05", path: "server/src/foo.ts", line: "2", anchorToken: "doThing" })],
     files: passFiles(),
-    entries: [{ crossing: "DE-05", path: "server/src/foo.ts", line: "2", reason: "stale — was drift, now fixed" }],
+    entries: [{ crossing: "DE-05", path: "server/src/foo.ts", line: "2", category: "missing-anchor", reason: "stale — was drift, now fixed" }],
   });
   assert.ok(hasError(evaluateCitationIntegrity(input).errors, "is STALE"));
 });
@@ -299,4 +330,39 @@ test("isAnchored: only a slash-path whose first segment is a repo root", () => {
   assert.equal(isAnchored("server/src/a.ts", roots), true);
   assert.equal(isAnchored("routes/a.ts", roots), false);
   assert.equal(isAnchored("a.ts", roots), false);
+});
+
+// --- CODEX P2 GUARD-LOGIC CONTROLS ------------------------------------------------------
+
+test("BUG1 (call-name boundary): a moved `admit()` is NOT satisfied by an unrelated `admittedUserRequester`", () => {
+  // unit: the stripped call name matches only at an identifier boundary + call syntax
+  assert.equal(anchorMatches("  return admit(payload);", "admit()"), true);
+  assert.equal(anchorMatches("async function admittedUserRequester(input) {", "admit()"), false);
+  assert.equal(anchorMatches("const x = preadmit(y);", "admit()"), false);
+  // integration: anchor `admit()` whose ±5 window holds only `admittedUserRequester` reds
+  const lines = ["l1", "l2", "async function admittedUserRequester(input) {", "l4", "l5"];
+  const input = makeInput({ citations: [cit({ line: "3", anchorToken: "admit()" })], files: { "server/src/foo.ts": { exists: true, lines } } });
+  assert.ok(hasError(evaluateCitationIntegrity(input).errors, "does not appear within ±5 lines"), "the substring-match false-pass must be gone");
+});
+
+test("BUG2 (static roots): classification is filesystem-independent — no dynamic union of existing dirs", () => {
+  // computeRepoRoots ignores the tree: it never picks up a currently-existing non-repo dir...
+  assert.equal(computeRepoRoots(REPO_ROOT).has("node_modules"), false, "a currently-existing non-repo dir must NOT be auto-classified a root");
+  // ...and always returns exactly the static set, whatever path is passed
+  assert.deepEqual([...computeRepoRoots("/nonexistent")].sort(), [...KNOWN_REPO_ROOTS].sort());
+  // so a KNOWN root that does NOT exist on disk still classifies anchored -> reds on file-exists
+  assert.equal(isAnchored("server/src/gone.ts", computeRepoRoots("/whatever")), true);
+});
+
+test("BUG4 (before-slice): a ~60-char before-style backtick anchor is captured, not lost", () => {
+  const anchor = "a sixty character distinctive before-anchor phrase here yes"; // 59 chars, > the old 40 window
+  assert.ok(anchor.length > 40 && anchor.length <= 80);
+  const cits = parseCitations("`" + anchor + "` at server/src/a.ts:10 does the thing");
+  assert.equal(cits.length, 1);
+  assert.equal(cits[0].anchorToken, anchor, "the before-style anchor must survive the widened slice");
+});
+
+test("BUG4: an after-style anchor still wins over a before-style one (precedence unchanged)", () => {
+  const cits = parseCitations("`before` at server/src/a.ts:10 (`after`) end");
+  assert.equal(cits[0].anchorToken, "after");
 });
