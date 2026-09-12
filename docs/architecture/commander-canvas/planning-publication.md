@@ -82,3 +82,7 @@ TK requested the required updates and a readiness answer. The received report is
 ## Voice/media planning publication
 
 TK requested finishing the next D3 planning deliverable. Two documents add the concrete policy/producer proposal and dated official provider research; E3/E4/E8, settings, bindings, status and review handoff are linked. Self-review preserves source policy, strict purpose checks, canonical outcomes and V1 scope; pending privacy acceptance is not inferred. Validate 132 documents, 31 slice/coding plans, 69 increments per set, 20 UAT scripts, proposed-path collisions and docs-only whitespace before push. No code, migrations, dependencies, credentials, runtime tests, provider sessions or paid qualification ran.
+
+## Privacy baseline accepted — September 12, 2026
+
+TK accepted the recommended company-admin review of disclosed provider terms, with AoA recording off by default and stricter company privacy requirements enforced. Disclosure, acceptance and the company privacy controls belong in Providers voice configuration. Updated policy, decision record, current status and review prompt; actual vendor terms, exact amendment/relay acceptance, runtime qualification and implementation remain separately gated.

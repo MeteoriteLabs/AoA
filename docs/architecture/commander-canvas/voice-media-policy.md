@@ -20,9 +20,9 @@ Only actor-authorized context selected for this conversation or immutable genera
 
 Support is evaluated per capability, connection, model, region and deployment mode. An unsupported path is unavailable with a reason; no silent fallback to another account, model, provider or less restrictive privacy policy. All three voice providers and media families remain V1; inability to qualify one is a release dependency, not scope reduction.
 
-## Product settings and unresolved acceptance
+## Accepted privacy baseline and settings
 
-Recommended privacy baseline: a company admin explicitly enables a provider after seeing its current retention, training-use, subprocessors/region and commercial-use terms. AoA recording defaults off; transcript retention follows the existing conversation policy. Verified stricter company requirements override user preferences. The alternative is mandatory verified zero provider retention, which can exclude ordinary account tiers or endpoints. TK was asked to choose; no response is recorded in this packet. The baseline here is a recommendation awaiting acceptance, not consent to actual vendor terms.
+Privacy baseline accepted by TK on September 12, 2026: a company admin explicitly enables a provider after seeing its current retention, training-use, subprocessors/region and commercial-use terms. AoA recording defaults off; transcript retention follows the existing conversation policy. Verified stricter company requirements override user preferences. AoA does not impose verified zero provider retention universally; companies may require it as a stricter policy. TK confirmed that disclosure, admin acceptance and these company privacy requirements belong in the same Providers voice-configuration area as connection and readiness settings. This accepts the product behavior, not any actual vendor terms, account activation or provider spend.
 
 Settings remain in their agreed locations:
 - Providers: connection, enabled capabilities, model/voice availability, region/retention disclosures and explicit readiness checks. A saved key or CLI login alone is not ready voice.
@@ -118,6 +118,6 @@ Acceptance tests supplement the existing E3/E4 cases: wrong-company issuance; mi
 Author review corrected generic Secrets binding assumptions, process-local budget signalling, provider-ID mapping, temporary-token revocation assumptions, protocol-family mixing, media retry uncertainty and Sora selection. No universal SDK, region, zero-retention guarantee or paid trial is asserted.
 
 Ready now: concrete narrow amendment, evidence, recommended paths, ownership and test mapping for review.
-Awaiting TK: privacy baseline choice and acceptance of the amendment/relay data path as proposed. No pending question is treated as approval.
+Accepted by TK: the privacy baseline and its location in Providers voice configuration. Still awaiting acceptance: the exact amendment/relay data path as proposed. Privacy acceptance does not authorize implementation, runtime qualification or actual provider terms.
 Awaiting engineering qualification: account-level capability/retention proof, accepted budget exposure, exact active-stop and CMD bindings, final protocol/SDK version and runtime evidence.
 Next: independent focused review of this material D3 proposal, then record TK's decisions; prepare bounded BASE/DESIGN authorization separately. Implementation remains paused.

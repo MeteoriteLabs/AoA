@@ -48,4 +48,4 @@ The master scope is the current product baseline; companion contracts specify pl
 
 ## Voice/media review packet
 
-[Concrete D3 proposal](voice-media-policy.md) and [September 12 official evidence](voice-media-provider-evidence.md) are ready for review. The packet preserves scope and records pending privacy/policy acceptance separately from engineering qualification. It does not start implementation.
+[Concrete D3 proposal](voice-media-policy.md) and [September 12 official evidence](voice-media-provider-evidence.md) are ready for review. The packet preserves scope and records TK-accepted privacy settings separately from pending amendment/relay acceptance and engineering qualification. It does not start implementation.
