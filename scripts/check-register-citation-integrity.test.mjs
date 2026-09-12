@@ -24,6 +24,7 @@ import {
   parseCitations,
   anchorVariants,
   anchorMatches,
+  anchorMatchCount,
   isAnchored,
   computeRepoRoots,
   splitPhysicalLines,
@@ -125,7 +126,7 @@ test("NEGATIVE CONTROL (c): a citation onto a COMMENT line passes (register cite
 });
 
 test("NEGATIVE CONTROL (c): a citation onto an IMPORT line passes", () => {
-  const input = makeInput({ citations: [cit({ line: "1", anchorToken: "myThing" })], files: { "server/src/foo.ts": { exists: true, lines: ['import { myThing } from "./x";', "", "myThing();"] } } });
+  const input = makeInput({ citations: [cit({ line: "1", anchorToken: "uniqueImportedThing" })], files: { "server/src/foo.ts": { exists: true, lines: ['import { uniqueImportedThing } from "./x";', "", "run();"] } } });
   assert.deepEqual(evaluateCitationIntegrity(input).errors, []);
 });
 
@@ -365,4 +366,41 @@ test("BUG4 (before-slice): a ~60-char before-style backtick anchor is captured, 
 test("BUG4: an after-style anchor still wins over a before-style one (precedence unchanged)", () => {
   const cits = parseCitations("`before` at server/src/a.ts:10 (`after`) end");
   assert.equal(cits[0].anchorToken, "after");
+});
+
+// --- DISTINCTIVENESS ORACLE (the structural fix for the wrong-line false-pass class) ----
+
+test("anchorMatchCount: counts in-window occurrences (0 / 1 / 2)", () => {
+  assert.equal(anchorMatchCount("a\nfooBar()\nb", "fooBar"), 1);
+  assert.equal(anchorMatchCount("fooBar()\nx\nfooBar()", "fooBar"), 2);
+  assert.equal(anchorMatchCount("nothing here", "fooBar"), 0);
+  // call anchor with no verbatim hit counts boundary call sites, not substrings
+  assert.equal(anchorMatchCount("admit(x)\nadmit(y)", "admit()"), 2);
+  assert.equal(anchorMatchCount("admittedUserRequester(z)", "admit()"), 0);
+});
+
+test("AMBIGUITY: an anchor present TWICE within ±5 reds as non-distinctive", () => {
+  // `handle` appears on both the cited line and a neighbour — it cannot pin one construct.
+  const lines = ["l1", "const handle = openHandle();", "mid", "reuse(handle);", "l5"];
+  const input = makeInput({ citations: [cit({ line: "2", anchorToken: "handle" })], files: { "server/src/foo.ts": { exists: true, lines } } });
+  const { errors } = evaluateCitationIntegrity(input);
+  assert.ok(hasError(errors, "NON-DISTINCTIVE"), report(errors));
+  assert.ok(hasError(errors, "appears 2 times within ±5"), report(errors));
+});
+
+test("AMBIGUITY: a DISTINCTIVE anchor (present exactly once in-window) passes", () => {
+  const lines = ["l1", "const handle = openDistinctHandleXYZ();", "mid", "reuse(handle);", "l5"];
+  const input = makeInput({ citations: [cit({ line: "2", anchorToken: "openDistinctHandleXYZ" })], files: { "server/src/foo.ts": { exists: true, lines } } });
+  assert.deepEqual(evaluateCitationIntegrity(input).errors, [], "count===1 must pass");
+});
+
+test("AMBIGUITY: an ambiguous-anchor grandfather entry excuses ONLY that category", () => {
+  const lines = ["l1", "const handle = openHandle();", "reuse(handle);"];
+  const citations = [cit({ crossingId: "DE-05", line: "2", anchorToken: "handle" })];
+  const files = { "server/src/foo.ts": { exists: true, lines } };
+  // grandfathering the ambiguity passes; a wrong CATEGORY (missing-file) would still red
+  assert.deepEqual(
+    evaluateCitationIntegrity(makeInput({ citations, files, entries: [{ crossing: "DE-05", path: "server/src/foo.ts", line: "2", category: "ambiguous-anchor", reason: "two legit uses of the symbol flank the construct" }] })).errors,
+    [],
+  );
 });

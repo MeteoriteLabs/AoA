@@ -182,6 +182,7 @@ export const VIOLATION_CATEGORIES = new Set([
   "blank-line",
   "missing-anchor",
   "anchor-not-found",
+  "ambiguous-anchor",
 ]);
 
 /** A backtick anchor immediately AFTER `path:LINE` (optionally wrapped in `(`). */
@@ -284,6 +285,31 @@ export function anchorMatches(hay, token) {
     return new RegExp(`(?<![A-Za-z0-9_$.])${name}\\s*\\(`).test(hay);
   }
   return false;
+}
+
+/**
+ * How many times does the anchor `token` occur in `hay`?
+ *
+ * ★ THE DISTINCTIVENESS ORACLE (the structural fix for the wrong-line false-pass class). A
+ * migration chose anchors that ALSO appeared near the WRONG cited line, so the ±5 check passed on
+ * the wrong construct. An anchor that resolves to EXACTLY ONE location in its window cannot do
+ * that. So the guard counts occurrences, not mere presence: 0 = drift/deletion, 1 = distinctive
+ * (good), ≥2 = ambiguous (a non-distinctive anchor that could pin the wrong line). The raw anchor
+ * is counted verbatim; a call anchor with no verbatim hit is counted at identifier-boundary call
+ * sites (mirrors `anchorMatches`).
+ */
+export function anchorMatchCount(hay, token) {
+  const raw = String(token || "").trim();
+  if (raw.length < 2) return 0;
+  let n = 0;
+  for (let i = hay.indexOf(raw); i !== -1; i = hay.indexOf(raw, i + raw.length)) n += 1;
+  if (n > 0) return n;
+  const call = /^([A-Za-z_$][\w$.]*)\s*\(/.exec(raw);
+  if (call && call[1].length >= 3) {
+    const name = call[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return (hay.match(new RegExp(`(?<![A-Za-z0-9_$.])${name}\\s*\\(`, "g")) || []).length;
+  }
+  return 0;
 }
 
 /** Does the anchor `token` appear within ±ANCHOR_RADIUS lines of [lo, hi]? */
@@ -501,8 +527,29 @@ export function evaluateCitationIntegrity(input) {
       });
       continue;
     }
-    // (e) VERIFY anchor: at least one anchor must appear within ±N lines of the cited line/range.
-    if (!tokens.some((t) => anchorNearby(f.lines, lo, hi, t))) {
+    // (e) VERIFY + DISTINCTIVE anchor: at least one anchor must resolve to EXACTLY ONE location
+    // within ±N lines of the cited line/range. Count occurrences, not mere presence:
+    //   0  -> the construct moved (re-point) or was deleted/renamed (re-anchor)
+    //   1  -> distinctive, pins the construct (good)
+    //   ≥2 -> AMBIGUOUS: a non-distinctive anchor that could equally pin a neighbour, which is
+    //         exactly how a drifted line with a coincidental token slips the ±5 check.
+    const windowText = f.lines
+      .slice(Math.max(0, lo - 1 - ANCHOR_RADIUS), Math.min(f.lines.length, hi + ANCHOR_RADIUS))
+      .join("\n");
+    const counts = tokens.map((t) => ({ t, n: anchorMatchCount(windowText, t) }));
+    if (counts.some((c) => c.n === 1)) {
+      // distinctive anchor found — OK
+    } else if (counts.some((c) => c.n >= 2)) {
+      const worst = counts.find((c) => c.n >= 2);
+      rawViolations.set(sig, {
+        category: "ambiguous-anchor",
+        message:
+          `${cite}: anchor \`${worst.t}\` is NON-DISTINCTIVE — it appears ${worst.n} times within ±${ANCHOR_RADIUS} lines of ` +
+          `line ${c.line}, so it does not pin a single construct (a drifted line with a coincidental token slips through this way). ` +
+          "Choose an anchor unique in the window.",
+      });
+      continue;
+    } else {
       rawViolations.set(sig, {
         category: "anchor-not-found",
         message:
