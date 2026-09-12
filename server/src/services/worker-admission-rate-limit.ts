@@ -170,6 +170,10 @@ export function createWorkerAdmissionRateLimiter(opts: {
           organizationId,
           // WHO — the specific refused worker (`auth.workerId`), not the tenant org.
           actorId: workerId,
+          // The refused actor is a worker machine identity: kind "worker" -> actorType
+          // "system" (no agents/auth row). The recorder derives actorType from this and
+          // also stamps it into details for legibility.
+          principalKind: "worker",
           entityType: "worker_poll_admission",
           entityId: organizationId,
           control: "server/src/services/worker-admission-rate-limit.ts:admit",
@@ -177,9 +181,6 @@ export function createWorkerAdmissionRateLimiter(opts: {
             count,
             limit: config.max,
             windowStartMs: windowStart.getTime(),
-            // The refused actor is a worker machine identity; name its kind so the
-            // WHO is legible beyond the bare id.
-            principalKind: "worker",
           },
         });
         return { allowed: false, reason: "over_cap", count, limit: config.max };

@@ -58,6 +58,9 @@
  *      considered and REJECTED — it drops refusals the ruled clause requires be recorded;
  *      write-amplification is bounded by the poll rate limit + activity_log retention, a
  *      pattern-wide property of the whole deny-path class (DE-03/DE-06/DE-19 also per-refusal).
+ *   7. actorType REFLECTS THE PRINCIPAL KIND: a `user` submitter records actor_type
+ *      "user", an `agent` "agent", and a worker (over_cap) or any other machine kind
+ *      "system" — a real human/agent capacity denial is NOT flattened to "system".
  *
  * ★ KILLED MUTANTS (each makes at least one arm RED, verified RED-first):
  *   (a)  delete the over_cap write            -> "THE CLAUSE (over_cap)" RED
@@ -67,6 +70,8 @@
  *   (e)  stamp `actorId = organizationId`     -> the three WHO arms RED (control 5)
  *   (f') ADD a first-crossing gate `count === config.max + 1` -> the per-refusal arm's
  *        "expect 2 rows" assertion RED (the second over-cap refusal would be dropped)
+ *   (g)  hardcode `actorType: "system"` (ignore principalKind) -> the "actorType REFLECTS
+ *        THE PRINCIPAL KIND" arm's user/agent assertions RED
  *
  * Real Postgres (embedded-postgres + the committed migration chain), the real limiter,
  * the real submit path (which threads the capacity-denial sink and drains it on the pool
@@ -83,6 +88,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { HttpError } from "../errors.js";
 import { createWorkerAdmissionRateLimiter } from "../services/worker-admission-rate-limit.js";
+import { recordWorkerAdmissionDenial } from "../services/worker-admission-denial-audit.js";
 import { jobSubmissionService } from "../services/job-submission.js";
 import { ORG, COMPANY, setupJobControlFixture, type JobControlFixture } from "./helpers/job-control-fixture.js";
 
@@ -344,9 +350,10 @@ integration("DE-27 audit clause — the two worker-admission refusals leave attr
     expect(rows).toHaveLength(1);
     const row = rows[0]!;
 
-    // WHO — the SUBMITTING PRINCIPAL, not the tenant org. actor_type is "system" (the
-    // principal is not resolved to an agents/auth row at this seam); actor_id is the
-    // submitting principal's id, and details.principalKind names its kind.
+    // WHO — the SUBMITTING PRINCIPAL, not the tenant org. actor_type is derived from the
+    // principal kind: this submission's principal is `system`, so `system` (a user/agent
+    // submitter would be `user`/`agent` — see the "actorType REFLECTS THE PRINCIPAL KIND"
+    // arm). actor_id is the submitting principal's id; details.principalKind names its kind.
     expect(row.actor_type).toBe("system");
     expect(row.actor_id).toBe(SUBMIT_PRINCIPAL_ID);
     // …and WHO is NOT the organization: the reverted bug (`actorId = organizationId`)
@@ -392,5 +399,56 @@ integration("DE-27 audit clause — the two worker-admission refusals leave attr
     // a constant reason (the mutation) would collapse this set to size 1.
     expect(new Set(rows.map((r) => r.action))).toEqual(new Set(["security.denied.worker_admission"]));
     expect(new Set(reasons)).toEqual(new Set(["over_cap", "capacity"]));
+  }, 60_000);
+
+  // ── actorType ───────────────────────────────────────────────────────────────────────
+
+  it("★ actorType REFLECTS THE PRINCIPAL KIND — user/agent record as user/agent, worker/service as system", async () => {
+    await clearAll();
+    // Drive the shared recorder DIRECTLY (the function the actorType mapping lives in),
+    // once per principal kind, against real PostgreSQL. actor_id stays the principal id;
+    // the recorder derives actor_type from principalKind via actorTypeForPrincipalKind.
+    // Hardcoding actorType: "system" (the mutant) makes the user/agent assertions go RED.
+    //
+    // Why not provoke a `user` capacity refusal through the submit path: `one_shot` (the
+    // submission builder's source) only admits requester kinds agent/system/commander
+    // (SOURCE_REQUESTER_KINDS), and a `user` principal resolves to a founder/team_lead/
+    // team_member requester (admission repo), which one_shot rejects BEFORE the capacity
+    // branch — so a user capacity refusal is unreachable via one_shot. Recording through
+    // the real recorder→recordSecurityDenial→activity_log path exercises the exact code
+    // under change. The submit-path capacity arm above still covers the `system` case
+    // end-to-end.
+    const db = ctx().app.db;
+    const cases: Array<{ kind: string; actorId: string; expected: string }> = [
+      { kind: "user", actorId: "de27-user-actor", expected: "user" },
+      { kind: "agent", actorId: "de27-agent-actor", expected: "agent" },
+      { kind: "worker", actorId: WORKER_A, expected: "system" },
+      { kind: "mcp", actorId: "de27-mcp-actor", expected: "system" },
+    ];
+    for (const c of cases) {
+      await recordWorkerAdmissionDenial(db, {
+        reason: "capacity",
+        companyId: COMPANY,
+        organizationId: ORG,
+        actorId: c.actorId,
+        principalKind: c.kind,
+        entityType: "job_attempt",
+        entityId: randomUUID(),
+        control: "server/src/__tests__/de-27-admission-audit.integration.test.ts:actorType",
+      });
+    }
+    const rows = await admissionDenialRows();
+    expect(rows).toHaveLength(cases.length);
+    const byActor = new Map(rows.map((r) => [r.actor_id, r]));
+    for (const c of cases) {
+      const row = byActor.get(c.actorId)!;
+      // WHO's TYPE is the truthful ActivityActorType for the kind — NOT always "system".
+      expect(row.actor_type).toBe(c.expected);
+      // The kind is also stamped into details for legibility, from the first-class field.
+      expect(String(row.details?.principalKind)).toBe(c.kind);
+      // actor_id is unchanged (the specific principal), and the org is never the actor.
+      expect(row.actor_id).toBe(c.actorId);
+      expect(row.actor_id).not.toBe(ORG);
+    }
   }, 60_000);
 });
