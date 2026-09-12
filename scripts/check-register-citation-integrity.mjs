@@ -277,57 +277,52 @@ export function anchorVariants(token) {
   return [...out];
 }
 
-/**
- * Does the anchor `token` appear in `hay`?
- *
- * ★ CODEX P2 (:251) — the call-name variant must match at an IDENTIFIER BOUNDARY followed by call
- * syntax, NOT as an arbitrary substring. Under plain `includes`, a moved `admit()` was satisfied by
- * an unrelated `admittedUserRequester` sitting in the window — the stripped name `admit` is a
- * substring of it. The raw anchor still matches verbatim (it may contain operators/spaces, so a
- * substring test is right for it); only the `foo()`→`foo` spelling is boundary-and-call gated.
- */
-export function anchorMatches(hay, token) {
-  const raw = String(token || "").trim();
-  if (raw.length < 2) return false;
-  if (hay.includes(raw)) return true;
-  const call = /^([A-Za-z_$][\w$.]*)\s*\(/.exec(raw);
-  if (call && call[1].length >= 3) {
-    const name = call[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return new RegExp(`(?<![A-Za-z0-9_$.])${name}\\s*\\(`).test(hay);
-  }
-  return false;
+/** Escape a string for use as a literal inside a RegExp. */
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** A bare identifier or dotted path — no whitespace, operators, quotes or parens. */
+const IDENTIFIER_SHAPED = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/;
+
 /**
- * How many times does the anchor `token` occur in `hay`?
+ * How many times does the anchor `token` occur in `hay`?  [THE DISTINCTIVENESS ORACLE]
  *
- * ★ THE DISTINCTIVENESS ORACLE (the structural fix for the wrong-line false-pass class). A
- * migration chose anchors that ALSO appeared near the WRONG cited line, so the ±5 check passed on
- * the wrong construct. An anchor that resolves to EXACTLY ONE location in its window cannot do
- * that. So the guard counts occurrences, not mere presence: 0 = drift/deletion, 1 = distinctive
- * (good), ≥2 = ambiguous (a non-distinctive anchor that could pin the wrong line). The raw anchor
- * is counted verbatim; a call anchor with no verbatim hit is counted at identifier-boundary call
- * sites (mirrors `anchorMatches`).
+ * A migration chose anchors that ALSO appeared near the WRONG cited line, so the ±5 check passed
+ * on the wrong construct. An anchor that resolves to EXACTLY ONE location in its window cannot do
+ * that, so the guard counts occurrences (0 = drift/deletion, 1 = distinctive, ≥2 = ambiguous)
+ * rather than testing mere presence.
+ *
+ * ★ CODEX P2 (:317, completing :251) — CLOSE THE WHOLE SUBSTRING CLASS. An IDENTIFIER-SHAPED anchor
+ * (a bare identifier or dotted path) is counted at IDENTIFIER BOUNDARIES — the match must not be
+ * flanked by `[\w$]` — so `admit` does NOT count inside `admittedUserRequester` or `preadmit`. That
+ * closes the plain-identifier false-pass that a raw `indexOf` left open after :251 fixed only the
+ * call-shaped (`admit()`) path. A SNIPPET-shaped anchor (whitespace / operators / quotes / parens,
+ * e.g. `count > config.max`, `if (inserted[0])`, a path string) is counted VERBATIM, since such a
+ * snippet legitimately matches only where it literally appears. A call-shaped anchor (`foo()`) with
+ * no verbatim hit falls back to `name(` at an identifier boundary.
  */
 export function anchorMatchCount(hay, token) {
   const raw = String(token || "").trim();
   if (raw.length < 2) return 0;
+  if (IDENTIFIER_SHAPED.test(raw)) {
+    return (hay.match(new RegExp(`(?<![\\w$])${escapeRegExp(raw)}(?![\\w$])`, "g")) || []).length;
+  }
+  // snippet / call-shaped: count verbatim occurrences first.
   let n = 0;
   for (let i = hay.indexOf(raw); i !== -1; i = hay.indexOf(raw, i + raw.length)) n += 1;
   if (n > 0) return n;
+  // call-shaped with no verbatim hit: the call name at an identifier boundary + `(`.
   const call = /^([A-Za-z_$][\w$.]*)\s*\(/.exec(raw);
   if (call && call[1].length >= 3) {
-    const name = call[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return (hay.match(new RegExp(`(?<![A-Za-z0-9_$.])${name}\\s*\\(`, "g")) || []).length;
+    return (hay.match(new RegExp(`(?<![\\w$.])${escapeRegExp(call[1])}\\s*\\(`, "g")) || []).length;
   }
   return 0;
 }
 
-/** Does the anchor `token` appear within ±ANCHOR_RADIUS lines of [lo, hi]? */
-function anchorNearby(lines, lo, hi, token) {
-  const from = Math.max(0, lo - 1 - ANCHOR_RADIUS);
-  const to = Math.min(lines.length, hi + ANCHOR_RADIUS);
-  return anchorMatches(lines.slice(from, to).join("\n"), token);
+/** Does the anchor `token` appear in `hay`? Boundary-correct — delegates to the count oracle. */
+export function anchorMatches(hay, token) {
+  return anchorMatchCount(hay, token) > 0;
 }
 
 /** Is `p` repo-root-anchored — path with a `/` whose first segment is a known repo root? */

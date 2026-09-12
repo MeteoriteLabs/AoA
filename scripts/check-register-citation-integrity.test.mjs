@@ -416,6 +416,29 @@ test("anchorMatchCount: counts in-window occurrences (0 / 1 / 2)", () => {
   assert.equal(anchorMatchCount("admittedUserRequester(z)", "admit()"), 0);
 });
 
+test("BUG6 (identifier-boundary COUNT, closing the :317 substring class):", () => {
+  // a plain-identifier anchor is NOT counted inside a longer identifier (was 1 by substring)
+  assert.equal(anchorMatchCount("const admittedUserRequester = true", "admit"), 0);
+  assert.equal(anchorMatchCount("preadmit(x)", "admit"), 0);
+  // real identifier tokens ARE counted (boundary, not substring)
+  assert.equal(anchorMatchCount("admit(x); admit(y)", "admit"), 2);
+  assert.equal(anchorMatchCount("services.companyId, foo", "services.companyId"), 1);
+  // a snippet anchor (operators/spaces) still substring-counts correctly
+  assert.equal(anchorMatchCount("if (count > config.max) {", "count > config.max"), 1);
+  assert.equal(anchorMatchCount("a\nb\nc", "count > config.max"), 0);
+});
+
+test("BUG6 end-to-end (RED-first): a plain-identifier anchor whose construct moved off, leaving only a LONGER identifier containing it, REDs", () => {
+  // Cited line holds `admittedUserRequester` (which contains the substring "admit"); the real
+  // `admit` token is nowhere in the ±5 window. Pre-fix (raw indexOf) counted 1 -> false GREEN.
+  const lines = ["l1", "const admittedUserRequester = gate();", "l3", "l4", "l5"];
+  const input = makeInput({ citations: [cit({ line: "2", anchorToken: "admit" })], files: { "server/src/foo.ts": { exists: true, lines } } });
+  assert.ok(hasError(evaluateCitationIntegrity(input).errors, "does not appear within ±5 lines"), "boundary count must RED, not false-green");
+  // control: the real `admit` token in-window passes
+  const ok = makeInput({ citations: [cit({ line: "2", anchorToken: "admit" })], files: { "server/src/foo.ts": { exists: true, lines: ["l1", "return admit(payload);", "l3"] } } });
+  assert.deepEqual(evaluateCitationIntegrity(ok).errors, [], "a real admit token in-window must pass");
+});
+
 test("AMBIGUITY: an anchor present TWICE within ±5 reds as non-distinctive", () => {
   // `handle` appears on both the cited line and a neighbour — it cannot pin one construct.
   const lines = ["l1", "const handle = openHandle();", "mid", "reuse(handle);", "l5"];
