@@ -89,17 +89,19 @@
 //               `actorId`, with `principalKind` in `details` so a reader sees a
 //               user/agent/mcp/commander submitter, not just an id.
 // `actorType` is the TRUTHFUL `ActivityActorType` for each refused principal, DERIVED
-// from `principalKind` by `actorTypeForPrincipalKind` and ALIGNED to the canonical
-// `getActorInfo` classifier (`server/src/routes/authz.ts`): `ActivityActorType` is
-// `agent | user | system | autonomy`, so an `agent` submitter records as `agent`, the
-// USER-BACKED kinds (`user`/`mcp`/`commander`/`local_board`, each constructed from a
-// `userId`) record as `user`, and the machine kinds a worker refusal or a
-// service-reconcile-origin submission carry (`worker` for over_cap, `system`) record as
-// `system` — a worker has no `agents`/`auth` row (`system` is the DE-06 worker convention),
-// but a real human/board/Commander/MCP capacity refusal must NOT be flattened into `system`.
-// `actor_id` is plain text with NO foreign key, which is exactly what makes
-// `workerId`/`principal.id` usable as the identity directly — the same choice, for the same
-// reason, as the DE-06 object-access, DE-06 denial, and DE-11 retention call sites
+// from `principalKind` by `actorTypeForPrincipalKind` and HONEST about the id actually in
+// `actorId` (= `principal.id`): `ActivityActorType` is `agent | user | system | autonomy`,
+// so an `agent` records as `agent` (principal.id is the agentId), the USER-BACKED kinds whose
+// principal.id is a userId (`user`/`commander`/`local_board`, each set from `actor.userId` by
+// `principalFor`) record as `user`, and the machine kinds record as `system` — a worker
+// (over_cap; no `agents`/`auth` row, the DE-06 convention), a service-reconcile-origin
+// `system` submission, and `mcp` (whose submit-path principal.id is the authentication KEY id,
+// not the owner userId — so recording it as `user` would misattribute; `getActorInfo` labels
+// mcp `user` because it holds the owner userId at REQUEST time, which the submit path does not;
+// full mcp owner-userId attribution is a filed follow-up). A real human/board/Commander capacity
+// refusal is NOT flattened into `system`. `actor_id` is plain text with NO foreign key, which is
+// exactly what makes `workerId`/`principal.id` usable as the identity directly — the same choice,
+// for the same reason, as the DE-06 object-access, DE-06 denial, and DE-11 retention call sites
 // (`artifact-object-access-audit.ts:277-278`).
 // The tenant ids are TOKEN-ATTESTED or DB-CONSISTENT, never off the wire: over_cap's
 // org and worker come out of `verifyWorkerOperationProof`, and capacity's org and
@@ -151,18 +153,28 @@ import { recordSecurityDenial } from "./security-denial-audit.js";
 export const WORKER_ADMISSION_DENIAL_SURFACE = "worker_admission";
 
 /**
- * The truthful `ActivityActorType` for a refused principal's kind, aligned to the repo's
- * CANONICAL actor classifier `getActorInfo` (`server/src/routes/authz.ts`): an `agent` is
- * an `agent`; `user`, `mcp`, `commander` and `local_board` are all USER-BACKED (each
- * constructed from a `userId`) and classify as `user` — so a real human/board/Commander/MCP
- * capacity denial is attributed as a `user` action, NOT flattened to `system`. The machine
- * kinds this recorder also sees — `worker` (the over_cap execution identity, with no truthful
- * `ActivityActorType` per the DE-06 worker convention) and `system` (a service-reconcile-origin
- * submission) — and any unknown kind record as `system`. Pure and total: never throws.
+ * The truthful `ActivityActorType` for a refused principal's kind — HONEST about the id
+ * actually in `actorId` (= the submit path's `principal.id`, built by `principalFor` in
+ * `server/src/routes/job-control.ts`):
+ *   - `agent`  -> `agent`  (principal.id is the agentId)
+ *   - `user`, `commander`, `local_board` -> `user`  (principal.id is a userId: `principalFor`
+ *      sets each from `actor.userId`, and commander is additionally validated
+ *      `claims.userId === principal.id` at `job-submission.ts:196`)
+ *   - `mcp`    -> `system`: the submit-path principal carries the authentication KEY id
+ *      (`actor.keyId`, `job-control.ts:99`), NOT the owner userId. The canonical `getActorInfo`
+ *      classifies mcp as `user` because it holds the owner userId at REQUEST time; the submit
+ *      path does not, so recording (user, keyId) would misattribute — the honest label for a
+ *      bare key credential is `system`. Full mcp owner-userId attribution would require
+ *      threading the userId through the shared principal construction (out of scope for DE-27;
+ *      filed as a follow-up).
+ *   - `worker` (the over_cap execution identity, no truthful `ActivityActorType` per the DE-06
+ *      convention), `system` (a service-reconcile-origin submission), and any unknown kind
+ *      -> `system`.
+ * Pure and total: never throws.
  */
 export function actorTypeForPrincipalKind(kind: string): ActivityActorType {
   if (kind === "agent") return "agent";
-  if (kind === "user" || kind === "mcp" || kind === "commander" || kind === "local_board") return "user";
+  if (kind === "user" || kind === "commander" || kind === "local_board") return "user";
   return "system";
 }
 
