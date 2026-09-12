@@ -1443,8 +1443,7 @@ own failure class.**
 end. Five clause-halves are not, and DE-17 is a sixth ~~behind the protocol freeze~~.** ~~Any plan must
 state twelve, not seventeen.~~ ★ **RECONCILED 2026-09-11/12 (E0-F013 Decision 1.6 + the settled
 ceiling):** "behind the protocol freeze" is refuted — DE-17 is UN-BUNDLED and the v1 freeze is not
-its blocker (`extensions[]` is additive under it, `events.ts:347`); its 6a half is deliverable now
-and only 6b remains hard-blocked. The pre-ruling "twelve, not seventeen" is superseded: under
+its blocker (`extensions[]` is additive under it, `events.ts:347`); ★ CORRECTED 2026-09-11 (Codex P1): 6a is NOT deliverable-now — both halves are blocked on the unbuilt worker→CP carrier for the post-fence event (the cleanup runs off-plane; the existing drain carries denials, not cleanup outcomes), 6a being SIMPLER (no authority-typing) and 6b needing authority-typing too. The pre-ruling "twelve, not seventeen" is superseded: under
 convention (ii) — the one §7 already applies to DE-06/DE-14 — the **closable-ever ceiling is
 SIXTEEN** (17 − DE-17, the sole audit clause still blocked on an unbuilt mechanism), DISTINCT from
 the open count of **TWELVE** (see the class-wide count above and the decision paper §7 / §8 1.7).
@@ -1462,7 +1461,7 @@ Never quote seventeen as achievable.
    read-denial conjunct amended to a documented DECLINE (blocker false; offline verifier
    chartered-but-unfunded; stays `partial`); DE-27 weak-reading kept as open Group B/C + partition
    dropped vacuous; DE-12 3c delivered / 3a+3b vacuous; DE-20 4a delivered / 4b vacuous; DE-11
-   rescheduled (live writer exists); DE-17 un-bundled (6a deliverable now, 6b the sole hard half).
+   rescheduled (live writer exists); DE-17 un-bundled but CORRECTED 2026-09-11 (Codex P1) — 6a is NOT deliverable-now: both halves are blocked on the unbuilt worker→CP carrier (6a simpler — report the cleanup outcome, no authority-typing; 6b needs authority-typing too).
    The historical deferral framing above (including the "DE-12's change half" phrasing) is kept as
    the reasoning trail; the per-clause dispositions here govern.
    ★ **OPTIONS PAPER, 2026-09-10:
@@ -1482,12 +1481,15 @@ Never quote seventeen as achievable.
    `critical:false` extension is additive UNDER the freeze) — but the paper's first draft then
    concluded DE-17 was therefore deliverable and recommended a split by channel, and **that was
    withdrawn on review** (Codex P1, PR #407, verified at source). **DE-17 has two harder blockers:** ★ **UN-BUNDLED
-   2026-09-11 (E0-F013 Decision 1.6): these two blockers gate 6b (denied escalations) ONLY. 6a
-   (post-fence cleanup audit) is deliverable NOW — the CP-side drain exists in production
-   (`drainWorkerDenial`→`recordSecurityDenial`, `worker-denial-audit.ts:227`, migration `0274`) and is
-   already wired on the non-fence-guarded quarantine-finalize path (`quarantine-finalize.ts:159`),
-   independent of `E0-F014`; it sidesteps the fenced worker-event ingest entirely. Only 6b needs a NEW
-   mechanism (`E0-F014` authority-typing OR a worker self-report carrier).**
+   2026-09-11 (E0-F013 Decision 1.6), then CORRECTED the same day after a Codex P1 (verified at source):
+   the two blockers named above gate 6b — but 6a is ALSO blocked, NOT deliverable now. The post-fence
+   cleanup (`CleanupAuthority.converge`) runs OFF-PLANE in the worker daemon and reports its outcome to
+   NO control-plane sink; the existing drain (`drainWorkerDenial`→`recordSecurityDenial`,
+   `worker-denial-audit.ts:227`, migration `0274`) carries DENIALS (DE-03/DE-06), not cleanup outcomes.
+   So a CP-side drain FOR CLEANUP OUTCOMES is genuinely missing: 6a ALSO needs an unbuilt worker→CP
+   carrier — SIMPLER than 6b (report the outcome, no authority-typing) and sequenceable first — while
+   6b needs the carrier PLUS authority-typing (`E0-F014` OR a worker self-report). Both are hard-blocked
+   on the missing carrier; the v1 freeze is not the blocker.**
    the fenced worker-event ingest gates on `guardActiveFence` BEFORE any append
    (`job-events.ts` header; `job-control.ts:2592`, in `acceptEvent` at `:2588`, under the
    closed-mutator invariant at `:2585-2587`) and DE-17's scenario is post-fence BY
