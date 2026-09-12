@@ -69,3 +69,9 @@ Use this combined plan-and-evidence review instead of separately repeating the p
 TK supplied [Claude’s review of the correction plan](baseline-correction-review-report.md); Codex verified the main verdict and recorded the LOW dispositions. Author/evidence and acceptance roles were already assigned; replatform landing responsibility remains a later gate. Node’s initial launch events do not prohibit subsequent errors; the plan already retains its error handler. No blocking plan finding was established.
 
 The preceding prompt is retained for provenance, not another unchanged review request. Next is TK’s explicit approval to author and offline-qualify the three-file correction on the isolated branch from the exact tested replatform candidate. No source correction, new test run, branch creation, base integration or Universe implementation has occurred in this review round.
+
+## Approved correction execution outcome
+
+TK explicitly approved the isolated correction batch after the reviewed plan. [Results](baseline-correction-results.md) record local correction commit `b5cc42643223c433a8263564c7142761472a13d9`, passing typecheck and all 247 targeted cases, plus all four full shards. F1/F2/F3 are corrected in that isolated tree; full qualification remains failed due to a confirmed blocked-task fixture port collision and a separate backup setup timeout. Totals: 24,242 passed, 4 failed, 78 skipped; two failed suites, no unhandled-error summary. Build was blocked. No additional fixes/retries followed.
+
+The runtime is stopped. Correction commits are local only; Universe remains on its original replatform pin. Prior “execution approval pending” statements describe the pre-approval stage and are superseded for this bounded batch only. New fixture corrections, source publication, base integration and Universe implementation remain separate decisions. See the report’s next-decision section.

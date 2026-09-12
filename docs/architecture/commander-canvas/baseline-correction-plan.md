@@ -10,6 +10,8 @@
 
 **Spec:** [Observed retry results](baseline-retry-results.md), [F1/F2/F3 diagnosis](baseline-retry-findings.md), [bounded preparation constraints](bounded-engineering-preparation.md), [planning reset](planning-reset.md). Prepared September 12, 2026 after TK authorized this corrective planning and review; source execution remains unapproved.
 
+**Execution update:** TK subsequently approved this batch. [Execution results](baseline-correction-results.md) supersede the pre-execution status below: Tasks 1–3 completed, Task 4 ran but failed on two different fixture issues and did not reach build; Task 5 adoption remains gated. The proposed correction is local only. No further fix or retry is authorized by that run.
+
 ## Global constraints
 
 - Keep Universe source pinned at `183e46a9c65fc3105c7e3d125629276814df7dbb` during planning. Its documentation branch remains `codex/universe-interface`. The main project checkout is a different checkout; it is not the target for these edits.
@@ -308,3 +310,9 @@ Coverage: F1 maps to Task 2; F2 to Task 1; F3 to Task 3; exact-commit verificati
 Review corrections made while drafting: DNS mock uses the actual `{ all: true }` signature and does not contact the fixture IP; Git identity comes from real branch objects rather than a fabricated commit; opener errors after success retain a listener; the red test uses an explicit protective observer and checks for the route's additional listener so it cannot conceal the missing fix; source authoring, qualification and base adoption are separate scopes. Full-suite comparison uses test identity because shard allocation changed with the added replatform test file. The self-review also removed the bootstrap dependency on a not-yet-created correction commit, separated patched targeted runs from the clean final checkout, made patch transfer and path-collision behavior explicit, and added exact pre-launch denial/missing-path assertions.
 
 **Not yet performed:** source edits, branch creation, bundle/checkout setup, targeted regressions, another full suite/build, base integration or E1.1 implementation. The code sketches are uncompiled proposals. Current deliverable: source-checked plan with [Claude review received and author-verified](baseline-correction-review-report.md), ready for explicit bounded execution-scope approval. The ownership and event-lifecycle clarifications do not change the proposed code or test scope. No new unchanged review round is required.
+
+## Approved correction execution outcome
+
+TK explicitly approved the isolated correction batch after the reviewed plan. [Results](baseline-correction-results.md) record local correction commit `b5cc42643223c433a8263564c7142761472a13d9`, passing typecheck and all 247 targeted cases, plus all four full shards. F1/F2/F3 are corrected in that isolated tree; full qualification remains failed due to a confirmed blocked-task fixture port collision and a separate backup setup timeout. Totals: 24,242 passed, 4 failed, 78 skipped; two failed suites, no unhandled-error summary. Build was blocked. No additional fixes/retries followed.
+
+The runtime is stopped. Correction commits are local only; Universe remains on its original replatform pin. Prior “execution approval pending” statements describe the pre-approval stage and are superseded for this bounded batch only. New fixture corrections, source publication, base integration and Universe implementation remain separate decisions. See the report’s next-decision section.

@@ -91,3 +91,9 @@ After the first attempt at 4c9b71e75, TK explicitly approved the proposed contai
 ## Corrective plan scope
 
 The [F1/F2/F3 corrective plan](baseline-correction-plan.md) is the separately prepared next scope. TK authorized authoring/reviewing that plan; source changes, Git-backed environment setup and further targeted/full runs still require explicit execution approval after review. The earlier environment-only retry authorization is exhausted. No base adoption or Universe implementation is included.
+
+## Approved correction execution outcome
+
+TK explicitly approved the isolated correction batch after the reviewed plan. [Results](baseline-correction-results.md) record local correction commit `b5cc42643223c433a8263564c7142761472a13d9`, passing typecheck and all 247 targeted cases, plus all four full shards. F1/F2/F3 are corrected in that isolated tree; full qualification remains failed due to a confirmed blocked-task fixture port collision and a separate backup setup timeout. Totals: 24,242 passed, 4 failed, 78 skipped; two failed suites, no unhandled-error summary. Build was blocked. No additional fixes/retries followed.
+
+The runtime is stopped. Correction commits are local only; Universe remains on its original replatform pin. Prior “execution approval pending” statements describe the pre-approval stage and are superseded for this bounded batch only. New fixture corrections, source publication, base integration and Universe implementation remain separate decisions. See the report’s next-decision section.

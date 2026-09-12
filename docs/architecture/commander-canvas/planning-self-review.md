@@ -148,3 +148,9 @@ The snippets are source-checked proposals, not compiled or executed code. The pl
 [Claude’s plan review](baseline-correction-review-report.md) is received and author-verified: no blocking plan finding. [The plan](baseline-correction-plan.md) now clarifies existing Codex/TK/Claude responsibilities, the later replatform landing owner/path gate, and initial launch versus subsequent child-process errors. The reviewed code proposal and test scope are unchanged. No further unchanged Claude round is requested.
 
 Current next step is explicit approval of isolated correction authoring and offline qualification. Neither baseline is green; runtime fixes/tests, correction branch creation, base adoption and Universe implementation remain unperformed. This documentation update is not execution approval.
+
+## Approved correction execution outcome
+
+TK explicitly approved the isolated correction batch after the reviewed plan. [Results](baseline-correction-results.md) record local correction commit `b5cc42643223c433a8263564c7142761472a13d9`, passing typecheck and all 247 targeted cases, plus all four full shards. F1/F2/F3 are corrected in that isolated tree; full qualification remains failed due to a confirmed blocked-task fixture port collision and a separate backup setup timeout. Totals: 24,242 passed, 4 failed, 78 skipped; two failed suites, no unhandled-error summary. Build was blocked. No additional fixes/retries followed.
+
+The runtime is stopped. Correction commits are local only; Universe remains on its original replatform pin. Prior “execution approval pending” statements describe the pre-approval stage and are superseded for this bounded batch only. New fixture corrections, source publication, base integration and Universe implementation remain separate decisions. See the report’s next-decision section.
