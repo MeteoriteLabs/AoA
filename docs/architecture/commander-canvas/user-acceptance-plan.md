@@ -68,7 +68,7 @@ Each script below has a defined role, setup, actions and pass criteria. Run vari
 
 **Role:** representative operator with engineering failure support. **Setup:** same conversation in two tabs; documented ack-drop and offline fixtures.
 
-1. Move/minimize a panel, type an unsent draft with attachment references, reload and reopen at a smaller viewport. Verify acknowledged geometry/draft and safe clamping without destroying preferred dimensions.
+1. Move/minimize a panel, pan/zoom to a nondefault camera, focus then maximize another panel, and type an unsent draft with attachment references. Save/reload, restore the maximized panel and reopen at a smaller viewport. Verify acknowledged camera, selection, stacking, maximized state, normal geometry and draft; safe clamping must not destroy preferred dimensions/camera or trigger a save merely from hydration.
 2. Edit the same layout/preferences in both tabs; make the second write stale. Observe conflict and recover both edits without silently overwriting the newer server state.
 3. Send Task/Commander text; have engineering drop the acknowledgement after commit. Immediately type new text. Reconnect and check canonical outcome before any retry; verify one message/action and retained newer typing.
 4. Repeat with failed save/send, destination switch and company switch. Recover edits in their original authorized destination; no cross-company draft/attachment leakage.

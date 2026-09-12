@@ -72,7 +72,7 @@
 
 ### E7.3 — Upgrade shared attention delivery and add Universe presentation
 
-**Start condition:** BASE; E3 only for speech. Gate meanings and owners are in the readiness register. Complete only the qualification/binding work while a runtime gate is open.
+**Start condition:** E7.3/1: BASE + E8.1/1 preferences; it owns the read-only projection consumed by E2.3 and E7.3/2. E7.3/2 additionally consumes E1.3 structured drafts, E2.2 outcomes and E2.4 Task ownership; E7.3/3 binds delivery and E3 only for speech. Gate meanings and owners are in the readiness register. Complete only the qualification/binding work while a runtime gate is open.
 
 **Existing source anchors** (paths relative to repository root; replatform-only paths require the pinned replatform tree):
 - `server/src/services/internal-agent/proactive.ts`

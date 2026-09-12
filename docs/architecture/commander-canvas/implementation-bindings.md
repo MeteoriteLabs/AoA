@@ -90,11 +90,11 @@ The generated inventory below records investigation anchors from all 31 slice ou
 
 ## Reconciled producer order
 
-- E1.1 produces registry, measured viewport and optimistic order; E1.2 produces authoritative layout ordinals/receipts and checkpoint storage.
+- E1.1 produces registry, measured viewport and optimistic order; E1.2 produces authoritative layout ordinals/receipts and checkpoint storage. AuthorizedLayoutSnapshot includes viewport plus selected/maximized/order; E1.1 hydrates registry and camera together, and onStateChange/onViewportCommit map to E1.2 lifecycle/order/presentation/viewport operations under one revision/receipt boundary. See [complete layout write/read contract](coding-plans/e1-2.md#complete-layout-writeread-contract).
 - E2.1/1 defines shared context types/resolution after BASE; client capture consumes E1.1 data and E1.3/1's draft snapshot contract. E1.6 consumes the projection for navigation. E1.6 is never an E2.1 prerequisite.
 - E1.3/1 publishes all five draft payloads; E1.3/2 recovery integrates after E2.2/1. Consumers may build against the contract early but cannot claim complete recovery.
 - E5.1 local renderer needs E1.1/E4 source contracts; durable state needs E1.2; contextual actions need E1.3/E2.1/E2.2. Local calculator success does not close the V1 slice.
-- E8.1/1 publishes personal preferences and their reduce-only policy inputs; E7.3/1 owns the source-authorized attention projection/shared delivery policy. E2.3 consumes that projection; E7.3/1 never calls the Universe catch-up service. E8.1/2 UI and E7.3 delivery tests complete together without making the initial preference contract cyclic.
+- E8.1/1 publishes personal preferences and their reduce-only policy inputs; E7.3/1 owns the source-authorized attention service, GET route, validated client, projection tests and shared delivery policy. E7.3/2 owns the consuming React surfaces/source-answer forms; it does not produce the GET route. E2.3 consumes that projection; E7.3/1 never calls the Universe catch-up service. E8.1/2 UI and E7.3 delivery tests complete together without making the initial preference contract cyclic.
 
 ## Distribution binding clarification
 

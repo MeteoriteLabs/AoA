@@ -15,3 +15,7 @@ Planned publication branch: `codex/universe-interface`. Source baseline: `183e46
 ## Returning findings
 
 Provide the report and reviewed commit. We will check each finding against source and accepted decisions, mark accepted/rejected-with-evidence/unresolved, update valid corrections and re-review material changes. Reviewer approval alone does not authorize coding. TK's explicit implementation approval and affected producer qualifications remain required. Keep the separate decision about deleting, preserving or reusing the premature draft visible before any implementation begins.
+
+## Focused prompt after the two residual corrections
+
+> Review the latest codex/universe-interface head against 11ab248b618dae228f2ac6efca8e02f4b4e4d132, retaining source base 183e46a9c65fc3105c7e3d125629276814df7dbb. Verify that the attention service/GET/client/tests are owned by E7.3/1 and consumed by E2.3/E7.3/2 without a reverse dependency. Trace viewport, order, selected/maximized state and normal panel geometry through UI callbacks, layout operations, validation, atomic receipts, GET snapshot, hydration and conflict/reload recovery. Check UAT-05 and dependent plans against those contracts. Report any remaining inconsistencies with exact file/section evidence; do not treat documented gates or planned tests as completed engineering. Review only: no implementation, dependency changes, providers or commits. Record the reviewed SHA; implementation still requires TK's explicit approval.

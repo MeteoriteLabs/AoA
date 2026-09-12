@@ -260,7 +260,7 @@ Resizer edges/corners remain hittable when visually quiet: transparent 8 px poin
 
 ```ts
 import type { ReactNode } from "react";
-import type { Scope, Ref, State, Rect } from "./panel-state";
+import type { Scope, Ref, State, Rect, Viewport } from "./panel-state";
 
 export type ContentEntry = {
   ref: Ref;
@@ -269,6 +269,7 @@ export type ContentEntry = {
 };
 export type AuthorizedLayoutSnapshot = {
   scope: Scope; schemaVersion: 1; revision: number; nextOpenedOrdinal: number;
+  viewport: Viewport;
   panels: Array<{ref:Ref;title:string;rect:Rect;openedOrdinal:number;
     minimized:boolean;pinned:boolean}>;
   order: string[]; selected: string|null; maximized: string|null;
@@ -282,6 +283,7 @@ export type OpeningAck = {
 };
 // Proposed additional panel-state.ts exports; implemented/tested in E1.1/1:
 export declare function hydrateLayout(current:State,snapshot:AuthorizedLayoutSnapshot):State;
+export declare function viewportFromLayout(snapshot:AuthorizedLayoutSnapshot):Viewport;
 export declare function reconcileOpeningAck(current:State,ack:OpeningAck,
   pending:readonly PendingOpen[]):State;
 export type WorkspaceProps = {
@@ -289,14 +291,23 @@ export type WorkspaceProps = {
   initialLayout: AuthorizedLayoutSnapshot;
   content: Record<string, ContentEntry>;
   onStateChange?: (state: State) => void;
+  onViewportCommit?: (viewport: Viewport) => void;
 };
 ```
 
-Hydration validates matching scope, schema, safe-integer revision/counter, unique keys/ordinals, bounded geometry, exact order membership and visible selected/maximized references. The counter must exceed every persisted ordinal. Hydrate directly from that authorized snapshot; never replay persisted panels through fresh open actions. Give hydrated instances fresh local generations starting at current.nextGeneration so old closures cannot affect them; preserve saved ordinal/geometry/minimized/pin/order. Initialize only after authorized loading, or through explicit clean-state replacement after pending edits resolve. Routine snapshot refresh uses E1.2 reconciliation and cannot overwrite dirty state by calling hydrateLayout.
+Hydration validates matching scope, schema, safe-integer revision/counter, unique keys/ordinals, bounded geometry, exact order membership and visible selected/maximized references. A non-null maximized key must equal selected and be last in order. Validate snapshot.viewport as finite CSS-pixel translation x/y within ±1,000,000 and zoom 0.25–2. The counter must exceed every persisted ordinal. Hydrate directly from that authorized snapshot; never replay persisted panels through fresh open actions. Give hydrated instances fresh local generations starting at current.nextGeneration so old closures cannot affect them; preserve saved ordinal/geometry/minimized/pin/order. Initialize only after authorized loading, or through explicit clean-state replacement after pending edits resolve. Routine snapshot refresh uses E1.2 reconciliation and cannot overwrite dirty state by calling hydrateLayout.
 
 Before sending a layout patch, E1.2 records PendingOpen for each open operation, including its batch index and the local generation at that moment. The receipt contains one opened mapping for every open operation in input order, including repeated existing opens; close→reopen of one key in the same batch therefore has distinct operation indexes. reconcileOpeningAck matches operationId+operationIndex+key and only changes the ordinal of the still-matching local generation. Missing/old journal identity cannot update a reopened panel; fetch/reconcile canonical state instead. Never change geometry, selection or generation from an ordinal acknowledgement. Keep nextOpenedOrdinal at least the acknowledged counter and above all still-optimistic ordinals; E1.2 owns the separate authoritative counter/revision and ignores client allocation claims. Repeated receipts are inert; stale scope/unknown receipt is rejected. Test hydration nonsequential ordinals, refresh with pending edits, same-batch close/reopen, stale receipt after reopen and two-tab reconciliation.
 
 content is keyed by panelKey; its absence renders an unavailable/loading body while frame controls continue to function. Key the top workspace provider by company/user/conversation to discard old private view state; E1.2–3 restore only authorized snapshots. Every launch path calls the same open action, never queries a DOM element by title.
+
+### Persisted camera and presentation round trip
+
+`hydrateLayout` restores panel registry/order/selected/maximized state; `viewportFromLayout` validates and returns the saved camera for the separate controlled React Flow viewport. The workspace installs both from the same acknowledged snapshot before first visible render. Panel State intentionally excludes camera; `initialLayout.viewport` and `onViewportCommit` are its explicit persistence seam. A fresh layout has viewport `{x:0,y:0,zoom:1}`, empty panels/order and null selected/maximized. Existing saved cameras are not reset to those defaults on ordinary reopen.
+
+The workspace handles live `onViewportChange` locally for immediate interaction; final pan/zoom or a completed authorized camera action emits one `onViewportCommit`. Hydration, ResizeObserver measurements and smaller-screen display fitting do not emit user commits or overwrite saved camera/normal geometry. A dirty or actively manipulated view uses E1.2 reconciliation, never unconditional rehydration. Scope changes cancel camera motion and pending callbacks; closures are scoped to the originating company/user/conversation.
+
+E1.2 maps `onStateChange` into lifecycle/geometry/pin/order plus explicit `presentation` operations, and maps `onViewportCommit` into a `viewport` operation. Send dependent order/selection/maximize edits as one patch. Only the acknowledged state is saved; selected/maximized projection and camera restore together after reload. Test a nondefault camera plus maximized panel through save→reload→restore, lost ack, two tabs and smaller viewport; selected title, stacking and preserved normal geometry must match, without an unsolicited save caused by hydration.
 
 ### Exact visual mapping and callback ownership
 

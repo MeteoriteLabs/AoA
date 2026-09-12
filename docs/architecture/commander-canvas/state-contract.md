@@ -6,7 +6,7 @@ Extends the [architecture map](architecture-map.md). This specifies intended beh
 
 ## Ownership and stored state
 
-A personal canvas belongs to a company, user and Commander conversation. Store schema version, revision and stable panel references; geometry, stacking, pin intent, manual placement, selected/focused references and tucked-away state. Resolve content through authorized domain APIs rather than copying task/artifact bodies into the layout.
+A personal canvas belongs to a company, user and Commander conversation. Store schema version, revision, viewport translation/zoom and stable panel references; geometry, stacking, pin intent, manual placement, selected/focused references and tucked-away state. Resolve content through authorized domain APIs rather than copying task/artifact bodies into the layout.
 
 Drafts are separate records keyed by user, conversation and destination composer. Two task composers never share a draft by incidental panel position. Store draft revision, text and authorized attachment references. Submitted messages remain owned by the conversation/task service. Clear a draft only on durable submission acknowledgement, preserving any text typed after that submission snapshot.
 
@@ -45,3 +45,7 @@ Hidden renderers may suspend expensive work after checkpointing local state. The
 - Old schema migration, excessive payload and invalid coordinates are handled explicitly.
 
 See the panel contract for the capability bridge and code-evidence.md for existing viewer tests. The proposed durable canvas storage has not yet been implemented or integration-tested.
+
+## Layout round-trip binding
+
+E1.2 persists viewport, order and selected/maximized presentation alongside panel geometry. E1.1's AuthorizedLayoutSnapshot carries all of them; hydrateLayout restores registry state and viewportFromLayout initializes the separately controlled camera from the same revision. Explicit presentation operations and final candidate invariants are defined in [E1.2's write/read contract](coding-plans/e1-2.md#complete-layout-writeread-contract). Hydration and display-only clamping do not save new layout changes; camera/focus conflicts use the same acknowledged revision and receipt protocol.
