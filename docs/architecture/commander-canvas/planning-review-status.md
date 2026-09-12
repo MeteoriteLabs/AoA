@@ -32,3 +32,7 @@ See [detailed plans](coding-plans/README.md), [shared bindings](implementation-b
 ## Worker-publication proposal awaiting review
 
 The [new addendum](worker-publication-plan.md) and owning E4/E5 plans recommend application-scoped processing/index/publication/grant records while retaining existing non-owner job authority, with durable verified-copy and publication receipt reconciliation. The author traced the pinned committed identity, canonical writers, grant restrictions, retention and frozen source kinds and reviewed propagation. This is not yet independently reviewed or security-accepted. Human-intake review closure stands for its unchanged scope; new proposal gates do not invalidate it. TK-managed review prompt is in the handoff.
+
+## Worker-publication review received and follow-up
+
+[Claude's review of 0d8876cdf](worker-publication-review-report.md) is received and author-checked. The proposal is coherent for security review, not runtime-ready. M1/M3 are valid existing gates now expanded in the [identity/revocation follow-up](worker-publication-identity-revocation.md); M2 allowlist tightening is applied; LOW-1 is rejected against the actual composite cascading job FK; LOW-2 remains a static registration check. New mechanisms await independent/security review; no gate closes through documentation alone.

@@ -159,3 +159,7 @@ These decisions can be discussed together, but each gets an explicit outcome, ow
 5. After reviewed findings and applicable gates are resolved, present the first E1.1 implementation batch for explicit approval.
 
 The human-upload decision does not need another unchanged review round. The two low observations require no architecture change: the summary inventory is intentionally representative, and organization metadata must never grant access. Keep the existing same-organization/cross-company denial cases mandatory when tests are implemented. Draft preservation remains accepted; cleanup timing is a later decision, not a blocker for unrelated planning.
+
+## Worker-publication review follow-up status
+
+[Received review](worker-publication-review-report.md) and [author disposition](independent-review-response.md#worker-publication-review-disposition) distinguish supported design conclusions from open qualifications. M2 is tightened in the publication plan. [M1/M3 detailed proposal](worker-publication-identity-revocation.md) defines stable action/slot identity, acceptance binding and authorization-barrier ordering. Security/CMD acceptance, complete permission/credential writer coverage and runtime evidence remain open. LOW-1's cascade concern was disproved at pinned source. Review this material follow-up before declaring generated publication accepted; the next separate planning area remains voice/media policy. No provider calls or implementation are authorized.

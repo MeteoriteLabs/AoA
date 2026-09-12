@@ -89,3 +89,17 @@ TK supplied [Claude's human-intake report](human-intake-review-report.md), revie
 The proposed-output summary is explicitly representative, with additional files in the coding addendum; omission of the access guard from that summary is not a missing implementation obligation. The organization_id note reinforces existing routing-only semantics and required authenticated denial tests. Those are planned tests, not executed proof. Preserve both observations as review guidance; no new architecture decision or runtime gate closure follows.
 
 Structural verification reports 124 packet documents before adding this preserved report, 31 slices/coding plans, 69 increments in each set and 20 UAT scripts, with no audit errors. The report's zero-new-files statement applies to the reviewed one-commit delta, not all documentation added since replatform. Publication of this closure adds only the received report and documentation status/next steps. Implementation remains unapproved.
+
+## Worker-publication review disposition
+
+Received [Claude's report](worker-publication-review-report.md) on 0d8876cdf333ba433c792127e8b4b264fb3a5d22 against 8b1dab340 and pinned 183e46a9c. Author source verification supports the overall coherent-proposal verdict, with these dispositions:
+
+| Finding | Disposition |
+|---|---|
+| M1 accepted output identity | Valid existing gate. Follow-up now specifies exact canonical action tuple, persisted slot UUID, accepted binding/CAS and producer ownership. Actual CMD/result adapter remains gated. |
+| M2 other-kind promotion | Accept tightening. Strict default-deny processor/build/slot/type/validator/hash-policy/promotion-policy tuples, forbidden-lineage checks and disguised other-kind negative fixtures added. Hash alone is not a secret/content detector. |
+| M3 revocation ordering | Valid highest-priority confidentiality gate. Follow-up proposes company and actual credential authority barriers, initial writer inventory, global lock order and deterministic race tests. Exhaustive writer/credential coverage and runtime proof remain open. |
+| LOW-1 cascade wording | Reject with pinned source evidence: packages/db/src/schema/job_artifacts.ts defines composite job_artifacts_org_job_fk on organizationId/jobId and calls .onDelete("cascade"). The separate organizations FK restricts; it does not override the job FK. Receipt lifetime still remains independent. |
+| LOW-2 static callback | Accept verification obligation already in design; add explicit source-registration and forged-selector checks. |
+
+The original report is preserved separately; no reviewer text is silently corrected. New M1/M3 mechanisms are proposals needing independent/security review, not proof of completed qualification. No implementation or human-intake decision is reopened.
