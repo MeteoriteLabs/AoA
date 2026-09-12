@@ -177,3 +177,4 @@ export { createPluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 export type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 
 export { fileImportService, processFileImportQueue, resetStuckJobs, WORKER_INTERVAL_MS } from "./file-import.js";
+export { jobSubmissionService, type AuthenticatedJobPrincipal } from "./job-submission.js";

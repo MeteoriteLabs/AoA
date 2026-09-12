@@ -18,7 +18,8 @@ import { environmentRuntimeService } from "../../environment-runtime.js";
 import { createLocalAgentJwt } from "../../../agent-auth-jwt.js";
 import { resolveBridgeEntrypoint } from "./bridge-path.js";
 import { publishLiveEvent, publishIssueStatusChanged, threadWorkingAgents, broadcastThreadPresence } from "../../live-events.js";
-import { logger } from "../../../middleware/logger.js";
+import { logger } from "../../../middleware/logger.js";
+import { recordDistributedShadow } from "../../distributed-shadow-port.js";
 import { computeCostCents } from "../cost-model.js";
 import { assembleAgentPersona } from "../commander-context.js";
 import { agentInstructionsService } from "../../agent-instructions.js";
@@ -828,6 +829,36 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         sink: "crew agent",
       },
     );
+
+    // ── MIG-006 shadow observation ────────────────────────────────────────
+    // After the execution target is resolved (so the recorded routing is real) and
+    // before `adapter.execute` (so the record is the dispatch's intent, not its
+    // outcome). Skipped without a `runId`: a `crew_run` source is identified by its
+    // run, and the FROZEN `.strict()` variant accepts no substitute.
+    //
+    // Inert unless this Organization's rollout is `shadow`; cannot throw; the probe is
+    // deadline-bounded, so the worst case for a live dispatch is
+    // SHADOW_PROBE_DEADLINE_MS and never a failure.
+    if (runId) {
+      await recordDistributedShadow({
+        companyId: payload.companyId,
+        source: { kind: "crew_run", crewRunId: runId },
+        // The crew agent is the executor, and `crew_run` admits an agent requester.
+        principal: { kind: "agent", id: agentId },
+        routing: { executionTargetType: executionTarget.type },
+        policy: {
+          model: typeof providerId === "string" ? providerId : null,
+          budgetPolicyId: null,
+          effectiveCompletionPolicy: "not_applicable",
+        },
+        workloadCharacterization: {
+          command: String(agent.adapterType ?? ""),
+          args: [],
+          maxRuntimeSeconds: 600,
+          stdinArtifactId: null,
+        },
+      });
+    }
 
     // Audit follow-up #27: capture the redacted+capped prompt snapshot now so
     // it is available to fold into the next existing run-row write (either the

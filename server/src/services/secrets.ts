@@ -165,7 +165,10 @@ function isSensitiveEnvKey(key: string) {
   return SENSITIVE_ENV_KEY_RE.test(key);
 }
 
-function canonicalizeBinding(binding: EnvBinding): CanonicalEnvBinding {
+/** Exported for DAT-008: the handle mint must classify a per-agent provider binding
+ * (plain vs secret_ref) using the SAME canonicalization the persistence and runtime
+ * paths use, so "does this agent override the company key?" cannot drift between them. */
+export function canonicalizeBinding(binding: EnvBinding): CanonicalEnvBinding {
   if (typeof binding === "string") return { type: "plain", value: binding };
   if (binding.type === "plain") return { type: "plain", value: String(binding.value) };
   return { type: "secret_ref", secretId: binding.secretId, version: binding.version ?? "latest" };

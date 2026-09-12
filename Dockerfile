@@ -57,6 +57,26 @@ COPY packages/adapters/openclaw-gateway/package.json packages/adapters/openclaw-
 COPY packages/adapters/pi-local/package.json packages/adapters/pi-local/
 COPY packages/plugins/create-paperclip-plugin/package.json packages/plugins/create-paperclip-plugin/
 COPY packages/plugins/sdk/package.json packages/plugins/sdk/
+COPY packages/worker-protocol/package.json packages/worker-protocol/
+COPY packages/worker-daemon/package.json packages/worker-daemon/
+COPY packages/sandbox-fake-provider/package.json packages/sandbox-fake-provider/
+COPY packages/sandbox-provider-contract/package.json packages/sandbox-provider-contract/
+# BRW-002 - the sandbox-local browser runtime. The deps-stage validator requires every
+# workspace package to be copied here, so a new package that is not listed fails `policy`.
+COPY packages/browser-runtime/package.json packages/browser-runtime/
+COPY packages/sandbox-e2b-provider/package.json packages/sandbox-e2b-provider/
+COPY packages/worker-keystore/package.json packages/worker-keystore/
+# DEP-012 Slice 1 · Unit A — the networked provider seam (shared wire + the adapter-manager
+# host). Component-level today; listed here because the deps-stage validator requires EVERY
+# workspace package.json, independent of whether the package ships its own image.
+COPY packages/provider-wire/package.json packages/provider-wire/
+COPY packages/adapter-manager/package.json packages/adapter-manager/
+# DEP-011 §1.2.0 — the node:crypto-only owned-labels-capability leaf (server mints through it).
+COPY packages/provider-capability/package.json packages/provider-capability/
+# DEP-011 Slice 2b — the CONTAINER networked-provider composition root. Listed here because the
+# deps-stage validator requires EVERY workspace package.json; the combined image does not run its
+# bin (its image home is a Slice-5 decision; the split worker image stays E4-D01-exact).
+COPY packages/worker-networked-host/package.json packages/worker-networked-host/
 COPY patches/ patches/
 RUN pnpm install --frozen-lockfile
 
