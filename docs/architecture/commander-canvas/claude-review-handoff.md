@@ -1,6 +1,6 @@
 # Universe — independent review handoff
 
-**Purpose:** TK takes this completed planning packet to Claude, then returns its findings. The initial independent review of f63b844 has been received and reconciled in planning documents. No implementation approval exists; the correction round needs user-managed re-review.
+**Purpose:** TK takes this completed planning packet to Claude, then returns its findings. The initial review and subsequent correction rounds have been received. The focused review of ac7b9a494 was checked against source/plans and closes the two residual contract gaps at the planning level. See [received review](focused-review-report.md) and [remaining decision packet](final-planning-decisions.md). No implementation approval exists. Prompts below are retained for review provenance or future material revisions.
 
 Planned publication branch: `codex/universe-interface`. Source baseline: `183e46a9c65fc3105c7e3d125629276814df7dbb` from replatform. [Publication record](planning-publication.md) records the verified branch/base and documentation-only checks. Review the published branch head and record its exact commit in the review report; do not substitute main or a premature Universe worktree.
 

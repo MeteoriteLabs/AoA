@@ -6,7 +6,9 @@ September 11, 2026. Read together with the [master scope](master-scope.md), [UI 
 
 The historical September 11 evidence/results below remain dated records. Current published baseline is `183e46a9c65fc3105c7e3d125629276814df7dbb`; `codex/universe-interface` already holds the reviewed documentation commit. V1 allocation and branch/methodology are agreed; runtime approval, qualification and named reviewers are not. See [review response](independent-review-response.md), [publication](planning-publication.md) and [accepted release plan](release-plans/README.md). Historical component test passes are not newly run tests or Universe acceptance.
 
-## Fresh evidence baseline
+The [final planning decision packet](final-planning-decisions.md) records the latest remote-head check, verified focused-review closure and remaining security/provider/owner/draft decisions. Its source-identity check is complete; BASE runtime qualification and product approval remain open.
+
+## Fresh evidence baseline (historical September 11 check)
 
 Fetched origin during this review; no checkout/rebase/merge or implementation branch created.
 

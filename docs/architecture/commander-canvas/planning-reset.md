@@ -2,7 +2,11 @@
 
 September 12, 2026. **Planning only. No production implementation is authorized.** This record supersedes earlier statements that the branch choice, coding start or implementation readiness were accepted. TK explicitly corrected that interpretation and asked to return to detailed planning and review.
 
-## Preserved decisions and open decisions
+## Current authority
+
+The prohibitions and branch alternatives below record the initial reset. Subsequent explicit user instructions authorized the fresh codex/universe-interface branch and documentation commits/pushes; that branch now exists at the verified remote replatform pin. The [focused contract re-review](focused-review-report.md) has been checked and the two residual planning gaps are closed. Current remaining decisions are in [the final planning packet](final-planning-decisions.md). Implementation, qualification execution, provider spend and draft deletion/reuse remain unapproved.
+
+## Preserved decisions and open decisions (initial reset; later decisions below control)
 
 - Preserve the reviewed Universe experience, settings ownership, animation rules and V1/V2 allocation: 30 slices in V1, E3.4 in V2; multi-screen deferred after desktop-app planning. Do not reopen these merely because the planning process was incomplete.
 - Branch strategy and exact source base remain proposals for review. A general discussion of slice branches did not authorize creating them or writing production code.
@@ -66,4 +70,4 @@ Where an upstream contract is not yet available, provide a complete investigatio
 
 ## Present status
 
-The reset, gap inventory and detailed per-increment coding plans are written, with [full-packet self-review](planning-self-review.md). Final independent Claude review remains open. TK will handle Claude review after the full plans and self-review, so the failed CLI attempt is historical, not a current blocker; see [review status](planning-review-status.md). TK clarified that the [same Universe branch](planning-branch-proposal.md) should come from replatform, contain plans now and integrated implementation only after explicit approval. This supersedes treating the planning and later integration branches as necessarily separate. No implementation readiness or 100% confidence is claimed. Disposition of the premature work stays deferred for its own explicit decision.
+The reset, gap inventory and detailed per-increment coding plans are written, with [full-packet self-review](planning-self-review.md). The subsequent focused Claude review of ac7b9a494 has been received and verified for the two residual contract areas; final decisions and runtime approval remain open. TK will handle Claude review after the full plans and self-review, so the failed CLI attempt is historical, not a current blocker; see [review status](planning-review-status.md). TK clarified that the [same Universe branch](planning-branch-proposal.md) should come from replatform, contain plans now and integrated implementation only after explicit approval. This supersedes treating the planning and later integration branches as necessarily separate. No implementation readiness or 100% confidence is claimed. Disposition of the premature work stays deferred for its own explicit decision.
