@@ -1,5 +1,7 @@
 # Universe — first implementation batch preparation
 
+**Latest preparation (September 13):** [Exact base proposal and first-batch visual checks](pre-implementation-discussion.md) are complete for TK's requested pre-implementation conversation. The merge simulation is conflict-free; the combined source is not yet runtime-qualified or adopted. Eight first-batch states have 32 rendered checks. No Universe coding starts before that conversation and explicit batch approval.
+
 **Historical preparation record; superseded for current execution scope by the [bounded engineering preparation proposal](bounded-engineering-preparation.md).** Earlier implementation was premature and remains paused. The Universe planning branch and source pin are now established; TK accepted keeping the earlier draft untouched/excluded. No runtime results below certify the new candidate or authorize coding.
 
 September 11, 2026. **Preparation completed to the boundaries below; runtime implementation has not started.** The user accepted the V1/V2 grouping and the methodology of one Universe integration branch, reviewed slice branches, integrated journey checks, and separate handling of replatform prerequisites.

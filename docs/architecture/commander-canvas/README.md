@@ -1,5 +1,7 @@
 # Commander Canvas design record
 
+**Latest preparation (September 13):** [Exact base proposal and first-batch visual checks](pre-implementation-discussion.md) are complete for TK's requested pre-implementation conversation. The merge simulation is conflict-free; the combined source is not yet runtime-qualified or adopted. Eight first-batch states have 32 rendered checks. No Universe coding starts before that conversation and explicit batch approval.
+
 **Current checkpoint (September 13, corrected qualification):** The [F5 repair and full baseline verification](f5-repair-results.md) passed at local source `fcab5a112`: repository typecheck, all four test shards (24,276 passed, 76 unchanged ordinary skips) and build. An interrupted shard-3 attempt is preserved separately and excluded from totals. No source drift or new skipped cases. Correction publication/landing, exact Universe base adoption and feature implementation remain unapproved. The remote replatform delta requires its own integration checks; no general epic replanning. Older dated records below are historical.
 
 **Current status — production implementation paused:** TK clarified that implementation was not authorized. The [planning reset and review checkpoint](planning-reset.md) controls current work. The isolated draft is excluded from accepted delivery; TK accepted preserving it untouched/excluded for now; later deletion or reuse needs its own decision. Detailed plans, independent review and explicit user approval must precede coding.

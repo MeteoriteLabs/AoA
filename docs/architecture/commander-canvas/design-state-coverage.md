@@ -1,5 +1,7 @@
 # Universe — DESIGN state evidence coverage
 
+**Latest preparation (September 13):** [Exact base proposal and first-batch visual checks](pre-implementation-discussion.md) are complete for TK's requested pre-implementation conversation. The merge simulation is conflict-free; the combined source is not yet runtime-qualified or adopted. Eight first-batch states have 32 rendered checks. No Universe coding starts before that conversation and explicit batch approval.
+
 September 12, 2026. **Completed documentary evidence inventory; DESIGN remains open.** This report is the DESIGN portion of the approved bounded baseline-preparation batch. It records existing evidence and missing proof; it does not record a new visual acceptance, run any UAT script, authorize E1.1 implementation, or change release scope. The [preparation record](bounded-engineering-preparation.md) records the original proposal and subsequent bounded batch authorization under which this report was authored.
 
 Codex is the evidence author. TK owns product and execution-scope acceptance. TK-managed Claude supplies independent technical review; this report does not substitute for that review or claim it occurred. No acceptance is inferred from authoring the report.
