@@ -1428,8 +1428,7 @@ own failure class.**
   carries DENIALS (DE-03/DE-06), NOT cleanup outcomes — so a CP-side drain FOR CLEANUP OUTCOMES is
   genuinely missing and 6a ALSO needs an unbuilt worker→CP carrier (SIMPLER than 6b — report the
   outcome, no authority-typing — and sequenceable first). **6b (denied escalations)** additionally
-  needs authority-typing, blocked on either `E0-F014` OR an unbuilt worker self-report carrier. Both
-  are hard-blocked on the missing carrier.
+  needs authority-typing, blocked on either `E0-F014` (the adapter-manager then reports over its own CP channel, no worker carrier) OR an unbuilt worker self-report carrier. Both halves are hard-blocked, on DIFFERENT unbuilt mechanisms — 6a the cleanup-outcome carrier, 6b authority-typing or a self-report.
 - **DE-14** — recordable only as a **log**, and that is all its clause asks ("the startup
   safety-assertion outcome is **logged**"). `assertHostedExecutionStartupSafe` fires at
   `config.ts:198` during config load, **before any DB pool exists**, so a durable row is
