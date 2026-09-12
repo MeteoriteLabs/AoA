@@ -27,18 +27,15 @@
 //               `opts.appDb` is a pool-level handle and the record is written
 //               DIRECTLY there, before the refusal is returned. No intent/drain is
 //               needed: nothing is about to roll back.
-//               ★ BOUNDED TO ONE ROW PER (org, window). The poll counter increments on
-//               EVERY poll, so a worker ignoring the 429 keeps `count` climbing; writing
-//               a row on each over-cap poll would turn this control into an unbounded
-//               per-window storage-amplification lever. So the over_cap write fires ONLY
-//               on the poll that FIRST crosses the cap (`count === config.max + 1`) — the
-//               atomic RETURNING hands exactly one caller that count, so exactly one
-//               attributed refusal row lands per (org, window); later over-cap polls still
-//               deny but write nothing. This is DELIBERATELY ASYMMETRIC with capacity
-//               below, which stays PER-REFUSAL: a capacity refusal is one discrete, heavy
-//               submission transaction (RLS + advisory lock + attempt insert), not a cheap
-//               poll a misbehaving worker can spin in a loop, so there is no amplification
-//               lever to bound and each discrete refusal is worth its own row.
+//               ★ ONE ROW PER OVER-CAP POLL (per-refusal). The founder-ruled reading of
+//               DE-27's audit clause (E0-F013 Decision 1.2c) is "each admission REFUSAL is
+//               durably recorded", so the row is written on EVERY over-cap poll, each with
+//               its own `actorId` and `details.count` — the same per-refusal shape as the
+//               DE-03/DE-06/DE-19 deny paths. A first-crossing / per-window COALESCE was
+//               considered and REJECTED: it drops the refusals the ruled clause requires be
+//               recorded. Write-amplification from a looping worker is bounded by the poll
+//               rate limit and `activity_log` retention — a pattern-wide property of the
+//               whole deny-path class, tracked separately, not a DE-27 deviation.
 //   capacity  — the shared per-organization concurrency cap,
 //               `org-concurrency.ts admitAttemptCapacity()`. Its `admitted:false`
 //               return is a plain `return` (Drizzle COMMITS a callback that returns
