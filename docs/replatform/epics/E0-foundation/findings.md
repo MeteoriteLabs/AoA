@@ -821,8 +821,10 @@ all four read as shipped.
    caller), not the old one (no caller at all). *(Note: SVC-005a also added a separate,
    genuinely-reachable cross-generation PLACEMENT fence — `predecessor_generation_unwitnessed`,
    `service-reconciler.ts:266-276` — but that is not the submit-time deny DE-12 item 4 cites, so it
-   does not flip this clause.)* **This item stays OPEN** for the still-absent partition-detector (3a) and drain-producer (3b)
-   mechanisms. ★ **CORRECTED 2026-09-11 (E0-F013 Decision 1):** the earlier claim that DE-12's
+   does not flip this clause.)* **This item stays OPEN** for the UNREACHABLE-DENIAL reason established above — the sole production
+   submitter (the reconciler) always supplies a matching generation, so the submit-time deny can
+   never refuse. It does NOT stay open for the audit conjuncts 3a/3b: those are E0-F013's audit
+   clause (dropped vacuous by Decision 1), a separate finding, not E0-F011's arming-path concern. ★ **CORRECTED 2026-09-11 (E0-F013 Decision 1):** the earlier claim that DE-12's
    residual AUDIT clause ("partition, drain, and generation changes are audited") is a
    `logger.info`-only line is STALE. Conjunct **3c (generation changes) is DELIVERED** — a roll writes
    exactly ONE durable `service.generation_roll` `activity_log` row via
