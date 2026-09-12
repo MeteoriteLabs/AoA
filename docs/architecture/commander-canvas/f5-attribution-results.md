@@ -33,6 +33,8 @@ Evidence: [summary and target process samples](evidence/f5-attribution-2026-09-1
 
 ## Recommended next step
 
+**Follow-up prepared:** the [F5 fixture correction plan](f5-fixture-correction-plan.md) now defines exact files, code, deadlines, regression tests and execution bounds. Source is not yet authored.
+
 Prepare one **fixture-only startup/lifecycle correction** for review: give database initialization an explicit bounded startup policy, report the failing stage, and own cleanup even if initialization or start completes after the caller times out. Preserve real backup assertions, default disk synchronization, global timeouts and concurrency. A larger startup allowance alone would not establish cancellation or cleanup correctness. Choose its finite budget as an explicit engineering policy with the observed timing range and CI limits recorded; this successful sample does not prove a sufficient worst-case budget.
 
 Review the concrete correction and deterministic late-completion/cleanup checks before authoring source. Then qualify the clean corrected commit with typecheck, the complete test suite and gated build. No repeated unchanged green-seeking diagnostic is recommended. This is a narrow engineering follow-up, not another review of all Universe epics.
