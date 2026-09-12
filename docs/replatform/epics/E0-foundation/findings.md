@@ -1420,13 +1420,16 @@ own failure class.**
   `packages/worker-protocol` is v1-FROZEN behind a hash-pinned cross-version conformance test. Its
   own ticket, with its own freeze decision.~~ ★ **UN-BUNDLED 2026-09-11 (E0-F013 Decision 1.6): the
   v1 freeze is NOT the blocker** (`extensions[]` is on the worker-event schema at `events.ts:347`, and
-  a `critical:false` extension is additive under the freeze). DE-17 splits: **6a (post-fence cleanup
-  audit) is deliverable NOW** as DE-19-shaped audit-wiring INDEPENDENT of `E0-F014` — it needs no wire
-  hop, because the CP-side drain (`drainWorkerDenial`→`recordSecurityDenial`,
-  `worker-denial-audit.ts:227`, migration `0274`) lives on the control plane and is already
-  production-wired on the non-fence-guarded quarantine-finalize path (`quarantine-finalize.ts:159`).
-  Only **6b (denied escalations)** remains hard, blocked on either `E0-F014` authority-typing OR an
-  unbuilt worker self-report carrier.
+  a `critical:false` extension is additive under the freeze). DE-17 splits, but ★ **CORRECTED
+  2026-09-11 (Codex P1, verified at source): 6a is NOT deliverable now.** The post-fence cleanup
+  (`CleanupAuthority.converge`, `packages/worker-daemon/src/supervisor/cleanup-authority.ts`) runs
+  OFF-PLANE in the worker daemon and reports its outcome to NO control-plane sink; the drain
+  (`drainWorkerDenial`→`recordSecurityDenial`, `worker-denial-audit.ts:227`, migration `0274`)
+  carries DENIALS (DE-03/DE-06), NOT cleanup outcomes — so a CP-side drain FOR CLEANUP OUTCOMES is
+  genuinely missing and 6a ALSO needs an unbuilt worker→CP carrier (SIMPLER than 6b — report the
+  outcome, no authority-typing — and sequenceable first). **6b (denied escalations)** additionally
+  needs authority-typing, blocked on either `E0-F014` OR an unbuilt worker self-report carrier. Both
+  are hard-blocked on the missing carrier.
 - **DE-14** — recordable only as a **log**, and that is all its clause asks ("the startup
   safety-assertion outcome is **logged**"). `assertHostedExecutionStartupSafe` fires at
   `config.ts:198` during config load, **before any DB pool exists**, so a durable row is
