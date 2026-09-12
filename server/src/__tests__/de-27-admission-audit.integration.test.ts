@@ -50,6 +50,21 @@
  *      any constant) goes RED. The over_cap worker id and the capacity principal id are
  *      DISTINCT from the org uuid and from each other, so a writer that stamped either
  *      the org or one constant identity cannot pass both arms.
+ *   6. WRITE AMPLIFICATION IS BOUNDED: the over_cap write fires ONLY on the poll that
+ *      first crosses the cap (`count === config.max + 1`), so a worker ignoring the 429
+ *      and polling again in the SAME window (count max + 2) is still denied but writes NO
+ *      second row — exactly one row per (org, window). Removing that gate is a mutant the
+ *      bound arm kills. The capacity path is deliberately NOT bounded (per-refusal): a
+ *      capacity refusal is one discrete heavy submission tx, not a cheap poll loop.
+ *
+ * ★ KILLED MUTANTS (each makes at least one arm RED, verified RED-first):
+ *   (a) delete the over_cap write            -> "THE CLAUSE (over_cap)" RED
+ *   (b) delete the capacity intent capture   -> "THE CLAUSE (capacity)" RED
+ *   (c) stamp a constant `reason`            -> "THE REASON IS READ FROM THE BRANCH" RED
+ *   (d) write on the ADMITTED poll path too  -> the over_cap "wrote ONE row" positive control RED
+ *   (e) stamp `actorId = organizationId`     -> the three WHO arms RED (control 5)
+ *   (f) remove the `count === config.max + 1` gate -> the bound arm's second-poll
+ *       "STILL exactly one" assertion RED (a second over-cap poll writes a second row)
  *
  * Real Postgres (embedded-postgres + the committed migration chain), the real limiter,
  * the real submit path (which threads the capacity-denial sink and drains it on the pool
@@ -259,6 +274,35 @@ integration("DE-27 audit clause — the two worker-admission refusals leave attr
     expect(rows[0]!.actor_id).not.toBe(ORG2);
     expect(rows[0]!.actor_id).not.toBe(ORG);
     expect(rows[0]!.actor_id).not.toBe(rows[0]!.organization_id);
+  }, 60_000);
+
+  it("★ WRITE-AMPLIFICATION IS BOUNDED — over_cap writes ONE row per (org, window), not one per over-cap poll", async () => {
+    await clearAll();
+    const limiter = createWorkerAdmissionRateLimiter({
+      appDb: ctx().app.db,
+      config: { windowMs: WINDOW_MS, max: 2 },
+      now: clockAt(120_000), // one fixed window for every poll below
+    });
+    expect((await limiter.admit(ORG, WORKER_A)).allowed).toBe(true); // count 1
+    expect((await limiter.admit(ORG, WORKER_A)).allowed).toBe(true); // count 2
+
+    // count 3 = max + 1 — the FIRST crossing this window. Writes exactly one row.
+    const firstOver = await limiter.admit(ORG, WORKER_A);
+    expect(firstOver).toMatchObject({ allowed: false, reason: "over_cap", count: 3 });
+    const afterFirst = await admissionDenialRows();
+    expect(afterFirst).toHaveLength(1);
+    expect(Number(afterFirst[0]!.details?.count)).toBe(3); // count retained AT CROSSING
+
+    // count 4 = max + 2 — a worker ignoring the 429 and polling AGAIN in the SAME window.
+    // Still denied, still increments the shared counter, but writes NO second row: this is
+    // the amplification bound. Removing the `count === config.max + 1` gate (the mutant)
+    // makes THIS assertion go RED — a second over-cap poll would write a second row.
+    const secondOver = await limiter.admit(ORG, WORKER_A);
+    expect(secondOver).toMatchObject({ allowed: false, reason: "over_cap", count: 4 });
+    const afterSecond = await admissionDenialRows();
+    expect(afterSecond).toHaveLength(1); // STILL exactly one — bounded to first crossing
+    // …and it is the SAME row (same crossing count), not a fresh one that replaced it.
+    expect(Number(afterSecond[0]!.details?.count)).toBe(3);
   }, 60_000);
 
   // ── capacity ────────────────────────────────────────────────────────────────────────

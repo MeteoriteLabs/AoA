@@ -151,26 +151,41 @@ export function createWorkerAdmissionRateLimiter(opts: {
         // the refusal is recorded DIRECTLY here, awaited before the deny is returned, so
         // the refusal and its record are atomic from the caller's view. Never throws —
         // `recordWorkerAdmissionDenial` swallows and logs a failed insert, so a broken
-        // recorder cannot convert a throttle into a 500. This is a rare refusal path, so
-        // the one INSERT is not on the hot admit path.
-        await recordWorkerAdmissionDenial(opts.appDb, {
-          reason: "over_cap",
-          companyId: null,
-          organizationId,
-          // WHO — the specific refused worker (`auth.workerId`), not the tenant org.
-          actorId: workerId,
-          entityType: "worker_poll_admission",
-          entityId: organizationId,
-          control: "server/src/services/worker-admission-rate-limit.ts:admit",
-          details: {
-            count,
-            limit: config.max,
-            windowStartMs: windowStart.getTime(),
-            // The refused actor is a worker machine identity; name its kind so the
-            // WHO is legible beyond the bare id.
-            principalKind: "worker",
-          },
-        });
+        // recorder cannot convert a throttle into a 500.
+        //
+        // ★ WRITE-AMPLIFICATION BOUND — ONE ROW PER (org, window). `incrementAdmissionWindow`
+        // upserts `requestCount + 1` on EVERY poll, so `count` keeps climbing while a
+        // misbehaving worker ignores the 429 and polls in a loop. Writing a row on every
+        // over-cap poll would make this control — the one meant to CHECK such a worker — an
+        // unbounded per-window persistent-storage amplification lever. So the row is written
+        // ONLY on the poll that FIRST crosses the cap this window (`count === config.max + 1`);
+        // the atomic RETURNING gives exactly one caller that count, so exactly one durable,
+        // attributed refusal row is written per (org, window). Later over-cap polls still
+        // increment the shared counter and still DENY — only the audit write is suppressed.
+        // `details.count` is the count AT CROSSING (config.max + 1), the forensic event: this
+        // org was throttled, this worker crossed it, at this count. (The capacity path stays
+        // per-refusal by design — a capacity refusal is one discrete, heavy submission tx, not
+        // a cheap poll loop — see `worker-admission-denial-audit.ts`.)
+        if (count === config.max + 1) {
+          await recordWorkerAdmissionDenial(opts.appDb, {
+            reason: "over_cap",
+            companyId: null,
+            organizationId,
+            // WHO — the specific refused worker (`auth.workerId`), not the tenant org.
+            actorId: workerId,
+            entityType: "worker_poll_admission",
+            entityId: organizationId,
+            control: "server/src/services/worker-admission-rate-limit.ts:admit",
+            details: {
+              count,
+              limit: config.max,
+              windowStartMs: windowStart.getTime(),
+              // The refused actor is a worker machine identity; name its kind so the
+              // WHO is legible beyond the bare id.
+              principalKind: "worker",
+            },
+          });
+        }
         return { allowed: false, reason: "over_cap", count, limit: config.max };
       }
       return { allowed: true, count, limit: config.max };
