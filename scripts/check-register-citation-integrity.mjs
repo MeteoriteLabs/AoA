@@ -78,6 +78,16 @@
  *   DE-28 quarantine-grant.ts:91→:101) and were FIXED rather than grandfathered, because they
  *   could resolve — grandfathering is for citations that cannot.
  *
+ *   CENSUS — `scripts/register-citation-census.json` pins how many enforced citations exist, in
+ *   TOTAL and PER REPO-ROOT. The guard would otherwise only check the citations it still emits, so
+ *   a parser/scope regression that silently dropped some (e.g. losing the `packages` root removes
+ *   71) would shrink coverage while policy stayed green. On the real-register run the live census
+ *   must equal the manifest, per root, or the guard REDs. A legitimate register change is a
+ *   DELIBERATE re-pin: `node scripts/check-register-citation-integrity.mjs --update-census` rewrites
+ *   the manifest (sorted, deterministic); commit it alongside the register change, like a snapshot.
+ *   An ABSENT census manifest is a FAIL. The census check runs only when the manifest is present in
+ *   the input — the pure unit tests pass synthetic inputs without it; `collect` always loads it.
+ *
  * THIS GUARD IS ADDITIVE. It does not touch and does not duplicate
  * check-distributed-execution-foundation.mjs clause 4, which is about crossing-ID tokens (DE-NN)
  * appearing in OPEN findings — a different contract over different text.
@@ -92,12 +102,13 @@
  *   node scripts/check-register-citation-integrity.mjs --root <fixture-dir>   # tests only
  */
 
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
 export const THREAT_CONTROLS_JSON = "docs/architecture/distributed-execution-threat-controls.json";
 export const GRANDFATHER_JSON = "scripts/register-citation-grandfather.json";
+export const CENSUS_JSON = "scripts/register-citation-census.json";
 
 /**
  * Extensions we recognise as a citable source/asset file.
@@ -352,9 +363,26 @@ export function collect(root) {
 
   const register = readJson(THREAT_CONTROLS_JSON);
   const grandfather = readJson(GRANDFATHER_JSON);
-  const repoRoots = computeRepoRoots(root);
+  const census = readJson(CENSUS_JSON);
+  const citations = parseRegisterCitations(register, computeRepoRoots(root));
 
-  // Parse every string field of every crossing.
+  // Read the files that in-scope citations point at (only those — pure, bounded file reads).
+  const files = {};
+  for (const c of citations) {
+    if (!c.inScope || files[c.path]) continue;
+    const abs = path.join(root, c.path);
+    if (!existsSync(abs) || !statSync(abs).isFile()) {
+      files[c.path] = { exists: false, lines: [] };
+    } else {
+      files[c.path] = { exists: true, lines: splitPhysicalLines(readFileSync(abs, "utf8")) };
+    }
+  }
+
+  return { citations, files, grandfather, census };
+}
+
+/** Parse every string field of every crossing into scoped citation records. */
+export function parseRegisterCitations(register, repoRoots) {
   const citations = [];
   for (const crossing of register.crossings ?? []) {
     if (!crossing || crossing.id == null) continue;
@@ -369,20 +397,27 @@ export function collect(root) {
       }
     }
   }
+  return citations;
+}
 
-  // Read the files that in-scope citations point at (only those — pure, bounded file reads).
-  const files = {};
-  for (const c of citations) {
-    if (!c.inScope || files[c.path]) continue;
-    const abs = path.join(root, c.path);
-    if (!existsSync(abs) || !statSync(abs).isFile()) {
-      files[c.path] = { exists: false, lines: [] };
-    } else {
-      files[c.path] = { exists: true, lines: splitPhysicalLines(readFileSync(abs, "utf8")) };
-    }
+/**
+ * The enforced-citation CENSUS: the count of unique enforced (explicit, repo-anchored) citations,
+ * in total and grouped by repo root. Pinning it (see `register-citation-census.json`) makes a
+ * silent coverage drop — a parser/scope regression that stops emitting some citations — fail
+ * loudly instead of leaving the guard quietly checking fewer citations while policy stays green.
+ */
+export function computeCensus(citations) {
+  const seen = new Set();
+  const byRoot = {};
+  for (const c of citations ?? []) {
+    if (!c.inScope) continue;
+    const sig = citationSignature(c.crossingId, c.path, c.line);
+    if (seen.has(sig)) continue;
+    seen.add(sig);
+    const root = c.path.split("/")[0];
+    byRoot[root] = (byRoot[root] || 0) + 1;
   }
-
-  return { citations, files, grandfather };
+  return { total: seen.size, byRoot };
 }
 
 /**
@@ -581,6 +616,35 @@ export function evaluateCitationIntegrity(input) {
     }
   }
 
+  // --- CENSUS: pin coverage so a silent drop REDs (runs on the real register; the manifest is
+  // absent for the pure-function unit tests, which pass synthetic inputs). ★ CODEX P2 (:70) —
+  // a loose "> 100" let a scope regression that dropped a whole root stay green while the guard
+  // silently checked fewer citations. The pinned total + per-root counts make that fail loudly.
+  if (input.census && typeof input.census === "object") {
+    const actual = computeCensus(citations);
+    const exp = input.census;
+    const repin = `re-pin deliberately with \`node scripts/check-register-citation-integrity.mjs --update-census\` (and commit ${CENSUS_JSON}) if the register change is intended`;
+    if (!Number.isInteger(exp.total)) {
+      errors.push(`${CENSUS_JSON}: "total" must be an integer (got ${JSON.stringify(exp.total)})`);
+    } else if (actual.total !== exp.total) {
+      errors.push(
+        `${CENSUS_JSON}: enforced-citation census changed — expected total ${exp.total}, got ${actual.total}. ` +
+          `A citation was added/removed or the parser/scope regressed; ${repin}.`,
+      );
+    }
+    const expByRoot = exp.byRoot && typeof exp.byRoot === "object" ? exp.byRoot : {};
+    for (const root of [...new Set([...Object.keys(expByRoot), ...Object.keys(actual.byRoot)])].sort()) {
+      const e = expByRoot[root] ?? 0;
+      const a = actual.byRoot[root] ?? 0;
+      if (e !== a) {
+        errors.push(
+          `${CENSUS_JSON}: enforced-citation census for root "${root}" changed — expected ${e}, got ${a} ` +
+            `(a whole-root scope drop, or a citation added/removed under it); ${repin}.`,
+        );
+      }
+    }
+  }
+
   notes.push(
     `citation integrity: ${enforced} enforced (explicit, repo-anchored) citations checked; ` +
       `best-effort (unenforced): ${bestEffort.bare} bare :LINE, ${bestEffort.unanchored} unanchored, ${bestEffort.filenameOnly} filename-only. ` +
@@ -589,9 +653,32 @@ export function evaluateCitationIntegrity(input) {
   return { errors, notes };
 }
 
+/** Re-pin the enforced-citation census from the live register (does NOT require the manifest). */
+function updateCensus(root) {
+  const registerAbs = path.join(root, THREAT_CONTROLS_JSON);
+  if (!existsSync(registerAbs)) throw new Error(`${THREAT_CONTROLS_JSON} is missing`);
+  const register = JSON.parse(readFileSync(registerAbs, "utf8"));
+  const census = computeCensus(parseRegisterCitations(register, computeRepoRoots(root)));
+  const prior = existsSync(path.join(root, CENSUS_JSON)) ? JSON.parse(readFileSync(path.join(root, CENSUS_JSON), "utf8")) : {};
+  const byRoot = {}; // sorted keys, for a deterministic manifest (stable diffs)
+  for (const k of Object.keys(census.byRoot).sort()) byRoot[k] = census.byRoot[k];
+  const manifest = { version: prior.version ?? 1, note: prior.note ?? "Pinned enforced-citation census; see the guard header.", total: census.total, byRoot };
+  writeFileSync(path.join(root, CENSUS_JSON), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  console.log(`re-pinned ${CENSUS_JSON}: total ${census.total}, byRoot ${JSON.stringify(census.byRoot)}`);
+}
+
 function main() {
   const rootFlag = process.argv.indexOf("--root");
   const root = rootFlag !== -1 ? process.argv[rootFlag + 1] : process.cwd();
+  if (process.argv.includes("--update-census")) {
+    try {
+      updateCensus(root);
+    } catch (error) {
+      console.error(`--update-census: FAIL\n  ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
+    }
+    return;
+  }
   let result;
   try {
     result = evaluateCitationIntegrity(collect(root));

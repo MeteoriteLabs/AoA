@@ -27,6 +27,7 @@ import {
   anchorMatchCount,
   isAnchored,
   computeRepoRoots,
+  computeCensus,
   splitPhysicalLines,
   KNOWN_REPO_ROOTS,
   GRANDFATHER_JSON,
@@ -331,6 +332,42 @@ test("isAnchored: only a slash-path whose first segment is a repo root", () => {
   assert.equal(isAnchored("server/src/a.ts", roots), true);
   assert.equal(isAnchored("routes/a.ts", roots), false);
   assert.equal(isAnchored("a.ts", roots), false);
+});
+
+// --- CENSUS: pin coverage so a silent drop reds (Codex P2 :70) ---------------------------
+
+test("computeCensus: the real register matches the pinned census manifest (total + per-root)", () => {
+  const input = collect(REPO_ROOT);
+  const actual = computeCensus(input.citations);
+  assert.equal(actual.total, input.census.total, "pinned total drifted from the live register");
+  assert.deepEqual(actual.byRoot, input.census.byRoot, "pinned per-root census drifted");
+});
+
+test("CENSUS (RED-first): dropping a whole repo root REDs the census, not a silent green", () => {
+  const input = collect(REPO_ROOT);
+  const before = evaluateCitationIntegrity(input);
+  assert.deepEqual(before.errors, [], `the real tree must be green first:\n${report(before.errors)}`);
+  const droppedRootTotal = computeCensus(input.citations).byRoot.packages;
+  const newTotal = input.census.total - droppedRootTotal;
+  // simulate a parser/scope regression that stops emitting `packages` citations
+  input.citations = input.citations.filter((c) => c.path.split("/")[0] !== "packages");
+  const { errors } = evaluateCitationIntegrity(input);
+  assert.ok(hasError(errors, `census changed — expected total ${input.census.total}, got ${newTotal}`), report(errors));
+  assert.ok(hasError(errors, 'root "packages" changed — expected'), report(errors));
+});
+
+test("CENSUS: a total mismatch reds and points at the --update-census re-pin", () => {
+  const input = makeInput({ citations: [cit()], files: passFiles() });
+  input.census = { total: 5, byRoot: { "server": 5 } };
+  const { errors } = evaluateCitationIntegrity(input);
+  assert.ok(hasError(errors, "expected total 5, got 1"), report(errors));
+  assert.ok(hasError(errors, "--update-census"), report(errors));
+});
+
+test("CENSUS: absent manifest (no census on synthetic input) skips the check — real run loads it fail-closed", () => {
+  // makeInput carries no census, so the pure evaluator does not run the census check on fixtures.
+  const { errors } = evaluateCitationIntegrity(makeInput({ citations: [cit()], files: passFiles() }));
+  assert.deepEqual(errors, [], report(errors));
 });
 
 // --- CODEX P2 GUARD-LOGIC CONTROLS ------------------------------------------------------
