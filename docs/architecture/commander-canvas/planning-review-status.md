@@ -2,7 +2,7 @@
 
 September 12, 2026. **Current workflow: contract review complete for the published correction round; final decisions and implementation authorization remain open.** TK supplied Claude's focused review of ac7b9a494, and the author verified it read-only: the two residual attention/layout gaps are closed in planning. The [received focused report](focused-review-report.md) is limited to those areas and structural checks, not a new full 31-slice audit or executed qualification. [The author response](independent-review-response.md) preserves the earlier finding history. Continue with [the final planning decision packet](final-planning-decisions.md). The failed CLI attempt below is historical and is no longer a blocker.
 
-**Subsequent accepted direction:** TK accepted the recommended human-asset approach and asked for plan updates/self-review. E4.1 now selects A explicitly; derivative/index/worker publication remains separately designed. This material planning change should receive user-managed review on its new commit. The earlier attention/layout review remains valid for its unchanged scope.
+**Subsequent accepted direction:** TK accepted the recommended human-asset approach and asked for plan updates/self-review. E4.1 now selects A explicitly; derivative/index/worker publication remains separately designed. TK supplied [Claude's focused human-intake review](human-intake-review-report.md) of abbfc3c7eea05932fb53d9c07b93b5ba1c2941d8. The author checked it against that commit and pinned source: PASS supported, no material correction required. This focused round is closed at the planning-contract level; tests remain proposed and unrun. The earlier attention/layout review remains valid for its unchanged scope.
 
 ## Historical unsuccessful CLI attempt
 

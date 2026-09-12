@@ -20,7 +20,7 @@ TK asked to follow the recommendations, update the plan and review it, after the
 - **Voice/media:** proceed with designing the recommended narrowly scoped credential policy. This accepts the direction, not a particular SDK, credential grant, direct-API amendment, retention term or spend authorization; these concrete details still need review.
 - **Ownership:** retain the proposed implementation/reviewer/product separation. Actual people have not been named or appointed by this acceptance.
 
-This request authorizes planning edits and author review. It does not authorize code, runtime qualifications, provider sessions, secret access, migrations or tests of the premature implementation. Material technical changes to the selected upload path must be reviewed on the new plan commit; the earlier focused-review pass does not cover these edits.
+This request authorizes planning edits and author review. It does not authorize code, runtime qualifications, provider sessions, secret access, migrations or tests of the premature implementation. The material upload-path changes received [focused Claude review at abbfc3c7e](human-intake-review-report.md), now checked against source/plans: no material findings. This closes selected A's consistency-review round. Exact security evidence and runtime qualification remain open; later material changes still require review.
 
 ## D1 — Exact base and integration sequence
 
@@ -149,3 +149,13 @@ No approval is recorded yet. Accepting the plan, reviewing this packet, or sayin
 5. Review the concrete bounded preparation authorization; only later review an implementation authorization.
 
 These decisions can be discussed together, but each gets an explicit outcome, owner and affected scope. Do not ask TK to re-decide the already accepted tray/UI, version allocation, branch direction or upstream tier ruling.
+
+## Next planning deliverables after the human-intake review
+
+1. Finish the distributed processing/publication proposal for E4.2/E4.3/E5: classify each store, name its authorized writer and define durable receipts, cancellation, crash recovery and private-source access. Keep ordinary human intake independent.
+2. Prepare the concrete D3 speech/media policy and provider contract packet, researching current official vendor contracts before recommending credentials, SDKs or retention terms. Present material product/cost/privacy decisions to TK; do not run providers.
+3. Complete the reviewer/responsibility record with actual accepted identities. Do not invent assignments or treat the author as an independent reviewer.
+4. Prepare the bounded BASE/DESIGN qualification proposal: exact replatform SHA, environment, commands, expected evidence and inherited-failure handling. Bring the concrete scope to TK before any execution; qualifications do not authorize coding.
+5. After reviewed findings and applicable gates are resolved, present the first E1.1 implementation batch for explicit approval.
+
+The human-upload decision does not need another unchanged review round. The two low observations require no architecture change: the summary inventory is intentionally representative, and organization metadata must never grant access. Keep the existing same-organization/cross-company denial cases mandatory when tests are implemented. Draft preservation remains accepted; cleanup timing is a later decision, not a blocker for unrelated planning.
