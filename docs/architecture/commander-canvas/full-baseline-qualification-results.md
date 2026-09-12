@@ -1,5 +1,7 @@
 # Universe — full corrected-baseline qualification
 
+**Subsequent diagnostic:** [F5 attribution completed](f5-attribution-results.md) with a passing instrumented shard and measured storage waits. It does not supersede the failed qualification below. The proposed diagnostic allowance in this historical report has now been used.
+
 **September 13, 2026. Verdict: not qualified. One backup-fixture setup failure remains; build was correctly blocked. The Universe plan does not need another general review round.**
 
 TK authorized returning to the baseline run to reach the implementation discussion. This executed Task 4 of the [F4 qualification plan](f4-fixture-repair-plan.md), not source fixes, source publication/adoption, provider execution or Universe feature implementation. Codex reviewed the completed results and retained the failure. No retries followed.

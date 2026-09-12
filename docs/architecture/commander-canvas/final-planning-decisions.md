@@ -1,6 +1,6 @@
 # Universe — final planning decision packet
 
-**Current checkpoint (September 13):** The authorized [full baseline run](full-baseline-qualification-results.md) completed with repository typecheck and 24,258 passing tests, but one backup setup timeout blocked two cases and therefore build. F1/F2/F3/F4 passed; F5 remains the sole observed failing suite. There are 76 unchanged ordinary skips, separately accounted for. Runtime is stopped; source/base adoption and Universe implementation remain unapproved. Planning is assembled and reviewed; the next action is a focused F5 attribution/correction, not another general planning round. Older dated records below are historical.
+**Current checkpoint (September 13, after diagnostic):** The [focused F5 diagnostic](f5-attribution-results.md) passed all 6,043 active shard tests, including both backup cases; three unchanged skips. Initialization took 3.081 seconds and showed filesystem journal/block-I/O waits alongside other database initializers. The earlier ten-second timeout did not recur, so the [failed full qualification](full-baseline-qualification-results.md) remains unaccepted and build remains withheld. Next is a concrete fixture-only startup/lifecycle correction for review, then clean qualification; no general epic replanning. Source fixes, base adoption and Universe implementation remain unapproved. Older dated records below are historical.
 
 September 12, 2026. **Planning only. No implementation, qualification execution, provider spend, draft reuse/deletion or merge is authorized by this document.**
 
