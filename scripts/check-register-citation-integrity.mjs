@@ -39,21 +39,18 @@
  *                       The task scoped (c) to a "three-services class"; the blank-only rule is
  *                       false-positive-free across ALL code files (a strict superset), so it is
  *                       applied broadly rather than to an under-defined subset.
- *     (d) SYMBOL-ANCHOR (STRONGER) — if a BACKTICKED token sits ADJACENT to the citation
- *                       (`` `admit()` at path:LINE ``, or `` path:LINE (`insertJobOnce`) ``),
- *                       that token — or a close variant (the call stripped of `()`, or its
- *                       leading identifier) — must appear within ±3 lines of the cited line.
- *                       This catches a line that drifted WITHIN range but off its construct,
- *                       which (b) cannot see. Enforced only where a backtick anchor EXISTS; an
- *                       absent anchor is never invented. The register today writes its adjacent
- *                       constructs in PARENTHESES, not backticks, and those are a mix of code
- *                       and prose (measured: 5 of 13 code-ish parenthetical tokens legitimately
- *                       fall outside ±3 lines — `admit(`, `target_revoked`, `stale_fence` name a
- *                       concept near, not at, the line), so parenthetical anchors are treated as
- *                       prose, not machine-checkable anchors. (d) is therefore ARMED for the
- *                       backtick form and matches zero citations today; its teeth are proven by
- *                       the positive/negative controls in the self-test, and the guard's current
- *                       teeth are (a)+(b)+(c) over 211 real citations.
+ *     (d) SYMBOL-ANCHOR (REQUIRED + VERIFIED — cite by symbol) — every enforced citation MUST
+ *                       carry a BACKTICKED anchor adjacent to it (`` path:LINE (`insertJobOnce`) ``
+ *                       or `` `admit()` at path:LINE ``). A missing anchor REDS. The anchor — or the
+ *                       call name stripped of its argument list — MUST appear within ±5 lines of the
+ *                       cited line (a range's window is [lo-5, hi+5]); if it does not, the construct
+ *                       moved (re-point) or was deleted (re-anchor) and it REDS. The anchor is the
+ *                       source of truth and the line is a hint: this is what catches a line that
+ *                       drifted WITHIN range but off its construct (the DE-15/DE-27 class), which
+ *                       (b) alone cannot see, and which the earlier blank-only (c) false-greened
+ *                       when the drift landed on other non-blank code. All 211 enforced citations
+ *                       were migrated to carry a distinctive, verified anchor; anchor matching is
+ *                       deliberately STRICT (no generic-fragment fallback — see `anchorVariants`).
  *
  *   BEST-EFFORT, NOT ENFORCED (a documented, MEASURED decision — this is the escape hatch the
  *   task granted for infeasible robust attribution):
@@ -102,12 +99,22 @@ import process from "node:process";
 export const THREAT_CONTROLS_JSON = "docs/architecture/distributed-execution-threat-controls.json";
 export const GRANDFATHER_JSON = "scripts/register-citation-grandfather.json";
 
-/** Extensions we recognise as a citable source/asset file. */
-const EXT = "(?:ts|tsx|js|jsx|mjs|cjs|sql|ya?ml|md|json|sh|ps1)";
+/**
+ * Extensions we recognise as a citable source/asset file.
+ *
+ * ★ CODEX P2 (:106) — ORDER LONGEST-FIRST AND REQUIRE AN EXTENSION BOUNDARY. With `ts` before
+ * `tsx` and `js` before `json`/`jsx`, `scripts/guard-inventory.json:189` matched `.js` inside
+ * `.json`, leaving `on:189` — so the citation parsed as a path `scripts/guard-inventory.js`
+ * (no line) plus a stray bare `:189`, i.e. an unenforced mis-parse of what is really an enforced
+ * `.json` citation. Two independent defences: longer alternatives come first, AND the extension
+ * must be followed by a non-alphanumeric (so `.js` cannot match the head of `.json`).
+ */
+const EXT = "(?:tsx|ts|jsx|json|js|cjs|mjs|sql|ya?ml|md|sh|ps1)";
+const EXT_BOUNDARY = "(?![A-Za-z0-9])";
 /** A path with at least one `/` and a recognised extension. */
-const SLASH_PATH = `(?:[A-Za-z0-9_.\\-]+/)+[A-Za-z0-9_.\\-]+\\.${EXT}`;
+const SLASH_PATH = `(?:[A-Za-z0-9_.\\-]+/)+[A-Za-z0-9_.\\-]+\\.${EXT}${EXT_BOUNDARY}`;
 /** A bare filename (no `/`) with a recognised extension. */
-const BARE_FILENAME = `[A-Za-z0-9_.\\-]+\\.${EXT}`;
+const BARE_FILENAME = `[A-Za-z0-9_.\\-]+\\.${EXT}${EXT_BOUNDARY}`;
 /**
  * One combined left-to-right scanner. Order matters: a slash path is tried before a bare
  * filename before a lone `:LINE`, so `a/b.ts:10` is one explicit slash citation, not a bare
@@ -153,8 +160,20 @@ export const KNOWN_REPO_ROOTS = new Set([
   "ui",
 ]);
 
-/** How far a symbol anchor may sit from the cited line, in either direction. */
-const ANCHOR_RADIUS = 3;
+/**
+ * How far a verified anchor may sit from the cited line, in either direction (a range citation's
+ * anchor may sit within [lo-N, hi+N]).
+ *
+ * ★ N = 5, chosen deliberately. The anchor is the source of truth and the line is a hint, so the
+ * window absorbs the small line-drift routine edits cause (a few lines added above) WITHOUT a
+ * false red, while still catching the real rot class: a construct that MOVED far (the DE-27
+ * shape) or was DELETED falls outside ±5 and reds. The teeth against a nearby-but-wrong match are
+ * not the window size but ANCHOR DISTINCTIVENESS — the migration picks anchors that are rare in
+ * the file, so a distinctive anchor cannot silently re-match an unrelated neighbour inside the
+ * window. Too tight (±0-1) would red on ordinary edits; too loose (±20) would let a construct
+ * drift far and still pass. ±5 is the balance.
+ */
+const ANCHOR_RADIUS = 5;
 
 /** A backtick anchor immediately AFTER `path:LINE` (optionally wrapped in `(`). */
 const ANCHOR_AFTER_RE = /^\s*\(?\s*`([^`\n]{1,80})`/;
@@ -212,15 +231,24 @@ function anchorFor(text, start, end) {
   return null;
 }
 
-/** Close variants of an anchor token that "the token appears" may match against. */
+/**
+ * Close variants of an anchor token that "the token appears" may match against.
+ *
+ * ★ DELIBERATELY STRICT — no generic-fragment fallback. An earlier version also returned the
+ * anchor's LEADING IDENTIFIER, so `count > config.max` matched a nearby bare `count` and
+ * `authority.recordProof` matched a bare `authority` — which made verification LENIENT in exactly
+ * the direction that lets drift pass. The only variant beyond the raw anchor is the call name with
+ * its argument list stripped (`admit(payload)` written as `admit()` still matches `admit(`), which
+ * is a spelling of the SAME symbol, not a weaker fragment of it. A distinctive multi-token anchor
+ * must therefore appear (nearly) verbatim within the window.
+ */
 export function anchorVariants(token) {
   const raw = String(token || "").trim();
   const out = new Set();
   if (raw.length >= 2) out.add(raw);
-  const noParen = raw.replace(/\(.*$/, "").trim(); // `admit(x)` -> `admit`
-  if (noParen.length >= 2) out.add(noParen);
-  const ident = (raw.match(/[A-Za-z_$][\w$]*/) || [])[0]; // leading identifier
-  if (ident && ident.length >= 2) out.add(ident);
+  // `foo(...)` / `foo()` / `a.b(...)` -> the call name, stripped of its argument list.
+  const call = /^([A-Za-z_$][\w$.]*)\s*\(/.exec(raw);
+  if (call && call[1].length >= 3) out.add(call[1]);
   return [...out];
 }
 
@@ -371,9 +399,11 @@ export function evaluateCitationIntegrity(input) {
   }
 
   // --- compute raw violations (ignoring the grandfather list) --------------------------
-  // Keyed by signature so N occurrences of the same citation collapse to one verdict.
+  // Group the in-scope occurrences by signature: N occurrences of the same citation collapse to
+  // one verdict, and the citation is anchored if ANY occurrence carries a verifying anchor (so a
+  // repeated citation need only be anchored once).
   const rawViolations = new Map(); // sig -> message
-  let enforced = 0;
+  const bySig = new Map(); // sig -> occurrences[]
   const bestEffort = { bare: 0, unanchored: 0, filenameOnly: 0 };
 
   for (const c of citations) {
@@ -383,9 +413,14 @@ export function evaluateCitationIntegrity(input) {
       else if (c.kind === "explicit-filename") bestEffort.filenameOnly += 1;
       continue;
     }
-    enforced += 1;
     const sig = citationSignature(c.crossingId, c.path, c.line);
-    if (rawViolations.has(sig)) continue; // already judged this exact citation
+    if (!bySig.has(sig)) bySig.set(sig, []);
+    bySig.get(sig).push(c);
+  }
+  const enforced = bySig.size;
+
+  for (const [sig, occs] of bySig) {
+    const c = occs[0];
     const cite = `${c.crossingId} (${c.field}) ${c.path}:${c.line}`;
     const f = files[c.path];
 
@@ -406,12 +441,23 @@ export function evaluateCitationIntegrity(input) {
       rawViolations.set(sig, `${cite}: cites a BLANK line — the citation has drifted onto whitespace and reaches no code.`);
       continue;
     }
-    // (d) symbol anchor: an adjacent backticked token must appear within ±3 lines.
-    if (c.anchorToken && !anchorNearby(f.lines, lo, hi, c.anchorToken)) {
+    // (d) REQUIRED anchor: every enforced citation must carry an adjacent backtick anchor.
+    const tokens = [...new Set(occs.map((o) => o.anchorToken).filter((t) => typeof t === "string" && t.trim() !== ""))];
+    if (tokens.length === 0) {
       rawViolations.set(
         sig,
-        `${cite}: the adjacent anchor \`${c.anchorToken}\` does not appear within ±${ANCHOR_RADIUS} lines of line ${c.line} ` +
-          "— the line drifted off the construct the citation names.",
+        `${cite}: MISSING anchor — every enforced citation must carry an adjacent backtick anchor naming a ` +
+          `distinctive symbol/snippet on the cited line, e.g. \`${c.path}:${c.line} (\`someDistinctiveSymbol\`)\`. ` +
+          "Cite by symbol: the anchor is the source of truth, the line is a hint.",
+      );
+      continue;
+    }
+    // (e) VERIFY anchor: at least one anchor must appear within ±N lines of the cited line/range.
+    if (!tokens.some((t) => anchorNearby(f.lines, lo, hi, t))) {
+      rawViolations.set(
+        sig,
+        `${cite}: anchor ${tokens.map((t) => "`" + t + "`").join(" / ")} does not appear within ±${ANCHOR_RADIUS} lines of ` +
+          `line ${c.line} — the construct moved (re-point the line) or was deleted/renamed (re-anchor).`,
       );
       continue;
     }

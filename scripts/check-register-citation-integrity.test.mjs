@@ -3,12 +3,12 @@
  * Self-test for `scripts/check-register-citation-integrity.mjs`.
  *
  * A GUARD WITH NO POSITIVE CONTROL IS ITSELF THE FAILURE CLASS IT FIGHTS. The first test is the
- * positive control: the shipped tree passes with zero errors, so a red below is attributable to
- * the mutation and not to a broken harness. Every check (a/b/c/d), the grandfather arm, and the
- * fail-closed posture is then driven to RED by a specific mutation, and each red is asserted to
- * carry the message naming that check — never merely "some error". NEGATIVE controls prove the
- * scope narrowings (bare refs, unanchored paths, comment/import lines) do NOT swallow, and do NOT
- * over-fire.
+ * positive control: the migrated tree passes with zero errors, so a red below is attributable to
+ * the mutation and not to a broken harness. Every check — (a) exists, (b) in-range, (c) reaches
+ * real code, (d) REQUIRED + VERIFIED symbol anchor — plus the grandfather arm and the fail-closed
+ * posture is driven to RED by a specific mutation, and each red is asserted to carry the message
+ * naming that check. NEGATIVE controls prove the scope narrowings (bare refs, unanchored paths,
+ * comment/import lines, strict anchor variants) neither swallow nor over-fire.
  *
  * Usage: node --test scripts/check-register-citation-integrity.test.mjs
  */
@@ -34,7 +34,7 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 const report = (errors) => `errors:\n${errors.map((e) => `  - ${e}`).join("\n") || "  (none)"}`;
 const hasError = (errors, needle) => errors.some((e) => e.includes(needle));
 
-/** A default in-scope, explicit, repo-anchored citation. */
+/** A default in-scope, explicit, repo-anchored, ANCHORED citation (anchors are required). */
 function cit(overrides = {}) {
   return {
     crossingId: "DE-01",
@@ -44,230 +44,219 @@ function cit(overrides = {}) {
     kind: "explicit-slash",
     anchored: true,
     inScope: true,
-    anchorToken: null,
+    anchorToken: "doThing",
     ...overrides,
   };
 }
-
-/** A minimal pure input: some citations, a files map, and an (optional) grandfather list. */
+/** A files map whose server/src/foo.ts line 2 carries the default anchor `doThing`. */
+const passFiles = () => ({ "server/src/foo.ts": { exists: true, lines: ["first();", "doThing();", "third();"] } });
 function makeInput({ citations = [], files = {}, entries = [] } = {}) {
   return { citations, files, grandfather: { version: 1, entries } };
 }
 
-// --- POSITIVE CONTROL -------------------------------------------------------------------
+// --- POSITIVE CONTROLS ------------------------------------------------------------------
 
-test("POSITIVE CONTROL: the shipped tree passes with zero errors", () => {
+test("POSITIVE CONTROL: the migrated tree passes with zero errors", () => {
   const { errors, notes } = evaluateCitationIntegrity(collect(REPO_ROOT));
   assert.deepEqual(errors, [], report(errors));
   assert.ok(notes.some((n) => n.includes("enforced")), notes.join("\n"));
 });
 
-test("POSITIVE CONTROL: the enforced set is non-trivial (the guard actually checks something)", () => {
+test("POSITIVE CONTROL: the enforced set is non-trivial (>100 citations actually checked)", () => {
   const { notes } = evaluateCitationIntegrity(collect(REPO_ROOT));
   const m = /(\d+) enforced/.exec(notes.join("\n"));
-  assert.ok(m && Number(m[1]) > 100, `expected >100 enforced citations, got note: ${notes.join("\n")}`);
+  assert.ok(m && Number(m[1]) > 100, `expected >100 enforced, got: ${notes.join("\n")}`);
+});
+
+test("POSITIVE CONTROL: a fully-correct anchored citation passes", () => {
+  const { errors } = evaluateCitationIntegrity(makeInput({ citations: [cit()], files: passFiles() }));
+  assert.deepEqual(errors, [], report(errors));
 });
 
 // --- (a) EXISTS -------------------------------------------------------------------------
 
-test("(a) EXISTS: a cited file that does not exist at HEAD reds", () => {
-  const input = makeInput({
-    citations: [cit({ path: "server/src/gone.ts", line: "5" })],
-    files: { "server/src/gone.ts": { exists: false, lines: [] } },
-  });
+test("(a) EXISTS: a cited file absent at HEAD reds", () => {
+  const input = makeInput({ citations: [cit({ path: "server/src/gone.ts", line: "5" })], files: { "server/src/gone.ts": { exists: false, lines: [] } } });
   const { errors } = evaluateCitationIntegrity(input);
   assert.ok(hasError(errors, "cited file does not exist at HEAD"), report(errors));
   assert.ok(hasError(errors, "server/src/gone.ts:5"), report(errors));
 });
 
-test("(a) EXISTS on the REAL tree: deleting a real cited file reds", () => {
+test("(a) EXISTS on the REAL tree: deleting a real cited file reds [required control iv]", () => {
   const input = collect(REPO_ROOT);
   const target = input.citations.find((c) => c.inScope);
-  assert.ok(target, "fixture drift: no in-scope citation found");
+  assert.ok(target, "fixture drift: no in-scope citation");
   input.files[target.path] = { exists: false, lines: [] };
-  const { errors } = evaluateCitationIntegrity(input);
-  assert.ok(hasError(errors, "cited file does not exist at HEAD"), report(errors));
+  assert.ok(hasError(evaluateCitationIntegrity(input).errors, "cited file does not exist at HEAD"));
 });
 
 // --- (b) IN-RANGE -----------------------------------------------------------------------
 
-test("(b) IN-RANGE: a line past the end of the file reds", () => {
-  const input = makeInput({
-    citations: [cit({ line: "99" })],
-    files: { "server/src/foo.ts": { exists: true, lines: ["a", "b", "c"] } },
-  });
-  const { errors } = evaluateCitationIntegrity(input);
-  assert.ok(hasError(errors, "is outside the file, which has 3 lines"), report(errors));
+test("(b) IN-RANGE: a line past EOF reds [required control iv]", () => {
+  const input = makeInput({ citations: [cit({ line: "99" })], files: { "server/src/foo.ts": { exists: true, lines: ["a", "b", "c"] } } });
+  assert.ok(hasError(evaluateCitationIntegrity(input).errors, "is outside the file, which has 3 lines"));
 });
 
-test("(b) IN-RANGE: a range whose upper bound overshoots reds", () => {
-  const input = makeInput({
-    citations: [cit({ line: "2-9" })],
-    files: { "server/src/foo.ts": { exists: true, lines: ["a", "b", "c"] } },
-  });
-  const { errors } = evaluateCitationIntegrity(input);
-  assert.ok(hasError(errors, "line 2-9 is outside the file"), report(errors));
+test("(b) IN-RANGE: a range overshoot reds", () => {
+  const input = makeInput({ citations: [cit({ line: "2-9" })], files: { "server/src/foo.ts": { exists: true, lines: ["a", "b", "c"] } } });
+  assert.ok(hasError(evaluateCitationIntegrity(input).errors, "line 2-9 is outside the file"));
 });
 
 test("(b) IN-RANGE on the REAL tree: bumping a real citation past EOF reds (the PR #443 rot class)", () => {
   const input = collect(REPO_ROOT);
   const target = input.citations.find((c) => c.inScope && input.files[c.path]?.exists);
-  assert.ok(target, "fixture drift: no resolvable in-scope citation");
-  const beyond = String(input.files[target.path].lines.length + 25);
-  target.line = beyond;
-  const { errors } = evaluateCitationIntegrity(input);
-  assert.ok(hasError(errors, "is outside the file"), report(errors));
+  assert.ok(target, "fixture drift");
+  target.line = String(input.files[target.path].lines.length + 25);
+  assert.ok(hasError(evaluateCitationIntegrity(input).errors, "is outside the file"));
 });
 
 // --- (c) REACHES-REAL-CODE --------------------------------------------------------------
 
 test("(c) REACHES-CODE: a single-line code citation onto a BLANK line reds", () => {
-  const input = makeInput({
-    citations: [cit({ line: "2" })],
-    files: { "server/src/foo.ts": { exists: true, lines: ["const x = 1;", "   ", "const y = 2;"] } },
-  });
-  const { errors } = evaluateCitationIntegrity(input);
-  assert.ok(hasError(errors, "cites a BLANK line"), report(errors));
+  const input = makeInput({ citations: [cit({ line: "2", anchorToken: "doThing" })], files: { "server/src/foo.ts": { exists: true, lines: ["doThing();", "   ", "x"] } } });
+  // anchor `doThing` is within ±5 (line 1) so only the blank check can speak here.
+  assert.ok(hasError(evaluateCitationIntegrity(input).errors, "cites a BLANK line"));
 });
 
-test("NEGATIVE CONTROL (c): a citation onto a COMMENT line passes — the register cites comments on purpose", () => {
-  const input = makeInput({
-    citations: [cit({ line: "2" })],
-    files: { "server/src/foo.ts": { exists: true, lines: ["code();", "// a deliberately-cited comment", "more();"] } },
-  });
-  const { errors } = evaluateCitationIntegrity(input);
-  assert.deepEqual(errors, [], report(errors));
+test("NEGATIVE CONTROL (c): a citation onto a COMMENT line passes (register cites comments on purpose)", () => {
+  const input = makeInput({ citations: [cit({ line: "2", anchorToken: "deliberatelyCited" })], files: { "server/src/foo.ts": { exists: true, lines: ["x();", "// deliberatelyCited comment", "y();"] } } });
+  assert.deepEqual(evaluateCitationIntegrity(input).errors, []);
 });
 
 test("NEGATIVE CONTROL (c): a citation onto an IMPORT line passes", () => {
-  const input = makeInput({
-    citations: [cit({ line: "1" })],
-    files: { "server/src/foo.ts": { exists: true, lines: ['import { x } from "./x";', "", "x();"] } },
-  });
-  const { errors } = evaluateCitationIntegrity(input);
-  assert.deepEqual(errors, [], report(errors));
+  const input = makeInput({ citations: [cit({ line: "1", anchorToken: "myThing" })], files: { "server/src/foo.ts": { exists: true, lines: ['import { myThing } from "./x";', "", "myThing();"] } } });
+  assert.deepEqual(evaluateCitationIntegrity(input).errors, []);
 });
 
-test("NEGATIVE CONTROL (c): a blank line in a NON-code file (.md/.sql) does not red — (c) is code-only", () => {
-  const input = makeInput({
-    citations: [cit({ path: "docs/x.md", line: "2" })],
-    files: { "docs/x.md": { exists: true, lines: ["# heading", "", "body"] } },
-  });
-  const { errors } = evaluateCitationIntegrity(input);
-  assert.deepEqual(errors, [], report(errors));
+test("NEGATIVE CONTROL (c): a blank line in a NON-code file does not red — (c) is code-only", () => {
+  const input = makeInput({ citations: [cit({ path: "docs/x.md", line: "2", anchorToken: "heading" })], files: { "docs/x.md": { exists: true, lines: ["# heading", "", "body"] } } });
+  assert.deepEqual(evaluateCitationIntegrity(input).errors, []);
 });
 
-test("NEGATIVE CONTROL (c): a blank line inside a RANGE citation does not red — (c) is single-line only", () => {
-  const input = makeInput({
-    citations: [cit({ line: "1-3" })],
-    files: { "server/src/foo.ts": { exists: true, lines: ["a();", "", "b();"] } },
-  });
+// --- (d) SYMBOL ANCHOR — REQUIRED + VERIFIED --------------------------------------------
+
+test("(d) REQUIRED: an enforced citation with NO anchor reds [required control ii]", () => {
+  const input = makeInput({ citations: [cit({ anchorToken: null })], files: passFiles() });
   const { errors } = evaluateCitationIntegrity(input);
-  assert.deepEqual(errors, [], report(errors));
+  assert.ok(hasError(errors, "MISSING anchor"), report(errors));
+  assert.ok(hasError(errors, "server/src/foo.ts:2"), report(errors));
 });
 
-// --- (d) SYMBOL ANCHOR ------------------------------------------------------------------
-
-test("(d) ANCHOR: an adjacent backtick token absent from ±3 lines reds", () => {
-  const lines = ["l1", "l2", "l3", "l4", "l5", "l6", "l7 admit()", "l8", "l9", "l10"]; // admit at line 7
-  const input = makeInput({
-    citations: [cit({ line: "2", anchorToken: "admit()" })], // cited line 2, admit is 5 away
-    files: { "server/src/foo.ts": { exists: true, lines } },
-  });
-  const { errors } = evaluateCitationIntegrity(input);
-  assert.ok(hasError(errors, "the adjacent anchor `admit()` does not appear within ±3 lines"), report(errors));
+test("(d) VERIFY: correct anchor within ±5 passes [required control iii]", () => {
+  const lines = ["l1", "l2", "l3", "l4", "insertJobOnce(row);", "l6"]; // anchor at line 5
+  const input = makeInput({ citations: [cit({ line: "1", anchorToken: "insertJobOnce" })], files: { "server/src/foo.ts": { exists: true, lines } } });
+  assert.deepEqual(evaluateCitationIntegrity(input).errors, []); // 5 is within 1±5
 });
 
-test("POSITIVE CONTROL (d): the same anchor within ±3 lines passes (variant match strips `()`)", () => {
-  const lines = ["l1", "return admit(payload);", "l3"]; // admit on line 2
-  const input = makeInput({
-    citations: [cit({ line: "1", anchorToken: "admit()" })], // cited line 1, admit on line 2 → within ±3
-    files: { "server/src/foo.ts": { exists: true, lines } },
-  });
-  const { errors } = evaluateCitationIntegrity(input);
-  assert.deepEqual(errors, [], report(errors));
+test("(d) VERIFY: the construct moved OUT of the ±5 window reds [required control i]", () => {
+  const lines = Array.from({ length: 40 }, (_, i) => (i === 29 ? "  insertJobOnce(row);" : `line ${i + 1}`)); // construct at line 30
+  const good = makeInput({ citations: [cit({ line: "30", anchorToken: "insertJobOnce" })], files: { "server/src/foo.ts": { exists: true, lines } } });
+  assert.deepEqual(evaluateCitationIntegrity(good).errors, [], "correct citation must be green first");
+  const moved = makeInput({ citations: [cit({ line: "10", anchorToken: "insertJobOnce" })], files: { "server/src/foo.ts": { exists: true, lines } } }); // cite says 10, construct at 30
+  assert.ok(hasError(evaluateCitationIntegrity(moved).errors, "does not appear within ±5 lines"));
 });
 
-test("(d) ANCHOR: the wrong-line mutation the task requires — move the cited line off its construct", () => {
-  // A correct citation, then the line is moved far from the construct; only the anchor arm can red.
-  const lines = Array.from({ length: 40 }, (_, i) => (i === 9 ? "  insertJobOnce(row);" : `line ${i + 1}`));
-  const good = makeInput({
-    citations: [cit({ line: "10", anchorToken: "insertJobOnce" })],
-    files: { "server/src/foo.ts": { exists: true, lines } },
-  });
-  assert.deepEqual(evaluateCitationIntegrity(good).errors, [], "the correct citation must be green first");
-  const moved = makeInput({
-    citations: [cit({ line: "30", anchorToken: "insertJobOnce" })], // construct is at 10, cite says 30
-    files: { "server/src/foo.ts": { exists: true, lines } },
-  });
-  const { errors } = evaluateCitationIntegrity(moved);
-  assert.ok(hasError(errors, "the adjacent anchor `insertJobOnce` does not appear within ±3 lines"), report(errors));
+test("(d) VERIFY: a range citation's anchor within [lo-5, hi+5] passes", () => {
+  const lines = Array.from({ length: 30 }, (_, i) => (i === 24 ? "  placementLeaseEligible: true," : `line ${i + 1}`)); // anchor at 25
+  const input = makeInput({ citations: [cit({ line: "18-22", anchorToken: "placementLeaseEligible" })], files: { "server/src/foo.ts": { exists: true, lines } } });
+  assert.deepEqual(evaluateCitationIntegrity(input).errors, []); // 25 within [13, 27]
+});
+
+test("(d) STRICT variants: a multi-token anchor does NOT match on a bare leading identifier nearby", () => {
+  // line 2 has a bare `authority`; the real `authority.recordProof` is far away (line 30).
+  const lines = Array.from({ length: 40 }, (_, i) => (i === 1 ? "const authority = x;" : i === 29 ? "authority.recordProof(p);" : `line ${i + 1}`));
+  const input = makeInput({ citations: [cit({ line: "2", anchorToken: "authority.recordProof" })], files: { "server/src/foo.ts": { exists: true, lines } } });
+  // If variants leaked a bare-`authority` fallback this would falsely PASS; strict variants red it.
+  assert.ok(hasError(evaluateCitationIntegrity(input).errors, "does not appear within ±5 lines"));
+});
+
+test("(d) call variant: `admit()` matches `admit(payload)` within ±5", () => {
+  const input = makeInput({ citations: [cit({ line: "1", anchorToken: "admit()" })], files: { "server/src/foo.ts": { exists: true, lines: ["x", "return admit(payload);", "y"] } } });
+  assert.deepEqual(evaluateCitationIntegrity(input).errors, []);
+});
+
+// --- EXTENSION BUG (Codex P2 :106) ------------------------------------------------------
+
+test("EXT BUG: `guard-inventory.json:189` classifies as an enforced .json citation [required control v]", () => {
+  const cits = parseCitations("declared at scripts/guard-inventory.json:189 in the manifest");
+  assert.equal(cits.length, 1, `expected one citation, got ${JSON.stringify(cits)}`);
+  assert.equal(cits[0].kind, "explicit-slash");
+  assert.equal(cits[0].path, "scripts/guard-inventory.json");
+  assert.equal(cits[0].line, "189");
+  assert.equal(isAnchored(cits[0].path, KNOWN_REPO_ROOTS), true);
+});
+
+test("EXT BUG: .tsx / .jsx do not truncate to .ts / .js", () => {
+  assert.equal(parseCitations("ui/src/App.tsx:10")[0].path, "ui/src/App.tsx");
+  assert.equal(parseCitations("ui/src/App.jsx:10")[0].path, "ui/src/App.jsx");
+});
+
+// --- P2 REGRESSION CONTROLS (prior commit) ----------------------------------------------
+
+test("P2-1 STATIC ROOTS: a citation under a repo root ABSENT at HEAD is still anchored → reds (a)", () => {
+  const rootsFromScripts = computeRepoRoots(path.join(REPO_ROOT, "scripts"));
+  assert.ok(rootsFromScripts.has("server"), "static roots must contain `server` even scanning a dir without it");
+  const anchored = isAnchored("server/src/gone.ts", rootsFromScripts);
+  assert.equal(anchored, true);
+  const input = makeInput({ citations: [cit({ crossingId: "DE-09", path: "server/src/gone.ts", line: "5", anchored, inScope: anchored })], files: { "server/src/gone.ts": { exists: false, lines: [] } } });
+  assert.ok(hasError(evaluateCitationIntegrity(input).errors, "cited file does not exist at HEAD"));
+});
+
+test("P2-2 PHYSICAL COUNT: one line past EOF of a trailing-newline file reds; the true last line passes", () => {
+  const content = "l1();\nl2();\ndoThing();\n";
+  assert.equal(content.split(/\r?\n/).length, 4, "raw split appends the sentinel (the bug)");
+  const lines = splitPhysicalLines(content);
+  assert.equal(lines.length, 3);
+  const files = { "server/src/foo.ts": { exists: true, lines } };
+  assert.ok(hasError(evaluateCitationIntegrity(makeInput({ citations: [cit({ line: "4" })], files })).errors, "is outside the file, which has 3 lines"));
+  assert.deepEqual(evaluateCitationIntegrity(makeInput({ citations: [cit({ line: "3", anchorToken: "doThing" })], files })).errors, []);
+  assert.deepEqual(splitPhysicalLines("a\n\n"), ["a", ""]);
 });
 
 // --- BEST-EFFORT SCOPE (negative controls) ----------------------------------------------
 
 test("NEGATIVE CONTROL: an out-of-range BARE :LINE ref does NOT red (bare refs are best-effort)", () => {
-  const input = makeInput({
-    citations: [cit({ kind: "bare", inScope: false, anchored: false, line: "9999" })],
-    files: {},
-  });
+  const input = makeInput({ citations: [cit({ kind: "bare", inScope: false, anchored: false, anchorToken: null, line: "9999" })], files: {} });
   const { errors, notes } = evaluateCitationIntegrity(input);
   assert.deepEqual(errors, [], report(errors));
-  assert.ok(notes.some((n) => n.includes("1 bare :LINE")), notes.join("\n"));
+  assert.ok(notes.some((n) => n.includes("1 bare :LINE")));
 });
 
 test("NEGATIVE CONTROL: an unanchored/relative path does NOT red (out of scope)", () => {
-  const input = makeInput({
-    citations: [cit({ path: "routes/projects.ts", anchored: false, inScope: false, line: "5" })],
-    files: {},
-  });
+  const input = makeInput({ citations: [cit({ path: "routes/projects.ts", anchored: false, inScope: false, anchorToken: null, line: "5" })], files: {} });
   const { errors, notes } = evaluateCitationIntegrity(input);
   assert.deepEqual(errors, [], report(errors));
-  assert.ok(notes.some((n) => n.includes("1 unanchored")), notes.join("\n"));
+  assert.ok(notes.some((n) => n.includes("1 unanchored")));
 });
 
 // --- GRANDFATHER ------------------------------------------------------------------------
 
 test("GRANDFATHER: a grandfathered violation passes; removing the entry re-reds", () => {
-  const citations = [cit({ crossingId: "DE-05", path: "server/src/legacy.ts", line: "500" })];
-  const files = { "server/src/legacy.ts": { exists: true, lines: ["only one line"] } }; // 500 is out of range
-  const withGf = evaluateCitationIntegrity(makeInput({
-    citations,
-    files,
-    entries: [{ crossing: "DE-05", path: "server/src/legacy.ts", line: "500", reason: "frozen historical block; code since moved" }],
-  }));
+  const citations = [cit({ crossingId: "DE-05", path: "server/src/legacy.ts", line: "500", anchorToken: null })];
+  const files = { "server/src/legacy.ts": { exists: true, lines: ["only one line"] } };
+  const withGf = evaluateCitationIntegrity(makeInput({ citations, files, entries: [{ crossing: "DE-05", path: "server/src/legacy.ts", line: "500", reason: "frozen historical block; code since moved" }] }));
   assert.deepEqual(withGf.errors, [], report(withGf.errors));
-  const withoutGf = evaluateCitationIntegrity(makeInput({ citations, files }));
-  assert.ok(hasError(withoutGf.errors, "is outside the file"), report(withoutGf.errors));
+  assert.ok(hasError(evaluateCitationIntegrity(makeInput({ citations, files })).errors, "is outside the file"));
 });
 
 test("GRANDFATHER: a STALE entry (its citation no longer violates) reds — self-cleaning", () => {
   const input = makeInput({
-    citations: [cit({ crossingId: "DE-05", path: "server/src/foo.ts", line: "1" })],
-    files: { "server/src/foo.ts": { exists: true, lines: ["real();"] } }, // line 1 is valid — NOT a violation
-    entries: [{ crossing: "DE-05", path: "server/src/foo.ts", line: "1", reason: "stale — was drift, now fixed" }],
+    citations: [cit({ crossingId: "DE-05", path: "server/src/foo.ts", line: "2", anchorToken: "doThing" })],
+    files: passFiles(),
+    entries: [{ crossing: "DE-05", path: "server/src/foo.ts", line: "2", reason: "stale — was drift, now fixed" }],
   });
-  const { errors } = evaluateCitationIntegrity(input);
-  assert.ok(hasError(errors, "is STALE"), report(errors));
+  assert.ok(hasError(evaluateCitationIntegrity(input).errors, "is STALE"));
 });
 
 test("GRANDFATHER: an entry with an empty reason reds", () => {
-  const input = makeInput({
-    citations: [cit({ path: "server/src/legacy.ts", line: "500" })],
-    files: { "server/src/legacy.ts": { exists: true, lines: ["x"] } },
-    entries: [{ crossing: "DE-01", path: "server/src/legacy.ts", line: "500", reason: "   " }],
-  });
-  const { errors } = evaluateCitationIntegrity(input);
-  assert.ok(hasError(errors, "needs a non-empty"), report(errors));
+  const input = makeInput({ citations: [cit({ path: "server/src/legacy.ts", line: "500", anchorToken: null })], files: { "server/src/legacy.ts": { exists: true, lines: ["x"] } }, entries: [{ crossing: "DE-01", path: "server/src/legacy.ts", line: "500", reason: "   " }] });
+  assert.ok(hasError(evaluateCitationIntegrity(input).errors, "needs a non-empty"));
 });
 
 test("GRANDFATHER: a malformed entries array (missing) reds fail-closed", () => {
-  const input = { citations: [], files: {}, grandfather: { version: 1 } };
-  const { errors } = evaluateCitationIntegrity(input);
-  assert.ok(hasError(errors, 'must be a JSON object with an "entries" array'), report(errors));
+  const { errors } = evaluateCitationIntegrity({ citations: [], files: {}, grandfather: { version: 1 } });
+  assert.ok(hasError(errors, 'must be a JSON object with an "entries" array'));
 });
-
-// --- FAIL-CLOSED ------------------------------------------------------------------------
 
 test("collect(): an absent manifest FAILS rather than reading as an empty allow-list", () => {
   assert.throws(
@@ -287,72 +276,27 @@ test("parseCitations: explicit slash + range, and bare :LINE attribution to the 
   ]);
 });
 
-test("parseCitations: a bare filename with a line is explicit-filename (no directory)", () => {
+test("parseCitations: a bare filename with a line is explicit-filename", () => {
   const cits = parseCitations("worker-session-auth.ts:103 handles it");
-  assert.equal(cits.length, 1);
   assert.equal(cits[0].kind, "explicit-filename");
-  assert.equal(cits[0].path, "worker-session-auth.ts");
 });
 
-test("parseCitations: a backtick anchor after the citation is captured", () => {
-  const cits = parseCitations("the gate at server/src/a.ts:10 (`admit()`) denies");
-  assert.equal(cits[0].anchorToken, "admit()");
+test("parseCitations: backtick anchors after and before the citation are captured", () => {
+  assert.equal(parseCitations("the gate at server/src/a.ts:10 (`admit()`) denies")[0].anchorToken, "admit()");
+  assert.equal(parseCitations("`insertJobOnce` at packages/db/b.ts:20 inserts once")[0].anchorToken, "insertJobOnce");
 });
 
-test("parseCitations: a backtick anchor before the path is captured", () => {
-  const cits = parseCitations("`insertJobOnce` at packages/db/b.ts:20 inserts once");
-  assert.equal(cits[0].anchorToken, "insertJobOnce");
-});
-
-test("anchorVariants: strips call parens and yields the leading identifier", () => {
+test("anchorVariants: strips a call's argument list but adds NO generic fragment", () => {
   assert.deepEqual(anchorVariants("admit()"), ["admit()", "admit"]);
-  assert.ok(anchorVariants("count > config.max").includes("count > config.max"));
+  assert.deepEqual(anchorVariants("admit(payload)"), ["admit(payload)", "admit"]);
+  // a member/operator anchor keeps only the raw form — no leading-identifier leak
+  assert.deepEqual(anchorVariants("authority.recordProof"), ["authority.recordProof"]);
+  assert.deepEqual(anchorVariants("count > config.max"), ["count > config.max"]);
 });
 
-test("isAnchored: only a slash-path whose first segment is a top-level dir", () => {
-  const top = new Set(["server", "packages"]);
-  assert.equal(isAnchored("server/src/a.ts", top), true);
-  assert.equal(isAnchored("routes/a.ts", top), false); // relative shorthand
-  assert.equal(isAnchored("a.ts", top), false); // filename-only
-});
-
-// --- CODEX P2 REGRESSION CONTROLS -------------------------------------------------------
-//
-// Two false-negative holes closed on top of the first commit. Each carries a RED control so it
-// cannot silently reopen.
-
-test("P2-1 STATIC ROOTS: a citation under a repo root ABSENT at HEAD is still anchored → reds (a)", () => {
-  // computeRepoRoots must NOT be filtered to dirs present at HEAD, or deleting a whole cited root
-  // reclassifies its citations as unanchored → skipped → the missing-file error is missed.
-  // Compute roots from a directory that has NO `server/` subdir (scripts/), and prove `server`
-  // still classifies as a root — because the STATIC set carries it, independent of disk.
-  const rootsFromScripts = computeRepoRoots(path.join(REPO_ROOT, "scripts"));
-  assert.ok(rootsFromScripts.has("server"), "static roots must contain `server` even when scanning a dir without it");
-  const anchored = isAnchored("server/src/gone.ts", rootsFromScripts);
-  assert.equal(anchored, true, "a path under a deleted root must classify as anchored, not unanchored");
-  // ...and that anchored classification must reach the file-exists check and RED.
-  const input = makeInput({
-    citations: [cit({ crossingId: "DE-09", path: "server/src/gone.ts", line: "5", anchored, inScope: anchored })],
-    files: { "server/src/gone.ts": { exists: false, lines: [] } },
-  });
-  const { errors } = evaluateCitationIntegrity(input);
-  assert.ok(hasError(errors, "cited file does not exist at HEAD"), report(errors));
-  // KNOWN_REPO_ROOTS is the static source of truth (not derived per-file).
-  assert.ok(KNOWN_REPO_ROOTS.has("server") && KNOWN_REPO_ROOTS.has("packages"), "the static known-roots set is the source of truth");
-});
-
-test("P2-2 PHYSICAL COUNT: a citation one line past EOF of a trailing-newline file reds; the true last line passes", () => {
-  const content = "l1();\nl2();\nl3();\n"; // 3 physical lines + a final newline
-  assert.equal(content.split(/\r?\n/).length, 4, "raw split appends the empty trailing-newline sentinel (the bug)");
-  const lines = splitPhysicalLines(content);
-  assert.equal(lines.length, 3, "splitPhysicalLines drops exactly the trailing sentinel");
-  const files = { "server/src/foo.ts": { exists: true, lines } };
-  // one past physical EOF → RED (would have PASSED with the sentinel still present)
-  const past = evaluateCitationIntegrity(makeInput({ citations: [cit({ line: "4" })], files }));
-  assert.ok(hasError(past.errors, "is outside the file, which has 3 lines"), report(past.errors));
-  // the true last line → passes
-  const last = evaluateCitationIntegrity(makeInput({ citations: [cit({ line: "3" })], files }));
-  assert.deepEqual(last.errors, [], report(last.errors));
-  // a genuinely-blank final line (content ending "\n\n") is preserved, not stripped away
-  assert.deepEqual(splitPhysicalLines("a\n\n"), ["a", ""]);
+test("isAnchored: only a slash-path whose first segment is a repo root", () => {
+  const roots = new Set(["server", "packages"]);
+  assert.equal(isAnchored("server/src/a.ts", roots), true);
+  assert.equal(isAnchored("routes/a.ts", roots), false);
+  assert.equal(isAnchored("a.ts", roots), false);
 });
