@@ -32,6 +32,10 @@ import { runInTenant } from "../db/tenant-context.js";
 // Always-loaded infrastructure logger (used app-wide); importing it here pulls nothing
 // new into the flag-off graph, so the DEP-007 dormancy invariant holds.
 import { logger } from "../middleware/logger.js";
+// DE-27 — the shared worker-admission denial recorder. This module already imports the
+// logger and loads only under AOA_DISTRIBUTED_EXECUTION_ENABLED (see the header), so a
+// static import here pulls nothing new into the flag-off graph.
+import { recordWorkerAdmissionDenial } from "./worker-admission-denial-audit.js";
 
 export const WORKER_POLL_RATE_LIMIT_WINDOW_MS_ENV = "AOA_WORKER_POLL_RATE_LIMIT_WINDOW_MS";
 export const WORKER_POLL_RATE_LIMIT_MAX_ENV = "AOA_WORKER_POLL_RATE_LIMIT_MAX";
@@ -136,6 +140,23 @@ export function createWorkerAdmissionRateLimiter(opts: {
         return { allowed: false, reason: "unavailable", limit: config.max };
       }
       if (count > config.max) {
+        // DE-27 (audit clause, cross-replica-admission conjunct). The tenant transaction
+        // that incremented the SHARED counter has already COMMITTED and returned `count`
+        // above, so `opts.appDb` is a pool-level handle and nothing is about to roll back:
+        // the refusal is recorded DIRECTLY here, awaited before the deny is returned, so
+        // the refusal and its record are atomic from the caller's view. Never throws —
+        // `recordWorkerAdmissionDenial` swallows and logs a failed insert, so a broken
+        // recorder cannot convert a throttle into a 500. This is a rare refusal path, so
+        // the one INSERT is not on the hot admit path.
+        await recordWorkerAdmissionDenial(opts.appDb, {
+          reason: "over_cap",
+          companyId: null,
+          organizationId,
+          entityType: "worker_poll_admission",
+          entityId: organizationId,
+          control: "server/src/services/worker-admission-rate-limit.ts:admit",
+          details: { count, limit: config.max, windowStartMs: windowStart.getTime() },
+        });
         return { allowed: false, reason: "over_cap", count, limit: config.max };
       }
       return { allowed: true, count, limit: config.max };

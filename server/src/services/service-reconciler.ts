@@ -53,6 +53,9 @@ import { HttpError } from "../errors.js";
 import { runInTenant } from "../db/tenant-context.js";
 import { assertAdmissibleOrganization } from "./tenant-admission.js";
 import { submitJobWithinTenant } from "./job-submission.js";
+// DE-27 (audit clause) — the capacity-refusal sink type (erased at compile time);
+// `drainAdmissionDenial` is loaded dynamically at the drain point in `reconcileService`.
+import type { AdmissionDenialSink } from "./worker-admission-denial-audit.js";
 import {
   classifyServiceInstanceLiveness,
   livenessDeadlineAllowedFromStatuses,
@@ -205,6 +208,10 @@ export async function reconcileServiceWithinTenant(
   repos: TenantRepositories,
   tx: Db,
   input: ReconcileServiceInput,
+  // DE-27 (audit clause) — forwarded into `submitJobWithinTenant` -> `admitAttemptCapacity`
+  // so a `capacity` refusal captures its intent for {@link reconcileService} to drain on a
+  // pool handle after this transaction rolls back. Optional so a direct caller is unchanged.
+  denialSink?: AdmissionDenialSink,
 ): Promise<ServiceReconcileOutcome> {
   // 1 + 2: serialize concurrent passes into a wait, then PIN desired_state AND generation
   // for the whole transaction so a concurrent SVC-005 generation bump cannot land between
@@ -334,6 +341,7 @@ export async function reconcileServiceWithinTenant(
       },
     },
     tx,
+    denialSink,
   );
 
   // 6b: attribute the instance to the job serving it, still inside this transaction. Without
@@ -388,13 +396,26 @@ export async function reconcileService(
   // Decision #121). It THROWS rather than returning a `none` reason: a sentinel org is a
   // programming error, not a state the reconciler converges.
   assertAdmissibleOrganization(input.organizationId);
+  // DE-27 (audit clause) — a `capacity` refusal from the composed `admitAttemptCapacity`
+  // captures its intent here and is drained on the POOL handle (`appDb`) AFTER `runInTenant`
+  // has rolled back (the 429 is what the catch maps to `quota_denied`). The row cannot be
+  // written inside the transaction the single-transaction composition exists to roll back.
+  // No-op when nothing was captured; never throws.
+  const denialSink: AdmissionDenialSink = { intent: null };
   try {
     return await runInTenant(appDb, input.organizationId, (repos, tx) =>
-      reconcileServiceWithinTenant(repos, tx, input));
+      reconcileServiceWithinTenant(repos, tx, input, denialSink));
   } catch (error) {
     if (quotaDenied(error)) return { action: "none", reason: "quota_denied" };
     if (invalidDefinition(error)) return { action: "none", reason: "invalid_definition" };
     throw error;
+  } finally {
+    if (denialSink.intent) {
+      const { drainAdmissionDenial } = await import("./worker-admission-denial-audit.js");
+      await drainAdmissionDenial(appDb, denialSink, {
+        control: "server/src/services/service-reconciler.ts:reconcileService",
+      });
+    }
   }
 }
 

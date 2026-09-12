@@ -40,6 +40,9 @@ import type { SubmitJobResponse, SubmitJobSource } from "@armyofagents/shared";
 import { runInTenant } from "../db/tenant-context.js";
 import { readDistributedExecutionDeploymentFlag } from "../config/distributed-execution.js";
 import { resolveCompanyOrganizationId } from "./org-concurrency.js";
+// DE-27 (audit clause) — the capacity-refusal sink type (erased at compile time);
+// `drainAdmissionDenial` is loaded dynamically at the drain point below.
+import type { AdmissionDenialSink } from "./worker-admission-denial-audit.js";
 import { assertAdmissibleMappedOrganization } from "./tenant-admission.js";
 import { issueService } from "./issues.js";
 import {
@@ -276,7 +279,15 @@ export function jobAdmissionBridge(
       // authoritative transaction commits, so a rollback (a throw below) fires NOTHING.
       const afterCommit: Array<() => void> = [];
 
-      const response = await runInTenant(appDb, organizationId, async (repos, tx) => {
+      // DE-27 (audit clause) — a `capacity` refusal from `admitAttemptCapacity` (reached
+      // through `submitJobWithinTenant`) captures its intent here and is drained on the POOL
+      // handle (`appDb`) AFTER `runInTenant` closes, in the `finally` below. The refusal
+      // throws the 429 and rolls this tenant transaction back, so the row cannot be written
+      // inside it. No-op when nothing was captured; never throws.
+      const denialSink: AdmissionDenialSink = { intent: null };
+      let response: SubmitJobResponse;
+      try {
+        response = await runInTenant(appDb, organizationId, async (repos, tx) => {
         // (1) Drive the legacy assignment authority for the ONE identity-bearing source.
         // Run-guarded checkout → single legacy/distributed winner; a pre-commit throw
         // (unmet dependency / ownership conflict / stale status) rolls back the whole
@@ -328,8 +339,16 @@ export function jobAdmissionBridge(
         // checkoutRunId = executionRunId = runId. For every other source this is the
         // unchanged `submit` control flow (reuse-existing `*IsAdmitted`, no fabricated
         // task). All admission denials surface as one opaque `TenantAdmissionDeniedError`.
-        return submitJobWithinTenant(repos, request, tx);
-      });
+        return submitJobWithinTenant(repos, request, tx, denialSink);
+        });
+      } finally {
+        if (denialSink.intent) {
+          const { drainAdmissionDenial } = await import("./worker-admission-denial-audit.js");
+          await drainAdmissionDenial(appDb, denialSink, {
+            control: "server/src/services/job-admission-bridge.ts:admitAndSubmit",
+          });
+        }
+      }
 
       // After commit ONLY. A rollback threw above and never reached here → no publication
       // on rollback. Each publish is best-effort and isolated — a live-event failure never
