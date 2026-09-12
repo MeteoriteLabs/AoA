@@ -116,3 +116,7 @@ No new product question is required to publish this review packet. Locked-policy
 | Independent review | Not performed; TK will supply Claude's findings |
 | Runtime confidence | Not certified; no implementation/runtime test execution in this pass |
 | Recommendation | Publish documentation for independent review; do not begin coding |
+
+## D3 correction self-review
+
+Accepted the two medium and one low findings after checking pinned secrets.ts, budgets.ts and budget-hooks.ts. Tightened the target-presence suggestion to durable restricted-secret classification with explicit shared-key compatibility and deletion behavior. Made shared Budget capacity a scheduled E8.1/1 producer and specified real database session uniqueness. Reconciled old E3.1 per-device ownership, post-issuance persistence, void end outcome and live-qualification dependency cycle in the owning coding/slice plans. The correction contract still marks complete writer inventories, exact tenant/API bindings and runtime proof open; no plan text certifies those gates. Privacy decisions and V1/V2 scope stay accepted.

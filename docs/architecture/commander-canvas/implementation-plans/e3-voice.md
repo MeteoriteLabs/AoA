@@ -129,3 +129,7 @@ pnpm build
 Unit/DB integration tests must use repository fixtures and authentic tenant/actor construction; browser integration tests use the real configured test application. Run only the commands relevant to the task under review; full combined checks precede runtime handoff. Provider and worker qualification requires a separately authorized configured environment. Missing runtime qualification cannot be replaced by source inspection.
 
 This plan defines work and its acceptance. It deliberately does not fabricate complete implementation code or provider signatures for open gates. BASE binding and relevant qualification produce those executable coding details before production implementation. All boxes remain unchecked because this pass changes documentation only.
+
+## D3 correction scheduling
+
+The [credential, shared Budget and session corrections](../voice-media-review-corrections.md) are authoritative for this follow-up. E8.1/1 delivers the restricted-secret resolver and BUDGET-VOICE-MEDIA producer; E3.1/2 integrates transactional session ownership after accepted documentary/security bindings. E3.1/1's live qualification closes on those real producers and consumer; it does not gate their own construction. E8.1/2 UI follows consumers. Runtime tests and implementation still require explicit authorization. Existing increment IDs and release allocation are unchanged.

@@ -49,3 +49,7 @@ The master scope is the current product baseline; companion contracts specify pl
 ## Voice/media review packet
 
 [Concrete D3 proposal](voice-media-policy.md) and [September 12 official evidence](voice-media-provider-evidence.md) are ready for review. The packet preserves scope and records TK-accepted privacy settings separately from pending amendment/relay acceptance and engineering qualification. It does not start implementation.
+
+## D3 review corrections prepared
+
+The [Claude review](voice-media-review-report.md) was checked against pinned source. Its two medium and one low findings are addressed at the planning level in the [credential, budget and session corrections](voice-media-review-corrections.md), propagated to E3/E4/E8 and shared bindings. Persistent secret restriction must survive unbinding; shared Budget capacity is an explicit E8.1/1 prerequisite; E3.1/2 gets database-enforced cross-tab ownership and honest unknown outcomes. These are new proposals needing focused review, not implemented guarantees. Privacy acceptance is unchanged. Next: review these corrections, resolve technical acceptance and responsibility gaps, then present bounded BASE/DESIGN qualification for explicit authorization. Implementation remains paused.

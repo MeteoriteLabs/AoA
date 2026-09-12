@@ -86,3 +86,7 @@ TK requested finishing the next D3 planning deliverable. Two documents add the c
 ## Privacy baseline accepted — September 12, 2026
 
 TK accepted the recommended company-admin review of disclosed provider terms, with AoA recording off by default and stricter company privacy requirements enforced. Disclosure, acceptance and the company privacy controls belong in Providers voice configuration. Updated policy, decision record, current status and review prompt; actual vendor terms, exact amendment/relay acceptance, runtime qualification and implementation remain separately gated.
+
+## Voice/media review correction round
+
+TK requested updates after author verification of the D3 review. Preserve the received report; add concrete M1/M2/L1 correction contracts and propagate ownership/dependency changes across E3/E4/E8, policy, bindings and current status. Self-review also corrected stale E3.1/2 post-issuance persistence, per-device ownership and void termination semantics. Validation passed: 134 documents; 31 slice and coding plans with 69 increments each; 20 UAT scripts covering 31 slices; 82 source anchors. Three new Budget paths are absent at the source pin and current tree. Documentation link/count and whitespace checks passed. Runtime typecheck, tests and build were not run because this is the authorized documentation-only correction. No runtime suite, provider qualification, credentials, code or draft changes are authorized or performed.
