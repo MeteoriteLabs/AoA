@@ -63,3 +63,7 @@ Required M3 tests use two real application DB connections and deterministic paus
 M1 and M3 are now more concrete *proposed* contracts with exact identity, acceptance and lock ordering. Their production adapter/writer coverage, security acceptance and real concurrency evidence remain open. M2's strict promotion allowlist is tightened in the main worker-publication plan. LOW-1 is rejected: the composite job FK explicitly calls onDelete("cascade") at the pinned source. LOW-2 is accepted as a static registration/negative-dispatch implementation check.
 
 No review or qualification gate is marked passed by writing this follow-up. Independent review should focus on cross-connection acceptance, lock order/coverage, source-policy preservation and whether any claimed guarantee exceeds the named prerequisites. No provider execution or implementation is authorized.
+
+## Reconciliation review outcome
+
+The [review of a033e17c0](worker-publication-reconciliation-review-report.md) confirms these proposed contracts are consistent. The [qualification record](worker-publication-qualification.md) supplies the expanded writer/credential inventory, precise existing-versus-missing Commander seams and contention checks. Lock order is a proposed safeguard, not proven deadlock freedom. No runtime gate is closed.

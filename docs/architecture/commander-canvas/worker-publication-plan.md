@@ -170,3 +170,7 @@ Rollback disables new intent/admission/promotion, while retaining authorized rea
 Checked source: existing committed natural identity and ordinal collision; nullable/thin rows; company lookup under tenant boundary; canonical writers and SELECT-only legacy grants; control-plane retention; frozen one_shot kinds; callback-local transactions. Chose per-store application records rather than new organization ledgers merely because processing uses a worker. Added explicit publication/cancel ordering, first-artifact deduplication, expiring-source copy, private-serving checks, index receipt visibility and projection repair.
 
 This is a detailed proposal with named qualifications, not a claim all coding bindings are complete. Security reviewer and upstream owners remain unassigned. TK-managed independent review should challenge the proposed application data classification, exact output authority, cancellation/revocation races and durability before acceptance. No implementation is authorized.
+
+## Reconciliation review closure
+
+The [follow-up review](worker-publication-reconciliation-review-report.md) closes the consistency review at a033e17c0. The [qualification record](worker-publication-qualification.md) controls remaining CMD binding, writer/credential coverage, dependency-direction and contention evidence. M2 is design-resolved; actual processor contracts still require validation. M1/M3 remain qualification-gated. No runtime or implementation approval follows.

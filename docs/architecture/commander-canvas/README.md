@@ -41,3 +41,7 @@ The master scope is the current product baseline; companion contracts specify pl
 - [Artifact processing](artifact-contract.md)
 - [Voice provider research](voice-provider-research.md)
 - [Universe landscape research](universe-landscape-research.md) — comparable products, GitHub references, and design implications.
+
+## Latest review outcome
+
+[Worker-publication reconciliation review](worker-publication-reconciliation-review-report.md) is author-checked and closed at the consistency level. [Remaining qualification record](worker-publication-qualification.md) lists actual CMD seams, expanded authority/credential coverage and contention evidence. Planning approval, runtime qualification and implementation authorization remain distinct.

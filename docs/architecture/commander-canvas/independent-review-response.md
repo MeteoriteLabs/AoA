@@ -103,3 +103,9 @@ Received [Claude's report](worker-publication-review-report.md) on 0d8876cdf333b
 | LOW-2 static callback | Accept verification obligation already in design; add explicit source-registration and forged-selector checks. |
 
 The original report is preserved separately; no reviewer text is silently corrected. New M1/M3 mechanisms are proposals needing independent/security review, not proof of completed qualification. No implementation or human-intake decision is reopened.
+
+## Reconciliation review of a033e17c0
+
+[Claude's follow-up report](worker-publication-reconciliation-review-report.md) confirms M1/M2/M3 contract consistency and withdraws LOW-1. Author verification supports that verdict. MEDIUM-A (real CMD acceptance binding) and MEDIUM-B (complete permission-writer/credential coverage) remain existing qualification gates, not newly undisclosed defects. M2 is closed as a design contract; per-processor validation remains unqualified. LOW dependency-direction verification is accepted.
+
+Qualify two phrases in the report: documented lock ordering does not prove deadlock freedom; company shared locks allow concurrent publishers, while exclusive permission changes and some ordinary company writes can contend. The [qualification record](worker-publication-qualification.md) expands source discovery, maps existing Commander seams and absent producer obligations, separates credential modes and adds real contention/implicit-lock acceptance checks. The static inventory is explicitly not exhaustive certification. The focused consistency round is closed; security/runtime acceptance and implementation approval remain open. No unchanged review needs automatic repetition.

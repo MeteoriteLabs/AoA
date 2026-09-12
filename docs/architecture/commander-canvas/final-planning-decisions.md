@@ -163,3 +163,9 @@ The human-upload decision does not need another unchanged review round. The two 
 ## Worker-publication review follow-up status
 
 [Received review](worker-publication-review-report.md) and [author disposition](independent-review-response.md#worker-publication-review-disposition) distinguish supported design conclusions from open qualifications. M2 is tightened in the publication plan. [M1/M3 detailed proposal](worker-publication-identity-revocation.md) defines stable action/slot identity, acceptance binding and authorization-barrier ordering. Security/CMD acceptance, complete permission/credential writer coverage and runtime evidence remain open. LOW-1's cascade concern was disproved at pinned source. Review this material follow-up before declaring generated publication accepted; the next separate planning area remains voice/media policy. No provider calls or implementation are authorized.
+
+## Current status after the reconciliation review
+
+The [review of a033e17c0](worker-publication-reconciliation-review-report.md) closes the focused worker-publication consistency round. [Qualification record](worker-publication-qualification.md) separates existing source seams from missing CMD bindings, expands permission/credential coverage and specifies contention checks. M2 is design-resolved; M1/M3 remain qualification-gated. Documented ordering is not proof of deadlock freedom.
+
+We are done with this review's reconciliation, not all execution prerequisites. Next planning work is the D3 speech/media policy, accepted responsibility identities, and a concrete bounded BASE/DESIGN preparation proposal. Continue static CMD/writer tracing as producer evidence becomes available. Actual security acceptance and observed tests remain required for affected paths; independently review material new mechanisms, not the same unchanged packet repeatedly. No user implementation or runtime authorization is recorded.
