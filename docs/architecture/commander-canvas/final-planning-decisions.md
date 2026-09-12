@@ -1,6 +1,6 @@
 # Universe — final planning decision packet
 
-**Current consolidated checkpoint:** [Universe plan readiness](consolidated-plan-readiness.md) is the current author verdict and per-slice gate register. The packet is ready for final independent planning review; Universe coding is not authorized. The [exact F4 repair plan](f4-fixture-repair-plan.md) supersedes the earlier Stage-B sketch, with three test-only files and bounded regression/qualification steps. Older dated proposals/results below retain their historical scope; they do not reopen completed review rounds.
+**Current checkpoint:** TK chose Codex review for this round and authorized proceeding with the bounded F4 repair. [Author review and F4 results](f4-repair-results.md): 12 lifecycle tests, strict test-file typecheck and 11 real integration cases passed; the original typecheck configuration failure is retained. Repair commit stays local. The [Universe readiness register](consolidated-plan-readiness.md) is current; no further unchanged Claude review is required. Next is separately approved full clean-commit baseline qualification, then base adoption and explicit Universe coding approval. Older dated records below are historical.
 
 September 12, 2026. **Planning only. No implementation, qualification execution, provider spend, draft reuse/deletion or merge is authorized by this document.**
 

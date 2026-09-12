@@ -1,6 +1,8 @@
 # Universe — consolidated planning readiness and final review packet
 
-**September 12, 2026. Author verdict: ready for final independent planning review; not yet cleared to begin Universe implementation.**
+**September 12, 2026. Current verdict: Codex review complete at TK's request; proceed through the named engineering gates. Universe implementation is not yet authorized.**
+
+[Completed author review and bounded F4 checks](f4-repair-results.md) supersede the earlier proposed Claude handoff for this round. No new independent review is claimed. The 31-slice planning assessment below remains; F4 targeted repair now passes, while full baseline qualification and base adoption remain open.
 
 The product scope and per-slice plan packet are assembled. No new general product-design round is recommended. The remaining work is a finite set of execution prerequisites and integration bindings, identified below. They must not be called completed merely because their qualification procedure is written. Conversely, runtime tests that can only exist after implementation are not requirements to rewrite the entire plan before starting any slice.
 
@@ -10,9 +12,9 @@ This is the current navigation and status record. Older dated review/proposal se
 
 | Question | Verdict | Reason |
 |---|---|---|
-| Is the Universe planning packet ready to hand to Claude as one coherent review? | **Yes, author-reviewed candidate** | Nine epics, 31 slices, 69 increments, version allocation, UI/settings/motion, contracts, failure/recovery and UAT are mapped. The F4 repair now has exact code and fault tests. |
+| Is the Universe planning packet assembled and author-reviewed? | **Yes; TK chose Codex review for this round** | Nine epics, 31 slices, 69 increments, version allocation, UI/settings/motion, contracts, failure/recovery and UAT are mapped. The F4 repair now has exact code and fault tests. |
 | Can every V1 slice be coded immediately from a fully qualified binding? | **No** | Distributed Commander, voice/media authority, browser transport/profile, isolated host, storage/index and terminal-writer bindings retain explicit qualifications. Their plans provide the procedure to obtain the missing evidence, not fictional APIs. |
-| May Universe coding start now? | **No** | Final review, qualified/adopted source base, first-slice design disposition and TK's explicit implementation approval remain open. No source adoption or new implementation happened in this planning pass. |
+| May Universe coding start now? | **No** | Author review is complete; qualified/adopted source base, first-slice design disposition and TK's explicit implementation approval remain open. No source adoption or new implementation happened in this planning pass. |
 
 This avoids equating “all plans exist” with “all implementation prerequisites passed.” The first verdict is about a reviewable plan; the second and third describe execution readiness.
 
@@ -68,7 +70,7 @@ Reviewed the slice/coding indexes, start conditions, shared producer order, late
 
 | Gate | Current fact | Exact next deliverable | Blocks |
 |---|---|---|---|
-| BASE/F4 | Source failure explained; repair not authored | [Exact F4 plan](f4-fixture-repair-plan.md) independent review, then approved three-file repair + 12 fault/lifecycle tests and 11 real integration cases | Clean baseline qualification/adoption and first production implementation batch |
+| BASE/F4 | [Targeted repair passed](f4-repair-results.md); commit 4aebfa0f4 stays local | Full qualification at that clean commit; no additional unchanged plan-review round | Clean baseline qualification/adoption and first production implementation batch |
 | BASE/F5 | Backup passed complete diagnostic workload; original timeout not reproduced | Original unchanged backup tests in approved full corrected-commit suite; failure attribution if it recurs | Full baseline acceptance; no additional backup-only planning loop recommended |
 | BASE/integration | Universe still 183e46; corrections b5 local on candidate 9200a66 | Green full typecheck/four shards/build, source review, exact replatform landing/adoption proposal and TK decision | Changing the implementation base; not documentation review |
 | DESIGN | Accepted UI intent and written extra states; missing attributable visual/host proof | Identify renderings for first-batch loading/error/narrow/focus states; compare to accepted intent and bring only material departures to TK. Preserve task regression and settings inventory | Affected UI coding/acceptance; runtime behavior tested during its implementation, not before it exists |
@@ -83,8 +85,8 @@ Codex prepares the concrete evidence and delta; TK accepts scope and material ex
 
 ## Finite route from here
 
-1. **Now:** hand this consolidated packet and the exact F4 proposal to Claude. Ask for material omissions, contradictions, unsafe code/bindings and unjustified gate closure. Do not ask for another redesign or a fresh review of unchanged decisions.
-2. **After findings are resolved:** present F4 source authoring plus its bounded regression checks for explicit approval. Review that actual diff before the separately scoped full clean-commit qualification. No new product planning is needed merely to run these named engineering steps.
+1. **Completed:** TK chose author review instead of Claude for this round. Codex reviewed the packet and ran the approved bounded F4 repair/checks; results are linked above.
+2. **Next:** separately approve full clean-commit qualification at 4aebfa0f4aaf011cfd85347246c18d3cbde305ba. The actual three-file diff and targeted checks are reviewed. No further product-planning round is needed to execute that existing protocol.
 3. **After baseline qualification:** present the exact base integration/adoption action. Close the first-batch DESIGN consistency disposition; actual React Flow/host tests stay in implementation acceptance. Then request approval for the small E1.1 registry/frame batch and the personal preference contract it consumes. This is not approval for every V1 integration.
 4. **During approved V1 delivery:** close each qualified binding before its consumer, implement/test/review slices, update only material affected plan sections as upstream changes. Progress other V1 work when an integration waits. Do not switch to V2.
 

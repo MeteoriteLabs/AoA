@@ -1,6 +1,6 @@
 # Universe — full implementation-plan self-review
 
-**Current consolidated checkpoint:** [Universe plan readiness](consolidated-plan-readiness.md) is the current author verdict and per-slice gate register. The packet is ready for final independent planning review; Universe coding is not authorized. The [exact F4 repair plan](f4-fixture-repair-plan.md) supersedes the earlier Stage-B sketch, with three test-only files and bounded regression/qualification steps. Older dated proposals/results below retain their historical scope; they do not reopen completed review rounds.
+**Current checkpoint:** TK chose Codex review for this round and authorized proceeding with the bounded F4 repair. [Author review and F4 results](f4-repair-results.md): 12 lifecycle tests, strict test-file typecheck and 11 real integration cases passed; the original typecheck configuration failure is retained. Repair commit stays local. The [Universe readiness register](consolidated-plan-readiness.md) is current; no further unchanged Claude review is required. Next is separately approved full clean-commit baseline qualification, then base adoption and explicit Universe coding approval. Older dated records below are historical.
 
 September 12, 2026. **Result: complete planning packet prepared for TK's independent Claude review; not approved for coding.** Scope is all nine epics, 31 slices and 69 numbered increments, including conditional qualification plans for unavailable upstream contracts. V1 remains 30 slices; E3.4 is V2. Source pin: `183e46a9c65fc3105c7e3d125629276814df7dbb`. Source reads and document validation are the evidence in this pass; no runtime tests, provider sessions, installation or implementation occurred.
 
@@ -178,3 +178,7 @@ TK approved the corrected export check and one success-gated shard invocation. [
 ## Consolidated closeout review
 
 The [current whole-packet review](consolidated-plan-readiness.md) accounts for every slice and distinguishes complete-for-review planning from conditional runtime bindings and unapproved execution. The [F4 proposal](f4-fixture-repair-plan.md) includes exact test-only code, deterministic startup/cleanup faults and bounded verification. Self-review caught and corrected the fault-case count, added explicit test-file typechecking and SDK preparation, and clarified existing-branch reuse. No production source, fixture, container or provider execution occurred. Independent review of this new material remains pending; previous unchanged review findings are not reopened.
+
+## Author review accepted as this round's review route
+
+TK chose Codex review and proceeding with bounded F4 work. [Results](f4-repair-results.md) record unchanged original task assertions, two effective negative controls, 12 unit passes, a disclosed temporary-config failure followed by strict corrected typecheck success, and 11 real-DB passes. Source diff is test-only and local. The full baseline remains unqualified; no new Claude handoff is required for unchanged material.

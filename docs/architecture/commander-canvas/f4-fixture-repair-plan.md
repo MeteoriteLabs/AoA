@@ -1,5 +1,7 @@
 # F4 blocked-task fixture repair implementation plan
 
+**Execution update:** TK selected Codex review and approved the bounded repair/check batch. [Results](f4-repair-results.md) record local commit 4aebfa0f4, 12 passing lifecycle cases, corrected strict typecheck and 11 passing integrations. Task 4 full qualification remains separately unapproved. Unchecked proposal steps below are not the execution ledger; the results report is authoritative. The external typecheck config shown below is corrected to the successful form; the original failed form and logs remain in evidence.
+
 > **For agentic workers:** Use `superpowers:executing-plans` after TK explicitly approves source authoring and the bounded checks below. This document is a reviewed proposal, not execution approval. Steps remain unchecked until observed.
 
 **Goal:** Make the blocked-task database fixture fail honestly on startup and clean up only resources it owns, preserving all four task assertions.
@@ -315,11 +317,16 @@ The first mutation must fail the rejected-start assertions; the second must fail
 ```json
 {
   "extends": "/workspace/f4-repair/server/tsconfig.json",
-  "compilerOptions": { "noEmit": true },
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node"],
+    "typeRoots": ["/workspace/f4-repair/server/node_modules/@types", "/workspace/f4-repair/node_modules/@types"]
+  },
   "include": [
     "/workspace/f4-repair/server/src/__tests__/helpers/blocked-task-fixture.ts",
     "/workspace/f4-repair/server/src/__tests__/blocked-task-fixture.test.ts",
-    "/workspace/f4-repair/server/src/__tests__/blocked-task-scan.integration.test.ts"
+    "/workspace/f4-repair/server/src/__tests__/blocked-task-scan.integration.test.ts",
+    "/workspace/f4-repair/server/src/types/**/*.d.ts"
   ],
   "exclude": []
 }
