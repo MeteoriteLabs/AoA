@@ -354,6 +354,11 @@ export async function submitJobWithinTenant(
             companyId: input.companyId,
             workloadType: workloadType(input.command.source),
             attemptId: attempt.id,
+            // DE-27 — WHO. The authenticated submitting principal, so a capacity refusal
+            // names the submitter (actorId = principal.id) rather than the tenant org.
+            principalId: input.principal.id,
+            principalKind: input.principal.kind,
+            principalRole: input.principal.role,
             // DE-27 — a capacity refusal captures its intent here; the caller drains it on
             // a pool handle after this transaction rolls back on the 429 below.
             denialSink,

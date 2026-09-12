@@ -27,20 +27,29 @@
  *
  * ★ ATTRIBUTION IS THE ASSERTION. Each of WHO / TENANT / RESOURCE / WHY is asserted
  * separately rather than asserting that a row merely exists:
- *   WHO      -> actor_type/actor_id is the organization whose admission was refused
- *               (admission is org-scoped; no finer principal exists at the control point)
+ *   WHO      -> actor_type is "system" (a worker/principal has no truthful
+ *               ActivityActorType) and actor_id is the SPECIFIC authenticated principal
+ *               refused — the refused worker's id (over_cap) or the submitting
+ *               principal's id (capacity) — NEVER the organization id. The tenant is
+ *               not the actor: two principals in one org must stay distinguishable.
  *   TENANT   -> organization_id (and, for capacity, company_id) is the refusing tenant
  *   RESOURCE -> over_cap names the org's worker-poll admission; capacity names the attempt
  *   WHY      -> details.reason is a stable branch code, told APART (over_cap vs capacity),
  *               plus details.crossing = "DE-27"
  *
- * ★ POSITIVE CONTROLS, so "always write an admission-denial row" fails this file:
+ * ★ POSITIVE CONTROLS, so a lazy writer fails this file:
  *   1. The two ADMITTED polls (count 1, 2) below the cap write NO row.
  *   2. The ADMITTED submit (under the cap of 1) writes NO row.
  *   3. The two refusals carry DIFFERENT reason codes — a constant reason would fail the
  *      anti-vacuity arm.
  *   4. ATTRIBUTION IS NOT A CONSTANT: a refusal for a SECOND organization lands under
  *      that organization, not the first.
+ *   5. WHO IS THE PRINCIPAL, NOT THE TENANT: actor_id is the refused worker id
+ *      (over_cap) / the submitting principal id (capacity), and each arm asserts it is
+ *      NOT the organization id — so the reverted bug (`actorId = organizationId`, or
+ *      any constant) goes RED. The over_cap worker id and the capacity principal id are
+ *      DISTINCT from the org uuid and from each other, so a writer that stamped either
+ *      the org or one constant identity cannot pass both arms.
  *
  * Real Postgres (embedded-postgres + the committed migration chain), the real limiter,
  * the real submit path (which threads the capacity-denial sink and drains it on the pool
@@ -67,6 +76,17 @@ const integration = describe.skipIf(
 /** A SECOND organization, for the attribution control. Its own `organizations` row so a
  * refusal for it is FK-valid and attributable to it and not to `ORG`. */
 const ORG2 = "a6000000-0000-4000-8000-0000000000f2";
+
+/** DE-27 WHO — the refused worker ids, DISTINCT from any org uuid, so an over_cap row
+ * that named the org (the reverted bug) or a constant is caught. `actor_id` has no FK, so
+ * these need no `workers` row. `WORKER_A` refuses under ORG, `WORKER_B` under ORG2. */
+const WORKER_A = "d7000000-0000-4000-8000-0000000000a1";
+const WORKER_B = "d7000000-0000-4000-8000-0000000000b2";
+
+/** DE-27 WHO — the submitting principal for the capacity path. `submission()` presents
+ * this exact (kind, id), and the capacity row's actor_id must equal this id, NOT the org. */
+const SUBMIT_PRINCIPAL_KIND = "system";
+const SUBMIT_PRINCIPAL_ID = "de27-submit-test";
 
 interface DenialRow {
   company_id: string | null;
@@ -120,7 +140,7 @@ integration("DE-27 audit clause — the two worker-admission refusals leave attr
     return {
       organizationId: ORG,
       companyId: COMPANY,
-      principal: { kind: "system" as const, id: "de27-submit-test" },
+      principal: { kind: SUBMIT_PRINCIPAL_KIND as const, id: SUBMIT_PRINCIPAL_ID },
       command: {
         idempotencyKey,
         source: { kind: "one_shot" as const, operationId: randomUUID(), operationKind: "readiness_probe" as const },
@@ -167,9 +187,9 @@ integration("DE-27 audit clause — the two worker-admission refusals leave attr
       config: { windowMs: WINDOW_MS, max: 2 },
       now: clockAt(120_000),
     });
-    expect((await limiter.admit(ORG)).allowed).toBe(true); // count 1
-    expect((await limiter.admit(ORG)).allowed).toBe(true); // count 2
-    const third = await limiter.admit(ORG);
+    expect((await limiter.admit(ORG, WORKER_A)).allowed).toBe(true); // count 1
+    expect((await limiter.admit(ORG, WORKER_A)).allowed).toBe(true); // count 2
+    const third = await limiter.admit(ORG, WORKER_A);
     expect(third).toEqual({ allowed: false, reason: "over_cap", count: 3, limit: 2 });
   }, 60_000);
 
@@ -180,9 +200,9 @@ integration("DE-27 audit clause — the two worker-admission refusals leave attr
       config: { windowMs: WINDOW_MS, max: 2 },
       now: clockAt(120_000),
     });
-    await limiter.admit(ORG);
-    await limiter.admit(ORG);
-    await limiter.admit(ORG); // over_cap
+    await limiter.admit(ORG, WORKER_A);
+    await limiter.admit(ORG, WORKER_A);
+    await limiter.admit(ORG, WORKER_A); // over_cap
 
     const rows = await admissionDenialRows();
     // POSITIVE CONTROL — the two ADMITTED polls wrote NO row. Without this, "write an
@@ -190,9 +210,14 @@ integration("DE-27 audit clause — the two worker-admission refusals leave attr
     expect(rows).toHaveLength(1);
     const row = rows[0]!;
 
-    // WHO — admission is org-scoped, so the organization is the refused actor, not a user/agent.
+    // WHO — the SPECIFIC refused worker, not the tenant org. actor_type is "system"
+    // (a worker has no truthful ActivityActorType); actor_id is the refused worker id.
     expect(row.actor_type).toBe("system");
-    expect(row.actor_id).toBe(ORG);
+    expect(row.actor_id).toBe(WORKER_A);
+    // …and WHO is NOT the organization: the reverted bug (`actorId = organizationId`)
+    // stamped ORG here, so this assertion is exactly what goes RED without the fix.
+    expect(row.actor_id).not.toBe(ORG);
+    expect(String(row.details?.principalKind)).toBe("worker");
     // TENANT — org-scoped limiter: the organization axis is set, the company axis is null.
     expect(row.organization_id).toBe(ORG);
     expect(row.company_id).toBeNull();
@@ -216,17 +241,24 @@ integration("DE-27 audit clause — the two worker-admission refusals leave attr
       config: { windowMs: WINDOW_MS, max: 1 },
       now: clockAt(120_000),
     });
-    expect((await limiterB.admit(ORG2)).allowed).toBe(true); // count 1
-    const over = await limiterB.admit(ORG2);
+    expect((await limiterB.admit(ORG2, WORKER_B)).allowed).toBe(true); // count 1
+    const over = await limiterB.admit(ORG2, WORKER_B);
     expect(over).toMatchObject({ allowed: false, reason: "over_cap" });
 
     const rows = await admissionDenialRows();
     expect(rows).toHaveLength(1);
-    // The row is attributed to ORG2 — the refusing organization — not to ORG. A writer that
+    // TENANT is attributed to ORG2 — the refusing organization — not to ORG. A writer that
     // stamped a constant tenant would fail here.
     expect(rows[0]!.organization_id).toBe(ORG2);
-    expect(rows[0]!.actor_id).toBe(ORG2);
     expect(rows[0]!.organization_id).not.toBe(ORG);
+    // WHO is the refused WORKER, and it is NEITHER organization id. This is the precise
+    // proof that actor_id is the principal and not the tenant: a writer that recorded
+    // `actorId = organizationId` would stamp ORG2 here (== organization_id), and a writer
+    // that stamped a constant identity would not carry WORKER_B's distinct value.
+    expect(rows[0]!.actor_id).toBe(WORKER_B);
+    expect(rows[0]!.actor_id).not.toBe(ORG2);
+    expect(rows[0]!.actor_id).not.toBe(ORG);
+    expect(rows[0]!.actor_id).not.toBe(rows[0]!.organization_id);
   }, 60_000);
 
   // ── capacity ────────────────────────────────────────────────────────────────────────
@@ -257,9 +289,15 @@ integration("DE-27 audit clause — the two worker-admission refusals leave attr
     expect(rows).toHaveLength(1);
     const row = rows[0]!;
 
-    // WHO — the organization whose capacity was exhausted.
+    // WHO — the SUBMITTING PRINCIPAL, not the tenant org. actor_type is "system" (the
+    // principal is not resolved to an agents/auth row at this seam); actor_id is the
+    // submitting principal's id, and details.principalKind names its kind.
     expect(row.actor_type).toBe("system");
-    expect(row.actor_id).toBe(ORG);
+    expect(row.actor_id).toBe(SUBMIT_PRINCIPAL_ID);
+    // …and WHO is NOT the organization: the reverted bug (`actorId = organizationId`)
+    // stamped ORG here, so this assertion goes RED without the fix.
+    expect(row.actor_id).not.toBe(ORG);
+    expect(String(row.details?.principalKind)).toBe(SUBMIT_PRINCIPAL_KIND);
     // TENANT — both axes: capacity holds an FK-valid company (the just-inserted attempt).
     expect(row.organization_id).toBe(ORG);
     expect(row.company_id).toBe(COMPANY);
@@ -285,8 +323,8 @@ integration("DE-27 audit clause — the two worker-admission refusals leave attr
       config: { windowMs: WINDOW_MS, max: 1 },
       now: clockAt(120_000),
     });
-    await limiter.admit(ORG);
-    await limiter.admit(ORG); // over_cap
+    await limiter.admit(ORG, WORKER_A);
+    await limiter.admit(ORG, WORKER_A); // over_cap
     // one capacity
     await ctx().admin`UPDATE organizations SET concurrency_cap = 1 WHERE id = ${ORG}`;
     const svc = jobSubmissionService(ctx().app.db);

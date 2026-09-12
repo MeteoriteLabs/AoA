@@ -56,19 +56,38 @@
 // holder, the throw propagates unchanged, and the caller drains the holder on the
 // pool handle in a `finally` after the transaction has closed.
 //
-// ★ ATTRIBUTION, AND WHY THE ORGANIZATION IS BOTH TENANT AND ACTOR HERE. Both deny
-// sites are ORGANIZATION-SCOPED admission authorities — the rate-limit counter is
-// keyed on `(organization_id, window_start)`, and the concurrency cap is
-// `organizations.concurrency_cap` serialized under one advisory lock per
-// organization. There is no worker, agent, or user principal at the control point:
-// the poll limiter is consulted BEFORE the frozen poll authority resolves a worker,
-// and the capacity claim is consulted on behalf of a job attempt, not a principal.
-// So the honest WHO is the organization whose admission was refused, recorded with
-// `actorType: "system"` and `actorId = organizationId`. That is the closest stable
-// identity this control point holds, not an oversight — a finer principal does not
-// exist here. The organization id is TOKEN-ATTESTED or DB-CONSISTENT, never off the
-// wire: over_cap's org comes out of `verifyWorkerOperationProof`
-// (`worker-control.ts` -> `admit(auth.organizationId)`), and capacity's org and
+// ★ ATTRIBUTION: THE ORGANIZATION IS THE TENANT, AND THE WHO IS THE AUTHENTICATED
+// PRINCIPAL — NOT THE ORGANIZATION. Both deny sites are ORGANIZATION-SCOPED admission
+// authorities — the rate-limit counter is keyed on `(organization_id, window_start)`,
+// and the concurrency cap is `organizations.concurrency_cap` serialized under one
+// advisory lock per organization — so the organization is the tenant the refusal
+// happened in and rides `organizationId` (and, for capacity, `companyId`). But the
+// tenant is NOT the WHO: an authenticated principal is in hand at BOTH control points,
+// and it is that principal, not the org, that `actorId` names — otherwise two distinct
+// refused workers/submitters in one org would collapse into one indistinguishable row
+// and the audit contract's WHO question could not be answered.
+//   over_cap  — the refused WORKER. `VerifiedWorkerOperation.workerId`
+//               (`middleware/worker-operation-proof.ts:7`, sourced from the HMAC-
+//               verified `claims.sub`) is in hand as `auth.workerId` at
+//               `worker-control.ts` the whole time — it is passed into `admit()`
+//               alongside the org, so the refused worker's own id is `actorId`. (The
+//               poll limiter being consulted BEFORE `leasing.poll` resolves the frozen
+//               LEASE authority does not mean there is no worker identity: the signed
+//               `auth` proof carries `workerId` from the first line of the handler.)
+//   capacity  — the submitting PRINCIPAL. `input.principal.id` (`job-submission.ts`,
+//               the `AuthenticatedJobPrincipal` the admission gate already authorized)
+//               is threaded into `admitAttemptCapacity` and captured as the intent's
+//               `actorId`, with `principalKind` in `details` so a reader sees a
+//               user/agent/mcp/commander submitter, not just an id.
+// `actorType` is `"system"` in BOTH cases because a worker/principal has no truthful
+// `ActivityActorType` at this seam — `ActivityActorType` is `agent | user | system |
+// autonomy`, a worker has no `agents`/`auth` row, and a job principal here is not
+// resolved to one — and `actor_id` is plain text with NO foreign key, which is exactly
+// what makes `workerId`/`principal.id` usable as the identity directly. This is the
+// same choice, for the same reason, as the DE-06 object-access, DE-06 denial, and
+// DE-11 retention call sites (`artifact-object-access-audit.ts:277-278`).
+// The tenant ids are TOKEN-ATTESTED or DB-CONSISTENT, never off the wire: over_cap's
+// org and worker come out of `verifyWorkerOperationProof`, and capacity's org and
 // company are the ids the just-inserted `job_attempts` row carries under the
 // submission's own organization GUC (an insert RLS accepted moments earlier), the
 // same ids that drive `runInTenant`. Actor-attribution is the ratified model
@@ -152,8 +171,18 @@ export interface WorkerAdmissionDenialInput {
    * CHECK).
    */
   companyId: string | null;
-  /** The ORGANIZATION axis. Token-attested or DB-resolved; never off the wire. */
+  /** The ORGANIZATION axis (the TENANT the refusal happened in). Token-attested or
+   * DB-resolved; never off the wire. This is NOT the WHO — see `actorId`. */
   organizationId: string;
+  /**
+   * WHO — the specific authenticated principal refused: the refused worker's id
+   * (`auth.workerId`, over_cap) or the submitting principal's id
+   * (`input.principal.id`, capacity). NEVER the organization id: the tenant is not
+   * the actor, and two principals in one org must stay distinguishable. `actor_id`
+   * is plain text with no FK, so a worker/principal id with no `agents`/`auth` row
+   * is safe to record directly.
+   */
+  actorId: string;
   /** WHICH RESOURCE — the kind of thing refused. */
   entityType: string;
   /** WHICH RESOURCE — its id. */
@@ -169,10 +198,12 @@ export interface WorkerAdmissionDenialInput {
  * BOTH deny sites funnel through — the over_cap site calls it directly on its pool
  * handle, and the capacity site reaches it through `drainAdmissionDenial`.
  *
- * `actorType`/`actorId` are `system`/`organizationId`: admission is org-scoped and
- * carries no finer principal at the control point (see the module header). Returns
- * the row id, or `null` when nothing could be written (logged at error by
- * `recordSecurityDenial`).
+ * `actorType` is `"system"` because a worker/principal has no truthful
+ * `ActivityActorType` at this seam; `actorId` is the SPECIFIC refused principal (the
+ * worker id for over_cap, the submitting principal id for capacity) and NOT the
+ * organization — the org is the tenant, carried on `organizationId` (see the module
+ * header). Returns the row id, or `null` when nothing could be written (logged at
+ * error by `recordSecurityDenial`).
  */
 export async function recordWorkerAdmissionDenial(
   db: Db,
@@ -184,12 +215,14 @@ export async function recordWorkerAdmissionDenial(
     crossing: WORKER_ADMISSION_CROSSING,
     surface: WORKER_ADMISSION_DENIAL_SURFACE,
     reason: input.reason,
-    // A worker-admission refusal has no worker/agent/user identity at the control
-    // point (see the header): the organization whose admission was refused is the
-    // stable actor. `actor_id` is plain text with no FK, so an organization id is
-    // safe to record directly.
+    // WHO is the specific refused principal — the worker id (over_cap) or the
+    // submitting principal id (capacity) — passed in as `actorId`, NEVER the org.
+    // `actorType` is "system" because a worker/principal has no truthful
+    // `ActivityActorType` here (a worker has no `agents`/`auth` row), and `actor_id`
+    // is plain text with no FK, so the id is safe to record directly. The org is the
+    // TENANT and rides `organizationId`/`details.organizationId`, not the actor.
     actorType: "system",
-    actorId: input.organizationId,
+    actorId: input.actorId,
     entityType: input.entityType,
     entityId: input.entityId,
     control: input.control,
@@ -209,6 +242,16 @@ export interface AdmissionDenialIntent {
   reason: "capacity";
   companyId: string;
   organizationId: string;
+  /**
+   * WHO — the submitting principal's id (`input.principal.id`), carried from the deny
+   * site so the drain records the submitter as the actor and not the tenant org.
+   */
+  actorId: string;
+  /**
+   * The submitting principal's kind (user/agent/mcp/commander/local_board/system),
+   * folded into the drained row's `details` so the WHO is legible beyond a bare id.
+   */
+  principalKind: string;
   /** The attempt that could not claim an organization capacity slot. */
   attemptId: string;
   /**
@@ -256,6 +299,8 @@ export async function drainAdmissionDenial(
     reason: pending.reason,
     companyId: pending.companyId,
     organizationId: pending.organizationId,
+    // WHO — the submitting principal (from the intent), not the tenant org.
+    actorId: pending.actorId,
     entityType: "job_attempt",
     entityId: pending.attemptId,
     // The refusing control is the deny site (from the intent), not this drain site.
@@ -263,6 +308,9 @@ export async function drainAdmissionDenial(
     details: {
       ...pending.details,
       attemptId: pending.attemptId,
+      // The submitter's kind, so an operator reading the row sees WHAT kind of
+      // principal was refused, not only its id.
+      principalKind: pending.principalKind,
       // Where the row was actually written (the pool-handle drain, after the tenant
       // transaction closed), kept alongside the deny site for the operator's trail.
       drainedBy: caller.control,

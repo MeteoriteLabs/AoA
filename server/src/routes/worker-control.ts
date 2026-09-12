@@ -409,7 +409,7 @@ export function workerControlRoutes(opts: {
       // per-org window cap, or on a shared-store error (fail-closed), deny with `throttled`
       // (429, retryable) — never a per-process fallback. The DB counter is the sole authority
       // both replicas share, so this is not process-local admission state.
-      const admission = await pollRateLimiter.admit(auth.organizationId);
+      const admission = await pollRateLimiter.admit(auth.organizationId, auth.workerId);
       if (!admission.allowed) {
         sendWorkerOperationProtocolError(req, res, "poll", "throttled", opts.now?.() ?? new Date());
         return;

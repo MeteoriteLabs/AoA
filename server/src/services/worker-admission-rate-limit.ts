@@ -114,8 +114,13 @@ export async function incrementAdmissionWindow(
 }
 
 export interface WorkerAdmissionRateLimiter {
-  /** Admit one poll for the organization; fail-closed on any shared-store error. */
-  admit(organizationId: string): Promise<WorkerAdmissionRateDecision>;
+  /**
+   * Admit one poll for the organization; fail-closed on any shared-store error.
+   * `workerId` is the refused actor recorded on an over_cap denial (DE-27) — the
+   * HMAC-verified `VerifiedWorkerOperation.workerId`, so the durable row names the
+   * specific refused worker and not the tenant org.
+   */
+  admit(organizationId: string, workerId: string): Promise<WorkerAdmissionRateDecision>;
 }
 
 export function createWorkerAdmissionRateLimiter(opts: {
@@ -125,7 +130,7 @@ export function createWorkerAdmissionRateLimiter(opts: {
 }): WorkerAdmissionRateLimiter {
   const config = opts.config ?? resolveWorkerPollRateLimitConfig();
   return {
-    async admit(organizationId: string): Promise<WorkerAdmissionRateDecision> {
+    async admit(organizationId: string, workerId: string): Promise<WorkerAdmissionRateDecision> {
       const windowStart = windowStartFor(opts.now?.() ?? new Date(), config.windowMs);
       let count: number;
       try {
@@ -152,10 +157,19 @@ export function createWorkerAdmissionRateLimiter(opts: {
           reason: "over_cap",
           companyId: null,
           organizationId,
+          // WHO — the specific refused worker (`auth.workerId`), not the tenant org.
+          actorId: workerId,
           entityType: "worker_poll_admission",
           entityId: organizationId,
           control: "server/src/services/worker-admission-rate-limit.ts:admit",
-          details: { count, limit: config.max, windowStartMs: windowStart.getTime() },
+          details: {
+            count,
+            limit: config.max,
+            windowStartMs: windowStart.getTime(),
+            // The refused actor is a worker machine identity; name its kind so the
+            // WHO is legible beyond the bare id.
+            principalKind: "worker",
+          },
         });
         return { allowed: false, reason: "over_cap", count, limit: config.max };
       }

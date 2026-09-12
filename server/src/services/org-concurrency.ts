@@ -201,6 +201,18 @@ export interface AdmitAttemptCapacityInput {
   companyId: string;
   workloadType: string;
   attemptId: string;
+  /**
+   * DE-27 (audit clause) — WHO. The authenticated submitting principal (the
+   * `AuthenticatedJobPrincipal` the submit path already authorized). When a
+   * `capacity` refusal is captured into `denialSink`, `principalId` becomes the
+   * durable row's `actorId` and `principalKind` its `details.principalKind`, so the
+   * refusal names the SUBMITTER, not the tenant organization. Required so the WHO is
+   * never silently dropped; `principalRole` is optional (not every principal carries
+   * a role).
+   */
+  principalId: string;
+  principalKind: string;
+  principalRole?: string;
   /** Override the Organization cap (defaults to organizations.concurrency_cap). */
   cap?: number;
   budgetBridge?: CapacityBudgetBridge;
@@ -274,6 +286,10 @@ export async function admitAttemptCapacity(
           reason: "capacity",
           companyId: input.companyId,
           organizationId: input.organizationId,
+          // WHO — the submitting principal, so the drained row names the submitter and
+          // not the tenant organization.
+          actorId: input.principalId,
+          principalKind: input.principalKind,
           attemptId: input.attemptId,
           control: "server/src/services/org-concurrency.ts:admitAttemptCapacity",
           details: { usage: usageForReport, cap, workloadType: input.workloadType },
