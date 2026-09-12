@@ -203,3 +203,9 @@ TK approved the exact container correction and one repeated offline sequence. Th
 TK authorized the corrective plan and its review. The [source-reviewed plan](baseline-correction-plan.md) covers F1 deterministic DNS testing, F2 actual Git metadata and F3 filesystem opener error handling. Proposed source corrections use an isolated branch from the exact tested replatform candidate; the Universe branch keeps its existing replatform source pin and planning documents. No new product decision is required for these corrections.
 
 Next is [TK-managed Claude review](claude-review-handoff.md#focused-review-of-the-baseline-correction-plan), verification of findings and explicit approval of the bounded source/environment/test scope. Source fixes and further tests have not run. A passing corrected baseline would support a later concrete adoption proposal, not automatically authorize a merge or E1.1 implementation. DESIGN, host and provider gates remain separate.
+
+## Baseline correction review disposition
+
+[Claude’s plan review](baseline-correction-review-report.md) is received and author-verified: no blocking plan finding. [The plan](baseline-correction-plan.md) now clarifies existing Codex/TK/Claude responsibilities, the later replatform landing owner/path gate, and initial launch versus subsequent child-process errors. The reviewed code proposal and test scope are unchanged. No further unchanged Claude round is requested.
+
+Current next step is explicit approval of isolated correction authoring and offline qualification. Neither baseline is green; runtime fixes/tests, correction branch creation, base adoption and Universe implementation remain unperformed. This documentation update is not execution approval.

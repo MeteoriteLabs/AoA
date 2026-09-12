@@ -110,3 +110,9 @@ TK approved the exact container correction and one repeated offline sequence. Th
 ## Corrective planning publication
 
 The [baseline correction plan](baseline-correction-plan.md) and [focused review handoff](claude-review-handoff.md#focused-review-of-the-baseline-correction-plan) are published on the existing Universe documentation branch. Its application source remains identical to the pinned replatform revision. The proposed correction branch and tested candidate are described as future execution choices, not silently created/adopted resources. This publication changes documentation only and leaves the premature draft untouched. Independent review, source/test execution and base integration remain pending.
+
+## Baseline correction review disposition
+
+[Claude’s plan review](baseline-correction-review-report.md) is received and author-verified: no blocking plan finding. [The plan](baseline-correction-plan.md) now clarifies existing Codex/TK/Claude responsibilities, the later replatform landing owner/path gate, and initial launch versus subsequent child-process errors. The reviewed code proposal and test scope are unchanged. No further unchanged Claude round is requested.
+
+Current next step is explicit approval of isolated correction authoring and offline qualification. Neither baseline is green; runtime fixes/tests, correction branch creation, base adoption and Universe implementation remain unperformed. This documentation update is not execution approval.
