@@ -51,3 +51,9 @@ TK returned the [review of 47b50fd94](voice-media-corrections-review-report.md).
 ## BASE/DESIGN preparation evidence checkpoint
 
 See [BASE results](baseline-preparation-results.md) and [DESIGN coverage](design-state-coverage.md). Both source snapshots stopped at an environment setup failure after successful installation/prebuilds. This is not a fresh source-readiness pass; test/build and actual-host evidence remain pending. Resolve the explicitly scoped environment correction and collect its results before requesting another independent source-baseline verdict. No unchanged voice/media review is requested. Production implementation remains paused.
+
+## Focused review after the approved offline baseline retry
+
+The [retry results](baseline-retry-results.md) and [failure attribution](baseline-retry-findings.md) supersede the earlier missing-pnpm checkpoint. The original failure and retry evidence are both retained. No source changes are included. A useful next independent review, before any corrective implementation, is:
+
+> Review the Universe offline baseline retry results and baseline-retry-findings.md at this exact documentation revision. Compare the source pin 183e46a9c65fc3105c7e3d125629276814df7dbb with candidate 9200a66c42633019349de937a8b97979acac0f7a. Verify F1 public DNS, F2 archive/Git metadata and F3 asynchronous filesystem opener error against the named source and published shard evidence. Check failure attribution, identical failure sets, skipped/unhandled-error caveats, source integrity and the proposed corrective scope. Identify any unsupported readiness or candidate-adoption claim. Review only: do not modify files, run providers, spend money, merge branches or implement Universe. Return concrete findings with severity and source evidence; do not reopen unchanged voice/media/product decisions.

@@ -1,8 +1,10 @@
 # Universe — bounded source-baseline preparation results
 
-September 12, 2026. **Preparation attempted; BASE remains open.** TK authorized the published [bounded preparation batch](bounded-engineering-preparation.md) by saying “lets do it” after publication at `3431c66f2e3a262c9a7f1119acaa0aaecfdbdc2a`. This report records execution, not implementation acceptance. No Universe source changes or source-base integration occurred.
+September 12, 2026. **First attempt retained; BASE remains open.** TK authorized the published [bounded preparation batch](bounded-engineering-preparation.md) by saying “lets do it” after publication at `3431c66f2e3a262c9a7f1119acaa0aaecfdbdc2a`. This report records execution, not implementation acceptance. No Universe source changes or source-base integration occurred.
 
-## Outcome
+**Latest status:** TK approved the container-only correction, and the [offline retry is now complete](baseline-retry-results.md). Both revisions pass typecheck, but the same three tests and one unhandled error remain on each. The original evidence below is preserved; it is superseded by the retry for current execution status. No implementation or base adoption is authorized.
+
+## First attempt outcome (historical)
 
 Both exact revisions installed with the frozen lockfile and passed all five approved package prebuilds. Both recursive typechecks failed because the container had Corepack but no direct `pnpm` executable on PATH. A plugin SDK package script invokes `pnpm` itself, so invoking its parent through `corepack pnpm` was insufficient. This is an **author-owned environment setup omission**, not evidence that replatform introduced a source regression. No source fix is proposed from this result.
 
@@ -55,9 +57,9 @@ Install also warned that workspace executable links for not-yet-built plugin SDK
 
 The newer candidate changes worker-admission audit/control paths, not this missing executable setup. With the same environment failure on both revisions, **candidate-only source failures are undetermined**, and no clean baseline claim or candidate adoption recommendation is justified. The existing source pin remains unchanged. BASE qualification must be resumed before presenting it as ready for implementation.
 
-## Concrete environment correction proposed, not executed
+## Original environment correction proposal (subsequently approved and executed)
 
-The approved proposal says: “Failure permits diagnosis and reporting, not source/dependency fixes, wider commands or unlimited retries.” Therefore this report stops at the authorized boundary. The next narrow batch would create the Corepack shim inside the same disposable user's home and include it in child PATH:
+The approved proposal says: “Failure permits diagnosis and reporting, not source/dependency fixes, wider commands or unlimited retries.” The first attempt therefore stopped at that boundary; TK subsequently approved this exact correction. See the linked retry for its outcome. The next narrow batch would create the Corepack shim inside the same disposable user's home and include it in child PATH:
 
 ```sh
 mkdir -p /workspace/home/bin

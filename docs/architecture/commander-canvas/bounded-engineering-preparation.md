@@ -83,3 +83,7 @@ For each revision, report separately: dependency/prebuild status, typecheck, fou
 Required outputs, written only after the approved checks actually run: baseline-preparation-results.md and design-state-coverage.md in this documentation directory. Record exact image digest and SHA, commands and sanitized logs, observed results and exclusions. Do not create a passing result stub now.
 
 Then TK receives: recommended execution base with evidence, proposed source integration action, remaining gates that affect E1.1, and its exact implementation batch. Acceptance of this preparation proposal never authorizes that later coding batch. Current status: bounded preparation authorized; consult the attributed results for execution status. Merge/rebase, source changes and implementation authorization remain absent.
+
+## Authorized retry outcome
+
+After the first attempt at 4c9b71e75, TK explicitly approved the proposed container-only pnpm shim and one offline retry. The [retry report](baseline-retry-results.md) records both passing typechecks, all eight shards, matching unresolved failures and unchanged source snapshots. Build was blocked by failed tests. The [findings](baseline-retry-findings.md) require a separately scoped corrective plan; this authorization does not extend to source changes or further retries. The container is stopped, logs retained, and source-base adoption and implementation remain unapproved.
