@@ -37,6 +37,11 @@ import { stampServiceIdentity } from "./service-job-config.js";
 // to the wrong sink). The dynamic import keeps this module's static graph logger-free and
 // keeps the admission code dormant (loaded only when the flag is on at runtime).
 import { readDistributedExecutionDeploymentFlag } from "../config/distributed-execution.js";
+// DE-27 (audit clause) — the capacity-refusal denial sink. Type-only import (erased at
+// compile time), so it keeps this module's static graph logger-free exactly as the
+// note above requires; `drainAdmissionDenial` is loaded DYNAMICALLY at the drain point,
+// and only when an intent was actually captured.
+import type { AdmissionDenialSink } from "./worker-admission-denial-audit.js";
 
 export interface AuthenticatedJobPrincipal {
   kind: "user" | "agent" | "mcp" | "commander" | "local_board" | "system";
@@ -122,6 +127,11 @@ export async function submitJobWithinTenant(
   // submission back (no orphan job/attempt). Optional so existing behaviour is unchanged
   // when a caller does not opt into capacity admission (the two production call sites pass it).
   tx?: Db,
+  // DE-27 (audit clause) — forwarded into `admitAttemptCapacity` so a `capacity` refusal
+  // records its intent here for the caller to drain on a pool handle after this
+  // (rolled-back) tenant transaction closes. Optional: a caller that does not thread it
+  // gets today's behaviour (the refusal still denies; it just records no row on that path).
+  denialSink?: AdmissionDenialSink,
 ): Promise<SubmitJobResponse> {
   const sourceId = sourceIdentity(input.command.source);
   // `commandDigest` hashes the RAW command, deliberately. Idempotent replay
@@ -344,6 +354,14 @@ export async function submitJobWithinTenant(
             companyId: input.companyId,
             workloadType: workloadType(input.command.source),
             attemptId: attempt.id,
+            // DE-27 — WHO. The authenticated submitting principal, so a capacity refusal
+            // names the submitter (actorId = principal.id) rather than the tenant org.
+            principalId: input.principal.id,
+            principalKind: input.principal.kind,
+            principalRole: input.principal.role,
+            // DE-27 — a capacity refusal captures its intent here; the caller drains it on
+            // a pool handle after this transaction rolls back on the 429 below.
+            denialSink,
           });
           if (!admission.admitted) {
             throw new HttpError(
@@ -412,7 +430,24 @@ export function jobSubmissionService(appDb: Db) {
         if (error instanceof ForbiddenOrganizationSentinelError) throw denial();
         throw error;
       }
-      return runInTenant(appDb, input.organizationId, (repos, tx) => submitJobWithinTenant(repos, input, tx));
+      // DE-27 (audit clause) — a `capacity` refusal is captured into this sink inside the
+      // tenant transaction and drained on the POOL handle (`appDb`) AFTER `runInTenant`
+      // closes. The transaction ROLLS BACK when `submitJobWithinTenant` throws the 429, so
+      // the row must be written outside it. The drain is a no-op when no refusal was
+      // captured (a success, or a non-capacity failure), and never throws.
+      const denialSink: AdmissionDenialSink = { intent: null };
+      try {
+        return await runInTenant(appDb, input.organizationId, (repos, tx) =>
+          submitJobWithinTenant(repos, input, tx, denialSink),
+        );
+      } finally {
+        if (denialSink.intent) {
+          const { drainAdmissionDenial } = await import("./worker-admission-denial-audit.js");
+          await drainAdmissionDenial(appDb, denialSink, {
+            control: "server/src/services/job-submission.ts:jobSubmissionService.submit",
+          });
+        }
+      }
     },
   };
 }

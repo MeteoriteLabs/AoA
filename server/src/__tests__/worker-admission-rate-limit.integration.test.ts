@@ -45,6 +45,9 @@ integration("DEP-009 shared worker-poll rate limiter", () => {
   // A fixed clock pinned to a known window so the test controls the bucket boundary.
   const WINDOW_MS = 60_000;
   const clockAt = (ms: number) => () => new Date(ms);
+  // DE-27 — `admit` now takes the refused worker's id (recorded as the over_cap actor).
+  // This suite proves the counter mechanics, not the audit row, so any stable id serves.
+  const WORKER = "d7000000-0000-4000-8000-0000000000a1";
 
   beforeAll(async () => {
     try {
@@ -65,9 +68,9 @@ integration("DEP-009 shared worker-poll rate limiter", () => {
       config: { windowMs: WINDOW_MS, max: 2 },
       now: clockAt(120_000),
     });
-    const first = await limiter.admit(ORG);
-    const second = await limiter.admit(ORG);
-    const third = await limiter.admit(ORG);
+    const first = await limiter.admit(ORG, WORKER);
+    const second = await limiter.admit(ORG, WORKER);
+    const third = await limiter.admit(ORG, WORKER);
     expect(first).toEqual({ allowed: true, count: 1, limit: 2 });
     expect(second).toEqual({ allowed: true, count: 2, limit: 2 });
     expect(third).toEqual({ allowed: false, reason: "over_cap", count: 3, limit: 2 });
@@ -84,8 +87,8 @@ integration("DEP-009 shared worker-poll rate limiter", () => {
       config: { windowMs: WINDOW_MS, max: 1 },
       now: clockAt(120_000),
     });
-    expect((await capHit.admit(ORG)).allowed).toBe(true);
-    expect((await capHit.admit(ORG)).allowed).toBe(false); // over cap in window @120000
+    expect((await capHit.admit(ORG, WORKER)).allowed).toBe(true);
+    expect((await capHit.admit(ORG, WORKER)).allowed).toBe(false); // over cap in window @120000
 
     // A limiter whose clock is in the NEXT window mints a fresh row and admits again.
     const nextWindow = createWorkerAdmissionRateLimiter({
@@ -93,7 +96,7 @@ integration("DEP-009 shared worker-poll rate limiter", () => {
       config: { windowMs: WINDOW_MS, max: 1 },
       now: clockAt(120_000 + WINDOW_MS),
     });
-    const admitted = await nextWindow.admit(ORG);
+    const admitted = await nextWindow.admit(ORG, WORKER);
     expect(admitted).toEqual({ allowed: true, count: 1, limit: 1 });
 
     const rows = await windowRows();
@@ -111,7 +114,7 @@ integration("DEP-009 shared worker-poll rate limiter", () => {
       now: clockAt(120_000),
     });
     const N = 12;
-    const decisions = await Promise.all(Array.from({ length: N }, () => limiter.admit(ORG)));
+    const decisions = await Promise.all(Array.from({ length: N }, () => limiter.admit(ORG, WORKER)));
     const counts = decisions
       .map((d) => (d.allowed || d.reason === "over_cap" ? d.count : NaN))
       .sort((a, b) => a - b);
@@ -136,10 +139,10 @@ integration("DEP-009 shared worker-poll rate limiter", () => {
       now: clockAt(120_000),
     });
     // A+A+B = 3 (all admitted); the 4th (B) trips the SHARED cap even though it is B's first.
-    expect((await replicaA.admit(ORG)).count).toBe(1);
-    expect((await replicaA.admit(ORG)).count).toBe(2);
-    expect((await replicaB.admit(ORG)).count).toBe(3);
-    const overflow = await replicaB.admit(ORG);
+    expect((await replicaA.admit(ORG, WORKER)).count).toBe(1);
+    expect((await replicaA.admit(ORG, WORKER)).count).toBe(2);
+    expect((await replicaB.admit(ORG, WORKER)).count).toBe(3);
+    const overflow = await replicaB.admit(ORG, WORKER);
     expect(overflow).toEqual({ allowed: false, reason: "over_cap", count: 4, limit: 3 });
 
     const rows = await windowRows();
@@ -160,7 +163,7 @@ integration("DEP-009 shared worker-poll rate limiter", () => {
       config: { windowMs: WINDOW_MS, max: 100 },
       now: clockAt(120_000),
     });
-    const decision = await limiter.admit(ORG);
+    const decision = await limiter.admit(ORG, WORKER);
     expect(decision).toEqual({ allowed: false, reason: "unavailable", limit: 100 });
   }, 60_000);
 });

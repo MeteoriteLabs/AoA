@@ -4,6 +4,11 @@ import { agents, companies, heartbeatRuns, jobAttempts, organizations } from "@a
 import { ORG_MAX_CONCURRENT_RUNS_DEFAULT, ORG_MAX_CONCURRENT_RUNS_MAX } from "@armyofagents/shared";
 import { preflightOneShotCliSpend } from "./one-shot-cli-budget.js";
 import { budgetService } from "./budgets.js";
+// DE-27 (audit clause) — the capacity refusal is recorded through a sink, drained by the
+// caller on a POOL handle after the tenant transaction closes (see below). Type-only import:
+// erased at compile time, so it pulls no logger-bearing runtime dependency into any static
+// graph. The recorder itself is loaded dynamically by the drain sites.
+import type { AdmissionDenialSink } from "./worker-admission-denial-audit.js";
 
 export const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 export const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
@@ -196,9 +201,31 @@ export interface AdmitAttemptCapacityInput {
   companyId: string;
   workloadType: string;
   attemptId: string;
+  /**
+   * DE-27 (audit clause) — WHO. The authenticated submitting principal (the
+   * `AuthenticatedJobPrincipal` the submit path already authorized). When a
+   * `capacity` refusal is captured into `denialSink`, `principalId` becomes the
+   * durable row's `actorId` and `principalKind` its `details.principalKind`, so the
+   * refusal names the SUBMITTER, not the tenant organization. Required so the WHO is
+   * never silently dropped; `principalRole` is optional (not every principal carries
+   * a role).
+   */
+  principalId: string;
+  principalKind: string;
+  principalRole?: string;
   /** Override the Organization cap (defaults to organizations.concurrency_cap). */
   cap?: number;
   budgetBridge?: CapacityBudgetBridge;
+  /**
+   * DE-27 (audit clause). When present, a `capacity` refusal (the `usage >= cap`
+   * branch) records its INTENT here rather than writing a row itself: this authority
+   * only ever runs on the caller's tenant transaction (`tx`), and every production
+   * caller THROWS on `admitted:false`, rolling that transaction back — so an
+   * in-transaction row would be discarded with it. The caller drains this holder on a
+   * POOL handle in a `finally` after the transaction closes. Optional, so the direct
+   * (non-submission) callers of this authority are unchanged when they do not opt in.
+   */
+  denialSink?: AdmissionDenialSink;
 }
 
 /**
@@ -245,6 +272,29 @@ export async function admitAttemptCapacity(
     }
 
     if (usageForReport >= cap) {
+      // DE-27 (audit clause, cross-replica-admission conjunct). Capture the refusal
+      // INTENT — never a write here: this branch runs on the caller's tenant transaction
+      // and the caller throws a 429 on `admitted:false`, rolling the whole submission
+      // back, so any row written on `tx` is discarded with it. The caller drains this
+      // holder on a pool handle after the transaction closes. The SECOND `reason:"capacity"`
+      // return below the claim UPDATE is a DISTINCT branch (a released/terminal/gone
+      // attempt, not a fresh cap refusal) and is deliberately NOT captured — recording it
+      // under the same `capacity` code would conflate two branches the reason vocabulary
+      // keeps apart, and it is not the cross-replica cap refusal DE-27 names.
+      if (input.denialSink) {
+        input.denialSink.intent = {
+          reason: "capacity",
+          companyId: input.companyId,
+          organizationId: input.organizationId,
+          // WHO — the submitting principal, so the drained row names the submitter and
+          // not the tenant organization.
+          actorId: input.principalId,
+          principalKind: input.principalKind,
+          attemptId: input.attemptId,
+          control: "server/src/services/org-concurrency.ts:admitAttemptCapacity",
+          details: { usage: usageForReport, cap, workloadType: input.workloadType },
+        };
+      }
       return { admitted: false, reason: "capacity", usage: usageForReport, cap };
     }
 

@@ -177,6 +177,7 @@ integration("JOB-007 worker/target revocation via generation cutoff", () => {
     // Claim the attempt's capacity so the fanout has a slot to release exactly once.
     await runInTenant(f.app.db, ORG, async (_repos, tx) => admitAttemptCapacity(tx, {
       organizationId: ORG, companyId: COMPANY, workloadType: "batch", attemptId: seeded.attemptId,
+      principalId: "worker-revocation-test", principalKind: "system",
     }));
     const [held] = await f.admin<{ state: string }[]>`
       SELECT capacity_claim_state AS state FROM job_attempts WHERE id = ${seeded.attemptId}`;
@@ -309,6 +310,7 @@ integration("JOB-007 worker/target revocation via generation cutoff", () => {
     const seeded = await f.seedPlacedJob(7_207);
     await runInTenant(f.app.db, ORG, async (_repos, tx) => admitAttemptCapacity(tx, {
       organizationId: ORG, companyId: COMPANY, workloadType: "batch", attemptId: seeded.attemptId,
+      principalId: "worker-revocation-test", principalKind: "system",
     }));
 
     // Precondition: the attempt is pending, holds a slot, and has NO lease row of any kind.

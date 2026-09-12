@@ -75,6 +75,8 @@ integration("JOB-007 organization quotas / shared capacity authority", () => {
         companyId: COMPANY,
         workloadType,
         attemptId,
+        principalId: "job-quotas-test",
+        principalKind: "system",
         budgetBridge,
       }));
 
