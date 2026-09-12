@@ -24,6 +24,9 @@ import {
   parseCitations,
   anchorVariants,
   isAnchored,
+  computeRepoRoots,
+  splitPhysicalLines,
+  KNOWN_REPO_ROOTS,
   GRANDFATHER_JSON,
 } from "./check-register-citation-integrity.mjs";
 
@@ -311,4 +314,45 @@ test("isAnchored: only a slash-path whose first segment is a top-level dir", () 
   assert.equal(isAnchored("server/src/a.ts", top), true);
   assert.equal(isAnchored("routes/a.ts", top), false); // relative shorthand
   assert.equal(isAnchored("a.ts", top), false); // filename-only
+});
+
+// --- CODEX P2 REGRESSION CONTROLS -------------------------------------------------------
+//
+// Two false-negative holes closed on top of the first commit. Each carries a RED control so it
+// cannot silently reopen.
+
+test("P2-1 STATIC ROOTS: a citation under a repo root ABSENT at HEAD is still anchored → reds (a)", () => {
+  // computeRepoRoots must NOT be filtered to dirs present at HEAD, or deleting a whole cited root
+  // reclassifies its citations as unanchored → skipped → the missing-file error is missed.
+  // Compute roots from a directory that has NO `server/` subdir (scripts/), and prove `server`
+  // still classifies as a root — because the STATIC set carries it, independent of disk.
+  const rootsFromScripts = computeRepoRoots(path.join(REPO_ROOT, "scripts"));
+  assert.ok(rootsFromScripts.has("server"), "static roots must contain `server` even when scanning a dir without it");
+  const anchored = isAnchored("server/src/gone.ts", rootsFromScripts);
+  assert.equal(anchored, true, "a path under a deleted root must classify as anchored, not unanchored");
+  // ...and that anchored classification must reach the file-exists check and RED.
+  const input = makeInput({
+    citations: [cit({ crossingId: "DE-09", path: "server/src/gone.ts", line: "5", anchored, inScope: anchored })],
+    files: { "server/src/gone.ts": { exists: false, lines: [] } },
+  });
+  const { errors } = evaluateCitationIntegrity(input);
+  assert.ok(hasError(errors, "cited file does not exist at HEAD"), report(errors));
+  // KNOWN_REPO_ROOTS is the static source of truth (not derived per-file).
+  assert.ok(KNOWN_REPO_ROOTS.has("server") && KNOWN_REPO_ROOTS.has("packages"), "the static known-roots set is the source of truth");
+});
+
+test("P2-2 PHYSICAL COUNT: a citation one line past EOF of a trailing-newline file reds; the true last line passes", () => {
+  const content = "l1();\nl2();\nl3();\n"; // 3 physical lines + a final newline
+  assert.equal(content.split(/\r?\n/).length, 4, "raw split appends the empty trailing-newline sentinel (the bug)");
+  const lines = splitPhysicalLines(content);
+  assert.equal(lines.length, 3, "splitPhysicalLines drops exactly the trailing sentinel");
+  const files = { "server/src/foo.ts": { exists: true, lines } };
+  // one past physical EOF → RED (would have PASSED with the sentinel still present)
+  const past = evaluateCitationIntegrity(makeInput({ citations: [cit({ line: "4" })], files }));
+  assert.ok(hasError(past.errors, "is outside the file, which has 3 lines"), report(past.errors));
+  // the true last line → passes
+  const last = evaluateCitationIntegrity(makeInput({ citations: [cit({ line: "3" })], files }));
+  assert.deepEqual(last.errors, [], report(last.errors));
+  // a genuinely-blank final line (content ending "\n\n") is preserved, not stripped away
+  assert.deepEqual(splitPhysicalLines("a\n\n"), ["a", ""]);
 });

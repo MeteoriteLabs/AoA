@@ -16,9 +16,14 @@
  * the measurement note at the bottom of this header):
  *
  *   ENFORCED = an EXPLICIT, REPO-ANCHORED citation: a `path:LINE` (or `:LINE-RANGE`) whose path
- *   contains a `/` and whose first segment is a real top-level directory of this repo
- *   (server/, packages/, docs/, scripts/, .github/, …). 211 of the register's citations are
- *   of this kind, and on the tree this guard shipped against every one of them resolves.
+ *   contains a `/` and whose first segment is a known repo root (server/, packages/, docs/,
+ *   scripts/, .github/, …). 211 of the register's citations are of this kind, and on the tree this
+ *   guard shipped against every one of them resolves. Anchoring is decided against a STATIC root
+ *   set (KNOWN_REPO_ROOTS, unioned with dirs that currently exist), NOT against the dirs present at
+ *   HEAD — so a PR that DELETES a whole cited root cannot reclassify its citations as unanchored and
+ *   skip the missing-file error the guard exists to raise. Line counts are PHYSICAL: the empty
+ *   sentinel that split() appends for a file's trailing newline is dropped, so a citation one line
+ *   past EOF reds instead of passing.
  *
  *   Per enforced citation, at working-tree HEAD:
  *     (a) EXISTS      — the file exists. A deleted or moved file reds.
@@ -118,6 +123,36 @@ const SCAN = new RegExp(
 /** Code-file extensions for the reaches-real-code (c) check. */
 const CODE_EXT_RE = /\.(?:ts|tsx|js|jsx|mjs|cjs)$/i;
 
+/**
+ * The repo's top-level directory names, as a STATIC list — the source of truth for whether a
+ * citation's path is "repo-root-anchored". It is deliberately NOT derived by filtering to the
+ * directories that happen to exist at HEAD: a PR that DELETES or renames a whole cited root
+ * (e.g. removes `server/`) must NOT thereby reclassify every `server/src/*.ts:LINE` citation as
+ * unanchored → best-effort → silently skipped. With the root name fixed here, such a citation
+ * stays anchored, hits the (a) file-exists check, and REDS — which is the whole point of the
+ * guard. `computeRepoRoots` unions this static set with whatever directories currently exist, so
+ * a NEW top-level directory added by a later PR is picked up automatically while a DELETED one is
+ * still recognised. Derived once from the repo root at tip 9200a66c4.
+ */
+export const KNOWN_REPO_ROOTS = new Set([
+  ".github",
+  "cli",
+  "doc",
+  "docker",
+  "docs",
+  "e2b",
+  "evals",
+  "packages",
+  "patches",
+  "plans",
+  "releases",
+  "scripts",
+  "server",
+  "skills",
+  "tests",
+  "ui",
+]);
+
 /** How far a symbol anchor may sit from the cited line, in either direction. */
 const ANCHOR_RADIUS = 3;
 
@@ -197,10 +232,10 @@ function anchorNearby(lines, lo, hi, token) {
   return anchorVariants(token).some((v) => hay.includes(v));
 }
 
-/** Is `p` repo-root-anchored — path with a `/` whose first segment is a top-level dir? */
-export function isAnchored(p, topLevelDirs) {
+/** Is `p` repo-root-anchored — path with a `/` whose first segment is a known repo root? */
+export function isAnchored(p, repoRoots) {
   if (!p.includes("/")) return false;
-  return topLevelDirs.has(p.split("/")[0]);
+  return repoRoots.has(p.split("/")[0]);
 }
 
 /** [lo, hi] line bounds from a "N" or "N-M" spec. */
@@ -230,7 +265,7 @@ export function collect(root) {
 
   const register = readJson(THREAT_CONTROLS_JSON);
   const grandfather = readJson(GRANDFATHER_JSON);
-  const topLevelDirs = topLevelDirsOf(root);
+  const repoRoots = computeRepoRoots(root);
 
   // Parse every string field of every crossing.
   const citations = [];
@@ -240,7 +275,7 @@ export function collect(root) {
       const strings = typeof value === "string" ? [value] : Array.isArray(value) ? value.filter((v) => typeof v === "string") : [];
       for (const s of strings) {
         for (const c of parseCitations(s)) {
-          const anchored = c.kind === "explicit-slash" && isAnchored(c.path, topLevelDirs);
+          const anchored = c.kind === "explicit-slash" && isAnchored(c.path, repoRoots);
           const inScope = anchored; // explicit + repo-anchored
           citations.push({ crossingId: crossing.id, field, ...c, anchored, inScope });
         }
@@ -256,20 +291,43 @@ export function collect(root) {
     if (!existsSync(abs) || !statSync(abs).isFile()) {
       files[c.path] = { exists: false, lines: [] };
     } else {
-      files[c.path] = { exists: true, lines: readFileSync(abs, "utf8").split(/\r?\n/) };
+      files[c.path] = { exists: true, lines: splitPhysicalLines(readFileSync(abs, "utf8")) };
     }
   }
 
   return { citations, files, grandfather };
 }
 
-/** The set of top-level directory names of the repo (used to decide anchoring). */
-export function topLevelDirsOf(root) {
-  const set = new Set();
-  for (const e of readdirSync(root, { withFileTypes: true })) {
-    if (e.isDirectory()) set.add(e.name);
+/**
+ * The set of repo-root names used to decide anchoring: the STATIC KNOWN_REPO_ROOTS unioned with
+ * whatever directories currently exist at `root`. The static half guarantees a citation under a
+ * DELETED root is still classified anchored (so it reds on file-exists rather than being skipped);
+ * the dynamic half picks up a NEW top-level directory a later PR adds. Anchoring therefore never
+ * DEPENDS on a cited root existing at HEAD — that is exactly the false-negative this closes.
+ */
+export function computeRepoRoots(root) {
+  const set = new Set(KNOWN_REPO_ROOTS);
+  try {
+    for (const e of readdirSync(root, { withFileTypes: true })) {
+      if (e.isDirectory()) set.add(e.name);
+    }
+  } catch {
+    // A missing/unreadable root leaves the static set — never fewer roots than the static list.
   }
   return set;
+}
+
+/**
+ * Split file content into its PHYSICAL lines. A file that ends with the ordinary final newline
+ * makes `split(/\r?\n/)` append one empty sentinel element; left in, it lets a citation exactly
+ * ONE line past EOF pass the in-range check. Drop that single trailing sentinel (and only it, so a
+ * file whose genuine last line is blank keeps that line). A citation to the true last line still
+ * resolves; a citation one past it is now out of range.
+ */
+export function splitPhysicalLines(content) {
+  const lines = String(content).split(/\r?\n/);
+  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  return lines;
 }
 
 /**
