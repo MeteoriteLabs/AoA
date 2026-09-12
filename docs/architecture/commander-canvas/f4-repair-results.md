@@ -1,5 +1,7 @@
 # F4 repair — author review and bounded execution results
 
+**Current checkpoint (September 13):** The authorized [full baseline run](full-baseline-qualification-results.md) completed with repository typecheck and 24,258 passing tests, but one backup setup timeout blocked two cases and therefore build. F1/F2/F3/F4 passed; F5 remains the sole observed failing suite. There are 76 unchanged ordinary skips, separately accounted for. Runtime is stopped; source/base adoption and Universe implementation remain unapproved. Planning is assembled and reviewed; the next action is a focused F5 attribution/correction, not another general planning round. Older dated records below are historical.
+
 **September 12, 2026: bounded F4 repair checks passed. Full corrected-baseline qualification and Universe implementation remain open.**
 
 TK instructed Codex to perform the review rather than sending this packet to Claude, and to go ahead. Codex treated this as authorization for the reviewed F4 source-authoring/targeted-check batch, not base adoption or Universe features. The initial commentary stated that boundary before work. No new independent Claude review is claimed or required for this completed round. Prior reviews remain historical evidence.

@@ -1,5 +1,7 @@
 # F4 blocked-task fixture repair implementation plan
 
+**Current checkpoint (September 13):** The authorized [full baseline run](full-baseline-qualification-results.md) completed with repository typecheck and 24,258 passing tests, but one backup setup timeout blocked two cases and therefore build. F1/F2/F3/F4 passed; F5 remains the sole observed failing suite. There are 76 unchanged ordinary skips, separately accounted for. Runtime is stopped; source/base adoption and Universe implementation remain unapproved. Planning is assembled and reviewed; the next action is a focused F5 attribution/correction, not another general planning round. Older dated records below are historical.
+
 **Execution update:** TK selected Codex review and approved the bounded repair/check batch. [Results](f4-repair-results.md) record local commit 4aebfa0f4, 12 passing lifecycle cases, corrected strict typecheck and 11 passing integrations. Task 4 full qualification remains separately unapproved. Unchecked proposal steps below are not the execution ledger; the results report is authoritative. The external typecheck config shown below is corrected to the successful form; the original failed form and logs remain in evidence.
 
 > **For agentic workers:** Use `superpowers:executing-plans` after TK explicitly approves source authoring and the bounded checks below. This document is a reviewed proposal, not execution approval. Steps remain unchecked until observed.

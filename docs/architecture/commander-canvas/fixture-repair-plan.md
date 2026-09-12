@@ -1,5 +1,7 @@
 # Database fixture investigation and repair plan
 
+**Current checkpoint (September 13):** The authorized [full baseline run](full-baseline-qualification-results.md) completed with repository typecheck and 24,258 passing tests, but one backup setup timeout blocked two cases and therefore build. F1/F2/F3/F4 passed; F5 remains the sole observed failing suite. There are 76 unchanged ordinary skips, separately accounted for. Runtime is stopped; source/base adoption and Universe implementation remain unapproved. Planning is assembled and reviewed; the next action is a focused F5 attribution/correction, not another general planning round. Older dated records below are historical.
+
 **Current checkpoint:** TK chose Codex review for this round and authorized proceeding with the bounded F4 repair. [Author review and F4 results](f4-repair-results.md): 12 lifecycle tests, strict test-file typecheck and 11 real integration cases passed; the original typecheck configuration failure is retained. Repair commit stays local. The [Universe readiness register](consolidated-plan-readiness.md) is current; no further unchanged Claude review is required. Next is separately approved full clean-commit baseline qualification, then base adoption and explicit Universe coding approval. Older dated records below are historical.
 
 > **For agentic workers:** Use `superpowers:executing-plans` after explicit approval of the named stage. Steps use checkboxes for work not yet executed.
