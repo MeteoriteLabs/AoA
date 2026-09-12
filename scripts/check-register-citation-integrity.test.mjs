@@ -394,6 +394,34 @@ test("AMBIGUITY: a DISTINCTIVE anchor (present exactly once in-window) passes", 
   assert.deepEqual(evaluateCitationIntegrity(input).errors, [], "count===1 must pass");
 });
 
+test("BUG5 (collect-all): a blank-line grandfather does NOT mask a co-located MISSING anchor", () => {
+  // The cited line is BLANK (code, single line) AND the citation has no anchor -> TWO independent
+  // violations (blank-line + missing-anchor). Grandfathering the blank-line must leave the
+  // missing-anchor RED (the P2 :516 masking hole).
+  const files = { "server/src/foo.ts": { exists: true, lines: ["code();", "   ", "more();"] } };
+  const citations = [cit({ crossingId: "DE-05", line: "2", anchorToken: null })];
+  const { errors } = evaluateCitationIntegrity(makeInput({
+    citations, files,
+    entries: [{ crossing: "DE-05", path: "server/src/foo.ts", line: "2", category: "blank-line", reason: "cites a deliberate blank anchor row" }],
+  }));
+  assert.ok(hasError(errors, "MISSING anchor"), report(errors));
+  assert.ok(!hasError(errors, "cites a BLANK line"), "the blank-line grandfather DID suppress its own category");
+});
+
+test("BUG5 (collect-all): a blank-line grandfather with an anchor present nearby still passes", () => {
+  // Only the blank-line violation exists (the anchor `nearbySym` resolves once in-window), so the
+  // blank-line grandfather cleanly suppresses it and the run is green.
+  const files = { "server/src/foo.ts": { exists: true, lines: ["nearbySym();", "   ", "more();"] } };
+  const citations = [cit({ crossingId: "DE-05", line: "2", anchorToken: "nearbySym" })];
+  assert.deepEqual(
+    evaluateCitationIntegrity(makeInput({
+      citations, files,
+      entries: [{ crossing: "DE-05", path: "server/src/foo.ts", line: "2", category: "blank-line", reason: "cites a deliberate blank anchor row" }],
+    })).errors,
+    [],
+  );
+});
+
 test("AMBIGUITY: an ambiguous-anchor grandfather entry excuses ONLY that category", () => {
   const lines = ["l1", "const handle = openHandle();", "reuse(handle);"];
   const citations = [cit({ crossingId: "DE-05", line: "2", anchorToken: "handle" })];

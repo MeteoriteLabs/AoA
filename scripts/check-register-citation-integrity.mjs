@@ -476,7 +476,7 @@ export function evaluateCitationIntegrity(input) {
   // Group the in-scope occurrences by signature: N occurrences of the same citation collapse to
   // one verdict, and the citation is anchored if ANY occurrence carries a verifying anchor (so a
   // repeated citation need only be anchored once).
-  const rawViolations = new Map(); // sig -> { message, category }
+  const rawViolations = new Map(); // sig -> [{ category, message }]  (ALL applicable, not just the first)
   const bySig = new Map(); // sig -> occurrences[]
   const bestEffort = { bare: 0, unanchored: 0, filenameOnly: 0 };
 
@@ -497,81 +497,85 @@ export function evaluateCitationIntegrity(input) {
     const c = occs[0];
     const cite = `${c.crossingId} (${c.field}) ${c.path}:${c.line}`;
     const f = files[c.path];
+    // ★ CODEX P2 (:516) — COLLECT ALL INDEPENDENT VIOLATIONS, never short-circuit after the first.
+    // A citation can fail more than one INDEPENDENT check at once (e.g. a blank cited line AND a
+    // missing anchor). The earlier code recorded only the first and `continue`d, so a category-
+    // scoped grandfather for that first category (blank-line) silently suppressed the whole
+    // citation — masking a co-located missing-anchor. Category-scoped grandfathering only works if
+    // each independent failure is recorded separately, so a grandfather excuses ONLY its own.
+    const vs = [];
+    const add = (category, message) => vs.push({ category, message });
 
     if (!f || !f.exists) {
-      rawViolations.set(sig, { category: "missing-file", message: `${cite}: cited file does not exist at HEAD (moved, renamed, or deleted).` });
-      continue;
-    }
-    const [lo, hi] = lineBounds(c.line);
-    if (!Number.isInteger(lo) || lo < 1 || !Number.isInteger(hi) || hi < lo || hi > f.lines.length) {
-      rawViolations.set(sig, {
-        category: "out-of-range",
-        message: `${cite}: line ${c.line} is outside the file, which has ${f.lines.length} lines (the file shifted or shrank under a citation that did not move).`,
-      });
-      continue;
-    }
-    // (c) reaches-real-code: a single-line code citation must not land on a blank line.
-    if (CODE_EXT_RE.test(c.path) && lo === hi && (f.lines[lo - 1] ?? "").trim() === "") {
-      rawViolations.set(sig, { category: "blank-line", message: `${cite}: cites a BLANK line — the citation has drifted onto whitespace and reaches no code.` });
-      continue;
-    }
-    // (d) REQUIRED anchor: every enforced citation must carry an adjacent backtick anchor.
-    const tokens = [...new Set(occs.map((o) => o.anchorToken).filter((t) => typeof t === "string" && t.trim() !== ""))];
-    if (tokens.length === 0) {
-      rawViolations.set(sig, {
-        category: "missing-anchor",
-        message:
-          `${cite}: MISSING anchor — every enforced citation must carry an adjacent backtick anchor naming a ` +
-          `distinctive symbol/snippet on the cited line, e.g. \`${c.path}:${c.line} (\`someDistinctiveSymbol\`)\`. ` +
-          "Cite by symbol: the anchor is the source of truth, the line is a hint.",
-      });
-      continue;
-    }
-    // (e) VERIFY + DISTINCTIVE anchor: at least one anchor must resolve to EXACTLY ONE location
-    // within ±N lines of the cited line/range. Count occurrences, not mere presence:
-    //   0  -> the construct moved (re-point) or was deleted/renamed (re-anchor)
-    //   1  -> distinctive, pins the construct (good)
-    //   ≥2 -> AMBIGUOUS: a non-distinctive anchor that could equally pin a neighbour, which is
-    //         exactly how a drifted line with a coincidental token slips the ±5 check.
-    const windowText = f.lines
-      .slice(Math.max(0, lo - 1 - ANCHOR_RADIUS), Math.min(f.lines.length, hi + ANCHOR_RADIUS))
-      .join("\n");
-    const counts = tokens.map((t) => ({ t, n: anchorMatchCount(windowText, t) }));
-    if (counts.some((c) => c.n === 1)) {
-      // distinctive anchor found — OK
-    } else if (counts.some((c) => c.n >= 2)) {
-      const worst = counts.find((c) => c.n >= 2);
-      rawViolations.set(sig, {
-        category: "ambiguous-anchor",
-        message:
-          `${cite}: anchor \`${worst.t}\` is NON-DISTINCTIVE — it appears ${worst.n} times within ±${ANCHOR_RADIUS} lines of ` +
-          `line ${c.line}, so it does not pin a single construct (a drifted line with a coincidental token slips through this way). ` +
-          "Choose an anchor unique in the window.",
-      });
-      continue;
+      // Terminal: with no file there are no lines against which to assess range/blank/anchor.
+      add("missing-file", `${cite}: cited file does not exist at HEAD (moved, renamed, or deleted).`);
     } else {
-      rawViolations.set(sig, {
-        category: "anchor-not-found",
-        message:
-          `${cite}: anchor ${tokens.map((t) => "`" + t + "`").join(" / ")} does not appear within ±${ANCHOR_RADIUS} lines of ` +
-          `line ${c.line} — the construct moved (re-point the line) or was deleted/renamed (re-anchor).`,
-      });
-      continue;
+      const [lo, hi] = lineBounds(c.line);
+      if (!Number.isInteger(lo) || lo < 1 || !Number.isInteger(hi) || hi < lo || hi > f.lines.length) {
+        // Terminal: the cited line is not in the file, so blank/anchor cannot be assessed against it.
+        add("out-of-range", `${cite}: line ${c.line} is outside the file, which has ${f.lines.length} lines (the file shifted or shrank under a citation that did not move).`);
+      } else {
+        // The two checks below are INDEPENDENT and are both assessed for this citation.
+        // (c) reaches-real-code: a single-line code citation must not land on a blank line.
+        if (CODE_EXT_RE.test(c.path) && lo === hi && (f.lines[lo - 1] ?? "").trim() === "") {
+          add("blank-line", `${cite}: cites a BLANK line — the citation has drifted onto whitespace and reaches no code.`);
+        }
+        // (d) REQUIRED + (e) DISTINCTIVE anchor. Count occurrences in the ±N window, not presence:
+        //   0 -> anchor-not-found (moved/deleted), 1 -> distinctive (good), ≥2 -> ambiguous.
+        const tokens = [...new Set(occs.map((o) => o.anchorToken).filter((t) => typeof t === "string" && t.trim() !== ""))];
+        if (tokens.length === 0) {
+          add(
+            "missing-anchor",
+            `${cite}: MISSING anchor — every enforced citation must carry an adjacent backtick anchor naming a ` +
+              `distinctive symbol/snippet on the cited line, e.g. \`${c.path}:${c.line} (\`someDistinctiveSymbol\`)\`. ` +
+              "Cite by symbol: the anchor is the source of truth, the line is a hint.",
+          );
+        } else {
+          const windowText = f.lines
+            .slice(Math.max(0, lo - 1 - ANCHOR_RADIUS), Math.min(f.lines.length, hi + ANCHOR_RADIUS))
+            .join("\n");
+          const counts = tokens.map((t) => ({ t, n: anchorMatchCount(windowText, t) }));
+          if (counts.some((x) => x.n === 1)) {
+            // distinctive anchor found — OK
+          } else if (counts.some((x) => x.n >= 2)) {
+            const worst = counts.find((x) => x.n >= 2);
+            add(
+              "ambiguous-anchor",
+              `${cite}: anchor \`${worst.t}\` is NON-DISTINCTIVE — it appears ${worst.n} times within ±${ANCHOR_RADIUS} lines of ` +
+                `line ${c.line}, so it does not pin a single construct (a drifted line with a coincidental token slips through this way). ` +
+                "Choose an anchor unique in the window.",
+            );
+          } else {
+            add(
+              "anchor-not-found",
+              `${cite}: anchor ${tokens.map((t) => "`" + t + "`").join(" / ")} does not appear within ±${ANCHOR_RADIUS} lines of ` +
+                `line ${c.line} — the construct moved (re-point the line) or was deleted/renamed (re-anchor).`,
+            );
+          }
+        }
+      }
     }
+    if (vs.length > 0) rawViolations.set(sig, vs);
   }
 
-  // --- apply grandfather (per category), then flag stale grandfather entries -----------
-  for (const [sig, v] of [...rawViolations].sort()) {
-    if (grandfatherSigs.has(`${sig}|${v.category}`)) continue; // this exact category is excused
-    errors.push(v.message);
+  // --- apply grandfather PER VIOLATION (by category), then flag stale grandfather entries ------
+  // A grandfather entry suppresses ONLY violations of its own category at that signature; every
+  // OTHER-category violation at the same citation still fails. This is what closes the P2 :516
+  // masking hole — a blank-line grandfather can no longer hide a co-located missing-anchor.
+  for (const [sig, vs] of [...rawViolations].sort()) {
+    for (const v of vs) {
+      if (grandfatherSigs.has(`${sig}|${v.category}`)) continue; // this category is excused
+      errors.push(v.message);
+    }
   }
-  for (const [key, meta] of [...grandfatherKeys].sort()) {
-    const v = rawViolations.get(citationSignature(meta.crossing, meta.p, meta.line));
-    if (!v || v.category !== meta.category) {
+  for (const [, meta] of [...grandfatherKeys].sort()) {
+    const vs = rawViolations.get(citationSignature(meta.crossing, meta.p, meta.line)) || [];
+    if (!vs.some((v) => v.category === meta.category)) {
+      const others = vs.map((v) => `"${v.category}"`).join(", ");
       errors.push(
         `${GRANDFATHER_JSON}: the entry for ${meta.crossing} ${meta.p}:${meta.line} (category "${meta.category}") is STALE — ` +
           `that citation no longer produces a "${meta.category}" violation` +
-          `${v ? ` (it now produces "${v.category}", which this entry does NOT excuse)` : ""} ` +
+          `${vs.length ? ` (it now produces ${others}, which this entry does NOT excuse)` : ""} ` +
           `(reason on file: ${JSON.stringify(meta.reason)}). Remove or re-categorise the entry; a grandfather that outlives its reason is silent debt.`,
       );
     }
