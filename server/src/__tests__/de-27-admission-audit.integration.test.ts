@@ -11,9 +11,9 @@
  * clause does NOT require a record naming WHICH replica decided, and the system has no
  * replica identity to name. So the whole remaining deliverable is: durably record the
  * two admission refusals —
- *   over_cap  — `worker-admission-rate-limit.ts admit()` (`:138-140`), the shared
+ *   over_cap  — `worker-admission-rate-limit.ts admit()`, the shared
  *               per-organization worker-poll rate limit; and
- *   capacity  — `org-concurrency.ts admitAttemptCapacity()` (`:247-249`), the shared
+ *   capacity  — `org-concurrency.ts admitAttemptCapacity()`, the shared
  *               per-organization concurrency cap, reached at submit time.
  * Before this unit both deny paths returned/threw before anything durable was written,
  * so a throttled poll and a capacity-refused submit were indistinguishable from traffic

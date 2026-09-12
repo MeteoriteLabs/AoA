@@ -789,7 +789,7 @@ all four read as shipped.
    (`packages/db/src/repositories/tenant/job-control.ts:2718`, predicate
    `eq(services.generation, input.generation)` at `:2726`, returning `null` on mismatch), taken at
    `server/src/services/job-submission.ts:239` (`if (!executionPrincipal) throw denial();`, closing
-   the `service_reconcile` arm opened at `:222`). *(The originally-cited `job-control.ts:1667-1679`
+   the `service_reconcile` arm opened at `:232`). *(The originally-cited `job-control.ts:1667-1679`
    / `:1675` deny is stale — no such deny is there at HEAD.)*
    **Premise (i) FELL — `services.generation` now HAS a writer.** `repos.jobControl.bumpServiceGeneration`
    (`job-control.ts:3135`, `.update(services).set({ generation })` as a compare-and-set gated on
