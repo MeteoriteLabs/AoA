@@ -21,6 +21,8 @@
 - Generate Drizzle migrations and synchronize db/shared/server/ui exports. Dependency manifest and generated lockfile change together. No schema/lockfile hand edits.
 - No release assignment, provider spend, implementation branch or runtime code change is authorized by this planning record alone. Current user request ends at planning and discussion.
 
+**Accepted human-upload architecture:** E4.1 uses company/actor/destination-scoped intake and canonical asset publication in the same application transaction (A). The original stays recoverable independently of preview/extraction/indexing, and private sources do not become company-wide or enter Memory. E4.2/E4.3 distributed processing and publication retain separate security/qualification decisions. This acceptance does not authorize runtime work.
+
 ## Task plans
 
 ### E4.1 — Make original intake durable

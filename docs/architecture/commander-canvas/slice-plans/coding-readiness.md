@@ -2,7 +2,7 @@
 
 These individual plans define the work now, before implementation. They deliberately distinguish **specified**, **bound for coding**, **implemented** and **verified**. Only verified work counts toward release completion.
 
-**September 12 authority correction:** the original slice outlines are supplemented by detailed coding plans and the independent-review reconciliation. Follow the [planning reset](../planning-reset.md). Detailed plans must be independently reviewed, findings resolved, and the user must explicitly approve beginning implementation. Technical readiness or a reviewer verdict alone does not authorize coding. The isolated premature draft is not accepted delivery; its disposition remains open.
+**September 12 authority correction:** the original slice outlines are supplemented by detailed coding plans and the independent-review reconciliation. Follow the [planning reset](../planning-reset.md). Detailed plans must be independently reviewed, findings resolved, and the user must explicitly approve beginning implementation. Technical readiness or a reviewer verdict alone does not authorize coding. The isolated premature draft is not accepted delivery; preserving it untouched/excluded is accepted, and later cleanup or reuse needs its own decision.
 
 ## Binding required before coding
 

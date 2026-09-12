@@ -2,6 +2,8 @@
 
 September 12, 2026. **Current workflow: contract review complete for the published correction round; final decisions and implementation authorization remain open.** TK supplied Claude's focused review of ac7b9a494, and the author verified it read-only: the two residual attention/layout gaps are closed in planning. The [received focused report](focused-review-report.md) is limited to those areas and structural checks, not a new full 31-slice audit or executed qualification. [The author response](independent-review-response.md) preserves the earlier finding history. Continue with [the final planning decision packet](final-planning-decisions.md). The failed CLI attempt below is historical and is no longer a blocker.
 
+**Subsequent accepted direction:** TK accepted the recommended human-asset approach and asked for plan updates/self-review. E4.1 now selects A explicitly; derivative/index/worker publication remains separately designed. This material planning change should receive user-managed review on its new commit. The earlier attention/layout review remains valid for its unchanged scope.
+
 ## Historical unsuccessful CLI attempt
 
 Prepared the [planning reset](planning-reset.md), [31-slice coverage audit](planning-audit.md), [accepted release allocation](release-plans/README.md) and [coding-readiness requirements](slice-plans/coding-readiness.md) for an independent Claude review. The requested review concerns process, approval boundaries, branch options and missing planning evidence. It explicitly does not certify technical coding plans that have not been completed.
@@ -14,7 +16,7 @@ The local Claude CLI was invoked in print/plan mode with built-in tools disabled
 - Check each returned finding against the source and accepted requirements, record whether it is accepted, rejected with evidence or unresolved, and revise/re-review material changes. Do not automatically apply every suggestion or silently remove agreed scope.
 - No CLI login or independent substitute reviewer is needed for this workflow. Do not send an unfinished recovery packet as if it were the complete technical plan.
 - The same-branch replatform direction is accepted; the exact snapshot is verified for publication. Explicit implementation approval remains a separate later decision. Review success cannot authorize runtime work.
-- The premature isolated draft remains untouched and excluded from accepted delivery. Delete/preserve/reuse stays on the final planning agenda.
+- The premature isolated draft remains untouched and excluded from accepted delivery. Preserving it untouched/excluded is now accepted; later cleanup/reuse remains separately authorized.
 
 ## Self-review and validation
 

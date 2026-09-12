@@ -8,7 +8,7 @@ September 12, 2026. The fresh branch was created after all 31 coding addenda and
 | Verified replatform source | `183e46a9c65fc3105c7e3d125629276814df7dbb` |
 | Remote main / merge base | `e097d2f9332a2715bdbaf2058a4b751481107713` |
 | Allowed publication diff | `docs/architecture/commander-canvas/` and `docs/architecture/commander-canvas-master-scope-review.md` only |
-| Premature draft | Excluded and untouched; disposition remains open |
+| Premature draft | Preserve untouched/excluded now accepted; later cleanup or reuse needs a separate decision |
 | Independent review | TK-managed Claude review after publication |
 | Runtime verification | Not run; this is documentation-only planning, not runtime certification |
 
@@ -46,3 +46,13 @@ TK supplied Claude's focused review of ac7b9a494 and the author verified its att
 A fresh remote lookup still returns replatform 183e46a9c and main e097d2f9; the local replatform branch bc2a5b8d is nine commits behind, not the selected review source. No sync/merge was performed. The original draft status remains unchanged. The status records now distinguish completed contract review from pending engineering qualification and TK execution approval.
 
 Validation for this publication covers 124 packet Markdown documents, unchanged 31 slice/coding plans and 69 increments per set, 20 UAT scripts, relative links/anchors/fences, source/output inventory and the documentation-only staged diff. Runtime typecheck/tests/build, UAT and provider sessions are not run for this documentation update. Final handoff records the verified pushed commit.
+
+## Accepted human-asset direction and author review
+
+TK accepted the recommended direction and requested plan updates, self-review and a detailed explanation of the remaining decisions. Human original intake now selects A explicitly across schema, service authority, finalize/audit transactions, access denial, cleanup and recovery tests. Derivative/index/worker publication and E5 grant stores retain their separate security decisions. Company scope does not authorize company-wide visibility; private originals remain protected independently of explicitly shared derived outputs.
+
+The author review checks owning E4 plans, shared contracts/bindings, release/readiness records and current decision status. It removes the obsolete human-intake tenant-repository path and non-owner qualification assumption. The asset service accepts a Db transaction handle but does not itself prove route authorization or production isolation. The new focused prompt in the review handoff targets this material change against 51e5b36; it has not received a new independent review.
+
+Branch/source direction and release allocation remain unchanged. Voice/media direction is accepted only for preparing a concrete policy and per-provider contracts; reviewer identities, exact qualifications and execution approval remain open. Preserve the premature draft untouched/excluded; no implementation or deletion is authorized.
+
+Publication validation checks all packet links/anchors/fences, slice/increment/UAT coverage, source/output inventory, whitespace and the documentation-only diff. The final handoff reports actual audit results and pushed SHA. Runtime typecheck, tests, build, UAT and provider sessions are not run for this planning-only change.

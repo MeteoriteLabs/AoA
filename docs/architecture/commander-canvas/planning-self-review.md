@@ -88,7 +88,7 @@ Distribution requirement added to E4/E5/E6 qualification: each new converter ima
 | Gate | Concrete remaining input | Affected work |
 |---|---|---|
 | Implementation approval | TK's explicit instruction after complete plan review, returned Claude findings and verified dispositions | All production coding |
-| BASE refresh | Revalidate pinned replatform/current main and changed producer contracts; assign actual reviewers; settle premature-draft delete/preserve/reuse separately | All affected increments, not unrelated plan work |
+| BASE refresh | Revalidate pinned replatform/current main and changed producer contracts; assign actual reviewers; retain the accepted untouched/excluded premature draft; review any later deletion or reuse separately | All affected increments, not unrelated plan work |
 | Tenant ledger extension | Approved data class, generated policy/grant mechanism and real non-owner transaction composition for proposed E4/E5 ledgers | E4 intake/derivatives and E5 capability-ledger bindings |
 | CMD | Actual non-task Commander routing, per-user credentials, canonical cancellation and original-conversation result delivery | Distributed Commander, voice/tool dispatch and generated outputs |
 | VOICE | Speech-purpose credential policy, exact current provider messages/models, scoped session issuance and real tests for all three | E3.1–E3.3 |

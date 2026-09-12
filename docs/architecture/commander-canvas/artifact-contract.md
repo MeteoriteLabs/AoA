@@ -4,6 +4,12 @@
 
 Extends the [format matrix](format-matrix.md), [request contract](request-contract.md) and existing canonical artifact/version services. This is a design contract, not a replacement storage implementation. Exact fields and transitions must be reconciled with AoA and replatform schemas before coding.
 
+## Accepted human-upload experience
+
+TK accepted reusing AoA's existing company-scoped asset system for human originals. The new E4.1 intake/parts records use the application boundary and canonical asset writer; company, initiating actor and current destination permissions remain required. Company membership alone never grants access to a private-conversation source. Original bytes stay downloadable after publication even when preview/extraction/indexing fails. Reopening a panel uses its canonical reference; editing/generation creates a distinct output/version. Sharing a derived presentation does not automatically share the private PDF used to create it; explicit broader publication records its own access/lineage decision.
+
+The existing task-comment attachment adapter remains canonical where resumable asset references are not yet supported; do not bypass that route or pretend every destination already shares the new upload API. Source authorization is checked at read, processing admission and publication. Background workers use separately reviewed job grants/publication receipts; human-upload authority does not grant them arbitrary asset writes. These are accepted requirements and proposed implementation behavior, not claims that all current routes already enforce them.
+
 ## Ownership and entry paths
 
 Accept files from user upload, authorized connector retrieval or governed worker generation. Each intake records company, initiating actor, conversation/task linkage, source, declared filename/type and request identity. Server authorization precedes upload-session issuance and is rechecked before publication. A connector or worker cannot choose an arbitrary company destination.
@@ -21,13 +27,13 @@ Large uploads use bounded resumable transfers. Temporary upload identity is dist
 | Preview / transcode | Displayable derivative and metadata | Mark preview unavailable; allow authorized original download; retry derivative independently |
 | Indexing / discovery | Searchable authorized references | Do not imply successful indexing before acknowledgement; failure does not erase canonical file |
 
-Extraction and preview may run independently after validation/publication. Not all formats support every stage. Generated artifacts take the same validation/publication path as uploads. A partial generation attempt is not silently promoted as a successful final artifact.
+Extraction and preview may run independently after validation/publication. Not all formats support every stage. Generated artifacts must satisfy the same validation, provenance and access guarantees as uploads; their worker admission/commit protocol remains distinct from the human-intake transaction. A partial generation attempt is not silently promoted as a successful final artifact.
 
 ## Canonical and derived identity
 
 Canonical versions preserve original bytes, integrity hash, MIME/type validation, size, source provenance and ownership links. Never overwrite an existing version during conversion. A derivative records source artifact/version, processor identifier/version, normalized configuration, output identity and status. Deduplicate processing by those inputs within authorized scope; content hashes must not become cross-tenant existence or access signals.
 
-Use the existing artifact commit protocol to reconcile object storage and database publication; do not claim a single transaction across both systems. Cleanup must distinguish referenced canonical files from abandoned staging and obsolete derivatives.
+Use selected E4.1 A's storage reservation and canonical application transaction for human intake; use the separately reviewed worker artifact commit/receipt protocol for generated outputs; do not claim a single transaction across both systems. Cleanup must distinguish referenced canonical files from abandoned staging and obsolete derivatives.
 
 ## Worker processing
 

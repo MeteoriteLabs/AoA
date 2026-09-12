@@ -10,6 +10,18 @@ Keep the agreed nine epics, 31 slices, 69 increments and release allocation: 30 
 
 **Recommendation:** finish these decisions, produce a versioned execution authorization for a bounded first batch, and only then implement. User acceptance of this packet or its recommendations alone does not authorize coding.
 
+## Accepted direction and remaining engineering work
+
+TK asked to follow the recommendations, update the plan and review it, after the asset experience explanation. Record this as acceptance of the recommended planning direction, not execution authorization:
+
+- **Human assets:** A is selected: reuse canonical company-scoped assets, with actor/destination permissions, recoverable originals, independent processing and immutable derived outputs. Company-scoped does not mean visible to all company members.
+- **Branch:** continue on the existing Universe branch using the reviewed remote replatform direction; revalidate its exact execution revision and evidence before runtime work.
+- **Premature draft:** preserve untouched and excluded as recommended. Later deletion or any reuse still needs a separate explicit decision.
+- **Voice/media:** proceed with designing the recommended narrowly scoped credential policy. This accepts the direction, not a particular SDK, credential grant, direct-API amendment, retention term or spend authorization; these concrete details still need review.
+- **Ownership:** retain the proposed implementation/reviewer/product separation. Actual people have not been named or appointed by this acceptance.
+
+This request authorizes planning edits and author review. It does not authorize code, runtime qualifications, provider sessions, secret access, migrations or tests of the premature implementation. Material technical changes to the selected upload path must be reviewed on the new plan commit; the earlier focused-review pass does not cover these edits.
+
 ## D1 — Exact base and integration sequence
 
 **Fresh read-only evidence:** remote refs were checked with git ls-remote in this pass.
@@ -18,7 +30,7 @@ Keep the agreed nine epics, 31 slices, 69 increments and release allocation: 30 
 |---|---|---|
 | Remote docs/replatform-program | 183e46a9c65fc3105c7e3d125629276814df7dbb | Same source revision reviewed by the planning packet |
 | Remote main | e097d2f9332a2715bdbaf2058a4b751481107713 | Ancestor and merge-base of the pinned replatform source |
-| Reviewed Universe head before this status update | ac7b9a494f9e3207142d77405036685445a4332f | Documentation-only descendant of that source |
+| Reviewed Universe head before this accepted-direction update | 51e5b36daf8680749ddb3918857a14a699c1c060 | Documentation-only descendant of that source; includes the focused-review record |
 | Local docs/replatform-program branch | bc2a5b8dfc3ad96f8ad765298ade54cc70cdcb18 | Nine commits behind remote, zero local-only commits; not the reviewed source |
 
 **Recommendation:** retain the existing codex/universe-interface branch and the exact remote source pin above. Do not create another branch or reset to the stale local replatform branch. This confirms source identity/ancestry, not that the base is runtime-stable.
@@ -39,23 +51,33 @@ The current non-owner aoa_app grants for assets/artifacts/artifact_versions are 
 | B — organization-owned ledger plus reviewed write grants | Could compose permitted writes in one non-owner transaction | Requires privilege expansion, exact role trace and separate security migration/review |
 | C — organization-owned ledger plus durable publication protocol | Preserves existing legacy grants | Two-transaction intent/receipt recovery, cancellation and crash protocol must be fully specified |
 
-**Recommendation:** A for human original intake only. If a distributed derivative/index or executable-host grant ledger must be organization-owned, prefer investigating C before expanding grants under B. This is a direction for security design, not a selected implementation for every ledger.
+**Accepted planning choice:** A for human original intake only. If a distributed derivative/index or executable-host grant ledger must be organization-owned, prefer investigating C before expanding grants under B. The human-intake choice is selected; the distributed-ledger preference remains an investigation direction, not a selected implementation for every ledger.
 
 The security decision must classify each store separately: original-intake records, derivatives, asset index, generation/publication receipts, E5 grant ledger. Record company versus organization ownership, actor/destination access, actual connection role, canonical writer, source lineage, retention, migration and recovery protocol. E1 personal UI tables remain their already-planned company/user scope; do not apply a blanket RLS retrofit or modify the frozen grant manifest.
 
-**What TK decides:** accept or revise the proposed product/security boundary and nominate an accountable security decision-maker. **What engineering owes:** the exact role/transaction trace, threat review and synchronized E4/E5 plans before any affected schema/service implementation. Tests must then prove the selected protocol. No schema choice or grant change is approved by this packet.
+**Product boundary accepted:** human intake stays on existing asset authority with private destination access. TK still needs to identify/accept the accountable security decision-maker; do not re-ask A/B/C for human intake absent new evidence. **What engineering owes:** the exact role/transaction trace, threat review and synchronized E4/E5 plans before any affected schema/service implementation. Tests must then prove the selected protocol. The selected application data class is reflected in E4.1, but its exact migration/role trace and runtime implementation remain unapproved. No grant expansion is approved.
 
 ## D3 — Voice/media permitted paths
 
 OpenAI, Gemini and ElevenLabs realtime integrations, plus the accepted image/audio/video generation scope, remain V1. This packet makes no new claim about a vendor's current SDK, pricing or feature availability.
 
-**Recommendation for an explicit policy amendment:** allow the qualified realtime speech and media-generation paths as purpose-scoped capabilities using the company's configured, access-controlled credential references. Preserve per-user/session authorization where required. Keep ordinary agent/Commander/extraction execution under the existing deployment/CLI rules; do not interpret a speech/media exception as a general direct-model API or shared-host fallback.
+**Accepted direction; exact policy amendment pending:** allow the qualified realtime speech and media-generation paths as purpose-scoped capabilities using the company's configured, access-controlled credential references. Preserve per-user/session authorization where required. Keep ordinary agent/Commander/extraction execution under the existing deployment/CLI rules; do not interpret a speech/media exception as a general direct-model API or shared-host fallback.
 
 Providers owns connection/readiness and allowed capabilities; Secrets owns credential storage/access; Budget & caps owns spending limits. Reuse existing owners rather than another Universe credential or budget system. Starting voice remains explicit, AoA raw-audio recording defaults off, and no secret is stored in canvas state, prompts or evidence. Provider retention must be verified separately from AoA recording preferences.
 
 For each provider/path, bind credential class, recipient/session permissions, local/cloud execution location, browser-safe session authorization if supported, retention/region policy, revocation, budget admission, cancellation and uncertain-outcome behavior. Research and qualify exact vendor contracts before selecting SDKs. The #104 cloud_auth extraction amendment is not itself permission for direct speech/media calls.
 
-**What TK decides:** permit/reject the proposed narrowly scoped policy extension and any material retention/cost tradeoff revealed by the concrete design. **What engineering owes:** an amendment compatible with locked decisions, separate reviewed provider contracts and requested limits before any credentials, provider sessions or spend. Qualification execution requires its own explicit scope and authorization. Until then, these V1 integrations remain gated; no scope cut or provider execution is assumed.
+**Direction accepted:** prepare the narrow speech/media extension. TK will review the concrete policy text and material retention/cost tradeoffs; accepting the direction does not approve unspecified terms or provider spend. **What engineering owes:** an amendment compatible with locked decisions, separate reviewed provider contracts and requested limits before any credentials, provider sessions or spend. Qualification execution requires its own explicit scope and authorization. Until then, these V1 integrations remain gated; no scope cut or provider execution is assumed.
+
+### What the voice/media decision means in practice
+
+The user selects an available provider in the existing Providers settings and connects an authorized credential through Secrets. Universe reflects readiness; it does not ask for a second API key. CLI login alone does not make voice ready. End voice ends that connection while the blob can remain visible; mic mute and speaker silence are independent, and hiding chat/blob does not silently change those settings.
+
+The connection must carry only the authority needed for speech/media and the chosen conversation. The browser must not receive a long-lived company provider key. Engineering will select a supported short-lived session mechanism or an authenticated proxy after vendor-contract review; lack of a safe supported path blocks that integration. Speech can convey intent to Commander, but providers cannot bypass task authorization, approval or budgets.
+
+Cost decisions include which company/provider budget applies, admission when limits are reached and how to explain an uncertain billable result. Existing Budget & caps stays the owner. A lost generation response requires a status check before retry where supported; absent reliable observation must be shown as unknown, not automatically billed again. The plan does not select amounts or authorize paid tests.
+
+Privacy decisions include what text/audio/files leave AoA, provider retention and region restrictions, plus whether a deployment permits that provider at all. AoA raw-audio recording off does not establish zero provider retention. If a provider cannot meet the accepted policy, surface unavailable with its reason; do not silently switch accounts/providers or weaken privacy. Concrete unsupported capabilities and material tradeoffs return to TK before implementation.
 
 ## D4 — Accountable owners and gate evidence
 
@@ -80,15 +102,21 @@ This is the complete nine-gate core register plus the additional named engineeri
 
 **Decision state:** accountable identities unassigned; no work is dispatched to others by this packet. Owners may qualify independent V1 portions, but whole-slice and V1 acceptance require every promised part. The [formal UAT plan](user-acceptance-plan.md) distinguishes engineering proof from TK/delegate product sign-off.
 
+### What responsibility means here
+
+These are review responsibilities, not a requirement to hire one person per row. An agreed engineer or agent can own several areas, but the author must not claim independent review of their own implementation. TK can continue handing review packets to Claude. The implementer documents the actual test environment and results; the reviewer checks the contracts and evidence; TK accepts experience and material policy choices. An AI plan review does not stand in for observed integration tests or upstream maintainer acceptance.
+
+I will prepare the technical proposals and explain their consequences; TK need not choose database mechanics. Names or delegated authority are needed before a gated batch begins, so issues have an accountable resolver. Upstream work remains with its actual program until that program accepts responsibility—this document creates no assignments or promises on its behalf.
+
 ## D5 — Premature draft disposition
 
 Read-only status of .worktrees/universe-e1-1 still shows uncommitted package.json, pnpm-lock.yaml, ui/package.json and untracked Universe component/harness/test/document paths. No adoption, deletion, commit, checkout or modification occurred. The accepted Universe worktree remains separate.
 
-**Recommendation:** preserve the draft untouched as an excluded historical reference through the first approved replacement's acceptance; do not merge, cherry-pick or use it as implementation input by default. Then decide cleanup explicitly. This avoids destructive cleanup now and avoids treating premature work as accepted work.
+**Accepted disposition for now:** preserve the draft untouched as an excluded historical reference through the first approved replacement's acceptance; do not merge, cherry-pick or use it as implementation input by default. Then decide cleanup explicitly. This avoids destructive cleanup now and avoids treating premature work as accepted work.
 
 Alternatives are explicit later deletion of verified draft-only paths/branches, or individually reviewed reuse with provenance and fresh tests. Any reuse changes the implementation input and must be reviewed before adoption. No automatic deletion schedule or cleanup authorization is created here.
 
-**Decision state:** awaiting TK's choice; default remains the existing untouched/excluded state.
+**Decision state:** preserve untouched/excluded accepted. Later cleanup or reuse remains a separate decision, with no automatic trigger.
 
 ## First-batch proposal and approval boundary
 
@@ -115,9 +143,9 @@ No approval is recorded yet. Accepting the plan, reviewing this packet, or sayin
 ## Proposed decision order
 
 1. Confirm D1's unchanged remote pin and name the integrator.
-2. Discuss D2 security direction and accountable reviewer.
-3. Discuss D3 scoped policy amendment; return with concrete vendor-specific tradeoffs when researched.
-4. Resolve D4 identities and D5 draft disposition.
+2. Complete the selected human-intake security trace; discuss separate distributed-store choices and accountable reviewer.
+3. Draft D3's exact scoped policy amendment; return with concrete vendor-specific tradeoffs when researched.
+4. Resolve D4 identities; retain D5's accepted untouched/excluded draft disposition.
 5. Review the concrete bounded preparation authorization; only later review an implementation authorization.
 
 These decisions can be discussed together, but each gets an explicit outcome, owner and affected scope. Do not ask TK to re-decide the already accepted tray/UI, version allocation, branch direction or upstream tier ruling.

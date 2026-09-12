@@ -1,6 +1,6 @@
 # Commander Canvas design record
 
-**Current status — planning only:** TK clarified that implementation was not authorized. The [planning reset and review checkpoint](planning-reset.md) controls current work. The isolated draft is excluded from accepted delivery; delete/preserve/reuse remains undecided. Detailed plans, independent review and explicit user approval must precede coding.
+**Current status — planning only:** TK clarified that implementation was not authorized. The [planning reset and review checkpoint](planning-reset.md) controls current work. The isolated draft is excluded from accepted delivery; TK accepted preserving it untouched/excluded for now; later deletion or reuse needs its own decision. Detailed plans, independent review and explicit user approval must precede coding.
 
 First-batch preparation is now recorded in [baseline and readiness](first-batch-readiness.md), [remaining UI state designs](ui-state-review.md) and the [canvas/controller coding plan](coding-plans/e1-1-canvas-controller.md). Written states and reference-controller checks are complete; visual review and real React Flow/host qualification remain distinct gates.
 
@@ -9,6 +9,8 @@ First-batch preparation is now recorded in [baseline and readiness](first-batch-
 Latest release planning: [V1/V2 allocation recommendation](release-plans/README.md) and [31 individual slice plans](slice-plans/README.md). The accepted allocation retains 30 slices in V1 and places E3.4 later speech modes in V2. The agreed execution rule is to finish and verify all V1 before starting V2 implementation. Individual plans define delivery increments; exact coding bindings remain gated as described in [coding readiness](slice-plans/coding-readiness.md).
 
 **Latest planning packet:** [31 detailed coding plans](coding-plans/README.md), [source/interface bindings](implementation-bindings.md), [whole-packet self-review](planning-self-review.md), [publication and Claude handoff](claude-review-handoff.md). All 69 increments have concrete steps or conditional qualification protocols. [Claude's independent review](independent-review-report.md) is now received. The [author reconciliation](independent-review-response.md) addresses it; the [focused re-review](focused-review-report.md) confirms the two residual contract corrections. Runtime qualification remains open. The [final planning decision packet](final-planning-decisions.md) presents remaining choices and recommendations before any implementation approval. [Formal UAT](user-acceptance-plan.md) maps every slice to future product acceptance; no runs are claimed.
+
+**Latest accepted direction:** human uploads use selected A, canonical company-scoped assets with actor/destination access. Independent processing preserves originals and private source boundaries. See [updated decisions](final-planning-decisions.md) and [E4.1](coding-plans/e4-1.md); author review of this change does not replace independent re-review or engineering qualification.
 
 Start with the [master scope](master-scope.md), then the [code evidence and dependency map](code-evidence.md).
 
