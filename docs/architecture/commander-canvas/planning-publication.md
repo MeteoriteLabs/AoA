@@ -78,3 +78,7 @@ The follow-up introduces proposed action/slot/binding identity, authoritative ac
 ## a033e17c0 reconciliation review closure
 
 TK requested the required updates and a readiness answer. The received report is preserved with normalized line endings; author disposition closes the contract-consistency round while retaining CMD, writer/credential, processor, retention and host qualifications. The new qualification record expands static source discovery and acceptance checks; it makes no exhaustive-coverage or deadlock-free claim. Review propagation is documentation-only. Verify the 130-document packet, 31 slice/coding plans, 69 increments in each set, 20 UAT scripts, whitespace and staged paths before publication. Runtime tests/typecheck/build are not run because this remains planning-only.
+
+## Voice/media planning publication
+
+TK requested finishing the next D3 planning deliverable. Two documents add the concrete policy/producer proposal and dated official provider research; E3/E4/E8, settings, bindings, status and review handoff are linked. Self-review preserves source policy, strict purpose checks, canonical outcomes and V1 scope; pending privacy acceptance is not inferred. Validate 132 documents, 31 slice/coding plans, 69 increments per set, 20 UAT scripts, proposed-path collisions and docs-only whitespace before push. No code, migrations, dependencies, credentials, runtime tests, provider sessions or paid qualification ran.

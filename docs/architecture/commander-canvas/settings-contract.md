@@ -127,3 +127,7 @@ All first-use defaults yield to saved choices. Always-visible tray may still be 
 - Shared instruction updates are versioned and audited; active sessions apply updates at a defined safe boundary, while access revocations take immediate effect.
 
 Implementation requires schema/API/UI changes following AoA's existing settings, Secrets and permission contracts. Exact routes and schema names remain engineering details; no new independent IAM system is introduced here.
+
+## Voice/media policy binding
+
+The [D3 proposal](voice-media-policy.md) supplies capability-specific readiness, strict connection-purpose binding and provider retention disclosures. Providers owns configuration/checks; Secrets owns keys; Budget & caps owns cost limits. Universe keeps personal voice/caption/device preferences and Commander keeps shared behavior. No settings read starts capture or a paid session. Privacy baseline is pending TK's choice; the recommendation is admin-approved disclosed provider terms with AoA recording off, subject to stricter company rules. No policy or subscription state is silently accepted.

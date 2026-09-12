@@ -20,6 +20,10 @@ ElevenLabs belongs in both component-provider and managed realtime-platform eval
 
 Reviewed September 10, 2026. Documentation-based shortlist, not an independent quality benchmark or procurement approval. Scope: voice around the existing Commander. Preserve its conversation, permissions and execution routing. Provider capabilities change; pin and retest model/API versions at implementation.
 
+## Current evidence and version boundary
+
+[September 12 provider evidence](voice-media-provider-evidence.md) and the [D3 policy proposal](voice-media-policy.md) supersede this older shortlist where they conflict. Three V1 voice providers remain required; pipeline/local speech remains E3.4/V2. GPT-Live client delegation is a newly documented OpenAI comparison candidate, not an automatic protocol switch. Earlier framework suggestions are not dependency selections.
+
 ## Recommended shortlist
 
 ### Architecture comparison — clarification after user review

@@ -45,3 +45,7 @@ The master scope is the current product baseline; companion contracts specify pl
 ## Latest review outcome
 
 [Worker-publication reconciliation review](worker-publication-reconciliation-review-report.md) is author-checked and closed at the consistency level. [Remaining qualification record](worker-publication-qualification.md) lists actual CMD seams, expanded authority/credential coverage and contention evidence. Planning approval, runtime qualification and implementation authorization remain distinct.
+
+## Voice/media review packet
+
+[Concrete D3 proposal](voice-media-policy.md) and [September 12 official evidence](voice-media-provider-evidence.md) are ready for review. The packet preserves scope and records pending privacy/policy acceptance separately from engineering qualification. It does not start implementation.

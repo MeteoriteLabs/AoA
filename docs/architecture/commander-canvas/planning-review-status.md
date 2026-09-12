@@ -40,3 +40,7 @@ The [new addendum](worker-publication-plan.md) and owning E4/E5 plans recommend 
 ## Current worker-publication review status
 
 [Claude's reconciliation review](worker-publication-reconciliation-review-report.md) and the [author disposition](independent-review-response.md#reconciliation-review-of-a033e17c0) close this focused consistency round. Earlier awaiting-review statements above are historical. The [qualification record](worker-publication-qualification.md) tracks CMD binding, expanded writer/credential discovery and real lock/contestion proof. The review does not establish security approval or runtime readiness. Further unchanged review loops are unnecessary; finish the named prerequisites and review material new bindings when available.
+
+## D3 voice/media draft ready for independent review
+
+The [policy packet](voice-media-policy.md) and [official evidence](voice-media-provider-evidence.md) are drafted and author-reviewed. Vendor research corrected stale URLs and exposed a scheduled video API shutdown, different speech protocol semantics and retention/credential caveats. Source review identified explicit Secrets binding and durable budget/session producer obligations. This is new review material; the previous worker-publication consistency round stays closed. TK privacy/policy acceptance and actual provider/security qualification remain open.
