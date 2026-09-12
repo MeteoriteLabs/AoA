@@ -35,3 +35,7 @@ The source caller actually exists: `server/src/services/internal-agent/cli-mode.
 The files named in F1–F3 have no diff between source pin `183e46a9c65fc3105c7e3d125629276814df7dbb` and replatform candidate `9200a66c42633019349de937a8b97979acac0f7a`. They precede the candidate's worker-admission audit/control change. The completed retry report must still compare actual failure sets rather than infer candidate outcomes from unchanged files.
 
 Keep the original source pin and the no-implementation gate until the results are reconciled. Record F1/F2 as qualification-environment/test requirements and F3 as an inherited source defect requiring a disposition. These issues do not reopen settled Universe product choices, privacy policy or release scope. Any corrective batch must name the source/test changes, exact base and tests before TK approves it; no automatic source patch, merge, network change or further retry follows from this report.
+
+## Corrective planning follow-up
+
+The [correction plan](baseline-correction-plan.md) maps these findings to exact files, test fixtures, a genuine Git-backed offline checkout and final qualification. It preserves the original source pin and evidence. The proposed correction branch starts from the tested replatform candidate, not main; it is not yet created or adopted into Universe. No finding is marked runtime-resolved by that planning work.
