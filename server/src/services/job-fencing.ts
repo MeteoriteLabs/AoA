@@ -43,6 +43,11 @@ import {
   drainWorkerDenial,
   workerProofReplayIntent,
 } from "./worker-denial-audit.js";
+import {
+  createFenceGuardDenialSink,
+  captureFenceGuardDenial,
+  drainFenceGuardDenialSink,
+} from "./fence-denial-audit.js";
 
 export {
   isActiveFence,
@@ -135,6 +140,11 @@ export function createJobLeaseRenewalService(input: {
       // `runInTenant`, so its record is collected as an INTENT and drained on the
       // pool handle once the transaction has unwound.
       const proofDenial = createWorkerDenialSink();
+      // ★ DE-04 / DE-18 — the renewLease fence refusal is caught INSIDE the callback and
+      // REMAPPED to a `JobLeasingError` below, so it never propagates as a `JobFenceError`.
+      // Captured at the inner catch (stale_fence / target_revoked / attempt_terminal) and
+      // drained on the pool handle in the `.finally`.
+      const fenceGuardDenial = createFenceGuardDenialSink();
 
       return runInTenant(input.appDb, renewInput.auth.organizationId, async (repos) => {
         const databaseNow = await repos.jobControl.currentDatabaseTime();
@@ -225,21 +235,24 @@ export function createJobLeaseRenewalService(input: {
           throw new JobLeasingError("stale_fence");
         }
 
+        const renewFence = {
+          organizationId: renewInput.auth.organizationId,
+          companyId: context.lease.companyId,
+          jobId: context.lease.jobId,
+          attemptId: context.lease.attemptId,
+          attemptNumber: context.lease.attemptNumber,
+          leaseId: context.lease.id,
+          workerId: renewInput.auth.workerId,
+          targetId: target.targetId,
+          targetAuthorityKey: authority.worker.targetAuthorityKey,
+          targetGeneration: target.targetGeneration,
+          profileHash: renewInput.auth.profileHash,
+          providerConstraintHash: target.providerConstraintHash,
+          fence: request.body.fenceToken,
+        };
         try {
           const { body } = await repos.jobControl.renewLease({
-            organizationId: renewInput.auth.organizationId,
-            companyId: context.lease.companyId,
-            jobId: context.lease.jobId,
-            attemptId: context.lease.attemptId,
-            attemptNumber: context.lease.attemptNumber,
-            leaseId: context.lease.id,
-            workerId: renewInput.auth.workerId,
-            targetId: target.targetId,
-            targetAuthorityKey: authority.worker.targetAuthorityKey,
-            targetGeneration: target.targetGeneration,
-            profileHash: renewInput.auth.profileHash,
-            providerConstraintHash: target.providerConstraintHash,
-            fence: request.body.fenceToken,
+            ...renewFence,
             leaseDurationMs,
             idempotencyKey: request.idempotencyKey,
             semanticDigest: digest,
@@ -269,6 +282,9 @@ export function createJobLeaseRenewalService(input: {
             body,
           });
         } catch (error) {
+          // Capture the governed-fence refusal before it is remapped away (no-op unless a
+          // `JobFenceError`); the row is written in the `.finally` on the pool handle.
+          captureFenceGuardDenial(fenceGuardDenial, renewFence, error);
           // The shared fence guard classifies the refusal; surface it uniformly.
           if (error instanceof DbJobFenceError) throw new JobLeasingError(error.code);
           throw error;
@@ -281,6 +297,12 @@ export function createJobLeaseRenewalService(input: {
           await drainWorkerDenial(input.appDb, proofDenial, {
             control: "server/src/services/job-fencing.ts:renew",
             workerId: renewInput.auth.workerId,
+            operation: "lease_renew",
+          });
+          // ★ DE-04 / DE-18 — the governed-fence refusal (stale_fence / target_revoked /
+          // attempt_terminal from renewLease's guardActiveFence), on the pool handle.
+          await drainFenceGuardDenialSink(input.appDb, fenceGuardDenial, {
+            control: "server/src/services/job-fencing.ts:renewLease",
             operation: "lease_renew",
           });
         });

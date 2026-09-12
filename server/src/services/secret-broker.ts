@@ -45,6 +45,11 @@ import {
   createWorkerDenialSink,
   drainWorkerDenial,
 } from "./worker-denial-audit.js";
+import {
+  createFenceGuardDenialSink,
+  captureFenceGuardDenial,
+  drainFenceGuardDenialSink,
+} from "./fence-denial-audit.js";
 import type { JobControlMetrics } from "./job-control-metrics.js";
 import { applyOwnedLabelsCapability, OWNED_LABELS_CAPABILITY_DEFAULT_TTL_MS } from "./owned-labels-mint.js";
 
@@ -278,6 +283,12 @@ export function createSecretBrokerService(input: {
       // STILL UNAUDITED, and NOT covered by this holder: every `{ denied: … }` return
       // below. Those are this service's own refusals and have no recorder.
       const fenceDenial = createWorkerDenialSink();
+      // ★ DE-04 / DE-07 — the resolveExecutionSecret fence refusal is caught INSIDE the
+      // callback and converted to a `{ denied }` return, so it never propagates as a
+      // `JobFenceError`. Captured at the inner catch and drained on the pool handle in the
+      // `.finally`. (This is also the wrong-owner secret-resolution refusal DE-29's
+      // "wrong-owner denials are audited" clause partially benefits from.)
+      const fenceGuardDenial = createFenceGuardDenialSink();
 
       // Fence identity + authorization inside ONE tenant tx, BEFORE any broker access.
       const authorized = await runInTenant(input.appDb, auth.organizationId, async (repos):
@@ -296,6 +307,9 @@ export function createSecretBrokerService(input: {
             appliedPolicyVersion: request.appliedPolicyVersion,
           });
         } catch (error) {
+          // ★ DE-04 — capture the governed-fence refusal (drained on the pool handle in the
+          // `.finally`) before it collapses onto the coarse `denied` return.
+          captureFenceGuardDenial(fenceGuardDenial, ctx.fenceIdentity, error);
           if (error instanceof DbJobFenceError) {
             return { denied: { outcome: "denied", reason: fenceReason(error.code) } };
           }
@@ -313,6 +327,12 @@ export function createSecretBrokerService(input: {
           await drainWorkerDenial(input.appDb, fenceDenial, {
             control: "server/src/services/worker-fence-context.ts:resolveWorkerFenceContext",
             workerId: auth.workerId,
+            operation: "secret_resolve",
+          });
+          // ★ DE-04 — the governed-fence refusal resolveExecutionSecret's guardActiveFence
+          // raised (stale_fence / attempt_terminal / target_revoked), on the pool handle.
+          await drainFenceGuardDenialSink(input.appDb, fenceGuardDenial, {
+            control: "server/src/services/secret-broker.ts:resolveExecutionSecret",
             operation: "secret_resolve",
           });
         });

@@ -44,6 +44,11 @@ import {
   createWorkerDenialSink,
   drainWorkerDenial,
 } from "./worker-denial-audit.js";
+import {
+  createFenceGuardDenialSink,
+  captureFenceGuardDenial,
+  drainFenceGuardDenialSink,
+} from "./fence-denial-audit.js";
 import type { StorageProvider } from "../storage/types.js";
 
 /** A guarded-fence refusal → the frozen protocol reason vocabulary. */
@@ -110,6 +115,10 @@ export function createPatchApplyService(input: {
       // STILL UNAUDITED, and NOT covered by this holder: every `rejected(...)`
       // return below. Those are this service's own refusals and have no recorder.
       const fenceDenial = createWorkerDenialSink();
+      // ★ DE-04 — the recordPatchApplyState fence refusal is caught INSIDE the callback and
+      // converted to a rejected response, so it never propagates as a `JobFenceError`. It is
+      // captured at the inner catch and drained on the pool handle in the `.finally`.
+      const fenceGuardDenial = createFenceGuardDenialSink();
 
       // The callback's return type is annotated because the `.finally` below breaks
       // the contextual-type flow from `apply`'s own signature, and without it the
@@ -184,6 +193,9 @@ export function createPatchApplyService(input: {
             currentBaseManifestHash: outcome.resolvedBaseManifestHash,
           };
         } catch (error) {
+          // ★ DE-04 — capture the governed-fence refusal (drained on the pool handle in the
+          // `.finally`) before it collapses onto the coarse rejected response.
+          captureFenceGuardDenial(fenceGuardDenial, ctx.fenceIdentity, error);
           if (error instanceof DbJobFenceError) return rejected(fenceReason(error.code));
           if (error instanceof PatchApplyRejection) return rejected("malformed");
           throw error;
@@ -196,6 +208,12 @@ export function createPatchApplyService(input: {
           await drainWorkerDenial(input.appDb, fenceDenial, {
             control: "server/src/services/worker-fence-context.ts:resolveWorkerFenceContext",
             workerId: auth.workerId,
+            operation: "patch_apply",
+          });
+          // ★ DE-04 — the governed-fence refusal recordPatchApplyState's guardActiveFence
+          // raised (stale_fence / attempt_terminal / target_revoked), on the pool handle.
+          await drainFenceGuardDenialSink(input.appDb, fenceGuardDenial, {
+            control: "server/src/services/patch-apply.ts:recordPatchApplyState",
             operation: "patch_apply",
           });
         });
