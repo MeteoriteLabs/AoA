@@ -58,9 +58,11 @@
  *      considered and REJECTED — it drops refusals the ruled clause requires be recorded;
  *      write-amplification is bounded by the poll rate limit + activity_log retention, a
  *      pattern-wide property of the whole deny-path class (DE-03/DE-06/DE-19 also per-refusal).
- *   7. actorType REFLECTS THE PRINCIPAL KIND: a `user` submitter records actor_type
- *      "user", an `agent` "agent", and a worker (over_cap) or any other machine kind
- *      "system" — a real human/agent capacity denial is NOT flattened to "system".
+ *   7. actorType REFLECTS THE PRINCIPAL KIND (aligned to the canonical getActorInfo): the
+ *      USER-BACKED kinds `user`/`mcp`/`commander`/`local_board` all record actor_type
+ *      "user", `agent` records "agent", and the machine kinds `worker` (over_cap)/`system`
+ *      record "system" — a real human/board/Commander/MCP capacity denial is NOT flattened
+ *      to "system".
  *
  * ★ KILLED MUTANTS (each makes at least one arm RED, verified RED-first):
  *   (a)  delete the over_cap write            -> "THE CLAUSE (over_cap)" RED
@@ -70,8 +72,9 @@
  *   (e)  stamp `actorId = organizationId`     -> the three WHO arms RED (control 5)
  *   (f') ADD a first-crossing gate `count === config.max + 1` -> the per-refusal arm's
  *        "expect 2 rows" assertion RED (the second over-cap refusal would be dropped)
- *   (g)  hardcode `actorType: "system"` (ignore principalKind) -> the "actorType REFLECTS
- *        THE PRINCIPAL KIND" arm's user/agent assertions RED
+ *   (g)  map the user-backed kinds (mcp/commander/local_board) to "system" (or hardcode
+ *        "system") -> the "actorType REFLECTS THE PRINCIPAL KIND" arm's user-backed/agent
+ *        "=user"/"=agent" assertions RED
  *
  * Real Postgres (embedded-postgres + the committed migration chain), the real limiter,
  * the real submit path (which threads the capacity-denial sink and drains it on the pool
@@ -403,12 +406,15 @@ integration("DE-27 audit clause — the two worker-admission refusals leave attr
 
   // ── actorType ───────────────────────────────────────────────────────────────────────
 
-  it("★ actorType REFLECTS THE PRINCIPAL KIND — user/agent record as user/agent, worker/service as system", async () => {
+  it("★ actorType REFLECTS THE PRINCIPAL KIND — user/mcp/commander/local_board→user, agent→agent, worker/system→system", async () => {
     await clearAll();
     // Drive the shared recorder DIRECTLY (the function the actorType mapping lives in),
     // once per principal kind, against real PostgreSQL. actor_id stays the principal id;
-    // the recorder derives actor_type from principalKind via actorTypeForPrincipalKind.
-    // Hardcoding actorType: "system" (the mutant) makes the user/agent assertions go RED.
+    // the recorder derives actor_type from principalKind via actorTypeForPrincipalKind,
+    // aligned to the canonical getActorInfo (authz.ts): the USER-BACKED kinds
+    // (user/mcp/commander/local_board, each constructed from a userId) all classify as
+    // `user`, `agent` as `agent`, and the machine kinds worker/system as `system`. Mapping
+    // any user-backed kind to "system" (the mutant) makes its `="user"` assertion go RED.
     //
     // Why not provoke a `user` capacity refusal through the submit path: `one_shot` (the
     // submission builder's source) only admits requester kinds agent/system/commander
@@ -421,9 +427,12 @@ integration("DE-27 audit clause — the two worker-admission refusals leave attr
     const db = ctx().app.db;
     const cases: Array<{ kind: string; actorId: string; expected: string }> = [
       { kind: "user", actorId: "de27-user-actor", expected: "user" },
+      { kind: "mcp", actorId: "de27-mcp-actor", expected: "user" },
+      { kind: "commander", actorId: "de27-commander-actor", expected: "user" },
+      { kind: "local_board", actorId: "de27-localboard-actor", expected: "user" },
       { kind: "agent", actorId: "de27-agent-actor", expected: "agent" },
       { kind: "worker", actorId: WORKER_A, expected: "system" },
-      { kind: "mcp", actorId: "de27-mcp-actor", expected: "system" },
+      { kind: "system", actorId: "de27-system-actor", expected: "system" },
     ];
     for (const c of cases) {
       await recordWorkerAdmissionDenial(db, {

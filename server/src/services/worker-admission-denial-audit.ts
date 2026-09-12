@@ -89,15 +89,18 @@
 //               `actorId`, with `principalKind` in `details` so a reader sees a
 //               user/agent/mcp/commander submitter, not just an id.
 // `actorType` is the TRUTHFUL `ActivityActorType` for each refused principal, DERIVED
-// from `principalKind` by `actorTypeForPrincipalKind`: `ActivityActorType` is
-// `agent | user | system | autonomy`, so a `user` submitter records as `user`, an
-// `agent` submitter as `agent`, and a worker (over_cap) or any other machine kind
-// (`mcp`/`commander`/`local_board`/`system`) as `system` — a worker has no `agents`/`auth`
-// row, and `system` is the DE-06 worker convention, but a real human/agent capacity
-// refusal must NOT be flattened into `system`. `actor_id` is plain text with NO foreign
-// key, which is exactly what makes `workerId`/`principal.id` usable as the identity
-// directly — the same choice, for the same reason, as the DE-06 object-access, DE-06
-// denial, and DE-11 retention call sites (`artifact-object-access-audit.ts:277-278`).
+// from `principalKind` by `actorTypeForPrincipalKind` and ALIGNED to the canonical
+// `getActorInfo` classifier (`server/src/routes/authz.ts`): `ActivityActorType` is
+// `agent | user | system | autonomy`, so an `agent` submitter records as `agent`, the
+// USER-BACKED kinds (`user`/`mcp`/`commander`/`local_board`, each constructed from a
+// `userId`) record as `user`, and the machine kinds a worker refusal or a
+// service-reconcile-origin submission carry (`worker` for over_cap, `system`) record as
+// `system` — a worker has no `agents`/`auth` row (`system` is the DE-06 worker convention),
+// but a real human/board/Commander/MCP capacity refusal must NOT be flattened into `system`.
+// `actor_id` is plain text with NO foreign key, which is exactly what makes
+// `workerId`/`principal.id` usable as the identity directly — the same choice, for the same
+// reason, as the DE-06 object-access, DE-06 denial, and DE-11 retention call sites
+// (`artifact-object-access-audit.ts:277-278`).
 // The tenant ids are TOKEN-ATTESTED or DB-CONSISTENT, never off the wire: over_cap's
 // org and worker come out of `verifyWorkerOperationProof`, and capacity's org and
 // company are the ids the just-inserted `job_attempts` row carries under the
@@ -148,16 +151,19 @@ import { recordSecurityDenial } from "./security-denial-audit.js";
 export const WORKER_ADMISSION_DENIAL_SURFACE = "worker_admission";
 
 /**
- * The truthful `ActivityActorType` for a refused principal's kind. A `user` submitter is
- * a `user` denial and an `agent` submitter an `agent` denial — so a real human/agent
- * capacity refusal is NOT misclassified as a system action. A worker (over_cap) and every
- * other machine/service kind (`mcp`/`commander`/`local_board`/`system`, and anything
- * unknown) have no truthful `user`/`agent` row here, so they record as `system` — the same
- * choice as the DE-06 object-access / DE-06 denial / DE-11 retention worker call sites.
- * Pure and total: never throws.
+ * The truthful `ActivityActorType` for a refused principal's kind, aligned to the repo's
+ * CANONICAL actor classifier `getActorInfo` (`server/src/routes/authz.ts`): an `agent` is
+ * an `agent`; `user`, `mcp`, `commander` and `local_board` are all USER-BACKED (each
+ * constructed from a `userId`) and classify as `user` — so a real human/board/Commander/MCP
+ * capacity denial is attributed as a `user` action, NOT flattened to `system`. The machine
+ * kinds this recorder also sees — `worker` (the over_cap execution identity, with no truthful
+ * `ActivityActorType` per the DE-06 worker convention) and `system` (a service-reconcile-origin
+ * submission) — and any unknown kind record as `system`. Pure and total: never throws.
  */
 export function actorTypeForPrincipalKind(kind: string): ActivityActorType {
-  return kind === "user" ? "user" : kind === "agent" ? "agent" : "system";
+  if (kind === "agent") return "agent";
+  if (kind === "user" || kind === "mcp" || kind === "commander" || kind === "local_board") return "user";
+  return "system";
 }
 
 /**
