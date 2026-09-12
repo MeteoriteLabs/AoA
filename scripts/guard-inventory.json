@@ -105,6 +105,10 @@
       "status": "ci",
       "reason": "invoked by a workflow"
     },
+    "scripts/check-register-citation-integrity.mjs": {
+      "status": "ci",
+      "reason": "policy job — verifies every explicit repo-anchored path:LINE citation in the threat register resolves at HEAD (exists/in-range/reaches-code/symbol-anchor), closing the silent-citation-rot class from PR #443. Runs with its self-test."
+    },
     "scripts/check-register-id-uniqueness.mjs": {
       "status": "ci",
       "reason": "invoked by a workflow"
