@@ -1,6 +1,8 @@
 # Commander Canvas design record
 
-**Current status — planning only:** TK clarified that implementation was not authorized. The [planning reset and review checkpoint](planning-reset.md) controls current work. The isolated draft is excluded from accepted delivery; TK accepted preserving it untouched/excluded for now; later deletion or reuse needs its own decision. Detailed plans, independent review and explicit user approval must precede coding.
+**Current status — production implementation paused:** TK clarified that implementation was not authorized. The [planning reset and review checkpoint](planning-reset.md) controls current work. The isolated draft is excluded from accepted delivery; TK accepted preserving it untouched/excluded for now; later deletion or reuse needs its own decision. Detailed plans, independent review and explicit user approval must precede coding.
+
+**Latest preparation evidence:** TK authorized the bounded BASE/DESIGN batch. [BASE results](baseline-preparation-results.md) record successful frozen installs and five prebuilds per revision, followed by a shared missing-pnpm environment failure at typecheck. Tests/build remain unrun; no source-base adoption is recommended yet. [DESIGN coverage](design-state-coverage.md) preserves accepted intent and identifies unrendered states and missing actual-host evidence. A precise environment correction is proposed for separate scope approval; no Universe implementation resumed.
 
 Current first-batch scope is in the [bounded preparation proposal](bounded-engineering-preparation.md); [earlier baseline and readiness](first-batch-readiness.md) is historical. Design inputs remain in [remaining UI state designs](ui-state-review.md) and the [canvas/controller coding plan](coding-plans/e1-1-canvas-controller.md). Written states and reference-controller checks are complete; visual review and real React Flow/host qualification remain distinct gates.
 

@@ -47,3 +47,7 @@ TK supplied [the reconciliation review](worker-publication-reconciliation-review
 ## Status after the voice/media correction review
 
 TK returned the [review of 47b50fd94](voice-media-corrections-review-report.md). The original M1/M2/L1 planning corrections are verified and the focused consistency round is closed. Do not rerun the prior prompt unchanged. [Static source inventory](voice-media-qualification-inventory.md) and [bounded preparation proposal](bounded-engineering-preparation.md) carry the remaining qualification work and accepted responsibility model. Future independent review should target material implementation bindings or actual evidence, identifying exact revisions; no runtime or coding is authorized by this status.
+
+## BASE/DESIGN preparation evidence checkpoint
+
+See [BASE results](baseline-preparation-results.md) and [DESIGN coverage](design-state-coverage.md). Both source snapshots stopped at an environment setup failure after successful installation/prebuilds. This is not a fresh source-readiness pass; test/build and actual-host evidence remain pending. Resolve the explicitly scoped environment correction and collect its results before requesting another independent source-baseline verdict. No unchanged voice/media review is requested. Production implementation remains paused.

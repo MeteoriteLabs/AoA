@@ -1,6 +1,6 @@
 # Bounded BASE/DESIGN engineering preparation proposal
 
-**Prepared September 12, 2026; not authorized for execution.** TK authorized documenting review closure, tracing source, assigning responsibilities and preparing this proposal. No runtime tests, package installation, containers, providers or implementation ran. The accepted responsibility model does not authorize this batch.
+**Prepared September 12, 2026; bounded execution subsequently authorized.** After publication at 3431c66f2e3a262c9a7f1119acaa0aaecfdbdc2a, TK said “lets do it” with this preparation proposal open. That authorizes only the BASE/DESIGN preparation below. The earlier proposal was documentation-only; the accepted responsibility model alone did not authorize execution. Source-base adoption and Universe implementation still require separate explicit approval. Actual outcomes are recorded in [BASE results](baseline-preparation-results.md) and [DESIGN coverage](design-state-coverage.md).
 
 ## Outcome and scope
 
@@ -29,9 +29,9 @@ This resolves the Universe author/reviewer assignment question, including BUDGET
 
 ## Proposed isolated environment
 
-Read-only host checks found Windows, Docker and WSL executables; WSL lists only docker-desktop. No general-purpose Linux distro or running Docker engine was certified. Do not run tests in Docker Desktop's internal distribution or mount the user's live AoA home/database.
+Read-only host checks found Windows, Docker and WSL executables; WSL lists only docker-desktop. At proposal time no general-purpose Linux distro or running Docker engine was certified. Do not run tests in Docker Desktop's internal distribution or mount the user's live AoA home/database.
 
-Recommended execution target: disposable Linux container on this machine, Node 24 / Debian Bookworm, pnpm 9.15.4 to match source manifest and CI major. Before starting it, inspect Docker engine availability and resolve the node:24-bookworm image to an immutable digest, record it with OS/Node/pnpm versions, and use that digest. Image resolution/pull, dependency installation and build scripts are part of the requested future batch, not existing authorization. If Docker is unavailable, stop and propose a concrete replacement; do not install WSL or change the host automatically.
+Recommended execution target: disposable Linux container on this machine, Node 24 / Debian Bookworm, pnpm 9.15.4 to match source manifest and CI major. Before starting it, inspect Docker engine availability and resolve the node:24-bookworm image to an immutable digest, record it with OS/Node/pnpm versions, and use that digest. Image resolution/pull, dependency installation and build scripts are within the subsequently approved bounded batch. If Docker is unavailable, stop and propose a concrete replacement; do not install WSL or change the host automatically.
 
 Use separate source snapshots rooted at /workspace/base and /workspace/candidate inside a task-owned temporary volume. Populate exact Git objects, with no host repository write mount, Docker socket mount, SSH agent, browser profile, .env, CLI login or user-secret directory. Run as a non-root user with fresh HOME and temporary application/cache directories. Container environment is allowlisted; DATABASE_URL and provider/cloud credentials are absent. No application server against real data. Package download network access is allowed only in the proposed setup phase; disable outbound network for verification. Preserve logs outside the disposable runtime using a designated report directory. Do not print environment values.
 
@@ -39,7 +39,7 @@ Time bounds: setup at most 45 minutes; checks at most 150 minutes per revision. 
 
 ## Commands requested for each exact source snapshot
 
-These are a future command allowlist, not commands run in this documentation turn. Checkout/snapshot creation and dependency setup are scoped to the disposable environment above. Verify the tree matches its SHA before and after; no tracked files may change.
+This is the approved command allowlist; the results report distinguishes executed commands from blocked or unrun stages. Checkout/snapshot creation and dependency setup are scoped to the disposable environment above. Verify the tree matches its SHA before and after; no tracked files may change.
 
 ```sh
 node --version
@@ -82,4 +82,4 @@ For each revision, report separately: dependency/prebuild status, typecheck, fou
 
 Required outputs, written only after the approved checks actually run: baseline-preparation-results.md and design-state-coverage.md in this documentation directory. Record exact image digest and SHA, commands and sanitized logs, observed results and exclusions. Do not create a passing result stub now.
 
-Then TK receives: recommended execution base with evidence, proposed source integration action, remaining gates that affect E1.1, and its exact implementation batch. Acceptance of this preparation proposal never authorizes that later coding batch. Current status: proposal ready for scope review; execution authorization absent.
+Then TK receives: recommended execution base with evidence, proposed source integration action, remaining gates that affect E1.1, and its exact implementation batch. Acceptance of this preparation proposal never authorizes that later coding batch. Current status: bounded preparation authorized; consult the attributed results for execution status. Merge/rebase, source changes and implementation authorization remain absent.
