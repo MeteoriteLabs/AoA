@@ -1,5 +1,7 @@
 # Commander Canvas design record
 
+**Current consolidated checkpoint:** [Universe plan readiness](consolidated-plan-readiness.md) is the current author verdict and per-slice gate register. The packet is ready for final independent planning review; Universe coding is not authorized. The [exact F4 repair plan](f4-fixture-repair-plan.md) supersedes the earlier Stage-B sketch, with three test-only files and bounded regression/qualification steps. Older dated proposals/results below retain their historical scope; they do not reopen completed review rounds.
+
 **Current status — production implementation paused:** TK clarified that implementation was not authorized. The [planning reset and review checkpoint](planning-reset.md) controls current work. The isolated draft is excluded from accepted delivery; TK accepted preserving it untouched/excluded for now; later deletion or reuse needs its own decision. Detailed plans, independent review and explicit user approval must precede coding.
 
 **Latest execution status:** The approved [TypeScript-aware export check and gated shard 4](fixture-loader-check-results.md) passed: 6,031 tests passed / 3 skipped; all seven previously uncollected suites ran and both backup tests passed. Setup took 6.233 seconds. The runtime is stopped. The preparation/loader issue is closed for this environment; F5 remains non-reproduced rather than repaired, and F4 still needs its narrow fixture correction. Next is the exact F4 repair/regression plan, then separately approved full qualification. No Universe implementation or base adoption.

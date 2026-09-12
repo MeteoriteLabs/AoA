@@ -1,5 +1,7 @@
 # Bounded BASE/DESIGN engineering preparation proposal
 
+**Current consolidated checkpoint:** [Universe plan readiness](consolidated-plan-readiness.md) is the current author verdict and per-slice gate register. The packet is ready for final independent planning review; Universe coding is not authorized. The [exact F4 repair plan](f4-fixture-repair-plan.md) supersedes the earlier Stage-B sketch, with three test-only files and bounded regression/qualification steps. Older dated proposals/results below retain their historical scope; they do not reopen completed review rounds.
+
 **Prepared September 12, 2026; bounded execution subsequently authorized.** After publication at 3431c66f2e3a262c9a7f1119acaa0aaecfdbdc2a, TK said “lets do it” with this preparation proposal open. That authorizes only the BASE/DESIGN preparation below. The earlier proposal was documentation-only; the accepted responsibility model alone did not authorize execution. Source-base adoption and Universe implementation still require separate explicit approval. Actual outcomes are recorded in [BASE results](baseline-preparation-results.md) and [DESIGN coverage](design-state-coverage.md).
 
 ## Outcome and scope

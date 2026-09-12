@@ -1,5 +1,7 @@
 # Universe — full implementation-plan self-review
 
+**Current consolidated checkpoint:** [Universe plan readiness](consolidated-plan-readiness.md) is the current author verdict and per-slice gate register. The packet is ready for final independent planning review; Universe coding is not authorized. The [exact F4 repair plan](f4-fixture-repair-plan.md) supersedes the earlier Stage-B sketch, with three test-only files and bounded regression/qualification steps. Older dated proposals/results below retain their historical scope; they do not reopen completed review rounds.
+
 September 12, 2026. **Result: complete planning packet prepared for TK's independent Claude review; not approved for coding.** Scope is all nine epics, 31 slices and 69 numbered increments, including conditional qualification plans for unavailable upstream contracts. V1 remains 30 slices; E3.4 is V2. Source pin: `183e46a9c65fc3105c7e3d125629276814df7dbb`. Source reads and document validation are the evidence in this pass; no runtime tests, provider sessions, installation or implementation occurred.
 
 ## Subsequent independent review correction
@@ -172,3 +174,7 @@ TK approved the bounded SDK build/export-check/shard proposal. [Results and exec
 ## Gated loader-aware diagnostic outcome
 
 TK approved the corrected export check and one success-gated shard invocation. [Results](fixture-loader-check-results.md): both commands passed; shard 4 ran 6,031 passing tests with 3 existing skips, including all seven previously uncollected suites and both backup cases. Source/patch identity and all 7,664 tracked entries matched before/after; runtime stopped. The prior aborted run remains invalid historical evidence. SDK preparation/loading is now resolved for this environment; F5 did not reproduce (setup 6.233 seconds) and is not declared repaired. No additional backup-only rerun or speculative timeout change is recommended. Next is reviewing the exact F4 fixture repair and fault regressions, then separately approved source authoring/full qualification. No base adoption or Universe implementation.
+
+## Consolidated closeout review
+
+The [current whole-packet review](consolidated-plan-readiness.md) accounts for every slice and distinguishes complete-for-review planning from conditional runtime bindings and unapproved execution. The [F4 proposal](f4-fixture-repair-plan.md) includes exact test-only code, deterministic startup/cleanup faults and bounded verification. Self-review caught and corrected the fault-case count, added explicit test-file typechecking and SDK preparation, and clarified existing-branch reuse. No production source, fixture, container or provider execution occurred. Independent review of this new material remains pending; previous unchanged review findings are not reopened.

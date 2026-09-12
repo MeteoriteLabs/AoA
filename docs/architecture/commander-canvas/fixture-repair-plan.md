@@ -1,5 +1,7 @@
 # Database fixture investigation and repair plan
 
+**Current consolidated checkpoint:** [Universe plan readiness](consolidated-plan-readiness.md) is the current author verdict and per-slice gate register. The packet is ready for final independent planning review; Universe coding is not authorized. The [exact F4 repair plan](f4-fixture-repair-plan.md) supersedes the earlier Stage-B sketch, with three test-only files and bounded regression/qualification steps. Older dated proposals/results below retain their historical scope; they do not reopen completed review rounds.
+
 > **For agentic workers:** Use `superpowers:executing-plans` after explicit approval of the named stage. Steps use checkboxes for work not yet executed.
 
 **Current status:** TK approved Stage A after independent review. [Diagnostic results](fixture-diagnostic-results.md) record both completed invocations: backup passed twice, but seven unrelated suites failed collection due to an omitted SDK build, limiting the workload comparison. The runtime is stopped. The source repair and full qualification stages remain unapproved. The unchecked steps below preserve the reviewed proposal; actual execution evidence is in the results record.
