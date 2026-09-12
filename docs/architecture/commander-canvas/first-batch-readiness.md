@@ -1,6 +1,6 @@
 # Universe — first implementation batch preparation
 
-**September 12 correction:** Implementation was started prematurely without the user's coding approval. Existing branch provenance is recorded in the [planning reset](planning-reset.md), not accepted as the future base. The isolated draft remains untouched and excluded from delivery; its disposition, detailed plan review and exact branching decision remain open.
+**Historical preparation record; superseded for current execution scope by the [bounded engineering preparation proposal](bounded-engineering-preparation.md).** Earlier implementation was premature and remains paused. The Universe planning branch and source pin are now established; TK accepted keeping the earlier draft untouched/excluded. No runtime results below certify the new candidate or authorize coding.
 
 September 11, 2026. **Preparation completed to the boundaries below; runtime implementation has not started.** The user accepted the V1/V2 grouping and the methodology of one Universe integration branch, reviewed slice branches, integrated journey checks, and separate handling of replatform prerequisites.
 

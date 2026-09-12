@@ -127,3 +127,7 @@ E4.2/2 owns proposed packages/db/src/schema/universe_publications.ts, packages/s
 ## D3 review correction producers
 
 [Correction contract](voice-media-review-corrections.md) extends E8.1/1 with persistent company_secrets resolutionScope and common-resolver checks, plus the canonical Budget-owned BUDGET-VOICE-MEDIA prerequisite. New proposed files: packages/db/src/schema/budget_capacity_reservations.ts, server/src/services/budget-capacity.ts and server/src/__tests__/budget-capacity.integration.test.ts. These supplement the representative inventory; they are not existing APIs. E3.1/2 owns the partial unique active-session index and constrained terminal state on its previously proposed schema. E3.1/1 live qualification closes after the producer and session consumer exist; independent documentation mapping can precede both. Full credential/cost/policy writer inventory and exact transaction/role bindings remain qualification requirements.
+
+## Source inventory and base drift checkpoint
+
+[Static qualification inventory](voice-media-qualification-inventory.md) links the actual budget, secret and privileged maintenance paths. New upstream admission auditing at 9200a66c42633019349de937a8b97979acac0f7a changes call signatures around org-concurrency and submission; rebind affected paths before adopting it. Source evidence here remains pinned to 183e46a9c65fc3105c7e3d125629276814df7dbb. [Preparation proposal](bounded-engineering-preparation.md) scopes comparison checks without merging or changing the base.

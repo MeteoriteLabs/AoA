@@ -2,7 +2,7 @@
 
 **Current status — planning only:** TK clarified that implementation was not authorized. The [planning reset and review checkpoint](planning-reset.md) controls current work. The isolated draft is excluded from accepted delivery; TK accepted preserving it untouched/excluded for now; later deletion or reuse needs its own decision. Detailed plans, independent review and explicit user approval must precede coding.
 
-First-batch preparation is now recorded in [baseline and readiness](first-batch-readiness.md), [remaining UI state designs](ui-state-review.md) and the [canvas/controller coding plan](coding-plans/e1-1-canvas-controller.md). Written states and reference-controller checks are complete; visual review and real React Flow/host qualification remain distinct gates.
+Current first-batch scope is in the [bounded preparation proposal](bounded-engineering-preparation.md); [earlier baseline and readiness](first-batch-readiness.md) is historical. Design inputs remain in [remaining UI state designs](ui-state-review.md) and the [canvas/controller coding plan](coding-plans/e1-1-canvas-controller.md). Written states and reference-controller checks are complete; visual review and real React Flow/host qualification remain distinct gates.
 
 **Latest decision:** The [V1/V2 grouping](release-plans/README.md) remains accepted. The same Universe branch codex/universe-interface now exists from the verified replatform revision, carrying planning documents; implementation approval remains open. Earlier statements that first-slice execution was accepted were incorrect and are superseded by the user's explicit planning-only correction.
 
@@ -53,3 +53,9 @@ The master scope is the current product baseline; companion contracts specify pl
 ## D3 review corrections prepared
 
 The [Claude review](voice-media-review-report.md) was checked against pinned source. Its two medium and one low findings are addressed at the planning level in the [credential, budget and session corrections](voice-media-review-corrections.md), propagated to E3/E4/E8 and shared bindings. Persistent secret restriction must survive unbinding; shared Budget capacity is an explicit E8.1/1 prerequisite; E3.1/2 gets database-enforced cross-tab ownership and honest unknown outcomes. These are new proposals needing focused review, not implemented guarantees. Privacy acceptance is unchanged. Next: review these corrections, resolve technical acceptance and responsibility gaps, then present bounded BASE/DESIGN qualification for explicit authorization. Implementation remains paused.
+
+## Current preparation checkpoint
+
+The [voice/media correction review](voice-media-corrections-review-report.md) is closed at design level. The [static inventory](voice-media-qualification-inventory.md) traces budget admission/cost/policy and secret resolution/mutation/export paths; runtime completeness remains a qualification gate. TK accepted Codex as implementation/evidence author, TK as acceptance owner, and TK-managed Claude as independent technical review. Upstream evidence remains separate.
+
+The [bounded BASE/DESIGN preparation proposal](bounded-engineering-preparation.md) specifies the source pin, newly observed replatform candidate, isolated Linux environment, commands, limits and result attribution. Replatform advanced to 9200a66c42633019349de937a8b97979acac0f7a; it was fetched/read, not merged. The existing Universe source pin remains 183e46a9c65fc3105c7e3d125629276814df7dbb. Next is scope approval of this preparation batch; implementation still requires a later explicit approval. No provider sessions, credentials, runtime tests or new implementation ran.
