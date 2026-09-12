@@ -2,6 +2,8 @@
 
 > **For agentic workers:** Use `superpowers:executing-plans` for the approved source batch. This is a self-reviewed source proposal; unchecked steps are not execution evidence.
 
+**Execution update:** TK approved source authoring, targeted checks and conditional full qualification. [Runtime preflight](f5-execution-preflight.md) currently blocks the first test; no approval needs repeating. The proposal wording below is historical and does not revoke that approval.
+
 **Goal:** Give real backup tests a bounded startup policy and cleanup ownership that survives setup expiry, while preserving both backup/restore assertions.
 
 **Architecture:** A database-package test helper sequences named setup operations, stops progression after disposal, and observes pending startup before cleanup. The integration test owns its actual PostgreSQL instance, client and temporary directories. No general fixture framework or server-to-database test import.
