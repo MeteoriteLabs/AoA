@@ -547,6 +547,42 @@ integration("DAT-003 workspace-patch apply/review", () => {
     expect(row.apply).toBeNull(); // no apply write
   }, 60_000);
 
+  it("DE-04 fence arm: the stale-fence apply refusal at recordPatchApplyState's guardActiveFence writes a durable fence_guard row (operation patch_apply)", async () => {
+    // Until the audit-wiring unit this refusal left NOTHING durable — the
+    // `rejected` wire object was the only trace. Observed RED against the
+    // unchanged wiring before the sink landed.
+    const { app, admin } = guardCtx();
+    const storage = makeMapStorage();
+    const { offer } = await activateLease();
+    await commitSnapshot(storage, offer, "1".repeat(64));
+    const patch = await commitPatch(storage, offer, { baseManifestHash: "1".repeat(64), resultManifestHash: "2".repeat(64) });
+    await expireLease(offer.leaseId);
+    await admin`DELETE FROM activity_log WHERE action LIKE ${"security.denied.%"}`;
+    const svc = createPatchApplyService({ appDb: app.db, storage });
+    const res = await svc.apply({ auth: auth(`sfa-${crypto.randomUUID()}`), request: applyReq(offer, patch.artifactId, patch.key) });
+    expect(res.outcome).toBe("rejected");
+    if (res.outcome !== "rejected") return;
+    expect(res.reason).toBe("stale_fence");
+    const rows = await admin<Array<{
+      action: string; actor_type: string; actor_id: string;
+      company_id: string | null; organization_id: string | null;
+      entity_type: string; entity_id: string; details: Record<string, unknown>;
+    }>>`SELECT action, actor_type, actor_id, company_id, organization_id, entity_type, entity_id, details
+        FROM activity_log WHERE action LIKE ${"security.denied.%"}`;
+    expect(rows).toHaveLength(1);
+    const denial = rows[0]!;
+    expect(denial.action).toBe("security.denied.fence_guard");
+    expect(denial.details.reason).toBe("stale_fence");
+    expect(denial.details.crossing).toBe("DE-04");
+    expect(denial.details.operation).toBe("patch_apply");
+    expect(denial.actor_type).toBe("system");
+    expect(denial.actor_id).toBe(WORKER);
+    expect(denial.entity_type).toBe("job_lease");
+    expect(denial.entity_id).toBe(offer.leaseId);
+    expect(denial.company_id).toBe(COMPANY);
+    expect(denial.organization_id).toBe(ORG);
+  }, 60_000);
+
   // ---- S6: mismatch → conflict quarantine + idempotency -------------------
 
   it("conflict-quarantines a patch whose base does NOT match (never auto-applies)", async () => {
