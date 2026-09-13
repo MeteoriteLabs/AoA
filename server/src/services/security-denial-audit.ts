@@ -62,9 +62,9 @@ import { SECURITY_DENIAL_ACTION_PREFIX } from "./activity-namespace.js";
  *   - a denial that resolves only an ORGANIZATION (SEVEN of DE-03's nine
  *     `recordProof` refusals, DE-15's drain, five of DE-06's six fence throws)
  *     now writes a row attributed to that organization and to no company. The
- *     seven are `job-control-ack.ts:93`, `job-events.ts:169`,
- *     `job-fencing.ts:133`, `job-leasing.ts:546` and `:816`,
- *     `worker-fence-context.ts:68` and `:162` — each holds a
+ *     seven are `job-control-ack.ts:117`, `job-events.ts:194`,
+ *     `job-fencing.ts:153`, `job-leasing.ts:662` and `:1016`,
+ *     `worker-fence-context.ts:135` and `:321` — each holds a
  *     `VerifiedWorkerOperation.organizationId` typed `string`, with platform
  *     scope refused ahead of it (`middleware/worker-operation-proof.ts:6,50`).
  *   - the OTHER TWO of the nine stay DOUBLY NULL even under (a2), and this

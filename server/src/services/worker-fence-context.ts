@@ -108,7 +108,7 @@ export async function resolveWorkerFenceContext(
       companyId: null,
       organizationId: auth.organizationId,
       // The proof-replay throw serves BOTH crossings: it is DE-06's `:75` fence
-      // throw AND DE-03's `worker-fence-context.ts:68` `recordProof` site.
+      // throw AND DE-03's `worker-fence-context.ts:135` `recordProof` site.
       crossings: reason === "proof_replayed" ? ["DE-03", "DE-06"] : ["DE-06"],
       entityType,
       entityId,
@@ -303,7 +303,7 @@ export async function resolveWorkerFenceContext(
  *
  * ★ DE-03, audit clause — `denialSink` (REQUIRED). ONLY the `recordProof` refusal
  * records into it: that is the site DE-03 enumerates as
- * `worker-fence-context.ts:162`. The THREE authority throws below it write
+ * `worker-fence-context.ts:321`. The THREE authority throws below it write
  * NOTHING — they are the same shape as the fence resolver's siblings, but they
  * are not in DE-03's enumeration and not on DE-06's artifact-broker path, so this
  * unit neither wired nor claimed them. The parameter is required so a third
@@ -326,7 +326,7 @@ export async function resolveWorkerDeviceContext(
     expiresAt: auth.sessionExpiresAt,
   });
   if (!proofRecorded) {
-    // ★ DE-03 — `worker-fence-context.ts:162` in the crossing's enumeration: the
+    // ★ DE-03 — `worker-fence-context.ts:321` in the crossing's enumeration: the
     // SECOND `recordProof` refusal in this file. Only this throw is wired here;
     // the three AUTHORITY throws below are the same shape as the fence
     // resolver's siblings but are NOT in DE-03's enumeration and are NOT part of
