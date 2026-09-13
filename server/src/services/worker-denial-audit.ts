@@ -38,7 +38,8 @@
 //   * TWO of the nine `recordProof` refusal sites stay DOUBLY NULL and are
 //     deliberately NOT wired: `worker-enrollment.ts:315`
 //     (`authoritativeOrganizationId` is `string | null`) and
-//     `middleware/worker-session-auth.ts:151`, whose `:183-185` branch passes an
+//     `middleware/worker-session-auth.ts` `verifyCurrent`'s `if (!recorded) fail()`,
+//     whose platform branch (`claims.organizationId === null`) passes an
 //     explicit `null` for a platform-scope worker. A row with neither axis is a
 //     different decision from a row with one, and this unit does not take it.
 //   * ONE MORE of the nine — `job-leasing.ts:816` (lease ack) — HOLDS an
@@ -113,19 +114,21 @@ export const WORKER_POLL_AUTHORITY_DENIAL_SURFACE = "worker_poll_authority";
  *                           or one of the defence-in-depth re-checks). This is
  *                           the ONE reason here that carries a company.
  *
- * `poll_generation_superseded` is the ONE POLL admission-authority refusal
- * recorded, in `job-leasing.ts:poll` — a distinct BRANCH from the fence-resolution
- * siblings above, so it carries its own code and surface (a poll presents no
- * fence). ★ ONLY THE GENERATION CUTOFF IS AUDITED (Codex P2 x4 on PR #448):
- * `authorityCurrent` is a 19-conjunct composite, and DE-18's audit clause is
- * narrowly "generation changes … at worker admission". A generation cutoff there
- * is exactly that → DE-18. Every other authority-currency failure (stale
- * heartbeat, membership loss, status/credential drift, identity mismatch) and the
- * two post-authority data-integrity refusals are NOT a generation change and a
- * poll has no lease fence, so they serve no crossing's audit clause; the poll
- * classifier (`pollAuthorityCurrencyIntent`, job-leasing.ts) returns null for them
- * — no row — rather than pollute DE-18 or DE-04. `details.failed` names the
- * conjuncts that fired; the wire answer stays the coarse `target_revoked`.
+ * `poll_generation_superseded` and `poll_authority_stale` are the TWO
+ * classifications of the ONE poll admission-authority reject branch in
+ * `job-leasing.ts:poll` — distinct from the fence-resolution siblings above (a
+ * poll presents no fence), split by the classifier
+ * (`pollAuthorityCurrencyIntent`, job-leasing.ts) on the ACTUAL failed
+ * conjunct(s) of the 19-conjunct `authorityCurrent` composite, never the
+ * composite boolean. An AUTHORITATIVE worker/target generation cutoff is
+ * DE-18's "generation changes … at worker admission" → `poll_generation_superseded`,
+ * DE-18. Every other authority-currency failure (stale heartbeat, membership
+ * loss, status/credential drift, disabled target, request-identity mismatch) →
+ * `poll_authority_stale`, filed under DE-04's worker-authority-currency arm
+ * (register amendment 2026-09-13). The two post-authority data-integrity
+ * refusals stay unrecorded — not an authority-currency failure, no clause to
+ * serve. `details.failed` names the conjuncts that fired; the wire answer stays
+ * the coarse `target_revoked`.
  */
 export const WORKER_DENIAL_REASONS = [
   "proof_replayed",
@@ -136,6 +139,7 @@ export const WORKER_DENIAL_REASONS = [
   "lease_unresolved",
   "fence_tuple_mismatch",
   "poll_generation_superseded",
+  "poll_authority_stale",
 ] as const;
 
 export type WorkerDenialReason = (typeof WORKER_DENIAL_REASONS)[number];
@@ -154,6 +158,7 @@ export const WORKER_DENIAL_SURFACE_BY_REASON: Record<WorkerDenialReason, string>
   lease_unresolved: WORKER_FENCE_DENIAL_SURFACE,
   fence_tuple_mismatch: WORKER_FENCE_DENIAL_SURFACE,
   poll_generation_superseded: WORKER_POLL_AUTHORITY_DENIAL_SURFACE,
+  poll_authority_stale: WORKER_POLL_AUTHORITY_DENIAL_SURFACE,
 };
 
 /**
@@ -215,16 +220,17 @@ export function createWorkerDenialSink(): WorkerDenialSink {
  * is safe to record.
  */
 /**
- * The POLL admission-arm intent for `job-leasing.ts:poll`'s generation-cutoff
- * `target_revoked` refusal — the ONLY poll refusal that serves a crossing's audit
- * clause (DE-18's "generation changes at admission"). Built by the caller's
- * classifier `pollAuthorityCurrencyIntent`, which returns null (no row) for every
- * non-generation refusal (Codex P2 x4 on PR #448). `companyId` is null: no lease
- * has resolved at a poll, and `workers`/`execution_targets` carry `organization_id`
- * only.
+ * The POLL admission-arm intent for `job-leasing.ts:poll`'s authority-currency
+ * `target_revoked` refusal. Built by the caller's classifier
+ * `pollAuthorityCurrencyIntent`, which derives reason + crossing from the failed
+ * conjunct(s): authoritative generation cutoff ⇒ `poll_generation_superseded`
+ * (DE-18), any other authority-currency failure ⇒ `poll_authority_stale`
+ * (DE-04's worker-authority-currency arm) (Codex P2 x4 on PR #448; DE-04 arm
+ * 2026-09-13). `companyId` is null: no lease has resolved at a poll, and
+ * `workers`/`execution_targets` carry `organization_id` only.
  */
 export function pollAuthorityDenialIntent(
-  reason: "poll_generation_superseded",
+  reason: "poll_generation_superseded" | "poll_authority_stale",
   crossing: string,
   auth: {
     organizationId: string;

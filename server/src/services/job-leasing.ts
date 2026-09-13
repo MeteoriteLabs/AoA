@@ -283,21 +283,23 @@ function authorityCurrent(input: {
 }
 
 /**
- * Classify WHY a poll's `authorityCurrent` returned false and, ONLY for a genuine
- * generation-replacement cutoff, build the DE-18 deny-path intent (Codex P2 x4 on
- * PR #448). `authorityCurrent` is a 19-conjunct composite; DE-18's audit clause is
- * narrowly "placement decisions and generation changes are audited", and the
- * generation-cutoff at worker admission is exactly that. Every OTHER
- * authority-currency failure — stale heartbeat, owner-membership loss, worker
- * status/credential drift, target disabled, request/payload identity mismatch —
- * serves NO crossing's audit clause: it is not a generation change (so not DE-18),
- * and a poll presents neither an attempt nor a lease fence (so not DE-04, whose
- * boundary is the Worker↔attempt/lease fence). Filing those under ANY crossing
- * corrupts that crossing's measure, so this returns `null` for them — no row. The
- * worker-authority-currency denial has no home in the current register and is a
- * documented follow-on (would need a new/extended crossing). Only the AUTHORITATIVE
- * DB-row generations count: `request_generation_drift` is the caller's own payload
- * claim (a current worker could forge it), so it never triggers DE-18.
+ * Classify WHY a poll's `authorityCurrent` returned false and build the deny-path
+ * intent, deriving the CROSSING from the actual failed conjunct(s) (Codex P2 x4 on
+ * PR #448; DE-04 arm added 2026-09-13). `authorityCurrent` is a 19-conjunct
+ * composite; DE-18's audit clause is narrowly "placement decisions and generation
+ * changes are audited", and an AUTHORITATIVE worker/target `device_generation`
+ * cutoff at worker admission is exactly that ⇒ `poll_generation_superseded`,
+ * DE-18. Every OTHER authority-currency failure — stale heartbeat,
+ * owner-membership loss, worker status/credential drift, target disabled,
+ * request/payload identity mismatch — is NOT a generation change; it files under
+ * DE-04's worker-authority-currency arm (register amendment 2026-09-13, the
+ * follow-on PR #448 documented) ⇒ `poll_authority_stale`, DE-04. Only the
+ * AUTHORITATIVE DB-row generations count for DE-18: `request_generation_drift` is
+ * the caller's own payload claim (a current worker could forge it), so it never
+ * triggers DE-18 — it rides the DE-04 row's `details.failed` instead. The two
+ * POST-authority data-integrity refusals (unreadable current target / unparseable
+ * stored hello) stay outside this classifier and remain unrecorded — they are not
+ * an authority-currency failure and serve no crossing's audit clause.
  *
  * PURE (no IO, no repository selection, no mutation) and mirrors the predicate in
  * `authorityCurrent` exactly — registered in `job-leasing-contract.test.ts`'s
@@ -340,14 +342,22 @@ export function pollAuthorityCurrencyIntent(
   if (oldestHeartbeat === null || databaseNow.getTime() - oldestHeartbeat > maxHeartbeatAgeMs) {
     failed.push("heartbeat_stale");
   }
-  // Only the AUTHORITATIVE DB-row generations are DE-18's cutoff.
+  // Nothing failed ⇒ nothing to classify ⇒ no row (the classifier is always
+  // computed; only the reject branch drains it).
+  if (failed.length === 0) return null;
+  // Only the AUTHORITATIVE DB-row generations are DE-18's cutoff —
+  // `request_generation_drift` is the caller's own forgeable payload claim and
+  // never mints a DE-18 event.
   const GENERATION_CONJUNCTS = new Set([
     "worker_generation_drift", "target_generation_drift",
   ]);
   const generation = failed.some((f) => GENERATION_CONJUNCTS.has(f));
-  // No generation change ⇒ no crossing to serve ⇒ no row (see the header).
-  if (!generation) return null;
-  return pollAuthorityDenialIntent("poll_generation_superseded", "DE-18", auth, failed);
+  if (generation) return pollAuthorityDenialIntent("poll_generation_superseded", "DE-18", auth, failed);
+  // ★ Every NON-generation authority-currency failure (stale heartbeat, owner
+  // membership loss, worker status/credential drift, disabled target,
+  // request-identity mismatch) now files under DE-04's worker-authority-currency
+  // arm (register amendment 2026-09-13 — the follow-on PR #448 documented).
+  return pollAuthorityDenialIntent("poll_authority_stale", "DE-04", auth, failed);
 }
 
 export function ackAuthorityCurrent(input: {
@@ -632,12 +642,13 @@ export function createJobLeasingService(input: {
       // consumer of the authority chain appears inside the transaction without
       // review. An earlier revision of this change tripped it and CI caught it.
       const replayDenialIntent = workerProofReplayIntent(pollInput.auth);
-      // ★ Poll admission-arm: ONLY the authorityCurrent generation-cutoff is audited
-      // (DE-18, via `pollAuthorityCurrencyIntent` below, which returns null for
-      // non-generation failures). The two POST-AUTHORITY data-integrity refusals
-      // (unreadable current target / unparseable stored hello) are NOT recorded:
-      // they are not a generation change and a poll has no lease fence, so they
-      // serve no crossing's audit clause — filing them anywhere pollutes it (Codex
+      // ★ Poll admission-arm: every authorityCurrent refusal is audited, with the
+      // crossing derived per-conjunct by `pollAuthorityCurrencyIntent` below —
+      // authoritative generation cutoff ⇒ DE-18; any other authority-currency
+      // failure ⇒ DE-04's worker-authority-currency arm (register amendment
+      // 2026-09-13). The two POST-AUTHORITY data-integrity refusals (unreadable
+      // current target / unparseable stored hello) are still NOT recorded: not an
+      // authority-currency failure, no crossing's audit clause to serve (Codex
       // P2 x4 on PR #448). They throw the coarse `target_revoked` with no row.
       for (let restartAttempt = 0; restartAttempt < 3; restartAttempt += 1) {
         // A retry iteration (restartAttempt > 0) means the previous head claim rolled back; count it
