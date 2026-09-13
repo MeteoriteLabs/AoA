@@ -429,8 +429,10 @@ integration("DE-27 audit clause — the two worker-admission refusals leave attr
     const db = ctx().app.db;
     const cases: Array<{ kind: string; actorId: string; expected: string }> = [
       { kind: "user", actorId: "de27-user-actor", expected: "user" },
-      // mcp's submit-path principal.id is the KEY id, not the owner userId (job-control.ts:99),
-      // so recording it as user would misattribute — the honest label for a key credential is system.
+      // mcp WITHOUT a threaded owner userId (the defensive fallback) → system: the
+      // principal.id is the KEY id, and with no owner in hand `system` is the honest
+      // label. The common path threads an owner and records `user` — see the dedicated
+      // arm below (task_8a0402bf).
       { kind: "mcp", actorId: "de27-mcp-key-id", expected: "system" },
       { kind: "commander", actorId: "de27-commander-actor", expected: "user" },
       { kind: "local_board", actorId: "de27-localboard-actor", expected: "user" },
@@ -463,5 +465,44 @@ integration("DE-27 audit clause — the two worker-admission refusals leave attr
       expect(row.actor_id).toBe(c.actorId);
       expect(row.actor_id).not.toBe(ORG);
     }
+  }, 60_000);
+
+  it("★ mcp OWNER attribution — a capacity refusal from an mcp submitter records the KEY OWNER as a `user`, not the bare key as `system` (task_8a0402bf)", async () => {
+    await clearAll();
+    // `principalFor` (job-control.ts) threads the mcp key's owner userId
+    // (`mcp_api_keys.userId`, notNull, from `req.actor.userId`) as `ownerUserId`
+    // alongside the key id. When present for an mcp principal the recorder attributes
+    // the row to that owner as a `user` action — the SAME classification the canonical
+    // `getActorInfo` makes for mcp at request time — and keeps the key id in
+    // `details.mcpKeyId` for the trail. Driven directly on the recorder (the mapping's
+    // home), against real PostgreSQL, because an mcp submitter is not reachable through
+    // the one_shot capacity path (SOURCE_REQUESTER_KINDS excludes mcp), the same reason
+    // the kind-matrix arm above drives the recorder directly.
+    const db = ctx().app.db;
+    const OWNER = "de27-mcp-owner-user";
+    const KEY_ID = "de27-mcp-key-id-owned";
+    const attemptId = randomUUID();
+    await recordWorkerAdmissionDenial(db, {
+      reason: "capacity",
+      companyId: COMPANY,
+      organizationId: ORG,
+      actorId: KEY_ID,
+      principalKind: "mcp",
+      ownerUserId: OWNER,
+      entityType: "job_attempt",
+      entityId: attemptId,
+      control: "server/src/__tests__/de-27-admission-audit.integration.test.ts:mcpOwner",
+    });
+    const rows = await admissionDenialRows();
+    expect(rows).toHaveLength(1);
+    const row = rows[0]!;
+    // WHO — the OWNER, as a `user` action (matching getActorInfo), NOT the bare key as `system`.
+    expect(row.actor_type).toBe("user");
+    expect(row.actor_id).toBe(OWNER);
+    // The authenticating key is still on the trail, and the kind is still legible.
+    expect(String(row.details?.mcpKeyId)).toBe(KEY_ID);
+    expect(String(row.details?.principalKind)).toBe("mcp");
+    // The tenant is never the actor.
+    expect(row.actor_id).not.toBe(ORG);
   }, 60_000);
 });

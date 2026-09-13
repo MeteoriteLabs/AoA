@@ -96,7 +96,11 @@ function principalFor(req: Request, companyId: string, organizationId: string): 
     return { kind: "agent", id: actor.agentId };
   }
   if (actor.type === "mcp" && actor.companyId === companyId && actor.keyId) {
-    return { kind: "mcp", id: actor.keyId };
+    // `id` stays the authenticating key id (the executor/requester identity on the
+    // job). `ownerUserId` carries the key's owner (`mcp_api_keys.userId`, notNull,
+    // on `actor.userId`) so a DE-27 capacity denial attributes to that owner as a
+    // `user` action, matching `getActorInfo` (task_8a0402bf).
+    return { kind: "mcp", id: actor.keyId, ownerUserId: actor.userId };
   }
   if (
     actor.type === "commander" &&

@@ -46,6 +46,11 @@ import type { AdmissionDenialSink } from "./worker-admission-denial-audit.js";
 export interface AuthenticatedJobPrincipal {
   kind: "user" | "agent" | "mcp" | "commander" | "local_board" | "system";
   id: string;
+  /** The request-time owner userId for an `mcp` principal (the `mcp_api_keys.userId`),
+   * so a capacity denial attributes to the key's owner as a `user` action per
+   * `getActorInfo` (task_8a0402bf). `id` stays the key id (the executor/requester
+   * identity on the job). Undefined for every other kind. */
+  ownerUserId?: string;
   role?: string;
   commanderClaims?: {
     userId: string;
@@ -359,6 +364,7 @@ export async function submitJobWithinTenant(
             principalId: input.principal.id,
             principalKind: input.principal.kind,
             principalRole: input.principal.role,
+            principalOwnerUserId: input.principal.ownerUserId,
             // DE-27 — a capacity refusal captures its intent here; the caller drains it on
             // a pool handle after this transaction rolls back on the 429 below.
             denialSink,

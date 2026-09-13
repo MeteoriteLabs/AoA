@@ -213,6 +213,10 @@ export interface AdmitAttemptCapacityInput {
   principalId: string;
   principalKind: string;
   principalRole?: string;
+  /** DE-27 — the request-time owner userId for an `mcp` submitter, so a capacity
+   * refusal attributes to the key's owner as a `user` action (task_8a0402bf). Passed
+   * straight into the intent; undefined for every other kind. */
+  principalOwnerUserId?: string;
   /** Override the Organization cap (defaults to organizations.concurrency_cap). */
   cap?: number;
   budgetBridge?: CapacityBudgetBridge;
@@ -290,6 +294,7 @@ export async function admitAttemptCapacity(
           // not the tenant organization.
           actorId: input.principalId,
           principalKind: input.principalKind,
+          ownerUserId: input.principalOwnerUserId,
           attemptId: input.attemptId,
           control: "server/src/services/org-concurrency.ts:admitAttemptCapacity",
           details: { usage: usageForReport, cap, workloadType: input.workloadType },
