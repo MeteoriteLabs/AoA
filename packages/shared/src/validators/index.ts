@@ -464,6 +464,21 @@ export {
 } from "./sidebar-preferences.js";
 
 export {
+  DEFAULT_UNIVERSE_PREFERENCES,
+  UNIVERSE_PREFERENCE_SECTIONS,
+  resolveUniversePreferences,
+  universePreferencesSchema,
+  universePreferencePatchSchema,
+  universePreferenceResetSchema,
+  type UniversePreferences,
+  type UniversePreferenceOverrides,
+  type PreferenceSection,
+  type UniversePreferencesSnapshot,
+  type UniversePreferencePatchInput,
+  type UniversePreferenceResetInput,
+} from "./universe-preferences.js";
+
+export {
   homeBoardLayoutItemSchema,
   homeBoardLayoutArraySchema,
   updateHomeBoardLayoutSchema,
