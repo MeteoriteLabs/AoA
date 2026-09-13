@@ -8,7 +8,10 @@ import {
 } from "@armyofagents/db";
 import { runInTenant } from "../db/tenant-context.js";
 import { registerWorkerHeartbeat } from "../services/execution-targets.js";
-import { recordWorkerSessionDenial } from "../services/worker-session-denial-audit.js";
+import {
+  recordWorkerSessionDenial,
+  type WorkerSessionDenialReason,
+} from "../services/worker-session-denial-audit.js";
 import { verifyDeviceProof, type DeviceProofHeaders } from "../services/worker-device-proof.js";
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
@@ -386,7 +389,21 @@ export async function registerProofBoundHeartbeat(input: {
   // ★ DE-18 — the heartbeat profile-touch refusal throws out of
   // `runInTenant`; capture-then-drain on the pool handle, same shape as
   // `authenticate`'s.
-  let heartbeatDenied = false;
+  // ★ ALL THREE heartbeat refusal sites are audited, not just the profile throw
+  // (Codex P2 on PR #448): the two `return false` paths (`heartbeatSessionTarget`
+  // matched no row — target disabled or generation advanced mid-session; and
+  // `registerWorkerHeartbeat` updated≠1) turn into `unauthorized` at the route
+  // WITHOUT throwing, so a `catch` alone would miss them. The refusing branch
+  // captures a predicate-named intent and it is drained on the POOL handle in a
+  // `finally` AFTER the tenant tx has closed — covering the return AND throw
+  // paths. All three are boolean writes that cannot prove WHICH column changed,
+  // and they fire only after `authenticate` already validated the generation for
+  // the request, so each is a concurrent-change refusal classified DE-04 (no
+  // `generation_drift`), never a falsely-claimed DE-18 generation cutoff.
+  // A one-field holder rather than a bare `let`: TypeScript narrows a `let` from
+  // its `null` initializer (the closure assignments below are not tracked by
+  // control-flow analysis) and would read it back as `never` at the drain.
+  const heartbeatDenial: { intent: { reason: WorkerSessionDenialReason; failed: string[] } | null } = { intent: null };
   try {
     return await runInTenant(input.appDb, input.principal.organizationId, async (repos, tx) => {
       const targetCurrent = await repos.workerEnrollment.heartbeatSessionTarget({
@@ -395,14 +412,20 @@ export async function registerProofBoundHeartbeat(input: {
         status: input.status,
         now: heartbeatAt,
       });
-      if (!targetCurrent) return false;
+      if (!targetCurrent) {
+        heartbeatDenial.intent = { reason: "heartbeat_target_revoked", failed: ["heartbeat_target_write_refused"] };
+        return false;
+      }
       const statusCurrent = await registerWorkerHeartbeat(tx, {
         targetId: input.principal.targetId,
         organizationId: input.principal.organizationId!,
         status: input.status,
         now: heartbeatAt,
       });
-      if (statusCurrent.updated !== 1) return false;
+      if (statusCurrent.updated !== 1) {
+        heartbeatDenial.intent = { reason: "heartbeat_status_refused", failed: ["heartbeat_status_write_refused"] };
+        return false;
+      }
       const profileCurrent = await repos.workerEnrollment.heartbeatSessionProfile({
         workerId: input.principal.workerId,
         executionTargetId: input.principal.targetId,
@@ -410,31 +433,24 @@ export async function registerProofBoundHeartbeat(input: {
         now: heartbeatAt,
       });
       if (!profileCurrent) {
-        heartbeatDenied = true;
+        heartbeatDenial.intent = { reason: "heartbeat_profile_revoked", failed: ["heartbeat_profile_write_refused"] };
         throw new WorkerSessionError("target_revoked");
       }
       return true;
     });
-  } catch (err) {
-    if (heartbeatDenied) {
+  } finally {
+    if (heartbeatDenial.intent) {
       await recordWorkerSessionDenial(input.appDb, {
-        reason: "heartbeat_profile_revoked",
+        reason: heartbeatDenial.intent.reason,
         organizationId: input.principal.organizationId,
         workerId: input.principal.workerId,
         targetId: input.principal.targetId,
         targetGeneration: input.principal.targetGeneration,
         deviceThumbprint: input.principal.deviceThumbprint,
-        // `heartbeatSessionProfile` returns a bare boolean — it cannot say WHICH
-        // column changed, and this fires only AFTER `verifyCurrent` already
-        // validated the generation for the request, so a mid-session profile-write
-        // refusal is a concurrent row change, NOT a provable generation cutoff.
-        // Classified DE-04 (no `generation_drift`) rather than falsely claiming
-        // DE-18 (Codex P2 on PR #448).
-        failed: ["heartbeat_profile_write_refused"],
+        failed: heartbeatDenial.intent.failed,
         control: "server/src/middleware/worker-session-auth.ts:registerProofBoundHeartbeat",
       });
     }
-    throw err;
   }
 }
 
