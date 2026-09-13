@@ -171,7 +171,49 @@ describe("controlled workspace", () => {
     act(() => handle.current!.undo());
     expect(handle.current!.getState().panels[key].rect).toEqual(initial);
     // D3 releases its native post-drag click suppression on the next timer tick.
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  });
+
+  it("preserves an observer's reentrant geometry edit when the drag is cancelled", async () => {
+    const { handle, changed } = setup();
+    const header = screen.getByLabelText("Task fixture panel controls");
+    const initial = handle.current!.getState().panels[key].rect;
+    const external = { ...initial, x: 777, y: 888 };
+    let edited = false;
+    changed.mockImplementation((state) => {
+      if (edited || state.panels[key].rect.x === initial.x) return;
+      edited = true;
+      handle.current!.dispatch({
+        type: "geometry",
+        key,
+        generation: state.panels[key].generation,
+        rect: external,
+        source: "human",
+      });
+    });
+    const mouse = (target: EventTarget, type: string, x: number, y: number) => {
+      const event = new MouseEvent(type, {
+        bubbles: true,
+        clientX: x,
+        clientY: y,
+        buttons: 1,
+      });
+      Object.defineProperty(event, "view", { value: window });
+      fireEvent(target, event);
+    };
+    mouse(header, "mousedown", 100, 100);
+    mouse(window, "mousemove", 150, 120);
+    expect(edited).toBe(true);
+    expect(handle.current!.getState().panels[key].rect).toEqual(external);
+    fireEvent.pointerCancel(window);
+    expect(handle.current!.getState().panels[key].rect).toEqual(external);
+    mouse(window, "mouseup", 150, 120);
+    expect(handle.current!.getState().panels[key].rect).toEqual(external);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
   });
 
   it("rejects invalid and maximized camera changes and returns defensive state", () => {

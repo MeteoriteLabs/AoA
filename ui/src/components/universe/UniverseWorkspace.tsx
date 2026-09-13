@@ -163,8 +163,8 @@ const ScopedWorkspace = forwardRef<WorkspaceHandle, WorkspaceProps>(
       };
       setShielded(true);
     }, []);
-    const dispatch = useCallback(
-      (action: Action) => {
+    const applyAction = useCallback(
+      (action: Action, owner?: GestureEntry) => {
         if (!alive.current) return;
         const before = current.current;
         const next = panelReducer(before, action);
@@ -180,6 +180,10 @@ const ScopedWorkspace = forwardRef<WorkspaceHandle, WorkspaceProps>(
         }
         if (action.type === "restore") pendingFocus.current = action.key;
         current.current = next;
+        // Capture this accepted sample before an observer can issue another command.
+        if (owner && owner === gesture.current && action.type === "geometry") {
+          owner.after = { ...next.panels[action.key].rect };
+        }
         setState(next);
         if (action.type === "minimize" || action.type === "close") {
           finishGesture(true);
@@ -191,6 +195,11 @@ const ScopedWorkspace = forwardRef<WorkspaceHandle, WorkspaceProps>(
         callbacks.current.onStateChange?.(structuredClone(next));
       },
       [finishGesture]
+    );
+
+    const dispatch = useCallback(
+      (action: Action) => applyAction(action),
+      [applyAction]
     );
 
     // Library callbacks are valid only while their captured incarnation owns a gesture.
@@ -205,13 +214,9 @@ const ScopedWorkspace = forwardRef<WorkspaceHandle, WorkspaceProps>(
           active.generation !== action.generation
         )
           return;
-        const before = current.current;
-        dispatch(action);
-        if (current.current !== before && gesture.current === active) {
-          active.after = { ...current.current.panels[action.key].rect };
-        }
+        applyAction(action, active);
       },
-      [dispatch]
+      [applyAction]
     );
 
     useLayoutEffect(() => {
