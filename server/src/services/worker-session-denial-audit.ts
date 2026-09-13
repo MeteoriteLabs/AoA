@@ -1,26 +1,22 @@
 // server/src/services/worker-session-denial-audit.ts
 //
-// DE-18, session arm — the durable record a worker-SESSION `target_revoked`
-// refusal leaves behind. `createWorkerSessionAuthenticator.authenticate` runs on
-// EVERY session-authenticated worker request and refuses `target_revoked` when
-// the presented (HMAC-verified) session's target/worker rows are no longer
-// current — a disabled target, a revoked worker, a lost owner membership, or a
-// device-generation bump (the DE-18 generation cutoff). Until this unit those
-// refusals reached the route as a bare 401 with no row, no metric and no log
-// line, on exactly the surface a superseded target-generation would probe first.
+// DE-18, session arm — the durable record a worker-SESSION GENERATION-CUTOFF
+// `target_revoked` refusal leaves behind. `createWorkerSessionAuthenticator`'s
+// per-request rechecks refuse `target_revoked` for several reasons (disabled
+// target, revoked worker, lost owner membership, credential/profile drift, and a
+// device-generation bump), but ONLY the device-generation bump is DE-18's
+// generation cutoff — see the ★ ONLY GENERATION note on `recordWorkerSessionDenial`
+// for why the rest are deliberately not recorded here.
 //
-// ★ THREE REFUSAL SITES, THREE CODES — distinct branches, distinct machine
-// reasons, matching the deny-path convention:
+// ★ TWO WIRED REFUSAL SITES feed this recorder, each passing a `details.failed`
+// disjunct list (a row is written only when that list includes `generation_drift`):
 //   `session_authority_revoked`  — `verifyCurrent`'s current-authority recheck
-//                                  (the per-request gate). The failing disjuncts
-//                                  are collected into `details.failed` so a
-//                                  reader can tell a disabled target from a
-//                                  membership loss without widening the code set.
-//   `platform_authority_revoked` — the shared-platform physical-authority
-//                                  recheck for a platform-scope target.
-//   `heartbeat_profile_revoked`  — `registerProofBoundHeartbeat`'s session-profile
-//                                  touch refused (generation/profile drift at the
-//                                  heartbeat write).
+//                                  (the per-request gate).
+//   `platform_authority_revoked` — the shared-platform physical-authority recheck
+//                                  for a platform-scope target.
+// `registerProofBoundHeartbeat`'s refusal branches are NOT wired here — they are
+// a documented follow-on (see worker-session-auth.ts), so this module emits no
+// heartbeat reason.
 //
 // ★ ATTRIBUTION. WHO = the presented worker (`actorType: "system"`,
 // `actorId` = the session's `sub` — token-attested, HMAC-verified). TENANT =
