@@ -10,6 +10,7 @@ export type PanelNodeData = Record<string, unknown> & {
   limits: ResizeLimits;
   zoom: number;
   dispatch: Dispatch<Action>;
+  headerReady: (panel: Panel, header: HTMLElement) => boolean;
   gestureDispatch: Dispatch<Action>;
   content: ReactNode;
   shielded: boolean;
@@ -65,6 +66,7 @@ export function PanelNode({ data }: NodeProps<PanelFlowNode>) {
         maximized={data.maximized}
         dispatch={dispatch}
         shielded={data.shielded}
+        onHeaderReady={(header) => data.headerReady(panel, header)}
         onHeaderKeyDown={(event) => {
           if (
             event.target !== event.currentTarget ||

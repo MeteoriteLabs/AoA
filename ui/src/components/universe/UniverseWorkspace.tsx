@@ -100,7 +100,9 @@ const ScopedWorkspace = forwardRef<WorkspaceHandle, WorkspaceProps>(
     const root = useRef<HTMLDivElement>(null);
     const recovery = useRef<HTMLButtonElement>(null);
     const triggers = useRef(new Map<string, HTMLElement>());
-    const pendingFocus = useRef<string | null>(null);
+    const pendingFocus = useRef<{ key: string; generation: number } | null>(
+      null
+    );
     const history = useRef(initialHistory(state.scope));
     const gesture = useRef<GestureEntry | null>(null);
     const serial = useRef(0);
@@ -176,9 +178,23 @@ const ScopedWorkspace = forwardRef<WorkspaceHandle, WorkspaceProps>(
             !element.closest(".universe-panel")
           )
             triggers.current.set(panelKey(before.scope, action.ref), element);
-          pendingFocus.current = panelKey(before.scope, action.ref);
+          const key = panelKey(before.scope, action.ref);
+          pendingFocus.current = {
+            key,
+            generation: next.panels[key].generation,
+          };
         }
-        if (action.type === "restore") pendingFocus.current = action.key;
+        if (action.type === "restore")
+          pendingFocus.current = {
+            key: action.key,
+            generation: action.generation,
+          };
+        if (
+          action.type === "close" ||
+          action.type === "minimize" ||
+          action.type === "focus"
+        )
+          pendingFocus.current = null;
         current.current = next;
         // Capture this accepted sample before an observer can issue another command.
         if (owner && owner === gesture.current && action.type === "geometry") {
@@ -250,17 +266,31 @@ const ScopedWorkspace = forwardRef<WorkspaceHandle, WorkspaceProps>(
         window.removeEventListener("lostpointercapture", cancel);
       };
     }, [finishGesture]);
-    useLayoutEffect(() => {
-      if (!pendingFocus.current) return;
-      const section = [
-        ...(root.current?.querySelectorAll<HTMLElement>("[data-panel-key]") ??
-          []),
-      ].find((element) => element.dataset.panelKey === pendingFocus.current);
-      if (section) {
-        section.querySelector<HTMLElement>(".universe-drag-handle")?.focus();
-        pendingFocus.current = null;
-      }
-    }, [state, usable]);
+    const headerReady = useCallback((panel: Panel, header: HTMLElement) => {
+      const pending = pendingFocus.current;
+      const actual = current.current.panels[panel.key];
+      if (
+        !alive.current ||
+        !pending ||
+        pending.key !== panel.key ||
+        pending.generation !== panel.generation ||
+        actual?.generation !== panel.generation ||
+        actual.minimized ||
+        current.current.selected !== panel.key
+      )
+        return true;
+      if (
+        !header.isConnected ||
+        header.closest("[inert]") ||
+        getComputedStyle(header).visibility === "hidden"
+      )
+        return false;
+      header.focus({ preventScroll: true });
+      // Consume only confirmed focus; wrapper attribute changes signal readiness.
+      if (document.activeElement !== header) return false;
+      pendingFocus.current = null;
+      return true;
+    }, []);
     const updateViewport = (next: Viewport, commit = false) => {
       if (!alive.current || current.current.maximized || !validViewport(next))
         return;
@@ -346,6 +376,7 @@ const ScopedWorkspace = forwardRef<WorkspaceHandle, WorkspaceProps>(
                 limits: resizeLimits(panel.ref.kind, viewport.zoom, usable),
                 zoom: viewport.zoom,
                 dispatch,
+                headerReady,
                 gestureDispatch,
                 shielded,
                 beginGesture,

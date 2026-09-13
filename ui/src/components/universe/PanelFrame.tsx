@@ -1,5 +1,7 @@
 import {
   Component,
+  useLayoutEffect,
+  useRef,
   type Dispatch,
   type ReactNode,
   type KeyboardEvent,
@@ -33,6 +35,7 @@ export type PanelFrameProps = {
   children: ReactNode;
   onHeaderKeyDown: (event: KeyboardEvent<HTMLElement>) => void;
   shielded: boolean;
+  onHeaderReady?: (header: HTMLElement) => boolean;
 };
 export function PanelFrame({
   panel,
@@ -42,7 +45,27 @@ export function PanelFrame({
   children,
   onHeaderKeyDown,
   shielded,
+  onHeaderReady,
 }: PanelFrameProps) {
+  const header = useRef<HTMLElement>(null);
+  // React Flow installs controlled nodes in its own commit. Signal readiness from
+  // the actual child after inert/visibility and initial measurement have updated.
+  useLayoutEffect(() => {
+    const element = header.current;
+    if (panel.minimized || !element || !onHeaderReady) return;
+    const wrapper = element.closest(".react-flow__node");
+    const observer = new MutationObserver(() => {
+      if (onHeaderReady(element)) observer.disconnect();
+    });
+    if (wrapper)
+      observer.observe(wrapper, {
+        attributes: true,
+        subtree: true,
+        attributeFilter: ["style", "inert"],
+      });
+    if (onHeaderReady(element)) observer.disconnect();
+    return () => observer.disconnect();
+  });
   const act = (type: "focus" | "minimize" | "restore" | "maximize" | "close") =>
     dispatch({ type, key: panel.key, generation: panel.generation });
   return (
@@ -55,6 +78,7 @@ export function PanelFrame({
       onPointerDownCapture={() => act("focus")}
     >
       <header
+        ref={header}
         className="universe-drag-handle"
         tabIndex={0}
         aria-label={`${panel.title} panel controls`}

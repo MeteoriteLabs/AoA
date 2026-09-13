@@ -1,10 +1,18 @@
 import { createRef } from "react";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { UniverseWorkspace, type WorkspaceHandle } from "../UniverseWorkspace";
 import { panelKey, type AuthorizedLayoutSnapshot } from "../panel-state";
 
 beforeEach(() => {
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(600);
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(400);
   vi.stubGlobal(
     "ResizeObserver",
     class {
@@ -31,7 +39,10 @@ beforeEach(() => {
     }
   );
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 const scope = { companyId: "a", userId: "u", conversationId: "c" };
 const ref = { companyId: "a", kind: "task" as const, id: "t" };
@@ -214,6 +225,36 @@ describe("controlled workspace", () => {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
+  });
+
+  it("focuses a newly opened incarnation after its frame becomes ready", async () => {
+    const { handle } = setup();
+    act(() =>
+      handle.current!.open({
+        ref: { ...ref, id: "new-focus" },
+        title: "New focus",
+      })
+    );
+    await waitFor(() =>
+      expect(screen.getByLabelText("New focus panel controls")).toHaveFocus()
+    );
+  });
+
+  it("waits for restored child readiness before consuming header focus", async () => {
+    const { handle } = setup();
+    fireEvent.click(screen.getByRole("button", { name: "Minimize panel" }));
+    const header = screen.getByLabelText("Task fixture panel controls");
+    const originalFocus = header.focus.bind(header);
+    const focus = vi.spyOn(header, "focus").mockImplementation(() => {
+      // Browsers reject focus while React Flow still has the old inert child.
+      if (!header.closest("[inert]")) originalFocus();
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Restore Task fixture" })
+    );
+    expect(handle.current!.getState().panels[key].minimized).toBe(false);
+    await waitFor(() => expect(header).toHaveFocus());
+    focus.mockRestore();
   });
 
   it("rejects invalid and maximized camera changes and returns defensive state", () => {
