@@ -783,6 +783,23 @@ integration("DAT-004 lease-scoped secret broker", () => {
     expect(sink.intent).toBeNull();
   });
 
+  it("DE-29 probe class: an ABSENT-handle probe records unknown_ref_kind — a foreign handle is absent-by-scoping, so the cross-tenant probe is deliberately IN this row stream (Codex P2 on PR #447, adjudicated)", async () => {
+    const brokers = recordingBrokers();
+    const { app } = guardCtx();
+    const { offer } = await activateLease();
+    await clearDenialRows();
+    const svc = createSecretBrokerService({ appDb: app.db, brokers });
+    const res = await svc.resolve({ auth: auth(`r-${crypto.randomUUID()}`), request: request(offer, "no-such-handle") });
+    expect(res.outcome).toBe("denied");
+    if (res.outcome !== "denied") return;
+    expect(res.reason).toBe("malformed");
+    const rows = await denialRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.action).toBe("security.denied.secret_resolve");
+    expect(rows[0]!.details.reason).toBe("unknown_ref_kind");
+    expect(rows[0]!.entity_id).toBe("no-such-handle");
+  }, 60_000);
+
   it("ANTI-VACUITY: an admitted resolve writes ZERO security.denied rows", async () => {
     const brokers = recordingBrokers();
     const { app } = guardCtx();

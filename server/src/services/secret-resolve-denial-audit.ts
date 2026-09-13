@@ -5,13 +5,24 @@
 // out of the tenant transaction it was refused in.
 //
 // ★ THE ONE CHOKEPOINT. `resolveExecutionSecret`
-// (`packages/db/src/repositories/tenant/job-control.ts`) computes the pure
-// owner-routing decision `authorizeSecretResolve` (`job-fence.ts`) over the
-// LOCKED handle/job/credential rows and throws
-// `SecretResolveRejection(<reason>)` for every non-admit verdict — sixteen
-// enumerated machine reasons, `credential_owner_mismatch` and
-// `owner_binding_incomplete` among them: the DE-29 threat proper, "a job
-// requesting another owner's credential". Until this unit that refusal reached
+// (`packages/db/src/repositories/tenant/job-control.ts`) throws
+// `SecretResolveRejection(<reason>)` for every refusal the guarded resolve
+// takes: the PRE-DECISION handle/job resolution (`unknown_ref_kind`, thrown
+// coarsely when the presented handle or its job resolves no row in this
+// organization's scope) and every non-admit verdict of the pure owner-routing
+// decision `authorizeSecretResolve` (`job-fence.ts`) over the LOCKED
+// handle/job/credential rows — sixteen enumerated machine reasons,
+// `credential_owner_mismatch` and `owner_binding_incomplete` among them: the
+// DE-29 threat proper, "a job requesting another owner's credential".
+// ★ THE PRE-DECISION `unknown_ref_kind` ROWS BELONG HERE TOO, deliberately
+// (Codex P2 on PR #447, adjudicated): a FOREIGN handle is absent-by-scoping in
+// this tenant, so the absent-handle probe is exactly the cross-tenant
+// wrong-owner probe DE-29 exists to see, and excluding it would blind the row
+// stream to the probe class. The cost, stated rather than hidden: the
+// mutator's own vocabulary reuses `unknown_ref_kind` for the pre-decision
+// misses AND for the decision's invalid-ref_kind verdict, so a reader cannot
+// split those two from the reason alone — that coarseness is the mutator's
+// non-disclosure choice, not this recorder's. Until this unit that refusal reached
 // the worker as a coarse `malformed` (correctly — the WIRE must not disclose
 // which invariant tripped) and left behind ONLY the count-only, id-free
 // `metrics.secretRead({outcome:"denied"})` tick that `E0-F013` files against
