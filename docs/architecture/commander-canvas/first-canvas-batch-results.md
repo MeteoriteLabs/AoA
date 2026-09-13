@@ -19,8 +19,8 @@ The internal harness demonstrates generic task-like, artifact and iframe content
 | Shared preferences | `7fc25f919`: strict schemas/defaults/reset sections; focused 7 tests, shared 590 tests, shared typecheck/build; independent task review approved |
 | React Flow dependency | `cf0d609f3`: exact `@xyflow/react@12.11.6`, manifest plus generated lockfile; frozen install and actual runtime exports checked |
 | Pure controller/history | `fe3b356ca` plus `03d3244a8`: 43 focused tests and targeted strict TypeScript; independent review caught receipt-wide ordinal consistency, corrected and re-reviewed |
-| Controlled frame | `e40313915`, `84230e07c`, `dfd52e9d4`: 60 focused tests and UI typecheck; independent review corrected resize targets, bounded opening and cancelled-gesture observer fencing |
-| Actual browser journey | In progress. Permanent Chromium tests exercise three content fixtures and three zoom levels; restore keyboard-focus failure remains under investigation |
+| Controlled frame | `e40313915` through `cf947c356`: 68 focused tests and UI typecheck; independent reviews corrected resize targets, bounded opening, cancellation fencing, child-ready focus and delayed camera completion |
+| Actual browser journey | 43 actual Chromium cases passed on `cf947c356`, zero retries/skips; final artifact packaging and whole-batch review pending |
 | Full modified-source qualification | Pending exact-source typecheck, complete test suite and build |
 | User experience acceptance | Pending demonstration and TK review |
 
@@ -37,6 +37,10 @@ The existing Linux baseline certificate is preserved. A fresh qualification chec
 6. Cancellation aborts a gesture: restore the before-rectangle only if the same scoped incarnation still has that gesture's last accepted rectangle. It creates no history entry and cannot overwrite a reentrant observer edit. This commits to abort semantics; changing to partial-motion retention would require revised undo/interaction tests.
 
 These refinements make existing identity and compare-before-write requirements explicit. Their integration cost is aligning the later E1.2 adapter with these signatures and recovery paths; they do not add a second layout writer or domain execution authority.
+
+## Interaction failures caught and corrected
+
+Actual pointer tests exposed incorrect resize hit stacking, lost focus on initial open/restore, and camera rollback at nondefault zoom. Cancel tests also exposed late gesture callbacks and a reentrant observer edit being overwritten. Each fix has a regression and scoped review. The camera defect came from delayed React Flow internal sync completions and earlier native drag completions replaying stale coordinates; only a native completion matching the current camera can commit. These generic-frame corrections do not certify the old mock or real task-entry routes.
 
 ## Completion boundary
 
