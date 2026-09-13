@@ -1,10 +1,12 @@
-// DE-18, admission + session arms — the dominant PRODUCTION `target_revoked`
-// denials, now durably recorded. The register's DE-18 row named exactly these as
-// the open follow-on: "the admission/session target_revoked arms … remain
-// unaudited". Each arm below drives the REAL refusing path over embedded
-// PostgreSQL under the non-owner `aoa_app` role and asserts the durable row's
-// WHO/TENANT/RESOURCE/WHY separately. Observed RED against the unchanged wiring
-// before the sinks landed.
+// DE-18 + DE-04, admission + session + heartbeat arms — the dominant PRODUCTION
+// `target_revoked`/`unauthorized` denials, durably recorded with the CROSSING
+// derived from the actual failed conjunct(s): an authoritative generation
+// cutoff is DE-18; every other worker-authority-currency refusal is DE-04's
+// worker-authority-currency arm (register amendment 2026-09-13 — the follow-on
+// PR #448 documented). Each arm below drives the REAL refusing path over
+// embedded PostgreSQL under the non-owner `aoa_app` role and asserts the
+// durable row's WHO/TENANT/RESOURCE/WHY separately. Observed RED against the
+// unchanged wiring before the sinks landed (both waves).
 //
 // Windows CI can't start embedded-postgres on the runneradmin runner (Issue
 // #114) — gated; opt in with AOA_RUN_WIN_INTEGRATION=1.
@@ -19,8 +21,14 @@ import {
   ORG,
   TARGET,
   WORKER,
+  THUMBPRINT,
+  WORKER_PROFILE_HASH,
   type JobControlFixture,
 } from "./helpers/job-control-fixture.js";
+import {
+  registerProofBoundHeartbeat,
+  type VerifiedTargetPrincipal,
+} from "../middleware/worker-session-auth.js";
 
 const integration = describe.skipIf(
   process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1",
@@ -88,18 +96,31 @@ integration("DE-18 admission/session target_revoked denial audit", () => {
     expect(row.details.operation).toBe("lease_poll");
   }, 60_000);
 
-  it("DE-18 discrimination (poll): a NON-generation authority failure (stale heartbeat) writes NO row — it serves no crossing's audit clause (Codex P2 x4 on PR #448)", async () => {
+  it("DE-04 discrimination (poll): a NON-generation authority failure (stale heartbeat) writes ONE row keyed to DE-04's worker-authority-currency arm, NOT DE-18", async () => {
     await fx.seedPlacedJob(9105);
     // Age the worker + target liveness past maxHeartbeatAgeMs (default 300s) while
     // leaving every generation conjunct intact, so `authorityCurrent` fails ONLY on
-    // the heartbeat freshness check — not a generation change, not a lease fence,
-    // so neither DE-18 nor DE-04 applies and nothing is recorded.
+    // the heartbeat freshness check — an authority-currency refusal, not a
+    // generation change, so the classifier files it under DE-04 (register
+    // amendment 2026-09-13), never DE-18.
     await fx.admin`UPDATE workers SET last_seen_at = clock_timestamp() - interval '1 hour' WHERE id = ${WORKER}`;
     await fx.admin`UPDATE execution_targets SET last_seen_at = clock_timestamp() - interval '1 hour' WHERE id = ${TARGET}`;
     await expect(
       fx.leasing.poll({ auth: auth("de18-p5"), request: pollRequest("de18-p5") }),
     ).rejects.toMatchObject({ code: "target_revoked" });
-    expect(await denialRows()).toHaveLength(0);
+    const rows = await denialRows();
+    expect(rows).toHaveLength(1);
+    const row = rows[0]!;
+    expect(row.action).toBe("security.denied.worker_poll_authority");
+    expect(row.details.reason).toBe("poll_authority_stale");
+    expect(row.details.crossing).toBe("DE-04");
+    expect(row.details.failed).toEqual(["heartbeat_stale"]);
+    expect(row.actor_type).toBe("system");
+    expect(row.actor_id).toBe(WORKER);
+    expect(row.organization_id).toBe(ORG);
+    expect(row.company_id).toBeNull();
+    expect(row.entity_type).toBe("execution_target");
+    expect(row.entity_id).toBe(TARGET);
   }, 60_000);
 
   it("poll: a post-authority data-integrity refusal (unparseable stored hello) writes NO row — no applicable crossing", async () => {
@@ -128,8 +149,173 @@ integration("DE-18 admission/session target_revoked denial audit", () => {
     expect(await denialRows()).toHaveLength(0);
   }, 60_000);
 
-  // NOTE: the `registerProofBoundHeartbeat` refusal arm is a documented FOLLOW-ON,
-  // not covered here (Codex P2 x3 on PR #448) — its six boolean-write refusal
-  // branches need a per-branch generation re-read to split DE-18 vs DE-04, so
-  // auditing them is deferred rather than shipped as a crossing-guessing partial.
+  // ---- HEARTBEAT arm (worker-session-auth.ts:registerProofBoundHeartbeat) ----
+  // The six boolean-write refusal branches are classified by a per-branch
+  // generation RE-READ of the same authority row each write predicates on (the
+  // follow-on PR #448 documented), then recorded as
+  // `security.denied.worker_session` rows with `details.branch` naming the
+  // branch and the crossing derived from `details.failed`.
+
+  const TARGET_PLATFORM = "a6000000-0000-4000-8000-000000000013";
+  const WORKER_PLATFORM = "a6000000-0000-4000-8000-000000000015";
+
+  function tenantPrincipal(): VerifiedTargetPrincipal {
+    return {
+      workerId: WORKER,
+      targetId: TARGET,
+      targetGeneration: 1,
+      deviceThumbprint: THUMBPRINT,
+      profileHash: WORKER_PROFILE_HASH,
+      expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+      organizationId: ORG,
+      scope: "organization",
+      targetScope: "organization",
+    };
+  }
+
+  function platformPrincipal(): VerifiedTargetPrincipal {
+    return {
+      workerId: WORKER_PLATFORM,
+      targetId: TARGET_PLATFORM,
+      targetGeneration: 1,
+      deviceThumbprint: THUMBPRINT,
+      profileHash: WORKER_PROFILE_HASH,
+      expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+      organizationId: null,
+      scope: "platform",
+      targetScope: "platform",
+    };
+  }
+
+  async function seedPlatformAuthority(): Promise<void> {
+    await fx.admin`DELETE FROM workers WHERE id = ${WORKER_PLATFORM}`;
+    await fx.admin`DELETE FROM execution_targets WHERE id = ${TARGET_PLATFORM}`;
+    await fx.admin`INSERT INTO execution_targets
+      (id, organization_id, slug, kind, trust_class, status, capabilities, config, scope,
+       target_authority_key, device_generation, last_seen_at)
+      VALUES (${TARGET_PLATFORM}, NULL, 'de18-hb-platform', 'dedicated_worker', 'dedicated_tenant',
+        'active', '{}', '{}', 'platform', 'platform', 1, clock_timestamp())`;
+    await fx.admin`INSERT INTO workers
+      (id, scope, organization_id, execution_target_id, target_authority_key, device_public_key,
+       device_thumbprint, device_generation, profile_hash, profile_snapshot, enrolled_at,
+       last_seen_at, label, status)
+      VALUES (${WORKER_PLATFORM}, 'platform', NULL, ${TARGET_PLATFORM}, 'platform', 'de18-hb-pk',
+        ${THUMBPRINT}, 1, ${WORKER_PROFILE_HASH}, '{}', clock_timestamp(),
+        clock_timestamp(), 'DE-18 heartbeat platform worker', 'enrolled')`;
+  }
+
+  it("ANTI-VACUITY (heartbeat): a healthy tenant heartbeat succeeds and writes ZERO security.denied rows", async () => {
+    await expect(registerProofBoundHeartbeat({
+      appDb: fx.app.db, principal: tenantPrincipal(), status: "active",
+    })).resolves.toBe(true);
+    expect(await denialRows()).toHaveLength(0);
+  }, 60_000);
+
+  it("DE-18 CLAUSE (heartbeat, tenant_target): a superseded target generation refuses AND leaves one DE-18 row naming branch + conjunct", async () => {
+    await fx.admin`UPDATE execution_targets SET device_generation = 2 WHERE id = ${TARGET}`;
+    await expect(registerProofBoundHeartbeat({
+      appDb: fx.app.db, principal: tenantPrincipal(), status: "active",
+    })).resolves.toBe(false);
+    const rows = await denialRows();
+    expect(rows).toHaveLength(1);
+    const row = rows[0]!;
+    expect(row.action).toBe("security.denied.worker_session");
+    expect(row.details.reason).toBe("heartbeat_authority_revoked");
+    expect(row.details.crossing).toBe("DE-18");
+    expect(row.details.branch).toBe("tenant_target");
+    expect(row.details.failed).toEqual(["generation_drift"]);
+    expect(row.actor_type).toBe("system");
+    expect(row.actor_id).toBe(WORKER);
+    expect(row.organization_id).toBe(ORG);
+    expect(row.company_id).toBeNull();
+    expect(row.entity_type).toBe("execution_target");
+    expect(row.entity_id).toBe(TARGET);
+  }, 60_000);
+
+  it("DE-04 discrimination (heartbeat, tenant_target): a DISABLED target refuses AND files under DE-04, not DE-18", async () => {
+    await fx.admin`UPDATE execution_targets SET status = 'disabled' WHERE id = ${TARGET}`;
+    await expect(registerProofBoundHeartbeat({
+      appDb: fx.app.db, principal: tenantPrincipal(), status: "active",
+    })).resolves.toBe(false);
+    const rows = await denialRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.action).toBe("security.denied.worker_session");
+    expect(rows[0]!.details.reason).toBe("heartbeat_authority_revoked");
+    expect(rows[0]!.details.crossing).toBe("DE-04");
+    expect(rows[0]!.details.branch).toBe("tenant_target");
+    expect(rows[0]!.details.failed).toEqual(["target_disabled"]);
+  }, 60_000);
+
+  it("DE-04 (heartbeat, tenant_profile): a REVOKED worker refuses target_revoked (the one throwing branch) AND files under DE-04", async () => {
+    await fx.admin`UPDATE workers SET status = 'revoked' WHERE id = ${WORKER}`;
+    await expect(registerProofBoundHeartbeat({
+      appDb: fx.app.db, principal: tenantPrincipal(), status: "active",
+    })).rejects.toMatchObject({ code: "target_revoked" });
+    const rows = await denialRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.details.reason).toBe("heartbeat_authority_revoked");
+    expect(rows[0]!.details.crossing).toBe("DE-04");
+    expect(rows[0]!.details.branch).toBe("tenant_profile");
+    expect(rows[0]!.details.failed).toEqual(["worker_revoked"]);
+  }, 60_000);
+
+  it("DE-18 (heartbeat, platform_liveness): a superseded PLATFORM generation refuses AND leaves one DOUBLY-NULL DE-18 row", async () => {
+    await seedPlatformAuthority();
+    await fx.admin`UPDATE execution_targets SET device_generation = 2 WHERE id = ${TARGET_PLATFORM}`;
+    await expect(registerProofBoundHeartbeat({
+      appDb: fx.app.db, operatorDb: fx.operator.db, principal: platformPrincipal(), status: "active",
+    })).resolves.toBe(false);
+    const rows = await denialRows();
+    expect(rows).toHaveLength(1);
+    const row = rows[0]!;
+    expect(row.action).toBe("security.denied.worker_session");
+    expect(row.details.reason).toBe("heartbeat_authority_revoked");
+    expect(row.details.crossing).toBe("DE-18");
+    expect(row.details.branch).toBe("platform_liveness");
+    expect(row.details.failed).toEqual(["generation_drift"]);
+    // A platform-scope refusal is the doubly-null row the E0-F013 (a2) CHECK admits.
+    expect(row.organization_id).toBeNull();
+    expect(row.company_id).toBeNull();
+    expect(row.actor_id).toBe(WORKER_PLATFORM);
+    expect(row.entity_id).toBe(TARGET_PLATFORM);
+  }, 60_000);
+
+  it("DE-04 (heartbeat, platform_status_transition): an INACTIVE platform target refuses a draining transition under DE-04", async () => {
+    await seedPlatformAuthority();
+    await fx.admin`UPDATE execution_targets SET status = 'disabled' WHERE id = ${TARGET_PLATFORM}`;
+    await expect(registerProofBoundHeartbeat({
+      appDb: fx.app.db, operatorDb: fx.operator.db, principal: platformPrincipal(), status: "draining",
+    })).resolves.toBe(false);
+    const rows = await denialRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.details.reason).toBe("heartbeat_authority_revoked");
+    expect(rows[0]!.details.crossing).toBe("DE-04");
+    expect(rows[0]!.details.branch).toBe("platform_status_transition");
+    expect(rows[0]!.details.failed).toEqual(["target_inactive"]);
+  }, 60_000);
+
+  it("DE-18 (heartbeat, shared_platform): a superseded platform generation refuses a TENANT logical heartbeat under DE-18, org-attributed", async () => {
+    await seedPlatformAuthority();
+    await fx.admin`UPDATE execution_targets SET device_generation = 2 WHERE id = ${TARGET_PLATFORM}`;
+    const principal: VerifiedTargetPrincipal = {
+      ...tenantPrincipal(),
+      targetId: TARGET_PLATFORM,
+      targetScope: "platform",
+      sharedPlatformAuthority: {
+        physicalWorkerId: WORKER_PLATFORM,
+        physicalProfileHash: WORKER_PROFILE_HASH,
+        devicePublicKey: "de18-hb-pk",
+      },
+    };
+    await expect(registerProofBoundHeartbeat({
+      appDb: fx.app.db, operatorDb: fx.operator.db, principal, status: "active",
+    })).resolves.toBe(false);
+    const rows = await denialRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.details.reason).toBe("heartbeat_authority_revoked");
+    expect(rows[0]!.details.crossing).toBe("DE-18");
+    expect(rows[0]!.details.branch).toBe("shared_platform");
+    expect(rows[0]!.details.failed).toEqual(["generation_drift"]);
+    expect(rows[0]!.organization_id).toBe(ORG);
+  }, 60_000);
 });
