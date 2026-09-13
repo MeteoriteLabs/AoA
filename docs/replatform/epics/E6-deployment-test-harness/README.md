@@ -1,8 +1,8 @@
 # E6 — Deployment and Distributed Test Harness
 
-**Status:** `backlog`
+**Status:** `complete` (all tickets DEP-000 through DEP-013 shipped, incl. `E6-D1-FOUNDATION`, which E3/E4/E5/E7 gate on — reconciled from a stale `backlog` in the 2026-09-13 record-integrity sweep, ticket range corrected from `through DEP-009` to the actual `tickets/` set)
 **Depends on:** E0; `E6-D1-FOUNDATION` consumes E2 plus E3/E4 core, and completion consumes E3/E4/E5
-**Tickets:** DEP-000 through DEP-009
+**Tickets:** DEP-000 through DEP-013
 **Exit gate:** full D1 isolated topology, fake/reference provider isolation suite, MinIO, Toxiproxy, CI evidence, staging manifests, two-replica HA, and distributed telemetry pass. Real E2B conformance is the CLI-001/D2 gate, not an E6 prerequisite.
 
 ## Mandatory planning brief

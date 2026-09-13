@@ -1,8 +1,8 @@
 # E3 — Durable Job Control
 
-**Status:** `backlog`
+**Status:** `complete` (all tickets JOB-001 through JOB-015 shipped; the durable job-control foundation E4/E5/E7/E10 build atop and E2 depends on as satisfied — reconciled from a stale `backlog` in the 2026-09-13 record-integrity sweep, ticket range corrected from its own `tickets/` set)
 **Depends on:** E1 and E2; JOB-004 through JOB-008, JOB-011 through JOB-014, and the exit gate require `E6-D1-FOUNDATION`; admission-only JOB-010 does not
-**Tickets:** JOB-001 through JOB-014
+**Tickets:** JOB-001 through JOB-015
 **Exit gate:** submit, enroll, admission, assignment, product approval, runtime decision, lease, ACK, renew, fence, event, completion, cancellation, retry, budget, cost, output/run projection, revocation, and operator controls pass in D1 with source-specific provenance.
 
 ## Mandatory planning brief
