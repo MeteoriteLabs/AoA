@@ -109,6 +109,153 @@ async function settleCameraEnd() {
 }
 
 describe("controlled workspace", () => {
+  it.each(["close", "minimize"] as const)(
+    "returns fallback focus to the recovery group after %s without a launcher",
+    (type) => {
+      const { handle } = setup();
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: type === "close" ? "Close panel" : "Minimize panel",
+        })
+      );
+      const recovery = screen.getByRole("group", {
+        name: "Workspace controls",
+      });
+      expect(recovery).toHaveFocus();
+      expect(
+        screen.queryByRole("button", { name: "Workspace controls" })
+      ).not.toBeInTheDocument();
+      if (type === "minimize") {
+        const restore = screen.getByRole("button", {
+          name: "Restore Task fixture",
+        });
+        expect(recovery).toContainElement(restore);
+        fireEvent.click(restore);
+        expect(handle.current!.getState().panels[key].minimized).toBe(false);
+      }
+    }
+  );
+
+  it("rejects a mismapped company's renderer while retaining an operable shell", () => {
+    const handle = createRef<WorkspaceHandle>();
+    const foreignRender = vi.fn(() => <p>Foreign content</p>);
+    render(
+      <UniverseWorkspace
+        ref={handle}
+        scope={scope}
+        initialLayout={layout}
+        content={{
+          [key]: {
+            ref: { ...ref, companyId: "b" },
+            title: "Foreign task",
+            render: foreignRender,
+          },
+        }}
+      />
+    );
+    expect(foreignRender).not.toHaveBeenCalled();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Content is unavailable"
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Minimize panel" }));
+    expect(handle.current!.getState().panels[key].minimized).toBe(true);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Restore Task fixture" })
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Maximize panel" }));
+    expect(handle.current!.getState().maximized).toBe(key);
+    fireEvent.click(screen.getByRole("button", { name: "Close panel" }));
+    expect(handle.current!.getState().panels[key]).toBeUndefined();
+    expect(foreignRender).not.toHaveBeenCalled();
+  });
+
+  it.each(["undo", "redo"] as const)(
+    "does not adopt a completed gesture's reentrant external edit or consume prior %s",
+    (direction) => {
+      const { handle, changed } = setup();
+      const header = screen.getByLabelText("Task fixture panel controls");
+      const initial = handle.current!.getState().panels[key].rect;
+      fireEvent.keyDown(header, { key: "ArrowRight", altKey: true });
+      const moved = handle.current!.getState().panels[key].rect;
+      if (direction === "redo") act(() => handle.current!.undo());
+      const before = handle.current!.getState().panels[key];
+      const external = { ...initial, x: 777, y: 888 };
+      let edited = false;
+      changed.mockImplementation((state) => {
+        if (edited || state.panels[key].rect.x === before.rect.x) return;
+        edited = true;
+        handle.current!.dispatch({
+          type: "geometry",
+          key,
+          generation: before.generation,
+          rect: external,
+          source: "human",
+        });
+      });
+      fireEvent.keyDown(header, { key: "ArrowRight", altKey: true });
+      expect(edited).toBe(true);
+      expect(handle.current!.getState().panels[key].rect).toEqual(external);
+      expect(changed).toHaveBeenLastCalledWith(handle.current!.getState());
+      act(() => handle.current!.undo());
+      expect(handle.current!.getState().panels[key].rect).toEqual(external);
+      // Returning to the prior history entry's expected value makes its survival observable.
+      act(() =>
+        handle.current!.dispatch({
+          type: "geometry",
+          key,
+          generation: before.generation,
+          rect: before.rect,
+          source: "human",
+        })
+      );
+      act(() => handle.current![direction]());
+      expect(handle.current!.getState().panels[key].rect).toEqual(
+        direction === "undo" ? initial : moved
+      );
+    }
+  );
+
+  it.each(["close", "minimize"] as const)(
+    "publishes the final rollback when a sibling %s interrupts a real drag",
+    async (type) => {
+      const { handle, changed } = setup();
+      const header = screen.getByLabelText("Task fixture panel controls");
+      const initial = handle.current!.getState().panels[key].rect;
+      fireEvent.keyDown(header, { key: "ArrowRight", altKey: true });
+      const prior = handle.current!.getState().panels[key].rect;
+      const siblingRef = { ...ref, id: "sibling" };
+      const siblingKey = panelKey(scope, siblingRef);
+      act(() => handle.current!.open({ ref: siblingRef, title: "Sibling" }));
+      const sibling = handle.current!.getState().panels[siblingKey];
+      mouse(header, "mousedown", 100, 100);
+      mouse(window, "mousemove", 150, 120);
+      expect(handle.current!.getState().panels[key].rect).not.toEqual(prior);
+      expect(screen.getAllByTestId("iframe-shield")).toHaveLength(2);
+      act(() =>
+        handle.current!.dispatch({
+          type,
+          key: siblingKey,
+          generation: sibling.generation,
+        })
+      );
+      const final = handle.current!.getState();
+      expect(final.panels[key].rect).toEqual(prior);
+      if (type === "close") expect(final.panels[siblingKey]).toBeUndefined();
+      else expect(final.panels[siblingKey].minimized).toBe(true);
+      expect(changed).toHaveBeenLastCalledWith(final);
+      expect(screen.queryAllByTestId("iframe-shield")).toHaveLength(0);
+      mouse(window, "mousemove", 200, 150);
+      mouse(window, "mouseup", 200, 150);
+      expect(handle.current!.getState()).toEqual(final);
+      expect(changed).toHaveBeenLastCalledWith(final);
+      act(() => handle.current!.undo());
+      expect(handle.current!.getState().panels[key].rect).toEqual(initial);
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
+  );
+
   it.each([0.5, 1, 2])(
     "opens absent panels in screen pixels at zoom %s without refitting existing panels",
     (zoom) => {

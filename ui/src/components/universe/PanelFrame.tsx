@@ -73,6 +73,7 @@ export function PanelFrame({
       className="universe-panel"
       data-selected={selected}
       data-panel-key={panel.key}
+      data-generation={panel.generation}
       aria-label={panel.title}
       inert={panel.minimized}
       onPointerDownCapture={() => act("focus")}

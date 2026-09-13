@@ -31,6 +31,10 @@ describe("shared frame button contract", () => {
         Fixture
       </PanelFrame>
     );
+    expect(screen.getByRole("region", { name: "Task" })).toHaveAttribute(
+      "data-generation",
+      String(panel.generation)
+    );
     fireEvent.click(screen.getByRole("button", { name }));
     expect(dispatch).toHaveBeenCalledExactlyOnceWith({
       ...action,

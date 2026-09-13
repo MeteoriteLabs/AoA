@@ -592,7 +592,7 @@ test("closing one panel preserves sibling generation geometry and content", asyn
 test("close/reopen generation and scope replacement reject stale callbacks and history", async ({
   page,
 }) => {
-  await setup(page);
+  await setup(page, 0.5);
   const first = Object.values((await state(page)).panels)[0];
   const instance = await page.getByTestId("mount-count").textContent();
   await button(page, "Capture stale close").click();
@@ -622,6 +622,7 @@ test("close/reopen generation and scope replacement reject stale callbacks and h
   await page.mouse.up();
   await expect(page.locator("section[data-panel-key]")).toHaveCount(0);
   await expect(page.getByTestId("iframe-shield")).toHaveCount(0);
+  await expectCamera(page, { x: 0, y: 0, zoom: 1 });
   await button(page, "Open task").click();
   const fresh = await rect(page);
   await button(page, "Undo geometry").click();
@@ -629,6 +630,106 @@ test("close/reopen generation and scope replacement reject stale callbacks and h
   await button(page, "Replay stale close").click();
   await expect(frame(page)).toBeVisible();
 });
+
+test("background edge resize foregrounds its incarnation and emits only geometry fields", async ({
+  page,
+}) => {
+  await setup(page);
+  const task = frame(page);
+  await drag(page, task.locator("header"), -120, -40, true);
+  const before = await rect(page);
+  await button(page, "Open artifact").click();
+  const taskKey = (await task.getAttribute("data-panel-key"))!;
+  const artifact = frame(page, "artifact");
+  const activeColor = await artifact
+    .locator("header")
+    .evaluate((e) => getComputedStyle(e).color);
+  const inactiveColor = await task
+    .locator("header")
+    .evaluate((e) => getComputedStyle(e).color);
+  expect.soft(inactiveColor).not.toBe(activeColor);
+  expect((await state(page)).selected).not.toBe(taskKey);
+  const edge = task
+    .locator("..")
+    .locator(".react-flow__resize-control.line.left");
+  const b = await box(edge);
+  await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(b.x + b.width / 2 - 40, b.y + b.height / 2, {
+    steps: 5,
+  });
+  const resizing = await state(page);
+  near(resizing.panels[taskKey].rect, {
+    ...before,
+    x: before.x - 40,
+    width: before.width + 40,
+  });
+  expect.soft(resizing.selected).toBe(taskKey);
+  expect.soft(resizing.order.at(-1)).toBe(taskKey);
+  expect
+    .soft(Object.keys(resizing.panels[taskKey].rect).sort())
+    .toEqual(["height", "width", "x", "y"]);
+  await expect
+    .soft(task)
+    .toHaveAttribute(
+      "data-generation",
+      String(resizing.panels[taskKey].generation)
+    );
+  await page.mouse.up();
+  const after = await state(page);
+  expect(after.panels[taskKey].rect).toEqual(resizing.panels[taskKey].rect);
+  await expect(page.getByTestId("iframe-shield")).toHaveCount(0);
+  await button(page, "Undo geometry").click();
+  near(await rect(page), before);
+});
+
+for (const type of ["Close", "Minimize"])
+  test(`sibling ${type.toLowerCase()} during a real drag publishes rollback and fences late callbacks`, async ({
+    page,
+  }) => {
+    await setup(page);
+    const initial = await rect(page);
+    await drag(page, frame(page).locator("header"), -120, -40, true);
+    const prior = await rect(page);
+    await button(page, "Open iframe").click();
+    const sibling = frame(page, "iframe");
+    const siblingPanel = Object.values((await state(page)).panels).find(
+      (p) => p.ref.id === "iframe"
+    )!;
+    const h = await box(frame(page).locator("header"));
+    const visible = await box(frame(page));
+    await page.mouse.move(h.x + 80, h.y + h.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(h.x + 130, h.y + h.height / 2 + 20, { steps: 5 });
+    near(await rect(page), { ...prior, x: prior.x + 50, y: prior.y + 20 });
+    await expect(page.getByTestId("iframe-shield")).toHaveCount(2);
+    // External lifecycle command while the real D3 drag is still active.
+    await sibling
+      .getByRole("button", { name: `${type} panel`, exact: true })
+      .evaluate((e: HTMLButtonElement) => e.click());
+    const final = await state(page);
+    near(await rect(page), prior);
+    near(await box(frame(page)), visible);
+    if (type === "Close") {
+      expect(final.panels[siblingPanel.key]).toBeUndefined();
+      await expect(sibling).toHaveCount(0);
+    } else {
+      expect(final.panels[siblingPanel.key]).toEqual({
+        ...siblingPanel,
+        minimized: true,
+      });
+      await expect(button(page, "Restore iframe fixture")).toBeVisible();
+    }
+    await expect(page.getByTestId("iframe-shield")).toHaveCount(0);
+    await page.mouse.move(h.x + 180, h.y + h.height / 2 + 40);
+    await page.mouse.up();
+    expect(await state(page)).toEqual(final);
+    near(await box(frame(page)), visible);
+    await button(page, "Undo geometry").click();
+    near(await rect(page), initial);
+    await button(page, "Undo geometry").click();
+    near(await rect(page), initial);
+  });
 
 test("missing and throwing renderer keep an operable shell", async ({
   page,

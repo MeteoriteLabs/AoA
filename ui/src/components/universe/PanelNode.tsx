@@ -28,7 +28,7 @@ export function PanelNode({ data }: NodeProps<PanelFlowNode>) {
       type: "geometry",
       key: panel.key,
       generation: panel.generation,
-      rect,
+      rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
       source: "human",
     });
   return (

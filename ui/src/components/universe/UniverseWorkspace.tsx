@@ -11,11 +11,13 @@ import { ReactFlow, ReactFlowProvider } from "@xyflow/react";
 import { PanelNode, type PanelFlowNode } from "./PanelNode";
 import {
   displayRect,
+  equalRect,
   hydrateLayout,
   initialState,
   openingRect,
   panelKey,
   panelReducer,
+  validRef,
   viewportFromLayout,
   type Action,
   type AuthorizedLayoutSnapshot,
@@ -98,7 +100,7 @@ const ScopedWorkspace = forwardRef<WorkspaceHandle, WorkspaceProps>(
     callbacks.current = props;
     const alive = useRef(true);
     const root = useRef<HTMLDivElement>(null);
-    const recovery = useRef<HTMLButtonElement>(null);
+    const recovery = useRef<HTMLDivElement>(null);
     const triggers = useRef(new Map<string, HTMLElement>());
     const pendingFocus = useRef<{ key: string; generation: number } | null>(
       null
@@ -114,7 +116,7 @@ const ScopedWorkspace = forwardRef<WorkspaceHandle, WorkspaceProps>(
       height: 0,
     });
 
-    const finishGesture = useCallback((cancelled = false) => {
+    const finishGesture = useCallback((cancelled = false, notify = true) => {
       const entry = gesture.current;
       gesture.current = null;
       if (!alive.current) return;
@@ -135,35 +137,14 @@ const ScopedWorkspace = forwardRef<WorkspaceHandle, WorkspaceProps>(
         if (next !== current.current) {
           current.current = next;
           setState(next);
-          callbacks.current.onStateChange?.(structuredClone(next));
+          if (notify) callbacks.current.onStateChange?.(structuredClone(next));
         }
         return;
       }
-      history.current = commitGesture(history.current, {
-        ...entry,
-        after: panel.rect,
-        cancelled,
-      });
-    }, []);
-    const beginGesture = useCallback((panel: Panel) => {
-      if (!alive.current || gesture.current) return;
-      const actual = current.current.panels[panel.key];
-      if (
-        actual?.generation !== panel.generation ||
-        actual.minimized ||
-        current.current.maximized === panel.key
-      )
-        return;
-      gesture.current = {
-        scopeKey: scopeKey(current.current.scope),
-        gestureId: String(++serial.current),
-        key: panel.key,
-        generation: panel.generation,
-        before: { ...actual.rect },
-        after: { ...actual.rect },
-        source: "human",
-      };
-      setShielded(true);
+      // A synchronous observer may have superseded the last accepted sample.
+      // Only a still-owned result can become human history or clear prior redo.
+      if (equalRect(panel.rect, entry.after))
+        history.current = commitGesture(history.current, entry);
     }, []);
     const applyAction = useCallback(
       (action: Action, owner?: GestureEntry) => {
@@ -202,13 +183,14 @@ const ScopedWorkspace = forwardRef<WorkspaceHandle, WorkspaceProps>(
         }
         setState(next);
         if (action.type === "minimize" || action.type === "close") {
-          finishGesture(true);
+          // Publish lifecycle and any rollback together, after both are accepted.
+          finishGesture(true, false);
           const trigger = triggers.current.get(action.key);
           (trigger?.isConnected ? trigger : recovery.current)?.focus();
           if (action.type === "close") triggers.current.delete(action.key);
         }
         // A defensive snapshot prevents observers from mutating the sole registry.
-        callbacks.current.onStateChange?.(structuredClone(next));
+        callbacks.current.onStateChange?.(structuredClone(current.current));
       },
       [finishGesture]
     );
@@ -216,6 +198,38 @@ const ScopedWorkspace = forwardRef<WorkspaceHandle, WorkspaceProps>(
     const dispatch = useCallback(
       (action: Action) => applyAction(action),
       [applyAction]
+    );
+
+    const beginGesture = useCallback(
+      (panel: Panel) => {
+        if (!alive.current || gesture.current) return;
+        dispatch({
+          type: "focus",
+          key: panel.key,
+          generation: panel.generation,
+        });
+        // Focus observers may issue commands too; capture the still-current incarnation.
+        const actual = current.current.panels[panel.key];
+        if (
+          !alive.current ||
+          gesture.current ||
+          actual?.generation !== panel.generation ||
+          actual.minimized ||
+          current.current.maximized === panel.key
+        )
+          return;
+        gesture.current = {
+          scopeKey: scopeKey(current.current.scope),
+          gestureId: String(++serial.current),
+          key: panel.key,
+          generation: panel.generation,
+          before: { ...actual.rect },
+          after: { ...actual.rect },
+          source: "human",
+        };
+        setShielded(true);
+      },
+      [dispatch]
     );
 
     // Library callbacks are valid only while their captured incarnation owns a gesture.
@@ -349,7 +363,9 @@ const ScopedWorkspace = forwardRef<WorkspaceHandle, WorkspaceProps>(
               ? props.content[key]
               : undefined;
             const matchingEntry =
-              entry && panelKey(state.scope, entry.ref) === key
+              entry &&
+              validRef(entry.ref, state.scope) &&
+              panelKey(state.scope, entry.ref) === key
                 ? entry
                 : undefined;
             return {
@@ -414,10 +430,14 @@ const ScopedWorkspace = forwardRef<WorkspaceHandle, WorkspaceProps>(
     const maximized = state.maximized !== null;
     return (
       <div className="universe-workspace">
-        <div className="universe-recovery">
-          <button ref={recovery} type="button">
-            Workspace controls
-          </button>
+        <div
+          className="universe-recovery"
+          ref={recovery}
+          role="group"
+          aria-label="Workspace controls"
+          tabIndex={-1}
+        >
+          <span>Workspace controls</span>
           {state.order
             .filter((key) => state.panels[key].minimized)
             .map((key) => (

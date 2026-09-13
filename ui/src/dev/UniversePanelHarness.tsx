@@ -17,6 +17,7 @@ import {
 import "../index.css";
 
 let mounts = 0;
+const initialViewport = { x: 0, y: 0, zoom: 1 };
 function DraftFixture() {
   const [instance] = useState(() => ++mounts);
   return (
@@ -43,7 +44,7 @@ function Harness() {
   };
   const handle = useRef<WorkspaceHandle>(null);
   const [observed, setObserved] = useState<State | null>(null);
-  const [camera, setCamera] = useState({ x: 0, y: 0, zoom: 1 });
+  const [camera, setCamera] = useState({ ...initialViewport });
   const stale = useRef<Action | null>(null);
   const refs: Ref[] = [
     { companyId: scope.companyId, kind: "task", id: "task" },
@@ -94,7 +95,7 @@ function Harness() {
     schemaVersion: 1,
     revision: 0,
     nextOpenedOrdinal: 1,
-    viewport: { x: 0, y: 0, zoom: 1 },
+    viewport: { ...initialViewport },
     panels: [],
     order: [],
     selected: null,
@@ -103,101 +104,143 @@ function Harness() {
   const open = (ref: Ref) =>
     handle.current?.open({ ref, title: `${ref.id} fixture` });
   return (
-    <main style={{ height: "100vh", display: "flex", flexDirection: "column" }}>
-      <div
-        style={{
-          padding: 10,
-          display: "flex",
-          gap: 8,
-          flexWrap: "wrap",
-          alignItems: "center",
-        }}
-      >
-        <strong>Internal frame fixtures</strong>
-        {refs.map((ref) => (
-          <button key={ref.id} onClick={() => open(ref)}>
-            Open {ref.id}
-          </button>
-        ))}
-        {[10, 50].map((count) => (
+    <main
+      className="universe-harness"
+      style={{ height: "100vh", display: "flex", flexDirection: "column" }}
+    >
+      <style>{`
+        .universe-harness { font: 13px system-ui, sans-serif; color: var(--text); background: var(--bg); }
+        .universe-harness-heading { padding: 10px 12px 0; font-size: 14px; }
+        .universe-harness-tools { display: flex; flex-wrap: wrap; gap: 8px 16px; padding: 8px 12px; }
+        .universe-harness-group { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+        .universe-harness-group > span { color: var(--dim); font-size: 12px; margin-right: 4px; }
+        .universe-harness-tools button { font: inherit; color: inherit; background: var(--card-2); border: 1px solid var(--border); border-radius: 5px; padding: 5px 8px; cursor: pointer; }
+        .universe-harness-tools button:hover { background: var(--hd); }
+        .universe-harness-tools button:focus-visible, .universe-harness-diagnostics summary:focus-visible { outline: 2px solid var(--brand-focus-ring, #d95059); outline-offset: 2px; }
+        .universe-harness-diagnostics { padding: 0 12px 8px; color: var(--dim); }
+        .universe-harness-diagnostics summary { cursor: pointer; }
+        .universe-harness-diagnostics pre { max-height: 180px; overflow: auto; color: var(--text); }
+      `}</style>
+      <strong className="universe-harness-heading">
+        Internal frame fixtures
+      </strong>
+      <div className="universe-harness-tools">
+        <div
+          className="universe-harness-group"
+          role="group"
+          aria-label="Launch fixtures"
+        >
+          <span>Launch</span>
+          {refs.map((ref) => (
+            <button key={ref.id} onClick={() => open(ref)}>
+              Open {ref.id}
+            </button>
+          ))}
+        </div>
+        <div
+          className="universe-harness-group"
+          role="group"
+          aria-label="Camera"
+        >
+          <span>Camera</span>
+          {[0.5, 1, 2].map((zoom) => (
+            <button
+              key={zoom}
+              onClick={() => handle.current?.setViewport({ x: 0, y: 0, zoom })}
+            >
+              Zoom {zoom}
+            </button>
+          ))}
+        </div>
+        <div
+          className="universe-harness-group"
+          role="group"
+          aria-label="Geometry history"
+        >
+          <span>History</span>
+          <button onClick={() => handle.current?.undo()}>Undo geometry</button>
+          <button onClick={() => handle.current?.redo()}>Redo geometry</button>
+        </div>
+        <div
+          className="universe-harness-group"
+          role="group"
+          aria-label="Fixture test tools"
+        >
+          <span>Test tools</span>
+          {[10, 50].map((count) => (
+            <button
+              key={count}
+              onClick={() => {
+                const state = handle.current?.getState();
+                if (state)
+                  for (const panel of Object.values(state.panels))
+                    handle.current?.dispatch({
+                      type: "close",
+                      key: panel.key,
+                      generation: panel.generation,
+                    });
+                for (const ref of batchRefs.slice(0, count)) open(ref);
+              }}
+            >
+              Open {count} fixtures
+            </button>
+          ))}
           <button
-            key={count}
             onClick={() => {
-              const state = handle.current?.getState();
-              if (state)
-                for (const panel of Object.values(state.panels))
-                  handle.current?.dispatch({
-                    type: "close",
-                    key: panel.key,
-                    generation: panel.generation,
-                  });
-              for (const ref of batchRefs.slice(0, count)) open(ref);
+              const state = handle.current!.getState();
+              const panel = state.selected && state.panels[state.selected];
+              if (panel)
+                stale.current = {
+                  type: "close",
+                  key: panel.key,
+                  generation: panel.generation,
+                };
             }}
           >
-            Open {count} fixtures
+            Capture stale close
           </button>
-        ))}
-        {[0.5, 1, 2].map((zoom) => (
           <button
-            key={zoom}
-            onClick={() => handle.current?.setViewport({ x: 0, y: 0, zoom })}
+            onClick={() => {
+              if (stale.current) handle.current?.dispatch(stale.current);
+            }}
           >
-            Zoom {zoom}
+            Replay stale close
           </button>
-        ))}
-        <button onClick={() => handle.current?.undo()}>Undo geometry</button>
-        <button onClick={() => handle.current?.redo()}>Redo geometry</button>
-        <button
-          onClick={() => {
-            const state = handle.current!.getState();
-            const panel = state.selected && state.panels[state.selected];
-            if (panel)
-              stale.current = {
-                type: "close",
-                key: panel.key,
-                generation: panel.generation,
-              };
-          }}
-        >
-          Capture stale close
-        </button>
-        <button
-          onClick={() => {
-            if (stale.current) handle.current?.dispatch(stale.current);
-          }}
-        >
-          Replay stale close
-        </button>
-        <button
-          onClick={() => {
-            const state = handle.current!.getState();
-            const panel = state.selected && state.panels[state.selected];
-            if (panel)
-              handle.current?.dispatch({
-                type: "geometry",
-                key: panel.key,
-                generation: panel.generation,
-                rect: { ...panel.rect, x: panel.rect.x + 50 },
-                source: "commander",
-              });
-          }}
-        >
-          Commander arrange fixture
-        </button>
-        <button
-          onClick={() => {
-            setConversation((old) =>
-              old === "fixture-1" ? "fixture-2" : "fixture-1"
-            );
-            setObserved(null);
-          }}
-        >
-          Switch scope
-        </button>
+          <button
+            onClick={() => {
+              const state = handle.current!.getState();
+              const panel = state.selected && state.panels[state.selected];
+              if (panel)
+                handle.current?.dispatch({
+                  type: "geometry",
+                  key: panel.key,
+                  generation: panel.generation,
+                  rect: { ...panel.rect, x: panel.rect.x + 50 },
+                  source: "commander",
+                });
+            }}
+          >
+            Commander arrange fixture
+          </button>
+          <button
+            onClick={() => {
+              setConversation((old) =>
+                old === "fixture-1" ? "fixture-2" : "fixture-1"
+              );
+              setObserved(null);
+              setCamera({ ...initialViewport });
+            }}
+          >
+            Switch scope
+          </button>
+        </div>
       </div>
-      <output data-testid="camera-state">{JSON.stringify(camera)}</output>
-      <details>
-        <summary>Observed registry ({conversationId})</summary>
+      <details className="universe-harness-diagnostics">
+        <summary>Raw fixture diagnostics ({conversationId})</summary>
+        <p>
+          Committed camera:{" "}
+          <output data-testid="camera-state">{JSON.stringify(camera)}</output>
+        </p>
         <pre data-testid="registry-state">
           {JSON.stringify(observed, null, 2)}
         </pre>

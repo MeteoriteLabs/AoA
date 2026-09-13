@@ -9,6 +9,7 @@
 }
 .universe-recovery {
   display: flex;
+  align-items: center;
   gap: 8px;
   padding: 8px;
   flex-wrap: wrap;
@@ -19,6 +20,9 @@
   border: 0;
   border-radius: 5px;
   padding: 6px 10px;
+}
+.universe-recovery > span {
+  padding: 6px 0;
 }
 .universe-canvas {
   flex: 1;
@@ -41,6 +45,7 @@
   padding: 0 6px 0 14px;
   gap: 8px;
   background: var(--hd, #ededee);
+  color: var(--dim, #65656c);
   border-radius: 8px 8px 0 0;
   cursor: grab;
 }
