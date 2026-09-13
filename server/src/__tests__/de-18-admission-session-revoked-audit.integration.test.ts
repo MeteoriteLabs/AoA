@@ -19,10 +19,8 @@ import {
   ORG,
   TARGET,
   WORKER,
-  THUMBPRINT,
   type JobControlFixture,
 } from "./helpers/job-control-fixture.js";
-import { registerProofBoundHeartbeat } from "../middleware/worker-session-auth.js";
 
 const integration = describe.skipIf(
   process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1",
@@ -149,77 +147,8 @@ integration("DE-18 admission/session target_revoked denial audit", () => {
     expect(await denialRows()).toHaveLength(0);
   }, 60_000);
 
-  // ---- SESSION heartbeat arm (worker-session-auth.ts) ----------------------
-
-  it("session heartbeat: a refused profile touch writes one worker_session row classified DE-04 (unprovable generation cutoff, Codex P2 on PR #448)", async () => {
-    // Target stays generation 1 (heartbeatSessionTarget passes); the WORKER row
-    // drifts ahead, so heartbeatSessionProfile refuses — the :registerProofBoundHeartbeat
-    // throw site. The principal is the shape the authenticator returns.
-    await fx.admin`UPDATE workers SET device_generation = 2 WHERE id = ${WORKER}`;
-    await expect(registerProofBoundHeartbeat({
-      appDb: fx.app.db,
-      principal: {
-        workerId: WORKER,
-        targetId: TARGET,
-        targetGeneration: 1,
-        deviceThumbprint: THUMBPRINT,
-        profileHash: sha256(JSON.stringify(workerHello())),
-        expiresAt: new Date(Date.now() + 60_000).toISOString(),
-        organizationId: ORG,
-        scope: "organization",
-        targetScope: "organization",
-      },
-      status: "active",
-    })).rejects.toMatchObject({ code: "target_revoked" });
-    const rows = await denialRows();
-    expect(rows).toHaveLength(1);
-    const row = rows[0]!;
-    expect(row.action).toBe("security.denied.worker_session");
-    expect(row.details.reason).toBe("heartbeat_profile_revoked");
-    // ★ DE-04, not DE-18: the profile-touch refusal is a bare boolean that cannot
-    // prove a generation cutoff (it fires after verifyCurrent already validated the
-    // generation), so it is classified as a concurrent-change refusal (Codex P2).
-    expect(row.details.crossing).toBe("DE-04");
-    expect(row.details.failed).toContain("heartbeat_profile_write_refused");
-    expect(row.actor_type).toBe("system");
-    expect(row.actor_id).toBe(WORKER);
-    expect(row.organization_id).toBe(ORG);
-    expect(row.company_id).toBeNull();
-    expect(row.entity_type).toBe("execution_target");
-    expect(row.entity_id).toBe(TARGET);
-  }, 60_000);
-
-  it("session heartbeat: a refused TARGET write (disabled/generation-advanced) is audited too, not just the profile touch (Codex P2 on PR #448)", async () => {
-    // Disable the target so heartbeatSessionTarget matches no row and the handler
-    // takes the `return false` path — which turns into `unauthorized` WITHOUT
-    // throwing, so it must be drained in the `finally`, not a catch.
-    await fx.admin`UPDATE execution_targets SET status = 'disabled' WHERE id = ${TARGET}`;
-    const outcome = await registerProofBoundHeartbeat({
-      appDb: fx.app.db,
-      principal: {
-        workerId: WORKER,
-        targetId: TARGET,
-        targetGeneration: 1,
-        deviceThumbprint: THUMBPRINT,
-        profileHash: sha256(JSON.stringify(workerHello())),
-        expiresAt: new Date(Date.now() + 60_000).toISOString(),
-        organizationId: ORG,
-        scope: "organization",
-        targetScope: "organization",
-      },
-      status: "active",
-    });
-    expect(outcome).toBe(false);
-    const rows = await denialRows();
-    expect(rows).toHaveLength(1);
-    const row = rows[0]!;
-    expect(row.action).toBe("security.denied.worker_session");
-    expect(row.details.reason).toBe("heartbeat_target_revoked");
-    expect(row.details.crossing).toBe("DE-04");
-    expect(row.details.failed).toContain("heartbeat_target_write_refused");
-    expect(row.actor_id).toBe(WORKER);
-    expect(row.organization_id).toBe(ORG);
-    expect(row.company_id).toBeNull();
-    await fx.admin`UPDATE execution_targets SET status = 'active' WHERE id = ${TARGET}`;
-  }, 60_000);
+  // NOTE: the `registerProofBoundHeartbeat` refusal arm is a documented FOLLOW-ON,
+  // not covered here (Codex P2 x3 on PR #448) — its six boolean-write refusal
+  // branches need a per-branch generation re-read to split DE-18 vs DE-04, so
+  // auditing them is deferred rather than shipped as a crossing-guessing partial.
 });

@@ -56,9 +56,6 @@ export const WORKER_SESSION_DENIAL_CROSSING = "DE-18";
 export const WORKER_SESSION_DENIAL_REASONS = [
   "session_authority_revoked",
   "platform_authority_revoked",
-  "heartbeat_target_revoked",
-  "heartbeat_status_refused",
-  "heartbeat_profile_revoked",
 ] as const;
 
 export type WorkerSessionDenialReason = (typeof WORKER_SESSION_DENIAL_REASONS)[number];

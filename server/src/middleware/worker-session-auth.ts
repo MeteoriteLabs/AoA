@@ -8,10 +8,7 @@ import {
 } from "@armyofagents/db";
 import { runInTenant } from "../db/tenant-context.js";
 import { registerWorkerHeartbeat } from "../services/execution-targets.js";
-import {
-  recordWorkerSessionDenial,
-  type WorkerSessionDenialReason,
-} from "../services/worker-session-denial-audit.js";
+import { recordWorkerSessionDenial } from "../services/worker-session-denial-audit.js";
 import { verifyDeviceProof, type DeviceProofHeaders } from "../services/worker-device-proof.js";
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
@@ -386,72 +383,44 @@ export async function registerProofBoundHeartbeat(input: {
         now: heartbeatAt,
       }));
   }
-  // ★ DE-18 — the heartbeat profile-touch refusal throws out of
-  // `runInTenant`; capture-then-drain on the pool handle, same shape as
-  // `authenticate`'s.
-  // ★ ALL THREE heartbeat refusal sites are audited, not just the profile throw
-  // (Codex P2 on PR #448): the two `return false` paths (`heartbeatSessionTarget`
-  // matched no row — target disabled or generation advanced mid-session; and
-  // `registerWorkerHeartbeat` updated≠1) turn into `unauthorized` at the route
-  // WITHOUT throwing, so a `catch` alone would miss them. The refusing branch
-  // captures a predicate-named intent and it is drained on the POOL handle in a
-  // `finally` AFTER the tenant tx has closed — covering the return AND throw
-  // paths. All three are boolean writes that cannot prove WHICH column changed,
-  // and they fire only after `authenticate` already validated the generation for
-  // the request, so each is a concurrent-change refusal classified DE-04 (no
-  // `generation_drift`), never a falsely-claimed DE-18 generation cutoff.
-  // A one-field holder rather than a bare `let`: TypeScript narrows a `let` from
-  // its `null` initializer (the closure assignments below are not tracked by
-  // control-flow analysis) and would read it back as `never` at the drain.
-  const heartbeatDenial: { intent: { reason: WorkerSessionDenialReason; failed: string[] } | null } = { intent: null };
-  try {
-    return await runInTenant(input.appDb, input.principal.organizationId, async (repos, tx) => {
-      const targetCurrent = await repos.workerEnrollment.heartbeatSessionTarget({
-        executionTargetId: input.principal.targetId,
-        deviceGeneration: input.principal.targetGeneration,
-        status: input.status,
-        now: heartbeatAt,
-      });
-      if (!targetCurrent) {
-        heartbeatDenial.intent = { reason: "heartbeat_target_revoked", failed: ["heartbeat_target_write_refused"] };
-        return false;
-      }
-      const statusCurrent = await registerWorkerHeartbeat(tx, {
-        targetId: input.principal.targetId,
-        organizationId: input.principal.organizationId!,
-        status: input.status,
-        now: heartbeatAt,
-      });
-      if (statusCurrent.updated !== 1) {
-        heartbeatDenial.intent = { reason: "heartbeat_status_refused", failed: ["heartbeat_status_write_refused"] };
-        return false;
-      }
-      const profileCurrent = await repos.workerEnrollment.heartbeatSessionProfile({
-        workerId: input.principal.workerId,
-        executionTargetId: input.principal.targetId,
-        deviceGeneration: input.principal.targetGeneration,
-        now: heartbeatAt,
-      });
-      if (!profileCurrent) {
-        heartbeatDenial.intent = { reason: "heartbeat_profile_revoked", failed: ["heartbeat_profile_write_refused"] };
-        throw new WorkerSessionError("target_revoked");
-      }
-      return true;
+  // ★ NOT AUDITED HERE, and this is a deliberate SCOPE line (Codex P2 x3 on PR
+  // #448). `registerProofBoundHeartbeat` has SIX refusal branches — the two
+  // platform early-returns above (`heartbeatPlatformPhysicalLivenessOnly` /
+  // `transitionPlatformPhysicalStatus`, `heartbeatSharedPlatformTarget`) and the
+  // tenant target-write / status-write / profile-touch below — most of them
+  // NON-throwing `return false` paths the route maps to `unauthorized`. Auditing
+  // them CORRECTLY needs a per-branch generation RE-READ: `heartbeatSessionTarget`
+  // and `heartbeatSessionProfile` are boolean writes whose repository predicate
+  // includes `device_generation`, so a `false` can be a genuine generation cutoff
+  // (DE-18) or a status/profile change (DE-04) and the boolean cannot say which.
+  // Shipping a partial, crossing-guessing audit here would OVER-CLAIM and pollute
+  // the DE-18/DE-04 measures — worse than a documented gap — so the whole
+  // heartbeat-refusal arm is deferred to a follow-on that adds the generation
+  // re-read and covers all six branches. The register records this explicitly.
+  return runInTenant(input.appDb, input.principal.organizationId, async (repos, tx) => {
+    const targetCurrent = await repos.workerEnrollment.heartbeatSessionTarget({
+      executionTargetId: input.principal.targetId,
+      deviceGeneration: input.principal.targetGeneration,
+      status: input.status,
+      now: heartbeatAt,
     });
-  } finally {
-    if (heartbeatDenial.intent) {
-      await recordWorkerSessionDenial(input.appDb, {
-        reason: heartbeatDenial.intent.reason,
-        organizationId: input.principal.organizationId,
-        workerId: input.principal.workerId,
-        targetId: input.principal.targetId,
-        targetGeneration: input.principal.targetGeneration,
-        deviceThumbprint: input.principal.deviceThumbprint,
-        failed: heartbeatDenial.intent.failed,
-        control: "server/src/middleware/worker-session-auth.ts:registerProofBoundHeartbeat",
-      });
-    }
-  }
+    if (!targetCurrent) return false;
+    const statusCurrent = await registerWorkerHeartbeat(tx, {
+      targetId: input.principal.targetId,
+      organizationId: input.principal.organizationId!,
+      status: input.status,
+      now: heartbeatAt,
+    });
+    if (statusCurrent.updated !== 1) return false;
+    const profileCurrent = await repos.workerEnrollment.heartbeatSessionProfile({
+      workerId: input.principal.workerId,
+      executionTargetId: input.principal.targetId,
+      deviceGeneration: input.principal.targetGeneration,
+      now: heartbeatAt,
+    });
+    if (!profileCurrent) throw new WorkerSessionError("target_revoked");
+    return true;
+  });
 }
 
 export async function revokeTenantWorkerAuthority(input: {

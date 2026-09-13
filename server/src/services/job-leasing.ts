@@ -335,8 +335,14 @@ export function pollAuthorityCurrencyIntent(
   if (oldestHeartbeat === null || databaseNow.getTime() - oldestHeartbeat > maxHeartbeatAgeMs) {
     failed.push("heartbeat_stale");
   }
+  // Only the AUTHORITATIVE DB-row generations are DE-18's generation-replacement
+  // cutoff. `request_generation_drift` is the caller's own payload claim — a
+  // current authenticated worker could set a stale payload generation and
+  // manufacture DE-18 audit events with no actual generation change (Codex P2 on
+  // PR #448), so it is a caller-drift failure → DE-04 (it is still recorded in
+  // `details.failed`, just not as a generation cutoff).
   const GENERATION_CONJUNCTS = new Set([
-    "worker_generation_drift", "target_generation_drift", "request_generation_drift",
+    "worker_generation_drift", "target_generation_drift",
   ]);
   const generation = failed.some((f) => GENERATION_CONJUNCTS.has(f));
   return pollAuthorityDenialIntent(
