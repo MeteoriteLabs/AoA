@@ -1,8 +1,8 @@
 # E4 — Worker Daemon
 
-**Status:** `backlog`
+**Status:** `complete` (all tickets WRK-001 through WRK-017 shipped — reconciled from a stale `backlog` in the 2026-09-13 record-integrity sweep, ticket range corrected from its own `tickets/` set, which had drifted far past the `through WRK-007` the README still listed)
 **Depends on:** E1 plus ticket-level E3 core dependencies; WRK-005 onward and the exit gate require `E6-D1-FOUNDATION`
-**Tickets:** WRK-001 through WRK-007
+**Tickets:** WRK-001 through WRK-017
 **Exit gate:** separate worker image leases through the protocol, supervises only sandboxes, survives restart, and replays its encrypted event outbox.
 
 ## Mandatory planning brief
