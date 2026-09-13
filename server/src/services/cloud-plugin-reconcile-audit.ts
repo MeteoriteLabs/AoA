@@ -59,18 +59,36 @@
  * `action`/`entityType` are free text with a jsonb `details`, so this needs no
  * schema change and no DDL.
  *
- * ★ IT NEVER THROWS. A failure to record must not turn boot reconciliation into a
- * crash — the record is evidence about a state change that already happened, and
- * losing the evidence must not lose the reconciliation. A failed insert is logged
- * at error level carrying the attribution the row would have carried. The cost of
- * a swallow is that a silently-broken writer looks like a quiet system, so
- * `de-16-reconciliation-audit.integration.test.ts` is written to go RED when the
- * write is removed, and it was observed doing so.
+ * ★ IT THROWS ON A FAILED INSERT, AND THAT IS DELIBERATE — the caller runs it
+ * INSIDE THE SAME TRANSACTION as the state flip (see
+ * `reconcileCloudBlockedPlugins` in `plugin-lifecycle.ts`). An earlier revision
+ * swallowed the failure and returned null "best-effort"; Codex (P1 on PR #446,
+ * accepted) showed why that is wrong here: the flip commits UNCONDITIONALLY, so a
+ * lost audit left the plugin permanently `PLUGIN_WORKER_BLOCKED_IN_CLOUD` while
+ * every later boot took the already-blocked skip branch and NEVER retried the
+ * missing record — the transition once again indistinguishable from one that
+ * never happened, violating AGENTS.md's "log mutations atomically" invariant.
+ * Now the recorder throws, the caller's transaction rolls the CLAIM back with it,
+ * the row stays claimable, and the next boot retries the whole flip-plus-audit.
+ * Boot never crashes because the caller wraps each row in a try/catch that logs
+ * and moves on — but the failed transition is retried rather than lost. The cost
+ * of the old swallow was that a silently-broken writer looked like a quiet
+ * system; `de-16-reconciliation-audit.integration.test.ts` drives the atomic
+ * rollback and the compare-and-set directly.
+ *
+ * ★ THE `db` HANDLE IS THE CALLER'S TRANSACTION, not a pool handle. A drizzle
+ * `PgTransaction` is not assignable to `Db`, so the caller passes it as
+ * `tx as unknown as Db` (the codebase's established idiom — see `hub-items.ts`);
+ * every method this recorder uses is present on the transaction at runtime.
+ * Unlike the retention/denial recorders — which drain on a POOL handle AFTER a
+ * TENANT transaction, precisely to escape RLS-rollback coupling — this runs at
+ * `cloud_auth` boot on the OWNER connection, where there is no tenant transaction
+ * to escape, so binding the audit to the flip's transaction is both safe and the
+ * point.
  */
 import type { Db } from "@armyofagents/db";
 import { activityLog } from "@armyofagents/db";
 import { sanitizeRecord } from "../redaction.js";
-import { logger } from "../middleware/logger.js";
 import { SECURITY_RECONCILE_ACTION_PREFIX } from "./activity-namespace.js";
 import { PLUGIN_WORKER_BLOCKED_IN_CLOUD } from "./cloud-plugin-execution.js";
 
@@ -88,27 +106,37 @@ export const CLOUD_PLUGIN_RECONCILE_ACTION = `${SECURITY_RECONCILE_ACTION_PREFIX
  */
 export const CLOUD_PLUGIN_BOOT_RECONCILE_ACTOR = "cloud-plugin-boot-reconciliation";
 
+/** The shape the recorder needs about a reconciled plugin. */
+export interface CloudPluginReconcileAuditInput {
+  /** The reconciled plugin's id (`plugins.id`). */
+  pluginId: string;
+  /** The reconciled plugin's own company id (`plugins.company_id`, NOT NULL / FK-valid). */
+  companyId: string;
+  /** The status the plugin held BEFORE it was reconciled to the blocked state. */
+  priorStatus: string;
+}
+
+/** The recorder's type — so the reconciler can accept an injected stand-in in its rollback test. */
+export type RecordCloudPluginReconcileToBlocked = (
+  db: Db,
+  input: CloudPluginReconcileAuditInput,
+) => Promise<string>;
+
 /**
  * Record one cloud-plugin boot reconciliation-to-blocked durably and
- * attributably. Returns the row id, or `null` when nothing could be written
- * (logged at error). NEVER throws — a broken recorder must not turn boot
- * reconciliation into a crash.
+ * attributably, returning the new row id. THROWS if the insert fails — the
+ * caller runs this INSIDE the same transaction as the state flip, so a throw
+ * rolls the claim back and the transition is retried on the next boot rather
+ * than left committed-but-unaudited (see the header, and Codex P1 on PR #446).
  *
  * Deliberately does NOT publish a live event, for the reason the sibling
  * recorders give: an audit record that broadcasts is one that can be used as a
  * channel.
  */
-export async function recordCloudPluginReconcileToBlocked(
-  db: Db,
-  input: {
-    /** The reconciled plugin's id (`plugins.id`). */
-    pluginId: string;
-    /** The reconciled plugin's own company id (`plugins.company_id`, NOT NULL / FK-valid). */
-    companyId: string;
-    /** The status the plugin held BEFORE it was reconciled to the blocked state. */
-    priorStatus: string;
-  },
-): Promise<string | null> {
+export const recordCloudPluginReconcileToBlocked: RecordCloudPluginReconcileToBlocked = async (
+  db,
+  input,
+) => {
   const details = sanitizeRecord({
     crossing: "DE-16",
     control: "server/src/services/plugin-lifecycle.ts:reconcileCloudBlockedPlugins",
@@ -119,43 +147,34 @@ export async function recordCloudPluginReconcileToBlocked(
     statusReasonCode: PLUGIN_WORKER_BLOCKED_IN_CLOUD,
   });
 
-  try {
-    const [row] = await db
-      .insert(activityLog)
-      .values({
-        // A REAL, FK-valid company read from the plugin row — not caller-supplied.
-        companyId: input.companyId,
-        // No control-plane-attested organization at boot; see the header.
-        organizationId: null,
-        // Boot/machine identity, no principal — same convention as the worker
-        // recorders.
-        actorType: "system",
-        actorId: CLOUD_PLUGIN_BOOT_RECONCILE_ACTOR,
-        action: CLOUD_PLUGIN_RECONCILE_ACTION,
-        entityType: "plugin",
-        entityId: input.pluginId,
-        // Left null: `agent_id`/`run_id` are FK'd to `agents`/`heartbeat_runs`
-        // and a boot reconciliation has a row in neither.
-        agentId: null,
-        runId: null,
-        details,
-      })
-      .returning({ id: activityLog.id });
-    return row?.id ?? null;
-  } catch (err) {
-    logger.error(
-      {
-        service: "cloud-plugin-reconcile-audit",
-        event: "security.reconcile_audit_write_failed",
-        crossing: "DE-16",
-        action: CLOUD_PLUGIN_RECONCILE_ACTION,
-        companyId: input.companyId,
-        pluginId: input.pluginId,
-        priorStatus: input.priorStatus,
-        err,
-      },
-      "failed to record a cloud-plugin boot reconciliation — the plugin is still blocked, but the transition is now unattributable",
+  const [row] = await db
+    .insert(activityLog)
+    .values({
+      // A REAL, FK-valid company read from the plugin row — not caller-supplied.
+      companyId: input.companyId,
+      // No control-plane-attested organization at boot; see the header.
+      organizationId: null,
+      // Boot/machine identity, no principal — same convention as the worker
+      // recorders.
+      actorType: "system",
+      actorId: CLOUD_PLUGIN_BOOT_RECONCILE_ACTOR,
+      action: CLOUD_PLUGIN_RECONCILE_ACTION,
+      entityType: "plugin",
+      entityId: input.pluginId,
+      // Left null: `agent_id`/`run_id` are FK'd to `agents`/`heartbeat_runs`
+      // and a boot reconciliation has a row in neither.
+      agentId: null,
+      runId: null,
+      details,
+    })
+    .returning({ id: activityLog.id });
+  if (!row) {
+    // An INSERT ... RETURNING that yields no row is an anomaly; throw so the
+    // caller's transaction rolls back the un-audited claim rather than counting
+    // a reconciliation whose record was silently lost.
+    throw new Error(
+      `cloud-plugin reconcile audit insert returned no row for plugin ${input.pluginId}`,
     );
-    return null;
   }
-}
+  return row.id;
+};

@@ -36,7 +36,9 @@
  * @see PLUGIN_SPEC.md §12.5 — Graceful Shutdown Policy
  */
 import { EventEmitter } from "node:events";
+import { and, eq, ne, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
+import { plugins } from "@armyofagents/db";
 import { pluginRollbackService } from "./plugin-rollback.js";
 import type {
   PluginStatus,
@@ -62,7 +64,10 @@ import {
   recordCloudPluginBootReconciled,
   type PluginActivationSource,
 } from "./cloud-plugin-execution.js";
-import { recordCloudPluginReconcileToBlocked } from "./cloud-plugin-reconcile-audit.js";
+import {
+  recordCloudPluginReconcileToBlocked,
+  type RecordCloudPluginReconcileToBlocked,
+} from "./cloud-plugin-reconcile-audit.js";
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for testing)
@@ -78,6 +83,71 @@ export function diffCapabilities(
 ): string[] {
   const oldSet = new Set(oldCaps);
   return newCaps.filter((c) => !oldSet.has(c));
+}
+
+/**
+ * Reconcile ONE plugin row to the cloud-blocked state, ATOMICALLY and
+ * idempotently, returning whether THIS caller performed the transition.
+ *
+ * The flip and its DE-16 audit row run in a SINGLE transaction:
+ *   1. A COMPARE-AND-SET claim: the `UPDATE` flips the row to
+ *      `error`/`PLUGIN_WORKER_BLOCKED_IN_CLOUD` only if it is not ALREADY
+ *      cloud-blocked (`status_reason_code IS DISTINCT FROM …`, NULL-safe) and not
+ *      concurrently uninstalled. `status_reason_code = BLOCKED` implies
+ *      `status = 'error'` — `updateStatus` clears the code for any non-error
+ *      status — so this predicate claims exactly the not-yet-cloud-blocked rows.
+ *      If two `cloud_auth` replicas boot at once and both read the same stale row
+ *      through `listInstalled()`, only ONE `UPDATE` matches; the loser's `UPDATE`
+ *      re-evaluates its predicate against the now-committed row (READ COMMITTED
+ *      row lock) and matches zero rows. (Codex P2 on PR #446, accepted.)
+ *   2. If the claim matched no row, another replica already owns the transition:
+ *      return `false` WITHOUT auditing and WITHOUT counting.
+ *   3. Otherwise write the audit row on the SAME transaction. The recorder THROWS
+ *      on a failed insert, which rolls the claim back with it — so the row is
+ *      never left committed-but-unaudited, and the next boot retries the whole
+ *      flip-plus-audit. (Codex P1 on PR #446, accepted; AGENTS.md "log mutations
+ *      atomically".)
+ *
+ * `recorder` is injectable ONLY so the rollback test can drive a failing audit;
+ * production always uses the real `recordCloudPluginReconcileToBlocked`.
+ */
+export async function reconcileOnePluginToBlocked(
+  db: Db,
+  row: Pick<PluginRecord, "id" | "companyId" | "status">,
+  recorder: RecordCloudPluginReconcileToBlocked = recordCloudPluginReconcileToBlocked,
+): Promise<boolean> {
+  // The status the row is moved FROM, for the durable record.
+  const priorStatus = row.status;
+  return db.transaction(async (tx) => {
+    const claimed = await tx
+      .update(plugins)
+      .set({
+        status: "error",
+        lastError: CLOUD_PLUGIN_BLOCK_MESSAGE,
+        statusReasonCode: PLUGIN_WORKER_BLOCKED_IN_CLOUD,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(plugins.id, row.id),
+          // Never resurrect a row uninstalled concurrently with this boot pass.
+          ne(plugins.status, "uninstalled"),
+          // The compare-and-set: claim only a row that is not ALREADY cloud-blocked.
+          sql`${plugins.statusReasonCode} IS DISTINCT FROM ${PLUGIN_WORKER_BLOCKED_IN_CLOUD}`,
+        ),
+      )
+      .returning({ id: plugins.id });
+
+    if (claimed.length === 0) return false;
+
+    // Same transaction as the flip: a throw here rolls the claim back.
+    await recorder(tx as unknown as Db, {
+      pluginId: row.id,
+      companyId: row.companyId,
+      priorStatus,
+    });
+    return true;
+  });
 }
 
 /**
@@ -110,36 +180,25 @@ export async function reconcileCloudBlockedPlugins(db: Db): Promise<number> {
       row.status === "error" &&
       row.statusReasonCode === PLUGIN_WORKER_BLOCKED_IN_CLOUD
     ) {
-      // Already reconciled on a previous boot/replica — idempotent no-op.
+      // Cheap read-time short-circuit for the common re-boot case; the
+      // compare-and-set claim in reconcileOnePluginToBlocked is the AUTHORITATIVE
+      // guard against a concurrent replica (this snapshot can be stale).
       continue;
     }
-    // Captured BEFORE the mutating updateStatus so the durable record can name
-    // the status the row was moved FROM. Only rows that reached this point are
-    // being reconciled — the already-blocked idempotent-skip above never gets
-    // here, so a re-boot writes no duplicate audit row.
-    const priorStatus = row.status;
     try {
-      await registry.updateStatus(row.id, {
-        status: "error",
-        lastError: CLOUD_PLUGIN_BLOCK_MESSAGE,
-        statusReasonCode: PLUGIN_WORKER_BLOCKED_IN_CLOUD,
-      });
+      const claimed = await reconcileOnePluginToBlocked(db, row);
+      // Only the replica whose compare-and-set actually flipped the row counts
+      // and gauges it — a concurrent replica that lost the CAS records nothing.
+      if (!claimed) continue;
       recordCloudPluginBootReconciled({
         pluginId: row.id,
         companyId: row.companyId,
       });
-      // DE-16 audit clause, RECONCILIATIONS conjunct: after a SUCCESSFUL flip,
-      // write the durable, attributable `activity_log` row the process-memory
-      // counter above could not. Best-effort — the recorder itself never throws,
-      // and it stays inside the per-row try/catch so a failure to record cannot
-      // abort the reconciliation of the remaining rows.
-      await recordCloudPluginReconcileToBlocked(db, {
-        pluginId: row.id,
-        companyId: row.companyId,
-        priorStatus,
-      });
       reconciled += 1;
     } catch (err) {
+      // A failed audit rolled the flip back (see reconcileOnePluginToBlocked): the
+      // row stays claimable and is retried on the next boot. Log and keep going so
+      // boot never crashes on one bad row.
       log.error(
         {
           pluginId: row.id,

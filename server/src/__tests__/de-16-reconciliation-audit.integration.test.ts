@@ -64,7 +64,10 @@ import { sql } from "drizzle-orm";
 import { applyPendingMigrations, createDb, type Db } from "@armyofagents/db";
 import { allocateEmbeddedPgPort } from "./helpers/embedded-pg-port.js";
 import { setDeploymentMode } from "../config/deployment-mode.js";
-import { reconcileCloudBlockedPlugins } from "../services/plugin-lifecycle.js";
+import {
+  reconcileCloudBlockedPlugins,
+  reconcileOnePluginToBlocked,
+} from "../services/plugin-lifecycle.js";
 import {
   CLOUD_PLUGIN_BLOCK_MESSAGE,
   PLUGIN_WORKER_BLOCKED_IN_CLOUD,
@@ -73,6 +76,7 @@ import {
 import {
   CLOUD_PLUGIN_BOOT_RECONCILE_ACTOR,
   CLOUD_PLUGIN_RECONCILE_ACTION,
+  type RecordCloudPluginReconcileToBlocked,
 } from "../services/cloud-plugin-reconcile-audit.js";
 import {
   SECURITY_DENIAL_ACTION_PREFIX,
@@ -176,11 +180,32 @@ async function denialRowCount(): Promise<number> {
   return Number(rows[0]?.n ?? "-1");
 }
 
-async function pluginRow(): Promise<{ status: string; status_reason_code: string | null; last_error: string | null } | null> {
-  const res = await ctxDb().execute<{ status: string; status_reason_code: string | null; last_error: string | null }>(sql`
-    SELECT status, status_reason_code, last_error FROM plugins WHERE id = ${pluginId} LIMIT 1`);
-  const rows = (Array.isArray(res) ? res : (res as { rows?: { status: string; status_reason_code: string | null; last_error: string | null }[] }).rows) ?? [];
+type PluginStatusRow = { status: string; status_reason_code: string | null; last_error: string | null };
+
+async function pluginStatusById(id: string): Promise<PluginStatusRow | null> {
+  const res = await ctxDb().execute<PluginStatusRow>(sql`
+    SELECT status, status_reason_code, last_error FROM plugins WHERE id = ${id} LIMIT 1`);
+  const rows = (Array.isArray(res) ? res : (res as { rows?: PluginStatusRow[] }).rows) ?? [];
   return rows[0] ?? null;
+}
+
+async function pluginRow(): Promise<PluginStatusRow | null> {
+  return pluginStatusById(pluginId);
+}
+
+/** Seed an independent plugin row (unique key) for the shared company. */
+async function seedPlugin(pluginKey: string, status: string): Promise<string> {
+  return firstId(
+    await ctxDb().execute<{ id: string }>(sql`
+      INSERT INTO plugins (id, company_id, plugin_key, package_name, version, api_version, categories, manifest_json, status, trust_tier)
+      VALUES (
+        gen_random_uuid(), ${companyId}, ${pluginKey}, ${`aoa-plugin-${pluginKey.replace(/\./g, "-")}`}, '1.0.0', 1,
+        ${JSON.stringify(["automation"])}::jsonb,
+        ${JSON.stringify({ ...MANIFEST, id: pluginKey })}::jsonb,
+        ${status}, 'trusted'
+      )
+      RETURNING id`),
+  );
 }
 
 beforeAll(async () => {
@@ -332,6 +357,61 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       // No new row, and the ONE row still describes the transition that happened.
       expect(await reconcileRowCount()).toBe(before);
       expect(await reconcileRowsFor(pluginId)).toHaveLength(1);
+    });
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Codex PR #446 findings, accepted and proven here (RED-first observed via
+    // the two mutations recorded in the PR): the audit is protected at the DB by
+    // a compare-and-set (P2) and made atomic with the flip (P1).
+    // ─────────────────────────────────────────────────────────────────────────
+    it("★★★ COMPARE-AND-SET (P2) — a concurrent replica that lost the claim writes NO audit row; the DB update is CONDITIONAL, not just the read-skip", async () => {
+      setDeploymentMode("cloud_auth");
+      const id = await seedPlugin("acme.cas", "ready");
+
+      // Replica A — snapshot says `ready`, claims the row and audits it.
+      expect(await reconcileOnePluginToBlocked(ctxDb(), { id, companyId, status: "ready" })).toBe(true);
+      const afterA = await pluginStatusById(id);
+      expect(afterA?.status).toBe("error");
+      expect(afterA?.status_reason_code).toBe(PLUGIN_WORKER_BLOCKED_IN_CLOUD);
+      expect(await reconcileRowsFor(id)).toHaveLength(1);
+
+      // Replica B — the SAME stale `ready` snapshot (as if it read `listInstalled`
+      // before A committed), driven straight through the claim so the read-time
+      // skip does NOT mask the race. The compare-and-set matches 0 rows, so B does
+      // NOT audit. This is the property the unconditional `updateStatus` lacked.
+      expect(await reconcileOnePluginToBlocked(ctxDb(), { id, companyId, status: "ready" })).toBe(false);
+      expect(await reconcileRowsFor(id)).toHaveLength(1);
+    });
+
+    it("★★★ ATOMIC ROLLBACK (P1) — a failed audit insert rolls the flip back (the row is NOT left blocked-but-unaudited), and a later clean pass completes it", async () => {
+      setDeploymentMode("cloud_auth");
+      const id = await seedPlugin("acme.rollback", "ready");
+
+      // Inject a recorder that throws INSIDE the transaction, exactly as a
+      // transient insert failure would.
+      const boom: RecordCloudPluginReconcileToBlocked = async () => {
+        throw new Error("audit boom");
+      };
+      await expect(
+        reconcileOnePluginToBlocked(ctxDb(), { id, companyId, status: "ready" }, boom),
+      ).rejects.toThrow("audit boom");
+
+      // The flip rolled back WITH the failed audit: the row is still `ready` — NOT
+      // committed-but-unaudited — and no audit row exists. Under the old
+      // best-effort recorder the flip would have committed and this would be
+      // `error`/blocked with zero audit rows, i.e. permanently unattributable.
+      const afterFail = await pluginStatusById(id);
+      expect(afterFail?.status).toBe("ready");
+      expect(afterFail?.status_reason_code).toBeNull();
+      expect(await reconcileRowsFor(id)).toHaveLength(0);
+
+      // RETRIABLE — because the failed transition was never committed, a clean
+      // pass completes the whole flip-plus-audit atomically.
+      expect(await reconcileOnePluginToBlocked(ctxDb(), { id, companyId, status: "ready" })).toBe(true);
+      const afterOk = await pluginStatusById(id);
+      expect(afterOk?.status).toBe("error");
+      expect(afterOk?.status_reason_code).toBe(PLUGIN_WORKER_BLOCKED_IN_CLOUD);
+      expect(await reconcileRowsFor(id)).toHaveLength(1);
     });
   },
 );
