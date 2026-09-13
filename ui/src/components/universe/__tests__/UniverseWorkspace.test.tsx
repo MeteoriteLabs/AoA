@@ -81,6 +81,25 @@ function setup() {
 }
 
 describe("controlled workspace", () => {
+  it.each([0.5, 1, 2])(
+    "opens absent panels in screen pixels at zoom %s without refitting existing panels",
+    (zoom) => {
+      const { handle } = setup();
+      act(() => handle.current!.setViewport({ x: 50, y: -25, zoom }));
+      const newRef = { ...ref, id: "new" };
+      act(() => handle.current!.open({ ref: newRef, title: "New" }));
+      const opened = handle.current!.getState().panels[panelKey(scope, newRef)];
+      expect(opened.rect.width * zoom).toBe(520);
+      expect(opened.rect.height * zoom).toBe(360);
+      expect(opened.rect.x * zoom + 50).toBeGreaterThanOrEqual(0);
+      expect(opened.rect.y * zoom - 25).toBeGreaterThanOrEqual(0);
+      act(() => handle.current!.setViewport({ x: 0, y: 0, zoom: 1 }));
+      act(() => handle.current!.open({ ref: newRef, title: "New" }));
+      expect(handle.current!.getState().panels[opened.key].rect).toEqual(
+        opened.rect
+      );
+    }
+  );
   it("routes actual frame actions through registry and preserves minimized drafts", () => {
     const { handle, camera } = setup();
     const draft = screen.getByLabelText("Draft");
@@ -123,6 +142,36 @@ describe("controlled workspace", () => {
       altKey: true,
     });
     expect(handle.current!.getState().panels[key].rect.x).toBe(before.x + 20);
+  });
+
+  it("cancels real header callbacks, rolls back and preserves prior undo", async () => {
+    const { handle } = setup();
+    const header = screen.getByLabelText("Task fixture panel controls");
+    const initial = handle.current!.getState().panels[key].rect;
+    fireEvent.keyDown(header, { key: "ArrowRight", altKey: true });
+    const prior = handle.current!.getState().panels[key].rect;
+    const mouse = (target: EventTarget, type: string, x: number, y: number) => {
+      const event = new MouseEvent(type, {
+        bubbles: true,
+        clientX: x,
+        clientY: y,
+        buttons: 1,
+      });
+      Object.defineProperty(event, "view", { value: window });
+      fireEvent(target, event);
+    };
+    mouse(header, "mousedown", 100, 100);
+    mouse(window, "mousemove", 150, 120);
+    expect(handle.current!.getState().panels[key].rect).not.toEqual(prior);
+    fireEvent.pointerCancel(window);
+    expect(handle.current!.getState().panels[key].rect).toEqual(prior);
+    mouse(window, "mousemove", 200, 150);
+    mouse(window, "mouseup", 200, 150);
+    expect(handle.current!.getState().panels[key].rect).toEqual(prior);
+    act(() => handle.current!.undo());
+    expect(handle.current!.getState().panels[key].rect).toEqual(initial);
+    // D3 releases its native post-drag click suppression on the next timer tick.
+    await new Promise((resolve) => setTimeout(resolve, 0));
   });
 
   it("rejects invalid and maximized camera changes and returns defensive state", () => {

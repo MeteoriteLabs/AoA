@@ -52,8 +52,13 @@ function Harness() {
     { companyId: scope.companyId, kind: "task", id: "missing" },
     { companyId: scope.companyId, kind: "task", id: "throwing" },
   ];
+  const batchRefs: Ref[] = Array.from({ length: 50 }, (_, index) => ({
+    companyId: scope.companyId,
+    kind: "task",
+    id: `load-${index + 1}`,
+  }));
   const content: Record<string, ContentEntry> = Object.fromEntries(
-    refs
+    [...refs, ...batchRefs]
       .filter((ref) => ref.id !== "missing")
       .map((ref) => [
         panelKey(scope, ref),
@@ -61,7 +66,7 @@ function Harness() {
           ref,
           title: `${ref.id} fixture`,
           render: () =>
-            ref.id === "task" ? (
+            ref.id === "task" || ref.id.startsWith("load-") ? (
               <DraftFixture />
             ) : ref.id === "artifact" ? (
               <article>
@@ -96,17 +101,7 @@ function Harness() {
     maximized: null,
   };
   const open = (ref: Ref) =>
-    handle.current?.dispatch({
-      type: "open",
-      ref,
-      title: `${ref.id} fixture`,
-      rect: {
-        x: 40 + refs.indexOf(ref) * 70,
-        y: 35 + refs.indexOf(ref) * 45,
-        width: 520,
-        height: 360,
-      },
-    });
+    handle.current?.open({ ref, title: `${ref.id} fixture` });
   return (
     <main style={{ height: "100vh", display: "flex", flexDirection: "column" }}>
       <div
@@ -122,6 +117,24 @@ function Harness() {
         {refs.map((ref) => (
           <button key={ref.id} onClick={() => open(ref)}>
             Open {ref.id}
+          </button>
+        ))}
+        {[10, 50].map((count) => (
+          <button
+            key={count}
+            onClick={() => {
+              const state = handle.current?.getState();
+              if (state)
+                for (const panel of Object.values(state.panels))
+                  handle.current?.dispatch({
+                    type: "close",
+                    key: panel.key,
+                    generation: panel.generation,
+                  });
+              for (const ref of batchRefs.slice(0, count)) open(ref);
+            }}
+          >
+            Open {count} fixtures
           </button>
         ))}
         {[0.5, 1, 2].map((zoom) => (

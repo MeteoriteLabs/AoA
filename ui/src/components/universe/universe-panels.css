@@ -90,23 +90,25 @@
   z-index: 100;
 }
 .react-flow__resize-control.universe-resize-corner {
-  width: 8px;
-  height: 8px;
+  z-index: 102;
+  width: var(--universe-hit-size);
+  height: var(--universe-hit-size);
   background: transparent;
   border: 0;
   border-radius: 0;
 }
 .react-flow__resize-control.universe-resize-edge {
+  z-index: 101;
   border: 0;
   background: transparent;
 }
 .react-flow__resize-control.universe-resize-edge.top,
 .react-flow__resize-control.universe-resize-edge.bottom {
-  height: 8px;
+  height: var(--universe-hit-size);
 }
 .react-flow__resize-control.universe-resize-edge.left,
 .react-flow__resize-control.universe-resize-edge.right {
-  width: 8px;
+  width: var(--universe-hit-size);
 }
 .react-flow__resize-control.universe-resize-corner:hover,
 .react-flow__resize-control.universe-resize-edge:hover {
@@ -114,15 +116,16 @@
 }
 @media (pointer: coarse) {
   .react-flow__resize-control.universe-resize-corner {
-    width: 24px;
-    height: 24px;
+    z-index: 102;
+    width: var(--universe-touch-hit-size);
+    height: var(--universe-touch-hit-size);
   }
   .react-flow__resize-control.universe-resize-edge.top,
   .react-flow__resize-control.universe-resize-edge.bottom {
-    height: 24px;
+    height: var(--universe-touch-hit-size);
   }
   .react-flow__resize-control.universe-resize-edge.left,
   .react-flow__resize-control.universe-resize-edge.right {
-    width: 24px;
+    width: var(--universe-touch-hit-size);
   }
 }

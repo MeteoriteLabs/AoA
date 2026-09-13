@@ -1,4 +1,4 @@
-import type { Dispatch, ReactNode } from "react";
+import type { CSSProperties, Dispatch, ReactNode } from "react";
 import { NodeResizer, type Node, type NodeProps } from "@xyflow/react";
 import { PanelFrame } from "./PanelFrame";
 import { keyboardRect, type ResizeLimits } from "./panel-gestures";
@@ -10,6 +10,7 @@ export type PanelNodeData = Record<string, unknown> & {
   limits: ResizeLimits;
   zoom: number;
   dispatch: Dispatch<Action>;
+  gestureDispatch: Dispatch<Action>;
   content: ReactNode;
   shielded: boolean;
   beginGesture: (panel: Panel) => void;
@@ -22,7 +23,7 @@ export function PanelNode({ data }: NodeProps<PanelFlowNode>) {
     _event: unknown,
     rect: { x: number; y: number; width: number; height: number }
   ) =>
-    dispatch({
+    data.gestureDispatch({
       type: "geometry",
       key: panel.key,
       generation: panel.generation,
@@ -34,6 +35,19 @@ export function PanelNode({ data }: NodeProps<PanelFlowNode>) {
       {!panel.minimized && !data.maximized && (
         <NodeResizer
           {...data.limits}
+          autoScale={false}
+          handleStyle={
+            {
+              "--universe-hit-size": `${8 / data.zoom}px`,
+              "--universe-touch-hit-size": `${24 / data.zoom}px`,
+            } as CSSProperties
+          }
+          lineStyle={
+            {
+              "--universe-hit-size": `${8 / data.zoom}px`,
+              "--universe-touch-hit-size": `${24 / data.zoom}px`,
+            } as CSSProperties
+          }
           handleClassName="universe-resize-corner"
           lineClassName="universe-resize-edge"
           onResizeStart={() => data.beginGesture(panel)}

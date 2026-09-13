@@ -13,6 +13,7 @@ import {
   displayRect,
   hydrateLayout,
   initialState,
+  openingRect,
   panelKey,
   panelReducer,
   viewportFromLayout,
@@ -22,6 +23,7 @@ import {
   type Ref,
   type Scope,
   type State,
+  type SizePolicy,
   type Viewport,
 } from "./panel-state";
 import {
@@ -51,6 +53,10 @@ export type WorkspaceProps = {
 /** Commands require caller authorization. The reducer's source field is not an authorization grant. */
 export type WorkspaceHandle = {
   dispatch: (action: Action) => void;
+  open: (
+    entry: Pick<ContentEntry, "ref" | "title">,
+    policy?: SizePolicy
+  ) => void;
   getState: () => State;
   getViewport: () => Viewport;
   setViewport: (viewport: Viewport) => void;
@@ -114,6 +120,23 @@ const ScopedWorkspace = forwardRef<WorkspaceHandle, WorkspaceProps>(
       if (!entry) return;
       const panel = current.current.panels[entry.key];
       if (panel?.generation !== entry.generation) return;
+      if (cancelled) {
+        // Roll back only this gesture's last accepted rectangle; a concurrent edit wins.
+        const next = panelReducer(current.current, {
+          type: "geometry",
+          key: entry.key,
+          generation: entry.generation,
+          rect: entry.before,
+          expectedRect: entry.after,
+          source: "human",
+        });
+        if (next !== current.current) {
+          current.current = next;
+          setState(next);
+          callbacks.current.onStateChange?.(structuredClone(next));
+        }
+        return;
+      }
       history.current = commitGesture(history.current, {
         ...entry,
         after: panel.rect,
@@ -170,6 +193,27 @@ const ScopedWorkspace = forwardRef<WorkspaceHandle, WorkspaceProps>(
       [finishGesture]
     );
 
+    // Library callbacks are valid only while their captured incarnation owns a gesture.
+    // Public dispatch remains independent for authorized external commands.
+    const gestureDispatch = useCallback(
+      (action: Action) => {
+        const active = gesture.current;
+        if (
+          action.type !== "geometry" ||
+          !active ||
+          active.key !== action.key ||
+          active.generation !== action.generation
+        )
+          return;
+        const before = current.current;
+        dispatch(action);
+        if (current.current !== before && gesture.current === active) {
+          active.after = { ...current.current.panels[action.key].rect };
+        }
+      },
+      [dispatch]
+    );
+
     useLayoutEffect(() => {
       alive.current = true;
       const observer = new ResizeObserver(([entry]) => {
@@ -221,6 +265,28 @@ const ScopedWorkspace = forwardRef<WorkspaceHandle, WorkspaceProps>(
     };
     useImperativeHandle(forwardedRef, () => ({
       dispatch,
+      open: (
+        entry,
+        policy = {
+          width: 520,
+          height: 360,
+          minWidth: entry.ref.kind === "browser" ? 400 : 320,
+          minHeight: 240,
+        }
+      ) => {
+        if (!alive.current || usable.width <= 0 || usable.height <= 0) return;
+        const existing =
+          current.current.panels[panelKey(current.current.scope, entry.ref)];
+        const rect =
+          existing?.rect ??
+          openingRect(
+            policy,
+            usable,
+            camera.current,
+            current.current.nextOpenedOrdinal
+          );
+        dispatch({ type: "open", ...entry, rect });
+      },
       getState: () => structuredClone(current.current),
       getViewport: () => ({ ...camera.current }),
       setViewport: (next) => updateViewport(next, true),
@@ -275,6 +341,7 @@ const ScopedWorkspace = forwardRef<WorkspaceHandle, WorkspaceProps>(
                 limits: resizeLimits(panel.ref.kind, viewport.zoom, usable),
                 zoom: viewport.zoom,
                 dispatch,
+                gestureDispatch,
                 shielded,
                 beginGesture,
                 endGesture: () => finishGesture(),
@@ -296,7 +363,7 @@ const ScopedWorkspace = forwardRef<WorkspaceHandle, WorkspaceProps>(
           })
         : [];
     const drag = (_event: unknown, node: PanelFlowNode) => {
-      dispatch({
+      gestureDispatch({
         type: "geometry",
         key: node.id,
         generation: node.data.panel.generation,
@@ -350,6 +417,7 @@ const ScopedWorkspace = forwardRef<WorkspaceHandle, WorkspaceProps>(
               }}
               minZoom={0.25}
               maxZoom={2}
+              nodeDragThreshold={0}
               onNodesChange={() => {}}
               onNodeDragStart={(_event, node) => beginGesture(node.data.panel)}
               onNodeDrag={drag}
