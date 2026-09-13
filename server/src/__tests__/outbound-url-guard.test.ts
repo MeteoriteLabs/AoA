@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildPinnedRequestOptions,
   executePinnedRequest,
@@ -8,6 +8,16 @@ import {
   validateAndResolveFetchUrl,
   type ValidatedFetchTarget,
 } from "../services/outbound-url-guard.js";
+
+const dnsMock = vi.hoisted(() => ({ lookup: vi.fn() }));
+vi.mock("node:dns/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:dns/promises")>();
+  return { ...actual, lookup: dnsMock.lookup };
+});
+beforeEach(() => {
+  dnsMock.lookup.mockReset();
+  dnsMock.lookup.mockRejectedValue(new Error("Unexpected DNS lookup in unit test"));
+});
 
 describe("isPrivateIP", () => {
   it("rejects IPv4 RFC 1918 ranges", () => {
@@ -372,8 +382,8 @@ describe("executePinnedRequest", () => {
   });
 
   it("validateAndResolveFetchUrl strips embedded credentials from parsedUrl", async () => {
-    // Use a public-resolving DNS name so validate doesn't reject.
-    // We're only checking that the returned parsedUrl has no creds.
+    // Resolve a controlled public answer; credential stripping needs no network.
+    dnsMock.lookup.mockResolvedValueOnce([{ address: "8.8.8.8", family: 4 }]);
     const target = await validateAndResolveFetchUrl("https://user:pass@example.com/path?q=1");
     expect(target.parsedUrl.username).toBe("");
     expect(target.parsedUrl.password).toBe("");
@@ -382,6 +392,21 @@ describe("executePinnedRequest", () => {
     expect(target.parsedUrl.pathname).toBe("/path");
     expect(target.parsedUrl.search).toBe("?q=1");
     expect(target.hostHeader).toBe("example.com");
+    expect(target.resolvedAddress).toBe("8.8.8.8");
+    expect(target.tlsServername).toBe("example.com");
+    expect(dnsMock.lookup).toHaveBeenCalledWith("example.com", { all: true });
+  });
+
+  it("rejects an all-private DNS answer", async () => {
+    dnsMock.lookup.mockResolvedValueOnce([{ address: "127.0.0.1", family: 4 }]);
+    await expect(validateAndResolveFetchUrl("https://example.com/"))
+      .rejects.toThrow(/All resolved IPs/);
+  });
+
+  it("surfaces DNS failure without using an unvalidated target", async () => {
+    dnsMock.lookup.mockRejectedValueOnce(new Error("fixture resolver failure"));
+    await expect(validateAndResolveFetchUrl("https://example.com/"))
+      .rejects.toThrow(/DNS resolution failed/);
   });
 
   it("sends the request body when init.body is provided", async () => {
