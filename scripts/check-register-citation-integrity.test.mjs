@@ -492,3 +492,41 @@ test("AMBIGUITY: an ambiguous-anchor grandfather entry excuses ONLY that categor
     [],
   );
 });
+
+// --- DOTTED-BOUNDARY (task_94660c59): a dotted anchor must pin the WHOLE member path -----
+// The identifier-boundary count (BUG6) rejects `[\w$]` neighbours so `admit` does not match
+// inside `admittedUserRequester`. But `.` was NOT in that boundary class, so a DOTTED anchor
+// (`config.max`, `services.companyId`) still matched as the tail of a LONGER, different chain
+// (`app.config.max`, `this.services.companyId`) — a wrong-construct false-pass, the same class
+// BUG6 closed for bare identifiers. The fix tightens the boundary to `[\w$.]` for a dotted
+// anchor only; a BARE identifier keeps `[\w$]` so an ordinary method call still matches.
+
+test("BUG7 (dotted-boundary): a dotted anchor does NOT match as the tail of a longer member chain", () => {
+  // false-pass class: `config.max` inside `app.config.max` (was 1 by the [\w$]-only boundary)
+  assert.equal(anchorMatchCount("x = app.config.max;", "config.max"), 0);
+  assert.equal(anchorMatchCount("y = this.services.companyId;", "services.companyId"), 0);
+  // ...nor as the HEAD of a longer chain
+  assert.equal(anchorMatchCount("config.max.deep", "config.max"), 0);
+  // the exact dotted construct still counts
+  assert.equal(anchorMatchCount("x = config.max;", "config.max"), 1);
+  assert.equal(anchorMatchCount("return services.companyId;", "services.companyId"), 1);
+});
+
+test("BUG7 (dotted-boundary): a BARE identifier anchor STILL matches an ordinary method call (no regression)", () => {
+  // a bare identifier keeps the [\w$] boundary: a leading `.` (method access) is a legit match
+  assert.equal(anchorMatchCount("gate.admit(x)", "admit"), 1);
+  assert.equal(anchorMatchCount("this.reconcile()", "reconcile"), 1);
+  // still boundary-correct inside a longer identifier (unchanged from BUG6)
+  assert.equal(anchorMatchCount("preadmit(x)", "admit"), 0);
+});
+
+test("BUG7 end-to-end (RED-first): a dotted anchor whose construct moved off, leaving only a LONGER member chain containing it, REDs", () => {
+  // Cited line holds `app.config.max` (contains the sub-path `config.max`); the real bare
+  // `config.max` construct is nowhere in the ±5 window. Pre-fix counted 1 -> false GREEN.
+  const lines = ["l1", "const ceiling = app.config.max;", "l3", "l4", "l5"];
+  const input = makeInput({ citations: [cit({ line: "2", anchorToken: "config.max" })], files: { "server/src/foo.ts": { exists: true, lines } } });
+  assert.ok(hasError(evaluateCitationIntegrity(input).errors, "does not appear within ±5 lines"), "dotted sub-path must RED, not false-green");
+  // control: the real `config.max` construct in-window passes
+  const ok = makeInput({ citations: [cit({ line: "2", anchorToken: "config.max" })], files: { "server/src/foo.ts": { exists: true, lines: ["l1", "const ceiling = config.max;", "l3"] } } });
+  assert.deepEqual(evaluateCitationIntegrity(ok).errors, [], "the exact dotted construct in-window must pass");
+});

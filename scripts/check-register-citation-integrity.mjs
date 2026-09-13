@@ -301,12 +301,21 @@ const IDENTIFIER_SHAPED = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/;
  * e.g. `count > config.max`, `if (inserted[0])`, a path string) is counted VERBATIM, since such a
  * snippet legitimately matches only where it literally appears. A call-shaped anchor (`foo()`) with
  * no verbatim hit falls back to `name(` at an identifier boundary.
+ *
+ * ★ task_94660c59 (dotted-boundary) — a DOTTED anchor (`config.max`, `services.companyId`) must pin
+ * the WHOLE member path, so its boundary class ALSO excludes `.`: `config.max` must NOT match as the
+ * tail of `app.config.max` or the head of `config.max.deep` — a wrong-construct false-pass of the
+ * same family the `[\w$]` boundary closed for bare identifiers. A BARE identifier keeps the `[\w$]`
+ * boundary (a leading `.` is NOT excluded) so an ordinary method access still matches — `admit`
+ * legitimately counts in `gate.admit(x)`; only a dotted anchor demands full-path exactness.
  */
 export function anchorMatchCount(hay, token) {
   const raw = String(token || "").trim();
   if (raw.length < 2) return 0;
   if (IDENTIFIER_SHAPED.test(raw)) {
-    return (hay.match(new RegExp(`(?<![\\w$])${escapeRegExp(raw)}(?![\\w$])`, "g")) || []).length;
+    // Dotted anchor -> `[\w$.]` boundary (pin the full path); bare identifier -> `[\w$]` (allow `obj.method`).
+    const b = raw.includes(".") ? "[\\w$.]" : "[\\w$]";
+    return (hay.match(new RegExp(`(?<!${b})${escapeRegExp(raw)}(?!${b})`, "g")) || []).length;
   }
   // snippet / call-shaped: count verbatim occurrences first.
   let n = 0;
