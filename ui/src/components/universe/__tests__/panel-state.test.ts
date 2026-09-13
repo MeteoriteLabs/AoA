@@ -379,3 +379,77 @@ it("receipt journal cannot smuggle a key from another scope or an invalid key", 
     expect(reconcileOpeningAck(s, ack, pending)).toBe(s);
   }
 });
+it("rejects contradictory ordinal mappings for repeated opens of one incarnation atomically", () => {
+  const s = opened();
+  const pending = [0, 2].map((operationIndex) => ({
+    scope,
+    operationId: "op",
+    operationIndex,
+    key,
+    generation: 1,
+  }));
+  const ack = {
+    scope,
+    operationId: "op",
+    revision: 5,
+    nextOpenedOrdinal: 22,
+    opened: [
+      { operationIndex: 0, key, openedOrdinal: 21 },
+      { operationIndex: 2, key, openedOrdinal: 20 },
+    ],
+  };
+  expect(reconcileOpeningAck(s, ack, pending)).toBe(s);
+  expect(s.layoutRevision).toBeUndefined();
+  expect(s.panels[key].openedOrdinal).toBe(1);
+});
+it.each([false, true])(
+  "rejects reused ordinal across closed/reopened incarnations even if final panel is closed: %s",
+  (closeFinal) => {
+    let s = panelReducer(opened(), { type: "close", key, generation: 1 });
+    s = panelReducer(s, open);
+    if (closeFinal) s = panelReducer(s, { type: "close", key, generation: 2 });
+    const pending = [1, 2].map((generation, operationIndex) => ({
+      scope,
+      operationId: "op",
+      operationIndex,
+      key,
+      generation,
+    }));
+    const ack = {
+      scope,
+      operationId: "op",
+      revision: 5,
+      nextOpenedOrdinal: 22,
+      opened: [0, 1].map((operationIndex) => ({
+        operationIndex,
+        key,
+        openedOrdinal: 21,
+      })),
+    };
+    expect(reconcileOpeningAck(s, ack, pending)).toBe(s);
+    expect(s.layoutRevision).toBeUndefined();
+  }
+);
+it("rejects one ordinal assigned to distinct keys even when their incarnations are closed", () => {
+  const otherKey = panelKey(scope, { ...ref, id: "b" });
+  const s = initialState(scope);
+  const pending = [key, otherKey].map((key, operationIndex) => ({
+    scope,
+    operationId: "op",
+    operationIndex,
+    key,
+    generation: operationIndex + 1,
+  }));
+  const ack = {
+    scope,
+    operationId: "op",
+    revision: 5,
+    nextOpenedOrdinal: 22,
+    opened: pending.map((p) => ({
+      operationIndex: p.operationIndex,
+      key: p.key,
+      openedOrdinal: 21,
+    })),
+  };
+  expect(reconcileOpeningAck(s, ack, pending)).toBe(s);
+});

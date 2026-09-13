@@ -203,7 +203,8 @@ export function reconcileOpeningAck(
   const sorted = [...journal].sort(
     (a, b) => a.operationIndex - b.operationIndex
   );
-  const panels = { ...current.panels };
+  const ordinalByIncarnation = new Map<string, number>();
+  const incarnationByOrdinal = new Map<number, string>();
   for (let i = 0; i < ack.opened.length; i++) {
     const mapping = ack.opened[i];
     const p = sorted[i];
@@ -215,6 +216,23 @@ export function reconcileOpeningAck(
       mapping.openedOrdinal >= ack.nextOpenedOrdinal
     )
       return current;
+    // Validate the entire journal, including instances no longer in the registry.
+    const incarnation = JSON.stringify([p.key, p.generation]);
+    const previousOrdinal = ordinalByIncarnation.get(incarnation);
+    const previousIncarnation = incarnationByOrdinal.get(mapping.openedOrdinal);
+    if (
+      (previousOrdinal !== undefined &&
+        previousOrdinal !== mapping.openedOrdinal) ||
+      (previousIncarnation !== undefined && previousIncarnation !== incarnation)
+    )
+      return current;
+    ordinalByIncarnation.set(incarnation, mapping.openedOrdinal);
+    incarnationByOrdinal.set(mapping.openedOrdinal, incarnation);
+  }
+  const panels = { ...current.panels };
+  for (let i = 0; i < ack.opened.length; i++) {
+    const mapping = ack.opened[i];
+    const p = sorted[i];
     const panel = Object.hasOwn(panels, p.key) ? panels[p.key] : undefined;
     if (panel && panel.generation === p.generation)
       panels[p.key] = { ...panel, openedOrdinal: mapping.openedOrdinal };
