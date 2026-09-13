@@ -1,5 +1,7 @@
 # E1.1 — canvas and shared panel controller coding plan
 
+**Implemented interface overlay:** [First-batch results](../first-canvas-batch-results.md) records the approved generic implementation, review corrections and evidence. The reference reducer below remains illustrative; implemented `panel-state.ts`, `panel-layout.ts` and `panel-history.ts` include the complete runtime validation, optional geometry `expectedRect` guard and bounded receipt reconciliation. Later persistence and real-route acceptance remain separate.
+
 > September 12 correction: this is an unapproved coding-plan draft requiring independent review. Implementation was premature and is paused; no test result grants approval. [Planning reset](../planning-reset.md) controls current work. Reassess this reference plan independently of the isolated code, then obtain explicit approval before implementation.
 
 **Goal:** One content-keyed panel controller consistently handles open/focus/move/resize/pin/minimize/maximize/restore/close through all entry routes.
@@ -275,13 +277,13 @@ export type AuthorizedLayoutSnapshot = {
   order: string[]; selected: string|null; maximized: string|null;
 };
 export type PendingOpen = {
-  operationId:string;operationIndex:number;key:string;generation:number;
+  scope:Scope;operationId:string;operationIndex:number;key:string;generation:number;
 };
 export type OpeningAck = {
-  operationId:string;revision:number;nextOpenedOrdinal:number;
+  scope:Scope;operationId:string;revision:number;nextOpenedOrdinal:number;
   opened:Array<{operationIndex:number;key:string;openedOrdinal:number}>;
 };
-// Proposed additional panel-state.ts exports; implemented/tested in E1.1/1:
+// Additional panel-state.ts exports (implemented via panel-layout.ts and re-exported):
 export declare function hydrateLayout(current:State,snapshot:AuthorizedLayoutSnapshot):State;
 export declare function viewportFromLayout(snapshot:AuthorizedLayoutSnapshot):Viewport;
 export declare function reconcileOpeningAck(current:State,ack:OpeningAck,
@@ -293,7 +295,19 @@ export type WorkspaceProps = {
   onStateChange?: (state: State) => void;
   onViewportCommit?: (viewport: Viewport) => void;
 };
+// forwardRef imperative launcher seam; SizePolicy comes from panel-state.ts.
+export type WorkspaceHandle = {
+  dispatch: (action: Action) => void;
+  open: (entry: Pick<ContentEntry, "ref" | "title">, policy?: SizePolicy) => void;
+  getState: () => State;
+  getViewport: () => Viewport;
+  setViewport: (viewport: Viewport) => void;
+  undo: () => void;
+  redo: () => void;
+};
 ```
+
+`WorkspaceHandle.open` waits for measured usable bounds and uses `openingRect` with the current camera; an already open panel retains its normal rectangle. Diagnostic snapshots are defensive copies. Mutation handles retained from an old scope are inert. Commands require authorization in the calling adapter; the reducer source tag is not a grant. Cancelled gestures revert only their own last accepted rectangle in the same incarnation, create no history entry and cannot overwrite observer or concurrent edits.
 
 Hydration validates matching scope, schema, safe-integer revision/counter, unique keys/ordinals, bounded geometry, exact order membership and visible selected/maximized references. A non-null maximized key must equal selected and be last in order. Validate snapshot.viewport as finite CSS-pixel translation x/y within ±1,000,000 and zoom 0.25–2. The counter must exceed every persisted ordinal. Hydrate directly from that authorized snapshot; never replay persisted panels through fresh open actions. Give hydrated instances fresh local generations starting at current.nextGeneration so old closures cannot affect them; preserve saved ordinal/geometry/minimized/pin/order. Initialize only after authorized loading, or through explicit clean-state replacement after pending edits resolve. Routine snapshot refresh uses E1.2 reconciliation and cannot overwrite dirty state by calling hydrateLayout.
 
@@ -458,7 +472,10 @@ console.log(JSON.stringify({ contractChecks: checks, result: "passed" }));
 pnpm --filter @armyofagents/ui add --save-exact @xyflow/react@12.11.6
 pnpm install --frozen-lockfile
 pnpm exec vitest run ui/src/components/universe/__tests__/panel-state.test.ts ui/src/components/universe/__tests__/PanelNode.test.tsx ui/src/components/universe/__tests__/UniverseWorkspace.test.tsx
-pnpm exec playwright test --config=tests/e2e/playwright.config.ts tests/e2e/universe-panels.spec.ts
+# Generic first-batch Vite-only fixture qualification (no DB/provider):
+pnpm exec playwright test --config=tests/universe-canvas/playwright.config.ts
+# Authenticated public Universe/task routes remain later E1.0/E2.4 acceptance:
+# pnpm exec playwright test --config=tests/e2e/playwright.config.ts tests/e2e/universe-panels.spec.ts
 pnpm -r typecheck
 pnpm test:run
 pnpm build

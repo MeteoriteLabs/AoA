@@ -10,7 +10,7 @@
 
 **Spec:** [Accepted V1/V2 allocation](release-plans/README.md), [coding plans](coding-plans/README.md), [source/interface bindings](implementation-bindings.md), [UI decisions](ui-review-decisions.md), [settings](settings-contract.md), [motion](motion-and-interaction.md), [UAT](user-acceptance-plan.md).
 
-**September 13, 2026 — author-reviewed sequencing packet.** BASE is adopted and qualified. Feature coding remains unstarted and awaits the user's implementation discussion and explicit bounded approval. This plan review is Codex's review, not a new Claude or independent-agent review.
+**September 13, 2026 — author-reviewed sequencing packet.** BASE is adopted and qualified. TK subsequently approved the first Canvas batch. Its exact package scope and current qualification are recorded in [first-batch results](first-canvas-batch-results.md); this does not authorize the remaining packages. This plan review is Codex's review, not a new Claude or independent-agent review.
 
 ## Global constraints
 
