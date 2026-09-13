@@ -95,10 +95,13 @@
 // principal.id is a userId (`user`/`commander`/`local_board`, each set from `actor.userId` by
 // `principalFor`) record as `user`, and the machine kinds record as `system` — a worker
 // (over_cap; no `agents`/`auth` row, the DE-06 convention), a service-reconcile-origin
-// `system` submission, and `mcp` (whose submit-path principal.id is the authentication KEY id,
-// not the owner userId — so recording it as `user` would misattribute; `getActorInfo` labels
-// mcp `user` because it holds the owner userId at REQUEST time, which the submit path does not;
-// full mcp owner-userId attribution is a filed follow-up). A real human/board/Commander capacity
+// `system` submission. `mcp` records as `user` when the request-time owner userId is threaded
+// (the common case; task_8a0402bf, 2026-09-13): the submit-path principal.id is the
+// authentication KEY id, but `principalFor` also threads the owner `actor.userId`
+// (`mcp_api_keys.userId`, notNull) as `ownerUserId`, so the recorder attributes the row to that
+// owner as a `user` action — matching `getActorInfo`, which labels mcp `user` from the same
+// owner userId at request time — keeping the key id in `details.mcpKeyId`; a defensive mcp
+// principal with NO owner userId still records `system`. A real human/board/Commander capacity
 // refusal is NOT flattened into `system`. `actor_id` is plain text with NO foreign key, which is
 // exactly what makes `workerId`/`principal.id` usable as the identity directly — the same choice,
 // for the same reason, as the DE-06 object-access, DE-06 denial, and DE-11 retention call sites
@@ -160,13 +163,15 @@ export const WORKER_ADMISSION_DENIAL_SURFACE = "worker_admission";
  *   - `user`, `commander`, `local_board` -> `user`  (principal.id is a userId: `principalFor`
  *      sets each from `actor.userId`, and commander is additionally validated
  *      `claims.userId === principal.id` at `job-submission.ts:196`)
- *   - `mcp`    -> `system`: the submit-path principal carries the authentication KEY id
- *      (`actor.keyId`, `job-control.ts:99`), NOT the owner userId. The canonical `getActorInfo`
- *      classifies mcp as `user` because it holds the owner userId at REQUEST time; the submit
- *      path does not, so recording (user, keyId) would misattribute — the honest label for a
- *      bare key credential is `system`. Full mcp owner-userId attribution would require
- *      threading the userId through the shared principal construction (out of scope for DE-27;
- *      filed as a follow-up).
+ *   - `mcp`    -> `user` WHEN the request-time owner userId is threaded (the common case;
+ *      task_8a0402bf, 2026-09-13): the submit-path principal.id is the authentication KEY id
+ *      (`actor.keyId`, `job-control.ts`), but `principalFor` now also threads the owner
+ *      `actor.userId` (`mcp_api_keys.userId`, notNull) as `ownerUserId`, so the recorder
+ *      attributes the row to that owner as a `user` action — matching the canonical
+ *      `getActorInfo`, which classifies mcp `user` from the same owner userId at request time —
+ *      and keeps the key id in `details.mcpKeyId`. This mapping is applied in the recorder (not
+ *      here), because `actorTypeForPrincipalKind` sees only the kind; a defensive mcp principal
+ *      with NO owner userId still records `system`, the honest label for a bare key credential.
  *   - `worker` (the over_cap execution identity, no truthful `ActivityActorType` per the DE-06
  *      convention), `system` (a service-reconcile-origin submission), and any unknown kind
  *      -> `system`.
@@ -234,6 +239,15 @@ export interface WorkerAdmissionDenialInput {
    * and also stamps it into `details` for legibility.
    */
   principalKind: string;
+  /**
+   * The REQUEST-TIME owner userId, present ONLY for an `mcp` submitter (the
+   * `mcp_api_keys.userId`, threaded from `req.actor.userId`). When set for an mcp
+   * principal, the recorder attributes the row to that owner as a `user` action —
+   * matching the canonical `getActorInfo`, which classifies mcp as `user` because
+   * it holds the owner userId at request time — and keeps the authenticating key id
+   * (`actorId`) in `details.mcpKeyId` for the trail. Absent for every other kind.
+   */
+  ownerUserId?: string;
   /** WHICH RESOURCE — the kind of thing refused. */
   entityType: string;
   /** WHICH RESOURCE — its id. */
@@ -262,6 +276,18 @@ export async function recordWorkerAdmissionDenial(
   db: Db,
   input: WorkerAdmissionDenialInput,
 ): Promise<string | null> {
+  // ★ mcp OWNER attribution (task_8a0402bf). The submit-path principal for an mcp
+  // caller carries the authenticating KEY id, not the owner userId, so by kind
+  // alone the honest label is `system`. But the request-time owner userId IS
+  // available (`mcp_api_keys.userId`, notNull) and is threaded here as
+  // `ownerUserId`: when present for an mcp principal, attribute the row to that
+  // owner as a `user` action — the same classification the canonical `getActorInfo`
+  // makes for mcp at request time — and keep the key id in `details.mcpKeyId` so the
+  // credential is still on the trail. Every other kind is unchanged (derived purely
+  // from `principalKind`); a defensive absent-owner mcp still records `system`.
+  const mcpOwnerAttributed = input.principalKind === "mcp" && Boolean(input.ownerUserId);
+  const actorType = mcpOwnerAttributed ? "user" : actorTypeForPrincipalKind(input.principalKind);
+  const actorId = mcpOwnerAttributed ? input.ownerUserId! : input.actorId;
   return recordSecurityDenial(db, {
     companyId: input.companyId,
     organizationId: input.organizationId,
@@ -269,14 +295,13 @@ export async function recordWorkerAdmissionDenial(
     surface: WORKER_ADMISSION_DENIAL_SURFACE,
     reason: input.reason,
     // WHO is the specific refused principal — the worker id (over_cap) or the
-    // submitting principal id (capacity) — passed in as `actorId`, NEVER the org.
-    // `actorType` is the TRUTHFUL kind for that principal (`user`/`agent`, else
-    // `system`): a worker has no `agents`/`auth` row so it is `system`, but a user or
-    // agent submitter must not be flattened into `system`. `actor_id` is plain text with
-    // no FK, so the id is safe to record directly. The org is the TENANT and rides
-    // `organizationId`/`details.organizationId`, not the actor.
-    actorType: actorTypeForPrincipalKind(input.principalKind),
-    actorId: input.actorId,
+    // submitting principal id (capacity) — NEVER the org. `actorType` is the TRUTHFUL
+    // kind: `user`/`agent` for those, `system` for a worker or bare machine kind, and
+    // `user` for an mcp caller whose owner userId is in hand (see the block above).
+    // `actor_id` is plain text with no FK, so the id is safe to record directly. The
+    // org is the TENANT and rides `organizationId`/`details.organizationId`.
+    actorType,
+    actorId,
     entityType: input.entityType,
     entityId: input.entityId,
     control: input.control,
@@ -285,6 +310,9 @@ export async function recordWorkerAdmissionDenial(
       organizationId: input.organizationId,
       // Kept for legibility beside the derived actorType, always from the first-class field.
       principalKind: input.principalKind,
+      // For an owner-attributed mcp row, keep the authenticating key id on the trail
+      // (it is the `actorId` the caller passed, now displaced by the owner userId).
+      ...(mcpOwnerAttributed ? { mcpKeyId: input.actorId } : {}),
     },
   });
 }
@@ -308,6 +336,9 @@ export interface AdmissionDenialIntent {
    * folded into the drained row's `details` so the WHO is legible beyond a bare id.
    */
   principalKind: string;
+  /** The request-time owner userId for an `mcp` submitter (see
+   * `WorkerAdmissionDenialInput.ownerUserId`). Undefined for every other kind. */
+  ownerUserId?: string;
   /** The attempt that could not claim an organization capacity slot. */
   attemptId: string;
   /**
@@ -360,6 +391,7 @@ export async function drainAdmissionDenial(
     // AND stamps it into details for legibility.
     actorId: pending.actorId,
     principalKind: pending.principalKind,
+    ownerUserId: pending.ownerUserId,
     entityType: "job_attempt",
     entityId: pending.attemptId,
     // The refusing control is the deny site (from the intent), not this drain site.
