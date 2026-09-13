@@ -91,6 +91,23 @@ function setup() {
   return { handle, changed, camera, ...result };
 }
 
+function mouse(target: EventTarget, type: string, x: number, y: number) {
+  const event = new MouseEvent(type, {
+    bubbles: true,
+    clientX: x,
+    clientY: y,
+    buttons: 1,
+  });
+  Object.defineProperty(event, "view", { value: window });
+  fireEvent(target, event);
+}
+
+async function settleCameraEnd() {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 170));
+  });
+}
+
 describe("controlled workspace", () => {
   it.each([0.5, 1, 2])(
     "opens absent panels in screen pixels at zoom %s without refitting existing panels",
@@ -256,6 +273,123 @@ describe("controlled workspace", () => {
     await waitFor(() => expect(header).toHaveFocus());
     focus.mockRestore();
   });
+
+  it("does not let a delayed camera synchronization roll back a live pan", async () => {
+    const { handle, camera, container } = setup();
+    act(() => handle.current!.setViewport({ x: 0, y: 0, zoom: 2 }));
+    camera.mockClear();
+    const pane = container.querySelector(".react-flow__pane")!;
+    mouse(pane, "mousedown", 100, 100);
+    mouse(window, "mousemove", 110, 105);
+    expect(handle.current!.getViewport()).toEqual({ x: 10, y: 5, zoom: 2 });
+    // XYFlow delays both synchronization and native gesture end by 150 ms.
+    await settleCameraEnd();
+    expect(handle.current!.getViewport()).toEqual({ x: 10, y: 5, zoom: 2 });
+    expect(camera).not.toHaveBeenCalled();
+    mouse(window, "mousemove", 140, 120);
+    mouse(window, "mouseup", 140, 120);
+    await settleCameraEnd();
+    expect(handle.current!.getViewport()).toEqual({ x: 40, y: 20, zoom: 2 });
+    expect(camera).toHaveBeenCalledTimes(1);
+    expect(camera).toHaveBeenLastCalledWith({ x: 40, y: 20, zoom: 2 });
+  });
+
+  it("does not let an earlier native pan end overwrite a newer pan", async () => {
+    const { handle, camera, container } = setup();
+    act(() => handle.current!.setViewport({ x: 0, y: 0, zoom: 2 }));
+    await settleCameraEnd();
+    camera.mockClear();
+    const pane = container.querySelector(".react-flow__pane")!;
+    mouse(pane, "mousedown", 100, 100);
+    mouse(window, "mousemove", 110, 105);
+    mouse(window, "mouseup", 110, 105);
+    mouse(pane, "mousedown", 100, 100);
+    mouse(window, "mousemove", 120, 110);
+    expect(handle.current!.getViewport()).toEqual({ x: 30, y: 15, zoom: 2 });
+    await settleCameraEnd();
+    expect(handle.current!.getViewport()).toEqual({ x: 30, y: 15, zoom: 2 });
+    expect(camera).not.toHaveBeenCalled();
+    mouse(window, "mousemove", 140, 120);
+    mouse(window, "mouseup", 140, 120);
+    await settleCameraEnd();
+    expect(camera).toHaveBeenCalledTimes(1);
+    expect(camera).toHaveBeenLastCalledWith({ x: 50, y: 25, zoom: 2 });
+  });
+
+  it("commits one completed native wheel pan without committing hydration", async () => {
+    const { handle, camera, container } = setup();
+    await settleCameraEnd();
+    expect(camera).not.toHaveBeenCalled();
+    fireEvent.wheel(container.querySelector(".react-flow__pane")!, {
+      deltaX: 40,
+      deltaY: 20,
+    });
+    expect(handle.current!.getViewport()).toEqual({ x: 10, y: 30, zoom: 0.5 });
+    expect(camera).not.toHaveBeenCalled();
+    await settleCameraEnd();
+    expect(camera).toHaveBeenCalledTimes(1);
+    expect(camera).toHaveBeenLastCalledWith({ x: 10, y: 30, zoom: 0.5 });
+  });
+
+  it.each(["maximize", "scope", "unmount"])(
+    "ignores a pending camera end after %s",
+    async (change) => {
+      const { handle, camera, container, rerender, unmount } = setup();
+      await settleCameraEnd();
+      camera.mockClear();
+      mouse(
+        container.querySelector(".react-flow__pane")!,
+        "mousedown",
+        100,
+        100
+      );
+      mouse(window, "mousemove", 140, 120);
+      mouse(window, "mouseup", 140, 120);
+      expect(handle.current!.getViewport()).toEqual({
+        x: 70,
+        y: 60,
+        zoom: 0.5,
+      });
+      if (change === "maximize") {
+        // D3 suppresses clicks until the first timer tick after a native drag.
+        await act(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Maximize panel" }));
+        expect(handle.current!.getState().maximized).toBe(key);
+      } else if (change === "scope") {
+        const other = { ...scope, conversationId: "next-camera" };
+        rerender(
+          <UniverseWorkspace
+            ref={handle}
+            scope={other}
+            initialLayout={{
+              ...layout,
+              scope: other,
+              panels: [],
+              order: [],
+              selected: null,
+            }}
+            content={{}}
+            onViewportCommit={camera}
+          />
+        );
+      } else {
+        unmount();
+      }
+      await settleCameraEnd();
+      expect(camera).not.toHaveBeenCalled();
+      if (change === "scope") {
+        expect(handle.current!.getViewport()).toEqual(layout.viewport);
+      } else if (change === "maximize") {
+        expect(handle.current!.getViewport()).toEqual({
+          x: 70,
+          y: 60,
+          zoom: 0.5,
+        });
+      }
+    }
+  );
 
   it("rejects invalid and maximized camera changes and returns defensive state", () => {
     const { handle, changed, camera } = setup();

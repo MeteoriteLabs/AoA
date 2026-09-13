@@ -449,7 +449,16 @@ const ScopedWorkspace = forwardRef<WorkspaceHandle, WorkspaceProps>(
               viewport={viewport}
               onViewportChange={(next) => updateViewport(next)}
               onMoveEnd={(event, next) => {
-                if (event) updateViewport(next, true);
+                // Controlled viewport synchronization also emits a truthy { sync: true }
+                // end event. A delayed native end can also predate a newer pan.
+                // Completion commits only the live camera; it never replays old samples.
+                if (
+                  event instanceof Event &&
+                  next.x === camera.current.x &&
+                  next.y === camera.current.y &&
+                  next.zoom === camera.current.zoom
+                )
+                  updateViewport(next, true);
               }}
               minZoom={0.25}
               maxZoom={2}
