@@ -36,7 +36,7 @@
  * @see PLUGIN_SPEC.md §12.5 — Graceful Shutdown Policy
  */
 import { EventEmitter } from "node:events";
-import { and, eq, ne, sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { plugins } from "@armyofagents/db";
 import { pluginRollbackService } from "./plugin-rollback.js";
@@ -89,25 +89,27 @@ export function diffCapabilities(
  * Reconcile ONE plugin row to the cloud-blocked state, ATOMICALLY and
  * idempotently, returning whether THIS caller performed the transition.
  *
- * The flip and its DE-16 audit row run in a SINGLE transaction:
- *   1. A COMPARE-AND-SET claim: the `UPDATE` flips the row to
- *      `error`/`PLUGIN_WORKER_BLOCKED_IN_CLOUD` only if it is not ALREADY
- *      cloud-blocked (`status_reason_code IS DISTINCT FROM …`, NULL-safe) and not
- *      concurrently uninstalled. `status_reason_code = BLOCKED` implies
- *      `status = 'error'` — `updateStatus` clears the code for any non-error
- *      status — so this predicate claims exactly the not-yet-cloud-blocked rows.
- *      If two `cloud_auth` replicas boot at once and both read the same stale row
- *      through `listInstalled()`, only ONE `UPDATE` matches; the loser's `UPDATE`
- *      re-evaluates its predicate against the now-committed row (READ COMMITTED
- *      row lock) and matches zero rows. (Codex P2 on PR #446, accepted.)
- *   2. If the claim matched no row, another replica already owns the transition:
- *      return `false` WITHOUT auditing and WITHOUT counting.
- *   3. Otherwise write the audit row on the SAME transaction. The recorder THROWS
- *      on a failed insert, which rolls the claim back with it — so the row is
- *      never left committed-but-unaudited, and the next boot retries the whole
- *      flip-plus-audit. (Codex P1 on PR #446, accepted; AGENTS.md "log mutations
- *      atomically".)
+ * The whole flip-plus-audit runs in a SINGLE transaction:
+ *   1. `SELECT … FOR UPDATE` locks the row and reads its CURRENT status. The lock
+ *      serializes concurrent `cloud_auth` replicas — if two boot at once and both
+ *      read the same stale row through `listInstalled()`, the second blocks here
+ *      until the first commits, then reads the now-blocked row. And the status
+ *      read HERE (not the `listInstalled()` snapshot, which a concurrent lifecycle
+ *      change could have staled) is the value the audit row records as
+ *      `priorStatus`, so the durable history names the status actually overwritten.
+ *      (Codex P2 on PR #446, both the double-write and the stale-prior-status.)
+ *   2. If the locked row is gone, uninstalled, or ALREADY cloud-blocked, there is
+ *      nothing to claim: return `false` WITHOUT flipping, auditing, or counting.
+ *   3. Otherwise flip the row and write the audit row on the SAME transaction. The
+ *      recorder THROWS on a failed insert, which rolls the flip back with it — so
+ *      the row is never left committed-but-unaudited, and the next boot retries the
+ *      whole flip-plus-audit. (Codex P1 on PR #446; AGENTS.md "log mutations
+ *      atomically".) The caller's per-row try/catch keeps boot alive.
  *
+ * `row` is the `listInstalled()` snapshot. Its `.status` is DELIBERATELY NOT the
+ * source of `priorStatus` — that is re-read under the lock in step 1, because the
+ * snapshot can be staled by a concurrent lifecycle change (Codex P2 on
+ * `943d3fed5`). It is accepted so the caller can pass the listed row directly.
  * `recorder` is injectable ONLY so the rollback test can drive a failing audit;
  * production always uses the real `recordCloudPluginReconcileToBlocked`.
  */
@@ -116,10 +118,34 @@ export async function reconcileOnePluginToBlocked(
   row: Pick<PluginRecord, "id" | "companyId" | "status">,
   recorder: RecordCloudPluginReconcileToBlocked = recordCloudPluginReconcileToBlocked,
 ): Promise<boolean> {
-  // The status the row is moved FROM, for the durable record.
-  const priorStatus = row.status;
   return db.transaction(async (tx) => {
-    const claimed = await tx
+    // Lock the row and read its CURRENT status inside the transaction. Raw `sql`
+    // FOR UPDATE, matching the codebase idiom (`dependencies.ts`); `.execute`
+    // returns an array or `{ rows }` depending on the driver, so handle both.
+    const lockedRes = await tx.execute(
+      sql`select status, status_reason_code from plugins where id = ${row.id} for update`,
+    );
+    const lockedRows = (Array.isArray(lockedRes)
+      ? lockedRes
+      : (lockedRes as { rows?: unknown[] }).rows) ?? [];
+    const locked = lockedRows[0] as
+      | { status: string; status_reason_code: string | null }
+      | undefined;
+
+    // Nothing to claim: row hard-removed, uninstalled, or already cloud-blocked
+    // (a re-boot or a replica that lost the lock race). No double-write.
+    if (!locked) return false;
+    if (locked.status === "uninstalled") return false;
+    if (
+      locked.status === "error" &&
+      locked.status_reason_code === PLUGIN_WORKER_BLOCKED_IN_CLOUD
+    ) {
+      return false;
+    }
+
+    // The status the row is ACTUALLY moved FROM, read under the lock above.
+    const priorStatus = locked.status;
+    await tx
       .update(plugins)
       .set({
         status: "error",
@@ -127,20 +153,9 @@ export async function reconcileOnePluginToBlocked(
         statusReasonCode: PLUGIN_WORKER_BLOCKED_IN_CLOUD,
         updatedAt: new Date(),
       })
-      .where(
-        and(
-          eq(plugins.id, row.id),
-          // Never resurrect a row uninstalled concurrently with this boot pass.
-          ne(plugins.status, "uninstalled"),
-          // The compare-and-set: claim only a row that is not ALREADY cloud-blocked.
-          sql`${plugins.statusReasonCode} IS DISTINCT FROM ${PLUGIN_WORKER_BLOCKED_IN_CLOUD}`,
-        ),
-      )
-      .returning({ id: plugins.id });
+      .where(eq(plugins.id, row.id));
 
-    if (claimed.length === 0) return false;
-
-    // Same transaction as the flip: a throw here rolls the claim back.
+    // Same transaction as the flip: a throw here rolls the flip back.
     await recorder(tx as unknown as Db, {
       pluginId: row.id,
       companyId: row.companyId,

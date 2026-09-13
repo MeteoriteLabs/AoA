@@ -360,15 +360,17 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
     });
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Codex PR #446 findings, accepted and proven here (RED-first observed via
-    // the two mutations recorded in the PR): the audit is protected at the DB by
-    // a compare-and-set (P2) and made atomic with the flip (P1).
+    // Codex PR #446 findings, accepted and proven here (each RED-first via a
+    // targeted mutation recorded in the PR): the flip+audit is atomic (P1), a
+    // concurrent replica that loses the row lock records nothing (P2), and the
+    // durable priorStatus is the status read UNDER the lock, not a stale snapshot
+    // (P2 on 943d3fed5).
     // ─────────────────────────────────────────────────────────────────────────
-    it("★★★ COMPARE-AND-SET (P2) — a concurrent replica that lost the claim writes NO audit row; the DB update is CONDITIONAL, not just the read-skip", async () => {
+    it("★★★ LOCKED CLAIM (P2) — a concurrent replica that lost the row lock writes NO audit row; the claim is a locked read, not just the read-skip", async () => {
       setDeploymentMode("cloud_auth");
       const id = await seedPlugin("acme.cas", "ready");
 
-      // Replica A — snapshot says `ready`, claims the row and audits it.
+      // Replica A — locks the row, sees it unblocked, claims + audits it.
       expect(await reconcileOnePluginToBlocked(ctxDb(), { id, companyId, status: "ready" })).toBe(true);
       const afterA = await pluginStatusById(id);
       expect(afterA?.status).toBe("error");
@@ -377,10 +379,32 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
 
       // Replica B — the SAME stale `ready` snapshot (as if it read `listInstalled`
       // before A committed), driven straight through the claim so the read-time
-      // skip does NOT mask the race. The compare-and-set matches 0 rows, so B does
-      // NOT audit. This is the property the unconditional `updateStatus` lacked.
+      // skip does NOT mask the race. Its `SELECT … FOR UPDATE` reads the now-blocked
+      // row and returns false, so B does NOT audit — the property the unconditional
+      // `updateStatus` lacked.
       expect(await reconcileOnePluginToBlocked(ctxDb(), { id, companyId, status: "ready" })).toBe(false);
       expect(await reconcileRowsFor(id)).toHaveLength(1);
+    });
+
+    it("★★★ TRUE PRIOR STATUS (P2 on 943d3fed5) — priorStatus is the status read UNDER the lock, NOT the caller's stale `listInstalled` snapshot", async () => {
+      setDeploymentMode("cloud_auth");
+      // The DB row is `disabled`, but the caller's snapshot still says `ready` — as
+      // if a `ready → disabled` lifecycle change landed after `listInstalled()`
+      // returned and before this transaction acquired the lock.
+      const id = await seedPlugin("acme.priorstatus", "disabled");
+
+      expect(await reconcileOnePluginToBlocked(ctxDb(), { id, companyId, status: "ready" })).toBe(true);
+      const after = await pluginStatusById(id);
+      expect(after?.status).toBe("error");
+      expect(after?.status_reason_code).toBe(PLUGIN_WORKER_BLOCKED_IN_CLOUD);
+
+      // The durable record names the status ACTUALLY overwritten (`disabled`, read
+      // under the lock), NOT the stale snapshot (`ready`). Under the pre-fix code
+      // (`priorStatus = row.status`) this would have recorded `ready`.
+      const rows = await reconcileRowsFor(id);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.details?.priorStatus).toBe("disabled");
+      expect(rows[0]!.details?.priorStatus).not.toBe("ready");
     });
 
     it("★★★ ATOMIC ROLLBACK (P1) — a failed audit insert rolls the flip back (the row is NOT left blocked-but-unaudited), and a later clean pass completes it", async () => {
