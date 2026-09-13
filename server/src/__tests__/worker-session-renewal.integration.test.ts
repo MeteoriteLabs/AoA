@@ -428,6 +428,61 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(reasons).toContain("worker_session_renewal_target_revoked");
     });
 
+    it("★ DE-18 session arm: the target_revoked refusal leaves ONE attributable security.denied.worker_session row naming the failed disjunct (RED-first)", async () => {
+      const denialRows = async () => await admin!<Array<{
+        action: string; actor_type: string; actor_id: string;
+        company_id: string | null; organization_id: string | null;
+        entity_type: string; entity_id: string; details: Record<string, unknown>;
+      }>>`SELECT action, actor_type, actor_id, company_id, organization_id, entity_type, entity_id, details
+          FROM activity_log WHERE action LIKE ${"security.denied.%"} ORDER BY created_at ASC`;
+
+      // ANTI-VACUITY FIRST, on pristine beforeEach state: a successful renewal
+      // writes ZERO denial rows. (Run first because the revocation arms below
+      // re-enroll the same worker/target repeatedly, which entangles a trailing
+      // fresh-enroll's device-generation handshake — unrelated to the audit.)
+      await admin!`DELETE FROM activity_log WHERE action LIKE ${"security.denied.%"}`;
+      const okEnroll = await enroll({ workerId: WORKER_A, targetId: TARGET_A, scope: "organization", organizationId: ORG_A, ownerUserId: null });
+      expect((await renew({ session: okEnroll.session, keys: okEnroll.keys, proofId: `de18-ok-${crypto.randomUUID()}` })).status).toBe(200);
+      expect(await denialRows()).toHaveLength(0);
+      await admin!`DELETE FROM workers`;
+
+      // Disabled target → failed names target_disabled.
+      const first = await enroll({ workerId: WORKER_A, targetId: TARGET_A, scope: "organization", organizationId: ORG_A, ownerUserId: null });
+      await admin!`UPDATE execution_targets SET status = 'disabled' WHERE id = ${TARGET_A}`;
+      await admin!`DELETE FROM activity_log WHERE action LIKE ${"security.denied.%"}`;
+      expect((await renew({ session: first.session, keys: first.keys, proofId: `de18-disabled-${crypto.randomUUID()}` })).status).toBe(401);
+      let rows = await denialRows();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.action).toBe("security.denied.worker_session");
+      expect(rows[0]!.details.reason).toBe("session_authority_revoked");
+      expect(rows[0]!.details.crossing).toBe("DE-18");
+      expect(rows[0]!.details.failed).toContain("target_disabled");
+      expect(rows[0]!.actor_type).toBe("system");
+      expect(rows[0]!.actor_id).toBe(WORKER_A);
+      expect(rows[0]!.organization_id).toBe(ORG_A);
+      expect(rows[0]!.company_id).toBeNull();
+      expect(rows[0]!.entity_type).toBe("execution_target");
+      expect(rows[0]!.entity_id).toBe(TARGET_A);
+      await admin!`UPDATE execution_targets SET status = 'active' WHERE id = ${TARGET_A}`;
+      await admin!`DELETE FROM workers`;
+
+      // Generation supersession → failed names generation_drift (the DE-18 cutoff proper).
+      const second = await enroll({ workerId: WORKER_A, targetId: TARGET_A, scope: "organization", organizationId: ORG_A, ownerUserId: null });
+      // RELATIVE bump (re-enrollment itself moves the generation, so an absolute
+      // value can be a downgrade), and no restore — the next enroll re-syncs.
+      await admin!`UPDATE execution_targets SET device_generation = device_generation + 1 WHERE id = ${TARGET_A}`;
+      await admin!`DELETE FROM activity_log WHERE action LIKE ${"security.denied.%"}`;
+      expect((await renew({ session: second.session, keys: second.keys, proofId: `de18-gen-${crypto.randomUUID()}` })).status).toBe(401);
+      rows = await denialRows();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.details.failed).toContain("generation_drift");
+      // Restore RELATIVELY (the enroll hello pins deviceGeneration 1, so the row
+      // must return to its pre-bump value for the next enrollment to admit).
+      await admin!`UPDATE execution_targets SET device_generation = device_generation - 1 WHERE id = ${TARGET_A}`;
+      await admin!`DELETE FROM workers`;
+
+    });
+
     it("refuses a DISABLED target, worker revoked by revoked_at alone, and an inactive owner membership → target_revoked class", async () => {
       // disabled target
       const disabled = await enroll({ workerId: WORKER_A, targetId: TARGET_A, scope: "organization", organizationId: ORG_A, ownerUserId: null });

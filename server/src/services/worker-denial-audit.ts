@@ -85,6 +85,10 @@ import { recordSecurityDenial } from "./security-denial-audit.js";
 export const WORKER_FENCE_DENIAL_SURFACE = "worker_fence_resolution";
 /** The reserved `surface` slug → `security.denied.worker_proof_replay`. */
 export const WORKER_PROOF_DENIAL_SURFACE = "worker_proof_replay";
+/** The reserved `surface` slug → `security.denied.worker_poll_authority` —
+ * the POLL/ACK admission-authority refusals (DE-18's admission arm), distinct
+ * from the fence-resolution surface because a poll presents no fence. */
+export const WORKER_POLL_AUTHORITY_DENIAL_SURFACE = "worker_poll_authority";
 
 /**
  * The reason vocabulary. Each code corresponds to exactly ONE branch in a
@@ -108,6 +112,17 @@ export const WORKER_PROOF_DENIAL_SURFACE = "worker_proof_replay";
  *                           (`target_authority_key`, `provider_constraint_hash`,
  *                           or one of the defence-in-depth re-checks). This is
  *                           the ONE reason here that carries a company.
+ *
+ * The three `poll_*` codes are the POLL admission-authority refusals in
+ * `job-leasing.ts:poll` (DE-18's admission arm) — distinct BRANCHES from the
+ * fence-resolution siblings above, so they carry distinct codes and their own
+ * surface (a poll presents no fence):
+ * `poll_authority_not_current`    — `authorityCurrent` refused the locked
+ *                                   authority under fresh database time (the
+ *                                   generation-cutoff / superseded-target deny).
+ * `poll_target_unreadable`        — `normalizePlacementRegistryTarget` returned
+ *                                   null for the CURRENT target row.
+ * `poll_worker_profile_unreadable`— the stored worker hello failed schema parse.
  */
 export const WORKER_DENIAL_REASONS = [
   "proof_replayed",
@@ -117,6 +132,9 @@ export const WORKER_DENIAL_REASONS = [
   "profile_drift",
   "lease_unresolved",
   "fence_tuple_mismatch",
+  "poll_authority_not_current",
+  "poll_target_unreadable",
+  "poll_worker_profile_unreadable",
 ] as const;
 
 export type WorkerDenialReason = (typeof WORKER_DENIAL_REASONS)[number];
@@ -134,6 +152,9 @@ export const WORKER_DENIAL_SURFACE_BY_REASON: Record<WorkerDenialReason, string>
   profile_drift: WORKER_FENCE_DENIAL_SURFACE,
   lease_unresolved: WORKER_FENCE_DENIAL_SURFACE,
   fence_tuple_mismatch: WORKER_FENCE_DENIAL_SURFACE,
+  poll_authority_not_current: WORKER_POLL_AUTHORITY_DENIAL_SURFACE,
+  poll_target_unreadable: WORKER_POLL_AUTHORITY_DENIAL_SURFACE,
+  poll_worker_profile_unreadable: WORKER_POLL_AUTHORITY_DENIAL_SURFACE,
 };
 
 /**
@@ -194,6 +215,42 @@ export function createWorkerDenialSink(): WorkerDenialSink {
  * across operations. `entity_id` carries no FK, so an id that matches no live row
  * is safe to record.
  */
+/**
+ * The DE-18 admission-arm intents for `job-leasing.ts:poll`'s three
+ * `target_revoked` refusals. PURE functions of the already-verified session
+ * artefact, hoisted and constructed OUTSIDE the tenant callback for the same
+ * reason `workerProofReplayIntent` is (the JOB-003 contract's
+ * `binding:protected-value-escape` refuses a protected authority symbol inside
+ * a non-approved call) — the poll body only ASSIGNS the prebuilt intent at the
+ * refusing branch. `companyId` is null: no lease has resolved at any of the
+ * three sites, and `workers`/`execution_targets` carry `organization_id` only.
+ */
+export function pollAuthorityDenialIntent(
+  reason: "poll_authority_not_current" | "poll_target_unreadable" | "poll_worker_profile_unreadable",
+  auth: {
+    organizationId: string;
+    workerId: string;
+    targetId: string;
+    targetGeneration: number;
+    deviceThumbprint: string;
+  },
+): WorkerDenialIntent {
+  return {
+    reason,
+    companyId: null,
+    organizationId: auth.organizationId,
+    crossings: ["DE-18"],
+    entityType: "execution_target",
+    entityId: auth.targetId,
+    details: {
+      workerId: auth.workerId,
+      targetId: auth.targetId,
+      targetGeneration: auth.targetGeneration,
+      deviceThumbprint: auth.deviceThumbprint,
+    },
+  };
+}
+
 export function workerProofReplayIntent(auth: {
   organizationId: string;
   workerId: string;

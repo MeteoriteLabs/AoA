@@ -8,6 +8,7 @@ import {
 } from "@armyofagents/db";
 import { runInTenant } from "../db/tenant-context.js";
 import { registerWorkerHeartbeat } from "../services/execution-targets.js";
+import { recordWorkerSessionDenial } from "../services/worker-session-denial-audit.js";
 import { verifyDeviceProof, type DeviceProofHeaders } from "../services/worker-device-proof.js";
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
@@ -143,6 +144,30 @@ export function createWorkerSessionAuthenticator(input: {
       }
       if (proof.deviceThumbprint !== claims.deviceThumbprint) fail();
 
+      // ★ DE-18, session arm — the capture-then-drain holder for the ONE
+      // refusal below that throws INSIDE a transaction (`verifyCurrent`'s
+      // current-authority recheck). The intent is recorded where the failing
+      // disjuncts are in hand and written on the POOL `appDb` only after the
+      // transaction promise has rejected — never inside the tx that is
+      // unwinding. See worker-session-denial-audit.ts.
+      const sessionDenial: {
+        intent: { organizationId: string | null; failed: string[] } | null;
+      } = { intent: null };
+      const drainSessionDenial = async (): Promise<void> => {
+        const pending = sessionDenial.intent;
+        if (!pending) return;
+        sessionDenial.intent = null;
+        await recordWorkerSessionDenial(input.appDb, {
+          reason: "session_authority_revoked",
+          organizationId: pending.organizationId,
+          workerId: claims.sub,
+          targetId: claims.targetId,
+          targetGeneration: claims.generation,
+          deviceThumbprint: claims.deviceThumbprint,
+          failed: pending.failed,
+          control: "server/src/middleware/worker-session-auth.ts:verifyCurrent",
+        });
+      };
       const verifyCurrent = async (
         authority: ReturnType<typeof operatorWorkerEnrollmentRepository>,
         authoritativeOrganizationId: string | null,
@@ -163,6 +188,21 @@ export function createWorkerSessionAuthenticator(input: {
         if (!current || current.target.status === "disabled" || current.worker.status === "revoked" ||
             current.worker.revokedAt !== null || !current.ownerMembershipActive ||
             current.target.deviceGeneration !== claims.generation || current.worker.deviceGeneration !== claims.generation) {
+          // ★ DE-18 — which disjunct(s) failed, for the audit row only; the
+          // wire answer stays the coarse code. Collected here because only this
+          // branch holds `current`.
+          sessionDenial.intent = {
+            organizationId: authoritativeOrganizationId,
+            failed: [
+              !current ? "authority_row_missing" : null,
+              current?.target.status === "disabled" ? "target_disabled" : null,
+              current && (current.worker.status === "revoked" || current.worker.revokedAt !== null)
+                ? "worker_revoked" : null,
+              current && !current.ownerMembershipActive ? "owner_membership_lost" : null,
+              current && (current.target.deviceGeneration !== claims.generation ||
+                current.worker.deviceGeneration !== claims.generation) ? "generation_drift" : null,
+            ].filter((d): d is string => d !== null),
+          };
           throw new WorkerSessionError("target_revoked");
         }
         if (current.worker.organizationId !== authoritativeOrganizationId || current.worker.scope !== claims.scope ||
@@ -181,11 +221,24 @@ export function createWorkerSessionAuthenticator(input: {
         };
       };
       if (claims.organizationId === null) {
-        return input.operatorDb.transaction((tx) =>
-          verifyCurrent(operatorWorkerEnrollmentRepository(tx as unknown as Db), null));
+        try {
+          return await input.operatorDb.transaction((tx) =>
+            verifyCurrent(operatorWorkerEnrollmentRepository(tx as unknown as Db), null));
+        } catch (err) {
+          // The operator transaction has unwound; drain on the pool handle and
+          // rethrow unchanged (a platform-scope refusal is the DOUBLY-NULL row).
+          await drainSessionDenial();
+          throw err;
+        }
       }
-      const principal = await runInTenant(input.appDb, claims.organizationId, (repos) =>
-        verifyCurrent(repos.workerEnrollment, claims.organizationId));
+      let principal: VerifiedTargetPrincipal;
+      try {
+        principal = await runInTenant(input.appDb, claims.organizationId, (repos) =>
+          verifyCurrent(repos.workerEnrollment, claims.organizationId));
+      } catch (err) {
+        await drainSessionDenial();
+        throw err;
+      }
       if (principal.targetScope === "platform") {
         const physical = await input.operatorDb.transaction((tx) =>
           operatorWorkerEnrollmentRepository(tx as unknown as Db)
@@ -196,6 +249,18 @@ export function createWorkerSessionAuthenticator(input: {
             physical.worker.deviceGeneration !== principal.targetGeneration ||
             physical.worker.deviceThumbprint !== principal.deviceThumbprint ||
             physical.worker.devicePublicKey !== proof.publicKey || !physical.worker.profileHash) {
+          // ★ DE-18 — no transaction in flight here (the operator tx above
+          // has resolved), so the row is written directly on the pool handle
+          // before the throw; the recorder never throws.
+          await recordWorkerSessionDenial(input.appDb, {
+            reason: "platform_authority_revoked",
+            organizationId: claims.organizationId,
+            workerId: claims.sub,
+            targetId: claims.targetId,
+            targetGeneration: claims.generation,
+            deviceThumbprint: claims.deviceThumbprint,
+            control: "server/src/middleware/worker-session-auth.ts:authenticate",
+          });
           throw new WorkerSessionError("target_revoked");
         }
         return {
@@ -302,30 +367,52 @@ export async function registerProofBoundHeartbeat(input: {
         now: heartbeatAt,
       }));
   }
-  return runInTenant(input.appDb, input.principal.organizationId, async (repos, tx) => {
-    const targetCurrent = await repos.workerEnrollment.heartbeatSessionTarget({
-      executionTargetId: input.principal.targetId,
-      deviceGeneration: input.principal.targetGeneration,
-      status: input.status,
-      now: heartbeatAt,
+  // ★ DE-18 — the heartbeat profile-touch refusal throws out of
+  // `runInTenant`; capture-then-drain on the pool handle, same shape as
+  // `authenticate`'s.
+  let heartbeatDenied = false;
+  try {
+    return await runInTenant(input.appDb, input.principal.organizationId, async (repos, tx) => {
+      const targetCurrent = await repos.workerEnrollment.heartbeatSessionTarget({
+        executionTargetId: input.principal.targetId,
+        deviceGeneration: input.principal.targetGeneration,
+        status: input.status,
+        now: heartbeatAt,
+      });
+      if (!targetCurrent) return false;
+      const statusCurrent = await registerWorkerHeartbeat(tx, {
+        targetId: input.principal.targetId,
+        organizationId: input.principal.organizationId!,
+        status: input.status,
+        now: heartbeatAt,
+      });
+      if (statusCurrent.updated !== 1) return false;
+      const profileCurrent = await repos.workerEnrollment.heartbeatSessionProfile({
+        workerId: input.principal.workerId,
+        executionTargetId: input.principal.targetId,
+        deviceGeneration: input.principal.targetGeneration,
+        now: heartbeatAt,
+      });
+      if (!profileCurrent) {
+        heartbeatDenied = true;
+        throw new WorkerSessionError("target_revoked");
+      }
+      return true;
     });
-    if (!targetCurrent) return false;
-    const statusCurrent = await registerWorkerHeartbeat(tx, {
-      targetId: input.principal.targetId,
-      organizationId: input.principal.organizationId!,
-      status: input.status,
-      now: heartbeatAt,
-    });
-    if (statusCurrent.updated !== 1) return false;
-    const profileCurrent = await repos.workerEnrollment.heartbeatSessionProfile({
-      workerId: input.principal.workerId,
-      executionTargetId: input.principal.targetId,
-      deviceGeneration: input.principal.targetGeneration,
-      now: heartbeatAt,
-    });
-    if (!profileCurrent) throw new WorkerSessionError("target_revoked");
-    return true;
-  });
+  } catch (err) {
+    if (heartbeatDenied) {
+      await recordWorkerSessionDenial(input.appDb, {
+        reason: "heartbeat_profile_revoked",
+        organizationId: input.principal.organizationId,
+        workerId: input.principal.workerId,
+        targetId: input.principal.targetId,
+        targetGeneration: input.principal.targetGeneration,
+        deviceThumbprint: input.principal.deviceThumbprint,
+        control: "server/src/middleware/worker-session-auth.ts:registerProofBoundHeartbeat",
+      });
+    }
+    throw err;
+  }
 }
 
 export async function revokeTenantWorkerAuthority(input: {

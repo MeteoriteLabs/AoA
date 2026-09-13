@@ -58,6 +58,7 @@ import {
 import type { VerifiedWorkerOperation } from "../middleware/worker-operation-proof.js";
 import {
   createWorkerDenialSink,
+  pollAuthorityDenialIntent,
   drainWorkerDenial,
   workerProofReplayIntent,
 } from "./worker-denial-audit.js";
@@ -436,6 +437,16 @@ export function createJobLeasingService(input: {
   class HeadRestartConflict extends Error {}
   const isHeadRestartConflict = (error: unknown): error is HeadRestartConflict =>
     error instanceof HeadRestartConflict;
+  // ★ DE-18, NOT WIRED HERE AND WHY: this helper's two `target_revoked` throws
+  // (platform-scope mismatch, platform physical-authority recheck) are shared by
+  // the poll AND ack paths, and the frozen JOB-003 contract pins its exact call
+  // expression at both call sites (`job-leasing-contract.test.ts` — the guard-call
+  // shape checks and the ack-flow `exactAckReturnDominance`), so neither a sink
+  // parameter nor a wrapping capture is admissible without a contract amendment —
+  // the same blocker as the ack-path `recordProof` site (see
+  // docs/replatform/DECISION-REQUEST-job-003-ack-drain-amendment.md). The
+  // organization-scope arms in the poll BODY are wired; these platform arms are
+  // named rather than silently skipped.
   const guardPlatformAuthority = async (
     guardRepos: TenantRepositories,
     guardAuth: VerifiedWorkerOperation,
@@ -552,6 +563,13 @@ export function createJobLeasingService(input: {
       // consumer of the authority chain appears inside the transaction without
       // review. An earlier revision of this change tripped it and CI caught it.
       const replayDenialIntent = workerProofReplayIntent(pollInput.auth);
+      // ★ DE-18, admission arm — the three poll `target_revoked` refusals, prebuilt
+      // OUTSIDE the tenant body for the same contract reason as the replay intent
+      // above, and only ASSIGNED at the refusing branch. Drained by the same
+      // `finally` drain as the replay refusal.
+      const revokedAuthorityIntent = pollAuthorityDenialIntent("poll_authority_not_current", pollInput.auth);
+      const unreadableTargetIntent = pollAuthorityDenialIntent("poll_target_unreadable", pollInput.auth);
+      const unreadableProfileIntent = pollAuthorityDenialIntent("poll_worker_profile_unreadable", pollInput.auth);
       for (let restartAttempt = 0; restartAttempt < 3; restartAttempt += 1) {
         // A retry iteration (restartAttempt > 0) means the previous head claim rolled back; count it
         // here so the head-conflict catch below stays the exact classifier/exhaustion/continue triple.
@@ -591,7 +609,16 @@ export function createJobLeasingService(input: {
               maxHeartbeatAgeMs,
               platformPhysicalHeartbeatAt,
             });
-            if (!currentAuthority) throw new JobLeasingError("target_revoked");
+            // ★ DE-18 — the generation-cutoff/superseded-authority admission
+            // deny. The capture rides the throw EXPRESSION (comma operator)
+            // because the frozen JOB-003 contract's
+            // `builder:trusted-common-authority-current` pins this refusal to a
+            // single-throw shape — a two-statement block reds it; the prebuilt
+            // intent (hoisted above, a pure function of the verified session
+            // artefact) keeps `binding:protected-value-escape` green.
+            if (!currentAuthority) {
+              throw (proofDenial.intent = revokedAuthorityIntent, new JobLeasingError("target_revoked"));
+            }
             // Touch liveness only AFTER the target lock + authority revalidation (F033). A poll that
             // loses the target row to an overlapping revoke throws above and never reaches here, so
             // the worker's last_seen_at stays untouched; only a poll that keeps authority advances
@@ -600,11 +627,17 @@ export function createJobLeasingService(input: {
             const normalizedCurrentTarget = await normalizePlacementRegistryTarget(
               guardedAuthority.currentTarget,
             );
-            if (!normalizedCurrentTarget) throw new JobLeasingError("target_revoked");
+            if (!normalizedCurrentTarget) {
+              proofDenial.intent = unreadableTargetIntent;
+              throw new JobLeasingError("target_revoked");
+            }
             const parsedStoredHello = workerHelloV1Schema.safeParse(
               lockedAuthority.worker.profileSnapshot,
             );
-            if (!parsedStoredHello.success) throw new JobLeasingError("target_revoked");
+            if (!parsedStoredHello.success) {
+              proofDenial.intent = unreadableProfileIntent;
+              throw new JobLeasingError("target_revoked");
+            }
             const effectiveCapacity = minCapacity(
               parsedStoredHello.data.capacity,
               parsedRequest.capacity,
