@@ -446,7 +446,8 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(await denialRows()).toHaveLength(0);
       await admin!`DELETE FROM workers`;
 
-      // Disabled target → failed names target_disabled.
+      // Disabled target → failed names target_disabled → DE-04 (a disabled target
+      // is NOT a generation replacement — Codex P2 on PR #448).
       const first = await enroll({ workerId: WORKER_A, targetId: TARGET_A, scope: "organization", organizationId: ORG_A, ownerUserId: null });
       await admin!`UPDATE execution_targets SET status = 'disabled' WHERE id = ${TARGET_A}`;
       await admin!`DELETE FROM activity_log WHERE action LIKE ${"security.denied.%"}`;
@@ -455,8 +456,9 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(rows).toHaveLength(1);
       expect(rows[0]!.action).toBe("security.denied.worker_session");
       expect(rows[0]!.details.reason).toBe("session_authority_revoked");
-      expect(rows[0]!.details.crossing).toBe("DE-18");
+      expect(rows[0]!.details.crossing).toBe("DE-04");
       expect(rows[0]!.details.failed).toContain("target_disabled");
+      expect(rows[0]!.details.failed).not.toContain("generation_drift");
       expect(rows[0]!.actor_type).toBe("system");
       expect(rows[0]!.actor_id).toBe(WORKER_A);
       expect(rows[0]!.organization_id).toBe(ORG_A);
@@ -476,6 +478,8 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       rows = await denialRows();
       expect(rows).toHaveLength(1);
       expect(rows[0]!.details.failed).toContain("generation_drift");
+      // ★ A genuine generation cutoff IS DE-18.
+      expect(rows[0]!.details.crossing).toBe("DE-18");
       // Restore RELATIVELY (the enroll hello pins deviceGeneration 1, so the row
       // must return to its pre-bump value for the next enrollment to admit).
       await admin!`UPDATE execution_targets SET device_generation = device_generation - 1 WHERE id = ${TARGET_A}`;

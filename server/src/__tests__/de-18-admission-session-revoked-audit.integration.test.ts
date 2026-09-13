@@ -151,7 +151,7 @@ integration("DE-18 admission/session target_revoked denial audit", () => {
 
   // ---- SESSION heartbeat arm (worker-session-auth.ts) ----------------------
 
-  it("DE-18 CLAUSE (session heartbeat): a drifted worker generation at the heartbeat profile touch writes one worker_session row", async () => {
+  it("session heartbeat: a refused profile touch writes one worker_session row classified DE-04 (unprovable generation cutoff, Codex P2 on PR #448)", async () => {
     // Target stays generation 1 (heartbeatSessionTarget passes); the WORKER row
     // drifts ahead, so heartbeatSessionProfile refuses — the :registerProofBoundHeartbeat
     // throw site. The principal is the shape the authenticator returns.
@@ -176,7 +176,11 @@ integration("DE-18 admission/session target_revoked denial audit", () => {
     const row = rows[0]!;
     expect(row.action).toBe("security.denied.worker_session");
     expect(row.details.reason).toBe("heartbeat_profile_revoked");
-    expect(row.details.crossing).toBe("DE-18");
+    // ★ DE-04, not DE-18: the profile-touch refusal is a bare boolean that cannot
+    // prove a generation cutoff (it fires after verifyCurrent already validated the
+    // generation), so it is classified as a concurrent-change refusal (Codex P2).
+    expect(row.details.crossing).toBe("DE-04");
+    expect(row.details.failed).toContain("heartbeat_profile_write_refused");
     expect(row.actor_type).toBe("system");
     expect(row.actor_id).toBe(WORKER);
     expect(row.organization_id).toBe(ORG);

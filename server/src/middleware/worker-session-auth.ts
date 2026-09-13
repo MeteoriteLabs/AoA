@@ -249,9 +249,24 @@ export function createWorkerSessionAuthenticator(input: {
             physical.worker.deviceGeneration !== principal.targetGeneration ||
             physical.worker.deviceThumbprint !== principal.deviceThumbprint ||
             physical.worker.devicePublicKey !== proof.publicKey || !physical.worker.profileHash) {
-          // ★ DE-18 — no transaction in flight here (the operator tx above
-          // has resolved), so the row is written directly on the pool handle
-          // before the throw; the recorder never throws.
+          // ★ Classify the physical-recheck failure by the enforcing predicate so
+          // the audit crossing reflects it (Codex P2 on PR #448): a generation
+          // mismatch is `generation_drift` → DE-18, everything else → DE-04.
+          const failed: string[] = [
+            !physical ? "physical_authority_missing" : null,
+            physical && physical.target.status !== "active" ? "target_inactive" : null,
+            physical && (physical.target.deviceGeneration !== principal.targetGeneration
+              || physical.worker.deviceGeneration !== principal.targetGeneration) ? "generation_drift" : null,
+            physical && (physical.worker.status === "revoked" || physical.worker.revokedAt !== null)
+              ? "worker_revoked" : null,
+            physical && physical.worker.deviceThumbprint !== principal.deviceThumbprint
+              ? "thumbprint_mismatch" : null,
+            physical && physical.worker.devicePublicKey !== proof.publicKey ? "pubkey_mismatch" : null,
+            physical && !physical.worker.profileHash ? "profile_hash_missing" : null,
+          ].filter((d): d is string => d !== null);
+          // No transaction in flight here (the operator tx above has resolved), so
+          // the row is written directly on the pool handle before the throw; the
+          // recorder never throws and derives the crossing from `failed`.
           await recordWorkerSessionDenial(input.appDb, {
             reason: "platform_authority_revoked",
             organizationId: claims.organizationId,
@@ -259,6 +274,7 @@ export function createWorkerSessionAuthenticator(input: {
             targetId: claims.targetId,
             targetGeneration: claims.generation,
             deviceThumbprint: claims.deviceThumbprint,
+            failed,
             control: "server/src/middleware/worker-session-auth.ts:authenticate",
           });
           throw new WorkerSessionError("target_revoked");
@@ -408,6 +424,13 @@ export async function registerProofBoundHeartbeat(input: {
         targetId: input.principal.targetId,
         targetGeneration: input.principal.targetGeneration,
         deviceThumbprint: input.principal.deviceThumbprint,
+        // `heartbeatSessionProfile` returns a bare boolean — it cannot say WHICH
+        // column changed, and this fires only AFTER `verifyCurrent` already
+        // validated the generation for the request, so a mid-session profile-write
+        // refusal is a concurrent row change, NOT a provable generation cutoff.
+        // Classified DE-04 (no `generation_drift`) rather than falsely claiming
+        // DE-18 (Codex P2 on PR #448).
+        failed: ["heartbeat_profile_write_refused"],
         control: "server/src/middleware/worker-session-auth.ts:registerProofBoundHeartbeat",
       });
     }

@@ -683,8 +683,14 @@ export function createJobLeasingService(input: {
             // throw's comma expression carries no protected symbol on the RHS
             // (`binding:protected-value-escape`). It runs on every poll (cheap,
             // pure) and is only USED on the failure branch.
+            // ★ Pass `platformPhysicalHeartbeatAt` too (Codex P2 on PR #448): for a
+            // shared-platform target the classifier must age liveness against the
+            // SAME physical heartbeat `authorityCurrent` uses, or it would compute a
+            // null heartbeat and spuriously add `heartbeat_stale` to a platform
+            // target rejected for another reason.
             const pollAuthorityFailureIntent = pollAuthorityCurrencyIntent(
               pollInput.auth, lockedAuthority, parsedRequest, databaseNow, maxHeartbeatAgeMs,
+              platformPhysicalHeartbeatAt,
             );
             const currentAuthority = authorityCurrent({
               auth: pollInput.auth,

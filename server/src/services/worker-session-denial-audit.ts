@@ -61,10 +61,28 @@ export const WORKER_SESSION_DENIAL_REASONS = [
 
 export type WorkerSessionDenialReason = (typeof WORKER_SESSION_DENIAL_REASONS)[number];
 
+/** The `details.failed` conjunct name that marks a genuine generation cutoff — the
+ * ONLY session-denial condition that is DE-18's target-generation replacement. */
+export const SESSION_GENERATION_CONJUNCT = "generation_drift";
+
+/**
+ * Which crossing a session denial serves, DERIVED from the failed predicate
+ * (Codex P2 on PR #448). Only a `generation_drift` failure is DE-18's
+ * generation-replacement cutoff; a disabled target, a revoked worker, a lost
+ * owner membership, a missing authority row or a credential/profile drift is a
+ * stale-worker admission refusal → DE-04, NOT DE-18. A hardcoded DE-18 here would
+ * pollute DE-18's audit measure exactly as the poll arm's did.
+ */
+export function workerSessionDenialCrossing(failed: readonly string[] | undefined): string {
+  return failed?.includes(SESSION_GENERATION_CONJUNCT) ? "DE-18" : "DE-04";
+}
+
 /**
  * Record ONE worker-session `target_revoked` refusal. `db` MUST be a pool
  * handle — the caller invokes this after its transaction has unwound, never
- * inside it. Returns the row id or null; never throws.
+ * inside it. The crossing is derived from `failed` (see
+ * `workerSessionDenialCrossing`), so a non-generation failure is not filed under
+ * DE-18. Returns the row id or null; never throws.
  */
 export async function recordWorkerSessionDenial(
   db: Db,
@@ -77,9 +95,9 @@ export async function recordWorkerSessionDenial(
     targetId: string;
     targetGeneration: number;
     deviceThumbprint: string;
-    /** The disjuncts that failed, for `session_authority_revoked` legibility
-     * (e.g. ["target_disabled","generation_drift"]); empty where the refusing
-     * check is a single predicate. */
+    /** The disjuncts that failed, naming the enforcing predicate(s). Decides the
+     * crossing: `generation_drift` present → DE-18, else DE-04. Every call site
+     * passes at least one name. */
     failed?: string[];
     control: string;
   },
@@ -87,7 +105,7 @@ export async function recordWorkerSessionDenial(
   return recordSecurityDenial(db, {
     companyId: null,
     organizationId: input.organizationId,
-    crossing: WORKER_SESSION_DENIAL_CROSSING,
+    crossing: workerSessionDenialCrossing(input.failed),
     surface: WORKER_SESSION_DENIAL_SURFACE,
     reason: input.reason,
     actorType: "system",
