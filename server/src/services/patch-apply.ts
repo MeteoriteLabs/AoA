@@ -44,6 +44,11 @@ import {
   createWorkerDenialSink,
   drainWorkerDenial,
 } from "./worker-denial-audit.js";
+import {
+  captureFenceGuardDenial,
+  createFenceGuardDenialSink,
+  drainFenceGuardDenialSink,
+} from "./fence-denial-audit.js";
 import type { StorageProvider } from "../storage/types.js";
 
 /** A guarded-fence refusal → the frozen protocol reason vocabulary. */
@@ -107,9 +112,19 @@ export function createPatchApplyService(input: {
       // a null company (`worker-denial-audit.ts`; `E0-F013` Decision 2 (a2) made
       // the latter storable). An earlier version of this comment said the other
       // five were still unaudited; that is no longer true.
-      // STILL UNAUDITED, and NOT covered by this holder: every `rejected(...)`
-      // return below. Those are this service's own refusals and have no recorder.
+      // STILL UNAUDITED, and NOT covered by this holder: the `rejected("malformed")`
+      // returns below (this service's own shape/binding refusals, with no closed
+      // machine-reason vocabulary to key a row to). The GOVERNED-FENCE refusal is no
+      // longer among them — the sink under this one records it.
       const fenceDenial = createWorkerDenialSink();
+      // ★ DE-04 / DE-18 — the guardActiveFence refusal inside recordPatchApplyState,
+      // captured at the inner catch (the refusal is converted to a wire `rejected`
+      // outcome there, so the transaction COMMITS and an outer catch never sees it)
+      // and drained on the pool handle in the `.finally` below.
+      // `resolveWorkerFenceContext` deliberately does NOT gate on the fence being
+      // ACTIVE, so this refusal genuinely fires in production — an expired lease
+      // applying late is a `stale_fence` HERE, not at the pre-check.
+      const fenceGuardDenial = createFenceGuardDenialSink();
 
       // The callback's return type is annotated because the `.finally` below breaks
       // the contextual-type flow from `apply`'s own signature, and without it the
@@ -184,7 +199,10 @@ export function createPatchApplyService(input: {
             currentBaseManifestHash: outcome.resolvedBaseManifestHash,
           };
         } catch (error) {
-          if (error instanceof DbJobFenceError) return rejected(fenceReason(error.code));
+          if (error instanceof DbJobFenceError) {
+            captureFenceGuardDenial(fenceGuardDenial, ctx.fenceIdentity, error);
+            return rejected(fenceReason(error.code));
+          }
           if (error instanceof PatchApplyRejection) return rejected("malformed");
           throw error;
         }
@@ -196,6 +214,13 @@ export function createPatchApplyService(input: {
           await drainWorkerDenial(input.appDb, fenceDenial, {
             control: "server/src/services/worker-fence-context.ts:resolveWorkerFenceContext",
             workerId: auth.workerId,
+            operation: "patch_apply",
+          });
+          // ★ DE-04 / DE-18 — the governed-fence refusal (stale_fence / target_revoked /
+          // attempt_terminal from recordPatchApplyState's guardActiveFence), on the
+          // pool handle.
+          await drainFenceGuardDenialSink(input.appDb, fenceGuardDenial, {
+            control: "server/src/services/patch-apply.ts:apply",
             operation: "patch_apply",
           });
         });

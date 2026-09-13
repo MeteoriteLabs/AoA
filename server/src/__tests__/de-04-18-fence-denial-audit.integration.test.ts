@@ -24,6 +24,14 @@
 // CURRENTLY-DORMANT / defense-in-depth path, kept as the ONE arm that exercises the
 // `target_revoked → DE-18` crossing mapping through a real drain. It is NOT the sole coverage.
 //
+// ★ 2026-09-13 (fence follow-on): TWO MORE owners drain the same refusal and are proven in
+// their OWN suites, not here — `patch-apply.ts:apply` and `secret-broker.ts:resolve`
+// (patch-apply.integration.test.ts / secret-broker.integration.test.ts). Unlike the three
+// services above, their pre-check (`resolveWorkerFenceContext`) does NOT gate on fence
+// liveness or attempt terminality, so `stale_fence`/`attempt_terminal` are
+// PRODUCTION-REACHABLE there; `target_revoked` remains pre-empted (race-only) for them, so
+// the sentence above about `target_revoked` reachability stands.
+//
 // Windows CI can't start embedded-postgres on the runneradmin runner (Issue #114) — gated;
 // opt in with AOA_RUN_WIN_INTEGRATION=1. The Linux `verify` gate runs it unconditionally.
 import { randomUUID } from "node:crypto";

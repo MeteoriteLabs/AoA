@@ -45,6 +45,16 @@ import {
   createWorkerDenialSink,
   drainWorkerDenial,
 } from "./worker-denial-audit.js";
+import {
+  captureFenceGuardDenial,
+  createFenceGuardDenialSink,
+  drainFenceGuardDenialSink,
+} from "./fence-denial-audit.js";
+import {
+  captureSecretResolveDenial,
+  createSecretResolveDenialSink,
+  drainSecretResolveDenialSink,
+} from "./secret-resolve-denial-audit.js";
 import type { JobControlMetrics } from "./job-control-metrics.js";
 import { applyOwnedLabelsCapability, OWNED_LABELS_CAPABILITY_DEFAULT_TTL_MS } from "./owned-labels-mint.js";
 
@@ -275,9 +285,23 @@ export function createSecretBrokerService(input: {
       // token-attested organization and a null company (`worker-denial-audit.ts`;
       // `E0-F013` Decision 2 (a2) made the latter storable). An earlier version of
       // this comment said the other five were still unaudited; that is no longer true.
-      // STILL UNAUDITED, and NOT covered by this holder: every `{ denied: … }` return
-      // below. Those are this service's own refusals and have no recorder.
+      // The `{ denied: … }` returns below now have their own recorders too — the two
+      // sinks declared under this one — so an earlier "STILL UNAUDITED" note here is
+      // also no longer true. STILL UNRECORDED, deliberately: the top-of-function
+      // `workerId !== auth.workerId` throw (a malformed request, pre-auth, with no
+      // fence in hand) and the post-broker coarse `malformed` on a broker FETCH
+      // failure (an infra fault after an ADMITTED resolve, not a refusal).
       const fenceDenial = createWorkerDenialSink();
+      // ★ DE-04 / DE-18 + DE-29 — the two refusal classes the guarded mutator can
+      // take AFTER the fence context resolves, each captured at the inner catch
+      // (the refusal is converted to a coarse wire outcome there, so an outer
+      // catch can never type it) and drained on the pool handle in the `.finally`
+      // below. `resolveWorkerFenceContext` deliberately does NOT gate on the
+      // fence being ACTIVE, so `guardActiveFence` inside `resolveExecutionSecret`
+      // genuinely refuses in production — an expired lease resolving late is a
+      // `stale_fence` here, not at the pre-check.
+      const fenceGuardDenial = createFenceGuardDenialSink();
+      const resolveDenial = createSecretResolveDenialSink();
 
       // Fence identity + authorization inside ONE tenant tx, BEFORE any broker access.
       const authorized = await runInTenant(input.appDb, auth.organizationId, async (repos):
@@ -297,10 +321,15 @@ export function createSecretBrokerService(input: {
           });
         } catch (error) {
           if (error instanceof DbJobFenceError) {
+            captureFenceGuardDenial(fenceGuardDenial, ctx.fenceIdentity, error);
             return { denied: { outcome: "denied", reason: fenceReason(error.code) } };
           }
           if (error instanceof SecretResolveRejection) {
-            // Coarse + non-disclosing: never reveal which invariant tripped.
+            // Coarse + non-disclosing ON THE WIRE: never reveal which invariant
+            // tripped. The audit row records the real reason (capture above the
+            // wire coarsening — non-disclosure is a protocol property, not an
+            // audit-trail one).
+            captureSecretResolveDenial(resolveDenial, ctx.fenceIdentity, request.handleId, error);
             return { denied: { outcome: "denied", reason: "malformed" } };
           }
           throw error;
@@ -314,6 +343,18 @@ export function createSecretBrokerService(input: {
             control: "server/src/services/worker-fence-context.ts:resolveWorkerFenceContext",
             workerId: auth.workerId,
             operation: "secret_resolve",
+          });
+          // ★ DE-04 / DE-18 — the governed-fence refusal (stale_fence / target_revoked /
+          // attempt_terminal from resolveExecutionSecret's guardActiveFence), on the
+          // pool handle.
+          await drainFenceGuardDenialSink(input.appDb, fenceGuardDenial, {
+            control: "server/src/services/secret-broker.ts:resolve",
+            operation: "secret_resolve",
+          });
+          // ★ DE-29 — the owner-routing refusal (authorizeSecretResolve's verdict,
+          // thrown as SecretResolveRejection), on the pool handle.
+          await drainSecretResolveDenialSink(input.appDb, resolveDenial, {
+            control: "server/src/services/secret-broker.ts:resolve",
           });
         });
 
