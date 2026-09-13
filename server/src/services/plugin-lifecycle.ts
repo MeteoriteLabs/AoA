@@ -62,6 +62,7 @@ import {
   recordCloudPluginBootReconciled,
   type PluginActivationSource,
 } from "./cloud-plugin-execution.js";
+import { recordCloudPluginReconcileToBlocked } from "./cloud-plugin-reconcile-audit.js";
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for testing)
@@ -112,6 +113,11 @@ export async function reconcileCloudBlockedPlugins(db: Db): Promise<number> {
       // Already reconciled on a previous boot/replica — idempotent no-op.
       continue;
     }
+    // Captured BEFORE the mutating updateStatus so the durable record can name
+    // the status the row was moved FROM. Only rows that reached this point are
+    // being reconciled — the already-blocked idempotent-skip above never gets
+    // here, so a re-boot writes no duplicate audit row.
+    const priorStatus = row.status;
     try {
       await registry.updateStatus(row.id, {
         status: "error",
@@ -121,6 +127,16 @@ export async function reconcileCloudBlockedPlugins(db: Db): Promise<number> {
       recordCloudPluginBootReconciled({
         pluginId: row.id,
         companyId: row.companyId,
+      });
+      // DE-16 audit clause, RECONCILIATIONS conjunct: after a SUCCESSFUL flip,
+      // write the durable, attributable `activity_log` row the process-memory
+      // counter above could not. Best-effort — the recorder itself never throws,
+      // and it stays inside the per-row try/catch so a failure to record cannot
+      // abort the reconciliation of the remaining rows.
+      await recordCloudPluginReconcileToBlocked(db, {
+        pluginId: row.id,
+        companyId: row.companyId,
+        priorStatus,
       });
       reconciled += 1;
     } catch (err) {
