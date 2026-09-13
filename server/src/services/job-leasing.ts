@@ -61,6 +61,7 @@ import {
   pollAuthorityDenialIntent,
   drainWorkerDenial,
   workerProofReplayIntent,
+  type WorkerDenialIntent,
 } from "./worker-denial-audit.js";
 
 export type { VerifiedWorkerOperation } from "../middleware/worker-operation-proof.js";
@@ -279,6 +280,71 @@ function authorityCurrent(input: {
     && request.deviceGeneration === auth.targetGeneration
     && oldestHeartbeat !== null
     && input.databaseNow.getTime() - oldestHeartbeat <= input.maxHeartbeatAgeMs;
+}
+
+/**
+ * Classify WHY a poll's `authorityCurrent` returned false, into the exact set of
+ * failed conjuncts, and build the deny-path intent with the crossing derived from
+ * that set (Codex P2 on PR #448). `authorityCurrent` is a 19-conjunct composite;
+ * only the three device_generation conjuncts are DE-18's generation-replacement
+ * cutoff. A failure that includes ANY generation conjunct is filed as
+ * `poll_generation_superseded` under DE-18; every other authority-currency failure
+ * (stale heartbeat, owner-membership loss, worker status/credential drift, request
+ * identity mismatch) is `poll_authority_stale` under DE-04 (a stale worker refused
+ * admission), NEVER DE-18. Either way `details.failed` names the exact conjuncts so
+ * a reader can tell them apart; the wire answer stays the coarse `target_revoked`.
+ *
+ * PURE (no IO, no repository selection, no mutation) and mirrors the predicate in
+ * `authorityCurrent` exactly — it is registered in `job-leasing-contract.test.ts`'s
+ * reviewed-protected-call allowlist for that reason, alongside `authorityCurrent`.
+ * It is always computed but only USED on the reject branch.
+ */
+export function pollAuthorityCurrencyIntent(
+  auth: VerifiedWorkerOperation,
+  authority: LeaseWorkerAuthority,
+  request: PollRequestV1,
+  databaseNow: Date,
+  maxHeartbeatAgeMs: number,
+  platformPhysicalHeartbeatAt?: Date | null,
+): WorkerDenialIntent {
+  const worker = authority.worker;
+  const target = authority.target;
+  const oldestHeartbeat = target.scope === "platform"
+    ? platformPhysicalHeartbeatAt?.getTime() ?? null
+    : !worker.lastSeenAt || !target.lastSeenAt
+      ? null
+      : Math.min(worker.lastSeenAt.getTime(), target.lastSeenAt.getTime());
+  const failed: string[] = [];
+  if (worker.id !== auth.workerId) failed.push("worker_id_mismatch");
+  if (worker.executionTargetId !== auth.targetId) failed.push("worker_target_mismatch");
+  if (worker.organizationId !== auth.organizationId) failed.push("worker_org_mismatch");
+  if (worker.scope === "platform") failed.push("worker_scope_platform");
+  if (worker.deviceGeneration !== auth.targetGeneration) failed.push("worker_generation_drift");
+  if (worker.deviceThumbprint !== auth.deviceThumbprint) failed.push("worker_thumbprint_mismatch");
+  if (worker.devicePublicKey !== auth.publicKey) failed.push("worker_pubkey_mismatch");
+  if (worker.profileHash !== auth.profileHash) failed.push("worker_profile_mismatch");
+  if (worker.revokedAt !== null) failed.push("worker_revoked");
+  if (!(worker.status === "enrolled" || worker.status === "active")) failed.push("worker_status_invalid");
+  if (!authority.ownerMembershipActive) failed.push("owner_membership_lost");
+  if (target.id !== auth.targetId) failed.push("target_id_mismatch");
+  if (target.status !== "active") failed.push("target_inactive");
+  if (target.deviceGeneration !== auth.targetGeneration) failed.push("target_generation_drift");
+  if (request.workerId !== auth.workerId) failed.push("request_worker_mismatch");
+  if (request.targetId !== auth.targetId) failed.push("request_target_mismatch");
+  if (request.deviceGeneration !== auth.targetGeneration) failed.push("request_generation_drift");
+  if (oldestHeartbeat === null || databaseNow.getTime() - oldestHeartbeat > maxHeartbeatAgeMs) {
+    failed.push("heartbeat_stale");
+  }
+  const GENERATION_CONJUNCTS = new Set([
+    "worker_generation_drift", "target_generation_drift", "request_generation_drift",
+  ]);
+  const generation = failed.some((f) => GENERATION_CONJUNCTS.has(f));
+  return pollAuthorityDenialIntent(
+    generation ? "poll_generation_superseded" : "poll_authority_stale",
+    generation ? "DE-18" : "DE-04",
+    auth,
+    failed,
+  );
 }
 
 export function ackAuthorityCurrent(input: {
@@ -563,13 +629,15 @@ export function createJobLeasingService(input: {
       // consumer of the authority chain appears inside the transaction without
       // review. An earlier revision of this change tripped it and CI caught it.
       const replayDenialIntent = workerProofReplayIntent(pollInput.auth);
-      // ★ DE-18, admission arm — the three poll `target_revoked` refusals, prebuilt
-      // OUTSIDE the tenant body for the same contract reason as the replay intent
-      // above, and only ASSIGNED at the refusing branch. Drained by the same
-      // `finally` drain as the replay refusal.
-      const revokedAuthorityIntent = pollAuthorityDenialIntent("poll_authority_not_current", pollInput.auth);
-      const unreadableTargetIntent = pollAuthorityDenialIntent("poll_target_unreadable", pollInput.auth);
-      const unreadableProfileIntent = pollAuthorityDenialIntent("poll_worker_profile_unreadable", pollInput.auth);
+      // ★ Poll admission-arm refusals. The two POST-AUTHORITY data-integrity arms are
+      // prebuilt OUTSIDE the tenant body for the same contract reason as the replay
+      // intent above, and only ASSIGNED at the refusing branch. Both are DE-04, not
+      // DE-18 (they fire only after the generation check has already passed, so they
+      // are not generation-replacement — Codex P2 on PR #448). Drained by the same
+      // `finally` as the replay refusal. The authorityCurrent arm is classified
+      // per-conjunct instead — see `pollAuthorityCurrencyIntent` below.
+      const unreadableTargetIntent = pollAuthorityDenialIntent("poll_target_unreadable", "DE-04", pollInput.auth);
+      const unreadableProfileIntent = pollAuthorityDenialIntent("poll_worker_profile_unreadable", "DE-04", pollInput.auth);
       for (let restartAttempt = 0; restartAttempt < 3; restartAttempt += 1) {
         // A retry iteration (restartAttempt > 0) means the previous head claim rolled back; count it
         // here so the head-conflict catch below stays the exact classifier/exhaustion/continue triple.
@@ -601,6 +669,23 @@ export function createJobLeasingService(input: {
                   guardedAuthority.physicalAuthorityWorker.lastSeenAt.getTime(),
                 ))
               : null;
+            // ★ Classify the authority-currency failure BEFORE the frozen
+            // `const currentAuthority = authorityCurrent(...)` binding, so the
+            // reject `if` remains the single-throw statement the JOB-003 contract
+            // (`builder:trusted-common-authority-current`) pins as the NEXT
+            // statement after that binding — a statement between them reds it.
+            // `pollAuthorityCurrencyIntent` is a PURE classifier (registered in the
+            // contract's reviewed-call allowlist beside `authorityCurrent`); it
+            // derives the reason + crossing from the ACTUAL failed conjunct so a
+            // stale-heartbeat / membership / credential failure is NOT filed under
+            // DE-18's generation-replacement crossing (Codex P2 on PR #448). Its
+            // result is bound to a non-protected local, so assigning it in the
+            // throw's comma expression carries no protected symbol on the RHS
+            // (`binding:protected-value-escape`). It runs on every poll (cheap,
+            // pure) and is only USED on the failure branch.
+            const pollAuthorityFailureIntent = pollAuthorityCurrencyIntent(
+              pollInput.auth, lockedAuthority, parsedRequest, databaseNow, maxHeartbeatAgeMs,
+            );
             const currentAuthority = authorityCurrent({
               auth: pollInput.auth,
               authority: lockedAuthority,
@@ -609,15 +694,8 @@ export function createJobLeasingService(input: {
               maxHeartbeatAgeMs,
               platformPhysicalHeartbeatAt,
             });
-            // ★ DE-18 — the generation-cutoff/superseded-authority admission
-            // deny. The capture rides the throw EXPRESSION (comma operator)
-            // because the frozen JOB-003 contract's
-            // `builder:trusted-common-authority-current` pins this refusal to a
-            // single-throw shape — a two-statement block reds it; the prebuilt
-            // intent (hoisted above, a pure function of the verified session
-            // artefact) keeps `binding:protected-value-escape` green.
             if (!currentAuthority) {
-              throw (proofDenial.intent = revokedAuthorityIntent, new JobLeasingError("target_revoked"));
+              throw (proofDenial.intent = pollAuthorityFailureIntent, new JobLeasingError("target_revoked"));
             }
             // Touch liveness only AFTER the target lock + authority revalidation (F033). A poll that
             // loses the target row to an overlapping revoke throws above and never reaches here, so

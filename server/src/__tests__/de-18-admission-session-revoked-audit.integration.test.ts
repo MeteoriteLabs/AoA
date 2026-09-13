@@ -65,7 +65,7 @@ integration("DE-18 admission/session target_revoked denial audit", () => {
 
   // ---- POLL admission arm (job-leasing.ts:poll) ----------------------------
 
-  it("DE-18 CLAUSE (poll): a superseded target generation is refused target_revoked AND leaves one attributable poll_authority row", async () => {
+  it("DE-18 CLAUSE (poll): a superseded target generation is refused target_revoked AND leaves one row keyed to DE-18 naming the generation conjunct", async () => {
     await fx.seedPlacedJob(9101);
     await fx.admin`UPDATE execution_targets SET device_generation = 2 WHERE id = ${TARGET}`;
     await expect(
@@ -75,8 +75,10 @@ integration("DE-18 admission/session target_revoked denial audit", () => {
     expect(rows).toHaveLength(1);
     const row = rows[0]!;
     expect(row.action).toBe("security.denied.worker_poll_authority");
-    expect(row.details.reason).toBe("poll_authority_not_current");
+    // ★ A GENERATION conjunct failed → DE-18, and details.failed names it.
+    expect(row.details.reason).toBe("poll_generation_superseded");
     expect(row.details.crossing).toBe("DE-18");
+    expect(row.details.failed).toContain("target_generation_drift");
     // WHO — the refused worker; TENANT — organization axis only (no lease resolved).
     expect(row.actor_type).toBe("system");
     expect(row.actor_id).toBe(WORKER);
@@ -86,6 +88,28 @@ integration("DE-18 admission/session target_revoked denial audit", () => {
     expect(row.entity_type).toBe("execution_target");
     expect(row.entity_id).toBe(TARGET);
     expect(row.details.operation).toBe("lease_poll");
+  }, 60_000);
+
+  it("DE-18 discrimination (poll): a NON-generation authority failure (stale heartbeat) is poll_authority_stale under DE-04, NOT DE-18 (Codex P2 on PR #448)", async () => {
+    await fx.seedPlacedJob(9105);
+    // Age the worker + target liveness past maxHeartbeatAgeMs (default 300s) while
+    // leaving every generation conjunct intact, so `authorityCurrent` fails ONLY on
+    // the heartbeat freshness check — the exact case that must NOT be filed as DE-18.
+    await fx.admin`UPDATE workers SET last_seen_at = clock_timestamp() - interval '1 hour' WHERE id = ${WORKER}`;
+    await fx.admin`UPDATE execution_targets SET last_seen_at = clock_timestamp() - interval '1 hour' WHERE id = ${TARGET}`;
+    await expect(
+      fx.leasing.poll({ auth: auth("de18-p5"), request: pollRequest("de18-p5") }),
+    ).rejects.toMatchObject({ code: "target_revoked" });
+    const rows = await denialRows();
+    expect(rows).toHaveLength(1);
+    const row = rows[0]!;
+    expect(row.action).toBe("security.denied.worker_poll_authority");
+    expect(row.details.reason).toBe("poll_authority_stale");
+    expect(row.details.crossing).toBe("DE-04");
+    expect(row.details.failed).toContain("heartbeat_stale");
+    // And it does NOT falsely carry a generation conjunct.
+    expect(row.details.failed).not.toContain("target_generation_drift");
+    expect(row.details.failed).not.toContain("worker_generation_drift");
   }, 60_000);
 
   it("poll reason distinctness: an unparseable stored worker hello is refused target_revoked with its OWN code", async () => {
