@@ -283,21 +283,26 @@ function authorityCurrent(input: {
 }
 
 /**
- * Classify WHY a poll's `authorityCurrent` returned false, into the exact set of
- * failed conjuncts, and build the deny-path intent with the crossing derived from
- * that set (Codex P2 on PR #448). `authorityCurrent` is a 19-conjunct composite;
- * only the three device_generation conjuncts are DE-18's generation-replacement
- * cutoff. A failure that includes ANY generation conjunct is filed as
- * `poll_generation_superseded` under DE-18; every other authority-currency failure
- * (stale heartbeat, owner-membership loss, worker status/credential drift, request
- * identity mismatch) is `poll_authority_stale` under DE-04 (a stale worker refused
- * admission), NEVER DE-18. Either way `details.failed` names the exact conjuncts so
- * a reader can tell them apart; the wire answer stays the coarse `target_revoked`.
+ * Classify WHY a poll's `authorityCurrent` returned false and, ONLY for a genuine
+ * generation-replacement cutoff, build the DE-18 deny-path intent (Codex P2 x4 on
+ * PR #448). `authorityCurrent` is a 19-conjunct composite; DE-18's audit clause is
+ * narrowly "placement decisions and generation changes are audited", and the
+ * generation-cutoff at worker admission is exactly that. Every OTHER
+ * authority-currency failure — stale heartbeat, owner-membership loss, worker
+ * status/credential drift, target disabled, request/payload identity mismatch —
+ * serves NO crossing's audit clause: it is not a generation change (so not DE-18),
+ * and a poll presents neither an attempt nor a lease fence (so not DE-04, whose
+ * boundary is the Worker↔attempt/lease fence). Filing those under ANY crossing
+ * corrupts that crossing's measure, so this returns `null` for them — no row. The
+ * worker-authority-currency denial has no home in the current register and is a
+ * documented follow-on (would need a new/extended crossing). Only the AUTHORITATIVE
+ * DB-row generations count: `request_generation_drift` is the caller's own payload
+ * claim (a current worker could forge it), so it never triggers DE-18.
  *
  * PURE (no IO, no repository selection, no mutation) and mirrors the predicate in
- * `authorityCurrent` exactly — it is registered in `job-leasing-contract.test.ts`'s
+ * `authorityCurrent` exactly — registered in `job-leasing-contract.test.ts`'s
  * reviewed-protected-call allowlist for that reason, alongside `authorityCurrent`.
- * It is always computed but only USED on the reject branch.
+ * Always computed, only USED on the reject branch; a `null` return drains no row.
  */
 export function pollAuthorityCurrencyIntent(
   auth: VerifiedWorkerOperation,
@@ -306,7 +311,7 @@ export function pollAuthorityCurrencyIntent(
   databaseNow: Date,
   maxHeartbeatAgeMs: number,
   platformPhysicalHeartbeatAt?: Date | null,
-): WorkerDenialIntent {
+): WorkerDenialIntent | null {
   const worker = authority.worker;
   const target = authority.target;
   const oldestHeartbeat = target.scope === "platform"
@@ -335,22 +340,14 @@ export function pollAuthorityCurrencyIntent(
   if (oldestHeartbeat === null || databaseNow.getTime() - oldestHeartbeat > maxHeartbeatAgeMs) {
     failed.push("heartbeat_stale");
   }
-  // Only the AUTHORITATIVE DB-row generations are DE-18's generation-replacement
-  // cutoff. `request_generation_drift` is the caller's own payload claim — a
-  // current authenticated worker could set a stale payload generation and
-  // manufacture DE-18 audit events with no actual generation change (Codex P2 on
-  // PR #448), so it is a caller-drift failure → DE-04 (it is still recorded in
-  // `details.failed`, just not as a generation cutoff).
+  // Only the AUTHORITATIVE DB-row generations are DE-18's cutoff.
   const GENERATION_CONJUNCTS = new Set([
     "worker_generation_drift", "target_generation_drift",
   ]);
   const generation = failed.some((f) => GENERATION_CONJUNCTS.has(f));
-  return pollAuthorityDenialIntent(
-    generation ? "poll_generation_superseded" : "poll_authority_stale",
-    generation ? "DE-18" : "DE-04",
-    auth,
-    failed,
-  );
+  // No generation change ⇒ no crossing to serve ⇒ no row (see the header).
+  if (!generation) return null;
+  return pollAuthorityDenialIntent("poll_generation_superseded", "DE-18", auth, failed);
 }
 
 export function ackAuthorityCurrent(input: {
@@ -635,15 +632,13 @@ export function createJobLeasingService(input: {
       // consumer of the authority chain appears inside the transaction without
       // review. An earlier revision of this change tripped it and CI caught it.
       const replayDenialIntent = workerProofReplayIntent(pollInput.auth);
-      // ★ Poll admission-arm refusals. The two POST-AUTHORITY data-integrity arms are
-      // prebuilt OUTSIDE the tenant body for the same contract reason as the replay
-      // intent above, and only ASSIGNED at the refusing branch. Both are DE-04, not
-      // DE-18 (they fire only after the generation check has already passed, so they
-      // are not generation-replacement — Codex P2 on PR #448). Drained by the same
-      // `finally` as the replay refusal. The authorityCurrent arm is classified
-      // per-conjunct instead — see `pollAuthorityCurrencyIntent` below.
-      const unreadableTargetIntent = pollAuthorityDenialIntent("poll_target_unreadable", "DE-04", pollInput.auth);
-      const unreadableProfileIntent = pollAuthorityDenialIntent("poll_worker_profile_unreadable", "DE-04", pollInput.auth);
+      // ★ Poll admission-arm: ONLY the authorityCurrent generation-cutoff is audited
+      // (DE-18, via `pollAuthorityCurrencyIntent` below, which returns null for
+      // non-generation failures). The two POST-AUTHORITY data-integrity refusals
+      // (unreadable current target / unparseable stored hello) are NOT recorded:
+      // they are not a generation change and a poll has no lease fence, so they
+      // serve no crossing's audit clause — filing them anywhere pollutes it (Codex
+      // P2 x4 on PR #448). They throw the coarse `target_revoked` with no row.
       for (let restartAttempt = 0; restartAttempt < 3; restartAttempt += 1) {
         // A retry iteration (restartAttempt > 0) means the previous head claim rolled back; count it
         // here so the head-conflict catch below stays the exact classifier/exhaustion/continue triple.
@@ -717,17 +712,13 @@ export function createJobLeasingService(input: {
             const normalizedCurrentTarget = await normalizePlacementRegistryTarget(
               guardedAuthority.currentTarget,
             );
-            if (!normalizedCurrentTarget) {
-              proofDenial.intent = unreadableTargetIntent;
-              throw new JobLeasingError("target_revoked");
-            }
+            // Not recorded: a post-authority data-integrity refusal serves no
+            // crossing's audit clause (see the poll-arm note above).
+            if (!normalizedCurrentTarget) throw new JobLeasingError("target_revoked");
             const parsedStoredHello = workerHelloV1Schema.safeParse(
               lockedAuthority.worker.profileSnapshot,
             );
-            if (!parsedStoredHello.success) {
-              proofDenial.intent = unreadableProfileIntent;
-              throw new JobLeasingError("target_revoked");
-            }
+            if (!parsedStoredHello.success) throw new JobLeasingError("target_revoked");
             const effectiveCapacity = minCapacity(
               parsedStoredHello.data.capacity,
               parsedRequest.capacity,

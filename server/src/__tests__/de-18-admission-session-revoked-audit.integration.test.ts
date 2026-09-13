@@ -88,56 +88,37 @@ integration("DE-18 admission/session target_revoked denial audit", () => {
     expect(row.details.operation).toBe("lease_poll");
   }, 60_000);
 
-  it("DE-18 discrimination (poll): a NON-generation authority failure (stale heartbeat) is poll_authority_stale under DE-04, NOT DE-18 (Codex P2 on PR #448)", async () => {
+  it("DE-18 discrimination (poll): a NON-generation authority failure (stale heartbeat) writes NO row — it serves no crossing's audit clause (Codex P2 x4 on PR #448)", async () => {
     await fx.seedPlacedJob(9105);
     // Age the worker + target liveness past maxHeartbeatAgeMs (default 300s) while
     // leaving every generation conjunct intact, so `authorityCurrent` fails ONLY on
-    // the heartbeat freshness check — the exact case that must NOT be filed as DE-18.
+    // the heartbeat freshness check — not a generation change, not a lease fence,
+    // so neither DE-18 nor DE-04 applies and nothing is recorded.
     await fx.admin`UPDATE workers SET last_seen_at = clock_timestamp() - interval '1 hour' WHERE id = ${WORKER}`;
     await fx.admin`UPDATE execution_targets SET last_seen_at = clock_timestamp() - interval '1 hour' WHERE id = ${TARGET}`;
     await expect(
       fx.leasing.poll({ auth: auth("de18-p5"), request: pollRequest("de18-p5") }),
     ).rejects.toMatchObject({ code: "target_revoked" });
-    const rows = await denialRows();
-    expect(rows).toHaveLength(1);
-    const row = rows[0]!;
-    expect(row.action).toBe("security.denied.worker_poll_authority");
-    expect(row.details.reason).toBe("poll_authority_stale");
-    expect(row.details.crossing).toBe("DE-04");
-    expect(row.details.failed).toContain("heartbeat_stale");
-    // And it does NOT falsely carry a generation conjunct.
-    expect(row.details.failed).not.toContain("target_generation_drift");
-    expect(row.details.failed).not.toContain("worker_generation_drift");
+    expect(await denialRows()).toHaveLength(0);
   }, 60_000);
 
-  it("poll reason distinctness: an unparseable stored worker hello is refused target_revoked with its OWN code", async () => {
+  it("poll: a post-authority data-integrity refusal (unparseable stored hello) writes NO row — no applicable crossing", async () => {
     await fx.seedPlacedJob(9102);
-    // Corrupt the stored hello but keep the HASH the authority compares, so the
-    // refusal lands on the schema parse (the :parsedStoredHello branch), not an
-    // earlier check.
     const hash = sha256(JSON.stringify(workerHello()));
     await fx.admin`UPDATE workers SET profile_snapshot = ${"{}"}::jsonb, profile_hash = ${hash} WHERE id = ${WORKER}`;
     await expect(
       fx.leasing.poll({ auth: auth("de18-p2"), request: pollRequest("de18-p2") }),
     ).rejects.toMatchObject({ code: "target_revoked" });
-    const rows = await denialRows();
-    expect(rows).toHaveLength(1);
-    expect(rows[0]!.action).toBe("security.denied.worker_poll_authority");
-    expect(rows[0]!.details.reason).toBe("poll_worker_profile_unreadable");
+    expect(await denialRows()).toHaveLength(0);
   }, 60_000);
 
-  it("poll reason distinctness: an unreadable CURRENT target registry row is refused with its OWN code", async () => {
+  it("poll: a post-authority data-integrity refusal (unreadable current target) writes NO row — no applicable crossing", async () => {
     await fx.seedPlacedJob(9103);
-    // Corrupt the registered profile but keep its hash column, so the authority
-    // comparison passes and the refusal lands on normalizePlacementRegistryTarget.
     await fx.admin`UPDATE execution_targets SET registered_profile = ${"{}"}::jsonb WHERE id = ${TARGET}`;
     await expect(
       fx.leasing.poll({ auth: auth("de18-p3"), request: pollRequest("de18-p3") }),
     ).rejects.toMatchObject({ code: "target_revoked" });
-    const rows = await denialRows();
-    expect(rows).toHaveLength(1);
-    expect(rows[0]!.action).toBe("security.denied.worker_poll_authority");
-    expect(rows[0]!.details.reason).toBe("poll_target_unreadable");
+    expect(await denialRows()).toHaveLength(0);
   }, 60_000);
 
   it("ANTI-VACUITY: a healthy poll (offer or no_work) writes ZERO security.denied rows", async () => {

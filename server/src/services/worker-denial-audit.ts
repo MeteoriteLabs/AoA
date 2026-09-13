@@ -113,30 +113,19 @@ export const WORKER_POLL_AUTHORITY_DENIAL_SURFACE = "worker_poll_authority";
  *                           or one of the defence-in-depth re-checks). This is
  *                           the ONE reason here that carries a company.
  *
- * The four `poll_*` codes are the POLL admission-authority refusals in
- * `job-leasing.ts:poll` — distinct BRANCHES from the fence-resolution siblings
- * above, so they carry distinct codes and their own surface (a poll presents no
- * fence). ★ CROSSING IS PER-BRANCH, not a blanket DE-18 (Codex P2 on PR #448):
- * `authorityCurrent` is a 19-conjunct composite and only the generation
- * conjuncts are DE-18's generation-replacement cutoff; a stale heartbeat,
- * membership loss, credential drift or identity mismatch is a DIFFERENT failure
- * and mapping it to DE-18 corrupts DE-18's audit measure. So the poll classifier
- * (`pollAuthorityCurrencyIntent`, job-leasing.ts) sets the crossing from the
- * ACTUAL failed conjunct and always carries `details.failed`:
- * `poll_generation_superseded`    — a GENERATION conjunct failed (worker/target/
- *                                   request device_generation ≠ the claim) → DE-18.
- * `poll_authority_stale`          — `authorityCurrent` failed on a NON-generation
- *                                   conjunct (heartbeat/membership/status/
- *                                   credential/identity) → DE-04 (a stale worker
- *                                   refused admission), NOT DE-18.
- * `poll_target_unreadable`        — `normalizePlacementRegistryTarget` returned
- *                                   null for the CURRENT target row (post-authority
- *                                   data-integrity refusal) → DE-04, not DE-18.
- * `poll_worker_profile_unreadable`— the stored worker hello failed schema parse
- *                                   (post-authority data-integrity) → DE-04.
- * The crossing rides `WorkerDenialIntent.crossings`, set by the builder per
- * branch; the surface map below is total over the reasons but does NOT decide the
- * crossing.
+ * `poll_generation_superseded` is the ONE POLL admission-authority refusal
+ * recorded, in `job-leasing.ts:poll` — a distinct BRANCH from the fence-resolution
+ * siblings above, so it carries its own code and surface (a poll presents no
+ * fence). ★ ONLY THE GENERATION CUTOFF IS AUDITED (Codex P2 x4 on PR #448):
+ * `authorityCurrent` is a 19-conjunct composite, and DE-18's audit clause is
+ * narrowly "generation changes … at worker admission". A generation cutoff there
+ * is exactly that → DE-18. Every other authority-currency failure (stale
+ * heartbeat, membership loss, status/credential drift, identity mismatch) and the
+ * two post-authority data-integrity refusals are NOT a generation change and a
+ * poll has no lease fence, so they serve no crossing's audit clause; the poll
+ * classifier (`pollAuthorityCurrencyIntent`, job-leasing.ts) returns null for them
+ * — no row — rather than pollute DE-18 or DE-04. `details.failed` names the
+ * conjuncts that fired; the wire answer stays the coarse `target_revoked`.
  */
 export const WORKER_DENIAL_REASONS = [
   "proof_replayed",
@@ -147,9 +136,6 @@ export const WORKER_DENIAL_REASONS = [
   "lease_unresolved",
   "fence_tuple_mismatch",
   "poll_generation_superseded",
-  "poll_authority_stale",
-  "poll_target_unreadable",
-  "poll_worker_profile_unreadable",
 ] as const;
 
 export type WorkerDenialReason = (typeof WORKER_DENIAL_REASONS)[number];
@@ -168,9 +154,6 @@ export const WORKER_DENIAL_SURFACE_BY_REASON: Record<WorkerDenialReason, string>
   lease_unresolved: WORKER_FENCE_DENIAL_SURFACE,
   fence_tuple_mismatch: WORKER_FENCE_DENIAL_SURFACE,
   poll_generation_superseded: WORKER_POLL_AUTHORITY_DENIAL_SURFACE,
-  poll_authority_stale: WORKER_POLL_AUTHORITY_DENIAL_SURFACE,
-  poll_target_unreadable: WORKER_POLL_AUTHORITY_DENIAL_SURFACE,
-  poll_worker_profile_unreadable: WORKER_POLL_AUTHORITY_DENIAL_SURFACE,
 };
 
 /**
@@ -232,21 +215,16 @@ export function createWorkerDenialSink(): WorkerDenialSink {
  * is safe to record.
  */
 /**
- * A POLL admission-arm intent for `job-leasing.ts:poll`'s `target_revoked`
- * refusals. The CROSSING and `failed` list are supplied by the caller's
- * classifier (`pollAuthorityCurrencyIntent`) so a NON-generation authority
- * failure is not filed under DE-18 (Codex P2 on PR #448). The two post-authority
- * data-integrity arms (`poll_target_unreadable` / `poll_worker_profile_unreadable`)
- * pass `crossing: "DE-04"` and no `failed`; they are prebuilt OUTSIDE the tenant
- * callback for the same reason `workerProofReplayIntent` is (the JOB-003
- * contract's `binding:protected-value-escape` refuses a protected authority
- * symbol inside a non-approved call). `companyId` is null: no lease has resolved
- * at any poll site, and `workers`/`execution_targets` carry `organization_id`
+ * The POLL admission-arm intent for `job-leasing.ts:poll`'s generation-cutoff
+ * `target_revoked` refusal — the ONLY poll refusal that serves a crossing's audit
+ * clause (DE-18's "generation changes at admission"). Built by the caller's
+ * classifier `pollAuthorityCurrencyIntent`, which returns null (no row) for every
+ * non-generation refusal (Codex P2 x4 on PR #448). `companyId` is null: no lease
+ * has resolved at a poll, and `workers`/`execution_targets` carry `organization_id`
  * only.
  */
 export function pollAuthorityDenialIntent(
-  reason: "poll_generation_superseded" | "poll_authority_stale"
-    | "poll_target_unreadable" | "poll_worker_profile_unreadable",
+  reason: "poll_generation_superseded",
   crossing: string,
   auth: {
     organizationId: string;

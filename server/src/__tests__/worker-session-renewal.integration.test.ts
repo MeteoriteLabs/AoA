@@ -446,25 +446,15 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(await denialRows()).toHaveLength(0);
       await admin!`DELETE FROM workers`;
 
-      // Disabled target → failed names target_disabled → DE-04 (a disabled target
-      // is NOT a generation replacement — Codex P2 on PR #448).
+      // Disabled target → NOT a generation replacement, and a session recheck is
+      // not the Worker↔lease fence, so it serves no crossing's audit clause and
+      // writes NO row (Codex P2 x4 on PR #448).
       const first = await enroll({ workerId: WORKER_A, targetId: TARGET_A, scope: "organization", organizationId: ORG_A, ownerUserId: null });
       await admin!`UPDATE execution_targets SET status = 'disabled' WHERE id = ${TARGET_A}`;
       await admin!`DELETE FROM activity_log WHERE action LIKE ${"security.denied.%"}`;
       expect((await renew({ session: first.session, keys: first.keys, proofId: `de18-disabled-${crypto.randomUUID()}` })).status).toBe(401);
       let rows = await denialRows();
-      expect(rows).toHaveLength(1);
-      expect(rows[0]!.action).toBe("security.denied.worker_session");
-      expect(rows[0]!.details.reason).toBe("session_authority_revoked");
-      expect(rows[0]!.details.crossing).toBe("DE-04");
-      expect(rows[0]!.details.failed).toContain("target_disabled");
-      expect(rows[0]!.details.failed).not.toContain("generation_drift");
-      expect(rows[0]!.actor_type).toBe("system");
-      expect(rows[0]!.actor_id).toBe(WORKER_A);
-      expect(rows[0]!.organization_id).toBe(ORG_A);
-      expect(rows[0]!.company_id).toBeNull();
-      expect(rows[0]!.entity_type).toBe("execution_target");
-      expect(rows[0]!.entity_id).toBe(TARGET_A);
+      expect(rows).toHaveLength(0);
       await admin!`UPDATE execution_targets SET status = 'active' WHERE id = ${TARGET_A}`;
       await admin!`DELETE FROM workers`;
 
@@ -477,9 +467,14 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect((await renew({ session: second.session, keys: second.keys, proofId: `de18-gen-${crypto.randomUUID()}` })).status).toBe(401);
       rows = await denialRows();
       expect(rows).toHaveLength(1);
+      expect(rows[0]!.action).toBe("security.denied.worker_session");
+      expect(rows[0]!.details.reason).toBe("session_authority_revoked");
       expect(rows[0]!.details.failed).toContain("generation_drift");
       // ★ A genuine generation cutoff IS DE-18.
       expect(rows[0]!.details.crossing).toBe("DE-18");
+      expect(rows[0]!.actor_id).toBe(WORKER_A);
+      expect(rows[0]!.organization_id).toBe(ORG_A);
+      expect(rows[0]!.company_id).toBeNull();
       // Restore RELATIVELY (the enroll hello pins deviceGeneration 1, so the row
       // must return to its pre-bump value for the next enrollment to admit).
       await admin!`UPDATE execution_targets SET device_generation = device_generation - 1 WHERE id = ${TARGET_A}`;

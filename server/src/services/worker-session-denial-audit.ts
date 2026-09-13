@@ -65,23 +65,20 @@ export type WorkerSessionDenialReason = (typeof WORKER_SESSION_DENIAL_REASONS)[n
 export const SESSION_GENERATION_CONJUNCT = "generation_drift";
 
 /**
- * Which crossing a session denial serves, DERIVED from the failed predicate
- * (Codex P2 on PR #448). Only a `generation_drift` failure is DE-18's
- * generation-replacement cutoff; a disabled target, a revoked worker, a lost
- * owner membership, a missing authority row or a credential/profile drift is a
- * stale-worker admission refusal → DE-04, NOT DE-18. A hardcoded DE-18 here would
- * pollute DE-18's audit measure exactly as the poll arm's did.
- */
-export function workerSessionDenialCrossing(failed: readonly string[] | undefined): string {
-  return failed?.includes(SESSION_GENERATION_CONJUNCT) ? "DE-18" : "DE-04";
-}
-
-/**
- * Record ONE worker-session `target_revoked` refusal. `db` MUST be a pool
- * handle — the caller invokes this after its transaction has unwound, never
- * inside it. The crossing is derived from `failed` (see
- * `workerSessionDenialCrossing`), so a non-generation failure is not filed under
- * DE-18. Returns the row id or null; never throws.
+ * Record ONE worker-session GENERATION-CUTOFF refusal under DE-18. `db` MUST be a
+ * pool handle — the caller invokes this after its transaction has unwound, never
+ * inside it.
+ *
+ * ★ ONLY generation cutoffs are recorded (Codex P2 x4 on PR #448). DE-18's audit
+ * clause is narrowly "generation changes … at worker admission", so a
+ * `generation_drift` failure serves it. A disabled target, revoked worker, lost
+ * owner membership, missing authority row or credential/profile drift is NOT a
+ * generation change, and a session recheck is not the Worker↔attempt/lease fence
+ * (DE-04) either — those refusals serve no crossing's audit clause, so recording
+ * them under ANY crossing pollutes it. When `failed` carries no
+ * `generation_drift`, this is a NO-OP (returns null) rather than a mislabelled
+ * row; the worker-authority-currency denial is a documented follow-on. Never
+ * throws.
  */
 export async function recordWorkerSessionDenial(
   db: Db,
@@ -94,17 +91,19 @@ export async function recordWorkerSessionDenial(
     targetId: string;
     targetGeneration: number;
     deviceThumbprint: string;
-    /** The disjuncts that failed, naming the enforcing predicate(s). Decides the
-     * crossing: `generation_drift` present → DE-18, else DE-04. Every call site
-     * passes at least one name. */
+    /** The disjuncts that failed, naming the enforcing predicate(s). A row is
+     * written ONLY when this includes `generation_drift`; otherwise no crossing
+     * applies and nothing is recorded. */
     failed?: string[];
     control: string;
   },
 ): Promise<string | null> {
+  // No generation change ⇒ serves no crossing's audit clause ⇒ no row.
+  if (!input.failed?.includes(SESSION_GENERATION_CONJUNCT)) return null;
   return recordSecurityDenial(db, {
     companyId: null,
     organizationId: input.organizationId,
-    crossing: workerSessionDenialCrossing(input.failed),
+    crossing: WORKER_SESSION_DENIAL_CROSSING,
     surface: WORKER_SESSION_DENIAL_SURFACE,
     reason: input.reason,
     actorType: "system",
