@@ -4802,6 +4802,12 @@ function leaseStaticContextPollViolations(source: string): string[] {
     const path = callPath(call);
     return [
       "authorityCurrent", "deriveAdmissibleWorkloadTypes", "evaluateStaticLeaseEligibility",
+      // DE-18 slice 2 (Codex P2 on PR #448) — a PURE classifier that mirrors
+      // `authorityCurrent`'s predicate to derive the failed conjunct(s) and the
+      // audit crossing, so a non-generation authority-currency failure is not filed
+      // under DE-18. It performs no IO, selects no repository, and cannot mutate the
+      // authority context; registered here for the same reason `authorityCurrent` is.
+      "pollAuthorityCurrencyIntent",
       // REL-004 clause 3a. A PURE decision over the locked, revalidated target's `kind` plus a
       // document read BEFORE the transaction opened: it adds no repository selection, performs
       // no IO, and cannot mutate the authority context. Reviewed and registered here for the

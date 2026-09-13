@@ -39,7 +39,7 @@ export const TARGET = "a6000000-0000-4000-8000-000000000003";
 export const WORKER = "a6000000-0000-4000-8000-000000000005";
 const PASSWORD = "job-006-role-password";
 const POLICY_HASH = "3".repeat(64);
-const THUMBPRINT = "4".repeat(64);
+export const THUMBPRINT = "4".repeat(64);
 const AUTHORITY_KEY = `organization:${ORG}`;
 
 export function sha256(value: Uint8Array | string): string {
@@ -81,7 +81,7 @@ function registeredProfile(provider: ProviderConstraintProfileV1): RegisteredTar
   };
 }
 
-function workerHello() {
+export function workerHello() {
   return {
     protocolVersion: 1 as const,
     workerId: WORKER,

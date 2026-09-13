@@ -85,6 +85,10 @@ import { recordSecurityDenial } from "./security-denial-audit.js";
 export const WORKER_FENCE_DENIAL_SURFACE = "worker_fence_resolution";
 /** The reserved `surface` slug → `security.denied.worker_proof_replay`. */
 export const WORKER_PROOF_DENIAL_SURFACE = "worker_proof_replay";
+/** The reserved `surface` slug → `security.denied.worker_poll_authority` —
+ * the POLL/ACK admission-authority refusals (DE-18's admission arm), distinct
+ * from the fence-resolution surface because a poll presents no fence. */
+export const WORKER_POLL_AUTHORITY_DENIAL_SURFACE = "worker_poll_authority";
 
 /**
  * The reason vocabulary. Each code corresponds to exactly ONE branch in a
@@ -108,6 +112,20 @@ export const WORKER_PROOF_DENIAL_SURFACE = "worker_proof_replay";
  *                           (`target_authority_key`, `provider_constraint_hash`,
  *                           or one of the defence-in-depth re-checks). This is
  *                           the ONE reason here that carries a company.
+ *
+ * `poll_generation_superseded` is the ONE POLL admission-authority refusal
+ * recorded, in `job-leasing.ts:poll` — a distinct BRANCH from the fence-resolution
+ * siblings above, so it carries its own code and surface (a poll presents no
+ * fence). ★ ONLY THE GENERATION CUTOFF IS AUDITED (Codex P2 x4 on PR #448):
+ * `authorityCurrent` is a 19-conjunct composite, and DE-18's audit clause is
+ * narrowly "generation changes … at worker admission". A generation cutoff there
+ * is exactly that → DE-18. Every other authority-currency failure (stale
+ * heartbeat, membership loss, status/credential drift, identity mismatch) and the
+ * two post-authority data-integrity refusals are NOT a generation change and a
+ * poll has no lease fence, so they serve no crossing's audit clause; the poll
+ * classifier (`pollAuthorityCurrencyIntent`, job-leasing.ts) returns null for them
+ * — no row — rather than pollute DE-18 or DE-04. `details.failed` names the
+ * conjuncts that fired; the wire answer stays the coarse `target_revoked`.
  */
 export const WORKER_DENIAL_REASONS = [
   "proof_replayed",
@@ -117,6 +135,7 @@ export const WORKER_DENIAL_REASONS = [
   "profile_drift",
   "lease_unresolved",
   "fence_tuple_mismatch",
+  "poll_generation_superseded",
 ] as const;
 
 export type WorkerDenialReason = (typeof WORKER_DENIAL_REASONS)[number];
@@ -134,6 +153,7 @@ export const WORKER_DENIAL_SURFACE_BY_REASON: Record<WorkerDenialReason, string>
   profile_drift: WORKER_FENCE_DENIAL_SURFACE,
   lease_unresolved: WORKER_FENCE_DENIAL_SURFACE,
   fence_tuple_mismatch: WORKER_FENCE_DENIAL_SURFACE,
+  poll_generation_superseded: WORKER_POLL_AUTHORITY_DENIAL_SURFACE,
 };
 
 /**
@@ -194,6 +214,44 @@ export function createWorkerDenialSink(): WorkerDenialSink {
  * across operations. `entity_id` carries no FK, so an id that matches no live row
  * is safe to record.
  */
+/**
+ * The POLL admission-arm intent for `job-leasing.ts:poll`'s generation-cutoff
+ * `target_revoked` refusal — the ONLY poll refusal that serves a crossing's audit
+ * clause (DE-18's "generation changes at admission"). Built by the caller's
+ * classifier `pollAuthorityCurrencyIntent`, which returns null (no row) for every
+ * non-generation refusal (Codex P2 x4 on PR #448). `companyId` is null: no lease
+ * has resolved at a poll, and `workers`/`execution_targets` carry `organization_id`
+ * only.
+ */
+export function pollAuthorityDenialIntent(
+  reason: "poll_generation_superseded",
+  crossing: string,
+  auth: {
+    organizationId: string;
+    workerId: string;
+    targetId: string;
+    targetGeneration: number;
+    deviceThumbprint: string;
+  },
+  failed?: string[],
+): WorkerDenialIntent {
+  return {
+    reason,
+    companyId: null,
+    organizationId: auth.organizationId,
+    crossings: [crossing],
+    entityType: "execution_target",
+    entityId: auth.targetId,
+    details: {
+      workerId: auth.workerId,
+      targetId: auth.targetId,
+      targetGeneration: auth.targetGeneration,
+      deviceThumbprint: auth.deviceThumbprint,
+      ...(failed && failed.length > 0 ? { failed } : {}),
+    },
+  };
+}
+
 export function workerProofReplayIntent(auth: {
   organizationId: string;
   workerId: string;
