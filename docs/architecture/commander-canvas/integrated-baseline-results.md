@@ -1,5 +1,7 @@
 # Universe — integrated baseline qualification
 
+**Subsequent disposition:** [Landing and adoption are complete](base-integration-results.md). The pending-CI statements below preserve the earlier local-qualification checkpoint.
+
 September 13, 2026. **Combined source qualified locally; PR CI and landing/adoption still pending. No Universe feature implementation.**
 
 TK authorized readiness qualification, repair publication/landing and exact base adoption, retaining a separate discussion before feature implementation. The four baseline repairs are published in [Stabilize baseline fixtures and handle filesystem opener failures](https://github.com/MeteoriteLabs/AoA/pull/449), targeting replatform. This record supersedes the earlier preparation report's unapproved readiness status only.

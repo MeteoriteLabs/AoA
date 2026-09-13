@@ -1,4 +1,8 @@
 {
+  "adoption.json": {
+    "sha256": "d588aa23d0c4285c86e8e87ba88265785ff5b193ae8e374eee8cdefa77ef1354",
+    "bytes": 50138
+  },
   "binding-checks.json": {
     "sha256": "041c6ed06ed3790a77fe51ff3f3a1bfbcb0efe9128aa93a6b8133a84b47e6d37",
     "bytes": 13055
@@ -59,6 +63,14 @@
     "sha256": "636fa293555e306557267f0ce1190ce8fa1905f07ea1849fabe12b7ed92e1b32",
     "bytes": 335
   },
+  "capture-adoption.py": {
+    "sha256": "d7fd1daf6cfe8f58972cfd0d2a1ed27486d68ab391680578b6c1ab87720c7b3d",
+    "bytes": 1860
+  },
+  "capture-ci.py": {
+    "sha256": "7e4cfd70c7c9ce7fbc9f0e06275deb24249cd58170988a9e6c59c82a35e24386",
+    "bytes": 1275
+  },
   "check-bindings.py": {
     "sha256": "aebd50667b7c64a084bda0400109858478bf99cc0b6afa98c9d3a1aa754a8609",
     "bytes": 1953
@@ -66,6 +78,10 @@
   "ci-tree.json": {
     "sha256": "d99dcf0e97f1c14b4634a7539301215c0291646994c3085dc8db388a749d8f4a",
     "bytes": 251
+  },
+  "ci.json": {
+    "sha256": "52654069733bdacc15f62cead4c2661eca5b06faf54e19e012c07ecba096a838",
+    "bytes": 70157
   },
   "citation.json": {
     "sha256": "e0247d8ef50c26f407e6027ce601f0c0b1bba94016141a35d5e40775c9c70d63",

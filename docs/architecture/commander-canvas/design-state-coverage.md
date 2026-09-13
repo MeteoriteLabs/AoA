@@ -1,6 +1,8 @@
 # Universe — DESIGN state evidence coverage
 
-**Latest preparation (September 13):** [Exact base proposal and first-batch visual checks](pre-implementation-discussion.md) are complete for TK's requested pre-implementation conversation. The merge simulation is conflict-free; the combined source is not yet runtime-qualified or adopted. Eight first-batch states have 32 rendered checks. No Universe coding starts before that conversation and explicit batch approval.
+**Latest readiness (September 13):** [Base integration and adoption](base-integration-results.md) are complete with full local qualification, required PR CI and exact source comparison. The existing Universe branch now contains the verified replatform landing. TK's requested discussion and explicit batch approval remain before feature implementation. Earlier dated preparation results below are historical.
+
+**Historical pre-adoption preparation (September 13):** [Exact base proposal and first-batch visual checks](pre-implementation-discussion.md) are complete for TK's requested pre-implementation conversation. The merge simulation is conflict-free; the combined source is not yet runtime-qualified or adopted. Eight first-batch states have 32 rendered checks. No Universe coding starts before that conversation and explicit batch approval.
 
 September 12, 2026. **Completed documentary evidence inventory; DESIGN remains open.** This report is the DESIGN portion of the approved bounded baseline-preparation batch. It records existing evidence and missing proof; it does not record a new visual acceptance, run any UAT script, authorize E1.1 implementation, or change release scope. The [preparation record](bounded-engineering-preparation.md) records the original proposal and subsequent bounded batch authorization under which this report was authored.
 

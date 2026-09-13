@@ -1,5 +1,9 @@
 # Universe — base proposal and first-batch design disposition
 
+**Latest readiness (September 13):** [Replatform integration and base adoption](base-integration-results.md) are complete. The exact repaired candidate passed typecheck, 24,295 tests (76 unchanged skips), build and the required PR checks. Its verified landing is adopted into the existing Universe branch. No Universe feature implementation has begun; TK's requested discussion and explicit batch approval are next.
+
+**Historical proposal below; current outcome is linked above.**
+
 September 13, 2026. **Preparation complete for TK's requested discussion. No Universe implementation or source-base adoption.** TK asked to finish the next preparation and talk before implementation. This record makes the next action concrete; it does not treat that request as approval to publish/merge source corrections or begin features.
 
 ## Exact base recommendation

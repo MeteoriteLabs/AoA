@@ -1,6 +1,8 @@
 # Universe — first implementation batch preparation
 
-**Latest preparation (September 13):** [Exact base proposal and first-batch visual checks](pre-implementation-discussion.md) are complete for TK's requested pre-implementation conversation. The merge simulation is conflict-free; the combined source is not yet runtime-qualified or adopted. Eight first-batch states have 32 rendered checks. No Universe coding starts before that conversation and explicit batch approval.
+**Latest readiness (September 13):** [Replatform integration and base adoption](base-integration-results.md) are complete. The exact repaired candidate passed typecheck, 24,295 tests (76 unchanged skips), build and the required PR checks. Its verified landing is adopted into the existing Universe branch. No Universe feature implementation has begun; TK's requested discussion and explicit batch approval are next.
+
+**Historical pre-adoption preparation (September 13):** [Exact base proposal and first-batch visual checks](pre-implementation-discussion.md) are complete for TK's requested pre-implementation conversation. The merge simulation is conflict-free; the combined source is not yet runtime-qualified or adopted. Eight first-batch states have 32 rendered checks. No Universe coding starts before that conversation and explicit batch approval.
 
 **Historical preparation record; superseded for current execution scope by the [bounded engineering preparation proposal](bounded-engineering-preparation.md).** Earlier implementation was premature and remains paused. The Universe planning branch and source pin are now established; TK accepted keeping the earlier draft untouched/excluded. No runtime results below certify the new candidate or authorize coding.
 

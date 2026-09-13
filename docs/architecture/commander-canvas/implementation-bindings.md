@@ -1,5 +1,7 @@
 # Universe — implementation bindings and shared-contract review
 
+**Adoption overlay:** [Verified base integration](base-integration-results.md#plan-applicability-after-adoption) rechecks these historical source anchors against the adopted source. All recorded runtime paths are unchanged; later producer qualifications remain open.
+
 Planning source: `183e46a9c65fc3105c7e3d125629276814df7dbb` on replatform. Source inspection is not runtime qualification. All paths below are repository-relative. Proposed outputs do not exist at this base unless marked as modifications. Read with [coding plans](coding-plans/README.md), [self-review](planning-self-review.md) and [branch procedure](planning-branch-proposal.md).
 
 ## Shared integration files
