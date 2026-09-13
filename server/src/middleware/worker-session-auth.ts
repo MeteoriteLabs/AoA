@@ -146,10 +146,14 @@ export function createWorkerSessionAuthenticator(input: {
 
       // ★ DE-18, session arm — the capture-then-drain holder for the ONE
       // refusal below that throws INSIDE a transaction (`verifyCurrent`'s
-      // current-authority recheck). The intent is recorded where the failing
-      // disjuncts are in hand and written on the POOL `appDb` only after the
-      // transaction promise has rejected — never inside the tx that is
-      // unwinding. See worker-session-denial-audit.ts.
+      // current-authority recheck). The failing disjuncts are captured where they
+      // are in hand and drained on the POOL `appDb` after the transaction promise
+      // rejects (never inside the unwinding tx). `recordWorkerSessionDenial`
+      // writes a DE-18 row ONLY when `failed` includes `generation_drift`; a
+      // non-generation session refusal (target inactive, worker revoked, lost
+      // membership, credential/profile drift) serves no crossing's clause and is
+      // deliberately unaudited (a documented follow-on). See
+      // worker-session-denial-audit.ts.
       const sessionDenial: {
         intent: { organizationId: string | null; failed: string[] } | null;
       } = { intent: null };
@@ -249,9 +253,14 @@ export function createWorkerSessionAuthenticator(input: {
             physical.worker.deviceGeneration !== principal.targetGeneration ||
             physical.worker.deviceThumbprint !== principal.deviceThumbprint ||
             physical.worker.devicePublicKey !== proof.publicKey || !physical.worker.profileHash) {
-          // ★ Classify the physical-recheck failure by the enforcing predicate so
-          // the audit crossing reflects it (Codex P2 on PR #448): a generation
-          // mismatch is `generation_drift` → DE-18, everything else → DE-04.
+          // ★ Name the enforcing predicate(s) of the physical-recheck failure
+          // (Codex P2 on PR #448). ONLY a `generation_drift` failure is recorded —
+          // as a DE-18 generation cutoff; `recordWorkerSessionDenial` NO-OPS for
+          // every non-generation failure (target inactive, worker revoked,
+          // credential/profile drift), because those serve no crossing's audit
+          // clause (not a generation change, and a session recheck is not the
+          // Worker↔lease fence) and remain DELIBERATELY UNAUDITED, a documented
+          // follow-on — not a DE-04 row.
           const failed: string[] = [
             !physical ? "physical_authority_missing" : null,
             physical && physical.target.status !== "active" ? "target_inactive" : null,
