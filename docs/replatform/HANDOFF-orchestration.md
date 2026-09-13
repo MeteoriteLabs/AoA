@@ -1,5 +1,7 @@
 # HANDOFF — the orchestration session
 
+> **SUPERSEDED by [`HANDOFF-orchestration-2026-09-10.md`](./HANDOFF-orchestration-2026-09-10.md), written 2026-09-10 at `a5d27555b`. Read that one; this is kept for history.**
+
 **Written 2026-09-03 at HEAD `e8d2d8a52`, from a 15-agent audit whose five load-bearing claims were
 each adversarially verified.** Supersedes the parallel-lane framing in `HANDOFF-wave-4.md` and
 `HANDOFF-lane-b-browser-service.md`, both of which are stale in specific named ways (§7).
