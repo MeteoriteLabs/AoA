@@ -241,6 +241,22 @@ jobs:
           node --test scripts/check-threat-control-audit-debt.test.mjs
           node scripts/check-threat-control-audit-debt.mjs
 
+      - name: Register citation integrity (source citations must not silently rot)
+        run: |
+          # The threat register cites source locations as path/to/file.ts:LINE. These rot
+          # whenever ANY PR shifts lines in a cited file — including sibling crossings a PR
+          # never touched. Codex reviews the diff, not the whole register, so it cannot catch
+          # whole-register drift; on PR #443 that cost TEN manual re-anchoring rounds. This
+          # guard verifies every explicit, repo-anchored citation against HEAD (exists,
+          # in-range, reaches a non-blank code line, and — where a backtick anchor is present —
+          # sits within ±3 lines of its construct). Bare/narrative refs are best-effort by
+          # measurement; a frozen block that cannot resolve is grandfathered with a reason.
+          #
+          # Both commands in ONE step, for the reason the ownership step below gives: two steps
+          # are two chances to run only one of them, and the one skipped is the one that failed.
+          node --test scripts/check-register-citation-integrity.test.mjs
+          node scripts/check-register-citation-integrity.mjs
+
       - name: Worker protocol dependency boundary
         run: |
           node scripts/check-worker-protocol-boundary.mjs

@@ -32,6 +32,11 @@ import {
   drainWorkerDenial,
   workerProofReplayIntent,
 } from "./worker-denial-audit.js";
+import {
+  createFenceGuardDenialSink,
+  captureFenceGuardDenial,
+  drainFenceGuardDenialSink,
+} from "./fence-denial-audit.js";
 
 /** The worker→server control-ACK envelope (HTTP-neutral): the delivery identity the
  * worker echoes plus the frozen ACK payload. There is no frozen envelope for this
@@ -95,6 +100,11 @@ export function createJobControlAckService(input: {
       // `runInTenant`, so its record is collected as an INTENT and drained on the
       // pool handle once the transaction has unwound.
       const proofDenial = createWorkerDenialSink();
+      // ★ DE-04 — the ackControlCommand fence refusal is caught INSIDE the callback and
+      // REMAPPED to a `JobLeasingError` below, so the original `JobFenceError` is gone by
+      // the time the transaction unwinds; it is captured at the inner catch (code + fence
+      // identity both in hand) and drained on the pool handle in the `.finally`.
+      const fenceGuardDenial = createFenceGuardDenialSink();
 
       // The explicit type argument is load-bearing: chaining `.finally` below drops
       // the contextual typing this call used to get from the method's return
@@ -164,21 +174,24 @@ export function createJobControlAckService(input: {
           throw new JobLeasingError("stale_fence");
         }
 
+        const ackFence = {
+          organizationId: auth.organizationId,
+          companyId: context.lease.companyId,
+          jobId: context.lease.jobId,
+          attemptId: context.lease.attemptId,
+          attemptNumber: context.lease.attemptNumber,
+          leaseId: context.lease.id,
+          workerId: auth.workerId,
+          targetId: target.targetId,
+          targetAuthorityKey: authority.worker.targetAuthorityKey,
+          targetGeneration: target.targetGeneration,
+          profileHash: auth.profileHash,
+          providerConstraintHash: target.providerConstraintHash,
+          fence: body.fenceToken,
+        };
         try {
           const result = await repos.jobControl.ackControlCommand({
-            organizationId: auth.organizationId,
-            companyId: context.lease.companyId,
-            jobId: context.lease.jobId,
-            attemptId: context.lease.attemptId,
-            attemptNumber: context.lease.attemptNumber,
-            leaseId: context.lease.id,
-            workerId: auth.workerId,
-            targetId: target.targetId,
-            targetAuthorityKey: authority.worker.targetAuthorityKey,
-            targetGeneration: target.targetGeneration,
-            profileHash: auth.profileHash,
-            providerConstraintHash: target.providerConstraintHash,
-            fence: body.fenceToken,
+            ...ackFence,
             ack: {
               commandId: ack.commandId,
               // JOB-015 — the frozen ACK schema has always carried this; the mutator
@@ -199,6 +212,9 @@ export function createJobControlAckService(input: {
             applied: result.ackOutcome?.applied ?? false,
           };
         } catch (error) {
+          // Capture the governed-fence refusal before it is remapped away (no-op unless it
+          // is a `JobFenceError`); the row is written in the `.finally` on the pool handle.
+          captureFenceGuardDenial(fenceGuardDenial, ackFence, error);
           if (error instanceof DbJobFenceError) throw new JobLeasingError(error.code);
           throw error;
         }
@@ -210,6 +226,12 @@ export function createJobControlAckService(input: {
           await drainWorkerDenial(input.appDb, proofDenial, {
             control: "server/src/services/job-control-ack.ts:ack",
             workerId: auth.workerId,
+            operation: "control_command_ack",
+          });
+          // ★ DE-04 — the governed-fence refusal (stale_fence / attempt_terminal /
+          // target_revoked from ackControlCommand's guardActiveFence), on the pool handle.
+          await drainFenceGuardDenialSink(input.appDb, fenceGuardDenial, {
+            control: "server/src/services/job-control-ack.ts:ackControlCommand",
             operation: "control_command_ack",
           });
         });

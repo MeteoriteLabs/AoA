@@ -51,6 +51,7 @@ import type {
 } from "@armyofagents/db";
 import type { SubmitJobSource, UpsertTaskOutput } from "@armyofagents/shared";
 import { runInTenant } from "../db/tenant-context.js";
+import { drainFenceGuardDenial } from "./fence-denial-audit.js";
 import { logger } from "../middleware/logger.js";
 import { readDistributedExecutionDeploymentFlag } from "../config/distributed-execution.js";
 import { resolveCompanyOrganizationId } from "./org-concurrency.js";
@@ -433,7 +434,20 @@ export function jobOutputBridge(
         });
 
         return { status: "recorded" as const, attemptTerminated: true, commentId };
-      });
+      })
+        // ★ DE-04 / DE-18 — completeAttempt's guardActiveFence rethrows the ORIGINAL
+        // `JobFenceError` (a genuine loser's attempt_terminal, or a stale_fence /
+        // target_revoked worker), so it reaches this pool-handle drain after the tenant
+        // transaction has unwound. The benign winner-replay above RETURNS rather than
+        // throwing, so it is never recorded; non-fence rejections pass through unrecorded.
+        // `input.fence` is the identity the mutator was handed. Never alters the outcome.
+        .catch(async (err: unknown) => {
+          await drainFenceGuardDenial(appDb, input.fence, err, {
+            control: "server/src/services/job-output-bridge.ts:completeAttempt",
+            operation: "attempt_complete",
+          });
+          throw err;
+        });
     },
 
     async assertRollbackSafe(companyId) {

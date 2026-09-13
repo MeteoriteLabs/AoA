@@ -178,6 +178,42 @@ export const SECURITY_RETENTION_ACTION_PREFIX = "security.retention.";
  */
 export const SECURITY_OBJECT_ACCESS_ACTION_PREFIX = "security.object_access.";
 
+/**
+ * Reserved `action` prefix for CLOUD-PLUGIN BOOT RECONCILIATION — DE-16's `audit`
+ * clause, RECONCILIATIONS CONJUNCT ("blocked plugin routes, dispatch, and
+ * reconciliations are audited").
+ *
+ * ★ WHY A FOURTH NAMESPACE AND NOT `security.denied.`. A boot reconciliation is a
+ * STATE/REVOCATION event, not a refused request. `reconcileCloudBlockedPlugins`
+ * (`server/src/services/plugin-lifecycle.ts`) runs at `cloud_auth` boot and flips
+ * a stale non-uninstalled `plugins` row to the blocked metadata-only state — it
+ * refuses nothing, it records that a row was moved. Filing it under
+ * `security.denied.` would make "count the denial rows" stop answering "count the
+ * refusals", which is the exact property the denial reservation exists to hold —
+ * the same argument `SECURITY_RETENTION_ACTION_PREFIX` and
+ * `SECURITY_OBJECT_ACCESS_ACTION_PREFIX` make for their own prefixes, and the
+ * reasoning the DE-12 generation-roll used for its own non-denial action. So: a
+ * distinct prefix, a distinct recorder (`cloud-plugin-reconcile-audit.ts`), and a
+ * distinct reservation, enforced at the same two caller-supplied-`action` writers.
+ *
+ * ★ THE ROUTE/DISPATCH CONJUNCT IS A DIFFERENT SHAPE AND STAYS IN `security.denied.`.
+ * DE-16's route + dispatch deny sites are genuine REFUSALS of a caller-supplied
+ * request that holds no trusted tenant, so E0-F013 Decision 3.2 records them via
+ * `recordCloudPluginDenial` under `security.denied.cloud_plugin_execution` with a
+ * NULL `company_id`. A reconciliation is the opposite: it carries a REAL,
+ * FK-valid `plugins.company_id` (NOT NULL, references `companies`), so its row is
+ * a normal company-attributed audit row, not a tenantless operator-sink row.
+ *
+ * ★ THE PARTIAL CHECK DOES NOT COVER THIS PREFIX, DELIBERATELY, for the same
+ * reason it does not cover `security.retention.` / `security.object_access.`: a
+ * reconciliation row always carries the reconciled plugin's own
+ * `plugins.company_id`, which is NOT NULL and FK-valid, so the row satisfies
+ * `activity_log_company_or_denial_check`'s NOT NULL arm (migration `0274`). A
+ * company-less reconciliation is not a thing the reconciler can produce, and the
+ * database refusing one would be the correct answer.
+ */
+export const SECURITY_RECONCILE_ACTION_PREFIX = "security.reconcile.";
+
 export class ReservedActivityNamespaceError extends Error {
   constructor(message?: string) {
     super(
@@ -210,6 +246,11 @@ export function assertUnreservedActivityNamespace(input: {
   if (input.action.startsWith(SECURITY_OBJECT_ACCESS_ACTION_PREFIX)) {
     throw new ReservedActivityNamespaceError(
       "Object-access audit events are reserved for the object-access recorder",
+    );
+  }
+  if (input.action.startsWith(SECURITY_RECONCILE_ACTION_PREFIX)) {
+    throw new ReservedActivityNamespaceError(
+      "Reconciliation audit events are reserved for the cloud-plugin reconciliation recorder",
     );
   }
 }

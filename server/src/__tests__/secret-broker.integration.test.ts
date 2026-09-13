@@ -22,6 +22,10 @@ import {
 import { provisionTenantAppRoleLoginSql } from "../db/rls-tenant.js";
 import { createJobLeasingService, type VerifiedWorkerOperation } from "../services/job-leasing.js";
 import { createSecretBrokerService, type SecretBrokerSet } from "../services/secret-broker.js";
+import {
+  captureSecretResolveDenial,
+  createSecretResolveDenialSink,
+} from "../services/secret-resolve-denial-audit.js";
 import { allocateEmbeddedPgPort } from "./helpers/embedded-pg-port.js";
 
 // DAT-004 — the lease-scoped secret broker against embedded-PG. It proves the
@@ -658,5 +662,153 @@ integration("DAT-004 lease-scoped secret broker", () => {
     await svc.resolve({ auth: auth(`r-${crypto.randomUUID()}`), request: request(offer, "h-count") });
     const audit = await auditRow("h-count");
     expect(audit.resolveCount).toBe(2);
+  }, 60_000);
+
+  // ---- DE-29 + DE-04/DE-18: the denied resolve leaves a durable record ----
+  //
+  // Until the audit-wiring unit, every `denied` outcome below left NOTHING
+  // durable — only the count-only `metrics.secretRead` tick E0-F013 files
+  // against DE-29 as forensically indistinguishable. These arms assert the
+  // durable `security.denied.*` row per refusal class, driven through the REAL
+  // service against real embedded PostgreSQL. Observed RED against the
+  // unchanged wiring before the sinks landed.
+
+  interface DenialRow {
+    action: string;
+    actor_type: string;
+    actor_id: string;
+    company_id: string | null;
+    organization_id: string | null;
+    entity_type: string;
+    entity_id: string;
+    details: Record<string, unknown>;
+  }
+
+  async function denialRows(): Promise<DenialRow[]> {
+    const { admin } = guardCtx();
+    return await admin<DenialRow[]>`
+      SELECT action, actor_type, actor_id, company_id, organization_id,
+             entity_type, entity_id, details
+      FROM activity_log WHERE action LIKE ${"security.denied.%"}
+      ORDER BY created_at ASC`;
+  }
+
+  async function clearDenialRows(): Promise<void> {
+    const { admin } = guardCtx();
+    await admin`DELETE FROM activity_log WHERE action LIKE ${"security.denied.%"}`;
+  }
+
+  it("DE-29 CLAUSE: a wrong-owner device_local denial writes ONE attributable row with the REAL reason (wire stays malformed)", async () => {
+    const brokers = recordingBrokers();
+    const { app } = guardCtx();
+    // Job executor is the WORKER, but the handle claims a user owner →
+    // authorizeSecretResolve verdict `owner_binding_incomplete` — the DE-29
+    // threat proper, thrown as SecretResolveRejection inside the mutator.
+    const { offer } = await activateLease({ kind: "worker", id: WORKER });
+    await mintHandle(offer.job.jobId, "h-de29", { refKind: "device_local", refId: PROVIDER_CREDENTIAL, materialization: "file", usePolicy: "sandbox_local_only", ownerPrincipalKind: "user", ownerPrincipalId: OWNER_USER });
+    await clearDenialRows();
+    const svc = createSecretBrokerService({ appDb: app.db, brokers });
+    const res = await svc.resolve({ auth: auth(`r-${crypto.randomUUID()}`), request: request(offer, "h-de29") });
+    expect(res.outcome).toBe("denied");
+    if (res.outcome !== "denied") return;
+    // The WIRE stays coarse and non-disclosing.
+    expect(res.reason).toBe("malformed");
+    // The tenant's own audit trail records the real branch.
+    const rows = await denialRows();
+    expect(rows).toHaveLength(1);
+    const row = rows[0]!;
+    expect(row.action).toBe("security.denied.secret_resolve");
+    expect(row.details.reason).toBe("owner_binding_incomplete");
+    expect(row.details.crossing).toBe("DE-29");
+    // WHO — the refused worker (a machine identity: actor_type system, id direct).
+    expect(row.actor_type).toBe("system");
+    expect(row.actor_id).toBe(WORKER);
+    // TENANT — both axes, from the locked lease / verified session, never the wire.
+    expect(row.company_id).toBe(COMPANY);
+    expect(row.organization_id).toBe(ORG);
+    // RESOURCE — the presented handle.
+    expect(row.entity_type).toBe("job_secret_handle");
+    expect(row.entity_id).toBe("h-de29");
+    expect(row.details.jobId).toBe(offer.job.jobId);
+    expect(row.details.leaseId).toBe(offer.leaseId);
+  }, 60_000);
+
+  it("DE-29 reason distinctness: a revoked handle records handle_revoked — distinct branch, distinct code", async () => {
+    const brokers = recordingBrokers();
+    const { app } = guardCtx();
+    const { offer } = await activateLease();
+    await mintHandle(offer.job.jobId, "h-de29-rev", { refKind: "company_secret", refId: "company-secret-1", status: "revoked" });
+    await clearDenialRows();
+    const svc = createSecretBrokerService({ appDb: app.db, brokers });
+    const res = await svc.resolve({ auth: auth(`r-${crypto.randomUUID()}`), request: request(offer, "h-de29-rev") });
+    expect(res.outcome).toBe("denied");
+    const rows = await denialRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.action).toBe("security.denied.secret_resolve");
+    expect(rows[0]!.details.reason).toBe("handle_revoked");
+  }, 60_000);
+
+  it("DE-04 fence arm: a stale-fence resolve refusal at resolveExecutionSecret's guardActiveFence writes a fence_guard row (operation secret_resolve)", async () => {
+    const brokers = recordingBrokers();
+    const { app } = guardCtx();
+    const { offer } = await activateLease();
+    await mintHandle(offer.job.jobId, "h-de04", { refKind: "company_secret", refId: "company-secret-1" });
+    await expireLease(offer.leaseId);
+    await clearDenialRows();
+    const svc = createSecretBrokerService({ appDb: app.db, brokers });
+    const res = await svc.resolve({ auth: auth(`r-${crypto.randomUUID()}`), request: request(offer, "h-de04") });
+    expect(res.outcome).toBe("denied");
+    if (res.outcome !== "denied") return;
+    expect(res.reason).toBe("stale_fence");
+    const rows = await denialRows();
+    expect(rows).toHaveLength(1);
+    const row = rows[0]!;
+    expect(row.action).toBe("security.denied.fence_guard");
+    expect(row.details.reason).toBe("stale_fence");
+    expect(row.details.crossing).toBe("DE-04");
+    expect(row.details.operation).toBe("secret_resolve");
+    expect(row.actor_id).toBe(WORKER);
+    expect(row.entity_type).toBe("job_lease");
+    expect(row.entity_id).toBe(offer.leaseId);
+    expect(row.company_id).toBe(COMPANY);
+  }, 60_000);
+
+  it("capture guard: a NON-rejection error captures NOTHING (narrow direct pin — the guard is unreachable through the production catch, which calls capture only from the rejection branch; this is the SVC-002 T1c shape)", () => {
+    const sink = createSecretResolveDenialSink();
+    const fence = {
+      organizationId: ORG, companyId: COMPANY, workerId: WORKER,
+      leaseId: "l", jobId: "j", attemptId: "a", targetId: TARGET, targetGeneration: 1,
+    };
+    captureSecretResolveDenial(sink, fence, "h-x", new Error("not a rejection"));
+    expect(sink.intent).toBeNull();
+  });
+
+  it("DE-29 probe class: an ABSENT-handle probe records unknown_ref_kind — a foreign handle is absent-by-scoping, so the cross-tenant probe is deliberately IN this row stream (Codex P2 on PR #447, adjudicated)", async () => {
+    const brokers = recordingBrokers();
+    const { app } = guardCtx();
+    const { offer } = await activateLease();
+    await clearDenialRows();
+    const svc = createSecretBrokerService({ appDb: app.db, brokers });
+    const res = await svc.resolve({ auth: auth(`r-${crypto.randomUUID()}`), request: request(offer, "no-such-handle") });
+    expect(res.outcome).toBe("denied");
+    if (res.outcome !== "denied") return;
+    expect(res.reason).toBe("malformed");
+    const rows = await denialRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.action).toBe("security.denied.secret_resolve");
+    expect(rows[0]!.details.reason).toBe("unknown_ref_kind");
+    expect(rows[0]!.entity_id).toBe("no-such-handle");
+  }, 60_000);
+
+  it("ANTI-VACUITY: an admitted resolve writes ZERO security.denied rows", async () => {
+    const brokers = recordingBrokers();
+    const { app } = guardCtx();
+    const { offer } = await activateLease();
+    await mintHandle(offer.job.jobId, "h-clean", { refKind: "company_secret", refId: "company-secret-1" });
+    await clearDenialRows();
+    const svc = createSecretBrokerService({ appDb: app.db, brokers });
+    const res = await svc.resolve({ auth: auth(`r-${crypto.randomUUID()}`), request: request(offer, "h-clean") });
+    expect(res.outcome).toBe("resolved");
+    expect(await denialRows()).toHaveLength(0);
   }, 60_000);
 });

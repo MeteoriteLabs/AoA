@@ -52,6 +52,11 @@ import {
   drainWorkerDenial,
   workerProofReplayIntent,
 } from "./worker-denial-audit.js";
+import {
+  createFenceGuardDenialSink,
+  captureFenceGuardDenial,
+  drainFenceGuardDenialSink,
+} from "./fence-denial-audit.js";
 import { logger } from "../middleware/logger.js";
 import { bindJobTraceLogger } from "./job-trace-log.js";
 import { decideServiceProjectionForEvent } from "./service-health-projection.js";
@@ -176,6 +181,11 @@ export function createJobEventIngestService(input: {
       // `runInTenant`, so its record is collected as an INTENT and drained on the
       // pool handle once the transaction has unwound.
       const proofDenial = createWorkerDenialSink();
+      // ★ DE-04 — the acceptEvent fence refusal is caught INSIDE the callback and converted
+      // to a cumulative-ACK status (invariant #8: a fence refusal must not roll back the
+      // committed append), so it never propagates as a `JobFenceError`. It is captured at
+      // the inner catch and drained on the pool handle in the `.finally`.
+      const fenceGuardDenial = createFenceGuardDenialSink();
 
       const response = await runInTenant(input.appDb, auth.organizationId, async (repos) => {
         const databaseNow = await repos.jobControl.currentDatabaseTime();
@@ -289,6 +299,9 @@ export function createJobEventIngestService(input: {
             .map((entry) => ({ eventId: entry.eventId, outcome: entry.result.outcome }));
         } catch (error) {
           if (!(error instanceof DbJobFenceError)) throw error;
+          // ★ DE-04 — capture the governed-fence refusal (drained on the pool handle in the
+          // `.finally`) before it is folded into the cumulative-ACK status below.
+          captureFenceGuardDenial(fenceGuardDenial, fenceIdentity, error);
           // The active-fence guard refused BEFORE any append: report the cumulative
           // ACK with the fence status (stale_fence / terminal) and the current
           // accepted-through sequence. No governed row was touched.
@@ -363,6 +376,12 @@ export function createJobEventIngestService(input: {
           await drainWorkerDenial(input.appDb, proofDenial, {
             control: "server/src/services/job-events.ts:ingest",
             workerId: auth.workerId,
+            operation: "event_upload",
+          });
+          // ★ DE-04 — the governed-fence refusal (stale_fence / attempt_terminal) that
+          // acceptEvent's guardActiveFence raised, on the pool handle after tx close.
+          await drainFenceGuardDenialSink(input.appDb, fenceGuardDenial, {
+            control: "server/src/services/job-events.ts:acceptEvent",
             operation: "event_upload",
           });
         });

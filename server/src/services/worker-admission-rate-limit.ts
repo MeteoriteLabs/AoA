@@ -32,6 +32,10 @@ import { runInTenant } from "../db/tenant-context.js";
 // Always-loaded infrastructure logger (used app-wide); importing it here pulls nothing
 // new into the flag-off graph, so the DEP-007 dormancy invariant holds.
 import { logger } from "../middleware/logger.js";
+// DE-27 — the shared worker-admission denial recorder. This module already imports the
+// logger and loads only under AOA_DISTRIBUTED_EXECUTION_ENABLED (see the header), so a
+// static import here pulls nothing new into the flag-off graph.
+import { recordWorkerAdmissionDenial } from "./worker-admission-denial-audit.js";
 
 export const WORKER_POLL_RATE_LIMIT_WINDOW_MS_ENV = "AOA_WORKER_POLL_RATE_LIMIT_WINDOW_MS";
 export const WORKER_POLL_RATE_LIMIT_MAX_ENV = "AOA_WORKER_POLL_RATE_LIMIT_MAX";
@@ -110,8 +114,13 @@ export async function incrementAdmissionWindow(
 }
 
 export interface WorkerAdmissionRateLimiter {
-  /** Admit one poll for the organization; fail-closed on any shared-store error. */
-  admit(organizationId: string): Promise<WorkerAdmissionRateDecision>;
+  /**
+   * Admit one poll for the organization; fail-closed on any shared-store error.
+   * `workerId` is the refused actor recorded on an over_cap denial (DE-27) — the
+   * HMAC-verified `VerifiedWorkerOperation.workerId`, so the durable row names the
+   * specific refused worker and not the tenant org.
+   */
+  admit(organizationId: string, workerId: string): Promise<WorkerAdmissionRateDecision>;
 }
 
 export function createWorkerAdmissionRateLimiter(opts: {
@@ -121,7 +130,7 @@ export function createWorkerAdmissionRateLimiter(opts: {
 }): WorkerAdmissionRateLimiter {
   const config = opts.config ?? resolveWorkerPollRateLimitConfig();
   return {
-    async admit(organizationId: string): Promise<WorkerAdmissionRateDecision> {
+    async admit(organizationId: string, workerId: string): Promise<WorkerAdmissionRateDecision> {
       const windowStart = windowStartFor(opts.now?.() ?? new Date(), config.windowMs);
       let count: number;
       try {
@@ -136,6 +145,44 @@ export function createWorkerAdmissionRateLimiter(opts: {
         return { allowed: false, reason: "unavailable", limit: config.max };
       }
       if (count > config.max) {
+        // DE-27 (audit clause, cross-replica-admission conjunct). The tenant transaction
+        // that incremented the SHARED counter has already COMMITTED and returned `count`
+        // above, so `opts.appDb` is a pool-level handle and nothing is about to roll back:
+        // the refusal is recorded DIRECTLY here, awaited before the deny is returned, so
+        // the refusal and its record are atomic from the caller's view. Never throws —
+        // `recordWorkerAdmissionDenial` swallows and logs a failed insert, so a broken
+        // recorder cannot convert a throttle into a 500.
+        //
+        // ★ ONE ROW PER OVER-CAP POLL (per-refusal), per the founder-ruled reading of the
+        // DE-27 audit clause (E0-F013 Decision 1.2c, verbatim in the register): "each
+        // admission REFUSAL is durably recorded." So the row is written on EVERY over-cap
+        // poll, each carrying its own `actorId` (the refused worker) and `details.count`
+        // (that poll's count) — NOT only the first crossing. This matches the whole deny-path
+        // pattern (DE-03/DE-06/DE-19 all record per-refusal). A first-crossing / per-window
+        // COALESCE was considered and REJECTED: it silently drops the refusals the ruled
+        // clause requires be recorded. Write-amplification from a looping authenticated worker
+        // is bounded by the poll rate limit and `activity_log` retention; it is a pattern-wide
+        // property of the whole deny-path class, tracked separately, not a DE-27-specific
+        // deviation from the ruling.
+        await recordWorkerAdmissionDenial(opts.appDb, {
+          reason: "over_cap",
+          companyId: null,
+          organizationId,
+          // WHO — the specific refused worker (`auth.workerId`), not the tenant org.
+          actorId: workerId,
+          // The refused actor is a worker machine identity: kind "worker" -> actorType
+          // "system" (no agents/auth row). The recorder derives actorType from this and
+          // also stamps it into details for legibility.
+          principalKind: "worker",
+          entityType: "worker_poll_admission",
+          entityId: organizationId,
+          control: "server/src/services/worker-admission-rate-limit.ts:admit",
+          details: {
+            count,
+            limit: config.max,
+            windowStartMs: windowStart.getTime(),
+          },
+        });
         return { allowed: false, reason: "over_cap", count, limit: config.max };
       }
       return { allowed: true, count, limit: config.max };

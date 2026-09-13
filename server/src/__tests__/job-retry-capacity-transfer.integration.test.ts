@@ -97,6 +97,7 @@ integration("DEP-009 reap→retry capacity-claim transfer", () => {
     const { seeded } = await ctx().activateLease(9_001, { maxAttempts: 3 });
     await runInTenant(ctx().app.db, ORG, (_repos, tx) => admitAttemptCapacity(tx, {
       organizationId: ORG, companyId: COMPANY, workloadType: "batch", attemptId: seeded.attemptId,
+      principalId: "retry-transfer-test", principalKind: "system",
     }));
     expect(await heldCount()).toBe(1);
 
