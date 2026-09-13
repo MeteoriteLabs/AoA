@@ -1,5 +1,7 @@
 # Universe — base proposal and first-batch design disposition
 
+**Current discussion supplement:** [The complete execution sequence](execution-sequence.md) now supplies exact delivery packages, prerequisites, external gates and the patch/review/integration method. [Author review](execution-sequence-review.md) is complete for that scheduling layer. The base-integration proposal below is historical; use the adopted-base result above and this sequence when selecting the first bounded implementation packet.
+
 **Latest readiness (September 13):** [Replatform integration and base adoption](base-integration-results.md) are complete. The exact repaired candidate passed typecheck, 24,295 tests (76 unchanged skips), build and the required PR checks. Its verified landing is adopted into the existing Universe branch. No Universe feature implementation has begun; TK's requested discussion and explicit batch approval are next.
 
 **Historical proposal below; current outcome is linked above.**

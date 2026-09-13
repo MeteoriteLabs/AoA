@@ -1,5 +1,7 @@
 # Universe — agreed release allocation
 
+**Execution supplement (September 13):** [The complete sequence](../execution-sequence.md) orders all 69 increments, including dependency-driven splits and separate V1/V2 closure. [The increment register](../execution-increment-map.md) is the exhaustive allocation; scheduling slots do not change the accepted release scope.
+
 September 11, 2026. **Release grouping accepted in the subsequent voice review.** After reviewing V1 as the complete everyday experience with all three realtime voice providers and local/cloud browsers, and later speech modes in V2, TK agreed to the grouping and asked to discuss the next topic. This accepts scope allocation, not production implementation, unresolved technical bindings or release readiness. Finish and verify all V1 before V2 implementation.
 
 ## Agreed scope

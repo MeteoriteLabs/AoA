@@ -8,32 +8,11 @@ Read [master scope](../master-scope.md), [accepted UI decisions](../ui-review-de
 
 ## Implementation order after approval
 
-These are internal sequencing groups within the accepted release, not smaller product releases. Dependencies apply to increments, so a blocked producer does not freeze unrelated V1 work.
+The [complete execution sequence](../execution-sequence.md) now replaces the earlier coarse ordering diagram. It maps all 69 original increments into 86 bounded delivery packages, with [explicit predecessor edges](../execution-increment-map.md), [external entry and completion evidence](../execution-dependency-gates.md), safe parallelism, review and integrated acceptance. Slot numbers are scheduling priorities, not all-previous-slot barriers or new releases.
 
-```text
-E0.1 BASE / E1.0 DESIGN / E8.1/1 preferences contract
-  E1.1 registry + measured viewport
-    -> E1.2 layout/checkpoints -> E1.3/1 draft snapshot contract
-    -> E2.1/1 context projection (also consumes E1.3/1)
-         -> E1.6 navigation/motion (with E1.4 tray + E1.5 surfaces)
-         -> E2.2/1 read-only outcomes -> E1.3/2 recovery
+The corrected order separates draft contracts from recovery, preference producers from consumer UI, original intake from index acceptance, output binding from publication/reply repair, and early provider/host/browser contracts from their later runtime qualification. Local and cloud view tracks can progress independently after shared authority contracts; both remain required for complete V1. See the [sequence self-review](../execution-sequence-review.md).
 
-E8.1/1 -> E7.3/1 authorized attention projection
-E1.2 + E2.2/1 + E7.3/1 -> E2.3 integrated reconciliation
-
-Qualified E2.2 execution + E3.1/E3.3 -> E3.2 voice lifecycle
-E4.1 original/status contract -> E4.2 formats/index -> E4.1/2 index acceptance
-E4.1/E4.2 + E2.2 -> E4.3 generation
-E1.2/E1.3 + E2.1/E2.2 + E4 references -> E5.1 blocks -> E5.2 HOST
-E7.1 routines -> E7.2 terminal-owner-qualified follow-ups -> attention integration
-E6.0 qualification -> E6.1 authority -> E6.2 cloud / E6.3 local -> E6.4 profiles/files
-
-E8.1/2 settings UI completes alongside its consumers
-All required V1 increments + qualifications + UAT -> E8.2 accepted complete V1
-                                                   -> V2 E3.4 afterward
-```
-
-The diagram shows major producer edges, not permission to ignore slice start conditions. E1.3 draft submission recovery consumes E2.2 while its text persistence can be specified earlier. E2.4 manual replies do not depend on distributed CMD cutover. E4.1 manual originals do not depend on generation, although new ledger access and storage recovery need their own qualification. E7.3 source-backed attention can precede follow-up-trigger integration. E8.1/1 is a contract producer; requiring every consumer before that contract would create a cycle. Voice/browser/profile/HOST/terminal-owner bindings must close before their dependent runtime code and full V1 acceptance.
+This index and the execution sequence do not override the numbered increment's original tests or locked contracts. Partial packages do not close a whole increment. Explicit implementation approval remains required; no feature code was added by the sequencing pass.
 
 ## Review and execution rules
 

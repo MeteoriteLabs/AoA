@@ -1,5 +1,7 @@
 # Coding readiness for every Universe increment
 
+**Current scheduling overlay:** [The complete execution sequence](../execution-sequence.md) distinguishes early contracts from later consumer qualification and maps all 69 increments. [Author review](../execution-sequence-review.md) and [dependency gates](../execution-dependency-gates.md) govern readiness ordering without waiving this document's coding requirements.
+
 These individual plans define the work now, before implementation. They deliberately distinguish **specified**, **bound for coding**, **implemented** and **verified**. Only verified work counts toward release completion.
 
 **September 12 authority correction:** the original slice outlines are supplemented by detailed coding plans and the independent-review reconciliation. Follow the [planning reset](../planning-reset.md). Detailed plans must be independently reviewed, findings resolved, and the user must explicitly approve beginning implementation. Technical readiness or a reviewer verdict alone does not authorize coding. The isolated premature draft is not accepted delivery; preserving it untouched/excluded is accepted, and later cleanup or reuse needs its own decision.

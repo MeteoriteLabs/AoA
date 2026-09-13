@@ -1,5 +1,7 @@
 # Universe — individual slice plans
 
+**Current sequencing:** [The complete execution sequence](../execution-sequence.md) and [original-increment map](../execution-increment-map.md) stitch these plans together. Author-reviewed scheduling is complete; individual runtime gates and explicit implementation approval remain distinct.
+
 September 12, 2026. **Planning only; implementation is not authorized.** All 31 existing slices have individual outlines, comprising 69 work increments. The [release allocation](../release-plans/README.md) is accepted; detailed coding plans are now drafted for review, with the replatform branch direction agreed and coding approval still withheld. A premature isolated implementation exists and remains paused and excluded from delivery. See the authoritative [planning reset](../planning-reset.md) and [coverage audit](../planning-audit.md).
 
 Each plan carries its own outcome, files, interface responsibility, ordered increments, dependency conditions and acceptance. The outlines retain acceptance and dependency context; [detailed addenda](../coding-plans/README.md) now specify each increment. Exact schema/function/provider bindings, actual failing test code and measurement limits are required at the accepted base before an increment starts. Open qualification work has a concrete deliverable rather than a guessed API. See the [coding readiness contract](coding-readiness.md).
