@@ -7,6 +7,24 @@ const button = (page: Page, name: string) =>
   page.getByRole("button", { name, exact: true });
 const frame = (page: Page, kind = "task") =>
   page.getByRole("region", { name: `${kind} fixture`, exact: true });
+async function expectCamera(
+  page: Page,
+  expected: { x: number; y: number; zoom: number }
+) {
+  await expect
+    .poll(async () =>
+      JSON.parse((await page.getByTestId("camera-state").textContent())!)
+    )
+    .toEqual(expected);
+  await expect
+    .poll(() =>
+      page.locator(".react-flow__viewport").evaluate((e) => {
+        const m = new DOMMatrix(getComputedStyle(e).transform);
+        return { x: m.e, y: m.f, zoom: m.a };
+      })
+    )
+    .toEqual(expected);
+}
 async function state(page: Page): Promise<State> {
   return JSON.parse(
     (await page.getByTestId("registry-state").textContent()) || "null"
@@ -149,8 +167,16 @@ for (const kind of ["task", "artifact", "iframe"])
       page,
     }) => {
       await setup(page, zoom, kind);
-      const normal = await rect(page, kind),
-        visible = await box(frame(page, kind));
+      const normal = await rect(page, kind);
+      const canvas = await box(page.getByTestId("universe-canvas"));
+      await page.mouse.move(canvas.x + 30, canvas.y + 100);
+      await page.mouse.down();
+      await page.mouse.move(canvas.x + 70, canvas.y + 120, { steps: 8 });
+      await page.mouse.up();
+      const camera = { x: 40, y: 20, zoom };
+      await expectCamera(page, camera);
+      near(await rect(page, kind), normal);
+      const visible = await box(frame(page, kind));
       const content = frame(page, kind).locator(".universe-panel-body");
       const marker = await content.elementHandle();
       if (kind === "task")
@@ -169,10 +195,11 @@ for (const kind of ["task", "artifact", "iframe"])
         await box(frame(page, kind)),
         await box(page.getByTestId("universe-canvas"))
       );
+      await expectCamera(page, camera);
       await button(page, "Zoom 2").click();
       expect(
         JSON.parse((await page.getByTestId("camera-state").textContent())!)
-      ).toEqual({ x: 0, y: 0, zoom });
+      ).toEqual(camera);
       await page.setViewportSize({ width: 1200, height: 800 });
       await expect
         .poll(async () => (await box(frame(page, kind))).width)
@@ -182,6 +209,7 @@ for (const kind of ["task", "artifact", "iframe"])
         await box(page.getByTestId("universe-canvas"))
       );
       near(await rect(page, kind), normal);
+      await expectCamera(page, camera);
       await frame(page, kind)
         .getByRole("button", { name: "Minimize panel", exact: true })
         .click();
@@ -191,17 +219,21 @@ for (const kind of ["task", "artifact", "iframe"])
       );
       await expect(frame(page, kind)).toHaveCount(0);
       expect(await marker!.evaluate((e) => e.isConnected)).toBe(true);
+      await expectCamera(page, camera);
       await button(page, `Restore ${kind} fixture`).click();
       near(await rect(page, kind), normal);
       near(await box(frame(page, kind)), visible);
+      await expectCamera(page, camera);
       await expect.soft(frame(page, kind).locator("header")).toBeFocused();
       await frame(page, kind)
         .getByRole("button", { name: "Maximize panel", exact: true })
         .click();
+      await expectCamera(page, camera);
       await frame(page, kind)
         .getByRole("button", { name: "Restore panel", exact: true })
         .click();
       near(await rect(page, kind), normal);
+      await expectCamera(page, camera);
       expect(await marker!.evaluate((e) => e.isConnected)).toBe(true);
       if (kind === "task")
         await expect(
@@ -220,6 +252,18 @@ test("body selection and scroll, overlap focus, pin and keyboard geometry", asyn
   await setup(page);
   const task = frame(page);
   const original = await rect(page);
+  const cameraBeforeControl = JSON.parse(
+    (await page.getByTestId("camera-state").textContent())!
+  );
+  await drag(
+    page,
+    task.getByRole("button", { name: "Pin panel", exact: true }),
+    70,
+    30
+  );
+  near(await rect(page), original);
+  await expectCamera(page, cameraBeforeControl);
+  await expect(page.getByTestId("iframe-shield")).toHaveCount(0);
   const draft = page.getByRole("textbox", { name: "Fixture draft" });
   await draft.fill("select these words");
   await draft.press("Control+A");
@@ -511,6 +555,40 @@ test("completed long drag is one undo; no-op and cancellation preserve history a
   await expect(page.getByTestId("iframe-shield")).toHaveCount(0);
 });
 
+test("closing one panel preserves sibling generation geometry and content", async ({
+  page,
+}) => {
+  await setup(page);
+  await drag(page, frame(page).locator("header"), -120, -50, true);
+  await button(page, "Open iframe").click();
+  const sibling = frame(page, "iframe");
+  const siblingElement = await sibling.elementHandle();
+  const iframeElement = await sibling.locator("iframe").elementHandle();
+  await page
+    .frameLocator("iframe")
+    .getByPlaceholder("Embedded text input")
+    .fill("sibling draft survives close");
+  const saved = Object.values((await state(page)).panels).find(
+    (p) => p.ref.id === "iframe"
+  )!;
+  const visible = await box(sibling);
+  // Focus existing task through its launcher so its close button is exposed.
+  await button(page, "Open task").click();
+  await frame(page)
+    .getByRole("button", { name: "Close panel", exact: true })
+    .click();
+  await expect(frame(page)).toHaveCount(0);
+  await expect(sibling).toBeVisible();
+  await expect(page.locator("section[data-panel-key]")).toHaveCount(1);
+  expect(Object.values((await state(page)).panels)).toEqual([saved]);
+  near(await box(sibling), visible);
+  expect(await siblingElement!.evaluate((e) => e.isConnected)).toBe(true);
+  expect(await iframeElement!.evaluate((e) => e.isConnected)).toBe(true);
+  await expect(
+    page.frameLocator("iframe").getByPlaceholder("Embedded text input")
+  ).toHaveValue("sibling draft survives close");
+});
+
 test("close/reopen generation and scope replacement reject stale callbacks and history", async ({
   page,
 }) => {
@@ -582,38 +660,41 @@ for (const zoom of [0.5, 1, 2])
       hasTouch: true,
       reducedMotion: "reduce",
     });
-    const page = await context.newPage();
-    page.on("pageerror", (e) => {
-      throw e;
-    });
-    await page.goto("http://127.0.0.1:5183/universe-harness.html");
-    await button(page, `Zoom ${zoom}`).click();
-    await button(page, "Open task").click();
-    const visible = await box(frame(page)),
-      canvas = await box(page.getByTestId("universe-canvas"));
-    expect(visible.x).toBeGreaterThanOrEqual(canvas.x);
-    expect(visible.y).toBeGreaterThanOrEqual(canvas.y);
-    expect(visible.width).toBeLessThanOrEqual(canvas.width);
-    expect(visible.height).toBeLessThanOrEqual(canvas.height);
-    const sizes = await page
-      .locator(".react-flow__resize-control")
-      .evaluateAll((es) =>
-        es.map((e) => {
-          const r = e.getBoundingClientRect();
-          return e.classList.contains("handle")
-            ? r.width
-            : e.classList.contains("left") || e.classList.contains("right")
-            ? r.width
-            : r.height;
-        })
-      );
-    expect(sizes).toEqual(Array(8).fill(24));
-    await drag(page, page.locator(".handle.bottom.right"), -500, -500);
-    const small = await rect(page);
-    expect(small.width).toBeGreaterThan(0);
-    expect(small.height).toBeGreaterThan(0);
-    expect(Object.values(small).every(Number.isFinite)).toBe(true);
-    await context.close();
+    try {
+      const page = await context.newPage();
+      page.on("pageerror", (e) => {
+        throw e;
+      });
+      await page.goto("http://127.0.0.1:5183/universe-harness.html");
+      await button(page, `Zoom ${zoom}`).click();
+      await button(page, "Open task").click();
+      const visible = await box(frame(page)),
+        canvas = await box(page.getByTestId("universe-canvas"));
+      expect(visible.x).toBeGreaterThanOrEqual(canvas.x);
+      expect(visible.y).toBeGreaterThanOrEqual(canvas.y);
+      expect(visible.width).toBeLessThanOrEqual(canvas.width);
+      expect(visible.height).toBeLessThanOrEqual(canvas.height);
+      const sizes = await page
+        .locator(".react-flow__resize-control")
+        .evaluateAll((es) =>
+          es.map((e) => {
+            const r = e.getBoundingClientRect();
+            return e.classList.contains("handle")
+              ? r.width
+              : e.classList.contains("left") || e.classList.contains("right")
+              ? r.width
+              : r.height;
+          })
+        );
+      expect(sizes).toEqual(Array(8).fill(24));
+      await drag(page, page.locator(".handle.bottom.right"), -500, -500);
+      const small = await rect(page);
+      expect(small.width).toBeGreaterThan(0);
+      expect(small.height).toBeGreaterThan(0);
+      expect(Object.values(small).every(Number.isFinite)).toBe(true);
+    } finally {
+      await context.close();
+    }
   });
 
 for (const count of [1, 10, 50])
