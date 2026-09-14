@@ -42,7 +42,7 @@
 //     whose platform branch (`claims.organizationId === null`) passes an
 //     explicit `null` for a platform-scope worker. A row with neither axis is a
 //     different decision from a row with one, and this unit does not take it.
-//   * ONE MORE of the nine — `job-leasing.ts:1016` (lease ack) — HOLDS an
+//   * ONE MORE of the nine — `job-leasing.ts:1023` (lease ack) — HOLDS an
 //     organization and is still NOT wired, so this module serves SIX of DE-03's
 //     seven organization-attested sites, not all seven. Its refusal throws out of
 //     `runInTenant`, and the FROZEN JOB-003 ack-flow contract
