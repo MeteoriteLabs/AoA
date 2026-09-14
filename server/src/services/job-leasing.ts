@@ -521,9 +521,12 @@ export function createJobLeasingService(input: {
   // the poll AND ack paths, and the frozen JOB-003 contract pins its exact call
   // expression at both call sites (`job-leasing-contract.test.ts` — the guard-call
   // shape checks and the ack-flow `exactAckReturnDominance`), so neither a sink
-  // parameter nor a wrapping capture is admissible without a contract amendment —
-  // the same blocker as the ack-path `recordProof` site (see
-  // docs/replatform/DECISION-REQUEST-job-003-ack-drain-amendment.md). The
+  // parameter nor a wrapping capture is admissible without a contract amendment.
+  // ★ 2026-09-14 Option-B ruling (docs/replatform/DECISION-REQUEST-job003-ack-drain.md):
+  // these two throws are NOT blocked by the ack drain — their blocker is the
+  // pinned helper/call shape, and they are attributed to
+  // DEFERRED-DECISION: guardPlatformAuthority denial sink (a named, owner-visible
+  // future decision, not accepted-as-gap). The
   // organization-scope arms in the poll BODY are wired; these platform arms are
   // named rather than silently skipped.
   const guardPlatformAuthority = async (
@@ -1009,6 +1012,10 @@ export function createJobLeasingService(input: {
       // `runInTenant` CALLBACK's body, so a protected ack effect placed inside the
       // `.finally` callback leaves the contract fully GREEN. A safe amendment must
       // also sweep the drain callback. Do not take the one-line version.
+      // ★ 2026-09-14 — RULED, Option B (docs/replatform/DECISION-REQUEST-job003-ack-drain.md):
+      // the hardened amendment is ADOPTED and this drain point is UNBLOCKED; the
+      // build (contract widening + wiring) has not shipped yet, so this site still
+      // records nothing until that unit lands.
       return runInTenant(input.appDb, ackInput.auth.organizationId, async (repos) => {
         const databaseNow = await repos.jobControl.currentDatabaseTime();
         await repos.workerEnrollment.cleanupExpiredProofs(databaseNow, 100);

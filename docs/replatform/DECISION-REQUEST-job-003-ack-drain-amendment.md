@@ -4,7 +4,11 @@
 the ack `runInTenant` call, and mirrored in `E0-F010` ("SIX of DE-03's seven organization-attested
 `recordProof` refusals now record… THE SEVENTH WAS NOT WIRED").
 **Date:** 2026-09-10. **Measured at:** `c27feeea8`.
-**Status:** OPEN — awaiting a founder ruling. **Changes no finding's status and wires no code.**
+**Status:** RULED 2026-09-14 — option (a), adopted in its hardened form, by the founder's Option-B
+ruling recorded in [`DECISION-REQUEST-job003-ack-drain.md`](./DECISION-REQUEST-job003-ack-drain.md)
+§Decision (the ruling text lives there and is not duplicated here). The ack-path audit arms are
+UNBLOCKED; the build (the hardened contract amendment + wiring) has not shipped yet.
+**Changes no finding's status and wires no code.**
 Every experiment below was applied to a scratch working tree, run, and **reverted**; the tree this
 paper ships in contains none of it (`git checkout --` + md5 verification after each arm).
 
