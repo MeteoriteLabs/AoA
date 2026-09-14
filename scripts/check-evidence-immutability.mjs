@@ -51,10 +51,22 @@
  * record arrives through a pull request and is seen here. Within a PR, a record's
  * introducing commit is the first commit in `base..candidate` that contains it.
  *
- * ★ WHY AN EMPTY BASE IS A FAILURE. Measured before writing this: handing the underlying
- * deny a base revision that predates the evidence tree returns ZERO ERRORS — a silent pass
- * that looks identical to a clean run. A mistyped ref, a shallow clone, or a moved
- * directory would therefore disarm this guard without a word. An empty base is refused.
+ * ★ WHY AN EMPTY BASE IS A FAILURE — AND THE ONE SHAPE IT IS NOT. Measured before writing
+ * this: handing the underlying deny a base revision that predates the evidence tree returns
+ * ZERO ERRORS — a silent pass that looks identical to a clean run. A mistyped ref, a
+ * shallow clone, or a moved directory would therefore disarm this guard without a word. An
+ * empty base is refused — UNLESS the base provably predates the ledger itself. The
+ * program→main pull request (#323) has base=main, and main legitimately contains no
+ * `docs/replatform/` tree at all: on that shape the unconditional refusal fired as a false
+ * FAIL from the moment this caller landed (#390), which is the mirror defect of a false
+ * pass. The two cases are distinguishable by the ledger's own charter: a base that does
+ * NOT contain `docs/replatform/artifact-policy.md` is a PRE-LEDGER base — immutability of
+ * base records is vacuous (there are none), and every record is introduced by the PR's own
+ * commits, so the within-PR walk below polices all of them against an explicitly empty
+ * baseline. A base that DOES contain the policy file but yields zero records is still
+ * refused: the ledger exists there, so an empty read means a disarmed clone or a moved
+ * directory, exactly the silent-pass this arm was built to catch. The green output states
+ * the pre-ledger shape out loud rather than passing it off as a normal run.
  *
  * Usage:
  *   node scripts/check-evidence-immutability.mjs --base <rev> [--candidate <rev>]
@@ -85,6 +97,14 @@ export const EVIDENCE_RECORD_RE =
 
 /** Pathspec that bounds the per-commit `ls-tree` walk. Purely a narrowing of the regex. */
 export const EVIDENCE_ROOT = "docs/replatform/epics";
+
+/**
+ * The ledger's charter file. Its presence at a revision is what makes that revision a
+ * LEDGER-BEARING one: a base holding this file but zero evidence records is a disarmed
+ * read and stays refused; a base without it predates the ledger and an empty record set
+ * there is the truth, not a symptom.
+ */
+export const LEDGER_POLICY_PATH = "docs/replatform/artifact-policy.md";
 
 function git(repoRoot, args) {
   return execFileSync("git", args, {
@@ -151,6 +171,22 @@ export function listEvidenceOids(repoRoot, rev) {
  *
  * @returns {string[]}
  */
+/**
+ * Whether a revision carries the ledger charter file. Only called after the revision has
+ * already been materialised successfully, so a throw here means the PATH is absent at that
+ * revision, not that the revision is unreadable.
+ *
+ * @returns {boolean}
+ */
+export function revHasLedgerPolicy(repoRoot, rev) {
+  try {
+    git(repoRoot, ["cat-file", "-e", `${rev}:${LEDGER_POLICY_PATH}`]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function listCandidateCommits(repoRoot, base, candidate) {
   return git(repoRoot, ["rev-list", "--reverse", "--topo-order", `${base}..${candidate}`])
     .toString("utf8")
@@ -229,7 +265,7 @@ export function checkIntroducedRecordImmutability({ repoRoot, base, candidate, c
 
 /**
  * @param {{repoRoot?: string, base: string, candidate?: string}} input
- * @returns {Promise<{ok: boolean, errors: string[], baseCount: number, candidateCount: number, commitCount: number}>}
+ * @returns {Promise<{ok: boolean, errors: string[], baseCount: number, candidateCount: number, commitCount: number, preLedgerBase?: boolean}>}
  */
 export async function runEvidenceImmutability(input) {
   const repoRoot = input.repoRoot ?? REPO_ROOT;
@@ -279,19 +315,28 @@ export async function runEvidenceImmutability(input) {
         };
       }
     }
+    let preLedgerBase = false;
     if (baseTree.count === 0) {
-      return {
-        ok: false,
-        errors: [
-          `evidence immutability: base revision ${base} holds ZERO evidence records. ` +
-            "That is not a clean run, it is a disarmed one — the deny returns no errors " +
-            "for an empty base. Check the revision, the clone depth, and that " +
-            "docs/replatform/epics/*/{qa,handoffs}/ still exists.",
-        ],
-        baseCount: 0,
-        candidateCount: candTree.count,
-        commitCount: 0,
-      };
+      if (revHasLedgerPolicy(repoRoot, base)) {
+        return {
+          ok: false,
+          errors: [
+            `evidence immutability: base revision ${base} holds ZERO evidence records ` +
+              `while ${LEDGER_POLICY_PATH} exists there — the ledger is present at that ` +
+              "revision, so an empty read is not a clean run, it is a disarmed one: the " +
+              "deny returns no errors for an empty base. Check the revision, the clone " +
+              "depth, and that docs/replatform/epics/*/{qa,handoffs}/ still exists.",
+          ],
+          baseCount: 0,
+          candidateCount: candTree.count,
+          commitCount: 0,
+          preLedgerBase: false,
+        };
+      }
+      // The base predates the ledger entirely (no charter file) — the program→main PR
+      // shape. Base-record immutability is vacuous; every record is introduced within the
+      // PR and the within-PR walk below pins each one from its first commit.
+      preLedgerBase = true;
     }
     const { errors } = await checkEvidenceImmutability(baseTree.root, candTree.root);
     const commits = listCandidateCommits(repoRoot, base, candidate);
@@ -303,6 +348,7 @@ export async function runEvidenceImmutability(input) {
       baseCount: baseTree.count,
       candidateCount: candTree.count,
       commitCount: commits.length,
+      preLedgerBase,
     };
   } finally {
     for (const tree of [baseTree, candTree]) {
@@ -338,6 +384,20 @@ async function main() {
         "A correction is a NEW attempt file carrying `Supersedes`, never an edit to a prior one.",
     );
     process.exitCode = 1;
+    return;
+  }
+  if (result.preLedgerBase) {
+    // Said out loud, not passed off as a normal run: the base predates the ledger, so the
+    // check ran against an EXPLICITLY EMPTY baseline and the within-PR walk carried the
+    // whole enforcement.
+    console.log(
+      `Evidence-ledger immutability OK (PRE-LEDGER BASE): base revision ${base} contains ` +
+        `neither ${LEDGER_POLICY_PATH} nor any evidence record — the ledger does not exist ` +
+        "there, so base-record immutability is vacuous and was checked against an " +
+        `explicitly empty baseline. All ${result.candidateCount} candidate record(s) were ` +
+        `introduced by this PR's own ${result.commitCount} commit(s); each was pinned at ` +
+        "its introducing commit and none was rewritten or removed by a later one.",
+    );
     return;
   }
   console.log(

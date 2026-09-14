@@ -45,9 +45,14 @@ const BREACHED_RECORD =
 const RECORD_CREATED = "6fc46988a"; // created BREACHED_RECORD
 const RECORD_REWRITTEN = "4379a2c53"; // rewrote it in place, bypassing `Supersedes`
 const BEFORE_RECORD = "6fc46988a^"; // BREACHED_RECORD does not exist yet
-// Predates docs/replatform/epics entirely: the deny returns zero errors here, which is
-// exactly the vacuous green the runner must refuse.
-const NO_EVIDENCE_TREE = "0034929882";
+// Predates docs/replatform entirely — no artifact-policy.md, no epics tree. This is the
+// PRE-LEDGER shape (the program→main PR has exactly it: base=main holds no ledger), which
+// the runner must handle against an explicitly empty baseline, NOT refuse.
+const PRE_LEDGER_BASE = "0034929882";
+// The very next commit: it CREATED docs/replatform (artifact-policy.md present) while the
+// qa/ and handoffs/ dirs held only READMEs — a ledger-bearing revision with zero evidence
+// records, which is the disarmed-read shape the runner must keep refusing.
+const LEDGER_NO_RECORDS = "6af4d009f";
 
 test("RED — the real historical breach is caught: an existing record rewritten in place", async () => {
   const result = await runEvidenceImmutability({
@@ -98,17 +103,41 @@ test("RED — deleting or renaming an existing record is caught", async () => {
   assert.ok(result.errors[0].includes(BREACHED_RECORD));
 });
 
-test("a base revision with zero evidence records is REFUSED, not silently passed", async () => {
+test("RED — a LEDGER-BEARING base with zero evidence records is REFUSED, not silently passed", async () => {
   // Measured before this guard was written: the underlying deny returns ZERO ERRORS for
-  // an empty base, indistinguishable from a clean run. A mistyped ref or a shallow clone
-  // would disarm the guard without a word.
+  // an empty base, indistinguishable from a clean run. When artifact-policy.md exists at
+  // the base, an empty record read means a disarmed clone or a moved directory — refused.
+  // Real history: 6af4d009f created the ledger charter while qa/ and handoffs/ held only
+  // READMEs, so it is a genuine policy-present-zero-records revision.
   const result = await runEvidenceImmutability({
-    base: NO_EVIDENCE_TREE,
+    base: LEDGER_NO_RECORDS,
     candidate: "HEAD",
   });
   assert.equal(result.baseCount, 0);
   assert.equal(result.ok, false);
   assert.match(result.errors[0], /ZERO evidence records/);
+  assert.match(
+    result.errors[0],
+    /artifact-policy\.md exists there/,
+    "the refusal must say WHY this empty base is suspicious: the ledger exists there",
+  );
+});
+
+test("GREEN — a PRE-LEDGER base (no artifact-policy.md) runs against an explicitly empty baseline", async () => {
+  // The program→main PR shape (#323): base=main, which holds no docs/replatform tree at
+  // all. Before this arm existed the unconditional empty-base refusal fired here as a
+  // false FAIL — the mirror of a false pass. The check must run, not refuse: base-record
+  // immutability is vacuous, and the within-PR walk polices every introduced record. Kept
+  // cheap by using the single-commit real-history pair that introduced the ledger.
+  const result = await runEvidenceImmutability({
+    base: PRE_LEDGER_BASE,
+    candidate: LEDGER_NO_RECORDS,
+  });
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.ok, true);
+  assert.equal(result.baseCount, 0);
+  assert.equal(result.preLedgerBase, true, "the pre-ledger shape must be reported, not hidden");
+  assert.equal(result.commitCount, 1, "the walk must actually have run over the PR's commit");
 });
 
 test("an unresolvable revision is REFUSED with a readable reason, not a stack trace", async () => {
@@ -265,6 +294,70 @@ test("POSITIVE CONTROL — adding a record, and superseding it with a NEW attemp
     result.baseCount + 2,
     "the control must really add two records, or it proves nothing",
   );
+});
+
+// -----------------------------------------------------------------------------
+// PRE-LEDGER BASES, in a throwaway repo: both arms of the distinction, with the control
+// that proves the pre-ledger path does NOT disarm the within-PR enforcement.
+// -----------------------------------------------------------------------------
+
+const POLICY_PATH = "docs/replatform/artifact-policy.md";
+
+/** A repo whose base commit predates the ledger entirely: no policy file, no epics tree. */
+function preLedgerRepo(t) {
+  const root = mkdtempSync(path.join(tmpdir(), "evidence-immutability-preledger-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  inRepo(root, ["init", "-q", "-b", "main"]);
+  inRepo(root, ["config", "user.email", "guard@example.invalid"]);
+  inRepo(root, ["config", "user.name", "guard"]);
+  writeRecord(root, "README.md", "# pre-ledger repo\n");
+  return { root, base: commitAll(root, "base: no ledger yet") };
+}
+
+test("GREEN — pre-ledger base: a PR that introduces the ledger and its records passes, flagged", async (t) => {
+  const { root, base } = preLedgerRepo(t);
+  writeRecord(root, POLICY_PATH, "# artifact policy\n");
+  writeRecord(root, PR_RECORD, "# unit record\n\n| Supersedes | none |\n| Result | pass |\n");
+  const tip = commitAll(root, "pr: introduce the ledger");
+
+  const result = await runEvidenceImmutability({ repoRoot: root, base, candidate: tip });
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.ok, true);
+  assert.equal(result.preLedgerBase, true);
+  assert.equal(result.candidateCount, 1, "the PR must really add a record, or this proves nothing");
+});
+
+test("RED — pre-ledger base does NOT disarm the within-PR walk: add-then-rewrite still denied", async (t) => {
+  // The control that stops the new arm from becoming an always-pass for main-based PRs:
+  // every record on such a PR is introduced within it, and each stays write-once from its
+  // first commit.
+  const { root, base } = preLedgerRepo(t);
+  writeRecord(root, POLICY_PATH, "# artifact policy\n");
+  writeRecord(root, PR_RECORD, "# unit record\n\n| Supersedes | none |\n| Result | fail |\n");
+  const introducing = commitAll(root, "pr: introduce the ledger");
+  writeRecord(root, PR_RECORD, "# unit record\n\n| Supersedes | none |\n\nCORRECTION\n");
+  const tip = commitAll(root, "pr: quietly rewrite the record");
+
+  const result = await runEvidenceImmutability({ repoRoot: root, base, candidate: tip });
+  assert.equal(result.ok, false, "a within-PR rewrite must stay denied on a pre-ledger base");
+  assert.equal(result.errors.length, 1);
+  assert.match(result.errors[0], /modified again by/);
+  assert.ok(result.errors[0].includes(introducing) && result.errors[0].includes(tip));
+});
+
+test("RED — throwaway control: policy file present but zero records is still the disarmed shape", async (t) => {
+  const { root } = preLedgerRepo(t);
+  writeRecord(root, POLICY_PATH, "# artifact policy\n");
+  const ledgerNoRecords = commitAll(root, "base: ledger charter without records");
+
+  const result = await runEvidenceImmutability({
+    repoRoot: root,
+    base: ledgerNoRecords,
+    candidate: ledgerNoRecords,
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.errors[0], /ZERO evidence records/);
+  assert.match(result.errors[0], /artifact-policy\.md exists there/);
 });
 
 test("WIRING — pr.yml's policy job actually invokes this guard", () => {
