@@ -42,7 +42,7 @@
 //     whose platform branch (`claims.organizationId === null`) passes an
 //     explicit `null` for a platform-scope worker. A row with neither axis is a
 //     different decision from a row with one, and this unit does not take it.
-//   * ONE MORE of the nine — `job-leasing.ts:1016` (lease ack) — HOLDS an
+//   * ONE MORE of the nine — `job-leasing.ts:1023` (lease ack) — HOLDS an
 //     organization and is still NOT wired, so this module serves SIX of DE-03's
 //     seven organization-attested sites, not all seven. Its refusal throws out of
 //     `runInTenant`, and the FROZEN JOB-003 ack-flow contract
@@ -51,7 +51,10 @@
 //     the ack method body and whose expression unwraps to the `runInTenant` call,
 //     and its `unwrap` strips only `await`, parens, `as` and `!`. Wiring it needs
 //     an AMENDMENT to that contract. The proving file PINS the site as recording
-//     nothing rather than dropping it from the count.
+//     nothing rather than dropping it from the count. ★ 2026-09-14: that
+//     amendment is RULED ADOPTED in hardened form (Option B,
+//     docs/replatform/DECISION-REQUEST-job003-ack-drain.md); the site stays
+//     unwired until the build unit lands.
 //   * `resolveWorkerDeviceContext`'s AUTHORITY throws (missing authority,
 //     inactive target, profile drift) are NOT wired. Only its `recordProof`
 //     refusal is, because that is the site DE-03 enumerates. Its siblings are
