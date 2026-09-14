@@ -106,6 +106,56 @@ export const EVIDENCE_ROOT = "docs/replatform/epics";
  */
 export const LEDGER_POLICY_PATH = "docs/replatform/artifact-policy.md";
 
+/**
+ * ★ THE GRANDFATHER ALLOWLIST — ruled by the founder 2026-09-14 (explicit pinned pairs;
+ * ratchet-from-now), enacted on PR #462. When the pre-ledger-base arm above unblinded the
+ * within-PR walk on the program→main PR (#323), the walk found THREE genuine in-place
+ * rewrites in the program branch's own history — all committed BEFORE this guard had a
+ * production caller (#390, 2026-09-09), on CI that was green at the time. They cannot be
+ * un-happened without rewriting published history, and exempting them by path or pattern
+ * would exempt FUTURE breaches of the same records. So each historical event is pinned by
+ * BOTH commit SHAs: the exact commit that introduced the record and the exact commit that
+ * rewrote it. A SHA names one immutable historical event and nothing else — no new commit
+ * can ever collide into an entry, so the allowlist can only ever match these three events.
+ *
+ * The ledger's own account of this ruling is
+ * `docs/replatform/epics/E0-foundation/qa/2026-09-14-d0-pre-guard-rewrite-grandfather-a1.md`.
+ * The self-test pins the list's LENGTH and verifies every entry against real history
+ * (both SHAs must exist, the record must exist at `introducedBy`, and `rewrittenBy` must
+ * genuinely change it) — growing or corrupting this list reds CI until deliberately
+ * reviewed.
+ *
+ * A grandfathered rewrite is RE-PINNED, not forgotten: the record's expected content
+ * becomes the rewritten blob from `rewrittenBy` onward, so any FOURTH rewrite of the same
+ * record — or any later touch of these three — is still denied.
+ */
+export const GRANDFATHERED_REWRITES = [
+  {
+    record: "docs/replatform/epics/E5-workspaces-secrets/qa/2026-08-24-d0-e5-exit-gate-audit-a1.md",
+    introducedBy: "6fc46988a4aa1de851e27e9454ecfd5bbe280e77",
+    rewrittenBy: "4379a2c53447a861f0bd6398ecef8f70392e07b2",
+    // The documented breach that motivated this guard (E0-F014 item 3, this file's header):
+    // a "★ CORRECTION" paragraph was inserted in place (+24/-4) while the record's own
+    // Supersedes field still read "— (E5 has no prior QA record; this is the first)".
+    why: "E0-F014 item 3 founding breach — in-place '★ CORRECTION', Supersedes bypassed",
+  },
+  {
+    record: "docs/replatform/epics/E2-tenant-kernel/qa/2026-08-10-d0-e2-tenant-kernel-21335854f-a5.md",
+    introducedBy: "7843b86e25eb1ff9c520308aef7f123fec6997a7",
+    rewrittenBy: "6b1af52a4db8a0fa41514db564e8cb622b02e1ba",
+    // Found by this investigation (PR #462) the moment the pre-ledger arm unblinded the
+    // within-PR walk on the #323 shape: the E2 epic-completion pass edited its own QA
+    // record in place instead of appending a superseding attempt.
+    why: "E2 completion pair, qa half — pre-guard in-place edit, found by PR #462",
+  },
+  {
+    record: "docs/replatform/epics/E2-tenant-kernel/handoffs/2026-08-10-epic-completion-21335854f-a5.md",
+    introducedBy: "7843b86e25eb1ff9c520308aef7f123fec6997a7",
+    rewrittenBy: "6b1af52a4db8a0fa41514db564e8cb622b02e1ba",
+    why: "E2 completion pair, handoff half — same pre-guard commit pair as the qa half",
+  },
+];
+
 function git(repoRoot, args) {
   return execFileSync("git", args, {
     cwd: repoRoot,
@@ -210,9 +260,15 @@ export function listCandidateCommits(repoRoot, base, candidate) {
  * record accounting are unchanged; they are excluded here so one breach is never counted
  * twice. Additions are never denied — that is how a legitimate `Supersedes` attempt lands.
  *
- * @returns {string[]}
+ * @returns {{errors: string[], grandfatheredHits: Array<{record: string, introducedBy: string, rewrittenBy: string}>}}
  */
-export function checkIntroducedRecordImmutability({ repoRoot, base, candidate, commits }) {
+export function checkIntroducedRecordImmutability({
+  repoRoot,
+  base,
+  candidate,
+  commits,
+  grandfathered = GRANDFATHERED_REWRITES,
+}) {
   const baseOids = listEvidenceOids(repoRoot, base);
   const candOids = listEvidenceOids(repoRoot, candidate);
   const snapshots = commits.map((sha) => ({ sha, oids: listEvidenceOids(repoRoot, sha) }));
@@ -235,6 +291,8 @@ export function checkIntroducedRecordImmutability({ repoRoot, base, candidate, c
   const introducedBy = (intro) =>
     intro.since === null ? `already present at the base ${base}` : `introduced by ${intro.since}`;
 
+  /** @type {Array<{record: string, introducedBy: string, rewrittenBy: string}>} */
+  const grandfatheredHits = [];
   /** @type {Map<string, string>} — one error per record; the first breach wins. */
   const errors = new Map();
   snapshots.forEach((snap, index) => {
@@ -242,6 +300,18 @@ export function checkIntroducedRecordImmutability({ repoRoot, base, candidate, c
       if (index <= intro.index || ownedByBaseDeny.has(rel) || errors.has(rel)) continue;
       const oid = snap.oids.get(rel);
       if (oid === undefined || oid === intro.oid) continue;
+      // A grandfathered pair matches by RECORD + BOTH exact SHAs, nothing looser. On a
+      // match the record is re-pinned to the rewritten blob, so anything that touches it
+      // AGAIN — including a later commit repeating the same edit — is still denied.
+      if (
+        grandfathered.some(
+          (g) => g.record === rel && g.introducedBy === intro.since && g.rewrittenBy === snap.sha,
+        )
+      ) {
+        grandfatheredHits.push({ record: rel, introducedBy: intro.since, rewrittenBy: snap.sha });
+        pinned.set(rel, { oid, since: snap.sha, index });
+        continue;
+      }
       errors.set(
         rel,
         `evidence immutability: record ${rel} was ${introducedBy(intro)} and modified again ` +
@@ -260,12 +330,12 @@ export function checkIntroducedRecordImmutability({ repoRoot, base, candidate, c
         "commit; a correction is a NEW attempt file carrying `Supersedes`",
     );
   }
-  return [...errors.values()];
+  return { errors: [...errors.values()], grandfatheredHits };
 }
 
 /**
- * @param {{repoRoot?: string, base: string, candidate?: string}} input
- * @returns {Promise<{ok: boolean, errors: string[], baseCount: number, candidateCount: number, commitCount: number, preLedgerBase?: boolean}>}
+ * @param {{repoRoot?: string, base: string, candidate?: string, grandfathered?: Array<{record: string, introducedBy: string, rewrittenBy: string}>}} input
+ * @returns {Promise<{ok: boolean, errors: string[], baseCount: number, candidateCount: number, commitCount: number, preLedgerBase?: boolean, grandfatheredHits?: Array<{record: string, introducedBy: string, rewrittenBy: string}>}>}
  */
 export async function runEvidenceImmutability(input) {
   const repoRoot = input.repoRoot ?? REPO_ROOT;
@@ -340,7 +410,13 @@ export async function runEvidenceImmutability(input) {
     }
     const { errors } = await checkEvidenceImmutability(baseTree.root, candTree.root);
     const commits = listCandidateCommits(repoRoot, base, candidate);
-    const introErrors = checkIntroducedRecordImmutability({ repoRoot, base, candidate, commits });
+    const { errors: introErrors, grandfatheredHits } = checkIntroducedRecordImmutability({
+      repoRoot,
+      base,
+      candidate,
+      commits,
+      ...(input.grandfathered !== undefined ? { grandfathered: input.grandfathered } : {}),
+    });
     const allErrors = [...errors, ...introErrors];
     return {
       ok: allErrors.length === 0,
@@ -349,6 +425,7 @@ export async function runEvidenceImmutability(input) {
       candidateCount: candTree.count,
       commitCount: commits.length,
       preLedgerBase,
+      grandfatheredHits,
     };
   } finally {
     for (const tree of [baseTree, candTree]) {
@@ -386,6 +463,18 @@ async function main() {
     process.exitCode = 1;
     return;
   }
+  // Grandfathered matches are DISCLOSED on green output, never silently absorbed: the
+  // reader of a passing run must be able to see that pinned historical events were in
+  // range and were the reason no error was raised for them.
+  const hits = result.grandfatheredHits ?? [];
+  const grandfatherNote =
+    hits.length === 0
+      ? ""
+      : ` NOTE: ${hits.length} founder-pinned grandfathered rewrite(s) were in range and ` +
+        "re-pinned rather than denied (ruling 2026-09-14; see GRANDFATHERED_REWRITES and " +
+        "docs/replatform/epics/E0-foundation/qa/2026-09-14-d0-pre-guard-rewrite-grandfather-a1.md): " +
+        hits.map((h) => `${h.record} (${h.introducedBy.slice(0, 9)}→${h.rewrittenBy.slice(0, 9)})`).join("; ") +
+        ".";
   if (result.preLedgerBase) {
     // Said out loud, not passed off as a normal run: the base predates the ledger, so the
     // check ran against an EXPLICITLY EMPTY baseline and the within-PR walk carried the
@@ -396,7 +485,8 @@ async function main() {
         "there, so base-record immutability is vacuous and was checked against an " +
         `explicitly empty baseline. All ${result.candidateCount} candidate record(s) were ` +
         `introduced by this PR's own ${result.commitCount} commit(s); each was pinned at ` +
-        "its introducing commit and none was rewritten or removed by a later one.",
+        "its introducing commit and none was rewritten or removed by a later one." +
+        grandfatherNote,
     );
     return;
   }
@@ -405,7 +495,7 @@ async function main() {
       `(${base}) all present and byte-identical in the candidate ` +
       `(${candidate || "HEAD"}, ${result.candidateCount} records); ` +
       `${result.commitCount} candidate commit(s) walked, and no record introduced by one of ` +
-      "them was rewritten or removed by a later one.",
+      "them was rewritten or removed by a later one." + grandfatherNote,
   );
 }
 

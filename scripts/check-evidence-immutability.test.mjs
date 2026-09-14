@@ -33,6 +33,7 @@ import test from "node:test";
 
 import {
   EVIDENCE_RECORD_RE,
+  GRANDFATHERED_REWRITES,
   REPO_ROOT,
   materializeEvidenceTree,
   parseArgs,
@@ -358,6 +359,152 @@ test("RED — throwaway control: policy file present but zero records is still t
   assert.equal(result.ok, false);
   assert.match(result.errors[0], /ZERO evidence records/);
   assert.match(result.errors[0], /artifact-policy\.md exists there/);
+});
+
+// -----------------------------------------------------------------------------
+// THE GRANDFATHER ALLOWLIST (founder ruling 2026-09-14: explicit pinned pairs,
+// ratchet-from-now). Exactness is enforced here: every entry must name a real historical
+// rewrite by both exact SHAs, the list's length is pinned, and controls prove that the
+// allowlist neither leaks to other records nor forgives a LATER rewrite of a pinned one.
+// -----------------------------------------------------------------------------
+
+function repoGit(args) {
+  return execFileSync("git", args, { cwd: REPO_ROOT, encoding: "utf8" }).trim();
+}
+
+test("ALLOWLIST EXACTNESS — the list is pinned at three entries; growing it must red CI until reviewed", () => {
+  assert.equal(
+    GRANDFATHERED_REWRITES.length,
+    3,
+    "GRANDFATHERED_REWRITES changed size — a new exemption is a founder decision, not a " +
+      "code change; update this pin only alongside a reviewed ruling and a new ledger note",
+  );
+});
+
+test("ALLOWLIST EXACTNESS — every entry names a real historical rewrite, verified against git", () => {
+  for (const entry of GRANDFATHERED_REWRITES) {
+    const label = `${entry.record} (${entry.introducedBy} -> ${entry.rewrittenBy})`;
+    // Full SHAs only: an abbreviated pin could become ambiguous as history grows.
+    assert.match(entry.introducedBy, /^[0-9a-f]{40}$/, `introducedBy must be a full SHA: ${label}`);
+    assert.match(entry.rewrittenBy, /^[0-9a-f]{40}$/, `rewrittenBy must be a full SHA: ${label}`);
+    assert.ok(EVIDENCE_RECORD_RE.test(entry.record), `entry must name an evidence record: ${label}`);
+    // Both commits must exist in this repository's history.
+    for (const sha of [entry.introducedBy, entry.rewrittenBy]) {
+      assert.equal(repoGit(["cat-file", "-t", sha]), "commit", `${sha} must be a real commit`);
+    }
+    // The rewriting commit descends from the introducing one.
+    execFileSync("git", ["merge-base", "--is-ancestor", entry.introducedBy, entry.rewrittenBy], {
+      cwd: REPO_ROOT,
+    });
+    // The record exists at both commits with GENUINELY DIFFERENT content — an entry that
+    // does not cover a real detected rewrite fails here.
+    const oidAt = (rev) =>
+      repoGit(["rev-parse", `${rev}:${entry.record}`]);
+    const introOid = oidAt(entry.introducedBy);
+    const rewriteOid = oidAt(entry.rewrittenBy);
+    assert.notEqual(
+      introOid,
+      rewriteOid,
+      `entry is not a real rewrite — identical blobs at both commits: ${label}`,
+    );
+    // And the rewriting commit itself touched the record (the rewrite happened THERE, not
+    // somewhere between).
+    const touched = repoGit([
+      "diff",
+      "--name-only",
+      `${entry.rewrittenBy}~1`,
+      entry.rewrittenBy,
+      "--",
+      entry.record,
+    ]);
+    assert.equal(touched, entry.record, `the rewriting commit must touch the record: ${label}`);
+  }
+});
+
+test("RED-first — WITHOUT the allowlist, the E5 pair is denied by the within-PR walk (real history)", async () => {
+  const result = await runEvidenceImmutability({
+    base: `${RECORD_CREATED}~1`,
+    candidate: RECORD_REWRITTEN,
+    grandfathered: [],
+  });
+  assert.equal(result.ok, false, "the pre-allowlist behaviour: the historical rewrite is denied");
+  assert.equal(result.errors.length, 1);
+  assert.match(result.errors[0], /modified again by/);
+  assert.ok(result.errors[0].includes(BREACHED_RECORD));
+});
+
+test("GREEN — WITH the allowlist, the same E5 range passes and the match is DISCLOSED, not absorbed", async () => {
+  const result = await runEvidenceImmutability({
+    base: `${RECORD_CREATED}~1`,
+    candidate: RECORD_REWRITTEN,
+  });
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.ok, true);
+  assert.equal(result.grandfatheredHits.length, 1, "the grandfathered match must be reported");
+  assert.equal(result.grandfatheredHits[0].record, BREACHED_RECORD);
+});
+
+test("GREEN — the E2 qa+handoff pair is grandfathered as TWO disclosed matches (real history)", async () => {
+  const E2_INTRODUCED = "7843b86e25eb1ff9c520308aef7f123fec6997a7";
+  const E2_REWRITTEN = "6b1af52a4db8a0fa41514db564e8cb622b02e1ba";
+  const red = await runEvidenceImmutability({
+    base: `${E2_INTRODUCED}~1`,
+    candidate: E2_REWRITTEN,
+    grandfathered: [],
+  });
+  assert.equal(red.ok, false, "RED-first: both E2 halves denied without the allowlist");
+  assert.equal(red.errors.length, 2);
+
+  const green = await runEvidenceImmutability({
+    base: `${E2_INTRODUCED}~1`,
+    candidate: E2_REWRITTEN,
+  });
+  assert.deepEqual(green.errors, []);
+  assert.equal(green.ok, true);
+  assert.equal(green.grandfatheredHits.length, 2);
+});
+
+test("RED — a FOURTH rewrite is still caught: a grandfathered record is RE-PINNED, not released", async (t) => {
+  // The ratchet. Pin a throwaway pair through the same mechanism, then rewrite the record
+  // AGAIN: the allowlist match re-pins the record to the rewritten blob, so the third
+  // touch must be denied even though the record has a grandfather entry.
+  const { root, base } = throwawayRepo(t);
+  writeRecord(root, PR_RECORD, "# unit record\n\n| Supersedes | none |\n| Result | pass |\n");
+  const introducing = commitAll(root, "pr: add QA record");
+  writeRecord(root, PR_RECORD, "# unit record\n\n| Supersedes | none |\n\nCORRECTION\n");
+  const grandfatheredRewrite = commitAll(root, "pr: the pinned historical rewrite");
+  writeRecord(root, PR_RECORD, "# unit record\n\n| Supersedes | none |\n\nCORRECTION 2\n");
+  const fourth = commitAll(root, "pr: a LATER rewrite that must still be denied");
+
+  const result = await runEvidenceImmutability({
+    repoRoot: root,
+    base,
+    candidate: fourth,
+    grandfathered: [
+      { record: PR_RECORD, introducedBy: introducing, rewrittenBy: grandfatheredRewrite },
+    ],
+  });
+  assert.equal(result.ok, false, "the pinned pair must not forgive a LATER rewrite");
+  assert.equal(result.errors.length, 1);
+  assert.match(result.errors[0], /modified again by/);
+  assert.ok(
+    result.errors[0].includes(grandfatheredRewrite) && result.errors[0].includes(fourth),
+    `after re-pin the error must name the grandfathered commit as the new introduction, got: ${result.errors[0]}`,
+  );
+  assert.equal(result.grandfatheredHits.length, 1, "the pinned rewrite itself was matched");
+});
+
+test("LEDGER — the ruling's own qa note exists and is an evidence record", () => {
+  const notePath =
+    "docs/replatform/epics/E0-foundation/qa/2026-09-14-d0-pre-guard-rewrite-grandfather-a1.md";
+  assert.ok(EVIDENCE_RECORD_RE.test(notePath));
+  const body = readFileSync(path.join(REPO_ROOT, ...notePath.split("/")), "utf8");
+  for (const entry of GRANDFATHERED_REWRITES) {
+    assert.ok(
+      body.includes(entry.introducedBy) && body.includes(entry.rewrittenBy),
+      `the ledger note must account for the pinned pair ${entry.introducedBy} -> ${entry.rewrittenBy}`,
+    );
+  }
 });
 
 test("WIRING — pr.yml's policy job actually invokes this guard", () => {
