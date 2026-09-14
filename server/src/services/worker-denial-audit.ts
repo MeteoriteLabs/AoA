@@ -51,7 +51,10 @@
 //     the ack method body and whose expression unwraps to the `runInTenant` call,
 //     and its `unwrap` strips only `await`, parens, `as` and `!`. Wiring it needs
 //     an AMENDMENT to that contract. The proving file PINS the site as recording
-//     nothing rather than dropping it from the count.
+//     nothing rather than dropping it from the count. ★ 2026-09-14: that
+//     amendment is RULED ADOPTED in hardened form (Option B,
+//     docs/replatform/DECISION-REQUEST-job003-ack-drain.md); the site stays
+//     unwired until the build unit lands.
 //   * `resolveWorkerDeviceContext`'s AUTHORITY throws (missing authority,
 //     inactive target, profile drift) are NOT wired. Only its `recordProof`
 //     refusal is, because that is the site DE-03 enumerates. Its siblings are

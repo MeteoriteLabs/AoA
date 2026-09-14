@@ -8,7 +8,7 @@ and the E0-F010 trail in `docs/replatform/epics/E0-foundation/findings.md` that 
 `recordProof` site.
 **Date:** 2026-09-14. **Measured at:** `5237b057a` (the `docs/replatform-program` branch HEAD this
 paper ships on).
-**Status:** OPEN — awaiting a founder ruling. **Changes no finding's status and wires no code.**
+**Status:** RULED 2026-09-14 — Option B (see the Decision block). **Changes no finding's status and wires no code.**
 This paper COMPLETES and does not replace
 [`DECISION-REQUEST-job-003-ack-drain-amendment.md`](./DECISION-REQUEST-job-003-ack-drain-amendment.md)
 (2026-09-10, still OPEN): that paper measured the ack drain-point blocker and its safe amendment;
@@ -274,10 +274,18 @@ a sentence.
 
 ---
 
-## DECISION BLOCK — for founder signature
+## DECISION BLOCK — RULED
 
-*(left blank for the founder; this paper recommends and does not rule)*
+> "Option B. Adopt the hardened `.finally` ack-drain amendment as measured in the filed 2026-09-10
+> paper (`DECISION-REQUEST-job-003-ack-drain-amendment.md`), unblocking the ack-path audit arms
+> (the 3 target_revoked throws + the seventh recordProof site). The guard-sink amendment for
+> guardPlatformAuthority's two shared-platform throws is DEFERRED as a named, owner-visible future
+> decision — not accepted-as-gap; the register must attribute those arms to the deferred guard-sink
+> decision, not to JOB-003."
 
-- **Ruling on `DECISION-REQUEST-job-003-ack-drain-amendment.md` (its §3 (a)/(b)/(c)):**
-- **Ruling on the guard throws (this paper's §3 (A)/(B)/(C)):**
-- **Signature / date:**
+- **Ruling on `DECISION-REQUEST-job-003-ack-drain-amendment.md` (its §3 (a)/(b)/(c)):** (a) — amend,
+  hardened form, per the ruling above.
+- **Ruling on the guard throws (this paper's §3 (A)/(B)/(C)):** (B) — deferred as the named future
+  decision **DEFERRED-DECISION: guardPlatformAuthority denial sink** (this paper's §3(A) is its
+  option space).
+- **Signature / date:** Ruled by the founder via Claude session, 2026-09-14.
