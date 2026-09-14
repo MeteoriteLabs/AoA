@@ -51,10 +51,22 @@
  * record arrives through a pull request and is seen here. Within a PR, a record's
  * introducing commit is the first commit in `base..candidate` that contains it.
  *
- * ★ WHY AN EMPTY BASE IS A FAILURE. Measured before writing this: handing the underlying
- * deny a base revision that predates the evidence tree returns ZERO ERRORS — a silent pass
- * that looks identical to a clean run. A mistyped ref, a shallow clone, or a moved
- * directory would therefore disarm this guard without a word. An empty base is refused.
+ * ★ WHY AN EMPTY BASE IS A FAILURE — AND THE ONE SHAPE IT IS NOT. Measured before writing
+ * this: handing the underlying deny a base revision that predates the evidence tree returns
+ * ZERO ERRORS — a silent pass that looks identical to a clean run. A mistyped ref, a
+ * shallow clone, or a moved directory would therefore disarm this guard without a word. An
+ * empty base is refused — UNLESS the base provably predates the ledger itself. The
+ * program→main pull request (#323) has base=main, and main legitimately contains no
+ * `docs/replatform/` tree at all: on that shape the unconditional refusal fired as a false
+ * FAIL from the moment this caller landed (#390), which is the mirror defect of a false
+ * pass. The two cases are distinguishable by the ledger's own charter: a base that does
+ * NOT contain `docs/replatform/artifact-policy.md` is a PRE-LEDGER base — immutability of
+ * base records is vacuous (there are none), and every record is introduced by the PR's own
+ * commits, so the within-PR walk below polices all of them against an explicitly empty
+ * baseline. A base that DOES contain the policy file but yields zero records is still
+ * refused: the ledger exists there, so an empty read means a disarmed clone or a moved
+ * directory, exactly the silent-pass this arm was built to catch. The green output states
+ * the pre-ledger shape out loud rather than passing it off as a normal run.
  *
  * Usage:
  *   node scripts/check-evidence-immutability.mjs --base <rev> [--candidate <rev>]
@@ -85,6 +97,64 @@ export const EVIDENCE_RECORD_RE =
 
 /** Pathspec that bounds the per-commit `ls-tree` walk. Purely a narrowing of the regex. */
 export const EVIDENCE_ROOT = "docs/replatform/epics";
+
+/**
+ * The ledger's charter file. Its presence at a revision is what makes that revision a
+ * LEDGER-BEARING one: a base holding this file but zero evidence records is a disarmed
+ * read and stays refused; a base without it predates the ledger and an empty record set
+ * there is the truth, not a symptom.
+ */
+export const LEDGER_POLICY_PATH = "docs/replatform/artifact-policy.md";
+
+/**
+ * ★ THE GRANDFATHER ALLOWLIST — ruled by the founder 2026-09-14 (explicit pinned pairs;
+ * ratchet-from-now), enacted on PR #462. When the pre-ledger-base arm above unblinded the
+ * within-PR walk on the program→main PR (#323), the walk found THREE genuine in-place
+ * rewrites in the program branch's own history — all committed BEFORE this guard had a
+ * production caller (#390, 2026-09-09), on CI that was green at the time. They cannot be
+ * un-happened without rewriting published history, and exempting them by path or pattern
+ * would exempt FUTURE breaches of the same records. So each historical event is pinned by
+ * BOTH commit SHAs: the exact commit that introduced the record and the exact commit that
+ * rewrote it. A SHA names one immutable historical event and nothing else — no new commit
+ * can ever collide into an entry, so the allowlist can only ever match these three events.
+ *
+ * The ledger's own account of this ruling is
+ * `docs/replatform/epics/E0-foundation/qa/2026-09-14-d0-pre-guard-rewrite-grandfather-a1.md`.
+ * The self-test pins the list's LENGTH and verifies every entry against real history
+ * (both SHAs must exist, the record must exist at `introducedBy`, and `rewrittenBy` must
+ * genuinely change it) — growing or corrupting this list reds CI until deliberately
+ * reviewed.
+ *
+ * A grandfathered rewrite is RE-PINNED, not forgotten: the record's expected content
+ * becomes the rewritten blob from `rewrittenBy` onward, so any FOURTH rewrite of the same
+ * record — or any later touch of these three — is still denied.
+ */
+export const GRANDFATHERED_REWRITES = [
+  {
+    record: "docs/replatform/epics/E5-workspaces-secrets/qa/2026-08-24-d0-e5-exit-gate-audit-a1.md",
+    introducedBy: "6fc46988a4aa1de851e27e9454ecfd5bbe280e77",
+    rewrittenBy: "4379a2c53447a861f0bd6398ecef8f70392e07b2",
+    // The documented breach that motivated this guard (E0-F014 item 3, this file's header):
+    // a "★ CORRECTION" paragraph was inserted in place (+24/-4) while the record's own
+    // Supersedes field still read "— (E5 has no prior QA record; this is the first)".
+    why: "E0-F014 item 3 founding breach — in-place '★ CORRECTION', Supersedes bypassed",
+  },
+  {
+    record: "docs/replatform/epics/E2-tenant-kernel/qa/2026-08-10-d0-e2-tenant-kernel-21335854f-a5.md",
+    introducedBy: "7843b86e25eb1ff9c520308aef7f123fec6997a7",
+    rewrittenBy: "6b1af52a4db8a0fa41514db564e8cb622b02e1ba",
+    // Found by this investigation (PR #462) the moment the pre-ledger arm unblinded the
+    // within-PR walk on the #323 shape: the E2 epic-completion pass edited its own QA
+    // record in place instead of appending a superseding attempt.
+    why: "E2 completion pair, qa half — pre-guard in-place edit, found by PR #462",
+  },
+  {
+    record: "docs/replatform/epics/E2-tenant-kernel/handoffs/2026-08-10-epic-completion-21335854f-a5.md",
+    introducedBy: "7843b86e25eb1ff9c520308aef7f123fec6997a7",
+    rewrittenBy: "6b1af52a4db8a0fa41514db564e8cb622b02e1ba",
+    why: "E2 completion pair, handoff half — same pre-guard commit pair as the qa half",
+  },
+];
 
 function git(repoRoot, args) {
   return execFileSync("git", args, {
@@ -151,6 +221,22 @@ export function listEvidenceOids(repoRoot, rev) {
  *
  * @returns {string[]}
  */
+/**
+ * Whether a revision carries the ledger charter file. Only called after the revision has
+ * already been materialised successfully, so a throw here means the PATH is absent at that
+ * revision, not that the revision is unreadable.
+ *
+ * @returns {boolean}
+ */
+export function revHasLedgerPolicy(repoRoot, rev) {
+  try {
+    git(repoRoot, ["cat-file", "-e", `${rev}:${LEDGER_POLICY_PATH}`]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function listCandidateCommits(repoRoot, base, candidate) {
   return git(repoRoot, ["rev-list", "--reverse", "--topo-order", `${base}..${candidate}`])
     .toString("utf8")
@@ -174,9 +260,15 @@ export function listCandidateCommits(repoRoot, base, candidate) {
  * record accounting are unchanged; they are excluded here so one breach is never counted
  * twice. Additions are never denied — that is how a legitimate `Supersedes` attempt lands.
  *
- * @returns {string[]}
+ * @returns {{errors: string[], grandfatheredHits: Array<{record: string, introducedBy: string, rewrittenBy: string}>}}
  */
-export function checkIntroducedRecordImmutability({ repoRoot, base, candidate, commits }) {
+export function checkIntroducedRecordImmutability({
+  repoRoot,
+  base,
+  candidate,
+  commits,
+  grandfathered = GRANDFATHERED_REWRITES,
+}) {
   const baseOids = listEvidenceOids(repoRoot, base);
   const candOids = listEvidenceOids(repoRoot, candidate);
   const snapshots = commits.map((sha) => ({ sha, oids: listEvidenceOids(repoRoot, sha) }));
@@ -199,6 +291,8 @@ export function checkIntroducedRecordImmutability({ repoRoot, base, candidate, c
   const introducedBy = (intro) =>
     intro.since === null ? `already present at the base ${base}` : `introduced by ${intro.since}`;
 
+  /** @type {Array<{record: string, introducedBy: string, rewrittenBy: string}>} */
+  const grandfatheredHits = [];
   /** @type {Map<string, string>} — one error per record; the first breach wins. */
   const errors = new Map();
   snapshots.forEach((snap, index) => {
@@ -206,6 +300,18 @@ export function checkIntroducedRecordImmutability({ repoRoot, base, candidate, c
       if (index <= intro.index || ownedByBaseDeny.has(rel) || errors.has(rel)) continue;
       const oid = snap.oids.get(rel);
       if (oid === undefined || oid === intro.oid) continue;
+      // A grandfathered pair matches by RECORD + BOTH exact SHAs, nothing looser. On a
+      // match the record is re-pinned to the rewritten blob, so anything that touches it
+      // AGAIN — including a later commit repeating the same edit — is still denied.
+      if (
+        grandfathered.some(
+          (g) => g.record === rel && g.introducedBy === intro.since && g.rewrittenBy === snap.sha,
+        )
+      ) {
+        grandfatheredHits.push({ record: rel, introducedBy: intro.since, rewrittenBy: snap.sha });
+        pinned.set(rel, { oid, since: snap.sha, index });
+        continue;
+      }
       errors.set(
         rel,
         `evidence immutability: record ${rel} was ${introducedBy(intro)} and modified again ` +
@@ -224,12 +330,12 @@ export function checkIntroducedRecordImmutability({ repoRoot, base, candidate, c
         "commit; a correction is a NEW attempt file carrying `Supersedes`",
     );
   }
-  return [...errors.values()];
+  return { errors: [...errors.values()], grandfatheredHits };
 }
 
 /**
- * @param {{repoRoot?: string, base: string, candidate?: string}} input
- * @returns {Promise<{ok: boolean, errors: string[], baseCount: number, candidateCount: number, commitCount: number}>}
+ * @param {{repoRoot?: string, base: string, candidate?: string, grandfathered?: Array<{record: string, introducedBy: string, rewrittenBy: string}>}} input
+ * @returns {Promise<{ok: boolean, errors: string[], baseCount: number, candidateCount: number, commitCount: number, preLedgerBase?: boolean, grandfatheredHits?: Array<{record: string, introducedBy: string, rewrittenBy: string}>}>}
  */
 export async function runEvidenceImmutability(input) {
   const repoRoot = input.repoRoot ?? REPO_ROOT;
@@ -279,23 +385,38 @@ export async function runEvidenceImmutability(input) {
         };
       }
     }
+    let preLedgerBase = false;
     if (baseTree.count === 0) {
-      return {
-        ok: false,
-        errors: [
-          `evidence immutability: base revision ${base} holds ZERO evidence records. ` +
-            "That is not a clean run, it is a disarmed one — the deny returns no errors " +
-            "for an empty base. Check the revision, the clone depth, and that " +
-            "docs/replatform/epics/*/{qa,handoffs}/ still exists.",
-        ],
-        baseCount: 0,
-        candidateCount: candTree.count,
-        commitCount: 0,
-      };
+      if (revHasLedgerPolicy(repoRoot, base)) {
+        return {
+          ok: false,
+          errors: [
+            `evidence immutability: base revision ${base} holds ZERO evidence records ` +
+              `while ${LEDGER_POLICY_PATH} exists there — the ledger is present at that ` +
+              "revision, so an empty read is not a clean run, it is a disarmed one: the " +
+              "deny returns no errors for an empty base. Check the revision, the clone " +
+              "depth, and that docs/replatform/epics/*/{qa,handoffs}/ still exists.",
+          ],
+          baseCount: 0,
+          candidateCount: candTree.count,
+          commitCount: 0,
+          preLedgerBase: false,
+        };
+      }
+      // The base predates the ledger entirely (no charter file) — the program→main PR
+      // shape. Base-record immutability is vacuous; every record is introduced within the
+      // PR and the within-PR walk below pins each one from its first commit.
+      preLedgerBase = true;
     }
     const { errors } = await checkEvidenceImmutability(baseTree.root, candTree.root);
     const commits = listCandidateCommits(repoRoot, base, candidate);
-    const introErrors = checkIntroducedRecordImmutability({ repoRoot, base, candidate, commits });
+    const { errors: introErrors, grandfatheredHits } = checkIntroducedRecordImmutability({
+      repoRoot,
+      base,
+      candidate,
+      commits,
+      ...(input.grandfathered !== undefined ? { grandfathered: input.grandfathered } : {}),
+    });
     const allErrors = [...errors, ...introErrors];
     return {
       ok: allErrors.length === 0,
@@ -303,6 +424,8 @@ export async function runEvidenceImmutability(input) {
       baseCount: baseTree.count,
       candidateCount: candTree.count,
       commitCount: commits.length,
+      preLedgerBase,
+      grandfatheredHits,
     };
   } finally {
     for (const tree of [baseTree, candTree]) {
@@ -340,12 +463,39 @@ async function main() {
     process.exitCode = 1;
     return;
   }
+  // Grandfathered matches are DISCLOSED on green output, never silently absorbed: the
+  // reader of a passing run must be able to see that pinned historical events were in
+  // range and were the reason no error was raised for them.
+  const hits = result.grandfatheredHits ?? [];
+  const grandfatherNote =
+    hits.length === 0
+      ? ""
+      : ` NOTE: ${hits.length} founder-pinned grandfathered rewrite(s) were in range and ` +
+        "re-pinned rather than denied (ruling 2026-09-14; see GRANDFATHERED_REWRITES and " +
+        "docs/replatform/epics/E0-foundation/qa/2026-09-14-d0-pre-guard-rewrite-grandfather-a1.md): " +
+        hits.map((h) => `${h.record} (${h.introducedBy.slice(0, 9)}→${h.rewrittenBy.slice(0, 9)})`).join("; ") +
+        ".";
+  if (result.preLedgerBase) {
+    // Said out loud, not passed off as a normal run: the base predates the ledger, so the
+    // check ran against an EXPLICITLY EMPTY baseline and the within-PR walk carried the
+    // whole enforcement.
+    console.log(
+      `Evidence-ledger immutability OK (PRE-LEDGER BASE): base revision ${base} contains ` +
+        `neither ${LEDGER_POLICY_PATH} nor any evidence record — the ledger does not exist ` +
+        "there, so base-record immutability is vacuous and was checked against an " +
+        `explicitly empty baseline. All ${result.candidateCount} candidate record(s) were ` +
+        `introduced by this PR's own ${result.commitCount} commit(s); each was pinned at ` +
+        "its introducing commit and none was rewritten or removed by a later one." +
+        grandfatherNote,
+    );
+    return;
+  }
   console.log(
     `Evidence-ledger immutability OK: ${result.baseCount} base records ` +
       `(${base}) all present and byte-identical in the candidate ` +
       `(${candidate || "HEAD"}, ${result.candidateCount} records); ` +
       `${result.commitCount} candidate commit(s) walked, and no record introduced by one of ` +
-      "them was rewritten or removed by a later one.",
+      "them was rewritten or removed by a later one." + grandfatherNote,
   );
 }
 
