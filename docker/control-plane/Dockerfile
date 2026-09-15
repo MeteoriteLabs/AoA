@@ -101,6 +101,9 @@ RUN pnpm install --frozen-lockfile --filter "@armyofagents/server..." --filter "
 # ---------------------------------------------------------------------------
 FROM base AS build
 WORKDIR /app
+# The server type graph can exceed Node's default heap during remote image
+# builds. Keep this scoped to the build stage; it is not a runtime setting.
+ENV NODE_OPTIONS=--max-old-space-size=6144
 COPY --from=deps /app /app
 COPY . .
 RUN pnpm install --frozen-lockfile --filter "@armyofagents/server..." --filter "@armyofagents/ui..."
