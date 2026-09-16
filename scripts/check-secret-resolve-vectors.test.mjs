@@ -113,6 +113,32 @@ test("device_local owner binding + membership re-check", () => {
   assert.equal(decide(activeHandle(owned), { ownerMembershipActive: true, deviceCredential: verifiedCredential() }), "admit");
 });
 
+test("membership re-check is SUBSTRATE-exempt: a worker/sandbox owner is exempt but still routed", () => {
+  // DE-29 owner-routing: a distributed run's company provider_key handle is owner-bound
+  // to the WORKER/SANDBOX executor (Decision #121 — never `agent`). worker/sandbox/system
+  // are never company_memberships, so ownerMembershipActive is false — but the fence
+  // already proved the lease authority and owner==executor holds, so this MUST admit
+  // (not owner_membership_lost).
+  const WORKER = { executorPrincipalKind: "worker", executorPrincipalId: "agent-worker-1" };
+  const workerOwned = { refKind: "provider_key", refId: "provider:anthropic", materialization: "env", usePolicy: "sandbox_local_only", ownerPrincipalKind: "worker", ownerPrincipalId: "agent-worker-1" };
+  assert.equal(decide(activeHandle(workerOwned), { jobOwner: WORKER, ownerMembershipActive: false }), "admit");
+  // The membership exemption is NOT a routing bypass: a different worker executor still fails owner==executor.
+  assert.equal(
+    decide(activeHandle(workerOwned), { jobOwner: { executorPrincipalKind: "worker", executorPrincipalId: "agent-worker-2" }, ownerMembershipActive: false }),
+    "owner_binding_incomplete",
+  );
+});
+
+test("membership re-check STILL applies to a membership-capable AGENT owner (exemption is substrate-only)", () => {
+  // An `agent` owner CAN hold a company_memberships row (principal_type='agent'), so the
+  // re-check must still fire — the exemption is limited to the execution substrate, never
+  // widened to a membership-capable principal.
+  const AGENT = { executorPrincipalKind: "agent", executorPrincipalId: "agent-42" };
+  const agentOwned = { refKind: "company_secret", refId: "secret-1", materialization: "env", usePolicy: "sandbox_local_only", ownerPrincipalKind: "agent", ownerPrincipalId: "agent-42" };
+  assert.equal(decide(activeHandle(agentOwned), { jobOwner: AGENT, ownerMembershipActive: false }), "owner_membership_lost");
+  assert.equal(decide(activeHandle(agentOwned), { jobOwner: AGENT, ownerMembershipActive: true }), "admit");
+});
+
 test("verifyFixture throws when an admit vector is mutated to a denial shape", () => {
   const fixture = loadFixture();
   const mutated = structuredClone(fixture);

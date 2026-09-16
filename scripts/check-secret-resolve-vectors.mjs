@@ -52,6 +52,15 @@ export const SECRET_REF_KINDS = ["company_secret", "connector_oauth", "provider_
 const DEVICE_CREDENTIAL_REF_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/**
+ * The owner principal kinds that CAN hold a `company_memberships` row (user/agent —
+ * `packages/shared` PRINCIPAL_TYPES). Mirrors `MEMBERSHIP_CAPABLE_OWNER_KINDS` in
+ * job-fence.ts WITHOUT importing it (this lane is an independent re-derivation). The
+ * execution substrate (worker/sandbox/system) is deliberately absent: it is never a
+ * company member, so the rule-6 membership re-check does not apply to it.
+ */
+const MEMBERSHIP_CAPABLE_OWNER_KINDS = ["user", "agent"];
+
 export const SECRET_RESOLVE_REJECTION_REASONS = [
   "handle_revoked",
   "unknown_ref_kind",
@@ -144,7 +153,13 @@ export function decideResolve(input) {
       || h.ownerPrincipalId !== input.jobOwner.executorPrincipalId) {
       return "owner_binding_incomplete";
     }
-    if (input.ownerMembershipActive !== true) return "owner_membership_lost";
+    // The company-membership re-check applies ONLY to a membership-capable owner
+    // (user/agent). The execution substrate (worker/sandbox/system) is never a company
+    // member, so it is exempt — its liveness is the fence (owner==executor above + the
+    // proven lease authority), not a company_membership. Mirrors job-fence.ts rule 6.
+    if (MEMBERSHIP_CAPABLE_OWNER_KINDS.includes(h.ownerPrincipalKind) && input.ownerMembershipActive !== true) {
+      return "owner_membership_lost";
+    }
   }
 
   // 7. device_local CREDENTIAL BINDING (D12/3 + D12/4). Facts read in the same fenced
