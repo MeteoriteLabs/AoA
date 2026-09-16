@@ -3,6 +3,15 @@ name: PR
 permissions:
   contents: read
 
+# The `server` package's `tsc`/build exceeds Node's ~2 GB default old-space heap and OOMs
+# (exit 134, "Ineffective mark-compacts near heap limit") on the 16 GB CI runner — the same
+# server compile fails the `verify` Typecheck step AND the `e2e` / `e2e-pgvector` Build steps.
+# Raise the heap ceiling workflow-wide so every server tsc/build child inherits it. A ceiling is
+# NOT a reservation — only the large `server` compile approaches it, so this is safe under the
+# runner's memory and pnpm's default concurrency. Mirrors d382dea13 (control-plane build heap).
+env:
+  NODE_OPTIONS: --max-old-space-size=8192
+
 on:
   # No branches: filter — every PR into ANY base branch is gated. This is the
   # fix for the porting-era allow-list that silently ran zero checks on
