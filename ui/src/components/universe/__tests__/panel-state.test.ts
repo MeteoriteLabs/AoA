@@ -8,9 +8,11 @@ import {
   reconcileOpeningAck,
   displayRect,
   openingRect,
+  arrangeLayout,
   type AuthorizedLayoutSnapshot,
   type Action,
   type Ref,
+  type Rect,
 } from "../panel-state";
 const scope = { companyId: "c", userId: "u", conversationId: "chat" };
 const ref: Ref = { companyId: "c", kind: "task", id: "a" };
@@ -452,4 +454,94 @@ it("rejects one ordinal assigned to distinct keys even when their incarnations a
     })),
   };
   expect(reconcileOpeningAck(s, ack, pending)).toBe(s);
+});
+describe("tiled arrange", () => {
+  const view = { x: 0, y: 0, zoom: 1 };
+  const policy = { minWidth: 320, minHeight: 240, gap: 16 };
+  const keys = (n: number) => Array.from({ length: n }, (_, i) => `k${i}`);
+  const overlaps = (a: Rect, b: Rect) =>
+    a.x < b.x + b.width &&
+    b.x < a.x + a.width &&
+    a.y < b.y + b.height &&
+    b.y < a.y + a.height;
+  it("returns nothing for an empty set", () => {
+    expect(
+      arrangeLayout(
+        [],
+        { left: 0, top: 0, width: 1000, height: 800 },
+        view,
+        policy
+      )
+    ).toEqual({});
+  });
+  it("tiles two side by side on a wide canvas and stacks them on a tall one", () => {
+    const wide = arrangeLayout(
+      keys(2),
+      { left: 0, top: 0, width: 1200, height: 600 },
+      view,
+      policy
+    );
+    expect(wide.k0.y).toBe(wide.k1.y);
+    expect(wide.k1.x).toBeGreaterThan(wide.k0.x);
+    expect(overlaps(wide.k0, wide.k1)).toBe(false);
+    const tall = arrangeLayout(
+      keys(2),
+      { left: 0, top: 0, width: 500, height: 1200 },
+      view,
+      policy
+    );
+    expect(tall.k0.x).toBe(tall.k1.x);
+    expect(tall.k1.y).toBeGreaterThan(tall.k0.y);
+    expect(overlaps(tall.k0, tall.k1)).toBe(false);
+  });
+  it("lays four panels into a non-overlapping 2x2 grid", () => {
+    const r = arrangeLayout(
+      keys(4),
+      { left: 0, top: 0, width: 1000, height: 1000 },
+      view,
+      policy
+    );
+    const rects = keys(4).map((k) => r[k]);
+    expect(new Set(rects.map((x) => x.x)).size).toBe(2);
+    expect(new Set(rects.map((x) => x.y)).size).toBe(2);
+    for (let i = 0; i < rects.length; i++)
+      for (let j = i + 1; j < rects.length; j++)
+        expect(overlaps(rects[i], rects[j])).toBe(false);
+  });
+  it("clamps tiles to the readable minimum and overflows for many panels", () => {
+    const usable = { left: 0, top: 0, width: 1000, height: 800 };
+    const laid = arrangeLayout(keys(50), usable, view, policy);
+    const rects = keys(50).map((k) => laid[k]);
+    for (const rect of rects) {
+      expect(rect.width).toBeGreaterThanOrEqual(320);
+      expect(rect.height).toBeGreaterThanOrEqual(240);
+    }
+    expect(Math.max(...rects.map((x) => x.y + x.height))).toBeGreaterThan(
+      usable.height
+    );
+  });
+  it("converts to canvas units under zoom", () => {
+    const usable = { left: 0, top: 0, width: 800, height: 600 };
+    const zoomed = arrangeLayout(
+      keys(1),
+      usable,
+      { x: 40, y: 20, zoom: 2 },
+      policy
+    );
+    const base = arrangeLayout(keys(1), usable, view, policy);
+    expect(zoomed.k0.width).toBeCloseTo(base.k0.width / 2);
+    expect(zoomed.k0.height).toBeCloseTo(base.k0.height / 2);
+  });
+  it("rejects invalid views and tile policies", () => {
+    const usable = { left: 0, top: 0, width: 800, height: 600 };
+    expect(() =>
+      arrangeLayout(keys(2), { ...usable, width: 0 }, view, policy)
+    ).toThrow(RangeError);
+    expect(() =>
+      arrangeLayout(keys(2), usable, view, { ...policy, minWidth: 0 })
+    ).toThrow(RangeError);
+    expect(() =>
+      arrangeLayout(keys(2), usable, view, { ...policy, gap: NaN })
+    ).toThrow(RangeError);
+  });
 });

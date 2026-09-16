@@ -292,6 +292,65 @@ export function openingRect(
   };
 }
 
+export type TilePolicy = {
+  minWidth: number;
+  minHeight: number;
+  gap: number;
+};
+/**
+ * Pure tiling: place `order` into a responsive, non-overlapping grid within
+ * `usable`. Grid shape is aspect-aware (wide canvases get more columns); tiles
+ * clamp to the readable minimum, so many panels overflow the viewport (reachable
+ * by panning) rather than shrinking into unusable slivers. Screen-space geometry
+ * is converted to canvas units the same way `openingRect` does, so tiling is
+ * correct at any zoom. The caller filters to the arrangeable set (auto,
+ * non-pinned, non-minimized); this function tiles exactly the keys it is given.
+ */
+export function arrangeLayout(
+  order: string[],
+  usable: Bounds,
+  view: Viewport,
+  policy: TilePolicy
+): Record<string, Rect> {
+  validateView(view, usable);
+  if (
+    ![policy.minWidth, policy.minHeight, policy.gap].every(Number.isFinite) ||
+    policy.minWidth <= 0 ||
+    policy.minHeight <= 0 ||
+    policy.gap < 0
+  )
+    throw new RangeError("Invalid tile policy");
+  const count = order.length;
+  if (count === 0) return {};
+  const cols = Math.min(
+    Math.max(Math.round(Math.sqrt((count * usable.width) / usable.height)), 1),
+    count
+  );
+  const rows = Math.ceil(count / cols);
+  const tileWidth = Math.max(
+    policy.minWidth,
+    (usable.width - policy.gap * (cols + 1)) / cols
+  );
+  const tileHeight = Math.max(
+    policy.minHeight,
+    (usable.height - policy.gap * (rows + 1)) / rows
+  );
+  const result: Record<string, Rect> = {};
+  order.forEach((key, index) => {
+    const col = index % cols;
+    const row = Math.floor(index / cols);
+    const screenX = usable.left + policy.gap + col * (tileWidth + policy.gap);
+    const screenY = usable.top + policy.gap + row * (tileHeight + policy.gap);
+    result[key] = {
+      x: (screenX - view.x) / view.zoom,
+      y: (screenY - view.y) / view.zoom,
+      width: tileWidth / view.zoom,
+      height: tileHeight / view.zoom,
+    };
+  });
+  return result;
+}
+
 export const positiveInteger = (n: number): boolean =>
   Number.isSafeInteger(n) && n > 0;
 export const equalRect = (a: Rect, b: Rect): boolean =>
