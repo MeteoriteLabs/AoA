@@ -865,3 +865,70 @@ for (const count of [1, 10, 50])
       contentType: "application/json",
     });
   });
+
+const overlap = (a: Rect, b: Rect) =>
+  a.x < b.x + b.width &&
+  b.x < a.x + a.width &&
+  a.y < b.y + b.height &&
+  b.y < a.y + a.height;
+
+test("auto-tile lays panels out, respects manual moves, explicit arrange, pin and toggle-off", async ({
+  page,
+}) => {
+  await setup(page);
+  const task = frame(page);
+  const taskKey = (await task.getAttribute("data-panel-key"))!;
+  await button(page, "Toggle auto-tile").click();
+  await button(page, "Open artifact").click();
+  const artifactKey = (await frame(page, "artifact").getAttribute(
+    "data-panel-key"
+  ))!;
+  // Two auto panels tile without overlapping.
+  let s = await state(page);
+  expect(
+    overlap(s.panels[taskKey].rect, s.panels[artifactKey].rect)
+  ).toBe(false);
+  expect(s.panels[taskKey].placement).toBe("auto");
+  // A human drag opts the task out; opening another panel leaves it put.
+  await drag(page, task.locator("header"), -60, 120, true);
+  const moved = await rect(page, "task");
+  expect((await state(page)).panels[taskKey].placement).toBe("manual");
+  await button(page, "Open iframe").click();
+  near(await rect(page, "task"), moved);
+  // Explicit Arrange re-tiles everything, incl. the moved task.
+  await button(page, "Arrange").click();
+  expect((await state(page)).panels[taskKey].placement).toBe("auto");
+  s = await state(page);
+  const tiled = Object.values(s.panels).map((p) => p.rect);
+  for (let i = 0; i < tiled.length; i++)
+    for (let j = i + 1; j < tiled.length; j++)
+      expect(overlap(tiled[i], tiled[j])).toBe(false);
+  // A pinned panel is never moved by Arrange.
+  await task.getByRole("button", { name: "Pin panel", exact: true }).click();
+  const pinned = await rect(page, "task");
+  await button(page, "Arrange").click();
+  near(await rect(page, "task"), pinned);
+  // Toggling auto-tile off stops re-tiling on open.
+  await button(page, "Toggle auto-tile").click();
+  const artifactBefore = await rect(page, "artifact");
+  await button(page, "Open missing").click();
+  near(await rect(page, "artifact"), artifactBefore);
+});
+
+test("fit frames all panels within the canvas", async ({ page }) => {
+  await setup(page);
+  await button(page, "Toggle auto-tile").click();
+  await button(page, "Open artifact").click();
+  await button(page, "Open iframe").click();
+  // Spread the content out so framing it needs a zoom-out.
+  await drag(page, frame(page, "iframe").locator("header"), 320, 320, true);
+  await button(page, "Fit").click();
+  const canvas = await box(page.getByTestId("universe-canvas"));
+  for (const kind of ["task", "artifact", "iframe"]) {
+    const b = await box(frame(page, kind));
+    expect(b.x).toBeGreaterThanOrEqual(canvas.x - 1);
+    expect(b.y).toBeGreaterThanOrEqual(canvas.y - 1);
+    expect(b.x + b.width).toBeLessThanOrEqual(canvas.x + canvas.width + 1);
+    expect(b.y + b.height).toBeLessThanOrEqual(canvas.y + canvas.height + 1);
+  }
+});

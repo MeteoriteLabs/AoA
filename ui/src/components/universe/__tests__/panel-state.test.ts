@@ -532,6 +532,25 @@ describe("tiled arrange", () => {
     expect(zoomed.k0.width).toBeCloseTo(base.k0.width / 2);
     expect(zoomed.k0.height).toBeCloseTo(base.k0.height / 2);
   });
+  it("caps tiles at the preferred size and centers the grid", () => {
+    const capped = {
+      minWidth: 320,
+      minHeight: 240,
+      maxWidth: 520,
+      maxHeight: 360,
+      gap: 16,
+    };
+    const usable = { left: 0, top: 0, width: 1600, height: 1000 };
+    const r = arrangeLayout(keys(1), usable, view, capped);
+    expect(r.k0.width).toBe(520);
+    expect(r.k0.height).toBe(360);
+    expect(r.k0.x).toBeGreaterThan(0);
+    const rightMargin = usable.width - (r.k0.x + r.k0.width);
+    expect(rightMargin).toBeCloseTo(r.k0.x);
+    expect(() =>
+      arrangeLayout(keys(1), usable, view, { ...capped, maxWidth: 100 })
+    ).toThrow(RangeError);
+  });
   it("rejects invalid views and tile policies", () => {
     const usable = { left: 0, top: 0, width: 800, height: 600 };
     expect(() =>
@@ -543,5 +562,54 @@ describe("tiled arrange", () => {
     expect(() =>
       arrangeLayout(keys(2), usable, view, { ...policy, gap: NaN })
     ).toThrow(RangeError);
+  });
+});
+describe("arrange action and placement", () => {
+  const target = { x: 40, y: 50, width: 400, height: 300 };
+  const humanMove = {
+    type: "geometry" as const,
+    key,
+    generation: 1,
+    rect: { x: 5, y: 6, width: 300, height: 300 },
+    source: "human" as const,
+  };
+  it("open marks a panel auto; a human move marks it manual, a commander move does not", () => {
+    const s = opened();
+    expect(s.panels[key].placement).toBe("auto");
+    expect(panelReducer(s, humanMove).panels[key].placement).toBe("manual");
+    expect(
+      panelReducer(s, { ...humanMove, source: "commander" }).panels[key]
+        .placement
+    ).toBe("auto");
+  });
+  it("arrange writes rects and resets placement to auto", () => {
+    const manual = panelReducer(opened(), humanMove);
+    expect(manual.panels[key].placement).toBe("manual");
+    const arranged = panelReducer(manual, {
+      type: "arrange",
+      rects: { [key]: target },
+    });
+    expect(arranged.panels[key].rect).toEqual(target);
+    expect(arranged.panels[key].placement).toBe("auto");
+  });
+  it("arrange skips pinned, minimized, maximized and unknown keys", () => {
+    const s = opened();
+    const arrange = (state: typeof s) =>
+      panelReducer(state, { type: "arrange", rects: { [key]: target } });
+    const pinned = panelReducer(s, {
+      type: "pin",
+      key,
+      generation: 1,
+      value: true,
+    });
+    expect(arrange(pinned)).toBe(pinned);
+    const minimized = panelReducer(s, { type: "minimize", key, generation: 1 });
+    expect(arrange(minimized)).toBe(minimized);
+    const maximized = panelReducer(s, { type: "maximize", key, generation: 1 });
+    expect(arrange(maximized)).toBe(maximized);
+    expect(panelReducer(s, { type: "arrange", rects: { other: target } })).toBe(
+      s
+    );
+    expect(panelReducer(s, { type: "arrange", rects: {} })).toBe(s);
   });
 });

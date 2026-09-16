@@ -10,6 +10,7 @@ import {
 import { ReactFlow, ReactFlowProvider } from "@xyflow/react";
 import { PanelNode, type PanelFlowNode } from "./PanelNode";
 import {
+  arrangeLayout,
   displayRect,
   equalRect,
   hydrateLayout,
@@ -26,6 +27,7 @@ import {
   type Scope,
   type State,
   type SizePolicy,
+  type TilePolicy,
   type Viewport,
 } from "./panel-state";
 import {
@@ -51,6 +53,10 @@ export type WorkspaceProps = {
   content: Record<string, ContentEntry>;
   onStateChange?: (state: State) => void;
   onViewportCommit?: (viewport: Viewport) => void;
+  /** When true, opening a panel re-tiles the auto (non-pinned, non-manual) set.
+   * Defaults off so the frame's built-in behaviour stays cascade; the product
+   * turns this on via the Universe preference. */
+  initialAutoTile?: boolean;
 };
 /** Commands require caller authorization. The reducer's source field is not an authorization grant. */
 export type WorkspaceHandle = {
@@ -64,8 +70,24 @@ export type WorkspaceHandle = {
   setViewport: (viewport: Viewport) => void;
   undo: () => void;
   redo: () => void;
+  /** Re-tile every non-pinned panel into the grid (manual panels rejoin). */
+  arrange: () => void;
+  /** Zoom/pan the camera to frame all visible panels. Changes no geometry. */
+  fit: () => void;
+  /** Toggle auto-tile-on-open; enabling it re-tiles immediately. */
+  setAutoTile: (on: boolean) => void;
 };
 const nodeTypes = { "universe-panel": PanelNode };
+// Tiles never grow past the preferred size, so a lone panel opens at a normal
+// size and the grid centers instead of ballooning; they shrink only to the
+// readable minimum before the grid overflows and pans.
+const TILE_POLICY: TilePolicy = {
+  minWidth: 320,
+  minHeight: 240,
+  maxWidth: 520,
+  maxHeight: 360,
+  gap: 16,
+};
 const validViewport = (v: Viewport) =>
   [v.x, v.y, v.zoom].every(Number.isFinite) &&
   Math.abs(v.x) <= 1e6 &&
@@ -109,6 +131,9 @@ const ScopedWorkspace = forwardRef<WorkspaceHandle, WorkspaceProps>(
     const gesture = useRef<GestureEntry | null>(null);
     const serial = useRef(0);
     const [shielded, setShielded] = useState(false);
+    const [autoTile, setAutoTileState] = useState(
+      props.initialAutoTile ?? false
+    );
     const [usable, setUsable] = useState({
       left: 0,
       top: 0,
@@ -312,6 +337,59 @@ const ScopedWorkspace = forwardRef<WorkspaceHandle, WorkspaceProps>(
       setCamera({ ...next });
       if (commit) callbacks.current.onViewportCommit?.({ ...next });
     };
+    const retile = (mode: "auto" | "all") => {
+      if (!alive.current || usable.width <= 0 || usable.height <= 0) return;
+      const s = current.current;
+      if (s.maximized) return;
+      const order = s.order.filter((key) => {
+        const panel = s.panels[key];
+        return (
+          panel &&
+          !panel.minimized &&
+          !panel.pinned &&
+          (mode === "all" || panel.placement !== "manual")
+        );
+      });
+      if (order.length === 0) return;
+      dispatch({
+        type: "arrange",
+        rects: arrangeLayout(order, usable, camera.current, TILE_POLICY),
+      });
+    };
+    const fit = () => {
+      if (!alive.current || usable.width <= 0 || usable.height <= 0) return;
+      const s = current.current;
+      if (s.maximized) return;
+      const visible = s.order
+        .map((key) => s.panels[key])
+        .filter((panel): panel is Panel => !!panel && !panel.minimized);
+      if (visible.length === 0) return;
+      const pad = 24;
+      const minX = Math.min(...visible.map((p) => p.rect.x)) - pad;
+      const minY = Math.min(...visible.map((p) => p.rect.y)) - pad;
+      const maxX =
+        Math.max(...visible.map((p) => p.rect.x + p.rect.width)) + pad;
+      const maxY =
+        Math.max(...visible.map((p) => p.rect.y + p.rect.height)) + pad;
+      const zoom = Math.max(
+        0.25,
+        Math.min(2, usable.width / (maxX - minX), usable.height / (maxY - minY))
+      );
+      updateViewport(
+        {
+          x:
+            usable.left +
+            (usable.width - (maxX - minX) * zoom) / 2 -
+            minX * zoom,
+          y:
+            usable.top +
+            (usable.height - (maxY - minY) * zoom) / 2 -
+            minY * zoom,
+          zoom,
+        },
+        true
+      );
+    };
     useImperativeHandle(forwardedRef, () => ({
       dispatch,
       open: (
@@ -335,12 +413,19 @@ const ScopedWorkspace = forwardRef<WorkspaceHandle, WorkspaceProps>(
             current.current.nextOpenedOrdinal
           );
         dispatch({ type: "open", ...entry, rect });
+        if (autoTile) retile("auto");
       },
       getState: () => structuredClone(current.current),
       getViewport: () => ({ ...camera.current }),
       setViewport: (next) => updateViewport(next, true),
       undo: () => replay("undo"),
       redo: () => replay("redo"),
+      arrange: () => retile("all"),
+      fit,
+      setAutoTile: (on: boolean) => {
+        setAutoTileState(on);
+        if (on) retile("all");
+      },
     }));
     function replay(direction: "undo" | "redo") {
       if (!alive.current || gesture.current) return;

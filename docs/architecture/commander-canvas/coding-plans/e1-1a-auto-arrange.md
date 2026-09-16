@@ -94,12 +94,22 @@ Add **Arrange**, **Fit**, and an **Auto-tile: on/off** toggle; wire the existing
 
 ## Increments
 
-1. **Arrange engine** (pure) + unit tests — `panel-layout.ts`.
-2. **State**: `placement` flag, `autoTile`, `arrange` action, open re-tile + tests.
-3. **Workspace**: `arrange()`/`fit()`/`setAutoTile()`, human-geometry→manual wiring.
-4. **Harness**: Arrange/Fit/toggle controls; real Commander-arrange.
-5. **Browser** regression additions.
-6. **Review + qualify** (focused UI + full browser suite + typecheck/build).
+1. ✅ **Arrange engine** (pure) + unit tests — `panel-state.ts` (`f31362c71`), then
+   refined to cap tiles at the preferred size and center the grid.
+2. ✅ **State**: `placement` flag, `arrange` action, human-geometry→manual + reducer tests.
+3. ✅ **Workspace**: `arrange()`/`fit()`/`setAutoTile()` handle, auto-tile-on-open,
+   `initialAutoTile` prop + `autoTile` state, `TILE_POLICY`.
+4. ✅ **Harness**: Arrange / Fit / auto-tile-toggle controls. The existing
+   "Commander arrange fixture" stub is **kept as-is** (three browser tests depend on
+   its commander-geometry behaviour); the real engine is exercised through the new
+   Arrange button — the same path Commander would call.
+5. ✅ **Browser** regression: auto-tile layout + manual opt-out + explicit Arrange +
+   pin exclusion + toggle-off + Fit.
+6. ⏳ **Review + qualify**: full-repo Linux typecheck/tests/build runs with the batch
+   before merge.
+
+**Verified 2026-09-17:** panel-state 46 unit tests, 85 universe UI unit tests, 50
+real-Chromium browser cases, and UI typecheck (`tsc -b`) all green.
 
 ## Out of scope (later slices)
 

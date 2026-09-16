@@ -45,6 +45,7 @@ function Harness() {
   const handle = useRef<WorkspaceHandle>(null);
   const [observed, setObserved] = useState<State | null>(null);
   const [camera, setCamera] = useState({ ...initialViewport });
+  const [autoTile, setAutoTile] = useState(false);
   const stale = useRef<Action | null>(null);
   const refs: Ref[] = [
     { companyId: scope.companyId, kind: "task", id: "task" },
@@ -160,6 +161,26 @@ function Harness() {
           <span>History</span>
           <button onClick={() => handle.current?.undo()}>Undo geometry</button>
           <button onClick={() => handle.current?.redo()}>Redo geometry</button>
+        </div>
+        <div
+          className="universe-harness-group"
+          role="group"
+          aria-label="Arrange"
+        >
+          <span>Arrange</span>
+          <button onClick={() => handle.current?.arrange()}>Arrange</button>
+          <button onClick={() => handle.current?.fit()}>Fit</button>
+          <button
+            aria-label="Toggle auto-tile"
+            aria-pressed={autoTile}
+            onClick={() => {
+              const next = !autoTile;
+              setAutoTile(next);
+              handle.current?.setAutoTile(next);
+            }}
+          >
+            Auto-tile: {autoTile ? "on" : "off"}
+          </button>
         </div>
         <div
           className="universe-harness-group"

@@ -19,6 +19,9 @@ export type Panel = {
   rect: Rect;
   minimized: boolean;
   pinned: boolean;
+  /** Auto panels join the tiled grid; a human move marks the panel "manual" so
+   * auto-tiling leaves it alone until an explicit Arrange. Absent = auto. */
+  placement?: "auto" | "manual";
 };
 export type State = {
   /** Reconciliation watermark only; persistence authority remains with E1.2. */
@@ -46,7 +49,8 @@ export type Action =
       rect: Rect;
       source: "human" | "commander";
       expectedRect?: Rect;
-    };
+    }
+  | { type: "arrange"; rects: Record<string, Rect> };
 
 export const panelKey = (scope: Scope, ref: Ref): string =>
   JSON.stringify([
@@ -116,6 +120,7 @@ export function panelReducer(s: State, a: Action): State {
           rect: { ...a.rect },
           minimized: false,
           pinned: false,
+          placement: "auto",
         };
     return foreground(
       {
@@ -128,6 +133,25 @@ export function panelReducer(s: State, a: Action): State {
       },
       key
     );
+  }
+  if (a.type === "arrange") {
+    if (!a.rects || typeof a.rects !== "object") return s;
+    let panels = s.panels;
+    for (const [key, rect] of Object.entries(a.rects)) {
+      const target = Object.hasOwn(s.panels, key) ? s.panels[key] : undefined;
+      if (
+        !target ||
+        target.minimized ||
+        target.pinned ||
+        s.maximized === key ||
+        !validRect(rect) ||
+        (equalRect(target.rect, rect) && target.placement === "auto")
+      )
+        continue;
+      if (panels === s.panels) panels = { ...s.panels };
+      panels[key] = { ...target, rect: { ...rect }, placement: "auto" };
+    }
+    return panels === s.panels ? s : { ...s, panels };
   }
   const panel = Object.hasOwn(s.panels, a.key) ? s.panels[a.key] : undefined;
   if (
@@ -153,7 +177,16 @@ export function panelReducer(s: State, a: Action): State {
         return s;
       return {
         ...s,
-        panels: { ...s.panels, [a.key]: { ...panel, rect: { ...a.rect } } },
+        panels: {
+          ...s.panels,
+          [a.key]: {
+            ...panel,
+            rect: { ...a.rect },
+            // A human move opts the panel out of auto-tiling until an explicit
+            // Arrange; a commander move leaves its placement as-is.
+            ...(a.source === "human" ? { placement: "manual" as const } : {}),
+          },
+        },
       };
     case "pin":
       if (typeof a.value !== "boolean") return s;
@@ -295,16 +328,22 @@ export function openingRect(
 export type TilePolicy = {
   minWidth: number;
   minHeight: number;
+  /** Optional preferred cap: tiles never grow past this, so a lone panel stays a
+   * normal size and the grid centers in leftover space instead of ballooning. */
+  maxWidth?: number;
+  maxHeight?: number;
   gap: number;
 };
 /**
  * Pure tiling: place `order` into a responsive, non-overlapping grid within
  * `usable`. Grid shape is aspect-aware (wide canvases get more columns); tiles
- * clamp to the readable minimum, so many panels overflow the viewport (reachable
- * by panning) rather than shrinking into unusable slivers. Screen-space geometry
- * is converted to canvas units the same way `openingRect` does, so tiling is
- * correct at any zoom. The caller filters to the arrangeable set (auto,
- * non-pinned, non-minimized); this function tiles exactly the keys it is given.
+ * clamp between the readable minimum and the optional preferred maximum, and the
+ * grid is centered in leftover space. When tiles hit the minimum and still do not
+ * fit, the grid overflows the viewport (reachable by panning) rather than
+ * shrinking into unusable slivers. Screen-space geometry is converted to canvas
+ * units the same way `openingRect` does, so tiling is correct at any zoom. The
+ * caller filters to the arrangeable set (auto, non-pinned, non-minimized); this
+ * function tiles exactly the keys it is given.
  */
 export function arrangeLayout(
   order: string[],
@@ -313,34 +352,48 @@ export function arrangeLayout(
   policy: TilePolicy
 ): Record<string, Rect> {
   validateView(view, usable);
+  const maxWidth = policy.maxWidth ?? Infinity;
+  const maxHeight = policy.maxHeight ?? Infinity;
   if (
     ![policy.minWidth, policy.minHeight, policy.gap].every(Number.isFinite) ||
     policy.minWidth <= 0 ||
     policy.minHeight <= 0 ||
-    policy.gap < 0
+    policy.gap < 0 ||
+    !(maxWidth >= policy.minWidth) ||
+    !(maxHeight >= policy.minHeight)
   )
     throw new RangeError("Invalid tile policy");
   const count = order.length;
   if (count === 0) return {};
+  const clamp = (value: number, low: number, high: number) =>
+    Math.min(Math.max(value, low), high);
   const cols = Math.min(
     Math.max(Math.round(Math.sqrt((count * usable.width) / usable.height)), 1),
     count
   );
   const rows = Math.ceil(count / cols);
-  const tileWidth = Math.max(
+  const tileWidth = clamp(
+    (usable.width - policy.gap * (cols + 1)) / cols,
     policy.minWidth,
-    (usable.width - policy.gap * (cols + 1)) / cols
+    maxWidth
   );
-  const tileHeight = Math.max(
+  const tileHeight = clamp(
+    (usable.height - policy.gap * (rows + 1)) / rows,
     policy.minHeight,
-    (usable.height - policy.gap * (rows + 1)) / rows
+    maxHeight
   );
+  const gridWidth = cols * tileWidth + policy.gap * (cols + 1);
+  const gridHeight = rows * tileHeight + policy.gap * (rows + 1);
+  const offsetX = Math.max(0, (usable.width - gridWidth) / 2);
+  const offsetY = Math.max(0, (usable.height - gridHeight) / 2);
   const result: Record<string, Rect> = {};
   order.forEach((key, index) => {
     const col = index % cols;
     const row = Math.floor(index / cols);
-    const screenX = usable.left + policy.gap + col * (tileWidth + policy.gap);
-    const screenY = usable.top + policy.gap + row * (tileHeight + policy.gap);
+    const screenX =
+      usable.left + offsetX + policy.gap + col * (tileWidth + policy.gap);
+    const screenY =
+      usable.top + offsetY + policy.gap + row * (tileHeight + policy.gap);
     result[key] = {
       x: (screenX - view.x) / view.zoom,
       y: (screenY - view.y) / view.zoom,
