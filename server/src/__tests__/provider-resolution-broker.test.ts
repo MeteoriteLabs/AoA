@@ -299,6 +299,37 @@ describe("broker resolveSecretValueForConnection (Function B + C path)", () => {
     expect(auditOutcome(auditCalls[0]!)).toMatchObject({ outcome: "failure", errorCode: "http_422" });
   });
 
+  it("parses string-encoded jsonb material from raw db.execute before decrypting", async () => {
+    // Regression guard: raw db.execute returns a RETURNS TABLE jsonb column as a JSON string;
+    // asJsonb must parse it so resolveVersion receives the material OBJECT, not the string.
+    const { db } = fakeOperatorDb({
+      bundle: () => [bundleRow({ version_material: JSON.stringify({ ciphertext: "zz" }) })],
+    });
+    setProviderCredentialBrokerDb(db);
+    const deps = buildResolveDeps({} as never, MULTI);
+    await deps.resolveSecretValueForConnection({} as never, ROW, makeArgs());
+    expect(mockResolveVersion).toHaveBeenCalledWith(
+      expect.objectContaining({ material: { ciphertext: "zz" } }),
+    );
+  });
+
+  it("still refuses a STRING-encoded mcp-oauth metadata (asJsonb before the R3 guard)", async () => {
+    // If secret_provider_metadata arrives as a JSON string, asRecord() inside the guard would see
+    // a string and skip — so asJsonb must run first or the R3 refusal is silently defeated.
+    const { db, auditCalls } = fakeOperatorDb({
+      bundle: () => [bundleRow({ secret_provider_metadata: JSON.stringify({ purpose: "mcp_oauth" }) })],
+    });
+    setProviderCredentialBrokerDb(db);
+    const deps = buildResolveDeps({} as never, MULTI);
+    const args = makeArgs({
+      context: { consumerType: "agent", consumerId: "agent-1", actorType: "agent", actorId: "agent-1" },
+    });
+    await expect(deps.resolveSecretValueForConnection({} as never, ROW, args)).rejects.toMatchObject({
+      status: 422,
+    });
+    expect(auditCalls).toHaveLength(1);
+  });
+
   it("the Node company backstop throws http_422 and audits it (matches the direct path's code)", async () => {
     // Function B scopes by company in SQL, so this backstop is unreachable in practice; when it
     // does fire it must audit http_422, not secret_resolve_failed — hence unprocessable().

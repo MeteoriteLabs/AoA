@@ -169,7 +169,13 @@ describe.skipIf(!RUN)("E7-1 provider-credential broker on a real aoa_operator co
     expect(bundle.secret_provider_metadata).toBeNull(); // carried for the R3 mcp-oauth guard
     expect(Number(bundle.resolved_version)).toBe(1);
     expect(bundle.version_found).toBe(true);
-    expect(bundle.version_material).toEqual(MATERIAL);
+    // Raw db.execute returns the jsonb `material` column as a JSON string (the broker's asJsonb
+    // normalizes it); normalize here the same way so the assertion reflects what the broker sees.
+    const material =
+      typeof bundle.version_material === "string"
+        ? JSON.parse(bundle.version_material)
+        : bundle.version_material;
+    expect(material).toEqual(MATERIAL);
     expect(bundle.binding_found).toBe(true);
   });
 

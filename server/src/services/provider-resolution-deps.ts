@@ -44,6 +44,20 @@ function rowsOf<T>(result: unknown): T[] {
   return (Array.isArray(result) ? result : ((result as { rows?: unknown[] }).rows ?? [])) as T[];
 }
 
+/** Raw `db.execute()` over postgres-js does NOT apply the schema-driven jsonb parsing the query
+ *  builder does — a jsonb column from a RETURNS TABLE function comes back as a JSON *string*. The
+ *  in-process resolveSecretValue reads material/config/metadata as parsed objects, so normalize
+ *  here or the broker would hand resolveVersion a string and the R3 metadata guard would see a
+ *  string (asRecord → null → guard silently skipped). Objects (or null) pass through untouched. */
+function asJsonb(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
 /** Mirrors secrets.ts errorCode (not exported); classifies the audit error_code. */
 function brokerErrorCode(err: unknown): string {
   if (err instanceof SecretCandidateUnavailableError) return err.code;
@@ -73,7 +87,7 @@ async function loadCandidateRowsViaBroker(operatorDb: Db, args: ResolveArgs): Pr
         connectionOrganizationId: (r.connection_organization_id as string | null) ?? null,
         connectionOwnerUserId: (r.connection_owner_user_id as string | null) ?? null,
         executionTargetId: (r.execution_target_id as string | null) ?? null,
-        config: (r.config as Record<string, unknown>) ?? {},
+        config: (asJsonb(r.config) as Record<string, unknown>) ?? {},
         secretRef: (r.secret_ref as string | null) ?? null,
       }),
     )
@@ -133,8 +147,9 @@ async function resolveSecretValueViaBroker(
       throw new SecretCandidateUnavailableError("secret_inactive", "Secret is not active");
     }
     // R3: mirror resolveSecretValue — refuse resolving an mcp:* OAuth bundle outside the broker's
-    // own consumer context. Function B returns secret_provider_metadata for exactly this check.
-    assertMcpOAuthResolutionAllowedByMetadata(bundle.secret_provider_metadata, ctx);
+    // own consumer context. Function B returns secret_provider_metadata for exactly this check
+    // (asJsonb so a string-encoded jsonb doesn't defeat the metadata guard).
+    assertMcpOAuthResolutionAllowedByMetadata(asJsonb(bundle.secret_provider_metadata), ctx);
     if (shouldEnforceSecretBinding(ctx) && bundle.binding_found !== true) {
       throw new SecretCandidateUnavailableError("secret_unbound", "Secret is not bound to this consumer path");
     }
@@ -157,11 +172,11 @@ async function resolveSecretValueViaBroker(
         id: bundle.secret_provider_config_id as string,
         provider: secretProvider,
         status: bundle.provider_config_status as string,
-        config: (bundle.provider_config_config as Record<string, unknown>) ?? {},
+        config: (asJsonb(bundle.provider_config_config) as Record<string, unknown>) ?? {},
       } as SecretProviderVaultRuntimeConfig;
     }
     const value = await getSecretProvider(secretProvider as Parameters<typeof getSecretProvider>[0]).resolveVersion({
-      material: bundle.version_material as Record<string, unknown> as never,
+      material: asJsonb(bundle.version_material) as Record<string, unknown> as never,
       externalRef: (bundle.secret_external_ref as string | null) ?? null,
       providerConfig,
       versionSelector: "latest",
