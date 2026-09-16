@@ -57,7 +57,6 @@ import {
   OrphanQuarantineRejection,
   SecretResolveRejection,
   authorizeSecretResolve,
-  MEMBERSHIP_CAPABLE_OWNER_KINDS,
   TERMINAL_ATTEMPT_STATUSES,
   type ActiveFenceRequest,
   type SecretRefKind,
@@ -4615,23 +4614,12 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
       // job row must exist; a missing row is a non-disclosing refusal, never an oracle.
       if (!jobRow) throw new SecretResolveRejection("unknown_ref_kind");
 
-      // For a MEMBERSHIP-CAPABLE-owner-bound handle, re-check the owner's ACTIVE company
-      // membership in the SAME tx (membership loss DENIES — re-check-at-resolve, invariant
-      // #5). `null` when no membership query is needed: an unowned handle OR an owner whose
-      // kind can never have a membership row.
-      //
-      // `company_memberships` rows are only ever `user`/`agent` (MEMBERSHIP_CAPABLE_OWNER_KINDS).
-      // A distributed run's company provider_key handle is owner-bound to the WORKER/SANDBOX
-      // executor (Decision #121 frozen executor authority — never `agent`), which is never a
-      // company member, so querying it would always return 0 rows and (before the gate in
-      // `authorizeSecretResolve` rule 6) deny EVERY agent-executed run with
-      // `owner_membership_lost`. The decision now exempts substrate owners — their liveness
-      // is the fence, not a membership — so this query is BOTH pointless and ignored for
-      // them; skip it and leave `ownerMembershipActive` null (DE-29). A membership-capable
-      // `agent` owner is still queried and re-checked, unchanged.
+      // For an owner-bound handle, re-check the owner's ACTIVE company membership in the
+      // SAME tx (membership loss DENIES — re-check-at-resolve, invariant #5). `null` when
+      // the handle is not owner-bound (no membership query needed).
       const ownerBound = !!(row.ownerPrincipalKind && row.ownerPrincipalId);
       let ownerMembershipActive: boolean | null = null;
-      if (ownerBound && (MEMBERSHIP_CAPABLE_OWNER_KINDS as readonly string[]).includes(row.ownerPrincipalKind!)) {
+      if (ownerBound) {
         const [membership] = await tx
           .select({ id: companyMemberships.id })
           .from(companyMemberships)
