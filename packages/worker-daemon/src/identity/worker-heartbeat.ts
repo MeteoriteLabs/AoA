@@ -35,14 +35,16 @@ export interface SendHeartbeatDeps {
 export async function sendHeartbeat(deps: SendHeartbeatDeps): Promise<"ok" | "failed"> {
   const now = deps.now ?? (() => Date.now());
   const newProofId = deps.newProofId ?? (() => `prf_${randomBytes(24).toString("base64url")}`);
-  const correlationId = (deps.newCorrelationId ?? (() => randomUUID()))();
 
   try {
+    // Everything that can throw lives INSIDE this try — the id INVOCATIONS (correlationId, proofId,
+    // now) and signing (crypto/canonicalization) as well as transport — so the documented "NEVER
+    // THROWS" contract is literally true for ANY caller, not only the loop (which already wraps this
+    // call defensively). The `now`/`newProofId` *default resolution* above is a plain `??` that
+    // cannot throw; only their invocation can, which is here.
+    const correlationId = (deps.newCorrelationId ?? (() => randomUUID()))();
     // Body MUST match workerExecutionTargetHeartbeatSchema (`.strict()`): only { status }.
     const bytes = Buffer.from(JSON.stringify({ status: "active" }), "utf8");
-    // Inside the try: signing (crypto/canonicalization) is the other throw source besides transport,
-    // so keeping it here makes the documented "NEVER THROWS" contract literally true for any caller
-    // (not only the loop, which already wraps this call defensively).
     const proof = signDeviceProof({
       method: "POST",
       path: deps.client.heartbeatPath,
