@@ -2,7 +2,7 @@
 
 **Implemented interface overlay:** [First-batch results](../first-canvas-batch-results.md) records the approved generic implementation, review corrections and evidence. The reference reducer below remains illustrative; implemented `panel-state.ts`, `panel-layout.ts` and `panel-history.ts` include the complete runtime validation, optional geometry `expectedRect` guard and bounded receipt reconciliation. Later persistence and real-route acceptance remain separate.
 
-> September 12 correction: this is an unapproved coding-plan draft requiring independent review. Implementation was premature and is paused; no test result grants approval. [Planning reset](../planning-reset.md) controls current work. Reassess this reference plan independently of the isolated code, then obtain explicit approval before implementation.
+> Historical September 12 correction: the premature draft was paused under the [planning reset](../planning-reset.md). Subsequent review and TK’s explicit first-batch approval are recorded in [first-batch results](../first-canvas-batch-results.md). That approval covers the bounded generic implementation only; the excluded earlier worktree remains untouched and test results do not authorize later batches.
 
 **Goal:** One content-keyed panel controller consistently handles open/focus/move/resize/pin/minimize/maximize/restore/close through all entry routes.
 

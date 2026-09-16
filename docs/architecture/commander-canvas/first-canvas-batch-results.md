@@ -1,10 +1,11 @@
 # First Canvas implementation batch
 
-**Status: implementation in progress; final qualification pending.** TK approved starting this bounded batch with “lets start” after reviewing the base, execution sequence and isolated worktree. This record supersedes the earlier “feature coding unstarted” status for these packages only.
+**Status: source implementation complete and fully qualified; awaiting TK demonstration review.** TK approved starting this bounded batch with “lets start” after reviewing the base, execution sequence and isolated worktree. This record supersedes the earlier “feature coding unstarted” status for these packages only.
 
 ## Scope and source
 
 - Branch: `codex/universe-interface`, isolated `.worktrees/universe-interface` checkout.
+- Final source/tests revision under qualification: `6659dede9af18e462cabca7df0a4686da8982dd2`.
 - Starting planning revision: `53e1ece01dd5b4be6c987af5950f1ea50fa4e4a7`.
 - Adopted replatform revision: `b48132dac0f3435e017915e1e21ef1d66a39d0cd`. Remote replatform still matched at batch preflight; no new merge or rebase was required.
 - Approved work: `E8.1/1.a` pure preference contracts and `E1.1/1–3` shared registry, geometry history, controlled React Flow frame and internal browser harness.
@@ -20,8 +21,9 @@ The internal harness demonstrates generic task-like, artifact and iframe content
 | React Flow dependency | `cf0d609f3`: exact `@xyflow/react@12.11.6`, manifest plus generated lockfile; frozen install and actual runtime exports checked |
 | Pure controller/history | `fe3b356ca` plus `03d3244a8`: 43 focused tests and targeted strict TypeScript; independent review caught receipt-wide ordinal consistency, corrected and re-reviewed |
 | Controlled frame | `e40313915` through `cf947c356`: 68 focused tests and UI typecheck; independent reviews corrected resize targets, bounded opening, cancellation fencing, child-ready focus and delayed camera completion |
-| Actual browser journey | 43 actual Chromium cases passed on `cf947c356`, zero retries/skips; final artifact packaging and whole-batch review pending |
-| Full modified-source qualification | Pending exact-source typecheck, complete test suite and build |
+| Actual browser journey | 47 actual Chromium cases passed on `6659dede9`, zero retries, skips, flaky cases or unexpected errors; 61.147 seconds |
+| Final correction wave | `6659dede9`: 75 focused UI tests and UI/browser typechecks pass; I1–I3 and M1–M7 corrected; scoped re-review APPROVED with zero residuals |
+| Full modified-source qualification | PASSED on `6659dede9`: 16 exact-source Linux gates green — install, 6 package builds, exports, citation checks, typecheck, 4 Vitest shards (24,377 passed / 76 skipped) and final build (`qualification-6659dede9a.json`) |
 | User experience acceptance | Pending demonstration and TK review |
 
 The existing Linux baseline certificate is preserved. A fresh qualification checkout at `/workspace/universe-canvas-20260913` uses the established non-root test container. Its initial online dependency installation failed with DNS `EAI_AGAIN`; transferring the four already integrity-addressed host-cache packages allowed a frozen offline install without manifest or lockfile changes. This environment preparation is not a source qualification result.
@@ -41,6 +43,24 @@ These refinements make existing identity and compare-before-write requirements e
 ## Interaction failures caught and corrected
 
 Actual pointer tests exposed incorrect resize hit stacking, lost focus on initial open/restore, and camera rollback at nondefault zoom. Cancel tests also exposed late gesture callbacks and a reentrant observer edit being overwritten. Each fix has a regression and scoped review. The camera defect came from delayed React Flow internal sync completions and earlier native drag completions replaying stale coordinates; only a native completion matching the current camera can commit. These generic-frame corrections do not certify the old mock or real task-entry routes.
+
+## Final correction coverage
+
+The whole-batch review identified three local correctness gaps: a contradictory-company content mapping could invoke its renderer, a completed human gesture could incorrectly claim an external edit in undo history, and a sibling lifecycle interruption could publish an older state after rollback. Five regressions reproduced those failures before correction. Final completion keeps only a gesture-owned accepted rectangle, checks content identity before rendering, and publishes the final accepted state after lifecycle cancellation.
+
+The same bounded pass corrected background-resize focus, inactive header brightness, scope camera diagnostics, incarnation attributes, resize callback metadata, the recovery focus target and internal toolbar organization. A new browser regression caught an introduced 12 px recovery-row shift; matching its existing height corrected it without changing assertions. These details and their failed/passing runs will be preserved with the final evidence.
+
+## Demonstration and reproduction
+
+Use the internal Vite entry `/universe-harness.html`. The coordinator preview is at `http://127.0.0.1:5184/universe-harness.html` while the local server is running. It is a generic engineering fixture, not the finished Universe visual design or a public application route.
+
+1. Open Task, Artifact and Iframe fixtures. Drag their headers and resize any edge/corner at Zoom 0.5, 1 and 2.
+2. Click an exposed panel or resize its exposed edge to bring it forward. Select and scroll body content without moving the canvas.
+3. Enter a draft, minimize and restore; maximize, resize the browser and restore. Content stays mounted and normal geometry is retained.
+4. Pin a panel: human movement remains available, while Commander arrangement refuses it. Undo/redo changes geometry only.
+5. Close one panel and verify its sibling remains; reopen gets a fresh incarnation. Missing/throwing fixtures retain operable frame controls.
+
+Reproduce the permanent browser gate with `pnpm exec playwright test --config tests/universe-canvas/playwright.config.ts`. It starts its own Vite-only server on 127.0.0.1:5183 with one Chromium worker and zero retries. Narrow/coarse targets are browser emulation, not touch-hardware qualification. The 1/10/50-panel timings include test-runner overhead and are samples, not performance guarantees.
 
 ## Completion boundary
 
