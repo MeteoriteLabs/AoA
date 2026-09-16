@@ -4,7 +4,12 @@ import { providerAssignments, providerConnections } from "@armyofagents/db";
 import { and, eq, isNull, or, sql } from "drizzle-orm";
 import type { CliAuthTopology } from "./cli-auth-topology.js";
 import { secretService } from "./secrets.js";
-import { companyKeyTargetForAdapter, shouldEnforceSecretBinding } from "./secrets.js";
+import {
+  assertMcpOAuthResolutionAllowedByMetadata,
+  companyKeyTargetForAdapter,
+  shouldEnforceSecretBinding,
+} from "./secrets.js";
+import { unprocessable } from "../errors.js";
 import { getSecretProvider } from "../secrets/provider-registry.js";
 import { SecretCandidateUnavailableError } from "../secrets/secret-candidate-errors.js";
 import type { SecretProviderVaultRuntimeConfig } from "../secrets/types.js";
@@ -119,10 +124,17 @@ async function resolveSecretValueViaBroker(
     if (bundle.secret_is_deleted === true) {
       throw new SecretCandidateUnavailableError("secret_missing", "Secret not found");
     }
-    if (bundle.secret_company_id !== args.companyId) throw new Error("Secret must belong to same company");
+    // Function B already scopes its row by `cs.company_id = p_company_id` (the DB-layer fail-closed
+    // guard on the one material-bearing definer), so this is the Node backstop matching
+    // resolveSecretValue's own company check. unprocessable() (HTTP 422) so brokerErrorCode audits
+    // it as http_422 exactly like the direct path.
+    if (bundle.secret_company_id !== args.companyId) throw unprocessable("Secret must belong to same company");
     if (bundle.secret_status !== "active") {
       throw new SecretCandidateUnavailableError("secret_inactive", "Secret is not active");
     }
+    // R3: mirror resolveSecretValue — refuse resolving an mcp:* OAuth bundle outside the broker's
+    // own consumer context. Function B returns secret_provider_metadata for exactly this check.
+    assertMcpOAuthResolutionAllowedByMetadata(bundle.secret_provider_metadata, ctx);
     if (shouldEnforceSecretBinding(ctx) && bundle.binding_found !== true) {
       throw new SecretCandidateUnavailableError("secret_unbound", "Secret is not bound to this consumer path");
     }
@@ -134,9 +146,9 @@ async function resolveSecretValueViaBroker(
     }
     let providerConfig: SecretProviderVaultRuntimeConfig | null = null;
     if (bundle.secret_provider_config_id) {
-      if (bundle.provider_config_found !== true) throw new Error("Secret provider config not found");
+      if (bundle.provider_config_found !== true) throw unprocessable("Secret provider config not found");
       if (bundle.provider_config_company_id !== args.companyId || bundle.provider_config_provider !== secretProvider) {
-        throw new Error("Secret provider config does not match secret");
+        throw unprocessable("Secret provider config does not match secret");
       }
       if (bundle.provider_config_disabled === true) {
         throw new SecretCandidateUnavailableError("provider_config_disabled", "Secret provider config is disabled");

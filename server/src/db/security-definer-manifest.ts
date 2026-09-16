@@ -192,7 +192,7 @@ export const SECURITY_DEFINER_FUNCTION_MANIFEST: readonly SecurityDefinerFunctio
       "public.company_secret_bindings",
     ],
     executionConfig: ['search_path=""'],
-    bodySha256: "9f4e5d08ed0e76d16a2df1f96e9ab0c3f2cd586350c79e43419c26e6ec3d979b",
+    bodySha256: "b1106fd8f4928b7169eb90521174feb04e828ba707fcf77e9d830e1c954a8095",
     rationale:
       "E7-1 provider-credential broker (migration 0281). Returns one Company secret's metadata, " +
       "the resolved version's ENCRYPTED material, the provider-config row, and whether a binding " +

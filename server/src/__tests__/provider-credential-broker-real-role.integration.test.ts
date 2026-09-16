@@ -31,6 +31,7 @@ const OTHER_ORG = "d7000000-0000-4000-8000-000000000011";
 const NEIGHBOUR = "d7000000-0000-4000-8000-000000000012";
 const NEIGHBOUR_CONN = "d7000000-0000-4000-8000-000000000013";
 const NEIGHBOUR_ASSIGN = "d7000000-0000-4000-8000-000000000014";
+const NEIGHBOUR_SECRET = "d7000000-0000-4000-8000-000000000015";
 
 const PROVIDER = "anthropic";
 const CONFIG_PATH = `provider_connection.${CONNECTION}`;
@@ -92,6 +93,9 @@ async function setUp(): Promise<Fixture> {
     await admin`INSERT INTO provider_assignments
       (id, organization_id, company_id, connection_id, provider, scope_type, priority, state)
       VALUES (${NEIGHBOUR_ASSIGN}, ${OTHER_ORG}, NULL, ${NEIGHBOUR_CONN}, ${PROVIDER}, 'org_default', 0, 'active')`;
+    // A secret owned by the neighbour company — Function B must refuse to bundle it for COMPANY.
+    await admin`INSERT INTO company_secrets (id, company_id, organization_id, name, provider, status, latest_version)
+      VALUES (${NEIGHBOUR_SECRET}, ${NEIGHBOUR}, ${OTHER_ORG}, 'neighbour-key', 'local_encrypted', 'active', 1)`;
 
     return { appDb, operatorDb, admin, teardown };
   } catch (error) {
@@ -160,10 +164,23 @@ describe.skipIf(!RUN)("E7-1 provider-credential broker on a real aoa_operator co
     expect(bundle.secret_status).toBe("active");
     expect(bundle.secret_is_deleted).toBe(false);
     expect(bundle.secret_provider).toBe("local_encrypted");
+    expect(bundle.secret_provider_metadata).toBeNull(); // carried for the R3 mcp-oauth guard
     expect(Number(bundle.resolved_version)).toBe(1);
     expect(bundle.version_found).toBe(true);
     expect(bundle.version_material).toEqual(MATERIAL);
     expect(bundle.binding_found).toBe(true);
+  });
+
+  it("resolve_company_secret_bundle refuses a secret owned by another company (DB-layer scoping)", async () => {
+    // The material-bearing definer is scoped by `cs.company_id = p_company_id`, so asking for the
+    // neighbour's secret under COMPANY returns zero rows rather than that tenant's metadata.
+    const rows = rowsOf<Record<string, unknown>>(
+      await fixture!.operatorDb.execute(sql`
+        SELECT * FROM public.resolve_company_secret_bundle(
+          ${COMPANY}::uuid, ${NEIGHBOUR_SECRET}::uuid, NULL::integer,
+          ${TARGET_TYPE}::text, ${TARGET_ID}::text, ${CONFIG_PATH}::text)`),
+    );
+    expect(rows).toHaveLength(0);
   });
 
   it("resolve_company_secret_bundle reports binding_found=false for an unbound consumer path", async () => {

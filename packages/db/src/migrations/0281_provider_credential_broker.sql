@@ -91,12 +91,16 @@ GRANT EXECUTE ON FUNCTION public.resolve_provider_assignment_candidates(uuid, uu
 --> statement-breakpoint
 
 -- ---------------------------------------------------------------------------------------------
--- Function B — secret bundle read. One row (or zero if the secret id does not exist),
--- carrying everything resolveSecretValue's DB layer reads: the secret metadata, the resolved
+-- Function B — secret bundle read. One row (or zero when no secret with that id belongs to the
+-- company), carrying everything resolveSecretValue's DB layer reads: the secret metadata
+-- (including provider_metadata, so the R3 mcp-oauth guard is reproducible in Node), the resolved
 -- version's encrypted material (COALESCE(p_version, latest_version)), the provider-config row
--- (if any), and whether a binding exists for the given consumer path. Every check
--- (status='active', deleted_at IS NULL, company match, binding-required, provider-config
--- disabled, version present) stays in Node. p_version NULL means "latest".
+-- (if any), and whether a binding exists for the given consumer path. The row is scoped by
+-- `cs.company_id = p_company_id` (defence in depth: A and C scope by company too, and this is the
+-- one material-bearing definer — it fails closed at the DB rather than trusting only the Node
+-- company check). Every policy check (status='active', deleted_at IS NULL, company match,
+-- mcp-oauth guard, binding-required, provider-config disabled, version present) still runs in
+-- Node. p_version NULL means "latest".
 -- ---------------------------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.resolve_company_secret_bundle(
   p_company_id   uuid,
@@ -113,6 +117,7 @@ RETURNS TABLE (
   secret_is_deleted       boolean,
   secret_provider         text,
   secret_external_ref     text,
+  secret_provider_metadata jsonb,
   secret_latest_version   integer,
   secret_provider_config_id uuid,
   resolved_version        integer,
@@ -138,6 +143,7 @@ AS $$
     (cs.deleted_at IS NOT NULL) AS secret_is_deleted,
     cs.provider,
     cs.external_ref,
+    cs.provider_metadata,
     cs.latest_version,
     cs.provider_config_id,
     COALESCE(p_version, cs.latest_version) AS resolved_version,
@@ -162,7 +168,8 @@ AS $$
     ON csv.secret_id = cs.id AND csv.version = COALESCE(p_version, cs.latest_version)
   LEFT JOIN public.company_secret_provider_configs pcfg
     ON pcfg.id = cs.provider_config_id
-  WHERE cs.id = p_secret_id;
+  WHERE cs.id = p_secret_id
+    AND cs.company_id = p_company_id;
 $$;
 --> statement-breakpoint
 REVOKE ALL ON FUNCTION public.resolve_company_secret_bundle(uuid, uuid, integer, text, text, text) FROM PUBLIC;

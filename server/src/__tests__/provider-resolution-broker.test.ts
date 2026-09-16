@@ -94,6 +94,7 @@ function bundleRow(overrides: Record<string, unknown> = {}) {
     secret_is_deleted: false,
     secret_provider: "local_encrypted",
     secret_external_ref: null,
+    secret_provider_metadata: null,
     secret_latest_version: 1,
     secret_provider_config_id: null,
     resolved_version: 1,
@@ -274,6 +275,39 @@ describe("broker resolveSecretValueForConnection (Function B + C path)", () => {
       errorCode: "secret_inactive",
       provider: "local_encrypted",
     });
+  });
+
+  it("refuses an mcp-oauth-managed secret for a generic consumer (R3 guard parity)", async () => {
+    // Broker parity with resolveSecretValue's assertMcpOAuthResolutionAllowed: an mcp:* OAuth
+    // bundle must not be resolvable by a generic (non-broker) consumer, even on the broker path.
+    const { db, auditCalls } = fakeOperatorDb({
+      bundle: () => [bundleRow({ secret_provider_metadata: { purpose: "mcp_oauth" } })],
+    });
+    setProviderCredentialBrokerDb(db);
+    const deps = buildResolveDeps({} as never, MULTI);
+    const args = makeArgs({
+      context: { consumerType: "agent", consumerId: "agent-1", actorType: "agent", actorId: "agent-1" },
+    });
+    await expect(deps.resolveSecretValueForConnection({} as never, ROW, args)).rejects.toMatchObject({
+      status: 422,
+    });
+    // secretProvider is captured, so the refusal still writes a failure audit (http_422).
+    expect(auditCalls).toHaveLength(1);
+    expect(auditOutcome(auditCalls[0]!)).toMatchObject({ outcome: "failure", errorCode: "http_422" });
+  });
+
+  it("the Node company backstop throws http_422 and audits it (matches the direct path's code)", async () => {
+    // Function B scopes by company in SQL, so this backstop is unreachable in practice; when it
+    // does fire it must audit http_422, not secret_resolve_failed — hence unprocessable().
+    const { db, auditCalls } = fakeOperatorDb({
+      bundle: () => [bundleRow({ secret_company_id: "other-company" })],
+    });
+    setProviderCredentialBrokerDb(db);
+    const deps = buildResolveDeps({} as never, MULTI);
+    await expect(deps.resolveSecretValueForConnection({} as never, ROW, makeArgs())).rejects.toMatchObject({
+      status: 422,
+    });
+    expect(auditOutcome(auditCalls[0]!)).toMatchObject({ outcome: "failure", errorCode: "http_422" });
   });
 
   it("does NOT audit when the secret row is absent (mirrors getById returning null)", async () => {
