@@ -981,3 +981,20 @@ test("panels carry a geometry transition with motion and none under reduced moti
     }
   }
 });
+
+test("arrange routes free panels around a pinned one", async ({ page }) => {
+  await setup(page);
+  const task = frame(page);
+  const taskKey = (await task.getAttribute("data-panel-key"))!;
+  await task.getByRole("button", { name: "Pin panel", exact: true }).click();
+  const pinnedRect = await rect(page, "task");
+  await button(page, "Open artifact").click();
+  await button(page, "Open iframe").click();
+  await button(page, "Arrange").click();
+  // The pinned task does not move and the free panels avoid its area.
+  near(await rect(page, "task"), pinnedRect);
+  const s = await state(page);
+  for (const [key, panel] of Object.entries(s.panels))
+    if (key !== taskKey)
+      expect(overlap(panel.rect, s.panels[taskKey].rect)).toBe(false);
+});

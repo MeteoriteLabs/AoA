@@ -343,13 +343,16 @@ export type TilePolicy = {
  * shrinking into unusable slivers. Screen-space geometry is converted to canvas
  * units the same way `openingRect` does, so tiling is correct at any zoom. The
  * caller filters to the arrangeable set (auto, non-pinned, non-minimized); this
- * function tiles exactly the keys it is given.
+ * function tiles exactly the keys it is given. `avoid` holds occupied rectangles
+ * (e.g. pinned panels, in canvas units) the grid routes around: a colliding cell
+ * is skipped and the grid grows downward, so free panels never land under a pin.
  */
 export function arrangeLayout(
   order: string[],
   usable: Bounds,
   view: Viewport,
-  policy: TilePolicy
+  policy: TilePolicy,
+  avoid: Rect[] = []
 ): Record<string, Rect> {
   validateView(view, usable);
   const maxWidth = policy.maxWidth ?? Infinity;
@@ -386,21 +389,38 @@ export function arrangeLayout(
   const gridHeight = rows * tileHeight + policy.gap * (rows + 1);
   const offsetX = Math.max(0, (usable.width - gridWidth) / 2);
   const offsetY = Math.max(0, (usable.height - gridHeight) / 2);
-  const result: Record<string, Rect> = {};
-  order.forEach((key, index) => {
-    const col = index % cols;
-    const row = Math.floor(index / cols);
+  const cellRect = (cell: number): Rect => {
+    const col = cell % cols;
+    const row = Math.floor(cell / cols);
     const screenX =
       usable.left + offsetX + policy.gap + col * (tileWidth + policy.gap);
     const screenY =
       usable.top + offsetY + policy.gap + row * (tileHeight + policy.gap);
-    result[key] = {
+    return {
       x: (screenX - view.x) / view.zoom,
       y: (screenY - view.y) / view.zoom,
       width: tileWidth / view.zoom,
       height: tileHeight / view.zoom,
     };
-  });
+  };
+  const hits = (rect: Rect) =>
+    avoid.some(
+      (a) =>
+        rect.x < a.x + a.width &&
+        a.x < rect.x + rect.width &&
+        rect.y < a.y + a.height &&
+        a.y < rect.y + rect.height
+    );
+  const result: Record<string, Rect> = {};
+  const guard = order.length + (avoid.length + 1) * cols + 64;
+  let cell = 0;
+  for (const key of order) {
+    let rect = cellRect(cell);
+    for (let tries = 0; hits(rect) && tries < guard; tries++)
+      rect = cellRect(++cell);
+    result[key] = rect;
+    cell++;
+  }
   return result;
 }
 

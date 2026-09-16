@@ -111,6 +111,21 @@ Add **Arrange**, **Fit**, and an **Auto-tile: on/off** toggle; wire the existing
 **Verified 2026-09-17:** panel-state 46 unit tests, 85 universe UI unit tests, 50
 real-Chromium browser cases, and UI typecheck (`tsc -b`) all green.
 
+## Post-review polish (2026-09-17)
+
+Follow-ups from TK's live review of the tiled layout, all shipped on this branch:
+
+- **Reflow on close/minimize/restore** — closing a panel no longer leaves a hole;
+  the survivors re-flow and a lone panel grows back (this is also "how a panel
+  becomes bigger" — close its siblings).
+- **Light motion** — opt-in `.universe-motion` layer: geometry changes glide and
+  panels fade in, suppressed during gestures and under reduced motion, off by
+  default (the product enables it). Full lifecycle motion is still E1.6.
+- **Stronger selection** — the active panel's header tint (20%) and title weight
+  are more pronounced and inactive titles recede — still tint/brightness only.
+- **Arrange around pinned** — Arrange routes free panels around pinned ones
+  instead of sliding under them (`arrangeLayout` gained an optional `avoid` set).
+
 ## Out of scope (later slices)
 
 - Persisting `autoTile` / `placement` (E1.2 layout persistence; E8.1 preference for

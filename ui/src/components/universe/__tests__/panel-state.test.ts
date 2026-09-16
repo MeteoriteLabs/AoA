@@ -551,6 +551,12 @@ describe("tiled arrange", () => {
       arrangeLayout(keys(1), usable, view, { ...capped, maxWidth: 100 })
     ).toThrow(RangeError);
   });
+  it("routes tiles around avoided (pinned) rectangles", () => {
+    const usable = { left: 0, top: 0, width: 1000, height: 800 };
+    const avoid = [{ x: 0, y: 0, width: 500, height: 400 }];
+    const r = arrangeLayout(keys(4), usable, view, policy, avoid);
+    for (const key of keys(4)) expect(overlaps(r[key], avoid[0])).toBe(false);
+  });
   it("rejects invalid views and tile policies", () => {
     const usable = { left: 0, top: 0, width: 800, height: 600 };
     expect(() =>

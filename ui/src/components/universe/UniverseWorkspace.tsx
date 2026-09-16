@@ -367,9 +367,12 @@ const ScopedWorkspace = forwardRef<WorkspaceHandle, WorkspaceProps>(
         );
       });
       if (order.length === 0) return;
+      const avoid = s.order
+        .filter((key) => s.panels[key].pinned && !s.panels[key].minimized)
+        .map((key) => s.panels[key].rect);
       dispatch({
         type: "arrange",
-        rects: arrangeLayout(order, usable, camera.current, TILE_POLICY),
+        rects: arrangeLayout(order, usable, camera.current, TILE_POLICY, avoid),
       });
     };
     retileRef.current = retile;
