@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import { createHeartbeatLoop } from "../poll/heartbeat-loop.js";
 import { SessionTerminalError, type SessionProvider } from "../poll/poll-loop.js";
 import type { WorkerSession } from "../enrollment/enroll.js";
+import type { DeviceKey } from "../identity/device-key.js";
+import type { ControlPlaneClient } from "../transport/client.js";
 
 const SESSION: WorkerSession = {
   token: "t",
@@ -41,8 +43,8 @@ function manualClock() {
   };
 }
 
-const stubKey = {} as never;
-const stubClient = {} as never;
+const stubKey = {} as unknown as DeviceKey;
+const stubClient = {} as unknown as ControlPlaneClient;
 
 describe("createHeartbeatLoop", () => {
   it("beats immediately and resolves firstBeat=ok", async () => {

@@ -391,6 +391,8 @@ export {
   BACKOFF_SLEEP_METRIC,
   CAPACITY_FREE_SLOTS_METRIC,
 } from "./poll/poll-loop.js";
+export { createHeartbeatLoop, type HeartbeatLoop } from "./poll/heartbeat-loop.js";
+export { sendHeartbeat } from "./identity/worker-heartbeat.js";
 export type {
   PollRequestEnvelope,
   BuildPollRequestInput,

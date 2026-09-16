@@ -54,6 +54,7 @@ import { deriveHelloProvisioning } from "../enrollment/hello-provisioning.js";
 import { buildDesktopHello } from "../enrollment/desktop-hello.js";
 import { deviceKeyFromPkcs8Der } from "../identity/device-key.js";
 import { createSessionProvider } from "../poll/poll-loop.js";
+import { createHeartbeatLoop, type HeartbeatLoop } from "../poll/heartbeat-loop.js";
 import { sha256Hex } from "../identity/device-proof.js";
 import type { WorkerCapacity } from "@armyofagents/worker-protocol";
 import {
@@ -477,6 +478,7 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
   });
 
   let runtime: DispatchRuntime | undefined;
+  let heartbeatLoop: HeartbeatLoop | undefined;
   // ★ The read is the ONLY remaining gate exactly when the first answer is `no_self_model` — that
   // is the whole reason for the two-pass shape. This boolean is the load-bearing guard: deleting
   // the `reason === "no_self_model"` check makes it fire for a cheaper refusal (e.g. `no_provider`),
@@ -562,13 +564,43 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
           logger,
           metrics,
         });
-        // ★ NOT awaited beyond composition: a terminal poll-loop stop does not exit the process;
-        // the daemon stays UP serving health, the same "healthy and inert" degradation.
-        runtime.start();
-        logger.info(
-          { workerId: identity.workerId, targetId: identity.targetId },
-          "worker-daemon dispatch COMPOSED; leasing through the poll loop",
-        );
+        // Wave-4 — seed the heartbeat BEFORE the poll loop. authorityCurrent requires a fresh
+        // worker.lastSeenAt (device-liveness.ts); nothing else advances it, and a poll issued
+        // before the first heartbeat is denied and returned as `target_revoked`, which the poll
+        // loop treats as terminal and never retries. So start the heartbeat driver, wait for its
+        // first SUCCESSFUL beat (bounded by a boot timeout), and only then start the poll loop.
+        heartbeatLoop = createHeartbeatLoop({
+          session: sessionProvider,
+          key,
+          client: controlPlaneClient,
+          intervalMs: config.heartbeatIntervalMs,
+          logger,
+          metrics,
+        });
+        heartbeatLoop.start();
+        const HEARTBEAT_BOOT_TIMEOUT_MS = 30_000;
+        const firstBeat = await Promise.race([
+          heartbeatLoop.firstBeat,
+          new Promise<"timeout">((resolve) => {
+            setTimeout(() => resolve("timeout"), HEARTBEAT_BOOT_TIMEOUT_MS).unref?.();
+          }),
+        ]);
+        if (firstBeat === "ok") {
+          // ★ NOT awaited beyond composition: a terminal poll-loop stop does not exit the process;
+          // the daemon stays UP serving health, the same "healthy and inert" degradation.
+          runtime.start();
+          logger.info(
+            { workerId: identity.workerId, targetId: identity.targetId },
+            "worker-daemon dispatch COMPOSED; heartbeat seeded; leasing through the poll loop",
+          );
+        } else {
+          // No heartbeat seed → a poll would be denied target_revoked and kill the loop for good.
+          // Stay healthy-and-inert; the heartbeat driver keeps retrying.
+          logger.warn(
+            { workerId: identity.workerId, targetId: identity.targetId, firstBeat },
+            "worker-daemon heartbeat did not seed before boot timeout; NOT starting the poll loop (healthy and inert)",
+          );
+        }
       } else {
         logger.info(
           { reason: dispatch2.reason, ...(dispatch2.logPayload ?? {}) },
@@ -615,10 +647,16 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
   const eventOutbox = runtime?.eventOutbox ?? deps.eventOutbox;
   const leaseSteps = leasing ? createLeaseLifecycleSteps(leasing, renewal) : [];
   const outboxSteps = eventOutbox ? createEventOutboxShutdownSteps(eventOutbox) : [];
+  // Wave-4 — stop the heartbeat driver ahead of the health-server stop (mirrors lease-stop
+  // ordering). Synchronous flag flip; wrapped async to match the step signature.
+  const heartbeatStopSteps = heartbeatLoop
+    ? [{ name: "heartbeat", stop: async () => { heartbeatLoop!.stop(); } }]
+    : [];
   const shutdown = createShutdownHandler({
     steps: [
       ...leaseSteps,
       ...outboxSteps,
+      ...heartbeatStopSteps,
       { name: "health-server", stop: () => health.close() },
       // LAST, after health closes. While the host drains, `status` should still find the
       // record — the same reason `stop-host` is last in the uninstall plan. Once health is
