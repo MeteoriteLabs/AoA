@@ -74,9 +74,12 @@
   background: transparent;
   color: inherit;
   cursor: pointer;
+  transition: background-color var(--motion-fast, 140ms) ease,
+    color var(--motion-fast, 140ms) ease;
 }
 .universe-panel-actions button:hover {
-  background: var(--card-2, #e8e8ea);
+  background: var(--card, #ffffff);
+  color: var(--text, #18181b);
 }
 .universe-workspace :focus-visible {
   outline: 2px solid var(--brand-focus-ring, #d95059);
@@ -115,9 +118,22 @@
 .react-flow__resize-control.universe-resize-edge.right {
   width: var(--universe-hit-size);
 }
-.react-flow__resize-control.universe-resize-corner:hover,
-.react-flow__resize-control.universe-resize-edge:hover {
-  background: color-mix(in srgb, var(--brand, #c43d46) 45%, transparent);
+/* Resize affordance is cursor-only: no colored edge/corner highlight on hover. */
+.react-flow__resize-control.universe-resize-edge.top,
+.react-flow__resize-control.universe-resize-edge.bottom {
+  cursor: ns-resize;
+}
+.react-flow__resize-control.universe-resize-edge.left,
+.react-flow__resize-control.universe-resize-edge.right {
+  cursor: ew-resize;
+}
+.react-flow__resize-control.universe-resize-corner.top.left,
+.react-flow__resize-control.universe-resize-corner.bottom.right {
+  cursor: nwse-resize;
+}
+.react-flow__resize-control.universe-resize-corner.top.right,
+.react-flow__resize-control.universe-resize-corner.bottom.left {
+  cursor: nesw-resize;
 }
 @media (pointer: coarse) {
   .react-flow__resize-control.universe-resize-corner {
