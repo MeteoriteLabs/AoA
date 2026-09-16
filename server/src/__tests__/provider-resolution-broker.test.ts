@@ -24,9 +24,12 @@ vi.mock("drizzle-orm", () => ({
   sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({ __strings: strings, __values: values }),
 }));
 
-const resolveVersionMock = vi.fn(async () => "sk-decrypted-value");
+// vi.hoisted so the vi.mock factory (hoisted above imports) can reference the spy safely.
+const { mockResolveVersion } = vi.hoisted(() => ({
+  mockResolveVersion: vi.fn(async () => "sk-decrypted-value"),
+}));
 vi.mock("../secrets/provider-registry.js", () => ({
-  getSecretProvider: vi.fn(() => ({ resolveVersion: resolveVersionMock })),
+  getSecretProvider: vi.fn(() => ({ resolveVersion: mockResolveVersion })),
   listSecretProviders: vi.fn(() => []),
   checkSecretProviders: vi.fn(async () => []),
 }));
@@ -131,7 +134,7 @@ const ROW = {
 
 afterEach(() => {
   vi.clearAllMocks();
-  resolveVersionMock.mockResolvedValue("sk-decrypted-value");
+  mockResolveVersion.mockResolvedValue("sk-decrypted-value");
 });
 
 describe("broker loadCandidateRows (Function A path)", () => {

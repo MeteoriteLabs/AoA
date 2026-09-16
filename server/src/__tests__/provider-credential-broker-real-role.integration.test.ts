@@ -86,16 +86,18 @@ async function setUp(): Promise<Fixture> {
     await admin`INSERT INTO organizations (id, name, slug) VALUES (${OTHER_ORG}, 'Neighbour org', 'nbr-org')`;
     await admin`INSERT INTO companies (id, organization_id, name, issue_prefix)
       VALUES (${NEIGHBOUR}, ${OTHER_ORG}, 'Neighbour company', 'NBR')`;
+    // A secret owned by the neighbour company — Function B must refuse to bundle it for COMPANY,
+    // and it backs the neighbour connection below (provider_connections_api_key_shape_check
+    // requires an api_key connection to carry a secret_ref; seed it before the connection for the FK).
+    await admin`INSERT INTO company_secrets (id, company_id, organization_id, name, provider, status, latest_version)
+      VALUES (${NEIGHBOUR_SECRET}, ${NEIGHBOUR}, ${OTHER_ORG}, 'neighbour-key', 'local_encrypted', 'active', 1)`;
     await admin`INSERT INTO provider_connections
-      (id, organization_id, company_id, provider, auth_method, state, sharing_policy)
-      VALUES (${NEIGHBOUR_CONN}, ${OTHER_ORG}, ${NEIGHBOUR}, ${PROVIDER}, 'api_key', 'verified', 'owner_only')`;
+      (id, organization_id, company_id, provider, auth_method, secret_ref, state, sharing_policy)
+      VALUES (${NEIGHBOUR_CONN}, ${OTHER_ORG}, ${NEIGHBOUR}, ${PROVIDER}, 'api_key', ${NEIGHBOUR_SECRET}, 'verified', 'owner_only')`;
     // company_id NULL + scope_type org_default: an org-wide default owned by the neighbour org.
     await admin`INSERT INTO provider_assignments
       (id, organization_id, company_id, connection_id, provider, scope_type, priority, state)
       VALUES (${NEIGHBOUR_ASSIGN}, ${OTHER_ORG}, NULL, ${NEIGHBOUR_CONN}, ${PROVIDER}, 'org_default', 0, 'active')`;
-    // A secret owned by the neighbour company — Function B must refuse to bundle it for COMPANY.
-    await admin`INSERT INTO company_secrets (id, company_id, organization_id, name, provider, status, latest_version)
-      VALUES (${NEIGHBOUR_SECRET}, ${NEIGHBOUR}, ${OTHER_ORG}, 'neighbour-key', 'local_encrypted', 'active', 1)`;
 
     return { appDb, operatorDb, admin, teardown };
   } catch (error) {
