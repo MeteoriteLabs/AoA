@@ -479,6 +479,11 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
 
   let runtime: DispatchRuntime | undefined;
   let heartbeatLoop: HeartbeatLoop | undefined;
+  // Wave-4 — the poll loop is started LAZILY, from the heartbeat driver's first successful beat
+  // (see below). `pollLoopStarted` makes that start happen at most once; `shuttingDown` (set by the
+  // signal handlers) prevents starting a poll loop the shutdown steps have already torn down.
+  let pollLoopStarted = false;
+  let shuttingDown = false;
   // ★ The read is the ONLY remaining gate exactly when the first answer is `no_self_model` — that
   // is the whole reason for the two-pass shape. This boolean is the load-bearing guard: deleting
   // the `reason === "no_self_model"` check makes it fire for a cheaper refusal (e.g. `no_provider`),
@@ -545,7 +550,7 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
           if (refreshed !== null) lifecycle.store.set(refreshed);
         }
         const composeRuntime = deps.composeDispatch ?? composeDispatchRuntime;
-        runtime = await composeRuntime({
+        const composed = await composeRuntime({
           // DEP-011 Slice 2b — pass EXACTLY the injected provider path: the desktop `provider`
           // OR the container `makeRunProvider` (composeDispatchRuntime forwards both to the
           // supervisor, which fail-fasts if both are set; the boot gate above refused if neither).
@@ -564,11 +569,17 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
           logger,
           metrics,
         });
-        // Wave-4 — seed the heartbeat BEFORE the poll loop. authorityCurrent requires a fresh
-        // worker.lastSeenAt (device-liveness.ts); nothing else advances it, and a poll issued
-        // before the first heartbeat is denied and returned as `target_revoked`, which the poll
-        // loop treats as terminal and never retries. So start the heartbeat driver, wait for its
-        // first SUCCESSFUL beat (bounded by a boot timeout), and only then start the poll loop.
+        runtime = composed;
+        // Wave-4 — seed the heartbeat, and start the poll loop ONLY after the first SUCCESSFUL beat.
+        // authorityCurrent requires a fresh worker.lastSeenAt (device-liveness.ts); nothing else
+        // advances it, and a poll issued before the first heartbeat is denied `target_revoked`,
+        // which the poll loop treats as terminal and never retries. So gate runtime.start() on
+        // firstBeat === "ok" — LAZILY, not on a bounded boot race: if the control plane is briefly
+        // slow at boot, the poll loop is DELAYED until the first beat eventually lands, instead of an
+        // otherwise-healthy, actively-beating worker being stranded inert until a restart. boot does
+        // NOT block on the beat, so the health server and shutdown handlers come up immediately.
+        // `firstBeat` never rejects (the driver is fail-soft), so this `.then` cannot orphan a
+        // rejection; the heartbeat loop keeps beating regardless (poll-loop start is the only gate).
         heartbeatLoop = createHeartbeatLoop({
           session: sessionProvider,
           key,
@@ -578,29 +589,26 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
           metrics,
         });
         heartbeatLoop.start();
-        const HEARTBEAT_BOOT_TIMEOUT_MS = 30_000;
-        const firstBeat = await Promise.race([
-          heartbeatLoop.firstBeat,
-          new Promise<"timeout">((resolve) => {
-            setTimeout(() => resolve("timeout"), HEARTBEAT_BOOT_TIMEOUT_MS).unref?.();
-          }),
-        ]);
-        if (firstBeat === "ok") {
-          // ★ NOT awaited beyond composition: a terminal poll-loop stop does not exit the process;
+        void heartbeatLoop.firstBeat.then((firstBeat) => {
+          if (firstBeat !== "ok") {
+            // Terminal session before any beat → re-enrollment required. Stay healthy-and-inert.
+            logger.warn(
+              { workerId: identity.workerId, targetId: identity.targetId, firstBeat },
+              "worker-daemon heartbeat terminal before first beat; NOT starting the poll loop (healthy and inert)",
+            );
+            return;
+          }
+          // Start at most once, and never after a shutdown began (which would spin up a poll loop the
+          // shutdown steps just tore down). ★ A terminal poll-loop stop does not exit the process;
           // the daemon stays UP serving health, the same "healthy and inert" degradation.
-          runtime.start();
+          if (pollLoopStarted || shuttingDown) return;
+          pollLoopStarted = true;
+          composed.start();
           logger.info(
             { workerId: identity.workerId, targetId: identity.targetId },
             "worker-daemon dispatch COMPOSED; heartbeat seeded; leasing through the poll loop",
           );
-        } else {
-          // No heartbeat seed → a poll would be denied target_revoked and kill the loop for good.
-          // Stay healthy-and-inert; the heartbeat driver keeps retrying.
-          logger.warn(
-            { workerId: identity.workerId, targetId: identity.targetId, firstBeat },
-            "worker-daemon heartbeat did not seed before boot timeout; NOT starting the poll loop (healthy and inert)",
-          );
-        }
+        });
       } else {
         logger.info(
           { reason: dispatch2.reason, ...(dispatch2.logPayload ?? {}) },
@@ -652,7 +660,7 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
   const heartbeatStopSteps = heartbeatLoop
     ? [{ name: "heartbeat", stop: async () => { heartbeatLoop!.stop(); } }]
     : [];
-  const shutdown = createShutdownHandler({
+  const runShutdown = createShutdownHandler({
     steps: [
       ...leaseSteps,
       ...outboxSteps,
@@ -670,6 +678,14 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
     exit: (code) => deps.proc.exit(code),
     flush: () => logger.flush(),
   });
+  // Wave-4 — flip `shuttingDown` at the very START of any shutdown (signal OR programmatic), BEFORE
+  // the steps run, so a heartbeat first-beat that resolves mid-shutdown cannot start a poll loop the
+  // lease-stop step just drained. The heartbeatStopSteps above also stop the driver; this closes the
+  // narrow window between lease-stop and heartbeat-stop.
+  const shutdown = (signal: ShutdownSignal): Promise<void> => {
+    shuttingDown = true;
+    return runShutdown(signal);
+  };
 
   deps.proc.once("SIGINT", () => {
     void shutdown("SIGINT");

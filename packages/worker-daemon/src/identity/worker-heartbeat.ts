@@ -37,19 +37,21 @@ export async function sendHeartbeat(deps: SendHeartbeatDeps): Promise<"ok" | "fa
   const newProofId = deps.newProofId ?? (() => `prf_${randomBytes(24).toString("base64url")}`);
   const correlationId = (deps.newCorrelationId ?? (() => randomUUID()))();
 
-  // Body MUST match workerExecutionTargetHeartbeatSchema (`.strict()`): only { status }.
-  const bytes = Buffer.from(JSON.stringify({ status: "active" }), "utf8");
-  const proof = signDeviceProof({
-    method: "POST",
-    path: deps.client.heartbeatPath,
-    rawBody: bytes,
-    correlationId,
-    issuedAt: new Date(now()).toISOString(),
-    proofId: newProofId(),
-    key: deps.key,
-  });
-
   try {
+    // Body MUST match workerExecutionTargetHeartbeatSchema (`.strict()`): only { status }.
+    const bytes = Buffer.from(JSON.stringify({ status: "active" }), "utf8");
+    // Inside the try: signing (crypto/canonicalization) is the other throw source besides transport,
+    // so keeping it here makes the documented "NEVER THROWS" contract literally true for any caller
+    // (not only the loop, which already wraps this call defensively).
+    const proof = signDeviceProof({
+      method: "POST",
+      path: deps.client.heartbeatPath,
+      rawBody: bytes,
+      correlationId,
+      issuedAt: new Date(now()).toISOString(),
+      proofId: newProofId(),
+      key: deps.key,
+    });
     const response = await deps.client.heartbeat({
       bytes,
       sessionToken: deps.session.token,
@@ -58,6 +60,6 @@ export async function sendHeartbeat(deps: SendHeartbeatDeps): Promise<"ok" | "fa
     });
     return response.status === 204 ? "ok" : "failed";
   } catch {
-    return "failed"; // transport failure — best-effort, never a throw
+    return "failed"; // signing or transport failure — best-effort, never a throw
   }
 }

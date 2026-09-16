@@ -65,6 +65,9 @@ function fakeClient(over: Record<string, unknown> = {}) {
     sessionRenewPath: "/api/worker-control/session/renew",
     selfModelRead: async () => ({ status: 200, body: { registeredProfile: fixture.registeredProfile, providerConstraintProfile: fixture.providerConstraintProfile } }),
     selfHelloRefresh: async () => ({ status: 200, body: {}, sessionHeader: "sess-refreshed" }),
+    // Wave-4 — the boot seeds a heartbeat before the poll loop; a 204 lets the first beat succeed.
+    heartbeatPath: "/api/execution-targets/heartbeat",
+    heartbeat: async () => ({ status: 204 }),
     ...over,
   } as never;
 }

@@ -151,7 +151,7 @@ describe("shipped-binary-refuses (8a) — the container root", () => {
       },
     );
     // Give the read a live self-model so gate 6 passes.
-    const fullDeps = { ...deps, createClient: () => ({ baseUrl: "http://f", selfModelReadPath: "/api/execution-targets/self/placement-profile", selfHelloRefreshPath: "/api/execution-targets/self/hello", selfModelRead: async () => ({ status: 200, body: readFixture() }), selfHelloRefresh: async () => ({ status: 200, body: {}, sessionHeader: "s2" }) }) } as unknown as BootstrapDeps;
+    const fullDeps = { ...deps, createClient: () => ({ baseUrl: "http://f", selfModelReadPath: "/api/execution-targets/self/placement-profile", selfHelloRefreshPath: "/api/execution-targets/self/hello", selfModelRead: async () => ({ status: 200, body: readFixture() }), selfHelloRefresh: async () => ({ status: 200, body: {}, sessionHeader: "s2" }), heartbeatPath: "/api/execution-targets/heartbeat", heartbeat: async () => ({ status: 204 }) }) } as unknown as BootstrapDeps;
     await bootstrapWorkerDaemon(fullDeps);
     expect(fullDeps.composeDispatch).toHaveBeenCalledTimes(1);
   });

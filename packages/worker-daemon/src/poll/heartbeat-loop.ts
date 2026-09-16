@@ -46,9 +46,30 @@ export interface HeartbeatLoop {
 }
 
 export function createHeartbeatLoop(deps: HeartbeatLoopDeps): HeartbeatLoop {
-  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const sleep =
+    deps.sleep ??
+    ((ms: number) =>
+      new Promise<void>((r) => {
+        // .unref() so the heartbeat's own timer never keeps the process (or a test runner) alive
+        // on its own — the health server + poll loop are what hold the daemon up, not this sleep.
+        const t: ReturnType<typeof setTimeout> = setTimeout(r, ms);
+        (t as { unref?: () => void }).unref?.();
+      }));
   const send = deps.send ?? defaultSend;
   const retryDelayMs = deps.retryDelayMs ?? 5_000;
+
+  // A metrics fault must NEVER break the heartbeat/boot path. `inc` throws on an unregistered label
+  // value (metrics.ts keeps a CLOSED `outcome` allow-list), and this loop is fire-and-forget, so an
+  // escaping throw would orphan the rejection AND (before settleFirst) strand `firstBeat` unresolved,
+  // leaving the poll loop unseeded — the exact failure the heartbeat exists to prevent. The outcome
+  // tokens ARE registered, so this only guards against future vocabulary drift.
+  const recordOutcome = (outcome: "ok" | "failed" | "terminal" | "session_unavailable"): void => {
+    try {
+      deps.metrics?.inc(HEARTBEAT_OUTCOME_METRIC, { outcome });
+    } catch {
+      /* metrics contract fault — never fatal to the daemon */
+    }
+  };
 
   let stopped = false;
   let firstResolved = false;
@@ -64,43 +85,54 @@ export function createHeartbeatLoop(deps: HeartbeatLoopDeps): HeartbeatLoop {
   };
 
   async function loop(): Promise<void> {
-    while (!stopped) {
-      let session: WorkerSession;
-      try {
-        session = await deps.session.get();
-      } catch (err) {
-        if (err instanceof SessionTerminalError) {
-          deps.metrics?.inc(HEARTBEAT_OUTCOME_METRIC, { outcome: "terminal" });
-          settleFirst("terminal");
-          return; // stop: re-enrollment required; daemon stays up inert
+    try {
+      while (!stopped) {
+        let session: WorkerSession;
+        try {
+          session = await deps.session.get();
+        } catch (err) {
+          if (err instanceof SessionTerminalError) {
+            recordOutcome("terminal");
+            deps.logger?.warn("worker heartbeat: session terminal; stopping (re-enrollment required)");
+            settleFirst("terminal");
+            return; // stop: re-enrollment required; daemon stays up inert
+          }
+          recordOutcome("session_unavailable");
+          deps.logger?.warn("worker heartbeat: session unavailable; will retry");
+          await sleep(retryDelayMs);
+          continue;
         }
-        deps.metrics?.inc(HEARTBEAT_OUTCOME_METRIC, { outcome: "session_unavailable" });
-        await sleep(retryDelayMs);
-        continue;
-      }
-      if (stopped) return;
+        if (stopped) return;
 
-      let outcome: "ok" | "failed";
-      try {
-        outcome = await send({ client: deps.client, session, key: deps.key });
-      } catch {
-        outcome = "failed"; // defensive; send is already best-effort
-      }
-      deps.metrics?.inc(HEARTBEAT_OUTCOME_METRIC, { outcome });
+        let outcome: "ok" | "failed";
+        try {
+          outcome = await send({ client: deps.client, session, key: deps.key });
+        } catch {
+          outcome = "failed"; // defensive; send is already best-effort
+        }
+        recordOutcome(outcome);
 
-      if (outcome === "ok") {
-        settleFirst("ok");
-        await sleep(deps.intervalMs);
-      } else {
-        await sleep(retryDelayMs);
+        if (outcome === "ok") {
+          settleFirst("ok");
+          await sleep(deps.intervalMs);
+        } else {
+          deps.logger?.warn("worker heartbeat: beat failed; will retry");
+          await sleep(retryDelayMs);
+        }
       }
+    } catch (err) {
+      // Belt-and-suspenders: every await above is already guarded, but a future edit — or an
+      // injected `sleep`/`send` that rejects — must still never turn `void loop()` into an unhandled
+      // rejection. `firstBeat` is intentionally left pending here (boot stays healthy-and-inert).
+      deps.logger?.error({ err }, "worker heartbeat loop crashed; poll loop will not be seeded");
     }
   }
 
   return {
     start(): void {
-      // Fire-and-forget: `loop` never rejects (every await is guarded), so this cannot
-      // become an unhandled rejection. A terminal stop leaves the daemon up.
+      // Fire-and-forget: `loop` never rejects — every await is guarded AND the whole body sits in an
+      // outer try/catch, and metric emits go through the swallowing `recordOutcome` — so this can
+      // never become an unhandled rejection. A terminal stop leaves the daemon up.
       void loop();
     },
     stop(): void {

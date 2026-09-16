@@ -48,6 +48,10 @@ function fakeClient(over: Record<string, unknown> = {}) {
     sessionRenewPath: "/api/worker-control/session/renew",
     selfModelRead: async () => ({ status: 200, body: { registeredProfile: fixture.registeredProfile, providerConstraintProfile: fixture.providerConstraintProfile } }),
     selfHelloRefresh: async () => ({ status: 200, body: {}, sessionHeader: "sess-refreshed" }),
+    // Wave-4 — the boot now seeds a heartbeat; a 204 lets the driver's first beat succeed so the
+    // lazy poll-loop start fires (override to a non-204 to exercise the never-seeded branch).
+    heartbeatPath: "/api/execution-targets/heartbeat",
+    heartbeat: async () => ({ status: 204 }),
     ...over,
   } as never;
 }
@@ -170,5 +174,33 @@ describe("dispatch-composition-2b — the boot wiring", () => {
       new Promise((r) => setTimeout(() => r("hung"), 1000)),
     ]);
     expect(winner).toBe("resolved");
+  });
+
+  it("★ Wave-4: the poll loop starts ONLY AFTER the first successful heartbeat (firstBeat ok ⇒ start)", async () => {
+    // The core of the fix: a poll issued before the heartbeat seeds worker.lastSeenAt is denied
+    // target_revoked (terminal). The default fakeClient returns 204, so the driver's first beat
+    // succeeds and the LAZY start callback fires runtime.start() — after boot has returned.
+    const startSpy = vi.fn();
+    const runtime = fakeRuntime({ start: startSpy });
+    const { result } = await boot({ composeDispatch: (async () => runtime) as never });
+    expect(result.ok).toBe(true);
+    await vi.waitFor(() => expect(startSpy).toHaveBeenCalledTimes(1));
+    await result.shutdown?.("SIGTERM");
+  });
+
+  it("★ Wave-4: a heartbeat that never seeds leaves the poll loop UNSTARTED (healthy and inert), ok:true", async () => {
+    // A non-204 heartbeat never lets firstBeat resolve "ok", so the poll loop must never start —
+    // a regression to an unconditional runtime.start() (the original bug) would fail here.
+    const startSpy = vi.fn();
+    const runtime = fakeRuntime({ start: startSpy });
+    const { result } = await boot({
+      composeDispatch: (async () => runtime) as never,
+      createClient: () => fakeClient({ heartbeat: async () => ({ status: 500 }) }),
+    });
+    expect(result.ok).toBe(true); // healthy and inert, never a crash
+    // Let the driver run its first (failing) beat and settle into retry backoff.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(startSpy).not.toHaveBeenCalled();
+    await result.shutdown?.("SIGTERM");
   });
 });
