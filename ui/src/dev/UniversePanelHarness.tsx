@@ -46,6 +46,7 @@ function Harness() {
   const [observed, setObserved] = useState<State | null>(null);
   const [camera, setCamera] = useState({ ...initialViewport });
   const [autoTile, setAutoTile] = useState(false);
+  const [motion, setMotion] = useState(false);
   const stale = useRef<Action | null>(null);
   const refs: Ref[] = [
     { companyId: scope.companyId, kind: "task", id: "task" },
@@ -181,6 +182,13 @@ function Harness() {
           >
             Auto-tile: {autoTile ? "on" : "off"}
           </button>
+          <button
+            aria-label="Toggle motion"
+            aria-pressed={motion}
+            onClick={() => setMotion((m) => !m)}
+          >
+            Motion: {motion ? "on" : "off"}
+          </button>
         </div>
         <div
           className="universe-harness-group"
@@ -272,6 +280,7 @@ function Harness() {
           scope={scope}
           initialLayout={layout}
           content={content}
+          motion={motion}
           onStateChange={setObserved}
           onViewportCommit={setCamera}
         />

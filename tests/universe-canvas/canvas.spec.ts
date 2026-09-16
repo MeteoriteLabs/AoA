@@ -953,3 +953,31 @@ test("auto-tile reflows the remaining panels when one closes", async ({
       after.width !== before.width
   ).toBe(true);
 });
+
+test("panels carry a geometry transition with motion and none under reduced motion", async ({
+  browser,
+}) => {
+  for (const [mode, animated] of [
+    ["no-preference", true],
+    ["reduce", false],
+  ] as const) {
+    const context = await browser.newContext({
+      viewport: { width: 1365, height: 900 },
+      reducedMotion: mode,
+    });
+    try {
+      const page = await context.newPage();
+      await page.goto("/universe-harness.html");
+      await button(page, "Toggle motion").click();
+      await button(page, "Open task").click();
+      await expect(frame(page).locator("header")).toBeVisible();
+      const duration = await page
+        .locator(".react-flow__node")
+        .first()
+        .evaluate((e) => getComputedStyle(e).transitionDuration);
+      expect(duration.includes("0.2s")).toBe(animated);
+    } finally {
+      await context.close();
+    }
+  }
+});

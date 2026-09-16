@@ -150,3 +150,30 @@
     width: var(--universe-touch-hit-size);
   }
 }
+
+/* Light motion, opt-in via the .universe-motion root class (the product enables
+   it; tests leave it off so geometry reads are deterministic). Geometry changes
+   (tile reflow, maximize/restore, arrange) glide and panels fade in on open. It is
+   suppressed during a live gesture so drag/resize never lag, and for users who
+   prefer reduced motion. The full lifecycle motion system (minimize/restore
+   connectors, close exit) is E1.6. The fade is opacity-only so it never shifts a
+   panel's measured box. */
+@media (prefers-reduced-motion: no-preference) {
+  .universe-motion .react-flow__node {
+    transition: transform 200ms ease, width 200ms ease, height 200ms ease;
+  }
+  .universe-motion.universe-gesturing .react-flow__node {
+    transition: none;
+  }
+  .universe-motion .universe-panel {
+    animation: universe-panel-in 180ms ease both;
+  }
+}
+@keyframes universe-panel-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}

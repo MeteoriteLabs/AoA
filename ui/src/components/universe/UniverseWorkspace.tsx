@@ -57,6 +57,9 @@ export type WorkspaceProps = {
    * Defaults off so the frame's built-in behaviour stays cascade; the product
    * turns this on via the Universe preference. */
   initialAutoTile?: boolean;
+  /** Enables the opt-in motion layer (glide on geometry change, fade on open).
+   * Off by default; the product enables it, still respecting reduced motion. */
+  motion?: boolean;
 };
 /** Commands require caller authorization. The reducer's source field is not an authorization grant. */
 export type WorkspaceHandle = {
@@ -563,7 +566,9 @@ const ScopedWorkspace = forwardRef<WorkspaceHandle, WorkspaceProps>(
             ))}
         </div>
         <div
-          className="universe-canvas"
+          className={`universe-canvas${props.motion ? " universe-motion" : ""}${
+            shielded ? " universe-gesturing" : ""
+          }`}
           ref={root}
           data-testid="universe-canvas"
         >
