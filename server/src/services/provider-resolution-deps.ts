@@ -105,21 +105,33 @@ async function resolveSecretValueViaBroker(
           ${args.companyId}::uuid, ${secretId}::uuid, NULL::integer,
           ${ctx.consumerType}::text, ${ctx.consumerId}::text, ${configPath}::text)`),
     )[0];
-    if (!bundle || bundle.secret_found !== true || bundle.secret_is_deleted === true) {
+    // Row absent entirely → mirror getById() returning null in resolveSecretValue: NO failure
+    // audit (there is no secret to attribute the event to, and no provider for p_provider).
+    if (!bundle || bundle.secret_found !== true) {
+      throw new SecretCandidateUnavailableError("secret_missing", "Secret not found");
+    }
+    // Row exists (even if soft-deleted) → mirror `if (secret)` in resolveSecretValue: EVERY
+    // failure from here on writes a failure audit, so capture the provider now (it is also the
+    // audit row's p_provider). Without this, inactive/deleted/company-mismatch failures on the
+    // distributed path would silently skip the secret_access_events tamper record that the
+    // direct path always writes.
+    secretProvider = bundle.secret_provider as string;
+    if (bundle.secret_is_deleted === true) {
       throw new SecretCandidateUnavailableError("secret_missing", "Secret not found");
     }
     if (bundle.secret_company_id !== args.companyId) throw new Error("Secret must belong to same company");
     if (bundle.secret_status !== "active") {
       throw new SecretCandidateUnavailableError("secret_inactive", "Secret is not active");
     }
-    secretProvider = bundle.secret_provider as string;
     if (shouldEnforceSecretBinding(ctx) && bundle.binding_found !== true) {
       throw new SecretCandidateUnavailableError("secret_unbound", "Secret is not bound to this consumer path");
     }
+    // Mirror resolveSecretValue ordering: resolvedVersion is set BEFORE the version-row lookup,
+    // so a version_missing failure audits with the resolved version rather than null.
+    resolvedVersion = Number(bundle.resolved_version);
     if (bundle.version_found !== true) {
       throw new SecretCandidateUnavailableError("secret_version_missing", "Secret version not found");
     }
-    resolvedVersion = Number(bundle.resolved_version);
     let providerConfig: SecretProviderVaultRuntimeConfig | null = null;
     if (bundle.secret_provider_config_id) {
       if (bundle.provider_config_found !== true) throw new Error("Secret provider config not found");
