@@ -50,8 +50,14 @@
   cursor: grab;
 }
 .universe-panel[data-selected="true"] .universe-drag-handle {
-  background: color-mix(in srgb, var(--brand, #c43d46) 12%, var(--hd, #ededee));
+  background: color-mix(in srgb, var(--brand, #c43d46) 20%, var(--hd, #ededee));
   color: var(--text, #18181b);
+}
+.universe-panel[data-selected="true"] .universe-panel-title {
+  font-weight: 600;
+}
+.universe-panel:not([data-selected="true"]) .universe-panel-title {
+  color: var(--dim, #65656c);
 }
 .universe-panel-title {
   flex: 1;
