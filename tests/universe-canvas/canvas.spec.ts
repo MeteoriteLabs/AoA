@@ -932,3 +932,24 @@ test("fit frames all panels within the canvas", async ({ page }) => {
     expect(b.y + b.height).toBeLessThanOrEqual(canvas.y + canvas.height + 1);
   }
 });
+
+test("auto-tile reflows the remaining panels when one closes", async ({
+  page,
+}) => {
+  await setup(page);
+  await button(page, "Toggle auto-tile").click();
+  await button(page, "Open artifact").click();
+  await button(page, "Open iframe").click();
+  const before = await rect(page, "task");
+  await frame(page, "artifact")
+    .getByRole("button", { name: "Close panel", exact: true })
+    .click();
+  await expect(frame(page, "artifact")).toHaveCount(0);
+  const after = await rect(page, "task");
+  // The 3 -> 2 reflow changed the surviving task's geometry (no leftover hole).
+  expect(
+    after.x !== before.x ||
+      after.y !== before.y ||
+      after.width !== before.width
+  ).toBe(true);
+});

@@ -134,6 +134,8 @@ const ScopedWorkspace = forwardRef<WorkspaceHandle, WorkspaceProps>(
     const [autoTile, setAutoTileState] = useState(
       props.initialAutoTile ?? false
     );
+    const autoTileRef = useRef(autoTile);
+    autoTileRef.current = autoTile;
     const [usable, setUsable] = useState({
       left: 0,
       top: 0,
@@ -216,6 +218,16 @@ const ScopedWorkspace = forwardRef<WorkspaceHandle, WorkspaceProps>(
         }
         // A defensive snapshot prevents observers from mutating the sole registry.
         callbacks.current.onStateChange?.(structuredClone(current.current));
+        // Auto-tile reflows the remaining panels when the visible set changes, so
+        // closing/minimizing never leaves a hole and a lone survivor grows back to a
+        // centered, full size (restore rejoins the grid). Arrange itself is exempt.
+        if (
+          (action.type === "close" ||
+            action.type === "minimize" ||
+            action.type === "restore") &&
+          autoTileRef.current
+        )
+          retileRef.current?.("auto");
       },
       [finishGesture]
     );
@@ -337,6 +349,7 @@ const ScopedWorkspace = forwardRef<WorkspaceHandle, WorkspaceProps>(
       setCamera({ ...next });
       if (commit) callbacks.current.onViewportCommit?.({ ...next });
     };
+    const retileRef = useRef<((mode: "auto" | "all") => void) | null>(null);
     const retile = (mode: "auto" | "all") => {
       if (!alive.current || usable.width <= 0 || usable.height <= 0) return;
       const s = current.current;
@@ -356,6 +369,7 @@ const ScopedWorkspace = forwardRef<WorkspaceHandle, WorkspaceProps>(
         rects: arrangeLayout(order, usable, camera.current, TILE_POLICY),
       });
     };
+    retileRef.current = retile;
     const fit = () => {
       if (!alive.current || usable.width <= 0 || usable.height <= 0) return;
       const s = current.current;
