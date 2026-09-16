@@ -323,11 +323,12 @@ test("single click on an unfocused panel control acts without a prior focus clic
   // Park the front artifact well below the task header so the task controls stay exposed.
   await drag(page, artifact.locator("header"), 40, 280, true);
   expect((await state(page)).selected).toBe(artifactKey);
-  // A SINGLE click on the unfocused task's Pin must both foreground it and toggle the control.
+  // A SINGLE click on the unfocused task's Pin toggles it in one click, without a
+  // prior focus click and without flashing the panel to the selected state.
   await task.getByRole("button", { name: "Pin panel", exact: true }).click();
-  let snapshot = await state(page);
-  expect(snapshot.selected).toBe(taskKey);
+  const snapshot = await state(page);
   expect(snapshot.panels[taskKey].pinned).toBe(true);
+  expect(snapshot.selected).toBe(artifactKey);
   // Re-foreground the artifact, then a SINGLE click on the unfocused task's Close removes it.
   await button(page, "Open artifact").click();
   expect((await state(page)).selected).toBe(artifactKey);
@@ -980,6 +981,28 @@ test("panels carry a geometry transition with motion and none under reduced moti
       await context.close();
     }
   }
+});
+
+test("selection is optional: empty-canvas click and closing clear it", async ({
+  page,
+}) => {
+  await setup(page);
+  const task = frame(page);
+  const taskKey = (await task.getAttribute("data-panel-key"))!;
+  expect((await state(page)).selected).toBe(taskKey);
+  // Clicking empty canvas deselects.
+  const canvas = await box(page.getByTestId("universe-canvas"));
+  await page.mouse.click(canvas.x + 12, canvas.y + canvas.height / 2);
+  expect((await state(page)).selected).toBeNull();
+  // Clicking the panel body re-selects; closing it leaves nothing selected.
+  const b = await box(task);
+  await page.mouse.click(b.x + 40, b.y + 80);
+  expect((await state(page)).selected).toBe(taskKey);
+  await task
+    .getByRole("button", { name: "Close panel", exact: true })
+    .click();
+  await expect(task).toHaveCount(0);
+  expect((await state(page)).selected).toBeNull();
 });
 
 test("arrange routes free panels around a pinned one", async ({ page }) => {

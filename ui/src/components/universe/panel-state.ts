@@ -50,7 +50,8 @@ export type Action =
       source: "human" | "commander";
       expectedRect?: Rect;
     }
-  | { type: "arrange"; rects: Record<string, Rect> };
+  | { type: "arrange"; rects: Record<string, Rect> }
+  | { type: "deselect" };
 
 export const panelKey = (scope: Scope, ref: Ref): string =>
   JSON.stringify([
@@ -90,10 +91,6 @@ function foreground(s: State, key: string): State {
     maximized: s.maximized === key ? key : null,
   };
 }
-function nextVisible(s: State): string | null {
-  return [...s.order].reverse().find((k) => !s.panels[k].minimized) ?? null;
-}
-
 export function panelReducer(s: State, a: Action): State {
   if (a.type === "open") {
     if (
@@ -153,6 +150,8 @@ export function panelReducer(s: State, a: Action): State {
     }
     return panels === s.panels ? s : { ...s, panels };
   }
+  if (a.type === "deselect")
+    return s.selected === null ? s : { ...s, selected: null };
   const panel = Object.hasOwn(s.panels, a.key) ? s.panels[a.key] : undefined;
   if (
     !panel ||
@@ -224,7 +223,7 @@ export function panelReducer(s: State, a: Action): State {
       };
       return {
         ...next,
-        selected: s.selected === a.key ? nextVisible(next) : s.selected,
+        selected: s.selected === a.key ? null : s.selected,
       };
     }
     case "close": {
@@ -238,7 +237,7 @@ export function panelReducer(s: State, a: Action): State {
       };
       return {
         ...next,
-        selected: s.selected === a.key ? nextVisible(next) : s.selected,
+        selected: s.selected === a.key ? null : s.selected,
       };
     }
   }

@@ -598,6 +598,7 @@ const ScopedWorkspace = forwardRef<WorkspaceHandle, WorkspaceProps>(
               maxZoom={2}
               nodeDragThreshold={0}
               onNodesChange={() => {}}
+              onPaneClick={() => dispatch({ type: "deselect" })}
               onNodeDragStart={(_event, node) => beginGesture(node.data.panel)}
               onNodeDrag={drag}
               onNodeDragStop={(event, node) => {

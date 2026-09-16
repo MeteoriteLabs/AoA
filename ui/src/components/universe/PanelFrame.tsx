@@ -76,7 +76,13 @@ export function PanelFrame({
       data-generation={panel.generation}
       aria-label={panel.title}
       inert={panel.minimized}
-      onPointerDownCapture={() => act("focus")}
+      onPointerDownCapture={(event) => {
+        // Selecting on pointer-down is for body/header interaction; a control
+        // button (close/minimize/maximize/pin) must not flash the panel to the
+        // selected state on its way to acting.
+        if (!(event.target as HTMLElement).closest(".universe-panel-actions"))
+          act("focus");
+      }}
     >
       <header
         ref={header}

@@ -619,3 +619,34 @@ describe("arrange action and placement", () => {
     expect(panelReducer(s, { type: "arrange", rects: {} })).toBe(s);
   });
 });
+describe("selection is optional", () => {
+  it("closing or minimizing the selected panel clears the selection", () => {
+    const s = opened();
+    expect(s.selected).toBe(key);
+    expect(
+      panelReducer(s, { type: "close", key, generation: 1 }).selected
+    ).toBeNull();
+    expect(
+      panelReducer(s, { type: "minimize", key, generation: 1 }).selected
+    ).toBeNull();
+  });
+  it("deselect clears an active selection and is a no-op otherwise", () => {
+    const cleared = panelReducer(opened(), { type: "deselect" });
+    expect(cleared.selected).toBeNull();
+    expect(panelReducer(cleared, { type: "deselect" })).toBe(cleared);
+  });
+  it("closing a non-selected panel leaves the selection intact", () => {
+    const other: Ref = { companyId: "c", kind: "artifact", id: "b" };
+    const otherKey = panelKey(scope, other);
+    const s = panelReducer(opened(), {
+      type: "open",
+      ref: other,
+      title: "B",
+      rect,
+    });
+    expect(s.selected).toBe(otherKey);
+    expect(
+      panelReducer(s, { type: "close", key, generation: 1 }).selected
+    ).toBe(otherKey);
+  });
+});
