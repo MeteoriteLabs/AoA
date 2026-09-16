@@ -2,6 +2,24 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "universe-harness",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": [
+        "/c",
+        "pnpm",
+        "--filter",
+        "@armyofagents/ui",
+        "exec",
+        "vite",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "5190",
+        "--strictPort"
+      ],
+      "port": 5190
+    },
+    {
       "name": "threads",
       "runtimeExecutable": "cmd",
       "runtimeArgs": [

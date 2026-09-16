@@ -354,9 +354,16 @@ const ScopedWorkspace = forwardRef<WorkspaceHandle, WorkspaceProps>(
       if (current.current !== before) history.current = proposal.history;
     }
 
+    // Paint order (z-index) follows selection/stacking, but the rendered node order stays
+    // stable across focus changes. React Flow stacks absolutely-positioned nodes by z-index
+    // regardless of sibling order, so keeping the DOM order fixed means foregrounding a panel
+    // never re-inserts its node mid-gesture and drops the pointer click landing on its header
+    // controls. Only opening/closing (which changes the key set) alters the rendered order.
+    const stacking = new Map(state.order.map((key, index) => [key, index]));
+    const renderOrder = [...state.order].sort();
     const nodes: PanelFlowNode[] =
       usable.width && usable.height
-        ? state.order.map((key, index) => {
+        ? renderOrder.map((key) => {
             const panel = state.panels[key];
             const rect = displayRect(panel, state, viewport, usable);
             const entry = Object.hasOwn(props.content, key)
@@ -375,7 +382,7 @@ const ScopedWorkspace = forwardRef<WorkspaceHandle, WorkspaceProps>(
               selected: state.selected === key,
               width: rect.width,
               height: rect.height,
-              zIndex: index,
+              zIndex: stacking.get(key) ?? 0,
               draggable: !panel.minimized && state.maximized === null,
               selectable: false,
               dragHandle: ".universe-drag-handle",

@@ -62,6 +62,12 @@ Use the internal Vite entry `/universe-harness.html`. The coordinator preview is
 
 Reproduce the permanent browser gate with `pnpm exec playwright test --config tests/universe-canvas/playwright.config.ts`. It starts its own Vite-only server on 127.0.0.1:5183 with one Chromium worker and zero retries. Narrow/coarse targets are browser emulation, not touch-hardware qualification. The 1/10/50-panel timings include test-runner overhead and are samples, not performance guarantees.
 
+## Post-demonstration correction (2026-09-17)
+
+During TK's live review, a control click (close/maximize/etc.) on an *unfocused* panel required two clicks — the first only foregrounded it — and the effect was more noticeable with many panels open. Cause: the panel dispatches `focus` on pointer-down (`PanelFrame`), and foregrounding reorders `state.order`, which drove **both** the rendered node order and `zIndex` in `UniverseWorkspace`; React re-inserted the node in the DOM mid-gesture, so the browser dropped the control's `click`. Fix: render nodes in a stable (selection-independent) order and drive stacking with `zIndex` alone — React Flow stacks absolutely-positioned nodes by z-index regardless of sibling order, so foregrounding is now a style change that cannot detach the click target. A new browser regression that single-clicks Pin then Close on a background panel reproduced the defect (red) and passes after the fix; the full 48-case browser suite, 75 focused UI tests, UI typecheck (`tsc -b`) and UI build are green.
+
+Two related observations from the same review were confirmed as **out of this batch**: motion/hover/animation polish is assigned to E1.0/E1.6 and consuming epics (see `motion-and-interaction.md`), and multi-panel auto-arrange/tiling is a dedicated later task (the current open placement is intentional bounded-cascade).
+
 ## Completion boundary
 
 Generic frame completion requires observed pointer/keyboard/resize/overlap behavior at zoom 0.5, 1 and 2, content lifetime and scope cancellation, narrow/reduced-motion checks, full modified-source tests/build and final review. Unit tests or fixture content cannot certify authenticated task routes, provider sessions, persistence or completed V1. The next batch remains subject to the user's review of this demonstration.

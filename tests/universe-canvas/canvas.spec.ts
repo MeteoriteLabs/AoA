@@ -311,6 +311,32 @@ test("body selection and scroll, overlap focus, pin and keyboard geometry", asyn
   await page.screenshot({ path: path.join(shotDir, "canvas-maximized.png") });
 });
 
+test("single click on an unfocused panel control acts without a prior focus click", async ({
+  page,
+}) => {
+  await setup(page);
+  const task = frame(page);
+  const taskKey = (await task.getAttribute("data-panel-key"))!;
+  await button(page, "Open artifact").click();
+  const artifact = frame(page, "artifact");
+  const artifactKey = (await artifact.getAttribute("data-panel-key"))!;
+  // Park the front artifact well below the task header so the task controls stay exposed.
+  await drag(page, artifact.locator("header"), 40, 280, true);
+  expect((await state(page)).selected).toBe(artifactKey);
+  // A SINGLE click on the unfocused task's Pin must both foreground it and toggle the control.
+  await task.getByRole("button", { name: "Pin panel", exact: true }).click();
+  let snapshot = await state(page);
+  expect(snapshot.selected).toBe(taskKey);
+  expect(snapshot.panels[taskKey].pinned).toBe(true);
+  // Re-foreground the artifact, then a SINGLE click on the unfocused task's Close removes it.
+  await button(page, "Open artifact").click();
+  expect((await state(page)).selected).toBe(artifactKey);
+  await task.getByRole("button", { name: "Close panel", exact: true }).click();
+  await expect(task).toHaveCount(0);
+  expect((await state(page)).panels[taskKey]).toBeUndefined();
+  await expect(artifact).toBeVisible();
+});
+
 for (const zoom of [0.5, 1, 2])
   test(`keyboard movement and resize use ten CSS pixels at ${zoom}`, async ({
     page,
