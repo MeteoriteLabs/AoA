@@ -1968,6 +1968,13 @@
       "when": 1789093541700,
       "tag": "0280_classy_warstar",
       "breakpoints": true
+    },
+    {
+      "idx": 281,
+      "version": "7",
+      "when": 1789596477624,
+      "tag": "0281_wooden_captain_marvel",
+      "breakpoints": true
     }
   ]
 }

@@ -490,6 +490,29 @@ export {
 } from "./home-board-layout.js";
 
 export {
+  UNIVERSE_REF_KINDS,
+  UNIVERSE_LAYOUT_SCHEMA_VERSION,
+  UNIVERSE_LAYOUT_MAX_PANELS,
+  UNIVERSE_LAYOUT_MAX_OPERATIONS,
+  UNIVERSE_LAYOUT_COORD_LIMIT,
+  UNIVERSE_LAYOUT_MIN_DIMENSION,
+  UNIVERSE_LAYOUT_MAX_DIMENSION,
+  UNIVERSE_LAYOUT_MIN_ZOOM,
+  UNIVERSE_LAYOUT_MAX_ZOOM,
+  rectSchema,
+  layoutOpSchema,
+  layoutPatchSchema,
+  universeLayoutDocumentSchema,
+  emptyUniverseLayoutDocument,
+  type UniverseRefKind,
+  type Rect,
+  type LayoutOp,
+  type LayoutPatch,
+  type LayoutAck,
+  type UniverseLayoutDocument,
+} from "./universe-layout.js";
+
+export {
   INBOX_DISMISSAL_ITEM_KEY_REGEX,
   inboxDismissalSchema,
   createInboxDismissalSchema,
