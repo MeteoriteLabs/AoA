@@ -676,7 +676,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       } catch (err) {
         emitOp("stage_files", "failed");
         deps.logger?.warn(
-          { leaseId: run.leaseId, resourceLabelsHash: hashResourceLabels(run.labels) },
+          { leaseId: run.leaseId, resourceLabelsHash: hashResourceLabels(run.labels), err },
           "supervisor: could not resolve staged input for this run — failing the attempt closed",
         );
         // A cancel arriving mid-resolve withdraws effect authority and surfaces here as a
@@ -731,7 +731,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
           // downstream can detect.
           emitOp("stage_files", "failed");
           deps.logger?.warn(
-            { leaseId: run.leaseId, resourceLabelsHash: hashResourceLabels(run.labels), stagedCount: staged.length },
+            { leaseId: run.leaseId, resourceLabelsHash: hashResourceLabels(run.labels), stagedCount: staged.length, err },
             "supervisor: staging the control plane's input failed — failing the attempt closed",
           );
           // Same reasoning as the resolve arm: a cancel withdraws effect authority and reaches
