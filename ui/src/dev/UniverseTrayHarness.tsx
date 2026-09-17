@@ -15,11 +15,17 @@ import {
 } from "../components/universe/panel-state";
 import {
   UniverseTray,
-  type CommanderToggleState,
   type LibraryMenu,
   type TrayReferenceItem,
 } from "../components/universe/UniverseTray";
 import type { OpenPanelTile } from "../components/universe/OpenPanelsOverview";
+import { CommanderSurface } from "../components/universe/CommanderSurface";
+import {
+  compactChat,
+  initialPresentation,
+  toggleTrayChat,
+  type Presentation,
+} from "../components/universe/commander-presentation";
 import "../index.css";
 
 const initialViewport = { x: 0, y: 0, zoom: 1 };
@@ -54,11 +60,22 @@ function Harness() {
   };
   const handle = useRef<WorkspaceHandle>(null);
   const [state, setState] = useState<State | null>(null);
-  const [toggles, setToggles] = useState<CommanderToggleState>({
-    chat: true,
-    blob: false,
-    captions: false,
-  });
+  const [presentation, setPresentation] = useState<Presentation>(
+    initialPresentation()
+  );
+  const setChat = (chat: Presentation["chat"]) =>
+    setPresentation((p) => ({
+      ...p,
+      chat,
+      lastVisible: chat === "tucked" ? p.lastVisible : chat,
+      chatFrontmost: chat !== "tucked",
+    }));
+  const showChat = () =>
+    setPresentation((p) => ({
+      ...p,
+      chat: p.chat === "tucked" ? p.lastVisible : p.chat,
+      chatFrontmost: true,
+    }));
 
   const commanderRef: Ref = { companyId, kind: "task", id: "commander-chat" };
   const library: Record<LibraryMenu, LibraryEntry[]> = {
@@ -197,14 +214,26 @@ function Harness() {
             { key: "planning", label: "Planning chat", hint: "today" },
             { key: "review", label: "Review notes", hint: "yesterday" },
           ]}
-          commanderToggles={toggles}
+          commanderToggles={{
+            chat: presentation.chat !== "tucked",
+            blob: presentation.blob,
+            captions: presentation.captions,
+          }}
           onToggleCommander={(which, value) =>
-            setToggles((prev) => ({ ...prev, [which]: value }))
+            setPresentation((p) =>
+              which === "chat"
+                ? value
+                  ? { ...p, chat: p.lastVisible, chatFrontmost: true }
+                  : { ...p, chat: "tucked", chatFrontmost: false }
+                : which === "blob"
+                  ? { ...p, blob: value }
+                  : { ...p, captions: value }
+            )
           }
           onOpenReference={onOpenReference}
-          onOpenConversation={() => openRef(commanderRef, "Commander")}
+          onOpenConversation={showChat}
           onOpenPanel={onOpenPanel}
-          onCommanderPrimary={() => openRef(commanderRef, "Commander")}
+          onCommanderPrimary={() => setPresentation(toggleTrayChat)}
         />
       </div>
       <details style={{ padding: "0 12px 6px", color: "var(--dim, #71717a)" }}>
@@ -230,6 +259,26 @@ function Harness() {
           content={content}
           initialAutoTile
           onStateChange={setState}
+        />
+        <CommanderSurface
+          presentation={presentation}
+          captionText={
+            presentation.captions
+              ? "…opening the launch story presentation for you."
+              : undefined
+          }
+          messages={[
+            { id: "m1", role: "commander", text: "I'm here. Ready when you are." },
+            { id: "m2", role: "user", text: "Draft the launch story." },
+            { id: "m3", role: "commander", text: "On it — opening a presentation." },
+          ]}
+          onPrimary={() => setPresentation(toggleTrayChat)}
+          onExpand={() => setChat("expanded")}
+          onCompact={() => setPresentation(compactChat)}
+          onMaximize={() => setChat("maximized")}
+          onRestore={() => setChat("expanded")}
+          onTuck={() => setChat("tucked")}
+          onHideBlob={() => setPresentation((p) => ({ ...p, blob: false }))}
         />
       </div>
     </main>
