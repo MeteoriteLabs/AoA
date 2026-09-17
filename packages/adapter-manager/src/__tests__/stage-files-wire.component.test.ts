@@ -94,7 +94,10 @@ let transport: RecordingMockTransport;
 let server: ReturnType<typeof createProviderServer>;
 let baseUrl: string;
 
-async function startServer(publicKey: KeyObject | undefined = controlPlane.publicKey): Promise<void> {
+// `gated` is an explicit boolean, NOT an optional KeyObject: passing `undefined` for a
+// defaulted KeyObject param would trigger the default (a key) and quietly gate the server,
+// which is exactly the trap that made the "ungated 404" case pass a key by mistake.
+async function startServer(gated = true): Promise<void> {
   transport = new RecordingMockTransport();
   const provider = new E2bSandboxProvider({
     transport,
@@ -102,7 +105,7 @@ async function startServer(publicKey: KeyObject | undefined = controlPlane.publi
     // test needs no network — returns the staged bytes the grant's sha256/maxBytes describe.
     redeemDownloadGrant: async () => STAGED_BYTES,
   });
-  server = createProviderServer({ provider, controlPlanePublicKey: publicKey, now: () => NOW });
+  server = createProviderServer({ provider, controlPlanePublicKey: gated ? controlPlane.publicKey : undefined, now: () => NOW });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 }
@@ -188,7 +191,7 @@ describe("E7-F011 stage_files over the networked wire", () => {
 
   it("GATED-ONLY: an UNGATED (keyless) server 404s stage_files (never a raw write)", async () => {
     await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
-    await startServer(undefined); // ungated
+    await startServer(false); // ungated (no control-plane key)
     const body = await rawOp("stage_files", { args: { sandboxId: "sbx-anything", files: FILES }, ctx: ctx() });
     expect(body).toContain("WireProtocolError");
     expect(body).toContain("operation not available in this slice: stage_files");
