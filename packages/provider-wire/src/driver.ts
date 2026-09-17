@@ -87,15 +87,16 @@ export class NetworkedProviderDriver implements SandboxProvider {
   readonly healthMode: HealthMode = "none";
   readonly artifactExportMode: ArtifactExportMode = "none";
   /**
-   * CLI-008 Unit B — `"none"`, and honestly so.
-   *
-   * `stage_files` is NOT a member of the frozen `ProviderOperation` vocabulary (deliberately
-   * — see `FileStagingMode`), and `#post` is typed to that vocabulary, so this driver has no
-   * wire route to reach a remote provider's `stageFiles`. Giving the adapter-manager wire an
-   * inbound staging route is its own piece of work; claiming support without one would
-   * silently drop every staged file.
+   * E7-F011 — `"grant_download"`: this driver RELAYS staging over the wire (the route CLI-008
+   * Unit B's comment called "its own piece of work"). `stage_files` is still NOT a member of
+   * the frozen `ProviderOperation` vocabulary (deliberately — see `FileStagingMode`); the
+   * route is added by widening `#post`'s op type LOCALLY to `ProviderOperation | "stage_files"`
+   * (never the frozen vocabulary), and `stageFiles` below POSTs `/op/stage_files`. Like
+   * `create`/`execute`, the mode asserts only that the driver can RELAY the op — if the FAR
+   * provider is `"none"`, its `stageFiles` throws `UnsupportedProviderOperation`, which the
+   * codec carries back and re-throws client-side. Honest failure, not a silent drop.
    */
-  readonly fileStagingMode: FileStagingMode = "none";
+  readonly fileStagingMode: FileStagingMode = "grant_download";
 
   /**
    * SVC-008a — `"none"`, and honestly so, for exactly the reason `fileStagingMode` is.
@@ -212,11 +213,18 @@ export class NetworkedProviderDriver implements SandboxProvider {
     throw new UnsupportedProviderOperation("export_artifact");
   }
   async stageFiles(
-    _sandboxId: string,
-    _files: readonly StagedFileRequest[],
-    _ctx: ProviderOpContext,
+    sandboxId: string,
+    files: readonly StagedFileRequest[],
+    ctx: ProviderOpContext,
   ): Promise<StageFilesResult> {
-    throw new UnsupportedProviderOperation("stage_files");
+    // E7-F011 — the networked lane's stage_files wire route. GATE-REQUIRED (staging writes
+    // into a live OWNED sandbox), so it attaches the owned-labels capability exactly like
+    // `execute`; a gated server owned-checks it, an ungated server 404s it. GRANT, NOT BYTES
+    // (E4-D01): each `StagedFileRequest` carries an `ArtifactDownloadGrantV1` (a bearer
+    // capability, `redaction:"secret"`) and NO payload — the far provider redeems + verifies
+    // sha256/maxBytes + writes, so no bytes cross the daemon. Two port params packed into one
+    // opaque `args`, as `execute` embeds `sandboxId` in `ExecuteInput`.
+    return this.#post<StageFilesResult>("stage_files", { sandboxId, files }, ctx, this.#capability);
   }
 
   // SVC-008a — a `"none"` provider THROWS from all three; it never returns an
@@ -244,7 +252,10 @@ export class NetworkedProviderDriver implements SandboxProvider {
   }
 
   async #post<R>(
-    op: ProviderOperation,
+    // E7-F011 — locally widened beyond the FROZEN `ProviderOperation` vocabulary to carry the
+    // non-frozen `stage_files` route (the vocabulary itself is untouched — E4-D02). Additive:
+    // every existing caller still passes a `ProviderOperation`.
+    op: ProviderOperation | "stage_files",
     args: unknown,
     ctx: ProviderOpContext,
     capability?: OwnedLabelsCapability,
