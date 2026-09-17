@@ -513,6 +513,19 @@ export {
 } from "./universe-layout.js";
 
 export {
+  UNIVERSE_DRAFT_DESTINATION_KINDS,
+  UNIVERSE_DRAFT_SCHEMA_VERSION,
+  UNIVERSE_DRAFT_MAX_TEXT,
+  UNIVERSE_DRAFT_MAX_ATTACHMENTS,
+  draftDestinationSchema,
+  draftPatchSchema,
+  type UniverseDraftDestinationKind,
+  type UniverseDraftDestination,
+  type UniverseDraftPatch,
+  type UniverseDraft,
+} from "./universe-draft.js";
+
+export {
   INBOX_DISMISSAL_ITEM_KEY_REGEX,
   inboxDismissalSchema,
   createInboxDismissalSchema,

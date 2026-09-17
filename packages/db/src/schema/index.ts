@@ -32,6 +32,7 @@ export {
   type UniverseLayoutDocument,
   type UniverseLayoutPanel,
 } from "./universe_layouts.js";
+export { universeDrafts } from "./universe_drafts.js";
 export { viewerPreferences } from "./viewer_preferences.js";
 export { hubPreferences } from "./hub_preferences.js";
 export { hubAutopilotPolicies } from "./hub_autopilot_policies.js";
