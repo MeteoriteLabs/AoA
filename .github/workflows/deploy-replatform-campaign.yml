@@ -106,8 +106,8 @@ jobs:
 
       - name: Load the deployment SSH key
         env:
-          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          DEPLOY_PASSPHRASE: ${{ secrets.DEPLOY_PASSPHRASE }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY1 }}
+          DEPLOY_PASSPHRASE: ${{ secrets.DEPLOY_PASSPHRASE1 }}
         run: |
           set -euo pipefail
           umask 077
