@@ -32,6 +32,7 @@ import type {
   ListInput,
   ProviderOpContext,
   SandboxProvider,
+  StagedFileRequest,
 } from "@armyofagents/worker-daemon";
 import { WireProtocolError, decodeOpRequest, encodeErrResponse, encodeOkResponse, isModelledWireError } from "@armyofagents/provider-wire/codec";
 import type { OwnedLabelsCapability } from "@armyofagents/provider-wire";
@@ -95,6 +96,10 @@ const GATE_REQUIRED_OPS: ReadonlySet<string> = new Set([
   "reconcile_cleanup",
   "inspect",
   "list",
+  // E7-F011 — staging writes into a live OWNED sandbox, so it is a single-sandbox owned op:
+  // GATED-ONLY (no keyless raw handler below), routed through `gateOwnedOp`. An ungated
+  // server 404s it, matching the B2 teardown ops, because it carries a bearer grant.
+  "stage_files",
 ]);
 
 export function createProviderServer(options: CreateProviderServerOptions): Server {
@@ -178,6 +183,14 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
       }
       case "list":
         return gateList(deps, args as ListInput, ctx, capability);
+      case "stage_files": {
+        // E7-F011 — a single-sandbox owned mutation (writes files into the live sandbox).
+        // Same gate as execute/cancel: verify capability -> AM-local inspect -> field-wise
+        // owned-check -> dispatch. The far provider redeems each file's download grant,
+        // verifies sha256/maxBytes, and writes; only the result paths cross back.
+        const { sandboxId, files } = args as { sandboxId: string; files: readonly StagedFileRequest[] };
+        return gateOwnedOp(deps, sandboxId, ctx, capability, () => provider.stageFiles(sandboxId, files, ctx));
+      }
       default:
         // GATE_REQUIRED_OPS is the exhaustive set; this is unreachable.
         return Promise.reject(new WireProtocolError(`operation not available in this slice: ${op}`));
