@@ -14,12 +14,43 @@ automated through GitHub Actions and gated by post-publish smoke tests.
 
 | ID | Decision | Locked value |
 |----|----------|--------------|
-| H.D1 | Distribution format | **Docker + NPM only.** No desktop installer in Phase H. |
+| H.D1 | Distribution format | **Docker + NPM only.** No desktop installer in Phase H. **Superseded for the re-platform program — see the note below.** |
 | H.D2 | Versioning | **SemVer** (`MAJOR.MINOR.PATCH`). First version `0.1.0`. Pre-1.0 signals "evolving — may break." Deviates from Paperclip's CalVer. |
 | H.D3 | Intended artifact destinations | **GHCR** (`ghcr.io/${{ github.repository }}` — auto-resolves to current owner; future rename to `anthropic/aoa` is a one-line workflow edit) + **npmjs.org public** for `@armyofagents/*` scoped packages, including `@armyofagents/cli`. These are configured targets, not evidence that an artifact exists. |
 | H.D4 | CI service | **GitHub Actions.** |
 | H.D5 | Multi-arch Docker | **amd64 + arm64.** arm/v7 (Raspberry Pi) deferred to Phase I. |
 | H.D6 | Smoke test scope | **Founder entry plus scoped-memory workflows.** The Docker harness uses the explicit `local_trusted` identity. The suite verifies profile and organization creation, health, scoped memory in task context and a real task-agent run, plus saving and approving memory from a Discussion. MCP inbound, budgets, and artifacts remain outside this lane. |
+
+### H.D1 supersession (re-platform program)
+
+**H.D1 remains correct for Phase H and is superseded within the re-platform program.**
+That program ships an installed desktop worker, so a desktop installer now exists and
+this table would otherwise read as forbidding it.
+
+Why the supersession is legitimate rather than a drift:
+
+- H.D1 is scoped to **Phase H** by its own heading.
+- [`docs/architecture/decisions.md`](../architecture/decisions.md) carries **no** locked
+  decision about desktop installers — checked, not assumed.
+- [`docs/replatform/program-design.md`](../replatform/program-design.md) schedules
+  **DSK-003** ("Desktop host, background worker, and signed installers") and names
+  "installed-desktop targets" in its definition of foundation completion, and
+  [`accepted-caveats.md`](../replatform/accepted-caveats.md) states it is "subordinate to
+  locked product decisions and `program-design.md`".
+
+What has NOT changed:
+
+- **Docker + npm remain the distribution path for the control plane.** The desktop
+  installer is an additional artifact for the worker host, not a replacement.
+- **Desktop stays off until its own beta gate passes.** `program-design.md`: "Desktop
+  remains off if its separate beta gate has not passed."
+- **Signing, notarization, SBOM and attestation for the installer belong to REL-004**,
+  which owns "every enabled desktop installer/updater artifact". DSK-003 builds the
+  artifact and its verification against a **test** trust root; REL-004 swaps in release
+  roots, exactly as DEP-001 already does for images.
+
+Recorded by DSK-003 (design decision D9): leaving two committed documents disagreeing is
+how a future reader concludes the installer was built by mistake.
 
 ## Artifact destinations
 

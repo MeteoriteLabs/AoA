@@ -2208,8 +2208,14 @@ export function companyPortabilityService(db: Db) {
           ? (sourceManifest.company?.agentCompletionReviewGuardrail ?? false)
           : false,
         // D2/H3: the owning Organization is server-resolved + authorized in the
-        // route (mirrors POST /). undefined -> createWithOperator falls back to
-        // the DEFAULT sentinel (self-hosted single-tenant), unchanged.
+        // route (mirrors POST /) — the self-hosted Default Org for the
+        // isolation-not-enforced path, or the real tenant in cloud_auth — and
+        // passed here as opts.organizationId. TEN-006a / E2-D07: the fail-OPEN
+        // sentinel default is GONE — if no Organization was resolved (a direct
+        // non-route caller), createWithOperator now fails CLOSED rather than
+        // silently bucketing to the sentinel. (`?? undefined` only normalizes a
+        // null opts value to undefined for the writer's `organizationId?: string`
+        // field; it is not a fallback.)
         organizationId: opts?.organizationId ?? undefined,
       }, { requestedByUserId: actorUserId ?? null }, actorUserId, (tx) => accessService(tx));
       targetCompany = created.company;

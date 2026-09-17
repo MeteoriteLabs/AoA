@@ -41,6 +41,7 @@ import { getServerAdapter } from "../../adapters/registry.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { resolveCommanderSandboxContext, runCommanderAdapterTurn } from "./commander-sandbox.js";
 import type { CommanderSandboxContext } from "./commander-sandbox.js";
+import { recordDistributedShadow, type ShadowSinkInput } from "../distributed-shadow-port.js";
 
 const require = createRequire(import.meta.url);
 
@@ -749,6 +750,54 @@ export async function resolveCliInvocation(
 
 // ── Service ─────────────────────────────────────────────────────────────────
 
+/**
+ * MIG-005 — the Commander turn's shadow snapshot, as a pure function.
+ *
+ * Extracted from the generator so its CONTENT is unit-testable: driving the real
+ * `chat` generator far enough to reach the seam needs the whole spawn surface mocked,
+ * and a test that heavy tends to assert that the mocks were called rather than that the
+ * record is right. Placement (after the target resolves, before the D1 gate) is pinned
+ * separately by a source contract test.
+ */
+export function buildCommanderTurnShadowInput(input: {
+  companyId: string;
+  userId: string;
+  userRole?: string;
+  runId: string;
+  conversationId: string;
+  cliTool: string;
+  model: string | null;
+  /** The resolved sandbox target, or null when Commander runs host-direct. */
+  executionTargetType: string | null;
+}): ShadowSinkInput {
+  return {
+    companyId: input.companyId,
+    source: {
+      kind: "commander_turn",
+      internalAgentRunId: input.runId,
+      conversationId: input.conversationId,
+    },
+    principal: { kind: "user", id: input.userId, role: input.userRole },
+    routing: {
+      // `local` is what the legacy path actually does on self-hosted, so record that
+      // rather than inventing an absence.
+      executionTargetType: input.executionTargetType ?? "local",
+    },
+    policy: {
+      model: input.model,
+      budgetPolicyId: null,
+      // A Commander turn is not a task and has no completion policy to snapshot.
+      effectiveCompletionPolicy: "not_applicable",
+    },
+    workloadCharacterization: {
+      command: input.cliTool,
+      args: [],
+      maxRuntimeSeconds: 600,
+      stdinArtifactId: null,
+    },
+  };
+}
+
 export function cliModeService(db: Db) {
   const sessionStore = createCLISessionStore();
 
@@ -938,6 +987,33 @@ export function cliModeService(db: Db) {
           };
           return;
         }
+      }
+
+      // 3b. MIG-005 shadow observation. Placed here because the execution target is
+      //     now RESOLVED (so the recorded routing is real) and nothing has been spawned
+      //     yet (so the record is the turn's intent, not its outcome).
+      //
+      //     Skipped without `params.runId`: a `commander_turn` source is identified by
+      //     its internal-agent run, and the FROZEN `.strict()` variant will not accept a
+      //     substitute. A turn with no run id has no identity to record — recording a
+      //     placeholder would be worse than recording nothing.
+      //
+      //     Inert unless this Organization's rollout is `shadow`. It cannot throw and its
+      //     probe is deadline-bounded, so the worst case for a live turn is
+      //     SHADOW_PROBE_DEADLINE_MS, never a failure.
+      if (params.runId) {
+        await recordDistributedShadow(
+          buildCommanderTurnShadowInput({
+            companyId: params.companyId,
+            userId: params.userId,
+            userRole: params.userRole,
+            runId: params.runId,
+            conversationId,
+            cliTool: config.cliTool,
+            model: config.model ?? null,
+            executionTargetType: commanderSandbox?.executionTarget.type ?? null,
+          }),
+        );
       }
 
       // 4. D1 multi-tenant unsandboxed execution gate — flipped to the RESOLVED
