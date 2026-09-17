@@ -8,13 +8,13 @@ import {
   useState,
 } from "react";
 import {
+  Briefcase,
   ChevronDown,
-  FileText,
+  Files,
   Globe,
   Inbox as InboxIcon,
-  LayoutGrid,
-  ListTodo,
-  Settings as SettingsIcon,
+  PanelsTopLeft,
+  SlidersHorizontal,
 } from "lucide-react";
 import {
   initialTrayState,
@@ -68,19 +68,19 @@ export interface UniverseTrayProps {
   dockHiding?: "always" | "auto" | "hidden";
 }
 
-// Right wing, in the U02 order: Work, Artifacts & Sources, Inbox, Browser,
-// Settings, then the one Open panels control.
-const RIGHT_MENUS: {
-  menu: TrayMenu;
-  label: string;
-  Icon: typeof FileText;
-}[] = [
-  { menu: "work", label: "Work", Icon: ListTodo },
-  { menu: "artifacts", label: "Artifacts & Sources", Icon: FileText },
+// Balanced wings around the centered AoA mark, matching the mock: Work and
+// Artifacts & Sources sit left with Commander; Inbox, Browser, Settings and the
+// one Open panels control sit right.
+type TrayEntry = { menu: TrayMenu; label: string; Icon: typeof Globe };
+const LEFT_MENUS: TrayEntry[] = [
+  { menu: "work", label: "Work", Icon: Briefcase },
+  { menu: "artifacts", label: "Artifacts & Sources", Icon: Files },
+];
+const RIGHT_MENUS: TrayEntry[] = [
   { menu: "inbox", label: "Inbox", Icon: InboxIcon },
   { menu: "browser", label: "Browser", Icon: Globe },
-  { menu: "settings", label: "Settings", Icon: SettingsIcon },
-  { menu: "open-panels", label: "Open panels", Icon: LayoutGrid },
+  { menu: "settings", label: "Settings", Icon: SlidersHorizontal },
+  { menu: "open-panels", label: "Open panels", Icon: PanelsTopLeft },
 ];
 
 const MENU_TITLE: Record<TrayMenu, string> = {
@@ -181,7 +181,7 @@ export function UniverseTray({
   const menuButton = (
     menu: TrayMenu,
     label: string,
-    Icon: typeof FileText
+    Icon: typeof Globe
   ) => (
     <button
       key={menu}
@@ -197,7 +197,7 @@ export function UniverseTray({
       data-active={state.menu === menu}
       onClick={() => dispatch({ type: "menu", menu })}
     >
-      <Icon size={18} aria-hidden />
+      <Icon size={16} aria-hidden />
       <Badge count={resolvedCounts[menu]} />
       <span className="universe-tray-tip" aria-hidden>
         {label}
@@ -244,8 +244,11 @@ export function UniverseTray({
                 data-active={state.menu === "commander"}
                 onClick={() => dispatch({ type: "menu", menu: "commander" })}
               >
-                <ChevronDown size={14} aria-hidden />
+                <ChevronDown size={13} aria-hidden />
               </button>
+              {LEFT_MENUS.map(({ menu, label, Icon }) =>
+                menuButton(menu, label, Icon)
+              )}
             </>
           )}
         </div>
@@ -257,7 +260,7 @@ export function UniverseTray({
           aria-expanded={state.expanded}
           onClick={() => dispatch({ type: "logo" })}
         >
-          <AoaLogo size={92} />
+          <AoaLogo size={58} />
         </button>
 
         <div className="universe-tray-wing universe-tray-wing-right">

@@ -191,7 +191,7 @@ function Harness() {
         <UniverseTray
           openPanels={openPanels}
           menuItems={menuItems}
-          conversationTitle="Planning chat"
+          conversationTitle="Launch direction"
           counts={{ inbox: library.inbox.length }}
           commanderConversations={[
             { key: "planning", label: "Planning chat", hint: "today" },
