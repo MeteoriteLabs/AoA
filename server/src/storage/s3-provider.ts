@@ -84,9 +84,16 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
   if (!region) throw unprocessable("S3 storage region is required");
 
   const prefix = normalizePrefix(config.prefix);
+  // A BLANK endpoint means UNSET (use the AWS default host), not a literal ""
+  // endpoint. Without this coercion an empty AOA_STORAGE_S3_ENDPOINT / _PRESIGN_
+  // ENDPOINT (the AWS, non-MinIO case) reaches `assertPresignHttps` below as ""
+  // and is rejected as "not https" — turning every artifact-transfer grant into a
+  // 422/503 even though the AWS default host IS https. Only coerce blank; a real
+  // non-https endpoint (e.g. "http://…") must still fail closed.
+  const endpoint = config.endpoint?.trim() || undefined;
   const client = new S3Client({
     region,
-    endpoint: config.endpoint,
+    endpoint,
     forcePathStyle: Boolean(config.forcePathStyle),
     ...(config.credentials ? { credentials: config.credentials } : {}),
   });
@@ -94,7 +101,7 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
   // DAT-002 — a SEPARATE client bound to the worker-facing presign endpoint so a
   // minted grant URL points at a worker-reachable https host, never the control
   // plane's internal endpoint. Resolution: presignEndpoint → endpoint → AWS default.
-  const presignEndpoint = config.presignEndpoint ?? config.endpoint;
+  const presignEndpoint = config.presignEndpoint?.trim() || endpoint;
   const presignClient = new S3Client({
     region,
     endpoint: presignEndpoint,

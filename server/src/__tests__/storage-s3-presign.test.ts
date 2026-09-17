@@ -96,4 +96,31 @@ describe("S3 storage provider presign (DAT-002)", () => {
       provider.presignPut!({ objectKey: KEY, expiresInSeconds: 300, maxBytes: 1024, checksumSha256: SHA }),
     ).rejects.toThrow(/https/i);
   });
+
+  it("treats a BLANK endpoint/presignEndpoint as unset (AWS default https), not a '' endpoint", async () => {
+    // Regression for the staging artifact-transfer-grant 503: on AWS (non-MinIO)
+    // AOA_STORAGE_S3_ENDPOINT / _PRESIGN_ENDPOINT are empty, so a "" reached the
+    // provider and assertPresignHttps rejected the valid AWS-default presign as
+    // "not https" (errStatus 422). A blank endpoint MUST mean unset, not "".
+    for (const blank of ["", "   "]) {
+      const provider = createS3StorageProvider({
+        bucket: "aoa-e7-canary-artifacts",
+        region: "us-east-1",
+        endpoint: blank,
+        presignEndpoint: blank,
+        forcePathStyle: true,
+        credentials: DUMMY_CREDS,
+      });
+      const grant = await provider.presignGet!({
+        objectKey: KEY,
+        expiresInSeconds: 120,
+        maxBytes: 1024,
+        checksumSha256: SHA,
+      });
+      expect(grant.method).toBe("GET");
+      expect(grant.url.startsWith("https://")).toBe(true);
+      expect(grant.url).toContain("amazonaws.com");
+      expect(grant.url).toContain("attempts/1/out.bin");
+    }
+  });
 });

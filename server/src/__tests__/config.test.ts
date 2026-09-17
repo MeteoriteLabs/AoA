@@ -15,6 +15,8 @@ const EXECUTION_POLICY_ENV_KEYS = [
   "AOA_DISTRIBUTED_PUBLIC_SERVICE_INGRESS_ENABLED",
   "AOA_DISTRIBUTED_CLOUD_PLUGIN_EXECUTION_ENABLED",
   "AOA_ALLOW_UNSANDBOXED_MULTITENANT",
+  "AOA_STORAGE_S3_ENDPOINT",
+  "AOA_STORAGE_S3_PRESIGN_ENDPOINT",
 ] as const;
 
 const ORIGINAL_EXECUTION_POLICY_ENV: Record<string, string | undefined> = Object.fromEntries(
@@ -137,6 +139,27 @@ describe("loadConfig", () => {
     ])("refuses the excluded surface %s instead of silently enabling it", (name) => {
       process.env[name] = "true";
       expect(() => loadConfig()).toThrow(new RegExp(`${name}.*excluded`, "i"));
+    });
+  });
+
+  describe("s3 endpoints", () => {
+    // Regression for the staging artifact-transfer-grant 503: a blank
+    // AOA_STORAGE_S3_ENDPOINT / _PRESIGN_ENDPOINT (the AWS, non-MinIO case) must
+    // resolve to undefined (use the AWS default host), never "" — a "" reaches the
+    // S3 presign path and is rejected as "not https".
+    it("coerces a blank AOA_STORAGE_S3_ENDPOINT to undefined", () => {
+      process.env.AOA_STORAGE_S3_ENDPOINT = "";
+      expect(loadConfig().storageS3Endpoint).toBeUndefined();
+    });
+
+    it("coerces a whitespace AOA_STORAGE_S3_PRESIGN_ENDPOINT to undefined", () => {
+      process.env.AOA_STORAGE_S3_PRESIGN_ENDPOINT = "   ";
+      expect(loadConfig().storageS3PresignEndpoint).toBeUndefined();
+    });
+
+    it("passes a real endpoint through, trimmed", () => {
+      process.env.AOA_STORAGE_S3_ENDPOINT = " https://minio.local:9000 ";
+      expect(loadConfig().storageS3Endpoint).toBe("https://minio.local:9000");
     });
   });
 });
