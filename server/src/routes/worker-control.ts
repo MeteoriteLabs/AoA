@@ -27,6 +27,7 @@ import {
   WorkerEnrollmentError,
 } from "../services/worker-enrollment.js";
 import { logger } from "../middleware/logger.js";
+import { internalErrorLogFields } from "../utils/internal-error-log.js";
 import { bindJobTraceLogger } from "../services/job-trace-log.js";
 import { sendWorkerProtocolError } from "../services/worker-protocol-http.js";
 import { sendWorkerOperationProtocolError, sizeRefusalCode } from "../services/worker-protocol-http.js";
@@ -300,6 +301,7 @@ export function workerControlRoutes(opts: {
       logger.error({
         action: "worker.enrollment.failed",
         reasonCode: "worker_enrollment_internal_unavailable",
+        ...internalErrorLogFields(error),
       }, "worker enrollment unavailable");
       sendWorkerProtocolError(req, res, "internal_unavailable", opts.now?.() ?? new Date());
     }
@@ -376,6 +378,7 @@ export function workerControlRoutes(opts: {
       logger.error({
         action: "worker.session.renewal.failed",
         reasonCode: "worker_session_renewal_internal_unavailable",
+        ...internalErrorLogFields(error),
       }, "worker session renewal unavailable");
       sendWorkerProtocolError(req, res, "internal_unavailable", opts.now?.() ?? new Date());
     }
@@ -444,6 +447,7 @@ export function workerControlRoutes(opts: {
       logger.error({
         action: "worker.poll.failed",
         reasonCode: "worker_poll_internal_unavailable",
+        ...internalErrorLogFields(error),
       }, "worker poll unavailable");
       sendWorkerOperationProtocolError(req, res, "poll", "internal_unavailable", opts.now?.() ?? new Date());
     }
@@ -503,6 +507,7 @@ export function workerControlRoutes(opts: {
       logger.error({
         action: "worker.lease_ack.failed",
         reasonCode: "worker_lease_ack_internal_unavailable",
+        ...internalErrorLogFields(error),
       }, "worker lease ACK unavailable");
       sendWorkerOperationProtocolError(req, res, "lease_ack", "internal_unavailable", opts.now?.() ?? new Date());
     }
@@ -548,6 +553,7 @@ export function workerControlRoutes(opts: {
       logger.error({
         action: "worker.lease_renew.failed",
         reasonCode: "worker_lease_renew_internal_unavailable",
+        ...internalErrorLogFields(error),
       }, "worker lease renew unavailable");
       sendWorkerOperationProtocolError(req, res, "lease_renew", "internal_unavailable", opts.now?.() ?? new Date());
     }
@@ -594,6 +600,7 @@ export function workerControlRoutes(opts: {
       logger.error({
         action: "worker.event_upload.failed",
         reasonCode: "worker_event_upload_internal_unavailable",
+        ...internalErrorLogFields(error),
       }, "worker event upload unavailable");
       sendWorkerOperationProtocolError(req, res, "event_upload", "internal_unavailable", opts.now?.() ?? new Date());
     }
@@ -643,6 +650,7 @@ export function workerControlRoutes(opts: {
       logger.error({
         action: "worker.artifact_transfer_grant.failed",
         reasonCode: "worker_artifact_transfer_grant_internal_unavailable",
+        ...internalErrorLogFields(error),
       }, "worker artifact transfer grant unavailable");
       sendWorkerOperationProtocolError(req, res, "artifact_transfer_grant", "internal_unavailable", opts.now?.() ?? new Date());
     }
@@ -692,6 +700,7 @@ export function workerControlRoutes(opts: {
       logger.error({
         action: "worker.artifact_commit.failed",
         reasonCode: "worker_artifact_commit_internal_unavailable",
+        ...internalErrorLogFields(error),
       }, "worker artifact commit unavailable");
       sendWorkerOperationProtocolError(req, res, "artifact_commit", "internal_unavailable", opts.now?.() ?? new Date());
     }
@@ -819,6 +828,7 @@ export function workerControlRoutes(opts: {
       logger.error({
         action: "worker.quarantine_grant.failed",
         reasonCode: "worker_quarantine_grant_internal_unavailable",
+        ...internalErrorLogFields(error),
       }, "worker quarantine grant unavailable");
       sendWorkerOperationProtocolError(req, res, "quarantine_grant", "internal_unavailable", opts.now?.() ?? new Date());
     }
@@ -868,6 +878,7 @@ export function workerControlRoutes(opts: {
       logger.error({
         action: "worker.quarantine_finalize.failed",
         reasonCode: "worker_quarantine_finalize_internal_unavailable",
+        ...internalErrorLogFields(error),
       }, "worker quarantine finalize unavailable");
       sendWorkerOperationProtocolError(req, res, "quarantine_finalize", "internal_unavailable", opts.now?.() ?? new Date());
     }
@@ -918,6 +929,7 @@ export function workerControlRoutes(opts: {
       logger.error({
         action: "worker.control_ack.failed",
         reasonCode: "worker_control_ack_internal_unavailable",
+        ...internalErrorLogFields(error),
       }, "worker control ack unavailable");
       sendWorkerOperationProtocolError(req, res, "control_command", "internal_unavailable", opts.now?.() ?? new Date());
     }
