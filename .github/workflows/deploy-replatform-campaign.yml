@@ -5,7 +5,9 @@ name: Deploy replatform campaign
 # lane targets the E7-1 campaign overlay on the replatform host.
 #
 # The target host is expected to be bootstrapped once by the operator with:
-#   - /opt/aoa/docker/campaign/.env.campaign (not tracked)
+#   - /opt/aoa/docker/campaign/.env.campaign (not tracked) — must carry a stable
+#     AOA_CAMPAIGN_SECRETS_MASTER_KEY (see docker/campaign/.env.campaign.example);
+#     the deploy fails loud if it is missing/empty
 #   - /opt/campaign/cp-extra.env (not tracked)
 #   - /opt/campaign/secrets/* (not tracked)
 #   - the existing aoa-staging Postgres/project volumes and enrolled worker
@@ -299,6 +301,20 @@ jobs:
           }
           [[ -f "$campaign_env" && -f "$cp_extra_env" ]] || {
             echo "campaign bootstrap files are missing" >&2
+            exit 1
+          }
+          # The control plane maps AOA_CAMPAIGN_SECRETS_MASTER_KEY -> AOA_SECRETS_MASTER_KEY
+          # (docker-compose.campaign.yml) to decrypt company provider secrets. A compose
+          # `environment:` value overrides env_file, so an empty campaign source would ship
+          # an empty key and break decryption AFTER the health check passes. Validate the
+          # EFFECTIVE value: compose-go dotenv is last-wins for duplicate keys, so take the
+          # LAST assignment and require it non-empty after stripping CR/whitespace.
+          master_key_line="$(grep -E '^AOA_CAMPAIGN_SECRETS_MASTER_KEY=' "$campaign_env" | tail -n1 || true)"
+          master_key_value="$(printf '%s' "${master_key_line#*=}" | tr -d '[:space:]')"
+          [[ -n "$master_key_value" ]] || {
+            echo "AOA_CAMPAIGN_SECRETS_MASTER_KEY is missing or its effective (last) value is" >&2
+            echo "empty in .env.campaign; set a stable, backed-up 32-byte key there before" >&2
+            echo "deploying (see docker/campaign/.env.campaign.example)" >&2
             exit 1
           }
           [[ -f "$campaign_root/secrets/cp-signing-key.pem" ]] || exit 1
