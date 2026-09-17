@@ -141,6 +141,8 @@ jobs:
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
           E2B_TEMPLATE_INPUT: ${{ inputs.e2b_template }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         run: |
           set -euo pipefail
           umask 077
@@ -156,10 +158,19 @@ jobs:
             echo "::error::e2b_template must be a non-empty single-line value"
             exit 1
           }
+          [[ -n "$AWS_ACCESS_KEY_ID" && -n "$AWS_SECRET_ACCESS_KEY" ]] || {
+            echo "::error::GitHub Secrets AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are required for S3 object storage"
+            exit 1
+          }
           google_env="$RUNNER_TEMP/aoa-campaign-google.env"
           campaign_env="$RUNNER_TEMP/aoa-campaign-overrides.env"
-          printf 'GOOGLE_CLIENT_ID=%s\nGOOGLE_CLIENT_SECRET=%s\n' \
-            "$GOOGLE_CLIENT_ID" "$GOOGLE_CLIENT_SECRET" > "$google_env"
+          # cp-extra.env fragment — values injected directly into the control-plane
+          # container env. Google OAuth plus the AWS credentials the S3 storage provider
+          # resolves through the AWS SDK default chain (the CP mints presigned artifact
+          # URLs, so only it needs them; the worker/sandbox use the URLs). Never printed;
+          # written 0600 into RUNNER_TEMP.
+          printf 'GOOGLE_CLIENT_ID=%s\nGOOGLE_CLIENT_SECRET=%s\nAWS_ACCESS_KEY_ID=%s\nAWS_SECRET_ACCESS_KEY=%s\n' \
+            "$GOOGLE_CLIENT_ID" "$GOOGLE_CLIENT_SECRET" "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" > "$google_env"
           printf 'E2B_API_KEY=%s\nAOA_CAMPAIGN_E2B_TEMPLATE=%s\n' \
             "$E2B_API_KEY" "$E2B_TEMPLATE_INPUT" > "$campaign_env"
           chmod 600 "$google_env" "$campaign_env"
@@ -336,7 +347,7 @@ jobs:
           campaign_env_changed=true
 
           install -m 600 "$cp_extra_env" "$cp_backup"
-          awk '!/^(GOOGLE_CLIENT_ID|GOOGLE_CLIENT_SECRET)=/' "$cp_extra_env" > "$stage/cp-extra.env.next"
+          awk '!/^(GOOGLE_CLIENT_ID|GOOGLE_CLIENT_SECRET|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY)=/' "$cp_extra_env" > "$stage/cp-extra.env.next"
           cat "$google_env" >> "$stage/cp-extra.env.next"
           chmod 600 "$stage/cp-extra.env.next"
           mv -f -- "$stage/cp-extra.env.next" "$cp_extra_env"
