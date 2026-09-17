@@ -14,7 +14,13 @@ import { companies } from "./companies.js";
 /** A persisted panel in a Universe layout snapshot. Presentation only — no content
  * bodies, credentials or live tokens are ever stored here. */
 export interface UniverseLayoutPanel {
-  ref: { companyId: string; kind: string; id: string; version?: string };
+  key: string;
+  ref: {
+    companyId: string;
+    kind: "task" | "artifact" | "browser";
+    id: string;
+    version?: string;
+  };
   title: string;
   rect: { x: number; y: number; width: number; height: number };
   openedOrdinal: number;

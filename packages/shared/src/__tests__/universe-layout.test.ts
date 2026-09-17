@@ -18,7 +18,13 @@ describe("universe layout validators", () => {
       operationId: "op-1",
       expectedRevision: 0,
       operations: [
-        { type: "open", key: "k1", ref: { kind: "task", id: "t1" }, rect },
+        {
+          type: "open",
+          key: "k1",
+          ref: { kind: "task", id: "t1" },
+          rect,
+          title: "T1",
+        },
         { type: "geometry", key: "k1", rect },
         { type: "pin", key: "k1", value: true },
         { type: "minimize", key: "k1", value: false },
@@ -54,6 +60,7 @@ describe("universe layout validators", () => {
         key: "k",
         ref: { kind: "evil", id: "x" },
         rect,
+        title: "T",
       }).success
     ).toBe(false);
   });
@@ -88,6 +95,7 @@ describe("universe layout validators", () => {
       ...emptyUniverseLayoutDocument(),
       panels: [
         {
+          key: "k1",
           ref: { companyId: "c", kind: "task", id: "t1" },
           title: "T",
           rect,

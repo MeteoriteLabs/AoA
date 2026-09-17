@@ -47,7 +47,13 @@ const viewportSchema = z.object({ x: coord, y: coord, zoom }).strict();
  * credentials, raw audio, cookies or control tokens ever ride here. */
 export const layoutOpSchema = z.discriminatedUnion("type", [
   z
-    .object({ type: z.literal("open"), key, ref: opRefSchema, rect: rectSchema })
+    .object({
+      type: z.literal("open"),
+      key,
+      ref: opRefSchema,
+      rect: rectSchema,
+      title: z.string().max(1024),
+    })
     .strict(),
   z.object({ type: z.literal("geometry"), key, rect: rectSchema }).strict(),
   z.object({ type: z.literal("pin"), key, value: z.boolean() }).strict(),
@@ -90,6 +96,7 @@ export type LayoutAck = {
  * because it has already been resolved server-side against the scope. */
 const documentPanelSchema = z
   .object({
+    key,
     ref: z
       .object({
         companyId: z.string().min(1),
