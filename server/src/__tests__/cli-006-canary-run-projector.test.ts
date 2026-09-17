@@ -36,6 +36,7 @@ function evidence(overrides: Partial<CanaryAttemptEvidence> = {}): CanaryAttempt
     ],
     terminal: { outcome: "succeeded", errorCode: null, errorMessage: null },
     usage: { inputTokens: 100, outputTokens: 50, costUsd: 0.01, durationMs: 1234 },
+    finishedAt: new Date("2026-08-19T10:00:42.000Z"),
     detectedFiles: [],
     ...overrides,
   };
@@ -115,6 +116,26 @@ describe("CLI-006 D5 — canary run projector", () => {
       evidence: evidence({ terminal: { outcome, errorCode: null, errorMessage: null } }),
     });
     expect(d.setRunStatus).toHaveBeenCalledWith(RUN, status, expect.anything());
+  });
+
+  // E7-F036 — a run must be DURABLY terminal: a terminal STATUS is not enough, the
+  // verifier's clause 3 also requires `finished_at` set (e7-distributed-run-verifier.ts:531).
+  // The projector is the ONLY terminal `setRunStatus` caller on the distributed path; every
+  // legacy caller passes `finishedAt` explicitly (setRunStatus never derives it). Without this
+  // a fully-successful distributed run lands status=succeeded, finished_at=null and never
+  // promotes. `expect.anything()` on the patch (the mapping test above) does not pin this.
+  it("stamps finished_at on the terminal patch (durably terminal — verifier clause 3)", async () => {
+    const d = deps();
+    const fin = new Date("2026-08-19T10:00:42.000Z");
+    await createCanaryRunProjector(d).projectTerminal({
+      target,
+      evidence: evidence({ finishedAt: fin }),
+    });
+    expect(d.setRunStatus).toHaveBeenCalledWith(
+      RUN,
+      "succeeded",
+      expect.objectContaining({ finishedAt: fin }),
+    );
   });
 
   it("carries the attempt's usage onto the run and the summary comment", async () => {

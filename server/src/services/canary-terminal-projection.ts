@@ -245,6 +245,11 @@ export function foldAttemptEvidence(input: {
       costUsd: null,
       durationMs: reportedMs ?? wallClockMs,
     },
+    // The run's `finished_at` (E7-F036). `now`, not the terminal row's occurredAt: the
+    // wall-clock `durationMs` above already measures against `now`, so keeping the same
+    // reference makes finished_at − started_at agree with the reported duration, and the
+    // after-commit projection fires within ms of the terminal.
+    finishedAt: input.now,
     // `artifact_prepared` carries an artifactId and a kind, never a path
     // (worker-protocol/src/events.ts:294), so there is no honest file list to
     // build — the same `[]` the W3a crew loopback ships until workspaces land.

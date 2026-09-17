@@ -131,6 +131,18 @@ describe("CLI-006/2b — foldAttemptEvidence", () => {
     expect(evidence.terminal).toEqual({ outcome: "failed", errorCode: null, errorMessage: null });
   });
 
+  // E7-F036 — the folded evidence carries `finished_at` so the projector can write a
+  // DURABLY terminal run (verifier clause 3 = terminal status AND finished_at). It is
+  // `now`, not the terminal row's occurredAt, on purpose: durationMs's wall-clock
+  // fallback (:227) already measures against `now`, so finished_at − started_at stays
+  // consistent with the reported duration. The after-commit hook fires within ms of the
+  // terminal, so `now` IS that instant.
+  it("stamps finished_at = now so the projected run is durably terminal", () => {
+    expect(fold().finishedAt).toEqual(NOW);
+    // present even when the terminal row read failed and rows are empty
+    expect(fold({ rows: [] }).finishedAt).toEqual(NOW);
+  });
+
   it("dedupes by eventId and orders by sequence", () => {
     const evidence = fold({
       rows: [
