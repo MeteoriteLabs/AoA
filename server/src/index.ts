@@ -28,6 +28,7 @@ import { createApp } from "./app.js";
 import { buildReadinessProbe } from "./routes/readiness.js";
 import { loadSchemaCompatibility } from "./services/schema-compatibility.js";
 import { setDistributedRolloutPort } from "./services/distributed-rollout-port.js";
+import { setProviderCredentialBrokerDb } from "./services/provider-resolution-deps.js";
 import {
   OPERATOR_ROLE,
   TENANT_APP_ROLE,
@@ -618,6 +619,10 @@ const distributedExecutionDatabases = config.distributedExecutionEnabled
   : null;
 if (distributedExecutionDatabases) {
   logger.info("Verified aoa_app and aoa_operator bounded database pools");
+  // E7-1: register the operator pool for the provider-credential broker (migration 0281). The
+  // multi_tenant credential resolution routes through the SECURITY DEFINER functions over this
+  // pool; read lazily in buildResolveDeps so registration order is irrelevant.
+  setProviderCredentialBrokerDb(distributedExecutionDatabases.operatorDb);
 }
 
 let jobControlRuntime: { stop(): Promise<void> } | null = null;

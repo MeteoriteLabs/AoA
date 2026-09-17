@@ -62,6 +62,16 @@ const EXPECTED_MANIFEST_IDENTITIES: Readonly<Record<string, string>> = {
   "public.canary_preflight_evidence_scalars":
     "p_organization_id uuid, p_company_id uuid, p_default_env_id uuid",
   "public.legacy_reconciliation_leases": "p_organization_id uuid, p_company_id uuid",
+  // E7-1 provider-credential broker (migration 0281). Three definer functions the operator
+  // pool calls to resolve the Company key without a grant on the owner-only credential model.
+  // These identities are what `pg_get_function_identity_arguments` renders for the 0281 bodies
+  // (all uuid/text/integer params, no timestamptz) and are compared with EXACT equality at boot.
+  "public.resolve_provider_assignment_candidates":
+    "p_organization_id uuid, p_company_id uuid, p_provider text",
+  "public.resolve_company_secret_bundle":
+    "p_company_id uuid, p_secret_id uuid, p_version integer, p_target_type text, p_target_id text, p_config_path text",
+  "public.record_company_secret_access":
+    "p_company_id uuid, p_secret_id uuid, p_version integer, p_provider text, p_actor_type text, p_actor_id text, p_consumer_type text, p_consumer_id text, p_issue_id uuid, p_heartbeat_run_id uuid, p_plugin_id uuid, p_config_path text, p_outcome text, p_error_code text",
 };
 
 describe("SECURITY DEFINER manifest — shape", () => {

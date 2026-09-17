@@ -125,18 +125,32 @@ export function assertNotMcpOAuthManaged(metadata: unknown) {
   }
 }
 
-function assertMcpOAuthResolutionAllowed(
-  secret: typeof companySecrets.$inferSelect,
+/**
+ * R3 broker-owned-secret guard, keyed on the secret's provider_metadata only. EXPORTED so the
+ * distributed-run credential broker (provider-resolution-deps.ts), which reads provider_metadata
+ * via resolve_company_secret_bundle rather than the ORM row, reproduces the EXACT refusal the
+ * in-process resolveSecretValue applies. Behaviour is unchanged for the direct path — the private
+ * wrapper below simply forwards the ORM row's providerMetadata here.
+ */
+export function assertMcpOAuthResolutionAllowedByMetadata(
+  providerMetadata: unknown,
   context: SecretConsumerContext,
 ) {
-  if (!isMcpOAuthManagedMetadata(secret.providerMetadata)) return;
+  if (!isMcpOAuthManagedMetadata(providerMetadata)) return;
   const allowedConsumer =
     context.consumerType === "system" &&
     (context.consumerId === "mcp-connectors" || context.consumerId === "oauth-broker");
   if (!allowedConsumer || !context.mcpOAuthOwner) {
     throw unprocessable("OAuth connector credentials cannot be used by generic secret consumers");
   }
-  assertMcpOAuthOwner(secret.providerMetadata, context.mcpOAuthOwner);
+  assertMcpOAuthOwner(providerMetadata, context.mcpOAuthOwner);
+}
+
+function assertMcpOAuthResolutionAllowed(
+  secret: typeof companySecrets.$inferSelect,
+  context: SecretConsumerContext,
+) {
+  assertMcpOAuthResolutionAllowedByMetadata(secret.providerMetadata, context);
 }
 
 export async function prepareMcpOAuthSecretVersion(input: {

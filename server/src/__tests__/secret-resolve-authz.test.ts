@@ -6,8 +6,10 @@ import { describe, expect, it } from "vitest";
 import {
   authorizeSecretResolve,
   SECRET_REF_KINDS,
+  MEMBERSHIP_CAPABLE_OWNER_KINDS,
   type SecretResolveAuthzInput,
 } from "@armyofagents/db";
+import { PRINCIPAL_TYPES } from "@armyofagents/shared";
 
 // -----------------------------------------------------------------------------
 // DAT-004 — the PURE lease-scoped secret-resolve authorization decision.
@@ -159,13 +161,77 @@ describe("DAT-004 authorizeSecretResolve (pure decision)", () => {
     expect(authorizeSecretResolve(input)).toBe("owner_membership_lost");
   });
 
-  it("re-checks membership for ANY owner-bound handle, not only device_local", () => {
+  it("re-checks membership for ANY membership-capable owner-bound handle, not only device_local", () => {
     const input = base({
       refKind: "company_secret", materialization: "env", usePolicy: "sandbox_local_only",
       ownerPrincipalKind: "user", ownerPrincipalId: "user-owner-1",
     });
     input.ownerMembershipActive = false;
     expect(authorizeSecretResolve(input)).toBe("owner_membership_lost");
+  });
+
+  // DE-29 owner-routing — the case that motivates exempting the execution SUBSTRATE from
+  // the membership re-check. A distributed run is executed by a WORKER/SANDBOX principal
+  // (Decision #121 frozen executor authority — `agent` is only a *requester* kind), and
+  // `execution-secret-handle-mint-runner` owner-binds the company `provider_key` handle to
+  // that executor. worker/sandbox/system are NEVER `company_memberships` (principal_type is
+  // only ever user/agent), so `ownerMembershipActive` is `false` for them. The
+  // owner==executor routing check STILL holds and the fence already proved the principal's
+  // live lease authority, so this MUST admit — not `owner_membership_lost` (the defect that
+  // blocked every agent-executed key resolution live on the canary).
+  it("ADMITS a provider_key handle owned by the execution SUBSTRATE (worker) with no company membership", () => {
+    const input = base({
+      refKind: "provider_key", refId: "provider:anthropic",
+      materialization: "env", usePolicy: "sandbox_local_only",
+      ownerPrincipalKind: "worker", ownerPrincipalId: "agent-worker-1",
+    });
+    input.jobOwner = { executorPrincipalKind: "worker", executorPrincipalId: "agent-worker-1" };
+    input.ownerMembershipActive = false; // worker/sandbox/system are never company members
+    expect(authorizeSecretResolve(input)).toBe("admit");
+  });
+
+  it("STILL enforces owner==executor routing for a substrate owner (membership exemption is not a routing bypass)", () => {
+    const input = base({
+      refKind: "provider_key", refId: "provider:anthropic",
+      materialization: "env", usePolicy: "sandbox_local_only",
+      ownerPrincipalKind: "worker", ownerPrincipalId: "agent-worker-1",
+    });
+    // A DIFFERENT worker is the locked job executor — the handle's owner does not route to it.
+    input.jobOwner = { executorPrincipalKind: "worker", executorPrincipalId: "agent-worker-2" };
+    input.ownerMembershipActive = false;
+    expect(authorizeSecretResolve(input)).toBe("owner_binding_incomplete");
+  });
+
+  // The exemption is SUBSTRATE-only, NOT "everything but user". An `agent` owner IS
+  // membership-capable (PRINCIPAL_TYPES = user/agent; agents get a company_memberships row
+  // with principal_type='agent' via the invite flow), so the membership re-check MUST still
+  // apply to it — a suspended/removed agent must lose access. This locks the relaxation to
+  // the substrate and prevents it from silently widening to membership-capable principals.
+  it("STILL re-checks membership for an AGENT owner (membership-capable, not substrate)", () => {
+    const input = base({
+      refKind: "company_secret", materialization: "env", usePolicy: "sandbox_local_only",
+      ownerPrincipalKind: "agent", ownerPrincipalId: "agent-42",
+    });
+    input.jobOwner = { executorPrincipalKind: "agent", executorPrincipalId: "agent-42" };
+    input.ownerMembershipActive = false;
+    expect(authorizeSecretResolve(input)).toBe("owner_membership_lost");
+  });
+
+  it("ADMITS an AGENT owner whose company membership is still active", () => {
+    const input = base({
+      refKind: "company_secret", materialization: "env", usePolicy: "sandbox_local_only",
+      ownerPrincipalKind: "agent", ownerPrincipalId: "agent-42",
+    });
+    input.jobOwner = { executorPrincipalKind: "agent", executorPrincipalId: "agent-42" };
+    input.ownerMembershipActive = true;
+    expect(authorizeSecretResolve(input)).toBe("admit");
+  });
+
+  it("pins MEMBERSHIP_CAPABLE_OWNER_KINDS to exactly the membership-capable PRINCIPAL_TYPES (no drift)", () => {
+    // The membership re-check gate must track the set of kinds that can actually hold a
+    // company_memberships row. Pinning it to PRINCIPAL_TYPES means adding a new member kind
+    // reds this test (forcing a deliberate decision) rather than silently exempting it.
+    expect([...MEMBERSHIP_CAPABLE_OWNER_KINDS].sort()).toEqual([...PRINCIPAL_TYPES].sort());
   });
 
   it("pins the ref-kind set to exactly the four legacy stores", () => {
