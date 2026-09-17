@@ -181,15 +181,16 @@ export function loadConfig(): Config {
   const storageS3Region = process.env.AOA_STORAGE_S3_REGION ?? fileStorage?.s3?.region ?? "us-east-1";
   // A BLANK env value means UNSET (use the AWS default host), never a literal ""
   // endpoint — a "" would make the S3 presign path reject the valid AWS default as
-  // "not https". Coerce blank/whitespace to undefined (same idiom as the auth base
-  // URL above).
+  // "not https". Apply env-over-file precedence FIRST (`??` so a set-but-blank env
+  // still overrides a stored file endpoint), THEN normalize blank/whitespace to
+  // undefined — so `AOA_STORAGE_S3_ENDPOINT=""` selects the AWS default even when a
+  // config file has a (possibly non-https) MinIO/R2 endpoint.
   const storageS3Endpoint =
-    process.env.AOA_STORAGE_S3_ENDPOINT?.trim() || fileStorage?.s3?.endpoint || undefined;
+    (process.env.AOA_STORAGE_S3_ENDPOINT ?? fileStorage?.s3?.endpoint)?.trim() || undefined;
   // DAT-002 — worker-facing https endpoint used ONLY to mint presigned artifact
   // grant URLs (distinct from the internal control-plane endpoint above).
   const storageS3PresignEndpoint =
-    process.env.AOA_STORAGE_S3_PRESIGN_ENDPOINT?.trim() ||
-    fileStorage?.s3?.presignEndpoint ||
+    (process.env.AOA_STORAGE_S3_PRESIGN_ENDPOINT ?? fileStorage?.s3?.presignEndpoint)?.trim() ||
     undefined;
   const storageS3Prefix = process.env.AOA_STORAGE_S3_PREFIX ?? fileStorage?.s3?.prefix ?? "";
   const storageS3ForcePathStyle =
