@@ -191,10 +191,14 @@ cp docker/campaign/.env.campaign.example docker/campaign/.env.campaign
 
 Fill: the three image tags, deployment mode + allowed hostnames, the four DB URLs +
 the two serving-role passwords, the session signing key, the truth bearer, the
-keypair + enrollment-ticket file paths, `E2B_API_KEY` + `AOA_CAMPAIGN_E2B_TEMPLATE`,
-and (optionally) the object store. **Leave `AOA_CAMPAIGN_DISTRIBUTED_EXECUTION_ROLLOUT`
-EMPTY for now** — you arm it in §6. Never commit the filled file; never put the E2B
-key in the control-plane's auth env file.
+**secrets-vault master key** (`AOA_CAMPAIGN_SECRETS_MASTER_KEY` — generate with
+`openssl rand -base64 32`; keep it STABLE and BACKED UP, since changing it makes
+every existing encrypted secret undecryptable), the keypair + enrollment-ticket file
+paths, `E2B_API_KEY` + `AOA_CAMPAIGN_E2B_TEMPLATE`, and (optionally) the object store.
+**Leave `AOA_CAMPAIGN_DISTRIBUTED_EXECUTION_ROLLOUT` EMPTY for now** — you arm it in
+§6. The deploy workflow refuses to run if `AOA_CAMPAIGN_SECRETS_MASTER_KEY` is missing
+or not a valid key. Never commit the filled file; never put the E2B key in the
+control-plane's auth env file.
 
 ---
 

@@ -167,6 +167,15 @@ services:
       AOA_STORAGE_S3_BUCKET: "${AOA_CAMPAIGN_S3_BUCKET:-}"
       AOA_STORAGE_S3_REGION: "${AOA_CAMPAIGN_S3_REGION:-us-east-1}"
       AOA_STORAGE_S3_FORCE_PATH_STYLE: "true"
+      # ★ The instance-wide secrets-vault master key (AES-256-GCM) the control plane
+      # uses to DECRYPT company provider keys at run time. It MUST be mapped here, not
+      # only via an out-of-band override file: a GitHub-managed `up --force-recreate`
+      # that omits the override drops the key, and the CP then fails a run with
+      # `pre_spawn_failed: Unsupported state or unable to authenticate data` (it can no
+      # longer decrypt the anthropic secret). Bare `${VAR}` by the campaign convention
+      # above — a missing key fails LOUD at first decrypt rather than silently falling
+      # back to a (nonexistent, read-only-fs) key file. Supplied from .env.campaign.
+      AOA_SECRETS_MASTER_KEY: "${AOA_CAMPAIGN_SECRETS_MASTER_KEY}"
     # Deployment-mode AUTH config (BetterAuth/Google trio for `authenticated`, etc.)
     # goes here — a file the operator supplies. `required: false` so a `local_trusted`
     # run needs no such file. ★ This file MUST NEVER contain E2B_API_KEY (the control
