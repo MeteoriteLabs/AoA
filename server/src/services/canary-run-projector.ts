@@ -47,6 +47,13 @@ export interface CanaryAttemptEvidence {
     readonly costUsd: number | null;
     readonly durationMs: number;
   };
+  /**
+   * When the attempt finished, stamped onto the run's `finished_at` (E7-F036). A run
+   * is DURABLY terminal only when it carries BOTH a terminal status and a finish time
+   * (evidence-verifier A clause 3); `setRunStatus` never derives it, so — like every
+   * legacy terminal caller — the projector must supply it.
+   */
+  readonly finishedAt: Date;
   readonly detectedFiles: ReadonlyArray<{ path: string; type?: string }>;
 }
 
@@ -186,6 +193,9 @@ export function createCanaryRunProjector(deps: CanaryRunProjectorDeps): CanaryRu
       let lostLatch = false;
       try {
         const won = await deps.setRunStatus(target.runId, runStatusForOutcome(evidence.terminal.outcome), {
+          // DURABLY terminal: a terminal status alone leaves finished_at null (setRunStatus
+          // never derives it), which the verifier reads as not-yet-finished — E7-F036.
+          finishedAt: evidence.finishedAt,
           error: evidence.terminal.errorMessage,
           usageJson: {
             inputTokens: evidence.usage.inputTokens,
