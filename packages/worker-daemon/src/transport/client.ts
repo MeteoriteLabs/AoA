@@ -130,6 +130,18 @@ export const SELF_HELLO_DESCRIPTOR = Object.freeze({
   timeoutMs: 15_000,
 });
 
+/** The worker execution-target heartbeat path. The device proof is signed OVER this exact
+ * string (the `/api` mount included), pinned by scripts/check-worker-path-parity.mjs. Server
+ * route: server/src/routes/execution-targets.ts `POST /execution-targets/heartbeat`; it seeds
+ * both worker.lastSeenAt and target.lastSeenAt and returns 204. */
+export const HEARTBEAT_PATH = "/api/execution-targets/heartbeat";
+
+/** Local descriptor for the heartbeat request (a tiny `{status}` body). */
+export const HEARTBEAT_DESCRIPTOR = Object.freeze({
+  maxRequestBytes: 4 * 1024,
+  timeoutMs: 15_000,
+});
+
 /**
  * DAT-008 slice 5 — the sandbox-local execution-secret RESOLVE route.
  *
@@ -257,6 +269,8 @@ export interface ControlPlaneClient {
   readonly selfHelloRefreshPath: string;
   /** The execution-secret resolve path the proof must be signed over (DAT-008 slice 5, LOCAL op). */
   readonly executionSecretResolvePath: string;
+  /** The heartbeat path the proof must be signed over (Wave-4 session-lifetime, LOCAL op). */
+  readonly heartbeatPath: string;
   /** The lease-ack path for `leaseId` (the proof must be signed over it). */
   leaseAckPath(leaseId: string): string;
   /** The lease-renew path for `leaseId` (the proof must be signed over it, WRK-005). */
@@ -299,6 +313,10 @@ export interface ControlPlaneClient {
    * branch on `outcome`, since a denial is ALSO HTTP 200. The value returns in the body (not a
    * header), so this reuses `postOperation`. */
   resolveExecutionSecret(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse>;
+  /** POST a device-proof heartbeat (LOCAL op, 4 KiB / 15s, Wave-4). Presents the live session as
+   * Bearer + a fresh device proof; the server seeds worker.lastSeenAt + target.lastSeenAt and
+   * returns 204. Returns the HTTP status only (no session header). */
+  heartbeat(request: WorkerOperationHttpRequest): Promise<{ status: number }>;
 }
 
 export interface ControlPlaneClientOptions {
@@ -349,6 +367,7 @@ export function createControlPlaneClient(opts: ControlPlaneClientOptions): Contr
   const controlAckTimeoutMs = opts.controlAckTimeoutMs ?? OPERATION_DESCRIPTORS.control_command.timeoutMs;
   const sessionRenewTimeoutMs = opts.sessionRenewTimeoutMs ?? SESSION_RENEW_DESCRIPTOR.timeoutMs;
   const selfHelloTimeoutMs = SELF_HELLO_DESCRIPTOR.timeoutMs;
+  const heartbeatTimeoutMs = HEARTBEAT_DESCRIPTOR.timeoutMs;
 
   /** POST a dual-authed worker operation (poll / lease_ack / lease_renew /
    * quarantine_*); classify transport failures the same way the enroll path does
@@ -426,6 +445,7 @@ export function createControlPlaneClient(opts: ControlPlaneClientOptions): Contr
     selfModelReadPath: SELF_MODEL_READ_PATH,
     sessionRenewPath: SESSION_RENEW_PATH,
     selfHelloRefreshPath: SELF_HELLO_PATH,
+    heartbeatPath: HEARTBEAT_PATH,
     executionSecretResolvePath: EXECUTION_SECRET_RESOLVE_PATH,
     leaseAckPath,
     leaseRenewPath,
@@ -536,6 +556,41 @@ export function createControlPlaneClient(opts: ControlPlaneClientOptions): Contr
         }
       }
       return { status: response.status, body, sessionHeader };
+    },
+    async heartbeat(request: WorkerOperationHttpRequest): Promise<{ status: number }> {
+      // Dual-authed like poll (Bearer session + device proof). The server returns 204 and no
+      // session header, so this needs only the status — it does not reuse `postOperation`
+      // (which parses a body) nor read a session header (like selfHelloRefresh).
+      if (request.bytes.byteLength > HEARTBEAT_DESCRIPTOR.maxRequestBytes) {
+        throw new ControlPlaneTransportError(
+          "request_too_large",
+          `heartbeat request exceeds the ${HEARTBEAT_DESCRIPTOR.maxRequestBytes}-byte descriptor ceiling`,
+        );
+      }
+      const headers: Record<string, string> = {
+        "content-type": "application/json",
+        authorization: `Bearer ${request.sessionToken}`,
+        ...request.proofHeaders,
+      };
+      if (request.requestId !== undefined) {
+        headers[WORKER_CONTROL_HEADERS.requestId] = request.requestId;
+      }
+      let response: Response;
+      try {
+        response = await doFetch(new URL(HEARTBEAT_PATH, opts.baseUrl).toString(), {
+          method: "POST",
+          headers,
+          body: new Uint8Array(request.bytes),
+          signal: AbortSignal.timeout(heartbeatTimeoutMs),
+        });
+      } catch (err) {
+        const name = err instanceof Error ? err.name : "";
+        if (name === "TimeoutError" || name === "AbortError") {
+          throw new ControlPlaneTransportError("timeout", "heartbeat request timed out");
+        }
+        throw new ControlPlaneTransportError("network", "heartbeat request transport failure");
+      }
+      return { status: response.status };
     },
     poll(request: WorkerOperationHttpRequest): Promise<WorkerOperationHttpResponse> {
       return postOperation("poll", POLL_PATH, pollTimeoutMs, OPERATION_DESCRIPTORS.poll.maxRequestBytes, request);

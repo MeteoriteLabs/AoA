@@ -186,6 +186,15 @@ export const CLOSED_LABEL_VALUES: Readonly<Record<string, ReadonlySet<string>>> 
     "stale",
     "oversized",
     "unhandled",
+    // ★★★ Wave-4 — the periodic heartbeat driver's `heartbeat_outcome` values, registered in the
+    // SAME commit that first emits them (poll/heartbeat-loop.ts). `outcome` is a CLOSED allow-list:
+    // an unregistered value THROWS in `inc`, and it throws on the HAPPY path (a 204 beat) as readily
+    // as on failure — which, in the fire-and-forget heartbeat loop, would orphan the rejection AND
+    // leave `firstBeat` unresolved so the poll loop never starts (the exact bug the heartbeat fixes).
+    // "failed" is already registered above (shared with sandbox/cleanup); these three are new.
+    "ok",
+    "terminal",
+    "session_unavailable",
   ]),
   workload: new Set(["batch", "browser_session", "service"]),
   bucket: new Set(["lt_1s", "lt_5s", "lt_30s", "gte_30s"]),

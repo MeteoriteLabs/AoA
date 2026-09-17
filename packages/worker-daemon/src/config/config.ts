@@ -56,6 +56,9 @@ export interface WorkerConfig {
     readonly service: number;
   };
   readonly pollTimeoutMs: number;
+  /** `AOA_WORKER_HEARTBEAT_INTERVAL_MS` — cadence between successful heartbeats (Wave-4). Default
+   * 2 min, clamped [15s, 4min] to stay under the server poll authority's 5-min heartbeat bound. */
+  readonly heartbeatIntervalMs: number;
   readonly backoff: {
     readonly baseMs: number;
     readonly maxMs: number;
@@ -80,6 +83,7 @@ export const ENV = {
   concurrencyBrowser: "AOA_WORKER_CONCURRENCY_BROWSER",
   concurrencyService: "AOA_WORKER_CONCURRENCY_SERVICE",
   pollTimeoutMs: "AOA_WORKER_POLL_TIMEOUT_MS",
+  heartbeatIntervalMs: "AOA_WORKER_HEARTBEAT_INTERVAL_MS",
   backoffBaseMs: "AOA_WORKER_BACKOFF_BASE_MS",
   backoffMaxMs: "AOA_WORKER_BACKOFF_MAX_MS",
   backoffJitter: "AOA_WORKER_BACKOFF_JITTER",
@@ -192,6 +196,12 @@ export function loadWorkerConfig(env: Env): WorkerConfig {
     max: 600_000,
   });
 
+  const heartbeatIntervalMs = parseIntEnv(env, ENV.heartbeatIntervalMs, {
+    defaultValue: 120_000,
+    min: 15_000,
+    max: 240_000,
+  });
+
   const baseMs = parseIntEnv(env, ENV.backoffBaseMs, { defaultValue: 1_000, min: 1, max: 600_000 });
   const maxMs = parseIntEnv(env, ENV.backoffMaxMs, { defaultValue: 30_000, min: 1, max: 3_600_000 });
   const jitter = parseUnitFloatEnv(env, ENV.backoffJitter, 0.5);
@@ -221,6 +231,7 @@ export function loadWorkerConfig(env: Env): WorkerConfig {
     eventOutboxPath,
     concurrency,
     pollTimeoutMs,
+    heartbeatIntervalMs,
     backoff,
     health,
   });

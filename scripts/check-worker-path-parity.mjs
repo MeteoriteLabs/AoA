@@ -61,6 +61,14 @@ const PAIRS = [
     daemonDescriptor: { file: "packages/worker-daemon/src/transport/client.ts", const: "EXECUTION_SECRET_RESOLVE_DESCRIPTOR" },
     serverDescriptor: { file: "server/src/services/execution-secret-resolve.ts", const: "EXECUTION_SECRET_RESOLVE_DESCRIPTOR" },
   },
+  {
+    name: "worker execution-target heartbeat (Wave-4 session-lifetime)",
+    daemonFile: "packages/worker-daemon/src/transport/client.ts",
+    daemonConst: "HEARTBEAT_PATH",
+    serverFile: "server/src/routes/execution-targets.ts",
+    mount: "/api",
+    serverRoute: "/execution-targets/heartbeat",
+  },
 ];
 
 /** Evaluate a small integer expression (`4 * 1024`, `10_000`) — no `eval`, digits + `*` only. */
