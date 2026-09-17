@@ -154,6 +154,13 @@
       "reason": "`workflow_dispatch` only, with required human-supplied inputs (a reviewed deploy sha). It is an OPERATOR ACTION, not a lane: there is no commit that owes it a run and no cadence it is late for, so a missing run is the normal state rather than an incident.",
       "wouldTakeToWatch": "Nothing short of giving deploys a declared cadence would make a verdict here owed. If deploys become scheduled, add a `cadence` entry."
     },
+    "deploy-replatform-campaign.yml@*": {
+      "workflow": "deploy-replatform-campaign.yml",
+      "branch": null,
+      "watch": "not-watched",
+      "reason": "`workflow_dispatch` only, with a required human-supplied `deploy_sha` (a reviewed commit from docs/replatform-program) plus operator inputs (e2b_template, start_worker, cleanup_builder_cache). It is an OPERATOR ACTION, not a lane: there is no commit that owes it a run and no cadence it is late for, so a missing run is the normal state rather than an incident.",
+      "wouldTakeToWatch": "Nothing short of giving campaign deploys a declared cadence would make a verdict here owed. If deploys become scheduled, add a `cadence` entry."
+    },
     "verdict-reconcile.yml@main": {
       "workflow": "verdict-reconcile.yml",
       "branch": "main",
