@@ -1,0 +1,235 @@
+/* E1.4 icon tray + menus. One stationary logo; equal-width wings animate around
+ * it without moving its center. Colors reuse the app tokens. */
+
+.universe-tray {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  font: 13px system-ui, sans-serif;
+  color: var(--text, #29292c);
+}
+
+.universe-tray-bar {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--card, #fff);
+  border: 1px solid var(--border, #e4e4e7);
+  border-radius: 12px;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 6%);
+}
+
+.universe-tray-wing {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.universe-tray-wing-left {
+  justify-content: flex-end;
+}
+.universe-tray-wing-right {
+  justify-content: flex-start;
+}
+
+.universe-tray-logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--border, #e4e4e7);
+  border-radius: 10px;
+  background: var(--card-2, #f4f4f5);
+  color: inherit;
+  cursor: pointer;
+}
+.universe-tray-logo:hover {
+  background: var(--hd, #ececef);
+}
+
+.universe-tray-icon {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.universe-tray-icon:hover {
+  background: var(--hd, #ececef);
+}
+.universe-tray-icon[data-active="true"] {
+  background: color-mix(in srgb, var(--brand, #d95059) 14%, transparent);
+  border-color: color-mix(in srgb, var(--brand, #d95059) 40%, transparent);
+}
+.universe-tray-commander-options {
+  width: 26px;
+}
+
+.universe-tray-icon:focus-visible,
+.universe-tray-logo:focus-visible,
+.universe-tray-list-item:focus-visible,
+.universe-tray-search:focus-visible,
+.universe-overview-tile:focus-visible {
+  outline: 2px solid var(--brand-focus-ring, #d95059);
+  outline-offset: 2px;
+}
+
+.universe-tray-badge {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--brand, #d95059);
+  color: #fff;
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+}
+
+/* Popup ------------------------------------------------------------------- */
+.universe-tray-popup {
+  position: absolute;
+  top: calc(100% + 8px);
+  z-index: 20;
+  width: min(420px, 92vw);
+  max-height: min(70vh, 560px);
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: var(--card, #fff);
+  border: 1px solid var(--border, #e4e4e7);
+  border-radius: 12px;
+  box-shadow: 0 8px 28px rgb(0 0 0 / 14%);
+}
+.universe-tray-popup-head {
+  display: flex;
+  align-items: center;
+}
+.universe-tray-popup-title {
+  font-weight: 600;
+}
+
+.universe-tray-search {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--border, #e4e4e7);
+  border-radius: 8px;
+  background: var(--card-2, #f4f4f5);
+  color: inherit;
+  font: inherit;
+}
+
+.universe-tray-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.universe-tray-list-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.universe-tray-list-item:hover {
+  background: var(--hd, #ececef);
+}
+.universe-tray-list-hint {
+  color: var(--dim, #71717a);
+  font-size: 12px;
+}
+.universe-tray-empty {
+  margin: 4px 0;
+  color: var(--dim, #71717a);
+}
+
+.universe-tray-commander-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.universe-tray-toggles {
+  display: flex;
+  gap: 14px;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border, #e4e4e7);
+  border-radius: 8px;
+}
+.universe-tray-toggles legend {
+  padding: 0 4px;
+  color: var(--dim, #71717a);
+  font-size: 12px;
+}
+.universe-tray-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+/* Open-panels overview ---------------------------------------------------- */
+.universe-overview {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px;
+}
+.universe-overview-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  min-height: 88px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #e4e4e7);
+  border-radius: 10px;
+  background: var(--card-2, #f4f4f5);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.universe-overview-tile:hover {
+  background: var(--hd, #ececef);
+}
+.universe-overview-tile[data-minimized="true"] {
+  opacity: 0.72;
+}
+.universe-overview-title {
+  font-weight: 600;
+}
+.universe-overview-kind {
+  color: var(--dim, #71717a);
+  font-size: 12px;
+}
+.universe-overview-empty {
+  margin: 4px 0;
+  color: var(--dim, #71717a);
+}
