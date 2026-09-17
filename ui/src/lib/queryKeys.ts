@@ -168,6 +168,8 @@ export const queryKeys = {
   },
   sidebarPreferences: (companyId: string) => ["sidebar-preferences", companyId] as const,
   homeBoardLayout: (companyId: string) => ["home-board-layout", companyId] as const,
+  universeLayout: (companyId: string, conversationId: string) =>
+    ["universe-layout", companyId, conversationId] as const,
   viewerPreferences: (companyId: string) => ["viewer-preferences", companyId] as const,
   inboxDismissals: (companyId: string) => ["inbox-dismissals", companyId] as const,
   activity: (companyId: string) => ["activity", companyId] as const,
