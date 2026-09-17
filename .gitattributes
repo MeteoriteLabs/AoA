@@ -101,3 +101,15 @@ docs/architecture/distributed-execution-* text eol=lf
 # CI mounts, and so the one-line-file assertion in docker/d1/__tests__ measures the same bytes
 # everywhere. The file is already LF, so this changes no committed bytes.
 docker/d1/worker-b.enrollment-ticket text eol=lf
+
+# Drizzle migration files + their journal metadata are HASHED (sha256 of file bytes) to form
+# the migration identity: loadRequiredMigrationIdentity (packages/db/src/client.ts) hashes every
+# `<tag>.sql`, and the control-plane's assertRequiredMigrationIdentity requires the DB journal's
+# hash set to equal that image-computed set. A Windows checkout / `git archive` with core.autocrlf
+# would emit CRLF, drifting every hash away from the LF journal the DB was migrated with — which
+# makes the CP try to re-apply already-applied migrations and FAIL BOOT on
+# distributed_execution_migration_identity (observed on a manual staging deploy). Pin LF so the
+# migration identity is byte-identical on every platform. The blobs are already LF, so this
+# changes no committed bytes — it stops a Windows working tree / archive from diverging.
+packages/db/src/migrations/*.sql text eol=lf
+packages/db/src/migrations/meta/*.json text eol=lf

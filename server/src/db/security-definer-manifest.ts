@@ -163,4 +163,59 @@ export const SECURITY_DEFINER_FUNCTION_MANIFEST: readonly SecurityDefinerFunctio
       "environment_leases.metadata, which is secret-bearing at rest, and failure_reason, so " +
       "the return type structurally cannot carry key material.",
   },
+  {
+    schema: "public",
+    name: "resolve_provider_assignment_candidates",
+    identityArguments: "p_organization_id uuid, p_company_id uuid, p_provider text",
+    executeGrantees: ["aoa_operator"],
+    authorityRelations: ["public.provider_assignments", "public.provider_connections"],
+    executionConfig: ['search_path=""'],
+    bodySha256: "1316da40fc578b72df4373f58c9464552fc06651ff3a76b2739ea46d2ef0784f",
+    rationale:
+      "E7-1 provider-credential broker (migration 0281). Returns the provider_assignment JOIN " +
+      "provider_connection candidates for a distributed/isolated run so aoa_operator resolves the " +
+      "Company provider key without a table grant on the owner-only credential model. EXECUTE is " +
+      "aoa_operator ONLY -- the boundary; the org/company predicates are defence in depth " +
+      "(caller-supplied, and candidateMatchesScope re-checks in Node). No secret material in the " +
+      "return type.",
+  },
+  {
+    schema: "public",
+    name: "resolve_company_secret_bundle",
+    identityArguments:
+      "p_company_id uuid, p_secret_id uuid, p_version integer, p_target_type text, p_target_id text, p_config_path text",
+    executeGrantees: ["aoa_operator"],
+    authorityRelations: [
+      "public.company_secrets",
+      "public.company_secret_versions",
+      "public.company_secret_provider_configs",
+      "public.company_secret_bindings",
+    ],
+    executionConfig: ['search_path=""'],
+    bodySha256: "b1106fd8f4928b7169eb90521174feb04e828ba707fcf77e9d830e1c954a8095",
+    rationale:
+      "E7-1 provider-credential broker (migration 0281). Returns one Company secret's metadata, " +
+      "the resolved version's ENCRYPTED material, the provider-config row, and whether a binding " +
+      "exists for the consumer path. Unlike canary_preflight_evidence_scalars this DOES carry " +
+      "company_secret_versions.material -- that is the point: aoa_operator must materialize the " +
+      "Company key to run the agent. AES-256-GCM decryption and every policy check " +
+      "(status/deleted/binding/version) stay in Node. EXECUTE is aoa_operator ONLY; the material " +
+      "never enters the wire (FORBIDDEN_WIRE_KEYS).",
+  },
+  {
+    schema: "public",
+    name: "record_company_secret_access",
+    identityArguments:
+      "p_company_id uuid, p_secret_id uuid, p_version integer, p_provider text, p_actor_type text, p_actor_id text, p_consumer_type text, p_consumer_id text, p_issue_id uuid, p_heartbeat_run_id uuid, p_plugin_id uuid, p_config_path text, p_outcome text, p_error_code text",
+    executeGrantees: ["aoa_operator"],
+    authorityRelations: ["public.secret_access_events", "public.company_secrets"],
+    executionConfig: ['search_path=""'],
+    bodySha256: "ca7312f6680aba21874953cde233927ec3765fd77c4d1a291fc096b90a38d94d",
+    rationale:
+      "E7-1 provider-credential broker (migration 0281). Performs the two writes resolveSecretValue " +
+      "makes that aoa_operator cannot: the secret_access_events audit INSERT (success AND failure) " +
+      "and, on success only, the company_secrets.last_resolved_at touch. Called from Node after " +
+      "decryption with the final outcome so audit timing matches the in-process path. EXECUTE is " +
+      "aoa_operator ONLY.",
+  },
 ];
