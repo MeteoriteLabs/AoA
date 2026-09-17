@@ -179,11 +179,18 @@ export function loadConfig(): Config {
   );
   const storageS3Bucket = process.env.AOA_STORAGE_S3_BUCKET ?? fileStorage?.s3?.bucket ?? "paperclip";
   const storageS3Region = process.env.AOA_STORAGE_S3_REGION ?? fileStorage?.s3?.region ?? "us-east-1";
-  const storageS3Endpoint = process.env.AOA_STORAGE_S3_ENDPOINT ?? fileStorage?.s3?.endpoint ?? undefined;
+  // A BLANK env value means UNSET (use the AWS default host), never a literal ""
+  // endpoint — a "" would make the S3 presign path reject the valid AWS default as
+  // "not https". Coerce blank/whitespace to undefined (same idiom as the auth base
+  // URL above).
+  const storageS3Endpoint =
+    process.env.AOA_STORAGE_S3_ENDPOINT?.trim() || fileStorage?.s3?.endpoint || undefined;
   // DAT-002 — worker-facing https endpoint used ONLY to mint presigned artifact
   // grant URLs (distinct from the internal control-plane endpoint above).
   const storageS3PresignEndpoint =
-    process.env.AOA_STORAGE_S3_PRESIGN_ENDPOINT ?? fileStorage?.s3?.presignEndpoint ?? undefined;
+    process.env.AOA_STORAGE_S3_PRESIGN_ENDPOINT?.trim() ||
+    fileStorage?.s3?.presignEndpoint ||
+    undefined;
   const storageS3Prefix = process.env.AOA_STORAGE_S3_PREFIX ?? fileStorage?.s3?.prefix ?? "";
   const storageS3ForcePathStyle =
     process.env.AOA_STORAGE_S3_FORCE_PATH_STYLE !== undefined
