@@ -32,9 +32,25 @@ export function OpenPanelsOverview({
             data-minimized={panel.minimized}
             onClick={() => onOpen(panel.key)}
           >
-            <span className="universe-overview-title">{panel.title}</span>
-            <span className="universe-overview-kind">
-              {panel.minimized ? `${panel.kind} · minimized` : panel.kind}
+            {/* Android-recents-style thumbnail. Real authorized content capture
+             * is the deferred E1.4/2 hover preview; this is a window proxy. */}
+            <span
+              className="universe-overview-thumb"
+              data-kind={panel.kind}
+              aria-hidden
+            >
+              <span className="universe-overview-thumb-bar" />
+              <span className="universe-overview-thumb-lines">
+                <i />
+                <i />
+                <i />
+              </span>
+            </span>
+            <span className="universe-overview-meta">
+              <span className="universe-overview-title">{panel.title}</span>
+              <span className="universe-overview-kind">
+                {panel.minimized ? `${panel.kind} · minimized` : panel.kind}
+              </span>
             </span>
           </button>
         </li>

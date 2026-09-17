@@ -1,5 +1,5 @@
 /// <reference types="vite/client" />
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, type CSSProperties } from "react";
 import { createRoot } from "react-dom/client";
 import {
   UniverseWorkspace,
@@ -164,25 +164,34 @@ function Harness() {
 
   return (
     <main
-      style={{
-        height: "100vh",
-        display: "flex",
-        flexDirection: "column",
-        background: "var(--bg, #f4f4f5)",
-        color: "var(--text, #29292c)",
-        font: "13px system-ui, sans-serif",
-      }}
+      style={
+        {
+          height: "100vh",
+          display: "flex",
+          flexDirection: "column",
+          // Dark canvas so light work panels float on it (JARVIS/Atlas). The
+          // workspace reads --bg for its own surface; keep panels (--card) light.
+          "--bg": "#0a0b10",
+          background:
+            "radial-gradient(1200px 700px at 50% -10%, #1d2030 0%, #0b0c12 60%, #07080c 100%)",
+          color: "#edeef2",
+          font: "13px system-ui, sans-serif",
+        } as CSSProperties
+      }
     >
       <div
         style={{
           display: "flex",
           justifyContent: "center",
           padding: "10px 12px 4px",
+          position: "relative",
+          zIndex: 50,
         }}
       >
         <UniverseTray
           openPanels={openPanels}
           menuItems={menuItems}
+          conversationTitle="Planning chat"
           counts={{ inbox: library.inbox.length }}
           commanderConversations={[
             { key: "planning", label: "Planning chat", hint: "today" },
@@ -213,7 +222,7 @@ function Harness() {
           )}
         </pre>
       </details>
-      <div style={{ flex: 1, minHeight: 0 }}>
+      <div style={{ flex: 1, minHeight: 0, position: "relative", zIndex: 0 }}>
         <UniverseWorkspace
           ref={handle}
           scope={scope}

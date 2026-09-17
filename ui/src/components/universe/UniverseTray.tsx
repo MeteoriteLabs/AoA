@@ -8,15 +8,13 @@ import {
   useState,
 } from "react";
 import {
+  ChevronDown,
   FileText,
   Globe,
   Inbox as InboxIcon,
   LayoutGrid,
   ListTodo,
-  MessageSquare,
-  Orbit,
   Settings as SettingsIcon,
-  Sparkles,
 } from "lucide-react";
 import {
   initialTrayState,
@@ -24,6 +22,8 @@ import {
   type TrayMenu,
 } from "./tray-state";
 import { OpenPanelsOverview, type OpenPanelTile } from "./OpenPanelsOverview";
+import { AoaLogo } from "../../onboarding/motion/AoaLogo";
+import "../../onboarding/motion/motion.css";
 import "./universe-tray.css";
 
 /** A library reference the tray can resolve and open (task, artifact, chat…). */
@@ -62,26 +62,31 @@ export interface UniverseTrayProps {
   /** Commander options view-mode toggles (independent of the primary action). */
   commanderToggles?: CommanderToggleState;
   onToggleCommander?: (which: keyof CommanderToggleState, value: boolean) => void;
+  /** Current conversation title shown quietly above the tray (U02). */
+  conversationTitle?: string;
   /** E8.1 dock hiding; "always" stays expanded, "hidden" collapses by default. */
   dockHiding?: "always" | "auto" | "hidden";
 }
 
-const LIBRARY_MENUS: {
-  menu: LibraryMenu;
+// Right wing, in the U02 order: Work, Artifacts & Sources, Inbox, Browser,
+// Settings, then the one Open panels control.
+const RIGHT_MENUS: {
+  menu: TrayMenu;
   label: string;
   Icon: typeof FileText;
 }[] = [
   { menu: "work", label: "Work", Icon: ListTodo },
-  { menu: "artifacts", label: "Artifacts", Icon: FileText },
+  { menu: "artifacts", label: "Artifacts & Sources", Icon: FileText },
   { menu: "inbox", label: "Inbox", Icon: InboxIcon },
   { menu: "browser", label: "Browser", Icon: Globe },
   { menu: "settings", label: "Settings", Icon: SettingsIcon },
+  { menu: "open-panels", label: "Open panels", Icon: LayoutGrid },
 ];
 
 const MENU_TITLE: Record<TrayMenu, string> = {
   commander: "Commander options",
   work: "Work",
-  artifacts: "Artifacts",
+  artifacts: "Artifacts & Sources",
   inbox: "Inbox",
   browser: "Browser",
   settings: "Settings",
@@ -108,6 +113,7 @@ export function UniverseTray({
   onCommanderPrimary,
   commanderToggles,
   onToggleCommander,
+  conversationTitle,
   dockHiding = "always",
 }: UniverseTrayProps) {
   const [state, dispatch] = useReducer(
@@ -193,6 +199,9 @@ export function UniverseTray({
     >
       <Icon size={18} aria-hidden />
       <Badge count={resolvedCounts[menu]} />
+      <span className="universe-tray-tip" aria-hidden>
+        {label}
+      </span>
     </button>
   );
 
@@ -204,6 +213,9 @@ export function UniverseTray({
       data-expanded={state.expanded}
       data-dock-hiding={dockHiding}
     >
+      {state.expanded && conversationTitle && (
+        <div className="universe-tray-conversation">{conversationTitle}</div>
+      )}
       <div className="universe-tray-bar">
         <div className="universe-tray-wing universe-tray-wing-left">
           {state.expanded && (
@@ -214,7 +226,10 @@ export function UniverseTray({
                 aria-label="Commander"
                 onClick={onCommanderPrimary}
               >
-                <MessageSquare size={18} aria-hidden />
+                <span className="universe-tray-blob" aria-hidden />
+                <span className="universe-tray-tip" aria-hidden>
+                  Commander
+                </span>
               </button>
               <button
                 type="button"
@@ -229,7 +244,7 @@ export function UniverseTray({
                 data-active={state.menu === "commander"}
                 onClick={() => dispatch({ type: "menu", menu: "commander" })}
               >
-                <Sparkles size={14} aria-hidden />
+                <ChevronDown size={14} aria-hidden />
               </button>
             </>
           )}
@@ -242,17 +257,14 @@ export function UniverseTray({
           aria-expanded={state.expanded}
           onClick={() => dispatch({ type: "logo" })}
         >
-          <Orbit size={20} aria-hidden />
+          <AoaLogo size={92} />
         </button>
 
         <div className="universe-tray-wing universe-tray-wing-right">
           {state.expanded &&
-            LIBRARY_MENUS.map(({ menu, label, Icon }) =>
-              menu === "settings" ? null : menuButton(menu, label, Icon)
+            RIGHT_MENUS.map(({ menu, label, Icon }) =>
+              menuButton(menu, label, Icon)
             )}
-          {state.expanded &&
-            menuButton("open-panels", MENU_TITLE["open-panels"], LayoutGrid)}
-          {state.expanded && menuButton("settings", "Settings", SettingsIcon)}
         </div>
       </div>
 
