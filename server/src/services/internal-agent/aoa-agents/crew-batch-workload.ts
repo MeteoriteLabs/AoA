@@ -17,7 +17,11 @@
 // seam via `acquireExecutionContext` — exactly as the heartbeat seam passes it for a
 // task_run — not resolved here through the adapter registry.
 
-import type { BuildTaskRunBatchWorkloadResult } from "../../task-run-batch-workload.js";
+import { resolveCrewAdapterFor } from "./resolve-crew-adapter.js";
+import {
+  buildTaskRunBatchWorkload,
+  type BuildTaskRunBatchWorkloadResult,
+} from "../../task-run-batch-workload.js";
 
 export interface CrewBatchWorkloadInput {
   /** `internal_agent_config.provider` — the company's crew provider (anthropic/openai/…). */
@@ -41,8 +45,18 @@ export interface CrewBatchWorkloadInput {
  * and refuse `adapter_not_v1_scope` through the inherited gate — the same refusal the credential
  * mint gives — so the seam has ONE place to read "this company's crew cannot go distributed".
  */
-export function buildCrewBatchWorkload(_input: CrewBatchWorkloadInput): BuildTaskRunBatchWorkloadResult {
-  // TDD STUB (red phase): a constant so every feature arm fails until the real
-  // implementation lands in the green commit. Replaced next.
-  return { ok: false, reason: "invalid_workload" };
+export function buildCrewBatchWorkload(input: CrewBatchWorkloadInput): BuildTaskRunBatchWorkloadResult {
+  // The ONE crew-specific decision: map the company's crew provider to the v1 sandbox
+  // adapter. `google`/`opencode` resolve to a non-v1 adapter (`gemini_local`/`opencode_local`)
+  // and refuse `adapter_not_v1_scope` through the delegated gate — the same refusal the mint
+  // gives. Everything else — the argv shape, staging, the frozen-schema validation, the
+  // timeout policy, the attributable refusal reasons — is inherited from the generic builder.
+  const { adapterType, adapterConfig } = resolveCrewAdapterFor(input.provider, input.crewModel);
+  return buildTaskRunBatchWorkload({
+    adapterType,
+    runtimeCommandSpec: input.runtimeCommandSpec,
+    adapterConfig,
+    currentTaskMarkdown: input.currentTaskMarkdown,
+    instructions: input.instructions ?? null,
+  });
 }
