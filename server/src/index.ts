@@ -83,6 +83,7 @@ import { scheduleWarmSandboxReaper } from "./services/warm-sandbox-reaper.js";
 import { scheduleCleanupRetrySweeper } from "./services/workspace-cleanup-retry-sweeper.js";
 import { scheduleClaudeConfigDirSweeper } from "./services/claude-config-dir-sweeper.js";
 import { registerHeartbeatWatchdogSweeper } from "./services/heartbeat-watchdog.js";
+import { createCrewAttemptTerminalProjection } from "./services/internal-agent/aoa-agents/crew-terminal-projection.js";
 import { startEmbeddingWorker } from "./services/embeddings-worker.js";
 import { startMentionOutboxWorker } from "./services/mention-outbox-worker.js";
 import { startCommentWakeupOutboxWorker } from "./services/comment-wakeup-outbox-worker.js";
@@ -924,40 +925,54 @@ const readinessProbe = buildReadinessProbe({
 // secret resolver; a deployment that never canaries should not pay for that at
 // startup. Inert until a run actually carries the `execution_owner` marker.
 let canaryProjectionHeartbeat: ReturnType<typeof heartbeatService> | undefined;
+// MIG-006 slice 2 — the crew analogue, composed alongside the heartbeat projection. Each no-ops
+// (its findRunForAttempt returns null) for any attempt the OTHER owns — heartbeat_runs and
+// internal_agent_runs are disjoint per attempt — so both run safely on every terminal.
+let crewProjection: ReturnType<typeof createCrewAttemptTerminalProjection> | undefined;
 const onAttemptTerminal =
   config.distributedExecutionEnabled && distributedExecutionDatabases
     ? async (signal: import("./services/job-events.js").AttemptTerminalSignal) => {
         const tenantAppDb = distributedExecutionDatabases.appDb;
-        canaryProjectionHeartbeat ??= heartbeatService(db as any);
         const { runInTenant } = await import("./db/tenant-context.js");
         const { jobEvents } = await import("@armyofagents/db");
         const { and: andOp, eq: eqOp } = await import("drizzle-orm");
-        await canaryProjectionHeartbeat.projectDistributedAttemptTerminal({
-          signal,
-          // The ONE thing the heartbeat service cannot do for itself: `job_events`
-          // is tenant-scoped behind RLS and reachable only through `runInTenant`
-          // over the `aoa_app` pool.
-          listAttemptEvents: async ({ organizationId, companyId, jobId, attemptId }) =>
-            runInTenant(tenantAppDb, organizationId, async (_repos, tx: typeof tenantAppDb) =>
-              tx
-                .select({
-                  eventId: jobEvents.eventId,
-                  sequence: jobEvents.sequence,
-                  eventType: jobEvents.eventType,
-                  event: jobEvents.event,
-                  occurredAt: jobEvents.occurredAt,
-                })
-                .from(jobEvents)
-                .where(
-                  andOp(
-                    eqOp(jobEvents.organizationId, organizationId),
-                    eqOp(jobEvents.companyId, companyId),
-                    eqOp(jobEvents.jobId, jobId),
-                    eqOp(jobEvents.attemptId, attemptId),
-                  ),
+        // The ONE thing the projection services cannot do for themselves: `job_events` is
+        // tenant-scoped behind RLS and reachable only through `runInTenant` over the `aoa_app`
+        // pool. Defined ONCE and shared by both projections so they can never read different rows.
+        const listAttemptEvents = async ({
+          organizationId,
+          companyId,
+          jobId,
+          attemptId,
+        }: {
+          organizationId: string;
+          companyId: string;
+          jobId: string;
+          attemptId: string;
+        }) =>
+          runInTenant(tenantAppDb, organizationId, async (_repos, tx: typeof tenantAppDb) =>
+            tx
+              .select({
+                eventId: jobEvents.eventId,
+                sequence: jobEvents.sequence,
+                eventType: jobEvents.eventType,
+                event: jobEvents.event,
+                occurredAt: jobEvents.occurredAt,
+              })
+              .from(jobEvents)
+              .where(
+                andOp(
+                  eqOp(jobEvents.organizationId, organizationId),
+                  eqOp(jobEvents.companyId, companyId),
+                  eqOp(jobEvents.jobId, jobId),
+                  eqOp(jobEvents.attemptId, attemptId),
                 ),
-            ),
-        });
+              ),
+          );
+        canaryProjectionHeartbeat ??= heartbeatService(db as any);
+        await canaryProjectionHeartbeat.projectDistributedAttemptTerminal({ signal, listAttemptEvents });
+        crewProjection ??= createCrewAttemptTerminalProjection(db as any);
+        await crewProjection.projectCrewAttemptTerminal({ signal, listAttemptEvents });
       }
     : undefined;
 
