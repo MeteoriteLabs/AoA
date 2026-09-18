@@ -1,8 +1,12 @@
 # MIG-010 — Legacy-resource reconciliation becomes runnable, and closure becomes decidable
 
-**Status:** `scoping stub` — filed so two open findings have a checkable owner (E4-F013). No
-implementation, no result doc. The design work lives in
-[`qa/2026-09-01-blocker-e-2-e-3-design.md`](../../../qa/2026-09-01-blocker-e-2-e-3-design.md).
+**Status:** `shipped` (units 2.2–2.5; PR #336 = Unit 2.3, `597e77715`, migrations 0268/0269/0270) —
+**corrected 2026-09-18** from the original `scoping stub` label below, which went stale after the units
+landed. **Resolves E10-F002, E7-F004, E7-F005, E7-F006.** The reconciler gained a production operator-CLI
+caller, the gate inventory narrowed to a DB-clock reconciliation watermark, and unattributable records got
+an operator remedy. Original filing note (kept for provenance): *"filed so two open findings have a
+checkable owner (E4-F013); no implementation, no result doc; the design work lives in
+[`qa/2026-09-01-blocker-e-2-e-3-design.md`](../../../qa/2026-09-01-blocker-e-2-e-3-design.md)."*
 **Epic:** `E10 — desktop migration / realtime`. **Owns:** `E10-F002` (E-2) and `E7-F004` (E-3).
 **Filed (UTC):** `2026-09-01`, from Blocker E terrain verification at `c7ead3a73`.
 
