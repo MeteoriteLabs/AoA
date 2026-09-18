@@ -57,6 +57,21 @@ stands) · Measured in `C:/uf` at `611a78bfb` (base `c48259358`), 2026-09-04, **
 > it broken while looking like a fix), **E7-F028** (MEDIUM — the probe's codex verdict states a cause
 > its own stderr contradicts) and **E7-F029** (LOW — the pack's self-test emits a second, synthetic
 > report). ★ **This amendment ships NO product change**, and it is not permission to make one.
+>
+> ★★★ **AMENDED AGAIN 2026-09-18 (post-E7-1) — STOP-CONDITION CLAUSE 1 IS NOW DISCHARGED FOR
+> `claude_local`; THE "LITERALS ARE UNCHANGED AT THIS TIP" PHRASING IS STALE.** The two-clause stop
+> condition above (repeated at `:1100-1101` and `:1201`) was written 2026-09-04, before the posture
+> landed. **E7-F021 is RESOLVED (2026-09-11, founder-authorized):** the posture PR added
+> `--dangerously-skip-permissions` to BOTH claude literals in
+> `server/src/services/task-run-sandbox-invocation.ts` (guarded RED-when-removed by
+> `server/src/__tests__/task-run-batch-workload.test.ts`). So **clause 1 — "no mechanism before the
+> posture is in the product (a reviewed, merged diff)" — is DISCHARGED for `claude_local`**: a
+> sandboxed claude now writes. **Clause 2 STILL STANDS:** codex is unchanged (**E7-F027 open** —
+> refused by its own trusted-directory gate), so any near-term mechanism must be **`claude_local`-only**,
+> not adapter-agnostic. ★ **This does NOT reopen the measure-first ruling or license a mechanism.** The
+> supply mechanism remains the 3×-refuted terrain of §4 and the measure-first position of §12/§13;
+> clause 1 clearing means only that its *precondition* is met, not that a fourth mechanism is approved.
+> **NO product change ships with this amendment.**
 
 **Governing decision:** [`DECISION-byte-egress-and-provider-topology.md`](../../../DECISION-byte-egress-and-provider-topology.md)
 — Option D, "the provider reads the file from inside its sandbox and PUTs it directly to object

@@ -51,7 +51,7 @@ a result-return blocker that drops every item — not recommended), then Command
   al., E3-17) ~~+ E7-1~~ — **none of them the mint.** ★ **2026-09-18: the `+ E7-1` blocker is REMOVED** —
   the E7-1 distributed E2B mechanism is proven end-to-end (Hetzner staging run `8dc34e90`, verifier
   `ok=true`; E7-F011 + E7-F036 merged), so crew's remaining blockers are the routing seam + the zero-caller
-  projection bridges only. Already pinned by shipped tests (no new test needed):
+  projection bridges only. ★ **2026-09-18: those projection bridges are PRODUCER-blocked, not merely zero-caller** — the deployed worker emits no artifact/result/usage evidence for them to consume (`observeRun` uncomposed; see the E3-F037 amendment + E7-F018), so wiring them is necessary-not-sufficient. The routing seam gets crew work dispatched + executed on the distributed substrate (proven mechanism), but crew's result loopback stays gated on **CLI-008 Unit F** worker-evidence emission until that lands. Already pinned by shipped tests (no new test needed):
   `job-submission.integration.test.ts:77-99,307` (the `{worker, agentId}` stamp), `mint.test.ts:128-133`
   (worker→`provider_key`), `mint.test.ts:138` (non-v1→refuse).
 - **Commander (`commander_turn`, MIG-005):** the LARGEST gap — a net-new per-user `provider_connection`
@@ -78,6 +78,33 @@ shares E5's `DEFERRAL-1-credential` wiring. Filed `unowned` because no ticket in
 force-fitting them onto one sink would be false ownership.
 
 **Blocks:** every Sprint 6 sink cutover. Does NOT block the drain fix.
+
+> ★ **AMENDED 2026-09-18 (post-E7-1) — TERRAIN RE-VERIFY OF SHARED PREREQUISITE #1: the routing seam
+> is SMALLER than "`run-execution-owner.ts` is task_run-shaped" implies, and the crew slice is scoped
+> here.** Re-measured at HEAD: the ownership decision is **already source-agnostic**.
+> `createRunExecutionOwnerResolver` (`server/src/services/run-execution-owner.ts:278`) → `resolve`
+> (`:284`) takes a generic `source: SubmitJobSource` and passes it straight through
+> `convert.convertRunToJob({ source, … })`; there is **no `task_run` branch** in the file, and its own
+> comment (`:162-171`) says the task_run-specific workload builder lives in the SEAM, *"not by `resolve`"*.
+> `createJobConvertOrchestrator` (`job-convert-orchestrator.ts:45`) and `job-admission-bridge.ts` are
+> likewise source-agnostic (the admission bridge already maps `crew_run`). So prerequisite #1's real
+> task_run coupling is only **(i)** the heartbeat CALLER + **(ii)** the workload builder
+> `buildTaskRunBatchWorkload` (`task-run-batch-workload.ts`, called at `heartbeat.ts:5303`) — NOT the
+> ownership/convert/placement machinery, which is reusable as-is.
+>
+> **Crew routing seam — scoped (crew rides the mint, so prerequisite #2 is NOT on crew's path).** REUSE
+> the generic resolver + convert + placement + preflight + staging + mint. BUILD two crew-specific
+> pieces: **(a)** a crew workload builder producing a `BatchWorkloadV1` (analogous to
+> `buildTaskRunBatchWorkload`; adapter/model via `resolve-crew-adapter.ts` — `anthropic→claude_local` /
+> `openai→codex_local` ride, others refuse `adapter_not_v1_scope`); **(b)** a crew ownership+suppression
+> SEAM in the crew runner `runAoaAgent` (`internal-agent/aoa-agents/runner.ts`, ~1860 lines — today it
+> has NO seam, only `recordDistributedShadow`, and executes via `getServerAdapter`→`adapter.execute`):
+> call `resolve()`, and on `owner:"distributed"` hand off + SUPPRESS the legacy `adapter.execute` (the
+> crew analogue of `heartbeat.ts:5451` `CLI-006-SUPPRESSION-RETURN`), else run as today. **First
+> buildable slice = (a)** — a pure, TDD-friendly, Unit-F-independent function. **Still Unit-F-gated:**
+> crew's RESULT loopback needs `jobOutputBridge`, which is producer-blocked (see the crew bullet above),
+> so the seam delivers crew work DISPATCHED + EXECUTED on the distributed substrate reaching a terminal;
+> results do not flow back until Unit F emits evidence.
 
 ## E10-F002 — MIG-008's reconciler and its store have ZERO production callers, so the crosswalk is never written
 
