@@ -34,8 +34,7 @@ export function readDistributedExecutionDeploymentFlag(env: Env): boolean {
 
 /** MIG-006 — read the separate, off-by-default crew rollout gate (see the env const above). */
 export function readDistributedCrewRolloutFlag(env: Env): boolean {
-  // TDD stub (red): a WRONG default (true) so the "defaults OFF" arm fails; green flips it to false.
-  return parseBooleanEnv(env, DISTRIBUTED_CREW_ROLLOUT_ENABLED_ENV, true);
+  return parseBooleanEnv(env, DISTRIBUTED_CREW_ROLLOUT_ENABLED_ENV, false);
 }
 
 export interface DistributedExecutionRolloutInput {

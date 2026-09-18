@@ -50,7 +50,16 @@ export interface CrewDistributedGateInput {
   readonly workload: BuildTaskRunBatchWorkloadResult;
 }
 
-export function resolveCrewDistributedGate(_input: CrewDistributedGateInput): CrewDistributedGate {
-  // TDD stub (red): a constant so the gate arms fail until the real logic lands in green.
-  return { attempt: false, reason: "crew_rollout_disabled" };
+export function resolveCrewDistributedGate(input: CrewDistributedGateInput): CrewDistributedGate {
+  // 1. The independent crew gate, FIRST — a task_run-canary org must not auto-arm tool-less crew.
+  if (!input.crewRolloutEnabled) return { attempt: false, reason: "crew_rollout_disabled" };
+  // 2. Real distributed execution is CANARY only (task_run reserves `active` for the inert convert).
+  if (input.rolloutState !== "canary") {
+    return { attempt: false, reason: "not_canary", detail: `rollout state is ${input.rolloutState}` };
+  }
+  // 3. The seam-built workload must be usable; a refusal stays legacy with its own reason.
+  if (!input.workload.ok) {
+    return { attempt: false, reason: "workload_unavailable", detail: input.workload.reason };
+  }
+  return { attempt: true, workload: input.workload.workload, stagedFiles: input.workload.stagedFiles };
 }
