@@ -2,7 +2,7 @@
   "trees": {
     "cli": {
       "mode": "pinned",
-      "count": 13
+      "count": 14
     },
     "docker": {
       "mode": "pinned",

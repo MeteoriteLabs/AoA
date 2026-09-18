@@ -11,8 +11,11 @@ import { expandHomePrefix } from "../config/home.js";
  * convention is to test pure helpers directly (see `data-dir.test.ts`).
  */
 export function resolveRestoreBackupFile(raw: string | undefined): string {
-  // STUB (RED phase): the required-file guard is intentionally absent here. `db-restore-input.test.ts`
-  // asserts the throw; the GREEN commit adds it. Without the guard an unset `--file` resolves to the
-  // cwd, which is exactly the silent-wrong-target failure the guard exists to prevent.
-  return path.resolve(expandHomePrefix((raw ?? "").trim()));
+  const trimmed = raw?.trim();
+  if (!trimmed) {
+    throw new Error(
+      "A backup file is required. Pass --file <path> to the backup (.dump/.sql) to restore from.",
+    );
+  }
+  return path.resolve(expandHomePrefix(trimmed));
 }
