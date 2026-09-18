@@ -118,10 +118,12 @@ export function createCrewAttemptTerminalProjection(db: Db) {
     // (2) The W3a loopback the suppression return skipped (relay/card + delivery). The token/cost
     //     evidence already landed on the run row via setRunStatus; the loopback's own summary shows
     //     duration only (the distributed lane surfaces no adapter usage to this seam).
+    const agentId = run.agentId;
+    if (!agentId) return; // agent row deleted mid-flight → nothing to loop back to (lock released).
     const agent = await db
       .select({ name: agents.name, runtimeConfig: agents.runtimeConfig })
       .from(agents)
-      .where(eq(agents.id, run.agentId))
+      .where(eq(agents.id, agentId))
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (!agent) return;
@@ -139,13 +141,13 @@ export function createCrewAttemptTerminalProjection(db: Db) {
           adapterUsage: undefined,
           costCents: null,
           runId: input.runId,
-          agentId: run.agentId,
+          agentId,
         });
       } else {
         await postCrewRunFailure(db, {
           companyId: input.companyId,
           issueId,
-          agentId: run.agentId,
+          agentId,
           agentName: agent.name,
           runtimeConfig,
           startedAtMs: nowMs,
