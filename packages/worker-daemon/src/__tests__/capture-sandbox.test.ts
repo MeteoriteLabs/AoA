@@ -33,7 +33,7 @@ describe("captureSandboxEntries — CLI-008 Unit F link 1", () => {
   it("captures a single output file as a relative file entry with content hash + size", async () => {
     const entries = await captureSandboxEntries(sandbox({ "/home/user/out/result.md": "hello" }), "/home/user/out");
     expect(entries).toEqual([
-      { path: "result.md", kind: "file", sha256: sha256(enc("hello")), sizeBytes: 5, executable: false },
+      { path: "result.md", kind: "file", provenance: "untracked", sizeBytes: 5, sha256: sha256(enc("hello")), executable: false },
     ]);
   });
 
