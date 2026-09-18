@@ -51,7 +51,7 @@ a result-return blocker that drops every item — not recommended), then Command
   al., E3-17) ~~+ E7-1~~ — **none of them the mint.** ★ **2026-09-18: the `+ E7-1` blocker is REMOVED** —
   the E7-1 distributed E2B mechanism is proven end-to-end (Hetzner staging run `8dc34e90`, verifier
   `ok=true`; E7-F011 + E7-F036 merged), so crew's remaining blockers are the routing seam + the zero-caller
-  projection bridges only. Already pinned by shipped tests (no new test needed):
+  projection bridges only. ★ **2026-09-18: those projection bridges are PRODUCER-blocked, not merely zero-caller** — the deployed worker emits no artifact/result/usage evidence for them to consume (`observeRun` uncomposed; see the E3-F037 amendment + E7-F018), so wiring them is necessary-not-sufficient. The routing seam gets crew work dispatched + executed on the distributed substrate (proven mechanism), but crew's result loopback stays gated on **CLI-008 Unit F** worker-evidence emission until that lands. Already pinned by shipped tests (no new test needed):
   `job-submission.integration.test.ts:77-99,307` (the `{worker, agentId}` stamp), `mint.test.ts:128-133`
   (worker→`provider_key`), `mint.test.ts:138` (non-v1→refuse).
 - **Commander (`commander_turn`, MIG-005):** the LARGEST gap — a net-new per-user `provider_connection`
