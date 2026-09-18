@@ -11,7 +11,9 @@
 // Windows CI can't start embedded-postgres on the runneradmin runner (Issue
 // #114) — gated; opt in with AOA_RUN_WIN_INTEGRATION=1.
 
+import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import type { ControlAckOperationRequestV1, LeaseOfferV1 } from "@armyofagents/worker-protocol";
 import {
   setupJobControlFixture,
   auth,
@@ -19,6 +21,7 @@ import {
   workerHello,
   sha256,
   ORG,
+  COMPANY,
   TARGET,
   WORKER,
   THUMBPRINT,
@@ -29,6 +32,38 @@ import {
   registerProofBoundHeartbeat,
   type VerifiedTargetPrincipal,
 } from "../middleware/worker-session-auth.js";
+import { createJobControlAckService } from "../services/job-control-ack.js";
+
+/** A worker→server control-ACK envelope for `offer` (mirrors de-04-18's helper). The ACK
+ * never reaches its mutator in these arms — the authority recheck refuses first. */
+function controlAckRequest(offer: LeaseOfferV1): ControlAckOperationRequestV1 {
+  const correlationId = randomUUID();
+  return {
+    protocolVersion: 1,
+    correlationId,
+    issuedAt: new Date().toISOString(),
+    nonce: `ca-${randomUUID()}`,
+    audience: "worker_run",
+    body: {
+      organizationId: ORG,
+      companyId: COMPANY,
+      workerId: WORKER,
+      jobId: offer.job.jobId,
+      attempt: offer.job.attempt,
+      leaseId: offer.leaseId,
+      fenceToken: offer.fenceToken,
+      ack: {
+        protocolVersion: 1,
+        correlationId,
+        commandId: randomUUID(),
+        commandSeq: 1,
+        status: "accepted",
+        observedAt: new Date().toISOString(),
+        detail: null,
+      },
+    },
+  };
+}
 
 const integration = describe.skipIf(
   process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1",
@@ -148,6 +183,66 @@ integration("DE-18 admission/session target_revoked denial audit", () => {
     expect(["offer", "no_work"]).toContain(res.outcome);
     expect(await denialRows()).toHaveLength(0);
   }, 60_000);
+
+  // ---- ACK admission arm (job-control-ack.ts: the ackAuthorityCurrent recheck) -----
+  // The ack path runs the SAME worker-authority-currency recheck as poll — `ackAuthorityCurrent`
+  // — BEFORE its guarded mutator, and refuses `target_revoked` when the worker's authority has
+  // drifted. That is the "separate, still-unaudited surface tracked as the follow-on" named in
+  // de-04-18-fence-denial-audit's header. These arms drive the REAL ack service through it and
+  // assert the same DE-18(generation)/DE-04(other) split the poll arm proves, on the shared
+  // `worker_poll_authority` surface.
+
+  it("DE-18 CLAUSE (ack): a superseded target generation refuses the control-ACK target_revoked AND leaves one DE-18 worker_poll_authority row naming the generation conjunct", async () => {
+    const { offer } = await fx.activateLease(9201);
+    await fx.admin`UPDATE execution_targets SET device_generation = 2 WHERE id = ${TARGET}`;
+    await expect(
+      createJobControlAckService({ appDb: fx.app.db })
+        .ack({ auth: auth("de18-ack1"), request: controlAckRequest(offer) }),
+    ).rejects.toMatchObject({ code: "target_revoked" });
+    const rows = await denialRows();
+    expect(rows).toHaveLength(1);
+    const row = rows[0]!;
+    expect(row.action).toBe("security.denied.worker_poll_authority");
+    // ★ A GENERATION conjunct failed → DE-18, and details.failed names it.
+    expect(row.details.reason).toBe("ack_generation_superseded");
+    expect(row.details.crossing).toBe("DE-18");
+    expect(row.details.failed).toContain("target_generation_drift");
+    // WHO — the refused worker; TENANT — organization axis only (no lease context resolved yet).
+    expect(row.actor_type).toBe("system");
+    expect(row.actor_id).toBe(WORKER);
+    expect(row.organization_id).toBe(ORG);
+    expect(row.company_id).toBeNull();
+    // RESOURCE — the superseded target.
+    expect(row.entity_type).toBe("execution_target");
+    expect(row.entity_id).toBe(TARGET);
+    expect(row.details.operation).toBe("control_command_ack");
+  }, 90_000);
+
+  it("DE-04 discrimination (ack): a NON-generation authority failure (stale heartbeat) writes ONE row keyed to DE-04's worker-authority-currency arm, NOT DE-18", async () => {
+    const { offer } = await fx.activateLease(9202);
+    // Age worker + target liveness past maxHeartbeatAgeMs (default 300s) while leaving every
+    // generation conjunct intact, so `ackAuthorityCurrent` fails ONLY on heartbeat freshness.
+    await fx.admin`UPDATE workers SET last_seen_at = clock_timestamp() - interval '1 hour' WHERE id = ${WORKER}`;
+    await fx.admin`UPDATE execution_targets SET last_seen_at = clock_timestamp() - interval '1 hour' WHERE id = ${TARGET}`;
+    await expect(
+      createJobControlAckService({ appDb: fx.app.db })
+        .ack({ auth: auth("de18-ack2"), request: controlAckRequest(offer) }),
+    ).rejects.toMatchObject({ code: "target_revoked" });
+    const rows = await denialRows();
+    expect(rows).toHaveLength(1);
+    const row = rows[0]!;
+    expect(row.action).toBe("security.denied.worker_poll_authority");
+    expect(row.details.reason).toBe("ack_authority_stale");
+    expect(row.details.crossing).toBe("DE-04");
+    expect(row.details.failed).toEqual(["heartbeat_stale"]);
+    expect(row.actor_type).toBe("system");
+    expect(row.actor_id).toBe(WORKER);
+    expect(row.organization_id).toBe(ORG);
+    expect(row.company_id).toBeNull();
+    expect(row.entity_type).toBe("execution_target");
+    expect(row.entity_id).toBe(TARGET);
+    expect(row.details.operation).toBe("control_command_ack");
+  }, 90_000);
 
   // ---- HEARTBEAT arm (worker-session-auth.ts:registerProofBoundHeartbeat) ----
   // The six boolean-write refusal branches are classified by a per-branch
