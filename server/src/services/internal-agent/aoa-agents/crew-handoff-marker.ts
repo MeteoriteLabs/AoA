@@ -26,13 +26,9 @@ export function buildCrewHandoffMarkerPatch(
   distributedJobId: string;
   distributedAttemptId: string;
 } {
-  // STUB (RED phase): does NOT reuse buildHandoffRunPatch's throw-on-legacy, and does NOT strip
-  // the `updatedAt` key internal_agent_runs cannot store. `crew-seam-suppression.test.ts` asserts
-  // both; the GREEN commit delegates to buildHandoffRunPatch and strips `updatedAt`.
-  return {
-    executionOwner: "distributed",
-    distributedJobId: owner.owner === "distributed" ? owner.jobId : "",
-    distributedAttemptId: owner.owner === "distributed" ? owner.attemptId : "",
-    updatedAt: now,
-  } as { executionOwner: "distributed"; distributedJobId: string; distributedAttemptId: string };
+  // Delegate to the proven pure patch (which THROWS on a legacy owner) and strip its `updatedAt`
+  // key — internal_agent_runs has no such column, so a naive reuse would throw at runtime on an
+  // unknown column.
+  const { updatedAt: _updatedAt, ...marker } = buildHandoffRunPatch(owner, now);
+  return marker;
 }
