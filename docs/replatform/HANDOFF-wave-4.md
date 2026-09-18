@@ -1,5 +1,11 @@
 # Re-platform — Wave 4 handoff (cut the sinks over)
 
+> **SUPERSEDED — 2026-09-18 by [`HANDOFF-2026-09-18-post-e7-1-sink-cutover.md`](./HANDOFF-2026-09-18-post-e7-1-sink-cutover.md).**
+> The E7-1 real-E2B distributed run was PROVEN end-to-end on staging (run `8dc34e90`, verifier `ok=true`;
+> E7-F011 + E7-F036 merged). The sink-cutover wave described here is still the next wave — the new handoff
+> restates it with the E7-1 blocker removed, the E3-F037 billing bridge sequenced first, and the current
+> box/runbook/deploy state. Kept for detail (§3-4 forward work, §1 per-ticket process); read the new file first.
+
 **As of:** branch `docs/replatform-program` tip `a089d1383` (ONE PR #323, worktree `C:\e3`).
 Worktree clean, nothing unpushed, PR CI green.
 **Last code SHA verified on BOTH lanes:** `c341cf680` (PR gate + D1 Merge Train). Everything

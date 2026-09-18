@@ -611,9 +611,26 @@ through a structure derived from the frozen list, check the derivation.
 
 ## E7-F011 — Unit B's channel has no route on the networked/container lane, and the prerequisite exists only as a comment
 
-**Status:** open · **Owner:** CLI-008 · **Severity:** MEDIUM (**corrected down from HIGH** — see the
+**Status:** resolved · **Owner:** CLI-008 · **Severity:** MEDIUM (**corrected down from HIGH** — see the
 correction banner) · **Filed:** 2026-09-03 immediately after CLI-008 Unit B merged as `393f7a251`,
 **corrected the same day**. Filed against my own work, and then corrected against my own work.
+
+**Resolved:** 2026-09-18 (PR #471, merge `62960bbfc`; design `tickets/E7-F011-networked-staging-route-design.md`).
+The networked/container lane now has a `stage_files` wire route:
+`NetworkedProviderDriver.stageFiles` POSTs `/op/stage_files` with `{sandboxId, files}` + the owned-labels
+capability (`packages/provider-wire/src/driver.ts`, `#post`'s op param widened LOCALLY to
+`ProviderOperation | "stage_files"` — the frozen `PROVIDER_OPERATIONS`/`CORE_PROVIDER_OPERATIONS` are
+untouched, E4-D02), and `fileStagingMode` flips `"none" → "grant_download"`. The adapter-manager adds a
+**GATED-only** `stage_files` route (`packages/adapter-manager/src/server.ts` — added to `GATE_REQUIRED_OPS`
++ a `routeGated` case → `gateOwnedOp(sandboxId)` → `E2bSandboxProvider.stageFiles`; an ungated server 404s
+it). GRANT-not-BYTES (E4-D01): the worker ships the `ArtifactDownloadGrantV1` pointer; the AM redeems +
+verifies sha256/maxBytes + `transport.writeFiles` — no payload crosses the daemon; no codec change.
+**PROVEN LIVE on the E7-1 canary (2026-09-18, Hetzner staging):** the full networked journey stages the
+control-plane task-context input into the sandbox and proceeds into execute. NOTE: staging alone left the
+run terminal-status-only (`finished_at` null) — a distinct terminal-projection gap tracked + fixed as
+[[E7-F036]]; together they made the E7-1 run durably terminal (verifier `ok=true`, run `8dc34e90`). This
+does NOT flip the `E7-1-coding-journey` gate clause (that measures a shipped CI boot; the run was a manual
+staging proof) and does NOT move `capabilityProven` (false by design — E7-D-CAPABILITY-DISCLOSURE).
 
 > ### ★★★ CORRECTION — link 4 of this finding was WRONG, and its own citation did not support it
 >
@@ -3878,3 +3895,39 @@ first-filed keeps the id.
 **What a closer must do:** delete or rework the debt enumerated above (retire the keyed lane + its pr.yml
 wiring, the runbook, the result doc, and the manifest entries; either delete `withPermissionPosture` or
 re-charter it), then flip Status and delete the `finding-ownership.json` key in the same commit.
+
+## E7-F036 — the distributed terminal projection stamps the run's status but never its `finished_at`, so a fully-successful distributed run is not durably terminal (verifier clause 3)
+
+**Status:** resolved · **Owner:** CLI-006 (D5 projector) · **Severity:** MEDIUM
+**Filed + Resolved:** 2026-09-18 (PR #472, merge `cbb496fe7`; design `tickets/E7-F036-projector-finished-at-design.md`).
+Found by the E7-1 verifier the moment E7-F011 let a distributed run reach a terminal status for the first time.
+
+**What.** `setRunStatus` (`server/src/services/heartbeat.ts`) writes `.set({ status, ...patch })` and **never
+derives `finished_at`** — every terminal caller passes it explicitly (reap, normal completion, failure,
+cancel, watchdog). The CLI-006 canary run projector (`server/src/services/canary-run-projector.ts`
+`projectTerminal`) was the **one** terminal `setRunStatus` caller whose patch (`{ error, usageJson }`)
+omitted it. So a fully-successful distributed run landed `status=succeeded, finished_at=NULL`, and
+evidence-verifier A clause 3 (`isTerminalRunStatus(status) && finishedAt !== null`,
+`server/src/services/e7-distributed-run-verifier.ts`) FAILED — the run was terminal-status-only, not
+*durably* terminal. Previously unreachable: no distributed run had ever reached a terminal status before
+E7-F011 ([[E7-F011]]).
+
+**The fix.** Carry `finishedAt` on the folded evidence — `foldAttemptEvidence`
+(`server/src/services/canary-terminal-projection.ts`) returns `finishedAt: input.now` (`now`, not the
+terminal row's `occurredAt`: the wall-clock `durationMs` fallback already measures against `now`, so
+`finished_at − started_at` stays consistent with the reported duration) — and the projector includes
+`finishedAt: evidence.finishedAt` in the `setRunStatus` patch, through the same shared terminal latch
+(Invariant 8 preserved; no second write path). `resolveTerminalLatchFallback` is **untouched**: its existing
+tests confirm the cross-terminal case (a cancel that already won the latch) still DROPS `finished_at` via
+`NON_CONTRADICTORY_TERMINAL_METADATA_KEYS`, so a cancel's `finished_at` is preserved; a same-status
+redelivery refreshes it with the rest of the metadata bundle, exactly like the legacy cancel-race write.
+
+**Proven.** Two unit tests, both positive-controlled (each goes red when its fix line is removed):
+`cli-006-canary-run-projector.test.ts` (terminal patch carries `finishedAt`) and
+`cli-006-projector-wiring.test.ts` (`foldAttemptEvidence` stamps `now`, incl. empty-rows path). **Live:** the
+E7-1 canary run `8dc34e90` (2026-09-18, Hetzner staging) landed `finished_at=2026-09-17T21:25:09.877Z` and
+`verify-e7-1-distributed-run 8dc34e90` returned `RESULT: PASS (mechanism)`, `ok=true`, EXIT 0.
+
+**Scope note.** This closes the last MECHANISM clause; it does NOT move `capabilityProven` (false by design —
+E7-D-CAPABILITY-DISCLOSURE; output capture is CLI-008 Unit F, unbuilt) and does NOT flip the
+`E7-1-coding-journey` register clause (which measures a shipped CI boot, not a manual staging run).

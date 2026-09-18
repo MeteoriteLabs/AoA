@@ -64,8 +64,17 @@ guards/residuals.
   (BRW-001/002/003*) + BRW-hostspawn-gate; **E9** SVC-001 (storage half only); **E11** REL-004(+C/D) /
   REL-FOUNDATION-GATE / REL-003 core / GATE-clause-3-rollback / foundation-suite-unrun. Sprints S1–S5b,
   S6, S7-1, S9-1, S9-2, S9-3.
-- **🟡 OWED — built, needs a live-infra run (OPERATOR, not session):** **E7-1** staging-canary campaign
-  (real-E2B distributed coding journey) → promotes E7-1 `unwired`→`wired`. ★ **NOT "blocked only on the
+- **🟢 E7-1 MECHANISM PROVEN LIVE — 2026-09-18 (was 🟡 OWED, needs-a-live-infra-run).** The real-E2B
+  distributed coding journey ran end-to-end on the Hetzner staging fleet:
+  `verify-e7-1-distributed-run 8dc34e90` → `RESULT: PASS (mechanism)`, `ok=true`, EXIT 0 (dispatch →
+  distributed owner → lease → secret redemption → `stage_files` over the wire → E2B create → execute →
+  durable terminal). Last two walls cleared today: **E7-F011** the networked `stage_files` wire (PR #471)
+  and **E7-F036** the projector `finished_at` stamp (PR #472). ★ This does **NOT** flip the
+  `E7-1-coding-journey` register clause `unwired`→`wired`: that clause measures a **shipped CI boot** and
+  names a **DEP-011 daemon-consumer precondition**, and a manual staging run satisfies neither — it stays
+  `unwired` until the operator builds/deploys the adapter-manager image in a shipped boot AND DEP-011 wires
+  the daemon consumer. **REL-003** DR staging rehearsal (measured RPO/RTO) is now the one still-owed
+  live-infra run. ★ **NOT "blocked only on the
   staging fleet"**: the E7-1 clause also names a DEP-011 daemon-consumer precondition, and a green E7-1
   proves the MECHANISM, not capability — capability needs CLI-008 Unit F **and, upstream of it, an
   operator/deployment precondition no code unit can supply (E7-F018: both `capabilityProven` arms are

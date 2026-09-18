@@ -48,7 +48,10 @@ a result-return blocker that drops every item — not recommended), then Command
   `adapter_not_v1_scope`). The shadow `source_not_admitted` was a **fixture artifact** — no crew runs
   were seeded (`MIG-005-006-007-shadow-result.md:107,110-112`) — NOT an admission-authority gap. So
   crew's ONLY blockers are the routing seam + the zero-caller projection bridges (`jobOutputBridge` et
-  al., E3-17) + E7-1 — **none of them the mint.** Already pinned by shipped tests (no new test needed):
+  al., E3-17) ~~+ E7-1~~ — **none of them the mint.** ★ **2026-09-18: the `+ E7-1` blocker is REMOVED** —
+  the E7-1 distributed E2B mechanism is proven end-to-end (Hetzner staging run `8dc34e90`, verifier
+  `ok=true`; E7-F011 + E7-F036 merged), so crew's remaining blockers are the routing seam + the zero-caller
+  projection bridges only. Already pinned by shipped tests (no new test needed):
   `job-submission.integration.test.ts:77-99,307` (the `{worker, agentId}` stamp), `mint.test.ts:128-133`
   (worker→`provider_key`), `mint.test.ts:138` (non-v1→refuse).
 - **Commander (`commander_turn`, MIG-005):** the LARGEST gap — a net-new per-user `provider_connection`
