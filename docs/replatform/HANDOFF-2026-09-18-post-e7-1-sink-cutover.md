@@ -93,10 +93,19 @@ it honestly `unwired`). Record hygiene beyond this PR: none outstanding for E7-F
 
 **5.1 — GATING PREREQUISITE: wire the dormant parity bridges (E3 Sprint-6).** Before the rollout dial can
 be armed beyond a keyed test, distributed spend/audit/output must be visible:
-- **`jobBudgetCostBridge`** — closes the **HIGH E3-F037**: a handed-off distributed attempt currently writes
+- **`jobBudgetCostBridge`** — the **HIGH E3-F037**: a handed-off distributed attempt currently writes
   NO `cost_events` row (`priceAcceptedUsage` has 0 production callers; the CLI-006 suppression `return` at
   `heartbeat.ts` bypasses the only cost writer). Arming `AOA_DISTRIBUTED_EXECUTION_ROLLOUT=canary` today
-  would produce spend no budget/cap/hard-stop can see. **Do this one first.**
+  would produce spend no budget/cap/hard-stop can see. **⚠ NOT a clean "do this one first" — corrected
+  2026-09-18 (post-E7-1).** The bridge (consumer) is built and correct, but its accepted-usage seam is
+  EMPTY on the deployed path: the distributed worker composes its supervisor WITHOUT `observeRun`
+  (`packages/worker-daemon/src/lifecycle/dispatch-runtime.ts:187` — comment "observeRun stays absent";
+  emit gated at `supervisor.ts:873`), so a real distributed attempt — the proven E7-1 run included —
+  emits no `usage` event and there is nothing to price. Wiring it alone yields no `cost_events` row (or a
+  hollow ~$0 one). E3-F037 therefore closes only with a usage-evidence PRODUCER first (compose
+  `observeRun` — **CLI-008 Unit F**, §6 — the same structural-reachability root **E7-F018** measures for
+  the output arm) AND the wiring. See the E3-F037 amendment (2026-09-18) and its E3-15-budget register
+  reason. Choose the actual next unit accordingly (a genuinely reachable seam, or attack Unit F).
 - **`jobAuditBridge`** + census (closes E3-F038) and **`jobOutputBridge`** (E3-17; also the crew sink's
   result path). Both are zero-caller today.
 

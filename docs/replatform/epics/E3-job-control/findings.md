@@ -2112,6 +2112,33 @@ prose half is DONE and is not a reason to close anything. Ownership is unchanged
 `unowned`: the sink cutover that would wire the bridge has no ticket (MIG-007 §3.3 — "None is
 promoted by this ticket").
 
+> ★ **AMENDED 2026-09-18 (post-E7-1) — THE ACCEPTED-USAGE SEAM THIS CLOSURE NAMES IS EMPTY ON THE
+> DEPLOYED PATH, so wiring alone does not close it.** The sentence above names an accepted-usage
+> *wiring* seam. Re-measured at HEAD, that seam has nothing to wire to: the deployed distributed
+> worker composes its supervisor **without** `observeRun` — `makeSupervisor({…})` at
+> `packages/worker-daemon/src/lifecycle/dispatch-runtime.ts:187` passes no `observeRun`, and the
+> comment above it (`:180-182`) states *"observeRun stays absent"*. A `usage` event is emitted ONLY
+> inside `if (deps.observeRun)` (`packages/worker-daemon/src/supervisor/supervisor.ts:873`, emit at
+> `:882`). So a real distributed attempt — **the proven E7-1 run included** — emits NO `usage` event,
+> and `priceAcceptedUsage` (which requires token `units`) has nothing to price. The E7-1 verifier
+> records the same producer gap in its own words — *"observeRun is uncomposed"*
+> (`server/src/cli/verify-e7-1-distributed-run.ts:65-68`) — and the terminal projector already carries
+> it: *"`observeRun` is default-off (E4-D12), so a real canary attempt may emit no usage at all"*
+> (`server/src/services/canary-terminal-projection.ts:221`), leaving `costUsd: null` by construction
+> (`:242-245`).
+>
+> **Consequence for closure — it is a TWO-part producer+consumer problem, not a one-line wiring.**
+> Calling `priceAcceptedUsage` on an empty seam produces no `cost_events` row; feeding it zero /
+> wall-clock units would mint a ~$0 row while the real model spend happened inside the sandbox on the
+> Company's provider key — the very spend this HIGH finding is about — a hollow close, not a real one.
+> So closure requires BOTH **(1)** the deployed worker to emit usage evidence (compose `observeRun`,
+> or an equivalent producer — CLI-008 Unit F territory) AND **(2)** the bridge wired to price it. This
+> is the SAME structural-reachability root that **E7-F018** (HIGH, open) measures for the output /
+> `capabilityProven` arm — *"no producer can move either counter"*; the budget arm shares it. "Wire at
+> sink cutover" understates the work: the consumer (bridge) is ready, the producer (usage event) is
+> not, and it has no ticket either. **Severity (HIGH), Status (open) and ownership (`unowned`) are
+> unchanged** — this amendment sharpens what closing it requires; it closes and reclassifies nothing.
+
 ## E3-F038 — The wiring register's census is not closed, and three symbols the guard's own header names have no clause at all
 
 **Status:** open
