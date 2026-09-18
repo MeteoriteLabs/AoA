@@ -11,7 +11,7 @@
 import { describe, expect, it } from "vitest";
 import type { LeaseWorkerAuthority } from "@armyofagents/db";
 import type { PollRequestV1 } from "@armyofagents/worker-protocol";
-import { pollAuthorityCurrencyIntent, type VerifiedWorkerOperation } from "../services/job-leasing.js";
+import { pollAuthorityCurrencyIntent, ackAuthorityCurrencyIntent, type VerifiedWorkerOperation } from "../services/job-leasing.js";
 import {
   classifyPlatformHeartbeatRefusal,
   classifyTenantHeartbeatRefusal,
@@ -162,6 +162,82 @@ describe("pollAuthorityCurrencyIntent — crossing derived per conjunct", () => 
   it("both poll reasons map to the worker_poll_authority surface", () => {
     expect(WORKER_DENIAL_SURFACE_BY_REASON.poll_generation_superseded).toBe("worker_poll_authority");
     expect(WORKER_DENIAL_SURFACE_BY_REASON.poll_authority_stale).toBe("worker_poll_authority");
+  });
+});
+
+// The ACK admission arm — the same mutation contract, for `ackAuthorityCurrencyIntent` (the ack
+// analogue mirroring `ackAuthorityCurrent`'s predicate). Deleting any single conjunct guard must
+// kill at least one test here.
+function ackClassify(input: {
+  worker?: Partial<LeaseWorkerAuthority["worker"]>;
+  target?: Record<string, unknown>;
+  ownerMembershipActive?: boolean;
+  workerId?: string;
+} = {}) {
+  return ackAuthorityCurrencyIntent({
+    auth: auth(),
+    authority: authority(input),
+    workerId: input.workerId ?? WORKER,
+    databaseNow: NOW,
+    maxHeartbeatAgeMs: MAX_AGE_MS,
+  });
+}
+
+describe("ackAuthorityCurrencyIntent — crossing derived per conjunct (ack admission arm)", () => {
+  it("returns null when every conjunct holds (positive control: no guessed row)", () => {
+    expect(ackClassify()).toBeNull();
+  });
+
+  it("an authoritative WORKER generation drift is DE-18 ack_generation_superseded", () => {
+    const intent = ackClassify({ worker: { deviceGeneration: 2 } });
+    expect(intent).toMatchObject({ reason: "ack_generation_superseded", crossings: ["DE-18"] });
+    expect(intent!.details.failed).toContain("worker_generation_drift");
+  });
+
+  it("an authoritative TARGET generation drift is DE-18", () => {
+    const intent = ackClassify({ target: { deviceGeneration: 2 } });
+    expect(intent).toMatchObject({ reason: "ack_generation_superseded", crossings: ["DE-18"] });
+    expect(intent!.details.failed).toContain("target_generation_drift");
+  });
+
+  it.each([
+    ["worker_id_mismatch", { worker: { id: "b7000000-0000-4000-8000-00000000000f" } }],
+    ["worker_target_mismatch", { worker: { executionTargetId: "b7000000-0000-4000-8000-00000000000e" } }],
+    ["worker_org_mismatch", { worker: { organizationId: "b7000000-0000-4000-8000-00000000000d" } }],
+    ["worker_scope_platform", { worker: { scope: "platform" } }],
+    ["worker_thumbprint_mismatch", { worker: { deviceThumbprint: "c".repeat(64) } }],
+    ["worker_pubkey_mismatch", { worker: { devicePublicKey: "other-pk" } }],
+    ["worker_profile_mismatch", { worker: { profileHash: "d".repeat(64) } }],
+    ["worker_revoked", { worker: { revokedAt: NOW } }],
+    ["worker_status_invalid", { worker: { status: "revoked" } }],
+    ["owner_membership_lost", { ownerMembershipActive: false }],
+    ["target_id_mismatch", { target: { id: "b7000000-0000-4000-8000-00000000000c" } }],
+    ["target_inactive", { target: { status: "disabled" } }],
+    ["request_worker_mismatch", { workerId: "b7000000-0000-4000-8000-00000000000b" }],
+    ["heartbeat_stale", { worker: { lastSeenAt: new Date(NOW.getTime() - MAX_AGE_MS - 1_000) } }],
+  ] as const)("a NON-generation authority-currency failure (%s) is DE-04 ack_authority_stale naming the conjunct", (conjunct, overrides) => {
+    const intent = ackClassify(overrides as never);
+    expect(intent).toMatchObject({ reason: "ack_authority_stale", crossings: ["DE-04"] });
+    expect(intent!.details.failed).toContain(conjunct);
+    expect(intent!.details.failed).not.toContain("worker_generation_drift");
+    expect(intent!.details.failed).not.toContain("target_generation_drift");
+  });
+
+  it("a NULL heartbeat (never seen) is heartbeat_stale", () => {
+    const intent = ackClassify({ worker: { lastSeenAt: null } });
+    expect(intent!.details.failed).toContain("heartbeat_stale");
+  });
+
+  it("a MIXED failure (generation + heartbeat) stays DE-18 with every conjunct named", () => {
+    const intent = ackClassify({ worker: { deviceGeneration: 2, lastSeenAt: null } });
+    expect(intent).toMatchObject({ reason: "ack_generation_superseded", crossings: ["DE-18"] });
+    expect(intent!.details.failed).toEqual(
+      expect.arrayContaining(["worker_generation_drift", "heartbeat_stale"]));
+  });
+
+  it("both ack reasons map to the worker_poll_authority surface", () => {
+    expect(WORKER_DENIAL_SURFACE_BY_REASON.ack_generation_superseded).toBe("worker_poll_authority");
+    expect(WORKER_DENIAL_SURFACE_BY_REASON.ack_authority_stale).toBe("worker_poll_authority");
   });
 });
 
