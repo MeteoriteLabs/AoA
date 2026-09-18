@@ -188,7 +188,13 @@ export function createCrewAttemptTerminalProjection(db: Db) {
               ),
             )
             .limit(1)
-            .then((rows) => rows[0] ?? null),
+            // internal_agent_runs.agent_id is nullable (ON DELETE SET NULL); CanaryRunRow.agentId
+            // is non-null. A run whose agent row was deleted mid-flight is not projectable — drop
+            // it (return null) rather than widen the shared row shape.
+            .then((rows) => {
+              const r = rows[0];
+              return r && r.agentId != null ? { ...r, agentId: r.agentId } : null;
+            }),
 
         listAttemptEvents: input.listAttemptEvents,
 
@@ -227,7 +233,9 @@ export function createCrewAttemptTerminalProjection(db: Db) {
                 status: crewRunStatusForProjection(status),
                 completedAt: mapped.completedAt ?? new Date(),
                 errorMessage: mapped.errorMessage,
-                tokenUsage: mapped.tokenUsage,
+                // The jsonb column's setter is typed Record<string, unknown> | …; the mapped usage
+                // is exactly that at runtime but its precise shape lacks an index signature.
+                tokenUsage: mapped.tokenUsage as unknown as Record<string, unknown> | null,
                 costCents: mapped.costCents,
                 durationMs: mapped.durationMs,
               })
