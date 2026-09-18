@@ -143,6 +143,14 @@ export const WORKER_DENIAL_REASONS = [
   "fence_tuple_mismatch",
   "poll_generation_superseded",
   "poll_authority_stale",
+  // The ACK admission-authority split, the same shape as the poll pair above and on the same
+  // surface — a control-ACK's `ackAuthorityCurrent` recheck refuses `target_revoked` when the
+  // worker's authority has drifted, classified per failed conjunct: an authoritative
+  // worker/target generation cutoff is DE-18's `ack_generation_superseded`, every other
+  // authority-currency failure is DE-04's `ack_authority_stale`. `details.operation`
+  // (`control_command_ack`) distinguishes it from the poll rows on the shared surface.
+  "ack_generation_superseded",
+  "ack_authority_stale",
 ] as const;
 
 export type WorkerDenialReason = (typeof WORKER_DENIAL_REASONS)[number];
@@ -162,6 +170,8 @@ export const WORKER_DENIAL_SURFACE_BY_REASON: Record<WorkerDenialReason, string>
   fence_tuple_mismatch: WORKER_FENCE_DENIAL_SURFACE,
   poll_generation_superseded: WORKER_POLL_AUTHORITY_DENIAL_SURFACE,
   poll_authority_stale: WORKER_POLL_AUTHORITY_DENIAL_SURFACE,
+  ack_generation_superseded: WORKER_POLL_AUTHORITY_DENIAL_SURFACE,
+  ack_authority_stale: WORKER_POLL_AUTHORITY_DENIAL_SURFACE,
 };
 
 /**
@@ -234,6 +244,44 @@ export function createWorkerDenialSink(): WorkerDenialSink {
  */
 export function pollAuthorityDenialIntent(
   reason: "poll_generation_superseded" | "poll_authority_stale",
+  crossing: string,
+  auth: {
+    organizationId: string;
+    workerId: string;
+    targetId: string;
+    targetGeneration: number;
+    deviceThumbprint: string;
+  },
+  failed?: string[],
+): WorkerDenialIntent {
+  return {
+    reason,
+    companyId: null,
+    organizationId: auth.organizationId,
+    crossings: [crossing],
+    entityType: "execution_target",
+    entityId: auth.targetId,
+    details: {
+      workerId: auth.workerId,
+      targetId: auth.targetId,
+      targetGeneration: auth.targetGeneration,
+      deviceThumbprint: auth.deviceThumbprint,
+      ...(failed && failed.length > 0 ? { failed } : {}),
+    },
+  };
+}
+
+/**
+ * The ACK admission-arm intent for `job-control-ack.ts`'s `ackAuthorityCurrent` reject — the ack
+ * analogue of {@link pollAuthorityDenialIntent}, and identical in shape (org-only attribution, the
+ * superseded target as the resource, `details.failed` naming the conjuncts). Built by the caller's
+ * classifier `ackAuthorityCurrencyIntent`: an authoritative generation cutoff ⇒
+ * `ack_generation_superseded` (DE-18), any other authority-currency failure ⇒ `ack_authority_stale`
+ * (DE-04's worker-authority-currency arm). `companyId` is null: the reject fires BEFORE the lease
+ * ack-context is resolved, and `workers`/`execution_targets` carry `organization_id` only.
+ */
+export function ackAuthorityDenialIntent(
+  reason: "ack_generation_superseded" | "ack_authority_stale",
   crossing: string,
   auth: {
     organizationId: string;
