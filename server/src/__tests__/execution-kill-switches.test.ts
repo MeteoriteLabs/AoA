@@ -31,6 +31,7 @@ import { pollResponseV1Schema } from "@armyofagents/worker-protocol";
 import {
   KILL_SWITCH_DIMENSIONS,
   KILL_SWITCH_MAX_REASON_LENGTH,
+  buildKillSwitchDocument,
   evaluateKillSwitches,
   killedProviders,
 } from "../services/execution-kill-switches.js";
@@ -51,6 +52,39 @@ const live = (overrides: Record<string, unknown> = {}) => ({
   value: "e2b",
   reason: "provider incident 2026-08-22",
   ...overrides,
+});
+
+describe("buildKillSwitchDocument — fail-closed writer validation (Track 3a)", () => {
+  const okEntry = { dimension: "provider", value: "e2b", reason: "provider incident 2026-08-22" };
+
+  it("builds a document the poll-path reader accepts for valid switches", () => {
+    const document = buildKillSwitchDocument([okEntry], KNOWN);
+    expect(document.schema).toBe(1);
+    // The whole point of the round-trip: what the writer builds, the reader can read.
+    expect(
+      evaluateKillSwitches({ document, provider: "e2b", template: undefined, knownProviders: KNOWN }),
+    ).toMatchObject({ killed: true, dimension: "provider", value: "e2b" });
+  });
+
+  it("REFUSES a provider value outside the known vocabulary (persisting it would drain every fleet)", () => {
+    expect(() => buildKillSwitchDocument([{ ...okEntry, value: "not_a_provider" }], KNOWN)).toThrow();
+  });
+
+  it("REFUSES an empty reason — a switch that stops others' work must state why", () => {
+    expect(() => buildKillSwitchDocument([{ ...okEntry, reason: "" }], KNOWN)).toThrow();
+  });
+
+  it("REFUSES an unknown dimension (an operator typo must not silently do nothing)", () => {
+    expect(() => buildKillSwitchDocument([{ ...okEntry, dimension: "providers" }], KNOWN)).toThrow();
+  });
+
+  it("builds a READABLE empty document for no switches — never the drain-causing bare {}", () => {
+    const document = buildKillSwitchDocument([], KNOWN);
+    expect(document).toEqual({ schema: 1, switches: [] });
+    expect(
+      evaluateKillSwitches({ document, provider: "e2b", template: undefined, knownProviders: KNOWN }),
+    ).toEqual({ killed: false });
+  });
 });
 
 describe("REL-004/I8 — a killed provider or template stops new leases", () => {

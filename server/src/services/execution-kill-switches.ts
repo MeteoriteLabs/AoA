@@ -41,7 +41,7 @@
 export const KILL_SWITCH_DIMENSIONS = ["provider", "template"] as const;
 export type KillSwitchDimension = (typeof KILL_SWITCH_DIMENSIONS)[number];
 
-const DOCUMENT_SCHEMA = 1;
+export const DOCUMENT_SCHEMA = 1;
 
 export type KillSwitchVerdict =
   | { readonly killed: false }
@@ -198,6 +198,57 @@ export function parseKillSwitchDocument(
     });
   }
   return parsed;
+}
+
+/**
+ * An operator's requested switch, before validation. The writer hands these to
+ * {@link buildKillSwitchDocument}, which validates them against the reader's contract.
+ */
+export interface KillSwitchWriteEntry {
+  readonly dimension: string;
+  readonly value: string;
+  readonly reason: string;
+  readonly reclaim?: boolean;
+}
+
+/** A kill-switch document {@link parseKillSwitchDocument} accepts (readable, never `unreadable`). */
+export interface KillSwitchDocument {
+  readonly schema: typeof DOCUMENT_SCHEMA;
+  readonly switches: readonly ValidatedKillSwitch[];
+}
+
+/**
+ * Build a kill-switch document the readers will accept, or THROW.
+ *
+ * ★ FAIL-CLOSED SAFETY. A persisted document `parseKillSwitchDocument` cannot read drains EVERY
+ * fleet (`policy_unreadable` -> drain). So the writer must never persist a document the reader
+ * would reject. This builder validates the operator's input by round-tripping it through the
+ * SAME parser the poll path uses, and throws with an attributable reason rather than returning
+ * an unreadable document. `knownProviders` is a parameter (this module stays dependency-free —
+ * the writer passes `EXECUTION_TARGET_KINDS`), so a `provider` value outside the vocabulary is
+ * refused here exactly as the reader refuses it.
+ *
+ * An empty `switches` array yields `{schema, switches: []}` — a READABLE "no active switches"
+ * document, NOT the dangerous bare `{}` (which is `unreadable`). Clearing the policy is a
+ * SEPARATE act that writes SQL NULL; this builder never produces null.
+ */
+export function buildKillSwitchDocument(
+  switches: readonly KillSwitchWriteEntry[],
+  knownProviders: readonly string[],
+): KillSwitchDocument {
+  // STUB (RED phase): NO fail-closed validation yet — the candidate is wrapped and returned
+  // without round-tripping through parseKillSwitchDocument. `execution-kill-switches.test.ts`
+  // asserts the throws the GREEN commit adds.
+  void knownProviders;
+  return {
+    schema: DOCUMENT_SCHEMA,
+    switches: switches.map((entry) => ({
+      dimension: entry.dimension as KillSwitchDimension,
+      value: entry.value,
+      reason: entry.reason,
+      reclaim: entry.reclaim === true,
+    })),
+  };
 }
 
 /**
