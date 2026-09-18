@@ -9,6 +9,15 @@ export const DISTRIBUTED_CLOUD_PLUGIN_EXECUTION_ENV =
   "AOA_DISTRIBUTED_CLOUD_PLUGIN_EXECUTION_ENABLED";
 export const UNSANDBOXED_MULTITENANT_OPT_IN_ENV = "AOA_ALLOW_UNSANDBOXED_MULTITENANT";
 
+/**
+ * MIG-006 — the SEPARATE, off-by-default gate for CREW distributed execution, deliberately
+ * INDEPENDENT of the task_run rollout dial. Arming an org's task_run canary must NOT auto-arm
+ * crew: a distributed crew agent runs without its `aoa` MCP tools (CLI-008 Unit C, unbuilt), on
+ * which crew work leans far more than a one-shot task run, so crew is opted in on its own. Off
+ * unless explicitly enabled.
+ */
+export const DISTRIBUTED_CREW_ROLLOUT_ENABLED_ENV = "AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED";
+
 type Env = Record<string, string | undefined>;
 
 function parseBooleanEnv(env: Env, name: string, defaultValue: boolean): boolean {
@@ -21,6 +30,11 @@ function parseBooleanEnv(env: Env, name: string, defaultValue: boolean): boolean
 
 export function readDistributedExecutionDeploymentFlag(env: Env): boolean {
   return parseBooleanEnv(env, DISTRIBUTED_EXECUTION_ENABLED_ENV, false);
+}
+
+/** MIG-006 — read the separate, off-by-default crew rollout gate (see the env const above). */
+export function readDistributedCrewRolloutFlag(env: Env): boolean {
+  return parseBooleanEnv(env, DISTRIBUTED_CREW_ROLLOUT_ENABLED_ENV, false);
 }
 
 export interface DistributedExecutionRolloutInput {
