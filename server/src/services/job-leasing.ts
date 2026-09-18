@@ -59,6 +59,7 @@ import type { VerifiedWorkerOperation } from "../middleware/worker-operation-pro
 import {
   createWorkerDenialSink,
   pollAuthorityDenialIntent,
+  ackAuthorityDenialIntent,
   drainWorkerDenial,
   workerProofReplayIntent,
   type WorkerDenialIntent,
@@ -393,6 +394,61 @@ export function ackAuthorityCurrent(input: {
     && target.deviceGeneration === auth.targetGeneration
     && oldestHeartbeat !== null
     && input.databaseNow.getTime() - oldestHeartbeat <= input.maxHeartbeatAgeMs;
+}
+
+/**
+ * The audit classifier for `ackAuthorityCurrent`'s reject — the ACK analogue of
+ * {@link pollAuthorityCurrencyIntent}. It mirrors `ackAuthorityCurrent`'s predicate EXACTLY,
+ * collecting the failed conjunct(s) into `details.failed` and deriving the audit crossing from
+ * them rather than from the composite boolean: an AUTHORITATIVE worker/target generation cutoff is
+ * DE-18's "generation changes … at worker admission" (`ack_generation_superseded`), and every other
+ * authority-currency failure (stale heartbeat, owner-membership loss, worker status/credential
+ * drift, disabled target, request-identity mismatch) is DE-04's worker-authority-currency arm
+ * (`ack_authority_stale`). PURE (no IO, no repository selection, no mutation); always computed,
+ * only USED on the reject branch — a `null` return drains no row. Kept beside `ackAuthorityCurrent`
+ * so a future edit to that predicate is visibly next to the classifier that must track it.
+ */
+export function ackAuthorityCurrencyIntent(input: {
+  auth: VerifiedWorkerOperation;
+  authority: LeaseWorkerAuthority;
+  workerId: string;
+  databaseNow: Date;
+  maxHeartbeatAgeMs: number;
+  platformPhysicalHeartbeatAt?: Date | null;
+}): WorkerDenialIntent | null {
+  const { auth, authority } = input;
+  const worker = authority.worker;
+  const target = authority.target;
+  const oldestHeartbeat = target.scope === "platform"
+    ? input.platformPhysicalHeartbeatAt?.getTime() ?? null
+    : !worker.lastSeenAt || !target.lastSeenAt
+      ? null
+      : Math.min(worker.lastSeenAt.getTime(), target.lastSeenAt.getTime());
+  const failed: string[] = [];
+  if (input.workerId !== auth.workerId) failed.push("request_worker_mismatch");
+  if (worker.id !== auth.workerId) failed.push("worker_id_mismatch");
+  if (worker.executionTargetId !== auth.targetId) failed.push("worker_target_mismatch");
+  if (worker.organizationId !== auth.organizationId) failed.push("worker_org_mismatch");
+  if (worker.scope === "platform") failed.push("worker_scope_platform");
+  if (worker.deviceGeneration !== auth.targetGeneration) failed.push("worker_generation_drift");
+  if (worker.deviceThumbprint !== auth.deviceThumbprint) failed.push("worker_thumbprint_mismatch");
+  if (worker.devicePublicKey !== auth.publicKey) failed.push("worker_pubkey_mismatch");
+  if (worker.profileHash !== auth.profileHash) failed.push("worker_profile_mismatch");
+  if (worker.revokedAt !== null) failed.push("worker_revoked");
+  if (!(worker.status === "enrolled" || worker.status === "active")) failed.push("worker_status_invalid");
+  if (!authority.ownerMembershipActive) failed.push("owner_membership_lost");
+  if (target.id !== auth.targetId) failed.push("target_id_mismatch");
+  if (target.status !== "active") failed.push("target_inactive");
+  if (target.deviceGeneration !== auth.targetGeneration) failed.push("target_generation_drift");
+  if (oldestHeartbeat === null || input.databaseNow.getTime() - oldestHeartbeat > input.maxHeartbeatAgeMs) {
+    failed.push("heartbeat_stale");
+  }
+  if (failed.length === 0) return null;
+  // Only the AUTHORITATIVE DB-row generations are DE-18's cutoff (matching the poll classifier).
+  const GENERATION_CONJUNCTS = new Set(["worker_generation_drift", "target_generation_drift"]);
+  const generation = failed.some((f) => GENERATION_CONJUNCTS.has(f));
+  if (generation) return ackAuthorityDenialIntent("ack_generation_superseded", "DE-18", auth, failed);
+  return ackAuthorityDenialIntent("ack_authority_stale", "DE-04", auth, failed);
 }
 
 function ackPlacementCurrent(

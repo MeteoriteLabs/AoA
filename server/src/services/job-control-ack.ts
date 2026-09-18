@@ -23,6 +23,7 @@ import { z } from "zod";
 import { runInTenant } from "../db/tenant-context.js";
 import {
   ackAuthorityCurrent,
+  ackAuthorityCurrencyIntent,
   JobLeasingError,
   type VerifiedWorkerOperation,
 } from "./job-leasing.js";
@@ -105,6 +106,11 @@ export function createJobControlAckService(input: {
       // the time the transaction unwinds; it is captured at the inner catch (code + fence
       // identity both in hand) and drained on the pool handle in the `.finally`.
       const fenceGuardDenial = createFenceGuardDenialSink();
+      // ★ DE-04/DE-18 — the ack-path worker-authority-currency refusal (the `ackAuthorityCurrent`
+      // recheck, BEFORE the guarded mutator). Its `target_revoked` throw pre-empts the fence guard,
+      // so it is the "separate, still-unaudited surface tracked as the follow-on" de-04-18's header
+      // names. Captured as an INTENT and drained on the pool handle in the `.finally`.
+      const authorityDenial = createWorkerDenialSink();
 
       // The explicit type argument is load-bearing: chaining `.finally` below drops
       // the contextual typing this call used to get from the method's return
@@ -131,14 +137,25 @@ export function createJobControlAckService(input: {
           targetId: auth.targetId,
         });
         const authorityNow = await repos.jobControl.currentDatabaseTime();
-        if (!authority || !ackAuthorityCurrent({
+        // A missing authority row carries no target/generation to classify — the fence-resolution
+        // family owns that reason, not this arm — so it throws `unauthorized` unrecorded here.
+        if (!authority) throw new JobLeasingError("unauthorized");
+        // ★ DE-04/DE-18 — the authority-currency recheck. A reject records its CLASSIFIED intent
+        // (crossing derived from the failed conjunct(s) by `ackAuthorityCurrencyIntent`, never the
+        // composite boolean) as a single comma-throw, then drains on the pool handle in `.finally`.
+        if (!ackAuthorityCurrent({
           auth,
           authority,
           workerId: body.workerId,
           databaseNow: authorityNow,
           maxHeartbeatAgeMs,
           platformPhysicalHeartbeatAt: null,
-        })) throw new JobLeasingError(authority ? "target_revoked" : "unauthorized");
+        })) {
+          throw (authorityDenial.intent = ackAuthorityCurrencyIntent({
+            auth, authority, workerId: body.workerId, databaseNow: authorityNow,
+            maxHeartbeatAgeMs, platformPhysicalHeartbeatAt: null,
+          }), new JobLeasingError("target_revoked"));
+        }
 
         const target = await normalizePlacementRegistryTarget(authority.target);
         if (!target || target.status !== "active") throw new JobLeasingError("target_revoked");
@@ -225,6 +242,14 @@ export function createJobControlAckService(input: {
         .finally(async () => {
           await drainWorkerDenial(input.appDb, proofDenial, {
             control: "server/src/services/job-control-ack.ts:ack",
+            workerId: auth.workerId,
+            operation: "control_command_ack",
+          });
+          // ★ DE-04/DE-18 — the ack-path authority-currency refusal (the `ackAuthorityCurrent`
+          // recheck), on the pool handle. `worker_poll_authority` surface, crossing already keyed
+          // on the intent by the classifier.
+          await drainWorkerDenial(input.appDb, authorityDenial, {
+            control: "server/src/services/job-control-ack.ts:ackAuthorityCurrent",
             workerId: auth.workerId,
             operation: "control_command_ack",
           });
