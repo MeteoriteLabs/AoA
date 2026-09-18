@@ -5,6 +5,46 @@
 **Authored:** 2026-09-18 (post-E7-1), by terrain re-verification against source on `docs/replatform-program`.
 **Owner:** unowned — this authors the previously-missing MIG-006 ticket (E10-F001 named it as unwritten).
 
+> ★★★ **AMENDED 2026-09-18 (post-build) — THE SCOPE BELOW IS SUPERSEDED: this is a crew-distributed
+> LIFECYCLE EPIC, not a "reuse-heavy, two-piece" seam.** Building it surfaced two decisive facts the
+> original terrain (focused on the ownership DECISION machinery) missed:
+>
+> 1. **`buildCrewBatchWorkload` (slice 1 / §2a) was the WRONG tool and is REMOVED (PR #478).** The crew
+>    runner already resolves `agent.adapterType` (`runner.ts:396` `getServerAdapter(agent.adapterType)`) and
+>    `runtimeCommandSpec` from it (`:823`), so the seam calls the generic `buildTaskRunBatchWorkload({
+>    adapterType: agent.adapterType, … })` **directly**, exactly like the task_run seam (`heartbeat.ts:5303`).
+>    The provider-resolving wrapper would re-derive the adapter from the company provider and mismatch the
+>    `runtimeCommandSpec` on provider drift.
+> 2. **The crew run lives in `internal_agent_runs`, which has NO distributed lifecycle** — no
+>    `executionOwner`/distributed columns, and NOTHING projects a distributed terminal onto it. The task_run
+>    handoff marker (`markRunHandedOffToDistributed`) and the terminal projection (`canary-terminal-projection`)
+>    are **`heartbeat_runs`-ONLY**. So the ownership DECISION reuses, but the LIFECYCLE does not.
+>
+> **The corrected unit breakdown (each its own scoped build):**
+> - **U1 — schema:** distributed markers on `internal_agent_runs` (executionOwner + distributed job/attempt
+>   ids) via Drizzle `db:generate` + migration.
+> - **U2 — crew handoff marker:** the `internal_agent_runs` analogue of `markRunHandedOffToDistributed`.
+> - **U3 — crew terminal projection:** the `internal_agent_runs` analogue of `canary-terminal-projection`
+>   (project the distributed attempt's terminal onto the crew run).
+> - **U4 — W3a loopback-defer:** record the crew result pending, reconcile when Unit F lands (NEVER drop).
+> - **U5 — the seam** (`runAoaAgent`, beside the shadow block at `:842`, before `adapter.execute` `:1165`):
+>   `resolveRunRolloutState({companyId, sourceKind:"crew_run"})` → `buildTaskRunBatchWorkload(agent.adapterType)`
+>   → `resolveCrewDistributedGate` (**SHIPPED**, slice 2a) → `resolveExecutionOwner` → on `distributed`,
+>   `shouldSuppressLegacyExecution` skips the legacy execute + U2 marks handoff + U4 defers the loopback.
+>
+> **Shipped so far:** the founder-ruled **gate** (separate off-by-default crew flag,
+> `AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED`) — `resolveCrewDistributedGate` + `readDistributedCrewRolloutFlag`
+> (slice 2a, **MERGED**). That was the last clean small unit; U1–U5 are the epic.
+>
+> **★ CRITICAL CAVEAT (unchanged): a distributed crew run is MECHANISM-ONLY** — tool-less (Unit C) and
+> result-deferred (Unit F) — so this whole epic is foundational-but-inert until C+F are closer. Do NOT
+> build it ahead of them; the payoff is gated (§4).
+>
+> **Still valid below (do not re-derive):** §1 terrain (the ownership/convert/placement machinery IS
+> source-agnostic and reusable), the seam LOCATION (`:823`/`:842`), the rollout-hook shape, and §4's
+> doubly-gated caveats. **Superseded:** §2a (`buildCrewBatchWorkload`) and §6's "two new pieces / first
+> slice = (a)" framing.
+
 > **★ Read this first.** This is the crew half of E10-F001's shared prerequisite #1 ("a distributed
 > routing seam for non-`task_run` sources"). It is scoped **crew-first** because crew is the one sink
 > that already **rides the mint** for a v1-provider company (E10-F001 crew bullet). Two properties of
