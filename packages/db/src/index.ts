@@ -34,10 +34,12 @@ export {
 } from "./migration-snapshot-gate.js";
 export {
   runDatabaseBackup,
+  runDatabaseRestore,
   formatDatabaseBackupResult,
   pruneOldBackups,
   type RunDatabaseBackupOptions,
   type RunDatabaseBackupResult,
+  type RunDatabaseRestoreOptions,
 } from "./backup-lib.js";
 export * from "./schema/index.js";
 // TEN-003: the tenant repository factory is the only sanctioned reader/writer of
