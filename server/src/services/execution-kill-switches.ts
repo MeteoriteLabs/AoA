@@ -236,19 +236,28 @@ export function buildKillSwitchDocument(
   switches: readonly KillSwitchWriteEntry[],
   knownProviders: readonly string[],
 ): KillSwitchDocument {
-  // STUB (RED phase): NO fail-closed validation yet — the candidate is wrapped and returned
-  // without round-tripping through parseKillSwitchDocument. `execution-kill-switches.test.ts`
-  // asserts the throws the GREEN commit adds.
-  void knownProviders;
-  return {
+  const candidate = {
     schema: DOCUMENT_SCHEMA,
     switches: switches.map((entry) => ({
-      dimension: entry.dimension as KillSwitchDimension,
+      dimension: entry.dimension,
       value: entry.value,
       reason: entry.reason,
-      reclaim: entry.reclaim === true,
+      ...(entry.reclaim === undefined ? {} : { reclaim: entry.reclaim }),
     })),
   };
+  // Round-trip through the SAME reader the poll path uses. An unreadable stored document
+  // drains every fleet, so refuse it here rather than persist it.
+  const parsed = parseKillSwitchDocument(candidate, knownProviders);
+  if (parsed === "unreadable") {
+    throw new Error(
+      "Refusing to persist an unreadable kill-switch document — a stored document the poll path cannot read drains every fleet. Each switch needs a dimension of provider|template, a non-empty value (a provider value must be a known execution target), and a stated reason (1-1000 chars).",
+    );
+  }
+  if (parsed === "absent") {
+    // Unreachable: `candidate` is a non-null object, so the parser never returns "absent".
+    throw new Error("kill-switch document candidate unexpectedly parsed as absent");
+  }
+  return { schema: DOCUMENT_SCHEMA, switches: parsed };
 }
 
 /**
