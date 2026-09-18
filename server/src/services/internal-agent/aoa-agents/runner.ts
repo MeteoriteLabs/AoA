@@ -18,8 +18,14 @@ import { environmentRuntimeService } from "../../environment-runtime.js";
 import { createLocalAgentJwt } from "../../../agent-auth-jwt.js";
 import { resolveBridgeEntrypoint } from "./bridge-path.js";
 import { publishLiveEvent, publishIssueStatusChanged, threadWorkingAgents, broadcastThreadPresence } from "../../live-events.js";
-import { logger } from "../../../middleware/logger.js";
+import { logger } from "../../../middleware/logger.js";
 import { recordDistributedShadow } from "../../distributed-shadow-port.js";
+import { getDistributedRolloutPort } from "../../distributed-rollout-port.js";
+import { readDistributedCrewRolloutFlag } from "../../../config/distributed-execution.js";
+import { buildTaskRunBatchWorkload } from "../../task-run-batch-workload.js";
+import { shouldSuppressLegacyExecution } from "../../run-execution-owner.js";
+import { resolveCrewDistributedGate } from "./crew-distributed-gate.js";
+import { buildCrewHandoffMarkerPatch } from "./crew-handoff-marker.js";
 import { computeCostCents } from "../cost-model.js";
 import { assembleAgentPersona } from "../commander-context.js";
 import { agentInstructionsService } from "../../agent-instructions.js";
@@ -829,6 +835,75 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         sink: "crew agent",
       },
     );
+
+    // ── MIG-006 slice 1 — the crew distributed-execution seam ─────────────────
+    // The crew analogue of the heartbeat/org CLI-006 canary transfer: gate this crew run to the
+    // distributed substrate, or fall through to the legacy in-process adapter below. Ships INERT
+    // behind the SEPARATE off-by-default crew flag (a task_run-canary org must not auto-arm
+    // tool-less crew). The rollout hook is read LAZILY through the process-wide port —
+    // runAoaAgent is a plain exported function with no options object, and an eager capture would
+    // be a silent no-op (see distributed-rollout-port.ts). The port is undefined on every
+    // flag-off / non-distributed deployment, so those stay byte-identical legacy.
+    const crewRolloutPort = getDistributedRolloutPort();
+    if (crewRolloutPort && readDistributedCrewRolloutFlag(process.env) && runId && payload.issueId) {
+      // The SHARED org rollout state (the crew flag above is the only independence lever), plus
+      // the resolved Organization, via the same hook the heartbeat seam uses. Best-effort inside
+      // the hook — a resolution error resolves to `off`, which stays legacy.
+      const { state: crewRolloutState, organizationId: crewOrganizationId } =
+        await crewRolloutPort.resolveRunRolloutState({ companyId: payload.companyId, sourceKind: "crew_run" });
+      if (crewOrganizationId) {
+        const crewWorkload = buildTaskRunBatchWorkload({
+          adapterType: agent.adapterType,
+          runtimeCommandSpec,
+          adapterConfig: resolvedConfigRecord,
+          // The crew persona is already folded into triggerPrompt by buildTriggerPrompt, so a
+          // separate instructions bundle would double-deliver — instructions:null for slice 1.
+          currentTaskMarkdown: triggerPrompt,
+          instructions: null,
+        });
+        const crewGate = resolveCrewDistributedGate({
+          rolloutState: crewRolloutState,
+          crewRolloutEnabled: true,
+          workload: crewWorkload,
+        });
+        if (crewGate.attempt) {
+          const crewOwner = await crewRolloutPort.resolveExecutionOwner({
+            source: { kind: "crew_run", crewRunId: runId },
+            actor: { kind: "agent", id: agentId, companyId: payload.companyId },
+            organizationId: crewOrganizationId,
+            idempotencyKey: runId,
+            rolloutState: crewRolloutState,
+            input: crewGate.workload,
+            stagedFiles: crewGate.stagedFiles,
+          });
+          if (shouldSuppressLegacyExecution(crewOwner) && crewOwner.owner === "distributed") {
+            // The attempt is the terminal authority now: write the durable marker (status
+            // untouched, still 'running') and SUPPRESS the legacy adapter by returning here. The
+            // run's `finally` below still fires (this return is inside the main try) — it releases
+            // the sandbox lease, unlinks cfgPath, and finalizes the transcript.
+            await db
+              .update(internalAgentRuns)
+              .set(buildCrewHandoffMarkerPatch(crewOwner, new Date()))
+              .where(and(eq(internalAgentRuns.id, runId), eq(internalAgentRuns.status, "running")));
+            log.info(
+              {
+                runId,
+                companyId: payload.companyId,
+                agentId,
+                jobId: crewOwner.jobId,
+                attemptId: crewOwner.attemptId,
+              },
+              "[MIG-006] crew run handed off to distributed attempt; suppressing legacy adapter",
+            );
+            return {
+              status: "succeeded",
+              runId,
+              distributedHandoff: { jobId: crewOwner.jobId, attemptId: crewOwner.attemptId },
+            }; // CREW-SUPPRESSION-RETURN
+          }
+        }
+      }
+    }
 
     // ── MIG-006 shadow observation ────────────────────────────────────────
     // After the execution target is resolved (so the recorded routing is real) and

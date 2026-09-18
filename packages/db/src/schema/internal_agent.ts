@@ -392,6 +392,19 @@ export const internalAgentRuns = pgTable(
     logStore: text("log_store"),
     logRef: text("log_ref"),
 
+    // MIG-006 — the durable distributed-execution handoff marker for a CREW run
+    // whose execution transferred to a worker attempt. Byte-identical to
+    // heartbeat_runs.ts's CLI-006 marker (execution_owner / distributed_job_id /
+    // distributed_attempt_id): `null` (every legacy run) means this process's
+    // adapter executed; 'distributed' means a worker attempt is the terminal
+    // authority and runAoaAgent SUPPRESSED its own adapter.execute. Must be durable
+    // (not in-process state) so a control-plane restart never re-dispatches a
+    // handed-off run, and so the crew terminal projector can bind the run to its
+    // attempt's evidence by (distributed_job_id, distributed_attempt_id).
+    executionOwner: text("execution_owner"),
+    distributedJobId: uuid("distributed_job_id"),
+    distributedAttemptId: uuid("distributed_attempt_id"),
+
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
