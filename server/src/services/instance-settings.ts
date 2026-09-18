@@ -198,7 +198,9 @@ export function instanceSettingsService(db: Db) {
       const current = await getOrCreateRow();
       await db
         .update(instanceSettings)
-        .set({ killSwitches: document, updatedAt: new Date() })
+        // The jsonb column's setter is typed `Record<string, unknown>`; the document is exactly
+        // that at runtime (a plain object), but its precise interface lacks an index signature.
+        .set({ killSwitches: document as unknown as Record<string, unknown>, updatedAt: new Date() })
         .where(eq(instanceSettings.id, current.id));
       return { document, settingsId: current.id };
     },
