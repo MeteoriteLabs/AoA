@@ -15,7 +15,8 @@
 //      leans on its `aoa` MCP tools far more than a one-shot task run.
 //   2. The org rollout STATE must be `canary` — real distributed execution. task_run reserves
 //      `active` for the CLI-005 inert convert; `off`/`shadow`/`active` never transfer crew.
-//   3. The workload the seam already built (`buildCrewBatchWorkload`) must be `ok`; a refusal
+//   3. The workload the seam already built (`buildTaskRunBatchWorkload`, from `agent.adapterType`)
+//      must be `ok`; a refusal
 //      (non-v1 provider, empty prompt, …) stays legacy with an attributable reason.
 //
 // Fail-safe: every non-attempt is a LEGACY run with a machine-readable reason. This function
@@ -46,7 +47,7 @@ export interface CrewDistributedGateInput {
   readonly rolloutState: RunRolloutState;
   /** The SEPARATE crew gate (`readDistributedCrewRolloutFlag`), off by default. */
   readonly crewRolloutEnabled: boolean;
-  /** The workload the seam built from `buildCrewBatchWorkload`. */
+  /** The workload the seam built from `buildTaskRunBatchWorkload` (`agent.adapterType`). */
   readonly workload: BuildTaskRunBatchWorkloadResult;
 }
 
