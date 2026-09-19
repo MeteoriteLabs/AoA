@@ -111,6 +111,9 @@ const EXPECTED_UNGUARDED = [
   // job/attempt/lease rows directly and PERMANENTLY revoke the fence, so they are
   // deliberately NOT worker-fence-guarded (the reaper acts when the fence is stale).
   "requestCancellation",
+  // SVC-005b operator drain: locks the authoritative rows directly like
+  // requestCancellation and queues ONE `drain` control command; NOT worker-fence-guarded.
+  "requestDrain",
   "listPendingControlCommands",
   "allocateRetryAttempt",
   "reapExpiredLeases",

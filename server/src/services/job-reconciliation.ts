@@ -27,6 +27,7 @@
 import { randomUUID } from "node:crypto";
 import type {
   CancellationOutcome,
+  DrainOutcome,
   Db,
   ReapExpiredLeasesResult,
 } from "@armyofagents/db";
@@ -75,8 +76,18 @@ export interface RequestCancellationServiceInput {
   commandId?: string;
 }
 
+export interface RequestDrainServiceInput {
+  organizationId: string;
+  companyId: string;
+  jobId: string;
+  reason: string;
+  /** Optional stable command id for an idempotent retry of the SAME drain. */
+  commandId?: string;
+}
+
 export interface JobReconciliationService {
   requestCancellation(input: RequestCancellationServiceInput): Promise<CancellationOutcome>;
+  requestDrain(input: RequestDrainServiceInput): Promise<DrainOutcome>;
   reapOrganization(
     organizationId: string,
     options?: { limit?: number },
@@ -107,6 +118,20 @@ export function createJobReconciliationService(input: {
           reason: cancelInput.reason,
           graceful: cancelInput.graceful,
           commandId: cancelInput.commandId ?? randomUUID(),
+          now,
+        });
+      });
+    },
+
+    async requestDrain(drainInput) {
+      return runInTenant(input.appDb, drainInput.organizationId, async (repos) => {
+        const now = await repos.jobControl.currentDatabaseTime();
+        return repos.jobControl.requestDrain({
+          organizationId: drainInput.organizationId,
+          companyId: drainInput.companyId,
+          jobId: drainInput.jobId,
+          reason: drainInput.reason,
+          commandId: drainInput.commandId ?? randomUUID(),
           now,
         });
       });

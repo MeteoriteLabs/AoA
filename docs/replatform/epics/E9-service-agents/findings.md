@@ -644,6 +644,14 @@ in the tree. Until one of those lands, the window is real and is stated in
 ## E9-F008 — three of the six frozen control-command kinds have ZERO producers, one of them cannot be persisted at all, and a repository docstring says otherwise
 
 **Status:** `open` · `unowned` · **Severity:** MED
+
+> **★ UPDATED 2026-09-20 (SVC-005b) — the `drain` third is CLOSED; the finding STAYS OPEN on the other two.**
+> `requestDrain` (`packages/db/src/repositories/tenant/job-control.ts`) now produces the frozen `drain`
+> kind, reached from the operator drain route via `reconciliation.requestDrain` (`drainJob`), and the
+> `JobControlCommandKind` docstring is corrected in the SAME change (§3's condition met). `graceful_stop`
+> (its only consumer folds into the `cancelRequested` floor — a producer is inert until a distinct
+> deadline-aware consumer + unforgeable ACK exist) and `checkpoint` (not persistable — needs the
+> `db:generate` CHECK widening, SVC-004) REMAIN zero-producer, so this finding is not resolved.
 **Filed:** 2026-09-10, by **SVC-003b**, while measuring SVC-003's graceful-stop and checkpoint-request
 outcome clauses. Filed rather than recorded in the result note because it is the reason two of
 SVC-003's five outcome conjuncts cannot be delivered by any ticket that does not first add a
@@ -664,7 +672,7 @@ JOB-006 (the docstring).
 | `product_approval_result` | yes | 1, via `queueGovernedControlCommand` from `job-approval-bridge.ts` |
 | `runtime_decision_result` | yes | 1, same path |
 | `graceful_stop` | yes | **none** |
-| `drain` | yes | **none** |
+| `drain` | yes | **1**, via `requestDrain` (SVC-005b) |
 | `checkpoint` | **no** | **none** |
 
 `checkpoint` is additionally excluded by `job_control_commands_kind_check`
@@ -691,13 +699,15 @@ both of its insert sites, and `reapExpiredLeases` contains no insert into `job_c
 all. Two of the three kinds that sentence names are issued by nothing. It is the same failure class
 this programme keeps meeting — a comment describing an intention as a fact — and it is left in place
 rather than silently corrected, because correcting the prose without adding the producer would make
-the gap invisible again.
+the gap invisible again. ★ UPDATED 2026-09-20 (SVC-005b): both landed together — the `requestDrain`
+producer AND the docstring correction — so this condition is met and the `drain` half of the record no
+longer disagrees with the code (the docstring still names `graceful_stop` unproduced, which stays true).
 
 ### 4. What would close it
 
 A producer for `graceful_stop` (SVC-005's operator stop/pause, and the fencing half of E9-F007),
 plus the widening of `GovernedControlCommandInput` that a producer needs; a producer for `drain`
-(SVC-005); and for `checkpoint`, a migration widening `job_control_commands_kind_check` before any
+(DONE 2026-09-20 — SVC-005b's `requestDrain`); and for `checkpoint`, a migration widening `job_control_commands_kind_check` before any
 producer is possible (SVC-004). The docstring is corrected by whichever of those lands first.
 
 ---

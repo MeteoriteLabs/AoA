@@ -31,7 +31,7 @@ import {
   jobEvents,
   jobArtifacts,
   workers,
-  type CancellationOutcome,
+  type DrainOutcome,
   type Db,
 } from "@armyofagents/db";
 import type {
@@ -175,13 +175,14 @@ export interface JobOperationsService {
     jobId: string,
   ): Promise<JobDetail | null>;
   listWorkers(organizationId: string): Promise<WorkerSummary[]>;
-  /** Job-level graceful stop — delegates to JOB-006 requestCancellation(graceful:true). */
+  /** Job-level graceful drain (SVC-005b) — queues the frozen `drain` control command
+   * so the worker finishes the in-flight attempt and stops taking new leases; NOT a cancel. */
   drainJob(
     organizationId: string,
     companyId: string,
     jobId: string,
     reason: string,
-  ): Promise<CancellationOutcome>;
+  ): Promise<DrainOutcome>;
   /** Resolves the worker's execution target server-side, then JOB-007 revoke. */
   revokeWorker(
     organizationId: string,
@@ -289,13 +290,15 @@ export function createJobOperationsService(input: {
     },
 
     async drainJob(organizationId, companyId, jobId, reason) {
-      // R1: there is no worker-fleet "drain" seam — drain is a job-level graceful stop.
-      return reconciliation.requestCancellation({
+      // SVC-005b (E9-F008): a REAL drain — queue the frozen `drain` control command so the
+      // worker's `handlers.drain` -> `pollLoop.stopLeasing()` finishes the in-flight attempt and
+      // stops taking new leases. This is NOT a cancel: the attempt runs to completion, and the
+      // job/attempt status is never transitioned.
+      return reconciliation.requestDrain({
         organizationId,
         companyId,
         jobId,
         reason,
-        graceful: true,
       });
     },
 
