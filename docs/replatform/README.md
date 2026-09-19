@@ -15,6 +15,10 @@ The program is a selective re-platform, not a blank-slate product rewrite. The e
 7. [`epics/README.md`](epics/README.md) — live epic status and navigation.
 8. [`templates/`](templates/) — mandatory formats for execution records.
 
+## Epic regrooming proposal
+
+[`epic-regrooming/README.md`](epic-regrooming/README.md) is a **non-authoritative proposal pending review** for milestone-scoped epic QA and completion-handoff recovery. It does not change the approved architecture, the live epic status table, or any existing result, QA record, or handoff.
+
 ## Source-of-truth hierarchy
 
 1. Locked product-wide decisions: `docs/architecture/decisions.md`.
