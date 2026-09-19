@@ -1476,10 +1476,10 @@ if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
   // open. Unconditional registration would be a throw, not a safety net.
   //
   // ★ WHAT THIS TICK ACTUALLY DOES TODAY, stated so nobody reads a running timer as a
-  // running service. `listReconcilableServices` scans `services`, which has ONE insert in
-  // the tree and ZERO production callers — there is no route by which a human or an agent
-  // can create a service (SVC-007 owns that). So on every real deployment this tick reads an
-  // empty window and converges nothing. What it does deliver is that the moment a `services`
+  // running service. `listReconcilableServices` scans `services`, whose create path shipped with
+  // SVC-007 — the org-admin-gated `POST .../companies/:company/services` -> `createService`
+  // (routes/job-control.ts) is now a production caller that inserts a row. So a deployment where
+  // an org-admin has created services converges them; one with none converges nothing. The moment a `services`
   // row exists with `desired_state='running'` and a `service_generations` definition, exactly
   // one instance and one job appear for it, and never two.
   const { createServiceReconciler } = await import("./services/service-reconciler.js");
