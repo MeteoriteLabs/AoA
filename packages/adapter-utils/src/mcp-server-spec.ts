@@ -187,7 +187,9 @@ export interface BrokeredAoaHttpEntry {
   readonly headers: { readonly Authorization: string };
 }
 export function brokeredAoaHttpEntry(params: {
-  apiBaseUrl: string;
+  // `apiBaseUrl` mirrors McpConfigParams.apiBaseUrl (optional, only consulted for a brokered
+  // run); an undefined base coerces in the template exactly as the pre-Unit-C inline entry did.
+  apiBaseUrl: string | undefined;
   companyId: string;
 }): BrokeredAoaHttpEntry {
   return {
