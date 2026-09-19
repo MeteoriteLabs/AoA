@@ -63,6 +63,11 @@ export const STAGED_PROMPT_PATH = `${STAGED_INPUT_DIR}/.aoa-run-prompt.md`;
  * `--append-system-prompt-file` (claude) or prepend to stdin (codex). */
 export const STAGED_INSTRUCTIONS_PATH = `${STAGED_INPUT_DIR}/.aoa-run-instructions.md`;
 
+/** CLI-008 Unit C — the brokered `aoa` MCP config the CLAUDE arm reads via `--mcp-config`.
+ * Flat sibling of the prompt/instructions (the flat-not-nested rule above stands). Staged
+ * ONLY for `claude_local` and ONLY when the caller supplies a config (tool surface authorized). */
+export const STAGED_AOA_MCP_CONFIG_PATH = `${STAGED_INPUT_DIR}/.aoa-run-mcp.json`;
+
 /**
  * The exit code the in-sandbox guard uses when a staged file it needs is not readable.
  *
@@ -106,6 +111,8 @@ export interface SandboxInvocation {
 
 /** Everything staged by this unit is UTF-8 markdown. */
 const STAGED_CONTENT_TYPE = "text/markdown; charset=utf-8";
+/** The staged aoa MCP config is JSON, not markdown. */
+const STAGED_JSON_CONTENT_TYPE = "application/json; charset=utf-8";
 const ENCODER = new TextEncoder();
 
 /**
@@ -157,9 +164,20 @@ export function buildSandboxInvocation(input: {
    * bundle" state, because `--append-system-prompt-file` on an empty file is a flag that
    * promises context and delivers none. */
   readonly instructions: string | null;
+  /** CLI-008 Unit C — the serialized brokered `aoa` MCP config, or `null` when the distributed
+   * tool surface is not authorized for this run. Staged + wired into the argv ONLY for
+   * `claude_local`; ignored for every other adapter (codex staging is the deferred MX3). `null`
+   * keeps the emitted invocation byte-identical to the pre-Unit-C output. */
+  readonly aoaMcpConfig?: string | null;
 }): SandboxInvocation | null {
   // The paths, the argv that reads them, and the bytes written to them are all derived from
   // this ONE list, in this ONE function.
+  // CLI-008 Unit C: the brokered `aoa` MCP config is staged ONLY for claude_local and ONLY when
+  // the caller authorized the tool surface (config !== null). It joins the SAME staged list, so
+  // `paths`, the readable guard's arity, and the trailing `...paths` argv all update by
+  // construction — the argv↔staged set-equality and guard-contiguity invariants hold automatically.
+  const aoaMcpConfig = input.aoaMcpConfig ?? null;
+  const stageAoaConfig = aoaMcpConfig !== null && input.adapterType === "claude_local";
   const staged: SandboxStagedFile[] = [
     { path: STAGED_PROMPT_PATH, bytes: ENCODER.encode(input.prompt), contentType: STAGED_CONTENT_TYPE },
     ...(input.instructions === null
@@ -171,6 +189,15 @@ export function buildSandboxInvocation(input: {
             contentType: STAGED_CONTENT_TYPE,
           },
         ]),
+    ...(stageAoaConfig
+      ? [
+          {
+            path: STAGED_AOA_MCP_CONFIG_PATH,
+            bytes: ENCODER.encode(aoaMcpConfig as string),
+            contentType: STAGED_JSON_CONTENT_TYPE,
+          },
+        ]
+      : []),
   ];
   const paths = staged.map((file) => file.path);
   const guard = readableGuard(paths.length);
@@ -182,9 +209,16 @@ export function buildSandboxInvocation(input: {
       // `--dangerously-skip-permissions` is required for unattended sandbox execution
       // (E7-F021, founder-authorized 2026-09-11): a distributed run has no human to answer
       // claude's permission prompt, and the flag is scoped to this throwaway sandbox only.
-      script = hasInstructions
-        ? `${guard}; exec "$0" --print - --dangerously-skip-permissions --output-format stream-json --verbose --append-system-prompt-file "$2" < "$1"`
-        : `${guard}; exec "$0" --print - --dangerously-skip-permissions --output-format stream-json --verbose < "$1"`;
+      {
+        // Optional segments compose in a fixed order; with neither present the script is
+        // byte-identical to the pre-Unit-C claude arm. Instructions are always `$2` (paths[1]);
+        // the aoa config, when staged, is the LAST path (`$${paths.length}`).
+        const instrSeg = hasInstructions ? ` --append-system-prompt-file "$2"` : "";
+        const mcpSeg = stageAoaConfig
+          ? ` --mcp-config "$${paths.length}" --strict-mcp-config --allowedTools mcp__aoa`
+          : "";
+        script = `${guard}; exec "$0" --print - --dangerously-skip-permissions --output-format stream-json --verbose${instrSeg}${mcpSeg} < "$1"`;
+      }
       break;
     case "codex_local":
       // No `--append-system-prompt-file` equivalent exists, so the bundle is concatenated
