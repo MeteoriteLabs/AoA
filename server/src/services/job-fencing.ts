@@ -301,7 +301,9 @@ export function createJobLeaseRenewalService(input: {
           // simply carries no fresh cap, which the next periodic renewal delivers.
           const renewedBody = withRenewedOwnedLabelsCapability(
             body,
-            { fenceIdentity: renewFence, authorityNow, leaseDeadline: new Date(body.expiresAt) },
+            // `body.expiresAt` is the NEW lease deadline (an ISO string); the renewLease return
+            // types it loosely, so coerce via String() (runtime identity on the string).
+            { fenceIdentity: renewFence, authorityNow, leaseDeadline: new Date(String(body.expiresAt)) },
             { controlPlaneSigningKey, shortTtlMs: ownedLabelsCapabilityTtlMs },
           );
           return leaseRenewOperationResponseV1Schema.parse({
