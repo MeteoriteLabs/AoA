@@ -301,8 +301,10 @@ describe("withRenewedOwnedLabelsCapability — E9-F002(b) re-mint on lease renew
     const verified = verifyOwnedLabelsCapability(ext.value, controlPlane.publicKey, AUTHORITY_NOW.getTime());
     expect(labelsEqual(verified, ANCHOR_LABELS)).toBe(true);
     expect(labelsEqual(ext.value.ownedLabels, ANCHOR_LABELS)).toBe(true);
-    // clamped to the NEW lease deadline the renewal just extended to.
-    expect(ext.value.expiresAt).toBe(LEASE_DEADLINE.getTime());
+    // expiresAt = min(authorityNow + TTL, newLeaseDeadline): here the 5-min TTL is the shorter
+    // bound (the test deadline is 10 min out), so it is now + TTL. The deadline-is-shorter clamp
+    // is exercised by mintOwnedLabelsCapability's own tests (the mint fn this helper reuses).
+    expect(ext.value.expiresAt).toBe(AUTHORITY_NOW.getTime() + OWNED_LABELS_CAPABILITY_DEFAULT_TTL_MS);
   });
 
   it("preserves pre-existing extensions (control-command projection) — appends, never clobbers", () => {
