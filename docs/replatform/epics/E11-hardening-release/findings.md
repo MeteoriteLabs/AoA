@@ -52,6 +52,12 @@ restore), and there is **no `aoa db:restore` command** (`aoa db:backup` exists �
 therefore has no operator invocation for the restore leg — the one clause satisfied by a function
 nothing calls (the DSK-002 / REL-004 "count the callers" lesson).
 
+> **UPDATED 2026-09-19 -- the premise above is STALE.** DBR-001 has since LANDED the operator
+> entrypoint: `aoa db:restore` (`cli/src/index.ts`) -> `dbRestoreCommand` (`cli/src/commands/db-restore.ts`)
+> calls `runDatabaseRestore`, which is NOW barrel-exported from `@armyofagents/db`
+> (`packages/db/src/index.ts`); commits `ec9d8b4b3`+`ca0f5c13d`. So the zero-callers / not-barrel-exported /
+> no-`aoa db:restore` clauses are false. The finding stays OPEN only on the LIVE staging DR rehearsal leg.
+
 **Resolution (in REL-003 scope):** the DR rehearsal runbook
 (`docs/replatform/epics/E11-hardening-release/tickets/REL-003-dr-rehearsal-runbook.md`, step 4)
 names the exact restore invocation — a thin harness calling `runDatabaseRestore({ connectionString,
