@@ -23,6 +23,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ActiveFenceRequest } from "@armyofagents/db";
 import { labelsEqual, type ResourceLabels } from "@armyofagents/worker-daemon";
+import type { WireExtension } from "@armyofagents/worker-protocol";
 import { verifyOwnedLabelsCapability } from "@armyofagents/adapter-manager";
 import { buildOwnedLabelsCapabilityCanonical } from "@armyofagents/provider-capability";
 
@@ -273,7 +274,7 @@ describe("Decision #104 — the minted capability leaks no secret", () => {
 // --------------------------------------------------------------------------------------
 
 describe("withRenewedOwnedLabelsCapability — E9-F002(b) re-mint on lease renewal", () => {
-  const renewBody = (extensions: unknown[] = []) => ({
+  const renewBody = (extensions: WireExtension[] = []) => ({
     protocolVersion: 1 as const,
     workerId: ANCHOR_LABELS.workerId,
     jobId: ANCHOR_LABELS.jobId,
