@@ -147,9 +147,11 @@ export class OrphanQuarantineRejection extends Error {
 // `attempt_terminal` and are decided earlier by the guard).
 // -----------------------------------------------------------------------------
 
-/** The CLOSED set of legacy value stores a handle's `ref_kind` may dispatch to. A
- * fifth store would need a new resolver branch AND a new entry here. */
-export const SECRET_REF_KINDS = ["company_secret", "connector_oauth", "provider_key", "device_local"] as const;
+/** The CLOSED set of value stores a handle's `ref_kind` may dispatch to. The first
+ * four are legacy value stores; `run_jwt` (DAT-007 / CLI-008) is the mint-at-resolve
+ * agent bearer — no value is stored, the broker MINTS it server-side at resolve. A
+ * sixth would need a new resolver branch AND a new entry here. */
+export const SECRET_REF_KINDS = ["company_secret", "connector_oauth", "provider_key", "device_local", "run_jwt"] as const;
 export type SecretRefKind = (typeof SECRET_REF_KINDS)[number];
 
 /**
@@ -189,7 +191,7 @@ const DEVICE_CREDENTIAL_REF_RE =
 export interface SecretResolveHandleFacts {
   /** `active` | `revoked`. */
   status: string;
-  /** company_secret | connector_oauth | provider_key | device_local (or unknown → deny). */
+  /** company_secret | connector_oauth | provider_key | device_local | run_jwt (or unknown → deny). */
   refKind: string | null;
   /** The non-secret pointer into the chosen broker (never a value). A ref_kind with no
    * pointer is unresolvable → deny (fail-closed against a half-minted handle). */
@@ -318,7 +320,7 @@ export function authorizeSecretResolve(input: SecretResolveAuthzInput): SecretRe
   //    without rebuilding the dispatched envelope).
   if (h.status !== "active") return "handle_revoked";
 
-  // 2. ref_kind must be one of the four legacy stores.
+  // 2. ref_kind must be a KNOWN store: a legacy value store or the run_jwt bearer.
   if (!h.refKind || !(SECRET_REF_KINDS as readonly string[]).includes(h.refKind)) return "unknown_ref_kind";
 
   // 2b. The broker pointer must be present — a ref_kind with no ref_id is a
@@ -349,6 +351,14 @@ export function authorizeSecretResolve(input: SecretResolveAuthzInput): SecretRe
     return "ref_kind_policy_conflict";
   }
   if (h.refKind === "device_local" && u === "remote_server_fenced") {
+    return "ref_kind_policy_conflict";
+  }
+  // A `run_jwt` is a fresh, agent-authenticating bearer MINTED at resolve for the
+  // sandbox env ONLY (`AOA_API_KEY`). It has no egress form, so it resolves ONLY as
+  // `sandbox_local_only` + `env` — never a network seam. Same defense-in-depth as the
+  // two above: a corrupt or hand-built envelope cannot route a run JWT to a
+  // remote-server / proxy destination.
+  if (h.refKind === "run_jwt" && (u !== "sandbox_local_only" || m !== "env")) {
     return "ref_kind_policy_conflict";
   }
 

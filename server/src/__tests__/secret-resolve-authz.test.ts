@@ -234,9 +234,9 @@ describe("DAT-004 authorizeSecretResolve (pure decision)", () => {
     expect([...MEMBERSHIP_CAPABLE_OWNER_KINDS].sort()).toEqual([...PRINCIPAL_TYPES].sort());
   });
 
-  it("pins the ref-kind set to exactly the four legacy stores", () => {
+  it("pins the ref-kind set to exactly the four legacy stores + the run_jwt mint-at-resolve bearer", () => {
     expect([...SECRET_REF_KINDS].sort()).toEqual(
-      ["company_secret", "connector_oauth", "device_local", "provider_key"],
+      ["company_secret", "connector_oauth", "device_local", "provider_key", "run_jwt"],
     );
   });
 });

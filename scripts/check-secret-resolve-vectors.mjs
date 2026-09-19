@@ -36,8 +36,10 @@ export const FIXTURE_SEGMENTS = ["tests", "fixtures", "secret-resolve", "v1", "v
 /** Thrown by the reference validation for any fixture problem. */
 export class SecretResolveVectorError extends Error {}
 
-/** The CLOSED set of legacy value stores a handle's ref_kind may dispatch to. */
-export const SECRET_REF_KINDS = ["company_secret", "connector_oauth", "provider_key", "device_local"];
+/** The CLOSED set of value stores a handle's ref_kind may dispatch to. The first four
+ * are legacy value stores; `run_jwt` (DAT-007 / CLI-008) is the mint-at-resolve agent
+ * bearer (no stored value). Mirrors SECRET_REF_KINDS in job-fence.ts. */
+export const SECRET_REF_KINDS = ["company_secret", "connector_oauth", "provider_key", "device_local", "run_jwt"];
 
 /**
  * The CLOSED rejection vocabulary, mirrored from `SECRET_RESOLVE_REJECTION_REASONS`
@@ -114,6 +116,11 @@ export function decideResolve(input) {
     return "ref_kind_policy_conflict";
   }
   if (h.refKind === "device_local" && u === "remote_server_fenced") {
+    return "ref_kind_policy_conflict";
+  }
+  //     run_jwt (a mint-at-resolve agent bearer) => sandbox_local_only + env ONLY, never
+  //     a network seam. Mirrors the run_jwt lock in authorizeSecretResolve.
+  if (h.refKind === "run_jwt" && (u !== "sandbox_local_only" || m !== "env")) {
     return "ref_kind_policy_conflict";
   }
 

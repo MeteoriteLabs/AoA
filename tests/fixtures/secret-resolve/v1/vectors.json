@@ -64,6 +64,16 @@
         "ownerPrincipalKind": null, "ownerPrincipalId": null
       },
       "ownerMembershipActive": null
+    },
+    {
+      "_note": "run_jwt (DAT-007 / CLI-008) — the mint-at-resolve agent bearer. Owner-unbound here; owner-binding is shared logic covered by the vectors above, so this isolates that run_jwt is a recognized ref_kind resolving on env + sandbox_local_only. refId is the jobId; the broker re-derives the run id from heartbeat_runs at resolve.",
+      "name": "run_jwt_sandbox_local_env",
+      "handle": {
+        "status": "active", "refKind": "run_jwt", "refId": "c4000000-0000-4000-8000-000000000004", "materialization": "env",
+        "usePolicy": "sandbox_local_only", "destination": null, "boundTargetGeneration": null,
+        "ownerPrincipalKind": null, "ownerPrincipalId": null
+      },
+      "ownerMembershipActive": null
     }
   ],
   "rejectVectors": [
@@ -288,6 +298,17 @@
         "status": "active", "refKind": "provider_key", "refId": "provider:anthropic", "materialization": "file",
         "usePolicy": "remote_server_fenced", "destination": null, "boundTargetGeneration": null,
         "ownerPrincipalKind": null, "ownerPrincipalId": null
+      },
+      "ownerMembershipActive": null
+    },
+    {
+      "_note": "run_jwt has no egress form: rule 3b locks it to sandbox_local_only + env. With a destination present, rule 4b would otherwise pass and rules 5/6 admit — so this vector ADMITS (and fails) if the run_jwt lock is removed. Non-vacuity for the lock.",
+      "name": "run_jwt_network_seam_locked",
+      "reason": "ref_kind_policy_conflict",
+      "handle": {
+        "status": "active", "refKind": "run_jwt", "refId": "c4000000-0000-4000-8000-000000000004", "materialization": "env",
+        "usePolicy": "remote_server_fenced", "destination": "https://api.provider.example",
+        "boundTargetGeneration": null, "ownerPrincipalKind": null, "ownerPrincipalId": null
       },
       "ownerMembershipActive": null
     }

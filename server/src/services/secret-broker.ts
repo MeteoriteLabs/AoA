@@ -169,6 +169,24 @@ export interface SecretBrokerSet {
     /** DAT-008 — the resolving handle, for the secret-access audit's consumer id. */
     handleId: string;
   }): Promise<string>;
+  /**
+   * DAT-007 / CLI-008 — the mint-at-resolve `run_jwt` bearer. Unlike the stores above it
+   * fetches NO stored value: it MINTS a fresh agent JWT server-side (where the HS256
+   * secret lives), binding `run_id` to the distributed `heartbeat_runs` row DAT-007's
+   * currency gate probes so the token can never outlive the run. Fail-closed by throwing
+   * (a coarse `malformed` at the wire) when no distributed run backs the job, the
+   * re-derived run's agent disagrees with the handle owner, or no signing key is set.
+   */
+  resolveRunJwt(input: {
+    /** The LOCKED lease's company (fence-derived, never the wire). */
+    companyId: string;
+    /** The run_jwt handle's `ref_id` = the distributed jobId; the run id is re-derived. */
+    refId: string;
+    /** The handle's denormalized owner (= the executing agent id), cross-checked. */
+    ownerPrincipalId: string | null;
+    /** The resolving handle id, for the secret-access audit's consumer id. */
+    handleId: string;
+  }): Promise<string>;
 }
 
 /** The default fail-closed broker set: every store throws until DAT-005 wires the real
@@ -179,6 +197,9 @@ export const failClosedSecretBrokers: SecretBrokerSet = {
   },
   async resolveProviderOrCompanySecret() {
     throw new Error("provider/company secret broker not wired (DAT-005)");
+  },
+  async resolveRunJwt() {
+    throw new Error("run_jwt broker not wired (DAT-007/CLI-008)");
   },
 };
 
@@ -214,7 +235,16 @@ export async function dispatchResolvedSecret(
   }
 
   let value: string;
-  if (authorized.refKind === "connector_oauth") {
+  if (authorized.refKind === "run_jwt") {
+    // Mint-at-resolve: the run_jwt handle stores no value. The broker mints a fresh agent
+    // JWT server-side, binding run_id to the distributed heartbeat_runs row DAT-007 probes.
+    value = await brokers.resolveRunJwt({
+      companyId: authorized.companyId,
+      refId: authorized.refId,
+      ownerPrincipalId: authorized.ownerPrincipalId,
+      handleId: authorized.handleId,
+    });
+  } else if (authorized.refKind === "connector_oauth") {
     value = await brokers.resolveConnectorOAuth({ companyId: authorized.companyId, refId: authorized.refId });
   } else {
     // provider_key | company_secret
