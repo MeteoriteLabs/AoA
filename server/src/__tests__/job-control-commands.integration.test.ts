@@ -126,6 +126,51 @@ integration("JOB-006 durable control commands + ACK", () => {
     });
   }, 60_000);
 
+  it("queues ONE `drain` command on the active fence and does NOT transition job/attempt state (SVC-005b)", async () => {
+    const f = ctx();
+    const reconciliation = createJobReconciliationService({ appDb: f.app.db });
+    const { seeded, offer } = await f.activateLease(6_006);
+    const before = await jobAttemptStatus(seeded.jobId, seeded.attemptId);
+
+    const outcome = await reconciliation.requestDrain({
+      organizationId: ORG,
+      companyId: COMPANY,
+      jobId: seeded.jobId,
+      reason: "fleet rollout",
+    });
+    expect(outcome.status).toBe("queued");
+    expect(outcome.command?.commandKind).toBe("drain");
+    expect(outcome.command?.commandSeq).toBe(1);
+    expect(outcome.command?.fenceToken).toBe(offer.fenceToken);
+    expect(outcome.command?.ackStatus).toBeNull();
+
+    // A drain is NOT a cancel: exactly one `drain` row, and the job/attempt status is
+    // UNCHANGED (the in-flight attempt runs to completion, never cancel_requested).
+    const rows = await commandRows(offer.leaseId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ commandSeq: 1, commandKind: "drain", ackStatus: null });
+    expect(await jobAttemptStatus(seeded.jobId, seeded.attemptId)).toEqual(before);
+  }, 60_000);
+
+  it("returns `no_active_lease` and does NOT finalize when the job has no active lease (drain != cancel)", async () => {
+    const f = ctx();
+    const reconciliation = createJobReconciliationService({ appDb: f.app.db });
+    const seeded = await f.seedPlacedJob(6_051);
+    const before = await jobAttemptStatus(seeded.jobId, seeded.attemptId);
+
+    const outcome = await reconciliation.requestDrain({
+      organizationId: ORG,
+      companyId: COMPANY,
+      jobId: seeded.jobId,
+      reason: "drain an unleased job",
+    });
+    // UNLIKE requestCancellation (which finalizes an unleased job to terminal
+    // 'cancelled'), a drain is a no-op on state: there is no in-flight attempt to finish.
+    expect(outcome.status).toBe("no_active_lease");
+    expect(outcome.command).toBeNull();
+    expect(await jobAttemptStatus(seeded.jobId, seeded.attemptId)).toEqual(before);
+  }, 60_000);
+
   it("replays the SAME cancel command idempotently (no second row) on a re-request", async () => {
     const f = ctx();
     const reconciliation = createJobReconciliationService({ appDb: f.app.db });
@@ -298,11 +343,11 @@ integration("JOB-015 control-command delivery on the lease-renew response", () =
     }) as unknown as Record<string, unknown>;
   }
 
-  // Insert a control command of an arbitrary kind directly. There is no production
-  // writer for `drain` — the two insert sites are `requestCancellation` (which
-  // hardcodes `cancel`) and `queueGovernedControlCommand` (typed to the two result
-  // kinds) — so every `drain` exercised below is a row this test wrote. That gap is
-  // stated in JOB-015-result.md §5; the DELIVERY path it exercises is real.
+  // Insert a control command of an arbitrary kind directly. SVC-005b added a production
+  // writer for `drain` (`requestDrain`; see the SVC-005b tests) — the drain zero-producer
+  // gap is closed. This helper is retained to deliver ARBITRARY kinds/sequences (e.g.
+  // `runtime_decision_result`, or a chosen seq) in isolation. The worker re-validates every
+  // delivered command against `controlCommandV1Schema`, so the body must be a producible shape.
   async function queueRaw(
     seeded: { jobId: string; attemptId: string },
     leaseId: string,
@@ -400,6 +445,39 @@ integration("JOB-015 control-command delivery on the lease-renew response", () =
     expect(value!.truncated).toBe(false);
     expect(value!.pendingCount).toBe(1);
     // ★ D2 — the boolean floor is untouched: a `drain` is NOT a cancel.
+    expect(after.body.cancelRequested).toBe(false);
+  }, 60_000);
+
+  it("delivers a REAL `requestDrain` on renew (cancelRequested=false) — the producer closes the loop (SVC-005b)", async () => {
+    const f = ctx();
+    const reconciliation = createJobReconciliationService({ appDb: f.app.db });
+    const renewal = createJobLeaseRenewalService({ appDb: f.app.db });
+    const { seeded, offer } = await f.activateLease(6_106);
+
+    // ★ POSITIVE CONTROL: nothing queued — the byte-inert renew (extensions []).
+    const before = await renewal.renew({ auth: auth("svc005b-0"), request: renewRequest(offer) });
+    expect(before.outcome).toBe("renewed");
+    if (before.outcome === "renewed") {
+      expect(before.body.extensions).toEqual([]);
+      expect(controlExtension(before.body)).toBeNull();
+      expect(before.body.cancelRequested).toBe(false);
+    }
+
+    // The REAL producer (not queueRaw): SVC-005b closed the drain zero-producer gap.
+    const outcome = await reconciliation.requestDrain({
+      organizationId: ORG, companyId: COMPANY, jobId: seeded.jobId, reason: "fleet rollout",
+    });
+    expect(outcome.command?.commandKind).toBe("drain");
+
+    const after = await renewal.renew({ auth: auth("svc005b-1"), request: renewRequest(offer) });
+    expect(after.outcome).toBe("renewed");
+    if (after.outcome !== "renewed") return;
+    const value = controlExtension(after.body);
+    expect(value).not.toBeNull();
+    expect(value!.commands).toHaveLength(1);
+    expect(value!.commands[0]!.commandId).toBe(outcome.command!.commandId);
+    expect(value!.commands[0]!.commandKind).toBe("drain");
+    // The drain reaches the worker's drain HANDLER (extension), not the cancel floor.
     expect(after.body.cancelRequested).toBe(false);
   }, 60_000);
 
