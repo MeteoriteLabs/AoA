@@ -129,6 +129,13 @@ It changes **no** finding status, **no** ownership, **no** `scripts/finding-owne
 
 **Awaiting founder ruling.** Choosing among the options below IS the decision requested; this paper makes none of them.
 
+> **★ RULED + ENACTED 2026-09-19 — this line is STALE; preserved for provenance.** The founder RULED **Option (b)**
+> (mint a fresh capability on lease renewal), recorded in `docs/replatform/epics/E9-service-agents/tickets/SVC-009-design.md`.
+> Slice **b1** (the server-side re-mint + delivery on lease renewal, INERT) shipped as PR #500 (`d408c0dc8`); owner ticket
+> **SVC-009**. The **E9-F002 finding STAYS OPEN** per the "On close" clause below — flip it only when b2 (worker
+> consumption) lands AND a service run is observed past the 240 s ceiling; b1 alone does not satisfy that. Do NOT close
+> the finding on this ruling.
+
 - ☐ **Option (a)** — Re-materialize secrets on the supervise tick (daemon re-mints). *Daemon-local; opens an unruled security surface — a compromised worker re-resolving secrets on a timer widens blast radius 1→N.*
 - ☐ **Option (b) ★ (RECOMMENDED)** — Mint a fresh capability on lease renewal (`worker-control.ts:516`). *Server-side, "not SVC-008's to make"; needs an owner (open SVC-003's ticket file or assign the renew-route change). Also fixes the identical long-batch orphan.*
 - ☐ **Option (c)** — Accept the ceiling; amend E9's acceptance language + DE-12 `deliveryEvidence` to say a service is dispatchable only within the effect-authority window. *No code; concedes the 72-hour D4 canary. Founder-level epic amendment. Defensible only as an explicit, disclosed interim.*
