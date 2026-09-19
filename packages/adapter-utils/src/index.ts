@@ -169,6 +169,7 @@ export {
   aoaSecretPlaceholderVars,
   aoaSecretPlaceholderFor,
   brokeredAoaHttpEntry,
+  brokeredAoaMcpConfig,
   type BrokeredAoaHttpEntry,
   stdioSpecCarriesSecretPlaceholder,
   withSynthesizedBearerHeader,

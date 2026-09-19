@@ -12,6 +12,8 @@ import {
 import {
   readDistributedCrewRolloutFlag,
   DISTRIBUTED_CREW_ROLLOUT_ENABLED_ENV,
+  readDistributedToolSurfaceFlag,
+  DISTRIBUTED_TOOL_SURFACE_ENABLED_ENV,
 } from "../config/distributed-execution.js";
 import type { BuildTaskRunBatchWorkloadResult } from "../services/task-run-batch-workload.js";
 
@@ -60,5 +62,15 @@ describe("resolveCrewDistributedGate — MIG-006 crew gate", () => {
       expect(g.workload.command).toBe("claude");
       expect(g.stagedFiles).toEqual([]);
     }
+  });
+});
+
+describe("readDistributedToolSurfaceFlag — CLI-008 Unit C tool-surface gate", () => {
+  it("defaults OFF (opt-in; the whole tool-surface slice is inert until set)", () => {
+    expect(readDistributedToolSurfaceFlag({})).toBe(false);
+  });
+  it("is ON only when the env is explicitly set truthy", () => {
+    expect(readDistributedToolSurfaceFlag({ [DISTRIBUTED_TOOL_SURFACE_ENABLED_ENV]: "true" })).toBe(true);
+    expect(readDistributedToolSurfaceFlag({ [DISTRIBUTED_TOOL_SURFACE_ENABLED_ENV]: "false" })).toBe(false);
   });
 });

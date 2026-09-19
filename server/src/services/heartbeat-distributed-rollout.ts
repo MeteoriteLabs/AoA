@@ -95,6 +95,12 @@ export interface HeartbeatDistributedRolloutHook {
      * forwarding rather than the type.
      */
     stagedFiles?: readonly { readonly path: string; readonly bytes: Uint8Array; readonly contentType?: string }[];
+    /**
+     * CLI-008 Unit C — the tool-surface gate, forwarded verbatim to the ownership decision
+     * (which forwards it to the run_jwt mint at placement). Like `stagedFiles`, this MUST be
+     * added to the destructure AND the delegated call below or it is silently dropped.
+     */
+    toolSurfaceAuthorized?: boolean;
   }): Promise<RunExecutionOwner>;
   /** Shadow comparison (D2): delegate to the effect-free comparator. Never throws. */
   runShadowComparison(snapshot: LegacyRunExecutionSnapshot): void;
@@ -147,7 +153,7 @@ export function createHeartbeatDistributedRolloutHook(deps: {
       }
     },
 
-    async resolveExecutionOwner({ source, actor, organizationId, idempotencyKey, rolloutState, input, stagedFiles }) {
+    async resolveExecutionOwner({ source, actor, organizationId, idempotencyKey, rolloutState, input, stagedFiles, toolSurfaceAuthorized }) {
       // An unwired resolver is a legacy deployment. Never guess.
       if (!deps.ownerResolver) {
         return { owner: "legacy", reason: "rollout_not_canary", detail: "owner resolver not composed" };
@@ -162,6 +168,7 @@ export function createHeartbeatDistributedRolloutHook(deps: {
           jobInput: input,
           rolloutState,
           stagedFiles,
+          toolSurfaceAuthorized,
         });
       } catch (error) {
         // The resolver already fails safe internally; this guards the delegation

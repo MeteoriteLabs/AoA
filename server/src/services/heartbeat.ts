@@ -64,6 +64,7 @@ import {
 } from "./heartbeat-distributed-rollout.js";
 import { getDistributedRolloutPort } from "./distributed-rollout-port.js";
 import type { RunRolloutState } from "../config/distributed-execution-rollout-source.js";
+import { readDistributedToolSurfaceFlag } from "../config/distributed-execution.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { resolveWarmSandboxPreference, readAgentWarmOverride } from "./warm-sandbox-policy.js";
 import { conflict, notFound, HttpError } from "../errors.js";
@@ -232,6 +233,7 @@ import {
   deregisterRuntimeHooksForRun,
 } from "./runtime-hook-registry.js";
 import {
+  brokeredAoaMcpConfig,
   RUNTIME_HOOK_BLOCK_TIMEOUT_SEC,
   RUNTIME_HOOK_PATH,
 } from "@armyofagents/adapter-utils";
@@ -5299,6 +5301,19 @@ export function heartbeatService(
         const canaryInstructions = await resolveTaskRunInstructionsBundle({
           adapterConfig: runScopedConfig,
         });
+        // CLI-008 Unit C — the distributed tool surface, gated by AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED
+        // (OFF by default → this block stays byte-identical to pre-Unit-C). When ON, a BROKERED claude
+        // run stages the `aoa` MCP config so the agent reaches mcp__aoa__*, and the SAME flag threads
+        // into the run_jwt (AOA_API_KEY) mint at placement (resolveExecutionOwner below), so the config
+        // and its bearer are provisioned together or not at all. The config needs a sandbox-targeted run
+        // and a resolved control-plane base URL; buildSandboxInvocation still emits it only for
+        // claude_local, and buildTaskRunBatchWorkload folds an empty/whitespace config to absent.
+        const toolSurfaceAuthorized = readDistributedToolSurfaceFlag(process.env);
+        const toolSurfaceApiBaseUrl = adapterEnv.AOA_API_URL ?? process.env.AOA_API_URL ?? undefined;
+        const aoaMcpConfig =
+          toolSurfaceAuthorized && runTargetsSandbox && toolSurfaceApiBaseUrl
+            ? brokeredAoaMcpConfig({ apiBaseUrl: toolSurfaceApiBaseUrl, companyId: agent.companyId })
+            : null;
         const canaryWorkload = canaryInstructions.ok
           ? buildTaskRunBatchWorkload({
               adapterType: agent.adapterType,
@@ -5306,6 +5321,7 @@ export function heartbeatService(
               adapterConfig: runScopedConfig,
               currentTaskMarkdown: context.currentTaskMarkdown,
               instructions: canaryInstructions.configured ? canaryInstructions.content : null,
+              aoaMcpConfig,
             })
           // ★ The `reason` here is never read: the `detail` below reports the INSTRUCTIONS
           //   failure whenever `canaryInstructions.ok` is false, so this branch exists only to
@@ -5324,6 +5340,9 @@ export function heartbeatService(
               // ★ The files the argv above READS. Passed from the SAME build result, so a
               // future edit cannot give the sandbox one and not the other.
               stagedFiles: canaryWorkload.stagedFiles,
+              // CLI-008 Unit C — the SAME tool-surface gate that decided aoaMcpConfig above, so the
+              // brokered config and its run_jwt bearer are provisioned together or not at all.
+              toolSurfaceAuthorized,
             })
           : {
               owner: "legacy",

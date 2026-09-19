@@ -47,6 +47,8 @@ export interface RunExecutionPlacement {
      * run, where the mint sources `credentialKind` from the binding exactly as before.
      */
     mintCredentialAuthority?: JobPlacementCredentialBinding["credentialKind"];
+    /** CLI-008 Unit C — gates the run_jwt (AOA_API_KEY) mint; off by default. */
+    toolSurfaceAuthorized?: boolean;
   }): Promise<{ disposition: string; leaseEligible?: boolean }>;
 }
 
@@ -268,6 +270,12 @@ export interface RunExecutionOwnerResolver {
      * in `cli-008-unit-b-staging-channel.integration.test.ts`.
      */
     stagedFiles?: readonly { readonly path: string; readonly bytes: Uint8Array; readonly contentType?: string }[];
+    /**
+     * CLI-008 Unit C — whether this run's distributed TOOL SURFACE is authorized
+     * (AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED). Forwarded to placement, where it gates the
+     * SECOND mint (the run_jwt / AOA_API_KEY bearer). Off by default → no run_jwt handle.
+     */
+    toolSurfaceAuthorized?: boolean;
   }): Promise<RunExecutionOwner>;
 }
 
@@ -290,6 +298,7 @@ export function createRunExecutionOwnerResolver(
       jobInput,
       rolloutState,
       stagedFiles,
+      toolSurfaceAuthorized,
     }) {
       // Set once the convert has claimed a capacity slot, so every later legacy exit — the
       // placement decline AND the catch-all — can hand it back. Declared out here because the
@@ -383,6 +392,8 @@ export function createRunExecutionOwnerResolver(
           // here. `gate` is the ok variant by this point, so it always carries it; a
           // refused gate returned legacy above and never reaches placement.
           mintCredentialAuthority: gate.credentialAuthority,
+          // CLI-008 Unit C — forward the tool-surface gate to the run_jwt mint (S3b).
+          toolSurfaceAuthorized,
         });
         if (decision.disposition !== "selected" || decision.leaseEligible !== true) {
           // The run goes legacy, so the slot this convert claimed must go back — otherwise the

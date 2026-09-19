@@ -79,6 +79,20 @@ describe("CLI-006 D3 — resolveRunExecutionOwner (one decision, fail-safe to le
     expect(place.mock.calls[0][0]).toMatchObject({ mintCredentialAuthority: "company_api_key" });
   });
 
+  // CLI-008 Unit C: the tool-surface gate rides to placement out of band, where it gates the
+  // SECOND mint (the run_jwt / AOA_API_KEY bearer). Off by default → no run_jwt handle.
+  it("forwards toolSurfaceAuthorized to placement (the run_jwt mint gate)", async () => {
+    const place = vi.fn(async () => ({ disposition: "selected", leaseEligible: true }));
+    await createRunExecutionOwnerResolver(deps({ placement: { place } })).resolve({ ...input, toolSurfaceAuthorized: true });
+    expect(place.mock.calls[0][0]).toMatchObject({ toolSurfaceAuthorized: true });
+  });
+
+  it("forwards NO toolSurfaceAuthorized when absent (the run_jwt mint stays off by default)", async () => {
+    const place = vi.fn(async () => ({ disposition: "selected", leaseEligible: true }));
+    await createRunExecutionOwnerResolver(deps({ placement: { place } })).resolve(input);
+    expect(place.mock.calls[0][0].toolSurfaceAuthorized).toBeUndefined();
+  });
+
   // Fail-closed / non-canary isolation: a refused preflight never places, so no mint
   // authority is ever threaded behind a gate that did not open.
   it("threads NO mint authority when the preflight refuses (nothing places)", async () => {

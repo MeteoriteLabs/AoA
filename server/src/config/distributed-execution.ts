@@ -18,6 +18,16 @@ export const UNSANDBOXED_MULTITENANT_OPT_IN_ENV = "AOA_ALLOW_UNSANDBOXED_MULTITE
  */
 export const DISTRIBUTED_CREW_ROLLOUT_ENABLED_ENV = "AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED";
 
+/**
+ * CLI-008 Unit C — the distributed TOOL SURFACE gate. A DEDICATED flag, not
+ * AOA_DISTRIBUTED_EXECUTION_ENABLED: that one is already on in staging and is the
+ * DAT-007 server-gate key, so reusing it would provision the aoa MCP tool surface +
+ * mint a run_jwt handle for every distributed run the moment this code shipped. Off
+ * unless explicitly enabled — the whole tool-surface slice (aoaMcpConfig + run_jwt) is
+ * inert until it is true.
+ */
+export const DISTRIBUTED_TOOL_SURFACE_ENABLED_ENV = "AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED";
+
 type Env = Record<string, string | undefined>;
 
 function parseBooleanEnv(env: Env, name: string, defaultValue: boolean): boolean {
@@ -35,6 +45,11 @@ export function readDistributedExecutionDeploymentFlag(env: Env): boolean {
 /** MIG-006 — read the separate, off-by-default crew rollout gate (see the env const above). */
 export function readDistributedCrewRolloutFlag(env: Env): boolean {
   return parseBooleanEnv(env, DISTRIBUTED_CREW_ROLLOUT_ENABLED_ENV, false);
+}
+
+/** CLI-008 Unit C — read the separate, off-by-default distributed tool-surface gate. */
+export function readDistributedToolSurfaceFlag(env: Env): boolean {
+  return parseBooleanEnv(env, DISTRIBUTED_TOOL_SURFACE_ENABLED_ENV, false);
 }
 
 export interface DistributedExecutionRolloutInput {
