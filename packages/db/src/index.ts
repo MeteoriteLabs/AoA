@@ -4,6 +4,8 @@ export {
   createTenantAppDbConnection,
   createOperatorDbConnection,
   assertNonOwnerConnection,
+  assertPrimaryDbBypassesRls,
+  rlsBypassRefusal,
   type NonOwnerDbConnection,
   type NonOwnerDbConnectionOptions,
   loadRequiredMigrationIdentity,
