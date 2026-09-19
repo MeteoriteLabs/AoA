@@ -282,6 +282,14 @@ as the precondition it is.
 
 ## ▣ DECISION REQUEST — CLI-008 Unit C tool reachability — **AWAITING FOUNDER RULING**
 
+> **★ RULED + ENACTED 2026-09-19 — this paper is a STALE record; the heading above is preserved for provenance.**
+> The founder RULED the recommended disposition (Q1: mechanism A brokered-HTTP transport + mechanism C sandbox-side
+> plumbing, B rejected; Q2: land C now, INERT-until-authorized). It is BUILT: Unit C slices 1-4 merged live-but-inert
+> behind `AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED` (commits `3a034f40d`..`1523a8353`; `scripts/finding-ownership.json`
+> calls it "tool surface, SHIPPED inert"). The `E7-F003` tools-row finding legitimately STAYS OPEN (`capabilityProven`
+> is false until the flag flips and the DAT-007 item#1 resolver gates the surface on) — do NOT read this ruling as
+> closing it.
+
 Two questions; the second is the load-bearing one.
 
 **Q1 — Transport/topology.** Confirm that a distributed (worker-lane) E2B coding agent reaches

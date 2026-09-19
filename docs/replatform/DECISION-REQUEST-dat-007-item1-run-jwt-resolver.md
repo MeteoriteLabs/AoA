@@ -125,6 +125,13 @@ It changes **no** finding status, **no** `deliveryStatus`, **no** clause text in
 
 ## ▣ DECISION REQUEST — DAT-007 item #1 fence-bound run-JWT resolver — **AWAITING FOUNDER RULING**
 
+> **★ RULED + ENACTED 2026-09-19 — this paper is a STALE record; the heading above is preserved for provenance.**
+> The founder RULED the recommended shape (Q1: per-call at the `/mcp` request-authorization seam, adopted into the seam
+> after `ensureProtocolAccess`; Q2: HARD GATE — the distributed tool surface stays off until the resolver lands). It is
+> BUILT: the currency classifier, the DB reader + inert `/mcp` mount, and the RLS-startup precondition slices merged
+> (PRs #492/#493/#494; `server/src/mcp/distributed-run-currency.ts`). `E7-F003` stays honestly OPEN until the tool
+> surface is flipped on. Do NOT re-request this ruling.
+
 Two questions; the second is the load-bearing one.
 
 **Q1 — Mechanism: where the currency check runs, and how it is mounted.** Confirm the resolver's transport shape, given the `/mcp` endpoint is stateless-per-POST (`server.ts:428,446`), the transport/registry are identical across lanes, and a distributed run-JWT actor reaches company data through two dispatch paths (broker `:745-768` AND outbound `:780+`).

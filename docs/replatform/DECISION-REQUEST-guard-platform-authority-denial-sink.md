@@ -19,7 +19,7 @@ two `guardPlatformAuthority` throws**, whose blocker is not storage and not the 
 JOB-003 contract that pins the helper's shape.
 
 Nothing below was run against the contract suite: this environment has no `node_modules`, so the dynamic
-red counts in §3(A) are cited to the JOB-003 paper's §2 run (at `5237b057a`) and the wiring unit must
+red counts in §2 are cited to the JOB-003 paper's §2 run (at `5237b057a`) and the wiring unit must
 re-observe them at HEAD. Every **static** pin the citations lean on was re-read at `95b3ba97d` and is
 named by symbol.
 
@@ -68,7 +68,7 @@ convention figures.
 
 `guardPlatformAuthority` is declared once in the service body (`job-leasing.ts:588`) and pinned there
 (`declarations.length !== 1` / helper-binding parent → `builder:trusted-service-authority-guard`,
-`job-leasing-contract.test.ts:2991`). It is called at exactly two sites, both as a bare `await`
+`job-leasing-contract.test.ts:3498`). It is called at exactly two sites, both as a bare `await`
 expression: the poll admission path (`job-leasing.ts:734`,
 `guardPlatformAuthority(repos, pollInput.auth, lockedAuthority)`) and the ack path (`job-leasing.ts:1094`,
 the `authority ? await guardPlatformAuthority(...) : null` ternary). Its two throws:
@@ -113,7 +113,7 @@ merges.
 
 - **2.1 A fourth (sink) parameter.** Reds twice, independently: the helper-shape branch of
   `builder:trusted-service-authority-guard` (helper parameter count pinned at three,
-  `job-leasing-contract.test.ts:2991`) and, at the poll call site,
+  `job-leasing-contract.test.ts:3498`) and, at the poll call site,
   `builder:physical-from-authority-guard` (the call expression pinned to exactly three arguments,
   `:3305`). **JOB-003 §2 arm (g-a), run at `5237b057a`: observed RED — 1 fail / 19 pass, exactly those
   two violations.**
