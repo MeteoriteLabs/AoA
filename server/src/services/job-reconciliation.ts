@@ -25,6 +25,12 @@
 // (`repositories/tenant/job-control.ts`), the sole locker of the authoritative rows.
 
 import { randomUUID } from "node:crypto";
+import {
+  recordJobDrainActivity,
+  publishJobControlActivity,
+  type JobControlActor,
+} from "./job-control-audit.js";
+import type { PreparedActivityEvent } from "./activity-log.js";
 import type {
   CancellationOutcome,
   DrainOutcome,
@@ -81,6 +87,8 @@ export interface RequestDrainServiceInput {
   companyId: string;
   jobId: string;
   reason: string;
+  /** WHO drained — recorded on the E9-F010 audit row; drain routes pass the operator user. */
+  actor: JobControlActor;
   /** Optional stable command id for an idempotent retry of the SAME drain. */
   commandId?: string;
 }
@@ -124,9 +132,10 @@ export function createJobReconciliationService(input: {
     },
 
     async requestDrain(drainInput) {
-      return runInTenant(input.appDb, drainInput.organizationId, async (repos) => {
+      const events: PreparedActivityEvent[] = [];
+      const outcome = await runInTenant(input.appDb, drainInput.organizationId, async (repos, tx) => {
         const now = await repos.jobControl.currentDatabaseTime();
-        return repos.jobControl.requestDrain({
+        const result = await repos.jobControl.requestDrain({
           organizationId: drainInput.organizationId,
           companyId: drainInput.companyId,
           jobId: drainInput.jobId,
@@ -134,7 +143,26 @@ export function createJobReconciliationService(input: {
           commandId: drainInput.commandId ?? randomUUID(),
           now,
         });
+        // E9-F010 — audit a MUTATING drain (a command was queued or already present) INSIDE the
+        // same tenant transaction; no_active_lease/not_found/job_terminal queue nothing and are
+        // not audited.
+        if (result.status === "queued" || result.status === "already_requested") {
+          events.push(
+            await recordJobDrainActivity(tx, {
+              actor: drainInput.actor,
+              companyId: drainInput.companyId,
+              organizationId: drainInput.organizationId,
+              jobId: drainInput.jobId,
+              outcome: result.status,
+              commandId: result.command?.commandId ?? null,
+              reason: drainInput.reason,
+            }),
+          );
+        }
+        return result;
       });
+      publishJobControlActivity(events);
+      return outcome;
     },
 
     async reapOrganization(organizationId, options) {

@@ -416,7 +416,10 @@ describe("JOB-008 operator controls — mutations delegate + audit", () => {
     expect(res.status).toBe(202);
     expect(res.body.status).toBe("queued");
     expect(h.reqDrainSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ organizationId: ORG, companyId: COMPANY, jobId: JOB, reason: "operator drain" }),
+      expect.objectContaining({
+        organizationId: ORG, companyId: COMPANY, jobId: JOB, reason: "operator drain",
+        actor: { actorType: "user", actorId: "operator-9" },
+      }),
     );
     // A drain is NOT a cancel: the operator drain path passes no `graceful` flag.
     expect(h.reqDrainSpy.mock.calls[0]![0]).not.toHaveProperty("graceful");

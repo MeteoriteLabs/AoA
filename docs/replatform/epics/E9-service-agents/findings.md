@@ -927,6 +927,16 @@ is a different clause from AGENTS.md's mutating-action invariant. Nothing here c
 **Resolve** = wire the three remaining mutations (the same shape, one call each, no new mechanism),
 then flip this Status and DELETE the manifest key in the SAME commit.
 
+> ★ UPDATED 2026-09-20 (E9-F010 audit unit): DRAIN is now audited — `recordJobDrainActivity`
+> (`server/src/services/job-control-audit.ts`) writes a durable `job.drain.requested` `activity_log` row
+> INSIDE `reconciliation.requestDrain`'s tenant transaction, atomic with the drain command. **jobs-POST**
+> is the last cleanly company-scoped route and lands in the fast-follow. **REVOKE is BLOCKED, not merely
+> unwired:** workers are ORG-scoped (`workers.ts` has no `company_id`) and the revoke transaction is
+> org/platform-scoped, but `activity_log_company_or_denial_check` (migration `0274`) requires a non-null
+> `company_id` for a non-`security.denied.` action — so `worker.revoked` cannot be a product row without
+> an org-scoped sink or a resolved company. This corrects §5's "NOT because they are blocked" for revoke;
+> the finding stays open on jobs-POST + revoke.
+
 ---
 
 ## E9-F011 — a create whose generation insert conflicts COMMITS a service with no generation, and the docstring says it rolls back

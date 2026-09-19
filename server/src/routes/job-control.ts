@@ -287,7 +287,10 @@ export function jobControlRoutes(opts: { db: Db; appDb: Db; operatorDb: Db }) {
         const jobId = uuid.parse(req.params.jobId);
         await assertOrgAdmin(req, organizationId);
         const { reason } = req.body as { reason: string };
-        const outcome = await operations.drainJob(organizationId, companyId, jobId, reason);
+        const outcome = await operations.drainJob(organizationId, companyId, jobId, reason, {
+          actorType: "user",
+          actorId: operatorUserId(req),
+        });
         if (outcome.status === "not_found") {
           // Uniform 404, no audit line (absent === cross-tenant-existing).
           throw notFound("Job not found");
