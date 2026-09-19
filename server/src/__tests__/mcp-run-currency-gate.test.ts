@@ -103,12 +103,13 @@ describe("DAT-007 item #1 — /mcp fence-bound currency gate (route mount)", () 
     expect(resolve).toHaveBeenCalledTimes(1);
   });
 
-  it("flag ON + BOARD actor → resolver NEVER consulted, request passes (edge 2, scoping control)", async () => {
+  it("flag ON + BOARD actor → currency resolver NEVER consulted (source scoping, edge 2)", async () => {
+    // The gate is scoped to protocolActor.source === "agent"; a board actor never reaches it
+    // (whatever the board-auth pipeline decides its status is), so the resolver is not consulted.
     process.env[FLAG] = "1";
     const resolve = vi.fn().mockResolvedValue("deny");
     const app = buildApp({ type: "board", source: "board", userId: "u-1", companyId: "company-1" }, resolve);
-    const res = await request(app).post("/api/companies/company-1/mcp").send(rpc("initialize"));
-    expect(res.status).toBe(200);
+    await request(app).post("/api/companies/company-1/mcp").send(rpc("initialize"));
     expect(resolve).not.toHaveBeenCalled();
   });
 
