@@ -200,6 +200,21 @@ export function brokeredAoaHttpEntry(params: {
 }
 
 /**
+ * CLI-008 Unit C — the full `--mcp-config` document a distributed claude run stages so it
+ * reaches `mcp__aoa__*`: the brokered `aoa` HTTP entry wrapped in claude's
+ * `{ mcpServers: { aoa: … } }` envelope, serialized. The Authorization header carries the
+ * LITERAL `${AOA_API_KEY}` placeholder — claude expands it from the sandbox env; the run_jwt
+ * value never rides the config on disk. Pure + deterministic (no clock/uuid), so a
+ * byte-for-byte assertion on the emitted document is stable.
+ */
+export function brokeredAoaMcpConfig(params: {
+  apiBaseUrl: string | undefined;
+  companyId: string;
+}): string {
+  return JSON.stringify({ mcpServers: { aoa: brokeredAoaHttpEntry(params) } });
+}
+
+/**
  * Env var names this module will reference from a config file. Deliberately the
  * POSIX-portable charset: `authTokenEnvVar` is always produced by
  * `envVarNameFor` (server) and therefore already conforms, but a writer must
