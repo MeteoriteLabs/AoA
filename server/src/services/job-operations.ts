@@ -42,6 +42,7 @@ import type {
 } from "@armyofagents/shared";
 import { runInTenant } from "../db/tenant-context.js";
 import { createJobReconciliationService } from "./job-reconciliation.js";
+import type { JobControlActor } from "./job-control-audit.js";
 import { revokeExecutionTarget } from "./execution-targets.js";
 
 // ── Projected column maps. Adding a column here widens the wire exposure: every
@@ -182,6 +183,7 @@ export interface JobOperationsService {
     companyId: string,
     jobId: string,
     reason: string,
+    actor: JobControlActor,
   ): Promise<DrainOutcome>;
   /** Resolves the worker's execution target server-side, then JOB-007 revoke. */
   revokeWorker(
@@ -289,16 +291,18 @@ export function createJobOperationsService(input: {
       return rows as unknown as WorkerSummary[];
     },
 
-    async drainJob(organizationId, companyId, jobId, reason) {
+    async drainJob(organizationId, companyId, jobId, reason, actor) {
       // SVC-005b (E9-F008): a REAL drain — queue the frozen `drain` control command so the
       // worker's `handlers.drain` -> `pollLoop.stopLeasing()` finishes the in-flight attempt and
       // stops taking new leases. This is NOT a cancel: the attempt runs to completion, and the
       // job/attempt status is never transitioned.
+      // E9-F010: the drain is audited durably inside its own tenant transaction (job-control-audit).
       return reconciliation.requestDrain({
         organizationId,
         companyId,
         jobId,
         reason,
+        actor,
       });
     },
 

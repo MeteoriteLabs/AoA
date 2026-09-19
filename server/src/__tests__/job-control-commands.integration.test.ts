@@ -137,6 +137,7 @@ integration("JOB-006 durable control commands + ACK", () => {
       companyId: COMPANY,
       jobId: seeded.jobId,
       reason: "fleet rollout",
+      actor: { actorType: "user", actorId: "operator-e9f010" },
     });
     expect(outcome.status).toBe("queued");
     expect(outcome.command?.commandKind).toBe("drain");
@@ -163,12 +164,61 @@ integration("JOB-006 durable control commands + ACK", () => {
       companyId: COMPANY,
       jobId: seeded.jobId,
       reason: "drain an unleased job",
+      actor: { actorType: "user", actorId: "operator-e9f010" },
     });
     // UNLIKE requestCancellation (which finalizes an unleased job to terminal
     // 'cancelled'), a drain is a no-op on state: there is no in-flight attempt to finish.
     expect(outcome.status).toBe("no_active_lease");
     expect(outcome.command).toBeNull();
     expect(await jobAttemptStatus(seeded.jobId, seeded.attemptId)).toEqual(before);
+  }, 60_000);
+
+  it("writes a durable activity_log audit row for a drain, INSIDE the mutation transaction (E9-F010)", async () => {
+    const f = ctx();
+    const reconciliation = createJobReconciliationService({ appDb: f.app.db });
+    const { seeded } = await f.activateLease(6_007);
+
+    const outcome = await reconciliation.requestDrain({
+      organizationId: ORG,
+      companyId: COMPANY,
+      jobId: seeded.jobId,
+      reason: "audited drain",
+      actor: { actorType: "user", actorId: "operator-e9f010" },
+    });
+    expect(outcome.status).toBe("queued");
+
+    const { admin } = ctx();
+    const rows = await admin<{ action: string; actorId: string; companyId: string; entityId: string; details: Record<string, unknown> }[]>`
+      SELECT action, actor_id AS "actorId", company_id AS "companyId", entity_id AS "entityId", details
+      FROM activity_log WHERE entity_id = ${seeded.jobId} AND action = 'job.drain.requested'`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      action: "job.drain.requested",
+      actorId: "operator-e9f010",
+      companyId: COMPANY,
+      entityId: seeded.jobId,
+    });
+    expect(rows[0]!.details.outcome).toBe("queued");
+  }, 60_000);
+
+  it("writes NO audit row for a no_active_lease drain — nothing mutated (E9-F010)", async () => {
+    const f = ctx();
+    const reconciliation = createJobReconciliationService({ appDb: f.app.db });
+    const seeded = await f.seedPlacedJob(6_052);
+
+    const outcome = await reconciliation.requestDrain({
+      organizationId: ORG,
+      companyId: COMPANY,
+      jobId: seeded.jobId,
+      reason: "no lease to drain",
+      actor: { actorType: "user", actorId: "operator-e9f010" },
+    });
+    expect(outcome.status).toBe("no_active_lease");
+
+    const { admin } = ctx();
+    const rows = await admin`SELECT 1 FROM activity_log
+      WHERE entity_id = ${seeded.jobId} AND action = 'job.drain.requested'`;
+    expect(rows).toHaveLength(0);
   }, 60_000);
 
   it("replays the SAME cancel command idempotently (no second row) on a re-request", async () => {
@@ -466,6 +516,7 @@ integration("JOB-015 control-command delivery on the lease-renew response", () =
     // The REAL producer (not queueRaw): SVC-005b closed the drain zero-producer gap.
     const outcome = await reconciliation.requestDrain({
       organizationId: ORG, companyId: COMPANY, jobId: seeded.jobId, reason: "fleet rollout",
+      actor: { actorType: "user", actorId: "operator-e9f010" },
     });
     expect(outcome.command?.commandKind).toBe("drain");
 
