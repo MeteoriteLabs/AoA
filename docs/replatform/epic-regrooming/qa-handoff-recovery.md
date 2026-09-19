@@ -82,10 +82,10 @@ Reopening creates new findings, results where needed, QA attempts, and handoffs.
 
 ## Recommended recovery order
 
-1. Repair evidence provenance for E2 and E5 with superseding attempts.
+1. Repair E2 evidence provenance. For E5, record the a1 immutable-record finding and reserve/approve the a2 audit plan, but do not commit an a2 result before its candidate campaigns exist.
 2. Perform current dependency/delta checks for historically complete E0–E2.
-3. Reconcile E3, E4, and E6 ticket ledgers and production reachability, then run `M1-D1-SPINE` without presenting it as full D1 or epic completion.
-4. Close the first-milestone E5 shortfalls and run its new seven-clause audit.
-5. Finish E7 tools/workspace/output capability and run `M1-D2-CODING` on the same exact candidate, explicitly retaining the DE-08/H-06 conflict.
-6. Issue only the non-promoting milestone handoff for the partial gates; issue per-epic completion handoffs later, after each epic’s normative gate is satisfied.
+3. Reconcile E3, E4, and E6 ticket ledgers and production reachability; close E5’s M1 implementation/build gaps; run focused acceptance; and freeze the E5 a2 seven-clause matrix, commands, topology, and owners.
+4. Finish E7 tools/workspace/output capability and freeze the exact shared M1 candidate.
+5. Run `M1-D1-SPINE`, then `M1-D2-CODING` on that same candidate, explicitly retaining the DE-08/H-06 conflict.
+6. Commit the passing E5 a2 audit as a consumer of both campaign records, then issue only the non-promoting milestone handoff. Per-epic completion handoffs wait for each epic’s normative gate.
 7. Regroom E8, E9, the later E10 lanes, and E11 as later milestones without losing their current slices or blockers.
