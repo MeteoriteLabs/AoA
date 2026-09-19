@@ -936,6 +936,15 @@ then flip this Status and DELETE the manifest key in the SAME commit.
 > `company_id` for a non-`security.denied.` action — so `worker.revoked` cannot be a product row without
 > an org-scoped sink or a resolved company. This corrects §5's "NOT because they are blocked" for revoke;
 > the finding stays open on jobs-POST + revoke.
+>
+> ★ UPDATED 2026-09-20 (jobs-POST audit): jobs-POST is NOW audited too — `recordJobSubmitActivity`
+> writes a durable `job.submitted` row inside `submitJobWithinTenant`'s tenant transaction on the
+> NEW-submission (`replayed:false`) path (a replay writes no second row), actor via the canonical
+> `actorTypeForPrincipalKind`. **Both company-scoped operator-route mutations (drain + jobs-POST) are now
+> audited** — the submit audit is on the operator `POST …/jobs` route only; the internal producers (the
+> JOB-010 admission bridge and the service reconciler) call `submitJobWithinTenant` without the audit sink
+> and are outside E9-F010's operator-mutation scope. The finding NARROWS to revoke-only — BLOCKED on the org-scope/company-null problem, needing an
+> org-scoped audit sink or an accept-the-gap decision, not more wiring.
 
 ---
 
