@@ -132,6 +132,15 @@ export interface TaskRunBatchWorkloadInput {
    * stayed green.
    */
   readonly instructions?: string | null;
+  /**
+   * CLI-008 Unit C — the brokered `aoa` MCP config document to stage for a distributed
+   * claude run, already assembled by the caller. `null`/absent (and empty/whitespace-only,
+   * normalized here) means this run provisions NO tool surface: `buildSandboxInvocation`
+   * then stages no config file and emits no `--mcp-config` flag. Non-null only reaches here
+   * once the tool-surface flag is on (Unit C S4); until then every caller passes null, so
+   * this field is inert.
+   */
+  readonly aoaMcpConfig?: string | null;
 }
 
 /** The frozen per-arg ceiling (`batchWorkloadV1Schema`: `z.array(z.string().max(8192))`).
@@ -298,6 +307,16 @@ export function buildTaskRunBatchWorkload(
       ? input.instructions
       : null;
 
+  // 3b'. The brokered `aoa` MCP config, staged for a distributed claude run so the remote
+  //      agent reaches `mcp__aoa__*`. Same empty-is-absent rule as the bundle: an
+  //      empty/whitespace-only document is treated as ABSENT (no tool surface), never staged
+  //      as a zero-byte config that `--mcp-config` would point at and claude would reject.
+  //      Inert until Unit C S4 turns the tool-surface flag on; every caller passes null today.
+  const aoaMcpConfig =
+    typeof input.aoaMcpConfig === "string" && input.aoaMcpConfig.trim().length > 0
+      ? input.aoaMcpConfig
+      : null;
+
   // 3c. The argv AND the files it reads, from one function. `buildSandboxInvocation` owns the
   //     paths, so there is nowhere for the two to disagree about them.
   const invocation = buildSandboxInvocation({
@@ -305,6 +324,7 @@ export function buildTaskRunBatchWorkload(
     binary: command,
     prompt,
     instructions,
+    aoaMcpConfig,
   });
   if (invocation === null) return { ok: false, reason: "adapter_not_v1_scope" };
   const stagedFiles = invocation.stagedFiles;
