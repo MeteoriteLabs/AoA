@@ -5,12 +5,15 @@ automated through GitHub Actions and gated by post-publish smoke tests.
 
 > **Current status (2026-07-20, re-verified 2026-09-19):** no MeteoriteLabs
 > `@armyofagents/*` package is available from the public npm registry. The release
-> workflow RUNS on push to `main` (and `workflow_dispatch`), but no release has been
-> PUBLISHED: the Changesets "Version Packages" PR #227 closed without merging and its
-> changesets remain unprocessed, so `changeset publish` never ran and the post-publish
-> smoke job (gated on `published == 'true'`) did not fire. Source checkout is the
-> supported installation path until a release is published and the exact install command
-> passes a clean-container smoke test.
+> workflow is **disabled** at the GitHub Actions platform level (`gh api
+> .../actions/workflows` reports `state: disabled_manually`), so despite the live
+> `on: push main` / `workflow_dispatch` triggers in `release.yml` it has NOT run since
+> 2026-06-25 — a manual disable overrides the YAML triggers. Even if re-enabled, no
+> release would publish yet: the Changesets "Version Packages" PR #227 closed without
+> merging and its changesets remain unprocessed, so `changeset publish` never ran and the
+> post-publish smoke job (gated on `published == 'true'`) did not fire. Source checkout is
+> the supported installation path until the workflow is re-enabled, a release is published,
+> and the exact install command passes a clean-container smoke test.
 
 ## Decision locks (Phase H)
 
