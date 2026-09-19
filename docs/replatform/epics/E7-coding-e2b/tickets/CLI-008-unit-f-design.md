@@ -1260,6 +1260,11 @@ the predicate, which no probe touches).
 
 ## 13. THE FIFTH OPTION, RECOVERED — *"do not build it"* — **and it was NEVER ADVERSARIALLY ATTACKED**
 
+> **★ UPDATED 2026-09-20 — it HAS now been attacked; see §13.4.** The heading is preserved for
+> provenance. The §13.2 pass ran (a 5-agent adversarial workflow grounded at HEAD): the option survives
+> **only as REPLACE**, never as delete, and that replace is **already enacted** (W21 / PR #422 + the
+> `E7-D-CAPABILITY-DISCLOSURE` ruling), so its live disposition is **SUPERSEDED**. §13.3's guardrails stand.
+
 ★★★ **READ THE WARNING BEFORE THE ARGUMENT.** A fifth option was generated during the 26-agent wave —
 *"DO NOT BUILD IT: retire the capability bar, delete the arm that lies about it, and spend the next
 unit on CLI-008 Unit C"* — and was **LOST to a serialization failure** before it reached the brief. It
@@ -1336,3 +1341,85 @@ only option in this document without a refutation attached. At minimum:
   is a third guess wearing a different hat.
 - **Do NOT cite this section as "the wave recommended retiring the bar."** The wave recommended
   **measuring first** (§12). This option was lost before the wave could judge it.
+
+### 13.4 ★★★ THE ATTACK, RUN — 2026-09-20 (the §13.2 pass the option was lost before)
+
+§13 recorded the fifth option "so it does not vanish a second time" and asked that "whoever picks this
+up attacks it properly." That attack has now run: a 5-agent adversarial workflow, grounded at HEAD,
+re-measured §13.1's premise and put the option through each of §13.2's four questions as a genuine
+adversary (default-to-refute). This subsection records the verdicts and evidence. **It takes no action**
+— §13.3 stands unchanged; deleting arm 2 remains the founder's call. It makes a recommendation, in the
+shape the decision papers do (a recommendation the founder rules on, not a ruling).
+
+**Headline: the option survives ONLY as REPLACE, never as DELETE — and the replace has already been
+enacted, so its live disposition is SUPERSEDED, not open-and-undecided.**
+
+#### 13.4.1 The premise, re-measured at HEAD
+
+- **"Gates nothing" — SURVIVES.** No executable gate reads `capabilityProven` / `--require-capability`
+  anywhere: `.github/` zero; `scripts/` only prose (`gate-clause-wiring.json:124` states the clause "does
+  NOT gate the E7-1 capabilityProven counter"; `register-id-uniqueness.mjs:39` a JSDoc); the only
+  production-TS executable use is the verifier's own lane (`e7-distributed-run-verifier.ts:701-707`,
+  reached only when `--require-capability` is passed, default false at `verify-e7-1-distributed-run.ts:129`).
+  E7-F018's structural unreachability also holds (`projectAcceptedOutput` has zero production callers).
+- **"Currently lies on the DEFAULT configuration" (§13.1 bullet 2 / E7-F020) — STALE, now FALSE.** W21
+  (PR #422) re-predicated arm 2 off the forgeable `eq(taskOutputs.createdByRunId, run.id)` onto a
+  fence-guarded `job_projection_receipts` inner-join keyed on `job_id` AND `attempt_id`
+  (`e7-distributed-run-verifier-store.ts:578-606`); the platform-minted heartbeat row is no longer counted,
+  so an ordinary run reads `capabilityProven = 0` HONESTLY. **E7-F020 is `resolved`** (`findings.md:1686`),
+  with provenance tests green (6/6 at the W21 fix; the suite has since grown to 20 with E7-F031’s
+  attempt-granularity + scanner cases). The delete's single strongest motivation is gone.
+
+#### 13.4.2 The four §13.2 verdicts (all high-confidence, cited at HEAD)
+
+- **Q1 — does deleting the bar orphan E7-F015/F020 into "no judge at all"? → SURVIVES ONLY AS REPLACE.**
+  E7-F020's lie was cured by REPLACE (W21), so deleting throws away a now-honest, tested judge; and
+  E7-F015's `capabilityProven` flip is already CLOSED — what keeps it open is the forgeable route
+  (`routes/task-outputs.ts:45-54`) + clause-4's secret scanner reading `created_by_run_id`
+  (`e7-distributed-run-verifier-store.ts:390`), neither of which deleting arm 2 touches. A literal DELETE
+  resolves NEITHER finding.
+- **Q2 — what replaces "did the journey do work"? → SURVIVES ONLY AS REPLACE.** DELETE destroys the
+  founder-ruled printed disclosure "CAPABILITY: NOT PROVEN — nothing the agent produced reached AoA"
+  (`formatVerifyResult:748-751`; ruling `E7-D-CAPABILITY-DISCLOSURE`, `verify-e7-1-distributed-run.ts:75-96`)
+  — the counterweight that "stops a green run being read as capability" — plus the dormant, tested
+  provenance apparatus that flips true the instant a producer ships. E7-F003 "saying it" (mechanism-only)
+  is not the same as clause 6 "encoding it."
+- **Q3 — is "spend the unit on Unit C instead" supported? → FAILS.** Unit C shipped this wave
+  BUILT-INERT + unmeasured, not measured: `AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED` defaults false
+  (`distributed-execution.ts:51-52`), is set true in ZERO CI workflows, the DAT-007 currency gate that would
+  arm it is itself inert (`distributed-run-currency.ts:23`, `mcp/server.ts:299`), and codex cannot stage
+  `--mcp-config`. "Tools reach a sandboxed agent" is UNMEASURED — E7-F003 stays open — the same unmeasured
+  floor as probe (a), arguably sharper post-Unit-C.
+- **Q4 — does the DELETE action follow from the scope conclusion? → SURVIVES ONLY AS REPLACE (non-sequitur).**
+  "Gates nothing" is a fact about TODAY, but Unit F's charter is to MAKE it gate later (§1.3:276-278), so the
+  diagnosis licenses leave-dormant / off-by-default, not permanent deletion. Decisively, the arm was already
+  REPLACED not deleted (`e7-distributed-run-verifier-store.ts:578-606`), closing E7-F015 AND E7-F020 without
+  deleting the arm or building the mechanism — proving replace was available and taken (round-3's "drop kind"
+  widening is recorded REFUTED at `store.ts:490-494`).
+
+#### 13.4.3 Recommendation (for the founder to rule; §13.3 stands)
+
+**Close the fifth option as SUPERSEDED.** Its only sound form — "replace the bar with an honest
+informational marker, do not delete" — is ALREADY enacted by W21 (PR #422) + the founder's
+`E7-D-CAPABILITY-DISCLOSURE` ruling (2026-09-09). There is nothing to build and nothing to delete.
+Concretely: keep `capabilityProven` **dormant-and-printed, off-by-default**; do NOT delete arm 2 (it
+converts a now-honest judge into "no judge", the worse state, and discards the W21 fix); do NOT arm
+`--require-capability` (it would mint an always-red gate nobody can pass — E7-F018 — which in this repo is
+how a guard gets bypassed then deleted); do NOT reallocate the next unit to Unit C on this option's strength
+(Q3: its tool-reach is unmeasured). The revisit gate for `capabilityProven` is BOTH E7-F018 closed (a
+checked-in config makes a run distributed AND a producer exists) AND the rollout dial armed in a real
+deployment.
+
+This closes §13's own open loop: the option no longer risks vanishing, and it has now been judged at honest
+confidence rather than presented beside the four options the wave attacked. **What remains genuinely open in
+Unit F is §12's output-mechanism question** (build a producer or not), measure-first-gated on clause (ii) —
+codex write capability, still unmeasured (E7-F027).
+
+#### 13.4.4 What this does NOT authorize
+
+Recording and recommending is not acting. This subsection does not delete arm 2 (a founder call, §13.3),
+does not implement any part of the option, does not arm `--require-capability` or wire `capabilityProven`
+into any gate, and must not be cited as "the wave recommended retiring the bar" (the wave recommended
+measuring first, §12; the option survives only as the replace already shipped). `capabilityProven = 0` is a
+provenance counter reading zero because nothing in the distributed path runs — not a verdict that no work
+happened.
