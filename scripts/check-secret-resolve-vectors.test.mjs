@@ -68,8 +68,27 @@ test("the checked-in fixture passes the reference checker", () => {
   assert.ok(rejects >= 7);
 });
 
-test("SECRET_REF_KINDS is exactly the four legacy stores", () => {
-  assert.deepEqual([...SECRET_REF_KINDS].sort(), ["company_secret", "connector_oauth", "device_local", "provider_key"]);
+test("SECRET_REF_KINDS is exactly the four legacy stores + the run_jwt mint-at-resolve bearer", () => {
+  assert.deepEqual(
+    [...SECRET_REF_KINDS].sort(),
+    ["company_secret", "connector_oauth", "device_local", "provider_key", "run_jwt"],
+  );
+});
+
+test("run_jwt resolves ONLY as sandbox_local_only + env, never a network seam", () => {
+  // The mint-at-resolve agent bearer (DAT-007 / CLI-008). A well-formed run_jwt handle
+  // admits; mislabelling it onto a network seam is locked out by rule 3b, exactly as
+  // connector_oauth/device_local are. Owner-unbound here (the owner-binding path is
+  // shared logic already pinned above); this vector isolates the run_jwt seam lock.
+  const runJwt = (over = {}) => activeHandle({
+    refKind: "run_jwt", refId: "job-1", materialization: "env", usePolicy: "sandbox_local_only",
+    destination: null, ownerPrincipalKind: null, ownerPrincipalId: null, ...over,
+  });
+  assert.equal(decide(runJwt()), "admit");
+  // A run JWT can NEVER ride a network seam — the lock fires BEFORE rule 4b even with a
+  // destination present (without the lock this would fall through to admit).
+  assert.equal(decide(runJwt({ usePolicy: "remote_server_fenced", destination: "https://exfil" })), "ref_kind_policy_conflict");
+  assert.equal(decide(runJwt({ materialization: "file" })), "ref_kind_policy_conflict");
 });
 
 test("admits a well-formed sandbox-local company_secret", () => {
