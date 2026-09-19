@@ -17,7 +17,7 @@
 // seam — there is no second, drifting copy. This module re-exports that surface and
 // hosts the renewal service that also gates on the same fence.
 
-import { createHash } from "node:crypto";
+import { createHash, type KeyObject } from "node:crypto";
 import {
   JobFenceError as DbJobFenceError,
   type Db,
@@ -32,6 +32,10 @@ import {
 } from "@armyofagents/worker-protocol";
 import { runInTenant } from "../db/tenant-context.js";
 import { projectControlCommandExtensions } from "./control-command-projection.js";
+import {
+  OWNED_LABELS_CAPABILITY_DEFAULT_TTL_MS,
+  withRenewedOwnedLabelsCapability,
+} from "./owned-labels-mint.js";
 import {
   ackAuthorityCurrent,
   JobLeasingError,
@@ -124,9 +128,18 @@ export function createJobLeaseRenewalService(input: {
   appDb: Db;
   leaseDurationMs?: number;
   maxHeartbeatAgeMs?: number;
+  /** E9-F002 (b) — the control-plane Ed25519 PRIVATE key used to RE-MINT the run's
+   * owned-labels capability on lease renewal. Absent (the default today, mirroring the
+   * resolve-route mint) ⇒ NO capability is delivered and the renew reply is byte-identical
+   * to pre-E9-F002. Injected from the same composition-root key as the resolve route. */
+  controlPlaneSigningKey?: KeyObject;
+  ownedLabelsCapabilityTtlMs?: number;
 }) {
   const leaseDurationMs = Math.max(1000, input.leaseDurationMs ?? 300_000);
   const maxHeartbeatAgeMs = Math.max(1000, input.maxHeartbeatAgeMs ?? 300_000);
+  const controlPlaneSigningKey = input.controlPlaneSigningKey;
+  const ownedLabelsCapabilityTtlMs =
+    input.ownedLabelsCapabilityTtlMs ?? OWNED_LABELS_CAPABILITY_DEFAULT_TTL_MS;
   return {
     async renew(renewInput: {
       auth: VerifiedWorkerOperation;
@@ -274,12 +287,31 @@ export function createJobLeaseRenewalService(input: {
                 })),
               ),
           });
+          // E9-F002 option (b) — RE-MINT the run's OwnedLabelsCapability on this renewal.
+          // The capability's window (5-min TTL, lease-clamped) is minted ONCE on the resolve
+          // route and never refreshed, so a run outliving it is forced to tear down under an
+          // expired cap (the never-re-minted-authority ceiling, E9-F002 §1). Refreshing it here
+          // is coherent: this path already re-verified the fence and extended the lease, and the
+          // cap is already lease-clamped — so it costs NOTHING new in blast radius (unlike the
+          // rejected option (a), which re-resolves secrets on a timer). Frozen-wire-CLEAN: the
+          // signed cap rides body.extensions[] as a NON-critical extension (an older worker
+          // ignores an unknown non-critical extension), never a new top-level field. INERT until
+          // a signing key is configured (default today, like DEP-011) AND the worker consumes it
+          // (the SVC-009 follow-on). The stored replay body is unchanged: a lost-response retry
+          // simply carries no fresh cap, which the next periodic renewal delivers.
+          const renewedBody = withRenewedOwnedLabelsCapability(
+            body,
+            // `body.expiresAt` is the NEW lease deadline (an ISO string); the renewLease return
+            // types it loosely, so coerce via String() (runtime identity on the string).
+            { fenceIdentity: renewFence, authorityNow, leaseDeadline: new Date(String(body.expiresAt)) },
+            { controlPlaneSigningKey, shortTtlMs: ownedLabelsCapabilityTtlMs },
+          );
           return leaseRenewOperationResponseV1Schema.parse({
             protocolVersion: 1,
             correlationId: request.correlationId,
             serverTime: authorityNow.toISOString(),
             outcome: "renewed",
-            body,
+            body: renewedBody,
           });
         } catch (error) {
           // Capture the governed-fence refusal before it is remapped away (no-op unless a

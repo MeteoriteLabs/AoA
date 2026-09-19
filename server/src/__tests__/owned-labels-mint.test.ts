@@ -23,13 +23,16 @@ import { describe, expect, it } from "vitest";
 
 import type { ActiveFenceRequest } from "@armyofagents/db";
 import { labelsEqual, type ResourceLabels } from "@armyofagents/worker-daemon";
+import type { WireExtension } from "@armyofagents/worker-protocol";
 import { verifyOwnedLabelsCapability } from "@armyofagents/adapter-manager";
 import { buildOwnedLabelsCapabilityCanonical } from "@armyofagents/provider-capability";
 
 import {
   applyOwnedLabelsCapability,
   ownedLabelsFromFenceIdentity,
+  withRenewedOwnedLabelsCapability,
   OWNED_LABELS_CAPABILITY_DEFAULT_TTL_MS,
+  OWNED_LABELS_CAPABILITY_EXTENSION_NAMESPACE,
   type OwnedLabelsMintContext,
 } from "../services/owned-labels-mint.js";
 import type { SecretResolveOutcome } from "../services/secret-broker.js";
@@ -263,5 +266,75 @@ describe("Decision #104 — the minted capability leaks no secret", () => {
       expect(json).not.toContain(secret);
       expect(canonical).not.toContain(secret);
     }
+  });
+});
+
+// --------------------------------------------------------------------------------------
+// E9-F002 (b) — re-mint on lease renewal, delivered frozen-wire-clean via extensions[]
+// --------------------------------------------------------------------------------------
+
+describe("withRenewedOwnedLabelsCapability — E9-F002(b) re-mint on lease renewal", () => {
+  const renewBody = (extensions: WireExtension[] = []) => ({
+    protocolVersion: 1 as const,
+    workerId: ANCHOR_LABELS.workerId,
+    jobId: ANCHOR_LABELS.jobId,
+    attempt: ANCHOR_LABELS.attempt,
+    leaseId: ANCHOR_LABELS.leaseId,
+    fenceToken: FENCE_TOKEN,
+    expiresAt: LEASE_DEADLINE.toISOString(),
+    cancelRequested: false,
+    cancelReason: null,
+    extensions,
+  });
+
+  it("appends a NON-critical capability extension whose signed cap verifies + labelsEqual anchor", () => {
+    const out = withRenewedOwnedLabelsCapability(renewBody(), mintCtx(), {
+      controlPlaneSigningKey: controlPlane.privateKey,
+      shortTtlMs: OWNED_LABELS_CAPABILITY_DEFAULT_TTL_MS,
+    });
+    const caps = out.extensions.filter((e: any) => e.namespace === OWNED_LABELS_CAPABILITY_EXTENSION_NAMESPACE);
+    expect(caps).toHaveLength(1);
+    const ext = caps[0] as any;
+    // NON-critical is the whole frozen-wire-clean property: an older worker IGNORES an unknown
+    // non-critical extension (a critical:true one would fail its envelope closed).
+    expect(ext.critical).toBe(false);
+    expect(ext.schemaVersion).toBe(1);
+    const verified = verifyOwnedLabelsCapability(ext.value, controlPlane.publicKey, AUTHORITY_NOW.getTime());
+    expect(labelsEqual(verified, ANCHOR_LABELS)).toBe(true);
+    expect(labelsEqual(ext.value.ownedLabels, ANCHOR_LABELS)).toBe(true);
+    // expiresAt = min(authorityNow + TTL, newLeaseDeadline): here the 5-min TTL is the shorter
+    // bound (the test deadline is 10 min out), so it is now + TTL. The deadline-is-shorter clamp
+    // is exercised by mintOwnedLabelsCapability's own tests (the mint fn this helper reuses).
+    expect(ext.value.expiresAt).toBe(AUTHORITY_NOW.getTime() + OWNED_LABELS_CAPABILITY_DEFAULT_TTL_MS);
+  });
+
+  it("preserves pre-existing extensions (control-command projection) — appends, never clobbers", () => {
+    const existing = { namespace: "aoa.dev/control-commands", schemaVersion: 1, critical: false, value: { commands: [] } };
+    const out = withRenewedOwnedLabelsCapability(renewBody([existing]), mintCtx(), {
+      controlPlaneSigningKey: controlPlane.privateKey,
+      shortTtlMs: OWNED_LABELS_CAPABILITY_DEFAULT_TTL_MS,
+    });
+    expect(out.extensions).toHaveLength(2);
+    expect(out.extensions[0]).toEqual(existing);
+    expect((out.extensions[1] as any).namespace).toBe(OWNED_LABELS_CAPABILITY_EXTENSION_NAMESPACE);
+  });
+
+  it("is INERT with no control-plane key — returns the SAME body reference, unchanged", () => {
+    const body = renewBody([{ namespace: "aoa.dev/x", schemaVersion: 1, critical: false, value: {} }]);
+    const out = withRenewedOwnedLabelsCapability(body, mintCtx(), {
+      controlPlaneSigningKey: undefined,
+      shortTtlMs: OWNED_LABELS_CAPABILITY_DEFAULT_TTL_MS,
+    });
+    expect(out).toBe(body);
+  });
+
+  it("clamps the re-minted cap via min(now+TTL, deadline) when the TTL is the shorter bound", () => {
+    const shortTtlMs = 30_000;
+    const out = withRenewedOwnedLabelsCapability(renewBody(), mintCtx(), {
+      controlPlaneSigningKey: controlPlane.privateKey,
+      shortTtlMs,
+    });
+    const ext = out.extensions.find((e: any) => e.namespace === OWNED_LABELS_CAPABILITY_EXTENSION_NAMESPACE) as any;
+    expect(ext.value.expiresAt).toBe(AUTHORITY_NOW.getTime() + shortTtlMs);
   });
 });
