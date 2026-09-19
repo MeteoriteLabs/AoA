@@ -382,6 +382,16 @@ export interface PlaceJobAttemptInput {
    * non-canary run → the mint sources `credentialKind` from the binding, unchanged.
    */
   mintCredentialAuthority?: JobPlacementCredentialBinding["credentialKind"];
+  /**
+   * CLI-008 Unit C — whether this run's distributed TOOL SURFACE is authorized
+   * (the AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED gate, computed once at dispatch). It
+   * gates the SECOND placement mint — the run_jwt (AOA_API_KEY) bearer — only.
+   * Omitted/false (the default until Unit C S4 wires the flag) mints no run_jwt
+   * handle, so the tool-surface slice is inert. Independent of the credential
+   * binding + the placement digest — read solely at the mint call, like
+   * `mintCredentialAuthority`.
+   */
+  toolSurfaceAuthorized?: boolean;
 }
 
 export interface JobPlacementServiceInput extends Omit<PlaceJobAttemptInput, "appDb" | "operatorDb" | "rollout"> {}

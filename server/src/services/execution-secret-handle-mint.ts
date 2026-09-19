@@ -204,3 +204,54 @@ export function decideExecutionSecretHandle(input: ExecutionSecretMintInput): Ex
     boundTargetGeneration: input.targetGeneration,
   };
 }
+
+// -----------------------------------------------------------------------------
+// DAT-007 / CLI-008 — the run_jwt (AOA_API_KEY) tool-surface handle mint decision.
+//
+// A SIBLING of decideExecutionSecretHandle, deliberately separate: it stages the
+// distributed TOOL SURFACE bearer, not a model-provider credential, so its shape and
+// its refusal vocabulary differ. It mints ONLY for a cloud, agent-backed, claude_local
+// run whose tool surface has been authorized (the AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED
+// gate, computed once at dispatch and threaded here as `toolSurfaceAuthorized`).
+// codex_local mints NO run_jwt handle — it has no aoa MCP tool surface (R6). PURE
+// (no db/clock/uuid) so every arm is directly unit- and mutation-testable.
+// -----------------------------------------------------------------------------
+
+/** The env var NAME the worker materializes the minted run JWT into. The frozen wire
+ * never carries the value; the broker MINTS it at resolve (secret-broker resolveRunJwt). */
+export const RUN_JWT_ENV_TARGET = "AOA_API_KEY" as const;
+
+export interface RunJwtHandleMintInput {
+  readonly deploymentMode: string;
+  /** `agents.adapter_type` — run_jwt is `claude_local` ONLY. */
+  readonly adapterType: string;
+  /** `jobs.executor_principal_kind` — an agent-backed run (worker/sandbox; never system). */
+  readonly executorPrincipalKind: string;
+  /** The AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED gate, threaded from dispatch. `false`
+   * (the default until Unit C S4) mints nothing → the whole tool-surface slice is inert. */
+  readonly toolSurfaceAuthorized: boolean;
+}
+
+export type RunJwtHandleMintRefusal =
+  | "not_cloud_deployment"
+  | "executor_not_agent"
+  | "adapter_not_claude_local"
+  | "tool_surface_not_authorized";
+
+export type RunJwtHandleMintDecision =
+  | { readonly mint: true; readonly envTarget: typeof RUN_JWT_ENV_TARGET }
+  | { readonly mint: false; readonly reason: RunJwtHandleMintRefusal };
+
+export function decideRunJwtHandle(input: RunJwtHandleMintInput): RunJwtHandleMintDecision {
+  // 1. Cloud only — a self-hosted run executes the CLI locally and needs no brokered
+  //    tool surface (Rule #11 / Decision #104), so it never stages a run_jwt bearer.
+  if (!isCloudSandboxMode(input.deploymentMode)) return { mint: false, reason: "not_cloud_deployment" };
+  // 2. Only an agent-owned run stages a tool-surface bearer. Per Decision #121 that run
+  //    executes as worker/sandbox (never `agent`); a system/service run mints nothing.
+  if (!isAgentBackedExecutorKind(input.executorPrincipalKind)) return { mint: false, reason: "executor_not_agent" };
+  // 3. claude_local ONLY — codex has no aoa MCP tool surface, so it never gets a run JWT (R6).
+  if (input.adapterType !== "claude_local") return { mint: false, reason: "adapter_not_claude_local" };
+  // 4. The tool-surface flag, computed once at dispatch. `false` until S4 → inert by default.
+  if (!input.toolSurfaceAuthorized) return { mint: false, reason: "tool_surface_not_authorized" };
+  return { mint: true, envTarget: RUN_JWT_ENV_TARGET };
+}
