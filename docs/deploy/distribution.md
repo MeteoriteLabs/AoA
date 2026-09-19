@@ -3,12 +3,14 @@
 How AoA is intended to ship: Docker images on GHCR plus scoped npm packages,
 automated through GitHub Actions and gated by post-publish smoke tests.
 
-> **Current status (2026-07-20):** no MeteoriteLabs `@armyofagents/*`
-> package is available from the public npm registry. The release workflow is
-> disabled, release PR #227 closed without merging, and its post-publish smoke
-> job did not run. Source checkout is the supported installation path until a
-> release is published and the exact install command passes a clean-container
-> smoke test.
+> **Current status (2026-07-20, re-verified 2026-09-19):** no MeteoriteLabs
+> `@armyofagents/*` package is available from the public npm registry. The release
+> workflow RUNS on push to `main` (and `workflow_dispatch`), but no release has been
+> PUBLISHED: the Changesets "Version Packages" PR #227 closed without merging and its
+> changesets remain unprocessed, so `changeset publish` never ran and the post-publish
+> smoke job (gated on `published == 'true'`) did not fire. Source checkout is the
+> supported installation path until a release is published and the exact install command
+> passes a clean-container smoke test.
 
 ## Decision locks (Phase H)
 

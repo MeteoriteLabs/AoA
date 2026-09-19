@@ -7,8 +7,8 @@
 |---|---|---|---|---|
 | A | Release manifest + the gate that CALLS the three verifiers | 1 | `60e658c07` | **Done** |
 | B | Vulnerability policy with expiring exceptions | 2 | `d90ffe68b` | **Done** |
-| C | Provider + template kill switches | 3a | `2b7ccc3f2` | **Decision built, NOT WIRED** — see §4 |
-| D | Reconcile active provider resources on kill | 3b | — | **Not built** — see §4 |
+| C | Provider + template kill switches | 3a | `451db1b11` | **WIRED** 2026-08-22 — job-leasing drain-on-kill (`evaluateKillSwitches`); see [`REL-004-lane-C-result.md`](./REL-004-lane-C-result.md) |
+| D | Reconcile active provider resources on kill | 3b | `573376d13` | **DONE** 2026-08-22 — deferral #5 closed; see [`REL-004-lane-D-result.md`](./REL-004-lane-D-result.md) |
 
 **42 mutants across the two landed lanes, 41 killed, 1 documented equivalent.**
 
@@ -115,9 +115,16 @@ Five survivors were real and are fixed:
 
 ---
 
-## 4. Lanes C and D — not built, and exactly where they go
+## 4. Lanes C and D — the plan (SHIPPED 2026-08-22; terrain preserved below)
 
-Neither is blocked. Both are specified below with the terrain verified, so a successor
+> **★ STALE HEADING CORRECTED 2026-09-19.** Lanes C (clause 3a, drain-on-kill via `job-leasing.ts`
+> `evaluateKillSwitches`, commit `451db1b11`) and D (clause 3b, deferral #5 closed, commit `573376d13`)
+> BOTH SHIPPED on 2026-08-22, ~3 hours after this parent result doc was last written — see
+> [`REL-004-lane-C-result.md`](./REL-004-lane-C-result.md) / [`REL-004-lane-D-result.md`](./REL-004-lane-D-result.md).
+> PR #485 (2026-09-18) later added the operator WRITE path (`/instance/kill-switches`). The terrain
+> below is preserved as the original plan, not a live "not built" claim.
+
+Neither was blocked. Both are specified below with the terrain verified, so a successor
 implements rather than re-derives.
 
 **The storage is `instance_settings.general`** — a singleton JSONB table that already
