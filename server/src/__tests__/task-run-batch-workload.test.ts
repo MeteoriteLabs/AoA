@@ -21,6 +21,7 @@ import {
   STAGED_INSTRUCTIONS_PATH,
   STAGED_INPUT_MISSING_EXIT_CODE,
   STAGED_PROMPT_PATH,
+  STAGED_AOA_MCP_CONFIG_PATH,
   SANDBOX_INVOCATION_BINARY_ARG_INDEX,
 } from "../services/task-run-sandbox-invocation.js";
 import {
@@ -37,6 +38,20 @@ import {
 } from "../services/task-run-batch-workload.js";
 
 const PROMPT = "## Task AOA-1\n\nShip the thing.";
+
+// CLI-008 Unit C — a realistic brokered `aoa` MCP config document. Its bytes are opaque to
+// the builder (buildSandboxInvocation stages the string verbatim); what S2 owns is that a
+// config handed to buildTaskRunBatchWorkload reaches the staged file and the argv, and that
+// the empty-is-absent fold + flag-off inertness are decided at THIS layer.
+const AOA_MCP_CONFIG = JSON.stringify({
+  mcpServers: {
+    aoa: {
+      type: "http",
+      url: "https://api.example/companies/c1/mcp",
+      headers: { Authorization: "Bearer ${AOA_API_KEY}" },
+    },
+  },
+});
 
 function input(over: Partial<TaskRunBatchWorkloadInput> = {}): TaskRunBatchWorkloadInput {
   return {
@@ -266,25 +281,34 @@ describe("the per-adapter argv shapes (CLI-008 Unit D)", () => {
   // from the emitted argv rather than from a fixture is what makes that a red test rather than
   // a comment.
   it.each([
-    ["claude_local", "claude", undefined],
-    ["claude_local", "claude", "# Be excellent"],
-    ["codex_local", "codex", undefined],
-    ["codex_local", "codex", "# Be excellent"],
-  ])("every absolute path in the %s argv is staged (instructions: %s)", (adapterType, binary, instructions) => {
-    const result = buildTaskRunBatchWorkload(
-      input({ adapterType, runtimeCommandSpec: { command: binary }, instructions }),
-    );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    const stagedPaths = result.stagedFiles.map((file) => file.path);
-    const argvPaths = result.workload.args.filter((arg) => arg.startsWith("/"));
-    expect(argvPaths.length).toBeGreaterThan(0);
-    for (const argvPath of argvPaths) {
-      expect(stagedPaths.includes(argvPath), `${argvPath} is in the argv but nothing stages it`).toBe(true);
-    }
-    // …and the converse: a staged byte no argv reads is a byte nobody consumes.
-    expect([...stagedPaths].sort()).toEqual([...argvPaths].sort());
-  });
+    ["claude_local", "claude", undefined, undefined],
+    ["claude_local", "claude", "# Be excellent", undefined],
+    ["claude_local", "claude", undefined, "aoa"],
+    ["claude_local", "claude", "# Be excellent", "aoa"],
+    ["codex_local", "codex", undefined, undefined],
+    ["codex_local", "codex", "# Be excellent", undefined],
+    // a config handed to a codex run is dropped, not staged — the set-equality proves it
+    // stages no byte the argv does not read (and reads no path it does not stage).
+    ["codex_local", "codex", undefined, "aoa"],
+  ])(
+    "every absolute path in the %s argv is staged (instructions: %s, config: %s)",
+    (adapterType, binary, instructions, configToken) => {
+      const aoaMcpConfig = configToken === "aoa" ? AOA_MCP_CONFIG : undefined;
+      const result = buildTaskRunBatchWorkload(
+        input({ adapterType, runtimeCommandSpec: { command: binary }, instructions, aoaMcpConfig }),
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const stagedPaths = result.stagedFiles.map((file) => file.path);
+      const argvPaths = result.workload.args.filter((arg) => arg.startsWith("/"));
+      expect(argvPaths.length).toBeGreaterThan(0);
+      for (const argvPath of argvPaths) {
+        expect(stagedPaths.includes(argvPath), `${argvPath} is in the argv but nothing stages it`).toBe(true);
+      }
+      // …and the converse: a staged byte no argv reads is a byte nobody consumes.
+      expect([...stagedPaths].sort()).toEqual([...argvPaths].sort());
+    },
+  );
 
   it("carries the adapter's real binary as an argv element, never the registry key", () => {
     const result = buildTaskRunBatchWorkload(input());
@@ -422,23 +446,96 @@ describe("the instructions bundle (CLI-008 Unit D)", () => {
   // code with an empty prompt, which looks like a successful context-free run.
   it("guards every staged path it reads, with an attributable exit code", () => {
     for (const instructions of [undefined, INSTRUCTIONS]) {
-      for (const [adapterType, binary] of [["claude_local", "claude"], ["codex_local", "codex"]]) {
-        const result = buildTaskRunBatchWorkload(
-          input({ adapterType, runtimeCommandSpec: { command: binary }, instructions }),
-        );
-        expect(result.ok).toBe(true);
-        if (!result.ok) return;
-        const script = result.workload.args[1]!;
-        const guard = script.slice(0, script.indexOf("done") + 4);
-        for (let i = 1; i <= result.stagedFiles.length; i += 1) {
-          expect(guard, `${adapterType} does not guard $${i}`).toContain(`"$${i}"`);
+      // ★ the config dimension: a claude run with a staged aoa config has THREE staged files;
+      // the guard must guard the config positional too, or an older worker stages nothing and
+      // the sandbox reads a file nobody wrote. codex never stages it, so its count is unchanged.
+      for (const aoaMcpConfig of [undefined, AOA_MCP_CONFIG]) {
+        for (const [adapterType, binary] of [["claude_local", "claude"], ["codex_local", "codex"]]) {
+          const result = buildTaskRunBatchWorkload(
+            input({ adapterType, runtimeCommandSpec: { command: binary }, instructions, aoaMcpConfig }),
+          );
+          expect(result.ok).toBe(true);
+          if (!result.ok) return;
+          const script = result.workload.args[1]!;
+          const guard = script.slice(0, script.indexOf("done") + 4);
+          for (let i = 1; i <= result.stagedFiles.length; i += 1) {
+            expect(guard, `${adapterType} does not guard $${i}`).toContain(`"$${i}"`);
+          }
+          // …and never a parameter it does not pass: `[ -r "" ]` is false, so guarding an unset
+          // positional would fail every run for a file it never needed.
+          expect(guard).not.toContain(`"$${result.stagedFiles.length + 1}"`);
+          expect(script).toContain(`exit ${STAGED_INPUT_MISSING_EXIT_CODE}`);
         }
-        // …and never a parameter it does not pass: `[ -r "" ]` is false, so guarding an unset
-        // positional would fail every run for a file it never needed.
-        expect(guard).not.toContain(`"$${result.stagedFiles.length + 1}"`);
-        expect(script).toContain(`exit ${STAGED_INPUT_MISSING_EXIT_CODE}`);
       }
     }
+  });
+});
+
+describe("the brokered aoa MCP config (CLI-008 Unit C S2)", () => {
+  function build(over: Partial<TaskRunBatchWorkloadInput> = {}) {
+    const result = buildTaskRunBatchWorkload(input(over));
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    return { workload: result.workload, stagedFiles: result.stagedFiles };
+  }
+
+  it("stages the config for a claude run and points --mcp-config at the STAGED positional", () => {
+    const { workload, stagedFiles } = build({ aoaMcpConfig: AOA_MCP_CONFIG });
+    const staged = stagedFiles.find((file) => file.path === STAGED_AOA_MCP_CONFIG_PATH);
+    expect(staged, "the config was not staged").toBeTruthy();
+    expect(new TextDecoder().decode(staged!.bytes)).toBe(AOA_MCP_CONFIG);
+    expect(staged!.contentType).toContain("application/json");
+    // no instructions bundle, so the prompt is $1 and the config is the second staged file → $2.
+    const configIndex = stagedFiles.findIndex((file) => file.path === STAGED_AOA_MCP_CONFIG_PATH) + 1;
+    expect(configIndex).toBe(2);
+    expect(workload.args[1]).toContain(`--mcp-config "$${configIndex}"`);
+    expect(workload.args[1]).toContain("--strict-mcp-config");
+    expect(workload.args[1]).toContain("--allowedTools mcp__aoa");
+  });
+
+  it("stages the config AFTER the instructions bundle (config becomes $3, bundle stays $2)", () => {
+    const { workload, stagedFiles } = build({ instructions: "# SOUL", aoaMcpConfig: AOA_MCP_CONFIG });
+    const configIndex = stagedFiles.findIndex((file) => file.path === STAGED_AOA_MCP_CONFIG_PATH) + 1;
+    expect(configIndex).toBe(3);
+    expect(workload.args[1]).toContain(`--mcp-config "$${configIndex}"`);
+    // the two staged pointers do not collide: the bundle flag still reads $2.
+    expect(workload.args[1]).toContain('--append-system-prompt-file "$2"');
+  });
+
+  // ★ THE NORMALIZATION S2 OWNS. buildSandboxInvocation only does `?? null`, so an empty or
+  // whitespace-only document would reach it as a non-null string and be staged as a zero-byte
+  // config that `--mcp-config` points at — a flag that promises a tool surface and delivers a
+  // parse error. buildTaskRunBatchWorkload folds empty/whitespace to ABSENT, exactly as it does
+  // for the instructions bundle. These cases can ONLY pass if that fold is present.
+  it.each([
+    ["empty", ""],
+    ["whitespace-only", "  \n\t "],
+  ])("treats a %s config as ABSENT — no staged file, no flags", (_label, aoaMcpConfig) => {
+    const withConfig = build({ aoaMcpConfig });
+    const baseline = build({});
+    expect(withConfig).toEqual(baseline);
+    expect(withConfig.stagedFiles.map((f) => f.path)).not.toContain(STAGED_AOA_MCP_CONFIG_PATH);
+    expect(withConfig.workload.args.join(" ")).not.toContain("--mcp-config");
+  });
+
+  // The inert guarantee: with the tool-surface flag off (every caller today), a null/absent
+  // config yields a workload byte-identical to the pre-Unit-C shape.
+  it.each([
+    ["absent", undefined],
+    ["null", null],
+  ])("is byte-identical to the no-config baseline when the config is %s", (_label, aoaMcpConfig) => {
+    expect(build({ aoaMcpConfig })).toEqual(build({}));
+  });
+
+  // codex has no --mcp-config channel; a config handed to a codex run is dropped, not staged,
+  // so the codex shape stays byte-identical whether or not a config is present.
+  it("never stages the config for a codex run", () => {
+    const codex = { adapterType: "codex_local", runtimeCommandSpec: { command: "codex" } };
+    const withConfig = build({ ...codex, aoaMcpConfig: AOA_MCP_CONFIG });
+    const baseline = build({ ...codex });
+    expect(withConfig).toEqual(baseline);
+    expect(withConfig.stagedFiles.map((f) => f.path)).not.toContain(STAGED_AOA_MCP_CONFIG_PATH);
+    expect(withConfig.workload.args.join(" ")).not.toContain("mcp__aoa");
   });
 });
 
