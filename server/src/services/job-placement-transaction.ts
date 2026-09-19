@@ -24,7 +24,10 @@ import {
   sortExecutionTargetRowsForPlacement,
   type ExecutionTargetRow,
 } from "./execution-target-resolver.js";
-import { mintExecutionSecretHandleForPlacement } from "./execution-secret-handle-mint-runner.js";
+import {
+  mintExecutionSecretHandleForPlacement,
+  mintRunJwtHandleForPlacement,
+} from "./execution-secret-handle-mint-runner.js";
 import {
   isActionableMintRefusal,
   type ExecutionSecretMintRefusal,
@@ -404,6 +407,25 @@ export async function placeJobAttemptTransaction(
         } catch {
           // Never a disclosing log: a mint FAILURE (as opposed to a refusal) must not
           // narrate credential topology into the placement path.
+        }
+        // DAT-007 / CLI-008 — the SECOND handle: the run_jwt (AOA_API_KEY) tool-surface
+        // bearer, minted under the SAME lock and pinned to the SAME placed generation.
+        // `toolSurfaceAuthorized` is false until Unit C S4, so mintRunJwtHandleForPlacement
+        // short-circuits and mints nothing today. Best-effort in its OWN try, exactly like
+        // the provider-key mint above: a failure (or the normal refusal) must never fail
+        // placement or take the shared legacy path down with it.
+        try {
+          await mintRunJwtHandleForPlacement(repos.jobControl, {
+            organizationId: input.organizationId,
+            companyId: input.companyId,
+            jobId: input.jobId,
+            executorPrincipalKind: context.job.executorPrincipalKind,
+            executorPrincipalId: context.job.executorPrincipalId,
+            targetGeneration: decision.targetGeneration,
+            toolSurfaceAuthorized: input.toolSurfaceAuthorized ?? false,
+          });
+        } catch {
+          // Best-effort: a run_jwt mint failure must never fail placement.
         }
       }
 

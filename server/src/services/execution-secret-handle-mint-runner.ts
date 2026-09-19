@@ -17,6 +17,7 @@ import { getDeploymentMode } from "../config/deployment-mode.js";
 import { canonicalizeBinding, companyKeyTargetForAdapter } from "./secrets.js";
 import {
   decideExecutionSecretHandle,
+  decideRunJwtHandle,
   isAgentBackedExecutorKind,
   type CanonicalProviderBinding,
   type ExecutionSecretMintDecision,
@@ -33,7 +34,7 @@ export interface ExecutionSecretMintRepo {
     companyId: string;
     jobId: string;
     handle: string;
-    refKind: "provider_key" | "company_secret";
+    refKind: "provider_key" | "company_secret" | "run_jwt";
     refId: string;
     materialization: "env";
     usePolicy: "sandbox_local_only";
@@ -151,4 +152,77 @@ export async function mintExecutionSecretHandleForPlacement(
   });
 
   return { minted: true, handle: written.handle, refKind: decision.refKind, deduped: !written.minted };
+}
+
+// -----------------------------------------------------------------------------
+// DAT-007 / CLI-008 — the SECOND placement mint: the run_jwt (AOA_API_KEY) tool-surface
+// bearer. A separate runner from the provider-key mint so the existing single-handle
+// contract (and its tests) are untouched. Both run inside the SAME placement lock; this
+// one is a NO-OP while the tool surface is off — it short-circuits before any agent load
+// or insert, so an inert deployment pays zero placement overhead.
+// -----------------------------------------------------------------------------
+
+export interface MintRunJwtHandleInput {
+  readonly organizationId: string;
+  readonly companyId: string;
+  readonly jobId: string;
+  readonly executorPrincipalKind: string;
+  readonly executorPrincipalId: string;
+  readonly targetGeneration: number | null;
+  /** The AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED gate. `false` (default until S4) mints nothing. */
+  readonly toolSurfaceAuthorized: boolean;
+  readonly deploymentMode?: string;
+  readonly newHandleId?: () => string;
+}
+
+export type MintRunJwtHandleOutcome =
+  | { readonly minted: true; readonly handle: string; readonly deduped: boolean }
+  | { readonly minted: false; readonly reason: string };
+
+export async function mintRunJwtHandleForPlacement(
+  repo: ExecutionSecretMintRepo,
+  input: MintRunJwtHandleInput,
+): Promise<MintRunJwtHandleOutcome> {
+  // Short-circuit while the tool surface is off (the default until S4): no agent load, no
+  // decision, no insert. This is what keeps the whole slice inert AND zero-overhead — the
+  // run_jwt mint never touches the DB until a dispatch actually authorizes the tool surface.
+  if (!input.toolSurfaceAuthorized) return { minted: false, reason: "tool_surface_not_authorized" };
+
+  const deploymentMode = input.deploymentMode ?? getDeploymentMode();
+  // Same load as the provider-key mint (an agent-owned coding run executes as worker/sandbox
+  // with executorPrincipalId = the agent id); the decision needs the agent's adapter_type.
+  const agent = isAgentBackedExecutorKind(input.executorPrincipalKind)
+    ? await repo.loadAgentAdapterBinding({ companyId: input.companyId, agentId: input.executorPrincipalId })
+    : null;
+
+  const decision = decideRunJwtHandle({
+    deploymentMode,
+    adapterType: agent?.adapterType ?? "",
+    executorPrincipalKind: input.executorPrincipalKind,
+    toolSurfaceAuthorized: input.toolSurfaceAuthorized,
+  });
+  if (!decision.mint) return { minted: false, reason: decision.reason };
+
+  const handle = (input.newHandleId ?? randomUUID)();
+  const written = await repo.insertExecutionSecretHandle({
+    organizationId: input.organizationId,
+    companyId: input.companyId,
+    jobId: input.jobId,
+    handle,
+    refKind: "run_jwt",
+    // ★ refId = jobId (Correction 4 option B). The run_jwt handle carries NO run id; the
+    // broker (resolveRunJwt) re-derives the run id from heartbeat_runs by distributed_job_id
+    // at resolve, so the minted run_id is exactly the row DAT-007's currency gate probes.
+    refId: input.jobId,
+    materialization: "env",
+    usePolicy: "sandbox_local_only",
+    envTarget: decision.envTarget,
+    refVersion: null,
+    boundTargetGeneration: input.targetGeneration,
+    // Owner-bound to the executing agent (worker/sandbox + agentId), like the provider-key
+    // handle: resolveExecutionSecret re-checks owner==executor under the fence at resolve.
+    ownerPrincipalKind: input.executorPrincipalKind,
+    ownerPrincipalId: input.executorPrincipalId,
+  });
+  return { minted: true, handle: written.handle, deduped: !written.minted };
 }

@@ -827,7 +827,7 @@ export interface JobControlRepository {
     companyId: string;
     jobId: string;
     handle: string;
-    refKind: "provider_key" | "company_secret";
+    refKind: "provider_key" | "company_secret" | "run_jwt";
     refId: string;
     materialization: "env";
     usePolicy: "sandbox_local_only";

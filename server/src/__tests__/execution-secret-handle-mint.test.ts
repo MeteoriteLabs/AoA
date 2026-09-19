@@ -11,9 +11,12 @@
 import { describe, expect, it } from "vitest";
 import {
   decideExecutionSecretHandle,
+  decideRunJwtHandle,
   isActionableMintRefusal,
+  RUN_JWT_ENV_TARGET,
   type ExecutionSecretMintInput,
   type ExecutionSecretMintRefusal,
+  type RunJwtHandleMintInput,
 } from "../services/execution-secret-handle-mint.js";
 
 const TARGET = { ownerId: "anthropic", secretName: "provider:anthropic", envVar: "ANTHROPIC_API_KEY" } as const;
@@ -244,5 +247,36 @@ describe("isActionableMintRefusal", () => {
     ];
     expect(ALL.filter(isActionableMintRefusal).sort())
       .toEqual(["agent_plain_literal_override", "owner_authority_disagreement"]);
+  });
+});
+
+describe("decideRunJwtHandle — the run_jwt (AOA_API_KEY) tool-surface gate (CLI-008 S3b)", () => {
+  function runInput(over: Partial<RunJwtHandleMintInput> = {}): RunJwtHandleMintInput {
+    return {
+      deploymentMode: "cloud_auth",
+      adapterType: "claude_local",
+      executorPrincipalKind: "agent",
+      toolSurfaceAuthorized: true,
+      ...over,
+    };
+  }
+
+  it("mints for a cloud, agent-backed, claude_local run once the tool surface is authorized", () => {
+    expect(decideRunJwtHandle(runInput())).toEqual({ mint: true, envTarget: RUN_JWT_ENV_TARGET });
+    expect(RUN_JWT_ENV_TARGET).toBe("AOA_API_KEY");
+  });
+
+  it("mints for the worker/sandbox executor kinds (Decision #121), not only the legacy agent kind", () => {
+    expect(decideRunJwtHandle(runInput({ executorPrincipalKind: "worker" }))).toMatchObject({ mint: true });
+    expect(decideRunJwtHandle(runInput({ executorPrincipalKind: "sandbox" }))).toMatchObject({ mint: true });
+  });
+
+  it.each([
+    ["a self-hosted deployment", { deploymentMode: "local_trusted" }, "not_cloud_deployment"],
+    ["a non-agent executor", { executorPrincipalKind: "system" }, "executor_not_agent"],
+    ["a codex_local adapter (no aoa MCP surface)", { adapterType: "codex_local" }, "adapter_not_claude_local"],
+    ["the tool surface OFF (the inert default until S4)", { toolSurfaceAuthorized: false }, "tool_surface_not_authorized"],
+  ])("refuses on %s", (_label, over, reason) => {
+    expect(decideRunJwtHandle(runInput(over))).toEqual({ mint: false, reason });
   });
 });

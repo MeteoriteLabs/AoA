@@ -46,7 +46,14 @@ import {
  * daemon, so this set is vendored and pinned by the contract test. CLI-001 v1 scope is
  * `claude_local` + `codex_local` only (DAT-008 §8); widen this set when that scope widens.
  */
-export const PROVIDER_AUTH_ENV_TARGETS: ReadonlySet<string> = new Set(["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]);
+// CLI-008 Unit C — AOA_API_KEY is the run_jwt tool-surface bearer's env target (minted at
+// resolve, delivered to the sandbox env like a provider key). Added in lockstep with the
+// mint (DAT-007/CLI-008 S3b) so a minted run_jwt handle is never dropped by an older worker.
+export const PROVIDER_AUTH_ENV_TARGETS: ReadonlySet<string> = new Set([
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "AOA_API_KEY",
+]);
 
 /** The classification of ONE resolve round-trip. Only `resolved` proceeds; everything else fails
  * the attempt closed. Modelled on `RenewAttempt` (lease-renewal.ts). */
