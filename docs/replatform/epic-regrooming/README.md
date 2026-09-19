@@ -18,6 +18,7 @@ The proposal distinguishes four claims that must not collapse into one another:
 - The formal program index still records E0–E2 as `complete`, E3/E4/E6 as `in_progress`, and E5/E7–E11 as `backlog`.
 - Several epic-local READMEs differ: E3, E4, and E6 say `complete`; E5 says its tickets are complete while its exit gate is not met.
 - E7 has a September 18 real-E2B mechanism run with `ok=true` and `capabilityProven=false`. It is not useful-agent capability evidence and is not an E7 completion gate.
+- The proposed one-control-plane/one-worker milestone cannot pass the current full D1 gate: [`../test-gates.md`](../test-gates.md) D1-00 requires at least two workers, and H-06 remains normative for D1–D6. This proposal therefore defines only the named `M1-D1-SPINE` and `M1-D2-CODING` partial gates; they cannot complete E6/E7 or substitute for full D1/D2.
 - This local proposal branch, and PR #323 as described by the current program records, have no fresh `ci-required` result attached by this proposal. No CI conclusion is inferred from historical prose.
 
 ## Proposed decision package
@@ -43,8 +44,9 @@ The proposal distinguishes four claims that must not collapse into one another:
 1. Is the proposed first milestone narrow enough to be reviewable while still proving a useful distributed coding journey?
 2. Are the 50 ticket dispositions correct, especially the boundary between promise-truth correction, pre-milestone assurance, later original scope, and optional expansion?
 3. Does the recovery procedure preserve every historical record while making gate ownership and exact-candidate evidence unambiguous?
-4. Should each epic’s proposed candidate gate and reopen triggers become the basis for a separately approved implementation-plan amendment?
-5. Are any deferred surfaces accidentally implied to be deleted rather than retained for later phases?
+4. Should the named milestone partial gates unlock the internal alpha dependency set while leaving the current full D1/D2/H-06 requirements untouched?
+5. Should each epic’s proposed candidate gate and reopen triggers become the basis for a separately approved implementation-plan amendment?
+6. Are any deferred surfaces accidentally implied to be deleted rather than retained for later phases?
 
 ## Approval effect
 

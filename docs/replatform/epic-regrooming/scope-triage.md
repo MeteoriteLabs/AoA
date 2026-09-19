@@ -49,6 +49,26 @@ One internal Organization runs `task_run` coding work through one control-plane 
 
 This is an internal alpha, not a private-beta promotion and not proof of the whole replatform program.
 
+## Proposed milestone partial gates
+
+These names define review boundaries for this proposal; they do not amend [`../test-gates.md`](../test-gates.md).
+
+### `M1-D1-SPINE` — one-control-plane/one-worker local-distributed partial gate
+
+Run the included lifecycle on one control-plane instance, one separately deployed worker, external PostgreSQL, object storage, the declared local/reference provider path, and the fault controls required by the included journey. Record exact revision, topology, production boot roots, tenant isolation, lifecycle/fence behavior, workspace/secret/output behavior, audit/cost signals, and cleanup/recovery.
+
+This is not D1. In particular, it does not satisfy D1-00’s at-least-two-worker topology, does not certify every full-D1 fault volume or HARD invariant, cannot complete E6, and cannot substitute for an E3–E6 exit gate that normatively consumes full D1. A passing handoff unlocks only the dependency set explicitly named by the approved first-milestone plan.
+
+### `M1-D2-CODING` — real-E2B useful-coding partial gate
+
+On the same exact candidate, run the included real-E2B `task_run` journey through an approved sandbox-local adapter, tool surface, workspace input, attributable output, cancellation, usage, provider failure, artifact integrity, and terminal cleanup. The record must report both mechanism and useful-capability verdicts.
+
+This is not D2. It cannot complete E7, satisfy D2’s full run counts/schedule, or substitute for full D2 in a later D5/D6 or release decision. It unlocks only the internal alpha milestone after `M1-D1-SPINE` and its named dependencies pass.
+
+### Normative-gate boundary
+
+Both partial gates are non-promoting. They may support a separately named milestone decision, but not an epic-completion handoff for E3–E7. Full D1/D2 and any E6/E7 completion still require the current normative gates, including H-06, or a separately reviewed and approved amendment to `test-gates.md`.
+
 ### Excluded from the first milestone, retained for later phases
 
 - browser-session execution and its D3 campaign;
@@ -72,7 +92,9 @@ The checked-in default-deny/allowlist shape is not an enforcement claim while th
 - browser, service, public-ingress, and external beta claims remain blocked; and
 - any self-hosted or tenant-hosted tier that promises egress denial must produce live packet-path enforcement evidence before enablement.
 
-The qualification limits blast radius; it does not turn a dormant control into a delivered one.
+The accepted managed-shared DE-08 residual conflicts with the still-normative H-06/D2 network boundary: H-06 requires metadata, private, worker-control, and control-plane destinations to remain denied, including direct-IP, redirect, and DNS-rebinding variants. The DE-08 scope decision did not amend that gate. `M1-D1-SPINE` and `M1-D2-CODING` must record the residual and the credential-taxonomy mitigation explicitly, but neither may mark H-06 passed. Any full D1/D2, E6, or E7 completion requires live evidence satisfying the current requirement or a separately approved normative amendment.
+
+The qualification limits blast radius; it does not turn a dormant control into a delivered one or a hard-invariant failure into a pass.
 
 ## Entry criteria
 
@@ -81,23 +103,24 @@ The milestone candidate may enter its integrated QA campaign only when:
 - the proposal is approved and its dispositions are reflected in owner-approved epic plan amendments;
 - E0–E2 historical completion evidence has passed a current dependency/delta review, including superseding records for any immutable-record breach;
 - every required E3–E7 ticket has either a canonical approved result or a policy-compliant successor/adoption record that pins the retained historical blob and closes its stated delta;
-- E3–E6 have candidate-specific ledgers showing which mechanisms are production-reachable rather than merely present;
+- E3–E6 have candidate-specific ledgers showing which mechanisms are production-reachable rather than merely present and which clauses are certified only by `M1-D1-SPINE`;
 - E5 has a new audit attempt superseding a1 and every first-milestone gate clause is `pass`, not `proven_weakly` or `not_proven`;
 - the supported adapter, tools, workspace, output, audit/cost, and cleanup paths are enabled only for the named internal Organization;
 - no excluded workload, desktop, mobility, cutover, HA, or beta flag is enabled; and
-- the candidate revision, topology, configuration digests, external dependencies, gate owner, QA owner, and rollback owner are frozen before the run starts.
+- the candidate revision, topology, configuration digests, external dependencies, partial-gate owner, QA owner, and rollback owner are frozen before the run starts; and
+- reviewers acknowledge that the accepted DE-08 residual leaves H-06 unsatisfied for full D1/D2 and therefore prevents E6/E7 completion absent a separately approved normative amendment.
 
 ## Exit criteria
 
 The first milestone passes only when one exact candidate has:
 
 1. all required ticket results approved with no pending review sentinel;
-2. a fresh integrated D1 campaign on the declared one-control-plane/one-worker topology;
-3. a fresh real-E2B D2 campaign covering the included journey, hostile tenant/credential cases, cancellation, output/artifact integrity, and every terminal cleanup path;
+2. a fresh `M1-D1-SPINE` partial-gate campaign on the declared one-control-plane/one-worker topology;
+3. a fresh `M1-D2-CODING` partial-gate campaign covering the included journey, hostile tenant/credential cases, cancellation, output/artifact integrity, and every terminal cleanup path;
 4. useful-agent capability evidence: the sandboxed adapter can use the approved tools/workspace and return attributable reviewable output; a mechanism-only run with `capabilityProven=false` cannot satisfy this criterion;
 5. explicit observation of the dormant-egress residual and credential-taxonomy checks, without an egress-enforcement claim;
 6. zero unresolved milestone-blocking findings and a recorded rollback rehearsal for the enabled path;
-7. a committed `Result: pass` QA record for the exact candidate; and
-8. a later committed `Decision: pass` completion handoff by the named Integration Gate Owner for the same candidate.
+7. committed `Result: pass` QA records for both named partial gates on the exact candidate; and
+8. a later committed, explicitly non-epic-completing `Decision: pass` milestone handoff by the named owner for the same candidate.
 
-Ticket shipment or an earlier mechanism run cannot substitute for items 2–8.
+Ticket shipment or an earlier mechanism run cannot substitute for items 2–8. Passing this milestone does not change E3–E7 to `complete`; their normative epic gates remain outstanding.

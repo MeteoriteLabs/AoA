@@ -7,6 +7,7 @@
 - Evidence is retained at the strength it actually supports. Unit coverage is not D1 topology proof; a manual mechanism run is not useful capability proof; a ticket result cannot complete an epic.
 - QA and handoff files are immutable from their first commit. A correction, rerun, changed decision, or changed revision creates a higher attempt with `Supersedes`.
 - Epic completion requires a passing QA record and a passing completion handoff for the exact same candidate revision.
+- A named milestone partial gate may unlock only its declared dependency set. It cannot complete an epic or substitute for a stricter normative D1/D2 gate.
 - Implementer, independent reviewer/QA owner, and Integration Gate Owner are separate roles. One person may not self-certify the result they implemented.
 
 ## 1. Freeze the recovery candidate
@@ -49,6 +50,8 @@ Run focused ticket acceptance first, then the epic’s integrated campaign, then
 
 Infrastructure or external-dependency prevention before the campaign starts may be `blocked_external`. Once a required campaign starts, a scheduled external failure counts toward `fail`. There is no conditional pass and no waiver of a HARD invariant.
 
+For this proposal, keep `M1-D1-SPINE` and `M1-D2-CODING` distinct from full D1/D2 in filenames, scope, requirement maps, and decisions. Their records must identify every normative clause they do not certify. In particular, the accepted managed-shared DE-08 residual must be recorded as an unresolved conflict with H-06; it cannot be transformed into a full-gate pass by prose.
+
 ## 6. Reuse a shared campaign narrowly
 
 One immutable campaign may support more than one epic when all consumers use the same exact revision, topology, configuration, and evidence bytes. The campaign must contain a separate requirement mapping for each epic and must not infer an untested clause from another epic’s pass.
@@ -60,6 +63,8 @@ Each epic still gets its own completion handoff and owner decision. If one epic 
 The Integration Gate Owner reviews the committed passing QA record, canonical/successor ticket results, open findings, dependency gates, and rollback state. The completion handoff is a separate later commit, pins the reviewed blobs and exact revision, and records only `pass`, `fail`, or `blocked_external`.
 
 `pass` is allowed only when every required ticket result is approved and the exit-gate QA record says `Result: pass` for that revision. A partial-gate handoff may unlock a named dependent without completing the parent epic; its name and scope must make that limit explicit.
+
+A first-milestone handoff based on the two M1 partial gates must say it is non-promoting and must not use `epic-completion` in its name. Full E6/E7 completion remains unavailable until current D1/D2/H-06 pass or the normative gate document is separately amended and approved.
 
 ## Reopening rules
 
@@ -79,8 +84,8 @@ Reopening creates new findings, results where needed, QA attempts, and handoffs.
 
 1. Repair evidence provenance for E2 and E5 with superseding attempts.
 2. Perform current dependency/delta checks for historically complete E0–E2.
-3. Reconcile E3, E4, and E6 ticket ledgers, production reachability, and exact-candidate integrated gates.
+3. Reconcile E3, E4, and E6 ticket ledgers and production reachability, then run `M1-D1-SPINE` without presenting it as full D1 or epic completion.
 4. Close the first-milestone E5 shortfalls and run its new seven-clause audit.
-5. Finish E7 tools/workspace/output capability and run the exact-candidate D1/D2 milestone campaign.
-6. Issue per-epic completion handoffs only after each epic’s own gate is satisfied.
+5. Finish E7 tools/workspace/output capability and run `M1-D2-CODING` on the same exact candidate, explicitly retaining the DE-08/H-06 conflict.
+6. Issue only the non-promoting milestone handoff for the partial gates; issue per-epic completion handoffs later, after each epic’s normative gate is satisfied.
 7. Regroom E8, E9, the later E10 lanes, and E11 as later milestones without losing their current slices or blockers.
