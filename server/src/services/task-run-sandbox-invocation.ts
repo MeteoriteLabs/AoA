@@ -209,15 +209,20 @@ export function buildSandboxInvocation(input: {
       // `--dangerously-skip-permissions` is required for unattended sandbox execution
       // (E7-F021, founder-authorized 2026-09-11): a distributed run has no human to answer
       // claude's permission prompt, and the flag is scoped to this throwaway sandbox only.
-      {
-        // Optional segments compose in a fixed order; with neither present the script is
-        // byte-identical to the pre-Unit-C claude arm. Instructions are always `$2` (paths[1]);
-        // the aoa config, when staged, is the LAST path (`$${paths.length}`).
-        const instrSeg = hasInstructions ? ` --append-system-prompt-file "$2"` : "";
-        const mcpSeg = stageAoaConfig
-          ? ` --mcp-config "$${paths.length}" --strict-mcp-config --allowedTools mcp__aoa`
-          : "";
-        script = `${guard}; exec "$0" --print - --dangerously-skip-permissions --output-format stream-json --verbose${instrSeg}${mcpSeg} < "$1"`;
+      // The NO-CONFIG branches are the SHIPPED literals verbatim: the W7U1 permission-posture
+      // guard (scripts/lib/__tests__/w7u1-agent-output-probe.test.mjs) reads this source and
+      // asserts the emitter still carries --dangerously-skip-permissions on these exact tails, so
+      // they must stay literal. Unit C adds a config branch that appends the mcp segment
+      // (config is the LAST staged path -> `$${paths.length}`, = $2 with no bundle, $3 with).
+      if (stageAoaConfig) {
+        const mcp = ` --mcp-config "$${paths.length}" --strict-mcp-config --allowedTools mcp__aoa`;
+        script = hasInstructions
+          ? `${guard}; exec "$0" --print - --dangerously-skip-permissions --output-format stream-json --verbose --append-system-prompt-file "$2"${mcp} < "$1"`
+          : `${guard}; exec "$0" --print - --dangerously-skip-permissions --output-format stream-json --verbose${mcp} < "$1"`;
+      } else {
+        script = hasInstructions
+          ? `${guard}; exec "$0" --print - --dangerously-skip-permissions --output-format stream-json --verbose --append-system-prompt-file "$2" < "$1"`
+          : `${guard}; exec "$0" --print - --dangerously-skip-permissions --output-format stream-json --verbose < "$1"`;
       }
       break;
     case "codex_local":
