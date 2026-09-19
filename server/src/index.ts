@@ -9,6 +9,7 @@ import type { Request as ExpressRequest, RequestHandler } from "express";
 import { and, asc, eq, exists, gt, ne, sql } from "drizzle-orm";
 import {
   createDb,
+  assertPrimaryDbBypassesRls,
   loadRequiredMigrationIdentity,
   ensurePostgresDatabase,
   inspectMigrations,
@@ -665,6 +666,11 @@ const listAdmittedOrganizationIds = distributedExecutionDatabases
   : undefined;
 
 if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
+  // DAT-007 item #1 precondition: the /mcp run-JWT currency resolver reads FORCE-RLS'd
+  // leases/job_attempts on this primary owner pool. Refuse to arm distributed execution unless
+  // the primary role bypasses RLS, or the resolver would read zero rows and deny every
+  // distributed run (fail-closed). Loud boot failure beats a silent, oracle-less 403 storm.
+  await assertPrimaryDbBypassesRls(db);
   const { createJobReadyScheduler } = await import("./services/job-ready-scheduler.js");
   const { createJobOutboxWorker } = await import("./services/job-outbox-worker.js");
   const { createPinoJobControlMetrics } = await import("./services/job-control-metrics.js");

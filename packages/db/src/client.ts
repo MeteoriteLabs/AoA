@@ -346,6 +346,58 @@ export async function assertNonOwnerConnection(
   }
 }
 
+/**
+ * DAT-007 item #1 — the RLS precondition for arming the distributed run-JWT currency gate.
+ *
+ * The `/mcp` currency resolver reads `leases`/`job_attempts` on the PRIMARY (owner) `db` pool.
+ * Those tables are FORCE-RLS'd with tenant policies scoped `TO aoa_app` (rls-tenant.ts), so if the
+ * primary `DATABASE_URL` role is ever a NON-superuser, NON-BYPASSRLS table owner, no policy matches
+ * it and no tenant GUC is set — the resolver reads ZERO rows and would DENY EVERY distributed run
+ * (fail-CLOSED: an availability outage, not a security bypass). This precondition refuses to arm the
+ * gate on such a pool, turning a silent, oracle-less 403 storm into a loud boot failure. The proven
+ * E7-1 canary already runs on a privileged primary db, so this holds today; the check exists so a
+ * future deployment cannot regress it silently. A superuser/BYPASSRLS owner bypasses FORCE RLS.
+ *
+ * PURE half — decide from the resolved role attributes so it is unit-testable without a database.
+ * Returns a refusal message, or null when the role bypasses RLS.
+ */
+export function rlsBypassRefusal(
+  attrs: { rolsuper?: boolean | null; rolbypassrls?: boolean | null } | null,
+): string | null {
+  if (!attrs) {
+    return "assertPrimaryDbBypassesRls: could not resolve current_user role attributes from pg_roles.";
+  }
+  if (!(attrs.rolsuper || attrs.rolbypassrls)) {
+    return (
+      "Refusing to arm AOA_DISTRIBUTED_EXECUTION_ENABLED: the primary db role " +
+      `(rolsuper=${attrs.rolsuper ?? false}, rolbypassrls=${attrs.rolbypassrls ?? false}) does not ` +
+      "bypass RLS. The DAT-007 currency resolver reads FORCE-RLS'd leases/job_attempts on this pool; " +
+      "a non-bypassing owner would read zero rows and deny every distributed run. Grant BYPASSRLS to " +
+      "the primary role (or thread a tenant-scoped read) before enabling distributed execution."
+    );
+  }
+  return null;
+}
+
+/**
+ * ASYNC half — resolve the primary pool's role attributes and throw on refusal. Call ONCE at the
+ * distributed-on startup so a misconfigured pool fails boot rather than every `/mcp` call. Mirrors
+ * `assertNonOwnerConnection`'s `pg_roles` read; the INVERSE assertion (must bypass, not must-not).
+ */
+export async function assertPrimaryDbBypassesRls(db: Db): Promise<void> {
+  const result = await db.execute(sql`
+    SELECT role.rolsuper, role.rolbypassrls
+    FROM pg_roles role
+    WHERE role.rolname = current_user
+  `);
+  const rows = (Array.isArray(result) ? result : (result as { rows: unknown[] }).rows) as Array<{
+    rolsuper?: boolean;
+    rolbypassrls?: boolean;
+  }>;
+  const refusal = rlsBypassRefusal(rows[0] ?? null);
+  if (refusal) throw new Error(refusal);
+}
+
 async function listMigrationFiles(): Promise<string[]> {
   const entries = await readdir(MIGRATIONS_FOLDER, { withFileTypes: true });
   return entries
