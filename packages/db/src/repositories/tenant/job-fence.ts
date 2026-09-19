@@ -320,7 +320,7 @@ export function authorizeSecretResolve(input: SecretResolveAuthzInput): SecretRe
   //    without rebuilding the dispatched envelope).
   if (h.status !== "active") return "handle_revoked";
 
-  // 2. ref_kind must be one of the four legacy stores.
+  // 2. ref_kind must be a KNOWN store: a legacy value store or the run_jwt bearer.
   if (!h.refKind || !(SECRET_REF_KINDS as readonly string[]).includes(h.refKind)) return "unknown_ref_kind";
 
   // 2b. The broker pointer must be present — a ref_kind with no ref_id is a
