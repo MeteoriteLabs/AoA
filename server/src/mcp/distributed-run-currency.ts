@@ -54,6 +54,12 @@ export interface RunCurrencySnapshot {
   readonly targetSuperseded: boolean;
 }
 
+/** Job-attempt statuses in which the run has terminated — a mirror of
+ *  `TERMINAL_ATTEMPT_STATUSES` (`packages/db/src/repositories/tenant/job-fence.ts:63`).
+ *  A terminal attempt is never live, so a superseded/replaced attempt (which the reaper
+ *  marks terminal before allocating its successor) is denied here. */
+const TERMINAL_ATTEMPT_STATUSES: readonly string[] = ["succeeded", "failed", "cancelled", "expired"];
+
 /**
  * Decide whether a distributed run-JWT actor's tool call is admitted, from the row
  * snapshot resolved for its SIGNED `run_id`.
@@ -77,9 +83,22 @@ export function classifyRunCurrency(
   snapshot: RunCurrencySnapshot,
   companyId: string,
 ): RunCurrencyVerdict {
-  // STUB (slice-1 RED): only the cross-company check is implemented; the full liveness
-  // predicate (steps 1/3/4 above) lands in the GREEN commit. The DENY edge-cases for a
-  // distributed run therefore fail against this stub — the intended RED.
-  if (snapshot.runFound && snapshot.runCompanyId !== companyId) return "deny";
-  return "admit";
+  // (1) No org distributed run row for this signed run id — not a run this gate covers
+  //     (crew, forged, or reaped). Fail-OPEN; bounded by the JWT's <=48h TTL.
+  if (!snapshot.runFound) return "admit";
+  // (2) Defense-in-depth: the run's company must match the URL company.
+  if (snapshot.runCompanyId !== companyId) return "deny";
+  // (3) A non-distributed owner (a LOCAL org run, execution_owner IS NULL) under flag-on
+  //     has no separable lease to be current against — admit. The central false-deny guard.
+  if (snapshot.executionOwner !== "distributed") return "admit";
+  // (4) Distributed: admit iff the run still holds the CURRENT live fence — an `active`
+  //     lease, fresh against the DB clock, a non-terminal attempt, and a current target.
+  //     Mirrors isActiveFence (job-fence.ts:509-515) + the guardActiveFence target cutoff
+  //     (job-control.ts:1961-1967). Any other state is a coarse deny.
+  const live =
+    snapshot.leaseStatus === "active" &&
+    snapshot.expiresFresh &&
+    !TERMINAL_ATTEMPT_STATUSES.includes(snapshot.attemptStatus ?? "") &&
+    !snapshot.targetSuperseded;
+  return live ? "admit" : "deny";
 }
