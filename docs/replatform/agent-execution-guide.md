@@ -117,6 +117,90 @@ Coding, browser, and service are mandatory for program completion and REL-005. E
 6. The Integration Gate Owner runs the gate on one exact revision and records pass/fail.
 7. Epic status changes only from committed evidence and a passing handoff.
 
+## Operating rules learned from execution
+
+> Lifted 2026-09-20 from `HANDOFF-orchestration-2026-09-10.md` (PR #417, closed), which recorded
+> them as one session's handoff. They are standing rules, not one wave's state, and a dated handoff
+> is the wrong home for them — nobody reads the fifth-most-recent handoff. **Every rule below was
+> paid for by a real defect in this programme.**
+
+### The failure class that dominates
+
+Across five waves: **~15 blockers, ZERO behavioural defects.** Every one was **a record disagreeing
+with the code it describes.** The mechanisms are reliably right; the claims about them are where the
+failures live. Observed shapes: a line cited at the base commit after the PR moved it; a delta
+recited rather than measured; a count edited in the same commit that changed the thing counted; a
+cited file that does not exist; a measurement contradicting its own table four lines below; and **a
+false claim of enforcement** — a comment saying an assertion reconciles a literal when nothing in
+the tree reads it.
+
+**Put these in every brief, verbatim:**
+
+1. **Cite by symbol; treat a line number as a hint.** `ls` every cited file.
+2. **Re-measure at HEAD.** Never base-plus-a-delta.
+3. **Re-count after your LAST edit** — especially a register row edited in the same commit.
+4. **Sweep for the BARE FIGURE, not the sentence.** Three sweeps missed sites because they swept a
+   phrase. Grep the digits *and* the spelled-out word.
+5. **A matrix whose rows come from different snapshots is not a matrix.** Re-run it as one.
+6. **Re-read your prose against your own tables before pushing. Add the table up.**
+
+### "X is blocked" — wrong six times out of six
+
+Every inherited blocked-claim that was actually re-measured has fallen: DE-01's read half needing
+BYPASSRLS (false); DE-15 having "no tenant at all" (false); DE-21's board half belonging to Decision
+2 (false — Decision 3); a capability being gated (both arms dead); a plan test guarding reader drift
+(it explained a transcription); service routes being unable to write `activity_log` (false).
+
+**Exoneration needs strictly more evidence than conviction.** Make every unit re-test the blocked
+claim **at source** before building around it.
+
+### Merge protocol
+
+1. CI green **and** `headRefOid` matching what was verified.
+2. **Re-read every PR comment in the minute before merging** —
+   `gh api repos/<owner>/<repo>/pulls/<n>/comments`, **not** `gh pr view --json comments`. External
+   review files after CI settles; this caught unread findings four separate times.
+3. **Reply to every finding.** The reply is where a corrected remedy gets recorded.
+4. **Re-read the PR TITLE against the diff.** A squash takes its permanent commit title from it, and
+   a wrong one is unfixable: `deb13d01f` is titled "DE-07 column drop" for the commit that
+   *withdrew* the drop.
+5. Merge, then **re-check the next PR's mergeability** — merges break siblings.
+
+A clean external review is not evidence of anything: the same reviewer has passed PRs clean that
+carried real defects.
+
+### Traps that have each cost a round
+
+- **No heredoc / `echo` / `printf` / `sed` file writes.** Use editing tools, byte-verify, and scan
+  for U+200B / U+00A0 / U+FEFF / U+0008.
+- **`String.replace` with `
+` against a CRLF tree matches nothing**, and the mutant returns
+  "green" having never been applied. The tree is mixed. Try both forms and **throw** when neither
+  matches.
+- **A stash-based baseline is invalid** when the code under test is already committed — false green.
+- **A mutation harness that rewrites its own backup** stacks mutants while reporting success. Refuse
+  to apply when a backup exists; verify the restore.
+- **Cross-package suites resolve via `dist/`** while vitest prints `src/` paths. Rebuild first.
+- **`server/tsconfig.json` excludes `src/__tests__`.** A textually clean merge with clean `tsc` left
+  14 tests red when one PR made a parameter required and a sibling called it without one. **After
+  merging siblings that touch the same signature, run both sides' suites at the merged head.**
+- **Finding ids collide across parallel branches.** `check-register-id-uniqueness` is green on each
+  branch alone and reds on whichever merges second. **First-filed keeps the id** — and have the
+  renumbering unit *measure the sibling's head*, because the next id may also be taken.
+- Windows: `git show <rev>:<path>` fails silently — use `MSYS_NO_PATHCONV=1 git cat-file blob`.
+  `jq` is not on PATH (use `gh --jq`). Node needs `C:/…`, not `/c/…`.
+- `AOA_RUN_WIN_INTEGRATION=1` for integration tests. **`node scripts/ci-local.mjs` green is NOT CI
+  green** — it skips the sharded `verify`.
+
+### What not to do
+
+- Do not close, enrol, strike from a cohort, or upgrade a `deliveryStatus` **for half a
+  conjunction.** This programme made that error twice and retracted publicly once.
+- Do not amend `AGENTS.md`'s invariants to make something satisfiable — that is a founder ruling.
+  **Narrowing an invariant until it is satisfiable is how a register becomes decorative.**
+- Do not dispatch a keyed E2B workflow without explicit founder authorization — it spends money.
+- Do not report the threat register's delivered/partial/not-delivered split as progress.
+
 ## Copy-ready planner prompt
 
 > Act as implementation planner for `<EPIC>`. Do not implement code. Read the repository instructions, locked decisions, `docs/replatform/program-design.md`, `current-main-crosswalk.md`, `accepted-caveats.md`, `test-gates.md`, `artifact-policy.md`, this epic's README, and every dependency handoff/decision/finding/QA record. Produce or amend `implementation-plan.md` with tickets no larger than three agent-days. Each ticket must name dependencies, exact files/modules, interfaces, failure behavior, migration/compatibility impact, observability, rollback/disablement, focused RED/GREEN commands including affected-package typecheck/build, evidence records, and commit boundary. Explicitly map the plan and gate to every applicable REQUIRED/HARD/INITIAL/OBSERVED value and frozen support-matrix row. Coding, browser, and service closure is mandatory for REL-005; only desktop and mobility may use disabled-surface closure. Resolve target class/trust/owner/locality/fallback, server-assigned versus reported capabilities, device lifecycle, owner-bound credentials, local staging, stale-output quarantine, handoff, desktop lifecycle where applicable, verified E2B limits, real-provider isolation, and the provider-neutral seam. Personal/device-local credentials are `owner_desktop` only; Organization-dedicated targets use `organization_brokered`. Do not add a Firecracker implementation. If a cross-epic rule is not locked, record a finding and propose a decision before making tickets assignable.
