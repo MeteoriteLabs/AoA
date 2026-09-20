@@ -842,11 +842,33 @@ Those two modules are reached **only** through `onAttemptTerminal`, which `job-e
 file can run inside the live fence**, so `projectAcceptedOutput` would still throw
 `attempt_terminal` for every F5 projection.
 
-★ **The build therefore needs an accepted-artifact hook BEFORE terminalization, plus the
-ingest/composition changes that carry it** — that is the substance of the owed design, and it lands
-on the ingest path (`server/src/services/job-events.ts` and its composition), not on the two
-post-commit projectors. The projectors may still change to **read** what the new path wrote; they
-may not be where the write happens.
+★ **The build therefore needs an accepted-artifact hook BEFORE terminalization** — and ★★★
+**`job-events.ts` IS STILL ONE LAYER TOO LATE, which a previous revision of this correction got
+wrong.** *Corrected twelfth round, verified at source.* That service calls
+`repos.jobControl.acceptEvent(…)` **once**, and `acceptEvent` does the whole thing inside a single
+repository transaction: its own comment is *“Fence FIRST (throws stale_fence / attempt_terminal),
+then durable append”*, with `guardActiveFence` holding the attempt row `FOR UPDATE` so *“no
+concurrent appender can interleave”*. So:
+
+- a hook placed **before** that call would act on **unaccepted** input — events that may yet be
+  rejected as `gap` / `hash_mismatch` / `stale_fence`; and
+- a hook placed **after** it sees the attempt **already terminal**.
+
+★ **And calling today's `jobOutputBridge` from inside that window does not work either**, because
+`projectAcceptedOutput` opens its **own** `runInTenant` transaction
+(`server/src/services/job-output-bridge.ts:261`), which cannot acquire the row locks the outer
+transaction is holding.
+
+★ **So the owed design is one of exactly two shapes, and it must name which:**
+
+1. **A transaction-aware callback inside `acceptEvent`**, fired after the append and before the
+   terminal transition, receiving the live repository transaction; or
+2. **A bridge operation that accepts an existing repository transaction** — `projectAcceptedOutput`
+   refactored so the tenant transaction can be supplied by the caller rather than opened by it.
+
+Until one is chosen and recorded, **the same-batch projection this ticket promises is not
+implementable**, and no file list is meaningful. The two post-commit projectors may still change to
+**read** what the new path wrote; they may not be where the write happens.
 
 **Owed test:** `server/src/__tests__/canary-output-projection.integration.test.ts`, ingesting
 `artifact_prepared` **and** the terminal event **in the same batch**, asserting one `task_outputs`
