@@ -307,8 +307,17 @@ provably not reached, and rollback is rehearsed. `E3-5-product-approval`, `E3-17
 
 ### `M3` — workload breadth
 
-**Scope.** E8 browser (`BRW-004`, `BRW-005`, `BRW-006`) and the E9 service remainder
+**Scope.** E8 browser (**`BRW-003c`**, `BRW-004`, `BRW-005`, `BRW-006`) and the E9 service remainder
 (`SVC-003`/`005`/`007` residuals, `SVC-004`, `SVC-006`).
+
+★★★ **`BRW-003c` WAS SCHEDULED BY NO MILESTONE AT ALL, and that is why it is named here.**
+*Added 2026-09-20 (seventh round), verified at source.* `BRW-003`'s retention slice is
+**design-only** — a design file exists, there is no result — and `E8-browser-automation/findings.md`
+makes shipping it part of the resolution condition for the **HIGH** finding `E8-F011`, whose owner
+is currently `unowned` *because* `BRW-003c` is design-only. `BRW-005` and `BRW-006` depend on
+`BRW-003`. Since no later milestone named it, a planner could have completed every listed browser
+ticket and left the sensitive-artifact **retention / purge / audit** gap permanently unscheduled —
+an enumerated scope that silently drops a HIGH finding's only route to closure.
 
 ★ *Corrected 2026-09-20: an earlier draft wrote "`BRW-004`…`008`". **`BRW-007` and `BRW-008` have
 no program-design node and no ticket file** — their only scope statement is
@@ -337,9 +346,20 @@ than a ticket:
   this proposal exists to prevent.**
 
 **★ The known blocker, stated up front.** `packages/browser-runtime` has **zero importers anywhere
-in the tree**, declares `playwright` as a *devDependency* so it is unshippable as written, and
-`workload.browser_session` is filtered out of the worker hello — so a browser job can be submitted
-and placed-for but never leased. M3 begins by fixing that, not by writing a campaign.
+in the tree**, and `workload.browser_session` is filtered out of the worker hello — so a browser job
+can be submitted and placed-for but never leased. M3 begins by fixing that, not by writing a
+campaign.
+
+★★★ **THE `playwright` devDependency IS NOT A BLOCKER — it is the STAGED architecture working as
+designed, and calling it “unshippable as written” was false.** *Corrected 2026-09-20 (seventh
+round), verified at source.* `packages/browser-runtime/src/runner.ts` is **staged into the sandbox**,
+not installed, and `e2b/e2b.Dockerfile:44-50` installs Playwright **globally** and sets `NODE_PATH`
+for exactly that reason — its own comment says so: *“Installed GLOBALLY with NODE_PATH set, because
+the runner is STAGED, not installed … so the guest has no node_modules of its own.”*
+`runtime-dependency.test.ts` documents and tests that architecture. Treating the intentional
+devDependency as fatal would make M3 require an unnecessary manifest change and would propagate a
+false prerequisite into the E8 and E11 plans. **The real remaining blockers are reachability/staging
+and capability advertisement** — the two named above.
 
 **Exit.** Full **D3** and full **D4**, including D4's 72-hour continuity campaign.
 
