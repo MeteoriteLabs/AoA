@@ -55,7 +55,16 @@ services:
       - data-net
 
   minio:
-    image: ${AOA_D1_MINIO_IMAGE:-minio/minio:latest}
+    # E6-F021 — PINNED to quay.io. Docker Hub's `minio/minio` is GONE: an anonymous
+    # pull token against `registry-1.docker.io/v2/minio/minio/manifests/latest` returns
+    # 401, and the Hub API returns `{"message":"object not found"}`. That is what red-
+    # lined this lane on 2026-09-15 and 2026-09-17 (`pull access denied for minio/minio`).
+    # quay.io is MinIO's own registry and serves the same image: a pull-scoped token +
+    # manifest GET for this exact tag returns 200 with a manifest LIST (multi-arch).
+    # The tag is dated rather than `:latest` — it was the ONLY `:latest` in this file,
+    # and the sibling third-party images here are tag-pinned (`pgvector:pg18`,
+    # `toxiproxy:2.9.0`). Do NOT restore `minio/minio`; it cannot be pulled.
+    image: ${AOA_D1_MINIO_IMAGE:-quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z}
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
       MINIO_ROOT_USER: "aoa-d1"
