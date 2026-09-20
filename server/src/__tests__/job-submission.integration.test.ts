@@ -99,7 +99,7 @@ const FROZEN_EXECUTOR_AUTHORITY = {
   crew_run: { kind: "worker", id: AGENT_A },
   one_shot: { kind: "worker", id: SOURCE_CASES[3].operationId },
   browser_request: { kind: "browser_worker", id: BROWSER_RUN_A },
-  service_reconcile: { kind: "service_instance", id: SERVICE_A },
+  service_reconcile: { kind: "service", id: SERVICE_A },
 } as const;
 
 let embedded: EmbeddedPostgresInstance | null = null;
@@ -698,7 +698,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(job).toMatchObject({
         requester_principal_kind: "system",
         requester_principal_id: "service-reconciler",
-        executor_principal_kind: "service_instance",
+        executor_principal_kind: "service",
         executor_principal_id: SERVICE_A,
       });
 
