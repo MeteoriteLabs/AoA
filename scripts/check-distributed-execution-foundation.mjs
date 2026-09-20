@@ -2717,30 +2717,46 @@ async function validateDeliveryAndEvidence(root, errors) {
   await requireFile(root, HANDOFF_TEMPLATE_MD, HANDOFF_TEMPLATE_FRAGMENTS, errors);
 }
 
-/** Collect immutable evidence records (qa/ + handoffs/) under an epic tree. */
+/**
+ * Collect immutable evidence records (`qa/` + `handoffs/`) under BOTH record trees.
+ *
+ * ★ `milestones/` added 2026-09-20 (D-11). A milestone spans several epics, so its records live
+ * at `docs/replatform/milestones/<milestone>/{qa,handoffs}/`. They were declared immutable in
+ * `artifact-policy.md` while BOTH collectors — this one and
+ * `scripts/check-evidence-immutability.mjs` — still walked only the epic tree, so a later commit
+ * could have modified, deleted or renamed a committed milestone record with the production
+ * immutability check still green. **A contract no guard reads is a false claim of enforcement,
+ * which is worse than no claim.** Caught in review before the tree held a single record.
+ *
+ * The two container names are iterated rather than the epic path being duplicated, so the epic
+ * and milestone halves cannot drift apart the way they just did. `EVIDENCE_RECORD_RE` in the
+ * sibling guard is kept in lockstep with this walk.
+ */
 async function collectEvidenceRecords(root) {
   const map = new Map();
-  const epicsAbs = path.join(root, "docs", "replatform", "epics");
-  let epics;
-  try {
-    epics = await readdir(epicsAbs, { withFileTypes: true });
-  } catch {
-    return map;
-  }
-  for (const epic of epics) {
-    if (!epic.isDirectory()) continue;
-    for (const sub of ["qa", "handoffs"]) {
-      const dirAbs = path.join(epicsAbs, epic.name, sub);
-      let entries;
-      try {
-        entries = await readdir(dirAbs, { withFileTypes: true });
-      } catch {
-        continue;
-      }
-      for (const entry of entries) {
-        if (!entry.isFile() || !entry.name.endsWith(".md") || entry.name === "README.md") continue;
-        const rel = `docs/replatform/epics/${epic.name}/${sub}/${entry.name}`;
-        map.set(rel, await readFile(path.join(dirAbs, entry.name), "utf8"));
+  for (const container of ["epics", "milestones"]) {
+    const containerAbs = path.join(root, "docs", "replatform", container);
+    let owners;
+    try {
+      owners = await readdir(containerAbs, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const owner of owners) {
+      if (!owner.isDirectory()) continue;
+      for (const sub of ["qa", "handoffs"]) {
+        const dirAbs = path.join(containerAbs, owner.name, sub);
+        let entries;
+        try {
+          entries = await readdir(dirAbs, { withFileTypes: true });
+        } catch {
+          continue;
+        }
+        for (const entry of entries) {
+          if (!entry.isFile() || !entry.name.endsWith(".md") || entry.name === "README.md") continue;
+          const rel = `docs/replatform/${container}/${owner.name}/${sub}/${entry.name}`;
+          map.set(rel, await readFile(path.join(dirAbs, entry.name), "utf8"));
+        }
       }
     }
   }

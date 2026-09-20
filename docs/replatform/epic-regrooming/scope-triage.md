@@ -108,6 +108,21 @@ property, not a capability one: an alpha must not arm a dial whose spend is invi
 `jobBudgetCostBridge` — and with it journey item 7's audit and failure-classification siblings
 `jobAuditBridge` and `jobOutputBridge` — must be wired before `M1a` passes, not deferred to `M1b`.
 
+★★★ **AND WIRING THE BRIDGE IS NOT ENOUGH — `M1a` MUST ALSO COMPOSE THE USAGE PRODUCER.**
+Corrected 2026-09-20 after review. `E3-15-budget`'s own register reason records the measurement:
+the deployed worker composes its supervisor **without `observeRun`**
+(`packages/worker-daemon/src/lifecycle/dispatch-runtime.ts`, pinned by its own test asserting
+`observeRun` is `undefined`), and usage is emitted only inside `if (deps.observeRun)`
+(`packages/worker-daemon/src/supervisor/supervisor.ts`). **So there is no usage event for the bridge
+to price.** Closure is a conjunction — *a producer AND the wiring* — and wiring alone would let a
+reader mark criterion 6 satisfied while distributed spend still bypasses every cap and auto-pause.
+That is the "half a conjunction" error this programme has retracted publicly once.
+
+★ **This does NOT pull Unit F into `M1a`.** `observeRun` is the supervisor's *instrumentation* seam
+— it already exists and is merely passed `undefined` at composition — and it yields usage and logs.
+Unit F's emit half is about *artifacts*, and stays in `M1b`. `M1a` owes the smaller piece: compose
+the seam the daemon already has.
+
 #### `M1b` — useful capability
 
 Journey items **3 and 5**, and **exit criterion 4 in full**. The return path: an artifact the agent

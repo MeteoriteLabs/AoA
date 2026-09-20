@@ -31,9 +31,13 @@ Everything in `artifact-policy.md` that governs `epics/<epic>/{qa,handoffs}/` go
 
 - **Immutable from first commit.** A superseded record is never edited; a new attempt names the old
   path in `**Supersedes:**`.
-- **Required fields** — `**Supersedes:**`, `**Decision:**` (`pass` / `fail` / `blocked_external`),
-  `**Attempt:**`, `**Revision:**`.
-- **A 12-character revision** in every filename. Six existing epic records violate this and are
+- **Required fields** — `**Supersedes:**`, `**Attempt:**`, `**Revision:**`, and then **one of two
+  verdict fields, which are NOT interchangeable**: a **QA record** carries `**Result:**`
+  (`../templates/qa-result-template.md`), a **handoff** carries `**Decision:**`
+  (`../templates/handoff-template.md`). Both take `pass` / `fail` / `blocked_external`. The
+  milestone exit criteria consume `Result: pass` from the QA record and `Decision: pass` from the
+  handoff, so a QA record written with `Decision:` cannot satisfy its gate.
+- **A 12-character revision** in every filename. **Eleven** existing epic records violate this and are
   carried as recorded debt rather than renamed, because renaming an immutable record is itself a
   breach — see the amendment banner in `qa-handoff-recovery.md`. **New records here have no such
   excuse.**

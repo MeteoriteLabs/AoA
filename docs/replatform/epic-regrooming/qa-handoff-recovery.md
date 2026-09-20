@@ -27,12 +27,32 @@
 > under **`../milestones/<milestone>/{qa,handoffs}/`** with the same immutability and filename
 > contract. The shared-campaign record of §6 is filed once there and cited by every consumer.
 >
-> ★ **Accepted debt, recorded rather than fixed.** Six existing records violate the filename
-> contract: three E2 handoffs carry a **9-character** revision token instead of `<sha12>`
-> (`…-21335854f-a5`, `…-920e55de5-a3`, `…-d5abd1a53-a4`), two QA files carry **no revision segment**,
-> and one conforms to nothing. They are **not renamed**: renaming an immutable record is itself a
-> breach, and the grandfather ruling already denies further touches of that class. `E2-tenant-kernel/handoffs/`
-> is also missing the `README.md` the folder contract requires — that one is additive and may be added.
+> ★ **Accepted debt, recorded rather than fixed — the COMPLETE inventory.** ★ *Corrected
+> 2026-09-20 after review: an earlier draft of this block listed six records and missed five. §4
+> directs recovery work to classify every artifact-policy violation, so an incomplete inventory
+> lets the omitted records be treated as valid adoptable evidence.* **Eleven** existing records
+> violate the `<YYYY-MM-DD>-…-<sha12>-a<attempt>.md` contract:
+>
+> | Record | Violation |
+> |---|---|
+> | `E2-tenant-kernel/handoffs/2026-08-10-epic-completion-21335854f-a5.md` | 9-char revision |
+> | `E2-tenant-kernel/handoffs/2026-08-10-epic-completion-920e55de5-a3.md` | 9-char revision |
+> | `E2-tenant-kernel/handoffs/2026-08-10-epic-completion-d5abd1a53-a4.md` | 9-char revision |
+> | `E2-tenant-kernel/qa/2026-08-10-d0-e2-tenant-kernel-21335854f-a5.md` | 9-char revision |
+> | `E2-tenant-kernel/qa/2026-08-10-d0-e2-tenant-kernel-920e55de5-a3.md` | 9-char revision |
+> | `E2-tenant-kernel/qa/2026-08-10-d0-e2-tenant-kernel-d5abd1a53-a4.md` | 9-char revision |
+> | `E6-deployment-test-harness/qa/2026-08-14-e6-d1-foundation-campaign-pass-85599b192.md` | 9-char revision **and no `-a<attempt>`** |
+> | `E0-foundation/qa/2026-09-14-d0-pre-guard-rewrite-grandfather-a1.md` | no revision segment |
+> | `E5-workspaces-secrets/qa/2026-08-24-d0-e5-exit-gate-audit-a1.md` | no revision segment |
+> | `E0-foundation/qa/pre-existing-failure-baseline.md` | no revision, no attempt |
+> | `E2-tenant-kernel/qa/pre-existing-failure-baseline.md` | no revision, no attempt |
+>
+> They are **not renamed**: renaming an immutable record is itself a breach, and the grandfather
+> ruling already denies further touches of that class. **None of them may be cited as
+> exact-candidate evidence without stating the defect**, because a 9-character token does not
+> uniquely identify a revision under the contract the gates assume.
+> `E2-tenant-kernel/handoffs/` is also missing the `README.md` the folder contract requires — that
+> one is purely additive and may be added.
 
 > **Proposal only.** This procedure preserves existing evidence. It never edits an old QA/handoff record to make today’s state look compliant.
 

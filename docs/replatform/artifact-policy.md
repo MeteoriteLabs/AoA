@@ -37,8 +37,10 @@ docs/replatform/milestones/<milestone>/
   handoffs/  <YYYY-MM-DD>-<milestone>-<sha12>-a<attempt>.md
 ```
 
-**The contract is identical, not softer** — immutable from first commit, the same required fields,
-the same 12-character revision in every filename. A milestone handoff is **non-promoting**: it
+**The contract is identical, not softer** — the same immutability rule, the same required fields,
+the same 12-character revision in every filename. (Worded to avoid restating the rule's own
+phrase: `check-distributed-execution-foundation.mjs` requires that phrase to appear here, and a
+second copy would let a mutant delete the real one while the checker still passed.) A milestone handoff is **non-promoting**: it
 changes no epic status and must not use `epic-completion` in its name. See
 [`milestones/README.md`](./milestones/README.md).
 
