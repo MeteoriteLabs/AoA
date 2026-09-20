@@ -1,15 +1,20 @@
 # Handoff — <Merge train or epic gate>
 
 **Date (UTC):** `<YYYY-MM-DD>`
-**Epic:** `<E#-name>`
-**Record path:** `<docs/replatform/epics/.../handoffs/<filename>.md>`
-**Gate slug:** `<merge-train-N, e6-d1-foundation, e10-realtime-foundation, or epic-completion>`
+**Epic:** `<E#-name>` — **or, for a milestone handoff, `**Milestone:**` `<M0|M1a|M1b|M2|M2-RTF|M3|M4|M5>` instead**
+**Record path:** `<docs/replatform/epics/.../handoffs/<filename>.md>` — **or `<docs/replatform/milestones/<milestone>/handoffs/<filename>.md>`**
+**Gate slug:** `<merge-train-N, e6-d1-foundation, e10-realtime-foundation, epic-completion, or a milestone id (m0, m1a, m1b, m2, m2-rtf, m3, m4, m5)>`
+> ★★★ **A milestone handoff is NON-PROMOTING and may never use `epic-completion`.** `M1a` and `M1b` get **separate** handoffs — an `M1b` handoff does not retroactively serve as `M1a`'s, nor the reverse.
 **Reviewed revision:** `<exact 40-character git SHA>`
+> ★ *A handoff's revision field is spelled `Reviewed revision`; a QA record's is `Revision`. They are not interchangeable literals.*
 **Attempt:** `<positive integer>`
 **Supersedes:** `<prior immutable handoff path or none>`
 **Decision:** `pass`, `fail`, or `blocked_external`
 **Gate owner role:** `Integration Gate Owner`
 **Gate owner identity:** `<named human or agent identity>`
+
+
+> ★★★ **MILESTONE HANDOFFS USE THIS TEMPLATE TOO, and before 2026-09-20 they could not.** A milestone belongs to **no single epic** by construction (`M1a` spans E3, E4, E5, E6 and E7), so `**Epic:**` and an `epics/…` record path were unsatisfiable for it. A milestone record therefore replaces `**Epic:**` with `**Milestone:**` and writes its path under `milestones/<milestone>/`. Every other field, and immutability, are unchanged.
 
 > This file is immutable from its first commit. A correction, rerun, changed decision, or changed revision creates a higher attempt and links this path through `Supersedes`.
 

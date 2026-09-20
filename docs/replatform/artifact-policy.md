@@ -34,8 +34,13 @@ milestone spans several epics by construction, so its QA and handoff records bel
 ```
 docs/replatform/milestones/<milestone>/
   qa/        <YYYY-MM-DD>-<gate>-<scope>-<sha12>-a<attempt>.md
-  handoffs/  <YYYY-MM-DD>-<milestone>-<sha12>-a<attempt>.md
+  handoffs/  <YYYY-MM-DD>-<milestone-or-gate-slug>-<sha12>-a<attempt>.md
 ```
+
+★ **The handoff's middle segment is the milestone id OR the gate slug.** *Corrected 2026-09-20:
+it read `<milestone>`, which collides with a gate that requires its handoff by name — `RTF-07`
+requires `e10-realtime-foundation`, so an `M2-RTF` handoff must be free to carry the gate slug
+there. Existing handoffs already use the gate slug in this position.*
 
 **The contract is identical, not softer** — the same immutability rule, the same required fields,
 the same 12-character revision in every filename. (Worded to avoid restating the rule's own

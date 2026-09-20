@@ -13,8 +13,10 @@ This is the fixed set of 50 tickets identified when the numbered program graph h
 > original four buckets could not express three real states, so three were added: **M**
 > (in-milestone build), **N** (no correction owed) and **X** (not filed). Every change is
 > evidenced in the amendment record below — read it before disputing a row. Arithmetic:
-> **50 distinct tickets, 51 entries, one declared split** (`DEP-011`); nothing was dropped and
-> nothing invented. *(`DEP-009` was briefly a second split; corrected — see disposition D.)*
+> **50 distinct tickets, 52 entries, two declared splits** (`DEP-011`, `MIG-006`); nothing was
+> dropped and nothing invented. *(`DEP-009` was briefly a third split; corrected — see disposition
+> D. `MIG-006` became the second split in the sixth review round: its seam shipped and its cutover
+> did not, and one row could not honestly say both.)*
 
 ### A. Promise-truth corrections — 20
 
@@ -28,17 +30,32 @@ These items are required to make the narrow milestone supportable and honestly o
 
 `TRACK-001`, `TRACK-002`, `DAT-011`, `DEP-008`, `DEP-013`, `WRK-017`, `MIG-009`, `MIG-010`.
 
-### C. Later original-program phase — 10
+### C. Later original-program phase — 10 tickets, 11 entries
+
+★ *Eleven entries because `MIG-006` is split across C1 (its shipped seam) and C2 (its deferred
+crew cutover) — the second of the two declared splits. Ten distinct tickets, as the header says.*
 
 These remain required or valuable in the original broader program, but they do not block the first milestone. **Split in two, because "deferred" was describing two different states and the distinction changes what is owed.**
 
 **C1 — shipped, retained, not required by M1 (6).** Finished and production-wired, or inert by design. Nothing is owed but a later milestone's evidence; do NOT re-open their acceptance.
 
-`DAT-006`, `DAT-010`, `DSK-003`, `DSK-004`, `SVC-008`, `MIG-006`.
+`DAT-006`, `DAT-010`, `DSK-003`, `DSK-004`, `SVC-008`, `MIG-006` *(seam half only — split)*.
 
-**C2 — unbuilt, genuinely deferred (4).** Deferral preserves their owners, dependencies, findings, and acceptance intent.
+★★★ **`MIG-006` IS A SPLIT, AND CLASSIFYING THE WHOLE TICKET C1 WAS WRONG.** *Corrected 2026-09-20
+(sixth round), verified at source.* C1 promises the work is finished and that its acceptance must
+not be re-opened — but `MIG-006-crew-routing-seam-design.md` says the ticket **still has no
+`-result.md`**, that a distributed crew run is *“MECHANISM-ONLY”*, and in terms that it is
+***“not an end-to-end crew cutover”***, with the rollout dial default-OFF for crew. Meanwhile `M2`
+below assigns exactly that cutover as build work. Both could not be true.
 
-`WRK-012`, `MIG-005`, `MIG-007`, `DBR-001`.
+- **C1 — the routing seam**: shipped and production-wired, doubly gated (Unit C tool-less, Unit F
+  result-deferred), default-OFF. Do not re-open THIS.
+- **C2 — the crew cutover**: unbuilt and genuinely deferred to **M2**, where it keeps its owner,
+  dependencies and acceptance intent. This half is what `M2` schedules.
+
+**C2 — unbuilt, genuinely deferred (5).** Deferral preserves their owners, dependencies, findings, and acceptance intent.
+
+`WRK-012`, `MIG-005`, `MIG-006` *(crew-cutover half — split; the seam is C1)*, `MIG-007`, `DBR-001`.
 
 ### D. Optional expansion — 1
 
@@ -155,18 +172,51 @@ This is not D1. In particular, it does not satisfy D1-00’s at-least-two-worker
 
 ### `M1-D2-CODING` — real-E2B useful-coding partial gate
 
-> ★ **Serves `M1b`.** `M1a` is gated by `M1-D1-SPINE` plus the real-E2B *mechanism* half of this
-> gate; the *useful-capability* half below is `M1b`'s. One campaign may produce both records on the
-> same candidate, but the two verdicts are recorded separately and the mechanism verdict never
-> implies the capability one.
+> ★★★ **SERVES `M1b` ONLY. `M1a` DOES NOT CONSUME THIS GATE AT ALL.** `M1a` is gated by
+> `M1-D1-SPINE` + [`M1a-D2-MECHANISM`](#m1a-d2-mechanism--real-e2b-mechanism-partial-gate), which
+> is a separate gate with its own campaign record and its own `Result`.
+>
+> ★ *Corrected 2026-09-20 (second review round). An earlier revision said `M1a` was gated by "the
+> mechanism half of this gate". **There is no such half.** A QA record has one normative
+> `**Result:**`, so a "half" is not a thing a gate owner can record — and leaving that sentence
+> here meant an operator could still pass `M1a` by putting a partial verdict on THIS record instead
+> of producing the standalone mechanism one, which is exactly the ambiguity `M1a-D2-MECHANISM` was
+> created to remove. Creating the new gate without deleting the old sentence fixed the description
+> and not the instruction.*
 
-On the same exact candidate, run the included real-E2B `task_run` journey through an approved sandbox-local adapter, tool surface, workspace input, attributable output, cancellation, usage, provider failure, artifact integrity, and terminal cleanup. The record must report both mechanism and useful-capability verdicts.
+On the same exact candidate, run the included real-E2B `task_run` journey through an approved sandbox-local adapter, tool surface, workspace input, attributable output, cancellation, usage, provider failure, artifact integrity, and terminal cleanup. **This record's `Result` is the useful-capability verdict, and a run reporting `capabilityProven=false` FAILS it.** (It may also print the mechanism verdict for context, but the mechanism *gate* is `M1a-D2-MECHANISM` and only that record's `Result` passes `M1a`.)
 
 This is not D2. It cannot complete E7, satisfy D2’s full run counts/schedule, or substitute for full D2 in a later D5/D6 or release decision. It unlocks only the internal alpha milestone after `M1-D1-SPINE` and its named dependencies pass.
 
+### `M1a-D2-MECHANISM` — real-E2B mechanism partial gate
+
+★★★ **Added 2026-09-20 after review, and it fixes a real defect rather than renaming one.** The
+M1a/M1b split originally allocated *"the mechanism verdict"* of `M1-D2-CODING` to `M1a` and *"both
+verdicts"* to `M1b`. **That cannot work.** Exit criterion 8 requires a committed `Result: pass` QA
+record for **each partial gate a milestone names**; `M1-D2-CODING` is defined above as the *useful-coding*
+gate and requires **attributable output**; and `templates/qa-result-template.md` gives a QA record a
+**single** normative `**Result:**`. Annotating one field as a "mechanism verdict" does not create a
+second `Result`. So the original wording either **falsely passed the useful-capability gate at
+M1a**, or left **M1a impossible to pass** — and which of the two it did depended on who read it.
+
+So the mechanism claim gets its OWN gate, with its own campaign and its own `Result` — never a share of another gate's:
+
+On the same exact candidate, run the included real-E2B `task_run` journey end to end — dispatch,
+distributed ownership, lease, secret redemption, staged input, E2B create/execute/teardown, durable
+terminal, cancellation, provider failure, reconciliation and every cleanup path — **in a shipped CI
+boot**, and record the operator-visible audit, cost and failure-classification signals journey item
+7 names.
+
+★ **It does NOT require attributable agent output, and a record reporting `capabilityProven=false`
+satisfies it.** That is the gate's defining property, not a waiver: it is what makes `M1a` a real
+checkpoint rather than a weakened `M1b`.
+
+This is not D2 and not `M1-D2-CODING`. It cannot complete E7, cannot support any useful-capability
+claim, and unlocks only `M1a`.
+
 ### Normative-gate boundary
 
-Both partial gates are non-promoting. They may support a separately named milestone decision, but not an epic-completion handoff for E3–E7. Full D1/D2 and any E6/E7 completion still require the current normative gates, including H-06, or a separately reviewed and approved amendment to `test-gates.md`.
+**All three partial gates — `M1-D1-SPINE`, `M1a-D2-MECHANISM` and `M1-D2-CODING` — are non-promoting.** ★ *Corrected 2026-09-20 (fourth round): this read “Both partial gates are non-promoting”, which pre-dates the mechanism gate and is the ROOT of the stale-quantifier class — two epic plans quote this sentence verbatim as their binding non-promotion rule, so the count was wrong in three documents at once. A gate left out of a non-promotion rule is a gate that may promote.* They may support a separately named milestone decision, but not an epic-completion handoff for E3–E7. Full D1/D2 and any E6/E7 completion still require the current normative gates, including H-06, or a separately reviewed and approved amendment to `test-gates.md`.
 
 ## The milestone sequence — M1a through M5
 
@@ -187,8 +237,8 @@ Both partial gates are non-promoting. They may support a separately named milest
 | # | Milestone | Proves | Named gate(s) | Blocked by |
 |---|---|---|---|---|
 | **M0** | Record + lane health | the records match the code, and every lane a milestone will cite is green and read | *(no gate — entry criteria for M1a)* | nothing |
-| **M1a** | The spine | mechanism: one org, one CP, one worker, real E2B, in a **shipped CI boot** | `M1-D1-SPINE` + the mechanism half of `M1-D2-CODING` | M0 |
-| **M1b** | Useful capability | an agent's output reaches the founder | the useful-capability half of `M1-D2-CODING` | M1a, `CLI-008` Unit F, `DAT-009` 3c–3e |
+| **M1a** | The spine | mechanism: one org, one CP, one worker, real E2B, in a **shipped CI boot** | `M1-D1-SPINE` + **`M1a-D2-MECHANISM`** | M0 |
+| **M1b** | Useful capability | an agent's output reaches the founder | **`M1-D2-CODING`** *(whole)* | M1a, `CLI-008` Unit F, `DAT-009` 3c–3e |
 | **M2** | Sink cutover | the legacy in-process paths stop owning execution | `M2-CUTOVER` *(to be named)* | M1b |
 | **M2-RTF** | Realtime foundation | reconnect-safe realtime, proven on one revision | **`E10-REALTIME-FOUNDATION`** | M1b *(its three input tickets are already shipped)* |
 | **M3** | Workload breadth | browser and service workloads run distributed | full **D3** + full **D4** | M2 **and `E10-REALTIME-FOUNDATION`** |
@@ -197,7 +247,15 @@ Both partial gates are non-promoting. They may support a separately named milest
 
 ### `M0` — record and lane health
 
-**Scope.** Disposition **B** in full, plus the record-truth half of **A**. No feature work.
+**Scope.** Disposition **B**, plus the record-truth half of **A**.
+
+★ **NOT "no feature work" — one build item is deliberately inside it, and pretending otherwise
+would let M0 complete without finishing its own scope.** *Corrected 2026-09-20 (second round).*
+`MIG-009` is in disposition B and is **split across two milestones**: its **evidence currency** (a
+record on the M0 candidate) is M0's, and its **trigger build** — designing and wiring the real
+`drainAll` invocation so criterion 6's rehearsal has a mechanism — is **`M1a`'s**, where it appears
+in the required result set. M0 introduces **no new product capability**; that is the honest claim,
+and it is narrower than the one this line used to make.
 
 **Why it is a milestone and not a chore.** Every later milestone's exit criteria are *"a committed
 `Result: pass` QA record on the exact candidate"*. A lane that is red, or green but unread, cannot
@@ -206,17 +264,42 @@ deleted upstream image and the consumer built to report that could not see it.
 
 **Exit.** `d1-merge-train` and every keyed lane green or explicitly quarantined with an owner; the
 DEP-013 consumer reporting zero unowned findings; disposition-A record corrections landed; a
-successor filed for `E7-F007` so `MIG-010` can carry a result (**D-10**).
+successor filed for `E7-F007` so `MIG-010` can carry a result (**D-10**); **and an approved,
+candidate-current result for every disposition-B ticket — `TRACK-001`, `TRACK-002`, `DAT-011`,
+`DEP-008`, `WRK-017`, and `MIG-009`'s evidence-currency record** (its trigger build is `M1a`'s).
+
+★ That enumeration is B in full: B has **eight** members, and the other two are the clauses
+immediately before it — `DEP-013` (the consumer) and `MIG-010` (which carries no result until the
+`E7-F007` successor is filed, which is D-10's clause). None is exempt; two are simply named by
+their own condition rather than twice.
+
+★★★ **THE B CLAUSE WAS MISSING, AND WITHOUT IT M0 COULD PASS WITHOUT ITS OWN DECLARED SCOPE.**
+*Corrected 2026-09-20 (sixth round).* M0's scope is *“Disposition **B**, plus the record-truth half
+of **A**”*, but this exit list named only the lanes, the consumer, the A corrections and the
+`E7-F007` successor — so every B ticket could be skipped and `M1a` could start on exactly the
+stale assurance evidence M0 exists to refresh. A milestone whose exit does not require its own
+scope is not a checkpoint.
 
 ### `M2` — sink cutover
 
 **Scope.** `MIG-005` (Commander), `MIG-006` (crew — units shipped, cutover deferred), `MIG-007`
-(extraction), and `E10-1-drain` promoted from dormant on a real `drainAll` trigger. The four parity
+(extraction). The four parity
 bridges are **not** here — three are `M1a` (D-8) and the fourth, `jobApprovalBridge`, follows its
 sink.
 
-**Entry.** `M1b` passed. `E10-F001`'s prerequisite analysis re-measured at HEAD — it is the finding
-that records that *no* Sprint-6 sink was buildable, and it must be re-tested rather than inherited.
+★★★ **`E10-1-drain` IS NOT M2's TO PROMOTE — it is an INHERITED PREREQUISITE, already wired at
+`M1a`.** *Corrected 2026-09-20 (fourth round).* An earlier revision listed it here as *“promoted
+from dormant on a real `drainAll` trigger”*, which contradicts two things this document says
+earlier: `M1a`'s required result set owes **the drain and its trigger** (D-9), and `M1a` exit
+criterion 6 requires a **recorded rollback rehearsal** that USES that drain rather than a manual
+runbook. Since `M2` cannot be entered until `M1b` has passed — which is after `M1a` — a candidate
+arriving at `M2` with `E10-1-drain` still dormant is one that could not have passed `M1a`. Leaving
+the line would have either reopened approved `M1a` work or given two milestones contradictory
+ownership of the same clause. `M2` **verifies** the drain it inherits; it does not promote it.
+
+**Entry.** `M1b` passed — which carries `M1a`'s wired `E10-1-drain` with it. `E10-F001`'s
+prerequisite analysis re-measured at HEAD — it is the finding that records that *no* Sprint-6 sink
+was buildable, and it must be re-tested rather than inherited.
 
 **Exit.** For each cut-over sink: the distributed path owns the write, the legacy path is
 provably not reached, and rollback is rehearsed. `E3-5-product-approval`, `E3-17-output`,
@@ -224,8 +307,17 @@ provably not reached, and rollback is rehearsed. `E3-5-product-approval`, `E3-17
 
 ### `M3` — workload breadth
 
-**Scope.** E8 browser (`BRW-004`, `BRW-005`, `BRW-006`) and the E9 service remainder
+**Scope.** E8 browser (**`BRW-003c`**, `BRW-004`, `BRW-005`, `BRW-006`) and the E9 service remainder
 (`SVC-003`/`005`/`007` residuals, `SVC-004`, `SVC-006`).
+
+★★★ **`BRW-003c` WAS SCHEDULED BY NO MILESTONE AT ALL, and that is why it is named here.**
+*Added 2026-09-20 (seventh round), verified at source.* `BRW-003`'s retention slice is
+**design-only** — a design file exists, there is no result — and `E8-browser-automation/findings.md`
+makes shipping it part of the resolution condition for the **HIGH** finding `E8-F011`, whose owner
+is currently `unowned` *because* `BRW-003c` is design-only. `BRW-005` and `BRW-006` depend on
+`BRW-003`. Since no later milestone named it, a planner could have completed every listed browser
+ticket and left the sensitive-artifact **retention / purge / audit** gap permanently unscheduled —
+an enumerated scope that silently drops a HIGH finding's only route to closure.
 
 ★ *Corrected 2026-09-20: an earlier draft wrote "`BRW-004`…`008`". **`BRW-007` and `BRW-008` have
 no program-design node and no ticket file** — their only scope statement is
@@ -254,16 +346,33 @@ than a ticket:
   this proposal exists to prevent.**
 
 **★ The known blocker, stated up front.** `packages/browser-runtime` has **zero importers anywhere
-in the tree**, declares `playwright` as a *devDependency* so it is unshippable as written, and
-`workload.browser_session` is filtered out of the worker hello — so a browser job can be submitted
-and placed-for but never leased. M3 begins by fixing that, not by writing a campaign.
+in the tree**, and `workload.browser_session` is filtered out of the worker hello — so a browser job
+can be submitted and placed-for but never leased. M3 begins by fixing that, not by writing a
+campaign.
+
+★★★ **THE `playwright` devDependency IS NOT A BLOCKER — it is the STAGED architecture working as
+designed, and calling it “unshippable as written” was false.** *Corrected 2026-09-20 (seventh
+round), verified at source.* `packages/browser-runtime/src/runner.ts` is **staged into the sandbox**,
+not installed, and `e2b/e2b.Dockerfile:44-50` installs Playwright **globally** and sets `NODE_PATH`
+for exactly that reason — its own comment says so: *“Installed GLOBALLY with NODE_PATH set, because
+the runner is STAGED, not installed … so the guest has no node_modules of its own.”*
+`runtime-dependency.test.ts` documents and tests that architecture. Treating the intentional
+devDependency as fatal would make M3 require an unnecessary manifest change and would propagate a
+false prerequisite into the E8 and E11 plans. **The real remaining blockers are reachability/staging
+and capability advertisement** — the two named above.
 
 **Exit.** Full **D3** and full **D4**, including D4's 72-hour continuity campaign.
 
 ### `M4` — HA and disaster recovery
 
-**Scope.** `DEP-009`'s two-replica half, `WRK-016` (replica-safe worker volumes), `REL-003`'s owed
-DR rehearsal with measured RPO/RTO, `DBR-001`.
+**Scope.** `WRK-016` (replica-safe worker volumes), `REL-003`'s owed
+DR rehearsal with measured RPO/RTO, `DBR-001`, and **the production-scale HA bar itself, owned by
+D5** — not by `DEP-009`.
+
+★ *Corrected 2026-09-20: this scope line still named "`DEP-009`'s two-replica half" after that
+ticket was un-split and moved wholly to **A**. Leaving it would have told the M4 planner to re-open
+an approved `complete + CI-GREEN` ticket instead of naming the real D5 work owner. Same incomplete
+sweep as the amendment row below — one fact corrected in one place and not its siblings.*
 
 **Exit.** Full **D5**.
 
@@ -360,7 +469,7 @@ The first milestone passes only when one exact candidate has:
 5. explicit observation of the dormant-egress residual and credential-taxonomy checks, without an egress-enforcement claim;
 6. zero unresolved milestone-blocking findings and a recorded rollback rehearsal for the enabled path;
 7. a committed passing E5 a2 audit for that exact candidate, consuming both M1 campaign records and retaining every full-gate non-certification;
-8. committed `Result: pass` QA records for both named partial gates on the exact candidate; and
+8. committed `Result: pass` QA records for **each partial gate that milestone names** on the exact candidate (★ *was “both named partial gates” — phrased by count, it silently excluded the third gate; phrased by the naming relation it cannot go stale when a gate is added*); and
 9. a later committed, explicitly non-epic-completing `Decision: pass` milestone handoff by the named owner for the same candidate.
 
 Ticket shipment or an earlier mechanism run cannot substitute for items 2–9. Passing this milestone does not change E3–E7 to `complete`; their normative epic gates remain outstanding.
@@ -370,14 +479,65 @@ Ticket shipment or an earlier mechanism run cannot substitute for items 2–9. P
 >
 > | Criterion | `M1a` | `M1b` | Note |
 > |---|---|---|---|
-> | 1 — all required ticket results approved | ✅ | ✅ | **Unsatisfiable until D-10 lands**: `MIG-010` is a required (B) ticket that deliberately carries no result so `E7-F007` keeps an owner. File the successor first. |
+> | 1 — all required ticket results approved | ✅ *(scoped — see below)* | ✅ | **TWO tickets make the unscoped reading unsatisfiable**, not one. `MIG-010` (B) carries no result so `E7-F007` keeps an owner — D-10 files the successor. **`CLI-008` (M) may not carry a parent result WHILE IT STILL OWNS OPEN FINDINGS**, and none is required for M1: ten findings name it as `ticket` and none names a successor, so a parent result written today orphans all ten at once. ★ *Corrected 2026-09-20 (fifth round): this said “can NEVER”. The reason given is conditional — it stops being true once `CLI-008-LEDGER` re-points the findings to the link-scoped successors — so the prohibition cannot be permanent, and the E7 plan says so in as many words: “only then can `CLI-008` carry a result honestly.”* |
+
+> ★★★ **CRITERION 1 IS SCOPED PER MILESTONE — AND THE SETS ARE ENUMERATED BELOW, because a scope
+> nobody can check is an exemption.** *Corrected 2026-09-20 (second round): an earlier revision said
+> `M1a` requires results for "the tickets in ITS OWN set" without defining that set anywhere, so a
+> gate owner could have dropped `WRK-013`, `DAT-007` or `DEP-011` by declaring them out of scope
+> without contradicting a word of the criterion. That is the thing it claimed not to be.*
+>
+> **`M1a` required result set** — every one of these owes a `-result.md` before `M1a` passes:
+>
+> ★ **Each row says where its task is defined, because a set whose members resolve to nothing is
+> the same exemption in a longer form.** *Self-review 2026-09-20 found three of these six had no
+> task: one was cited too narrowly, and two had none at all — including `DEP-011-S5`, an id this
+> document had invented. Corrected below rather than left to be discovered at M1a Step 0.*
+>
+> ★★★ **THE THREE ✅ TASKS ARE DEFINED IN THE COMPANION CHANGE, NOT IN THIS ONE — so a repo-wide
+> search of THIS commit finds `DAT-007-S3` and `E7-1-JOURNEY-ARM` nowhere but this table, and that
+> observation is correct.** *Added 2026-09-20 (third review round), which raised exactly that.* The
+> epic implementation plans land as a **separate change on this same base branch**, merged
+> back-to-back with this one because the dependency runs both ways: those plans are written against
+> these dispositions, and these rows cite those plans. **A ✅ here is a claim about the merged base,
+> not about this commit** — stated plainly so nobody reads it as a claim this commit can support.
+>
+> ★ **If the companion change does not land, these three rows become `TO FILE` and `M1a` Step 0
+> files seven tickets instead of four.** That is the honest contingency; it is not the plan.
+>
+> | Ticket | Epic | Task defined | What it owes M1a |
+> |---|---|---|---|
+> | `MIG-009` | E10 | ✅ companion — E10 plan **§8.1**, *“wire the rollback drain to an honest operator trigger”* | the drain **and its trigger** (D-9), for criterion 6's rehearsal. ★★★ **The frozen `MIG-009-drain-result.md` DOES NOT SATISFY THIS ROW and may not be reused for criterion 1** — it records the trigger as deliberately `unwired`, which is the precise thing `M1a` must change. A **new** result is required. |
+> | `DAT-007-S3` | E5 | ✅ companion — E5 plan, *“prove the `/mcp` run-currency gate against real PostgreSQL”* (task + verify command + mutation rows) | the `/mcp` run-currency gate proven against real PostgreSQL |
+> | `E7-1-JOURNEY-ARM` | E7 | ✅ companion — E7 plan, *“promote the coding-journey clause when its two preconditions ship”* (S, ≤1 agent-day) | promote `E7-1-coding-journey` on a shipped CI boot. ★ Its E6 precondition (the adapter-manager image in a shipped boot) is **`DEP-011`'s deploy half, the `TO FILE` row below** — so this row is ordered behind it. |
+> | `WRK-013` | E4 | ❌ **TO FILE** | the startup reconciler — journey item 8's restart recovery; closes `E4-F009`. Its design is `Status: scoping` and **no plan carries a task for it**. |
+> | DEP-011's remaining deploy half | E6 | ❌ **TO FILE, scope unestablished** | the adapter-manager image + control-plane key in a **shipped** deploy. ★ An earlier revision called this `DEP-011-S5`; **that id does not exist** — no result doc, and neither the E6 nor E7 plan defines its task. Its exact remaining scope was explicitly recorded as *not established* by the plan drafting, and must be measured before it is assignable. |
+> | the parity bridges + the usage producer | E3 + E4 | ❌ **TO FILE** | the three consumers (`jobBudgetCostBridge`, `jobAuditBridge`, `jobOutputBridge`) **and** the `observeRun` producer — **D-8**. |
+>
+> ★★★ **So `M1a`'s first act is filing four tickets, not building.** Three of the six rows have no
+> task today. `M1a` cannot pass until every row carries a result, and a row cannot carry a result
+> until it has a task — which makes the gap visible rather than letting a gate owner discover it
+> mid-milestone.
+>
+> **`M1b` required result set:** `CLI-008-F1a`, `CLI-008-F3`, `CLI-008-F4`, `CLI-008-F5`,
+> `CLI-008-F6`, `CLI-008-C5`, `DAT-009-3c`, `DAT-009-3d`, `DAT-009-3e`. ★ `CLI-008-F1b` is **design-only — it is not in either
+> required set as a build item**, and no build may be assigned from it. It does still commit its own
+> `CLI-008-F1b-result.md` recording the design review, which is what the E7 plan requires of it.
+> ★ *Corrected 2026-09-20 (fifth round): this said F1b “produces a design, not a result” while the
+> E7 plan requires that record by name and requires committing it — an executor could not satisfy
+> both. Design-only constrains what F1b may PRODUCE AS WORK, not whether it records what it did.*
+> ★ The parent `CLI-008` produces **no result for M1**, and none may be created while it still owns
+> open findings (one written today would orphan ten at once). ★ *Corrected 2026-09-20 (fifth round):
+> this said “no result, ever”, which contradicts the E7 plan's “only then can `CLI-008` carry a
+> result honestly” — after `CLI-008-LEDGER` re-points the ten findings the bar lifts. It is not in
+> either required set either way.*
 > | 2 — fresh `M1-D1-SPINE` campaign | ✅ | ✅ | |
-> | 3 — fresh `M1-D2-CODING` campaign | ✅ *(mechanism verdict)* | ✅ *(both verdicts)* | one campaign may produce both records; the verdicts are recorded separately |
+> | 3 — fresh real-E2B campaign | ✅ **`M1a-D2-MECHANISM`** | ✅ **`M1-D2-CODING`** | two gates, two QA records, two `Result` fields. One campaign run may produce both, but a QA record has ONE normative `Result`, so the mechanism verdict needed its own gate — see above. |
 > | **4 — useful-agent capability evidence** | ✖ | ✅ | **The split lives here.** `M1a` is satisfied by a record reporting `capabilityProven=false`; `M1b` is not, and the bar is unchanged. |
 > | 5 — dormant-egress residual observed | ✅ | ✅ | |
 > | 6 — zero blocking findings + **recorded rollback rehearsal** | ✅ | ✅ | **D-9:** the rehearsal USES the `MIG-009` drain, so `E10-1-drain` must be wired — not a manual runbook. |
 > | 7 — committed passing E5 a2 audit | ✅ | ✅ | |
-> | 8 — `Result: pass` QA records for both named gates | ✅ | ✅ | |
+> | 8 — `Result: pass` QA records for its named gates | ✅ *(`M1-D1-SPINE` + `M1a-D2-MECHANISM`)* | ✅ *(those two + `M1-D2-CODING`)* | criterion 8 is scoped by the **naming relation**, not a count — so `M1a` owes two records and `M1b` three, and adding a gate never silently exempts it |
 > | 9 — non-epic-completing `Decision: pass` handoff | ✅ | ✅ | filed under `docs/replatform/milestones/<M>/handoffs/` per **D-11** |
 >
 > ★ **`E3-F037` is an `M1a` blocker under criterion 6** (**D-8**): a distributed attempt writes no
@@ -397,7 +557,7 @@ Nineteen disputes, each verified at `4df71dada` against source rather than inher
 | `DAT-009` | C → **M** | Slice 3 owns `createArtifactExportSequencer`, whose ONLY references are its own definition and the barrel re-export at `packages/worker-daemon/src/index.ts:178` — **zero production callers**. It is return-path link 3, which exit criterion 4 requires. |
 | `DAT-011` | C → **B** | LANDED and production-wired: `createSweepTrigger` imported at `server/src/routes/worker-control.ts:44`, constructed at `:137`. Exit criterion 3 demands "every terminal cleanup path"; M1 mints artifact grants. |
 | `MIG-009` | C → **B** | **D-9:** exit criterion 6's rollback rehearsal USES the drain. MIG-009 shipped it deliberately unwired (`E10-1-drain` dormant); wiring it gives criterion 6 a mechanism rather than a runbook. ★ **The apparent conflict with the register is resolved in D-9's favour — see below.** |
-| `DEP-009` | D → **split A + D** | Its shipped admission half is load-bearing on journey item 1 — `admitAttemptCapacity` is composed on the live submit path (`server/src/services/job-submission.ts:34,131,136`). Leaving a `complete + CI-GREEN` ticket under "re-enter through their own approved scope" would re-open evidence M1 depends on. Two-replica HA stays D. |
+| `DEP-009` | D → **A** *(whole ticket)* | Its shipped admission half is load-bearing on journey item 1 — `admitAttemptCapacity` is composed on the live submit path (`server/src/services/job-submission.ts:34,131,136`). ★ **And its two-replica half shipped too** — `complete + CI-GREEN`, live boot and `e6f-11` 6/6 on `d1-merge-train`, `control-plane-b` in the D1 compose. An earlier revision of this row said "Two-replica HA stays D"; that was the third of three sites stating the superseded split, and is corrected here. The production-scale HA bar is **D5's**, not this ticket's. |
 | `WRK-013` | A → **M** | `Status: scoping`, no result, `E4-F009` open. `StartupReconcilerDeps.leaseCandidates` still has no durable source. No claim exists, so there is no promise to correct. |
 | `DAT-007` | A → **M** | Its own result header: `PARTIAL — the core remote-reach is BLOCKED`. Already honest; the residual is build work on the tools-in path. |
 | `CLI-008` | A → **M** | No result doc; **ten** open findings name it as `ticket`. The largest unbuilt block in the original A. |
@@ -405,7 +565,9 @@ Nineteen disputes, each verified at `4df71dada` against source rather than inher
 | `FND-006`, `FND-007`, `FND-008` | A → **N** | Frozen reviewed ledgers, no clause, no finding, and live enforcement — `isCloudPluginExecutionBlocked` has 23 production call sites; FND-007's authority JSON is read by the always-on `policy` checker. |
 | `WRK-009`, `CLI-007` | A → **N** | Narrow and complete. `CLI-007` already carries its own caveat ("unblocks but does not promote E7-1") and resolved `E7-F001`. |
 | `MIG-001`, `MIG-004` | C / D → **X** | Zero files on disk, confirmed by `find`. |
-| `DAT-006`, `DAT-010`, `DSK-003`, `DSK-004`, `SVC-008`, `MIG-006` | C → **C1** | All shipped. C's "deferral preserves their owners" misdescribes finished, production-wired work — `DAT-010` sits on the milestone's own artifact-commit path (`server/src/services/artifact-commit.ts:42,272`). |
+| `DAT-006`, `DAT-010`, `DSK-003`, `DSK-004`, `SVC-008` | C → **C1** | All shipped. C's "deferral preserves their owners" misdescribes finished, production-wired work — `DAT-010` sits on the milestone's own artifact-commit path (`server/src/services/artifact-commit.ts:42,272`). |
+
+| `MIG-006` | C1 → **split C1 + C2** | Its routing seam shipped and is production-wired, but the ticket **has no `-result.md`**, a distributed crew run is *“MECHANISM-ONLY”*, and its own design says it is ***“not an end-to-end crew cutover”*** with the rollout dial default-OFF for crew. C1 forbids re-opening acceptance while `M2` schedules the cutover as build — one row could not say both. Seam stays C1; the cutover is C2, deferred to M2. This is the **second** declared split. |
 
 ### Not moved, but recorded
 

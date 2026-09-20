@@ -14,9 +14,27 @@
 > "leave both files untouched now" agrees with it — now by citation rather than by coincidence.
 >
 > **Required fields, named explicitly** (they are enforced, not stylistic): `**Supersedes:**`,
-> `**Decision:**` (a handoff records exactly `pass` / `fail` / `blocked_external`), `**Attempt:**`,
-> and `**Revision:**`. The filename contract is
-> `<YYYY-MM-DD>-<lane-or-gate>-<scope>-<sha12>-a<attempt>.md`.
+> `**Attempt:**`, the revision field — ★ spelled `**Revision:**` on a **QA record** and `**Reviewed
+> revision:**` on a **handoff**, *corrected 2026-09-20 (fourth round): this named only `Revision`,
+> which no handoff template field matches, so a handoff author following this list could not satisfy
+> both it and the template* — and then **one of two verdict fields, which are NOT
+> interchangeable** — a **QA record** carries `**Result:**`
+> ([`../templates/qa-result-template.md`](../templates/qa-result-template.md)) and a **handoff**
+> carries `**Decision:**` ([`../templates/handoff-template.md`](../templates/handoff-template.md)).
+> Both take `pass` / `fail` / `blocked_external`. ★ *Corrected 2026-09-20: this list named only
+> `Decision` while the procedure creates QA records too, so an author following it could omit the
+> template-required `Result` and produce a record the pass checks later in this document cannot
+> use.* The filename contract is
+> **two forms, not one** — ★ *corrected 2026-09-20 (second round): a single combined pattern was
+> given for both record types, and it was the QA form. A handoff author following it would have
+> produced a filename carrying a `<scope>` segment the authoritative layout does not define.*
+>
+> - **QA record:** `<YYYY-MM-DD>-<lane>-<scope>-<sha12>-a<attempt>.md`
+> - **Handoff:** `<YYYY-MM-DD>-<gate-or-merge-train>-<sha12>-a<attempt>.md` — **no `<scope>`
+>   segment**. For a milestone handoff the middle segment is the milestone id **or the gate slug**
+>   (`<YYYY-MM-DD>-<milestone-or-gate-slug>-<sha12>-a<attempt>.md`) — ★ *corrected 2026-09-20
+>   (fifth round): milestone-only would have made the `RTF-07`-required `e10-realtime-foundation`
+>   handoff unwritable under `milestones/M2-RTF/`.*
 >
 > **Status-flip authority.** This procedure produces evidence; it grants nothing. Only the
 > Integration Gate Owner changes an epic's status, and only on a committed `pass` QA record and a
@@ -115,7 +133,7 @@ Run focused ticket acceptance first, then the epic’s integrated campaign, then
 
 Infrastructure or external-dependency prevention before the campaign starts may be `blocked_external`. Once a required campaign starts, a scheduled external failure counts toward `fail`. There is no conditional pass and no waiver of a HARD invariant.
 
-For this proposal, keep `M1-D1-SPINE` and `M1-D2-CODING` distinct from full D1/D2 in filenames, scope, requirement maps, and decisions. Their records must identify every normative clause they do not certify. In particular, the accepted managed-shared DE-08 residual must be recorded as an unresolved conflict with H-06; it cannot be transformed into a full-gate pass by prose.
+For this proposal, keep **all three** M1 partial gates — `M1-D1-SPINE`, `M1a-D2-MECHANISM` and `M1-D2-CODING` — distinct from full D1/D2 in filenames, scope, requirement maps, and decisions. ★ *Corrected 2026-09-20 (third round): this line named only two, which pre-dates the mechanism gate.* ★★★ **`M1a-D2-MECHANISM` and `M1-D2-CODING` must also stay distinct FROM EACH OTHER**, and that is the distinction most likely to be lost: they are run on different candidates, they carry separate `Result` fields, and a mechanism pass is not evidence for the capability gate under any wording. Their records must identify every normative clause they do not certify. In particular, the accepted managed-shared DE-08 residual must be recorded as an unresolved conflict with H-06; it cannot be transformed into a full-gate pass by prose.
 
 ## 6. Reuse a shared campaign narrowly
 
@@ -129,7 +147,7 @@ The Integration Gate Owner reviews the committed passing QA record, canonical/su
 
 `pass` is allowed only when every required ticket result is approved and the exit-gate QA record says `Result: pass` for that revision. A partial-gate handoff may unlock a named dependent without completing the parent epic; its name and scope must make that limit explicit.
 
-A first-milestone handoff based on the two M1 partial gates must say it is non-promoting and must not use `epic-completion` in its name. Full E6/E7 completion remains unavailable until current D1/D2/H-06 pass or the normative gate document is separately amended and approved.
+**There are two milestone handoffs, not one.** The `M1a` handoff is based on `M1-D1-SPINE` + `M1a-D2-MECHANISM`; the `M1b` handoff adds `M1-D2-CODING`. Each must say it is non-promoting and must not use `epic-completion` in its name, and each gets its own record — an `M1b` handoff does not retroactively serve as `M1a`'s, nor the reverse. ★ *Corrected 2026-09-20 (third round): this said “a first-milestone handoff based on the two M1 partial gates”, singular, which left the `M1a` checkpoint with no handoff of its own.* Full E6/E7 completion remains unavailable until current D1/D2/H-06 pass or the normative gate document is separately amended and approved.
 
 ## Reopening rules
 
@@ -150,7 +168,35 @@ Reopening creates new findings, results where needed, QA attempts, and handoffs.
 1. Repair E2 evidence provenance. For E5, record the a1 immutable-record finding and reserve/approve the a2 audit plan, but do not commit an a2 result before its candidate campaigns exist.
 2. Perform current dependency/delta checks for historically complete E0–E2.
 3. Reconcile E3, E4, and E6 ticket ledgers and production reachability; close E5’s M1 implementation/build gaps; run focused acceptance; and freeze the E5 a2 seven-clause matrix, commands, topology, and owners.
-4. Finish E7 tools/workspace/output capability and freeze the exact shared M1 candidate.
-5. Run `M1-D1-SPINE`, then `M1-D2-CODING` on that same candidate, explicitly retaining the DE-08/H-06 conflict.
-6. Commit the passing E5 a2 audit as a consumer of both campaign records, then issue only the non-promoting milestone handoff. Per-epic completion handoffs wait for each epic’s normative gate.
-7. Regroom E8, E9, the later E10 lanes, and E11 as later milestones without losing their current slices or blockers.
+> ★★★ **STEPS 4–6 WERE REWRITTEN 2026-09-20 (third review round) BECAUSE THEY COULD NOT PRODUCE
+> THE `M1a` CHECKPOINT.** As written they made the operator *finish E7 tools/workspace/output
+> capability* **first**, then run only `M1-D1-SPINE` and `M1-D2-CODING`, then issue **one**
+> handoff. `M1a` exists precisely to be reached **before** output capability, so an operator
+> following the old order would never run `M1a-D2-MECHANISM`, never record it, and never produce
+> the pre-capability checkpoint — the gate would exist in the plan of record and be unreachable by
+> the only executable procedure that mints its evidence. *Creating the gate without updating this
+> list was, once again, correcting what the documents say and leaving what they tell you to do.*
+
+4. **Freeze the shared candidate and complete the `M1a` required result set.** This step does
+   **not** require E7 tools/workspace/output capability — requiring it here is what made `M1a`
+   unreachable. `M1a` Step 0 first files the tickets that set marks `TO FILE`.
+5. **Run `M1-D1-SPINE`, then `M1a-D2-MECHANISM`, on that same frozen candidate**, explicitly
+   retaining the DE-08/H-06 conflict. ★ `M1a-D2-MECHANISM` is satisfied by a record reporting
+   `capabilityProven=false`; that is the gate’s defining property, not a waiver.
+6. **Issue the `M1a` milestone handoff** — non-promoting, and naming both campaign records above.
+   `M1a` is complete here. Per-epic completion handoffs still wait for each epic’s normative gate.
+7. **Then** finish E7 tools/workspace/output capability (`CLI-008` Unit F links, `DAT-009` 3c–3e)
+   and freeze the `M1b` candidate.
+8. **Run ALL THREE gates on the `M1b` candidate** — `M1-D1-SPINE`, `M1a-D2-MECHANISM`, then
+   `M1-D2-CODING`. `M1-D2-CODING`'s `Result` is the useful-capability verdict, and a run reporting
+   `capabilityProven=false` **fails** it.
+
+   ★★★ **THE M1a RECORDS MAY NOT BE CARRIED FORWARD, and an earlier revision of this step said to
+   run only `M1-D2-CODING`.** *Corrected 2026-09-20 (fifth round).* `M1b` inherits every `M1a` exit
+   criterion, and criteria 2 and 3 each require a **fresh** campaign; every gate record attests
+   **one exact candidate**, and step 7 freezes a NEW one. Reusing `M1a`'s spine and mechanism
+   records would attest the older revision, so the procedure as written could not produce a valid
+   `M1b` handoff at all. `M1a` is a checkpoint on the way, not a set of credits `M1b` spends.
+9. Commit the passing E5 a2 audit as a consumer of the campaign records, then issue the **`M1b`**
+   milestone handoff — a second handoff, not the same one.
+10. Regroom E8, E9, the later E10 lanes, and E11 as later milestones without losing their current slices or blockers.
