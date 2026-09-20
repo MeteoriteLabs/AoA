@@ -271,6 +271,10 @@ a sentence.
 3. E0-F010's trail gains the ruling reference; DE-03's status does not move (enrollment and
    session-issue conjuncts still have no writer — unchanged from the filed paper's (c) analysis).
 4. A follow-on task is filed for option A so the deferral has an owner-visible handle.
+   ★ **RESOLVED 2026-09-20:** that follow-on decision shipped as
+   `docs/replatform/DECISION-REQUEST-guard-platform-authority-denial-sink.md` and was **RULED + ENACTED
+   Option B** (accept the deny-site gap, made honest) — the `guardPlatformAuthority` denial-sink deferral is
+   **closed**, not aging. See that paper's enactment block; the DE-18/DE-04 register rows carry the disposition.
 
 ---
 

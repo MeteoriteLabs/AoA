@@ -384,7 +384,14 @@ measured rather than inherited:
   `target_revoked` throws + this seventh `recordProof` site) are UNBLOCKED; build pending, nothing
   delivered by the ruling itself. `guardPlatformAuthority`'s two shared-platform throws are NOT
   unblocked by it: they are attributed to **DEFERRED-DECISION: guardPlatformAuthority denial sink**
-  (a named, owner-visible future decision). No status moves here; DE-03's enrollment and
+  (a named, owner-visible future decision).
+  ★ **SUPERSEDED 2026-09-20 — that deferral is now RULED + ENACTED (Option B,
+  `docs/replatform/DECISION-REQUEST-guard-platform-authority-denial-sink.md`):** G1 reclassified as a
+  data-integrity fallthrough (not an authority denial), G2's deny-site gap accepted on the session-arm
+  adjacency (`security.denied.worker_session`) with the adjacent-not-identical residual window named in the
+  DE-18 and DE-04 register rows; the frozen JOB-003 contract is NOT amended (Option A rejected). Register+docs
+  only — no finding status moves, no code wired, `deliveryStatus` stays `partial` on both crossings.
+  No status moves here; DE-03's enrollment and
   session-issue conjuncts still have no writer. Both rows' full per-site evidence, the four DE-06 sites actually
   PROVOKED versus the two pinned as structurally unreachable, and the mutation matrix are in
   `docs/architecture/distributed-execution-threat-controls.json`.

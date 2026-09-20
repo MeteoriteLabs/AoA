@@ -1260,10 +1260,12 @@ the predicate, which no probe touches).
 
 ## 13. THE FIFTH OPTION, RECOVERED — *"do not build it"* — **and it was NEVER ADVERSARIALLY ATTACKED**
 
-> **★ UPDATED 2026-09-20 — it HAS now been attacked; see §13.4.** The heading is preserved for
-> provenance. The §13.2 pass ran (a 5-agent adversarial workflow grounded at HEAD): the option survives
-> **only as REPLACE**, never as delete, and that replace is **already enacted** (W21 / PR #422 + the
-> `E7-D-CAPABILITY-DISCLOSURE` ruling), so its live disposition is **SUPERSEDED**. §13.3's guardrails stand.
+> **★ UPDATED 2026-09-20 — it HAS now been attacked; see §13.4. ★ RATIFIED 2026-09-20 — the founder ruled
+> SUPERSEDED; see §13.4.3.** The heading is preserved for provenance. The §13.2 pass ran (a 5-agent adversarial
+> workflow grounded at HEAD): the option survives **only as REPLACE**, never as delete, and that replace is
+> **already enacted** (W21 / PR #422 + the `E7-D-CAPABILITY-DISCLOSURE` ruling), so its live disposition is
+> **SUPERSEDED** — now **ratified** as the terminal disposition. `capabilityProven` stays dormant-and-printed
+> off-by-default, clause-6 arm 2 is **not** deleted, `--require-capability` is **not** armed. §13.3's guardrails stand.
 
 ★★★ **READ THE WARNING BEFORE THE ARGUMENT.** A fifth option was generated during the 26-agent wave —
 *"DO NOT BUILD IT: retire the capability bar, delete the arm that lies about it, and spend the next
@@ -1398,6 +1400,16 @@ enacted, so its live disposition is SUPERSEDED, not open-and-undecided.**
   widening is recorded REFUTED at `store.ts:490-494`).
 
 #### 13.4.3 Recommendation (for the founder to rule; §13.3 stands)
+
+> **★ RATIFIED 2026-09-20 — the founder RULED this recommendation: close the fifth option as SUPERSEDED.**
+> The disposition below is now an **enacted ruling**, not an open recommendation. Concretely ratified: keep
+> `capabilityProven` **dormant-and-printed, off-by-default**; **do NOT delete clause-6 arm 2** (W21 / PR #422
+> already made it honest — deleting converts a now-honest judge into "no judge", the worse state, and discards
+> the W21 fix); **do NOT arm `--require-capability`** (it would mint an always-red gate nobody can pass —
+> E7-F018). The revisit gate is unchanged (both E7-F018 closed AND the rollout dial armed in a real
+> deployment). This ratification **takes no build action and closes no finding**: E7-F003 stays honestly OPEN
+> (its close criterion carries a keyed-real-E2B conjunct), clause-6 arm 2 stays in place, and §13.3's guardrails
+> stand. It converts a recommendation into a settled disposition; it does not delete, wire, or arm anything.
 
 **Close the fifth option as SUPERSEDED.** Its only sound form — "replace the bar with an honest
 informational marker, do not delete" — is ALREADY enacted by W21 (PR #422) + the founder's

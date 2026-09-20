@@ -7,7 +7,44 @@ two shared-platform throws are attributed to DEFERRED-DECISION: guardPlatformAut
 named, owner-visible future decision, NOT accepted-as-gap; their blocker is the pinned helper/call
 shape, not the ack drain)"*).
 **Date:** 2026-09-20. **Measured at:** `95b3ba97d` (the `docs/replatform-program` HEAD this paper ships on).
-**Status:** OPEN — awaiting a founder ruling. **Changes no finding's status and wires no code.**
+**Status:** ★ **RULED + ENACTED 2026-09-20 (Option B).** The founder ruled **(B) — accept the deny-site gap,
+made honest** (§4). This paper is now the option space of record; the ruling and what was enacted are in the
+block immediately below. **Changes no finding's status and wires no code.**
+
+---
+
+## ★ RULED + ENACTED 2026-09-20 — Option B, the register-only enactment
+
+The founder **RULED Option (B)** on 2026-09-20: G1 and G2 are **not** amended; the register is amended to say
+precisely why the deny-site gap is acceptable, split by throw. This is the **register + docs only** enactment
+of that ruling (the guard-sink track carries no production code — B is honest-the-gap, not a code change).
+
+**Enacted (this is what moved):**
+
+1. **DE-18 `audit` clause** (`docs/architecture/distributed-execution-threat-controls.json`) — the deferral
+   attribution *"attributed to DEFERRED-DECISION: guardPlatformAuthority denial sink"* is **replaced** by the
+   ruled disposition: **G1** reclassified as a **data-integrity fallthrough** (unrecorded by the same
+   poll-post-authority-data-integrity rule already stated there, not an exception carved for this arm); **G2**
+   on its **generation-cutoff conjunct** (DE-18's) accepted on the **session-arm adjacency**
+   (`security.denied.worker_session`), with the **adjacent-not-identical residual window** named (a guard throw
+   with no co-firing session refusal writes no row). `deliveryStatus` stays `partial`; no cohort/count change.
+2. **DE-04 worker-authority-currency arm** (same file) — a new **★ GUARD-SINK DENY-SITE** sentence records
+   **G2**'s **non-generation** authority-currency conjuncts (which file under DE-04, not DE-18) accepted on the
+   same session-arm adjacency, the same residual window, and G1 as data-integrity. `deliveryStatus` stays
+   `partial`; no cohort/count change.
+3. **The `DEFERRED-DECISION: guardPlatformAuthority denial sink` follow-on task** (the JOB-003 §5.4 handle) is
+   **CLOSED as ruled-B**. The named deferral no longer ages; there is nothing left for a future unit to build.
+
+**Deliberately NOT taken here (named, not silent):** the paper's §5.2 — *"Update `job-leasing.ts:578-587` from
+the deferral note to the ruling reference"* — is a **one-line production-source comment touch** and is **out of
+scope for this register-only enactment** (the guard-sink track edits no `.ts`). The `job-leasing.ts`
+`guardPlatformAuthority` comment therefore still reads *"DEFERRED-DECISION"* at enactment time; that source-comment
+refresh is a **follow-on** for whoever next touches `job-leasing.ts`, and it is a comment-only refresh — no
+behaviour, no contract, no finding. The register (amended here) is the authority on the disposition.
+
+**Not moved (unchanged by the ruling):** no finding status; DE-18 and DE-04 stay `partial`; E0-F010 and E0-F013
+untouched; nothing enrolled in `scripts/gate-clause-wiring.json`; the frozen JOB-003 contract **not** amended
+(Option A rejected).
 
 This paper is the **option-A paper** that
 [`DECISION-REQUEST-job003-ack-drain.md`](./DECISION-REQUEST-job003-ack-drain.md) §4 promised when the
@@ -243,9 +280,10 @@ this recommendation is overturned.** The measurement in §1–§2 stands either 
 
 ---
 
-## §5 — Consequential edits (none taken by this paper)
+## §5 — Consequential edits — ★ (B) RULED + ENACTED 2026-09-20 (see the enactment block up top)
 
-If **(B)** is ruled:
+If **(B)** is ruled — **RULED; edits 1, 3, 4 TAKEN as register+docs; edit 2 named as a follow-on, see the
+enactment block at the head of this paper:**
 
 1. Amend DE-18's `audit` clause and DE-04's worker-authority-currency arm in
    `distributed-execution-threat-controls.json`: replace *"attributed to DEFERRED-DECISION:
@@ -280,7 +318,7 @@ option space of record.
 >
 > Choose ONE:
 >
-> - [ ] **(B) — RECOMMENDED.** Accept the deny-site gap, made honest: G1 reclassified as a data-integrity
+> - [x] **(B) — RECOMMENDED — ★ RULED + ENACTED 2026-09-20.** Accept the deny-site gap, made honest: G1 reclassified as a data-integrity
 >       fallthrough (unrecorded by the poll-data-integrity rule); G2's deny-site gap accepted on the
 >       session-arm adjacency (`security.denied.worker_session`), with the register naming the
 >       adjacent-not-identical residual window. Amend DE-18/DE-04 accordingly; close the deferral's §5.4
@@ -295,7 +333,7 @@ option space of record.
 > - [ ] **(D)** REJECTED unless explicitly overridden — an out-of-band conduit into the helper is option A
 >       without its review (§2).
 >
-> Signed: ____________________  Date: ____________
+> Signed: **Ruled by the founder via Claude session** — Option (B)  Date: **2026-09-20**
 
 **No finding status is changed by this document.** DE-18 and DE-04 remain `partial`; E0-F010 and E0-F013
 are untouched; nothing is enrolled in `scripts/gate-clause-wiring.json`.
