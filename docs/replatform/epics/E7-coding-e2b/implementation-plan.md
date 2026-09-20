@@ -770,15 +770,41 @@ unlinked metadata-only row — both dishonest.
 4. **What it must NOT do** — mint a path the sandbox never reported, or write a `task_outputs` row
    whose `artifact_id` resolves to nothing.
 
-**Only once that is recorded** does the build half apply — modify
+★★★ **F5 MUST NOT ADD A FIFTH, POST-TERMINAL `task_outputs` WRITER — an earlier revision of this
+build step did exactly that, and it cannot work.** *Corrected 2026-09-20 (tenth round), verified at
+source.*
+
+`jobOutputBridge.projectAcceptedOutput` is **the sole distributed-output writer**, and it writes
+the row **plus an `output_projection` receipt in ONE tenant transaction** while *“the attempt stays
+RUNNING”* (`server/src/services/job-output-bridge.ts:11`). It is fence-bound: once the attempt is
+finalized the active-fence guard throws **`attempt_terminal`** (`:18`). And the capability
+verifier's admission is explicit that there is *“exactly one writer”*
+(`server/src/services/e7-distributed-run-verifier-store.ts:539`).
+
+So a projector ordered **after** the terminal has only two outcomes, and both are wrong:
+
+1. it calls the bridge and **fails with `attempt_terminal`**, because the fence is already closed; or
+2. it bypasses the bridge and writes directly — producing an **uncounted row with no
+   `output_projection` receipt**, which the verifier does not admit, and leaving **two writers
+   overlapping the same distributed-run scope** at the M2 cutover.
+
+★ **The build must therefore materialize the artifact and invoke
+`jobOutputBridge.projectAcceptedOutput` BEFORE terminal projection**, inside the live fence, so the
+row and its receipt stay in one transaction and the single-writer property holds. That ordering is
+part of the design this ticket owes; it is not an implementation detail to be settled later.
+
+**Only once that design is recorded** does the build half apply — modify
 `server/src/services/canary-terminal-projection.ts`, modify
-`server/src/services/canary-run-projector.ts` (a fifth step ordered **after** the terminal and
-**before** the run-summary comment), create
+`server/src/services/canary-run-projector.ts` (the output step ordered **before** the terminal, per
+the correction above), create
 `server/src/__tests__/canary-output-projection.integration.test.ts`, and extend the two existing
 projector suites.
 
-**Failure behavior:** best-effort and ordered last-but-one: a projection failure logs and does not
-retract the terminal, does not fail the attempt, and does not block the run-summary comment. A run
+**Failure behavior:** ★ *to be set by the ordering decision above — a step that runs **before** the
+terminal cannot be described as “ordered last-but-one”, and a bridge call that fails inside the live
+fence is not the same event as a post-terminal projector failing.* The surviving invariants: a
+projection failure must not retract a durable terminal, must not silently produce a row without its
+`output_projection` receipt, and must not block the run-summary comment. A run
 with no `artifact_prepared` events projects nothing and writes no row — asserted, because a
 projector that writes an empty row on every run is the vacuity trap.
 
