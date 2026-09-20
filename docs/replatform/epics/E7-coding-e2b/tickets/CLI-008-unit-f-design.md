@@ -364,6 +364,15 @@ the judge, and §4 is three failed attempts at exactly those.
    local-FS walk in `build-manifest.ts`, fail-closed on any path outside the root or failing
    `isSafeWorkspacePath`. It is **inert by construction**: nothing re-exports it from
    `snapshot/index.ts` and nothing calls it, because link 3 is still unbuilt.
+   ★★★ **CORRECTED 2026-09-20 — that capture half is a LOCAL-LANE tool and must NOT be composed
+   on the E2B or networked lane.** `captureSandboxEntries` calls `readFile` and hashes the bytes
+   **in the daemon**, contradicting this repo's own sequencer contract (`artifact-export.ts`:
+   *"GRANTS OUT, NEVER BYTES … the bytes go sandbox → provider → object storage and never touch
+   the daemon"*). The honouring route already exists: the provider's `digestArtifact`
+   (metadata-only) + `exportArtifact` under a minted grant. The module is **inert** (zero callers),
+   so nothing is affected — but the capture half of link 1 is **not** solved for the E2B lane, and
+   describing it as solved without that qualifier was wrong.
+
    ★★★ **The EMIT half is what remains, and it is the half the three refutations in §4 are
    about**: nothing yet tells the agent to write to that root, so `captureSandboxEntries` has
    nothing to walk on a real run. **This flips no counter and closes no finding.** Do not read

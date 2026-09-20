@@ -1,5 +1,43 @@
 # E7 — Coding/CLI on E2B — Implementation Plan
 
+> ★★★ **CORRECTED 2026-09-20 after review — TWO OF THE LINK CLAIMS WERE WRONG, AND ONE OF THEM
+> WAS MINE ABOUT WORK I HAD ALREADY MERGED.** Both were found by adversarial review of this plan
+> and both are verified at source. They do not change what Unit F must achieve; they change the
+> route, and they move link 5 out of "ordinary engineering".
+>
+> **(1) `captureSandboxEntries` is the WRONG TOOL for the E2B lane — it pulls bytes through the
+> daemon.** `capture-sandbox.ts` does `readFile(absolute)` and then `sha256(bytes)`, so every
+> captured file's bytes transit the worker daemon. That contradicts the sequencer's own stated
+> contract at `artifact-export.ts`: *"**GRANTS OUT, NEVER BYTES** … the bytes go sandbox →
+> provider → object storage and **never touch the daemon**, which is dependency-pinned (E4-D01)
+> precisely so it does not handle them."* The provider-side route that honours it already exists
+> and is real — `E2bSandboxProvider.digestArtifact` returns `{sha256, sizeBytes}` (**metadata
+> only**) and `exportArtifact` re-hashes and PUTs, with `artifactExportMode = "grant_upload"`.
+>
+> ★ **So the capture half of link 1 is NOT solved for the lane that matters.** It is a
+> **local/desktop-lane** tool — the sandbox analogue of DAT-001's local-FS walk, correct where the
+> daemon legitimately holds the filesystem — and it is **inert** (zero callers, not re-exported),
+> so nothing in production is affected. But it must not be composed on the E2B or networked lane,
+> and an earlier record of mine describing it as "link 1's capture half" without that qualifier
+> was wrong.
+>
+> ★ **No guard catches this.** `check-worker-daemon-boundary` passes, because it enforces a
+> *dependency* boundary; the *data-plane* rule is prose in a docstring. A guard for it is worth
+> considering and is not in this plan's scope.
+>
+> **(2) Link 5 is NOT ordinary engineering — it needs a designed projection contract.** The frozen
+> `artifactPreparedPayloadV1Schema` is `{artifactId, kind}`, `.strict()` — **no path** — and the
+> projector says so itself: *"`artifact_prepared` carries an artifactId and a kind, never a path …
+> so there is no honest file list to build."* Worse, that `artifactId` identifies a
+> **`job_artifacts`** row while `task_outputs.artifactId` references the separate **`artifacts`**
+> table. So F5 owes a **lookup and materialization contract** (`job_artifacts` → path, and
+> `job_artifacts` → `artifacts`) before any projector work, and the frozen v1 wire constrains how.
+>
+> **What survives unchanged:** link 2 is built; the export **sequencer** (`createArtifactExportSequencer`)
+> is built and correct — it already implements the metadata-first route; link 4 remains ordinary.
+> **What changes:** F3's route (metadata-only enumeration + provider digest/export, never
+> `captureSandboxEntries`), and F5's classification (**designed contract first**, not ordinary work).
+
 **Plan status:** `draft` — not approvable until (a) the operator approves the read-back, (b) the
 `scope-triage.md` dispositions this plan executes are reflected in an owner-approved amendment, and
 (c) the shared decisions below (E7-D01…E7-D07) are ratified. This plan covers **only** the E7 work
