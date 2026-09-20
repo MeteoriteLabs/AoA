@@ -2233,3 +2233,43 @@ which is exactly the visibility this finding said was three short. Per the owner
 this finding's `scripts/finding-ownership.json` key was deleted in the same commit. (The `E4-F018`
 cross-reference "that omission is E3-F038" stays as written — it is a resolved finding's historical
 pointer to where the omission was tracked.)
+
+---
+
+## E3-F039 - JOB-003's immutable-tick-deadline integration case is FLAKY on macOS, proven by two runs of the same code
+
+**Status:** open
+**Severity:** LOW (one advisory-lane test; a flake, not a regression)
+**Filed:** 2026-09-21 (M0 unit 2), proven across `cross-platform-weekly` runs `35532248020` and
+`35533383104`.
+
+**What.** `job-leasing.integration.test.ts > JOB-003 atomic poll/offer and ready hints > enforces
+the immutable tick deadline inside real PostgreSQL cleanup and delivery statements` failed once on
+`test-cross-platform (macos-latest, 4)`.
+
+★★★ **IT IS A FLAKE, AND THAT IS PROVEN RATHER THAN ASSUMED.** The same shard on the same
+platform:
+
+| Run | macOS shard 4 | Note |
+|---|---|---|
+| `35532248020` | **success** | |
+| `35533383104` | **failure** | this case |
+
+The only source change between those two runs is to `browser-runtime/path-adapter.test.ts` and
+`crew-workspace-resolution.test.ts` - neither is this file, and neither adds or removes a test file,
+so vitest's `--shard` partition is identical across both. The same partition, on the same platform,
+against the same code for this file, produced both results. That is the definition of a flake.
+
+★ **Why it is filed rather than chased.** This case drives a **real PostgreSQL** and asserts a
+DEADLINE. Deadline assertions against a real database on a shared hosted runner are timing-sensitive
+by construction, and this repo has already recorded the symmetric failure once: *"An assertion that
+holds only on slow hardware is a flake, not a check."* Re-running until it is green would teach the
+lane's readers nothing, and tightening or loosening the deadline would trade one platform's flake
+for another's.
+
+**What would close it.** Make the deadline assertion independent of wall-clock scheduling - assert
+against the database's own clock, or against a deadline the test sets rather than one it races. It
+is the same remedy shape as `E5-F005`, one epic over.
+
+**Blocks gate:** no. It is not in any required lane: the Linux `verify` shards are the required gate
+and this case is green there.

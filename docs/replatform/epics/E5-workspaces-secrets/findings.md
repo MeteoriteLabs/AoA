@@ -296,5 +296,16 @@ the survivor's listen moment and the earlier service's exit can be sequenced exp
 being scheduled against a wall clock. Then the assertion tests the fence arm because the fence arm
 is the one the test arranged, on every platform.
 
-**Blocks gate:** no. It is one advisory test, and the batch-rejection behaviour it exercises is
-observed on all three platforms - only the error TYPE differs.
+★★★ **AMENDED 2026-09-21 - IT IS A FAMILY OF TWO, NOT ONE CASE.** Run `35533383104` turned up
+a sibling with the same shape on Windows:
+`startRuntimeServicesForWorkspaceControl > validates the whole batch before committing any service`
+(`server/src/__tests__/runtime-service-control.test.ts`). Same subject - batch validation and
+rollback over REAL spawned services - same platform, same single-test failure. Filing it as a second
+finding would have split one cause across two records, so it is named here instead.
+
+★ **That makes the fix scope clearer, not larger.** Both cases race real child processes against a
+wall clock to reach a specific arm. Injecting the ordering fixes the family; widening a timeout
+fixes neither, because the two cases want opposite timings.
+
+**Blocks gate:** no. These are two advisory tests, and the batch-rejection behaviour they exercise
+is observed on all three platforms - only the error TYPE, or which arm is reached, differs.
