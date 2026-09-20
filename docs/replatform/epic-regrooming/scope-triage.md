@@ -410,6 +410,19 @@ Nineteen disputes, each verified at `4df71dada` against source rather than inher
 ### Not moved, but recorded
 
 - **`MIG-010` (B) had a structural deadlock.** It has no `-result.md` deliberately — adding one would retire it as `E7-F007`'s owner exactly when that finding needs one — while exit criterion 1 requires results for every REQUIRED ticket. **D-10: file a successor for `E7-F007`** so MIG-010 can land a result honestly. Until that successor exists, criterion 1 is unsatisfiable.
+- ★★★ **`CLI-008` has the SAME structural deadlock as `MIG-010`, and D-10 did not cover it.**
+  Measured 2026-09-20: **ten** open findings name `CLI-008` as their `ticket` — `E7-F003`, `F015`,
+  `F016`, `F017`, `F023`, `F024`, `F026`, `F027`, `F032`, `F033` — and **none names a successor**.
+  `check-finding-ownership.mjs` treats a ticket as complete once any `<ID>*-result.md` exists, and
+  a shipped owner must name a real on-disk, non-self, unshipped successor or the guard reds
+  (`successor_already_complete` / the E4-F013 chain). **So creating `tickets/CLI-008-result.md`
+  would orphan ten findings in a single commit.**
+
+  The remedy is the **link-scoped split** the E7 implementation plan now carries: file the Unit F
+  link tickets as real successors, re-point the ten findings onto them, and **never create a parent
+  `CLI-008` result doc**. That is stronger than D-10's single-successor remedy because it also
+  breaks the ticket into buildable units — but the constraint is the same, so record it the same
+  way: `CLI-008` is a ticket that **cannot be marked complete as a unit**.
 - **`DBR-001` (C2) design text is stale.** It says "**no `aoa db:restore` command exists**"; the command shipped in #484 (`cli/src/commands/db-restore.ts`). Its DR scope placement is still correct.
 - **`MIG-005` / `MIG-007` are NOT M1 prerequisites.** The milestone journey is `task_run`-only. A sibling document bundled them with the parity bridges into one pre-M1 stage; that bundling is corrected in [`RECONCILIATION-2026-09-20.md`](RECONCILIATION-2026-09-20.md). The **bridges** are M1 work (disposition A, journey item 7); the **cutovers** are Retained.
 - ★★★ **`E10-1-drain`: the register said REL-005 owns the trigger, and that premise is STALE.**
