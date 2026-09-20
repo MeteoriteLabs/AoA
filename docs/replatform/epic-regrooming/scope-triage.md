@@ -238,7 +238,7 @@ claim, and unlocks only `M1a`.
 |---|---|---|---|---|
 | **M0** | Record + lane health | the records match the code, and every lane a milestone will cite is green and read | *(no gate — entry criteria for M1a)* | nothing |
 | **M1a** | The spine | mechanism: one org, one CP, one worker, real E2B, in a **shipped CI boot** | `M1-D1-SPINE` + **`M1a-D2-MECHANISM`** | M0 |
-| **M1b** | Useful capability | an agent's output reaches the founder | **`M1-D2-CODING`** *(whole)* | M1a, `CLI-008` Unit F, `DAT-009` 3c–3e |
+| **M1b** | Useful capability | an agent's output reaches the founder | **all three, fresh on the `M1b` candidate** — `M1-D1-SPINE` + `M1a-D2-MECHANISM` + `M1-D2-CODING` ★ *corrected twelfth round: this named only `M1-D2-CODING`. Criterion 8 derives the required passing records from **the gates a milestone names**, so naming one here permitted an `M1b` handoff omitting the two exact-candidate records the recovery procedure requires.* | M1a, `CLI-008` Unit F, `DAT-009` 3c–3e |
 | **M2** | Sink cutover | the legacy in-process paths stop owning execution | `M2-CUTOVER` *(to be named)* | M1b |
 | **M2-RTF** | Realtime foundation | reconnect-safe realtime, proven on one revision | **`E10-REALTIME-FOUNDATION`** | M1b *(its three input tickets are already shipped)* |
 | **M3** | Workload breadth | browser and service workloads run distributed | full **D3** + full **D4** | M2 **and `E10-REALTIME-FOUNDATION`** |
@@ -563,8 +563,13 @@ Ticket shipment or an earlier mechanism run cannot substitute for items 2–9. P
 > until it has a task — which makes the gap visible rather than letting a gate owner discover it
 > mid-milestone.
 >
-> **`M1b` required result set:** `CLI-008-F1a`, `CLI-008-F3`, `CLI-008-F4`, `CLI-008-F5`,
-> `CLI-008-F6`, `CLI-008-C5`, `DAT-009-3c`, `DAT-009-3d`, `DAT-009-3e`. ★★★ **`CLI-008-F1b`'s result IS in the `M1b` set** — it is
+> **`M1b` required result set:** `CLI-008-F1a`, **`CLI-008-F1b`**, `CLI-008-F3`, `CLI-008-F4`,
+> `CLI-008-F5`, `CLI-008-F6`, `CLI-008-C5`, `DAT-009-3c`, `DAT-009-3d`, `DAT-009-3e`.
+> ★★★ *`CLI-008-F1b` added to the LIST twelfth round: the sentence after it already said its result
+> is required and mandatory before `M1b` passes, while the enumeration omitted it — and the
+> enumeration is the mechanically checkable artefact. A coverage check reads the list, not the
+> prose, so this inconsistency would have let the output-mechanism design review be dropped by
+> exactly the kind of automated check written to prevent that.* ★★★ **`CLI-008-F1b`'s result IS in the `M1b` set** — it is
 > **design-only as to BUILD** (no build may be assigned from it), but its
 > `CLI-008-F1b-result.md` is required and must be **approved before `M1b` passes**.
 > *Corrected 2026-09-20 (eighth round): an earlier revision listed F1b as “not in either set”, which
@@ -585,7 +590,7 @@ Ticket shipment or an earlier mechanism run cannot substitute for items 2–9. P
 > | **4 — useful-agent capability evidence** | ✖ | ✅ | **The split lives here.** `M1a` is satisfied by a record reporting `capabilityProven=false`; `M1b` is not, and the bar is unchanged. |
 > | 5 — dormant-egress residual observed | ✅ | ✅ | |
 > | 6 — zero blocking findings + **recorded rollback rehearsal** | ✅ | ✅ | **D-9:** the rehearsal USES the `MIG-009` drain, so `E10-1-drain` must be wired — not a manual runbook. |
-> | 7 — committed passing E5 a2 audit | ✅ | ✅ | |
+> | 7 — committed passing E5 audit **for that milestone's candidate** | ✅ **`a2`** | ✅ **`a3` or later** | ★★★ *Corrected twelfth round: both cells said `a2`. This table is the **executable allocation** of the nine criteria, so leaving it unchanged authorised an `M1b` handoff whose audit attests the older `M1a` revision — exactly what criterion 7 and the recovery procedure had already been corrected to forbid. `M1b` freezes a different candidate; an audit attests one exact revision, and a later attempt links by `Supersedes`.* |
 > | 8 — `Result: pass` QA records for its named gates | ✅ *(`M1-D1-SPINE` + `M1a-D2-MECHANISM`)* | ✅ *(those two + `M1-D2-CODING`)* | criterion 8 is scoped by the **naming relation**, not a count — so `M1a` owes two records and `M1b` three, and adding a gate never silently exempts it |
 > | 9 — non-epic-completing `Decision: pass` handoff | ✅ | ✅ | filed under `docs/replatform/milestones/<M>/handoffs/` per **D-11** |
 >
