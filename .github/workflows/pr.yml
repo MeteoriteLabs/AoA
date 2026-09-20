@@ -1735,6 +1735,9 @@ jobs:
           R_SCHEMA: ${{ needs.changes.outputs.schema }}
           R_FIXTURES: ${{ needs.changes.outputs.fixtures }}
           R_PROVIDER: ${{ needs.changes.outputs.provider }}
+          # The PR's own labels. Empty on a `push` event (no pull_request context),
+          # which is why the block below cannot fire outside a PR.
+          R_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
         run: |
           echo "code=$R_CODE | changes=$R_CHANGES policy=$R_POLICY brand-check=$R_BRAND worker-protocol-contract-bytes=$R_WP_BYTES verify=$R_VERIFY lint=$R_LINT e2e=$R_E2E e2e-pgvector=$R_E2E_PGVECTOR migrations=$R_MIGRATIONS browser=$R_BROWSER"
           echo "distributed-contract=$R_DC | protocol=$R_PROTOCOL schema=$R_SCHEMA fixtures=$R_FIXTURES provider=$R_PROVIDER"
@@ -1776,5 +1779,27 @@ jobs:
           if [ "$contract_changed" = "true" ]; then
             [ "$R_DC" = "success" ] || { echo "::error::distributed-contract=$R_DC (required for protocol/schema/fixtures/provider changes)"; fail=1; }
           fi
+          # ── The merge block ────────────────────────────────────────────────
+          # A PR carrying `do-not-merge` must not be mergeable, and the ONLY thing
+          # branch protection consults is this check — so the block belongs here
+          # rather than in a new required context (adding one would need a
+          # settings change, and a required check that ever SKIPS strands PRs on
+          # "Expected — Waiting for status" forever).
+          #
+          # WHY THIS EXISTS: #323 carries 1330 commits and the title "[WIP
+          # integration, do not merge]". While it was CONFLICTING, git refused the
+          # merge and that refusal was doing real safety work BY ACCIDENT.
+          # Resolving the conflict (so the branch could finally be verified
+          # against main) removed it. This makes the same guarantee deliberate.
+          #
+          # It is a LABEL, not the title: a label is explicit, toggleable by the
+          # owner without a force-push, and cannot be changed by an editor who
+          # only meant to reword a heading.
+          case ",$R_LABELS," in
+            *,do-not-merge,*)
+              echo "::error::the \`do-not-merge\` label is present — remove it when this PR is genuinely ready to merge"
+              fail=1
+              ;;
+          esac
           [ "$fail" = "0" ] && echo "ci-required: PASS"
           exit $fail
