@@ -344,7 +344,7 @@ reviewer may consume — and each is explicitly non-promoting:
 | Partial record | What it supports | What it explicitly does **not** do |
 |---|---|---|
 | `M1-D1-SPINE` | one-CP/one-worker lifecycle evidence | *"not D1 … does not satisfy D1-00's at-least-two-worker topology, does not certify every full-D1 fault volume or HARD invariant, cannot complete E6"* (`scope-triage.md:144`) |
-| `M1-D2-CODING` | real-E2B coding mechanism and, separately, capability | *"not D2. It cannot complete E7, satisfy D2's full run counts/schedule, or substitute for full D2 in a later D5/D6 or release decision"* (`:155`) |
+| `M1a-D2-MECHANISM` + `M1-D2-CODING` | ★ *two gates since 2026-09-20, not one carrying two verdicts:* the first certifies the real-E2B **mechanism** (a `capabilityProven=false` run passes it), the second certifies **useful capability** (that same run fails it) | *"not D2. It cannot complete E7, satisfy D2's full run counts/schedule, or substitute for full D2 in a later D5/D6 or release decision"* (`:155`) |
 | `E10-REALTIME-FOUNDATION` | reconnect-safe claims in CLI-006/BRW-006/SVC-007 | RTF-00, `test-gates.md:100`: *"It does not pass E10, D3, D4, **D5**, D6, desktop, cutover, or mobility."* |
 | `REL-003`'s verification core | D5-DR03/DR04/DR05 **verifier** correctness | proves the verifiers, not a restore. `REL-003-result.md:153-155`: *"a green buildable core is not a live rehearsal, and this result does not claim one."* |
 | `REL-004` lanes A–D | signed-artifact and kill-switch mechanism | test signing root only; the gate is not on the publish path; no write path for the switch |

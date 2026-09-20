@@ -114,7 +114,7 @@ NOT first-milestone, stated with evidence rather than omitted:
   comments (`server/src/routes/worker-control.ts:166`,
   `server/src/services/execution-secret-resolve.ts:7`) assert the same. Per the triage's dormant
   default-deny qualification, no E5 document may say sandbox egress denial passed because a policy
-  object or allowlist was constructed, and `M1-D1-SPINE` / `M1-D2-CODING` may **not** mark H-06
+  object or allowlist was constructed, and `M1-D1-SPINE` / **`M1a-D2-MECHANISM`** / `M1-D2-CODING` may **not** mark H-06
   passed.
 
 ### NOT in scope (epic non-goals for the first milestone)
@@ -793,7 +793,7 @@ grant URL, secret, or byte.
 | H-08 supply chain | No new runtime dependency. Both provider boundary checkers stay green. |
 | H-09 cleanup | `DAT-011-B1` re-measures the orphan sweep and records its §4 residual verbatim. |
 | H-10 evidence integrity | Append-only ticket results; a1 is immutable and a2 supersedes it. |
-| Exit criterion 3 (`M1-D2-CODING`, every terminal cleanup path) | `DAT-011-B1`. |
+| Exit criterion 3 (**`M1a-D2-MECHANISM`**, every terminal cleanup path) | `DAT-011-B1`. ★ *Corrected 2026-09-20 (third round): criterion 3 is the mechanism campaign, and terminal cleanup needs no attributable agent output — naming `M1-D2-CODING` would have deferred this evidence from `M1a` to `M1b`.* |
 | Exit criterion 4 (useful capability, `M1b` only) | `DAT-009-3c`/`3d`/`3e` supply **link 3**. They do **not** satisfy the criterion — the producer is CLI-008 Unit F. |
 | Exit criterion 7 (committed passing E5 a2 audit) | `E5-A2-MATRIX` plans it; a2 is written after the campaigns and consumes their records. |
 

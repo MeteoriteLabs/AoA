@@ -203,10 +203,10 @@ events or logs; D3-05 cancellation ≤60s and session cleanup ≤5min; D3-06 art
 to event sequence and digest-matched.
 
 **Named partial gates that may SUPPORT but never COMPLETE it:** none exist for E8.
-`M1-D1-SPINE` and `M1-D2-CODING` are the only named partial gates in the triage
+`M1-D1-SPINE`, `M1a-D2-MECHANISM` and `M1-D2-CODING` are the only named partial gates in the triage
 (`scope-triage.md:140-155`) and both are `task_run`-scoped; `scope-triage.md:157-159` makes
 them **non-promoting** and bars them from an epic-completion handoff. `BRW-hostspawn-gate`
-is a *guard*, not a gate: it proves the clause is watched, never that it is satisfied.
+is a *guard*, not a gate: it proves the clause is watched, never that it is satisfied. ★ *Corrected 2026-09-20 (third round): this said `M1-D1-SPINE` and `M1-D2-CODING` were the only named partial gates. The companion regrooming change adds **`M1a-D2-MECHANISM`**, the pre-capability mechanism gate, so there are three — and this epic's later-milestone framing depends on naming them correctly.*
 
 **Two standing non-certifications a Step-0 planner must carry forward:**
 

@@ -878,6 +878,10 @@ triage is explicit: *"`M1a` explicitly does NOT claim useful agent capability, a
 reports `capabilityProven=false` satisfies it."* The result doc must say so in those terms, so no
 reader converts a mechanism verdict into a capability one.
 
+★★★ **This ticket's record is an `M1a-D2-MECHANISM` record, not an `M1-D2-CODING` one.** It is
+filed under that gate, its `Result` is the mechanism verdict, and it never contributes to the
+capability gate — whose `Result` a `capabilityProven=false` run **fails**.
+
 **Ticket non-goals:** building the image or the daemon consumer; flipping any other clause; running
 a keyed E2B lane without founder authorization.
 
@@ -894,7 +898,10 @@ typed-out 4, that is a finding, not an edit to the number.
 
 **Observability:** `node scripts/check-gate-clause-wiring.mjs` reports the clause `wired` with its
 caller count; `pnpm verify:cp-am-keypair` green at C0 before the canary; the E7-1 verifier's exit
-code and both verdicts recorded.
+code recorded, and `capabilityProven` reported alongside it. ★ *Corrected 2026-09-20: “both
+verdicts recorded” described one record carrying two `Result`s, which the QA template does not
+allow — the verifier PRINTS both values, and the record’s single normative `Result` is the
+mechanism verdict.*
 
 **RED → GREEN:** RED — the checker fires `unwired_but_now_has_caller` once the boot exists, before
 the register edit (the positive control); GREEN — checker green after it, with the verifier's run
@@ -962,7 +969,7 @@ content, secret, or session byte.
 | H-06 network boundary | **NOT claimed.** The DE-08 residual is accepted at the managed-shared tier and neither partial gate may mark H-06 passed. Metadata/control-plane reachability is recorded as an unresolved provider-boundary risk, not as denied. |
 | H-08 supply chain | No new runtime dependency; the daemon boundary checker stays green. |
 | H-10 evidence integrity | Append-only ticket results; the unit-F design is amended by appended note, never by deletion. |
-| Exit criterion 3 (`M1-D2-CODING`, mechanism verdict) | `E7-1-JOURNEY-ARM`, with `capabilityProven=false` explicitly acceptable. |
+| Exit criterion 3 (**`M1a-D2-MECHANISM`**) | `E7-1-JOURNEY-ARM`, with `capabilityProven=false` explicitly acceptable. ★ *Corrected 2026-09-20 (third round): this row said “`M1-D2-CODING`, mechanism verdict”. There is no mechanism half of `M1-D2-CODING` — a QA record has ONE normative `Result`, which is why the companion change made the mechanism verdict its own gate. Recording this ticket under `M1-D2-CODING` would either falsely pass the capability gate or leave `M1a` unpassable.* |
 | **Exit criterion 4 (useful capability — `M1b` only)** | **`CLI-008-F1b` + `F3` + `F4` + `F5` + `F6`, plus E5's `DAT-009-3c/3d`.** This is the only criterion the split moves, and `F1b` is the one link with no design. |
 | Exit criterion 6 (rollback rehearsal) | `CLI-008-C5`'s config-only disablement is part of the rehearsal. |
 
@@ -1070,5 +1077,5 @@ authorize implementation.
 - [ ] **T8 (P1, M)** — `CLI-008-C5`: arm the tool surface after `DAT-007-S3`. Verify: an expired
   lease observably loses the surface and mints no handle; flag-off control.
 - [ ] **T9 (P2, S)** — `E7-1-JOURNEY-ARM`: promote the clause once E6 ships both preconditions.
-  Verify: `unwired_but_now_has_caller` fired first; both verdicts recorded, with
-  `capabilityProven=false` stated as an `M1a` pass.
+  Verify: `unwired_but_now_has_caller` fired first; the `M1a-D2-MECHANISM` record committed with
+  `capabilityProven=false` printed and stated as an `M1a` pass — one record, one `Result`.

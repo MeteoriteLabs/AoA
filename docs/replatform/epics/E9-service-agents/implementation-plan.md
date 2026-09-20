@@ -298,9 +298,9 @@ ownership; D4-06 ≥99.5% healthy availability; D4-07 convergence ≤2min / ≤1
 bounded, attributable ambiguous effects; D4-09 checkpoint identity match.
 
 **Named partial gates that may SUPPORT but never COMPLETE it:** none exist for E9.
-`M1-D1-SPINE` and `M1-D2-CODING` are the only named partial gates in the triage
+`M1-D1-SPINE`, `M1a-D2-MECHANISM` and `M1-D2-CODING` are the only named partial gates in the triage
 (`scope-triage.md:140-155`); both are `task_run`-scoped and both are declared
-**non-promoting** (`:157-159`).
+**non-promoting** (`:157-159`). ★ *Corrected 2026-09-20 (third round): this said `M1-D1-SPINE` and `M1-D2-CODING` were the only named partial gates. The companion regrooming change adds **`M1a-D2-MECHANISM`**, the pre-capability mechanism gate, so there are three — and this epic's later-milestone framing depends on naming them correctly.*
 
 **The six `wired` clauses do not support it either.** A wired clause asserts a symbol has
 production callers. Every shipped SVC result explicitly disclaims the gate.
