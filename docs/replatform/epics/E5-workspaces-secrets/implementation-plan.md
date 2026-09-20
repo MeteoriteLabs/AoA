@@ -50,7 +50,7 @@ first executed ticket. Finding IDs are `E5-F0xx`; decision IDs are `E5-D0x`.
 |---|---|---|
 | `DAT-011` | **B** | Shipped and production-wired. Owes **current evidence on the milestone candidate**, not a rebuild. |
 | `TRACK-001` | **B** | Shipped guard. Owes current lane-green evidence. |
-| `DAT-008` | **A** | Preserve the implementation; narrow the completion claim. Slices 5–7 are not "shipped". |
+| `DAT-008` | **A** | Preserve the implementation; narrow the completion claim. ★★★ **Corrected 2026-09-20 (D4), verified at source:** slices **1–5 ARE shipped**. Slice 5 landed with its own result doc ([`tickets/DAT-008-slice-5-result.md`](./tickets/DAT-008-slice-5-result.md)) and its symbol is composed in production — `synthesiseRunSecrets` is imported at `packages/worker-daemon/src/lifecycle/dispatch-runtime.ts:40` and called at `:164`. **Slice 6 is UNRECORDED** — no `DAT-008-slice-6-*` file exists in `tickets/`; that is an absent *record*, which is NOT the same as deferred work and must never be written down as either "shipped" or "deferred". **Slice 7 is DEFERRED** — `DEFERRED (no code, no test)` ([`tickets/DAT-008-slice-7-result.md`](./tickets/DAT-008-slice-7-result.md)). ★ *Superseded text: "Slices 5–7 are not 'shipped'." — it retracted a shipped, production-composed slice and collapsed "unrecorded" into "deferred"; §4 `DAT-008-A1` already stated this correctly.* |
 | `DAT-007` | **M** | Its own result header already says `PARTIAL — the core remote-reach is BLOCKED`. Residual is build work. |
 | `DAT-009` | **M** | Slices **3c / 3d / 3e** are `M1b` build work; return-path **link 3**. |
 | `DAT-006`, `DAT-010` | **C1** | Shipped, production-wired, **not required by M1**. **Do NOT re-open their acceptance.** `DAT-010` sits on the milestone's own artifact-commit path (`server/src/services/artifact-commit.ts:42,272`). |
@@ -179,7 +179,7 @@ NOT first-milestone, stated with evidence rather than omitted:
 | 4 | lease-scoped secrets | `proven_weakly` | Slice 5 landed and is `wired` via `E5-5`; slice 7 is `DEFERRED (no code, no test)`; **slice 6 has no record at all**. | `DAT-008-A1` (record only). |
 | 5 | redaction | `proven_weakly` | `E5-5` **`wired`** — `synthesiseRunSecrets` referenced by `composeDispatchRuntime`, planted-leak proof on both streams. The residual (a real sandbox authenticating over live E2B) lives in test evidence, not the caller count. | Covered by the M1 campaign. |
 | 6 | denied egress | **`proven_in_d1`** (`e6f-08`) | `E5-6` **`unwired`** — `createFenceAwareEgressProxy` zero callers. The `e6f-08` evidence is the D1 harness, not this symbol. | **Not M1** (E5-D06). |
-| 7 | brokered internal tool surface (DAT-007) | **`not_proven`** | Item #1 slices 1–2 shipped and armed behind the flag; item #2 (the `brokered:true` dispatch call site) is CLI-008 Unit C's. | `DAT-007-S3` (M1a) + E7 Unit C (M1b). |
+| 7 | brokered internal tool surface (DAT-007) | **`not_proven`** | Item #1 slices 1–2 shipped and armed behind the flag, **and the real-PG resolver proof already exists** — 5 cases at `server/src/__tests__/distributed-run-currency.integration.test.ts:258-313`, so `DAT-007-S3` reruns + extends rather than first-proves (★ D1). Item #2's dispatch call site is **DELIVERED, default-OFF**: `server/src/services/heartbeat.ts:5311-5316` + `server/src/services/task-run-sandbox-invocation.ts:167-200`, gated by `readDistributedToolSurfaceFlag` (default **false**, `server/src/config/distributed-execution.ts:51-53`). What item #2 owes is **enablement + live proof**, not construction. ★ *Superseded text: "item #2 (the `brokered:true` dispatch call site) is CLI-008 Unit C's" (D5, verified at source).* | `DAT-007-S3` (M1a) + E7 Unit C **enablement/live-proof** (M1b). |
 
 ### What the three non-milestone dormant clauses each need — stated, not omitted
 
@@ -253,6 +253,16 @@ NOT first-milestone, stated with evidence rather than omitted:
 - `node scripts/ci-local.mjs` green is **not** CI green; it skips the sharded `verify`.
 - Windows: `AOA_RUN_WIN_INTEGRATION=1` for integration tests; `git show <rev>:<path>` fails silently
   (use `MSYS_NO_PATHCONV=1 git cat-file blob`); `jq` is not on PATH (use `gh --jq`).
+- ★★★ **`AOA_RUN_WIN_INTEGRATION=1` does NOT unskip every integration suite, and it does not unskip
+  the one this plan depends on.** *Added 2026-09-20 (D2), verified at source.*
+  `server/src/__tests__/distributed-run-currency.integration.test.ts:68` is
+  `describe.skipIf(process.platform === "win32")` — an **unconditional** platform skip that reads no
+  environment variable at all (the suite's own comment cites Issue #114: embedded-postgres cannot
+  boot on the Windows CI runner). Setting the variable therefore changes nothing: on Windows the
+  suite reports **zero executed tests and exit 0**, which is a check that nothing runs. Before
+  prescribing any suite as a gate, confirm it is not platform-skipped on the platform you prescribe,
+  and make the **executed-test count** part of the recorded evidence — an exit code alone cannot
+  distinguish "passed" from "ran nothing".
 - **Re-measure at HEAD; cite by symbol.** Every caller count in this plan is a measurement with a
   date attached, and the dominant failure class in this programme is a record disagreeing with the
   code it describes.
@@ -279,7 +289,7 @@ function Invoke-NativeGate([string]$Label, [scriptblock]$Command) {
 | `TRACK-001-B1` | `Invoke-NativeGate 'graph coverage' { node scripts/check-ticket-graph-coverage.mjs }; Invoke-NativeGate 'graph coverage self-test' { node --test scripts/lib/__tests__/ticket-graph-coverage.test.mjs }; Invoke-NativeGate 'dependency graph' { node scripts/check-dependency-graph.mjs }; Invoke-NativeGate 'guard inventory' { node scripts/check-guard-inventory.mjs }` |
 | `DAT-008-A1` | `Invoke-NativeGate 'register integrity' { node scripts/check-register-citation-integrity.mjs }; Invoke-NativeGate 'finding ownership' { node scripts/check-finding-ownership.mjs }; Invoke-NativeGate 'gate clause wiring' { node scripts/check-gate-clause-wiring.mjs }` |
 | `E5-A2-MATRIX` | `Invoke-NativeGate 'evidence immutability' { node scripts/check-evidence-immutability.mjs --base origin/docs/replatform-program }; Invoke-NativeGate 'register integrity' { node scripts/check-register-citation-integrity.mjs }` ★★★ **The `--base` is REQUIRED and an earlier revision omitted it.** *Corrected 2026-09-20 (sixth round), verified at source.* `pnpm check:evidence-immutability` passes no base (`package.json:51` is the bare script), and the guard **refuses to run without one** — `check-evidence-immutability.mjs:353-359`: *“no base revision supplied … Refusing to run: a guard with no base compares nothing and passes.”* That refusal is correct behaviour, not a bug. Only CI supplied a base, via `EVIDENCE_IMMUTABILITY_BASE: ${{ github.event.pull_request.base.sha }}` (`pr.yml:230`), so the prescribed focused command always failed locally and `E5-A2-MATRIX` could not complete outside the PR workflow. Use the candidate's base revision; `origin/docs/replatform-program` is the program-branch default. |
-| `DAT-007-S3` | `Invoke-NativeGate 'DAT-007 classify' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/distributed-run-currency-classify.test.ts src/__tests__/mcp-run-currency-gate.test.ts }; $env:AOA_RUN_WIN_INTEGRATION='1'; Invoke-NativeGate 'DAT-007 real PG' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/distributed-run-currency.integration.test.ts }; Invoke-NativeGate 'server typecheck' { pnpm --filter @armyofagents/server typecheck }; Invoke-NativeGate 'server build' { pnpm --filter @armyofagents/server build }` |
+| `DAT-007-S3` | **Tier-1/2, runs anywhere:** `Invoke-NativeGate 'DAT-007 classify' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/distributed-run-currency-classify.test.ts src/__tests__/mcp-run-currency-gate.test.ts }; Invoke-NativeGate 'server typecheck' { pnpm --filter @armyofagents/server typecheck }; Invoke-NativeGate 'server build' { pnpm --filter @armyofagents/server build }`<br><br>**Tier-3 real-PG suite — LINUX ONLY, and the evidence is the executed-test count, not the exit code:** run `pnpm --filter @armyofagents/server exec vitest run src/__tests__/distributed-run-currency.integration.test.ts --reporter=verbose` **on Linux CI**, and record in the result doc the reporter's **NON-ZERO passed/executed test count** together with the run URL. A run reporting `0 passed` is a FAIL for this ticket regardless of exit code.<br><br>★★★ **Corrected 2026-09-20 (D2), verified at source.** *Superseded text: `$env:AOA_RUN_WIN_INTEGRATION='1'; Invoke-NativeGate 'DAT-007 real PG' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/distributed-run-currency.integration.test.ts }`.* That command **cannot execute the suite it gates**: `server/src/__tests__/distributed-run-currency.integration.test.ts:68` is `describe.skipIf(process.platform === "win32")` — unconditional, reading no environment variable — so on Windows it exits 0 having run **zero tests** and the gate passes vacuously. Two admissible remedies, and the ticket must pick one explicitly: **(a)** run it on Linux CI with a non-zero executed count (preferred; Linux CI is this plan's formal test authority under DEC-03, §0); or **(b)** **first change the suite to honour the override** — e.g. `describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")` — declare that change as ticket work in the Files list, and only then prescribe the Windows command. Embedded-postgres cannot boot on the Windows CI runner (Issue #114), which is why the skip exists at all, so (b) is operator-directed local evidence only and must be labeled `operator-directed windows-local`. |
 | `DAT-009-3c` | `Invoke-NativeGate 'protocol build' { pnpm --filter @armyofagents/worker-protocol build }; Invoke-NativeGate 'DAT-009 3c' { pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/supervisor-export-artifacts.test.ts src/__tests__/artifact-export-sequencer.test.ts src/__tests__/supervisor-happy.component.test.ts }; Invoke-NativeGate 'worker typecheck' { pnpm --filter @armyofagents/worker-daemon typecheck }; Invoke-NativeGate 'worker build' { pnpm --filter @armyofagents/worker-daemon build }` |
 | `DAT-009-3d` | `Invoke-NativeGate 'protocol build' { pnpm --filter @armyofagents/worker-protocol build }; Invoke-NativeGate 'DAT-009 3d' { pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/dispatch-runtime.test.ts src/__tests__/dispatch-runtime-export-composition.test.ts }; Invoke-NativeGate 'gate clause wiring' { node scripts/check-gate-clause-wiring.mjs }; Invoke-NativeGate 'worker typecheck' { pnpm --filter @armyofagents/worker-daemon typecheck }; Invoke-NativeGate 'worker build' { pnpm --filter @armyofagents/worker-daemon build }` |
 | `DAT-009-3e` | `Invoke-NativeGate 'wire build' { pnpm --filter @armyofagents/provider-wire build }; Invoke-NativeGate 'DAT-009 3e' { pnpm --filter @armyofagents/provider-wire exec vitest run src/__tests__/driver-artifact-export.test.ts }; Invoke-NativeGate 'AM' { pnpm --filter @armyofagents/adapter-manager exec vitest run src/__tests__/server-artifact-export.test.ts }; Invoke-NativeGate 'e2b headers' { pnpm --filter @armyofagents/sandbox-e2b-provider exec vitest run src/__tests__/put-grant-bytes.test.ts }; Invoke-NativeGate 'AM boundary' { node scripts/check-adapter-manager-boundary.mjs }; Invoke-NativeGate 'e2b boundary' { node scripts/check-sandbox-e2b-provider-boundary.mjs }; Invoke-NativeGate 'wire typecheck' { pnpm --filter @armyofagents/provider-wire typecheck }; Invoke-NativeGate 'wire build' { pnpm --filter @armyofagents/provider-wire build }` |
@@ -456,10 +466,36 @@ blocked, with the blocker named** — never as a clause dropped from the matrix.
 
 **Migration/compatibility / rollback:** documentation only.
 
-**Observability:** `node scripts/check-evidence-immutability.mjs --base <candidate base>` must stay green — a1 must not be touched. ★ *The `--base` is required; the bare `pnpm` script supplies none and the guard refuses to run without one.*
+**Observability:** `node scripts/check-evidence-immutability.mjs --base <candidate base> --candidate <candidate sha>` must stay green — a1 must not be touched **in any commit of this branch**, not merely at the tip. ★ *The `--base` is required; the bare `pnpm` script supplies none and the guard refuses to run without one.* ★★★ *And the RED positive control may NEVER be run against this repository — see the RED → GREEN block below (D3).*
 
-**RED → GREEN:** RED is the immutability checker failing on a deliberate edit to a1 (positive
-control, reverted); GREEN is the checker passing with the new planning entry in place.
+**RED → GREEN:** ★★★ **Corrected 2026-09-20 (D3), verified at source — the old procedure cannot
+produce a RED, and its "reverted" variant permanently poisons the candidate.** *Superseded text:
+"RED is the immutability checker failing on a deliberate edit to a1 (positive control, reverted)".*
+`scripts/check-evidence-immutability.mjs` reads **committed git blobs**, never the working tree:
+`git cat-file blob <rev>:<path>` at `:196`, `listEvidenceOids` at `:203`, and `candidate` defaults to
+the committed revision `HEAD` (`:353-354`). Two consequences, both fatal to the old wording:
+- an **uncommitted** edit to a1 is invisible to the guard, which stays green — a check that nothing
+  runs, dressed as a positive control; and
+- **committing the edit and then reverting it** does not clear it either, because the guard also
+  walks `base..candidate` commit by commit (`listCandidateCommits`, `:248`; the within-PR pass at
+  `:275-312`) for exactly the case of a record rewritten and restored inside one pull request. The
+  forbidden edit stays in the history it walks, so the revert leaves the candidate permanently red.
+
+- **RED (positive control) — in a DISPOSABLE FIXTURE REPOSITORY ONLY, never in this repo.** In the
+  scratch directory, `git init` a throwaway repo (or `git clone --no-hardlinks` this one there).
+  Commit, as the **base**, `docs/replatform/artifact-policy.md` (the ledger charter the guard uses to
+  tell a ledger-bearing base from a pre-ledger one, `:110-112`, `:241`) plus a copy of the a1 record;
+  capture `BASE=$(git rev-parse HEAD)`. Commit, as the **candidate**, a mutation of that a1 copy;
+  capture `CAND=$(git rev-parse HEAD)`. Then run the guard with **both revisions explicit and its
+  repo root pointed at the fixture**:
+  `node <this-repo>/scripts/check-evidence-immutability.mjs --base "$BASE" --candidate "$CAND"`.
+  It must exit non-zero and name the mutated record. Delete the fixture. Record both fixture SHAs and
+  the guard's verbatim message in `tickets/E5-A2-MATRIX-result.md` — that record, not a mutation of
+  the real ledger, is the positive control's evidence.
+- **GREEN — against the UNTOUCHED candidate.**
+  `node scripts/check-evidence-immutability.mjs --base <candidate base> --candidate <candidate sha>`
+  with the new `qa/README.md` planning entry in place and a1 modified in **no** commit of this
+  branch. Pass both revisions explicitly; do not rely on the `HEAD` default.
 
 **Evidence / commit:** `tickets/E5-A2-MATRIX-result.md`; one documentation commit
 `docs(e5): freeze the a2 seven-clause audit matrix, commands, topology and owners`.
@@ -478,30 +514,128 @@ boot precondition is wired too: `assertPrimaryDbBypassesRls(db)` at `server/src/
 inside the `config.distributedExecutionEnabled` block, with the comment stating why — *"the resolver
 would read zero rows and deny every distributed run (fail-closed). Loud boot failure beats a silent,
 oracle-less 403 storm."* Ticket `DAT-007`'s own result header says
-`PARTIAL — the core remote-reach is BLOCKED`, which remains accurate for item #2.
+`PARTIAL — the core remote-reach is BLOCKED`.
+
+★★★ **Corrected 2026-09-20 (D5), verified at source: that header is NO LONGER accurate for item
+#2 as written.** *Superseded text: "which remains accurate for item #2."* Item #2's missing piece was
+the **dispatch call site**, and it now EXISTS, delivered **default-OFF**:
+`server/src/services/heartbeat.ts:5311-5316` reads the tool-surface flag and builds the brokered
+`aoa` MCP config via `brokeredAoaMcpConfig` (`packages/adapter-utils/src/mcp-server-spec.ts:210`) for
+a sandbox-targeted run, and threads the **same** `toolSurfaceAuthorized` value into the run-JWT
+(`AOA_API_KEY`) mint at placement (`heartbeat.ts:5343-5345`) so the config and its bearer are
+provisioned together or not at all; `server/src/services/task-run-sandbox-invocation.ts:167-200`
+stages that config into the sandbox invocation for `claude_local`. What item #2 still owes is
+therefore **not construction** but:
+- **enablement** — `readDistributedToolSurfaceFlag` defaults **false**
+  (`server/src/config/distributed-execution.ts:51-53`, `parseBooleanEnv(env,
+  DISTRIBUTED_TOOL_SURFACE_ENABLED_ENV, false)`), so the plumbing is inert on every deployment today;
+  and
+- **live proof** — an actually-brokered run reaching `mcp__aoa__*` end to end, which no record in
+  this epic supplies.
+
+Credit the delivered plumbing; retain those two residuals. Do not plan, schedule, or budget for
+building a call site that exists.
 
 **What remains, and why it is `M1a` and not `M1b`:** `M1a` **arms the distributed flag**. The
 moment it is armed, this gate runs on every `/mcp` call from a distributed run-JWT actor and reads
-FORCE-RLS'd `leases` / `job_attempts` / `execution_targets` rows. The classifier has Tier-1 unit
-coverage; the **query** does not have a proof against a real PostgreSQL with forced RLS and a real
-`clock_timestamp()`. An unproven fail-closed authorization query on an armed path is exactly the
-safety shape `E3-F037` was ruled an `M1a` blocker for.
+`leases` / `job_attempts` / `execution_targets` rows. An unproven arm of a fail-closed authorization
+query on an armed path is the safety shape `E3-F037` was ruled an `M1a` blocker for — but the
+unproven set is now specific, and it is much smaller than this plan previously claimed.
 
-**Outcome:** a Tier-3 integration proof, on embedded PostgreSQL with forced RLS, that the resolver's
-verdicts are correct for: a local run (`execution_owner` NULL → admit), a distributed run with a
-fresh active lease (admit), an expired lease (deny), a replaced `targetGeneration` (deny), a revoked
-target (deny), a run in another company (deny with the **same coarse forbidden** as wrong-tenant, no
-oracle), and a resolver throw (propagates → 500 → deny). Plus a positive control: the gate off (flag
-false) admits every one of those.
+★★★ **Corrected 2026-09-20 (D1), verified at source: real-PostgreSQL coverage of the query
+ALREADY EXISTS.** *Superseded text: "The classifier has Tier-1 unit coverage; the **query** does not
+have a proof against a real PostgreSQL with forced RLS and a real `clock_timestamp()`."*
+`server/src/__tests__/distributed-run-currency.integration.test.ts` boots embedded PostgreSQL and
+**applies the real migrations** (`:111-115`, `applyPendingMigrations(connectionString)` then
+`createDb`), seeds a full `organizations → companies → agents → execution_target → worker → job →
+job_attempt → lease → heartbeat_run` chain, and drives
+`createDistributedRunCurrencyResolver(db).resolve(...)` directly. The resolver computes freshness in
+SQL against the **real database clock** —
+`server/src/mcp/distributed-run-currency-resolver.ts:46`, `` sql`(${leases.expiresAt} >
+clock_timestamp())` `` — and the expired-lease case exercises exactly that arm. So real PG and
+`clock_timestamp()` are **proven**. What `DAT-007-S3` owes is a **rerun on the current milestone
+candidate** plus an **extension for the cases that are genuinely missing**, not a first proof.
 
-**Ticket non-goals:** item #2, the `brokered:true` worker-dispatch call site — that is **CLI-008
-Unit C** (E7), and building it here would absorb another epic's ticket. Changing the classifier's
+**Coverage that EXISTS today — 5 cases, `distributed-run-currency.integration.test.ts:258-313`:**
+
+| # | Case | Verdict | Line |
+|---|---|---|---|
+| 1 | live distributed run: active fresh lease, non-terminal attempt, current target | `admit` | `:258` |
+| 2 | stale: `leases.expires_at` in the past — the SQL-clock freshness arm | `deny` | `:269` |
+| 3 | replaced: attempt status terminal (`expired`) though the lease is active+fresh | `deny` | `:281` |
+| 4 | local run: `heartbeat_runs.execution_owner IS NULL` (central false-deny guard) | `admit` | `:295` |
+| 5 | no run row: a signed run id with no `heartbeat_runs` row (fail-open, TTL-bounded) | `admit` | `:306` |
+
+**Cases that are GENUINELY missing — this ticket's extension, each named with the resolver code it
+would exercise:**
+
+1. **Replaced `targetGeneration` (deny).** Every seeded target and lease carries generation `1` and
+   they always match (`:174`, `:231`), so the generation-only half of the `target_revoked` cutoff
+   (`distributed-run-currency-resolver.ts:47,95`) has **no differential** — it is read but never
+   falsified.
+2. **Revoked / disabled execution target (deny).** `targetStatus`
+   (`distributed-run-currency-resolver.ts:49`) is selected, but the suite seeds only a current,
+   non-disabled target.
+3. **Wrong-company run (deny, same coarse forbidden as wrong-tenant, no existence oracle).** A single
+   `COMPANY` constant is used for every seed and for every `resolve({ companyId: COMPANY })` call
+   (`:80`, `:263-310`), so the cross-tenant arm (`resolver.ts:60,91,114`) is never taken.
+4. **Resolver throw → propagates → deny.** No case injects a database error; the catch-and-admit
+   mutant has nothing to die against.
+5. **Flag-off positive control.** Belongs in `server/src/__tests__/mcp-run-currency-gate.test.ts`,
+   proving the rows measure the gate and not the fixture.
+6. **`signedRunId` vs the header-overridable `req.actor.runId`.** The distinction is load-bearing
+   (`server/src/middleware/auth.ts:363`) and unpinned by the integration suite.
+
+**Forced RLS is a DELIBERATE non-goal of that suite — do not record it as covered, and do not record
+its absence as "no real-PG coverage".** The suite seeds and reads as the embedded-pg initdb
+**superuser**, which bypasses even FORCE'd RLS, and states the rationale itself at
+`distributed-run-currency.integration.test.ts:16-27`: cases 2 and 3 are precisely the adversarial
+states the real leasing service **refuses to construct**, so only direct superuser inserts can build
+them. A forced-RLS proof therefore needs a separate `aoa_app`-role harness and is a distinct,
+explicitly-scoped addition — not a property of this rerun, and not a gap in it.
+
+**Outcome:** the **existing** Tier-3 integration proof rerun on the milestone candidate with a
+recorded non-zero executed-test count (D2), **extended** so the resolver's verdicts are covered for
+the full set — existing rows reasserted, new rows added:
+
+- a local run (`execution_owner` NULL → admit) — **EXISTS** (`:295`)
+- a distributed run with a fresh active lease (admit) — **EXISTS** (`:258`)
+- an expired lease (deny) — **EXISTS** (`:269`)
+- a terminal attempt under an active+fresh lease (deny) — **EXISTS** (`:281`)
+- an absent `heartbeat_runs` row (admit, TTL-bounded fail-open) — **EXISTS** (`:306`)
+- a replaced `targetGeneration` (deny) — **NEW**
+- a revoked/disabled execution target (deny) — **NEW**
+- a run in another company (deny with the **same coarse forbidden** as wrong-tenant, no oracle) — **NEW**
+- a resolver throw (propagates → 500 → deny) — **NEW**
+- a positive control: the gate off (flag false) admits every one of those — **NEW**
+
+★★★ *Superseded text: "a Tier-3 integration proof, on embedded PostgreSQL with forced RLS, that the
+resolver's verdicts are correct for: …". It listed five already-passing cases as if none existed
+(D1), and asserted **forced RLS**, which that suite deliberately bypasses by seeding as the
+embedded-pg superuser with its rationale recorded at
+`server/src/__tests__/distributed-run-currency.integration.test.ts:16-27`. If forced-RLS coverage is
+wanted it is a separately-scoped `aoa_app`-role harness, declared as its own work.*
+
+**Ticket non-goals:** item #2 — but state it accurately: its **dispatch call site is already built**
+(`server/src/services/heartbeat.ts:5311-5316`,
+`server/src/services/task-run-sandbox-invocation.ts:167-200`). What remains there is **flipping
+`AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED` on and live-proving a brokered run reaches `mcp__aoa__*`**,
+which is **CLI-008 Unit C**'s (E7) and would absorb another epic's ticket. Changing the classifier's
 verdict vocabulary. Widening the denial message (it is deliberately identical to wrong-tenant).
+★ *Superseded text: "item #2, the `brokered:true` worker-dispatch call site — that is **CLI-008 Unit
+C** (E7), and building it here would absorb another epic's ticket." — it described delivered,
+default-OFF plumbing as unbuilt (D5, verified at source).*
 
-**Files:** extend `server/src/__tests__/distributed-run-currency.integration.test.ts`; extend
-`server/src/__tests__/mcp-run-currency-gate.test.ts` with the flag-off positive control. Source
-changes are expected to be **zero** — if the proof reds, the defect is filed and fixed in the
-resolver, and that is the point of the ticket.
+**Files:** extend `server/src/__tests__/distributed-run-currency.integration.test.ts` with the four
+new deny cases; extend `server/src/__tests__/mcp-run-currency-gate.test.ts` with the flag-off
+positive control and the `signedRunId`-vs-header mutant pin. Source changes are expected to be
+**zero** — if the proof reds, the defect is filed and fixed in the resolver, and that is the point of
+the ticket. ★ **The existing five cases are NOT rewritten**; they are rerun (D1).
+★★★ **Platform decision this ticket must make explicitly (D2):** the suite is Linux-only by
+construction — `describe.skipIf(process.platform === "win32")` at `:68`, reading no environment
+variable. Either accept that and produce the evidence on Linux CI, **or** declare the guard change
+(honour `AOA_RUN_WIN_INTEGRATION`) **here, in this Files list, as ticket work**. What is forbidden is
+prescribing a Windows command that the unchanged guard silently skips.
 
 **Interfaces:** `DistributedRunCurrencyResolver.resolve({signedRunId, companyId, agentId}) →
 RunCurrencyVerdict`. Unchanged. The signed run id is used and the header-overridable
@@ -522,11 +656,20 @@ scan) so a later regression to a scan is visible.
 **Rollback/disablement:** `AOA_DISTRIBUTED_EXECUTION_ENABLED=false` disables the gate entirely at
 route construction (`server/src/mcp/server.ts:297`). Rollback is the flag, not a code revert.
 
-**RED → GREEN:**
-- RED: the seven verdict rows above against embedded PostgreSQL with forced RLS — absent today.
+**RED → GREEN:** ★★★ *Corrected 2026-09-20 (D1). The old list declared all seven rows "absent
+today", which is false: five verdict cases exist and pass. A RED may be claimed only for behaviour
+that is genuinely absent — asserting RED on an existing green case produces a false RED, which §3
+item 2 obliges the controller to reject.* *Superseded text: "RED: the seven verdict rows above
+against embedded PostgreSQL with forced RLS — absent today."*
+- **NOT RED — already GREEN; rerun and record.** The five existing cases
+  (`server/src/__tests__/distributed-run-currency.integration.test.ts:258,269,281,295,306`). Their
+  evidence is the rerun's **non-zero executed-test count on Linux** (D2), not a RED.
+- RED: a replaced `targetGeneration` denies — genuinely absent.
+- RED: a revoked/disabled execution target denies — genuinely absent.
+- RED: a wrong-company run denies with the **same coarse forbidden** as wrong-tenant — genuinely absent.
+- RED: a resolver throw propagates → deny; the catch-and-admit mutant must red — genuinely absent.
 - RED: the header-override mutant (resolve on `req.actor.runId` instead of `signedRunId`) must red.
-- RED: the catch-and-admit mutant must red.
-- RED: the flag-off control admits all seven (proving the rows measure the gate, not the fixture).
+- RED: the flag-off control admits every case (proving the rows measure the gate, not the fixture).
 - GREEN: the identical commands pass, plus server typecheck and build.
 
 **Evidence / commit:** `tickets/DAT-007-S3-result.md`; one commit
@@ -761,9 +904,30 @@ Maps H-04, H-05, H-08.
 
 ## 5. Legacy parity mapping (FND-007 / frozen-main crosswalk)
 
-The artifact/export path is **net-new**. The legacy analogue is the in-process artifact and
-task-output write path (`server/src/services/artifact-commit.ts` reached from the legacy run, plus
-`task_outputs` written by the legacy projector), which stays fully authoritative and untouched.
+The artifact/export path is **net-new**.
+
+★★★ **Corrected 2026-09-20 (D6), verified at source: `artifact-commit.ts` is NOT a legacy analogue
+— it is the DISTRIBUTED server half.** *Superseded text: "The legacy analogue is the in-process
+artifact and task-output write path (`server/src/services/artifact-commit.ts` reached from the legacy
+run, plus `task_outputs` written by the legacy projector), which stays fully authoritative and
+untouched."* `server/src/services/artifact-commit.ts` has exactly **one** production importer —
+`server/src/routes/worker-control.ts:42` — and exactly one production invocation,
+`artifactCommits.commit({ auth, request })` at `server/src/routes/worker-control.ts:694`, inside the
+`POST /worker-control/artifact-commits` route (`:667`) and **after** worker device-proof verification
+(`verifyWorkerOperationProof`, `:684`). No legacy run path reaches it; it is the same fenced
+server half `E5-D01` declares live-proven and closed. Calling it "the legacy analogue" would have
+mapped the new path onto itself and made the crosswalk vacuous.
+
+**The actual legacy analogues**, for the crosswalk this section owes:
+- the in-process artifact writer `artifactService` (`server/src/services/artifacts.ts:38`), mounted
+  by `server/src/routes/artifacts.ts`; and
+- the legacy `task_outputs` emitters `emitPullRequestTaskOutput` / `emitRuntimeServiceTaskOutput` /
+  `emitSandboxPreviewTaskOutput` / `emitBranchTaskOutput`
+  (`server/src/services/task-output-emitters.ts:68,91,135,159`), called from
+  `server/src/services/heartbeat.ts`, `server/src/services/execution-workspaces.ts`,
+  `server/src/services/workspace-runtime.ts` and `server/src/routes/github.ts`.
+
+Those stay fully authoritative and untouched.
 ★★★ **`jobOutputBridge` IS REQUIRED BEFORE `M1a` PASSES — NOT AT M2.** *Corrected 2026-09-20 (ninth
 round).* `scope-triage.md` puts the three parity-bridge consumers, `jobOutputBridge` among them, in
 the **`M1a` required-result set** (D-8). An earlier revision of this paragraph scheduled it for
@@ -893,7 +1057,12 @@ authorize implementation.
 - [ ] **T3 (P1, S)** — `DAT-008-A1`: narrow `README.md:3` to the ledgers; file a finding for the
   unaccounted slice 6 only after a second search. Verify: three record guards green after the edit.
 - [ ] **T4 (P2, S)** — `E5-A2-MATRIX`: freeze the seven-clause matrix, commands, topology and owners.
-  Verify: a1 untouched, `check-evidence-immutability.mjs --base <candidate base>` green (★ the bare script has no base and refuses to run).
+  Verify: a1 untouched **in every commit of the branch**, and
+  `check-evidence-immutability.mjs --base <candidate base> --candidate <candidate sha>` green (★ the
+  bare script has no base and refuses to run). ★★★ The RED positive control runs in a **disposable
+  fixture repository**, never here: the guard reads committed blobs and also walks `base..candidate`,
+  so "edit a1, then revert" neither REDs while uncommitted nor clears once committed — the forbidden
+  blob stays in the walked history (D3).
 - [ ] **T5 (P1 STOP, M)** — `DAT-007-S3`: prove the run-currency gate against real PostgreSQL with
   forced RLS. Verify: seven verdict rows, the header-override mutant, the catch-and-admit mutant,
   and the flag-off control.

@@ -220,9 +220,21 @@ treat a line number as a hint.** `ls` every cited file and re-measure at HEAD.
 - **Bytes leave the sandbox by a direct provider→object-store PUT under a worker-minted grant**
   (E7-D06). The control plane carries grants and references. No payload crosses the
   dependency-pinned daemon.
-- **Best-effort on the way out, fail-closed on the way in.** Staging fails the attempt because an
-  agent running without its input produces a clean terminal for mutilated work; export and
-  announcement must not discard a successful run because its *evidence* could not be filed.
+- **Best-effort on the way out, fail-closed on the way in — with ONE recorded exception.** Staging
+  fails the attempt because an agent running without its input produces a clean terminal for
+  mutilated work; **export** (`CLI-008-F3`) must not discard a successful run because its *evidence*
+  could not be filed.
+  ★★★ **The `artifact_prepared` ANNOUNCEMENT is EXEMPT from this rule and is bound instead to
+  `CLI-008-F4`'s recorded contiguity decision.** *Superseded text: "export **and announcement** must
+  not discard a successful run because its evidence could not be filed." Corrected 2026-09-20,
+  verified at source.* The announcement cannot be best-effort: `EventSequencer.#emit` increments
+  `#seq` **before** awaiting the sink (`packages/worker-daemon/src/supervisor/events.ts:139`
+  allocates, `:164` awaits), so a swallowed sink failure leaves a hole and the terminal that follows
+  it is rejected — the control plane's ack status set is
+  `"accepted" | "gap" | "hash_mismatch" | …` (`server/src/services/job-events.ts:125`). A blanket
+  best-effort rule here **forbids two of the three options F4's own *Failure behavior* permits**
+  (fatal, and retry-until-land-or-fail) and silently re-mandates the one the ingest contract
+  rejects. Every other out-bound path — export, capture, `emitOp` — keeps the rule unchanged.
 - **No `capabilityProven` claim from composition.** `E7-1-staged-input-write` already states the
   precedent in its own register reason: `wired` means *reachable from a boot root*, and that seam
   *passes NO files*. **A function that returns `[]` by construction is the vacuously-true clause the
@@ -671,10 +683,28 @@ projects onto the task. Any result doc claiming this moves `capabilityProven` is
 corrupt rather than absent, and this ticket records that the artifact route does not inherit that
 defect because it carries a reference, not bytes).
 
-**Files:** modify `packages/worker-daemon/src/supervisor/events.ts`; modify the F3 producer to emit
-after a successful commit; create
+**Files:** modify `packages/worker-daemon/src/supervisor/events.ts`; place the emit on the
+**sequencer-completion / supervisor path** — the `DAT-009-3c` `SupervisorDeps.resolveExportArtifacts`
+hook site, where `createArtifactExportSequencer`'s returned `readonly ExportedArtifactRef[]` is in
+hand — **not** inside the F3 producer; create
 `packages/worker-daemon/src/__tests__/events-artifact-prepared.test.ts`; update `findings.md` for
 `E7-F024`'s disposition.
+
+★★★ **Superseded text: *"modify the F3 producer to emit after a successful commit"*.** *Corrected
+2026-09-20, verified at source — this placed a POST-commit emission inside a PRE-commit component.*
+The F3 producer's own declared interface (above, `CLI-008-F3` §Interfaces) returns
+`Promise<readonly ArtifactExportRequest[]>`: it describes what SHOULD be exported and then returns.
+The commit belongs to the **sequencer**: `createArtifactExportSequencer`
+(`packages/worker-daemon/src/lease/artifact-export.ts:264`) **consumes** those requests as an input
+field (`:269`), calls `deps.client.artifactCommit` (`:383`), checks `outcome === "committed"`
+(`:425-427`), and only then pushes an `ExportedArtifactRef` and returns the committed set (`:438`).
+By the time a successful commit exists the producer is no longer on the stack, so it cannot emit
+"after" one. **Two placements are admissible and this ticket takes the first:** (a) emit on the
+sequencer-completion/supervisor path, over the returned committed references — additive, touches no
+E5-owned signature; or (b) thread an **explicitly designed successful-commit callback** from the
+sequencer into the producer's deps, which is a change to the `DAT-009-3c`/`3d` seam **E5 owns** and
+is therefore out of this ticket's scope. What is NOT admissible is asserting the producer emits
+post-commit with no such callback designed.
 
 **Interfaces:** `artifactPrepared(input: ArtifactPreparedPayloadV1): Promise<WorkerEventV1>` —
 contiguous `seq`, per-event `eventDigest` via `canonicalEventDigestInputV1` + `node:crypto`, into
@@ -924,9 +954,31 @@ supplies the output converts a forgeable gate into an unpassable one.
 **Current state, measured:** `E7ProducedOutputCounts` is two numbers
 (`server/src/services/e7-distributed-run-verifier.ts:130-133`). Clause 6 is the module's **only**
 `capabilityFailures.push` (`:657`). Arm 1 counts committed `workspace_patch` `job_artifacts`,
-attempt-scoped as of `E7-F031`; arm 2 counts an applied `output_projection` receipt on `job_id`,
-job-granular by deliberate choice — and the store's own header carries a **DO NOT "MAKE THIS
-CONSISTENT"** warning at `:297` that this ticket must read before touching either.
+attempt-scoped as of `E7-F031`; **arm 2 counts an applied `output_projection` receipt on `job_id`
+*and* `attempt_id = run.distributed_attempt_id` — it is ATTEMPT-scoped too, also as of `E7-F031`.**
+Verified at source: the predicate carries `eq(jobProjectionReceipts.attemptId, attemptId)`
+(`server/src/services/e7-distributed-run-verifier-store.ts:596`), the store's linkage census row #10
+records it as `PRECISION | attempt` (`:71`), and the `countProducedOutputs` header opens with
+**"BOTH ARMS BIND TO THE RUN'S ATTEMPT, NOT ITS JOB (E7-F031)"** (`:427`).
+
+★★★ *Superseded text: "arm 2 counts an applied `output_projection` receipt on `job_id`,
+job-granular by deliberate choice". Corrected 2026-09-20, verified at source.* That was true only in
+the window between `E7-F020` and `E7-F031`; `:71` still carries the sentence "E7-F020 fixed its
+linkage and **left it** job-granular" as a description of the state `E7-F031` then closed, and
+`:436-439` records why — a patch or an output produced by attempt 2 was printing
+`capability: PROVEN` for a run bound to attempt 1.
+
+★ **And the `:297` warning does not say what this ticket was told it says.** It is headed
+**DO NOT "MAKE THIS CONSISTENT" WITH `countProducedOutputs`** and it sits at the **clause-4 secret
+scanner's** call site. It distinguishes the **SCANNER** (`listRunSecretScanSurfaces`, which wants
+RECALL and is deliberately union-linked and job-wide) from the **CAPABILITY COUNTER** (arm 2, which
+wants PRECISION and is receipt-linked and attempt-bound), and forbids reconciling **those two**:
+"narrowing this to the receipt join … would silently stop scanning every legacy platform writer …
+and widening the counter to this union would re-open E7-F020" (`:297-312`), restated in the census
+as "#7 and #10 read the same table for opposite purposes and MUST stay divergent ON BOTH AXES"
+(`:74`). **It says nothing about arm 1 versus arm 2** — those two are already consistent. This
+ticket must still read it before touching either arm, for the scanner/counter boundary it does
+state.
 
 **Outcome:** clause 6 asserts something both **provable** and **non-forgeable**, given whatever
 `CLI-008-F1b` ruled; and the four scanner/evidence findings are dispositioned with evidence.
@@ -939,11 +991,21 @@ CONSISTENT"** warning at `:297` that this ticket must read before touching eithe
 | `E7-F032` (LOW) | Clause 4 does not scan a sibling attempt's `job_events`, so a retried job's leak can reach a clean verdict. |
 | `E7-F033` (MEDIUM) | The residual over-matching hard matchers (`provider_key`, `e2b_api_key_assignment`) and the standing precision-AND-recall suite obligation. |
 
-**Ticket non-goals:** re-opening `E7-F031`'s attempt-scoping; making arms 1 and 2 "consistent" (the
-store forbids it in terms); widening arm 1 off `kind = 'workspace_patch'` **unless** F1b's ruling
+**Ticket non-goals:** re-opening `E7-F031`'s attempt-scoping; ★★★ **reconciling the clause-4
+SECRET SCANNER (`listRunSecretScanSurfaces`) with the capability COUNTER in either direction — THAT
+is the pair the store forbids in terms** (`server/src/services/e7-distributed-run-verifier-store.ts:297-312`,
+census `:74`); widening arm 1 off `kind = 'workspace_patch'` **unless** F1b's ruling
 supplies a supply mechanism whose output the widened arm cannot be satisfied by — the staged input
 bundle satisfies the naive widening on every run (§4.3), and that refutation stands until a ruling
 displaces it.
+
+★★★ *Superseded text: "making arms 1 and 2 ‘consistent’ (the store forbids it in terms)".
+Corrected 2026-09-20, verified at source.* The store forbids making the **scanner** consistent with
+the **counter**; it does not forbid — and has no reason to forbid — consistency between the two
+counter arms, which `E7-F031` already made consistent (both attempt-bound:
+`e7-distributed-run-verifier-store.ts:427` states it, `:596` is arm 2's `attemptId` conjunct).
+Carrying the old wording as a non-goal would have fenced off a state the source already occupies and
+pointed an implementer at the wrong warning.
 
 **Files:** modify `server/src/services/e7-distributed-run-verifier.ts` and
 `-store.ts`; extend the pinned capability fixture; `findings.md` for the five dispositions.

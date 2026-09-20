@@ -192,8 +192,13 @@ Reopening creates new findings, results where needed, QA attempts, and handoffs.
    owner does this, every milestone QA record minted by the steps below is nonconforming, so no
    milestone can validly pass. See the banner above.
 4. **Freeze the shared candidate and complete the `M1a` required result set.** This step does
-   **not** require E7 tools/workspace/output capability — requiring it here is what made `M1a`
-   unreachable. `M1a` Step 0 first files the tickets that set marks `TO FILE`.
+   **not** require the **tools** or **output** paths — the tool surface is armed by `CLI-008-C5`,
+   an `M1b` ticket, and `M1a` passes with `capabilityProven=false`. ★ **Workspace staging IS
+   required**, because the `M1a` journey stages input. *Corrected thirteenth round: an earlier
+   revision deferred “tools/workspace/output” while the entry criteria exempted only output — two
+   different subsets, so a candidate frozen here could fail `M1a`'s own entry conditions. The exact
+   subset is `tools` + `output`, and it is now stated identically in both documents.*
+   `M1a` Step 0 first files the tickets that set marks `TO FILE`.
 5. **Run `M1-D1-SPINE`, then `M1a-D2-MECHANISM`, on that same frozen candidate**, explicitly
    retaining the DE-08/H-06 conflict. ★ `M1a-D2-MECHANISM` is satisfied by a record reporting
    `capabilityProven=false`; that is the gate’s defining property, not a waiver.
