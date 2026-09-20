@@ -13,14 +13,14 @@ This is the fixed set of 50 tickets identified when the numbered program graph h
 > original four buckets could not express three real states, so three were added: **M**
 > (in-milestone build), **N** (no correction owed) and **X** (not filed). Every change is
 > evidenced in the amendment record below — read it before disputing a row. Arithmetic:
-> **50 distinct tickets, 52 entries, two declared splits** (`DEP-009`, `DEP-011`); nothing
-> was dropped and nothing invented.
+> **50 distinct tickets, 51 entries, one declared split** (`DEP-011`); nothing was dropped and
+> nothing invented. *(`DEP-009` was briefly a second split; corrected — see disposition D.)*
 
 ### A. Promise-truth corrections — 20
 
 These items reconcile what the program promised with what the shipped or partially shipped mechanism actually proves. Preserve their implementation and evidence, but do not inherit an over-broad completion claim.
 
-`PRT-007`, `TEN-006`, `JOB-009`, `JOB-010`, `JOB-011`, `JOB-012`, `JOB-013`, `JOB-014`, `JOB-015`, `WRK-008`, `WRK-010`, `WRK-011`, `WRK-014`, `WRK-015`, `DAT-008`, `DEP-009` *(admission half — split)*, `DEP-010`, `DEP-011` *(record half — split)*, `DEP-012`, `MIG-008`.
+`PRT-007`, `TEN-006`, `JOB-009`, `JOB-010`, `JOB-011`, `JOB-012`, `JOB-013`, `JOB-014`, `JOB-015`, `WRK-008`, `WRK-010`, `WRK-011`, `WRK-014`, `WRK-015`, `DAT-008`, `DEP-009`, `DEP-010`, `DEP-011` *(record half — split)*, `DEP-012`, `MIG-008`.
 
 ### B. Pre-milestone assurance and operations — 8
 
@@ -40,11 +40,21 @@ These remain required or valuable in the original broader program, but they do n
 
 `WRK-012`, `MIG-005`, `MIG-007`, `DBR-001`.
 
-### D. Optional expansion — 2
+### D. Optional expansion — 1
 
 These are explicit expansion choices, not silent prerequisites for the first milestone. If selected later, they re-enter through their own approved scope and evidence gates.
 
-`WRK-016`, `DEP-009` *(two-replica HA half — split)*.
+`WRK-016`.
+
+★★★ *Corrected 2026-09-20: `DEP-009` was listed here as a split, on the reading that its
+two-replica HA half was later expansion. **It is not — it shipped.** `DEP-009-result.md` reads
+`complete + CI-GREEN`, with the live two-replica boot and `e6f-11` **6/6** proven on
+`d1-merge-train`, and `docker-compose.d1.yml` carries the `control-plane-b` replica. Filing shipped
+work under "if selected later, they re-enter through their own approved scope and evidence gates"
+repeats the error the C1/C2 split was made to fix. `DEP-009` is now wholly disposition **A** —
+and its promise-truth correction is precisely that proving **two replicas boot in D1** is not
+proving **production-scale HA behind a load balancer**, which is D5's bar and M4's work, owned by
+D5 rather than by this ticket.*
 
 ### M. In-milestone build — 5
 
@@ -180,7 +190,8 @@ Both partial gates are non-promoting. They may support a separately named milest
 | **M1a** | The spine | mechanism: one org, one CP, one worker, real E2B, in a **shipped CI boot** | `M1-D1-SPINE` + the mechanism half of `M1-D2-CODING` | M0 |
 | **M1b** | Useful capability | an agent's output reaches the founder | the useful-capability half of `M1-D2-CODING` | M1a, `CLI-008` Unit F, `DAT-009` 3c–3e |
 | **M2** | Sink cutover | the legacy in-process paths stop owning execution | `M2-CUTOVER` *(to be named)* | M1b |
-| **M3** | Workload breadth | browser and service workloads run distributed | full **D3** + full **D4** | M2 |
+| **M2-RTF** | Realtime foundation | reconnect-safe realtime, proven on one revision | **`E10-REALTIME-FOUNDATION`** | M1b *(its three input tickets are already shipped)* |
+| **M3** | Workload breadth | browser and service workloads run distributed | full **D3** + full **D4** | M2 **and `E10-REALTIME-FOUNDATION`** |
 | **M4** | HA and disaster recovery | two replicas preserve correctness; a measured restore | full **D5** | M3 |
 | **M5** | Private beta | three external Organizations, all workloads, 14 days | full **D6** → **E11 exit** | M4 |
 
@@ -213,8 +224,34 @@ provably not reached, and rollback is rehearsed. `E3-5-product-approval`, `E3-17
 
 ### `M3` — workload breadth
 
-**Scope.** E8 browser (`BRW-004`…`008`) and the E9 service remainder (`SVC-003`/`005`/`007`
-residuals, `SVC-004`, `SVC-006`).
+**Scope.** E8 browser (`BRW-004`, `BRW-005`, `BRW-006`) and the E9 service remainder
+(`SVC-003`/`005`/`007` residuals, `SVC-004`, `SVC-006`).
+
+★ *Corrected 2026-09-20: an earlier draft wrote "`BRW-004`…`008`". **`BRW-007` and `BRW-008` have
+no program-design node and no ticket file** — their only scope statement is
+`scope-addendum-agent-and-commander.md`, outside the ticket graph. They are not M3 scope and must
+not be implied to be; filing them is a programme-owner decision.*
+
+★★★ **ENTRY BLOCKER THIS SEQUENCE ORIGINALLY MISSED — `E10-REALTIME-FOUNDATION`.**
+`epics/README.md` records that **`BRW-006` requires it** and **`SVC-007` requires it**, and
+`test-gates.md` RTF-00 states the gate "exists only to unblock reconnect-safe claims in CLI-006,
+BRW-006, and SVC-007". Since `BRW-006` carries D3 and `SVC-007` carries D4, **M3 as first written
+could not pass.** It now has its own milestone, `M2-RTF`, because the work is a campaign rather
+than a ticket:
+
+- **Its three input tickets have ALL shipped** — `JOB-005`, `DEP-009`, `MIG-003` each carry a
+  `-result.md`. So the gate is **passable today**.
+- **The gate itself is UNPASSED.** Measured 2026-09-20: **zero** QA records anywhere under
+  `epics/*/qa/` reference `E10-REALTIME-FOUNDATION`, and **no** handoff named
+  `e10-realtime-foundation` exists. RTF-07 requires that handoff by name.
+- ★ **`MIG-003` shipping is not the gate passing.** Its result doc says `complete` /
+  `Disposition: pass` — that is a **ticket** result. The gate additionally requires RTF-01…RTF-06
+  proven on **one exact revision**: two interchangeable replicas authorising by Organization and
+  Company, ≥10,000 durable events across ≥2 Organizations with 100 reconnect gaps recovered in
+  exact order and 100 duplicate injections suppressed, a 15-minute broker outage, bounded
+  backpressure, control-versus-presence, and the redaction canary corpus. **Treating the ticket
+  result as the gate record is exactly the "a ticket shipped" / "an epic passed its gate" collapse
+  this proposal exists to prevent.**
 
 **★ The known blocker, stated up front.** `packages/browser-runtime` has **zero importers anywhere
 in the tree**, declares `playwright` as a *devDependency* so it is unshippable as written, and
@@ -359,7 +396,7 @@ Nineteen disputes, each verified at `4df71dada` against source rather than inher
 |---|---|---|
 | `DAT-009` | C → **M** | Slice 3 owns `createArtifactExportSequencer`, whose ONLY references are its own definition and the barrel re-export at `packages/worker-daemon/src/index.ts:178` — **zero production callers**. It is return-path link 3, which exit criterion 4 requires. |
 | `DAT-011` | C → **B** | LANDED and production-wired: `createSweepTrigger` imported at `server/src/routes/worker-control.ts:44`, constructed at `:137`. Exit criterion 3 demands "every terminal cleanup path"; M1 mints artifact grants. |
-| `MIG-009` | C → **B** | **D-9:** exit criterion 6's rollback rehearsal USES the drain. MIG-009 shipped it deliberately unwired (`E10-1-drain` dormant); wiring it gives criterion 6 a mechanism rather than a runbook. |
+| `MIG-009` | C → **B** | **D-9:** exit criterion 6's rollback rehearsal USES the drain. MIG-009 shipped it deliberately unwired (`E10-1-drain` dormant); wiring it gives criterion 6 a mechanism rather than a runbook. ★ **The apparent conflict with the register is resolved in D-9's favour — see below.** |
 | `DEP-009` | D → **split A + D** | Its shipped admission half is load-bearing on journey item 1 — `admitAttemptCapacity` is composed on the live submit path (`server/src/services/job-submission.ts:34,131,136`). Leaving a `complete + CI-GREEN` ticket under "re-enter through their own approved scope" would re-open evidence M1 depends on. Two-replica HA stays D. |
 | `WRK-013` | A → **M** | `Status: scoping`, no result, `E4-F009` open. `StartupReconcilerDeps.leaseCandidates` still has no durable source. No claim exists, so there is no promise to correct. |
 | `DAT-007` | A → **M** | Its own result header: `PARTIAL — the core remote-reach is BLOCKED`. Already honest; the residual is build work on the tools-in path. |
@@ -375,6 +412,32 @@ Nineteen disputes, each verified at `4df71dada` against source rather than inher
 - **`MIG-010` (B) had a structural deadlock.** It has no `-result.md` deliberately — adding one would retire it as `E7-F007`'s owner exactly when that finding needs one — while exit criterion 1 requires results for every REQUIRED ticket. **D-10: file a successor for `E7-F007`** so MIG-010 can land a result honestly. Until that successor exists, criterion 1 is unsatisfiable.
 - **`DBR-001` (C2) design text is stale.** It says "**no `aoa db:restore` command exists**"; the command shipped in #484 (`cli/src/commands/db-restore.ts`). Its DR scope placement is still correct.
 - **`MIG-005` / `MIG-007` are NOT M1 prerequisites.** The milestone journey is `task_run`-only. A sibling document bundled them with the parity bridges into one pre-M1 stage; that bundling is corrected in [`RECONCILIATION-2026-09-20.md`](RECONCILIATION-2026-09-20.md). The **bridges** are M1 work (disposition A, journey item 7); the **cutovers** are Retained.
+- ★★★ **`E10-1-drain`: the register said REL-005 owns the trigger, and that premise is STALE.**
+  Drafting the E10 plan surfaced what looked like a flat contradiction: **D-9** requires the drain
+  wired for M1 exit criterion 6, while both `MIG-009-drain-result.md` and the `E10-1-drain` register
+  reason say promoting it needs *"a real operator teardown / kill-switch write path — which is
+  **REL-005** scope"*, and `REL-005` has **zero files** and sits at M5. Both cannot stand.
+
+  Measured at HEAD, the conflict dissolves: **an operator kill-switch write path SHIPPED in REL-004
+  Lane C** (PR #485) — `server/src/routes/instance-settings.ts` serves `kill_switches_set` /
+  `kill_switches_cleared`, and `server/src/services/instance-settings.ts` writes the dedicated
+  `kill_switches` column. The route's own comment already describes the semantics as a drain
+  (*"refuses an unreadable document, which would drain every fleet"*). So the trigger the register
+  was waiting on is **no longer REL-005's to deliver** — it exists.
+
+  ★ **What genuinely remains is a GRAIN question, not a blocker.** Kill switches are *dimensioned*
+  (`evaluateKillSwitches` matches exactly on provider or template and gates new placement at
+  `job-leasing.ts:720`), whereas `drainAll` is fleet-wide. Connecting them naively would let killing
+  one template drain another provider's in-flight work. Reconciling that grain is **MIG-009's design
+  question**, and it is M1-sized.
+
+  ★ This is the *"X is blocked — wrong six times out of six"* pattern from the operating rules,
+  caught once more: the blocked-claim was inherited from a register reason rather than re-measured,
+  and re-measuring it at HEAD falsified the premise. **`REL-005` is not a prerequisite of M1.**
+- **Two gate clauses share the `E9-4` ordinal** — `E9-4-service-liveness-deadline` and
+  `E9-4-service-create-and-desired-state`. The keys are unique so no guard breaks and nothing is
+  mis-reported; the ordinal simply stopped being a sequence. Recorded, not renamed: renaming a
+  clause key would rot every citation into it for a cosmetic gain.
 - **A fifth parity bridge is live and tracked by nothing.** `jobAdmissionBridge` (JOB-010) HAS a production caller (`server/src/index.ts:1225` import, `:1250` construct) and **no gate clause names it**. `E3-F038` closed this census class, but its scope was the guard header's fourteen named symbols and this is not among them. The four genuinely callerless bridges are **JOB-011/012/013/014**, not JOB-010..014.
 
 `REL-FOUNDATION-GATE` is deliberately outside this 50-ticket accounting: its current program-design entry says it is nonnumeric, inert, and retained for human traceability rather than ticket-graph coverage.
