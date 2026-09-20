@@ -123,11 +123,21 @@ nothing stages. The gate clause records exactly this:
 `gate-clause-wiring.json` → `E8-1-sandbox-local-browser`, `status: "unwired"`,
 `expectedReferences: 1`, reason *"the capability is unreachable despite the non-zero count."*
 
-**(b) It declares `playwright` as a `devDependency`, so it is unshippable as written.**
-`packages/browser-runtime/package.json` has **no `dependencies` key at all**; `playwright`,
-`typescript`, `vitest` and `@types/node` are all under `devDependencies`, while `main`
-points at `./dist/index.js` and `files` ships `dist`. A production install of this package
-resolves no browser driver.
+**(b) ★★★ WITHDRAWN — the `playwright` devDependency is the STAGED architecture working as
+designed, not a blocker.** *Corrected 2026-09-20 (seventh round), verified at source.* An earlier
+revision said the package is *“unshippable as written”* because `playwright` sits under
+`devDependencies`. That reasoning assumed a **production install**, and the runtime does not use
+one: `packages/browser-runtime/src/runner.ts` is **staged into the sandbox** — the host writes the
+runner plus `session.json` and then execs it — and `e2b/e2b.Dockerfile:44-50` installs Playwright
+**globally** and sets `NODE_PATH` for precisely that reason. The Dockerfile says so itself:
+*“Installed GLOBALLY with NODE_PATH set, because the runner is STAGED, not installed … so the guest
+has no node_modules of its own to resolve `import { chromium } from "playwright"` against.”*
+`runtime-dependency.test.ts` documents and tests that architecture.
+
+★ **Treating it as fatal would have made M3 require an unnecessary manifest change** and would have
+propagated a false prerequisite into the triage and the E11 plan. The blocker list is therefore
+**(a) reachability/staging** and **(c) capability advertisement** — both still real and both
+unchanged.
 
 **(c) `workload.browser_session` is filtered out of the worker hello, so a browser job can
 be submitted and placed-for but never leased.**

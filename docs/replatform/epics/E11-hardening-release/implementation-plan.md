@@ -305,9 +305,13 @@ elapsed time from a clean start, assuming nothing resets it.
 through MIG-008"*. Of those, `MIG-001` has **zero files on disk** (disposition **X**,
 `scope-triage.md`), `MIG-005`/`MIG-007` are unbuilt (**C2**, `:41`), and E8's browser lane
 carries the blocker `scope-triage.md` states up front: `packages/browser-runtime` has *"zero
-importers anywhere in the tree"*, declares `playwright` as a devDependency *"so it is unshippable as
-written"*, and `workload.browser_session` is filtered out of the worker hello, so *"a browser job can
-be submitted and placed-for but never leased."* D6-03's ≥50 browser journeys sit behind that.
+importers anywhere in the tree"* and `workload.browser_session` is filtered out of the worker hello,
+so *"a browser job can be submitted and placed-for but never leased."* D6-03's ≥50 browser journeys
+sit behind that. ★ *Corrected 2026-09-20 (seventh round): this also quoted the `playwright`
+devDependency as making the package “unshippable as written”. That clause is **withdrawn** — the
+runner is staged into the sandbox and Playwright is installed globally with `NODE_PATH`
+(`e2b/e2b.Dockerfile:44-50`), which is the architecture, not a defect. The two surviving blockers
+are the real ones.*
 
 ### B6 — Accepted residuals that E11 must record but cannot claim
 
@@ -453,5 +457,6 @@ Reopen this plan — not merely amend a ticket — when any of the following bec
 9. **The DE-08 residual is amended, or H-06 gets a successor decision.** B6 propagates from D2 to
    the E11 exit; a change there changes what an E11 candidate may claim.
 10. **A milestone before M4 slips its scope** — in particular if M3's browser lane
-    (`packages/browser-runtime`, zero importers, `playwright` as a devDependency) does not ship,
+    (`packages/browser-runtime`, zero importers, and `browser_session` filtered from the worker
+    hello — ★ *not* the `playwright` devDependency, which is the staged architecture) does not ship,
     D6-03's ≥50 browser journeys are unreachable and E11 cannot enter D6 at all.
