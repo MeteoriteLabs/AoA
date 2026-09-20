@@ -427,14 +427,24 @@ Ticket shipment or an earlier mechanism run cannot substitute for items 2–9. P
 >
 > **`M1a` required result set** — every one of these owes a `-result.md` before `M1a` passes:
 >
-> | Ticket | Epic | What it owes M1a |
-> |---|---|---|
-> | `MIG-009` | E10 | the drain **and its trigger** (D-9), for criterion 6's rehearsal |
-> | `WRK-013` | E4 | the startup reconciler — journey item 8's restart recovery; closes `E4-F009` |
-> | `DAT-007-S3` | E5 | the `/mcp` run-currency gate proven against real PostgreSQL |
-> | `DEP-011-S5` | E6 | the adapter-manager image + control-plane key in a **shipped** deploy |
-> | `E7-1-JOURNEY-ARM` | E7 | promote `E7-1-coding-journey` on a shipped CI boot |
-> | **TO FILE at `M1a` Step 0** | E3 + E4 | the three parity-bridge consumers (`jobBudgetCostBridge`, `jobAuditBridge`, `jobOutputBridge`) **and** the `observeRun` usage producer — **D-8**. No ticket exists for these yet; filing them is `M1a`'s first act, and `M1a` cannot pass until they carry results. |
+> ★ **Each row says where its task is defined, because a set whose members resolve to nothing is
+> the same exemption in a longer form.** *Self-review 2026-09-20 found three of these six had no
+> task: one was cited too narrowly, and two had none at all — including `DEP-011-S5`, an id this
+> document had invented. Corrected below rather than left to be discovered at M1a Step 0.*
+>
+> | Ticket | Epic | Task defined | What it owes M1a |
+> |---|---|---|---|
+> | `MIG-009` | E10 | ✅ E10 plan **§8.1** (full house detail) | the drain **and its trigger** (D-9), for criterion 6's rehearsal |
+> | `DAT-007-S3` | E5 | ✅ E5 plan | the `/mcp` run-currency gate proven against real PostgreSQL |
+> | `E7-1-JOURNEY-ARM` | E7 | ✅ E7 plan | promote `E7-1-coding-journey` on a shipped CI boot |
+> | `WRK-013` | E4 | ❌ **TO FILE** | the startup reconciler — journey item 8's restart recovery; closes `E4-F009`. Its design is `Status: scoping` and **no plan carries a task for it**. |
+> | DEP-011's remaining deploy half | E6 | ❌ **TO FILE, scope unestablished** | the adapter-manager image + control-plane key in a **shipped** deploy. ★ An earlier revision called this `DEP-011-S5`; **that id does not exist** — no result doc, and neither the E6 nor E7 plan defines its task. Its exact remaining scope was explicitly recorded as *not established* by the plan drafting, and must be measured before it is assignable. |
+> | the parity bridges + the usage producer | E3 + E4 | ❌ **TO FILE** | the three consumers (`jobBudgetCostBridge`, `jobAuditBridge`, `jobOutputBridge`) **and** the `observeRun` producer — **D-8**. |
+>
+> ★★★ **So `M1a`'s first act is filing four tickets, not building.** Three of the six rows have no
+> task today. `M1a` cannot pass until every row carries a result, and a row cannot carry a result
+> until it has a task — which makes the gap visible rather than letting a gate owner discover it
+> mid-milestone.
 >
 > **`M1b` required result set:** `CLI-008-F1a`, `CLI-008-F3`, `CLI-008-F4`, `CLI-008-F5`,
 > `CLI-008-F6`, `CLI-008-C5`, `DAT-009-3c`, `DAT-009-3d`, `DAT-009-3e`. ★ `CLI-008-F1b` is
