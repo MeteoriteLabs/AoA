@@ -19,7 +19,7 @@ implementation tasks are **not** here. See [§8](#8-ticket-implementation-tasks-
 | Item | Recorded value |
 |---|---|
 | Epic status | `backlog` (`README.md:3`) |
-| Milestone | **M3 — workload breadth** (`scope-triage.md`, `:216-217`) |
+| Milestone | **M3 — workload breadth** (`scope-triage.md`, §*The milestone sequence*) |
 | Milestone scope | `SVC-003`/`005`/`007` **residuals**, plus `SVC-004` and `SVC-006` (`scope-triage.md`) |
 | Entry | **M2 passed** (`scope-triage.md`). M2 needs M1b → M1a → M0. Four milestones sit between HEAD and E9 entry. |
 | Named exit gate | **full D4**, including the 72-hour continuity campaign (`scope-triage.md`; clauses at `test-gates.md:133-145`) |
@@ -99,7 +99,7 @@ runtime/spend limits** (`program-design.md:1054`).
 |---|---|
 | operator pause/resume | **DELIVERED** — SVC-007a's desired-state transitions |
 | generation rollout (the writer + the placement fence) | **DELIVERED** — SVC-005a |
-| **worker drain** | **NOT DELIVERED** — blocked on `E9-F008` (zero producers + type-level narrowing). `SVC-005b` is designed and unbuilt. |
+| **worker drain** | **PARTLY DELIVERED** — ★★★ *corrected 2026-09-20 (ninth round), verified at source: the “zero producers” half is FALSE.* `requestDrain` queues `commandKind` `drain` (`packages/db/src/repositories/tenant/job-control.ts:5145`), reached through `server/src/services/job-reconciliation.ts:134` and the operator service — **the producer ships**. The distinct residuals remain: graceful-stop semantics and the checkpoint, plus `E9-F008`'s type-level narrowing. `SVC-005b`'s revival question must be re-asked against a shipped producer, not against “designed and unbuilt”. |
 | **replace-BEFORE-stop** | **STRUCTURALLY UNREACHABLE** under `service_instances_live_service_uq`, which permits exactly one non-terminal instance per `(organization, service)`. Not a gap to fill — a shape to re-decide. |
 | **hard runtime/spend limits** | **UNBUILT** |
 | **stuck-stop force-kill** | **UNBUILT** |
@@ -112,7 +112,7 @@ generation, active instance, health, checkpoint, budget, restart history**
 | Conjunct | State |
 |---|---|
 | create / pause / resume / stop controls | **DELIVERED** — SVC-007a |
-| every control action is audited | **HALF DELIVERED** — SVC-007b wires `activity_log` into the two **mutating** routes. The **roll** route writes nothing durable, and three mutating endpoints on the same router (job submission, `drain`, worker `revoke`) also write nothing. That is `E9-F010`'s still-open half. |
+| every control action is audited | **MOSTLY DELIVERED** — ★★★ *corrected 2026-09-20 (ninth round), verified at source.* **Three durable writers ship**: `recordServiceGenerationRollActivity` (`server/src/services/service-generation-rollout.ts:415`), `recordJobSubmitActivity` (`server/src/services/job-submission.ts:406`) and `recordJobDrainActivity` (`server/src/services/job-reconciliation.ts:151`) — so **roll, job submission and drain DO write durably**, and this row's earlier claim that the roll route “writes nothing durable” was false. The surviving gap is **revoke**, with its documented organization/company-scope blocker. ★ Superseded text, retained for the record: 
 | generation update | ★ **MOVED SINCE THE README's SVC-007a ENTRY.** `README.md:9` lists *"nothing rolls a generation (SVC-005)"* as not-delivered; SVC-005a subsequently shipped `rollServiceGeneration`. The **route-level** audit for it is still missing (above). |
 | **TTL / checkpoint acceptance** | **NOT DELIVERED** — SVC-004 / SVC-005 |
 | **the view** (checkpoint, budget, restart history) | **NOT DELIVERED** — the view carries none of the three |
@@ -121,7 +121,7 @@ generation, active instance, health, checkpoint, budget, restart history**
 | **★ the largest** — *"no service job is leased anywhere in its suite"* | **NOT DELIVERED** — the DAEMON half of "created, supervised, projected" is unexercised. See §5.1. |
 
 **`SVC-008` — both halves SHIPPED** (`README.md:5`), and the triage classes it **C1**
-(*"shipped, retained, not required by M1"*, `scope-triage.md §*C. Later original-program phase — 10*`, `:371`). What stays open is
+(*"shipped, retained, not required by M1"*, `scope-triage.md §*C. Later original-program phase — 10*`, §*C1 — shipped, retained, not required by M1*). What stays open is
 not the ticket but its finding: **`E9-F002`**, because its resolve criterion is a
 conjunction and only the T0 conjunct holds. SVC-008's own acceptance clause *"no service run
 reaches `destroy` with an expired effect authority"* **is** satisfied — by **bounding** the
@@ -262,7 +262,15 @@ scheduling any of it.
 
 ### 5.4 Other measured blockers
 
-- **No service job is leased anywhere in any E9 suite** (`README.md:9`, `:11`). The daemon
+- ★★★ **CORRECTED 2026-09-20 (ninth round) — A SERVICE-LEASING PROOF DOES EXIST.**
+  `server/src/__tests__/service-leased-supervised.integration.test.ts` performs a real poll and ACK,
+  asserts the workload type is `service` and the persisted lease state, then invokes the real
+  supervisor. Its **actual** limits are narrower than “nowhere” and are what this bullet should
+  say: seeded placement, a keyless provider double, and no server ingestion of the emitted events.
+  Recording a shipped proof as absent invites rebuilding it.
+
+  *Superseded claim, retained for the record:* “No service job is leased anywhere in any E9 suite”
+  (`README.md:9`, `:11`). The daemon
   half of "created, supervised, projected" is unexercised end to end. This is distinct from
   §5.1: the capability is now advertised and `workload.service` is in
   `SUPERVISABLE_WORKLOAD_CAPABILITIES` (`packages/worker-daemon/src/enrollment/hello-provisioning.ts:59`),

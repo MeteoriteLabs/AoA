@@ -321,10 +321,31 @@ as `ticket` for exactly ten open findings. Its own design's Status line has been
 says so: *"If you are reading a Status line here, check it against `git log --oneline -- <this file>`
 and the GO-BOOK row before trusting it."*
 
-**Outcome:** the link-scoped ticket ids below exist as `#### ID` nodes in `program-design.md` (which
-`check-ticket-graph-coverage.mjs` requires before any ticket file may exist), each open finding is
-re-pointed from `CLI-008` to the link that will close it, and the five drifted citations in §1 are
-corrected **by symbol**.
+★★★ **BLOCKING — THE `CLI-008-Fn` ID SHAPE CANNOT BE EXPRESSED TO THE GUARDS, AND USING IT WOULD
+SILENTLY COMPLETE THE PARENT.** *Added 2026-09-20 (ninth round), verified by reading the parsers.*
+This scheme must be resolved **before** `CLI-008-LEDGER` is assigned:
+
+| Guard | Code | What it does with `CLI-008-F6` |
+|---|---|---|
+| `check-finding-ownership.mjs:49` | `/^([A-Z]+-\d+)/` over ticket filenames | extracts **`CLI-008`** — `CLI-008-F6` is **not a known owner**, so re-pointing a finding to it yields `owner_ticket_missing` |
+| `check-finding-ownership.mjs:67` | `/^([A-Z]+-\d+).*-result\.md$/` | reads **`CLI-008-LEDGER-result.md` as a result for `CLI-008` itself** — ★★★ **which is precisely the act that orphans all ten findings**, and which this plan and the triage both forbid |
+| `ticket-graph-coverage.mjs:68` | `/^####\s+([A-Z]{2,5}-\d{3})\s/` | does **not** match `#### CLI-008-F6` (the id is followed by `-`, not whitespace), so the required graph node cannot be declared at all |
+
+★ **So the Outcome below is currently unreachable**, and the danger is not merely that the guards
+red — it is that the ledger's own result file **reads as the parent's**, turning the one forbidden
+act into the default outcome of following this ticket.
+
+**The fix is a decision, recorded in `decisions.md` before `CLI-008-LEDGER` is assigned:** either
+(a) allocate **distinct numeric ids** in the supported `CLI-0NN` shape for every link **and for the
+ledger**, keeping `CLI-008` as the narrative parent only; or (b) **schedule the parser changes
+first**, as their own unit with their own tests, and make the split depend on them. Option (a)
+needs no guard change and is the lower-risk default; option (b) must not be assumed to be a
+one-line regex edit, because all three guards and the graph contract move together.
+
+**Outcome (once the id scheme is decided):** the link-scoped ticket ids exist as `#### ID` nodes in
+`program-design.md` (which `check-ticket-graph-coverage.mjs` requires before any ticket file may
+exist), each open finding is re-pointed from `CLI-008` to the link that will close it, and the five
+drifted citations in §1 are corrected **by symbol**.
 
 **Proposed finding → link ownership** (the reviewer confirms each against source; a wrong
 re-ownership is worse than none):
@@ -430,14 +451,25 @@ and no provider package (E4-D01).
 
 **Observability:** none added; capture is a pure data producer.
 
-**Rollback/disablement:** revert the barrel export; the module returns to inert.
+**Rollback/disablement:** delete the enumeration test and the header note; nothing was exported,
+so there is no export to revert.
 
 **RED → GREEN:** RED — a binding test in which `listDir` returns directory entries rather than
-absolute file paths must fail loudly rather than silently capture nothing; RED — the barrel export
-is absent today; GREEN — both, plus the daemon boundary check and worker typecheck/build.
+absolute file paths must fail loudly rather than silently enumerate nothing; RED — the
+metadata-only enumerator does not exist today; GREEN — both, plus the daemon boundary check and
+worker typecheck/build.
+
+★★★ **THE OLD BARREL-EXPORT ASSERTION IS REMOVED, AND THAT IS THE POINT OF THE CORRECTION.**
+*Corrected 2026-09-20 (ninth round).* An earlier revision required *“the barrel export is absent
+today”* to go GREEN by adding it, and the commit message ordered *“export the sandbox capture
+half”* — while this same ticket's Outcome §2 and Files section say `captureSandboxEntries` must
+stay **inert on the E2B and networked lanes** and must **NOT** be exported from `snapshot/index.ts`
+for them. An implementer following the acceptance test would have breached the data-plane contract
+the ticket exists to fence. Fixing the Outcome and leaving the acceptance test is how the rejected
+instruction survives.
 
 **Evidence / commit:** `tickets/CLI-008-F1a-result.md`; one commit
-`feat(worker-daemon): export the sandbox capture half and pin its transport binding`.
+`test(worker-daemon): pin the metadata-only listDir enumeration seam and fence the byte-reading one`.
 
 ---
 
@@ -940,7 +972,19 @@ verdicts recorded” described one record carrying two `Result`s, which the QA t
 allow — the verifier PRINTS both values, and the record’s single normative `Result` is the
 mechanism verdict.*
 
-**RED → GREEN:** RED — the checker fires `unwired_but_now_has_caller` once the boot exists, before
+★★★ **THE PROMOTION RED CANNOT FIRE FROM A DEPLOYMENT BOOT, and an earlier revision required it to.**
+*Corrected 2026-09-20 (ninth round), verified by reading the checker.* `gate-clause-wiring.mjs:106`
+emits `unwired_but_now_has_caller` **only when `count > expectedReferences`** — it counts source
+references and **never inspects a deployment boot**. This ticket also requires the reference count
+to stay at four, so evaluating the entry returns clean-and-`unwired` no matter what ships. A RED
+that no possible state produces is not a positive control; it is a checkbox nobody can tick.
+
+★ **Split the two jobs:** promote on **shipped-boot evidence** (the deploy record, which is what
+actually changes), and get the positive control from a **controlled checker fixture** that raises
+the reference count above `expectedReferences` — proving the checker still bites, without pretending
+the boot is what trips it.
+
+*Superseded text:* RED — the checker fires `unwired_but_now_has_caller` once the boot exists, before
 the register edit (the positive control); GREEN — checker green after it, with the verifier's run
 recorded.
 
@@ -978,7 +1022,7 @@ recorded as net-new, never as "parity passed."
 | Producer | A retry double-commits | `CLI-008-F3` | Same `idempotencyKey`, same derived `artifactId` — a replay. |
 | Producer | Export fails after successful work | `CLI-008-F3` | Best-effort: `emitOp failed`, truthful terminal, attempt **not** failed. |
 | Producer | A grant URL reaches a log or a thrown message | `CLI-008-F3` | Asserted absent — H-04, zero tolerance. |
-| Announcement | The event sink fails | `CLI-008-F4` | Best-effort; the commit is already durable and is not retracted. |
+| Announcement | The event sink fails | `CLI-008-F4` | ★ **Per F4's recorded contiguity decision — NOT “best-effort”.** The commit is already durable and is never retracted either way, but the emit consumed a `seq`, so a hole makes the control plane reject the tail as a `gap`. Fatal, allocate-on-success, or retry-until-land; the row follows whichever `decisions.md` records. |
 | Announcement | A reconstructed transcript is corrupt | `E7-F024` disposition in `CLI-008-F4` | Recorded: the artifact route carries a reference, not bytes, so it does not inherit the `log` truncation. |
 | Projection | Two mechanisms write `task_outputs` | `CLI-008-F5` | Scoped to `execution_owner = distributed`; the `jobOutputBridge` boundary is stated for M2. |
 | Projection | An empty row is written on every run | `CLI-008-F5` | No events ⇒ no row (anti-vacuity). |
@@ -1098,21 +1142,40 @@ authorize implementation.
 - [ ] **T1 (P1 STOP, S)** — `CLI-008-LEDGER`: file the link-scoped successors, re-point the ten
   findings, correct the five drifted citations. Verify: five record guards green after the last
   edit; **`tickets/CLI-008-result.md` does not exist**.
-- [ ] **T2 (P1, S)** — `CLI-008-F1a`: export the capture half and pin its transport binding. Verify:
-  a directory-returning `listDir` fails loudly; boundary check green.
+- [ ] **T2 (P1, S)** — `CLI-008-F1a`: pin the **metadata-only** `listDir` enumeration seam and
+  **fence** the byte-reading one. ★ *Not “export the capture half” — corrected 2026-09-20 (ninth
+  round); `captureSandboxEntries` must stay inert on the E2B and networked lanes.* Verify: a
+  directory-returning `listDir` fails loudly; no `readFile`/digest in the enumerator's dependency
+  surface; boundary check green.
 - [ ] **T3 (P1 STOP, design)** — `CLI-008-F1b`: produce one of the three permitted outcomes with a
   decision request. Verify: every candidate is priced against §6 and given a positive control; §13's
   option, if recommended, has had its first adversarial attack pass. **No product change.**
 - [ ] **T4 (P1, M)** — `CLI-008-F3`: the producer, plus the **E7-D08 `kind` decision** recorded in
   `decisions.md`. Verify: anti-vacuity, replay-not-duplicate, escape refusal, no grant-URL leak.
 - [ ] **T5 (P2, S)** — `CLI-008-F4`: `artifactPrepared`. Verify: frozen schema validates, digest
-  verifies, `seq` contiguous, sink throw harmless, frozen-consumer check green.
+  verifies, `seq` contiguous (**unconditional**), and **the sink-failure behaviour matches the
+  recorded contiguity decision**, frozen-consumer check green. ★ *Was “sink throw harmless” —
+  corrected 2026-09-20 (ninth round): two of F4's three permitted options make a sink failure fail
+  the attempt, so that checkbox mandated the very best-effort contract F4's Failure behavior
+  rejects. This is the third place that one assertion had to be fixed; the paragraph was corrected
+  first and the operative lists were not.*
 - [ ] **T6 (P2, M)** — `CLI-008-F5`: the projection, with the `jobOutputBridge` boundary stated in
   the register entry's own words. Verify: no events ⇒ no row; non-distributed runs not projected.
 - [ ] **T7 (P1 STOP, M)** — `CLI-008-F6`: the judge, after F1b's ruling. Verify: the forged row no
   longer satisfies; the sibling-attempt leak is caught; both matchers have precision and recall.
 - [ ] **T8 (P1, M)** — `CLI-008-C5`: arm the tool surface after `DAT-007-S3`. Verify: an expired
-  lease observably loses the surface and mints no handle; flag-off control.
+  lease observably **loses the surface** — denied redemption and denied `/mcp` access — plus the
+  flag-off control. ★★★ **NOT “mints no handle”: a configuration-only ticket cannot deliver a
+  mint-time lease check.** *Corrected 2026-09-20 (ninth round), verified at source:*
+  `mintRunJwtHandleForPlacement` (`server/src/services/execution-secret-handle-mint-runner.ts:165`)
+  takes **no lease or clock input**, and `decideRunJwtHandle`
+  (`server/src/services/execution-secret-handle-mint.ts:245`) decides on deployment, principal,
+  adapter and flag — **not currency**. Currency is enforced where the existing gate actually runs:
+  at **MCP authorization**. Requiring mint-time prevention from a ticket whose scope is
+  configuration made the checkbox unreachable; if mint-time prevention is genuinely wanted, it must
+  be **scheduled as its own implementation work**, not smuggled into an arming ticket.
 - [ ] **T9 (P2, S)** — `E7-1-JOURNEY-ARM`: promote the clause once E6 ships both preconditions.
-  Verify: `unwired_but_now_has_caller` fired first; the `M1a-D2-MECHANISM` record committed with
+  Verify: the positive control fired on a **controlled checker fixture** (not on the boot — ★ the
+  checker counts references and cannot see a deployment); promotion carried by shipped-boot
+  evidence; the `M1a-D2-MECHANISM` record committed with
   `capabilityProven=false` printed and stated as an `M1a` pass — one record, one `Result`.

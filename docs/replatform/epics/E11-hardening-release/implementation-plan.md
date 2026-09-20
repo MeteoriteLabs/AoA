@@ -201,7 +201,7 @@ candidate. The interfaces it consumes, and the rule for each:
   leave the gates as they are; adopt the §4 narrowed substitute; adopt the review's clause as
   written with the §6 costs in full. **No E11 ticket may be planned as though any of the three has
   been chosen.**
-- **Gate text is not editable by this plan.** `artifact-policy.md:71`: *"Autonomous agents may
+- **Gate text is not editable by this plan.** `artifact-policy.md` §*Status and evidence rules*: *"Autonomous agents may
   propose decisions in epic-local `decisions.md`; only the designated custodian or gate owner may
   lock them."* `test-gates.md` is the normative criteria document; nothing here amends it, and every
   D5/D6 figure below is quoted rather than paraphrased.
@@ -260,7 +260,24 @@ design.md, no result.md; no rehearsal evidence)."* The rehearsal must measure ag
 object-store backup path is deployed (the same live-infra dependency the E7-1 canary campaign and
 the REL-003 rehearsal share)."* This is infrastructure-blocked, not design-blocked.
 
-### B3 — The kill switch has no write path, and its owner does not exist
+### B3 — ★★★ CORRECTED: the kill-switch WRITE PATH ships; the UI and an owner are what is missing
+
+*Corrected 2026-09-20 (ninth round), verified at source.* `server/src/routes/instance-settings.ts`
+mounts authorized `PUT` (`:92`) and `DELETE` (`:131`) on `/instance/kill-switches` behind
+`assertCanManageInstanceSettings`, over `setKillSwitches` / `clearKillSwitches` in
+`server/src/services/instance-settings.ts`, which writes the dedicated column. The route says so
+itself: *“this is the missing writer so an operator no longer needs hand-SQL to throw a switch.”*
+
+★ **So “no write path” and “hand-executed SQL only” are both false, and `REL-001` must not be
+assigned to build it.** The four records quoted below are **frozen**; they are corrected here by
+finding, never edited. What remains is the **UI**, a named owner, and the decision on how the
+shipped dimensioned switch triggers the fleet-wide `drainAll`.
+
+★ *One limit I measured and did NOT find closed: there is no `activity_log` write on that path, so
+the switch is authorized but not actor-attributed. That gap is real, is separate, and is not
+claimed closed here.*
+
+#### Superseded claim, retained for the record
 
 Four independent committed records name the same gap: `GATE-clause-3-rollback-result.md:17-19`
 (zero production writers to `instance_settings.kill_switches`; the operator action is hand-executed
@@ -303,7 +320,7 @@ elapsed time from a clean start, assuming nothing resets it.
 
 `README.md:4` states the dependency set: *"E8, E9, DEP-009, MIG-001 through MIG-003, and MIG-005
 through MIG-008"*. Of those, `MIG-001` has **zero files on disk** (disposition **X**,
-`scope-triage.md`), `MIG-005`/`MIG-007` are unbuilt (**C2**, `:41`), and E8's browser lane
+`scope-triage.md`), `MIG-005`/`MIG-007` are unbuilt (**C2**, §*C2 — unbuilt, genuinely deferred*), and E8's browser lane
 carries the blocker `scope-triage.md` states up front: `packages/browser-runtime` has *"zero
 importers anywhere in the tree"* and `workload.browser_session` is filtered out of the worker hello,
 so *"a browser job can be submitted and placed-for but never leased."* D6-03's ≥50 browser journeys
@@ -412,7 +429,7 @@ function nothing calls.
 | `REL-002` — release hardening remainder | **zero files** | M5 | **Write at Step 0 of M5.** Same manifest rule. Its content is genuinely unspecified today; do not infer it from the README's prose. |
 | `REL-003` — DR + migration rehearsal | design + result + runbook | **M4** | **Partially shipped; promotion owed.** Verification core and runbook green (§2). Promotes *"only on a cited live run with measured RPO/RTO vs D5-DR02/DR03"* (`REL-003-result.md:93`). No new design needed — the runbook is the plan. |
 | `REL-004` — signed images, SBOM, vulnerability, kill switches | result + lanes C/D | shipped | **Done, with recorded residuals.** Do not reopen acceptance. Its five Lane-D limits and three deferrals are inputs to M4/M5 planning, not defects. |
-| `REL-005` — selected-Organization private beta | **zero files** | M5 | **Write at Step 0 of M5**, after the D6-04 frozen matrix is committed. Carries the `E10-1-drain` `drainAll` trigger and the kill-switch operator surface unless reassigned. Cannot start before D6-01 closure. |
+| `REL-005` — selected-Organization private beta | **zero files** | M5 | **Write at Step 0 of M5**, after the D6-04 frozen matrix is committed. ★★★ **It does NOT carry the `E10-1-drain` `drainAll` trigger — it INHERITS one already built.** *Corrected 2026-09-20 (ninth round): `MIG-009` owes the drain **and its trigger** before `M1a` passes, and `M1a` exit criterion 6 needs a rollback rehearsal that uses it — so a candidate reaching M5 with the trigger unbuilt could not have passed `M1a`. Assigning it here gave two milestones ownership of one clause and deferred an `M1a` blocker to `M5`.* Carries the kill-switch operator surface unless reassigned. Cannot start before D6-01 closure. |
 | `DBR-001` — operator restore entrypoint + live rehearsal | design only, `Status: scoping` | **M4** | **Amend now, execute at M4.** Part 1 shipped (`aoa db:restore`); part 2 is the live rehearsal. See `T1`. |
 | `REL-FOUNDATION-GATE` | design + result | shipped | **Done.** Graph-inert and non-numeric by design; outside the 50-ticket accounting (`scope-triage.md`). |
 | `GATE-clause-3-rollback` | design + result + terrain | shipped, **one sink** | **Re-satisfy at activation** for `commander_turn`, `crew_run`, `one_shot` — which is M2 work, not E11's. One stale clause to correct (§5). |

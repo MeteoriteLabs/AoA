@@ -762,7 +762,17 @@ Maps H-04, H-05, H-08.
 The artifact/export path is **net-new**. The legacy analogue is the in-process artifact and
 task-output write path (`server/src/services/artifact-commit.ts` reached from the legacy run, plus
 `task_outputs` written by the legacy projector), which stays fully authoritative and untouched.
-Nothing in this plan disables, wraps, or races it — `E3-17-output` / `jobOutputBridge` remains
+★★★ **`jobOutputBridge` IS REQUIRED BEFORE `M1a` PASSES — NOT AT M2.** *Corrected 2026-09-20 (ninth
+round).* `scope-triage.md` puts the three parity-bridge consumers, `jobOutputBridge` among them, in
+the **`M1a` required-result set** (D-8). An earlier revision of this paragraph scheduled it for
+*“M2, not M1”*, and `CLI-008-F5` then used that premise to authorise a **second** distributed
+`task_outputs` writer — restricting F5 to distributed runs does not separate two writers that are
+both distributed. **Before F5 is assigned, `decisions.md` must record how F5 and the bridge divide
+that write** (one delegates to the other, or they own disjoint row kinds). Two unsequenced writers
+to one projection is a correctness problem, not a scheduling preference.
+
+*Superseded text:* Nothing in this plan disables, wraps, or races it — `E3-17-output` /
+`jobOutputBridge` remains
 `unwired` and its cutover is **M2**, not M1. Legacy and distributed execution never own the same run
 simultaneously; the first milestone runs one internal Organization through the distributed path with
 the legacy path still owning everything else.

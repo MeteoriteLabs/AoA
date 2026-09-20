@@ -67,8 +67,8 @@ an active epic. Any epic-local decision taken during M2 creates it.
 | M2 scope, verbatim | `scope-triage.md`: *“`MIG-005` (Commander), `MIG-006` (crew — units shipped, cutover deferred), `MIG-007` (extraction). The four parity bridges are **not** here — three are `M1a` (D-8) and the fourth, `jobApprovalBridge`, follows its sink.”* ★★★ **`E10-1-drain` IS NOT IN M2's SCOPE — it is INHERITED, already wired at `M1a`.** *Corrected 2026-09-20 (fourth round): this reproduced a sentence ending “…and `E10-1-drain` promoted from dormant on a real `drainAll` trigger”, which the companion change deleted as self-contradictory — `M1a` owes the drain AND its trigger (D-9) and `M1a` criterion 6 needs a rehearsal that uses it, so a candidate reaching `M2` with it dormant could not have passed `M1a`. Quoting the deleted text would have re-asserted the contradiction from inside E10's own plan.* |
 | M2 entry, verbatim | `scope-triage.md`: *“`M1b` passed — which carries `M1a`'s wired `E10-1-drain` with it. `E10-F001`'s prerequisite analysis re-measured at HEAD — it is the finding that records that *no* Sprint-6 sink was buildable, and it must be re-tested rather than inherited.”* |
 | M2 exit, verbatim | `scope-triage.md`: *"For each cut-over sink: the distributed path owns the write, the legacy path is provably not reached, and rollback is rehearsed. `E3-5-product-approval`, `E3-17-output`, `E3-audit-parity-bridge` and `E10-1-drain` all `wired` with real callers."* |
-| ★ The M0/M1 exception | **`MIG-009` is disposition B, not deferred.** `scope-triage.md` (**D-9**): *"exit criterion 6's rollback rehearsal USES the drain. MIG-009 shipped it deliberately unwired (`E10-1-drain` dormant); wiring it gives criterion 6 a mechanism rather than a runbook."* Reiterated at `:341`: *"the rehearsal USES the `MIG-009` drain, so `E10-1-drain` must be wired — not a manual runbook."* |
-| Desktop lane | Retained, not deferred-to-nothing: `scope-triage.md §*Retained after the first milestone*` lists *"installed desktop packaging, updater, desktop beta, and device-loss campaigns"* under **Retained after the first milestone**. `DSK-003`/`DSK-004` are disposition **C1** — shipped, retained, not required by M1 (`:37`). |
+| ★ The M0/M1 exception | **`MIG-009` is disposition B, not deferred.** `scope-triage.md` (**D-9**): *"exit criterion 6's rollback rehearsal USES the drain. MIG-009 shipped it deliberately unwired (`E10-1-drain` dormant); wiring it gives criterion 6 a mechanism rather than a runbook."* Reiterated in the same document's exit-criteria table: *"the rehearsal USES the `MIG-009` drain, so `E10-1-drain` must be wired — not a manual runbook."* |
+| Desktop lane | Retained, not deferred-to-nothing: `scope-triage.md §*Retained after the first milestone*` lists *"installed desktop packaging, updater, desktop beta, and device-loss campaigns"* under **Retained after the first milestone**. `DSK-003`/`DSK-004` are disposition **C1** — shipped, retained, not required by M1 (§*C1*). |
 | Zero-file tickets | `MIG-001` and `MIG-004`, disposition **X**. `find docs/replatform -iname "*MIG-001*" -o -iname "*MIG-004*"` returns nothing. `scope-triage.md` is explicit that the C/D wordings are *"**vacuous** for these: there is no owner, design, or acceptance intent to preserve."* |
 | Open findings | `E10-F001` (**HIGH**, `unowned`). `E10-F002` is **resolved** by MIG-010 Unit 2.3, `597e77715`. |
 
@@ -403,11 +403,21 @@ root is produced. `DSK-004` §5 — *"no end-to-end update run"*, health confirm
 and real signing roots exist, DSK-01…DSK-10 cannot be attempted and desktop stays disabled, with
 `check-desktop-surface-disabled.mjs` as the standing negative evidence.
 
-### B7 — The rollback lever's per-sink ordering is not expressible
+### B7 — ★★★ RETIRED: the per-sink ordering IS expressible
 
-The shadow result: *"**No per-sink rollout axis.** … it means Wave 4's MIG-005 → 006 → 007 ordering
-is not expressible today."* MIG-002 slice 1 added a `sources` filter to the **dial**, which is
-env-config, not a database dial. M2's staged cutover needs this resolved or it cannot stage.
+*Corrected 2026-09-20 (ninth round), verified at source.* This section said the ordering *“is not
+expressible today”* and that M2 *“cannot stage”*. Both are false. `sourceKind` is the MIG-002
+per-sink axis, `server/src/config/distributed-execution-rollout-source.ts` enforces `policy.sources`
+against it, and `server/src/__tests__/rollout-dial-live.test.ts` proves Commander-first, then crew,
+with one-shot remaining off — which is exactly the MIG-005 → 006 → 007 staging this section
+declared impossible.
+
+★ **What may survive is an operator-interface question** — env-config versus a database-backed
+dial — and that is a different, much smaller claim. It must not be carried as a missing axis: a
+blocker that does not exist stops work just as effectively as one that does.
+
+*Superseded claim, retained for the record:* the shadow result's *“**No per-sink rollout axis.** …
+it means Wave 4's MIG-005 → 006 → 007 ordering is not expressible today.”*
 
 ---
 
@@ -673,7 +683,7 @@ restore every mutant with `git checkout --` and verify the tree is clean afterwa
 |---|---|
 | **M0** (positive control) — delete the drained-count print/propagation | the clean-org drain assertion |
 | **M-reach** — compose the drain but never call `drainAll` | the reached-exactly-once assertion. **If this survives, the ticket has shipped a vacuous `wired` and must not land.** |
-| **M-commandId** — replace the derived `commandId` with a fresh random value | the idempotent-re-run test (two cancels instead of one) |
+| **M-commandId** — replace the derived `commandId` with a fresh random value | ★★★ **the stated failure CANNOT occur — corrected 2026-09-20 (ninth round), verified at source.** `requestCancellation` (`packages/db/src/repositories/tenant/job-control.ts:5079`) **deduplicates by organization, lease and `cancel` kind and returns `already_requested` BEFORE the new id is used**, so two runs against one live job still queue **one** cancel and the mutant stays green. Assert **deterministic id derivation directly at the adapter boundary** instead, and drop the duplicate-command explanation — a mutation whose kill condition the code makes impossible is a guard that proves nothing. |
 | **M-exit** — always exit 0 | the skipped-org non-zero-exit test |
 | **M-flagoff** — remove the flag-off guard | the no-pool assertion |
 | **M-skiplist** — print a count instead of `skippedOrganizations` | the verbatim-report test |
