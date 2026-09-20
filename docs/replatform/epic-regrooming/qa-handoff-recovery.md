@@ -14,7 +14,10 @@
 > "leave both files untouched now" agrees with it — now by citation rather than by coincidence.
 >
 > **Required fields, named explicitly** (they are enforced, not stylistic): `**Supersedes:**`,
-> `**Attempt:**`, `**Revision:**`, and then **one of two verdict fields, which are NOT
+> `**Attempt:**`, the revision field — ★ spelled `**Revision:**` on a **QA record** and `**Reviewed
+> revision:**` on a **handoff**, *corrected 2026-09-20 (fourth round): this named only `Revision`,
+> which no handoff template field matches, so a handoff author following this list could not satisfy
+> both it and the template* — and then **one of two verdict fields, which are NOT
 > interchangeable** — a **QA record** carries `**Result:**`
 > ([`../templates/qa-result-template.md`](../templates/qa-result-template.md)) and a **handoff**
 > carries `**Decision:**` ([`../templates/handoff-template.md`](../templates/handoff-template.md)).

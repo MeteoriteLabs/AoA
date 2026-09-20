@@ -176,7 +176,7 @@ This is not D2. It cannot complete E7, satisfy D2’s full run counts/schedule, 
 ★★★ **Added 2026-09-20 after review, and it fixes a real defect rather than renaming one.** The
 M1a/M1b split originally allocated *"the mechanism verdict"* of `M1-D2-CODING` to `M1a` and *"both
 verdicts"* to `M1b`. **That cannot work.** Exit criterion 8 requires a committed `Result: pass` QA
-record for **both named partial gates**; `M1-D2-CODING` is defined above as the *useful-coding*
+record for **each partial gate a milestone names**; `M1-D2-CODING` is defined above as the *useful-coding*
 gate and requires **attributable output**; and `templates/qa-result-template.md` gives a QA record a
 **single** normative `**Result:**`. Annotating one field as a "mechanism verdict" does not create a
 second `Result`. So the original wording either **falsely passed the useful-capability gate at
@@ -199,7 +199,7 @@ claim, and unlocks only `M1a`.
 
 ### Normative-gate boundary
 
-Both partial gates are non-promoting. They may support a separately named milestone decision, but not an epic-completion handoff for E3–E7. Full D1/D2 and any E6/E7 completion still require the current normative gates, including H-06, or a separately reviewed and approved amendment to `test-gates.md`.
+**All three partial gates — `M1-D1-SPINE`, `M1a-D2-MECHANISM` and `M1-D2-CODING` — are non-promoting.** ★ *Corrected 2026-09-20 (fourth round): this read “Both partial gates are non-promoting”, which pre-dates the mechanism gate and is the ROOT of the stale-quantifier class — two epic plans quote this sentence verbatim as their binding non-promotion rule, so the count was wrong in three documents at once. A gate left out of a non-promotion rule is a gate that may promote.* They may support a separately named milestone decision, but not an epic-completion handoff for E3–E7. Full D1/D2 and any E6/E7 completion still require the current normative gates, including H-06, or a separately reviewed and approved amendment to `test-gates.md`.
 
 ## The milestone sequence — M1a through M5
 
@@ -252,12 +252,23 @@ successor filed for `E7-F007` so `MIG-010` can carry a result (**D-10**).
 ### `M2` — sink cutover
 
 **Scope.** `MIG-005` (Commander), `MIG-006` (crew — units shipped, cutover deferred), `MIG-007`
-(extraction), and `E10-1-drain` promoted from dormant on a real `drainAll` trigger. The four parity
+(extraction). The four parity
 bridges are **not** here — three are `M1a` (D-8) and the fourth, `jobApprovalBridge`, follows its
 sink.
 
-**Entry.** `M1b` passed. `E10-F001`'s prerequisite analysis re-measured at HEAD — it is the finding
-that records that *no* Sprint-6 sink was buildable, and it must be re-tested rather than inherited.
+★★★ **`E10-1-drain` IS NOT M2's TO PROMOTE — it is an INHERITED PREREQUISITE, already wired at
+`M1a`.** *Corrected 2026-09-20 (fourth round).* An earlier revision listed it here as *“promoted
+from dormant on a real `drainAll` trigger”*, which contradicts two things this document says
+earlier: `M1a`'s required result set owes **the drain and its trigger** (D-9), and `M1a` exit
+criterion 6 requires a **recorded rollback rehearsal** that USES that drain rather than a manual
+runbook. Since `M2` cannot be entered until `M1b` has passed — which is after `M1a` — a candidate
+arriving at `M2` with `E10-1-drain` still dormant is one that could not have passed `M1a`. Leaving
+the line would have either reopened approved `M1a` work or given two milestones contradictory
+ownership of the same clause. `M2` **verifies** the drain it inherits; it does not promote it.
+
+**Entry.** `M1b` passed — which carries `M1a`'s wired `E10-1-drain` with it. `E10-F001`'s
+prerequisite analysis re-measured at HEAD — it is the finding that records that *no* Sprint-6 sink
+was buildable, and it must be re-tested rather than inherited.
 
 **Exit.** For each cut-over sink: the distributed path owns the write, the legacy path is
 provably not reached, and rollback is rehearsed. `E3-5-product-approval`, `E3-17-output`,
@@ -407,7 +418,7 @@ The first milestone passes only when one exact candidate has:
 5. explicit observation of the dormant-egress residual and credential-taxonomy checks, without an egress-enforcement claim;
 6. zero unresolved milestone-blocking findings and a recorded rollback rehearsal for the enabled path;
 7. a committed passing E5 a2 audit for that exact candidate, consuming both M1 campaign records and retaining every full-gate non-certification;
-8. committed `Result: pass` QA records for both named partial gates on the exact candidate; and
+8. committed `Result: pass` QA records for **each partial gate that milestone names** on the exact candidate (★ *was “both named partial gates” — phrased by count, it silently excluded the third gate; phrased by the naming relation it cannot go stale when a gate is added*); and
 9. a later committed, explicitly non-epic-completing `Decision: pass` milestone handoff by the named owner for the same candidate.
 
 Ticket shipment or an earlier mechanism run cannot substitute for items 2–9. Passing this milestone does not change E3–E7 to `complete`; their normative epic gates remain outstanding.
@@ -467,7 +478,7 @@ Ticket shipment or an earlier mechanism run cannot substitute for items 2–9. P
 > | 5 — dormant-egress residual observed | ✅ | ✅ | |
 > | 6 — zero blocking findings + **recorded rollback rehearsal** | ✅ | ✅ | **D-9:** the rehearsal USES the `MIG-009` drain, so `E10-1-drain` must be wired — not a manual runbook. |
 > | 7 — committed passing E5 a2 audit | ✅ | ✅ | |
-> | 8 — `Result: pass` QA records for its named gates | ✅ *(`M1-D1-SPINE` + `M1a-D2-MECHANISM`)* | ✅ *(those two + `M1-D2-CODING`)* | "both named gates" in criterion 8 means **the gates that milestone names**, not all three at M1a |
+> | 8 — `Result: pass` QA records for its named gates | ✅ *(`M1-D1-SPINE` + `M1a-D2-MECHANISM`)* | ✅ *(those two + `M1-D2-CODING`)* | criterion 8 is scoped by the **naming relation**, not a count — so `M1a` owes two records and `M1b` three, and adding a gate never silently exempts it |
 > | 9 — non-epic-completing `Decision: pass` handoff | ✅ | ✅ | filed under `docs/replatform/milestones/<M>/handoffs/` per **D-11** |
 >
 > ★ **`E3-F037` is an `M1a` blocker under criterion 6** (**D-8**): a distributed attempt writes no
