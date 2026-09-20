@@ -244,6 +244,20 @@ integration("DE-18 admission/session target_revoked denial audit", () => {
     expect(row.details.operation).toBe("control_command_ack");
   }, 90_000);
 
+  it("ANTI-VACUITY (ack): a healthy control-ACK on a CURRENT authority drives the same recheck-then-drain path and writes ZERO security.denied rows", async () => {
+    const { offer } = await fx.activateLease(9203);
+    // No control command was delivered for this lease, so the guarded mutator matches
+    // nothing and reports applied:false — but `ackAuthorityCurrent` ran and PASSED, which
+    // is the whole point: a healthy ack traverses the SAME authority recheck + `.finally`
+    // drain the two arms above exercise, and every one of its three denial sinks
+    // (proof-replay / authority-currency / fence-guard) must stay silent. A regression
+    // that fired any of them on the happy path would surface here as a non-empty row set.
+    const res = await createJobControlAckService({ appDb: fx.app.db })
+      .ack({ auth: auth("de18-ackav"), request: controlAckRequest(offer) });
+    expect(res.applied).toBe(false);
+    expect(await denialRows()).toHaveLength(0);
+  }, 90_000);
+
   // ---- HEARTBEAT arm (worker-session-auth.ts:registerProofBoundHeartbeat) ----
   // The six boolean-write refusal branches are classified by a per-branch
   // generation RE-READ of the same authority row each write predicates on (the
