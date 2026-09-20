@@ -831,15 +831,30 @@ that batch**: `artifact_prepared` and the terminal event ingested together, asse
 `task_outputs` row with its `output_projection` receipt and no `attempt_terminal` throw. Until that
 design is recorded, F5 is not assignable as build.
 
-**Only once that design is recorded** does the build half apply — modify
-`server/src/services/canary-terminal-projection.ts`, modify
-`server/src/services/canary-run-projector.ts` (the output step ordered **before** the terminal, per
-the correction above), create
-`server/src/__tests__/canary-output-projection.integration.test.ts`, and extend the two existing
-projector suites.
+**Only once that design is recorded** does the build half apply — and ★★★ **ITS FILE LIST IS NOT
+THE TERMINAL PROJECTOR'S.** *Corrected twelfth round.* A previous revision of this very correction
+kept the build confined to `canary-terminal-projection.ts` and `canary-run-projector.ts` while the
+text above it said “before attempt terminalization” — the same instruction-versus-description
+failure the correction was written to fix, committed inside the fix.
 
-**Failure behavior:** ★ *to be set by the ordering decision above — a step that runs **before** the
-terminal cannot be described as “ordered last-but-one”, and a bridge call that fails inside the live
+Those two modules are reached **only** through `onAttemptTerminal`, which `job-events.ts` awaits
+**after** the ingest transaction has committed and terminalized the attempt. **No edit to either
+file can run inside the live fence**, so `projectAcceptedOutput` would still throw
+`attempt_terminal` for every F5 projection.
+
+★ **The build therefore needs an accepted-artifact hook BEFORE terminalization, plus the
+ingest/composition changes that carry it** — that is the substance of the owed design, and it lands
+on the ingest path (`server/src/services/job-events.ts` and its composition), not on the two
+post-commit projectors. The projectors may still change to **read** what the new path wrote; they
+may not be where the write happens.
+
+**Owed test:** `server/src/__tests__/canary-output-projection.integration.test.ts`, ingesting
+`artifact_prepared` **and** the terminal event **in the same batch**, asserting one `task_outputs`
+row with its `output_projection` receipt and **no `attempt_terminal` throw** — the case that fails
+against any design that writes from the post-commit hook, which is exactly why it is the owed one.
+
+**Failure behavior:** ★ *to be set by the ordering decision above — a write that happens **before
+attempt terminalization** cannot be described as “ordered last-but-one”, and a bridge call that fails inside the live
 fence is not the same event as a post-terminal projector failing.* The surviving invariants: a
 projection failure must not retract a durable terminal, must not silently produce a row without its
 `output_projection` receipt, and must not block the run-summary comment. A run
