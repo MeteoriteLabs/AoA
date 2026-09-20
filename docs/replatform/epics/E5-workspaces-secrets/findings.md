@@ -205,3 +205,55 @@ is a security-sensitive change, and M0 introduces no new product capability. Any
 BOTH sides - resolving only the candidate would widen the boundary rather than align it.
 
 **Blocks gate:** no.
+
+---
+
+## E5-F004 - DAT-008 slice 6 is closed on the mint side only, and no standalone slice-6 record indexes it
+
+**Status:** open
+**Severity:** LOW (record-indexing) and MEDIUM (the placement-side residual) - two separable facts,
+kept apart deliberately so neither is read as the other
+**Filed:** 2026-09-21 (`DAT-008-A1`, M0 unit 7), verified at `5a796928bc1a64773ad7ca77971e18f9a58b6f66`.
+
+★★★ **THIS FINDING EXISTS BECAUSE AN EARLIER DRAFT OF ITS OWN TICKET WAS WRONG.** The E5 plan
+records that `DAT-008-A1` was first written to assert *"slice 6 has no record on disk at all"* and
+that founder decision **D7** struck it as a **false absence claim**, verified at source. What is
+absent is a `DAT-008-slice-6-*` FILENAME, not the slice. D7 also forbids a specific absence-claiming
+word in any artefact this ticket writes; that word is named in the E5 plan's `DAT-008-A1` task and
+is deliberately not reproduced here, because reproducing it in a register is how a struck claim
+comes back through a search.
+
+### (i) The record-indexing gap - LOW
+
+No standalone `DAT-008-slice-6-*` result file exists. The slice is nonetheless accounted for three
+times over, each re-verified at `5a796928bc1a64773ad7ca77971e18f9a58b6f66`:
+
+- **Named:** *"Slice 6 - deferral #3, the tautological owner check"* -
+  [`tickets/DAT-008-design.md:233`](./tickets/DAT-008-design.md).
+- **Dispositioned:** *"Deferral #3 is closed on the MINT side only. The mint refuses unless two
+  independently-derived owner authorities agree. The *original* tautological comparison in the
+  placement path is untouched - DAT-008 stops relying on it; it does not delete it."* -
+  [`tickets/DAT-008-result.md:111-113`](./tickets/DAT-008-result.md).
+- **Implemented (mint side):** `server/src/services/execution-secret-handle-mint.ts:174` -
+  `if (!ownerAuthoritiesAgree(input.placementOwner, input.credentialKind)) return
+  refuse("owner_authority_disagreement");`
+
+So the defect is that nothing INDEXES those three under a slice-6 name - a navigability problem,
+not a missing-work problem.
+
+### (ii) The placement-side residual - MEDIUM
+
+The original tautological owner comparison **in the placement path is untouched**, deliberately.
+`DAT-008` stopped relying on it; it did not delete it. Only the mint side is closed.
+
+★ **What this is NOT.** It is not a live escape: the mint refuses unless two independently-derived
+owner authorities agree, so the path `DAT-008` armed is guarded. The residual is that a second,
+older comparison still exists in the placement path and still compares a value with itself.
+
+### Disposition
+
+`DAT-008-A1` narrows the E5 README's completion sentence to what the ledgers support and files this.
+It builds neither half: the placement-side residual and slice 7 are unbuilt and stay that way, and
+re-deriving the mint-side evidence is a non-goal because it is cited above.
+
+**Blocks gate:** no.
