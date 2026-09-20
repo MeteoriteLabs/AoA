@@ -55,6 +55,27 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # ★★★ REQUIRED BY TYPECHECK AND BY TESTS, not a convenience. Several workspace
+      # packages are dist-only leaves that siblings import BY NAME, resolving through package
+      # exports to ./dist -- so `tsc --noEmit` needs their .d.ts and vitest needs their .js,
+      # and both run BEFORE `pnpm build`. Copied from the required Linux lane
+      # (`pr.yml`, "Build dist-only leaves (required by typecheck + tests)"), which is the
+      # proven recipe; do not let the two drift.
+      #
+      # ★ MEASURED, on run 35529720894: without this step BOTH new jobs went red --
+      # typecheck with `error TS2307: Cannot find module '@armyofagents/worker-protocol'`
+      # (sandbox-fake-provider/src/control-server.ts:24) and every test shard with
+      # collection failures in the packages that import those leaves. The single job this
+      # lane used to be won that race by side effect; a split job has its own fresh
+      # checkout and wins nothing.
+      - name: Build dist-only leaves (required by typecheck + tests)
+        run: |
+          pnpm --filter @armyofagents/worker-protocol build
+          pnpm --filter @armyofagents/sandbox-fake-provider build
+          pnpm --filter @armyofagents/worker-daemon build
+          pnpm --filter @armyofagents/sandbox-provider-contract build
+          pnpm --filter @armyofagents/sandbox-e2b-provider build
+
       - name: Typecheck
         run: pnpm -r typecheck
 
@@ -92,6 +113,27 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      # ★★★ REQUIRED BY TYPECHECK AND BY TESTS, not a convenience. Several workspace
+      # packages are dist-only leaves that siblings import BY NAME, resolving through package
+      # exports to ./dist -- so `tsc --noEmit` needs their .d.ts and vitest needs their .js,
+      # and both run BEFORE `pnpm build`. Copied from the required Linux lane
+      # (`pr.yml`, "Build dist-only leaves (required by typecheck + tests)"), which is the
+      # proven recipe; do not let the two drift.
+      #
+      # ★ MEASURED, on run 35529720894: without this step BOTH new jobs went red --
+      # typecheck with `error TS2307: Cannot find module '@armyofagents/worker-protocol'`
+      # (sandbox-fake-provider/src/control-server.ts:24) and every test shard with
+      # collection failures in the packages that import those leaves. The single job this
+      # lane used to be won that race by side effect; a split job has its own fresh
+      # checkout and wins nothing.
+      - name: Build dist-only leaves (required by typecheck + tests)
+        run: |
+          pnpm --filter @armyofagents/worker-protocol build
+          pnpm --filter @armyofagents/sandbox-fake-provider build
+          pnpm --filter @armyofagents/worker-daemon build
+          pnpm --filter @armyofagents/sandbox-provider-contract build
+          pnpm --filter @armyofagents/sandbox-e2b-provider build
 
       - name: Run tests (shard ${{ matrix.shard }}/4)
         # ★★★ `pnpm exec vitest run --shard=…`, NEVER `pnpm test:run -- --shard=…`.
