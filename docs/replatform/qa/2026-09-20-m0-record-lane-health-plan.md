@@ -472,6 +472,13 @@ timeout is **unmeasured**. Sharding may surface real Windows failures that the t
 If it does, those are reported as findings and this unit does not declare the lane green on the
 strength of the macOS half.
 
+★★★ **SUPERSEDED BY THE SECTION BELOW — this paragraph is the PREDICTION, and it has since been
+measured.** *Marked 2026-09-21 after Codex review of PR #525 flagged the same stale "unmeasured"
+claim in `CLAUDE.md`.* Windows now finishes: five of eight shards are green and the three failures
+are enumerated below with dispositions. The paragraph is kept because it is what the unit committed
+to before it had evidence — and it was right that the timeout was hiding failures — but it must not
+be read in the present tense.
+
 ### U2 as executed — FOUR causes, each hidden behind the one before it
 
 The prediction above held: removing the timeout surfaced failures it had been hiding, and they were
