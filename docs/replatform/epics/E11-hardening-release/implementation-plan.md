@@ -10,7 +10,7 @@ only:
 > dispatch looks like once live, and a plan written five sprints early goes stale — which is the
 > exact failure this audit exists to fix."*
 
-Restated for the milestone layer at `epic-regrooming/scope-triage.md:167-171`: *"Scope and gates
+Restated for the milestone layer at `epic-regrooming/scope-triage.md`: *"Scope and gates
 only — deliberately NOT implementation plans. … Each milestone's detailed plan is written
 just-in-time, at its own Step 0, against HEAD."*
 
@@ -31,10 +31,10 @@ the `DBR-001` successor ticket.
 |---|---|
 | Epic status | `backlog` (`README.md:3`). Only the Integration Gate Owner changes it, on a committed `pass` QA record **and** a committed `pass` completion handoff for one exact candidate (`artifact-policy.md`, "Status and evidence rules"). |
 | Plan written at | `e710d8b54` on branch `claude/plan-spine-m1-split`. Every `file:line` below was read at this revision. |
-| Milestone position | **M4 and M5.** `scope-triage.md:184-185`: M4 proves *"two replicas preserve correctness; a measured restore"* under full **D5**; M5 proves *"three external Organizations, all workloads, 14 days"* under full **D6 → E11 exit**. |
-| Milestones between HEAD and E11 | M0 (record + lane health) → M1a (spine) → M1b (useful capability) → M2 (sink cutover) → M3 (workload breadth). E11 is blocked by all five in sequence (`scope-triage.md:177-185`). |
-| E11 scope inside M4 | `REL-003`'s owed DR rehearsal with measured RPO/RTO, and `DBR-001` (`scope-triage.md:228-229`), alongside the non-E11 items `DEP-009`'s two-replica half and `WRK-016`. |
-| E11 scope inside M5 | `REL-001`, `REL-002`, `REL-005` — *"none of which has a ticket file today"* — plus the D6 campaign itself (`scope-triage.md:235-236`). |
+| Milestone position | **M4 and M5.** `scope-triage.md §*The milestone sequence — M1a through M5*`: M4 proves *"two replicas preserve correctness; a measured restore"* under full **D5**; M5 proves *"three external Organizations, all workloads, 14 days"* under full **D6 → E11 exit**. |
+| Milestones between HEAD and E11 | M0 (record + lane health) → M1a (spine) → M1b (useful capability) → M2 (sink cutover) → M3 (workload breadth). E11 is blocked by all five in sequence (`scope-triage.md`). |
+| E11 scope inside M4 | `REL-003`'s owed DR rehearsal with measured RPO/RTO, and `DBR-001` (`scope-triage.md`), alongside the non-E11 items `DEP-009`'s two-replica half and `WRK-016`. |
+| E11 scope inside M5 | `REL-001`, `REL-002`, `REL-005` — *"none of which has a ticket file today"* — plus the D6 campaign itself (`scope-triage.md §*`M5` — private beta*`). |
 | Ticket files on disk | `REL-003` (design + result + runbook), `REL-004` (result + lanes C/D designs/results/terrain), `REL-FOUNDATION-GATE`, `GATE-clause-3-rollback`, `foundation-suite-unrun`, `DBR-001` (design only). **`REL-001`, `REL-002`, `REL-005`: zero files** — `find docs/replatform -iname "REL-001*" -o -iname "REL-002*" -o -iname "REL-005*"` returns nothing. |
 | Open findings | Seven: `E11-F001` (LOW), `E11-F002` (MED), `E11-F004`…`F007` (**HIGH**), `E11-F008` (LOW). `E11-F003` is resolved and its ownership key correctly deleted. |
 | Epic-local decisions | One: **`E11-D01`**, `decisions.md:16-18` — *"`proposed` — **NOT ADOPTED. This is a founder decision and it has not been made.**"* It is the only decision in the whole corpus that explicitly says it awaits the founder (`epic-regrooming/RECONCILIATION-2026-09-20.md:165-167`). |
@@ -167,7 +167,7 @@ code), and fixing it is the one E11 item that is buildable today (§8, `T1`).
 
 No design, no result, no terrain, no owner. Confirmed by `find` at HEAD and corroborated three ways
 in committed text (`REL-FOUNDATION-GATE-result.md:16-17`; `scripts/finding-ownership.json:255`).
-They are M5 scope (`scope-triage.md:235-236`). Because they are unwritten, every fact any document
+They are M5 scope (`scope-triage.md`). Because they are unwritten, every fact any document
 asserts about their content is a plan statement, not evidence.
 
 ---
@@ -303,17 +303,17 @@ elapsed time from a clean start, assuming nothing resets it.
 
 `README.md:4` states the dependency set: *"E8, E9, DEP-009, MIG-001 through MIG-003, and MIG-005
 through MIG-008"*. Of those, `MIG-001` has **zero files on disk** (disposition **X**,
-`scope-triage.md:61-65`), `MIG-005`/`MIG-007` are unbuilt (**C2**, `:41`), and E8's browser lane
-carries the blocker `scope-triage.md:219-222` states up front: `packages/browser-runtime` has *"zero
+`scope-triage.md`), `MIG-005`/`MIG-007` are unbuilt (**C2**, `:41`), and E8's browser lane
+carries the blocker `scope-triage.md` states up front: `packages/browser-runtime` has *"zero
 importers anywhere in the tree"*, declares `playwright` as a devDependency *"so it is unshippable as
 written"*, and `workload.browser_session` is filtered out of the worker hello, so *"a browser job can
 be submitted and placed-for but never leased."* D6-03's ≥50 browser journeys sit behind that.
 
 ### B6 — Accepted residuals that E11 must record but cannot claim
 
-`scope-triage.md:296`: the accepted managed-shared **DE-08** residual *"conflicts with the
+`scope-triage.md`: the accepted managed-shared **DE-08** residual *"conflicts with the
 still-normative H-06/D2 network boundary"*, and the scope decision *"did not amend that gate."*
-Neither M1 partial gate *"may mark H-06 passed"*, and *"Any full D1/D2, E6, or E7 completion
+**None of the three M1 partial gates — `M1-D1-SPINE`, `M1a-D2-MECHANISM`, `M1-D2-CODING` —** *“may mark H-06 passed”*, ★ *corrected 2026-09-20 (fourth round): “Neither M1 partial gate” asserted there were two, which in a mechanism-only E11 evidence chain failed to say the new gate may not mark H-06 passed either,* and *"Any full D1/D2, E6, or E7 completion
 requires live evidence satisfying the current requirement or a separately approved normative
 amendment."* E11's exit consumes D2 (via D6-01), so this residual propagates all the way to the
 E11 exit gate and must be recorded, unclaimed, in every E11 candidate record.
@@ -333,7 +333,7 @@ correction belongs in a finding or a successor record, never in an edit.
 signed-image, provider-kill, and mandatory coding/browser/service private-beta evidence gates pass
 on one release candidate."*
 
-Structurally, from `scope-triage.md:185`: full **D6 → E11 exit**, and D6-01 requires all of D0–D5
+Structurally, from `scope-triage.md`: full **D6 → E11 exit**, and D6-01 requires all of D0–D5
 current on the same candidate. So the E11 exit gate consumes, on one exact revision: D0, D1, D2
 (coding), D3 (browser), D4 (service), D5 (HA + load + DR), then D6 itself, then a committed `pass`
 E11 QA record and a committed `pass` completion handoff (`artifact-policy.md`).
@@ -343,7 +343,7 @@ reviewer may consume — and each is explicitly non-promoting:
 
 | Partial record | What it supports | What it explicitly does **not** do |
 |---|---|---|
-| `M1-D1-SPINE` | one-CP/one-worker lifecycle evidence | *"not D1 … does not satisfy D1-00's at-least-two-worker topology, does not certify every full-D1 fault volume or HARD invariant, cannot complete E6"* (`scope-triage.md:144`) |
+| `M1-D1-SPINE` | one-CP/one-worker lifecycle evidence | *"not D1 … does not satisfy D1-00's at-least-two-worker topology, does not certify every full-D1 fault volume or HARD invariant, cannot complete E6"* (`scope-triage.md`) |
 | `M1a-D2-MECHANISM` + `M1-D2-CODING` | ★ *two gates since 2026-09-20, not one carrying two verdicts:* the first certifies the real-E2B **mechanism** (a `capabilityProven=false` run passes it), the second certifies **useful capability** (that same run fails it) | *"not D2. It cannot complete E7, satisfy D2's full run counts/schedule, or substitute for full D2 in a later D5/D6 or release decision"* (`:155`) |
 | `E10-REALTIME-FOUNDATION` | reconnect-safe claims in CLI-006/BRW-006/SVC-007 | RTF-00, `test-gates.md:100`: *"It does not pass E10, D3, D4, **D5**, D6, desktop, cutover, or mobility."* |
 | `REL-003`'s verification core | D5-DR03/DR04/DR05 **verifier** correctness | proves the verifiers, not a restore. `REL-003-result.md:153-155`: *"a green buildable core is not a live rehearsal, and this result does not claim one."* |
@@ -351,9 +351,10 @@ reviewer may consume — and each is explicitly non-promoting:
 | `scripts/check-desktop-surface-disabled.mjs` | DSK-00's desktop-**disabled** negative evidence | it proves absence, which is the only thing a cloud-only beta needs from it |
 | A milestone handoff under `docs/replatform/milestones/<M>/handoffs/` | a milestone decision | *"A milestone handoff is **non-promoting**: it changes no epic status and must not use `epic-completion` in its name"* (`artifact-policy.md`) |
 
-★ The rule that binds all of them: **`scope-triage.md:159`** — *"Both partial gates are
-non-promoting. They may support a separately named milestone decision, but not an epic-completion
-handoff for E3–E7."* The same logic applies to E11: no accumulation of partial records substitutes
+★ The rule that binds all of them: **`scope-triage.md` §*Normative-gate boundary*** —
+*“All three partial gates — `M1-D1-SPINE`, `M1a-D2-MECHANISM` and `M1-D2-CODING` — are
+non-promoting. They may support a separately named milestone decision, but not an
+epic-completion handoff.”* ★ *Re-pointed 2026-09-20 from a bare line number to the owning heading: this sentence is quoted verbatim by more than one plan, and editing it in the companion change moved every line citation to it.* The same logic applies to E11: no accumulation of partial records substitutes
 for a fresh full-D6 campaign on one candidate.
 
 ---
@@ -409,7 +410,7 @@ function nothing calls.
 | `REL-004` — signed images, SBOM, vulnerability, kill switches | result + lanes C/D | shipped | **Done, with recorded residuals.** Do not reopen acceptance. Its five Lane-D limits and three deferrals are inputs to M4/M5 planning, not defects. |
 | `REL-005` — selected-Organization private beta | **zero files** | M5 | **Write at Step 0 of M5**, after the D6-04 frozen matrix is committed. Carries the `E10-1-drain` `drainAll` trigger and the kill-switch operator surface unless reassigned. Cannot start before D6-01 closure. |
 | `DBR-001` — operator restore entrypoint + live rehearsal | design only, `Status: scoping` | **M4** | **Amend now, execute at M4.** Part 1 shipped (`aoa db:restore`); part 2 is the live rehearsal. See `T1`. |
-| `REL-FOUNDATION-GATE` | design + result | shipped | **Done.** Graph-inert and non-numeric by design; outside the 50-ticket accounting (`scope-triage.md:380`). |
+| `REL-FOUNDATION-GATE` | design + result | shipped | **Done.** Graph-inert and non-numeric by design; outside the 50-ticket accounting (`scope-triage.md`). |
 | `GATE-clause-3-rollback` | design + result + terrain | shipped, **one sink** | **Re-satisfy at activation** for `commander_turn`, `crew_run`, `one_shot` — which is M2 work, not E11's. One stale clause to correct (§5). |
 | `foundation-suite-unrun` | design + result | shipped | **Done.** Closed `REL-FOUNDATION-GATE` §0h. |
 

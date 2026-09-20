@@ -966,15 +966,15 @@ content, secret, or session byte.
 | D0-T05 hermetic inputs | F1a/F3/F4 use an in-memory sandbox and a recording exporter; F5/F6 use embedded PostgreSQL; only `C5` and `E7-1-JOURNEY-ARM` touch a deployment, and neither dispatches a keyed lane without authorization. |
 | H-04 secret containment | No grant URL, file content, path content, or credential in any log, metric label, thrown message, or returned value — asserted in F3 and F4. Zero tolerance. |
 | H-05 sandbox boundary | Bytes leave by a direct provider→object-store PUT under a worker-minted grant; the control plane carries grants and references only (E7-D06). |
-| H-06 network boundary | **NOT claimed.** The DE-08 residual is accepted at the managed-shared tier and neither partial gate may mark H-06 passed. Metadata/control-plane reachability is recorded as an unresolved provider-boundary risk, not as denied. |
+| H-06 network boundary | **NOT claimed.** The DE-08 residual is accepted at the managed-shared tier and **none of the three partial gates — `M1-D1-SPINE`, `M1a-D2-MECHANISM`, `M1-D2-CODING` — may mark H-06 passed.** ★ *Corrected 2026-09-20 (fourth round): this said “neither partial gate”, which describes the old two-gate model and left the new mechanism record outside the prohibition entirely.* Metadata/control-plane reachability is recorded as an unresolved provider-boundary risk, not as denied. |
 | H-08 supply chain | No new runtime dependency; the daemon boundary checker stays green. |
 | H-10 evidence integrity | Append-only ticket results; the unit-F design is amended by appended note, never by deletion. |
 | Exit criterion 3 (**`M1a-D2-MECHANISM`**) | `E7-1-JOURNEY-ARM`, with `capabilityProven=false` explicitly acceptable. ★ *Corrected 2026-09-20 (third round): this row said “`M1-D2-CODING`, mechanism verdict”. There is no mechanism half of `M1-D2-CODING` — a QA record has ONE normative `Result`, which is why the companion change made the mechanism verdict its own gate. Recording this ticket under `M1-D2-CODING` would either falsely pass the capability gate or leave `M1a` unpassable.* |
 | **Exit criterion 4 (useful capability — `M1b` only)** | **`CLI-008-F1b` + `F3` + `F4` + `F5` + `F6`, plus E5's `DAT-009-3c/3d`.** This is the only criterion the split moves, and `F1b` is the one link with no design. |
 | Exit criterion 6 (rollback rehearsal) | `CLI-008-C5`'s config-only disablement is part of the rehearsal. |
 
-**What no ticket here satisfies:** the E7 **epic** exit gate. `M1-D1-SPINE` and `M1-D2-CODING` are
-non-promoting partial gates; a passing milestone handoff changes no epic status and must not use
+**What no ticket here satisfies:** the E7 **epic** exit gate. `M1-D1-SPINE`, `M1a-D2-MECHANISM` and
+`M1-D2-CODING` are **all three** non-promoting partial gates; a passing milestone handoff changes no epic status and must not use
 `epic-completion` in its name.
 
 ---

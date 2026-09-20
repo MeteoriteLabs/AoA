@@ -10,7 +10,7 @@ implementation tasks are **not** here. See [§8](#8-ticket-implementation-tasks-
 > looks like once live, and a plan written five sprints early goes stale — which is the
 > exact failure this audit exists to fix. Step 1 of each is 'write the plan'."* Restated as
 > the milestone rule at
-> [`../../epic-regrooming/scope-triage.md:167-171`](../../epic-regrooming/scope-triage.md).
+> [`../../epic-regrooming/scope-triage.md`](../../epic-regrooming/scope-triage.md).
 
 ---
 
@@ -19,14 +19,14 @@ implementation tasks are **not** here. See [§8](#8-ticket-implementation-tasks-
 | Item | Recorded value |
 |---|---|
 | Epic status | `backlog` (`README.md:3`) |
-| Milestone | **M3 — workload breadth** (`scope-triage.md:184`, `:216-217`) |
-| Milestone scope | `SVC-003`/`005`/`007` **residuals**, plus `SVC-004` and `SVC-006` (`scope-triage.md:216-217`) |
-| Entry | **M2 passed** (`scope-triage.md:184`). M2 needs M1b → M1a → M0. Four milestones sit between HEAD and E9 entry. |
-| Named exit gate | **full D4**, including the 72-hour continuity campaign (`scope-triage.md:224`; clauses at `test-gates.md:133-145`) |
+| Milestone | **M3 — workload breadth** (`scope-triage.md`, `:216-217`) |
+| Milestone scope | `SVC-003`/`005`/`007` **residuals**, plus `SVC-004` and `SVC-006` (`scope-triage.md`) |
+| Entry | **M2 passed** (`scope-triage.md`). M2 needs M1b → M1a → M0. Four milestones sit between HEAD and E9 entry. |
+| Named exit gate | **full D4**, including the 72-hour continuity campaign (`scope-triage.md`; clauses at `test-gates.md:133-145`) |
 | Epic exit gate | `README.md:12` — desired state, generation, placement, health, restart, checkpoint, drain, budgets, UI, and the 72-hour D4 continuity/reconciliation canary pass **without public ingress**. |
 | Dependencies | E7; `SVC-007` additionally requires `E10-REALTIME-FOUNDATION` (`README.md:4`) |
 | Release coupling | Service is a **mandatory** private-beta workload: E9/D4 blocks `REL-005` even with its exposure flag off (`README.md:16`) |
-| Out of scope permanently | Public ingress is **unrepresentable** (`README.md:16`; `scope-triage.md:276`) |
+| Out of scope permanently | Public ingress is **unrepresentable** (`README.md:16`; `scope-triage.md`) |
 
 **E9 is the most-wired epic in the register and the furthest from its gate.** Six gate
 clauses are `wired` — more than any other epic — and the exit gate is untouched. That gap is
@@ -121,7 +121,7 @@ generation, active instance, health, checkpoint, budget, restart history**
 | **★ the largest** — *"no service job is leased anywhere in its suite"* | **NOT DELIVERED** — the DAEMON half of "created, supervised, projected" is unexercised. See §5.1. |
 
 **`SVC-008` — both halves SHIPPED** (`README.md:5`), and the triage classes it **C1**
-(*"shipped, retained, not required by M1"*, `scope-triage.md:37`, `:371`). What stays open is
+(*"shipped, retained, not required by M1"*, `scope-triage.md §*C. Later original-program phase — 10*`, `:371`). What stays open is
 not the ticket but its finding: **`E9-F002`**, because its resolve criterion is a
 conjunction and only the T0 conjunct holds. SVC-008's own acceptance clause *"no service run
 reaches `destroy` with an expired effect authority"* **is** satisfied — by **bounding** the
@@ -299,8 +299,8 @@ bounded, attributable ambiguous effects; D4-09 checkpoint identity match.
 
 **Named partial gates that may SUPPORT but never COMPLETE it:** none exist for E9.
 `M1-D1-SPINE`, `M1a-D2-MECHANISM` and `M1-D2-CODING` are the only named partial gates in the triage
-(`scope-triage.md:140-155`); both are `task_run`-scoped and both are declared
-**non-promoting** (`:157-159`). ★ *Corrected 2026-09-20 (third round): this said `M1-D1-SPINE` and `M1-D2-CODING` were the only named partial gates. The companion regrooming change adds **`M1a-D2-MECHANISM`**, the pre-capability mechanism gate, so there are three — and this epic's later-milestone framing depends on naming them correctly.*
+(`scope-triage.md` §*Normative-gate boundary*); **all three** are `task_run`-scoped and **all three** are declared
+**non-promoting**. ★ *Re-pointed 2026-09-20 from a bare line number to the owning heading: this sentence is quoted verbatim by more than one plan, and editing it in the companion change moved every line citation to it.* ★ *Corrected 2026-09-20 (third round): this said `M1-D1-SPINE` and `M1-D2-CODING` were the only named partial gates. The companion regrooming change adds **`M1a-D2-MECHANISM`**, the pre-capability mechanism gate, so there are three — and this epic's later-milestone framing depends on naming them correctly.*
 
 **The six `wired` clauses do not support it either.** A wired clause asserts a symbol has
 production callers. Every shipped SVC result explicitly disclaims the gate.
@@ -317,7 +317,7 @@ production callers. Every shipped SVC result explicitly disclaims the gate.
 ## 7. NOT in scope
 
 - **Public ingress.** *"Public ingress remains unrepresentable"* (`README.md:16`) and is a
-  programme exclusion (`scope-triage.md:276`) — not a later phase.
+  programme exclusion (`scope-triage.md`) — not a later phase.
 - **Editing the frozen contracts.** `SERVICE_INSTANCE_TRANSITIONS`, `CONTROL_COMMAND_KINDS`
   and the `SandboxProvider` port are untouched by every E9 decision (`decisions.md:3-6`).
   `E9-F004` is a defect inside a frozen table and is **not** a licence to edit it.
@@ -332,7 +332,7 @@ production callers. Every shipped SVC result explicitly disclaims the gate.
   (§4), not E9 engineering.
 - **Re-opening the acceptance of SVC-001/002/003a/003b/005a/007a/007b/008a/008b.** They
   shipped; the triage classes SVC-008 **C1** and forbids re-opening C1 acceptance
-  (`scope-triage.md:35`).
+  (`scope-triage.md`).
 - **Replace-BEFORE-stop as a build item.** It is structurally unreachable under the live
   instance index; changing that is an architecture decision, not a task.
 
@@ -342,7 +342,7 @@ production callers. Every shipped SVC result explicitly disclaims the gate.
 
 **There are none here, by design.** Per-ticket tasks are authored **just-in-time at M3's
 Step 0, against HEAD**. The doctrine is `GO-BOOK.md:1906-1908` §7, restated at
-`scope-triage.md:167-171`: *"a plan written five sprints early goes stale — which is the
+`scope-triage.md`: *"a plan written five sprints early goes stale — which is the
 exact failure this audit exists to fix."* Four milestones sit between HEAD and E9's entry,
 and this epic has shipped ten units in roughly two weeks — every measurement in §2 and §5
 must be **re-taken** at Step 0, never inherited.
@@ -383,5 +383,5 @@ Re-open and re-measure this plan — do not execute it — if any of the followi
 8. **A service job is observed leased in any E9 suite** — §5.4's largest coverage gap.
 9. **`E10-REALTIME-FOUNDATION` passes or is rescoped** — `SVC-007`'s dependency and the
    epic's durable-catch-up conjunct.
-10. **M2 passes**, which is E9's actual entry condition (`scope-triage.md:184`). That is the
+10. **M2 passes**, which is E9's actual entry condition (`scope-triage.md`). That is the
     trigger to write the real ticket plans, not to run this one.

@@ -9,7 +9,7 @@ scope and sequence only:
 > dispatch looks like once live, and a plan written five sprints early goes stale — which is the
 > exact failure this audit exists to fix."*
 
-Restated at the milestone layer in `epic-regrooming/scope-triage.md:167-171`: *"Scope and gates only
+Restated at the milestone layer in `epic-regrooming/scope-triage.md`: *"Scope and gates only
 — deliberately NOT implementation plans. … Each milestone's detailed plan is written just-in-time,
 at its own Step 0, against HEAD."*
 
@@ -63,13 +63,13 @@ an active epic. Any epic-local decision taken during M2 creates it.
 |---|---|
 | Epic status | `backlog` (`README.md:3`). Only the Integration Gate Owner changes it, on a committed `pass` QA record and a committed `pass` completion handoff for one exact candidate. |
 | Plan written at | `e710d8b54` on branch `claude/plan-spine-m1-split`. Every `file:line` below was read at this revision. |
-| Milestone position | **M2 — sink cutover**, `scope-triage.md:182`: *"the legacy in-process paths stop owning execution"*, gate `M2-CUTOVER` *(to be named)*, blocked by M1b. |
-| M2 scope, verbatim | `scope-triage.md:202-206`: *"`MIG-005` (Commander), `MIG-006` (crew — units shipped, cutover deferred), `MIG-007` (extraction), and `E10-1-drain` promoted from dormant on a real `drainAll` trigger. The four parity bridges are **not** here — three are `M1a` (D-8) and the fourth, `jobApprovalBridge`, follows its sink."* |
-| M2 entry, verbatim | `scope-triage.md:208-210`: *"`M1b` passed. `E10-F001`'s prerequisite analysis re-measured at HEAD — it is the finding that records that *no* Sprint-6 sink was buildable, and it must be re-tested rather than inherited."* |
-| M2 exit, verbatim | `scope-triage.md:211-213`: *"For each cut-over sink: the distributed path owns the write, the legacy path is provably not reached, and rollback is rehearsed. `E3-5-product-approval`, `E3-17-output`, `E3-audit-parity-bridge` and `E10-1-drain` all `wired` with real callers."* |
-| ★ The M0/M1 exception | **`MIG-009` is disposition B, not deferred.** `scope-triage.md:362` (**D-9**): *"exit criterion 6's rollback rehearsal USES the drain. MIG-009 shipped it deliberately unwired (`E10-1-drain` dormant); wiring it gives criterion 6 a mechanism rather than a runbook."* Reiterated at `:341`: *"the rehearsal USES the `MIG-009` drain, so `E10-1-drain` must be wired — not a manual runbook."* |
-| Desktop lane | Retained, not deferred-to-nothing: `scope-triage.md:251` lists *"installed desktop packaging, updater, desktop beta, and device-loss campaigns"* under **Retained after the first milestone**. `DSK-003`/`DSK-004` are disposition **C1** — shipped, retained, not required by M1 (`:37`). |
-| Zero-file tickets | `MIG-001` and `MIG-004`, disposition **X**. `find docs/replatform -iname "*MIG-001*" -o -iname "*MIG-004*"` returns nothing. `scope-triage.md:63` is explicit that the C/D wordings are *"**vacuous** for these: there is no owner, design, or acceptance intent to preserve."* |
+| Milestone position | **M2 — sink cutover**, `scope-triage.md §*The milestone sequence — M1a through M5*`: *"the legacy in-process paths stop owning execution"*, gate `M2-CUTOVER` *(to be named)*, blocked by M1b. |
+| M2 scope, verbatim | `scope-triage.md`: *“`MIG-005` (Commander), `MIG-006` (crew — units shipped, cutover deferred), `MIG-007` (extraction). The four parity bridges are **not** here — three are `M1a` (D-8) and the fourth, `jobApprovalBridge`, follows its sink.”* ★★★ **`E10-1-drain` IS NOT IN M2's SCOPE — it is INHERITED, already wired at `M1a`.** *Corrected 2026-09-20 (fourth round): this reproduced a sentence ending “…and `E10-1-drain` promoted from dormant on a real `drainAll` trigger”, which the companion change deleted as self-contradictory — `M1a` owes the drain AND its trigger (D-9) and `M1a` criterion 6 needs a rehearsal that uses it, so a candidate reaching `M2` with it dormant could not have passed `M1a`. Quoting the deleted text would have re-asserted the contradiction from inside E10's own plan.* |
+| M2 entry, verbatim | `scope-triage.md`: *“`M1b` passed — which carries `M1a`'s wired `E10-1-drain` with it. `E10-F001`'s prerequisite analysis re-measured at HEAD — it is the finding that records that *no* Sprint-6 sink was buildable, and it must be re-tested rather than inherited.”* |
+| M2 exit, verbatim | `scope-triage.md`: *"For each cut-over sink: the distributed path owns the write, the legacy path is provably not reached, and rollback is rehearsed. `E3-5-product-approval`, `E3-17-output`, `E3-audit-parity-bridge` and `E10-1-drain` all `wired` with real callers."* |
+| ★ The M0/M1 exception | **`MIG-009` is disposition B, not deferred.** `scope-triage.md` (**D-9**): *"exit criterion 6's rollback rehearsal USES the drain. MIG-009 shipped it deliberately unwired (`E10-1-drain` dormant); wiring it gives criterion 6 a mechanism rather than a runbook."* Reiterated at `:341`: *"the rehearsal USES the `MIG-009` drain, so `E10-1-drain` must be wired — not a manual runbook."* |
+| Desktop lane | Retained, not deferred-to-nothing: `scope-triage.md §*Retained after the first milestone*` lists *"installed desktop packaging, updater, desktop beta, and device-loss campaigns"* under **Retained after the first milestone**. `DSK-003`/`DSK-004` are disposition **C1** — shipped, retained, not required by M1 (`:37`). |
+| Zero-file tickets | `MIG-001` and `MIG-004`, disposition **X**. `find docs/replatform -iname "*MIG-001*" -o -iname "*MIG-004*"` returns nothing. `scope-triage.md` is explicit that the C/D wordings are *"**vacuous** for these: there is no owner, design, or acceptance intent to preserve."* |
 | Open findings | `E10-F001` (**HIGH**, `unowned`). `E10-F002` is **resolved** by MIG-010 Unit 2.3, `597e77715`. |
 
 ---
@@ -171,7 +171,7 @@ Residual, quoted: *"The **literal cross-container WS socket-receive leg**… is 
 e6f-13"*, and the d1 lanes are Linux-CI-only.
 
 **`MIG-005` (Commander) and `MIG-007` (extraction) — designs only, both verdict-blocked, no result
-files. They are disposition C2 and NOT M1 prerequisites.** `scope-triage.md:377`: *"**`MIG-005` /
+files. They are disposition C2 and NOT M1 prerequisites.** `scope-triage.md`: *"**`MIG-005` /
 `MIG-007` are NOT M1 prerequisites.** The milestone journey is `task_run`-only. A sibling document
 bundled them with the parity bridges into one pre-M1 stage; that bundling is corrected in
 `RECONCILIATION-2026-09-20.md`. The **bridges** are M1 work (disposition A, journey item 7); the
@@ -235,7 +235,7 @@ for `cancelled` and `no_active_lease`. 8 mutants, all killed by deletion, positi
 that is deliberate.** Its design header now reads `shipped` (PR #336, `597e77715`, migrations
 0268/0269/0270) and it resolved `E10-F002`, `E7-F004`, `E7-F005`, `E7-F006`. It has no `-result.md`
 because adding one would retire it as `E7-F007`'s owner exactly when that finding needs one.
-`scope-triage.md:375` (**D-10**): *"file a successor for `E7-F007`* so MIG-010 can land a result
+`scope-triage.md` (**D-10**): *"file a successor for `E7-F007`* so MIG-010 can land a result
 honestly. Until that successor exists, criterion 1 is unsatisfiable."*
 
 **`MIG-001`, `MIG-004` — disposition X, zero files on disk.** Nothing is built, nothing is designed,
@@ -278,10 +278,10 @@ convert / placement stack and adds only the per-sink pieces. The re-measured ter
 
 ## 4. Shared decisions and locked contracts
 
-- **D-9 (founder) — `MIG-009` is M0/M1 work, not deferred.** `scope-triage.md:362`, and the criterion
+- **D-9 (founder) — `MIG-009` is M0/M1 work, not deferred.** `scope-triage.md`, and the criterion
   allocation at `:341`. This plan treats it as on the critical path.
 - **D-10 (founder) — a successor for `E7-F007` must be filed before `MIG-010` can carry a result.**
-  `scope-triage.md:375`. Until then, exit criterion 1 (*"all required ticket results approved"*) is
+  `scope-triage.md §*Exit criteria*`. Until then, exit criterion 1 (*"all required ticket results approved"*) is
   unsatisfiable for M1a **and** M1b.
 - **The crew rollout dial is separate from the `task_run` dial, and off by default.** Founder-ruled;
   implemented as `AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED`
@@ -319,7 +319,7 @@ routing-seam estimate was cut down on the same day, and the ownership register w
 2026-09-19 to record that *"the crew routing-seam prerequisite SHIPPED (MIG-006) and the
 sink-agnostic drain SHIPPED (MIG-009)"*.
 
-`scope-triage.md:208-210` makes re-measurement an explicit **M2 entry condition**: *"`E10-F001`'s
+`scope-triage.md` makes re-measurement an explicit **M2 entry condition**: *"`E10-F001`'s
 prerequisite analysis re-measured at HEAD — it is the finding that records that *no* Sprint-6 sink
 was buildable, and it must be re-tested rather than inherited."* Step 0 of M2 re-derives every
 clause from source. Inheriting this finding is the failure it exists to prevent.
@@ -347,7 +347,7 @@ register agrees: `scripts/gate-clause-wiring.json` → `E10-1-drain`, `status: "
 
 ★★★ **This is where D-9 and MIG-009's own DEFER decision collide, and the contradiction is real.**
 MIG-009's result §3 and the register reason both say the trigger is *"REL-005 scope"*. **REL-005 has
-zero files on disk and is M5 scope** (`scope-triage.md:235-236`). D-9 requires the drain wired for
+zero files on disk and is M5 scope** (`scope-triage.md`). D-9 requires the drain wired for
 M1's exit criterion 6. Those cannot both stand. §8.1 resolves it the only way that does not
 manufacture a vacuous green: build a *narrow operator trigger* now, following the
 `reconcile:legacy-resources` precedent, and leave REL-005 the *product* kill-switch write path.
@@ -363,7 +363,7 @@ already-posted loopback. This is not a bug in what shipped — the result is not
 
 `findings.md:54`: *"those projection bridges are PRODUCER-blocked, not merely zero-caller — the
 deployed worker emits no artifact/result/usage evidence for them to consume (`observeRun`
-uncomposed …), so wiring them is necessary-not-sufficient."* `scope-triage.md:111-119` makes the
+uncomposed …), so wiring them is necessary-not-sufficient."* `scope-triage.md` makes the
 same point for M1a and names the error class: *"Closure is a conjunction — *a producer AND the
 wiring* — and wiring alone would let a reader mark criterion 6 satisfied while distributed spend
 still bypasses every cap and auto-pause. That is the 'half a conjunction' error this programme has
@@ -405,15 +405,21 @@ Three conjuncts, and the middle one is the only one with a named gate on disk.
 | Partial record | What it supports | What it explicitly does **not** do |
 |---|---|---|
 | `E10-REALTIME-FOUNDATION` (`test-gates.md:98-108`, RTF-00…RTF-07) | reconnect-safe claims in CLI-006, BRW-006, SVC-007 | RTF-00: *"It requires JOB-005, DEP-009, MIG-003, and their complete dependency closure on one exact revision. **It does not pass E10**, D3, D4, D5, D6, desktop, cutover, or mobility."* RTF-07 requires the handoff to *"explicitly list desktop distribution, legacy cutover, mobility, browser D3, and service D4 as not certified."* |
-| `M2-CUTOVER` *(to be named)* | the sink-cutover milestone | Not defined yet (`scope-triage.md:182`). Naming it is M2 Step-0 work and is a gate-owner action. |
-| `M1-D1-SPINE` | one-CP/one-worker lifecycle evidence, including the criterion-6 rollback rehearsal that consumes the drain | *"not D1 … cannot complete E6, and cannot substitute for an E3–E6 exit gate"* (`scope-triage.md:144`) |
+| `M2-CUTOVER` *(to be named)* | the sink-cutover milestone | Not defined yet (`scope-triage.md`). Naming it is M2 Step-0 work and is a gate-owner action. |
+| `M1-D1-SPINE` | one-CP/one-worker lifecycle evidence, including the criterion-6 rollback rehearsal that consumes the drain | *"not D1 … cannot complete E6, and cannot substitute for an E3–E6 exit gate"* (`scope-triage.md`) |
 | `MIG-003`'s `pass` | the realtime substrate half of the exit gate's middle conjunct | Its own disposition is *"scope-honest: in-process + real-two-replica-substrate evidence"*, with the cross-container WS socket-receive leg not executed. |
 | `E10-2-legacy-reconciliation` / `E10-2-reconciliation-watermark` (`wired`) | that a production caller exists for the reconciliation pass and its watermark | Both register reasons state the limit in their own words: *"It does NOT mean the canary opens."* |
 | `scripts/check-desktop-surface-disabled.mjs` | DSK-00's desktop-**disabled** negative evidence, i.e. the third conjunct when desktop is not advertised | It proves absence. It says nothing about a desktop surface that is advertised. |
 | A milestone handoff under `docs/replatform/milestones/<M>/handoffs/` | a milestone decision | *"non-promoting: it changes no epic status and must not use `epic-completion` in its name"* (`artifact-policy.md`). |
 
-★ The binding rule, `scope-triage.md:159`: *"Both partial gates are non-promoting. They may support
-a separately named milestone decision, but not an epic-completion handoff."* No accumulation of
+★ The binding rule, `scope-triage.md` §*Normative-gate boundary*:
+*“All three partial gates — `M1-D1-SPINE`, `M1a-D2-MECHANISM` and `M1-D2-CODING` — are
+non-promoting. They may support a separately named milestone decision, but not an
+epic-completion handoff.”* ★ *Re-pointed 2026-09-20 from a bare line number to the owning heading: this sentence is quoted verbatim by more than one plan, and editing it in the companion change moved every line citation to it.*
+
+★★★ *This plan previously never named `M1a-D2-MECHANISM` at all, and quoted the superseded
+two-gate form of this rule — so a reader could have treated a mechanism record as independently
+promotable.* No accumulation of
 these substitutes for a full E10 exit campaign on one exact candidate. And the regrooming sheet is
 explicit (`epic-regrooming/epics/E10.md`): *"Do not issue a full E10 completion handoff for the
 first milestone."*
@@ -476,7 +482,7 @@ scoped honestly.
 
 **Why this one is planned in full.** Founder decision **D-9** moved `MIG-009` from disposition C to
 **B**: exit criterion 6's rollback rehearsal *uses* the drain, so *"wiring it gives criterion 6 a
-mechanism rather than a runbook"* (`scope-triage.md:362`). It is therefore M0/M1 work, not M2, and
+mechanism rather than a runbook"* (`scope-triage.md`). It is therefore M0/M1 work, not M2, and
 it is the only E10 item on the first milestone's critical path.
 
 **Depends on:** nothing unbuilt. The drain's correctness work is already shipped and proven

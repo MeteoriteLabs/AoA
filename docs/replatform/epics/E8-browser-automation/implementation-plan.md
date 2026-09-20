@@ -11,7 +11,7 @@ re-grooming audit exists to fix. See [§8](#8-ticket-implementation-tasks--writt
 > looks like once live, and a plan written five sprints early goes stale — which is the
 > exact failure this audit exists to fix. Step 1 of each is 'write the plan'."* The
 > milestone sequence restates it at
-> [`../../epic-regrooming/scope-triage.md:167-171`](../../epic-regrooming/scope-triage.md).
+> [`../../epic-regrooming/scope-triage.md`](../../epic-regrooming/scope-triage.md).
 
 ---
 
@@ -20,16 +20,16 @@ re-grooming audit exists to fix. See [§8](#8-ticket-implementation-tasks--writt
 | Item | Recorded value |
 |---|---|
 | Epic status | `backlog` (`README.md:3`) |
-| Milestone | **M3 — workload breadth** (`scope-triage.md:184`, `:216-224`) |
-| Milestone scope | `BRW-004`…`BRW-008` (`scope-triage.md:216-217`) |
-| Entry | **M2 passed** (`scope-triage.md:184`). M2 needs M1b; M1b needs M1a; M1a needs M0. Four milestones sit between HEAD and E8 entry. |
-| Named exit gate | **full D3** (`scope-triage.md:224`), whose clauses are `test-gates.md:124-131` (D3-01…D3-06). |
+| Milestone | **M3 — workload breadth** (`scope-triage.md`, `:216-224`) |
+| Milestone scope | `BRW-004`…`BRW-008` (`scope-triage.md`) |
+| Entry | **M2 passed** (`scope-triage.md`). M2 needs M1b; M1b needs M1a; M1a needs M0. Four milestones sit between HEAD and E8 entry. |
+| Named exit gate | **full D3** (`scope-triage.md`), whose clauses are `test-gates.md:124-131` (D3-01…D3-06). |
 | Epic exit gate | `README.md:7` — sandbox-local browser, evidence, approvals, network/secret policy, cancellation, cleanup, and the D3 reconnect journey pass; agents can request a session and Commander runs on the governed path with **no host-side browser spawn reachable from a boot root**. |
 | Dependencies | E7; `BRW-006` additionally requires `E10-REALTIME-FOUNDATION` (`README.md:4`). |
 | Release coupling | Browser is a **mandatory** private-beta workload: E8/D3 blocks `REL-005` even with its exposure flag off (`README.md:11`). |
 
 **M3 does not begin with a campaign.** The triage states the entry condition literally:
-*"M3 begins by fixing that, not by writing a campaign"* (`scope-triage.md:222`) — "that"
+*"M3 begins by fixing that, not by writing a campaign"* (`scope-triage.md §*`M3` — workload breadth*`) — "that"
 being §5 below.
 
 ---
@@ -98,7 +98,7 @@ planner must read all three:
    denial onto the **credential taxonomy**. `E8-F012` is the recorded consequence.
 4. **Frozen wire.** `packages/worker-protocol` is frozen v1. Any additive browser field is a
    Protocol Custodian STOP plus D0-T04 evidence. BRW-001 established none is needed.
-5. **The dormant default-deny egress qualification** (`scope-triage.md:286-298`): *"no
+5. **The dormant default-deny egress qualification** (`scope-triage.md`): *"no
    document may say sandbox egress denial passed merely because a policy object or allowlist
    was constructed"*, and *"browser, service, and external beta claims remain blocked"*
    while the provider path does not enforce.
@@ -109,7 +109,7 @@ planner must read all three:
 
 ### 5.1 ★★★ THE BLOCKER — three facts, each independently fatal
 
-This leads because the triage says M3 starts here (`scope-triage.md:219-222`).
+This leads because the triage says M3 starts here (`scope-triage.md`).
 
 **(a) `packages/browser-runtime` has zero importers anywhere in the tree.**
 The only occurrences of `@armyofagents/browser-runtime` outside the package itself are three
@@ -186,7 +186,7 @@ remaining nine are open; five are HIGH.
 - **BRW-004 slice (e)** is `JOB-015`, i.e. outside E8. BRW-004 explicitly **handed back**
   the control-command delivery hop.
 - **BRW-004 is `gate_review`, not `complete`.** It is the only E8 ticket in that state and
-  M3's scope list opens with it (`scope-triage.md:216`).
+  M3's scope list opens with it (`scope-triage.md`).
 
 ---
 
@@ -204,14 +204,14 @@ to event sequence and digest-matched.
 
 **Named partial gates that may SUPPORT but never COMPLETE it:** none exist for E8.
 `M1-D1-SPINE`, `M1a-D2-MECHANISM` and `M1-D2-CODING` are the only named partial gates in the triage
-(`scope-triage.md:140-155`) and both are `task_run`-scoped; `scope-triage.md:157-159` makes
-them **non-promoting** and bars them from an epic-completion handoff. `BRW-hostspawn-gate`
+(`scope-triage.md` §*Normative-gate boundary*) and **all three** are `task_run`-scoped; that same section makes
+**all three** **non-promoting** ★ *Re-pointed 2026-09-20 from a bare line number to the owning heading: this sentence is quoted verbatim by more than one plan, and editing it in the companion change moved every line citation to it.* and bars them from an epic-completion handoff. `BRW-hostspawn-gate`
 is a *guard*, not a gate: it proves the clause is watched, never that it is satisfied. ★ *Corrected 2026-09-20 (third round): this said `M1-D1-SPINE` and `M1-D2-CODING` were the only named partial gates. The companion regrooming change adds **`M1a-D2-MECHANISM`**, the pre-capability mechanism gate, so there are three — and this epic's later-milestone framing depends on naming them correctly.*
 
 **Two standing non-certifications a Step-0 planner must carry forward:**
 
 - The accepted DE-08 managed-shared residual leaves **H-06 unsatisfied**
-  (`scope-triage.md:296`). A campaign record must observe the residual and may **not** mark
+  (`scope-triage.md`). A campaign record must observe the residual and may **not** mark
   H-06 passed.
 - Browser is a **mandatory** private-beta workload; E8/D3 blocks `REL-005` even when its
   exposure flag is off (`README.md:11`).
@@ -229,11 +229,11 @@ is a *guard*, not a gate: it proves the clause is watched, never that it is sati
 - **Building egress enforcement.** `E8-F003`/`F007`/`F008` measure its absence; none of them
   proposes an implementation, and the W10B unit explicitly *"built and proposed no
   enforcement of any kind."* Whether and where to enforce is a founder/provider decision.
-- **Tenant-defined public ingress** — a programme exclusion (`scope-triage.md:276`).
+- **Tenant-defined public ingress** — a programme exclusion (`scope-triage.md`).
 - **Re-opening BRW-001/002/003's acceptance.** They are complete and CI-validated; their
   declared deferrals are recorded in their own result docs.
 - **Any claim that egress denial passed because a policy object or allowlist was
-  constructed** (`scope-triage.md:290`). `E8-F008` is the measured case where exactly that
+  constructed** (`scope-triage.md`). `E8-F008` is the measured case where exactly that
   read-back passes on an unpoliced sandbox.
 
 ---
@@ -242,7 +242,7 @@ is a *guard*, not a gate: it proves the clause is watched, never that it is sati
 
 **There are none here, by design.** Per-ticket tasks for this epic are authored
 **just-in-time at M3's Step 0, against HEAD** — not now. The doctrine is `GO-BOOK.md:1906-1908`
-§7, restated at `scope-triage.md:167-171`: *"a plan written five sprints early goes stale —
+§7, restated at `scope-triage.md`: *"a plan written five sprints early goes stale —
 which is the exact failure this audit exists to fix."* Four milestones (M0, M1a, M1b, M2)
 sit between HEAD and E8's entry; every blocker in §5 is measured **at HEAD** and must be
 **re-measured** at Step 0 rather than inherited from this document.
@@ -282,5 +282,5 @@ Re-open and re-measure this plan — do not execute it — if any of the followi
    non-certifications change shape.
 8. **`scripts/browser-spawn-expectation.json`'s declared occurrence count changes** without
    a `BRW-008` result — that is either the retirement landing early or the guard rotting.
-9. **M2 passes**, which is E8's actual entry condition (`scope-triage.md:184`). That is the
+9. **M2 passes**, which is E8's actual entry condition (`scope-triage.md`). That is the
    trigger to write the real ticket plans, not to run this one.
