@@ -472,6 +472,47 @@ timeout is **unmeasured**. Sharding may surface real Windows failures that the t
 If it does, those are reported as findings and this unit does not declare the lane green on the
 strength of the macOS half.
 
+### U2 as executed — FOUR causes, each hidden behind the one before it
+
+The prediction above held: removing the timeout surfaced failures it had been hiding, and they were
+not all Windows'. Recorded in the order they were found, because that order is the finding.
+
+| # | Cause | Evidence | Fix |
+|---|---|---|---|
+| 1 | one 25-min cap over typecheck + whole suite + build | every scheduled run `cancelled` since 2026-08-16 | split the job; shard tests 4 ways (**not** raise the cap — `pr.yml:1040`) |
+| 2 | the split test job had **no dist build** | `error TS2307: Cannot find module '@armyofagents/worker-protocol'`; all 8 shards failed collection (run `35529720894`) | copied `pr.yml`'s *"Build dist-only leaves (required by typecheck + tests)"* |
+| 3 | **no heap ceiling** | `FATAL ERROR: … JavaScript heap out of memory` in `server typecheck` on macOS (run `35530583783`); `pr.yml:11` sets 8 GB workflow-wide and this lane set none | copied that `env:` block |
+| 4 | `plugin-sdk/dist` missing | `ERR_MODULE_NOT_FOUND … plugin-sdk/dist/index.js`; 6–9 failed **files** per shard against 0–19 failed **tests** — the signature of collection errors (run `35530935808`) | `node scripts/build-plugin-sdk-locked.mjs`, the repo's own locked builder |
+
+★★★ **Causes 2 and 4 were mine**, introduced by the split, and are recorded as such rather than
+folded into the original diagnosis. Both are the same shape: the single job had been getting those
+artefacts as a **side effect** — of `pnpm -r typecheck`, whose plugin-example scripts run the
+locked sdk builder — and a separate job with its own checkout gets nothing for free.
+
+**Measured outcome after all four (run `35532248020`):** 9 of 12 jobs green, up from 4. Both
+`verify-cross-platform` jobs green for the first time; both `e2e-cross-platform` jobs green. The
+lane went from **no verdict at all** to **four failing tests across ~25,000**.
+
+**The remaining four, dispositioned:**
+
+- `browser-runtime/path-adapter.test.ts` (macOS, 1) — the **third** site of the `/private/var`
+  symlink class. Fixed.
+- `crew-workspace-resolution.test.ts` (Windows, 2) — `path.relative(...).startsWith("..")` cannot
+  express a cross-**root** relationship; the agent home is on `C:` and the checkout on `D:`, so
+  `relative` returns an absolute path. A different drive is the strongest form of "not inside", and
+  the guard called that safest case unsafe. Fixed with one `expectOutsideCwd` helper.
+- `workspace-runtime.test.ts` late-exit rollback (Windows, 1) — a **real-process race**, filed as
+  `E5-F005` rather than fixed. Raising the timeout would make it pass without making it
+  deterministic; skipping on Windows would restore a green without changing what is known.
+
+★★★ **AND THE LANE'S GREEN DOES NOT MEAN WHAT IT LOOKS LIKE — `E6-F023`.** Every job carries
+`continue-on-error: true`, so the **run** conclusion is blind to them, and the DEP-013 consumer
+reads the run conclusion. Run `35530935808` concluded `success` **with 8 of 12 jobs failing**. U2 is
+what exposed this: the timeout used to force `cancelled`, which propagates regardless, so the lane
+read red for the wrong reason. **A green `cross-platform-weekly` may not be cited as cross-platform
+test health until that is resolved**, and choosing among the three recorded options is a gate-owner
+decision, not a repair.
+
 ## 7. What already exists (review output)
 
 Nothing in this plan builds new machinery. Every unit consumes something already shipped:
