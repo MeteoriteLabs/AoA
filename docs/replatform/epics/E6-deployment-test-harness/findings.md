@@ -1526,3 +1526,27 @@ The repair makes the lane PULLABLE and the red REPORTABLE. It does **not** asser
 `d1-merge-train` is green — the lane has not run on a fixed compose file at filing time, and its
 next run is the evidence. If it reds for a different reason, that is a new finding, not this one.
 
+---
+
+## E6-F016 - the epic's ticket-range claim asserted DEP-011 shipped, and DEP-011 has no result doc
+
+**Status:** open
+**Severity:** LOW (record-truth; no code claim rests on it today)
+**Filed:** 2026-09-21 (M0 unit 7, the disposition-A audit), measured at `169be1f2c`.
+
+**What.** `README.md`'s status line read *"all tickets DEP-000 through DEP-013 shipped"*. That is a
+RANGE claim, and a range includes every id inside it. `docs/replatform/epics/E6-deployment-test-harness/tickets/`
+holds `DEP-011-design.md` and **no `DEP-011*-result.md`** - the only DEP id in the range with a
+design and no ledger.
+
+★ **It is not that DEP-011 did nothing.** Its mint/worker/reaper slices have their own records
+elsewhere in the programme's history, and `scope-triage.md` splits the ticket: the **record half**
+is disposition A and the **remaining deploy half** is `TO FILE, scope unestablished` and belongs to
+`M1a`. What is wrong is a blanket range sentence asserting a shipment the epic's own `tickets/`
+directory cannot evidence.
+
+**Disposition.** The range sentence is narrowed in place to say so; the ticket is not re-opened and
+no result is invented for it. `M1a` Step 0 still owes the deploy half's ticket, and that obligation
+is unchanged by this finding.
+
+**Blocks gate:** no.
