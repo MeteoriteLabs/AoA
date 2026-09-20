@@ -192,7 +192,8 @@ Reopening creates new findings, results where needed, QA attempts, and handoffs.
    owner does this, every milestone QA record minted by the steps below is nonconforming, so no
    milestone can validly pass. See the banner above.
 4. **Freeze the shared candidate and complete the `M1a` required result set.** This step does
-   **not** require the **tools** or **output** paths — the tool surface is armed by `CLI-008-C5`,
+   **not** require the **tools** or **output** paths — the tool surface is armed by `CLI-016`
+   (renumbered from `CLI-008-C5`, M0 unit 4),
    an `M1b` ticket, and `M1a` passes with `capabilityProven=false`. ★ **Workspace staging IS
    required**, because the `M1a` journey stages input. *Corrected thirteenth round: an earlier
    revision deferred “tools/workspace/output” while the entry criteria exempted only output — two
@@ -212,10 +213,13 @@ Reopening creates new findings, results where needed, QA attempts, and handoffs.
    **both** milestones, so `M1a` was being declared complete before producing evidence its own
    exit criteria require. A milestone cannot be complete at a step that precedes one of its
    required records.
-7. **Then** finish E7 tools/workspace/output capability — `CLI-008` Unit F links, **`CLI-008-C5`**
+7. **Then** finish E7 tools/workspace/output capability — `CLI-008` Unit F links (now
+   `CLI-010`, `CLI-011`, `CLI-012`, `CLI-013`, `CLI-014`, `CLI-015`), **`CLI-016`**
    and `DAT-009` 3c–3e — and freeze the `M1b` candidate. ★★★ **`C5` IS THE TICKET THAT ARMS THE
    TOOL SURFACE, and omitting it made this step unable to deliver the capability it claims.**
-   *Corrected fifteenth round:* the triage says the surface is armed by `CLI-008-C5`, and the `M1b`
+   *Corrected fifteenth round:* the triage says the surface is armed by `CLI-016` (was
+   `CLI-008-C5`; renumbered M0 unit 4 because the link-scoped ids are unrepresentable to the
+   ownership guard), and the `M1b`
    required-result set demands its approved result — so an operator following the old wording would
    freeze the `M1b` candidate without it and discover the missing prerequisite only at the exit
    check. `C5` also depends on `DAT-007-S3`, which is `M1a`'s, so it cannot start earlier than this

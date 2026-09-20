@@ -974,6 +974,117 @@ It unblocks JOB-004 through JOB-008, JOB-011 through JOB-014, and WRK-005 onward
   before it is closed), then the same fixture failing once the produced-output clause is asserted;
   per-unit integration proof for the channel, tools, context, workspace and return path as each lands.
 
+> **Link-scoped successors for `CLI-008` — `CLI-010` … `CLI-016`.** Deliberately NOT a `####`
+> heading: `check-dependency-graph.mjs` reads every `#### ` line as a ticket node, so a heading
+> beginning `CLI-008` would mint a second `CLI-008` node with no `Depends on:` line and red the
+> graph. Measured, not guessed — it did exactly that on the first attempt.
+
+★★★ **WHY THESE EXIST, AND WHY THEY ARE NUMBERED.** *Added 2026-09-21 (M0 unit 4, founder decisions
+D1 + D5).* `scope-triage.md`'s `M1b` required-result set named its members `CLI-008-F1a`,
+`CLI-008-F1b`, `CLI-008-F3`, `CLI-008-F4`, `CLI-008-F5`, `CLI-008-F6` and `CLI-008-C5`. **Those ids
+cannot be expressed to the guards.** `check-finding-ownership.mjs:423` tests ownership with an exact
+`tickets.has(entry.ticket)`, and `findTicketIds` (`:50`) derives ids from filenames with
+`/^([A-Z]+-\d+)/` — so `CLI-008-F1a` resolves to nothing, and a `CLI-008-F1a-result.md` would
+resolve to **`CLI-008`**, marking the parent shipped and orphaning every finding it owns. The ids are
+therefore numeric, and the mapping is fixed here so no reader has to guess it:
+
+| Old link-scoped id | Ticket | Unit F §1.6 link |
+|---|---|---|
+| `CLI-008-F1a` | **`CLI-010`** | link 1, the EMIT half — tell the agent where to write |
+| `CLI-008-F1b` | **`CLI-011`** | link 1, the output-mechanism design review (design-only as to BUILD) |
+| `CLI-008-F3` | **`CLI-012`** | link 3, the worker-side consumer: digest → mint grant → export → commit |
+| `CLI-008-F4` | **`CLI-013`** | link 4, the announcement: `EventSequencer.artifactPrepared` |
+| `CLI-008-F5` | **`CLI-014`** | link 5, the projector: `foldAttemptEvidence` hard-codes `detectedFiles: []` |
+| `CLI-008-F6` | **`CLI-015`** | link 6, the judge — `countProducedOutputs` (clause 6) |
+| `CLI-008-C5` | **`CLI-016`** | Unit C slice 5 — arms the tool surface |
+
+★ **Link 2 has no successor because it is BUILT** (`e2b-provider` `artifactExportMode =
+"grant_upload"`, real `digestArtifact`/`exportArtifact`, PR #353). Unit F §1.6 strikes it through.
+Seven successors for six links is not an arithmetic error: link 1 splits into `F1a`/`F1b`, and `C5`
+is a Unit C slice that the `M1b` set carries alongside them.
+
+★★ **Only `CLI-011` and `CLI-015` carry ticket FILES today; the other five are nodes only.** That is
+deliberate and is what the coverage guard is built for: *"the authority names a ticket that has no
+file yet → that is the BACKLOG … NOT a failure"* (`scripts/lib/ticket-graph-coverage.mjs`). Files
+exist exactly where a finding is re-pointed, because `check-finding-ownership` needs a file on disk
+to accept an owner. Minting five more design docs with no design behind them would be inventing
+evidence.
+
+#### CLI-010 — Unit F link 1, the EMIT half: tell the agent where to write (M)
+
+- **Depends on:** CLI-008.
+- **Outcome:** An agreed absolute path inside the sandbox that this run's output lands in, and an
+  instruction that makes the agent use it. The CAPTURE half exists and is inert
+  (`captureSandboxEntries`, zero callers); it has nothing to walk until this lands. The three
+  refutations in `CLI-008-unit-f-design.md` §4 are about this half and must be answered, not
+  re-argued.
+- **Acceptance:** A real distributed run leaves at least one file under the designated root, observed
+  rather than argued.
+- **Test:** A keyed real-E2B case asserting the root is populated, with a positive control on a run
+  that was not given the instruction.
+
+#### CLI-011 — Unit F link 1, the output-mechanism design review (S)
+
+- **Depends on:** CLI-008.
+- **Outcome:** The founder ruling on HOW output leaves the sandbox, recorded. Design-only as to
+  BUILD — no build may be assigned from it — but its result is required before `M1b` passes, because
+  `CLI-015` cannot proceed without the ruling and exit criterion 4 depends on it. Owns **E7-F026**.
+- **Acceptance:** A committed result naming the chosen mechanism, the options refuted, and the pins
+  each option would move.
+- **Test:** Not a build ticket; the evidence is the decision record and the pin census it cites.
+
+#### CLI-012 — Unit F link 3, the worker-side consumer (M)
+
+- **Depends on:** CLI-010.
+- **Outcome:** Sequence digest → mint upload grant → export → commit. This is DAT-009 slice 3's
+  charter; nothing calls `exportArtifact`/`digestArtifact` today, which is why link 2 being built
+  flips no counter.
+- **Acceptance:** A committed `job_artifacts` row of the counted kind, produced by a real run.
+- **Test:** The keyed export lane extended to the full sequence, with a TOCTOU refusal case.
+
+#### CLI-013 — Unit F link 4, the announcement (S)
+
+- **Depends on:** CLI-012.
+- **Outcome:** `EventSequencer` gains `artifactPrepared`, so a committed artifact is visible to the
+  control plane's evidence stream. ★ This blocks PROJECTION onto the task; it does **not** block the
+  counter — `countProducedOutputs` reads `job_artifacts` directly and joins no events (§1.8).
+  Conflating the two is the error Unit F's design exists to correct.
+- **Acceptance:** The event appears in the stream for a run that committed an artifact.
+- **Test:** Sequencer unit coverage plus one end-to-end observation.
+
+#### CLI-014 — Unit F link 5, the projector (S)
+
+- **Depends on:** CLI-013.
+- **Outcome:** Stop hard-coding `detectedFiles: []` (`canary-terminal-projection.ts:251`) and write
+  `task_outputs` from the terminal projection — `createCanaryRunProjector.projectTerminal` has four
+  steps today and none of them writes it.
+- **Acceptance:** A distributed run's produced files reach the task surface the founder reads.
+- **Test:** Projection unit coverage with a fixture carrying a real artifact.
+
+#### CLI-015 — Unit F link 6, the judge (M)
+
+- **Depends on:** CLI-011.
+- **Outcome:** A verifier that counts the right things. Owns **E7-F016** — clause 6's operator-facing
+  text misdescribes its own subject, blaming four links of which three flip neither counter. ★ The
+  obvious repair is REFUTED (§4.3): folding a clause 6 failure into `ok` would make E7-1 permanently
+  red and retroactively invalidate honest mechanism evidence, so `capabilityProven` stays a second
+  dimension.
+- **Acceptance:** The verifier distinguishes a run that produced something from one that did not, and
+  its operator text names only what it actually reads.
+- **Test:** The existing four-mutation corpus extended to the corrected clause, each mutation
+  reddening a named row.
+
+#### CLI-016 — Unit C slice 5: arm the tool surface (M)
+
+- **Depends on:** DAT-007.
+- **Outcome:** The distributed agent can actually call `mcp__aoa__*`. Unit C shipped the argv segment
+  behind a default-off flag; this slice arms it. `M1b`'s capability evidence depends on it, and it
+  cannot start before `DAT-007`'s `/mcp` run-currency gate is proven against real PostgreSQL.
+- **Acceptance:** A distributed run in which the agent invokes an AoA tool and the call is authorized
+  by the run's own identity.
+- **Test:** A keyed real-E2B case asserting a tool call reaches AoA, with a negative control on an
+  unauthorized run id.
+
 ### E8 — Browser automation
 
 #### BRW-001 — Browser-session job and policy extensions (M)

@@ -240,6 +240,34 @@ node); re-point the manifest; and **sweep every site that enumerates the old ids
 carrying a mapping table. Correcting the prose and leaving the enumeration is this programme's most
 repeated defect.
 
+### U4 — executed 2026-09-21, and two things changed in flight
+
+Recorded in [`../DECISION-cli-008-successor-id-scheme.md`](../DECISION-cli-008-successor-id-scheme.md).
+
+★★★ **The ten findings do not map onto the seven link ids (D5).** §1.6 of `CLI-008-unit-f-design.md`
+defines the links as the **output return path** (emit → capture → export → announce → project →
+judge). The ten findings are a different subject set: argv-only capability, a forgeable outputs
+endpoint, **clause-4** secret-scanner scope ×3, log truncation, a grant-pairing bug, an
+output-mechanism claim, codex's trusted-directory refusal. So "re-point the ten" was not achievable
+as written. Re-pointed on subject, each verified at source: `E7-F026` → `CLI-011`, `E7-F016` →
+`CLI-015` (clause 6 **is** `countProducedOutputs`, `e7-distributed-run-verifier-store.ts:124`).
+**Eight remain on `CLI-008`** — safe, because the parent has no `-result.md`, and correct, because
+absorbing them would be a false claim of ownership.
+
+★★ **Only two successors carry ticket FILES.** `ticket-graph-coverage` is asymmetric by design — a
+file with no node is a failure; a node with no file *"is the BACKLOG … NOT a failure"*. Files exist
+exactly where a finding is re-pointed, because `check-finding-ownership` needs one on disk to accept
+an owner. The other five are nodes. Minting five design docs with no design behind them would be
+inventing evidence.
+
+★ **No `-LEDGER` result file**, because `CLI-008-LEDGER-result.md` resolves to `CLI-008` under the
+same regex and would be the orphaning act. The decision record holds the work instead.
+
+★ **One measured surprise, recorded so the next author does not repeat it:** a `#### CLI-008 …`
+heading for the mapping block minted a *second* `CLI-008` node and reddened
+`check-dependency-graph` with *"ticket heading has no 'Depends on:' line"*. Every `#### ` line in
+`program-design.md` is a ticket node. The mapping block is a blockquote now.
+
 ---
 
 ## 6. Unit 1 — repair the `keyed-e2b-unit-d` lane

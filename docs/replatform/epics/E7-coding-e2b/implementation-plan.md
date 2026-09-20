@@ -339,7 +339,32 @@ absence of the behavior, never a missing import.
 
 ## 4. Ticket implementation tasks
 
-### `CLI-008-LEDGER` — file the link-scoped successors and re-point the ten findings (S, ≤1 agent-day, M0)
+### `CLI-008` ledger — file the link-scoped successors and re-point what genuinely maps (S, ≤1 agent-day, M0)
+
+> ★★★ **EXECUTED 2026-09-21 (M0 unit 4). Two things changed from the task as written below, both
+> founder-ruled, and the heading no longer says "the ten findings" because that was not achievable.**
+>
+> **(D1) The ids are numeric.** `CLI-010`…`CLI-016` replace `CLI-008-F1a`…`CLI-008-C5`; the mapping
+> is in `program-design.md` immediately before the `CLI-010` node. The task's own blocking banner
+> below called this out and it is confirmed at source: `check-finding-ownership.mjs:423` tests an
+> exact `tickets.has(entry.ticket)` and `findTicketIds` (`:50`) derives ids with
+> `/^([A-Z]+-\d+)/`. There is also no `-LEDGER` result file, because `CLI-008-LEDGER-result.md`
+> would itself resolve to `CLI-008` and be the orphaning act; the work is recorded in
+> `docs/replatform/DECISION-cli-008-successor-id-scheme.md` instead.
+>
+> **(D5) Only TWO of the ten findings were re-pointed, not ten.** The ten do not correspond to the
+> six Unit F links. §1.6 of `CLI-008-unit-f-design.md` defines the links as the output return path
+> (emit → capture → export → announce → project → judge); the findings span argv-only capability
+> (`E7-F003`), a forgeable outputs endpoint (`E7-F015`), clause-4 secret-scanner scope (`E7-F023`,
+> `E7-F032`, `E7-F033`), log truncation (`E7-F024`), a grant-pairing bug (`E7-F017`) and codex's
+> trusted-directory refusal (`E7-F027`). Re-pointed on SUBJECT, verified at source:
+> **`E7-F026` → `CLI-011`** (a claim about an output-mechanism option) and **`E7-F016` → `CLI-015`**
+> (clause 6 **is** `countProducedOutputs`, `e7-distributed-run-verifier-store.ts:124`, which is
+> link 6). The other **eight remain on `CLI-008`**, which is safe: the parent has no `-result.md`,
+> so it is not in `completedTicketIds` and nothing is orphaned. Sweeping them into a link successor
+> would be a false claim of ownership — the exact thing the guard exists to stop.
+>
+> ★ **So the bar on a `CLI-008` parent result has NOT lifted.** Eight findings still name it.
 
 **Depends on:** nothing. **Disposition:** M's record precondition.
 
@@ -1299,18 +1324,22 @@ content, secret, or session byte.
 ## 8. Controller sequence and parallelization
 
 ```text
-M0:    CLI-008-LEDGER            (unblocks every ticket id below)
+M0:    the ledger            DONE 2026-09-21 (M0 unit 4) — ids filed, 2 of 10 findings re-pointed
 
 M1a:   E7-1-JOURNEY-ARM          [gated on E6: adapter-manager image in a shipped CI boot
                                   + DEP-011 Slice 5 daemon consumer]
 
-M1b:   CLI-008-F1a ──▶ CLI-008-F1b  ──(founder ruling)──▶ CLI-008-F6
+M1b:   CLI-010 ──────▶ CLI-011      ──(founder ruling)──▶ CLI-015
               │                                              ▲
-              └──▶ CLI-008-F3 ──▶ CLI-008-F4 ──▶ CLI-008-F5 ─┘
+              └──▶ CLI-012 ──▶ CLI-013 ──▶ CLI-014 ──────────┘
                       ▲
                       └── E5: DAT-009-3c ──▶ DAT-009-3d
 
-       CLI-008-C5     [gated on E5: DAT-007-S3]   — parallel with the F chain
+       CLI-016        [gated on E5: DAT-007-S3]   — parallel with the F chain
+
+       ★ RENUMBERED 2026-09-21. was: CLI-008-F1a/F1b/F3/F4/F5/F6/C5, in that order.
+         The link-scoped shape is unrepresentable to check-finding-ownership; see
+         program-design.md, immediately before the CLI-010 node, for the mapping.
 
 OUT OF M1, named so it is not read as dropped:
        Unit E (workspace, XL), codex MX3 (E7-F027), the M2 sink cutover
