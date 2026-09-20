@@ -174,6 +174,17 @@ test("parseArgs takes the base from a flag, an =form, or the environment", () =>
 
 test("the record pattern matches qa/ and handoffs/ markdown and nothing else", () => {
   assert.ok(EVIDENCE_RECORD_RE.test(BREACHED_RECORD));
+  // ★ D-11 — the milestone tree is covered by the SAME contract. Before 2026-09-20 these four
+  // assertions all failed: `milestones/` was declared immutable in artifact-policy.md while both
+  // collectors walked only `epics/`, so a committed milestone record could be modified, deleted or
+  // renamed with this guard still green. A declared contract no guard reads is a false claim of
+  // enforcement. These are the positive control for the widening.
+  assert.ok(EVIDENCE_RECORD_RE.test("docs/replatform/milestones/M1a/qa/2026-09-20-m1-d1-spine-abcdef123456-a1.md"));
+  assert.ok(EVIDENCE_RECORD_RE.test("docs/replatform/milestones/M1a/handoffs/2026-09-20-M1a-abcdef123456-a1.md"));
+  assert.ok(!EVIDENCE_RECORD_RE.test("docs/replatform/milestones/M1a/qa/README.md"));
+  // ...and the widening must not have swallowed the whole docs tree on the way past.
+  assert.ok(!EVIDENCE_RECORD_RE.test("docs/replatform/milestones/README.md"));
+  assert.ok(!EVIDENCE_RECORD_RE.test("docs/replatform/epic-regrooming/scope-triage.md"));
   assert.ok(EVIDENCE_RECORD_RE.test("docs/replatform/epics/E1-worker-protocol/handoffs/x.md"));
   assert.ok(!EVIDENCE_RECORD_RE.test("docs/replatform/epics/E1-worker-protocol/qa/README.md"));
   assert.ok(!EVIDENCE_RECORD_RE.test("docs/replatform/epics/E1-worker-protocol/tickets/x.md"));

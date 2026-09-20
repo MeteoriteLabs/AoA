@@ -219,11 +219,23 @@ Keeping E0–E11 as archival labels on shipped work, the remaining work sequence
 | **R1** | Record truth | every epic README's status is derivable from a guard |
 | **R2** | Lane health | `d1-merge-train` green; the consumer reports both red lanes |
 | **R3** | The return path (Unit F links 1-emit/3/4/5) | an artifact produced in a sandbox lands in `task_outputs` and the founder sees it on the task |
-| **R4** | Sink cutover (4 parity bridges + `E10-1-drain` + MIG-005/007) | all four bridges wired |
+| **R4** | Sink cutover (MIG-005 Commander / MIG-006 crew / MIG-007 extraction + `E10-1-drain`) | the distributed path owns each write; the legacy path is provably unreached |
 | **R5** | Shipped boot (AM/worker/CP images in CI + DEP-011 daemon consumer) | `E7-1-coding-journey` flips `wired` on a CI boot, not a manual staging run |
 | **R6** | **M1 internal alpha** — this proposal's milestone, `M1-D1-SPINE` + `M1-D2-CODING` | one org, one CP, one worker, real E2B, useful output |
 | **R7** | Workload breadth (E8, E9 remainder) | D3 / D4 |
 | **R8** | Release (REL-001/002/005, DBR-001, D5/D6) | private beta |
 
 R1 and R2 are cheap and unblock honest measurement of everything after them. R3 is the only
-genuinely hard item. R6 is this proposal's milestone, unchanged.
+genuinely hard item.
+
+> ★★★ **CORRECTED 2026-09-20 — R4 bundled two different things, and the bundle was wrong.**
+> As first written, R4 read *"4 parity bridges + `E10-1-drain` + MIG-005/007"* and sat before R6,
+> which implied the Commander and extraction cutovers were first-milestone prerequisites. **They are
+> not** — the milestone journey is `task_run`-only, and `scope-triage.md` correctly retains those
+> cutovers for later. The **parity bridges** are the milestone's (journey item 7, disposition A), and
+> three of them are `M1a` blockers under founder decision **D-8** because `E3-F037` makes a
+> handed-off run's spend invisible to budget policy. The row above now carries only the cutovers.
+>
+> ★ **R1–R8 is superseded as a sequence by `scope-triage.md`'s M0–M5**, which is the plan of record.
+> It is kept here as the reasoning that produced it: the observation that the dependency chains run
+> *across* E0–E11, which is why execution order never matched epic order.

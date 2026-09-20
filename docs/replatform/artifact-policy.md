@@ -27,6 +27,42 @@ docs/replatform/epics/<epic>/
 
 Folders are created when an epic enters `planning`. Result files are created only when real execution or evidence exists; do not pre-create empty ticket or QA records.
 
+★★★ **MILESTONE records live outside the epic tree (added 2026-09-20, founder decision D-11).** A
+milestone spans several epics by construction, so its QA and handoff records belong to no
+`epics/<epic>/` folder. They live under:
+
+```
+docs/replatform/milestones/<milestone>/
+  qa/        <YYYY-MM-DD>-<gate>-<scope>-<sha12>-a<attempt>.md
+  handoffs/  <YYYY-MM-DD>-<milestone-or-gate-slug>-<sha12>-a<attempt>.md
+```
+
+★★★ **BLOCKING PRECONDITION — `EVID-04` MUST BE AMENDED BEFORE ANY MILESTONE QA RECORD IS FILED,
+AND THIS DOCUMENT CANNOT DO IT.** *Added 2026-09-20 (twelfth round), verified at source.*
+`test-gates.md` `EVID-04` states the record path normatively: *“Use
+`docs/replatform/epics/<epic>/qa/<YYYY-MM-DD>-<lane>-<scope>-<sha12>-a<attempt>.md`”*. A record
+under `milestones/<milestone>/qa/` **does not conform to it**. Changing this policy, the templates
+and the immutability guard does **not** amend a normative gate — gate text is the gate owner's, and
+`qa-handoff-recovery.md` says so in terms.
+
+★ **So the milestone layout is BLOCKED on an `EVID-04` amendment permitting milestone paths**, and
+the most concrete casualty is the **required `M2-RTF` campaign**, which has nowhere conforming to
+live. Filing milestone evidence before that amendment produces records that satisfy this document
+and violate the gate — which is worse than having no path, because it looks conformant. **This is a
+gate-owner action and it is not optional.**
+
+★ **The handoff's middle segment is the milestone id OR the gate slug.** *Corrected 2026-09-20:
+it read `<milestone>`, which collides with a gate that requires its handoff by name — `RTF-07`
+requires `e10-realtime-foundation`, so an `M2-RTF` handoff must be free to carry the gate slug
+there. Existing handoffs already use the gate slug in this position.*
+
+**The contract is identical, not softer** — the same immutability rule, the same required fields,
+the same 12-character revision in every filename. (Worded to avoid restating the rule's own
+phrase: `check-distributed-execution-foundation.mjs` requires that phrase to appear here, and a
+second copy would let a mutant delete the real one while the checker still passed.) A milestone handoff is **non-promoting**: it
+changes no epic status and must not use `epic-completion` in its name. See
+[`milestones/README.md`](./milestones/README.md).
+
 ## Artifact responsibilities
 
 ### `README.md`

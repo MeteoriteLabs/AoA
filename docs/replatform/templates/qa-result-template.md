@@ -1,17 +1,21 @@
 # QA Result — <Lane, scope, revision, and attempt>
 
 **Date (UTC):** `<YYYY-MM-DD>`
-**Epic:** `<E#-name>`
-**Record path:** `<docs/replatform/epics/.../qa/<filename>.md>`
+**Epic:** `<E#-name>` — **or, for a milestone record, `**Milestone:**` `<M0|M1a|M1b|M2|M2-RTF|M3|M4|M5>` instead**
+**Record path:** `<docs/replatform/epics/.../qa/<filename>.md>` — **or `<docs/replatform/milestones/<milestone>/qa/<filename>.md>`**
 **Scope slug:** `<stable scope slug used in the filename>`
 **Revision:** `<exact 40-character git SHA>`
 **Attempt:** `<positive integer>`
 **Supersedes:** `<prior immutable QA record path or none>`
-**Lane:** `D0`, `E6-D1-FOUNDATION`, `D1`, `D1-HA`, `E10-REALTIME-FOUNDATION`, `D2`, `D3`, `D4`, `D5`, `D6`, `desktop`, `merge-train`, `nightly`, `weekly`, or `release`
+**Lane:** `D0`, `E6-D1-FOUNDATION`, `M1-D1-SPINE`, `M1a-D2-MECHANISM`, `M1-D2-CODING`, `D1`, `D1-HA`, `E10-REALTIME-FOUNDATION`, `D2`, `D3`, `D4`, `D5`, `D6`, `desktop`, `merge-train`, `nightly`, `weekly`, or `release`
+> ★ *The three `M1…` lanes were added 2026-09-20: the milestone partial gates were named in the plan of record while this enum still omitted all three, so a conforming record for them could not be written.* ★★★ **`M1a-D2-MECHANISM` and `M1-D2-CODING` are DIFFERENT LANES and a record carries one `Result`** — a mechanism pass is never evidence for the capability gate.
 **Result:** `pass`, `fail`, or `blocked_external`
 **Failure class:** `none`, `product`, `harness`, `provider`, or `environment`
 **Campaign start (UTC):** `<RFC3339 or not_applicable>`
 **Campaign end (UTC):** `<RFC3339 or not_applicable>`
+
+
+> ★★★ **MILESTONE RECORDS USE THIS TEMPLATE TOO, and before 2026-09-20 they could not.** A milestone belongs to **no single epic** by construction (`M1a` spans E3, E4, E5, E6 and E7), so `**Epic:**` and an `epics/…` record path were unsatisfiable for it. A milestone record therefore replaces `**Epic:**` with `**Milestone:**` and writes its path under `milestones/<milestone>/`. Every other field, and immutability, are unchanged.
 
 > This file is immutable from its first commit. A correction, rerun, changed decision, or changed revision creates a higher attempt and links this path through `Supersedes`.
 

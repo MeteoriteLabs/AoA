@@ -4,7 +4,8 @@
  *
  * A CHECK THAT NOTHING RUNS IS NOT A CHECK.
  *
- * ★ WHY THIS EXISTS. `docs/replatform/artifact-policy.md:54,67` makes every QA and handoff
+ * ★ WHY THIS EXISTS. `docs/replatform/artifact-policy.md:90,94,103` — the three `write-once from
+ * its first commit` / `immutable from first commit` clauses — makes every QA and handoff
  * record "write-once from its first commit" — a rerun or correction creates a NEW attempt
  * carrying `Supersedes`, and never edits a prior one. The deny that enforces this,
  * `checkEvidenceImmutability` in `check-distributed-execution-foundation.mjs`, has been on
@@ -37,7 +38,8 @@
  * pins each record's content AT THE COMMIT THAT INTRODUCED IT, and denies any later commit
  * in the same pull request that changes or removes it.
  *
- * ★ WHY THIS DOES NOT BLOCK A LEGITIMATE CORRECTION. Under `artifact-policy.md:54,58,67` a
+ * ★ WHY THIS DOES NOT BLOCK A LEGITIMATE CORRECTION. Under `artifact-policy.md:90,94,103` — each
+ * of which says a correction creates a new attempt with `Supersedes` — a
  * rerun, correction or changed decision is expressed by ADDING A NEW attempt file whose
  * `Supersedes` field points BACKWARD at the prior path (`qa-result-template.md:9`,
  * `handoff-template.md:9`). The superseded record is never touched and gets no backlink, so
@@ -93,10 +95,16 @@ export const REPO_ROOT = path.resolve(fileURLToPath(new URL("..", import.meta.ur
  * excluded. Materialising a wider set than the deny reads would be theatre.
  */
 export const EVIDENCE_RECORD_RE =
-  /^docs\/replatform\/epics\/[^/]+\/(?:qa|handoffs)\/(?!README\.md$)[^/]+\.md$/;
+  /^docs\/replatform\/(?:epics|milestones)\/[^/]+\/(?:qa|handoffs)\/(?!README\.md$)[^/]+\.md$/;
 
-/** Pathspec that bounds the per-commit `ls-tree` walk. Purely a narrowing of the regex. */
-export const EVIDENCE_ROOT = "docs/replatform/epics";
+/**
+ * ★ `milestones/` added 2026-09-20 (D-11). A milestone spans several epics, so its QA and handoff
+ * records live at `docs/replatform/milestones/<milestone>/{qa,handoffs}/`. The contract declared
+ * for them is the SAME immutability contract — and a contract this guard does not read is a false
+ * claim of enforcement, which is worse than no claim. Caught in review before the tree held a
+ * single record.
+ */
+export const EVIDENCE_ROOT = "docs/replatform";
 
 /**
  * The ledger's charter file. Its presence at a revision is what makes that revision a
@@ -457,7 +465,7 @@ async function main() {
     console.error("Evidence-ledger immutability FAILED:");
     for (const err of result.errors) console.error(`  - ${err}`);
     console.error(
-      "\nQA and handoff records are write-once (docs/replatform/artifact-policy.md:54,67).\n" +
+      "\nQA and handoff records are write-once (docs/replatform/artifact-policy.md:90,94,103).\n" +
         "A correction is a NEW attempt file carrying `Supersedes`, never an edit to a prior one.",
     );
     process.exitCode = 1;
