@@ -327,7 +327,7 @@ provably not reached, and rollback is rehearsed. `E3-5-product-approval`, `E3-17
 
 ### `M3` — workload breadth
 
-**Scope.** E8 browser (**`BRW-003c`**, `BRW-004`, `BRW-005`, `BRW-006`) and the E9 service remainder
+**Scope.** E8 browser (**`BRW-003c`**, `BRW-004`, `BRW-005`, `BRW-006`, **`BRW-007`**, **`BRW-008`** — the last two **TO FILE at M3 Step 0**: authorized by the E8 scope addendum, but with no graph node or ticket file yet) and the E9 service remainder
 (`SVC-003`, `SVC-005` and `SVC-007` **residuals**, `SVC-004`, `SVC-006`, `SVC-009`).
 
 ★★★ **IDS ARE WRITTEN OUT IN FULL HERE ON PURPOSE.** *Corrected 2026-09-20 (thirteenth round).*
@@ -360,10 +360,21 @@ is currently `unowned` *because* `BRW-003c` is design-only. `BRW-005` and `BRW-0
 ticket and left the sensitive-artifact **retention / purge / audit** gap permanently unscheduled —
 an enumerated scope that silently drops a HIGH finding's only route to closure.
 
-★ *Corrected 2026-09-20: an earlier draft wrote "`BRW-004`…`008`". **`BRW-007` and `BRW-008` have
-no program-design node and no ticket file** — their only scope statement is
-`scope-addendum-agent-and-commander.md`, outside the ticket graph. They are not M3 scope and must
-not be implied to be; filing them is a programme-owner decision.*
+★★★ **RETRACTED — I WAS WRONG ABOUT `BRW-007` AND `BRW-008`, AND THEY ARE M3 SCOPE.**
+*Corrected 2026-09-20 (thirteenth round), verified at source.* An earlier correction of mine said
+they *“have no program-design node and no ticket file … filing them is a programme-owner
+decision”*. The first half is true and **the conclusion does not follow**: the authority already
+exists. `epics/E8-browser-automation/scope-addendum-agent-and-commander.md` is titled *“E8 scope
+addendum — BRW-007 and BRW-008”*, records **“Authority: programme owner decision”**, sizes both
+tickets, and fixes the chain `BRW-004 → BRW-006 → BRW-007 → BRW-008`. E8's `README.md` lists
+*“BRW-001 through BRW-008”* and its **exit gate** includes the agent session request and retiring
+the host-side path — i.e. exactly these two.
+
+★ **Absence of a design NODE is not absence of AUTHORITY**, and that is the distinction I collapsed.
+Since `M5` exits through E11, which depends on E8, leaving them unscheduled would have parked
+required E8 work outside every milestone — the same defect as `MIG-001`. They are named in M3's
+scope above; the missing graph node and ticket files are **M3 Step-0 filings**, exactly like the
+other `TO FILE` rows.*
 
 ★★★ **ENTRY BLOCKER THIS SEQUENCE ORIGINALLY MISSED — `E10-REALTIME-FOUNDATION`.**
 `epics/README.md` records that **`BRW-006` requires it** and **`SVC-007` requires it**, and
@@ -494,7 +505,7 @@ The checked-in default-deny/allowlist shape is not an enforcement claim while th
 - browser, service, and external beta claims remain blocked, while public ingress remains a program exclusion; and
 - any self-hosted or tenant-hosted tier that promises egress denial must produce live packet-path enforcement evidence before enablement.
 
-The accepted managed-shared DE-08 residual conflicts with the still-normative H-06/D2 network boundary: H-06 requires metadata, private, worker-control, and control-plane destinations to remain denied, including direct-IP, redirect, and DNS-rebinding variants. The DE-08 scope decision did not amend that gate. `M1-D1-SPINE` and `M1-D2-CODING` must record the residual and the credential-taxonomy mitigation explicitly, but neither may mark H-06 passed. Any full D1/D2, E6, or E7 completion requires live evidence satisfying the current requirement or a separately approved normative amendment.
+The accepted managed-shared DE-08 residual conflicts with the still-normative H-06/D2 network boundary: H-06 requires metadata, private, worker-control, and control-plane destinations to remain denied, including direct-IP, redirect, and DNS-rebinding variants. The DE-08 scope decision did not amend that gate. **all three partial gates — `M1-D1-SPINE`, `M1a-D2-MECHANISM` and `M1-D2-CODING` —** must record the residual and the credential-taxonomy mitigation explicitly, and **none** may mark H-06 passed ★ *(corrected thirteenth round: this named two gates, so an `M1a` campaign — which owns dormant-egress criterion 5 — could have omitted the required safety evidence entirely)*. Any full D1/D2, E6, or E7 completion requires live evidence satisfying the current requirement or a separately approved normative amendment.
 
 The qualification limits blast radius; it does not turn a dormant control into a delivered one or a hard-invariant failure into a pass.
 
@@ -509,11 +520,20 @@ and the output capability `M1a` exists to defer, so an `M1a` candidate could nev
 same defect the recovery order had, one document further up, and splitting only the exits did not
 cure it.
 
-★ **`M1a` entry = every bullet below EXCEPT the output half:** the adapter, workspace, audit/cost
-and cleanup paths must be enabled for the named internal Organization, and the **output** path need
-not be — `M1a` is satisfied by a run reporting `capabilityProven=false`. The required-ticket bullet
-is scoped to **`M1a`'s own required result set**, not to every E3–E7 ticket. Every other bullet
-applies to both milestones unchanged.
+★ **`M1a` entry — THE EXACT DEFERRED SUBSET IS `tools` AND `output`.** The **adapter**,
+**workspace**, **audit/cost** and **cleanup** paths must be enabled for the named internal
+Organization; the **tools** and **output** paths need not be. `M1a` is satisfied by a run reporting
+`capabilityProven=false`, and the tool surface is armed by `CLI-008-C5`, which is an **`M1b`**
+ticket — so requiring tools at `M1a` entry would make the checkpoint depend on `M1b` work. Workspace
+staging IS required: the `M1a` journey stages input. The required-ticket bullet is scoped to
+**`M1a`'s own required result set**, not to every E3–E7 ticket. Every other bullet applies to both
+milestones unchanged.
+
+★★★ *Corrected 2026-09-20 (thirteenth round): an earlier revision exempted only the output half,
+which still required the tool surface that `C5` does not arm until `M1b` — while the recovery
+procedure deferred tools, workspace AND output. The two documents named different subsets, so an
+operator could freeze a candidate that fails `M1a`'s own entry conditions. **`tools` + `output`,
+stated identically in both places.***
 
 **`M1b` entry — and, except as scoped above, `M1a` entry** — the milestone candidate may enter its
 integrated QA campaign only when:
@@ -523,7 +543,7 @@ integrated QA campaign only when:
 - every required E3–E7 ticket has either a canonical approved result or a policy-compliant successor/adoption record that pins the retained historical blob and closes its stated delta;
 - E3–E6 have candidate-specific ledgers showing which mechanisms are production-reachable rather than merely present and which clauses are certified only by `M1-D1-SPINE`;
 - every E5 implementation/build gap required by the M1 subset is closed and production-wired, with focused acceptance green;
-- the proposed E5 a2 seven-clause audit matrix, commands, exact topology, QA owner, and decision owner are approved and frozen; the a2 record is planned to consume the exact M1 candidate campaigns rather than required to pass before they start;
+- the proposed E5 seven-clause audit matrix, commands, exact topology, QA owner, and decision owner are approved and frozen — ★ *the matrix is frozen once and reused across attempts; `a2` attests the `M1a` candidate and `M1b` owes `a3` or later, corrected twelfth round* — ; the audit record is planned to consume the exact M1 candidate campaigns rather than required to pass before they start;
 - the supported adapter, tools, workspace, output, audit/cost, and cleanup paths are enabled only for the named internal Organization;
 - no excluded workload, desktop, mobility, cutover, HA, or beta flag is enabled;
 - the candidate revision, topology, configuration digests, external dependencies, partial-gate owner, QA owner, and rollback owner are frozen before the run starts; and
