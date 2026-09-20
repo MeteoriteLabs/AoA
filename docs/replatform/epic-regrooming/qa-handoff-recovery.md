@@ -31,8 +31,10 @@
 >
 > - **QA record:** `<YYYY-MM-DD>-<lane>-<scope>-<sha12>-a<attempt>.md`
 > - **Handoff:** `<YYYY-MM-DD>-<gate-or-merge-train>-<sha12>-a<attempt>.md` — **no `<scope>`
->   segment**. For a milestone handoff the middle segment is the milestone id
->   (`<YYYY-MM-DD>-<milestone>-<sha12>-a<attempt>.md`).
+>   segment**. For a milestone handoff the middle segment is the milestone id **or the gate slug**
+>   (`<YYYY-MM-DD>-<milestone-or-gate-slug>-<sha12>-a<attempt>.md`) — ★ *corrected 2026-09-20
+>   (fifth round): milestone-only would have made the `RTF-07`-required `e10-realtime-foundation`
+>   handoff unwritable under `milestones/M2-RTF/`.*
 >
 > **Status-flip authority.** This procedure produces evidence; it grants nothing. Only the
 > Integration Gate Owner changes an epic's status, and only on a committed `pass` QA record and a
@@ -185,8 +187,16 @@ Reopening creates new findings, results where needed, QA attempts, and handoffs.
    `M1a` is complete here. Per-epic completion handoffs still wait for each epic’s normative gate.
 7. **Then** finish E7 tools/workspace/output capability (`CLI-008` Unit F links, `DAT-009` 3c–3e)
    and freeze the `M1b` candidate.
-8. **Run `M1-D2-CODING`** on the `M1b` candidate. Its `Result` is the useful-capability verdict, and
-   a run reporting `capabilityProven=false` **fails** it.
+8. **Run ALL THREE gates on the `M1b` candidate** — `M1-D1-SPINE`, `M1a-D2-MECHANISM`, then
+   `M1-D2-CODING`. `M1-D2-CODING`'s `Result` is the useful-capability verdict, and a run reporting
+   `capabilityProven=false` **fails** it.
+
+   ★★★ **THE M1a RECORDS MAY NOT BE CARRIED FORWARD, and an earlier revision of this step said to
+   run only `M1-D2-CODING`.** *Corrected 2026-09-20 (fifth round).* `M1b` inherits every `M1a` exit
+   criterion, and criteria 2 and 3 each require a **fresh** campaign; every gate record attests
+   **one exact candidate**, and step 7 freezes a NEW one. Reusing `M1a`'s spine and mechanism
+   records would attest the older revision, so the procedure as written could not produce a valid
+   `M1b` handoff at all. `M1a` is a checkpoint on the way, not a set of credits `M1b` spends.
 9. Commit the passing E5 a2 audit as a consumer of the campaign records, then issue the **`M1b`**
    milestone handoff — a second handoff, not the same one.
 10. Regroom E8, E9, the later E10 lanes, and E11 as later milestones without losing their current slices or blockers.
