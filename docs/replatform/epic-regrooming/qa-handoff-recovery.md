@@ -22,7 +22,14 @@
 > `Decision` while the procedure creates QA records too, so an author following it could omit the
 > template-required `Result` and produce a record the pass checks later in this document cannot
 > use.* The filename contract is
-> `<YYYY-MM-DD>-<lane-or-gate>-<scope>-<sha12>-a<attempt>.md`.
+> **two forms, not one** — ★ *corrected 2026-09-20 (second round): a single combined pattern was
+> given for both record types, and it was the QA form. A handoff author following it would have
+> produced a filename carrying a `<scope>` segment the authoritative layout does not define.*
+>
+> - **QA record:** `<YYYY-MM-DD>-<lane>-<scope>-<sha12>-a<attempt>.md`
+> - **Handoff:** `<YYYY-MM-DD>-<gate-or-merge-train>-<sha12>-a<attempt>.md` — **no `<scope>`
+>   segment**. For a milestone handoff the middle segment is the milestone id
+>   (`<YYYY-MM-DD>-<milestone>-<sha12>-a<attempt>.md`).
 >
 > **Status-flip authority.** This procedure produces evidence; it grants nothing. Only the
 > Integration Gate Owner changes an epic's status, and only on a committed `pass` QA record and a

@@ -155,12 +155,19 @@ This is not D1. In particular, it does not satisfy D1-00’s at-least-two-worker
 
 ### `M1-D2-CODING` — real-E2B useful-coding partial gate
 
-> ★ **Serves `M1b`.** `M1a` is gated by `M1-D1-SPINE` plus the real-E2B *mechanism* half of this
-> gate; the *useful-capability* half below is `M1b`'s. One campaign may produce both records on the
-> same candidate, but the two verdicts are recorded separately and the mechanism verdict never
-> implies the capability one.
+> ★★★ **SERVES `M1b` ONLY. `M1a` DOES NOT CONSUME THIS GATE AT ALL.** `M1a` is gated by
+> `M1-D1-SPINE` + [`M1a-D2-MECHANISM`](#m1a-d2-mechanism--real-e2b-mechanism-partial-gate), which
+> is a separate gate with its own campaign record and its own `Result`.
+>
+> ★ *Corrected 2026-09-20 (second review round). An earlier revision said `M1a` was gated by "the
+> mechanism half of this gate". **There is no such half.** A QA record has one normative
+> `**Result:**`, so a "half" is not a thing a gate owner can record — and leaving that sentence
+> here meant an operator could still pass `M1a` by putting a partial verdict on THIS record instead
+> of producing the standalone mechanism one, which is exactly the ambiguity `M1a-D2-MECHANISM` was
+> created to remove. Creating the new gate without deleting the old sentence fixed the description
+> and not the instruction.*
 
-On the same exact candidate, run the included real-E2B `task_run` journey through an approved sandbox-local adapter, tool surface, workspace input, attributable output, cancellation, usage, provider failure, artifact integrity, and terminal cleanup. The record must report both mechanism and useful-capability verdicts.
+On the same exact candidate, run the included real-E2B `task_run` journey through an approved sandbox-local adapter, tool surface, workspace input, attributable output, cancellation, usage, provider failure, artifact integrity, and terminal cleanup. **This record's `Result` is the useful-capability verdict, and a run reporting `capabilityProven=false` FAILS it.** (It may also print the mechanism verdict for context, but the mechanism *gate* is `M1a-D2-MECHANISM` and only that record's `Result` passes `M1a`.)
 
 This is not D2. It cannot complete E7, satisfy D2’s full run counts/schedule, or substitute for full D2 in a later D5/D6 or release decision. It unlocks only the internal alpha milestone after `M1-D1-SPINE` and its named dependencies pass.
 
@@ -175,7 +182,7 @@ gate and requires **attributable output**; and `templates/qa-result-template.md`
 second `Result`. So the original wording either **falsely passed the useful-capability gate at
 M1a**, or left **M1a impossible to pass** — and which of the two it did depended on who read it.
 
-So the mechanism half becomes its own gate with its own record:
+So the mechanism claim gets its OWN gate, with its own campaign and its own `Result` — never a share of another gate's:
 
 On the same exact candidate, run the included real-E2B `task_run` journey end to end — dispatch,
 distributed ownership, lease, secret redemption, staged input, E2B create/execute/teardown, durable
@@ -213,8 +220,8 @@ Both partial gates are non-promoting. They may support a separately named milest
 | # | Milestone | Proves | Named gate(s) | Blocked by |
 |---|---|---|---|---|
 | **M0** | Record + lane health | the records match the code, and every lane a milestone will cite is green and read | *(no gate — entry criteria for M1a)* | nothing |
-| **M1a** | The spine | mechanism: one org, one CP, one worker, real E2B, in a **shipped CI boot** | `M1-D1-SPINE` + the mechanism half of `M1-D2-CODING` | M0 |
-| **M1b** | Useful capability | an agent's output reaches the founder | the useful-capability half of `M1-D2-CODING` | M1a, `CLI-008` Unit F, `DAT-009` 3c–3e |
+| **M1a** | The spine | mechanism: one org, one CP, one worker, real E2B, in a **shipped CI boot** | `M1-D1-SPINE` + **`M1a-D2-MECHANISM`** | M0 |
+| **M1b** | Useful capability | an agent's output reaches the founder | **`M1-D2-CODING`** *(whole)* | M1a, `CLI-008` Unit F, `DAT-009` 3c–3e |
 | **M2** | Sink cutover | the legacy in-process paths stop owning execution | `M2-CUTOVER` *(to be named)* | M1b |
 | **M2-RTF** | Realtime foundation | reconnect-safe realtime, proven on one revision | **`E10-REALTIME-FOUNDATION`** | M1b *(its three input tickets are already shipped)* |
 | **M3** | Workload breadth | browser and service workloads run distributed | full **D3** + full **D4** | M2 **and `E10-REALTIME-FOUNDATION`** |
@@ -223,7 +230,15 @@ Both partial gates are non-promoting. They may support a separately named milest
 
 ### `M0` — record and lane health
 
-**Scope.** Disposition **B** in full, plus the record-truth half of **A**. No feature work.
+**Scope.** Disposition **B**, plus the record-truth half of **A**.
+
+★ **NOT "no feature work" — one build item is deliberately inside it, and pretending otherwise
+would let M0 complete without finishing its own scope.** *Corrected 2026-09-20 (second round).*
+`MIG-009` is in disposition B and is **split across two milestones**: its **evidence currency** (a
+record on the M0 candidate) is M0's, and its **trigger build** — designing and wiring the real
+`drainAll` invocation so criterion 6's rehearsal has a mechanism — is **`M1a`'s**, where it appears
+in the required result set. M0 introduces **no new product capability**; that is the honest claim,
+and it is narrower than the one this line used to make.
 
 **Why it is a milestone and not a chore.** Every later milestone's exit criteria are *"a committed
 `Result: pass` QA record on the exact candidate"*. A lane that is red, or green but unread, cannot
@@ -404,12 +419,27 @@ Ticket shipment or an earlier mechanism run cannot substitute for items 2–9. P
 > |---|---|---|---|
 > | 1 — all required ticket results approved | ✅ *(scoped — see below)* | ✅ | **TWO tickets make the unscoped reading unsatisfiable**, not one. `MIG-010` (B) carries no result so `E7-F007` keeps an owner — D-10 files the successor. **`CLI-008` (M) can NEVER carry a parent result**: ten findings name it as `ticket` and none names a successor, so a parent result orphans all ten at once. |
 
-> ★★★ **CRITERION 1 IS SCOPED PER MILESTONE, and this is a correction, not a waiver.** Read
-> unscoped, it demands a result for every required ticket — including one that must never have a
-> parent result by construction. So: **`M1a` requires results for the tickets in ITS OWN set**;
-> `CLI-008`'s **link-scoped successors** (`F1a`, `F3`, `F4`, `F5`, `F6`) produce their results at
-> **`M1b`**, and the parent `CLI-008` produces none, ever. A milestone may not silently exempt a
-> required ticket — it must name the scope, which is what this does.
+> ★★★ **CRITERION 1 IS SCOPED PER MILESTONE — AND THE SETS ARE ENUMERATED BELOW, because a scope
+> nobody can check is an exemption.** *Corrected 2026-09-20 (second round): an earlier revision said
+> `M1a` requires results for "the tickets in ITS OWN set" without defining that set anywhere, so a
+> gate owner could have dropped `WRK-013`, `DAT-007` or `DEP-011` by declaring them out of scope
+> without contradicting a word of the criterion. That is the thing it claimed not to be.*
+>
+> **`M1a` required result set** — every one of these owes a `-result.md` before `M1a` passes:
+>
+> | Ticket | Epic | What it owes M1a |
+> |---|---|---|
+> | `MIG-009` | E10 | the drain **and its trigger** (D-9), for criterion 6's rehearsal |
+> | `WRK-013` | E4 | the startup reconciler — journey item 8's restart recovery; closes `E4-F009` |
+> | `DAT-007-S3` | E5 | the `/mcp` run-currency gate proven against real PostgreSQL |
+> | `DEP-011-S5` | E6 | the adapter-manager image + control-plane key in a **shipped** deploy |
+> | `E7-1-JOURNEY-ARM` | E7 | promote `E7-1-coding-journey` on a shipped CI boot |
+> | **TO FILE at `M1a` Step 0** | E3 + E4 | the three parity-bridge consumers (`jobBudgetCostBridge`, `jobAuditBridge`, `jobOutputBridge`) **and** the `observeRun` usage producer — **D-8**. No ticket exists for these yet; filing them is `M1a`'s first act, and `M1a` cannot pass until they carry results. |
+>
+> **`M1b` required result set:** `CLI-008-F1a`, `CLI-008-F3`, `CLI-008-F4`, `CLI-008-F5`,
+> `CLI-008-F6`, `CLI-008-C5`, `DAT-009-3c`, `DAT-009-3d`, `DAT-009-3e`. ★ `CLI-008-F1b` is
+> **design-only and produces a design, not a result** — it is not in either set as a build item.
+> ★ The parent `CLI-008` produces **no result, ever** (it would orphan ten findings).
 > | 2 — fresh `M1-D1-SPINE` campaign | ✅ | ✅ | |
 > | 3 — fresh real-E2B campaign | ✅ **`M1a-D2-MECHANISM`** | ✅ **`M1-D2-CODING`** | two gates, two QA records, two `Result` fields. One campaign run may produce both, but a QA record has ONE normative `Result`, so the mechanism verdict needed its own gate — see above. |
 > | **4 — useful-agent capability evidence** | ✖ | ✅ | **The split lives here.** `M1a` is satisfied by a record reporting `capabilityProven=false`; `M1b` is not, and the bar is unchanged. |
