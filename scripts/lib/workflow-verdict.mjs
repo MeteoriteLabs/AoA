@@ -326,6 +326,49 @@ export function evaluateCadenceStream({ stream, runs, intervalHours, now }) {
  *
  * @param {{stream: object, commits: object[]|null, runs: object[], paths: string[]}} input
  */
+/**
+ * ★★★ THE QUIET-PATH EXCEPTION — E6-F021. The silent half above is right about what is
+ * OWED and says nothing about what was already ANSWERED. Measured 2026-09-20:
+ * `d1-merge-train.yml@docs/replatform-program` concluded `failure` on 2026-09-15 and again
+ * on 2026-09-17; the newest `docker/**`-matching commit was then 105 commits back, past
+ * `COVERAGE_WINDOW = 40`, so `targetIndex` was -1 and this evaluator returned `null`. The
+ * lane had a real red verdict and the consumer reported NOTHING — the exact class DEP-013
+ * exists to end ("a red verdict nobody consumes is operationally identical to a check that
+ * does not run", GO-BOOK §1.9.8), reproduced one layer inside its own guard.
+ *
+ * ★ It cannot manufacture an unclosable incident, which is the §5.2 bar this must clear.
+ * It speaks ONLY when a run really did complete and really did not succeed, so the repair
+ * is always available: fix the lane, or re-run it. Contrast `uncovered_commit`, whose only
+ * repair may be landing a workflow on another branch. A quiet-and-green lane, a lane with
+ * no completed run at all, and a lane whose workflow is absent from the branch all stay
+ * silent — those arms return before this one.
+ *
+ * ★ Raising `COVERAGE_WINDOW` is NOT the fix and was rejected: it moves the cliff instead
+ * of removing it, and the cliff is what hides the red.
+ *
+ * ★ REQUIRES A NON-EMPTY HISTORY, and that is load-bearing rather than defensive. An
+ * unfiltered lane matches every commit (`commitMatchesPaths(c, []) === true`), so the ONLY
+ * way to reach this arm with no `paths:` filter is an EMPTY `commits` list — which the real
+ * collector never produces (a missing branch returns `null`; otherwise it returns at least
+ * one head). Firing on `[]` would make coverage mode report a dead SCHEDULE, which is
+ * cadence's job and is the §5.2 separation the suite pins ("coverage cannot see a dead
+ * schedule"). This arm is about a stranded VERDICT, never about silence.
+ *
+ * @param {{stream: object, commits: object[], runs: object[]}} input
+ * @returns {object|null}
+ */
+function unreadFailure({ stream, commits, runs }) {
+  if (!Array.isArray(commits) || commits.length === 0) return null; // no history to have been quiet ABOUT
+  const latest = newestCompletedRun(runs);
+  if (!latest || !isReportableRun(latest)) return null; // quiet AND answered green (or unanswered) — correctly silent
+  return finding(
+    stream,
+    "unread_failure",
+    `\`${String(latest.headSha ?? "unknown").slice(0, 9)}\` concluded \`${latest.conclusion ?? "null"}\` and no later commit matches the lane's paths: filter, so nothing re-triggers it`,
+    { runUrl: latest.url ?? null, sha: latest.headSha ?? null, conclusion: latest.conclusion ?? null },
+  );
+}
+
 export function evaluateCoverageStream({ stream, commits, runs, paths, workflowPresentOnBranch = true }) {
   // ★★★ A WORKFLOW THAT IS NOT ON THE BRANCH CANNOT RUN THERE — and reporting that would be
   // an incident nobody can close, which is the exact failure §5.2 rejects wall-clock staleness
@@ -340,7 +383,7 @@ export function evaluateCoverageStream({ stream, commits, runs, paths, workflowP
   if (workflowPresentOnBranch === false) return null;
   if (commits == null) return null; // the branch does not exist — nothing is owed
   const targetIndex = commits.findIndex((c) => commitMatchesPaths(c, paths));
-  if (targetIndex === -1) return null; // quiet path, correctly silent
+  if (targetIndex === -1) return unreadFailure({ stream, commits, runs }); // quiet path — silent UNLESS a red verdict is stranded
   const target = commits[targetIndex];
 
   // ★★ A RUN AT A DESCENDANT COVERS IT — found by REAL DATA, not by reasoning. `50380b6f7`

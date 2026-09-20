@@ -1446,3 +1446,83 @@ decision is ever revisited; it was refused, not deferred.
    with no repair.
 
 Either way, flip this Status and DELETE the `scripts/finding-ownership.json` key in the SAME commit.
+
+---
+
+## E6-F021 — the D1 gate lane has been RED since 2026-09-15 on a DELETED upstream image, and the consumer built to report exactly that went silent because the red aged out of its lookback window
+
+**Status:** `resolved` · **Severity:** HIGH · **Owner:** `unowned` (at filing; both halves repaired
+in the filing commit)
+**Filed:** 2026-09-20, by the re-platform reconciliation/grooming pass, measured at `4df71dada`.
+
+### The lane
+
+`d1-merge-train.yml@docs/replatform-program` — the lane that CONSTITUTES the `E6-D1-FOUNDATION`
+gate — concluded `failure` on **2026-09-15** (run `35017820850`) and again on **2026-09-17** (run
+`35238458091`). Both died in the same step, *Bring up the D1 stack*, with the same line:
+
+```
+minio Error pull access denied for minio/minio, repository does not exist or may require 'docker login'
+```
+
+`docker-compose.d1.yml` defaulted the MinIO service to `${AOA_D1_MINIO_IMAGE:-minio/minio:latest}`
+and **no workflow sets that variable**, so the default was always what CI pulled. Measured the same
+day, with a positive control:
+
+| registry | request | result |
+|---|---|---|
+| Docker Hub | `GET registry-1.docker.io/v2/minio/minio/manifests/latest` with an anonymous pull token | **401** |
+| Docker Hub | `GET hub.docker.com/v2/repositories/minio/minio/tags` | `{"message":"object not found"}` |
+| quay.io | `GET quay.io/v2/minio/minio/manifests/RELEASE.2025-09-07T16-13-09Z` with a pull-scoped token | **200**, `manifest.list.v2+json` (multi-arch) |
+
+This is an UPSTREAM deletion, not a repo regression: MinIO's Docker Hub repository is gone. It was
+also the ONLY `:latest` image reference in the file, against sibling third-party images that are
+tag-pinned (`pgvector/pgvector:pg18`, `ghcr.io/shopify/toxiproxy:2.9.0`).
+
+### Why nobody saw it — the half that matters
+
+DEP-013 exists so that *"a red verdict nobody consumes"* cannot happen again, and
+`d1-merge-train.yml@docs/replatform-program` is declared in
+`scripts/workflow-verdict-manifest.json` as **THE CHARTERED STREAM**. The consumer was alive and
+publishing — issue #358 was reconciled at 2026-09-20T08:16 and listed two findings — **and the red
+D1 lane was not one of them.**
+
+`evaluateCoverageStream` finds the newest commit matching the lane's `paths:` filter and evaluates
+the run covering it. `scripts/reconcile-workflow-verdicts.mjs` fetches only `COVERAGE_WINDOW = 40`
+heads. The newest `docker/**`-matching commit was `ceb6f2c45` (2026-09-17) with **105 commits
+since**, so `targetIndex` was `-1` and the evaluator returned `null`. The collector even logged
+*"silent (window exhausted)"* — and that log reached no reader.
+
+★★★ **So the lane went red, then stopped being triggered, and therefore disappeared from the guard
+written to stop precisely that.** [[E6-F010]] and GO-BOOK §1.9.8 record the previous instance of
+this class; this is the same class reproduced one layer inside its own detector.
+
+### Repair — both halves, in the filing commit
+
+1. **The lane.** `docker-compose.d1.yml` now defaults to
+   `quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z` (MinIO's own registry, dated tag, verified
+   200/multi-arch above). `scripts/check-d1-compose.test.mjs`'s fixture is aligned.
+2. **The blind spot.** `evaluateCoverageStream` gains an `unread_failure` arm
+   (`unreadFailure` in `scripts/lib/workflow-verdict.mjs`): when nothing is owed, it stays silent
+   **unless** the stream's newest completed run did not succeed. It cannot manufacture an
+   incident nobody can close — it speaks only when a run really completed and really failed, so
+   "fix or re-run the lane" is always the repair. Raising `COVERAGE_WINDOW` was considered and
+   **rejected**: it moves the cliff rather than removing it, and the cliff is what hides the red.
+
+★ **The arm requires a NON-EMPTY commit history, and that is load-bearing.** An unfiltered lane
+matches every commit (`commitMatchesPaths(c, []) === true`), so the only way to reach the arm with
+no `paths:` filter is an empty `commits` list — which the real collector never produces. Firing on
+`[]` would make coverage mode report a dead SCHEDULE, which is cadence's job and is the §5.2
+separation the suite pins (*"coverage cannot see a dead schedule"*). That test caught this during
+the build and the arm was narrowed rather than the test relaxed.
+
+**Positive control + mutant** both ship in `scripts/lib/__tests__/workflow-verdict.test.mjs`: the
+control asserts the measured 2026-09-17 shape now reports `unread_failure`, and the mutant restores
+the bare `return null` and observes the silence. Suite 44/44.
+
+### Not claimed
+
+The repair makes the lane PULLABLE and the red REPORTABLE. It does **not** assert that
+`d1-merge-train` is green — the lane has not run on a fixed compose file at filing time, and its
+next run is the evidence. If it reds for a different reason, that is a new finding, not this one.
+

@@ -182,6 +182,82 @@ test("★★ §5.2 coverage — a QUIET branch reports NOTHING (the half that st
   assert.equal(f, null, "no matching commit means nothing was owed — reporting it would be unclosable");
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// E6-F021 — the quiet path must stay silent about what is OWED without going
+// silent about what was already ANSWERED red.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("★★★ E6-F021 POSITIVE CONTROL — a stranded red verdict past the window IS reported", () => {
+  // The measured 2026-09-20 shape: d1-merge-train concluded `failure` on 2026-09-17 and the
+  // newest `docker/**` commit was 105 commits back, past COVERAGE_WINDOW=40. Before this arm
+  // the evaluator returned null and issue #358 listed the lane nowhere.
+  const f = evaluateCoverageStream({
+    stream: coverageStream,
+    commits: [
+      { sha: "4df71dada", files: ["docs/replatform/GO-BOOK.md"] },
+      { sha: "ddccb65cc", files: ["scripts/finding-ownership.json"] },
+    ],
+    runs: [{ headSha: "47d8f98ed", status: "completed", conclusion: "failure", url: "https://x/35238458091" }],
+    paths: ["docker/**"],
+  });
+  assert.equal(f?.code, "unread_failure", "a red nobody can re-trigger is the thing this guard exists for");
+  assert.equal(f.sha, "47d8f98ed");
+  assert.equal(f.conclusion, "failure");
+  assert.match(f.detail, /nothing re-triggers it/);
+});
+
+test("★★ E6-F021 — quiet AND green stays silent (the §5.2 half this must not break)", () => {
+  assert.equal(
+    evaluateCoverageStream({
+      stream: coverageStream,
+      commits: [{ sha: "bbbbbbbb1", files: ["docs/replatform/GO-BOOK.md"] }],
+      runs: [{ headSha: "50380b6f7", status: "completed", conclusion: "success" }],
+      paths: ["docker/**"],
+    }),
+    null,
+    "a healthy lane with nothing owed reports nothing",
+  );
+});
+
+test("★★ E6-F021 — quiet with NO completed run stays silent (never an unclosable incident)", () => {
+  assert.equal(
+    evaluateCoverageStream({
+      stream: coverageStream,
+      commits: [{ sha: "bbbbbbbb1", files: ["server/src/x.ts"] }],
+      runs: [{ headSha: "bbbbbbbb1", status: "in_progress", conclusion: null }],
+      paths: ["docker/**"],
+    }),
+    null,
+    "an in-progress run is not yet a verdict, and a lane that never ran owes nothing",
+  );
+});
+
+test("★★ E6-F021 — a workflow ABSENT from the branch still reports nothing, red runs or not", () => {
+  assert.equal(
+    evaluateCoverageStream({
+      stream: coverageStream,
+      commits: [{ sha: "bbbbbbbb1", files: ["docs/x.md"] }],
+      runs: [{ headSha: "old", status: "completed", conclusion: "failure" }],
+      paths: ["docker/**"],
+      workflowPresentOnBranch: false,
+    }),
+    null,
+    "the presence arm returns BEFORE the unread-failure arm, and must keep doing so",
+  );
+});
+
+test("★ MUTANT (E6-F021): restoring the bare `return null` hides the stranded red", () => {
+  const input = {
+    stream: coverageStream,
+    commits: [{ sha: "4df71dada", files: ["docs/replatform/GO-BOOK.md"] }],
+    runs: [{ headSha: "47d8f98ed", status: "completed", conclusion: "failure" }],
+    paths: ["docker/**"],
+  };
+  const mutant = ({ commits, paths }) => (commits.findIndex((c) => commitMatchesPaths(c, paths)) === -1 ? null : "unreachable");
+  assert.equal(mutant(input), null, "the mutant — the code as it shipped — is silent…");
+  assert.equal(evaluateCoverageStream(input)?.code, "unread_failure", "…and the real evaluator speaks. This case is the difference.");
+});
+
 test("§5.2 coverage — a branch that does not exist is silent", () => {
   assert.equal(evaluateCoverageStream({ stream: coverageStream, commits: null, runs: [], paths: ["docker/**"] }), null);
 });

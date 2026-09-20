@@ -127,7 +127,10 @@ async function collectStreamData(request, { owner, repo }, stream, info, log) {
       return { runs, commits, workflowPresentOnBranch: true };
     }
   }
-  log(`  ${streamKey(stream)}: no paths-matching commit in the last ${heads.length} — silent (window exhausted)`);
+  // E6-F021 — NOT unconditionally silent any more. Nothing is OWED here, but the evaluator
+  // still reports `unread_failure` when the stream's newest completed run did not succeed:
+  // a stranded red is exactly what this window used to hide. See `unreadFailure` in the lib.
+  log(`  ${streamKey(stream)}: no paths-matching commit in the last ${heads.length} (window exhausted) — nothing owed; a stranded red verdict is still reported`);
   return { runs, commits, workflowPresentOnBranch: true };
 }
 
