@@ -525,6 +525,48 @@ Launch A, B, C, D, E, F in parallel; U8 last. **Conflict flags:** lanes A, D and
 are append-heavy and conflict readily, so those lanes serialise their register edits even when their
 code edits do not. Merges serialise regardless; only the work parallelises.
 
+## 11. M0 exit-state assessment (2026-09-21)
+
+**Founder decision D7: the handoff is HELD.** No `M0` handoff is filed, and none should be until the
+rows below are green. A `Decision: pass` written today would be the self-certification
+`artifact-policy.md` forbids — the eight records this milestone produced are all at `gate_review`
+and their author may not approve them.
+
+| # | Criterion | State | What remains, and who owns it |
+|---|---|---|---|
+| 1 | lanes green or quarantined with an owner | **blocked on merge** | `keyed-e2b-unit-d` is **fixed and proven** (run `35528929017`, 6/6). `cross-platform-weekly` has had three causes removed; its verifying dispatch was still in flight at this commit. **Neither clears the watched stream until this PR merges** — the consumer watches `@docs/replatform-program`, and only a push-triggered run there supersedes a stranded verdict. |
+| 2 | the `DEP-013` consumer reports zero unowned findings | **blocked on merge** | Same mechanism as 1. Re-run the consumer after merge; it should report **0** where it reported 2. |
+| 3 | disposition-A record corrections landed | **DONE** | All 20 audited (`qa/2026-09-21-disposition-a-audit.md`); four epic README claims narrowed; `E5-F004` and `E6-F016` filed and declared. |
+| 4 | a successor filed for `E7-F007` | **DONE** | `MIG-011` filed, node + design on disk, finding re-pointed. Proven by positive control: reverting the re-point reds the guard with `owner_ticket_already_complete` + `successor_missing`. |
+| 5 | `MIG-010`'s result committed **and approved** | **committed, NOT approved** | `MIG-010-result.md` at `gate_review`. **An independent reviewer owns the approval.** |
+| 6 | approved, candidate-current result for every disposition-B ticket | **committed, NOT approved** | Six `-B1-result.md` records, all at `gate_review`. Same reviewer act. |
+
+★★★ **Two of the six are gated on an act this session structurally cannot perform**, and that is
+the correct outcome rather than a shortfall to work around. `artifact-policy.md` names implementer,
+independent reviewer and Integration Gate Owner as **separate roles**, and says an implementation
+agent's self-certification cannot set `complete`.
+
+★ **Criteria 1 and 2 are gated on a merge, not on more work.** The fix for each is committed and,
+for `keyed-e2b-unit-d`, proven on a real keyed run. What is missing is a push to the watched branch,
+which is what a merge is.
+
+### The order the remaining steps must happen in
+
+```
+merge this PR ──► keyed-e2b-unit-d re-fires on the watched branch (paths: match)
+                  cross-platform-weekly re-fires on its schedule, or is dispatched
+                            │
+                            ▼
+          re-run the DEP-013 consumer ──► criteria 1 + 2 clear
+                            │
+   independent reviewer approves the 8 gate_review records ──► criteria 5 + 6 clear
+                            │
+                            ▼
+              THEN the gate owner files milestones/M0/handoffs/...-a1.md
+```
+
+★ The handoff is the **last** act, not the first. It pins records that must already say `complete`.
+
 ## GSTACK REVIEW REPORT
 
 | Review | Trigger | Why | Runs | Status | Findings |
