@@ -1,5 +1,15 @@
 # HANDOFF — post-E7-1 (2026-09-18): the sink-cutover wave
 
+> ★★★ **NOT THE ONLY "CURRENT" HANDOFF — READ THIS FIRST.** A SECOND forward-work handoff,
+> [`HANDOFF-2026-09-18-next-wave.md`](./HANDOFF-2026-09-18-next-wave.md), was written **nine hours
+> after** this one on the same day. Neither referenced the other, and they prescribe different next
+> waves: this file leads with the Sprint-6 sink cutover, that one with a four-track map led by
+> MIG-006 and the Unit C tool topology. Measured 2026-09-20: MIG-006's units U1/U2/U3/U5 and Unit C
+> slices 1–4 all shipped, i.e. **the later handoff's tracks are the ones that were executed.** The
+> forward-work base is now the adopted `epic-regrooming/` proposal (founder decision D-1,
+> 2026-09-20); both handoffs are historical. The supersession claim below is true of the three files
+> it names and was never true of the later handoff, which did not yet exist.
+>
 > **This supersedes `HANDOFF-wave-4.md`, `HANDOFF-next-wave.md`, and `HANDOFF-wave-3-4.md` as the current
 > forward-work authority.** It is written to be read cold by a new session with zero prior context. Ground
 > truth for status is this file + `GO-BOOK.md §1` + each epic's `findings.md`; the epic `README.md` status

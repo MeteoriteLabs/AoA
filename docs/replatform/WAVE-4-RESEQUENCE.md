@@ -1,5 +1,13 @@
 # Wave 4 — re-sequenced on the walking skeleton's verified chain
 
+> ★★★ **HISTORICAL — TERRAIN FROM 2026-08-23, ~688 COMMITS BEHIND HEAD.** Two things to know
+> before citing it. (1) It says it *"supersedes the ordering in `WAVE-4-EXECUTION-PLAN.md`"*,
+> but that file is **NEWER** (2026-08-24) and carries no such banner — the supersession was
+> asserted and never enacted. (2) `qa/2026-08-28-worker-dispatch-chain-reconciled.md`
+> independently re-derived this chain and found **four of seven links flipped**; §3.3 and §3.4
+> are named there as stale. Its §5 claim that *"21 ticket ids have no ticket file"* and that
+> *"E9 has no `tickets/` directory"* is false at HEAD: E8 has 29 ticket files and E9 has 20.
+
 **Status: TERRAIN. No design, no code.** Supersedes the ordering in
 [`WAVE-4-EXECUTION-PLAN.md`](./WAVE-4-EXECUTION-PLAN.md), which was written before the spike and does
 not reference it. Produced by a 27-agent probe of six chain links, every blocker-severity claim put

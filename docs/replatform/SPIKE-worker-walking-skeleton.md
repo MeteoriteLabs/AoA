@@ -1,5 +1,11 @@
 # SPIKE — can one real worker daemon receive and execute one real job?
 
+> ★★★ **HISTORICAL — the spike ran from `43f886bc9` (2026-08-23), which is 668 commits behind
+> HEAD.** Its question has since been answered far past this scope: a full distributed E2B
+> coding run was proven end to end on 2026-09-18 (`verify-e7-1-distributed-run`, `ok=true`,
+> EXIT 0). Kept for the chain it mapped; do not cite its code shapes or its "not built yet"
+> statements, which the E4/E6/E7 tickets have long overtaken.
+
 **Status: SPIKE. Throwaway by construction.** No code produced here may merge as production.
 Started from `docs/replatform-program` at `43f886bc9`, run locally against the D1 compose stack.
 

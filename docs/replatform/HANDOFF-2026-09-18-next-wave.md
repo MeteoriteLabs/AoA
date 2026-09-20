@@ -1,5 +1,12 @@
 # HANDOFF — Next Wave: "Make the proven engine USEFUL"
 
+> ★★★ **HISTORICAL — its tracks were executed, and it had a same-day sibling it never named.**
+> [`HANDOFF-2026-09-18-post-e7-1-sink-cutover.md`](./HANDOFF-2026-09-18-post-e7-1-sink-cutover.md)
+> was written nine hours earlier, claims to be *"the current forward-work authority"*, and
+> prescribes a different next wave; neither file referenced the other. Measured 2026-09-20: Track 1
+> (MIG-006 seam) and Track 2 (Unit C tool surface) both **shipped**. The forward-work base is now
+> the adopted `epic-regrooming/` proposal (founder decision D-1, 2026-09-20).
+
 **Written 2026-09-18, measured at HEAD `9ec70ba9a` (on `docs/replatform-program`).**
 Grounded in a 5-agent truth-code audit of every epic (each claim verified against code, not the
 records — the records LAG the code badly; §7 lists the stale claims). Supersedes the GO-BOOK's

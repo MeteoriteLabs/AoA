@@ -1,5 +1,12 @@
 # Wave 4 — consolidated execution plan (Lane A)
 
+> ★★★ **HISTORICAL — 2026-08-24, ~688 COMMITS BEHIND HEAD, AND SELF-CONTRADICTING.** Its own
+> later-added notes refute its body in at least three places (the §4.2 *"largest single risk
+> in the plan"* is answered at §1 with *"does not exist"*; the DAT-008 slice 6 and slice 7 rows
+> are contradicted by the same file's own summary). The blocker banner at the top of this file
+> is `WAVE-4-BLOCKER-worker-session-lifetime.md`, whose `E4-F007` is **resolved** at HEAD. Read
+> it as a record of one day's plan, not as sequencing.
+
 > ### ★★★ BLOCKER — a worker cannot hold authority for more than 15 minutes
 >
 > Verified in code while mapping slice 2b: the enrollment **code route lives 10 minutes**, a

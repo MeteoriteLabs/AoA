@@ -614,6 +614,12 @@ overturned.** The measurement in §1 stands either way.
 > - [ ] DE-21 branches 1–5 **and `:376`'s `!key` arm** are re-recorded against **Decision 3**.
 >
 > Signed: ____________________  Date: ____________
+>
+> ★ **THE BLOCK ABOVE IS THE ORIGINAL REQUEST FORM, PRESERVED — NOT A LIVE SIGNATURE LINE.**
+> This paper was **RULED 2026-09-09** (option (a2) + partial CHECK) and **SHIPPED** (migration
+> `0274`); see the `**Status:**` line at the head. The unticked boxes and blank signature are
+> provenance. A grep for an unticked box or `Signed: ___` will misclassify this paper as open;
+> the head status is the authority.
 
 **No finding status is changed by this document.** `E0-F010` and `E0-F013` remain `open`; no
 `deliveryStatus` moves; nothing is enrolled in `scripts/gate-clause-wiring.json`.
