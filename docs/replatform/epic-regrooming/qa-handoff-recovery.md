@@ -183,8 +183,16 @@ Reopening creates new findings, results where needed, QA attempts, and handoffs.
 5. **Run `M1-D1-SPINE`, then `M1a-D2-MECHANISM`, on that same frozen candidate**, explicitly
    retaining the DE-08/H-06 conflict. ★ `M1a-D2-MECHANISM` is satisfied by a record reporting
    `capabilityProven=false`; that is the gate’s defining property, not a waiver.
-6. **Issue the `M1a` milestone handoff** — non-promoting, and naming both campaign records above.
+6. **Commit the passing E5 a2 audit as a consumer of the two `M1a` campaign records, THEN issue
+   the `M1a` milestone handoff** — non-promoting, and naming both campaign records above.
    `M1a` is complete here. Per-epic completion handoffs still wait for each epic’s normative gate.
+
+   ★★★ **THE AUDIT COMES BEFORE THE HANDOFF, and an earlier revision issued the handoff at this
+   step while first committing the audit at step 9 — after `M1b`'s campaigns.** *Corrected
+   2026-09-20 (ninth round).* Exit criterion 7 requires a *“committed passing E5 a2 audit”* for
+   **both** milestones, so `M1a` was being declared complete before producing evidence its own
+   exit criteria require. A milestone cannot be complete at a step that precedes one of its
+   required records.
 7. **Then** finish E7 tools/workspace/output capability (`CLI-008` Unit F links, `DAT-009` 3c–3e)
    and freeze the `M1b` candidate.
 8. **Run ALL THREE gates on the `M1b` candidate** — `M1-D1-SPINE`, `M1a-D2-MECHANISM`, then
@@ -197,6 +205,14 @@ Reopening creates new findings, results where needed, QA attempts, and handoffs.
    **one exact candidate**, and step 7 freezes a NEW one. Reusing `M1a`'s spine and mechanism
    records would attest the older revision, so the procedure as written could not produce a valid
    `M1b` handoff at all. `M1a` is a checkpoint on the way, not a set of credits `M1b` spends.
-9. Commit the passing E5 a2 audit as a consumer of the campaign records, then issue the **`M1b`**
-   milestone handoff — a second handoff, not the same one.
+9. **Commit a HIGHER, SUPERSEDING audit attempt** — `a3` or later — as a consumer of the `M1b`
+   campaign records, then issue the **`M1b`** milestone handoff: a second handoff, not the same
+   one.
+
+   ★★★ **`M1b` MAY NOT REUSE `a2`.** *Corrected 2026-09-20 (ninth round).* `a2` is an immutable
+   record attesting the `M1a` candidate; step 7 freezes a **different** candidate, and an audit
+   attests one exact revision exactly as a gate record does. Reusing it would make `M1b`'s
+   criterion 7 evidence point at the older tree — the same defect as carrying `M1a`'s gate
+   records forward, which step 8 already forbids. A correction or changed candidate creates a
+   new attempt linked by `Supersedes`, never an edit.
 10. Regroom E8, E9, the later E10 lanes, and E11 as later milestones without losing their current slices or blockers.
