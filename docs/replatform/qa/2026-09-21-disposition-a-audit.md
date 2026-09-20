@@ -51,7 +51,7 @@ audit both correct **forward**, by narrowing the claim and filing a finding.
 | 15 | `DAT-008` | E5 | slice 6 mint-side only; slice 7 deferred | *"DAT-001 through DAT-011 shipped"* | **narrowed** — `DAT-008-A1`, `E5-F004` |
 | 16 | `DEP-009` | E6 | `complete + CI-GREEN`, two-replica boot + `e6f-11` 6/6 on `d1-merge-train` | range | **accurate** ★ |
 | 17 | `DEP-010` | E6 | *"the provider seam, **wired and provably inert**"* | range | **narrowed** |
-| 18 | `DEP-011` | E6 | **design file only — NO result doc** | range | **FALSE** — `E6-F016` |
+| 18 | `DEP-011` | E6 | **design file only — NO result doc** | range | **FALSE** — `E6-F022` |
 | 19 | `DEP-012` | E6 | five unit/wave results (Unit A, B1, B2, β1, β2) | range | **accurate** |
 | 20 | `MIG-008` | E10 | `complete + review-fixed (no-key core green)` | epic README says `backlog` | **under-claimed** — see §5 |
 
@@ -67,7 +67,7 @@ Nothing in E6's README claims otherwise, so no README edit is owed.
 | `epics/E3-job-control/README.md` | *"all tickets JOB-001 through JOB-015 shipped"* → shipped **to the extent their ticket ledgers support** |
 | `epics/E4-worker-daemon/README.md` | same narrowing, **naming** `WRK-008` (control-plane half), `WRK-010` (slice 1, server-side only), `WRK-014` (inert), `WRK-015` (Part 1) |
 | `epics/E6-deployment-test-harness/README.md` | same narrowing, and **`DEP-011` explicitly excluded** from the shipped range; `DEP-010` noted as provably inert |
-| `epics/E6-deployment-test-harness/findings.md` | **`E6-F016`** — the range claim asserted a shipment with no ledger |
+| `epics/E6-deployment-test-harness/findings.md` | **`E6-F022`** — the range claim asserted a shipment with no ledger |
 | `epics/E5-workspaces-secrets/README.md`, `findings.md` | `DAT-008-A1` + **`E5-F004`** (landed in the same unit) |
 
 ★ **The word "all" is what did the damage**, and it is removed from three sentences rather than
@@ -91,7 +91,7 @@ larger correction with its own owner.
 
 ## 6. What criterion 3 now rests on
 
-Four epic README sentences narrowed, two findings filed and declared (`E5-F004`, `E6-F016`), and a
+Four epic README sentences narrowed, two findings filed and declared (`E5-F004`, `E6-F022`), and a
 per-ticket verdict recorded for all twenty so a later reader can check the reasoning rather than
 inherit it. Fourteen of the twenty needed no correction, and this record says which fourteen and
 why — an audit that only lists what it changed cannot be distinguished from one that stopped early.

@@ -1528,7 +1528,7 @@ next run is the evidence. If it reds for a different reason, that is a new findi
 
 ---
 
-## E6-F016 - the epic's ticket-range claim asserted DEP-011 shipped, and DEP-011 has no result doc
+## E6-F022 - the epic's ticket-range claim asserted DEP-011 shipped, and DEP-011 has no result doc
 
 **Status:** open
 **Severity:** LOW (record-truth; no code claim rests on it today)
