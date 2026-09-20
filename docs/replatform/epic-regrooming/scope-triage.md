@@ -268,10 +268,15 @@ successor filed for `E7-F007` so `MIG-010` can carry a result (**D-10**); **and 
 candidate-current result for every disposition-B ticket — `TRACK-001`, `TRACK-002`, `DAT-011`,
 `DEP-008`, `WRK-017`, and `MIG-009`'s evidence-currency record** (its trigger build is `M1a`'s).
 
-★ That enumeration is B in full: B has **eight** members, and the other two are the clauses
-immediately before it — `DEP-013` (the consumer) and `MIG-010` (which carries no result until the
-`E7-F007` successor is filed, which is D-10's clause). None is exempt; two are simply named by
-their own condition rather than twice.
+★ That enumeration is B in full: B has **eight** members. `DEP-013` is named by its own clause
+above (the consumer). **`MIG-010` owes an approved result too, and M0 does not exit without it** —
+★★★ *corrected 2026-09-20 (eighth round): an earlier revision treated the D-10 clause as
+discharging `MIG-010`. It does not. Filing the `E7-F007` successor only removes the ownership
+deadlock **so that** `MIG-010` CAN receive a result; it neither creates nor approves one. As
+written, M0 could exit with a disposition-B ticket still lacking canonical evidence, and the `M1a`
+required-result set does not pick it up either — so the result would have been owed by nobody.*
+The order is therefore: file the successor, **then** commit and approve `MIG-010`'s result, both
+before M0 exits. None of the eight is exempt.
 
 ★★★ **THE B CLAUSE WAS MISSING, AND WITHOUT IT M0 COULD PASS WITHOUT ITS OWN DECLARED SCOPE.**
 *Corrected 2026-09-20 (sixth round).* M0's scope is *“Disposition **B**, plus the record-truth half
@@ -308,7 +313,16 @@ provably not reached, and rollback is rehearsed. `E3-5-product-approval`, `E3-17
 ### `M3` — workload breadth
 
 **Scope.** E8 browser (**`BRW-003c`**, `BRW-004`, `BRW-005`, `BRW-006`) and the E9 service remainder
-(`SVC-003`/`005`/`007` residuals, `SVC-004`, `SVC-006`).
+(`SVC-003`/`005`/`007` residuals, `SVC-004`, `SVC-006`, **`SVC-009`**).
+
+★★★ **`SVC-009` WAS SCHEDULED BY NOTHING, and M3 could not have reached its own exit without it.**
+*Added 2026-09-20 (eighth round), verified at source and independently by a mechanical
+ticket-coverage sweep of this document.* It sits outside the 50-ticket roster, so no disposition
+carries it, and no milestone named it — yet `epic-regrooming/epics/E9.md` requires *“`SVC-009`
+worker-side renewal-capability consumption and the E2B TTL extension”* **before a service run beyond
+240 seconds can be proven**, and M3 exits on the full **D4** campaign, which is 72 hours. An
+enumerated scope that omits it sends the planner to discover unscheduled work at the exit gate.
+`SVC-009` and its duration follow-up are M3's.
 
 ★★★ **`BRW-003c` WAS SCHEDULED BY NO MILESTONE AT ALL, and that is why it is named here.**
 *Added 2026-09-20 (seventh round), verified at source.* `BRW-003`'s retention slice is
@@ -520,9 +534,14 @@ Ticket shipment or an earlier mechanism run cannot substitute for items 2–9. P
 > mid-milestone.
 >
 > **`M1b` required result set:** `CLI-008-F1a`, `CLI-008-F3`, `CLI-008-F4`, `CLI-008-F5`,
-> `CLI-008-F6`, `CLI-008-C5`, `DAT-009-3c`, `DAT-009-3d`, `DAT-009-3e`. ★ `CLI-008-F1b` is **design-only — it is not in either
-> required set as a build item**, and no build may be assigned from it. It does still commit its own
-> `CLI-008-F1b-result.md` recording the design review, which is what the E7 plan requires of it.
+> `CLI-008-F6`, `CLI-008-C5`, `DAT-009-3c`, `DAT-009-3d`, `DAT-009-3e`. ★★★ **`CLI-008-F1b`'s result IS in the `M1b` set** — it is
+> **design-only as to BUILD** (no build may be assigned from it), but its
+> `CLI-008-F1b-result.md` is required and must be **approved before `M1b` passes**.
+> *Corrected 2026-09-20 (eighth round): an earlier revision listed F1b as “not in either set”, which
+> read as exempting its record. But the E7 plan requires that result by name, exit criterion 4
+> depends on F1b, and `F6` cannot proceed without its founder ruling — so `M1b` could have passed on
+> an **unreviewed output-mechanism decision**, which is the one decision the milestone most needs
+> reviewed. “Design-only” limits what F1b may PRODUCE; it does not make its design review optional.*
 > ★ *Corrected 2026-09-20 (fifth round): this said F1b “produces a design, not a result” while the
 > E7 plan requires that record by name and requires committing it — an executor could not satisfy
 > both. Design-only constrains what F1b may PRODUCE AS WORK, not whether it records what it did.*
