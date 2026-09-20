@@ -418,7 +418,7 @@ conjunctive per-workload floors: ≥100 coding jobs, ≥50 browser journeys, ≥
 - **`DAT-009` / `DAT-010` / `DAT-011`** — provider-side artifact export under a worker-minted grant,
   control-plane-owned artifact retention, and tenant-free orphan sweep. *(`DAT-009` is now **M** and
   `DAT-011` **B**; the retention expansion beyond M1 stays retained.)*;
-- **`WRK-012`** — the self-model refresh channel for a long-lived worker;
+- **`WRK-012`** — the self-model refresh channel for a long-lived worker. ★★★ **It is CONDITIONAL, not optional, and its trigger is recorded here so retention cannot quietly become abandonment.** *Added eleventh round:* `WRK-012-design.md` states when it becomes **REQUIRED** — long-lived workers with operational mid-life constraint rotation. No milestone blocks on it today and the files do not establish which one should, so **naming that milestone is a programme-owner decision**; until it is made, this trigger is the thing to watch, not the ticket's absence from a scope list;
 - **additional coding adapters beyond the approved first-milestone set** — no ticket exists for
   these, which is why they are named here explicitly rather than left to an implicit disposition;
 - **threat controls recorded `partial` or `not-delivered`** other than DE-08, which has its own
@@ -482,7 +482,7 @@ The first milestone passes only when one exact candidate has:
 4. useful-agent capability evidence: the sandboxed adapter can use the approved tools/workspace and return attributable reviewable output; a mechanism-only run with `capabilityProven=false` cannot satisfy this criterion;
 5. explicit observation of the dormant-egress residual and credential-taxonomy checks, without an egress-enforcement claim;
 6. zero unresolved milestone-blocking findings and a recorded rollback rehearsal for the enabled path;
-7. a committed passing E5 a2 audit for that exact candidate, consuming both M1 campaign records and retaining every full-gate non-certification;
+7. a committed passing **E5 audit attempt for that exact candidate** — `a2` for `M1a`, and `a3` or later for `M1b` — consuming that milestone's campaign records and retaining every full-gate non-certification. ★★★ *Corrected eleventh round: this said “a2 audit” while being allocated to **both** milestones, and `M1b` freezes a different candidate. An audit attests one exact revision exactly as a gate record does, so `M1b` reusing `a2` would point its criterion-7 evidence at the older tree — the defect the gate-record rule already forbids. A correction or changed candidate creates a new attempt linked by `Supersedes`, never an edit.*;
 8. committed `Result: pass` QA records for **each partial gate that milestone names** on the exact candidate (★ *was “both named partial gates” — phrased by count, it silently excluded the third gate; phrased by the naming relation it cannot go stale when a gate is added*); and
 9. a later committed, explicitly non-epic-completing `Decision: pass` milestone handoff by the named owner for the same candidate.
 
@@ -600,7 +600,7 @@ Nineteen disputes, each verified at `4df71dada` against source rather than inher
   would orphan ten findings in a single commit.**
 
   The remedy is the **link-scoped split** the E7 implementation plan now carries: file the Unit F
-  link tickets as real successors, re-point the ten findings onto them, and **never create a parent
+  link tickets as real successors, re-point the ten findings onto them, and ★ **create no parent** — ★★★ *corrected eleventh round: this remedy still said “never” after the restriction above was made conditional. The bar is “**while `CLI-008` still owns open findings**”, and none is required for M1; the E7 plan says a result becomes honest once the findings are re-pointed. An operative remedy that stays absolute silently overrides the corrected rule it implements.* Superseded wording: **never create a parent
   `CLI-008` result doc**. That is stronger than D-10's single-successor remedy because it also
   breaks the ticket into buildable units — but the constraint is the same, so record it the same
   way: `CLI-008` is a ticket that **cannot be marked complete as a unit**.
