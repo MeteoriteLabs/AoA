@@ -108,11 +108,7 @@ export type SourceExecutorKind =
   | "worker"
   | "sandbox"
   | "browser_worker"
-  // E9-F003 (founder ruling 2026-09-20): a `service_reconcile` job's executor principal
-  // deliberately names the SERVICE, not an instance. The kind was the mislabel
-  // `service_instance`; it is renamed here so the persisted `executor_principal_kind` and
-  // the lease envelope's `executionPrincipal` stop naming an entity the id is not.
-  | "service";
+  | "service"; // E9-F003 (2026-09-20 ruling): renamed from the mislabel `service_instance`; a `service_reconcile` executor principal deliberately names the SERVICE, not an instance.
 
 export interface SourceExecutorAuthority {
   kind: SourceExecutorKind;
@@ -2098,10 +2094,8 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
   // ★★★ THE WORKER'S PAYLOAD IS A CLAIM, NEVER AN AUTHORITY, AND THIS IS THE WHOLE FENCE.
   // `serviceReconcileSourceSchema` carries no `serviceInstanceId` (adding it is a Protocol
   // Custodian STOP, SVC-002-design §10.2), so the lease envelope's `executionPrincipal`
-  // names the SERVICE — under the kind `service` since E9-F003's rename (it was the mislabel
-  // `service_instance`) — while the workload carries a different instance id. Even with the
-  // honest kind the `principalId` is the SERVICE id, not the instance, so this stands: a
-  // projection that trusted `payload.serviceInstanceId`
+  // names the SERVICE under the kind `service` (E9-F003 renamed it from `service_instance`)
+  // while the workload carries a different instance id. A projection that trusted `payload.serviceInstanceId`
   // would promote that unauthorized value into a status write on any row in the tenant.
   // So the AUTHORITY is `service_instances.job_id`/`.attempt_id`, which SVC-002's reconciler
   // wrote inside its own transaction ("without this the instance row is UNATTRIBUTABLE and
@@ -2778,11 +2772,7 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
           eq(services.desiredState, "running"),
         ))
         .limit(1);
-      // E9-F003 — the id is a `services.id`, so the kind names the SERVICE honestly (was the
-      // mislabel `service_instance`). `job-leasing.ts`'s `principal()` maps both to
-      // `principalType: "service"`, so the lease envelope is byte-identical; only the label
-      // becomes true.
-      return row ? { kind: "service", id: row.id } : null;
+      return row ? { kind: "service", id: row.id } : null; // E9-F003: services.id under the honest `service` kind (was `service_instance`; principal() maps both to `service`).
     },
 
     async lockServiceForReconcile(input) {
