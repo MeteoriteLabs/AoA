@@ -257,3 +257,44 @@ It builds neither half: the placement-side residual and slice 7 are unbuilt and 
 re-deriving the mint-side evidence is a non-goal because it is cited above.
 
 **Blocks gate:** no.
+
+---
+
+## E5-F005 - the late-exit runtime-service rollback case is a real-process RACE, and it resolves differently on Windows
+
+**Status:** open
+**Severity:** LOW (one test, on an advisory lane; no product claim rests on it)
+**Filed:** 2026-09-21 (M0 unit 2), measured on `cross-platform-weekly` run `35532248020`.
+
+**What.** `ensureRuntimeServicesForRun > rejects and rolls back the whole run batch when an earlier
+service exits during later readiness`
+(`server/src/__tests__/workspace-runtime.test.ts:1031`) spawns **real** `node -e` child processes
+and depends on their relative timing: a survivor service sleeps 700ms before listening, against a
+3s readiness timeout polled every 100ms. It then asserts the failure is specifically a
+`RuntimeServiceActivationFenceError`.
+
+OBSERVED on Windows: the rejection is a plain
+`Error: Failed to start runtime service "d..."` instead. The batch **is** rejected - the behaviour
+under test happens - but the race resolves down a different arm, so the type assertion fails.
+Green on macOS and on the required Linux lane.
+
+★★★ **NOT FIXED BY RAISING THE TIMEOUT, DELIBERATELY.** Widening the window until Windows
+wins the race would make the test pass without making it deterministic, and this repo has already
+paid for that lesson in the opposite direction: a probe asserting strict `<` on same-millisecond
+timestamps passed on Windows and failed on Linux, and the record of it says *"an assertion that
+holds only on slow hardware is a flake, not a check."* The same applies to one that holds only on
+fast hardware.
+
+★ **Nor is it fixed by skipping on Windows.** A skip would restore the green without changing
+what is known, and this lane has just finished paying for a green that hid its failures
+(`E6-F023`).
+
+### What a fix would be
+
+Make the ordering **injected rather than raced** - the test owns the child processes it spawns, so
+the survivor's listen moment and the earlier service's exit can be sequenced explicitly instead of
+being scheduled against a wall clock. Then the assertion tests the fence arm because the fence arm
+is the one the test arranged, on every platform.
+
+**Blocks gate:** no. It is one advisory test, and the batch-rejection behaviour it exercises is
+observed on all three platforms - only the error TYPE differs.
