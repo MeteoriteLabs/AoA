@@ -21,6 +21,7 @@ import {
   TenantAdmissionDeniedError,
 } from "./tenant-admission.js";
 import { attemptReadyOutbox } from "./job-outbox.js";
+import type { PreparedActivityEvent } from "./activity-log.js";
 // BRW-001 — per-workload-type input validation. The registry declares a slot for every
 // frozen workload type but ENFORCES only the ones an epic owns; a `not_enforced` slot
 // returns the caller's input byte-identically, so importing this changes nothing for the
@@ -137,6 +138,10 @@ export async function submitJobWithinTenant(
   // (rolled-back) tenant transaction closes. Optional: a caller that does not thread it
   // gets today's behaviour (the refusal still denies; it just records no row on that path).
   denialSink?: AdmissionDenialSink,
+  // E9-F010 — a NEW submission records a durable `job.submitted` activity_log row INSIDE this
+  // same tenant transaction; the prepared event is handed back through this sink for the caller
+  // to publish AFTER commit. Optional so a caller that does not thread it keeps today's behaviour.
+  auditSink?: { event: PreparedActivityEvent | null },
 ): Promise<SubmitJobResponse> {
   const sourceId = sourceIdentity(input.command.source);
   // `commandDigest` hashes the RAW command, deliberately. Idempotent replay
@@ -388,6 +393,28 @@ export async function submitJobWithinTenant(
           availableAt: now,
           createdAt: now,
         }));
+        // E9-F010 — durable audit of a NEW submission, atomic with the job insert. A replay
+        // (replayed:true, above) mutated nothing new; its winning transaction wrote this row.
+        if (tx && auditSink) {
+          // E9-F010 — DYNAMIC import so this module's STATIC graph stays logger-free
+          // (job-control-audit -> activity-log -> live-events reaches middleware/logger.js; a static
+          // import would bind the logger to the wrong sink before AOA_LOG_DIR is set — the same reason
+          // `drainAdmissionDenial` is imported dynamically below). Loaded at runtime, post-setup.
+          const { recordJobSubmitActivity, jobActorTypeForPrincipalKind } = await import(
+            "./job-control-audit.js"
+          );
+          auditSink.event = await recordJobSubmitActivity(tx, {
+            actor: {
+              actorType: jobActorTypeForPrincipalKind(input.principal.kind),
+              actorId: input.principal.id,
+            },
+            companyId: input.companyId,
+            organizationId: input.organizationId,
+            jobId: job.id,
+            attemptId: attempt.id,
+            sourceKind: input.command.source.kind,
+          });
+        }
         return { jobId: job.id, attemptId: attempt.id, status: "queued", replayed: false };
   }
 }
@@ -442,10 +469,17 @@ export function jobSubmissionService(appDb: Db) {
       // the row must be written outside it. The drain is a no-op when no refusal was
       // captured (a success, or a non-capacity failure), and never throws.
       const denialSink: AdmissionDenialSink = { intent: null };
+      const auditSink: { event: PreparedActivityEvent | null } = { event: null };
       try {
-        return await runInTenant(appDb, input.organizationId, (repos, tx) =>
-          submitJobWithinTenant(repos, input, tx, denialSink),
+        const response = await runInTenant(appDb, input.organizationId, (repos, tx) =>
+          submitJobWithinTenant(repos, input, tx, denialSink, auditSink),
         );
+        // E9-F010 — publish the durable submission audit AFTER commit (best-effort feed poke).
+        if (auditSink.event) {
+          const { publishJobControlActivity } = await import("./job-control-audit.js");
+          publishJobControlActivity([auditSink.event]);
+        }
+        return response;
       } finally {
         if (denialSink.intent) {
           const { drainAdmissionDenial } = await import("./worker-admission-denial-audit.js");

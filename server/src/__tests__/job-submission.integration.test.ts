@@ -377,6 +377,30 @@ afterAll(async () => {
 describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")(
   "JOB-001 transactional job submission",
   () => {
+    it("writes a durable `job.submitted` audit row for a NEW submission, and none on replay (E9-F010)", async () => {
+      guard();
+      const body = command("audit-key");
+      const first = await request(app).post(route()).set(asUser(USER_A)).send(body);
+      expect(first.status).toBe(201);
+      const jobId = first.body.jobId as string;
+
+      const rows = await admin!<{
+        action: string; actorType: string; actorId: string; companyId: string; entityId: string;
+      }[]>`SELECT action, actor_type AS "actorType", actor_id AS "actorId", company_id AS "companyId",
+        entity_id AS "entityId" FROM activity_log
+        WHERE entity_id = ${jobId} AND action = 'job.submitted'`;
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        action: "job.submitted", actorType: "user", actorId: USER_A, companyId: COMPANY_A, entityId: jobId,
+      });
+
+      // A replay mutates nothing new: 200 and NO second audit row (the winning tx wrote the one row).
+      const replay = await request(app).post(route()).set(asUser(USER_A)).send(body);
+      expect(replay.status).toBe(200);
+      const after = await admin!`SELECT 1 FROM activity_log WHERE entity_id = ${jobId} AND action = 'job.submitted'`;
+      expect(after).toHaveLength(1);
+    }, 60_000);
+
     it("returns the original IDs for an identical replay and 409 for a changed digest", async () => {
       guard();
       const body = command("replay-key");

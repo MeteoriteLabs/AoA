@@ -39,12 +39,31 @@ import type { Db } from "@armyofagents/db";
 import type { ActivityActorType } from "@armyofagents/shared";
 import { insertActivity, publishActivity, type PreparedActivityEvent } from "./activity-log.js";
 
+/**
+ * Map an authenticated principal kind to its `ActivityActorType` for an audit row.
+ *
+ * ★ This MIRRORS the canonical `actorTypeForPrincipalKind` (worker-admission-denial-audit.ts) and
+ * MUST stay equal to it — pinned by the parity test in `job-control-audit.test.ts`. It is duplicated
+ * into THIS light, logger-free module on purpose: `job-submission.ts` deliberately keeps its STATIC
+ * import graph logger-free (a static import of the denial-audit chain pulls `middleware/logger.js` and
+ * binds the logger to the wrong sink before `AOA_LOG_DIR` is set — see job-submission.ts's own
+ * comment), so it cannot statically import the canonical copy.
+ */
+export function jobActorTypeForPrincipalKind(kind: string): ActivityActorType {
+  if (kind === "agent") return "agent";
+  if (kind === "user" || kind === "commander" || kind === "local_board") return "user";
+  return "system";
+}
+
 /** The `entity_type` every job-control audit row carries. */
 export const JOB_AUDIT_ENTITY_TYPE = "job";
 
 /** The audited action for an operator drain. Reuses the drain route's structured-log `action`
  *  so the durable row and the process log read the same string and cannot drift. */
 export const JOB_DRAIN_ACTION = "job.drain.requested";
+
+/** The audited action for a job submission (the pre-JOB-008 operator/agent submit route). */
+export const JOB_SUBMIT_ACTION = "job.submitted";
 
 /** WHO performed the control action. `actorId` is NOT NULL (`activity_log.actor_id` is NOT NULL);
  *  for drain the route's `assertOrgAdmin` guarantees a real board user id before the mutation. */
@@ -92,6 +111,44 @@ export async function recordJobDrainActivity(
       outcome: input.outcome,
       commandId: input.commandId,
       reason: input.reason,
+    },
+  });
+}
+
+export interface JobSubmitAuditInput {
+  actor: JobControlActor;
+  companyId: string;
+  organizationId: string;
+  jobId: string;
+  attemptId: string;
+  /** The submission source kind (e.g. `board`, `mcp`, `debrief_push`), for the audit detail. */
+  sourceKind: string;
+}
+
+/**
+ * Record that a NEW job was submitted — INSIDE the tenant transaction that inserted it. The
+ * caller records this ONLY on a fresh submission (`replayed: false`); an idempotent replay
+ * mutated nothing new and its winning transaction already wrote this row. Returns the prepared
+ * event for the caller to publish AFTER commit.
+ */
+export async function recordJobSubmitActivity(
+  tx: Db,
+  input: JobSubmitAuditInput,
+): Promise<PreparedActivityEvent> {
+  return insertActivity(tx, {
+    companyId: input.companyId,
+    actorType: input.actor.actorType,
+    actorId: input.actor.actorId,
+    action: JOB_SUBMIT_ACTION,
+    entityType: JOB_AUDIT_ENTITY_TYPE,
+    entityId: input.jobId,
+    agentId: null,
+    runId: null,
+    details: {
+      organizationId: input.organizationId,
+      jobId: input.jobId,
+      attemptId: input.attemptId,
+      sourceKind: input.sourceKind,
     },
   });
 }
