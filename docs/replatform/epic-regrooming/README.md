@@ -15,9 +15,10 @@ The proposal distinguishes four claims that must not collapse into one another:
 
 ## Current status, unchanged by this proposal
 
+- This proposal has been reconciled through `origin/docs/replatform-program` revision `3bdca18da3ca3051f740957311291fd1f8a950f3` (2026-09-20). That update advances E3 audit/census evidence, ships E7 CLI-008 Unit C behind a default-off flag, adds `SVC-009`, and supplies E9's first keyless leased/supervised service mechanism proof. None of those changes supplies a named M1 partial-gate record or a normative epic-completion QA/handoff.
 - The formal program index still records E0–E2 as `complete`, E3/E4/E6 as `in_progress`, and E5/E7–E11 as `backlog`.
 - Several epic-local READMEs differ: E3, E4, and E6 say `complete`; E5 says its tickets are complete while its exit gate is not met.
-- E7 has a September 18 real-E2B mechanism run with `ok=true` and `capabilityProven=false`. It is not useful-agent capability evidence and is not an E7 completion gate.
+- E7 has a September 18 real-E2B mechanism run with `ok=true` and `capabilityProven=false`. CLI-008 Unit C has since landed as live-but-inert plumbing: its dedicated flag defaults off, is enabled in no CI workflow, and still has no keyed live proof. Neither item is useful-agent capability evidence or an E7 completion gate.
 - The proposed one-control-plane/one-worker milestone cannot pass the current full D1 gate: [`../test-gates.md`](../test-gates.md) D1-00 requires at least two workers, and H-06 remains normative for D1–D6. This proposal therefore defines only the named `M1-D1-SPINE` and `M1-D2-CODING` partial gates; they cannot complete E6/E7 or substitute for full D1/D2.
 - This local proposal branch, and PR #323 as described by the current program records, have no fresh `ci-required` result attached by this proposal. No CI conclusion is inferred from historical prose.
 

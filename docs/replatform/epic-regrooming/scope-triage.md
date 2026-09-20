@@ -6,6 +6,8 @@
 
 Each ticket below appears exactly once in one of four proposed dispositions.
 
+This is the fixed set of 50 tickets identified when the numbered program graph had grown from 72 to 122 nodes. The 2026-09-20 origin refresh adds one later successor, `SVC-009`, making the current graph 123 nodes / 114 ticket IDs. `SVC-009` owns the still-open E9 effect-authority lifetime follow-up and belongs to E9's deferred service milestone; it is outside this historical 50-ticket accounting and does not enter the first milestone by implication.
+
 ### A. Promise-truth corrections — 27
 
 These items reconcile what the program promised with what the shipped or partially shipped mechanism actually proves. Preserve their implementation and evidence, but do not inherit an over-broad completion claim.
