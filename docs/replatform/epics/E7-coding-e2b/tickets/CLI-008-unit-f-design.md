@@ -357,6 +357,17 @@ the judge, and §4 is three failed attempts at exactly those.
 
 1. **No file to export.** Unit D's script runs `claude --print -` and lets stdout go nowhere in
    particular. There is no agreed absolute path inside the sandbox holding anything this run emitted.
+   ★ **SPLIT 2026-09-20 — link 1 has two halves, and the CAPTURE half is now BUILT.**
+   `captureSandboxEntries` (`packages/worker-daemon/src/snapshot/capture-sandbox.ts`) walks a
+   designated in-sandbox output root over an INJECTED `listDir`/`readFile` provider seam and
+   returns deterministic, plain `CapturedFileEntry[]` — the E2B-sourced analogue of DAT-001's
+   local-FS walk in `build-manifest.ts`, fail-closed on any path outside the root or failing
+   `isSafeWorkspacePath`. It is **inert by construction**: nothing re-exports it from
+   `snapshot/index.ts` and nothing calls it, because link 3 is still unbuilt.
+   ★★★ **The EMIT half is what remains, and it is the half the three refutations in §4 are
+   about**: nothing yet tells the agent to write to that root, so `captureSandboxEntries` has
+   nothing to walk on a real run. **This flips no counter and closes no finding.** Do not read
+   the capture half's existence as a supply mechanism.
 2. ~~**No real `exportArtifact`/`digestArtifact`.** `E2bSandboxProvider` declares
    `artifactExportMode = "none"` and declines both (`e2b-provider.ts:178,391-402`) — honestly, and
    with `#transport.readFile` (`real-transport.ts:196`) sitting one line away, uncalled.~~
