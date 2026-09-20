@@ -1293,6 +1293,24 @@ This is a named partial gate, not a ticket and not E10 completion. It requires J
 - **Acceptance:** Per-Company rollback-safety (an org with any pending authoritative-cost receipt on any of its Companies is skipped; a clean org is drained); `listActiveAttempts` returns the distinct in-flight `(company, job)` set over `job_attempts`; `cancelled`/`no_active_lease` counted, terminal/not-found excluded; the existing drain tests reworked for the new `DrainDeps` shape. Promotion of `E10-1-drain` either lands on an M-proven production caller OR stays `unwired` with a reason (kill-switch write path is REL-005) — the acceptance accepts either, never a vacuous wired.
 - **Test:** Unit rollback-safety matrix (clean org drains, receipt-bearing org skips) + embedded-PG `listActiveAttempts` over seeded attempts + the drain status coverage; positive control first, grain + SQL guards mutation-proven by deletion.
 
+#### MIG-011 — Make the pass verdict and the gate verdict agree by construction (S)
+
+- **Depends on:** MIG-010.
+- **Outcome:** Close **E7-F007**, the fail-OPEN divergence MIG-010 filed and deliberately did not
+  fix. `reconcileCompanyLegacyResources` computes closure over records it builds IN MEMORY;
+  `canary-preflight` recomputes it over records PERSISTED in the append-only crosswalk. Delete an
+  agent AFTER its lease was recorded `mapped` and the two disagree: `insertRecordIfAbsent` is
+  `onConflictDoNothing`, so the newly-unattributable record is never written — the pass refuses
+  forever while the gate OPENS. ★ This ticket exists so `MIG-010` can carry a result without
+  retiring itself as that finding's owner (founder decision **D-10**).
+- **Acceptance:** One chosen shape, implemented, with the two computations unable to disagree — or,
+  if the divergence is accepted, a pass whose verdict reads the same persisted records the gate
+  does. A permanently red operator command with no way to make it green is not an acceptable
+  end state; that is how this programme has historically taught people to stop reading a tool.
+- **Test:** The existing `mig-010-unit-2-5-unattributable.integration.test.ts` extended with the
+  post-pass-deletion ordering that produced the divergence — measured on a real database, which is
+  how the finding was made in the first place.
+
 #### MIG-010 — Legacy-resource reconciliation becomes runnable, and closure becomes decidable (M)
 
 - **Depends on:** MIG-008, CLI-006.
