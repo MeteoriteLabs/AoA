@@ -4,7 +4,7 @@
  *
  * A CHECK THAT NOTHING RUNS IS NOT A CHECK.
  *
- * ★ WHY THIS EXISTS. `docs/replatform/artifact-policy.md:76,80,89` — the three `write-once from
+ * ★ WHY THIS EXISTS. `docs/replatform/artifact-policy.md:90,94,103` — the three `write-once from
  * its first commit` / `immutable from first commit` clauses — makes every QA and handoff
  * record "write-once from its first commit" — a rerun or correction creates a NEW attempt
  * carrying `Supersedes`, and never edits a prior one. The deny that enforces this,
@@ -38,7 +38,7 @@
  * pins each record's content AT THE COMMIT THAT INTRODUCED IT, and denies any later commit
  * in the same pull request that changes or removes it.
  *
- * ★ WHY THIS DOES NOT BLOCK A LEGITIMATE CORRECTION. Under `artifact-policy.md:76,80,89` — each
+ * ★ WHY THIS DOES NOT BLOCK A LEGITIMATE CORRECTION. Under `artifact-policy.md:90,94,103` — each
  * of which says a correction creates a new attempt with `Supersedes` — a
  * rerun, correction or changed decision is expressed by ADDING A NEW attempt file whose
  * `Supersedes` field points BACKWARD at the prior path (`qa-result-template.md:9`,
@@ -465,7 +465,7 @@ async function main() {
     console.error("Evidence-ledger immutability FAILED:");
     for (const err of result.errors) console.error(`  - ${err}`);
     console.error(
-      "\nQA and handoff records are write-once (docs/replatform/artifact-policy.md:76,80,89).\n" +
+      "\nQA and handoff records are write-once (docs/replatform/artifact-policy.md:90,94,103).\n" +
         "A correction is a NEW attempt file carrying `Supersedes`, never an edit to a prior one.",
     );
     process.exitCode = 1;

@@ -390,6 +390,20 @@ sweep as the amendment row below — one fact corrected in one place and not its
 
 **Exit.** Full **D5**.
 
+★★★ **FULL `D2` IS AN UNSCHEDULED ENTRY PREREQUISITE FOR `M5`, AND SOMEBODY MUST OWN IT.**
+*Added 2026-09-20 (twelfth round), verified at source.* `test-gates.md` `D6-01` requires *“all
+D0–D5 records, including **D2 coding**, D3 browser, and D4 service … current for the same release
+candidate”*, and it says plainly that *“a coding-only candidate cannot enter or pass D6”*. `M1b` is
+explicit that its `M1-D2-CODING` record **cannot substitute for full D2**, and **none of M2, M3 or
+M4 schedules a full-D2 campaign** — so the sequence arrives at its final milestone with an entry
+prerequisite nobody owns.
+
+★ **Full `D2` belongs to `M3` or `M4`, and D6 consumes it only if it is CURRENT FOR THE SAME
+CANDIDATE** — so whichever milestone owns it, `M5` still owes a same-candidate rerun unless it
+inherits a record attesting M5's own candidate. **Which milestone takes it is a programme-owner
+decision**; the files do not settle it, and inventing one here would repeat the mistake this note
+exists to catch.
+
 ### `M5` — private beta
 
 **Scope.** `REL-001`, `REL-002`, `REL-005` — none of which has a ticket file today — plus the D6
@@ -459,7 +473,23 @@ The qualification limits blast radius; it does not turn a dormant control into a
 
 ## Entry criteria
 
-The milestone candidate may enter its integrated QA campaign only when:
+★★★ **THESE ENTRY CRITERIA ARE `M1b`'s. `M1a` ENTERS ON THE SUBSET BELOW, AND WITHOUT THAT SPLIT
+THE CHECKPOINT IS UNREACHABLE AT ENTRY.** *Added 2026-09-20 (twelfth round).* The M1a/M1b split
+divided the **exit** criteria and left these **entry** criteria shared — and they require *“every
+required E3–E7 ticket”* and *“the supported adapter, **tools, workspace, output**, audit/cost and
+cleanup paths”* to be enabled before any integrated campaign may start. That is the `M1b` result set
+and the output capability `M1a` exists to defer, so an `M1a` candidate could never be admitted — the
+same defect the recovery order had, one document further up, and splitting only the exits did not
+cure it.
+
+★ **`M1a` entry = every bullet below EXCEPT the output half:** the adapter, workspace, audit/cost
+and cleanup paths must be enabled for the named internal Organization, and the **output** path need
+not be — `M1a` is satisfied by a run reporting `capabilityProven=false`. The required-ticket bullet
+is scoped to **`M1a`'s own required result set**, not to every E3–E7 ticket. Every other bullet
+applies to both milestones unchanged.
+
+**`M1b` entry — and, except as scoped above, `M1a` entry** — the milestone candidate may enter its
+integrated QA campaign only when:
 
 - the proposal is approved and its dispositions are reflected in owner-approved epic plan amendments;
 - E0–E2 historical completion evidence has passed a current dependency/delta review, including superseding records for any immutable-record breach;
