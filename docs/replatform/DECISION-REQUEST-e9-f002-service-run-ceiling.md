@@ -127,7 +127,7 @@ It changes **no** finding status, **no** ownership, **no** `scripts/finding-owne
 
 ## ▣ DECISION — E9-F002 / SVC-008 §9.1, the service-run ceiling
 
-**Awaiting founder ruling.** Choosing among the options below IS the decision requested; this paper makes none of them.
+**RULED + ENACTED 2026-09-19 — Option (b) (heading corrected 2026-09-20; see the provenance note immediately below).** Do NOT re-request. The finding legitimately stays OPEN because its CLOSE criterion needs a service run observed past 240s (§9.4 E2B create-time-fixed TTL extension, owned OUTSIDE E9) — slice b1 shipped #500, slice b2 is buildable-INERT.
 
 > **★ RULED + ENACTED 2026-09-19 — this line is STALE; preserved for provenance.** The founder RULED **Option (b)**
 > (mint a fresh capability on lease renewal), recorded in `docs/replatform/epics/E9-service-agents/tickets/SVC-009-design.md`.

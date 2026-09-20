@@ -7,7 +7,8 @@ two shared-platform throws are attributed to DEFERRED-DECISION: guardPlatformAut
 named, owner-visible future decision, NOT accepted-as-gap; their blocker is the pinned helper/call
 shape, not the ack drain)"*).
 **Date:** 2026-09-20. **Measured at:** `95b3ba97d` (the `docs/replatform-program` HEAD this paper ships on).
-**Status:** OPEN — awaiting a founder ruling. **Changes no finding's status and wires no code.**
+**Status:** RULED 2026-09-20 — **Option (B) accept-the-gap-made-honest.** Reclassify G1 (`job-leasing.ts:596`) as a data-integrity fallthrough; accept G2 (`:638`) on the `security.denied.worker_session` session-arm adjacency, naming the adjacent-not-identical residual window in the DE-18/DE-04 register rows, and close the §5.4 deferral task. Enactment owned by the **Session-2 guard-sink/register track** (`HANDOFF-2026-09-20-session-2-guard-sink-register.md`) — **register + docs ONLY; the frozen JOB-003 contract is NOT amended and `job-leasing.ts` is NOT edited.** (Original status line preserved below.)
+> **Status (superseded):** OPEN — awaiting a founder ruling. **Changes no finding's status and wires no code.**
 
 This paper is the **option-A paper** that
 [`DECISION-REQUEST-job003-ack-drain.md`](./DECISION-REQUEST-job003-ack-drain.md) §4 promised when the

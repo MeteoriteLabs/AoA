@@ -1399,6 +1399,9 @@ enacted, so its live disposition is SUPERSEDED, not open-and-undecided.**
 
 #### 13.4.3 Recommendation (for the founder to rule; §13.3 stands)
 
+> **★ RATIFIED 2026-09-20 by the founder.** The fifth option is **closed as SUPERSEDED**: `capabilityProven` stays **dormant-and-printed, off-by-default**; clause-6 arm 2 is **NOT deleted** (W21/#422 already re-predicated it off the forgeable `createdByRunId` onto the fenced `job_projection_receipts` join, so it is honest — deleting it would convert a fixed judge into "no judge"); `--require-capability` is **NOT armed** (it would mint an always-red gate, E7-F018); and the next unit is **NOT reallocated to Unit C** on this option's strength. E7-F003 stays honestly OPEN until the keyed live proof. §13.3's "deleting arm 2 remains the founder's call" is hereby exercised in the negative — it is not deleted.
+
+
 **Close the fifth option as SUPERSEDED.** Its only sound form — "replace the bar with an honest
 informational marker, do not delete" — is ALREADY enacted by W21 (PR #422) + the founder's
 `E7-D-CAPABILITY-DISCLOSURE` ruling (2026-09-09). There is nothing to build and nothing to delete.

@@ -280,7 +280,7 @@ as the precondition it is.
 
 ---
 
-## ▣ DECISION REQUEST — CLI-008 Unit C tool reachability — **AWAITING FOUNDER RULING**
+## ▣ DECISION REQUEST — CLI-008 Unit C tool reachability — **RULED + ENACTED 2026-09-19** (heading corrected 2026-09-20; slices 1–4 merged INERT behind `AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED` — E7-F003 stays open until the keyed live proof. Do NOT re-request.)
 
 > **★ RULED + ENACTED 2026-09-19 — this paper is a STALE record; the heading above is preserved for provenance.**
 > The founder RULED the recommended disposition (Q1: mechanism A brokered-HTTP transport + mechanism C sandbox-side

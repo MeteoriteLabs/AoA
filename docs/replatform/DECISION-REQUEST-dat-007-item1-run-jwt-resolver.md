@@ -123,7 +123,7 @@ It changes **no** finding status, **no** `deliveryStatus`, **no** clause text in
 
 ---
 
-## ▣ DECISION REQUEST — DAT-007 item #1 fence-bound run-JWT resolver — **AWAITING FOUNDER RULING**
+## ▣ DECISION REQUEST — DAT-007 item #1 fence-bound run-JWT resolver — **RULED + ENACTED 2026-09-19** (heading corrected 2026-09-20; #492/#493/#494 merged, `distributed-run-currency.ts` landed — E7-F003 stays open until the tool surface flips on. Do NOT re-request.)
 
 > **★ RULED + ENACTED 2026-09-19 — this paper is a STALE record; the heading above is preserved for provenance.**
 > The founder RULED the recommended shape (Q1: per-call at the `/mcp` request-authorization seam, adopted into the seam
