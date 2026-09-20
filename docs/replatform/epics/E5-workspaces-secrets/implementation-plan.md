@@ -63,7 +63,7 @@ plan, and their inert-until-wired state is recorded by their own designs, not co
 ```text
 M0 (record + lane health — no feature work):
   DAT-011-B1 ──┐
-  TRACK-001-B1 ├──▶ E5-A2-MATRIX (freeze the seven-clause a2 audit matrix)
+  TRACK-001-B1 ├──▶ E5-A2-MATRIX (freeze the seven-clause audit matrix; a2=M1a, a3+=M1b)
   DAT-008-A1 ──┘
 
 M1a (the spine — flag armed, capabilityProven=false is a PASS):
@@ -422,7 +422,9 @@ anchor (positive control); GREEN is all three record guards passing after the ed
 
 ---
 
-### `E5-A2-MATRIX` — freeze the seven-clause a2 audit matrix (S, ≤2 agent-days, M0)
+### `E5-A2-MATRIX` — freeze the seven-clause audit matrix (S, ≤2 agent-days, M0)
+
+★★★ **IT FREEZES THE MATRIX FOR *BOTH* ATTEMPTS, NOT JUST `a2`.** *Corrected twelfth round:* `a2` attests the `M1a` candidate and `M1b` owes **`a3` or later** on its own frozen candidate, so a task that plans only `a2` leaves the `M1b` attempt unowned. The matrix, commands, topology and owners are frozen once and **reused across attempts**; each attempt is a new immutable record linked by `Supersedes`.
 
 **Disposition:** entry-criteria work named by the triage: *"the proposed E5 a2 seven-clause audit
 matrix, commands, exact topology, QA owner, and decision owner are approved and frozen; the a2

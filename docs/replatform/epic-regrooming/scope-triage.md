@@ -496,7 +496,7 @@ integrated QA campaign only when:
 - every required E3–E7 ticket has either a canonical approved result or a policy-compliant successor/adoption record that pins the retained historical blob and closes its stated delta;
 - E3–E6 have candidate-specific ledgers showing which mechanisms are production-reachable rather than merely present and which clauses are certified only by `M1-D1-SPINE`;
 - every E5 implementation/build gap required by the M1 subset is closed and production-wired, with focused acceptance green;
-- the proposed E5 a2 seven-clause audit matrix, commands, exact topology, QA owner, and decision owner are approved and frozen; the a2 record is planned to consume the exact M1 candidate campaigns rather than required to pass before they start;
+- the proposed E5 seven-clause audit matrix, commands, exact topology, QA owner, and decision owner are approved and frozen — ★ *the matrix is frozen once and reused across attempts; `a2` attests the `M1a` candidate and `M1b` owes `a3` or later, corrected twelfth round* — ; the audit record is planned to consume the exact M1 candidate campaigns rather than required to pass before they start;
 - the supported adapter, tools, workspace, output, audit/cost, and cleanup paths are enabled only for the named internal Organization;
 - no excluded workload, desktop, mobility, cutover, HA, or beta flag is enabled;
 - the candidate revision, topology, configuration digests, external dependencies, partial-gate owner, QA owner, and rollback owner are frozen before the run starts; and

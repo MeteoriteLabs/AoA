@@ -504,7 +504,7 @@ attack/readoption branch is removed.
 
 **Outcome:** exactly one of — (i) a fourth candidate mechanism that survives §6's constraint list
 and the §4 refutation pattern, priced and sized, `claude_local`-only per E7-D04; or (ii) a
-recommendation to adopt §13's option, **with the adversarial attack pass it has never had**; or
+★★★ **[REMOVED — twelfth round] — an earlier revision offered here a recommendation to adopt §13's option *“with the adversarial attack pass it has never had”*. §13 is **RATIFIED** (*“close the fifth option as SUPERSEDED”*) and §13.4 records the attack as **completed**, so both halves of that clause were false and it is not an available outcome.** Or
 (iii) a recorded statement that neither is reachable, naming what would change it. A founder ruling
 follows; **this ticket makes none of the three choices binding on its own.**
 
@@ -755,8 +755,17 @@ projector writes the corresponding `task_outputs` row.
 
 **★ The collision this ticket must not cause, stated up front.** `gate-clause-wiring.json`'s
 `E3-17-output` (`jobOutputBridge`, JOB-014) **owns the general distributed-job → `task_outputs`
-projection** and is `unwired` pending **M2 sink cutover** — *"task_outputs is still written by the
-legacy path."* A second writer landing in M1 would make two mechanisms own one row. **The rule:
+projection**. ★★★ **AND THE RESOLUTION IS NOT A SCOPED SECOND WRITER — IT IS THAT THERE IS ONLY
+ONE WRITER.** *Corrected twelfth round.* Two things in the superseded framing below are wrong:
+the bridge is an **`M1a` prerequisite** (D-8), not something pending M2 — what is M2 is the **sink
+cutover** — and scoping a second writer by `execution_owner = distributed` does **not** separate two
+writers, because F5's runs are distributed too. The bridge writes the row **and** its
+`output_projection` receipt in one tenant transaction under the live fence, and the capability
+verifier admits *“exactly one writer”*; so F5 must **route through it**, not write beside it.
+
+*Superseded framing, retained for the record:* it is `unwired` pending **M2 sink cutover** —
+*“task_outputs is still written by the legacy path”* — a second writer landing in M1 would make two
+mechanisms own one row, and the rule was that
 this projector writes only for a run whose `execution_owner` is `distributed` and whose attempt it
 is projecting, and the result doc must state the boundary against `jobOutputBridge` in the words of
 the register entry**, so that M2's cutover inherits a stated seam rather than a surprise.
@@ -981,8 +990,15 @@ have precision **and** recall cases; GREEN — all of the above plus server type
 *"tool surface, SHIPPED inert"*. **`E7-F003`'s tools row legitimately stays open** — the flag is off.
 
 **Outcome:** the flag is armed for the named internal Organization only, and the arming is **proven
-to be gated**: the surface and the second secret handle are emitted only when the run's identity is
-fence-current, which is exactly what DAT-007 item #1's resolver decides.
+to be gated at USE**: a run whose lease has expired is **denied at MCP authorization and refused at
+redemption**, which is exactly what DAT-007 item #1's resolver decides.
+
+★★★ **NOT “emitted only when fence-current” — that is an emission-time gate this ticket cannot
+build.** *Corrected twelfth round, and this is the fourth site for one rule.* `mintRunJwtHandleForPlacement`
+(`server/src/services/execution-secret-handle-mint-runner.ts:165`) takes **no lease and no clock**,
+and `decideRunJwtHandle` gates on deployment, principal, adapter and flag — not currency. The argv
+and the handle are produced at dispatch, before any currency check exists; the currency gate lives
+at **use**. The acceptance list was corrected earlier and this Outcome was not.
 
 **★ Why this cannot precede `DAT-007-S3`.** The founder ruling's own words: DE-08 leaves **no network
 backstop** for the run credential at the managed-shared tier, so the run-JWT cannot be fenced at the
@@ -1009,9 +1025,11 @@ off, nothing is emitted and nothing is minted — the default until this ticket.
 **Migration/compatibility:** configuration only in the product; no schema, route, or wire change.
 Every other deployment is unaffected (flag default false).
 
-**Observability:** record, on the milestone candidate, that the surface is emitted **only** for a
-fence-current run — a run whose lease has expired must observably lose the surface. A gate that is
-never observed to deny is a check that nothing runs.
+**Observability:** record, on the milestone candidate, that a run whose lease has expired
+**observably loses the surface — denied at MCP authorization, refused at redemption**. ★ *Not
+“emitted only for a fence-current run”: emission happens at dispatch and carries no currency check;
+the denial is the observable, corrected twelfth round.* A gate that is never observed to deny is a
+check that nothing runs.
 
 **Rollback/disablement:** unset `AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED`. Instant, config-only, and
 the rollback rehearsal exit criterion 6 requires must include it.
@@ -1141,7 +1159,7 @@ recorded as net-new, never as "parity passed."
 | Judge | A retried job's leak reaches a clean verdict | `CLI-008-F6` (`E7-F032`) | Sibling-attempt scan. |
 | Tool surface | A stale/replaced sandbox keeps calling tools | `CLI-008-C5` + E5's `DAT-007-S3` | Denied by the fence-bound resolver with the coarse wrong-tenant forbidden — no oracle. |
 | Tool surface | Armed without the resolver | forbidden by the founder ruling | Not an implementable option. |
-| Gate clause | A boot appears and the register does not notice | `E7-1-JOURNEY-ARM` | `unwired_but_now_has_caller` fires; the typed-out count is the tripwire. |
+| Gate clause | The register's reference count drifts above `expectedReferences` | `E7-1-JOURNEY-ARM` | ★ *corrected twelfth round: the row said “a boot appears and the register does not notice”, but `gate-clause-wiring.mjs` emits this only when the **source-reference count** exceeds `expectedReferences` and never inspects a deployment — so a boot could not trip it. Promotion rides shipped-boot evidence; this row is the controlled-fixture control.* `unwired_but_now_has_caller` fires; the typed-out count is the tripwire. |
 
 Metrics use bounded labels only and never an Organization, Company, job, path, grant URL, file
 content, secret, or session byte.

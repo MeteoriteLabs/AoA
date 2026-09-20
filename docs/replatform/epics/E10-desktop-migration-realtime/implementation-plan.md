@@ -198,8 +198,7 @@ recommended even once unblocked."*
 *"`createJobShadowComparator` defaulted its derivation to an identity function… Every field compared
 equal to itself. Measured before touching anything: 2,000 randomized snapshots across all six
 diffed fields, 0 divergences."* Limits: the evidence is a **seeded corpus, not organic traffic**;
-only 1 of 7 fields is compared; there is no per-sink rollout axis, so *"Wave 4's MIG-005 → 006 → 007
-ordering is not expressible today"*.
+only 1 of 7 fields is compared. ★★★ **The third limit is NO LONGER TRUE and must not be carried as current.** *Corrected twelfth round:* the frozen result said *“there is no per-sink rollout axis, so Wave 4's MIG-005 → 006 → 007 ordering is not expressible today”* — but `sourceKind` **is** that axis, `server/src/config/distributed-execution-rollout-source.ts` enforces `policy.sources` against it, and `server/src/__tests__/rollout-dial-live.test.ts` proves Commander-then-crew staging. The result is frozen and is corrected here **by finding**, never edited; the seeded-corpus and 1-of-7-fields limits stand.
 
 **`MIG-006` — crew routing seam — FOUR OF FIVE UNITS SHIPPED; U4 differs from design; no result
 file.** Re-measured at `4df71dada` and re-verified by me at HEAD:
@@ -364,7 +363,7 @@ MIG-009's result §3 and the register reason both say the trigger is *"REL-005 s
 zero files on disk and is M5 scope** (`scope-triage.md`). D-9 requires the drain wired for
 M1's exit criterion 6. Those cannot both stand. §8.1 resolves it the only way that does not
 manufacture a vacuous green: build a *narrow operator trigger* now, following the
-`reconcile:legacy-resources` precedent, and leave REL-005 the *product* kill-switch write path.
+`reconcile:legacy-resources` precedent. ★★★ *Corrected twelfth round: REL-005 is NOT owed the kill-switch **write path** — authorized `PUT`/`DELETE` `/instance/kill-switches` ship and are actor-attributed via `logActivity` (`server/src/routes/instance-settings.ts:92,108,131`). What is left to REL-005 is the **UI** and the drain-integration decision.* Superseded text: leave REL-005 the *product* kill-switch write path.
 
 ### B3 — Crew's result loopback has no enrichment path when Unit F lands (U4 divergence)
 
@@ -582,7 +581,7 @@ have; §0). Do not implement either way without the ruling.
 (INFORMATIONAL, recorded specifically for the wiring ticket): the drain's `requestCancellation` dep
 is deliberately narrower than the repo's `RequestCancellationInput` (it omits `commandId`/`now`), and
 *"the REL-005 wiring adapter must supply a STABLE `commandId` derived from the jobId for idempotent
-re-runs (a per-call random id would queue duplicate cancels)."* **This is the single most likely way
+re-runs (a per-call random id would queue duplicate cancels)."* ★★★ **THAT RATIONALE IS FALSE and the test built on it proves nothing** — *corrected twelfth round:* `requestCancellation` dedupes by organization, lease and `cancel` kind and returns `already_requested` **before** `input.commandId` is used, so a random id queues **one** cancel exactly as a stable one does. Assert deterministic id derivation **at the adapter boundary**. Superseded text: **This is the single most likely way
 to get this ticket wrong.** The adapter derives `commandId` deterministically from `jobId`, and a
 test asserts that two consecutive CLI runs over the same live job queue **one** cancel, not two.
 
