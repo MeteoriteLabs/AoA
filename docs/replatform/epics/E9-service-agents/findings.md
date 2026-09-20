@@ -315,7 +315,7 @@ failure that E9-F001 exists to record. It closes when T0 is green on a shipped d
 
 ## E9-F003 — a `service_reconcile` job's executor principal is the SERVICE id under the kind `service_instance`, and that mislabel reaches the worker's lease envelope
 
-**Status:** `open` · **Severity:** MED · **Owner:** `unowned`
+**Status:** `resolved` 2026-09-20 (PR #511, executor-kind rename) · **Severity:** MED
 **Filed:** 2026-09-10, by the SVC-002 implementation unit, after external review of PR #406
 raised it against the shipped reconciler. Recorded in prose since 2026-09-08
 (`tickets/SVC-002-terrain.md` §5.4) and **never filed** — which is the weak form this programme
@@ -323,6 +323,18 @@ keeps re-learning, so it is filed now.
 **Affected tickets:** SVC-003 (the natural inheritor, no file on disk), SVC-002 (first producer).
 **Blocks gate:** no for dispatch; yes for any clause asserting that a job is attributable to a
 service INSTANCE from the job side.
+
+> **★ RESOLVED 2026-09-20 (PR #511), route two of §3.** The founder ruled the `service_reconcile`
+> executor principal deliberately names the SERVICE, and the kind is renamed `service_instance`→
+> `service` so the label stops lying (adding `serviceInstanceId` to the frozen
+> `serviceReconcileSourceSchema` was the rejected Protocol-Custodian amend). `serviceSourceIsAdmitted`
+> returns `{ kind: "service", id }`, the `SourceExecutorKind` union carries `service`, and
+> `job-submission.integration.test.ts` pins the persisted `executor_principal_kind = "service"` with
+> `executor_principal_id = SERVICE_A` — kind and id now name the same entity. `job-leasing.ts`'s
+> `principal()` already mapped both to `principalType: "service"`, so the lease envelope is
+> byte-identical; only the label becomes true. The `jobs.executor_principal_kind` CHECK tightening is
+> `db:generate`-gated and DEFERRED; the code rename needs no migration. The
+> `scripts/finding-ownership.json` key is deleted in this commit.
 
 ### 1. The mislabel, verified at `ca5089663`
 
@@ -588,13 +600,25 @@ That is a residual on SVC-005, stated here so it is not rediscovered a third tim
 
 ## E9-F007 — the liveness deadline terminalizes the INSTANCE and does not fence the WORKER, so a silent-but-renewing worker overlaps its own replacement
 
-**Status:** `open` · `unowned` · **Severity:** HIGH
+**Status:** `resolved` 2026-09-20 by E9-D001 (route-(c) overlap allowance) · **Severity:** HIGH
 **Filed:** 2026-09-10, by **SVC-003b**, in the commit that creates the condition. Filed rather than
 folded into the design note because it is a real overlap window with external effects on one side of
 it, and because the ticket that must close it (SVC-005) already owns the clause it belongs to.
 **Affected tickets:** SVC-003 (created it), SVC-005 (owns the clause), SVC-004 (restart policy).
 **Blocks gate:** no — E9's exit gate is not met for several larger reasons already on record. It
 does bound what SVC-003b's clause may be read to claim.
+
+> **★ RESOLVED 2026-09-20 by E9-D001 — §3's third route.** The founder ruled the overlap allowance:
+> `docs/replatform/epics/E9-service-agents/decisions.md` (E9-D001) is the approved architecture
+> decision the SVC-005 acceptance clause's own escape sentence contemplates. It PERMITS bounded
+> same-service external-effect overlap and defines its **fencing** policy — the single-live-instance
+> `service_instances_live_service_uq`, SVC-003a's terminal split-brain refusal, and the
+> attempt-terminal write-fence make STATE overlap impossible and bound the effect window to the
+> old lease's TTL + reaper interval — and its **idempotency** policy: a service's external effects
+> must be idempotent across generations. The same-generation overlap this finding names is now a
+> documented allowance rather than a gap; it grants the deadline no new lease authority. A
+> deadline-aware `graceful_stop` cooperative-stop (E9-F008, still open) is left as an OPTIONAL future
+> tightening, not a precondition. The `scripts/finding-ownership.json` key is deleted in this commit.
 
 ### 1. The mechanism, verified at source
 
@@ -1022,6 +1046,17 @@ early, as E9-F007), SVC-008 (the daemon side that could witness a stop), SVC-006
 would have to observe it).
 **Blocks gate:** no — E9's exit gate is unmet for several larger reasons already on record. It does
 bound what SVC-005a may be read to claim, and that is why it is filed rather than left implied.
+
+> **★ RESOLVING DECISION LANDED 2026-09-20 — E9-D001, route (c); the register-close is PENDING the
+> custodian.** `docs/replatform/epics/E9-service-agents/decisions.md` (E9-D001, merged) is the
+> approved architecture decision §4 route (c) calls for — it PERMITS the overlap and defines the
+> fencing + idempotency policy, converting this from a gap into a documented allowance. The finding
+> is NOT flipped to `resolved` here because deleting its `finding-ownership.json` key requires
+> rewording DE-12's `deliveryEvidence` in `distributed-execution-threat-controls.json` (which cites
+> the `E9-F012` token; `check-distributed-execution-foundation.mjs` clause 3 refuses a dangling
+> citation) — a shared-register edit the register-custodian session owns. The status flip + key
+> delete + DE-12 reword land together under the custodian. (E9-F007, the same-generation twin, has
+> no such coupling and is closed by this commit.)
 
 ### 1. The clause, and the half that is delivered
 
