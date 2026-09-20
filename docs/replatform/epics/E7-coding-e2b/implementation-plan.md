@@ -115,12 +115,25 @@ and is explicitly forbidden from creating the parent result doc.
   round 3 on **the predicate itself** — its repair (drop the forgeable `task_outputs` arm and widen
   the artifact arm off `kind = 'workspace_patch'`) is satisfied on **every** converted distributed
   run by the run's **own staged input bundle**. The core move is itself the defect.
-- **E7-D03 — Links 3, 4 and 5 are NOT blocked by the emit question, and links 4 and 5 flip NO
-  counter.** `countProducedOutputs` queries `job_artifacts` directly and joins no events, so **a
-  committed artifact counts whether or not anything announced it** (`E7-F016`'s substance). Link 4
-  (the `artifact_prepared` emitter) and link 5 (the projector) are what make a committed artifact
-  **visible to the founder on the task** — which is exit criterion 4's actual sentence — while the
-  **counter** moves on link 3 alone. Confusing the two is the error this plan is written to avoid.
+- **E7-D03 — Links 3, 4 and 5 are NOT blocked by the emit question, and there are TWO counters,
+  not one.** ★★★ *Superseded text: "links 4 and 5 flip NO counter" and "the **counter** moves on
+  link 3 alone". Corrected 2026-09-20, verified at source.* That reading was true of ONE of
+  `countProducedOutputs`' two arms and false of the other, once `CLI-008-F5` was corrected to route
+  through `jobOutputBridge.projectAcceptedOutput`. The two counters, named separately:
+  - **The QUALIFYING ARTIFACT counter** — `countProducedOutputs` arm 1, committed
+    `kind = 'workspace_patch'` `job_artifacts`, attempt-scoped as of `E7-F031`. It queries
+    `job_artifacts` directly and joins no events, so **a committed artifact counts whether or not
+    anything announced it** (`E7-F016`'s substance). **Link 3 alone moves this counter. Link 4 does
+    not, and link 5 does not.**
+  - **The RECEIPT-BACKED OUTPUT counter** — `countProducedOutputs` arm 2, the `taskOutputs` number:
+    `task_outputs` rows inner-joined to an applied `output_projection` / `task_outputs` receipt on
+    both `job_id` and `attempt_id`
+    (`server/src/services/e7-distributed-run-verifier-store.ts:579-606`). Its **sole** writer is
+    `jobOutputBridge.projectAcceptedOutput` — which is precisely what F5 must route through — so
+    **link 5 DOES move this counter.** Link 4 still moves neither.
+  What links 4 and 5 buy *beyond* the counters is that a committed artifact becomes **visible to the
+  founder on the task**, which is exit criterion 4's actual sentence. Confusing the two counters with
+  each other, or either with visibility, is the error this plan is written to avoid.
 - **E7-D04 — `claude_local` only, for anything Unit-F-shaped, until `E7-F027` is characterised.**
   Clause 1 of the stop condition is discharged; clause 2 is not. A mechanism that looks
   adapter-agnostic while codex is refused before any model call is a fix that leaves codex broken and
@@ -211,7 +224,7 @@ treat a line number as a hint.** `ls` every cited file and re-measure at HEAD.
 | Fact | Authority | Rule |
 |---|---|---|
 | Whether an artifact exists and is committed | The control plane, after a fenced commit re-verifies the declared SHA-256 via `headObject` | The worker's export returns an `{objectKey}`; only the commit makes it real. |
-| Whether the founder can see it on the task | The projector writing `task_outputs` | **A committed artifact counts for the verifier whether or not it is visible.** Exit criterion 4 asks for visible; the counter asks for committed. Both are owed (E7-D03). |
+| Whether the founder can see it on the task | The projector writing `task_outputs` **through `jobOutputBridge.projectAcceptedOutput`** | **A committed artifact counts for the QUALIFYING ARTIFACT counter (arm 1) whether or not it is visible.** Exit criterion 4 asks for visible; arm 1 asks for committed. ★ Separately, the projector's bridge route writes an `output_projection` receipt and therefore **does** move the RECEIPT-BACKED OUTPUT counter (`taskOutputs`, arm 2). All three are owed (E7-D03). |
 | Whether the agent may call `mcp__aoa__*` | The run's identity being **fence-current**, resolved by DAT-007 item #1 | The surface is emitted only under the flag, and the flag is only safe once the resolver is proven (`DAT-007-S3` in E5's plan). |
 | Whether the run produced useful work | **Nobody, today.** `capabilityProven` reads tables, never bytes | E7-D01. No ticket may claim otherwise. |
 
@@ -311,7 +324,7 @@ function Invoke-NativeGate([string]$Label, [scriptblock]$Command) {
 |---|---|
 | `CLI-008-LEDGER` | `Invoke-NativeGate 'finding ownership' { node scripts/check-finding-ownership.mjs }; Invoke-NativeGate 'register citations' { node scripts/check-register-citation-integrity.mjs }; Invoke-NativeGate 'id uniqueness' { node scripts/check-register-id-uniqueness.mjs }; Invoke-NativeGate 'ticket graph' { node scripts/check-ticket-graph-coverage.mjs }; Invoke-NativeGate 'dependency graph' { node scripts/check-dependency-graph.mjs }` |
 | `CLI-008-F1a` | `Invoke-NativeGate 'protocol build' { pnpm --filter @armyofagents/worker-protocol build }; Invoke-NativeGate 'F1a' { pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/capture-sandbox.test.ts src/__tests__/sandbox-listdir-binding.test.ts }; Invoke-NativeGate 'daemon boundary' { pnpm check:worker-daemon-boundary }; Invoke-NativeGate 'worker typecheck' { pnpm --filter @armyofagents/worker-daemon typecheck }; Invoke-NativeGate 'worker build' { pnpm --filter @armyofagents/worker-daemon build }` |
-| `CLI-008-F1b` | **Design ticket — no RED/GREEN.** Evidence is the §6-constraint table, the positive-control table, and an adversarial attack pass on the chosen option (including on §13's *"do not build it"*, which has never had one). |
+| `CLI-008-F1b` | **Design ticket — no RED/GREEN.** Evidence is the §6-constraint table, the positive-control table, and an adversarial attack pass on the chosen option. ★ *Superseded text: "(including on §13's "do not build it", which has never had one)". Corrected 2026-09-20, verified at source: `tickets/CLI-008-unit-f-design.md:1367` records that attack as **run and completed**, and `:1424` records the founder ruling "close the fifth option as **SUPERSEDED**" — so it is neither a candidate option nor an attack F1b owes.* |
 | `CLI-008-F3` | `Invoke-NativeGate 'protocol build' { pnpm --filter @armyofagents/worker-protocol build }; Invoke-NativeGate 'F3' { pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/export-request-producer.test.ts src/__tests__/supervisor-export-artifacts.test.ts src/__tests__/artifact-export-sequencer.test.ts }; Invoke-NativeGate 'worker typecheck' { pnpm --filter @armyofagents/worker-daemon typecheck }; Invoke-NativeGate 'worker build' { pnpm --filter @armyofagents/worker-daemon build }` |
 | `CLI-008-F4` | `Invoke-NativeGate 'protocol build' { pnpm --filter @armyofagents/worker-protocol build }; Invoke-NativeGate 'F4' { pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/events-artifact-prepared.test.ts }; Invoke-NativeGate 'frozen v1' { pnpm check:frozen-worker-protocol-v1 }; Invoke-NativeGate 'worker typecheck' { pnpm --filter @armyofagents/worker-daemon typecheck }; Invoke-NativeGate 'worker build' { pnpm --filter @armyofagents/worker-daemon build }` |
 | `CLI-008-F5` | `$env:AOA_RUN_WIN_INTEGRATION='1'; Invoke-NativeGate 'F5' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/canary-run-projector.test.ts src/__tests__/canary-terminal-projection.test.ts src/__tests__/canary-output-projection.integration.test.ts }; Invoke-NativeGate 'gate clause wiring' { node scripts/check-gate-clause-wiring.mjs }; Invoke-NativeGate 'server typecheck' { pnpm --filter @armyofagents/server typecheck }; Invoke-NativeGate 'server build' { pnpm --filter @armyofagents/server build }` |
@@ -370,7 +383,7 @@ re-ownership is worse than none):
 | `E7-F003` | MEDIUM | **`CLI-008`** (parent, stays open) | It is the capability gap itself and spans tools + workspace + return path. It is why the parent may not carry a result yet. |
 | `E7-F015` | MEDIUM | `CLI-008-F6` | The bar is forgeable by one board POST; the fix is a judge change. |
 | `E7-F016` | LOW | `CLI-008-F6` | Clause 6's text misdescribes its own subject. |
-| `E7-F017` | LOW | **`DAT-009` slice 3** (already its owner) | Found by DAT-009; the repair is a one-line reorder in Unit B's module. Leave it. |
+| `E7-F017` | LOW | **`CLI-008`** — retain, or file a named E7 successor | ★ *Superseded text: "**`DAT-009` slice 3** (already its owner) … Leave it." Corrected 2026-09-20 against the authoritative register:* `scripts/finding-ownership.json` records `"ticket": "CLI-008"` for `E7-F017`, and its `ownerStillOpen` says in terms that it is **"deliberately NOT fixed by the ticket that FOUND it: DAT-009 slice 3 is E5 work, and editing another unit's failure text inside an E5 PR is the drive-by that makes a diff unreviewable."** The defect is in CLI-008 Unit B's own module (`packages/worker-daemon/src/lease/staged-input.ts:252-258`). **Keep CLI-008 as owner, or file a named E7 successor — this plan must not re-point it to DAT-009.** |
 | `E7-F023` | MEDIUM | `CLI-008-F6` | Clause 4's scanned set is composed at the call site. |
 | `E7-F024` | MEDIUM | `CLI-008-F4` | The frozen `log` payload silently truncates at 65,536 chars and caps at 480 events — an announcement-surface property. |
 | `E7-F026` | LOW | `CLI-008-F1b` | It is a critique of the fourth candidate answer, which is F1b's subject. |
@@ -517,8 +530,10 @@ attack/readoption branch is removed.
 **Outcome:** exactly one of — (i) a fourth candidate mechanism that survives §6's constraint list
 and the §4 refutation pattern, priced and sized, `claude_local`-only per E7-D04; or (ii) a
 ★★★ **[REMOVED — twelfth round] — an earlier revision offered here a recommendation to adopt §13's option *“with the adversarial attack pass it has never had”*. §13 is **RATIFIED** (*“close the fifth option as SUPERSEDED”*) and §13.4 records the attack as **completed**, so both halves of that clause were false and it is not an available outcome.** Or
-(iii) a recorded statement that neither is reachable, naming what would change it. A founder ruling
-follows; **this ticket makes none of the three choices binding on its own.**
+(iii) a recorded statement that neither is reachable, naming what would change it — **two live
+outcomes, not three**, since (ii) is removed above. A founder ruling follows; **this ticket makes
+neither choice binding on its own.** ★ *Superseded text: "none of the three choices". Corrected
+2026-09-20 alongside the (ii) removal.*
 
 **★ The bar this ticket must clear, stated so it cannot be quietly lowered.** A fourth mechanism
 proposed before it survives §6 will be refuted for the same reason the first three were (E7-D02).
@@ -598,7 +613,9 @@ producer's dependency surface contains no byte-returning read. No existing guard
 `check-worker-daemon-boundary` passes a violation because it enforces a *dependency* boundary while
 the data-plane rule lives in a docstring.
 
-**★ The `kind` decision is this ticket's, and it decides whether the counter moves.**
+**★ The `kind` decision is this ticket's, and it decides whether the QUALIFYING ARTIFACT counter
+(arm 1) moves** — not the RECEIPT-BACKED OUTPUT counter (`taskOutputs`, arm 2), which is F5's
+(E7-D03).
 `countProducedOutputs` arm 1 filters `kind = 'workspace_patch'` and is attempt-scoped as of
 `E7-F031`. A `kind` outside that filter produces a real, attributable, committed artifact that the
 verifier **does not count**. Both of those are defensible and they are different products: the
@@ -793,6 +810,17 @@ writers, because F5's runs are distributed too. The bridge writes the row **and*
 `output_projection` receipt in one tenant transaction under the live fence, and the capability
 verifier admits *“exactly one writer”*; so F5 must **route through it**, not write beside it.
 
+★★★ **AND ROUTING THROUGH IT MOVES A COUNTER — the second of E7-D03's two.** *Corrected
+2026-09-20, verified at source.* `projectAcceptedOutput` writes the `task_outputs` row **and** its
+`output_projection` receipt in ONE tenant transaction, and `countProducedOutputs` **arm 2** counts
+exactly those receipted rows, bound on `job_id` **and** `attempt_id`
+(`server/src/services/e7-distributed-run-verifier-store.ts:579-606`). ★ *Superseded text: "links 4
+and 5 flip NO counter" (the earlier E7-D03 wording).* Link 4 flips none; **this ticket's bridge
+write moves the RECEIPT-BACKED OUTPUT counter (`taskOutputs`).** It still does **not** move the
+QUALIFYING ARTIFACT counter (arm 1, committed `kind = 'workspace_patch'` `job_artifacts`) — that
+remains link 3's — and moving arm 2 by writing a legitimate receipt is **not** a predicate change,
+which stays F6's.
+
 *Superseded framing, retained for the record:* it is `unwired` pending **M2 sink cutover** —
 *“task_outputs is still written by the legacy path”* — a second writer landing in M1 would make two
 mechanisms own one row, and the rule was that
@@ -807,8 +835,10 @@ test reds in CI, but no `verify:e7-1-distributed-run` invocation would ever repo
 committed and the founder still cannot see it on the task"*. That trade is recorded here so this
 ticket prices it rather than re-deriving it.
 
-**Ticket non-goals:** the counter (F6); the sink cutover (M2); the legacy write path; forking
-`postRunSummaryComment`.
+**Ticket non-goals:** the **clause-6 predicate** and the **QUALIFYING ARTIFACT counter** (F6) —
+★ note this ticket **does** move the RECEIPT-BACKED OUTPUT counter (`taskOutputs`, arm 2) by
+routing through the bridge, which is a legitimate receipt, not a predicate change (E7-D03); the
+sink cutover (M2); the legacy write path; forking `postRunSummaryComment`.
 
 ★★★ **NOT ASSIGNABLE AS BUILD UNTIL ITS CONTRACT IS DESIGNED — the files and interfaces below are
 the SECOND half of this ticket, not the first.** *Corrected 2026-09-20 (second review round): an
@@ -933,7 +963,8 @@ written. The distributed flag remains the outer off-switch.
 
 **RED → GREEN:**
 - RED: a run with one `artifact_prepared` event yields one `task_outputs` row and a non-empty
-  `detectedFiles`.
+  `detectedFiles` — the row written **through `jobOutputBridge.projectAcceptedOutput` with its
+  `output_projection` receipt**, so `countProducedOutputs` arm 2 (`taskOutputs`) counts it.
 - RED: a run with none yields **no row** and `detectedFiles: []` (anti-vacuity).
 - RED: a projection throw leaves the terminal and the run-summary comment intact.
 - RED: a run whose `execution_owner` is not `distributed` is **not** projected by this path (the
@@ -1305,8 +1336,11 @@ the F chain. Parallel **PRs** are free; only **merges** serialize.
 - Link 1b is stated as undesigned, its three refutations are carried forward as binding, and the
   design ticket's permitted outcomes include *"neither is reachable"*. No fourth mechanism is
   proposed in this plan.
-- Links 4 and 5 are stated as flipping **no counter**; only link 3 moves it. That distinction is
-  `E7-F016`'s substance and is the error the plan is written to avoid.
+- The **two** counters are stated separately (E7-D03): link 3 alone moves the **QUALIFYING
+  ARTIFACT** counter (arm 1) — that distinction is `E7-F016`'s substance — while link 5's bridge
+  route moves the **RECEIPT-BACKED OUTPUT** counter (`taskOutputs`, arm 2). Link 4 moves neither.
+  ★ *Superseded text: "Links 4 and 5 are stated as flipping no counter; only link 3 moves it."
+  Corrected 2026-09-20 against `server/src/services/e7-distributed-run-verifier-store.ts:579-606`.*
 - H-06 is not claimed; the DE-08 residual is carried explicitly; no keyed lane is dispatched without
   founder authorization.
 - No frozen-protocol edit, no schema change, no new runtime dependency.
@@ -1338,9 +1372,15 @@ authorize implementation.
   round); `captureSandboxEntries` must stay inert on the E2B and networked lanes.* Verify: a
   directory-returning `listDir` fails loudly; no `readFile`/digest in the enumerator's dependency
   surface; boundary check green.
-- [ ] **T3 (P1 STOP, design)** — `CLI-008-F1b`: produce one of the three permitted outcomes with a
-  decision request. Verify: every candidate is priced against §6 and given a positive control; §13's
-  option, if recommended, has had its first adversarial attack pass. **No product change.**
+- [ ] **T3 (P1 STOP, design)** — `CLI-008-F1b`: produce one of the **two** permitted outcomes —
+  (i) a surviving fourth candidate mechanism, or (iii) a recorded statement that neither is
+  reachable — with a decision request. Verify: every candidate is priced against §6 and given a
+  positive control. **No product change.** ★ *Superseded text: "one of the three permitted outcomes
+  … §13's option, if recommended, has had its first adversarial attack pass". Corrected 2026-09-20,
+  verified at source: option (ii) was REMOVED (twelfth round) because
+  `tickets/CLI-008-unit-f-design.md:1367` records the attack as completed and `:1424` records the
+  founder ruling "close the fifth option as SUPERSEDED". The paragraph was corrected first and the
+  operative lists were not — the same failure T5 records.*
 - [ ] **T4 (P1, M)** — `CLI-008-F3`: the producer, plus the **E7-D08 `kind` decision** recorded in
   `decisions.md`. Verify: anti-vacuity, replay-not-duplicate, escape refusal, no grant-URL leak.
 - [ ] **T5 (P2, S)** — `CLI-008-F4`: `artifactPrepared`. Verify: frozen schema validates, digest
@@ -1350,8 +1390,14 @@ authorize implementation.
   the attempt, so that checkbox mandated the very best-effort contract F4's Failure behavior
   rejects. This is the third place that one assertion had to be fixed; the paragraph was corrected
   first and the operative lists were not.*
-- [ ] **T6 (P2, M)** — `CLI-008-F5`: the projection, with the `jobOutputBridge` boundary stated in
-  the register entry's own words. Verify: no events ⇒ no row; non-distributed runs not projected.
+- [ ] **T6 (P2, M)** — `CLI-008-F5`: the projection, **routed through
+  `jobOutputBridge.projectAcceptedOutput`** (one writer), with the `jobOutputBridge` boundary stated
+  in the register entry's own words. Verify: no events ⇒ no row; non-distributed runs not projected;
+  the written row carries its `output_projection` receipt, so `countProducedOutputs` arm 2
+  (`taskOutputs`) counts it. ★ *Superseded text: this checkbox inherited E7-D03's "links 4 and 5
+  flip no counter"; F5 moves the RECEIPT-BACKED OUTPUT counter and leaves only the QUALIFYING
+  ARTIFACT counter (arm 1) to link 3 — verified at
+  `server/src/services/e7-distributed-run-verifier-store.ts:579-606`.*
 - [ ] **T7 (P1 STOP, M)** — `CLI-008-F6`: the judge, after F1b's ruling. Verify: the forged row no
   longer satisfies; the sibling-attempt leak is caught; both matchers have precision and recall.
 - [ ] **T8 (P1, M)** — `CLI-008-C5`: arm the tool surface after `DAT-007-S3`. Verify: an expired

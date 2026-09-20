@@ -615,12 +615,29 @@ test asserts that two consecutive CLI runs over the same live job queue **one** 
      `failedCancellations` count (or per-attempt outcomes), and the CLI fails non-zero on it. This
      edits a shipped service, so it is no longer the purely additive rollback this ticket claims
      and the “no service change” line below must be corrected with it.
-  2. **Terminal-state recheck** — after the sweep the CLI re-reads active attempts for every
-     organization it did not skip and fails non-zero if any remain. Additive, no service edit, but
-     it must re-read through the same tenant-scoped path and not a new query.
+  2. **Terminal-state recheck — ★★★ ONLY WITH A BOUNDED CONVERGENCE WAIT, AND A NAIVE VERSION OF
+     THIS OPTION IS WRONG.** *Corrected 2026-09-20 (fourteenth round), verified at source — this
+     defect was in my own earlier prescription.* An immediate re-read **fails a fully successful
+     drain**: `requestCancellation` sets `job_attempts.status = 'cancel_requested'`
+     (`packages/db/src/repositories/tenant/job-control.ts:5068`) and returns `queued`, which
+     `DRAINED_STATUSES` counts as **drained**
+     (`server/src/services/job-distributed-drain.ts:103`) — while `listActiveAttempts` excludes only
+     **terminal** statuses, so every just-cancelled attempt still reads as active. Cancellation is a
+     **request**; terminal convergence happens asynchronously when the worker acts on it.
 
-  ★ **A RED test is owed either way: a `requestCancellation` that throws for one attempt must make
-  this CLI exit non-zero.** Against today's code that test fails, which is the point — it is the
+     So this option must: re-read through the same tenant-scoped path (not a new query), wait a
+     **bounded** interval for convergence, and **distinguish `cancel_requested` from never-requested**
+     — an attempt still `cancel_requested` at the deadline is a *convergence timeout*, which is a
+     different verdict from *the cancel never happened*. Reporting both as one failure is as
+     dishonest as reporting neither.
+
+  ★ **TWO RED tests are owed either way** — (i) a `requestCancellation` that **throws** for one
+  attempt must make this CLI exit non-zero; and (ii) ★ **a fully successful drain, whose attempts
+  are still `cancel_requested` when the sweep returns, must exit ZERO** — the positive control that
+  catches the naive recheck above. Without (ii), option 2 looks correct and silently fails every
+  clean run.
+
+  ★ On (i): Against today's code that test fails, which is the point — it is the
   positive control for the dead lever.
 - The CLI never widens `pageSize` or `statementTimeoutMs` past the module's clamps, and never
   invents a `reason` that is not a stable enum-like string.

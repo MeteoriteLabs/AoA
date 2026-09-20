@@ -47,7 +47,7 @@ section a Step-0 planner should read before assuming anything is missing.
 | **BRW-003b** — capture + producer half | **complete (producer slice)** | `tickets/BRW-003b-result.md:3`. Video/trace ordering is an invariant, not a preference: `saveAs` deadlocks against `close()` if the natural order is used, and `tracing.flush()` discards a trace not stopped before close. |
 | **BRW-003d-1…5** — payload bounding, redaction, stream metadata, ordering + response bounding, grant-time ceiling | **complete** | `tickets/BRW-003d-{1..5}-result.md`. Collectively discharge BRW-003's "payloads bounded", "redaction is explicit", "stream metadata", "order tied to event sequence", "large download". d-2 fixed a **live** redaction defect (a secret in an array element was not redacted at all). d-5 closed a false claim of enforcement (the grant enforced nothing; only commit did, and only after the bytes were already stored). |
 | **BRW-003c** | **DESIGN ONLY** | `tickets/BRW-003c-design.md` exists; there is **no** `BRW-003c-result.md`. Named as design-only in `E8-F011`'s ownership disposition. |
-| **BRW-004** — browser secrets, network, human approval, slices (a)–(d) | **`gate_review`** | `tickets/BRW-004-result.md:3`. Slice **(e) is chartered as `JOB-015`** and was not built here; slices (f)–(h) not attempted. It resolved its two escalations, one of them by handing the control-command delivery hop **back** (answer: E8 does **not** own it). It closed `E8-F002` and opened/repointed several others. |
+| **BRW-004** — browser secrets, network, human approval, slices (a)–(d) | **`gate_review`** | `tickets/BRW-004-result.md:3`. Slice **(e) is chartered as `JOB-015`** and was not built here; slices (f)–(h) not attempted. It resolved its two escalations, one of them by handing the control-command delivery **hop** back (answer: E8 does **not** own the hop). ★★★ *Updated 2026-09-20 (dead-lever sweep), verified at source: `JOB-015` has **shipped** (`../E3-job-control/README.md:3`) and returned the **result-handler composition** to **`BRW-004`** — “The applier is not this ticket's: **E8/BRW-004** owns the browser-side approval applier (its slices (c)–(e) were gated on JOB-015 and can now proceed)” (`../E3-job-control/tickets/JOB-015-result.md:355-356`). Production composes `drain` only (`packages/worker-daemon/src/lifecycle/dispatch-runtime.ts:236-241`), so the applier is **unbuilt E8 work**, not an external dependency.* It closed `E8-F002` and opened/repointed several others. |
 | **BRW-hostspawn-gate** | **SHIPPED** (`eed9fdd35`) | `tickets/BRW-hostspawn-gate-result.md`. A guard-only, graph-inert unit: `scripts/check-boot-roots-browser-spawn-free.mjs` + `scripts/lib/boot-roots-browser-spawn-free.mjs` + `scripts/browser-spawn-expectation.json`, wired as a `policy`-job step in `.github/workflows/pr.yml`. It makes the gate's "no host-side browser spawn reachable from a boot root" clause **catchable and regression-proof while the spawn legitimately still exists** (declared: `cli-mode.ts`, owner `BRW-008`, `signatureOccurrences: 3`). A 3-agent adversarial pass found a real evasion — a spawn relocated into `packages/adapter-utils` — and the scan was widened to the whole `packages/` surface minus `browser-runtime`. **It does not close the spawn.** |
 
 **Gate-clause register state** (`scripts/gate-clause-wiring.json`):
@@ -107,9 +107,16 @@ planner must read all three:
 
 ## 5. Known blockers, measured
 
-### 5.1 ★★★ THE BLOCKER — three facts, each independently fatal
+### 5.1 ★★★ THE BLOCKER — two facts, each independently fatal
 
 This leads because the triage says M3 starts here (`scope-triage.md`).
+
+★ *Corrected 2026-09-20 (withdrawn-prerequisite sweep): this heading said **“three facts, each
+independently fatal”**. Item **(b)** below is **WITHDRAWN** — `e2b/e2b.Dockerfile:44-50` installs
+Playwright **globally** with `NODE_PATH` because the runner is **staged, not installed** — so there
+are **two**: **(a)** reachability/staging and **(c)** capability advertisement. The (a)/(b)/(c)
+lettering is retained so (a) and (c) keep the names every other record cites.
+★ Superseded text: “three facts, each independently fatal”.*
 
 **(a) `packages/browser-runtime` has zero importers anywhere in the tree.**
 The only occurrences of `@armyofagents/browser-runtime` outside the package itself are three
@@ -164,8 +171,17 @@ constraint; the capability is.** Both arms are pinned by
 missing) and `:186` (capability present, slot missing).
 
 **Consequence, stated plainly:** there is today no path by which a browser job runs. Fixing
-(a)+(b)+(c) is *necessary and not sufficient* — it makes `BRW-005`…`BRW-008` buildable; it
-proves nothing about D3.
+**(a)+(c)** — the two genuine blockers — is *necessary and not sufficient*: it makes
+`BRW-005`…`BRW-008` buildable; it proves nothing about D3.
+
+★ *Corrected 2026-09-20 (withdrawn-prerequisite sweep), verified at source: this required fixing
+**“(a)+(b)+(c)”**, which re-imposed the item withdrawn at §5.1(b) two paragraphs above.
+`e2b/e2b.Dockerfile:44-50` installs Playwright globally with `NODE_PATH` precisely because the
+runner is staged rather than installed, so **no `browser-runtime` manifest change is a prerequisite
+for anything**. The §8 enablement row already excluded it; this consequence and reopen trigger 1
+were the two operative sites that still encoded it, and a consequence naming a prerequisite that
+can never be satisfied is unsatisfiable by construction.
+★ Superseded text: “Fixing (a)+(b)+(c) is *necessary and not sufficient*”.*
 
 ### 5.2 Open findings — nine, measured at HEAD
 
@@ -176,7 +192,7 @@ remaining nine are open; five are HIGH.
 |---|---|---|
 | **`E8-F001`** | MED | A frozen golden-journey fixture and shipped `JOB-011` code name **different approval authorities** for `browser_request` (fixture: product-approval; code: `"none"` + a runtime permission decision). BRW-004 slice (b) made the disagreement *visible* and pinned the one known divergence by value tuple; the resolution needs a **v2 fixture directory**, which `tests/fixtures/distributed-execution/README.md` forbids doing in place and for which **no ticket in the 94-ticket programme owns the fixture corpus**. Blocks any D3 approval claim that cites the fixture as authority. MUST NOT be closed by deleting the pin or weakening the gate. |
 | **`E8-F003`** | **HIGH** | A **Critical** threat control (DE-08) recorded owned-and-delivered while its enforcement **exists nowhere**: sandbox egress is filtered at none of the three candidate points and the cloud metadata endpoint answers from inside the guest. Measured against real E2B in workflow run `33857218680`. Blocks D3-02's private/metadata denial and H-06. |
-| **`E8-F004`** | LOW | `listStrandedAnswers` (`server/src/services/agent-runtime-decisions.ts`) is an INNER JOIN on `run_id`; now that `run_id` is nullable every distributed decision is silently excluded. **The exclusion is correct** — a distributed decision has no heartbeat run — but the equivalent sweep does not exist and cannot yet, because **no control-plane hop delivers a control command to a running worker at all**. ★★★ **FALSE — corrected 2026-09-20 (ninth round), verified at source.** The delivery hop **ships**: `listPendingControlCommands` returns pending controls on the renewal response (`packages/db/src/repositories/tenant/job-control.ts:4113`), `applyOneControlCommand` applies them worker-side (`packages/worker-daemon/src/lease/lease-renewal.ts:650`), and `dispatch-runtime.ts:241` wires drain to `stopLeasing()`. What is actually missing is narrower and must not be stated as the whole: the **result-command applier** and the **stranded-answer sweep**. Booking a shipped hop as absent is how a programme rebuilds what it already has. Belongs beside `JOB-015`. Do not close it by deleting the join. |
+| **`E8-F004`** | LOW | `listStrandedAnswers` (`server/src/services/agent-runtime-decisions.ts`) is an INNER JOIN on `run_id`; now that `run_id` is nullable every distributed decision is silently excluded. **The exclusion is correct** — a distributed decision has no heartbeat run — but the equivalent sweep does not exist and cannot yet, because **no control-plane hop delivers a control command to a running worker at all**. ★★★ **FALSE — corrected 2026-09-20 (ninth round), verified at source.** The delivery hop **ships**: `listPendingControlCommands` returns pending controls on the renewal response (`packages/db/src/repositories/tenant/job-control.ts:4113`), `applyOneControlCommand` applies them worker-side (`packages/worker-daemon/src/lease/lease-renewal.ts:650`), and `dispatch-runtime.ts:241` wires drain to `stopLeasing()`. What is actually missing is narrower and must not be stated as the whole: the **result-command applier** and the **stranded-answer sweep**. Booking a shipped hop as absent is how a programme rebuilds what it already has. ★★★ **Re-assigned 2026-09-20 (dead-lever sweep), verified at source:** this said the remainder *“belongs beside `JOB-015`”*. It does not — `JOB-015` is **shipped for its own scope** (slices (a)–(f); `../E3-job-control/README.md:3`) and its result doc puts the applier outside it: *“The applier is not this ticket's: **E8/BRW-004** owns the browser-side approval applier … and **E9/SVC-001** the service-side one”* (`../E3-job-control/tickets/JOB-015-result.md:355-357`); `packages/worker-daemon/src/lifecycle/dispatch-runtime.ts:236-241` composes `drain` only and records the same reason. The two halves therefore split: the **result-command applier → `BRW-004`** (E8 work at M3 Step 0), and the **stranded-answer sweep → unowned, TO FILE at M3 Step 0** (`findings.md` §`E8-F004`, *Owner: `unowned`*). ★ Superseded text: “Belongs beside `JOB-015`.” Do not close it by deleting the join. |
 | **`E8-F005`** | MED (NARROWED) | The schema↔migration drift gate now covers the schema-vs-snapshot direction (`scripts/check-schema-migration-drift.mjs`, in the `migrations` job). The **SQL-file-tampering** direction is still undetected: an edited or gutted committed migration passes (measured: emptying `0279_*.sql` → exit 0), because `drizzle-kit generate` diffs against the meta snapshot, not the committed SQL. Catching it requires a DB-backed check. |
 | **`E8-F006`** | MED | **E8-1's own promotion check cannot detect E8-1's promotion.** The evaluator's only `unwired` signal is `count > expectedReferences` (`scripts/lib/gate-clause-wiring.mjs:105-106`), and the live delivery route is **stage-a-file-and-exec**, which adds no reference. Any stage-and-exec wiring leaves the count at exactly 1 and the check stays silent. Error direction is **pessimistic** (over-reports dormancy), which is why it is MED. Choosing E8-1's promotion observable is an E8 gate decision and is owed at M3. |
 | **`E8-F007`** | **HIGH** | The programme booked *"managed-E2B egress is not fully lockable"* as fact for a year; the installed SDK exposes the surface. That false premise is what wrote off the only enforcement layer **outside** the guest. Blocks any argument that provider-side filtering is unavailable. |
@@ -193,8 +209,15 @@ remaining nine are open; five are HIGH.
   is a gate-blocking one.
 - **`BRW-006` additionally requires `E10-REALTIME-FOUNDATION`** (`README.md:4`), which is
   not in M3's scope list. Entry must confirm it.
-- **BRW-004 slice (e)** is `JOB-015`, i.e. outside E8. BRW-004 explicitly **handed back**
-  the control-command delivery hop.
+- **BRW-004 slice (e)** was chartered as `JOB-015`, i.e. the **delivery hop** is outside E8.
+  BRW-004 explicitly **handed back** that hop. ★★★ *Updated 2026-09-20 (dead-lever sweep),
+  verified at source: `JOB-015` has since **shipped** (slices (a)–(f);
+  `../E3-job-control/README.md:3`) and **handed the applier back to E8** — “its slices (c)–(e)
+  were gated on JOB-015 and can now proceed” (`../E3-job-control/tickets/JOB-015-result.md:356`).
+  The **result-handler composition against `ControlCommandHandlers.result` is therefore `BRW-004`
+  work**, not a dependency to wait on; production composes `drain` only
+  (`packages/worker-daemon/src/lifecycle/dispatch-runtime.ts:236-241`). Nothing in this bullet is
+  blocked on E3 any more.*
 - **BRW-004 is `gate_review`, not `complete`.** It is the only E8 ticket in that state and
   M3's scope list opens with it (`scope-triage.md`).
 
@@ -232,8 +255,15 @@ is a *guard*, not a gate: it proves the clause is watched, never that it is sati
 
 - **No frozen-protocol edit.** BRW-001 established every browser field is already in v1; an
   additive field is a Protocol Custodian STOP plus D0-T04 evidence, not E8 work.
-- **The control-command delivery hop** — handed back by BRW-004 and chartered as `JOB-015`.
-  `E8-F004`'s missing sweep belongs *beside* it, not in front of it.
+- **The control-command delivery hop** — handed back by BRW-004 and chartered as `JOB-015`,
+  which has **shipped** (`../E3-job-control/README.md:3`). ★★★ *Narrowed 2026-09-20 (dead-lever
+  sweep), verified at source: only the **hop** is out of scope. The **result-handler composition**
+  is **in** E8 scope and is `BRW-004`'s — `JOB-015`'s result doc assigns it there explicitly
+  (`../E3-job-control/tickets/JOB-015-result.md:355-357`) while
+  `packages/worker-daemon/src/lifecycle/dispatch-runtime.ts:236-241` composes `drain` only.
+  `E8-F004`'s missing **stranded-answer sweep** is a separate, **unowned** item — **TO FILE at M3
+  Step 0** — and no longer waits on `JOB-015`.
+  ★ Superseded text: “`E8-F004`'s missing sweep belongs *beside* it, not in front of it.”*
 - **A v2 golden-journey fixture directory** (`E8-F001`) — a fixture-owner / Protocol
   Custodian authorisation, and no ticket in the programme owns the corpus.
 - **Building egress enforcement.** `E8-F003`/`F007`/`F008` measure its absence; none of them
@@ -261,7 +291,7 @@ Tickets that will need tasks, with their disposition as measured for this plan:
 
 | Ticket | Disposition today | What Step 0 must resolve first |
 |---|---|---|
-| `BRW-004` | `gate_review`, slices (a)–(d) shipped, (e)→`JOB-015`, (f)–(h) unattempted | Whether (f)–(h) are still the right shape after §5.1 is fixed; slice (f) is *"materially affected by slice (a)'s measurement"* per the result doc §1. |
+| `BRW-004` | `gate_review`, slices (a)–(d) shipped, (e)'s **delivery hop** → `JOB-015` (**shipped**), (f)–(h) unattempted — ★★★ *plus the **result-handler composition**, re-assigned here 2026-09-20 and verified at source* | Whether (f)–(h) are still the right shape after §5.1 is fixed; slice (f) is *"materially affected by slice (a)'s measurement"* per the result doc §1. **Also now Step-0 work: compose `ControlCommandHandlers.result`.** `JOB-015` shipped the channel and assigned the applier here — “**E8/BRW-004** owns the browser-side approval applier (its slices (c)–(e) were gated on JOB-015 and can now proceed)” (`../E3-job-control/tickets/JOB-015-result.md:355-356`) — while `packages/worker-daemon/src/lifecycle/dispatch-runtime.ts:236-241` still composes `drain` only. The **stranded-answer sweep** (`E8-F004`) is **NOT** this ticket's and is **unowned — TO FILE at M3 Step 0**. ★ Superseded text: slice (e) reading wholly as “→ `JOB-015`”, which left this ticket waiting on a shipped ticket that had declared the work out of scope. |
 | `BRW-005` — browser golden journey | **no ticket file**; node at `program-design.md:1007` | Blocked on §5.1 entirely: there is no leasable browser job to run a journey against. Also needs `DEP-005`. |
 | `BRW-006` — evidence + approval experience | **no ticket file**; node at `program-design.md:1014` | `E10-REALTIME-FOUNDATION` must have passed (`README.md:4`); it is not in M3's scope list. |
 | `BRW-007` — agent-facing session request ★★★ **RETRACTED thirteenth round — they ARE M3 scope.** The E8 scope addendum is titled for these two tickets and records *“Authority: programme owner decision”*; E8's README lists *“BRW-001 through BRW-008”* and its exit gate includes their work. Absence of a design NODE is not absence of AUTHORITY. They are **TO FILE at M3 Step 0** — the graph node and ticket files are the filing, not a new decision. | **no ticket file, no program-design node**; scope only in `scope-addendum-agent-and-commander.md:46` | Needs BRW-002 + BRW-004 + BRW-006. The `ask_human` precedent is the named authorization model. |
@@ -275,18 +305,50 @@ Tickets that will need tasks, with their disposition as measured for this plan:
 
 Re-open and re-measure this plan — do not execute it — if any of the following becomes true:
 
-1. **Any of §5.1's three facts changes.** Specifically: a non-CI, non-`Dockerfile` reference
-   to `@armyofagents/browser-runtime` appears; `packages/browser-runtime/package.json` gains
-   a `dependencies` key; or `SUPERVISABLE_WORKLOAD_CAPABILITIES`
+1. **Either of §5.1's two facts changes.** Specifically: a non-CI, non-`Dockerfile` reference
+   to `@armyofagents/browser-runtime` appears; or `SUPERVISABLE_WORKLOAD_CAPABILITIES`
    (`hello-provisioning.ts:59`) gains `workload.browser_session`.
+   ★ *Corrected 2026-09-20 (withdrawn-prerequisite sweep), verified at source: this said **“three
+   facts”** and watched `packages/browser-runtime/package.json` for a `dependencies` key. That item
+   was **WITHDRAWN** at §5.1(b) — the runner is staged and `e2b/e2b.Dockerfile:44-50` installs
+   Playwright globally with `NODE_PATH` — so the watch could only ever fire on a change that is
+   **not** a blocker clearing, while the manifest correctly never changing would have kept a
+   withdrawn prerequisite standing in the trigger forever.
+   ★ Superseded text: “Any of §5.1's three facts changes … `packages/browser-runtime/package.json`
+   gains a `dependencies` key”.*
 2. **`E8-1-sandbox-local-browser` moves off `unwired`**, or its `expectedReferences` changes
    — *and* note `E8-F006`: the register may **not** notice this on its own.
 3. **Any HIGH finding closes or is repointed** — `E8-F003`, `E8-F007`, `E8-F008`, `E8-F011`,
    `E8-F012`. Four of the five are `unowned`; an owner being named is itself a trigger.
 4. **A fixture owner or Protocol Custodian is named** for the golden-journey corpus
    (`E8-F001`), or a v2 fixture directory is authorised.
-5. **`JOB-015` lands the REMAINING control-command work** — ★ *the delivery hop itself already ships (see the correction above); what JOB-015 owes is the result-command applier and the stranded-answer sweep* — `E8-F004` repoints to it and
-   BRW-004 slice (e) re-enters the epic's dependency surface.
+5. **The result-handler composition lands, or the stranded-answer sweep is filed.**
+   `ControlCommandHandlers.result` is the port both appliers compose against;
+   `packages/worker-daemon/src/lifecycle/dispatch-runtime.ts:241` composes **`drain` only**, and
+   `:236-238` says so in place: *“`result` is deliberately ABSENT … E8/BRW-004 owns the
+   browser-side applier”*. So: **`BRW-004` owns the browser-side result applier** (and `E9/SVC-001`
+   the service-side one, `../E3-job-control/tickets/JOB-015-result.md:355-357`) — it is **E8 work
+   at M3 Step 0**, not something to wait on. The **stranded-answer sweep** is a **separate,
+   unowned** item: `findings.md` §`E8-F004` records *Owner: `unowned`*, and no ticket in the
+   94-ticket programme takes it — **TO FILE at M3 Step 0**. `E8-F004` repoints to whichever ticket
+   takes it.
+   ★★★ *Corrected 2026-09-20 (dead-lever sweep), verified at source: this trigger waited on
+   **`JOB-015`** to “land the REMAINING control-command work … the result-command applier and the
+   stranded-answer sweep”. **`JOB-015` is shipped for its own scope** — slices (a)–(f) built
+   (`../E3-job-control/tickets/JOB-015-result.md:4-5`), E3 recorded `complete` with “all tickets
+   JOB-001 through JOB-015 shipped” (`../E3-job-control/README.md:3`) — and its result doc states
+   explicitly that the applier **is not that ticket's work**: *“The applier is not this ticket's:
+   **E8/BRW-004** owns the browser-side approval applier (its slices (c)–(e) were gated on JOB-015
+   and can now proceed), and **E9/SVC-001** the service-side one”*
+   (`../E3-job-control/tickets/JOB-015-result.md:355-357`). The production composition agrees:
+   `dispatch-runtime.ts:236-241` supplies `drain` and deliberately no `result`. A reopen trigger
+   waiting on a shipped ticket that has declared the work out of scope can **never fire** — a dead
+   lever, and it was also the one thing still recording BRW-004's slices (c)–(e) as externally
+   blocked when `JOB-015` had already released them.
+   ★ Superseded text: “**`JOB-015` lands the REMAINING control-command work** — the delivery hop
+   itself already ships … what JOB-015 owes is the result-command applier and the stranded-answer
+   sweep — `E8-F004` repoints to it and BRW-004 slice (e) re-enters the epic's dependency
+   surface”.*
 6. **`E10-REALTIME-FOUNDATION` passes or is rescoped** — `BRW-006`'s dependency.
 7. **The DE-08 ruling is amended, or H-06 is normatively amended** — §6's two standing
    non-certifications change shape.

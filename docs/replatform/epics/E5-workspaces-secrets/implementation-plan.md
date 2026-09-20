@@ -50,7 +50,7 @@ first executed ticket. Finding IDs are `E5-F0xx`; decision IDs are `E5-D0x`.
 |---|---|---|
 | `DAT-011` | **B** | Shipped and production-wired. Owes **current evidence on the milestone candidate**, not a rebuild. |
 | `TRACK-001` | **B** | Shipped guard. Owes current lane-green evidence. |
-| `DAT-008` | **A** | Preserve the implementation; narrow the completion claim. ★★★ **Corrected 2026-09-20 (D4), verified at source:** slices **1–5 ARE shipped**. Slice 5 landed with its own result doc ([`tickets/DAT-008-slice-5-result.md`](./tickets/DAT-008-slice-5-result.md)) and its symbol is composed in production — `synthesiseRunSecrets` is imported at `packages/worker-daemon/src/lifecycle/dispatch-runtime.ts:40` and called at `:164`. **Slice 6 is UNRECORDED** — no `DAT-008-slice-6-*` file exists in `tickets/`; that is an absent *record*, which is NOT the same as deferred work and must never be written down as either "shipped" or "deferred". **Slice 7 is DEFERRED** — `DEFERRED (no code, no test)` ([`tickets/DAT-008-slice-7-result.md`](./tickets/DAT-008-slice-7-result.md)). ★ *Superseded text: "Slices 5–7 are not 'shipped'." — it retracted a shipped, production-composed slice and collapsed "unrecorded" into "deferred"; §4 `DAT-008-A1` already stated this correctly.* |
+| `DAT-008` | **A** | Preserve the implementation; narrow the completion claim. ★★★ **Corrected 2026-09-20 (D4), verified at source:** slices **1–5 ARE shipped**. Slice 5 landed with its own result doc ([`tickets/DAT-008-slice-5-result.md`](./tickets/DAT-008-slice-5-result.md)) and its symbol is composed in production — `synthesiseRunSecrets` is imported at `packages/worker-daemon/src/lifecycle/dispatch-runtime.ts:40` and called at `:164`. **Slice 6 is UNRECORDED** — no `DAT-008-slice-6-*` file exists in `tickets/`; that is an absent *record*, which is NOT the same as deferred work and must never be written down as either "shipped" or "deferred". **Slice 7 is DEFERRED** — `DEFERRED (no code, no test)` ([`tickets/DAT-008-slice-7-result.md`](./tickets/DAT-008-slice-7-result.md)). ★ *Superseded text: "Slices 5–7 are not 'shipped'." — it retracted a shipped, production-composed slice and collapsed "unrecorded" into "deferred"; §4 `DAT-008-A1` already stated this correctly.* ★★★ **Amended 2026-09-20 (D7), verified at source — "UNRECORDED" above means *no standalone `DAT-008-slice-6-*` result FILENAME*, and nothing more. Slice 6 is NOT unaccounted:** it is named as *deferral #3* ([`tickets/DAT-008-design.md:233`](./tickets/DAT-008-design.md)), its state is recorded as *"Deferral #3 is closed on the MINT side only"* ([`tickets/DAT-008-result.md:111`](./tickets/DAT-008-result.md)), and the mint-side refusal is implemented at `server/src/services/execution-secret-handle-mint.ts:174` (`ownerAuthoritiesAgree(...)` → `refuse("owner_authority_disagreement")`). The genuinely open part is the **placement-side** tautological owner check, which `DAT-008-result.md:111-113` says is deliberately untouched. Do not write "unaccounted". |
 | `DAT-007` | **M** | Its own result header already says `PARTIAL — the core remote-reach is BLOCKED`. Residual is build work. |
 | `DAT-009` | **M** | Slices **3c / 3d / 3e** are `M1b` build work; return-path **link 3**. |
 | `DAT-006`, `DAT-010` | **C1** | Shipped, production-wired, **not required by M1**. **Do NOT re-open their acceptance.** `DAT-010` sits on the milestone's own artifact-commit path (`server/src/services/artifact-commit.ts:42,272`). |
@@ -176,7 +176,7 @@ NOT first-milestone, stated with evidence rather than omitted:
 | 1 | immutable workspace staging | `proven_weakly` | Unchanged; `job-leasing.ts:371` still hardcodes `workspace: null`. No register clause. | **Not M1.** Needs CLI-008 Unit E. |
 | 2 | fenced object commit | **`proven_in_d1`** (server half) | Server half live-proven (E5-D01). **Worker half `unwired`** — `E5-2`, zero callers. | `DAT-009-3c/3d/3e` (M1b). |
 | 3 | patch conflict quarantine | `proven_weakly` | `createPatchApplyService` (`server/src/services/patch-apply.ts:88`) has **zero production callers** — every reference outside the definition is `server/src/__tests__/patch-apply.integration.test.ts`. `E5-3` `unwired`. | **Not M1.** See below. |
-| 4 | lease-scoped secrets | `proven_weakly` | Slice 5 landed and is `wired` via `E5-5`; slice 7 is `DEFERRED (no code, no test)`; **slice 6 has no record at all**. | `DAT-008-A1` (record only). |
+| 4 | lease-scoped secrets | `proven_weakly` | Slice 5 landed and is `wired` via `E5-5`; slice 7 is `DEFERRED (no code, no test)`; **slice 6 has no standalone result FILE, but it is not unaccounted** — ★★★ *Corrected 2026-09-20 (D7), verified at source.* It is *deferral #3* (`tickets/DAT-008-design.md:233`), recorded *"closed on the MINT side only"* (`tickets/DAT-008-result.md:111`), and implemented mint-side at `server/src/services/execution-secret-handle-mint.ts:174`. Open residual: the **placement-side** owner check. ★ *Superseded text: "**slice 6 has no record at all**".* | `DAT-008-A1` (record only). |
 | 5 | redaction | `proven_weakly` | `E5-5` **`wired`** — `synthesiseRunSecrets` referenced by `composeDispatchRuntime`, planted-leak proof on both streams. The residual (a real sandbox authenticating over live E2B) lives in test evidence, not the caller count. | Covered by the M1 campaign. |
 | 6 | denied egress | **`proven_in_d1`** (`e6f-08`) | `E5-6` **`unwired`** — `createFenceAwareEgressProxy` zero callers. The `e6f-08` evidence is the D1 harness, not this symbol. | **Not M1** (E5-D06). |
 | 7 | brokered internal tool surface (DAT-007) | **`not_proven`** | Item #1 slices 1–2 shipped and armed behind the flag, **and the real-PG resolver proof already exists** — 5 cases at `server/src/__tests__/distributed-run-currency.integration.test.ts:258-313`, so `DAT-007-S3` reruns + extends rather than first-proves (★ D1). Item #2's dispatch call site is **DELIVERED, default-OFF**: `server/src/services/heartbeat.ts:5311-5316` + `server/src/services/task-run-sandbox-invocation.ts:167-200`, gated by `readDistributedToolSurfaceFlag` (default **false**, `server/src/config/distributed-execution.ts:51-53`). What item #2 owes is **enablement + live proof**, not construction. ★ *Superseded text: "item #2 (the `brokered:true` dispatch call site) is CLI-008 Unit C's" (D5, verified at source).* | `DAT-007-S3` (M1a) + E7 Unit C **enablement/live-proof** (M1b). |
@@ -396,27 +396,62 @@ completion claim. **Depends on:** nothing.
 5 landed** ([`tickets/DAT-008-slice-5-result.md`](./tickets/DAT-008-slice-5-result.md)) and gives
 `E5-5-redaction` its production caller via `synthesiseRunSecrets` ← `composeDispatchRuntime`;
 **slice 7 is `DEFERRED (no code, no test)`**
-([`tickets/DAT-008-slice-7-result.md`](./tickets/DAT-008-slice-7-result.md)); **slice 6 has no record
-on disk at all.**
+([`tickets/DAT-008-slice-7-result.md`](./tickets/DAT-008-slice-7-result.md)); **slice 6 has no
+standalone result file, but it DOES have a record and an implementation.**
+
+★★★ **Corrected 2026-09-20 (D7), verified at source.** *Superseded text: "**slice 6 has no record
+on disk at all.**"* — that is a false absence claim. What is absent is a `DAT-008-slice-6-*`
+**filename**; the slice itself is accounted for three times over:
+- **Named:** slice 6 is *"deferral #3, the tautological owner check"* —
+  [`tickets/DAT-008-design.md:233`](./tickets/DAT-008-design.md).
+- **Dispositioned:** *"Deferral #3 is closed on the MINT side only. The mint refuses unless two
+  independently-derived owner authorities agree. The *original* tautological comparison in the
+  placement path is untouched"* — [`tickets/DAT-008-result.md:111-113`](./tickets/DAT-008-result.md).
+- **Implemented (mint side):** `server/src/services/execution-secret-handle-mint.ts:174` —
+  `if (!ownerAuthoritiesAgree(input.placementOwner, input.credentialKind)) return
+  refuse("owner_authority_disagreement");`, under the comment *"Deferral #3 — both owner authorities
+  must exist and agree"*.
+
+The **genuinely open** part is therefore narrow and must be stated as such: the **placement-side**
+tautological owner comparison is still in place, deliberately, and no standalone slice-6-named result
+file indexes any of the above.
 
 **Outcome:** `README.md:3`'s sentence — "DAT-001 through DAT-011 shipped" — and the epic's
 `complete` ticket line are narrowed to what the ledgers support: the control-plane half plus the
-worker redemption slice landed; slice 6 is unaccounted and slice 7 is deferred with no code. This is
+worker redemption slice landed; slice 6 is **mint-side closed with a placement-side residual and no
+standalone result file** — not "unaccounted" (★ *Superseded text: "slice 6 is unaccounted"*; D7,
+verified at source) — and slice 7 is deferred with no code. This is
 the record-truth half of disposition A, and it is the thing that makes exit criterion 1 checkable.
 
-**Ticket non-goals:** building slice 6 or slice 7; touching `E5-5`'s `wired` status (it is correct —
+**Ticket non-goals:** building slice 6's placement-side residual or slice 7; re-deriving the
+mint-side slice-6 evidence (it is cited above); touching `E5-5`'s `wired` status (it is correct —
 the checker reads caller count, and the live-E2B residual lives in the test evidence, which the
 register entry already says); re-opening `DAT-008`'s landed slices.
 
-**Files:** `README.md` (the status sentence); `findings.md` (a new `E5-F003` recording the
-unaccounted slice 6 if no record is found on a second search); `tickets/DAT-008-A1-result.md`.
+**Files:** `README.md` (the status sentence); `findings.md` (a new `E5-F003` recording **two
+narrow, separable facts** — (i) the **record-indexing** gap: no standalone `DAT-008-slice-6-*`
+result file exists, while the slice is recorded at `tickets/DAT-008-design.md:233` and
+`tickets/DAT-008-result.md:111`; and (ii) the **placement-side residual**: the original tautological
+owner comparison is untouched, with only the mint side closed at
+`server/src/services/execution-secret-handle-mint.ts:174`); `tickets/DAT-008-A1-result.md`.
 **No source file changes.**
+
+★★★ **The word "unaccounted" must not appear in any artefact this ticket writes** (D7). Slice 6 has
+a named record, a recorded disposition and shipped mint-side code; writing "unaccounted" would
+publish a false absence claim. ★ *Superseded text: "`findings.md` (a new `E5-F003` recording the
+unaccounted slice 6 if no record is found on a second search)".*
 
 **Interfaces:** none.
 
-**Failure behavior:** if a slice-6 record is found elsewhere in the tree, the finding is not filed
-and the ticket records where it was found instead. Exoneration needs strictly more evidence than
-conviction — re-test the claim at source before writing it down.
+**Failure behavior:** ★★★ **the second search has already been run and it FOUND the records** (D7)
+— `tickets/DAT-008-design.md:233`, `tickets/DAT-008-result.md:111`, and the mint implementation at
+`server/src/services/execution-secret-handle-mint.ts:174`. So the absence-of-work finding is **not
+filed**; what is filed is the pair in the Files list above. If a standalone `DAT-008-slice-6-*`
+result file is additionally found anywhere in the tree, drop clause (i) and record where it was
+found. Exoneration needs strictly more evidence than conviction — re-test the claim at source before
+writing it down. ★ *Superseded text: "if a slice-6 record is found elsewhere in the tree, the
+finding is not filed and the ticket records where it was found instead." — it left the default as
+"assert absence", and the records were already on disk.*
 
 **Migration/compatibility / rollback:** documentation only; revert the commit.
 
@@ -581,8 +616,16 @@ would exercise:**
    (`:80`, `:263-310`), so the cross-tenant arm (`resolver.ts:60,91,114`) is never taken.
 4. **Resolver throw → propagates → deny.** No case injects a database error; the catch-and-admit
    mutant has nothing to die against.
-5. **Flag-off positive control.** Belongs in `server/src/__tests__/mcp-run-currency-gate.test.ts`,
-   proving the rows measure the gate and not the fixture.
+5. **★★★ Corrected 2026-09-20 (D8), verified at source — this one is NOT missing.** The flag-off
+   positive control **already exists and passes**:
+   `server/src/__tests__/mcp-run-currency-gate.test.ts:125-132` — *"flag OFF (unset) + distributed
+   agent → resolver NEVER consulted (byte-identical legacy)"* — asserts `res.status` is `200` and
+   `expect(resolve).not.toHaveBeenCalled()`. It is **rerun and credited**, never claimed RED. If a
+   RED is wanted for this arm it must come from an **explicit mutant** (a reader that consults the
+   resolver with the flag unset), not from pretending the test is absent.
+   ★ *Superseded text: "5. **Flag-off positive control.** Belongs in
+   `server/src/__tests__/mcp-run-currency-gate.test.ts`, proving the rows measure the gate and not
+   the fixture."*
 6. **`signedRunId` vs the header-overridable `req.actor.runId`.** The distinction is load-bearing
    (`server/src/middleware/auth.ts:363`) and unpinned by the integration suite.
 
@@ -596,7 +639,9 @@ explicitly-scoped addition — not a property of this rerun, and not a gap in it
 
 **Outcome:** the **existing** Tier-3 integration proof rerun on the milestone candidate with a
 recorded non-zero executed-test count (D2), **extended** so the resolver's verdicts are covered for
-the full set — existing rows reasserted, new rows added:
+the full set of the **ten** cases below — five existing Tier-3 rows reasserted, **four** new Tier-3
+deny rows added, and the tenth (the flag-off control) already green in the Tier-1 gate suite and
+merely rerun:
 
 - a local run (`execution_owner` NULL → admit) — **EXISTS** (`:295`)
 - a distributed run with a fresh active lease (admit) — **EXISTS** (`:258`)
@@ -607,7 +652,10 @@ the full set — existing rows reasserted, new rows added:
 - a revoked/disabled execution target (deny) — **NEW**
 - a run in another company (deny with the **same coarse forbidden** as wrong-tenant, no oracle) — **NEW**
 - a resolver throw (propagates → 500 → deny) — **NEW**
-- a positive control: the gate off (flag false) admits every one of those — **NEW**
+- a positive control: the gate off (flag false) leaves the resolver unconsulted — **EXISTS**
+  (`server/src/__tests__/mcp-run-currency-gate.test.ts:125`), rerun and credited.
+  ★ *Superseded text: "a positive control: the gate off (flag false) admits every one of those —
+  **NEW**". Verified at source: the test is present and green (D8).*
 
 ★★★ *Superseded text: "a Tier-3 integration proof, on embedded PostgreSQL with forced RLS, that the
 resolver's verdicts are correct for: …". It listed five already-passing cases as if none existed
@@ -627,8 +675,11 @@ C** (E7), and building it here would absorb another epic's ticket." — it descr
 default-OFF plumbing as unbuilt (D5, verified at source).*
 
 **Files:** extend `server/src/__tests__/distributed-run-currency.integration.test.ts` with the four
-new deny cases; extend `server/src/__tests__/mcp-run-currency-gate.test.ts` with the flag-off
-positive control and the `signedRunId`-vs-header mutant pin. Source changes are expected to be
+new deny cases; extend `server/src/__tests__/mcp-run-currency-gate.test.ts` with the
+`signedRunId`-vs-header mutant pin **only** — the flag-off positive control is already there and
+green (`:125`), so it is rerun, not written. ★ *Superseded text: "extend
+`server/src/__tests__/mcp-run-currency-gate.test.ts` with the flag-off positive control and the
+`signedRunId`-vs-header mutant pin." (D8, verified at source.)* Source changes are expected to be
 **zero** — if the proof reds, the defect is filed and fixed in the resolver, and that is the point of
 the ticket. ★ **The existing five cases are NOT rewritten**; they are rerun (D1).
 ★★★ **Platform decision this ticket must make explicitly (D2):** the suite is Linux-only by
@@ -669,7 +720,16 @@ against embedded PostgreSQL with forced RLS — absent today."*
 - RED: a wrong-company run denies with the **same coarse forbidden** as wrong-tenant — genuinely absent.
 - RED: a resolver throw propagates → deny; the catch-and-admit mutant must red — genuinely absent.
 - RED: the header-override mutant (resolve on `req.actor.runId` instead of `signedRunId`) must red.
-- RED: the flag-off control admits every case (proving the rows measure the gate, not the fixture).
+- **NOT RED — already GREEN; rerun and credit.** The flag-off positive control
+  (`server/src/__tests__/mcp-run-currency-gate.test.ts:125`) already asserts HTTP 200 plus
+  `resolve` `not.toHaveBeenCalled` with the flag unset. ★ *Superseded text: "RED: the flag-off
+  control admits every case (proving the rows measure the gate, not the fixture)." (D8, verified at
+  source.)* A RED on this arm is admissible **only** from an explicit mutant that consults the
+  resolver with the flag unset.
+- **NOT this ticket's RED — separately scoped.** Forced RLS. The Tier-3 suite deliberately seeds and
+  reads as the embedded-pg superuser, which bypasses even FORCE'd RLS, with the rationale recorded at
+  `server/src/__tests__/distributed-run-currency.integration.test.ts:16-27`. A forced-RLS proof needs
+  its own `aoa_app`-role harness and must be declared as its own work.
 - GREEN: the identical commands pass, plus server typecheck and build.
 
 **Evidence / commit:** `tickets/DAT-007-S3-result.md`; one commit
@@ -1036,9 +1096,15 @@ Parallel **PRs** are free; only **merges** serialize.
   capability, and a stub producer is forbidden.
 - H-06 is not claimed anywhere; the DE-08 residual is carried explicitly.
 - No schema change, no `db:generate`, no frozen-protocol edit, no new runtime dependency.
-- **What I could not establish:** whether a `DAT-008` slice-6 record exists anywhere outside
-  `epics/E5-workspaces-secrets/tickets/` — a search of that directory found none, and
-  `DAT-008-A1` is instructed to search again before filing a finding rather than assert absence.
+- ★★★ **Resolved 2026-09-20 (D7), verified at source.** *Superseded text: "**What I could not
+  establish:** whether a `DAT-008` slice-6 record exists anywhere outside
+  `epics/E5-workspaces-secrets/tickets/` — a search of that directory found none, and `DAT-008-A1`
+  is instructed to search again before filing a finding rather than assert absence."* The records
+  were in that very directory, under other filenames: `tickets/DAT-008-design.md:233` names slice 6
+  as *deferral #3*, and `tickets/DAT-008-result.md:111` records it *"closed on the MINT side only"*,
+  with the code at `server/src/services/execution-secret-handle-mint.ts:174`. What remains
+  unestablished is only whether a **standalone slice-6-named result file** exists anywhere — a
+  record-indexing question, not a work-existence one.
   I also could not establish a current green/red state for any CI lane from this worktree; every
   lane claim in `M0` must be produced by running the lane, not inherited from this plan.
 
@@ -1054,8 +1120,15 @@ authorize implementation.
   `worker-control.ts` caller; mutants M2/M3′/M4 still kill.
 - [ ] **T2 (P1, S)** — `TRACK-001-B1`: run the ticket-graph guard plus its positive control on the
   candidate. Verify: exit 0, and a fixture id with no node reds it.
-- [ ] **T3 (P1, S)** — `DAT-008-A1`: narrow `README.md:3` to the ledgers; file a finding for the
-  unaccounted slice 6 only after a second search. Verify: three record guards green after the edit.
+- [ ] **T3 (P1, S)** — `DAT-008-A1`: narrow `README.md:3` to the ledgers; file `E5-F003` for the
+  **two separable slice-6 facts** — (i) no standalone `DAT-008-slice-6-*` result file indexes the
+  slice, and (ii) the **placement-side** tautological owner check is the open residual — each cited
+  (`tickets/DAT-008-design.md:233`, `tickets/DAT-008-result.md:111`,
+  `server/src/services/execution-secret-handle-mint.ts:174`). **Do not write "unaccounted":** the
+  mint side is shipped and recorded. Verify: three record guards green after the edit, and no
+  artefact of this ticket claims slice 6 is unaccounted or absent.
+  ★★★ *Superseded text: "file a finding for the unaccounted slice 6 only after a second search." —
+  the second search has been run and found the records (D7, verified at source).*
 - [ ] **T4 (P2, S)** — `E5-A2-MATRIX`: freeze the seven-clause matrix, commands, topology and owners.
   Verify: a1 untouched **in every commit of the branch**, and
   `check-evidence-immutability.mjs --base <candidate base> --candidate <candidate sha>` green (★ the
@@ -1063,9 +1136,23 @@ authorize implementation.
   fixture repository**, never here: the guard reads committed blobs and also walks `base..candidate`,
   so "edit a1, then revert" neither REDs while uncommitted nor clears once committed — the forbidden
   blob stays in the walked history (D3).
-- [ ] **T5 (P1 STOP, M)** — `DAT-007-S3`: prove the run-currency gate against real PostgreSQL with
-  forced RLS. Verify: seven verdict rows, the header-override mutant, the catch-and-admit mutant,
-  and the flag-off control.
+- [ ] **T5 (P1 STOP, M)** — `DAT-007-S3`: **rerun on Linux and extend** the run-currency gate's
+  existing real-PostgreSQL proof. Verify: a Tier-3 rerun with a recorded **non-zero executed-test
+  count on Linux** (D2) covering the ticket's **ten** cases — the five EXISTING rows reasserted
+  (`server/src/__tests__/distributed-run-currency.integration.test.ts:258,269,281,295,306`) and the
+  four NEW deny rows (replaced `targetGeneration`, revoked/disabled target, wrong-company run,
+  resolver throw) — plus the header-override mutant and the catch-and-admit mutant. The tenth case,
+  the **flag-off control, is already green** and is rerun, not built
+  (`server/src/__tests__/mcp-run-currency-gate.test.ts:125` asserts 200 +
+  `not.toHaveBeenCalled`); a RED for it would need an explicit mutant. **Forced RLS is NOT part of
+  this ticket's RED** — it is a separately-scoped `aoa_app`-role harness, because the suite
+  deliberately seeds as the embedded-pg superuser and says so at
+  `server/src/__tests__/distributed-run-currency.integration.test.ts:16-27`.
+  ★★★ *Superseded text: "prove the run-currency gate against real PostgreSQL with forced RLS.
+  Verify: seven verdict rows, the header-override mutant, the catch-and-admit mutant, and the
+  flag-off control." — it contradicted its own corrected ticket body (§`DAT-007-S3`, "Forced RLS is
+  a DELIBERATE non-goal of that suite"), said seven rows where the ticket enumerates ten cases, and
+  demanded as new a control that already exists and passes.*
 - [ ] **T6 (P1 STOP, M)** — `DAT-009-3c`: the supervisor hook, plus the **E5-D07 decision** on
   whether a failed export fails the attempt, with its own mutant.
 - [ ] **T7 (P1, S)** — `DAT-009-3d`: compose it, promote `E5-2` with evidence, and state plainly in
