@@ -2,6 +2,13 @@
 
 > **Proposal only — non-authoritative pending review.** Nothing in this directory changes an epic status, approves scope, passes a gate, or supersedes an existing result, QA record, or handoff. The authority hierarchy in [`../README.md`](../README.md) continues to govern.
 
+> **★ ADOPTED AS THE GROOMING BASE — founder decision D-1, 2026-09-20.** That decision
+> authorizes grooming work against this proposal and rebases it onto `4df71dada`. It does
+> **not** answer the six [review questions](#review-questions) below, does not flip an epic
+> status, and does not pass a gate — the caveat above still governs all three. The
+> reconciliation that produced the decision, the five findings it added, and the full
+> decision record are in [`RECONCILIATION-2026-09-20.md`](RECONCILIATION-2026-09-20.md).
+
 ## Why this exists
 
 The program has accumulated substantial implementation and useful evidence, but its formal epic records no longer give a consistent answer to “what can enter gate review?” This workspace proposes a return to milestone-scoped epic QA and exact-candidate completion handoffs without rewriting the record that got us here.
@@ -15,7 +22,9 @@ The proposal distinguishes four claims that must not collapse into one another:
 
 ## Current status, unchanged by this proposal
 
-- This proposal has been reconciled through `origin/docs/replatform-program` revision `3bdca18da3ca3051f740957311291fd1f8a950f3` (2026-09-20). That update advances E3 audit/census evidence, ships E7 CLI-008 Unit C behind a default-off flag, adds `SVC-009`, and supplies E9's first keyless leased/supervised service mechanism proof. None of those changes supplies a named M1 partial-gate record or a normative epic-completion QA/handoff.
+- This proposal has been reconciled through `origin/docs/replatform-program` revision `4df71dada` (2026-09-20), via `3bdca18da3ca3051f740957311291fd1f8a950f3`. That update advances E3 audit/census evidence, ships E7 CLI-008 Unit C behind a default-off flag, adds `SVC-009`, and supplies E9's first keyless leased/supervised service mechanism proof. None of those changes supplies a named M1 partial-gate record or a normative epic-completion QA/handoff.
+- The four merges since that revision (#511 `service_instance`→`service` rename, #512 guard-sink R1=B, #513 E9-D001 route-(c) overlap allowance, #514 E9-F003/F007 status flips) are register and code-rename work. **None supplies a partial-gate record or an epic-completion QA/handoff either**, so every "cannot enter gate review" verdict in the epic sheets is unchanged at `4df71dada`.
+- An independent reconciliation pass re-derived this proposal's load-bearing claims from source at `4df71dada` and they hold; it also found five items this proposal did not contain, including a **red `E6-D1-FOUNDATION` lane that the DEP-013 consumer could not see**. See [`RECONCILIATION-2026-09-20.md`](RECONCILIATION-2026-09-20.md) §1–§4.
 - The formal program index still records E0–E2 as `complete`, E3/E4/E6 as `in_progress`, and E5/E7–E11 as `backlog`.
 - Several epic-local READMEs differ: E3, E4, and E6 say `complete`; E5 says its tickets are complete while its exit gate is not met.
 - E7 has a September 18 real-E2B mechanism run with `ok=true` and `capabilityProven=false`. CLI-008 Unit C has since landed as live-but-inert plumbing: its dedicated flag defaults off, is enabled in no CI workflow, and still has no keyed live proof. Neither item is useful-agent capability evidence or an E7 completion gate.
@@ -23,6 +32,8 @@ The proposal distinguishes four claims that must not collapse into one another:
 - This local proposal branch, and PR #323 as described by the current program records, have no fresh `ci-required` result attached by this proposal. No CI conclusion is inferred from historical prose.
 
 ## Proposed decision package
+
+- [`RECONCILIATION-2026-09-20.md`](RECONCILIATION-2026-09-20.md) — the measured state at `4df71dada`, what this proposal is confirmed right about, the five findings the reconciliation added, and the 2026-09-20 founder decision record.
 
 - [`scope-triage.md`](scope-triage.md) — the 50-ticket disposition, first-milestone boundary, entry criteria, and exit criteria.
 - [`qa-handoff-recovery.md`](qa-handoff-recovery.md) — how to adopt useful historical evidence and restore policy-compliant exact-revision QA and handoffs.
