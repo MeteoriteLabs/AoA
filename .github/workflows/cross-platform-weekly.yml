@@ -143,6 +143,18 @@ jobs:
           pnpm --filter @armyofagents/worker-daemon build
           pnpm --filter @armyofagents/sandbox-provider-contract build
           pnpm --filter @armyofagents/sandbox-e2b-provider build
+          # ★★★ AND THE PLUGIN SDK, which the sibling job gets for free and this one does not.
+          # `plugin-sdk/dist` is built as a SIDE EFFECT of `pnpm -r typecheck` -- the plugin
+          # examples' typecheck scripts each run `scripts/build-plugin-sdk-locked.mjs`. The
+          # verify job runs typecheck; this job deliberately does not, so it must build it
+          # explicitly or every server test touching plugin-worker-manager fails COLLECTION with
+          # `ERR_MODULE_NOT_FOUND: .../@armyofagents/plugin-sdk/dist/index.js`. Measured on run
+          # 35530935808: 6-9 failed FILES per shard with only 0-19 failed TESTS, i.e. almost all
+          # of them were collection errors rather than assertions.
+          #
+          # ★ Uses the repo's own locked builder rather than `pnpm --filter ... build`, so
+          # parallel shards on one runner cannot race each other through its lock dir.
+          node scripts/build-plugin-sdk-locked.mjs
 
       - name: Run tests (shard ${{ matrix.shard }}/4)
         # ★★★ `pnpm exec vitest run --shard=…`, NEVER `pnpm test:run -- --shard=…`.
