@@ -287,7 +287,22 @@ scope is not a checkpoint.
 
 ### `M2` — sink cutover
 
-**Scope.** `MIG-005` (Commander), `MIG-006` (crew — units shipped, cutover deferred), `MIG-007`
+★★★ **`MIG-001` IS SCHEDULED HERE TOO, BECAUSE THE SEQUENCE CANNOT REACH ITS OWN FINAL EXIT
+WITHOUT IT.** *Added 2026-09-20 (thirteenth round), verified at source.* `epics/E11-hardening-release/README.md`
+lists *“E8, E9, DEP-009, **MIG-001 through MIG-003**, and MIG-005 through MIG-008”* as
+**unconditional** E11 dependencies, and `M5` exits through E11 — but `MIG-001` is disposition **X**
+(zero files on disk) and **no milestone named it**, so an M5 planner would have discovered the
+Decision #117 target/credential-routing cutover outside every milestone. `MIG-003` has shipped and
+`MIG-002` has a ticket; `MIG-001` is the one with nothing.
+
+★ **It is a cutover, so `M2` is its natural home — and like the `M1a` `TO FILE` rows, FILING IT IS
+STEP-0 WORK**: it has no ticket, so it cannot carry a result until one exists. ★ *My own
+ticket-coverage sweep missed this, because it excluded disposition X as legitimately unscheduled —
+an exclusion is only safe if nothing else declares the ticket required, and E11's dependency set
+did.*
+
+**Scope.** `MIG-001` *(Decision #117 target/credential routing cutover — **TO FILE at M2 Step 0**)*,
+`MIG-005` (Commander), `MIG-006` (crew — units shipped, cutover deferred), `MIG-007`
 (extraction). The four parity
 bridges are **not** here — three are `M1a` (D-8) and the fourth, `jobApprovalBridge`, follows its
 sink.
@@ -313,7 +328,19 @@ provably not reached, and rollback is rehearsed. `E3-5-product-approval`, `E3-17
 ### `M3` — workload breadth
 
 **Scope.** E8 browser (**`BRW-003c`**, `BRW-004`, `BRW-005`, `BRW-006`) and the E9 service remainder
-(`SVC-003`/`005`/`007` residuals, `SVC-004`, `SVC-006`, **`SVC-009`**).
+(`SVC-003`, `SVC-005` and `SVC-007` **residuals**, `SVC-004`, `SVC-006`, `SVC-009`).
+
+★★★ **IDS ARE WRITTEN OUT IN FULL HERE ON PURPOSE.** *Corrected 2026-09-20 (thirteenth round).*
+An earlier revision wrote `` `SVC-003`/`005`/`007` ``, which reads fine and is **invisible to every
+mechanical check** — a coverage sweep scanning for ticket ids sees only `SVC-003`, so `SVC-005` and
+`SVC-007` appear unscheduled while in fact being in scope. My own ticket-coverage sweep reported
+exactly that false gap, which is how the abbreviation was found. **An id that a checker cannot read
+is an id that is not really enumerated**, and this document's whole method depends on its lists
+being machine-checkable.
+
+★ **`SVC-008a` is a known residual with a design and no result**, and it is covered by `SVC-008`'s
+**C1** disposition (shipped, retained). It is named here so that a dependency sweep reading E9's
+`README.md` — which lists it among E9's dependencies — does not report it as unowned.
 
 ★★★ **`SVC-009` WAS SCHEDULED BY NOTHING, and M3 could not have reached its own exit without it.**
 *Added 2026-09-20 (eighth round), verified at source and independently by a mechanical

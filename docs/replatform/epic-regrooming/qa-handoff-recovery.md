@@ -41,9 +41,20 @@
 > committed `pass` handoff for the exact candidate (`../README.md`, `../epics/README.md`).
 >
 > **Where milestone records live (D-11).** A milestone record belongs to no single epic, and
-> `artifact-policy.md` defines paths only under `epics/<epic>/`. Milestone QA and handoff records go
-> under **`../milestones/<milestone>/{qa,handoffs}/`** with the same immutability and filename
-> contract. The shared-campaign record of §6 is filed once there and cited by every consumer.
+> ★★★ **BLOCKED UNTIL `EVID-04` IS AMENDED — DO NOT FILE MILESTONE QA RECORDS BEFORE THEN.**
+> *Added 2026-09-20 (thirteenth round).* `test-gates.md` `EVID-04` states the QA record path
+> normatively as `docs/replatform/epics/<epic>/qa/…`, so a record under `milestones/<milestone>/qa/`
+> **does not conform to the gate**. `artifact-policy.md` already carries this as a blocking
+> precondition; **this procedure did not**, and this procedure is the executable one — an operator
+> following it would have produced nonconforming evidence and then declared `M1a` complete from it.
+> Amending the policy, the templates and the immutability guard does **not** amend a gate; that is a
+> gate-owner action. **Neither `M1a` nor the required `M2-RTF` campaign can validly pass until it
+> happens.**
+>
+> Once amended: `artifact-policy.md` defines paths only under `epics/<epic>/`. Milestone QA and
+> handoff records go under **`../milestones/<milestone>/{qa,handoffs}/`** with the same immutability
+> and filename contract. The shared-campaign record of §6 is filed once there and cited by every
+> consumer.
 >
 > ★ **Accepted debt, recorded rather than fixed — the COMPLETE inventory.** ★ *Corrected
 > 2026-09-20 after review: an earlier draft of this block listed six records and missed five. §4
@@ -177,6 +188,9 @@ Reopening creates new findings, results where needed, QA attempts, and handoffs.
 > the only executable procedure that mints its evidence. *Creating the gate without updating this
 > list was, once again, correcting what the documents say and leaving what they tell you to do.*
 
+0. ★★★ **PRECONDITION — `EVID-04` amended to permit `milestones/<milestone>/qa/`.** Until the gate
+   owner does this, every milestone QA record minted by the steps below is nonconforming, so no
+   milestone can validly pass. See the banner above.
 4. **Freeze the shared candidate and complete the `M1a` required result set.** This step does
    **not** require E7 tools/workspace/output capability — requiring it here is what made `M1a`
    unreachable. `M1a` Step 0 first files the tickets that set marks `TO FILE`.
