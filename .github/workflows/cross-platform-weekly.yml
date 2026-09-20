@@ -15,6 +15,19 @@ concurrency:
 
 jobs:
   # Advisory portability coverage. Linux remains the required PR platform.
+  #
+  # ★★★ SPLIT FROM ONE JOB INTO TWO, 2026-09-21 (M0 unit 2). The single job ran typecheck, the
+  # WHOLE test suite and build under one 25-minute cap. macOS needs 1049s for `pnpm test:run`
+  # alone (measured, run 35493290194) and Windows is consistently slower, so the Windows job was
+  # killed by the cap on EVERY scheduled run. A timed-out job concludes `cancelled`, which rolls
+  # the run to `cancelled` — which is why this lane produced NO cross-platform verdict at all for
+  # the six weeks from 2026-08-16, and why the DEP-013 consumer reports it `not_success`.
+  #
+  # ★ THE CAP WAS NOT RAISED, DELIBERATELY. `pr.yml:1040-1041` states the rule for this repo:
+  # "A PER-SHARD cap. Do NOT raise: a shard that still can't finish under it is a signal to shard
+  # finer or to investigate a slow test, never to raise the cap (GO-BOOK §2.0)." So the tests are
+  # sharded on the same axis the required Linux lane already uses, and typecheck/build stay in
+  # their own job so they are not repeated once per shard.
   verify-cross-platform:
     strategy:
       fail-fast: false
@@ -45,11 +58,53 @@ jobs:
       - name: Typecheck
         run: pnpm -r typecheck
 
-      - name: Run tests
-        run: pnpm test:run
-
       - name: Build
         run: pnpm build
+
+  # The test suite, sharded so Windows can finish. Advisory like its sibling.
+  test-cross-platform:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+        shard: [1, 2, 3, 4]
+    runs-on: ${{ matrix.os }}
+    # A PER-SHARD cap, carrying the same rule as `pr.yml`'s: do NOT raise it. Derived, not
+    # guessed — macOS's measured whole-suite work is 1049s, so a quarter of it is ~262s and this
+    # leaves roughly 4x headroom for the slower Windows runner plus its install.
+    timeout-minutes: 25
+    continue-on-error: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run tests (shard ${{ matrix.shard }}/4)
+        # ★★★ `pnpm exec vitest run --shard=…`, NEVER `pnpm test:run -- --shard=…`.
+        # `pr.yml:1102-1114` records the trap with its proof: pnpm 9.15.4 forwards the `--`
+        # literally, so `pnpm test:run -- --shard=1/4` becomes `vitest run -- --shard=1/4`, the
+        # flag is SILENTLY IGNORED and every shard runs the whole suite (run 33012727670: four
+        # shards, ~52 min each, no split). A lane that shards four ways and still times out would
+        # look like a slow runner rather than a swallowed flag.
+        #
+        # The denominator MUST equal the `shard` matrix length above (4): vitest partitions the
+        # file set, so the four shards' union is exactly the full suite — nothing dropped, nothing
+        # run twice.
+        run: pnpm exec vitest run --shard=${{ matrix.shard }}/4
 
   # macOS runs the browser suite. Windows performs setup/build parity only
   # until its hosted runner can use an external/containerized PostgreSQL.

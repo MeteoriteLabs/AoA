@@ -333,10 +333,27 @@ rollback, and smoke-test runbook.
 | Platform | Verify | E2E |
 |----------|--------|-----|
 | Linux | Required gate | Required gate |
-| macOS | Advisory (green) | Advisory (green) |
-| Windows | Advisory (4 tests skipped — Issues #113/#127) | Skipped — embedded-postgres can't start on `runneradmin` runner (Issue #114) |
+| macOS | Advisory — see status below | Advisory (green) |
+| Windows | Advisory — see status below (4 tests skipped — Issues #113/#127) | Skipped — embedded-postgres can't start on `runneradmin` runner (Issue #114) |
 
 Windows e2e skip is implemented at playwright config level (`tests/e2e/playwright.config.ts`).
+
+**Advisory `verify` status, corrected 2026-09-21 (M0 unit 2).** This table said macOS verify was
+*"Advisory (green)"* and described Windows only by its skipped tests. Both were false at
+`169be1f2c`: `cross-platform-weekly` had concluded `cancelled` on **every** scheduled run from
+2026-08-16 to 2026-09-20 — six consecutive weeks with no cross-platform verdict at all, which is
+what the DEP-013 consumer reports as `not_success`.
+
+- **macOS** failed 4 tests in 2 files on the `/var` → `/private/var` symlink class
+  (`company-workspace-fs-routes.test.ts`, `workspace-runtime.test.ts`). Fixtures now resolve their
+  temp roots at creation; the underlying lexical path comparison is recorded as `E5-F003`.
+- **Windows** never finished: the single job ran typecheck + the whole suite + build under one
+  25-minute cap, and a timed-out job concludes `cancelled`. The lane is now **split into
+  `verify-cross-platform` (typecheck + build) and `test-cross-platform` (tests, sharded 4 ways)**,
+  mirroring the required Linux lane rather than raising the cap (GO-BOOK §2.0).
+
+Windows's failure set beyond the timeout is still **unmeasured** — sharding may surface real Windows
+failures the timeout was hiding. Treat "advisory green" as a claim needing a run behind it.
 
 **CDN fallback:** The required Linux `e2e` job uses a Google Chrome-for-Testing download when `cdn.playwright.dev` stalls (configured in `.github/workflows/pr.yml`). The advisory `e2e-cross-platform` macOS/Windows lanes do NOT use that fallback — they still rely on the default Playwright CDN and time out at 12 min if the CDN stalls. Generalizing the Google-storage fallback to mac/win lanes is tracked for 1.1.
 

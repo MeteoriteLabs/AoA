@@ -165,3 +165,43 @@ semantics — that choice is DAT-009's, not this filing's), which would also giv
 a production caller. Not done here: `putGrantBytes` is on the export path DAT-009 slice 3 owns, and
 changing which digest a signed PUT carries is a correctness decision with live-store consequences
 that must be re-proven on the keyed lane, not asserted from a filing unit.
+
+---
+
+## E5-F003 - the approved-workspace-root check compares paths lexically while git resolves symlinks, so cleanup refuses on any symlinked root
+
+**Status:** open
+**Severity:** MEDIUM (fails CLOSED - it preserves the worktree and warns, so nothing is deleted
+wrongly; the defect is that legitimate cleanup never happens and the operator is told the path is
+"outside approved runtime workspace roots", which reads like a misconfiguration)
+**Filed:** 2026-09-21 (M0 unit 2), measured at `169be1f2c` from `cross-platform-weekly` run
+`35493290194`.
+
+**What.** `isApprovedRuntimeWorkspacePath`
+([`server/src/services/runtime-workspace-path-policy.ts:14-27`](../../../../server/src/services/runtime-workspace-path-policy.ts))
+builds its approved roots with `path.resolve` and tests membership with `isStrictDescendant`
+(`:4-7`), which is `path.relative` over `path.resolve`. Both are **lexical**: neither resolves
+symlinks. Git, however, normalises symlinks when it creates a worktree, so a realized workspace's
+`cwd` comes back RESOLVED while the project root it was derived from stays as configured.
+
+When the configured root traverses a symlink, the resolved candidate is not a lexical descendant of
+the unresolved root. `realizeExecutionWorkspace` cleanup then takes the refusal arm at
+[`workspace-runtime.ts:1531-1537`](../../../../server/src/services/workspace-runtime.ts), sets
+`preserve = true`, and pushes
+*"Refusing to remove path ... because it is outside approved runtime workspace roots."*
+
+**Evidence.** macOS makes this reproducible for free: `os.tmpdir()` is `/var/folders/...`, a symlink
+to `/private/var/folders/...`. Three `workspace-runtime.test.ts` cases failed on
+`cross-platform-weekly` for exactly this reason - the cleanup-and-remove case, the keep-unmerged-
+branch case and the teardown-operations case - all three reporting the same refusal against
+`/private/var/.../paperclip-worktree-repo-*/.aoa/worktrees/...`. It is not macOS-specific: a
+symlinked home directory or a bind-mounted checkout produces the same shape on Linux.
+
+**Not fixed here, and why.** M0 unit 2 repairs the LANE by resolving the fixtures' temp roots at
+creation, which is what git will produce anyway; it does not touch the predicate. That predicate is
+the boundary that bounds recursive deletion ("Recursive workspace cleanup is limited to server-owned
+allocation roots ... Persisted row metadata is deliberately not trusted", `:9-13`), so changing it
+is a security-sensitive change, and M0 introduces no new product capability. Any repair must resolve
+BOTH sides - resolving only the candidate would widen the boundary rather than align it.
+
+**Blocks gate:** no.

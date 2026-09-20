@@ -371,6 +371,79 @@ never chained to one check's exit code.
 
 ---
 
+## 6b. Unit 2 — repair the `cross-platform-weekly` lane
+
+Designed 2026-09-21 after measuring run `35493290194`. Two independent causes, one per platform.
+
+### macOS — 4 real test failures, and one of them is a product finding
+
+`verify-cross-platform (macos-latest)` fails at `Run tests`: `Test Files 2 failed | 2060 passed |
+23 skipped (2085)`, `Tests 4 failed | 18703 passed | 107 skipped`. Duration 1049s — well inside its
+cap. All four are the **`/var` → `/private/var` symlink** class:
+
+| File | Case | Observed |
+|---|---|---|
+| `company-workspace-fs-routes.test.ts` | browse defaults to the jail root | `expected '/private/var/folders/…' to be '/var/folders/…'` |
+| `workspace-runtime.test.ts` | removes a created git worktree and branch during cleanup | `expected [ Array(1) ] to deeply equal []` — the array is a refusal warning |
+| `workspace-runtime.test.ts` | keeps an unmerged runtime-created branch and warns | got `Refusing to remove path "/private/var/…"` instead of the skip message |
+| `workspace-runtime.test.ts` | records teardown and cleanup operations | `expected [ 'workspace_teardown' ] to deeply equal [ 'workspace_teardown', …(2) ]` |
+
+**Mechanism, read at source rather than inferred.** Both files build their world from
+`fs.mkdtemp(path.join(os.tmpdir(), …))`, which on macOS returns `/var/folders/…` — a symlink to
+`/private/var/folders/…`. Git normalises that when it creates a worktree, so the workspace's own
+`cwd` comes back real while the project root stays symlinked. `isApprovedRuntimeWorkspacePath`
+(`server/src/services/runtime-workspace-path-policy.ts:14-27`) then compares them **lexically**, via
+`path.relative`/`path.resolve` in `isStrictDescendant` (`:4-7`) — never `realpath` — so the real
+candidate is not a descendant of the symlinked root, cleanup refuses, and `preserve = true`
+(`workspace-runtime.ts:1531-1537`). The three `workspace-runtime` failures are all that one refusal.
+
+**Fix — the established idiom, not a new one.** `fs.realpath` the `mkdtemp` result at the point of
+creation, so the test's world is already resolved and matches what git will produce. This file
+already knows the hazard: `workspace-runtime.test.ts:36` is a realpath-comparing `expectSamePath`
+helper, and `git-service.test.ts:35`, `local-execution-target.test.ts:9`,
+`scoped-cli-auth-home.test.ts:40` and `cursor-local-skill-injection.test.ts:45` use the same idiom.
+On Linux and Windows `realpath` of a freshly created real directory is identity, so no lane but
+macOS changes behaviour.
+
+★★★ **AND THE PRODUCT INCONSISTENCY IS RECORDED, NOT PAPERED OVER.** The lexical comparison is not
+only a test artefact: any deployment whose project root traverses a symlink (macOS `/var`, a
+symlinked home, a bind-mounted checkout) gets the same refusal, and legitimate worktrees are
+silently preserved with a warning. It **fails closed**, so it is a correctness/UX defect rather than
+a safety hole — and `isApprovedRuntimeWorkspacePath` is the predicate that bounds recursive
+deletion, so changing it is a security-sensitive change and explicitly **not** M0's (M0 introduces
+no new product capability). U2 files it as a finding with an owner and leaves the predicate alone.
+
+### Windows — the job never finishes
+
+`verify-cross-platform (windows-latest)` is killed at `Run tests` by `timeout-minutes: 25`; a
+timed-out job reports `cancelled`, which is what rolls the whole run to `cancelled` and is what the
+DEP-013 consumer reads as `not_success`. macOS needs 1049s unsharded and Windows is consistently
+slower, so the cap is not the defect — the unsharded shape is.
+
+**Fix — mirror the required lane, because the repo already ruled on this.** `pr.yml:1023-1052`
+shards `verify` four ways and its own comment states the rule: *"A PER-SHARD cap. Do NOT raise: a
+shard that still can't finish under it is a signal to shard finer or to investigate a slow test,
+never to raise the cap (GO-BOOK §2.0)."* So U2 shards `verify-cross-platform` on the same axis
+rather than raising 25.
+
+★ **The known trap is inherited too.** `pr.yml:1102-1114` records that `pnpm test:run -- --shard=…`
+is **silently ignored** — pnpm 9.15.4 forwards the `--` literally, so every shard runs the whole
+suite (proven on run 33012727670: 4 shards each ~52 min, no split). The command must be
+`pnpm exec vitest run --shard=<i>/<n>`, and the denominator must equal the matrix length.
+
+### RED and GREEN
+
+RED is recorded and reproducible: six consecutive weekly runs `cancelled`, most recently
+`35493290194`, with the four named assertions on macOS. GREEN is a dispatched
+`cross-platform-weekly` run on the fix branch in which **every** `verify-cross-platform` job
+concludes `success` and the run's own conclusion is no longer `cancelled`. The lane is
+GitHub-hosted, so this verification costs no keyed spend.
+
+★ **What this unit does NOT claim.** Windows has never finished, so its failure set beyond the
+timeout is **unmeasured**. Sharding may surface real Windows failures that the timeout was hiding.
+If it does, those are reported as findings and this unit does not declare the lane green on the
+strength of the macOS half.
+
 ## 7. What already exists (review output)
 
 Nothing in this plan builds new machinery. Every unit consumes something already shipped:
