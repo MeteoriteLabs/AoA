@@ -3931,3 +3931,40 @@ E7-1 canary run `8dc34e90` (2026-09-18, Hetzner staging) landed `finished_at=202
 **Scope note.** This closes the last MECHANISM clause; it does NOT move `capabilityProven` (false by design —
 E7-D-CAPABILITY-DISCLOSURE; output capture is CLI-008 Unit F, unbuilt) and does NOT flip the
 `E7-1-coding-journey` register clause (which measures a shipped CI boot, not a manual staging run).
+
+---
+
+## E7-F037 - the keyed Unit D lane's red was attributed to Unit C's MCP flags; it is the E7-F021/F027 permission posture, nine days earlier
+
+**Status:** resolved - **Owner:** M0 lane health (this correction) - **Severity:** LOW (record-truth)
+**Filed + Resolved:** 2026-09-20, M0 unit 1. Measured from both failing runs' logs, not reasoned.
+
+**The claim.** `epic-regrooming/RECONCILIATION-2026-09-20.md` section 3.4 records that
+`keyed-e2b-unit-d` *"failed 2026-09-10 and 2026-09-19 on two real assertions - the claude and codex
+argv shapes drifted when Unit C added MCP flags and the keyed test was not updated."*
+
+**What is measured.** The attribution is false; the count and the dates are right.
+
+- Run `34533429893` (`db0edd932`, 2026-09-10) and run `35438996937` (`74103f95d`, 2026-09-19) fail
+  with **byte-identical** assertions - two failures, same two cases, same two diffs.
+- Both diffs contain only the **permission-posture** flags: `+ "--dangerously-skip-permissions"`
+  (claude) and `+ "--skip-git-repo-check"` / `+ "--dangerously-bypass-approvals-and-sandbox"`
+  (codex).
+- **No MCP flag appears in either diff.** Unit C's segment is emitted only on the `stageAoaConfig`
+  branch (`server/src/services/task-run-sandbox-invocation.ts:217-221`), and the lane did not
+  exercise that branch at all.
+- `db0edd932` is the F021/F027 posture PR itself, founder-authorized 2026-09-11 and recorded at
+  E7-F021 above. Unit C's merge only **re-fired** the lane, because
+  `task-run-sandbox-invocation.ts` sits in its `paths:` filter.
+
+**Why it stood.** The config branch had **no keyed coverage**, so there was no observed MCP argv to
+contradict the reading. A branch that cannot be observed gets described from memory - the same class
+as "a check that nothing runs is not a check", one level up: a *record* nothing can falsify.
+
+**Disposition.** The reconciliation is amended in place with the superseded text quoted (house
+style for that document), the two stale expectations are realigned with the shipped posture, and a
+third keyed case now observes the MCP branch so this class of claim is falsifiable next time.
+Evidence: `docs/replatform/qa/2026-09-20-m0-record-lane-health-plan.md` section 4 (RC-1) and
+section 6.
+
+**Blocks gate:** no.

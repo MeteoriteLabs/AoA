@@ -117,9 +117,24 @@ one real question. This is a scoping proposal, not a claim that the work is done
 ### 3.4 `keyed-e2b-unit-d` is red, and the "no E2B key" premise is false
 
 `E2B_API_KEY` **is** a repo secret (since 2026-08-26) and six of seven keyed lanes are
-green. `keyed-e2b-unit-d` failed 2026-09-10 and 2026-09-19 on two real assertions — the
-claude and codex argv shapes drifted when Unit C added MCP flags and the keyed test was not
-updated. It is the one finding the DEP-013 consumer **is** reporting, and it is unclaimed.
+green. `keyed-e2b-unit-d` failed 2026-09-10 and 2026-09-19 on two real assertions.
+
+★★★ **THE CAUSE NAMED HERE WAS WRONG, AND THE COVERAGE GAP IS WHY NOTHING CAUGHT IT.**
+*Corrected 2026-09-20 (M0 unit 1), measured from both runs' logs — see `E7-F037` in
+`../epics/E7-coding-e2b/findings.md`.* ★ *Superseded text: "the claude and codex argv shapes
+drifted when Unit C added MCP flags and the keyed test was not updated."* The drift is the
+**E7-F021 / E7-F027 permission posture**, founder-authorized 2026-09-11 and shipped in
+`db0edd932` — **nine days before Unit C**. Runs `34533429893` and `35438996937` fail with
+byte-identical assertions, and **neither diff contains an MCP flag**: Unit C's segment is
+emitted only on the `stageAoaConfig` branch
+(`server/src/services/task-run-sandbox-invocation.ts:217-221`), which the lane did not
+exercise at all. Unit C's merge only **re-fired** the lane, because that module sits in its
+`paths:` filter. The keyed test was indeed not updated — that half stands.
+
+★ The rest of this paragraph stands: it is a real red, and it was unclaimed until M0 took it.
+**It is one of TWO findings the DEP-013 consumer is reporting** — ★ *superseded text: "It is
+the one finding"* — the other being `cross-platform-weekly.yml@main`, `not_success`, whose
+scheduled runs have concluded `cancelled` every week since 2026-08-16.
 
 ### 3.5 A latent migration collision, recorded and deliberately not acted on
 
