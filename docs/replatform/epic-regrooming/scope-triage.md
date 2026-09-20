@@ -432,11 +432,22 @@ Ticket shipment or an earlier mechanism run cannot substitute for items 2–9. P
 > task: one was cited too narrowly, and two had none at all — including `DEP-011-S5`, an id this
 > document had invented. Corrected below rather than left to be discovered at M1a Step 0.*
 >
+> ★★★ **THE THREE ✅ TASKS ARE DEFINED IN THE COMPANION CHANGE, NOT IN THIS ONE — so a repo-wide
+> search of THIS commit finds `DAT-007-S3` and `E7-1-JOURNEY-ARM` nowhere but this table, and that
+> observation is correct.** *Added 2026-09-20 (third review round), which raised exactly that.* The
+> epic implementation plans land as a **separate change on this same base branch**, merged
+> back-to-back with this one because the dependency runs both ways: those plans are written against
+> these dispositions, and these rows cite those plans. **A ✅ here is a claim about the merged base,
+> not about this commit** — stated plainly so nobody reads it as a claim this commit can support.
+>
+> ★ **If the companion change does not land, these three rows become `TO FILE` and `M1a` Step 0
+> files seven tickets instead of four.** That is the honest contingency; it is not the plan.
+>
 > | Ticket | Epic | Task defined | What it owes M1a |
 > |---|---|---|---|
-> | `MIG-009` | E10 | ✅ E10 plan **§8.1** (full house detail) | the drain **and its trigger** (D-9), for criterion 6's rehearsal |
-> | `DAT-007-S3` | E5 | ✅ E5 plan | the `/mcp` run-currency gate proven against real PostgreSQL |
-> | `E7-1-JOURNEY-ARM` | E7 | ✅ E7 plan | promote `E7-1-coding-journey` on a shipped CI boot |
+> | `MIG-009` | E10 | ✅ companion — E10 plan **§8.1**, *“wire the rollback drain to an honest operator trigger”* | the drain **and its trigger** (D-9), for criterion 6's rehearsal. ★★★ **The frozen `MIG-009-drain-result.md` DOES NOT SATISFY THIS ROW and may not be reused for criterion 1** — it records the trigger as deliberately `unwired`, which is the precise thing `M1a` must change. A **new** result is required. |
+> | `DAT-007-S3` | E5 | ✅ companion — E5 plan, *“prove the `/mcp` run-currency gate against real PostgreSQL”* (task + verify command + mutation rows) | the `/mcp` run-currency gate proven against real PostgreSQL |
+> | `E7-1-JOURNEY-ARM` | E7 | ✅ companion — E7 plan, *“promote the coding-journey clause when its two preconditions ship”* (S, ≤1 agent-day) | promote `E7-1-coding-journey` on a shipped CI boot. ★ Its E6 precondition (the adapter-manager image in a shipped boot) is **`DEP-011`'s deploy half, the `TO FILE` row below** — so this row is ordered behind it. |
 > | `WRK-013` | E4 | ❌ **TO FILE** | the startup reconciler — journey item 8's restart recovery; closes `E4-F009`. Its design is `Status: scoping` and **no plan carries a task for it**. |
 > | DEP-011's remaining deploy half | E6 | ❌ **TO FILE, scope unestablished** | the adapter-manager image + control-plane key in a **shipped** deploy. ★ An earlier revision called this `DEP-011-S5`; **that id does not exist** — no result doc, and neither the E6 nor E7 plan defines its task. Its exact remaining scope was explicitly recorded as *not established* by the plan drafting, and must be measured before it is assignable. |
 > | the parity bridges + the usage producer | E3 + E4 | ❌ **TO FILE** | the three consumers (`jobBudgetCostBridge`, `jobAuditBridge`, `jobOutputBridge`) **and** the `observeRun` producer — **D-8**. |
