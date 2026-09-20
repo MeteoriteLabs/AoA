@@ -1550,3 +1550,51 @@ no result is invented for it. `M1a` Step 0 still owes the deploy half's ticket, 
 is unchanged by this finding.
 
 **Blocks gate:** no.
+
+---
+
+## E6-F023 - cross-platform-weekly's run conclusion is blind to every job it declares advisory, and the DEP-013 consumer reads that conclusion
+
+**Status:** open
+**Severity:** MEDIUM (a false GREEN, which is worse than a red: it is indistinguishable from health)
+**Filed:** 2026-09-21 (M0 unit 2), measured on run `35530935808`.
+
+**What.** Every job in `cross-platform-weekly.yml` carries `continue-on-error: true`, so a failing
+job does not fail the run. The DEP-013 consumer keys on the **run conclusion**
+(`workflow-verdict.mjs`, `not_success` when the latest completed run did not conclude `success`), so
+the consumer cannot see an advisory job's failure at all.
+
+**Measured, not reasoned.** Run `35530935808` concluded **`success`** while **8 of its 12 jobs
+failed** - all four macOS and all four Windows test shards. `verify-cross-platform` and
+`e2e-cross-platform` were green on both platforms. A consumer reading that run reports the lane
+healthy.
+
+★★★ **AND M0 UNIT 2 IS WHAT MADE THIS VISIBLE, BY REMOVING THE THING THAT WAS MASKING IT.**
+Before that unit the lane died on a 25-minute timeout, and a timed-out job concludes `cancelled`,
+which **does** propagate to the run regardless of `continue-on-error`. So the lane read red - for
+the wrong reason, but red. With the timeout gone, the same lane reads green while its tests fail.
+That is a REGRESSION IN SIGNAL HONESTY produced by a repair, and it is recorded here rather than
+banked, because "the lane is green now" would be the exact false-enforcement claim this programme
+exists to stop.
+
+★ **The advisory intent is not in dispute.** Linux is the required platform and these jobs are
+deliberately non-blocking; nothing here argues they should gate a merge. The defect is narrower: a
+job that may fail without consequence still owes a VERDICT someone can read, and today its failure
+is invisible to the only consumer that reads this lane.
+
+### The options, none of which M0 chose
+
+1. **Drop `continue-on-error` from the test jobs.** The run then concludes `failure` and the
+   consumer reports it honestly - but the lane goes red until cross-platform test health is fixed,
+   which is a larger piece of work than lane health.
+2. **Keep it and give the consumer a job-level reader.** `workflow-verdict.mjs` would need to read
+   job conclusions, not just the run's. That widens DEP-013's contract.
+3. **Split advisory from verdict-bearing.** Let the jobs that CAN be green today
+   (`verify-cross-platform`, `e2e-cross-platform`) be verdict-bearing and leave the test shards
+   advisory, so the lane reports on what it can actually assert.
+
+Option 3 is the one that makes the lane's verdict mean something without blocking on test health,
+but choosing is a gate-owner decision about what this lane asserts, not a repair.
+
+**Blocks gate:** no. It does, however, mean a green `cross-platform-weekly` must not be cited as
+cross-platform TEST health until this is resolved.
