@@ -36,6 +36,34 @@
 > `AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED`) — `resolveCrewDistributedGate` + `readDistributedCrewRolloutFlag`
 > (slice 2a, **MERGED**). That was the last clean small unit; U1–U5 are the epic.
 >
+> ★★★ **AMENDED AGAIN 2026-09-20 — THAT LINE IS STALE. FOUR OF THE FIVE UNITS SHIPPED**
+> between 2026-09-18 and 2026-09-19, in PRs #486 / #487 / #488, while this document sat
+> unmerged. Re-measured at `4df71dada`:
+>
+> | Unit | State | Where |
+> |---|---|---|
+> | **U1** schema | ✅ SHIPPED | migration `0282_internal_agent_runs_distributed_marker.sql`; `internal_agent_runs.execution_owner` / `.distributed_job_id` / `.distributed_attempt_id` (`packages/db/src/schema/internal_agent.ts:404-406`) |
+> | **U2** handoff marker | ✅ SHIPPED | `crew-handoff-marker.ts` |
+> | **U3** terminal projection | ✅ SHIPPED | `crew-terminal-projection.ts` |
+> | **U4** loopback-defer | ⚠️ **NOT AS DESIGNED** — see below | — |
+> | **U5** seam | ✅ SHIPPED | `runner.ts` MIG-006 block, with a behavioural suppression proof in `crew-seam-suppression.test.ts` (#488) |
+>
+> ★ **U4 is the one that differs, and the difference is worth stating rather than marking
+> done.** The design asked for *"record the crew result pending, reconcile when Unit F lands
+> (NEVER drop)"*. What shipped instead fires the W3a loopback ONCE, at terminal time, from
+> inside the projector — `crew-terminal-projection.ts` step (2), *"the W3a loopback the
+> suppression return skipped"*. The result is **not dropped**, which was the requirement that
+> mattered; but it is **not deferred-and-reconciled** either, and its own comment records the
+> cost: *"the loopback's own summary shows duration only (the distributed lane surfaces no
+> adapter usage to this seam)"*. **There is no mechanism to enrich that loopback when Unit F
+> lands.** A founder reading a distributed crew thread sees a completion with no result
+> content, permanently.
+>
+> ★ **This document is therefore the DESIGN and the as-built record**, landed late. MIG-006
+> still has no `-result.md`; that remains owed. Until Unit F's emit half exists, the whole
+> epic stays mechanism-only and doubly gated (Unit C tool-less, Unit F result-deferred) —
+> §4's caveat is unchanged and is the reason none of this is on by default.
+>
 > **★ CRITICAL CAVEAT (unchanged): a distributed crew run is MECHANISM-ONLY** — tool-less (Unit C) and
 > result-deferred (Unit F) — so this whole epic is foundational-but-inert until C+F are closer. Do NOT
 > build it ahead of them; the payoff is gated (§4).
