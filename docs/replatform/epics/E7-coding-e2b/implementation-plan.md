@@ -167,7 +167,7 @@ and is explicitly forbidden from creating the parent result doc.
 
 | # | Link | State, measured | Owner below |
 |---|---|---|---|
-| 1a | **capture** — walk a designated in-sandbox output root | **BUILT, INERT.** `captureSandboxEntries` (`packages/worker-daemon/src/snapshot/capture-sandbox.ts:67`) over an INJECTED `listDir`/`readFile` seam, fail-closed on any path outside the root or failing `isSafeWorkspacePath`, deterministic, plain `CapturedFileEntry[]`. **Nothing re-exports it from `snapshot/index.ts` and nothing calls it** — verified: every reference at this tip is its own definition or `src/__tests__/capture-sandbox.test.ts`. | `CLI-008-F1a` |
+| 1a | **capture** — walk a designated in-sandbox output root | ⚠️ **BUILT, INERT, AND WRONG-LANE.** Metadata-only *enumeration* is what link 3 needs; the built helper also reads and hashes bytes **in the daemon**, which the sequencer contract forbids — so the capture half is **not** solved for the E2B lane. `captureSandboxEntries` (`packages/worker-daemon/src/snapshot/capture-sandbox.ts:67`) over an INJECTED `listDir`/`readFile` seam, fail-closed on any path outside the root or failing `isSafeWorkspacePath`, deterministic, plain `CapturedFileEntry[]`. **Nothing re-exports it from `snapshot/index.ts` and nothing calls it** — verified: every reference at this tip is its own definition or `src/__tests__/capture-sandbox.test.ts`. | `CLI-008-F1a` |
 | 1b | **emit** — tell the agent to write there | ★★★ **UNDESIGNED.** The half the three refutations are about. Nothing yet tells the agent to write to that root, so `captureSandboxEntries` has nothing to walk on a real run. **This flips no counter and closes no finding.** | `CLI-008-F1b` (DESIGN ONLY) |
 | 2 | **a real `exportArtifact`/`digestArtifact`** | ✅ **BUILT** 2026-09-04 (PR #353). `packages/sandbox-e2b-provider/src/e2b-provider.ts:246` declares `artifactExportMode = "grant_upload"`; `exportArtifact` reads → size-checks → **re-hashes against the grant** → PUTs → returns `{objectKey}`. Proven on a **real E2B sandbox** (`keyed-e2b-dat-009-export.yml`, 4/4, run `33856478690`), including the TOCTOU refusal. | — (closed) |
 | 3 | **worker-side consumer** — sequence digest → mint grant → export → commit | **UNBUILT.** `createArtifactExportSequencer` (`packages/worker-daemon/src/lease/artifact-export.ts:264`) exists with zero production callers; its only other reference is the barrel at `packages/worker-daemon/src/index.ts:178`. The hook and composition are **E5's** `DAT-009-3c`/`3d`; the **producer of `ArtifactExportRequest[]`** is this epic's. | `CLI-008-F3` |
@@ -374,7 +374,7 @@ five guards passing with the successors declared.
 
 ---
 
-### `CLI-008-F1a` — un-inert the capture half (S, ≤1 agent-day, M1b)
+### `CLI-008-F1a` — prove the enumeration seam, and FENCE the byte-reading one (S, ≤1 agent-day, M1b)
 
 **Depends on:** `CLI-008-LEDGER`.
 
@@ -384,12 +384,24 @@ five guards passing with the successors declared.
 refusal, unsafe-path refusal, determinism). It is **inert by construction** — `snapshot/index.ts`
 does not export it, and nothing calls it. Its header says why: *"because link 3 is still unbuilt."*
 
-**Outcome:** the capture half is reachable and its **concrete binding is proven** — the injected
-`listDir`/`readFile` seam is shown to bind correctly to `E2bTransport.listDir`
-(`packages/sandbox-e2b-provider/src/real-transport.ts:466`) and `.readFile` (`:453`), whose
-enumeration returns **absolute file paths, not directories**. That asymmetry is the one thing a
-consumer gets wrong silently, and it is worth a ticket of its own rather than being discovered
-inside link 3.
+★★★ **REWRITTEN 2026-09-20 (second review round). The original outcome was to export
+`captureSandboxEntries` and prove its `listDir`/`readFile` binding against `E2bTransport` — i.e. to
+prove the exact binding F3 now forbids, because `readFile` + `sha256` pulls sandbox bytes through
+the daemon. Exporting it would have made the wrong tool reachable on the wrong lane, one ticket
+before the ticket that must not use it.** This was self-contradictory and is corrected here rather
+than left for someone to hit.
+
+**Outcome, two halves:**
+
+1. **Prove the ENUMERATION seam** — the half link 3 actually needs. `E2bTransport.listDir`
+   (`packages/sandbox-e2b-provider/src/real-transport.ts:466`) returns **absolute file paths, not
+   directories**, and that asymmetry is the one thing a consumer gets wrong silently. Bind and test
+   it **metadata-only**: no `readFile`, no hashing, no bytes.
+2. **FENCE the byte-reading seam.** `captureSandboxEntries` stays **inert on the E2B and networked
+   lanes**. It is a local/desktop-lane tool — the sandbox analogue of DAT-001's local-FS walk — and
+   this ticket makes that explicit in its header rather than leaving a reader to infer it. If it is
+   exported at all, it is exported for the local lane only and carries a comment naming the
+   data-plane contract it would otherwise breach.
 
 **★ What this ticket does NOT do.** It gives the agent nothing to write. It is the capture half
 only; the emit half is `CLI-008-F1b` and remains undesigned. **Do not read this ticket's completion
@@ -398,13 +410,15 @@ as a supply mechanism**, and no result doc may say capture landed as though outp
 **Ticket non-goals:** calling it (that is F3); a Unit-E workspace, git base, or ignore policy
 (E7-D05); a `WorkspaceManifestV1` (link 1b's assembly step, which brands via `.parse()`).
 
-**Files:** modify `packages/worker-daemon/src/snapshot/index.ts` (export `captureSandboxEntries` +
-`CapturedFileEntry` + `SandboxCaptureDeps`); create
-`packages/worker-daemon/src/__tests__/capture-sandbox-transport-binding.test.ts`.
+**Files:** create `packages/worker-daemon/src/__tests__/sandbox-listdir-binding.test.ts` (the
+metadata-only enumeration proof); modify `packages/worker-daemon/src/snapshot/capture-sandbox.ts`
+(header only — state the lane restriction and the contract it would breach). ★ **Do NOT export
+`captureSandboxEntries` from `snapshot/index.ts` for the E2B/networked lanes.**
 
-**Interfaces:** `captureSandboxEntries(deps: SandboxCaptureDeps, root: string) =>
-Promise<CapturedFileEntry[]>`, unchanged. Entries stay **plain and unbranded** — the branding
-authority is `.parse()`, not this producer.
+**Interfaces:** a metadata-only path enumerator — `(listDir, root) => readonly string[]`, with the
+same fail-closed relativisation and `isSafeWorkspacePath` refusal the capture helper uses. **No
+`readFile`, no digest, no bytes.** The digest and size the frozen grant schema requires come from
+the provider's `digestArtifact`, which returns `{sha256, sizeBytes}` and no content.
 
 **Failure behavior:** fail-closed, unchanged: a listed path not under `root`, or whose relativised
 form fails `isSafeWorkspacePath`, **throws**. A capture that silently dropped or mangled a path
@@ -493,10 +507,28 @@ at this tip; the daemon's HTTP client declares `artifactCommit`
 explicitly: *"Slice f — NOT DAT-009's. The producer, the kind, and the counter… That is CLI-008 Unit
 F. DAT-009 must not absorb it."*
 
-**Outcome:** a producer that, on attempt completion, walks the designated output root via
-`captureSandboxEntries`, turns each entry into an `ArtifactExportRequest` with an **explicit
-declared `kind`**, and hands the list to the sequencer through the E5 hook — so that one file the
-sandbox produced becomes a `committed` `job_artifacts` row under a worker-minted grant.
+**Outcome:** a producer that, on attempt completion, **enumerates paths only** under the
+designated output root, turns each path into an `ArtifactExportRequest` with an **explicit declared
+`kind`**, and hands the list to the sequencer through the E5 hook — so that one file the sandbox
+produced becomes a `committed` `job_artifacts` row under a worker-minted grant.
+
+★★★ **IT MUST NOT CALL `captureSandboxEntries`, AND THIS IS A HARD CONSTRAINT, NOT A PREFERENCE.**
+That helper does `readFile` then `sha256(bytes)`, so every file's bytes would transit the worker
+daemon — against the sequencer's own contract in `packages/worker-daemon/src/lease/artifact-export.ts`:
+*"**GRANTS OUT, NEVER BYTES** … the bytes go sandbox → provider → object storage and **never touch
+the daemon**, which is dependency-pinned (E4-D01) precisely so it does not handle them."*
+`captureSandboxEntries` is a **local/desktop-lane** tool; on the E2B and networked lanes it is the
+wrong tool and composing it here would reopen a locked data-plane boundary.
+
+★ **The route that honours the contract already exists.** Enumerate with a metadata-only `listDir`;
+let the sequencer's provider-backed `digestArtifact` (which returns `{sha256, sizeBytes}` and no
+bytes) supply the digest and size the frozen grant schema requires, and `exportArtifact` do the
+upload. The daemon sees paths and metadata, never content.
+
+★ **This ticket owes a test that FAILS if the crossing returns** — a composition assertion that the
+producer's dependency surface contains no byte-returning read. No existing guard catches it:
+`check-worker-daemon-boundary` passes a violation because it enforces a *dependency* boundary while
+the data-plane rule lives in a docstring.
 
 **★ The `kind` decision is this ticket's, and it decides whether the counter moves.**
 `countProducedOutputs` arm 1 filters `kind = 'workspace_patch'` and is attempt-scoped as of
@@ -646,14 +678,35 @@ ticket prices it rather than re-deriving it.
 **Ticket non-goals:** the counter (F6); the sink cutover (M2); the legacy write path; forking
 `postRunSummaryComment`.
 
-**Files:** modify `server/src/services/canary-terminal-projection.ts` (fold `detectedFiles` from
-events); modify `server/src/services/canary-run-projector.ts` (a fifth step); create
-`server/src/__tests__/canary-output-projection.integration.test.ts`; extend the two existing
-projector suites.
+★★★ **NOT ASSIGNABLE AS BUILD UNTIL ITS CONTRACT IS DESIGNED — the files and interfaces below are
+the SECOND half of this ticket, not the first.** *Corrected 2026-09-20 (second review round): an
+earlier revision listed only the projector edits, which reads as ordinary work and is not.*
 
-**Interfaces:** `foldAttemptEvidence` gains an `artifact_prepared` case; `projectTerminal` gains one
-step, ordered **after** the terminal and **before** the run-summary comment, so the summary can name
-the outputs.
+**The blocker, measured.** `artifactPreparedPayloadV1Schema` is `{artifactId, kind}` and `.strict()`
+— **it carries no path** — and the projector says so itself: *"`artifact_prepared` carries an
+artifactId and a kind, never a path … so there is no honest file list to build."* Worse, that id
+identifies a **`job_artifacts`** row, while `task_outputs.artifactId` references the **separate
+`artifacts`** table. Following a projector-only task from here forces either an invented path or an
+unlinked metadata-only row — both dishonest.
+
+**So F5's FIRST deliverable is a design, recorded in `decisions.md`, covering:**
+
+1. **Lookup** — `job_artifacts` row → a durable relative path, scoped by tenant, job, attempt and
+   status. The frozen v1 wire will not carry the path, so the path's **provenance must be durable
+   at commit time**, not reconstructed at projection time.
+2. **Materialization** — `job_artifacts` → `artifacts`, **idempotent** under retry and re-projection,
+   including the viewable version/reference rows `task_outputs` consumers expect.
+3. **Ordering and failure** — where materialization sits relative to the terminal, and what happens
+   when it fails after the terminal is durable.
+4. **What it must NOT do** — mint a path the sandbox never reported, or write a `task_outputs` row
+   whose `artifact_id` resolves to nothing.
+
+**Only once that is recorded** does the build half apply — modify
+`server/src/services/canary-terminal-projection.ts`, modify
+`server/src/services/canary-run-projector.ts` (a fifth step ordered **after** the terminal and
+**before** the run-summary comment), create
+`server/src/__tests__/canary-output-projection.integration.test.ts`, and extend the two existing
+projector suites.
 
 **Failure behavior:** best-effort and ordered last-but-one: a projection failure logs and does not
 retract the terminal, does not fail the attempt, and does not block the run-summary comment. A run
