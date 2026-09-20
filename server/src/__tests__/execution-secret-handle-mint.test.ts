@@ -116,9 +116,10 @@ describe("decideExecutionSecretHandle — refusals", () => {
   });
 
   it("refuses when the executor principal does not back an agent-owned run", () => {
-    // CLI-007: browser_worker + service_instance are real EXECUTOR kinds (browser/service
-    // runs) that must never stage a model credential; user/system are non-execution kinds.
-    for (const kind of ["user", "system", "service", "service_instance", "browser_worker"]) {
+    // CLI-007: browser_worker + service are real EXECUTOR kinds (browser/service runs; the
+    // service kind was renamed from `service_instance` by E9-F003) that must never stage a
+    // model credential; user/system are non-execution kinds.
+    for (const kind of ["user", "system", "service", "browser_worker"]) {
       expect(decideExecutionSecretHandle(input({ executorPrincipalKind: kind })))
         .toEqual({ mint: false, reason: "executor_not_agent" });
     }
