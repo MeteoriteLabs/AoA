@@ -1,5 +1,39 @@
 # QA and Completion-Handoff Recovery
 
+> ★★★ **AMENDED 2026-09-20 after an audit of this procedure against the rules it must not violate.**
+> Four gaps are closed inline below and are summarised here so a reader knows what changed.
+>
+> **The authorities this procedure operates under, which it previously cited nowhere:**
+> [`../artifact-policy.md`](../artifact-policy.md) (record immutability, the required fields, and
+> the folder + filename contract), [`../templates/qa-result-template.md`](../templates/qa-result-template.md),
+> [`../templates/handoff-template.md`](../templates/handoff-template.md), and — for the three
+> already-breached records — the founder grandfather ruling recorded in
+> `../epics/E0-foundation/qa/2026-09-14-d0-pre-guard-rewrite-grandfather-a1.md`, enacted as
+> `GRANDFATHERED_REWRITES` in `scripts/check-evidence-immutability.mjs`. **That ruling re-pins those
+> three records: any FOURTH rewrite, or any later touch of them, is denied by the guard.** §4's
+> "leave both files untouched now" agrees with it — now by citation rather than by coincidence.
+>
+> **Required fields, named explicitly** (they are enforced, not stylistic): `**Supersedes:**`,
+> `**Decision:**` (a handoff records exactly `pass` / `fail` / `blocked_external`), `**Attempt:**`,
+> and `**Revision:**`. The filename contract is
+> `<YYYY-MM-DD>-<lane-or-gate>-<scope>-<sha12>-a<attempt>.md`.
+>
+> **Status-flip authority.** This procedure produces evidence; it grants nothing. Only the
+> Integration Gate Owner changes an epic's status, and only on a committed `pass` QA record and a
+> committed `pass` handoff for the exact candidate (`../README.md`, `../epics/README.md`).
+>
+> **Where milestone records live (D-11).** A milestone record belongs to no single epic, and
+> `artifact-policy.md` defines paths only under `epics/<epic>/`. Milestone QA and handoff records go
+> under **`../milestones/<milestone>/{qa,handoffs}/`** with the same immutability and filename
+> contract. The shared-campaign record of §6 is filed once there and cited by every consumer.
+>
+> ★ **Accepted debt, recorded rather than fixed.** Six existing records violate the filename
+> contract: three E2 handoffs carry a **9-character** revision token instead of `<sha12>`
+> (`…-21335854f-a5`, `…-920e55de5-a3`, `…-d5abd1a53-a4`), two QA files carry **no revision segment**,
+> and one conforms to nothing. They are **not renamed**: renaming an immutable record is itself a
+> breach, and the grandfather ruling already denies further touches of that class. `E2-tenant-kernel/handoffs/`
+> is also missing the `README.md` the folder contract requires — that one is additive and may be added.
+
 > **Proposal only.** This procedure preserves existing evidence. It never edits an old QA/handoff record to make today’s state look compliant.
 
 ## Recovery principles
@@ -36,6 +70,17 @@ If a historical result is noncanonical or frozen but materially inaccurate, open
 The same rule applies to prerequisite and partial-gate evidence: adopt the narrow clause it proves and do not promote it into an epic-completion claim.
 
 ## 4. Supersede immutable-record breaches
+
+> ★ **AMENDED 2026-09-20 — this section covers a CLASS, not two instances.** §2 classifies
+> `invalid_record` ("the file itself was changed after first commit **or otherwise violates the
+> artifact policy**") and nothing downstream acted on it: §3 handles the other three classes and the
+> two named events below were the whole of §4. **Rule for any `invalid_record` not named below:**
+> if the breach is a *rewrite*, supersede it exactly as the two worked examples do — a new attempt
+> naming the old path in `Supersedes`, re-running or validly carrying forward its evidence, and
+> never editing the original. If the breach is a *contract* violation that cannot be repaired
+> without touching an immutable file (a malformed filename, a missing field), **record it as
+> accepted debt with its reason** — do not rename or edit. The superseding attempt repairs
+> provenance; it does not erase the breach, and neither does the debt note.
 
 Two known breaches must remain explicit:
 

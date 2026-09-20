@@ -27,6 +27,21 @@ docs/replatform/epics/<epic>/
 
 Folders are created when an epic enters `planning`. Result files are created only when real execution or evidence exists; do not pre-create empty ticket or QA records.
 
+★★★ **MILESTONE records live outside the epic tree (added 2026-09-20, founder decision D-11).** A
+milestone spans several epics by construction, so its QA and handoff records belong to no
+`epics/<epic>/` folder. They live under:
+
+```
+docs/replatform/milestones/<milestone>/
+  qa/        <YYYY-MM-DD>-<gate>-<scope>-<sha12>-a<attempt>.md
+  handoffs/  <YYYY-MM-DD>-<milestone>-<sha12>-a<attempt>.md
+```
+
+**The contract is identical, not softer** — immutable from first commit, the same required fields,
+the same 12-character revision in every filename. A milestone handoff is **non-promoting**: it
+changes no epic status and must not use `epic-completion` in its name. See
+[`milestones/README.md`](./milestones/README.md).
+
 ## Artifact responsibilities
 
 ### `README.md`
