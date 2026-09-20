@@ -624,8 +624,34 @@ after a successful commit; create
 contiguous `seq`, per-event `eventDigest` via `canonicalEventDigestInputV1` + `node:crypto`, into
 the injected sink, exactly like every sibling emitter.
 
-**Failure behavior:** best-effort. A sink failure logs and continues to a truthful terminal; it
-never fails the attempt and never retracts the commit (the artifact is already durable).
+**Failure behavior — ★★★ NOT best-effort, and an earlier revision of this ticket said it was.**
+*Corrected 2026-09-20 (fifth round), verified at source.*
+
+`EventSequencer.#emit` increments `#seq` **before** awaiting the sink
+(`packages/worker-daemon/src/supervisor/events.ts:139` allocates, `:164` awaits), so a failed
+`artifact_prepared` emit has **already consumed its sequence number**. The terminal then carries
+the next seq while that one never reached the durable outbox — a **hole**. The control plane
+classifies exactly that as a gap: `createJobEventIngestService` returns
+`"accepted" | "gap" | "hash_mismatch" | …` with an `acceptedThroughSeq`
+(`server/src/services/job-events.ts:125,275`), so nothing past the hole is accepted.
+
+★ **So “log and continue to a truthful terminal” cannot work: the terminal is precisely what would
+not land.** The old wording promised the one outcome the mechanism forbids.
+
+**This ticket therefore owes a DECISION before it is assignable as build**, recorded in
+`decisions.md`, choosing between:
+
+1. **Fatal** — a sink failure fails the attempt. Simple and honest; costs an attempt for a
+   post-commit bookkeeping event.
+2. **Allocate-on-success** — the sequencer assigns `seq` only after the sink accepts, so a failed
+   emit leaves no hole. This changes a **shared** sequencer used by every sibling emitter, so it
+   needs its own review and cannot be smuggled in under this ticket.
+3. **Durable retry before the terminal** — the emit is retried until it lands or the attempt
+   fails; the terminal never overtakes an unlanded event.
+
+★ **What it may NOT do is keep the current wording**, which describes a best-effort path whose
+stated success condition the ingest contract rejects. The artifact is already durable either way —
+the commit is never retracted; the open question is only how the event stream stays contiguous.
 
 **Migration/compatibility:** additive. `check:frozen-worker-protocol-v1` must stay green — the
 frozen package is not edited.

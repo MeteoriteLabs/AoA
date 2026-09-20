@@ -789,7 +789,7 @@ grant URL, secret, or byte.
 | D0-T05 hermetic inputs | `3c`/`3d` use fakes and a recording exporter; `DAT-007-S3` uses embedded PostgreSQL; only `3e`'s optional keyed lane touches a real provider, and only under founder authorization. |
 | H-04 secret containment | No grant URL, secret, path, or byte in any log, metric label, thrown message, or returned value — asserted in `3c` and `3e`. Zero tolerance. |
 | H-05 sandbox boundary | Bytes leave the sandbox only by a direct provider→object-store PUT under a worker-minted grant; the control plane carries grants and references, never bytes. |
-| H-06 network boundary | **NOT claimed.** `E5-6` is `unwired`, the DE-08 residual is accepted and recorded, and neither milestone gate may mark H-06 passed (E5-D06). |
+| H-06 network boundary | **NOT claimed.** `E5-6` is `unwired`, the DE-08 residual is accepted and recorded, and **none of the three partial gates — `M1-D1-SPINE`, `M1a-D2-MECHANISM`, `M1-D2-CODING` — may mark H-06 passed** (E5-D06). ★ *Corrected 2026-09-20 (fifth round): “neither milestone gate” was the last surviving two-gate count in this traceability table.* |
 | H-08 supply chain | No new runtime dependency. Both provider boundary checkers stay green. |
 | H-09 cleanup | `DAT-011-B1` re-measures the orphan sweep and records its §4 residual verbatim. |
 | H-10 evidence integrity | Append-only ticket results; a1 is immutable and a2 supersedes it. |

@@ -155,8 +155,25 @@ per-lease identities and the sweeper projects terminals through one projection w
 a **companyId**"* is likewise fixed: the dep is re-typed to `companyId` at
 `server/src/services/job-distributed-drain.ts:78`, and `listOrganizationCompanyIds` at `:60`
 enumerates the org. Both are frozen results, so the correction belongs in a finding, never an edit.
-What survives: the kill switch still has no UI and no API, and the revocation fan-out is still
-unwired.
+What survives: the revocation fan-out is still unwired.
+
+★★★ **THE KILL-SWITCH WRITE API HAS SHIPPED — so treating it as future `REL-005` work is a FALSE
+BLOCKER.** *Corrected 2026-09-20 (fifth round), verified at source.* `server/src/routes/instance-settings.ts`
+mounts authenticated `GET` (`:87`), `PUT` (`:92`) and `DELETE` (`:131`) `/instance/kill-switches`,
+gated by `assertCanManageInstanceSettings`, over `setKillSwitches` (`:192`) / `clearKillSwitches`
+(`:208`) in `server/src/services/instance-settings.ts`. The route's own comment says it plainly:
+*“this is the missing writer so an operator no longer needs hand-SQL to throw a switch.”*
+
+★ **One correction to the report that raised this:** it also said the shipped path includes
+activity logging. I did **not** find an activity write in either the route or the service — so the
+switch is authorized but, as far as I measured, **not** actor-attributed in `activity_log`. That is
+a separate gap and is not claimed closed here.
+
+★ **The remaining work is DRAIN INTEGRATION AND GRANULARITY, not creating a write path** — how the
+existing dimensioned switch triggers the fleet-wide `drainAll`. Describing it as creation risks
+building a duplicate operator surface beside the one that already exists.
+
+★ The **UI** is still absent; only the API claim was false.
 
 **`MIG-003` — durable realtime fan-out and sequence catch-up — `complete + review-fixed`.**
 The `E10-REALTIME-FOUNDATION` substrate. `live_event_log` + `live_event_sequences` under tenant
@@ -495,7 +512,7 @@ performs by hand. On landing, `E10-1-drain` promotes from `unwired` to `wired` *
 actually reaches `drainAll`**, proven by mutation.
 
 **Ticket non-goals.** No sink cutover and no credential path (the drain is sink-agnostic,
-`E10-F001`). No product kill-switch UI or API — that stays REL-005's. No change to the drain's
+`E10-F001`). No kill-switch **UI** — that stays REL-005's. ★ *The kill-switch **API** is NOT deferred: it has shipped (see the correction above); only the UI and the drain-trigger decision remain.* No change to the drain's
 cancellation semantics, its grain, its SQL, or `DRAINED_STATUSES`. No migration. No
 `packages/worker-protocol` change. No new `AOA_*` switch unless the operator ruling in ★ below
 requires one.
@@ -510,8 +527,9 @@ not an improvisation — is to split the trigger:
   `server/src/cli/reconcile-legacy-resources.ts` / `pnpm reconcile:legacy-resources`, which is the
   exact shape `gate-clause-wiring.json` already accepts as an honest caller for
   `E10-2-legacy-reconciliation` and which was *"PROVEN TO BITE"* by mutation.
-- **Later (REL-005):** the product kill-switch write path and its UI/API, which is a different
-  surface with a different authority model, and which the `E11` plan records as still unowned.
+- **Later (REL-005):** the kill-switch **UI**, and the decision on how the shipped dimensioned
+  switch triggers the fleet-wide `drainAll` — ★ **not** the write path, which has shipped (see the
+  correction above). The `E11` plan's “still unowned” framing inherits the same false blocker.
 
 If the controller rules otherwise — that MIG-009 must stay deferred and criterion 6 accepts a
 runbook — that ruling supersedes D-9 and belongs in a `decisions.md` entry (which E10 does not yet
@@ -575,14 +593,54 @@ test asserts that two consecutive CLI runs over the same live job queue **one** 
   `job_terminal`/`not_found`, both excluded from `DRAINED_STATUSES` — handled, not raced.
 - Any skipped organization ⇒ **non-zero exit**. A drain that silently reports a clean sweep while
   skipping organizations is precisely the dead-lever failure MIG-009 was written to kill.
+
+- ★★★ **`skippedOrganizations` IS NOT SUFFICIENT FOR THE EXIT CODE, and an earlier revision of this
+  ticket implied it was.** *Corrected 2026-09-20 (fifth round), verified at source.* The per-attempt
+  cancellation in `drainAll` swallows its error — `job-distributed-drain.ts:208` is a bare
+  `catch { }` that records **neither** a skipped organization **nor** a failed attempt, and the org
+  is still pushed as `skipped: false`. So a transient `requestCancellation` failure leaves an empty
+  skip list, this CLI exits **zero**, and **the rollback rehearsal passes while work is still
+  active** — which is the exact dead lever above, arriving through the one path the rule did not
+  cover.
+
+  **So this ticket owes one of two things, and must state which in `decisions.md`:**
+
+  1. **Widen the result contract** — `DistributedExecutionDrainResult` grows a
+     `failedCancellations` count (or per-attempt outcomes), and the CLI fails non-zero on it. This
+     edits a shipped service, so it is no longer the purely additive rollback this ticket claims
+     and the “no service change” line below must be corrected with it.
+  2. **Terminal-state recheck** — after the sweep the CLI re-reads active attempts for every
+     organization it did not skip and fails non-zero if any remain. Additive, no service edit, but
+     it must re-read through the same tenant-scoped path and not a new query.
+
+  ★ **A RED test is owed either way: a `requestCancellation` that throws for one attempt must make
+  this CLI exit non-zero.** Against today's code that test fails, which is the point — it is the
+  positive control for the dead lever.
 - The CLI never widens `pageSize` or `statementTimeoutMs` past the module's clamps, and never
   invents a `reason` that is not a stable enum-like string.
 
 **Observability.** One structured line per organization — `{organizationId, skipped, reason,
 cancelled}` — plus a final summary `{organizationsScanned, cancelled, skippedCount}`. Opaque ids
 only: no Company name, no actor, no job content, no key, no secret. The operator invocation itself
-is an auditable action; the CLI prints the exact `reason` string it passed to `drainAll` so the
-`activity_log`/cancellation records and the console agree.
+is an auditable action; the CLI prints the exact `reason` string it passed to `drainAll`.
+
+★★★ **THERE IS NO `activity_log` ROW ON THIS PATH TODAY, and an earlier revision of this line
+implied the console merely “agrees” with one.** *Corrected 2026-09-20 (fifth round), verified at
+source.* `job-distributed-drain.ts` imports no audit module, and the job audit helpers
+(`JOB_DRAIN_ACTION = "job.drain.requested"`, `server/src/services/job-control-audit.ts:63`) are
+composed by the **HTTP** drain route, not by `drainAll`. A CLI calling the service directly
+therefore mutates **every active attempt in the fleet** with **no actor-attributed durable audit
+record at all** — a fleet-wide rollback with no answer to *who ran it*.
+
+**So this ticket owes an actor identity and an explicit audit write**, recorded in `decisions.md`:
+either route the drain through the already-audited control surface, or compose an `activity_log`
+write for the invocation using `JOB_DRAIN_ACTION` and a CLI-operator actor. The CLI's file and
+interface plan above must gain that dependency — it currently has neither, which is why the gap
+was invisible.
+
+★ **The audit write must be ATOMIC with the mutation it records**, not best-effort beside it: a
+best-effort audit that is skipped on failure is permanently lost, and this repo has that failure
+class on record already.
 
 **Rollback of this ticket.** Purely additive: one new CLI file, one root script, one register
 status flip, tests, and docs. No migration, no schema, no service change. Rolling back means
@@ -664,7 +722,7 @@ therefore be **behavioural**, never a compile error — the same trap MIG-009 re
 The result doc records: the Start SHA, the reached-exactly-once proof, the full mutation table with
 `M-reach` explicitly named, the embedded-PG positive control, the `commandId` derivation, the
 register transition `unwired → wired` with its new `reason`, and the REL-005 boundary — the product
-kill-switch write path is **not** delivered here and must not be implied.
+kill-switch **UI** is **not** delivered here and must not be implied. ★ *The write path is not “not delivered” — it already exists; this ticket simply does not touch it.*
 
 **Size.** ≤3 agent-days. The drain's logic is already correct and mutation-proven; this ticket is a
 composition root, an operator entrypoint, an idempotency adapter, and the proof that the trigger is
@@ -683,7 +741,7 @@ Reopen this plan — not merely amend a ticket — when any of the following bec
    than a permanent gap.
 3. **The `drainAll` trigger question is ruled** — either the §8.1 operator-CLI split, or a ruling
    that MIG-009 stays deferred and criterion 6 accepts a runbook. Either ruling changes M1's exit.
-4. **`REL-005` is filed.** It is the named owner of the kill-switch write path; filing it changes
+4. **`REL-005` is filed.** It is the named owner of the kill-switch **UI and the drain-trigger decision** — ★ *not the write path, which has shipped*; filing it changes
    the boundary §8.1 draws.
 5. **The `E7-F007` successor is filed (D-10).** `MIG-010` can then carry a result, and exit
    criterion 1 becomes satisfiable.
