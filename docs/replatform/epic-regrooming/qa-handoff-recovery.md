@@ -14,8 +14,14 @@
 > "leave both files untouched now" agrees with it — now by citation rather than by coincidence.
 >
 > **Required fields, named explicitly** (they are enforced, not stylistic): `**Supersedes:**`,
-> `**Decision:**` (a handoff records exactly `pass` / `fail` / `blocked_external`), `**Attempt:**`,
-> and `**Revision:**`. The filename contract is
+> `**Attempt:**`, `**Revision:**`, and then **one of two verdict fields, which are NOT
+> interchangeable** — a **QA record** carries `**Result:**`
+> ([`../templates/qa-result-template.md`](../templates/qa-result-template.md)) and a **handoff**
+> carries `**Decision:**` ([`../templates/handoff-template.md`](../templates/handoff-template.md)).
+> Both take `pass` / `fail` / `blocked_external`. ★ *Corrected 2026-09-20: this list named only
+> `Decision` while the procedure creates QA records too, so an author following it could omit the
+> template-required `Result` and produce a record the pass checks later in this document cannot
+> use.* The filename contract is
 > `<YYYY-MM-DD>-<lane-or-gate>-<scope>-<sha12>-a<attempt>.md`.
 >
 > **Status-flip authority.** This procedure produces evidence; it grants nothing. Only the

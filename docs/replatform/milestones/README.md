@@ -23,7 +23,12 @@ milestones/<milestone>/handoffs/<YYYY-MM-DD>-<milestone>-<sha12>-a<attempt>.md
 
 `<milestone>` is the identifier from
 [`../epic-regrooming/scope-triage.md`](../epic-regrooming/scope-triage.md) → *The milestone
-sequence*: `M0`, `M1a`, `M1b`, `M2`, `M3`, `M4`, `M5`.
+sequence*: `M0`, `M1a`, `M1b`, `M2`, **`M2-RTF`**, `M3`, `M4`, `M5`.
+
+★ `M2-RTF` carries the `E10-REALTIME-FOUNDATION` campaign record and its `e10-realtime-foundation`
+handoff (RTF-07 requires that handoff **by name**). It was added to the milestone sequence and
+initially omitted from this list, which would have left an operator with no valid directory for a
+required campaign — so `milestones/M2-RTF/` is inside the contract, not outside it.
 
 ## The contract is the same one, not a softer one
 

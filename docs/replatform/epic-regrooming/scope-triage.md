@@ -164,6 +164,32 @@ On the same exact candidate, run the included real-E2B `task_run` journey throug
 
 This is not D2. It cannot complete E7, satisfy D2’s full run counts/schedule, or substitute for full D2 in a later D5/D6 or release decision. It unlocks only the internal alpha milestone after `M1-D1-SPINE` and its named dependencies pass.
 
+### `M1a-D2-MECHANISM` — real-E2B mechanism partial gate
+
+★★★ **Added 2026-09-20 after review, and it fixes a real defect rather than renaming one.** The
+M1a/M1b split originally allocated *"the mechanism verdict"* of `M1-D2-CODING` to `M1a` and *"both
+verdicts"* to `M1b`. **That cannot work.** Exit criterion 8 requires a committed `Result: pass` QA
+record for **both named partial gates**; `M1-D2-CODING` is defined above as the *useful-coding*
+gate and requires **attributable output**; and `templates/qa-result-template.md` gives a QA record a
+**single** normative `**Result:**`. Annotating one field as a "mechanism verdict" does not create a
+second `Result`. So the original wording either **falsely passed the useful-capability gate at
+M1a**, or left **M1a impossible to pass** — and which of the two it did depended on who read it.
+
+So the mechanism half becomes its own gate with its own record:
+
+On the same exact candidate, run the included real-E2B `task_run` journey end to end — dispatch,
+distributed ownership, lease, secret redemption, staged input, E2B create/execute/teardown, durable
+terminal, cancellation, provider failure, reconciliation and every cleanup path — **in a shipped CI
+boot**, and record the operator-visible audit, cost and failure-classification signals journey item
+7 names.
+
+★ **It does NOT require attributable agent output, and a record reporting `capabilityProven=false`
+satisfies it.** That is the gate's defining property, not a waiver: it is what makes `M1a` a real
+checkpoint rather than a weakened `M1b`.
+
+This is not D2 and not `M1-D2-CODING`. It cannot complete E7, cannot support any useful-capability
+claim, and unlocks only `M1a`.
+
 ### Normative-gate boundary
 
 Both partial gates are non-promoting. They may support a separately named milestone decision, but not an epic-completion handoff for E3–E7. Full D1/D2 and any E6/E7 completion still require the current normative gates, including H-06, or a separately reviewed and approved amendment to `test-gates.md`.
@@ -262,8 +288,14 @@ and placed-for but never leased. M3 begins by fixing that, not by writing a camp
 
 ### `M4` — HA and disaster recovery
 
-**Scope.** `DEP-009`'s two-replica half, `WRK-016` (replica-safe worker volumes), `REL-003`'s owed
-DR rehearsal with measured RPO/RTO, `DBR-001`.
+**Scope.** `WRK-016` (replica-safe worker volumes), `REL-003`'s owed
+DR rehearsal with measured RPO/RTO, `DBR-001`, and **the production-scale HA bar itself, owned by
+D5** — not by `DEP-009`.
+
+★ *Corrected 2026-09-20: this scope line still named "`DEP-009`'s two-replica half" after that
+ticket was un-split and moved wholly to **A**. Leaving it would have told the M4 planner to re-open
+an approved `complete + CI-GREEN` ticket instead of naming the real D5 work owner. Same incomplete
+sweep as the amendment row below — one fact corrected in one place and not its siblings.*
 
 **Exit.** Full **D5**.
 
@@ -370,14 +402,21 @@ Ticket shipment or an earlier mechanism run cannot substitute for items 2–9. P
 >
 > | Criterion | `M1a` | `M1b` | Note |
 > |---|---|---|---|
-> | 1 — all required ticket results approved | ✅ | ✅ | **Unsatisfiable until D-10 lands**: `MIG-010` is a required (B) ticket that deliberately carries no result so `E7-F007` keeps an owner. File the successor first. |
+> | 1 — all required ticket results approved | ✅ *(scoped — see below)* | ✅ | **TWO tickets make the unscoped reading unsatisfiable**, not one. `MIG-010` (B) carries no result so `E7-F007` keeps an owner — D-10 files the successor. **`CLI-008` (M) can NEVER carry a parent result**: ten findings name it as `ticket` and none names a successor, so a parent result orphans all ten at once. |
+
+> ★★★ **CRITERION 1 IS SCOPED PER MILESTONE, and this is a correction, not a waiver.** Read
+> unscoped, it demands a result for every required ticket — including one that must never have a
+> parent result by construction. So: **`M1a` requires results for the tickets in ITS OWN set**;
+> `CLI-008`'s **link-scoped successors** (`F1a`, `F3`, `F4`, `F5`, `F6`) produce their results at
+> **`M1b`**, and the parent `CLI-008` produces none, ever. A milestone may not silently exempt a
+> required ticket — it must name the scope, which is what this does.
 > | 2 — fresh `M1-D1-SPINE` campaign | ✅ | ✅ | |
-> | 3 — fresh `M1-D2-CODING` campaign | ✅ *(mechanism verdict)* | ✅ *(both verdicts)* | one campaign may produce both records; the verdicts are recorded separately |
+> | 3 — fresh real-E2B campaign | ✅ **`M1a-D2-MECHANISM`** | ✅ **`M1-D2-CODING`** | two gates, two QA records, two `Result` fields. One campaign run may produce both, but a QA record has ONE normative `Result`, so the mechanism verdict needed its own gate — see above. |
 > | **4 — useful-agent capability evidence** | ✖ | ✅ | **The split lives here.** `M1a` is satisfied by a record reporting `capabilityProven=false`; `M1b` is not, and the bar is unchanged. |
 > | 5 — dormant-egress residual observed | ✅ | ✅ | |
 > | 6 — zero blocking findings + **recorded rollback rehearsal** | ✅ | ✅ | **D-9:** the rehearsal USES the `MIG-009` drain, so `E10-1-drain` must be wired — not a manual runbook. |
 > | 7 — committed passing E5 a2 audit | ✅ | ✅ | |
-> | 8 — `Result: pass` QA records for both named gates | ✅ | ✅ | |
+> | 8 — `Result: pass` QA records for its named gates | ✅ *(`M1-D1-SPINE` + `M1a-D2-MECHANISM`)* | ✅ *(those two + `M1-D2-CODING`)* | "both named gates" in criterion 8 means **the gates that milestone names**, not all three at M1a |
 > | 9 — non-epic-completing `Decision: pass` handoff | ✅ | ✅ | filed under `docs/replatform/milestones/<M>/handoffs/` per **D-11** |
 >
 > ★ **`E3-F037` is an `M1a` blocker under criterion 6** (**D-8**): a distributed attempt writes no
@@ -397,7 +436,7 @@ Nineteen disputes, each verified at `4df71dada` against source rather than inher
 | `DAT-009` | C → **M** | Slice 3 owns `createArtifactExportSequencer`, whose ONLY references are its own definition and the barrel re-export at `packages/worker-daemon/src/index.ts:178` — **zero production callers**. It is return-path link 3, which exit criterion 4 requires. |
 | `DAT-011` | C → **B** | LANDED and production-wired: `createSweepTrigger` imported at `server/src/routes/worker-control.ts:44`, constructed at `:137`. Exit criterion 3 demands "every terminal cleanup path"; M1 mints artifact grants. |
 | `MIG-009` | C → **B** | **D-9:** exit criterion 6's rollback rehearsal USES the drain. MIG-009 shipped it deliberately unwired (`E10-1-drain` dormant); wiring it gives criterion 6 a mechanism rather than a runbook. ★ **The apparent conflict with the register is resolved in D-9's favour — see below.** |
-| `DEP-009` | D → **split A + D** | Its shipped admission half is load-bearing on journey item 1 — `admitAttemptCapacity` is composed on the live submit path (`server/src/services/job-submission.ts:34,131,136`). Leaving a `complete + CI-GREEN` ticket under "re-enter through their own approved scope" would re-open evidence M1 depends on. Two-replica HA stays D. |
+| `DEP-009` | D → **A** *(whole ticket)* | Its shipped admission half is load-bearing on journey item 1 — `admitAttemptCapacity` is composed on the live submit path (`server/src/services/job-submission.ts:34,131,136`). ★ **And its two-replica half shipped too** — `complete + CI-GREEN`, live boot and `e6f-11` 6/6 on `d1-merge-train`, `control-plane-b` in the D1 compose. An earlier revision of this row said "Two-replica HA stays D"; that was the third of three sites stating the superseded split, and is corrected here. The production-scale HA bar is **D5's**, not this ticket's. |
 | `WRK-013` | A → **M** | `Status: scoping`, no result, `E4-F009` open. `StartupReconcilerDeps.leaseCandidates` still has no durable source. No claim exists, so there is no promise to correct. |
 | `DAT-007` | A → **M** | Its own result header: `PARTIAL — the core remote-reach is BLOCKED`. Already honest; the residual is build work on the tools-in path. |
 | `CLI-008` | A → **M** | No result doc; **ten** open findings name it as `ticket`. The largest unbuilt block in the original A. |
