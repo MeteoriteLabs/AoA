@@ -9,6 +9,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   mintExecutionSecretHandleForPlacement,
+  mintRunJwtHandleForPlacement,
   providerBindingForEnvVar,
   type ExecutionSecretMintRepo,
 } from "../services/execution-secret-handle-mint-runner.js";
@@ -205,5 +206,63 @@ describe("mintExecutionSecretHandleForPlacement", () => {
     const { stub } = repo({ adapterType: "claude_local", adapterConfig: {} });
     await mintExecutionSecretHandleForPlacement(stub, BASE);
     expect(stub.loadAgentAdapterBinding).toHaveBeenCalledWith({ companyId: "co-1", agentId: "agent-1" });
+  });
+});
+
+describe("mintRunJwtHandleForPlacement — the run_jwt (AOA_API_KEY) placement mint (CLI-008 S3b)", () => {
+  const RUN_JWT_BASE = {
+    organizationId: "org-1",
+    companyId: "co-1",
+    jobId: "job-1",
+    executorPrincipalKind: "agent",
+    executorPrincipalId: "agent-1",
+    targetGeneration: 4,
+    deploymentMode: "cloud_auth",
+    newHandleId: () => "99999999-2222-4333-8444-555555555555",
+  } as const;
+
+  it("short-circuits when the tool surface is OFF — NO agent load, NO insert (the inert default)", async () => {
+    const { stub, inserted } = repo({ adapterType: "claude_local", adapterConfig: {} });
+    const out = await mintRunJwtHandleForPlacement(stub, { ...RUN_JWT_BASE, toolSurfaceAuthorized: false });
+    expect(out).toEqual({ minted: false, reason: "tool_surface_not_authorized" });
+    // Zero DB touch while inert: neither the agent binding nor the handle table is read/written.
+    expect(stub.loadAgentAdapterBinding).not.toHaveBeenCalled();
+    expect(inserted).toEqual([]);
+  });
+
+  it("mints a run_jwt handle bound to the JOB id (not a run id) with the AOA_API_KEY env target", async () => {
+    const { stub, inserted } = repo({ adapterType: "claude_local", adapterConfig: {} });
+    const out = await mintRunJwtHandleForPlacement(stub, { ...RUN_JWT_BASE, toolSurfaceAuthorized: true });
+    expect(out).toEqual({ minted: true, handle: "99999999-2222-4333-8444-555555555555", deduped: false });
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0]).toMatchObject({
+      refKind: "run_jwt",
+      refId: "job-1",
+      envTarget: "AOA_API_KEY",
+      materialization: "env",
+      usePolicy: "sandbox_local_only",
+      refVersion: null,
+      boundTargetGeneration: 4,
+      ownerPrincipalKind: "agent",
+      ownerPrincipalId: "agent-1",
+    });
+  });
+
+  it("mints NO run_jwt handle for a codex_local run (codex has no aoa MCP surface)", async () => {
+    const { stub, inserted } = repo({ adapterType: "codex_local", adapterConfig: {} });
+    const out = await mintRunJwtHandleForPlacement(stub, { ...RUN_JWT_BASE, toolSurfaceAuthorized: true });
+    expect(out).toEqual({ minted: false, reason: "adapter_not_claude_local" });
+    expect(inserted).toEqual([]);
+  });
+
+  it("mints NO run_jwt handle on a self-hosted deployment", async () => {
+    const { stub, inserted } = repo({ adapterType: "claude_local", adapterConfig: {} });
+    const out = await mintRunJwtHandleForPlacement(stub, {
+      ...RUN_JWT_BASE,
+      toolSurfaceAuthorized: true,
+      deploymentMode: "local_trusted",
+    });
+    expect(out).toEqual({ minted: false, reason: "not_cloud_deployment" });
+    expect(inserted).toEqual([]);
   });
 });

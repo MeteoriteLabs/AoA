@@ -14,6 +14,7 @@ import {
 // -----------------------------------------------------------------------------
 
 const SECRET_MARKER = "SECRET-VALUE-should-never-hit-wire-or-sandbox";
+const RUN_JWT_MARKER = "MINTED-RUN-JWT-should-never-hit-wire";
 
 function authorized(overrides: Partial<AuthorizedSecretResolution> = {}): AuthorizedSecretResolution {
   return {
@@ -43,6 +44,10 @@ function recordingBrokers(): SecretBrokerSet & { calls: string[] } {
     async resolveProviderOrCompanySecret(input) {
       calls.push(`secret:${input.refKind}:${input.companyId}:${input.refId}`);
       return SECRET_MARKER;
+    },
+    async resolveRunJwt(input) {
+      calls.push(`runjwt:${input.companyId}:${input.refId}:${input.ownerPrincipalId}`);
+      return RUN_JWT_MARKER;
     },
   };
 }
@@ -128,6 +133,31 @@ describe("DAT-004 dispatchResolvedSecret", () => {
     await expect(dispatchResolvedSecret(authorized({
       refKind: "connector_oauth", refId: "mcp:oauth:x", materialization: "proxy",
       usePolicy: "fence_proxy", destination: "https://api.x",
+    }), failClosedSecretBrokers)).rejects.toThrow();
+  });
+
+  it("resolves a run_jwt handle to the sandbox_local_only env seam via the run_jwt broker", async () => {
+    const brokers = recordingBrokers();
+    const out = await dispatchResolvedSecret(authorized({
+      refKind: "run_jwt", refId: "job-uuid-1", materialization: "env",
+      usePolicy: "sandbox_local_only", materializationTarget: "AOA_API_KEY", destination: null,
+      ownerPrincipalKind: "worker", ownerPrincipalId: "agent-1",
+    }), brokers);
+    expect(out.outcome).toBe("resolved");
+    if (out.outcome !== "resolved") return;
+    expect(out.seam).toBe("sandbox_local_only");
+    expect(out.material.value).toBe(RUN_JWT_MARKER);
+    expect(out.material.materializationTarget).toBe("AOA_API_KEY");
+    expect(out.material.destination).toBeNull();
+    // ONLY the run_jwt broker is invoked — never the connector/secret stores — and it
+    // receives the company (fence-derived), the jobId (refId) and the handle owner.
+    expect(brokers.calls).toEqual(["runjwt:company-1:job-uuid-1:agent-1"]);
+  });
+
+  it("fail-closed default brokers never yield a value for a run_jwt handle", async () => {
+    await expect(dispatchResolvedSecret(authorized({
+      refKind: "run_jwt", refId: "job-uuid-1", materialization: "env",
+      usePolicy: "sandbox_local_only", materializationTarget: "AOA_API_KEY",
     }), failClosedSecretBrokers)).rejects.toThrow();
   });
 });

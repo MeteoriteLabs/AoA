@@ -827,7 +827,7 @@ export interface JobControlRepository {
     companyId: string;
     jobId: string;
     handle: string;
-    refKind: "provider_key" | "company_secret";
+    refKind: "provider_key" | "company_secret" | "run_jwt";
     refId: string;
     materialization: "env";
     usePolicy: "sandbox_local_only";
@@ -1171,6 +1171,12 @@ export interface JobControlRepository {
   // monotonically-sequenced E1 cancel command bound to the current lease fence
   // (idempotent: one cancel command per lease).
   requestCancellation(input: RequestCancellationInput): Promise<CancellationOutcome>;
+  /** SVC-005b — queue ONE E1 `drain` control command on the job's live fence (E9-F008
+   * closure for the `drain` kind). A drain finishes the in-flight attempt and stops the
+   * worker taking new leases (`handlers.drain` -> `pollLoop.stopLeasing()`); UNLIKE
+   * `requestCancellation` it drives NO job/attempt status transition and NEVER finalizes
+   * an unleased job. Idempotent per (org, lease, command id); monotonic per-lease seq. */
+  requestDrain(input: RequestDrainInput): Promise<DrainOutcome>;
   /**
    * Un-ACKed control commands for a lease, in monotonic `command_seq` order — the
    * "return pending controls until ACK" read.
@@ -1372,10 +1378,13 @@ export interface AuthorizedSecretResolution {
 // ---------------------------------------------------------------------------
 // JOB-006 — cancellation, control commands, and reaper/retry types.
 
-/** The control-command kinds JOB-006/JOB-011 queue (a subset of the frozen E1
- * CONTROL_COMMAND_KINDS). JOB-006 issues `cancel`/`drain`/`graceful_stop` from the
- * reaper/cancellation; JOB-011 queues the SERVER-authored `product_approval_result`
- * / `runtime_decision_result` when the existing product/runtime authority resolves. */
+/** The control-command kinds JOB-006/JOB-011/SVC-005b queue (a subset of the frozen E1
+ * CONTROL_COMMAND_KINDS). JOB-006's `requestCancellation` issues `cancel`; SVC-005b's
+ * `requestDrain` issues `drain` (the operator drain route); JOB-011 queues the
+ * SERVER-authored `product_approval_result` / `runtime_decision_result` when the existing
+ * product/runtime authority resolves. `graceful_stop` still has no producer — its only
+ * consumer folds into the `cancelRequested` floor (E9-F008) — and `checkpoint` is not
+ * persistable (excluded from `job_control_commands_kind_check`). */
 export type JobControlCommandKind =
   | "cancel"
   | "drain"
@@ -1508,6 +1517,29 @@ export type CancellationStatus =
 
 export interface CancellationOutcome {
   status: CancellationStatus;
+  command: QueuedControlCommand | null;
+}
+
+export interface RequestDrainInput {
+  organizationId: string;
+  companyId: string;
+  jobId: string;
+  reason: string;
+  /** Caller-supplied command id — a retried drain with the SAME id replays the queued
+   * command (idempotent), never a second command. */
+  commandId: string;
+  now: Date;
+}
+
+export type DrainStatus =
+  | "queued"
+  | "already_requested"
+  | "no_active_lease"
+  | "job_terminal"
+  | "not_found";
+
+export interface DrainOutcome {
+  status: DrainStatus;
   command: QueuedControlCommand | null;
 }
 
@@ -5092,6 +5124,118 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         fenceToken: lease.fence,
         reason: input.reason,
         graceful: input.graceful,
+        command: commandBody,
+      }).onConflictDoNothing({
+        target: [
+          jobControlCommands.organizationId,
+          jobControlCommands.leaseId,
+          jobControlCommands.commandId,
+        ],
+      }).returning();
+      if (inserted) return { status: "queued", command: toQueuedControlCommand(inserted) };
+      // Lost the (org, lease, command_id) race — re-read the winning row.
+      const [row] = await tx.select().from(jobControlCommands).where(and(
+        eq(jobControlCommands.organizationId, input.organizationId),
+        eq(jobControlCommands.leaseId, lease.id),
+        eq(jobControlCommands.commandId, input.commandId),
+      )).limit(1);
+      return { status: "already_requested", command: row ? toQueuedControlCommand(row) : null };
+    },
+
+    async requestDrain(input) {
+      // SVC-005b — the operator drain producer (E9-F008 closure for the `drain` kind).
+      // A drain is NOT a cancel: it queues ONE `drain` control command on the live fence
+      // (the worker's `handlers.drain` -> `pollLoop.stopLeasing()` finishes the in-flight
+      // attempt and stops taking new leases) and drives NO job/attempt status transition.
+      // GLOBAL lock order lease -> attempt -> job (LAST) — identical to requestCancellation
+      // and the reaper, so a concurrent reap/terminal-flush never deadlocks (40P01). Lock
+      // the one live lease FIRST (at most one offered/active per job).
+      const [liveLease] = await tx.select().from(leases).where(and(
+        eq(leases.organizationId, input.organizationId),
+        eq(leases.companyId, input.companyId),
+        eq(leases.jobId, input.jobId),
+        inArray(leases.status, ["offered", "active"]),
+      )).orderBy(desc(leases.createdAt)).for("update").limit(1);
+
+      // The live lease's attempt, if any — a drain has nothing to command without one.
+      const [attempt] = liveLease
+        ? await tx.select().from(jobAttempts).where(and(
+          eq(jobAttempts.organizationId, input.organizationId),
+          eq(jobAttempts.companyId, input.companyId),
+          eq(jobAttempts.jobId, input.jobId),
+          eq(jobAttempts.id, liveLease.attemptId),
+        )).for("update").limit(1)
+        : [undefined];
+
+      // Finally the job (LAST) — for the not_found / job_terminal diagnostics only; a drain
+      // NEVER mutates it.
+      const [job] = await tx.select().from(jobs).where(and(
+        eq(jobs.organizationId, input.organizationId),
+        eq(jobs.companyId, input.companyId),
+        eq(jobs.id, input.jobId),
+      )).for("update").limit(1);
+      if (!job) return { status: "not_found", command: null };
+      if ((JOB_TERMINAL_STATUSES as readonly string[]).includes(job.status)) {
+        return { status: "job_terminal", command: null };
+      }
+
+      const lease = liveLease;
+      if (!lease || !attempt || !lease.workerId || !lease.attemptNumber) {
+        // No fenced worker to drain. Unlike requestCancellation, a drain NEVER finalizes an
+        // unleased job: draining means "let the in-flight attempt finish", and there is no
+        // in-flight attempt to finish, so there is nothing to command and nothing to cancel.
+        return { status: "no_active_lease", command: null };
+      }
+
+      // Idempotent: one drain command per lease. A prior drain replays as-is.
+      const [existing] = await tx.select().from(jobControlCommands).where(and(
+        eq(jobControlCommands.organizationId, input.organizationId),
+        eq(jobControlCommands.leaseId, lease.id),
+        eq(jobControlCommands.commandKind, "drain"),
+      )).orderBy(asc(jobControlCommands.commandSeq)).limit(1);
+      if (existing) return { status: "already_requested", command: toQueuedControlCommand(existing) };
+
+      // Allocate the next monotonic per-lease sequence under the lease lock.
+      const [{ maxSeq }] = await tx.select({
+        maxSeq: sql<number>`COALESCE(MAX(${jobControlCommands.commandSeq}), 0)`,
+      }).from(jobControlCommands).where(and(
+        eq(jobControlCommands.organizationId, input.organizationId),
+        eq(jobControlCommands.leaseId, lease.id),
+      ));
+      const commandSeq = Number(maxSeq) + 1;
+      // The frozen E1 `drain` variant is {...base, commandKind:"drain", reason}. It carries
+      // NO `graceful` key (that is the `cancel` variant only); the worker-side strict schema
+      // rejects any extra key, so the body must not spread cancel's shape.
+      const commandBody: Record<string, unknown> = {
+        protocolVersion: 1,
+        audience: "control_channel",
+        commandId: input.commandId,
+        commandSeq,
+        idempotencyKey: input.commandId,
+        issuedAt: input.now.toISOString(),
+        nonce: randomUUID(),
+        organizationId: input.organizationId,
+        companyId: input.companyId,
+        workerId: lease.workerId,
+        jobId: input.jobId,
+        attempt: lease.attemptNumber,
+        leaseId: lease.id,
+        fenceToken: lease.fence,
+        commandKind: "drain",
+        reason: input.reason,
+      };
+      const [inserted] = await tx.insert(jobControlCommands).values({
+        organizationId: input.organizationId,
+        companyId: input.companyId,
+        jobId: input.jobId,
+        attemptId: attempt.id,
+        attemptNumber: lease.attemptNumber,
+        leaseId: lease.id,
+        commandId: input.commandId,
+        commandSeq,
+        commandKind: "drain",
+        fenceToken: lease.fence,
+        reason: input.reason,
         command: commandBody,
       }).onConflictDoNothing({
         target: [

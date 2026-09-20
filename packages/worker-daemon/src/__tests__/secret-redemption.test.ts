@@ -81,6 +81,7 @@ describe("PROVIDER_AUTH_ENV_TARGETS — the worker-local allowlist", () => {
   it("admits the CLI-001 v1 provider-auth names only", () => {
     expect(PROVIDER_AUTH_ENV_TARGETS.has("ANTHROPIC_API_KEY")).toBe(true);
     expect(PROVIDER_AUTH_ENV_TARGETS.has("OPENAI_API_KEY")).toBe(true);
+    expect(PROVIDER_AUTH_ENV_TARGETS.has("AOA_API_KEY")).toBe(true);
     expect(PROVIDER_AUTH_ENV_TARGETS.has("PATH")).toBe(false);
     expect(PROVIDER_AUTH_ENV_TARGETS.has("LD_PRELOAD")).toBe(false);
   });

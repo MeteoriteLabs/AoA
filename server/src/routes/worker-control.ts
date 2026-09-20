@@ -119,7 +119,12 @@ export function workerControlRoutes(opts: {
     scheduler: opts.jobReadyScheduler,
     metrics: opts.jobControlMetrics,
   });
-  const renewal = createJobLeaseRenewalService({ appDb: opts.appDb });
+  const renewal = createJobLeaseRenewalService({
+    appDb: opts.appDb,
+    // E9-F002 (b) — the SAME control-plane signing key the resolve route mints with; absent
+    // today ⇒ no capability re-minted on renewal (byte-identical), exactly like the resolve mint.
+    controlPlaneSigningKey: opts.controlPlaneSigningKey,
+  });
   const events = createJobEventIngestService({ appDb: opts.appDb, onAttemptTerminal: opts.onAttemptTerminal });
   // DAT-002 — the raw storage provider (full-object-key, no company prefixing) used
   // to presign worker grants and headObject-verify commits.

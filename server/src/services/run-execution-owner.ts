@@ -47,6 +47,8 @@ export interface RunExecutionPlacement {
      * run, where the mint sources `credentialKind` from the binding exactly as before.
      */
     mintCredentialAuthority?: JobPlacementCredentialBinding["credentialKind"];
+    /** CLI-008 Unit C — gates the run_jwt (AOA_API_KEY) mint; off by default. */
+    toolSurfaceAuthorized?: boolean;
   }): Promise<{ disposition: string; leaseEligible?: boolean }>;
 }
 
@@ -261,13 +263,19 @@ export interface RunExecutionOwnerResolver {
      * CLI-008 Unit B — files the control plane wants to exist inside the sandbox before the
      * agent runs. Staged after the convert and before placement (see `stageJobInput`).
      *
-     * ★ EMPTY TODAY, AND THAT IS THE DESIGNED STATE. Unit B delivers the CHANNEL; the things
-     * that ride it are Units C (the MCP config) and D (the instructions bundle). The seam
-     * passes what it has, which is nothing, so no production run stages a file yet and
-     * `capabilityProven` is unmoved. The chain itself is proven end-to-end with a real bundle
-     * in `cli-008-unit-b-staging-channel.integration.test.ts`.
+     * ★ NON-EMPTY SINCE UNIT D, which moved the PROMPT onto this channel: `buildSandboxInvocation`
+     * always stages the prompt, so every canary distributed run stages >=1 file here — the prompt
+     * always, the instructions bundle when the agent has a configured one, and the aoa MCP config
+     * only when AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED is on (claude_local, Unit C). `capabilityProven`
+     * stays unmoved — gated on Unit F (unbuilt), NOT staging; proven in `cli-008-unit-b-staging-channel.integration.test.ts`.
      */
     stagedFiles?: readonly { readonly path: string; readonly bytes: Uint8Array; readonly contentType?: string }[];
+    /**
+     * CLI-008 Unit C — whether this run's distributed TOOL SURFACE is authorized
+     * (AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED). Forwarded to placement, where it gates the
+     * SECOND mint (the run_jwt / AOA_API_KEY bearer). Off by default → no run_jwt handle.
+     */
+    toolSurfaceAuthorized?: boolean;
   }): Promise<RunExecutionOwner>;
 }
 
@@ -290,6 +298,7 @@ export function createRunExecutionOwnerResolver(
       jobInput,
       rolloutState,
       stagedFiles,
+      toolSurfaceAuthorized,
     }) {
       // Set once the convert has claimed a capacity slot, so every later legacy exit — the
       // placement decline AND the catch-all — can hand it back. Declared out here because the
@@ -383,6 +392,8 @@ export function createRunExecutionOwnerResolver(
           // here. `gate` is the ok variant by this point, so it always carries it; a
           // refused gate returned legacy above and never reaches placement.
           mintCredentialAuthority: gate.credentialAuthority,
+          // CLI-008 Unit C — forward the tool-surface gate to the run_jwt mint (S3b).
+          toolSurfaceAuthorized,
         });
         if (decision.disposition !== "selected" || decision.leaseEligible !== true) {
           // The run goes legacy, so the slot this convert claimed must go back — otherwise the

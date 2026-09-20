@@ -38,12 +38,18 @@ import {
   signOwnedLabelsCapability,
   type OwnedLabelsCapability,
 } from "@armyofagents/provider-capability";
+import type { WireExtension } from "@armyofagents/worker-protocol";
 
 import type { SecretResolveOutcome } from "./secret-broker.js";
 
 /** A short default TTL, clamped to the lease deadline. The absolute bound is the lease
  * deadline (§1.4); this is the "never longer than" ceiling for a healthy short lease. */
 export const OWNED_LABELS_CAPABILITY_DEFAULT_TTL_MS = 5 * 60_000;
+
+/** E9-F002 (b) — the wire-extension namespace the RENEW reply carries a re-minted
+ * capability under. A NON-critical extension (an older worker ignores it), so this is a
+ * frozen-wire-CLEAN additive delivery. Vendored on the worker side when it consumes it. */
+export const OWNED_LABELS_CAPABILITY_EXTENSION_NAMESPACE = "aoa.dev/owned-labels-capability";
 
 /** The device-proof-verified fence context the mint reads — the fields
  * `resolveWorkerFenceContext` already resolves inside the broker tenant-tx closure. */
@@ -116,4 +122,28 @@ export function applyOwnedLabelsCapability(
   if (outcome.outcome !== "resolved" || outcome.seam !== "sandbox_local_only") return outcome;
   const ownedLabelsCapability = mintOwnedLabelsCapability(ctx, opts.controlPlaneSigningKey, opts.shortTtlMs);
   return { ...outcome, ownedLabelsCapability };
+}
+
+/**
+ * E9-F002 option (b) — append a RE-MINTED capability to a lease-renew reply body's
+ * `extensions[]`, as a NON-critical extension under {@link OWNED_LABELS_CAPABILITY_EXTENSION_NAMESPACE}.
+ * An older worker ignores an unknown non-critical extension, so this is a frozen-wire-CLEAN
+ * additive delivery — never a new top-level response field (the renew response schema is
+ * `.strict()`). Absent a control-plane signing key the body is returned UNCHANGED (inert),
+ * exactly like {@link applyOwnedLabelsCapability}. PURE: reads only the injected ctx; NEVER throws.
+ */
+export function withRenewedOwnedLabelsCapability<B extends { readonly extensions?: readonly WireExtension[] }>(
+  body: B,
+  ctx: OwnedLabelsMintContext,
+  opts: OwnedLabelsMintOptions,
+): B {
+  if (!opts.controlPlaneSigningKey) return body;
+  const capability = mintOwnedLabelsCapability(ctx, opts.controlPlaneSigningKey, opts.shortTtlMs);
+  const extension: WireExtension = {
+    namespace: OWNED_LABELS_CAPABILITY_EXTENSION_NAMESPACE,
+    schemaVersion: 1,
+    critical: false,
+    value: capability,
+  };
+  return { ...body, extensions: [...(body.extensions ?? []), extension] } as B;
 }

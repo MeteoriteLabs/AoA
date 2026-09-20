@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({
   infoSpy: vi.fn(),
-  reqCancelSpy: vi.fn(),
+  reqDrainSpy: vi.fn(),
   revokeSpy: vi.fn(),
   state: {
     canOrg: true as boolean,
@@ -37,7 +37,7 @@ vi.mock("../services/organization-access.js", () => ({
 
 // Mutation delegates (JOB-006 cancellation / JOB-007 revocation).
 vi.mock("../services/job-reconciliation.js", () => ({
-  createJobReconciliationService: () => ({ requestCancellation: h.reqCancelSpy }),
+  createJobReconciliationService: () => ({ requestDrain: h.reqDrainSpy }),
 }));
 vi.mock("../services/execution-targets.js", () => ({
   revokeExecutionTarget: h.revokeSpy,
@@ -272,8 +272,8 @@ beforeEach(() => {
     job_events: [fullEvent()],
     workers: [fullWorker()],
   };
-  h.reqCancelSpy.mockReset();
-  h.reqCancelSpy.mockResolvedValue({ status: "queued", command: { commandId: "cmd-1", commandSeq: 1 } });
+  h.reqDrainSpy.mockReset();
+  h.reqDrainSpy.mockResolvedValue({ status: "queued", command: { commandId: "cmd-1", commandSeq: 1 } });
   h.revokeSpy.mockReset();
   h.revokeSpy.mockResolvedValue({ revoked: true, revokedGeneration: 2, targetScope: "organization" });
 });
@@ -409,15 +409,20 @@ describe("JOB-008 operator controls — redaction by projection", () => {
 });
 
 describe("JOB-008 operator controls — mutations delegate + audit", () => {
-  it("drain delegates to requestCancellation with graceful:true and audits", async () => {
+  it("drain delegates to requestDrain (no graceful — a drain is not a cancel) and audits", async () => {
     const res = await request(makeApp(boardAdmin))
       .post(`/api/organizations/${ORG}/companies/${COMPANY}/jobs/${JOB}/drain`)
       .send({ reason: "operator drain" });
     expect(res.status).toBe(202);
     expect(res.body.status).toBe("queued");
-    expect(h.reqCancelSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ organizationId: ORG, companyId: COMPANY, jobId: JOB, graceful: true }),
+    expect(h.reqDrainSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        organizationId: ORG, companyId: COMPANY, jobId: JOB, reason: "operator drain",
+        actor: { actorType: "user", actorId: "operator-9" },
+      }),
     );
+    // A drain is NOT a cancel: the operator drain path passes no `graceful` flag.
+    expect(h.reqDrainSpy.mock.calls[0]![0]).not.toHaveProperty("graceful");
     expect(h.infoSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "job.drain.requested",
@@ -436,8 +441,8 @@ describe("JOB-008 operator controls — mutations delegate + audit", () => {
     }
   });
 
-  it("drain is idempotent — a repeat cancellation returns already_requested with a stable 202", async () => {
-    h.reqCancelSpy.mockResolvedValue({ status: "already_requested", command: null });
+  it("drain is idempotent — a repeat drain returns already_requested with a stable 202", async () => {
+    h.reqDrainSpy.mockResolvedValue({ status: "already_requested", command: null });
     const res = await request(makeApp(boardAdmin))
       .post(`/api/organizations/${ORG}/companies/${COMPANY}/jobs/${JOB}/drain`)
       .send({ reason: "again" });
@@ -445,8 +450,8 @@ describe("JOB-008 operator controls — mutations delegate + audit", () => {
     expect(res.body.status).toBe("already_requested");
   });
 
-  it("drain maps a not_found cancellation status to 404 with no audit", async () => {
-    h.reqCancelSpy.mockResolvedValue({ status: "not_found", command: null });
+  it("drain maps a not_found drain status to 404 with no audit", async () => {
+    h.reqDrainSpy.mockResolvedValue({ status: "not_found", command: null });
     const res = await request(makeApp(boardAdmin))
       .post(`/api/organizations/${ORG}/companies/${COMPANY}/jobs/${JOB}/drain`)
       .send({ reason: "x" });

@@ -131,3 +131,30 @@ describe("CLI-005 heartbeat distributed-rollout hook (flag-first, dormant by def
     expect(compare).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("resolveExecutionOwner — CLI-008 Unit C toolSurfaceAuthorized forwarding", () => {
+  it("forwards toolSurfaceAuthorized to the ownership resolver (the file's own drop-warning)", async () => {
+    const resolve = vi.fn(async () => ({ owner: "distributed", jobId: "j", attemptId: "a" }));
+    const hook = createHeartbeatDistributedRolloutHook({
+      env: {},
+      deploymentMode: "cloud_auth",
+      rolloutSource: fakeRolloutSource("active"),
+      resolveOrganizationId: vi.fn(async () => ORG),
+      convertOrchestrator: { convertRunToJob: vi.fn() } as unknown as JobConvertOrchestrator,
+      comparator: { compare: vi.fn() } as unknown as JobShadowComparator,
+      ownerResolver: { resolve },
+    });
+    await hook.resolveExecutionOwner({
+      source: { kind: "task_run", runId: "r", issueId: "i", assigneeAgentId: "a" } as unknown as SubmitJobSource,
+      actor: { kind: "agent", id: "a", companyId: COMPANY } as never,
+      organizationId: ORG,
+      idempotencyKey: "k",
+      rolloutState: "active" as never,
+      input: {},
+      stagedFiles: [],
+      toolSurfaceAuthorized: true,
+    });
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(resolve.mock.calls[0][0]).toMatchObject({ toolSurfaceAuthorized: true });
+  });
+});

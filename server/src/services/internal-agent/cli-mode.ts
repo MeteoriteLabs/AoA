@@ -12,6 +12,7 @@ import {
   mergeExternalMcpServers,
   withSynthesizedBearerHeader,
   aoaSecretPlaceholderFor,
+  brokeredAoaHttpEntry,
   type McpHttpServerSpec,
   type McpServerSpec,
 } from "@armyofagents/adapter-utils";
@@ -337,11 +338,7 @@ export function buildMcpConfig(params: McpConfigParams): McpConfig {
   // config. Falls back to the unchanged stdio bridge when `brokered` is
   // falsy (the default — desktop/unsandboxed runs are byte-identical).
   const aoaEntry: McpConfigServerEntry = params.brokered
-    ? {
-        type: "http",
-        url: `${params.apiBaseUrl}/companies/${params.companyId}/mcp`,
-        headers: { Authorization: `Bearer ${aoaSecretPlaceholderFor("AOA_API_KEY")}` },
-      }
+    ? brokeredAoaHttpEntry({ apiBaseUrl: params.apiBaseUrl, companyId: params.companyId })
     : buildMcpBridgeSpec(params);
   const reserved: Record<string, McpConfigServerEntry> = { aoa: aoaEntry };
   if (params.enabledCapabilities?.includes("browser_use")) {

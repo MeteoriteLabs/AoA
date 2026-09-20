@@ -3,7 +3,9 @@
 **Answers:** `E0-F013` → *"Decisions this slice did not take"* → **Decision 2**
 (`docs/replatform/epics/E0-foundation/findings.md`).
 **Date:** 2026-09-09. **Measured at:** `fffc7e1de` (PR #396, the DE-06 landing + re-triage merge).
-**Status:** OPEN — awaiting a founder ruling. **Changes no finding's status and wires no code.**
+**Status:** RULED 2026-09-09 — option (a2) + partial CHECK; SHIPPED (migration `0274`, the
+`activity_log` denial sink); Decision 2 CLOSED as a decision (see findings.md E0-F013 Decision 2).
+**This decision-request paper itself changed no finding's status and wired no code.**
 
 > **★ ADDENDUM, 2026-09-09 — the two "needs a unit, not a ruling" groups are now WIRED (Unit C).**
 > The scheduling consequence in the headline below has been acted on: DE-06's `:122` tuple-integrity
