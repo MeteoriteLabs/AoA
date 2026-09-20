@@ -1,5 +1,13 @@
 # Lane B kickoff — E8 browser (BRW ×6) + E9 service agents (SVC ×7)
 
+> ★★★ **HISTORICAL — DO NOT START A SESSION FROM THIS FILE.** Re-measured 2026-09-20 at
+> `4df71dada`: the `lane-b` branch it directs you to is **555 commits behind**, and §5.4's
+> *"Lane A has taken 0262 and 0263"* is **20 migrations stale** (the tip is
+> `0282_internal_agent_runs_distributed_marker.sql`). Its kickoff framing is also overtaken —
+> E8 has **29** ticket files on disk and E9 has **20**, against the "×6 / ×7 unstarted" this
+> file assumes. `HANDOFF-orchestration.md` §7 and GO-BOOK §1.9.2 both already name it stale;
+> this banner puts that on the file itself.
+
 **Remote branch:** `docs/replatform-program` (the same single integration branch — PR #323).
 **Worktree:** `C:\e8`, on the local branch **`lane-b`** which TRACKS that remote branch.
 **NOT** `C:\e3` — that is Lane A's, and git refuses to check one branch out in two worktrees.

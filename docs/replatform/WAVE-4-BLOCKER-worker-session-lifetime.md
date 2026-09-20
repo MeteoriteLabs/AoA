@@ -1,5 +1,13 @@
 # Wave 4 blocker — a worker cannot hold authority for more than 15 minutes
 
+> ★★★ **STALE — ALL THREE CLAUSES BELOW ABOUT `E4-F007` ARE FALSE AT HEAD.** Re-measured
+> 2026-09-20 at `4df71dada`: `epics/E4-worker-daemon/findings.md` reads
+> **Status: `resolved`** (WRK-010 slice 2, go-book Sprint 2.5) · *was* HIGH — and the
+> `E4-F007` key has been **deleted** from `scripts/finding-ownership.json`. So it is not
+> `open`, its severity is historical, and it is not unowned — WRK-010 slice 2 closed it.
+> **The blocker this document is named for was fixed.** Kept as the record of how it was
+> found; do not cite its status lines. (625+ commits behind when this banner was added.)
+
 **Found:** 2026-08-24, mapping terrain for WRK-008 slice 2b (composing the poll loop).
 **Verified in code at branch tip**, not taken from the documents that describe it.
 **Status of the underlying finding:** `E4-F007`, **open**, severity **HIGH**, filed by

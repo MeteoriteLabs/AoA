@@ -15,6 +15,15 @@ healthy, and runs the E6F conformance suite live (`AOA_D1_CAMPAIGN=foundation`, 
 **now UNBLOCKS JOB-004..014 and WRK-005..007** (and, transitively, most of E5). Next critical-path
 step: E3/E4 remaining tickets.
 
+> ★★★ **ALSO STALE: THE TICKET RANGES AND THE "CURRENT TIP" ABOVE, NOT ONLY THE STATUS CELLS.**
+> Re-measured 2026-09-20 at `4df71dada`. The ranges below understate what is on disk — E3 by 1
+> (JOB-015), E4 by 10 (through WRK-017), E5 by 5 (through DAT-011), E6 by 4 (through DEP-013), E7 by
+> 2 (through CLI-008), E9 by 2 (through SVC-009) — and the "Current tip" paragraph is pinned to
+> `85599b192`, **1,015 commits behind**, while naming a "next critical-path step" (E3/E4 remaining
+> tickets) that both epic READMEs have recorded as complete since 2026-09-13. The disclaimer below
+> covers the status cells and was never widened to cover either. The corrected ranges are in the
+> `Ticket range` column; the epic READMEs remain the finer record.
+>
 > ⚠️ **This status table lags the reconciled ground truth (as of 2026-09-10).** The rows below
 > are the pre-reconciliation view (E3/E4 mid-flight, E5/E7–E11 `backlog`). The authoritative
 > current status is **GO-BOOK §1 "★ CURRENT STATUS" (reconciled 2026-08-28 and later)**: E0–E6
@@ -29,13 +38,13 @@ step: E3/E4 remaining tickets.
 | [E0 Foundation](E0-foundation/) | `complete` | approved program design | FND-001–FND-008 | foundation checker, current-main crosswalk, cloud-plugin exclusion, focused config tests, repository verification |
 | [E1 Worker protocol](E1-worker-protocol/) | `complete` | E0 | PRT-001–PRT-007 | package contract, transport/control semantics, frozen conformance vectors, compatibility and boundary checks |
 | [E2 Tenant kernel](E2-tenant-kernel/) | `complete` | E0 | TEN-001–TEN-006 | non-owner RLS, sentinel removal, and adversarial tenant suite |
-| [E3 Job control](E3-job-control/) | `in_progress` (core JOB-001/002/009/003 done; **JOB-004..014 UNBLOCKED** — `E6-D1-FOUNDATION` passed) | E1, E2; JOB-004–JOB-008 and JOB-011–JOB-014 required `E6-D1-FOUNDATION` (now satisfied) | JOB-001–JOB-014 | authoritative hybrid placement, fenced distributed lifecycle, and bounded legacy-control parity |
-| [E4 Worker daemon](E4-worker-daemon/) | `in_progress` (core WRK-001..004 done; **WRK-005..007 UNBLOCKED** — `E6-D1-FOUNDATION` passed) | E1 plus ticket-level E3 core; WRK-005+ required `E6-D1-FOUNDATION` (now satisfied) | WRK-001–WRK-007 | restart-safe worker with encrypted event outbox |
-| [E5 Workspaces and secrets](E5-workspaces-secrets/) | `backlog` | E3, E4 | DAT-001–DAT-006 | fenced artifact round trip, orphan quarantine, and lease-scoped secret tests |
-| [E6 Deployment/test harness](E6-deployment-test-harness/) | `in_progress` (DEP-000..004 done; **E6-D1-FOUNDATION gate PASSED live** @ `85599b192`; DEP-005..009 remain) | E0; partial gate consumes E2 and E3/E4 core | DEP-000–DEP-009 | D1 topology, migration-0188 snapshot/marker preflight, reusable hostile isolation conformance, and two-replica HA; E2B evidence lands in E7/D2 |
-| [E7 Coding/E2B](E7-coding-e2b/) | `backlog` | E3–E6; CLI-006 requires MIG-008 and `E10-REALTIME-FOUNDATION` | CLI-001–CLI-006 | mandatory canary-Organization coding journey and D2 E2B lane |
+| [E3 Job control](E3-job-control/) | `in_progress` (core JOB-001/002/009/003 done; **JOB-004..014 UNBLOCKED** — `E6-D1-FOUNDATION` passed) | E1, E2; JOB-004–JOB-008 and JOB-011–JOB-014 required `E6-D1-FOUNDATION` (now satisfied) | JOB-001–JOB-015 | authoritative hybrid placement, fenced distributed lifecycle, and bounded legacy-control parity |
+| [E4 Worker daemon](E4-worker-daemon/) | `in_progress` (core WRK-001..004 done; **WRK-005..007 UNBLOCKED** — `E6-D1-FOUNDATION` passed) | E1 plus ticket-level E3 core; WRK-005+ required `E6-D1-FOUNDATION` (now satisfied) | WRK-001–WRK-017 | restart-safe worker with encrypted event outbox |
+| [E5 Workspaces and secrets](E5-workspaces-secrets/) | `backlog` | E3, E4 | DAT-001–DAT-011 | fenced artifact round trip, orphan quarantine, and lease-scoped secret tests |
+| [E6 Deployment/test harness](E6-deployment-test-harness/) | `in_progress` (DEP-000..004 done; **E6-D1-FOUNDATION gate PASSED live** @ `85599b192`; DEP-005..009 remain) | E0; partial gate consumes E2 and E3/E4 core | DEP-000–DEP-013 | D1 topology, migration-0188 snapshot/marker preflight, reusable hostile isolation conformance, and two-replica HA; E2B evidence lands in E7/D2 |
+| [E7 Coding/E2B](E7-coding-e2b/) | `backlog` | E3–E6; CLI-006 requires MIG-008 and `E10-REALTIME-FOUNDATION` | CLI-001–CLI-008 | mandatory canary-Organization coding journey and D2 E2B lane |
 | [E8 Browser automation](E8-browser-automation/) | `backlog` | E7; BRW-006 requires `E10-REALTIME-FOUNDATION` | BRW-001–BRW-006 | mandatory D3 browser evidence/approval journey |
-| [E9 Service agents](E9-service-agents/) | `backlog` | E7; SVC-007 requires `E10-REALTIME-FOUNDATION` | SVC-001–SVC-007 | mandatory D4 72-hour continuity/reconciliation canary |
+| [E9 Service agents](E9-service-agents/) | `backlog` | E7; SVC-007 requires `E10-REALTIME-FOUNDATION` | SVC-001–SVC-009 | mandatory D4 72-hour continuity/reconciliation canary |
 | [E10 Desktop/migration/realtime](E10-desktop-migration-realtime/) | `backlog` | ticket-level E3–E7 dependencies; MIG-003 plus JOB-005/DEP-009 precede `E10-REALTIME-FOUNDATION` | DSK-001–DSK-004, MIG-001–MIG-008 | CM-015/current-path cutover, named realtime preflight, signed desktop lifecycle, and conditional handoff |
 | [E11 Hardening/release](E11-hardening-release/) | `backlog` | E8, E9, DEP-009, MIG-001–MIG-003, MIG-005–MIG-008; DSK/MIG-004 are advertised-matrix conditional | REL-001–REL-005 | pre-0188 full restore plus mandatory coding/browser/service private-beta evidence pack |
 
