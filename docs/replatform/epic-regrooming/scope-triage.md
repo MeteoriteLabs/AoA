@@ -13,8 +13,10 @@ This is the fixed set of 50 tickets identified when the numbered program graph h
 > original four buckets could not express three real states, so three were added: **M**
 > (in-milestone build), **N** (no correction owed) and **X** (not filed). Every change is
 > evidenced in the amendment record below — read it before disputing a row. Arithmetic:
-> **50 distinct tickets, 51 entries, one declared split** (`DEP-011`); nothing was dropped and
-> nothing invented. *(`DEP-009` was briefly a second split; corrected — see disposition D.)*
+> **50 distinct tickets, 52 entries, two declared splits** (`DEP-011`, `MIG-006`); nothing was
+> dropped and nothing invented. *(`DEP-009` was briefly a third split; corrected — see disposition
+> D. `MIG-006` became the second split in the sixth review round: its seam shipped and its cutover
+> did not, and one row could not honestly say both.)*
 
 ### A. Promise-truth corrections — 20
 
@@ -28,17 +30,32 @@ These items are required to make the narrow milestone supportable and honestly o
 
 `TRACK-001`, `TRACK-002`, `DAT-011`, `DEP-008`, `DEP-013`, `WRK-017`, `MIG-009`, `MIG-010`.
 
-### C. Later original-program phase — 10
+### C. Later original-program phase — 10 tickets, 11 entries
+
+★ *Eleven entries because `MIG-006` is split across C1 (its shipped seam) and C2 (its deferred
+crew cutover) — the second of the two declared splits. Ten distinct tickets, as the header says.*
 
 These remain required or valuable in the original broader program, but they do not block the first milestone. **Split in two, because "deferred" was describing two different states and the distinction changes what is owed.**
 
 **C1 — shipped, retained, not required by M1 (6).** Finished and production-wired, or inert by design. Nothing is owed but a later milestone's evidence; do NOT re-open their acceptance.
 
-`DAT-006`, `DAT-010`, `DSK-003`, `DSK-004`, `SVC-008`, `MIG-006`.
+`DAT-006`, `DAT-010`, `DSK-003`, `DSK-004`, `SVC-008`, `MIG-006` *(seam half only — split)*.
 
-**C2 — unbuilt, genuinely deferred (4).** Deferral preserves their owners, dependencies, findings, and acceptance intent.
+★★★ **`MIG-006` IS A SPLIT, AND CLASSIFYING THE WHOLE TICKET C1 WAS WRONG.** *Corrected 2026-09-20
+(sixth round), verified at source.* C1 promises the work is finished and that its acceptance must
+not be re-opened — but `MIG-006-crew-routing-seam-design.md` says the ticket **still has no
+`-result.md`**, that a distributed crew run is *“MECHANISM-ONLY”*, and in terms that it is
+***“not an end-to-end crew cutover”***, with the rollout dial default-OFF for crew. Meanwhile `M2`
+below assigns exactly that cutover as build work. Both could not be true.
 
-`WRK-012`, `MIG-005`, `MIG-007`, `DBR-001`.
+- **C1 — the routing seam**: shipped and production-wired, doubly gated (Unit C tool-less, Unit F
+  result-deferred), default-OFF. Do not re-open THIS.
+- **C2 — the crew cutover**: unbuilt and genuinely deferred to **M2**, where it keeps its owner,
+  dependencies and acceptance intent. This half is what `M2` schedules.
+
+**C2 — unbuilt, genuinely deferred (5).** Deferral preserves their owners, dependencies, findings, and acceptance intent.
+
+`WRK-012`, `MIG-005`, `MIG-006` *(crew-cutover half — split; the seam is C1)*, `MIG-007`, `DBR-001`.
 
 ### D. Optional expansion — 1
 
@@ -247,7 +264,21 @@ deleted upstream image and the consumer built to report that could not see it.
 
 **Exit.** `d1-merge-train` and every keyed lane green or explicitly quarantined with an owner; the
 DEP-013 consumer reporting zero unowned findings; disposition-A record corrections landed; a
-successor filed for `E7-F007` so `MIG-010` can carry a result (**D-10**).
+successor filed for `E7-F007` so `MIG-010` can carry a result (**D-10**); **and an approved,
+candidate-current result for every disposition-B ticket — `TRACK-001`, `TRACK-002`, `DAT-011`,
+`DEP-008`, `WRK-017`, and `MIG-009`'s evidence-currency record** (its trigger build is `M1a`'s).
+
+★ That enumeration is B in full: B has **eight** members, and the other two are the clauses
+immediately before it — `DEP-013` (the consumer) and `MIG-010` (which carries no result until the
+`E7-F007` successor is filed, which is D-10's clause). None is exempt; two are simply named by
+their own condition rather than twice.
+
+★★★ **THE B CLAUSE WAS MISSING, AND WITHOUT IT M0 COULD PASS WITHOUT ITS OWN DECLARED SCOPE.**
+*Corrected 2026-09-20 (sixth round).* M0's scope is *“Disposition **B**, plus the record-truth half
+of **A**”*, but this exit list named only the lanes, the consumer, the A corrections and the
+`E7-F007` successor — so every B ticket could be skipped and `M1a` could start on exactly the
+stale assurance evidence M0 exists to refresh. A milestone whose exit does not require its own
+scope is not a checkpoint.
 
 ### `M2` — sink cutover
 
@@ -514,7 +545,9 @@ Nineteen disputes, each verified at `4df71dada` against source rather than inher
 | `FND-006`, `FND-007`, `FND-008` | A → **N** | Frozen reviewed ledgers, no clause, no finding, and live enforcement — `isCloudPluginExecutionBlocked` has 23 production call sites; FND-007's authority JSON is read by the always-on `policy` checker. |
 | `WRK-009`, `CLI-007` | A → **N** | Narrow and complete. `CLI-007` already carries its own caveat ("unblocks but does not promote E7-1") and resolved `E7-F001`. |
 | `MIG-001`, `MIG-004` | C / D → **X** | Zero files on disk, confirmed by `find`. |
-| `DAT-006`, `DAT-010`, `DSK-003`, `DSK-004`, `SVC-008`, `MIG-006` | C → **C1** | All shipped. C's "deferral preserves their owners" misdescribes finished, production-wired work — `DAT-010` sits on the milestone's own artifact-commit path (`server/src/services/artifact-commit.ts:42,272`). |
+| `DAT-006`, `DAT-010`, `DSK-003`, `DSK-004`, `SVC-008` | C → **C1** | All shipped. C's "deferral preserves their owners" misdescribes finished, production-wired work — `DAT-010` sits on the milestone's own artifact-commit path (`server/src/services/artifact-commit.ts:42,272`). |
+
+| `MIG-006` | C1 → **split C1 + C2** | Its routing seam shipped and is production-wired, but the ticket **has no `-result.md`**, a distributed crew run is *“MECHANISM-ONLY”*, and its own design says it is ***“not an end-to-end crew cutover”*** with the rollout dial default-OFF for crew. C1 forbids re-opening acceptance while `M2` schedules the cutover as build — one row could not say both. Seam stays C1; the cutover is C2, deferred to M2. This is the **second** declared split. |
 
 ### Not moved, but recorded
 
