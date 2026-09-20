@@ -428,7 +428,7 @@ Ticket shipment or an earlier mechanism run cannot substitute for items 2–9. P
 >
 > | Criterion | `M1a` | `M1b` | Note |
 > |---|---|---|---|
-> | 1 — all required ticket results approved | ✅ *(scoped — see below)* | ✅ | **TWO tickets make the unscoped reading unsatisfiable**, not one. `MIG-010` (B) carries no result so `E7-F007` keeps an owner — D-10 files the successor. **`CLI-008` (M) can NEVER carry a parent result**: ten findings name it as `ticket` and none names a successor, so a parent result orphans all ten at once. |
+> | 1 — all required ticket results approved | ✅ *(scoped — see below)* | ✅ | **TWO tickets make the unscoped reading unsatisfiable**, not one. `MIG-010` (B) carries no result so `E7-F007` keeps an owner — D-10 files the successor. **`CLI-008` (M) may not carry a parent result WHILE IT STILL OWNS OPEN FINDINGS**, and none is required for M1: ten findings name it as `ticket` and none names a successor, so a parent result written today orphans all ten at once. ★ *Corrected 2026-09-20 (fifth round): this said “can NEVER”. The reason given is conditional — it stops being true once `CLI-008-LEDGER` re-points the findings to the link-scoped successors — so the prohibition cannot be permanent, and the E7 plan says so in as many words: “only then can `CLI-008` carry a result honestly.”* |
 
 > ★★★ **CRITERION 1 IS SCOPED PER MILESTONE — AND THE SETS ARE ENUMERATED BELOW, because a scope
 > nobody can check is an exemption.** *Corrected 2026-09-20 (second round): an earlier revision said
@@ -469,9 +469,17 @@ Ticket shipment or an earlier mechanism run cannot substitute for items 2–9. P
 > mid-milestone.
 >
 > **`M1b` required result set:** `CLI-008-F1a`, `CLI-008-F3`, `CLI-008-F4`, `CLI-008-F5`,
-> `CLI-008-F6`, `CLI-008-C5`, `DAT-009-3c`, `DAT-009-3d`, `DAT-009-3e`. ★ `CLI-008-F1b` is
-> **design-only and produces a design, not a result** — it is not in either set as a build item.
-> ★ The parent `CLI-008` produces **no result, ever** (it would orphan ten findings).
+> `CLI-008-F6`, `CLI-008-C5`, `DAT-009-3c`, `DAT-009-3d`, `DAT-009-3e`. ★ `CLI-008-F1b` is **design-only — it is not in either
+> required set as a build item**, and no build may be assigned from it. It does still commit its own
+> `CLI-008-F1b-result.md` recording the design review, which is what the E7 plan requires of it.
+> ★ *Corrected 2026-09-20 (fifth round): this said F1b “produces a design, not a result” while the
+> E7 plan requires that record by name and requires committing it — an executor could not satisfy
+> both. Design-only constrains what F1b may PRODUCE AS WORK, not whether it records what it did.*
+> ★ The parent `CLI-008` produces **no result for M1**, and none may be created while it still owns
+> open findings (one written today would orphan ten at once). ★ *Corrected 2026-09-20 (fifth round):
+> this said “no result, ever”, which contradicts the E7 plan's “only then can `CLI-008` carry a
+> result honestly” — after `CLI-008-LEDGER` re-points the ten findings the bar lifts. It is not in
+> either required set either way.*
 > | 2 — fresh `M1-D1-SPINE` campaign | ✅ | ✅ | |
 > | 3 — fresh real-E2B campaign | ✅ **`M1a-D2-MECHANISM`** | ✅ **`M1-D2-CODING`** | two gates, two QA records, two `Result` fields. One campaign run may produce both, but a QA record has ONE normative `Result`, so the mechanism verdict needed its own gate — see above. |
 > | **4 — useful-agent capability evidence** | ✖ | ✅ | **The split lives here.** `M1a` is satisfied by a record reporting `capabilityProven=false`; `M1b` is not, and the bar is unchanged. |
