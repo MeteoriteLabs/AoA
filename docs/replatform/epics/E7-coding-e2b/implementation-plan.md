@@ -958,15 +958,29 @@ product index). No route change. Legacy and distributed never own the same run s
 **Observability:** the `task_outputs` row itself, plus a log line carrying opaque ids only. No file
 bytes, no path content beyond the declared relative path, no grant URL.
 
-**Rollback/disablement:** remove the fifth step; `detectedFiles` returns to `[]` and no row is
-written. The distributed flag remains the outer off-switch.
+**Rollback/disablement:** ★★★ **REMOVE THE CHOSEN TRANSACTIONAL HOOK — there is no “fifth step”
+left to remove, and naming one would leave the real writer ACTIVE.** *Corrected 2026-09-20
+(fifteenth round).* This ticket's write moved out of the post-commit projector and into either a
+transaction-aware callback inside `acceptEvent` or a bridge operation taking the existing
+repository transaction (see the ordering decision above). Disablement is therefore the removal of
+**whichever of those two was built** — the callback and its composition, or the bridge integration.
+An instruction to “remove the fifth step” would have claimed disablement while `task_outputs` rows
+and `detectedFiles` kept being produced by the pre-terminal writer: a rollback that does not roll
+back. The distributed flag remains the outer off-switch.
 
 **RED → GREEN:**
 - RED: a run with one `artifact_prepared` event yields one `task_outputs` row and a non-empty
   `detectedFiles` — the row written **through `jobOutputBridge.projectAcceptedOutput` with its
   `output_projection` receipt**, so `countProducedOutputs` arm 2 (`taskOutputs`) counts it.
 - RED: a run with none yields **no row** and `detectedFiles: []` (anti-vacuity).
-- RED: a projection throw leaves the terminal and the run-summary comment intact.
+- RED: **the projection-failure case selected by the ordering decision above** — ★★★ *not a fixed
+  “throw leaves the terminal intact”, corrected fifteenth round.* Once the write is inside the ingest
+  transaction the two admissible behaviours diverge and the test must follow the decision, not
+  preempt it: an **uncaught** error aborts that transaction **before** terminalization (nothing
+  commits; the batch is retried), while **catching** it lets the artifact event and the terminal
+  commit **without** the required row and receipt and forecloses the retry — permanent,
+  founder-visible output loss. Asserting the second here would have hard-coded exactly that loss,
+  and would make the fail-and-retry design impossible to satisfy.
 - RED: a run whose `execution_owner` is not `distributed` is **not** projected by this path (the
   `jobOutputBridge` boundary).
 - GREEN: all of the above plus the wiring checker, server typecheck and server build.

@@ -212,8 +212,14 @@ Reopening creates new findings, results where needed, QA attempts, and handoffs.
    **both** milestones, so `M1a` was being declared complete before producing evidence its own
    exit criteria require. A milestone cannot be complete at a step that precedes one of its
    required records.
-7. **Then** finish E7 tools/workspace/output capability (`CLI-008` Unit F links, `DAT-009` 3c–3e)
-   and freeze the `M1b` candidate.
+7. **Then** finish E7 tools/workspace/output capability — `CLI-008` Unit F links, **`CLI-008-C5`**
+   and `DAT-009` 3c–3e — and freeze the `M1b` candidate. ★★★ **`C5` IS THE TICKET THAT ARMS THE
+   TOOL SURFACE, and omitting it made this step unable to deliver the capability it claims.**
+   *Corrected fifteenth round:* the triage says the surface is armed by `CLI-008-C5`, and the `M1b`
+   required-result set demands its approved result — so an operator following the old wording would
+   freeze the `M1b` candidate without it and discover the missing prerequisite only at the exit
+   check. `C5` also depends on `DAT-007-S3`, which is `M1a`'s, so it cannot start earlier than this
+   step.
 8. **Run ALL THREE gates on the `M1b` candidate** — `M1-D1-SPINE`, `M1a-D2-MECHANISM`, then
    `M1-D2-CODING`. `M1-D2-CODING`'s `Result` is the useful-capability verdict, and a run reporting
    `capabilityProven=false` **fails** it.
