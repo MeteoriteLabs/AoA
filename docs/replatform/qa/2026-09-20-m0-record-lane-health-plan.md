@@ -322,9 +322,19 @@ covered by the founder's keyed-spend authorization, recorded in §2.
 There is no local RED: this worktree has no `node_modules` (deep-OneDrive `ENAMETOOLONG`) and the
 case requires a live `E2B_API_KEY`. The RED is **already recorded, twice, and provably can fail** —
 runs `34533429893` and `35438996937`, byte-identical assertions, on two different candidates nine
-days apart. GREEN is a dispatched `keyed-e2b-unit-d` run on the fix branch reporting **5 passed, 0
-failed, 0 skipped**, with the lane's own positive-control step ("Fail if the cases SKIPPED")
-reporting the key was present.
+days apart. GREEN is a dispatched `keyed-e2b-unit-d` run on the fix branch reporting **6 passed, 0
+failed, 0 skipped** — five pre-existing cases plus the MCP-branch case D4 added — with the lane's
+own positive-control step ("Fail if the cases SKIPPED") reporting the key was present.
+
+★ *Corrected after Codex review of PR #525: this read "5 passed", written before D4 added the sixth
+case and not swept when it did. The plan is E7-F037's durable evidence, so a count contradicting
+the linked run would read as a stale or partial lane result at a later gate audit. Observed:
+run `35528929017`, `Test Files 1 passed (1)` / `Tests 6 passed (6)`.*
+
+**OBSERVED (run `35528929017`, 2026-09-20):** `Tests 6 passed (6)`, `Test Files 1 passed (1)`, all
+six cases named `✓` — claude shape, claude shape with the brokered MCP config, codex shape, the
+exit-78 staging refusal, and both E7-F014 exit-code cases. The positive-control step ran with
+`E2B_API_KEY` present and concluded `success`.
 
 The positive control matters here more than usual: `describe.skip` without a key is a green vitest
 run, so a keyless lane would report success while proving nothing. The GREEN claim is not made from
