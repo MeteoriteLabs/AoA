@@ -2141,7 +2141,7 @@ promoted by this ticket").
 
 ## E3-F038 — The wiring register's census is not closed, and three symbols the guard's own header names have no clause at all
 
-**Status:** open
+**Status:** resolved (2026-09-20 — the three census clauses were enrolled; see **Resolution** at the end of this finding)
 **Severity:** MEDIUM (the register under-reports its own subject; no wrong `wired` claim results)
 **Filed:** 2026-09-06 (W5U1), measured at `e1f723df2`.
 
@@ -2208,3 +2208,28 @@ filed something is itself unchecked.
 gate, and W5U1's charter is explicitly "do not wire any dormant clause"; three new declarations
 authored by a filing unit would be the register drifting in the other direction. What is recorded is
 that the census is open.
+
+**Resolution (2026-09-20).** The census is now closed. The three symbols were enrolled in
+`scripts/gate-clause-wiring.json`, each measured with the guard's own `countProductionCallers` and
+declared to match: `jobAuditBridge` → `E3-audit-parity-bridge` (`unwired`, 0 callers),
+`createResultCommitter` → `E5-result-commit-worker` (`unwired`, 0 callers), `openEventOutboxStore` →
+`E4-event-outbox-store` (`wired`, 2 callers — dispatch-runtime.ts:92 + :118). These are *census*
+declarations, not gate-met claims: an `unwired@0` entry records honest dormancy (the same shape as
+the three sibling bridges E3-5/E3-15/E3-17) and a `wired@2` entry records a caller the guard
+verifies — neither claims an epic gate is met, and none of the bridges was *wired* (no production
+caller was added). W5U1's "do not wire" charter is respected; what changed is that a later
+resolution pass, not the filing unit, authored the factual entries. FOUR now-stale enrolment-state
+references to `jobAuditBridge`, across three registers, were reconciled in the same change so no
+register disagrees with itself: in `scripts/gate-clause-wiring.json`, the
+`E9-4-service-create-and-desired-state` clause's false "(already on the register under DE-01)" and
+the `E0-de19-denial-audit` clause's "is not enrolled in this register at all"; in
+`scripts/finding-ownership.json`, the open finding `E0-F013`'s "no register entry at all"; and in
+`docs/architecture/distributed-execution-threat-controls.json`, DE-19's `deliveryEvidence` "no
+register entry at all". Each kept its original point (jobAuditBridge is a built writer with zero
+callers) with a parenthetical noting E3-F038 has since enrolled it `unwired`. (The fourth twin —
+E0-F013 and the threat-register — was caught by adversarial review of the first revision.) The two
+new `unwired` keys now appear on the guard's green-run `DORMANT, on the record:` line,
+which is exactly the visibility this finding said was three short. Per the ownership resolve clause,
+this finding's `scripts/finding-ownership.json` key was deleted in the same commit. (The `E4-F018`
+cross-reference "that omission is E3-F038" stays as written — it is a resolved finding's historical
+pointer to where the omission was tracked.)
