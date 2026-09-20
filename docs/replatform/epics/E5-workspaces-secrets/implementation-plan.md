@@ -278,7 +278,7 @@ function Invoke-NativeGate([string]$Label, [scriptblock]$Command) {
 | `DAT-011-B1` | `Invoke-NativeGate 'DAT-011 sweep' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/artifact-sweep-trigger.test.ts src/__tests__/artifact-commit.integration.test.ts }; Invoke-NativeGate 'server typecheck' { pnpm --filter @armyofagents/server typecheck }; Invoke-NativeGate 'server build' { pnpm --filter @armyofagents/server build }` |
 | `TRACK-001-B1` | `Invoke-NativeGate 'graph coverage' { node scripts/check-ticket-graph-coverage.mjs }; Invoke-NativeGate 'graph coverage self-test' { node --test scripts/lib/__tests__/ticket-graph-coverage.test.mjs }; Invoke-NativeGate 'dependency graph' { node scripts/check-dependency-graph.mjs }; Invoke-NativeGate 'guard inventory' { node scripts/check-guard-inventory.mjs }` |
 | `DAT-008-A1` | `Invoke-NativeGate 'register integrity' { node scripts/check-register-citation-integrity.mjs }; Invoke-NativeGate 'finding ownership' { node scripts/check-finding-ownership.mjs }; Invoke-NativeGate 'gate clause wiring' { node scripts/check-gate-clause-wiring.mjs }` |
-| `E5-A2-MATRIX` | `Invoke-NativeGate 'evidence immutability' { pnpm check:evidence-immutability }; Invoke-NativeGate 'register integrity' { node scripts/check-register-citation-integrity.mjs }` |
+| `E5-A2-MATRIX` | `Invoke-NativeGate 'evidence immutability' { node scripts/check-evidence-immutability.mjs --base origin/docs/replatform-program }; Invoke-NativeGate 'register integrity' { node scripts/check-register-citation-integrity.mjs }` ★★★ **The `--base` is REQUIRED and an earlier revision omitted it.** *Corrected 2026-09-20 (sixth round), verified at source.* `pnpm check:evidence-immutability` passes no base (`package.json:51` is the bare script), and the guard **refuses to run without one** — `check-evidence-immutability.mjs:353-359`: *“no base revision supplied … Refusing to run: a guard with no base compares nothing and passes.”* That refusal is correct behaviour, not a bug. Only CI supplied a base, via `EVIDENCE_IMMUTABILITY_BASE: ${{ github.event.pull_request.base.sha }}` (`pr.yml:230`), so the prescribed focused command always failed locally and `E5-A2-MATRIX` could not complete outside the PR workflow. Use the candidate's base revision; `origin/docs/replatform-program` is the program-branch default. |
 | `DAT-007-S3` | `Invoke-NativeGate 'DAT-007 classify' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/distributed-run-currency-classify.test.ts src/__tests__/mcp-run-currency-gate.test.ts }; $env:AOA_RUN_WIN_INTEGRATION='1'; Invoke-NativeGate 'DAT-007 real PG' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/distributed-run-currency.integration.test.ts }; Invoke-NativeGate 'server typecheck' { pnpm --filter @armyofagents/server typecheck }; Invoke-NativeGate 'server build' { pnpm --filter @armyofagents/server build }` |
 | `DAT-009-3c` | `Invoke-NativeGate 'protocol build' { pnpm --filter @armyofagents/worker-protocol build }; Invoke-NativeGate 'DAT-009 3c' { pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/supervisor-export-artifacts.test.ts src/__tests__/artifact-export-sequencer.test.ts src/__tests__/supervisor-happy.component.test.ts }; Invoke-NativeGate 'worker typecheck' { pnpm --filter @armyofagents/worker-daemon typecheck }; Invoke-NativeGate 'worker build' { pnpm --filter @armyofagents/worker-daemon build }` |
 | `DAT-009-3d` | `Invoke-NativeGate 'protocol build' { pnpm --filter @armyofagents/worker-protocol build }; Invoke-NativeGate 'DAT-009 3d' { pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/dispatch-runtime.test.ts src/__tests__/dispatch-runtime-export-composition.test.ts }; Invoke-NativeGate 'gate clause wiring' { node scripts/check-gate-clause-wiring.mjs }; Invoke-NativeGate 'worker typecheck' { pnpm --filter @armyofagents/worker-daemon typecheck }; Invoke-NativeGate 'worker build' { pnpm --filter @armyofagents/worker-daemon build }` |
@@ -454,7 +454,7 @@ blocked, with the blocker named** — never as a clause dropped from the matrix.
 
 **Migration/compatibility / rollback:** documentation only.
 
-**Observability:** `pnpm check:evidence-immutability` must stay green — a1 must not be touched.
+**Observability:** `node scripts/check-evidence-immutability.mjs --base <candidate base>` must stay green — a1 must not be touched. ★ *The `--base` is required; the bare `pnpm` script supplies none and the guard refuses to run without one.*
 
 **RED → GREEN:** RED is the immutability checker failing on a deliberate edit to a1 (positive
 control, reverted); GREEN is the checker passing with the new planning entry in place.
@@ -549,6 +549,22 @@ ArtifactExportRequest[]>`, mirroring `resolveStagedFiles?` (`supervisor.ts:190`)
 lifecycle is byte-identical to today.** Present ⇒ it runs between `observeRun` and `events.terminal`,
 raced under a deadline (`withDeadline`, the `stageInputDeadlineMs` pattern), with `emitOp` on both
 outcomes.
+
+★★★ **THE HOOK AS SPECIFIED CANNOT RUN THE SEQUENCER, AND THIS TICKET OWES THAT COMPOSITION
+SURFACE BEFORE IT IS ASSIGNABLE.** *Added 2026-09-20 (sixth round), verified at source.* The hook
+returns `ArtifactExportRequest[]` — requests only. But `createArtifactExportSequencer`
+(`packages/worker-daemon/src/lease/artifact-export.ts:264`) needs `client`, `key` and `session` **at
+construction** (`CreateArtifactExportSequencerDeps`, `:168-179`) and an `exporter` **at invocation**
+(`:266-270`) — and those live on opposite sides of a boundary: the **dispatch runtime** owns the
+control-plane client, device key and session, while only the **supervisor** holds the per-run
+`run.effect` exporter and sandbox id. `supervisor.ts` composes no sequencer today.
+
+★ So a *“hook present ⇒ sequencer runs”* test cannot be written against the planned interface
+without inventing an unplanned one — which is how an unstated dependency becomes an improvised
+design during implementation. **Define the composition surface first** (a sequencer callback
+injected into the supervisor at construction, or the runtime passing a pre-constructed sequencer
+through the lifecycle), record it here, and only then assign `3c`/`3d`. The digest→grant→export→
+commit path itself is already built and correct; what is missing is the seam that reaches it.
 
 **The one design decision this ticket owns and `3a` deliberately did not pre-empt: is a failed
 export a failed ATTEMPT?** Staging fails closed; export is on the other side of the work. The
@@ -865,7 +881,7 @@ authorize implementation.
 - [ ] **T3 (P1, S)** — `DAT-008-A1`: narrow `README.md:3` to the ledgers; file a finding for the
   unaccounted slice 6 only after a second search. Verify: three record guards green after the edit.
 - [ ] **T4 (P2, S)** — `E5-A2-MATRIX`: freeze the seven-clause matrix, commands, topology and owners.
-  Verify: a1 untouched, `check:evidence-immutability` green.
+  Verify: a1 untouched, `check-evidence-immutability.mjs --base <candidate base>` green (★ the bare script has no base and refuses to run).
 - [ ] **T5 (P1 STOP, M)** — `DAT-007-S3`: prove the run-currency gate against real PostgreSQL with
   forced RLS. Verify: seven verdict rows, the header-override mutant, the catch-and-admit mutant,
   and the flag-off control.

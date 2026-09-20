@@ -663,8 +663,19 @@ asserted.
 
 **RED → GREEN:** RED — the emitter does not exist; RED — the emitted event validates against the
 frozen `artifactPreparedPayloadV1Schema` and its digest verifies; RED — `seq` stays contiguous with
-the surrounding emitters; RED — a sink throw does not fail the attempt; GREEN — all of the above
-plus the frozen-consumer check and worker typecheck/build.
+the surrounding emitters; **RED — the sink-failure assertion that the recorded contiguity decision
+selects** (see *Failure behavior* above); GREEN — all of the above plus the frozen-consumer check
+and worker typecheck/build.
+
+★★★ **THE SINK-FAILURE ASSERTION IS WRITTEN AFTER THE DECISION, NOT BEFORE IT.** *Corrected
+2026-09-20 (sixth round).* This list read *“RED — a sink throw does not fail the attempt”*, and
+because GREEN requires **every** listed assertion, it **mandated the very best-effort behaviour the
+corrected *Failure behavior* section rejects** — two of the three permitted options (fatal, and
+retry-until-land-or-fail) make a terminal sink failure fail the attempt, so an implementer choosing
+either could not turn this ticket green. Fixing the prose and leaving the acceptance test is how a
+rejected contract survives: **the test is the instruction.** Write this assertion to match the
+option recorded in `decisions.md`, and keep the contiguity assertion above unconditional — no
+option is allowed to leave a hole in the stream.
 
 **Evidence / commit:** `tickets/CLI-008-F4-result.md`; one commit
 `feat(worker-daemon): emit artifact_prepared after a fenced commit`.
