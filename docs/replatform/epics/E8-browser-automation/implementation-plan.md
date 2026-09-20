@@ -22,7 +22,7 @@ re-grooming audit exists to fix. See [§8](#8-ticket-implementation-tasks--writt
 | Epic status | `backlog` (`README.md:3`) |
 | Milestone | **M3 — workload breadth** (`scope-triage.md` §*The milestone sequence*) |
 | Milestone scope | **`BRW-004`, `BRW-005`, `BRW-006`** (`scope-triage.md`). ★★★ **`BRW-007` and `BRW-008` ARE NOT M3 SCOPE.** *Corrected 2026-09-20 (fifth round): this wrote the range “`BRW-004`…`BRW-008`”. The companion change is explicit that those two have **no program-design node and no ticket file**, and must not be implied into M3 without a programme-owner decision — scheduling M3 on them would make the milestone depend on two unchartered units.* |
-| Entry | **M2 passed** (`scope-triage.md`). M2 needs M1b; M1b needs M1a; M1a needs M0. Four milestones sit between HEAD and E8 entry. |
+| Entry | **M2 passed AND `E10-REALTIME-FOUNDATION` passed** — ★ *corrected eleventh round: the triage's M3 row requires both, and this entry row named only M2* (`scope-triage.md`). M2 needs M1b; M1b needs M1a; M1a needs M0. Four milestones sit between HEAD and E8 entry. |
 | Named exit gate | **full D3** (`scope-triage.md`), whose clauses are `test-gates.md:124-131` (D3-01…D3-06). |
 | Epic exit gate | `README.md:7` — sandbox-local browser, evidence, approvals, network/secret policy, cancellation, cleanup, and the D3 reconnect journey pass; agents can request a session and Commander runs on the governed path with **no host-side browser spawn reachable from a boot root**. |
 | Dependencies | E7; `BRW-006` additionally requires `E10-REALTIME-FOUNDATION` (`README.md:4`). |

@@ -20,8 +20,8 @@ implementation tasks are **not** here. See [§8](#8-ticket-implementation-tasks-
 |---|---|
 | Epic status | `backlog` (`README.md:3`) |
 | Milestone | **M3 — workload breadth** (`scope-triage.md`, §*The milestone sequence*) |
-| Milestone scope | `SVC-003`/`005`/`007` **residuals**, plus `SVC-004` and `SVC-006` (`scope-triage.md`) |
-| Entry | **M2 passed** (`scope-triage.md`). M2 needs M1b → M1a → M0. Four milestones sit between HEAD and E9 entry. |
+| Milestone scope | `SVC-003`/`005`/`007` **residuals**, plus `SVC-004`, `SVC-006` and **`SVC-009`** (`scope-triage.md`). ★ *`SVC-009` added eleventh round: the triage schedules it in M3 and E9's own recovery sheet requires its renewal-capability consumption before a service run beyond 240 seconds can be proven — this boundary row had not received that correction.* |
+| Entry | **M2 passed AND `E10-REALTIME-FOUNDATION` passed** — ★ *corrected eleventh round: the triage's M3 row requires both, and this entry row named only M2* (`scope-triage.md`). M2 needs M1b → M1a → M0. Four milestones sit between HEAD and E9 entry. |
 | Named exit gate | **full D4**, including the 72-hour continuity campaign (`scope-triage.md`; clauses at `test-gates.md:133-145`) |
 | Epic exit gate | `README.md:12` — desired state, generation, placement, health, restart, checkpoint, drain, budgets, UI, and the 72-hour D4 continuity/reconciliation canary pass **without public ingress**. |
 | Dependencies | E7; `SVC-007` additionally requires `E10-REALTIME-FOUNDATION` (`README.md:4`) |
@@ -360,7 +360,7 @@ Tickets that will need tasks, with their disposition as measured for this plan:
 | Ticket | Disposition today | What Step 0 must resolve first |
 |---|---|---|
 | `SVC-003` residual | OPEN on 3 of 5 conjuncts | Graceful stop and checkpoint request both route through `E9-F008`; checkpoint additionally needs §5.2's migration toolchain. Bounded lease renewal needs SVC-005's TTL/budget columns, so it **sequences after** SVC-005, not before. |
-| `SVC-005` residual | OPEN on drain, hard limits, force-kill | `SVC-005b` is designed and unbuilt for the `drain` third only. Decide whether it is revived as-is or folded into a whole-`E9-F008` unit. Replace-before-stop needs a decision, not a task. |
+| `SVC-005` residual | OPEN on drain, hard limits, force-kill | ★ **the drain PRODUCER ships** (`requestDrain`, `packages/db/src/repositories/tenant/job-control.ts:5145`, called from `server/src/services/job-reconciliation.ts:134`) — *corrected eleventh round; the residuals are graceful-stop and the checkpoint, not the producer* for the `drain` third only. Decide whether it is revived as-is or folded into a whole-`E9-F008` unit. Replace-before-stop needs a decision, not a task. |
 | `SVC-007` residual | OPEN on audit-completeness, the view, idempotent create, realtime | The view's three missing columns (checkpoint, budget, restart history) depend on SVC-004/SVC-005 existing at all. `E10-REALTIME-FOUNDATION` must be confirmed passed. |
 | `SVC-004` — restart, backoff, checkpoint recovery | **no ticket file**; node at `program-design.md:1044` | Fully migration-gated (§5.2). Its acceptance — *"local disk alone cannot qualify as recovery state"* — interacts with DAT-002's artifact path. |
 | `SVC-006` — service golden canary | **no ticket file**; node at `program-design.md:1058` | **This is the D4 campaign.** It cannot be scheduled while §5.1 holds: 72 hours cannot be run against a 240-second service. |
@@ -388,7 +388,7 @@ Re-open and re-measure this plan — do not execute it — if any of the followi
 6. **Any gate clause's status changes**, or a **seventh** E9 clause is enrolled — and note
    that a wired clause still proves nothing about the gate.
 7. **`E9-F012`'s register close lands**, or DE-12's `deliveryStatus` moves off `partial`.
-8. **A service job is observed leased in any E9 suite** — §5.4's largest coverage gap.
+8. ★★★ **SATISFIED — do not wait on this.** *Corrected eleventh round: `server/src/__tests__/service-leased-supervised.integration.test.ts` already polls, ACKs, asserts persisted lease state and invokes the real supervisor.* What remains unproven, and what this trigger should now say, is **placement, provider realism, server-side projection ingestion, and duration**. Superseded text: **A service job is observed leased in any E9 suite** — §5.4's largest coverage gap.
 9. **`E10-REALTIME-FOUNDATION` passes or is rescoped** — `SVC-007`'s dependency and the
    epic's durable-catch-up conjunct.
 10. **M2 passes**, which is E9's actual entry condition (`scope-triage.md`). That is the

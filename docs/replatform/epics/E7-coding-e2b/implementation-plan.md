@@ -148,15 +148,18 @@ and is explicitly forbidden from creating the parent result doc.
 ### NOT in scope (epic non-goals for the first milestone)
 
 - No Unit E, no `WorkspaceManifestV1` producer, no `--add-dir`, no repository to work in (E7-D05).
-- No fourth supply mechanism written under time pressure (E7-D02). `CLI-008-F1b` is a design pass
-  whose permitted outcomes include *"do not build it"* — §13 of the unit-F design records that option
-  as **recovered but never adversarially attacked**, so adopting it also requires an attack pass.
+- No fourth supply mechanism written under time pressure (E7-D02). `CLI-008-F1b` is a design pass.
+  ★★★ *Corrected eleventh round: an earlier revision listed *“do not build it”* among its permitted
+  outcomes and required an attack pass to adopt it. §13 of the unit-F design is **RATIFIED** — the
+  founder ruled **“close the fifth option as SUPERSEDED”** — so it is neither a permitted outcome
+  nor an attack F1b owes. Carrying a closed option in a constraints list reopens it by the back
+  door.*
 - No adapter-agnostic mechanism; no codex work beyond characterisation (E7-D04).
 - No re-opening of the DE-08 sandbox-egress ruling (CONCEDED at the managed-shared tier, 2026-09-11)
   and no claim that H-06 passes.
 - No `packages/db` schema change and no `drizzle-kit generate`.
 - No re-opening of `CLI-001`…`CLI-006` or `CLI-007` (disposition N).
-- No sink cutover. `E3-17-output` / `jobOutputBridge` is **M2**, not M1, and link 5 must not become a
+- No sink cutover. ★★★ **BUT `jobOutputBridge` ITSELF IS AN `M1a` PREREQUISITE, NOT M2** — *corrected eleventh round: `scope-triage.md` puts the three parity-bridge consumers, `jobOutputBridge` among them, in the `M1a` required-result set (D-8), and the E5 plan says so too. What is M2 is the **sink cutover**, not the bridge.* The distinction matters because link 5 relied on the deferral to justify a second writer, and there is only one writer. Superseded text: `E3-17-output` / `jobOutputBridge` is **M2**, not M1, and link 5 must not become a
   second writer of `task_outputs` ahead of it (see `CLI-008-F5`).
 
 ---
@@ -295,7 +298,7 @@ function Invoke-NativeGate([string]$Label, [scriptblock]$Command) {
 | Ticket | Exact focused command (RED first, then identical GREEN) |
 |---|---|
 | `CLI-008-LEDGER` | `Invoke-NativeGate 'finding ownership' { node scripts/check-finding-ownership.mjs }; Invoke-NativeGate 'register citations' { node scripts/check-register-citation-integrity.mjs }; Invoke-NativeGate 'id uniqueness' { node scripts/check-register-id-uniqueness.mjs }; Invoke-NativeGate 'ticket graph' { node scripts/check-ticket-graph-coverage.mjs }; Invoke-NativeGate 'dependency graph' { node scripts/check-dependency-graph.mjs }` |
-| `CLI-008-F1a` | `Invoke-NativeGate 'protocol build' { pnpm --filter @armyofagents/worker-protocol build }; Invoke-NativeGate 'F1a' { pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/capture-sandbox.test.ts src/__tests__/capture-sandbox-transport-binding.test.ts }; Invoke-NativeGate 'daemon boundary' { pnpm check:worker-daemon-boundary }; Invoke-NativeGate 'worker typecheck' { pnpm --filter @armyofagents/worker-daemon typecheck }; Invoke-NativeGate 'worker build' { pnpm --filter @armyofagents/worker-daemon build }` |
+| `CLI-008-F1a` | `Invoke-NativeGate 'protocol build' { pnpm --filter @armyofagents/worker-protocol build }; Invoke-NativeGate 'F1a' { pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/capture-sandbox.test.ts src/__tests__/sandbox-listdir-binding.test.ts }; Invoke-NativeGate 'daemon boundary' { pnpm check:worker-daemon-boundary }; Invoke-NativeGate 'worker typecheck' { pnpm --filter @armyofagents/worker-daemon typecheck }; Invoke-NativeGate 'worker build' { pnpm --filter @armyofagents/worker-daemon build }` |
 | `CLI-008-F1b` | **Design ticket — no RED/GREEN.** Evidence is the §6-constraint table, the positive-control table, and an adversarial attack pass on the chosen option (including on §13's *"do not build it"*, which has never had one). |
 | `CLI-008-F3` | `Invoke-NativeGate 'protocol build' { pnpm --filter @armyofagents/worker-protocol build }; Invoke-NativeGate 'F3' { pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/export-request-producer.test.ts src/__tests__/supervisor-export-artifacts.test.ts src/__tests__/artifact-export-sequencer.test.ts }; Invoke-NativeGate 'worker typecheck' { pnpm --filter @armyofagents/worker-daemon typecheck }; Invoke-NativeGate 'worker build' { pnpm --filter @armyofagents/worker-daemon build }` |
 | `CLI-008-F4` | `Invoke-NativeGate 'protocol build' { pnpm --filter @armyofagents/worker-protocol build }; Invoke-NativeGate 'F4' { pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/events-artifact-prepared.test.ts }; Invoke-NativeGate 'frozen v1' { pnpm check:frozen-worker-protocol-v1 }; Invoke-NativeGate 'worker typecheck' { pnpm --filter @armyofagents/worker-daemon typecheck }; Invoke-NativeGate 'worker build' { pnpm --filter @armyofagents/worker-daemon build }` |
@@ -487,8 +490,17 @@ permission posture is added** — a single-variable differential; **(b)** the te
 nothing; **(c)** both streams deliver. The stop condition's **clause 1 is discharged** (the posture
 shipped 2026-09-11, `E7-F021` resolved); **clause 2 still stands** (`E7-F027`, codex).
 
-§13 records a **fifth option — *"do not build it"*** — that was **lost to a serialization failure
-and therefore never adversarially attacked**. It is recorded, **not adopted**.
+★★★ **THE FIFTH OPTION IS CLOSED, AND THIS TICKET MUST NOT REOPEN IT.** *Corrected eleventh round,
+verified at source.* §13 of the Unit F design records the fifth option — *“do not build it”* — and
+§13's ratification line records the founder ruling in terms: **“RATIFIED 2026-09-20 — the founder
+RULED this recommendation: close the fifth option as SUPERSEDED.”** An earlier revision of this
+ticket still described it as *“never adversarially attacked”* and scheduled that attack as F1b work.
+That is a **ratified disposition being reopened by a task list**, which is the thing the programme's
+own decision rules forbid — and it would have spent F1b's founder ruling on a question already
+ruled.
+
+★ **F1b's live question is the output MECHANISM only**, per the Outcome below. The
+attack/readoption branch is removed.
 
 **Outcome:** exactly one of — (i) a fourth candidate mechanism that survives §6's constraint list
 and the §4 refutation pattern, priced and sized, `claude_local`-only per E7-D04; or (ii) a
@@ -552,7 +564,19 @@ the daemon**, which is dependency-pinned (E4-D01) precisely so it does not handl
 `captureSandboxEntries` is a **local/desktop-lane** tool; on the E2B and networked lanes it is the
 wrong tool and composing it here would reopen a locked data-plane boundary.
 
-★ **The route that honours the contract already exists.** Enumerate with a metadata-only `listDir`;
+★★★ **THE ROUTE IS NOT REACHABLE FROM THE WORKER TODAY, AND SAYING IT “already exists” WAS TOO
+STRONG.** *Corrected eleventh round, verified at source.* `listDir` exists on the **E2B transport**,
+behind the provider's **private `#transport`** field (`packages/sandbox-e2b-provider/src/e2b-provider.ts`),
+while the worker's `SandboxProvider` port (`packages/worker-daemon/src/supervisor/provider.ts`)
+exposes **no enumeration operation at all** — and neither do the effect authority, the network
+driver or the adapter manager. `F1a` schedules a test and a header note; `F3` schedules producer and
+composition changes; `DAT-009-3e` supplies digest and export only. **Nobody schedules the port.**
+
+★ **So this ticket owes, before it is assignable: a fenced metadata-only enumeration operation on
+the `SandboxProvider` port and its network binding** — or an explicitly named alternative source of
+output paths. The shape below is right; what is missing is the seam that reaches it.
+
+★ **The digest/export half of the contract does already exist.** Enumerate with a metadata-only `listDir`;
 let the sequencer's provider-backed `digestArtifact` (which returns `{sha256, sizeBytes}` and no
 bytes) supply the digest and size the frozen grant schema requires, and `exportArtifact` do the
 upload. The daemon sees paths and metadata, never content.
@@ -789,9 +813,23 @@ So a projector ordered **after** the terminal has only two outcomes, and both ar
    overlapping the same distributed-run scope** at the M2 cutover.
 
 ★ **The build must therefore materialize the artifact and invoke
-`jobOutputBridge.projectAcceptedOutput` BEFORE terminal projection**, inside the live fence, so the
-row and its receipt stay in one transaction and the single-writer property holds. That ordering is
-part of the design this ticket owes; it is not an implementation detail to be settled later.
+`jobOutputBridge.projectAcceptedOutput` while the attempt's fence is still OPEN.**
+
+★★★ **AND “EARLIER INSIDE THE CANARY PROJECTOR” DOES NOT ACHIEVE THAT — a previous revision of
+this correction said “before terminal projection” and was still wrong.** *Corrected eleventh round,
+verified at source.* The canary projector is a **post-terminalization hook**: `job-events.ts`
+documents it as *“fired AFTER the tenant transaction commits, when this ingest **terminalized the
+attempt**”*, and it *“must never be called inside `runInTenant`”*. So **every** step in that
+projector — first or fifth — already runs after the attempt is terminal and after the fence the
+bridge locks has closed. Re-ordering steps inside it cannot fix an ordering problem that is
+structural to the hook.
+
+★ **So the design this ticket owes is projection BEFORE ATTEMPT TERMINALIZATION**, not before one
+step of a post-terminal projector — i.e. on the ingest path that still holds the live fence, with
+the artifact and terminal events arriving in the same batch. **The owed integration case is exactly
+that batch**: `artifact_prepared` and the terminal event ingested together, asserting one
+`task_outputs` row with its `output_projection` receipt and no `attempt_terminal` throw. Until that
+design is recorded, F5 is not assignable as build.
 
 **Only once that design is recorded** does the build half apply — modify
 `server/src/services/canary-terminal-projection.ts`, modify
@@ -942,8 +980,18 @@ never observed to deny is a check that nothing runs.
 the rollback rehearsal exit criterion 6 requires must include it.
 
 **RED → GREEN:** RED — with the flag on and the run fence-current, the argv carries the MCP config
-and the handle is minted; RED — with the flag on and the lease expired, the surface is denied and
-the handle is **not** minted; RED — with the flag off, neither happens (the control proving the rows
+and the handle is minted; RED — with the flag on and the lease expired, **the surface is denied at
+MCP authorization and redemption is refused**; RED — with the flag off, neither happens (the control proving the rows
+
+★★★ **“THE HANDLE IS NOT MINTED” IS REMOVED FROM THIS LIST, AND IT WAS THE THIRD SITE FOR ONE
+RULE.** *Corrected eleventh round.* `mintRunJwtHandleForPlacement`
+(`server/src/services/execution-secret-handle-mint-runner.ts:165`) takes **no lease and no clock**,
+and `decideRunJwtHandle` decides on deployment, principal, adapter and flag — not currency. A
+configuration-only ticket cannot add a mint-time check, so this RED could never go green. Currency
+is enforced where the gate actually runs: **MCP authorization**. The checklist entry was corrected
+earlier and this acceptance list was not — the same propagation failure, again.
+
+*(Superseded RED, retained for the record: “the handle is **not** minted”.)*
 measure the flag); GREEN — all three plus server typecheck and build.
 
 **Evidence / commit:** `tickets/CLI-008-C5-result.md`; one commit

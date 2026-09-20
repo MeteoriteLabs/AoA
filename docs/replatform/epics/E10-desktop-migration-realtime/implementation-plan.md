@@ -164,10 +164,7 @@ gated by `assertCanManageInstanceSettings`, over `setKillSwitches` (`:192`) / `c
 (`:208`) in `server/src/services/instance-settings.ts`. The route's own comment says it plainly:
 *“this is the missing writer so an operator no longer needs hand-SQL to throw a switch.”*
 
-★ **One correction to the report that raised this:** it also said the shipped path includes
-activity logging. I did **not** find an activity write in either the route or the service — so the
-switch is authorized but, as far as I measured, **not** actor-attributed in `activity_log`. That is
-a separate gap and is not claimed closed here.
+★★★ **RETRACTED — THE KILL-SWITCH PATH IS AUDITED, AND MY EARLIER CORRECTION SAYING OTHERWISE WAS WRONG.** *Eleventh round, 2026-09-20.* `server/src/routes/instance-settings.ts:108` takes the actor via `getActorInfo(req)` and calls `logActivity` with `action: "instance.kill_switches_set"`; `:134` does the same for clearing. The original report was right and I was wrong. I missed it because I grepped for `activityLog` / `activity_log` / `recordActivity` and the function is named **`logActivity`** — ★ *a name-based search proves absence only if the name is right, and I asserted a gap on the strength of one.* **The switch is authorized AND actor-attributed; no audit work is owed here.**
 
 ★ **The remaining work is DRAIN INTEGRATION AND GRANULARITY, not creating a write path** — how the
 existing dimensioned switch triggers the fleet-wide `drainAll`. Describing it as creation risks
@@ -664,7 +661,7 @@ deleting the CLI and reverting `E10-1-drain` to `unwired` — the register enfor
 - RED — `drainAll` is actually reached. Assert on a spy that `drainAll` is invoked exactly once per
   CLI run. **This is the assertion that distinguishes this ticket from the vacuous compose MIG-009
   rejected**; without it the register's caller count would be satisfied by construction alone.
-- RED — stable `commandId`: two consecutive runs over the same live job produce one queued cancel,
+- RED — stable `commandId`, **asserted at the ADAPTER BOUNDARY on the derived id itself**. ★★★ *Corrected eleventh round: an earlier revision proved it with “two consecutive runs produce one queued cancel”, which the code makes impossible to fail — `requestCancellation` (`packages/db/src/repositories/tenant/job-control.ts:5079`) dedupes by organization, lease and `cancel` kind and returns `already_requested` **before the new id is used**, so a randomized id passes. The mutation table already carries this correction; this RED list did not, which is the propagation failure the whole review keeps finding.* Superseded assertion: two consecutive runs over the same live job produce one queued cancel,
   not two. Derived from `jobId`, not random.
 - RED — any skipped organization ⇒ non-zero exit.
 - RED — flag-off exits non-zero and opens no pool.
@@ -761,7 +758,7 @@ Reopen this plan — not merely amend a ticket — when any of the following bec
 7. **`MIG-001` or `MIG-004` is filed.** Both are disposition X today; either changes E10's ticket
    set and `MIG-004` gives `E11-F007` an owner.
 8. **A per-sink rollout axis ships.** B7 — without it, M2's staged MIG-005 → 006 → 007 ordering is
-   not expressible, and with it, M2's sequencing plan changes.
+   ★★★ **ALREADY SHIPPED — corrected eleventh round; do not wait on it.** `server/src/config/distributed-execution-rollout-source.ts` applies `policy.sources` against `sourceKind`, and `server/src/__tests__/rollout-dial-live.test.ts` proves Commander-first then crew with one-shot off. Any residual is the **operator interface** (env-config vs a database dial), which is what this trigger should name. Superseded text: not expressible, and with it, M2's sequencing plan changes.
 9. **The `observeRun` producer is composed in the deployed worker.** B4 — the parity bridges stop
    being producer-blocked, which changes what M2's exit can honestly claim.
 10. **The two E10 directories are consolidated, or a decision declines to consolidate.** §0. Either

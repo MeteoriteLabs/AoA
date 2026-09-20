@@ -273,9 +273,7 @@ assigned to build it.** The four records quoted below are **frozen**; they are c
 finding, never edited. What remains is the **UI**, a named owner, and the decision on how the
 shipped dimensioned switch triggers the fleet-wide `drainAll`.
 
-★ *One limit I measured and did NOT find closed: there is no `activity_log` write on that path, so
-the switch is authorized but not actor-attributed. That gap is real, is separate, and is not
-claimed closed here.*
+★★★ **RETRACTED — THE KILL-SWITCH PATH IS AUDITED, AND MY EARLIER CORRECTION SAYING OTHERWISE WAS WRONG.** *Eleventh round, 2026-09-20.* `server/src/routes/instance-settings.ts:108` takes the actor via `getActorInfo(req)` and calls `logActivity` with `action: "instance.kill_switches_set"`; `:134` does the same for clearing. The original report was right and I was wrong. I missed it because I grepped for `activityLog` / `activity_log` / `recordActivity` and the function is named **`logActivity`** — ★ *a name-based search proves absence only if the name is right, and I asserted a gap on the strength of one.* **The switch is authorized AND actor-attributed; no audit work is owed here.**
 
 #### Superseded claim, retained for the record
 
@@ -469,7 +467,7 @@ Reopen this plan — not merely amend a ticket — when any of the following bec
    14-day clock restarts from zero.
 7. **The staging fleet with a database + object-store backup path is deployed.** That unblocks B2
    and makes `REL-003`/`DBR-001` immediately executable.
-8. **A kill-switch write path ships**, or `KILL_SWITCH_DIMENSIONS` gains an Organization or sink
+8. ★★★ **THE WRITE PATH ALREADY SHIPS — corrected eleventh round; this trigger must not wait on it.** Authorized `PUT`/`DELETE` `/instance/kill-switches` are mounted (`server/src/routes/instance-settings.ts:92,131`) and audited via `logActivity`. What this trigger should watch is the **UI** and the drain-integration decision, or `KILL_SWITCH_DIMENSIONS` gaining an Organization or sink
    axis. B3 and the D6-09/D6-10 evidence shape both change.
 9. **The DE-08 residual is amended, or H-06 gets a successor decision.** B6 propagates from D2 to
    the E11 exit; a change there changes what an E11 candidate may claim.

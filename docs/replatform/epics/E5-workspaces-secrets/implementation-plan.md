@@ -821,7 +821,7 @@ grant URL, secret, or byte.
 | H-10 evidence integrity | Append-only ticket results; a1 is immutable and a2 supersedes it. |
 | Exit criterion 3 (**`M1a-D2-MECHANISM`**, every terminal cleanup path) | `DAT-011-B1`. ★ *Corrected 2026-09-20 (third round): criterion 3 is the mechanism campaign, and terminal cleanup needs no attributable agent output — naming `M1-D2-CODING` would have deferred this evidence from `M1a` to `M1b`.* |
 | Exit criterion 4 (useful capability, `M1b` only) | `DAT-009-3c`/`3d`/`3e` supply **link 3**. They do **not** satisfy the criterion — the producer is CLI-008 Unit F. |
-| Exit criterion 7 (committed passing E5 a2 audit) | `E5-A2-MATRIX` plans it; a2 is written after the campaigns and consumes their records. |
+| Exit criterion 7 (committed passing E5 audit) | `E5-A2-MATRIX` plans it; the audit is written after the campaigns it consumes and **before that milestone's handoff**. ★★★ **TWO ATTEMPTS, NOT ONE — corrected eleventh round.** `a2` attests the **`M1a`** candidate and is committed before the `M1a` handoff; `M1b` freezes a **different** candidate, so it owes **`a3` or later**, linked by `Supersedes`. An audit attests one exact revision exactly as a gate record does, so reusing `a2` for `M1b` would point criterion-7 evidence at the older tree — the same defect as carrying `M1a`'s gate records forward. |
 
 ---
 
