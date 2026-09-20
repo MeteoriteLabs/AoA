@@ -9,6 +9,15 @@ on:
 permissions:
   contents: read
 
+# ★★★ THE REQUIRED LANE SETS THIS AND THIS LANE DID NOT, WHICH IS THE WHOLE DIFFERENCE.
+# Measured on run 35530583783: `server typecheck` died on macOS with
+# `FATAL ERROR: Ineffective mark-compacts near heap limit - JavaScript heap out of memory`,
+# a V8 crash rather than a type error. `pr.yml:11` carries a workflow-level
+# `NODE_OPTIONS: --max-old-space-size=8192`; this file carried none, so the same tsc run that
+# passes on the required lane exhausted the default heap here. Copied verbatim, not re-derived.
+env:
+  NODE_OPTIONS: --max-old-space-size=8192
+
 concurrency:
   group: cross-platform-weekly-${{ github.ref }}
   cancel-in-progress: true
