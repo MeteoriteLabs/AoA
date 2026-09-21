@@ -150,6 +150,19 @@ describe("WRK-018 — createRunOutputCapture (the per-run scrubber)", () => {
     }
   });
 
+  it("a canary EQUAL to (or containing) the marker is never excused as 'inside a marker' (Codex P2, PR #546)", () => {
+    for (const canary of [REDACTION_MARKER, `x${REDACTION_MARKER}`]) {
+      const drops: string[] = [];
+      const cap = createRunOutputCapture({ canaries: [canary], onDrop: (r) => drops.push(r) });
+      cap.onStdout(`secret=${canary}\n`);
+      const { stdoutTail } = cap.close();
+      expect(stdoutTail).not.toContain(canary);
+      // The exact-marker canary cannot be scrubbed at all (its replacement IS itself), so the
+      // tail must be refused; a canary merely CONTAINING the marker scrubs to the bare marker.
+      if (canary === REDACTION_MARKER) expect(drops).toContain("unscrubbable");
+    }
+  });
+
   it("FAIL CLOSED: output that still holds a canary after scrubbing is dropped entirely", () => {
     // Longest-first single-pass scrubbing turns "wxyzq" into "w«redacted»" via the "xyzq"
     // needle AFTER the longer needle already ran — a residual the post-check must catch.

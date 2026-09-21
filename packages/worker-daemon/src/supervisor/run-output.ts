@@ -97,8 +97,12 @@ export function scrubOutputText(text: string, canaries: readonly string[]): stri
   const insideMarker = (start: number, end: number): boolean =>
     markerSpans.some(([s, e]) => start >= s && end <= e);
   for (const needle of needles) {
+    // A needle that CONTAINS the marker (or equals it) is never excused: replacing it yields
+    // the marker, so "inside a marker" would be every occurrence of the secret itself (Codex
+    // P2, PR #546). Any occurrence of such a needle refuses the text.
+    const excusable = !needle.includes(REDACTION_MARKER);
     for (let at = scrubbed.indexOf(needle); at >= 0; at = scrubbed.indexOf(needle, at + 1)) {
-      if (!insideMarker(at, at + needle.length)) return null;
+      if (!excusable || !insideMarker(at, at + needle.length)) return null;
     }
   }
   return scrubbed;

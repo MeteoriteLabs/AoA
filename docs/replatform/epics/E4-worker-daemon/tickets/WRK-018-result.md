@@ -79,6 +79,7 @@ adapter-manager, worker-networked-host, worker-keystore, provider-capability.
 | MC3 | AM captures regardless of the flag | the no-flag byte-identical case |
 | MP3 | revert tokenCount's present-non-number rule, or the `corrupt` result sentinel | the respective Codex-P2 #2 case |
 | MP4 | drop the `usage`-key marker check | the structural-redaction case |
+| MP5 | excuse marker-containing needles again | the exact-marker canary case |
 | MP2 | revert the Codex P2 fix (plain `includes` residual check) | the marker-substring canary case (`"red"`, `"redacted"`, `"a"` dropped every tail as `unscrubbable`) |
 
 **Positive controls that stop the canary tests being vacuous:** each lane asserts the canary WAS in
@@ -108,6 +109,13 @@ result line standing in, or a redacted key reading as 0. The three Codex finding
 usage is read ONLY from the final non-empty line, which must be exactly `type:"result"` with no
 marker in any `usage` key; otherwise no usage. RED first (`expected { inputTokens: 1, ... } to be
 null`); mutation MP4 (drop the key-marker check) reds the structural case.
+
+**Codex P2 on `ef291ded7` (verified, fixed at source):** the inside-a-marker allowance (added for
+the first P2) excused a canary EQUAL to the marker, since its every occurrence is "inside a marker".
+Needles that contain the marker are now never excused; the exact-marker canary refuses the tail.
+RED first (`expected 'secret=«redacted»
+' not to contain '«redacted»'`); mutation MP5 (drop the
+rule) reds it.
 
 **A vacuous test caught and fixed during the build:** the first "empty tail" case asserted inside
 the observer, whose throw the supervisor swallows, so it passed in RED. It now records and asserts
