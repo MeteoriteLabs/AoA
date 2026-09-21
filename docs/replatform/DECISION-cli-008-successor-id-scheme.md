@@ -33,7 +33,7 @@ immediately before the `CLI-010` node:
 
 | Old | New | Subject |
 |---|---|---|
-| `CLI-008-F1a` | `CLI-010` | link 1, the EMIT half |
+| `CLI-008-F1a` | `CLI-010` | link 1, the CAPTURE side — the metadata-only enumeration seam; fences `captureSandboxEntries` ★ *(label corrected 2026-09-21: this row read “the EMIT half”. `F1a` was always the capture/enumeration side and `F1b` the emit side — see `F1b`'s row. The id mapping is unchanged; only the description was wrong, and it had propagated into the `CLI-010` graph node.)* |
 | `CLI-008-F1b` | `CLI-011` | link 1, the output-mechanism design review |
 | `CLI-008-F3` | `CLI-012` | link 3, the worker-side consumer |
 | `CLI-008-F4` | `CLI-013` | link 4, the announcement |

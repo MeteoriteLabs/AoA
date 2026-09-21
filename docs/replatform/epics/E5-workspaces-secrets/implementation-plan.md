@@ -991,7 +991,7 @@ Those stay fully authoritative and untouched.
 ★★★ **`jobOutputBridge` IS REQUIRED BEFORE `M1a` PASSES — NOT AT M2.** *Corrected 2026-09-20 (ninth
 round).* `scope-triage.md` puts the three parity-bridge consumers, `jobOutputBridge` among them, in
 the **`M1a` required-result set** (D-8). An earlier revision of this paragraph scheduled it for
-*“M2, not M1”*, and `CLI-008-F5` then used that premise to authorise a **second** distributed
+*“M2, not M1”*, and `CLI-014` then used that premise to authorise a **second** distributed
 `task_outputs` writer — restricting F5 to distributed runs does not separate two writers that are
 both distributed. **Before F5 is assigned, `decisions.md` must record how F5 and the bridge divide
 that write** (one delegates to the other, or they own disjoint row kinds). Two unsequenced writers

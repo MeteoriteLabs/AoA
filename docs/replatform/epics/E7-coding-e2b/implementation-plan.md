@@ -49,7 +49,7 @@ open finding* — and **owes nothing**, so filing a correction against it would 
 > **For agentic workers:** REQUIRED SUB-SKILL: use `superpowers:subagent-driven-development` to
 > execute this plan ticket by ticket **only after operator approval**. Every ticket uses a fresh
 > implementer subagent (strict RED → GREEN) and a DISTINCT independent reviewer subagent. **One
-> ticket below — `CLI-008-F1b` — is a DESIGN ticket and may not be assigned as build work under any
+> ticket below — `CLI-011` — is a DESIGN ticket and may not be assigned as build work under any
 > circumstance.** Three mechanisms have been proposed for it and all three were refuted.
 
 **The single most valuable thing this plan does:** it **splits `CLI-008` Unit F into link-scoped
@@ -79,7 +79,7 @@ rather than a blocker, while stating without softening which single link still h
 | Unit D | ✅ **DONE** 2026-09-03. Prompt on stdin from a staged file; instructions bundle on `--append-system-prompt-file`. Closes `E7-F008`, `E7-F009`. |
 | Unit E | **Unbuilt, XL, and NOT first-milestone.** See E7-D05. |
 | Unit F | **Six links.** Link 2 BUILT; link 1's **capture** half BUILT and inert; links 3/4/5 unbuilt and ordinary; link 1's **emit** half **undesigned after three refutations**; link 6 (the judge) blocked behind it. [`tickets/CLI-008-unit-f-design.md`](./tickets/CLI-008-unit-f-design.md) §1.6. |
-| `E7-F014` | **RESOLVED** 2026-09-04 (PR #351). The unit-F design's §5 "blocking dependency — being fixed on a parallel branch" is **discharged**; a non-zero exit no longer throws past every post-execute capture. That staleness is `CLI-008-LEDGER`'s to correct. |
+| `E7-F014` | **RESOLVED** 2026-09-04 (PR #351). The unit-F design's §5 "blocking dependency — being fixed on a parallel branch" is **discharged**; a non-zero exit no longer throws past every post-execute capture. That staleness is `CLI-009`'s to correct. |
 | `E7-F021` | **RESOLVED** 2026-09-11, founder-authorized. `--dangerously-skip-permissions` is on both claude literals in `task-run-sandbox-invocation.ts`, guarded RED-when-removed by `server/src/__tests__/task-run-batch-workload.test.ts`. So the unit-F stop condition's **clause 1 is discharged for `claude_local`**. |
 | `E7-F027` | **OPEN, narrowed.** codex is refused by its own trusted-directory gate before any model call. **Stop-condition clause 2 still stands: any near-term mechanism must be `claude_local`-only, not adapter-agnostic.** |
 | Formal test authority | Linux CI under DEC-03. Windows short-path evidence is `operator-directed windows-local`. Windows e2e is skipped at the Playwright config level (Issue #114). |
@@ -98,7 +98,7 @@ reason those ten still have a live owner.
 **So creating `tickets/CLI-008-result.md` before the link-scoped successors exist would orphan ten
 findings in one commit.** This is the same deadlock the triage recorded for `MIG-010` (D-10: file
 the successor first). **The split IS the remedy**: each link-scoped ticket takes the findings that
-belong to it, and only then can `CLI-008` carry a result honestly. `CLI-008-LEDGER` sequences that
+belong to it, and only then can `CLI-008` carry a result honestly. `CLI-009` sequences that
 and is explicitly forbidden from creating the parent result doc.
 
 ### Shared decisions and locked contracts (E7-D01…E7-D07)
@@ -118,7 +118,7 @@ and is explicitly forbidden from creating the parent result doc.
 - **E7-D03 — Links 3, 4 and 5 are NOT blocked by the emit question, and there are TWO counters,
   not one.** ★★★ *Superseded text: "links 4 and 5 flip NO counter" and "the **counter** moves on
   link 3 alone". Corrected 2026-09-20, verified at source.* That reading was true of ONE of
-  `countProducedOutputs`' two arms and false of the other, once `CLI-008-F5` was corrected to route
+  `countProducedOutputs`' two arms and false of the other, once `CLI-014` was corrected to route
   through `jobOutputBridge.projectAcceptedOutput`. The two counters, named separately:
   - **The QUALIFYING ARTIFACT counter** — `countProducedOutputs` arm 1, committed
     `kind = 'workspace_patch'` `job_artifacts`, attempt-scoped as of `E7-F031`. It queries
@@ -161,7 +161,7 @@ and is explicitly forbidden from creating the parent result doc.
 ### NOT in scope (epic non-goals for the first milestone)
 
 - No Unit E, no `WorkspaceManifestV1` producer, no `--add-dir`, no repository to work in (E7-D05).
-- No fourth supply mechanism written under time pressure (E7-D02). `CLI-008-F1b` is a design pass.
+- No fourth supply mechanism written under time pressure (E7-D02). `CLI-011` is a design pass.
   ★★★ *Corrected eleventh round: an earlier revision listed *“do not build it”* among its permitted
   outcomes and required an attack pass to adopt it. §13 of the unit-F design is **RATIFIED** — the
   founder ruled **“close the fifth option as SUPERSEDED”** — so it is neither a permitted outcome
@@ -173,7 +173,7 @@ and is explicitly forbidden from creating the parent result doc.
 - No `packages/db` schema change and no `drizzle-kit generate`.
 - No re-opening of `CLI-001`…`CLI-006` or `CLI-007` (disposition N).
 - No sink cutover. ★★★ **BUT `jobOutputBridge` ITSELF IS AN `M1a` PREREQUISITE, NOT M2** — *corrected eleventh round: `scope-triage.md` puts the three parity-bridge consumers, `jobOutputBridge` among them, in the `M1a` required-result set (D-8), and the E5 plan says so too. What is M2 is the **sink cutover**, not the bridge.* The distinction matters because link 5 relied on the deferral to justify a second writer, and there is only one writer. Superseded text: `E3-17-output` / `jobOutputBridge` is **M2**, not M1, and link 5 must not become a
-  second writer of `task_outputs` ahead of it (see `CLI-008-F5`).
+  second writer of `task_outputs` ahead of it (see `CLI-014`).
 
 ---
 
@@ -183,13 +183,13 @@ and is explicitly forbidden from creating the parent result doc.
 
 | # | Link | State, measured | Owner below |
 |---|---|---|---|
-| 1a | **capture** — walk a designated in-sandbox output root | ⚠️ **BUILT, INERT, AND WRONG-LANE.** Metadata-only *enumeration* is what link 3 needs; the built helper also reads and hashes bytes **in the daemon**, which the sequencer contract forbids — so the capture half is **not** solved for the E2B lane. `captureSandboxEntries` (`packages/worker-daemon/src/snapshot/capture-sandbox.ts:67`) over an INJECTED `listDir`/`readFile` seam, fail-closed on any path outside the root or failing `isSafeWorkspacePath`, deterministic, plain `CapturedFileEntry[]`. **Nothing re-exports it from `snapshot/index.ts` and nothing calls it** — verified: every reference at this tip is its own definition or `src/__tests__/capture-sandbox.test.ts`. | `CLI-008-F1a` |
-| 1b | **emit** — tell the agent to write there | ★★★ **UNDESIGNED.** The half the three refutations are about. Nothing yet tells the agent to write to that root, so `captureSandboxEntries` has nothing to walk on a real run. **This flips no counter and closes no finding.** | `CLI-008-F1b` (DESIGN ONLY) |
+| 1a | **capture** — walk a designated in-sandbox output root | ⚠️ **BUILT, INERT, AND WRONG-LANE.** Metadata-only *enumeration* is what link 3 needs; the built helper also reads and hashes bytes **in the daemon**, which the sequencer contract forbids — so the capture half is **not** solved for the E2B lane. `captureSandboxEntries` (`packages/worker-daemon/src/snapshot/capture-sandbox.ts:67`) over an INJECTED `listDir`/`readFile` seam, fail-closed on any path outside the root or failing `isSafeWorkspacePath`, deterministic, plain `CapturedFileEntry[]`. **Nothing re-exports it from `snapshot/index.ts` and nothing calls it** — verified: every reference at this tip is its own definition or `src/__tests__/capture-sandbox.test.ts`. | `CLI-010` |
+| 1b | **emit** — tell the agent to write there | ★★★ **UNDESIGNED.** The half the three refutations are about. Nothing yet tells the agent to write to that root, so `captureSandboxEntries` has nothing to walk on a real run. **This flips no counter and closes no finding.** | `CLI-011` (DESIGN ONLY) |
 | 2 | **a real `exportArtifact`/`digestArtifact`** | ✅ **BUILT** 2026-09-04 (PR #353). `packages/sandbox-e2b-provider/src/e2b-provider.ts:246` declares `artifactExportMode = "grant_upload"`; `exportArtifact` reads → size-checks → **re-hashes against the grant** → PUTs → returns `{objectKey}`. Proven on a **real E2B sandbox** (`keyed-e2b-dat-009-export.yml`, 4/4, run `33856478690`), including the TOCTOU refusal. | — (closed) |
-| 3 | **worker-side consumer** — sequence digest → mint grant → export → commit | **UNBUILT.** `createArtifactExportSequencer` (`packages/worker-daemon/src/lease/artifact-export.ts:264`) exists with zero production callers; its only other reference is the barrel at `packages/worker-daemon/src/index.ts:178`. The hook and composition are **E5's** `DAT-009-3c`/`3d`; the **producer of `ArtifactExportRequest[]`** is this epic's. | `CLI-008-F3` |
-| 4 | **announcement** | **UNBUILT, and NOT blocked.** `EventSequencer` (`packages/worker-daemon/src/supervisor/events.ts`) has no `artifactPrepared` method. The event kind, payload schema and DB CHECK are all already frozen-and-present (E7-D07). | `CLI-008-F4` |
-| 5 | **projector** | **UNBUILT.** `foldAttemptEvidence` hard-codes `detectedFiles: []` (`server/src/services/canary-terminal-projection.ts:256`) and `createCanaryRunProjector.projectTerminal` (`server/src/services/canary-run-projector.ts:156`) has four steps — events, terminal, `finalizeRun` (`:219`), run-summary comment (`:238`) — **none of which writes `task_outputs`**. | `CLI-008-F5` |
-| 6 | **the judge** | **Counts the wrong things, and its obvious repair is refuted.** The module's only `capabilityFailures.push` is at `server/src/services/e7-distributed-run-verifier.ts:657`. | `CLI-008-F6` |
+| 3 | **worker-side consumer** — sequence digest → mint grant → export → commit | **UNBUILT.** `createArtifactExportSequencer` (`packages/worker-daemon/src/lease/artifact-export.ts:264`) exists with zero production callers; its only other reference is the barrel at `packages/worker-daemon/src/index.ts:178`. The hook and composition are **E5's** `DAT-009-3c`/`3d`; the **producer of `ArtifactExportRequest[]`** is this epic's. | `CLI-012` |
+| 4 | **announcement** | **UNBUILT, and NOT blocked.** `EventSequencer` (`packages/worker-daemon/src/supervisor/events.ts`) has no `artifactPrepared` method. The event kind, payload schema and DB CHECK are all already frozen-and-present (E7-D07). | `CLI-013` |
+| 5 | **projector** | **UNBUILT.** `foldAttemptEvidence` hard-codes `detectedFiles: []` (`server/src/services/canary-terminal-projection.ts:256`) and `createCanaryRunProjector.projectTerminal` (`server/src/services/canary-run-projector.ts:156`) has four steps — events, terminal, `finalizeRun` (`:219`), run-summary comment (`:238`) — **none of which writes `task_outputs`**. | `CLI-014` |
+| 6 | **the judge** | **Counts the wrong things, and its obvious repair is refuted.** The module's only `capabilityFailures.push` is at `server/src/services/e7-distributed-run-verifier.ts:657`. | `CLI-015` |
 
 ### Line pins that have drifted since they were published — correct these, do not copy them
 
@@ -210,7 +210,7 @@ treat a line number as a hint.** `ls` every cited file and re-measure at HEAD.
 |---|---|---|
 | `POST /api/worker-control/artifact-transfer-grants` `:605`, `/artifact-commits` `:654` | `server/src/routes/worker-control.ts` | Mint + fenced commit. Mounted whenever distributed execution is on. Live-proven against real MinIO (`DAT-002-live-minio-result.md`, `d1-merge-train` `31885553697`, 13/13). |
 | `createArtifactExportSequencer`, `grantPutHeaders` | `packages/worker-daemon/src/lease/artifact-export.ts:264,146` | Link 3's sequencing. **E5 owns the hook + composition** (`DAT-009-3c`/`3d`); this epic owns the producer. |
-| `SupervisorDeps.resolveExportArtifacts` | does not exist yet — `DAT-009-3c` | Link 3's seam. `CLI-008-F3` is its first and only caller. |
+| `SupervisorDeps.resolveExportArtifacts` | does not exist yet — `DAT-009-3c` | Link 3's seam. `CLI-012` is its first and only caller. |
 | `DistributedRunCurrencyResolver` | `server/src/mcp/distributed-run-currency-resolver.ts:35`, composed `server/src/mcp/server.ts:302`, called `:466-479` | The fence-bound gate that scopes the run credential to a live lease. **It is the precondition for arming the tool surface** — the founder ruling names it as such. |
 | `E2bTransport.readFile` / `listDir` | `packages/sandbox-e2b-provider/src/real-transport.ts:453,466` | The concrete binding behind link 1a's injected seam. |
 | `postRunSummaryComment` | `server/src/services/run-summary-comment.ts` | The shared writer the projector already uses at step 4. Link 5 adds a step; it does not fork the writer. |
@@ -235,7 +235,7 @@ treat a line number as a hint.** `ls` every cited file and re-measure at HEAD.
   dependency-pinned daemon.
 - **Best-effort on the way out, fail-closed on the way in — with ONE recorded exception.** Staging
   fails the attempt because an agent running without its input produces a clean terminal for
-  mutilated work; **export** (`CLI-008-F3`) must not discard a successful run because its *evidence*
+  mutilated work; **export** (`CLI-012`) must not discard a successful run because its *evidence*
   could not be filed.
   ★★★ **The `artifact_prepared` ANNOUNCEMENT is EXEMPT from this rule and is bound instead to
   `CLI-008-F4`'s recorded contiguity decision.** *Superseded text: "export **and announcement** must
@@ -322,14 +322,14 @@ function Invoke-NativeGate([string]$Label, [scriptblock]$Command) {
 
 | Ticket | Exact focused command (RED first, then identical GREEN) |
 |---|---|
-| `CLI-008-LEDGER` | `Invoke-NativeGate 'finding ownership' { node scripts/check-finding-ownership.mjs }; Invoke-NativeGate 'register citations' { node scripts/check-register-citation-integrity.mjs }; Invoke-NativeGate 'id uniqueness' { node scripts/check-register-id-uniqueness.mjs }; Invoke-NativeGate 'ticket graph' { node scripts/check-ticket-graph-coverage.mjs }; Invoke-NativeGate 'dependency graph' { node scripts/check-dependency-graph.mjs }` |
-| `CLI-008-F1a` | `Invoke-NativeGate 'protocol build' { pnpm --filter @armyofagents/worker-protocol build }; Invoke-NativeGate 'F1a' { pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/capture-sandbox.test.ts src/__tests__/sandbox-listdir-binding.test.ts }; Invoke-NativeGate 'daemon boundary' { pnpm check:worker-daemon-boundary }; Invoke-NativeGate 'worker typecheck' { pnpm --filter @armyofagents/worker-daemon typecheck }; Invoke-NativeGate 'worker build' { pnpm --filter @armyofagents/worker-daemon build }` |
-| `CLI-008-F1b` | **Design ticket — no RED/GREEN.** Evidence is the §6-constraint table, the positive-control table, and an adversarial attack pass on the chosen option. ★ *Superseded text: "(including on §13's "do not build it", which has never had one)". Corrected 2026-09-20, verified at source: `tickets/CLI-008-unit-f-design.md:1367` records that attack as **run and completed**, and `:1424` records the founder ruling "close the fifth option as **SUPERSEDED**" — so it is neither a candidate option nor an attack F1b owes.* |
-| `CLI-008-F3` | `Invoke-NativeGate 'protocol build' { pnpm --filter @armyofagents/worker-protocol build }; Invoke-NativeGate 'F3' { pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/export-request-producer.test.ts src/__tests__/supervisor-export-artifacts.test.ts src/__tests__/artifact-export-sequencer.test.ts }; Invoke-NativeGate 'worker typecheck' { pnpm --filter @armyofagents/worker-daemon typecheck }; Invoke-NativeGate 'worker build' { pnpm --filter @armyofagents/worker-daemon build }` |
-| `CLI-008-F4` | `Invoke-NativeGate 'protocol build' { pnpm --filter @armyofagents/worker-protocol build }; Invoke-NativeGate 'F4' { pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/events-artifact-prepared.test.ts }; Invoke-NativeGate 'frozen v1' { pnpm check:frozen-worker-protocol-v1 }; Invoke-NativeGate 'worker typecheck' { pnpm --filter @armyofagents/worker-daemon typecheck }; Invoke-NativeGate 'worker build' { pnpm --filter @armyofagents/worker-daemon build }` |
-| `CLI-008-F5` | `$env:AOA_RUN_WIN_INTEGRATION='1'; Invoke-NativeGate 'F5' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/canary-run-projector.test.ts src/__tests__/canary-terminal-projection.test.ts src/__tests__/canary-output-projection.integration.test.ts }; Invoke-NativeGate 'gate clause wiring' { node scripts/check-gate-clause-wiring.mjs }; Invoke-NativeGate 'server typecheck' { pnpm --filter @armyofagents/server typecheck }; Invoke-NativeGate 'server build' { pnpm --filter @armyofagents/server build }` |
-| `CLI-008-F6` | `Invoke-NativeGate 'F6' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/e7-distributed-run-verifier.test.ts src/__tests__/e7-distributed-run-verifier-store.test.ts src/__tests__/e7-verifier-capability-fixture.test.ts }; Invoke-NativeGate 'server typecheck' { pnpm --filter @armyofagents/server typecheck }; Invoke-NativeGate 'server build' { pnpm --filter @armyofagents/server build }` |
-| `CLI-008-C5` | `$env:AOA_RUN_WIN_INTEGRATION='1'; Invoke-NativeGate 'C5' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/task-run-batch-workload.test.ts src/__tests__/mcp-run-currency-gate.test.ts src/__tests__/distributed-tool-surface-arming.integration.test.ts }; Invoke-NativeGate 'server typecheck' { pnpm --filter @armyofagents/server typecheck }; Invoke-NativeGate 'server build' { pnpm --filter @armyofagents/server build }` |
+| `CLI-009` | `Invoke-NativeGate 'finding ownership' { node scripts/check-finding-ownership.mjs }; Invoke-NativeGate 'register citations' { node scripts/check-register-citation-integrity.mjs }; Invoke-NativeGate 'id uniqueness' { node scripts/check-register-id-uniqueness.mjs }; Invoke-NativeGate 'ticket graph' { node scripts/check-ticket-graph-coverage.mjs }; Invoke-NativeGate 'dependency graph' { node scripts/check-dependency-graph.mjs }` |
+| `CLI-010` | `Invoke-NativeGate 'protocol build' { pnpm --filter @armyofagents/worker-protocol build }; Invoke-NativeGate 'F1a' { pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/capture-sandbox.test.ts src/__tests__/sandbox-listdir-binding.test.ts }; Invoke-NativeGate 'daemon boundary' { pnpm check:worker-daemon-boundary }; Invoke-NativeGate 'worker typecheck' { pnpm --filter @armyofagents/worker-daemon typecheck }; Invoke-NativeGate 'worker build' { pnpm --filter @armyofagents/worker-daemon build }` |
+| `CLI-011` | ★ *Corrected 2026-09-21 (Codex, PR #526):* *this row was keyed `CLI-008-F1b`, which the sweep missed.* **Design ticket — no RED/GREEN.** Evidence is the §6-constraint table, the positive-control table, and an adversarial attack pass on the chosen option. ★ *Superseded text: "(including on §13's "do not build it", which has never had one)". Corrected 2026-09-20, verified at source: `tickets/CLI-008-unit-f-design.md:1367` records that attack as **run and completed**, and `:1424` records the founder ruling "close the fifth option as **SUPERSEDED**" — so it is neither a candidate option nor an attack F1b owes.* |
+| `CLI-012` | `Invoke-NativeGate 'protocol build' { pnpm --filter @armyofagents/worker-protocol build }; Invoke-NativeGate 'F3' { pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/export-request-producer.test.ts src/__tests__/supervisor-export-artifacts.test.ts src/__tests__/artifact-export-sequencer.test.ts }; Invoke-NativeGate 'enumerate wire' { pnpm --filter @armyofagents/provider-wire exec vitest run src/__tests__/driver-enumerate.test.ts }; Invoke-NativeGate 'enumerate route' { pnpm --filter @armyofagents/adapter-manager exec vitest run src/__tests__/server-enumerate.test.ts }; Invoke-NativeGate 'worker typecheck' { pnpm --filter @armyofagents/worker-daemon typecheck }; Invoke-NativeGate 'worker build' { pnpm --filter @armyofagents/worker-daemon build }; Invoke-NativeGate 'wire+route+provider typecheck' { pnpm --filter @armyofagents/provider-wire --filter @armyofagents/adapter-manager --filter @armyofagents/sandbox-e2b-provider typecheck }` ★ *Corrected 2026-09-21 (Codex, PR #526):* *the command ran only worker-daemon tests, so the enumeration binding and route could be approved without being exercised or compiled.* |
+| `CLI-013` | `Invoke-NativeGate 'protocol build' { pnpm --filter @armyofagents/worker-protocol build }; Invoke-NativeGate 'F4' { pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/events-artifact-prepared.test.ts }; Invoke-NativeGate 'frozen v1' { pnpm check:frozen-worker-protocol-v1 }; Invoke-NativeGate 'worker typecheck' { pnpm --filter @armyofagents/worker-daemon typecheck }; Invoke-NativeGate 'worker build' { pnpm --filter @armyofagents/worker-daemon build }` |
+| `CLI-014` | `$env:AOA_RUN_WIN_INTEGRATION='1'; Invoke-NativeGate 'F5' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/canary-run-projector.test.ts src/__tests__/canary-terminal-projection.test.ts src/__tests__/canary-output-projection.integration.test.ts }; Invoke-NativeGate 'gate clause wiring' { node scripts/check-gate-clause-wiring.mjs }; Invoke-NativeGate 'server typecheck' { pnpm --filter @armyofagents/server typecheck }; Invoke-NativeGate 'server build' { pnpm --filter @armyofagents/server build }` |
+| `CLI-015` | `Invoke-NativeGate 'F6' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/e7-distributed-run-verifier.test.ts src/__tests__/e7-distributed-run-verifier-store.test.ts src/__tests__/e7-verifier-capability-fixture.test.ts }; Invoke-NativeGate 'server typecheck' { pnpm --filter @armyofagents/server typecheck }; Invoke-NativeGate 'server build' { pnpm --filter @armyofagents/server build }` |
+| `CLI-016` | `$env:AOA_RUN_WIN_INTEGRATION='1'; Invoke-NativeGate 'C5' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/task-run-batch-workload.test.ts src/__tests__/mcp-run-currency-gate.test.ts src/__tests__/distributed-tool-surface-arming.integration.test.ts }; Invoke-NativeGate 'server typecheck' { pnpm --filter @armyofagents/server typecheck }; Invoke-NativeGate 'server build' { pnpm --filter @armyofagents/server build }` |
 | `E7-1-JOURNEY-ARM` | `Invoke-NativeGate 'gate clause wiring' { node scripts/check-gate-clause-wiring.mjs }; Invoke-NativeGate 'cp/am keypair' { pnpm verify:cp-am-keypair }; Invoke-NativeGate 'E7-1 verifier' { pnpm verify:e7-1-distributed-run }` |
 
 Test filenames not already on disk are **new files this plan authorizes**; the RED is the genuine
@@ -374,6 +374,14 @@ as `ticket` for exactly ten open findings. Its own design's Status line has been
 says so: *"If you are reading a Status line here, check it against `git log --oneline -- <this file>`
 and the GO-BOOK row before trusting it."*
 
+★★★ **RESOLVED 2026-09-21 by M0 unit 4 (founder D1): numeric ids `CLI-009`…`CLI-016` were
+allocated — option (a) below — and they parse cleanly under all three guards.** What follows is the
+**historical** statement of why the link-scoped ids could not be used, kept verbatim with its
+original `CLI-008-Fn` / `CLI-008-LEDGER` examples. ★ *Corrected 2026-09-21 (Codex, PR #526):* an id sweep in this PR renamed those
+examples to the new numeric ids, which turned this block into a false claim that the **enacted**
+scheme fails the guards (`/^([A-Z]+-\d+)/` parses `CLI-015` as `CLI-015`, and `#### CLI-015 —`
+matches the graph regex). Restored byte-for-byte from `docs/replatform-program`.
+
 ★★★ **BLOCKING — THE `CLI-008-Fn` ID SHAPE CANNOT BE EXPRESSED TO THE GUARDS, AND USING IT WOULD
 SILENTLY COMPLETE THE PARENT.** *Added 2026-09-20 (ninth round), verified by reading the parsers.*
 This scheme must be resolved **before** `CLI-008-LEDGER` is assigned:
@@ -400,21 +408,29 @@ one-line regex edit, because all three guards and the graph contract move togeth
 exist), each open finding is re-pointed from `CLI-008` to the link that will close it, and the five
 drifted citations in §1 are corrected **by symbol**.
 
-**Proposed finding → link ownership** (the reviewer confirms each against source; a wrong
+★★★ **SUPERSEDED — DO NOT EXECUTE THIS TABLE.** ★ *Corrected 2026-09-21 (Codex, PR #526):* M0 unit 4 enacted
+the founder's subject-based ruling (D5): **only `E7-F016` → `CLI-015` and `E7-F026` → `CLI-011`
+moved.** `E7-F003`, `E7-F015`, `E7-F017`, `E7-F023`, `E7-F024`, `E7-F027`, `E7-F032` and `E7-F033`
+**stay on `CLI-008`**. The authority is `scripts/finding-ownership.json`, not this table. The
+"Proposed owner" column below is the pre-ruling proposal, kept as history; the id sweep in this PR
+had renamed its `CLI-008-Fn` cells to numeric ids, which made it read as an operative instruction
+to undo D5.
+
+**Proposed finding → link ownership** (*historical — pre-D5 proposal*; the reviewer confirms each against source; a wrong
 re-ownership is worse than none):
 
 | Finding | Severity | Proposed owner | Why |
 |---|---|---|---|
 | `E7-F003` | MEDIUM | **`CLI-008`** (parent, stays open) | It is the capability gap itself and spans tools + workspace + return path. It is why the parent may not carry a result yet. |
-| `E7-F015` | MEDIUM | `CLI-008-F6` | The bar is forgeable by one board POST; the fix is a judge change. |
-| `E7-F016` | LOW | `CLI-008-F6` | Clause 6's text misdescribes its own subject. |
+| `E7-F015` | MEDIUM | `CLI-015` | The bar is forgeable by one board POST; the fix is a judge change. |
+| `E7-F016` | LOW | `CLI-015` | Clause 6's text misdescribes its own subject. |
 | `E7-F017` | LOW | **`CLI-008`** — retain, or file a named E7 successor | ★ *Superseded text: "**`DAT-009` slice 3** (already its owner) … Leave it." Corrected 2026-09-20 against the authoritative register:* `scripts/finding-ownership.json` records `"ticket": "CLI-008"` for `E7-F017`, and its `ownerStillOpen` says in terms that it is **"deliberately NOT fixed by the ticket that FOUND it: DAT-009 slice 3 is E5 work, and editing another unit's failure text inside an E5 PR is the drive-by that makes a diff unreviewable."** The defect is in CLI-008 Unit B's own module (`packages/worker-daemon/src/lease/staged-input.ts:252-258`). **Keep CLI-008 as owner, or file a named E7 successor — this plan must not re-point it to DAT-009.** |
-| `E7-F023` | MEDIUM | `CLI-008-F6` | Clause 4's scanned set is composed at the call site. |
-| `E7-F024` | MEDIUM | `CLI-008-F4` | The frozen `log` payload silently truncates at 65,536 chars and caps at 480 events — an announcement-surface property. |
-| `E7-F026` | LOW | `CLI-008-F1b` | It is a critique of the fourth candidate answer, which is F1b's subject. |
+| `E7-F023` | MEDIUM | `CLI-015` | Clause 4's scanned set is composed at the call site. |
+| `E7-F024` | MEDIUM | `CLI-013` | The frozen `log` payload silently truncates at 65,536 chars and caps at 480 events — an announcement-surface property. |
+| `E7-F026` | LOW | `CLI-011` | It is a critique of the fourth candidate answer, which is F1b's subject. |
 | `E7-F027` | MEDIUM | **`CLI-008`** (parent) or a new `CLI-008-MX3` | codex's trusted-directory refusal. E7-D04 keeps it out of `M1b`; it must not be orphaned by the split. |
-| `E7-F032` | LOW | `CLI-008-F6` | Clause 4 does not scan a sibling attempt's `job_events`. |
-| `E7-F033` | MEDIUM | `CLI-008-F6` | The widened secret scanner's residual matchers. |
+| `E7-F032` | LOW | `CLI-015` | Clause 4 does not scan a sibling attempt's `job_events`. |
+| `E7-F033` | MEDIUM | `CLI-015` | The widened secret scanner's residual matchers. |
 
 **Ticket non-goals — and the first is the important one:**
 - **Do NOT create `tickets/CLI-008-result.md`.** `findCompletedTicketIds` counts a result's existence
@@ -422,11 +438,16 @@ re-ownership is worse than none):
 - Do not close, re-disposition, or downgrade any finding. Re-pointing an owner is not a closure.
 - Do not renumber an existing finding id (first-filed keeps the id).
 
-**Files:** `docs/replatform/program-design.md` (the new `#### CLI-008-F1a` … `#### CLI-008-F6`,
-`#### CLI-008-C5` nodes); `scripts/finding-ownership.json`; `findings.md` (owner lines only);
+**Files:** `docs/replatform/program-design.md` (the new `#### CLI-010` … `#### CLI-015`,
+`#### CLI-016` nodes); `scripts/finding-ownership.json`; `findings.md` (owner lines only);
 `tickets/CLI-008-unit-f-design.md` (an **amendment note**, appended — the document's own convention
-— correcting the five drifted citations and recording that `E7-F014` is resolved);
-`tickets/CLI-008-LEDGER-result.md`.
+— correcting the five drifted citations and recording that `E7-F014` is resolved). **No result
+file.** ★ *Corrected 2026-09-21 (Codex, PR #526):* this list ended with `tickets/CLI-009-result.md`. There is no `CLI-009` graph node, and
+`/^([A-Z]+-\d+)/` parses that filename as `CLI-009`, so creating it would mint an undeclared
+completed ticket and fail graph coverage. The ledger is **ENACTED** (M0 unit 4) and its record is
+`docs/replatform/DECISION-cli-008-successor-id-scheme.md`, which says there is *"deliberately no
+`-LEDGER-result.md`"*. (M0 had left this line pointing at `CLI-008-LEDGER-result.md`, contradicting its
+own decision; an id sweep in this PR then renamed it to the worse `CLI-009-result.md`.)
 
 **Interfaces:** none — record work.
 
@@ -443,14 +464,16 @@ and the thing it counts must never be edited in the same commit without a re-cou
 finding id (the positive control — a guard without one is a check that nothing runs); GREEN is all
 five guards passing with the successors declared.
 
-**Evidence / commit:** `tickets/CLI-008-LEDGER-result.md`; one documentation commit
-`docs(e7): split CLI-008 Unit F into link-scoped tickets and re-point its findings`.
+**Evidence / commit:** ★ **ENACTED — nothing further to commit.** The evidence is M0 unit 4's
+commit and `docs/replatform/DECISION-cli-008-successor-id-scheme.md`; there is no result file, for
+the reason given under **Files** above. *(Previously: `tickets/CLI-009-result.md`; see the correction
+above.)*
 
 ---
 
-### `CLI-008-F1a` — prove the enumeration seam, and FENCE the byte-reading one (S, ≤1 agent-day, M1b)
+### `CLI-010` — prove the enumeration seam, and FENCE the byte-reading one (S, ≤1 agent-day, M1b)
 
-**Depends on:** `CLI-008-LEDGER`.
+**Depends on:** the enacted ledger — `docs/replatform/DECISION-cli-008-successor-id-scheme.md`, ENACTED by M0 unit 4, so **already satisfied**; its graph edge is `CLI-008` (`program-design.md`). `CLI-009` names that ledger but has no graph node, ticket or result file by design, so it cannot itself be a satisfiable prerequisite. ★ *Corrected 2026-09-21 (Codex, PR #526):* this read `CLI-009`.
 
 **Current state, measured:** `captureSandboxEntries`
 (`packages/worker-daemon/src/snapshot/capture-sandbox.ts:67`) is **built and tested**
@@ -478,7 +501,7 @@ than left for someone to hit.
    data-plane contract it would otherwise breach.
 
 **★ What this ticket does NOT do.** It gives the agent nothing to write. It is the capture half
-only; the emit half is `CLI-008-F1b` and remains undesigned. **Do not read this ticket's completion
+only; the emit half is `CLI-011` and remains undesigned. **Do not read this ticket's completion
 as a supply mechanism**, and no result doc may say capture landed as though output landed.
 
 **Ticket non-goals:** calling it (that is F3); a Unit-E workspace, git base, or ignore policy
@@ -521,14 +544,14 @@ for them. An implementer following the acceptance test would have breached the d
 the ticket exists to fence. Fixing the Outcome and leaving the acceptance test is how the rejected
 instruction survives.
 
-**Evidence / commit:** `tickets/CLI-008-F1a-result.md`; one commit
+**Evidence / commit:** `tickets/CLI-010-result.md`; one commit
 `test(worker-daemon): pin the metadata-only listDir enumeration seam and fence the byte-reading one`.
 
 ---
 
-### `CLI-008-F1b` — the emit half: DESIGN ONLY, founder-ruling gated (≤3 agent-days, M1b, **NOT ASSIGNABLE AS BUILD**)
+### `CLI-011` — the emit half: DESIGN ONLY, founder-ruling gated (≤3 agent-days, M1b, **NOT ASSIGNABLE AS BUILD**)
 
-**Depends on:** `CLI-008-F1a`. **Blocks:** `CLI-008-F6`, and exit criterion 4 in full.
+**Depends on:** the enacted ledger — `docs/replatform/DECISION-cli-008-successor-id-scheme.md`, ENACTED by M0 unit 4, so **already satisfied**; its graph edge is `CLI-008` (`program-design.md`). `CLI-009` names that ledger but has no graph node, ticket or result file by design, so it cannot itself be a satisfiable prerequisite, like `CLI-010` — **not** on `CLI-010`. ★ *Corrected 2026-09-21 (Codex, PR #526):* this read `CLI-009` (the ledger). ★ *Corrected 2026-09-21 (Codex, PR #526):* this read `CLI-010` (renamed from `CLI-008-F1a`), which serialized the mechanism review behind the enumeration seam and contradicted the diagram that declares them independent. **Blocks:** `CLI-015`, and exit criterion 4 in full.
 
 **Current state, measured:** three mechanisms have been proposed and refuted — argv **shape**, argv
 **size**, then **the predicate itself**. The ruling of record is **measure first**
@@ -572,7 +595,7 @@ argv, no template, no test edit. No adapter-agnostic mechanism. No keyed dispatc
 **Files:** an amendment to `tickets/CLI-008-unit-f-design.md` (appended, per that document's own
 convention — a refuted plan left standing in a design document gets built, so nothing is deleted
 and nothing is silently demoted); a `DECISION-REQUEST-cli-008-unit-f-emit.md` under
-`docs/replatform/`; `tickets/CLI-008-F1b-result.md`. **No source files.**
+`docs/replatform/`; `tickets/CLI-011-result.md`. **No source files.**
 
 **Interfaces:** none.
 
@@ -585,14 +608,14 @@ blocks it' is the outcome."* That is a successful ticket, not a failed one.
 **Observability:** the decision request must name, for each candidate, which §6 constraint it
 satisfies and which positive control would prove it — not a narrative.
 
-**Evidence / commit:** `tickets/CLI-008-F1b-result.md`; one documentation commit
+**Evidence / commit:** `tickets/CLI-011-result.md`; one documentation commit
 `docs(e7): CLI-008 Unit F link 1b — candidate analysis and decision request`.
 
 ---
 
-### `CLI-008-F3` — the producer: capture → export requests → the sequencer (M, ≤3 agent-days, M1b)
+### `CLI-012` — the producer: capture → export requests → the sequencer (M, ≤3 agent-days, M1b)
 
-**Depends on:** `CLI-008-F1a`; **E5's `DAT-009-3c` and `DAT-009-3d` must be `complete`** at recorded
+**Depends on:** `CLI-010`; **E5's `DAT-009-3c` and `DAT-009-3d` must be `complete`** at recorded
 reviewed revisions (they supply `SupervisorDeps.resolveExportArtifacts` and its composition).
 
 **Current state, measured:** the sequencer exists with zero production callers
@@ -621,8 +644,10 @@ STRONG.** *Corrected eleventh round, verified at source.* `listDir` exists on th
 behind the provider's **private `#transport`** field (`packages/sandbox-e2b-provider/src/e2b-provider.ts`),
 while the worker's `SandboxProvider` port (`packages/worker-daemon/src/supervisor/provider.ts`)
 exposes **no enumeration operation at all** — and neither do the effect authority, the network
-driver or the adapter manager. `F1a` schedules a test and a header note; `F3` schedules producer and
-composition changes; `DAT-009-3e` supplies digest and export only. **Nobody schedules the port.**
+driver or the adapter manager. `CLI-010` schedules a test and a header note; `CLI-012` schedules
+producer and composition changes; `DAT-009-3e` supplies digest and export only. **`CLI-012` now
+owns the port** (see its graph node in `program-design.md`) — ★ *Corrected 2026-09-21 (Codex, PR #526):* this said “Nobody schedules
+the port”, which was true before the post-M0 regroom assigned it.
 
 ★ **So this ticket owes, before it is assignable: a fenced metadata-only enumeration operation on
 the `SandboxProvider` port and its network binding** — or an explicitly named alternative source of
@@ -652,10 +677,31 @@ link 6 to decide what it counts. **This ticket must state which it chose and why
 projection (F5); changing the counter (F6); a Unit-E workspace.
 
 **Files:** create `packages/worker-daemon/src/lease/export-request-producer.ts`; modify
-`packages/worker-daemon/src/index.ts` (barrel); modify the `DAT-009-3d` composition point in
-`packages/worker-daemon/src/lifecycle/dispatch-runtime.ts` to pass the real producer instead of
-nothing; create `packages/worker-daemon/src/__tests__/export-request-producer.test.ts`; append to
-`decisions.md`.
+`packages/worker-daemon/src/index.ts` (barrel); pass the real producer into the composition point **that `DAT-009-3d` builds** in
+`packages/worker-daemon/src/lifecycle/dispatch-runtime.ts`, replacing the "nothing" `DAT-009-3d`
+leaves there — a one-argument change at an existing seam, **not** building the composition, which is
+and stays `DAT-009-3d`'s. ★ *Corrected 2026-09-21 (Codex, PR #526):* Codex read the previous wording as assigning the composition to
+this ticket. It never did; but removing this edit, as suggested, would leave the producer
+unconnected, so the edit stays and its scope is now stated exactly; create `packages/worker-daemon/src/__tests__/export-request-producer.test.ts`; append to
+`decisions.md`. ★ **And the enumeration port** — modify
+`packages/worker-daemon/src/supervisor/provider.ts` (the `SandboxProvider` port gains a fenced,
+metadata-only enumeration operation: paths only, no bytes); modify
+`packages/sandbox-e2b-provider/src/e2b-provider.ts` (implement it over the private
+`#transport.listDir`); modify `packages/provider-wire/src/driver.ts` (the networked-lane binding,
+which has no enumeration today); modify `packages/adapter-manager/src/server.ts` (the matching
+op route **and** its ownership gate — the server answers any op outside `GATE_REQUIRED_OPS` or its
+raw-handler map with `404 operation not available in this slice`, so a driver-only change is
+unreachable on the networked lane); create
+`packages/provider-wire/src/__tests__/driver-enumerate.test.ts` and
+`packages/adapter-manager/src/__tests__/server-enumerate.test.ts`. Enumeration is a
+**single-sandbox owned op**: route it through `gateOwnedOp` like `stage_files` (E7-F011), never a
+keyless raw handler. **Non-goal:** changing the frozen `PROVIDER_OPERATIONS` vocabulary in
+`@armyofagents/worker-protocol` — the export ops `DAT-009-3e` added are wire routes outside it,
+and this one follows the same pattern. ★ *Corrected 2026-09-21 (Codex, PR #526):* the adapter-manager half was missing; this
+section mirrors `DAT-009-3e`'s file list, which includes `server.ts` and a server test for the same
+reason. *Added (Codex, PR #526): the port was assigned to this ticket in
+its graph node but authorized by no file list, so it would have stayed unimplemented. The sequencer
+composition surface stays with `DAT-009-3c`/`3d`, which this ticket already waits on.*
 
 **Interfaces:** `createExportRequestProducer(deps: {capture, outputRoot, kind, contentTypeFor,
 retention}) => (input: {handoff, exec}) => Promise<readonly ArtifactExportRequest[]>` — the exact
@@ -691,15 +737,15 @@ unset and the lifecycle is byte-identical. The flag remains the operational off-
 - RED: no thrown message, returned value, or logged field contains `grant.url`.
 - GREEN: all of the above plus protocol build and worker typecheck/build.
 
-**Evidence / commit:** `tickets/CLI-008-F3-result.md`; one commit
+**Evidence / commit:** `tickets/CLI-012-result.md`; one commit
 `feat(worker-daemon): produce artifact export requests from the sandbox output root`.
 Maps H-04, H-05.
 
 ---
 
-### `CLI-008-F4` — the announcement: `EventSequencer.artifactPrepared` (S, ≤1 agent-day, M1b)
+### `CLI-013` — the announcement: `EventSequencer.artifactPrepared` (S, ≤1 agent-day, M1b)
 
-**Depends on:** `CLI-008-F3` (there is nothing to announce before it).
+**Depends on:** `CLI-012` (there is nothing to announce before it).
 
 **Current state, measured:** `EventSequencer`
 (`packages/worker-daemon/src/supervisor/events.ts`) has emitters for `attemptStarted` (`:170`),
@@ -734,7 +780,7 @@ hand — **not** inside the F3 producer; create
 
 ★★★ **Superseded text: *"modify the F3 producer to emit after a successful commit"*.** *Corrected
 2026-09-20, verified at source — this placed a POST-commit emission inside a PRE-commit component.*
-The F3 producer's own declared interface (above, `CLI-008-F3` §Interfaces) returns
+The F3 producer's own declared interface (above, `CLI-012` §Interfaces) returns
 `Promise<readonly ArtifactExportRequest[]>`: it describes what SHOULD be exported and then returns.
 The commit belongs to the **sequencer**: `createArtifactExportSequencer`
 (`packages/worker-daemon/src/lease/artifact-export.ts:264`) **consumes** those requests as an input
@@ -805,14 +851,14 @@ rejected contract survives: **the test is the instruction.** Write this assertio
 option recorded in `decisions.md`, and keep the contiguity assertion above unconditional — no
 option is allowed to leave a hole in the stream.
 
-**Evidence / commit:** `tickets/CLI-008-F4-result.md`; one commit
+**Evidence / commit:** `tickets/CLI-013-result.md`; one commit
 `feat(worker-daemon): emit artifact_prepared after a fenced commit`.
 
 ---
 
-### `CLI-008-F5` — the projector: make the artifact visible on the task (M, ≤3 agent-days, M1b)
+### `CLI-014` — the projector: make the artifact visible on the task (M, ≤3 agent-days, M1b)
 
-**Depends on:** `CLI-008-F4`.
+**Depends on:** `CLI-013`.
 
 **Current state, measured:** `foldAttemptEvidence` hard-codes `detectedFiles: []`
 (`server/src/services/canary-terminal-projection.ts:256`), and
@@ -1010,14 +1056,14 @@ back. The distributed flag remains the outer off-switch.
   `jobOutputBridge` boundary).
 - GREEN: all of the above plus the wiring checker, server typecheck and server build.
 
-**Evidence / commit:** `tickets/CLI-008-F5-result.md`; one commit
+**Evidence / commit:** `tickets/CLI-014-result.md`; one commit
 `feat(server): project committed artifacts onto the task for distributed runs`.
 
 ---
 
-### `CLI-008-F6` — the judge: clause 6 and the four scanner findings (M, ≤3 agent-days, M1b)
+### `CLI-015` — the judge: clause 6 and the four scanner findings (M, ≤3 agent-days, M1b)
 
-**Depends on:** `CLI-008-F1b`'s **ruling** and `CLI-008-F3`. **This ticket may not be assigned
+**Depends on:** `CLI-011`'s **ruling** and `CLI-012`. **This ticket may not be assigned
 before the ruling**, because round 3 proved that changing the predicate without knowing what
 supplies the output converts a forgeable gate into an unpassable one.
 
@@ -1051,7 +1097,7 @@ ticket must still read it before touching either arm, for the scanner/counter bo
 state.
 
 **Outcome:** clause 6 asserts something both **provable** and **non-forgeable**, given whatever
-`CLI-008-F1b` ruled; and the four scanner/evidence findings are dispositioned with evidence.
+`CLI-011` ruled; and the four scanner/evidence findings are dispositioned with evidence.
 
 | Finding | Disposition this ticket owes |
 |---|---|
@@ -1103,12 +1149,12 @@ must still red under the new predicate; RED — a forged `task_outputs` row must
 clause; RED — the sibling-attempt leak (`E7-F032`) is caught; RED — the two over-matching matchers
 have precision **and** recall cases; GREEN — all of the above plus server typecheck and build.
 
-**Evidence / commit:** `tickets/CLI-008-F6-result.md`; one commit
+**Evidence / commit:** `tickets/CLI-015-result.md`; one commit
 `fix(server): make the E7 capability clause provable and non-forgeable`.
 
 ---
 
-### `CLI-008-C5` — arm the distributed tool surface behind the fence-bound gate (M, ≤2 agent-days, M1b)
+### `CLI-016` — arm the distributed tool surface behind the fence-bound gate (M, ≤2 agent-days, M1b)
 
 **Depends on:** **E5's `DAT-007-S3` `complete`** at a recorded reviewed revision.
 
@@ -1181,7 +1227,7 @@ earlier and this acceptance list was not — the same propagation failure, again
 *(Superseded RED, retained for the record: “the handle is **not** minted”.)*
 measure the flag); GREEN — all three plus server typecheck and build.
 
-**Evidence / commit:** `tickets/CLI-008-C5-result.md`; one commit
+**Evidence / commit:** `tickets/CLI-016-result.md`; one commit
 `feat(server): arm the distributed tool surface for the named internal Organization`.
 Maps H-04, H-05.
 
@@ -1277,19 +1323,19 @@ recorded as net-new, never as "parity passed."
 
 | Code path | Realistic production failure | Ticket / test | Handling / signal |
 |---|---|---|---|
-| Capture | `listDir` returns directories, not files | `CLI-008-F1a` | Binding test fails loudly; no silent empty capture. |
-| Capture | A path escapes the output root | `CLI-008-F1a` | Throws — fail-closed; an artifact must not misrepresent the sandbox. |
-| Producer | Nothing was written by the agent | `CLI-008-F3` | `[]`, zero HTTP calls, zero session fetches; no orphan grant. |
-| Producer | A retry double-commits | `CLI-008-F3` | Same `idempotencyKey`, same derived `artifactId` — a replay. |
-| Producer | Export fails after successful work | `CLI-008-F3` | Best-effort: `emitOp failed`, truthful terminal, attempt **not** failed. |
-| Producer | A grant URL reaches a log or a thrown message | `CLI-008-F3` | Asserted absent — H-04, zero tolerance. |
-| Announcement | The event sink fails | `CLI-008-F4` | ★ **Per F4's recorded contiguity decision — NOT “best-effort”.** The commit is already durable and is never retracted either way, but the emit consumed a `seq`, so a hole makes the control plane reject the tail as a `gap`. Fatal, allocate-on-success, or retry-until-land; the row follows whichever `decisions.md` records. |
-| Announcement | A reconstructed transcript is corrupt | `E7-F024` disposition in `CLI-008-F4` | Recorded: the artifact route carries a reference, not bytes, so it does not inherit the `log` truncation. |
-| Projection | Two mechanisms write `task_outputs` | `CLI-008-F5` | Scoped to `execution_owner = distributed`; the `jobOutputBridge` boundary is stated for M2. |
-| Projection | An empty row is written on every run | `CLI-008-F5` | No events ⇒ no row (anti-vacuity). |
-| Judge | A board POST forges the bar | `CLI-008-F6` (`E7-F015`) | The `capabilityProven` flip is already closed; the clause-4 leak-scan feed is bounded here. |
-| Judge | A retried job's leak reaches a clean verdict | `CLI-008-F6` (`E7-F032`) | Sibling-attempt scan. |
-| Tool surface | A stale/replaced sandbox keeps calling tools | `CLI-008-C5` + E5's `DAT-007-S3` | Denied by the fence-bound resolver with the coarse wrong-tenant forbidden — no oracle. |
+| Capture | `listDir` returns directories, not files | `CLI-010` | Binding test fails loudly; no silent empty capture. |
+| Capture | A path escapes the output root | `CLI-010` | Throws — fail-closed; an artifact must not misrepresent the sandbox. |
+| Producer | Nothing was written by the agent | `CLI-012` | `[]`, zero HTTP calls, zero session fetches; no orphan grant. |
+| Producer | A retry double-commits | `CLI-012` | Same `idempotencyKey`, same derived `artifactId` — a replay. |
+| Producer | Export fails after successful work | `CLI-012` | Best-effort: `emitOp failed`, truthful terminal, attempt **not** failed. |
+| Producer | A grant URL reaches a log or a thrown message | `CLI-012` | Asserted absent — H-04, zero tolerance. |
+| Announcement | The event sink fails | `CLI-013` | ★ **Per F4's recorded contiguity decision — NOT “best-effort”.** The commit is already durable and is never retracted either way, but the emit consumed a `seq`, so a hole makes the control plane reject the tail as a `gap`. Fatal, allocate-on-success, or retry-until-land; the row follows whichever `decisions.md` records. |
+| Announcement | A reconstructed transcript is corrupt | `CLI-013` (addresses `E7-F024`; the finding stays owned by `CLI-008` under D5) | Recorded: the artifact route carries a reference, not bytes, so it does not inherit the `log` truncation. |
+| Projection | Two mechanisms write `task_outputs` | `CLI-014` | **There is one sanctioned writer:** `CLI-014` projects through `jobOutputBridge` inside `acceptEvent`'s transaction, per its corrected contract above; it adds no second writer. ★ *Corrected 2026-09-21 (Codex, PR #526):* *this row said the writers were separated by `execution_owner = distributed` with the `jobOutputBridge` boundary deferred to M2 — the superseded design, which would reintroduce an unreceipted, uncounted duplicate writer.* |
+| Projection | An empty row is written on every run | `CLI-014` | No events ⇒ no row (anti-vacuity). |
+| Judge | A board POST forges the bar | `CLI-015` (addresses `E7-F015`; owned by `CLI-008` under D5) | The `capabilityProven` flip is already closed; the clause-4 leak-scan feed is bounded here. |
+| Judge | A retried job's leak reaches a clean verdict | `CLI-015` (addresses `E7-F032`; owned by `CLI-008` under D5) | Sibling-attempt scan. |
+| Tool surface | A stale/replaced sandbox keeps calling tools | `CLI-016` + E5's `DAT-007-S3` | Denied by the fence-bound resolver with the coarse wrong-tenant forbidden — no oracle. |
 | Tool surface | Armed without the resolver | forbidden by the founder ruling | Not an implementable option. |
 | Gate clause | The register's reference count drifts above `expectedReferences` | `E7-1-JOURNEY-ARM` | ★ *corrected twelfth round: the row said “a boot appears and the register does not notice”, but `gate-clause-wiring.mjs` emits this only when the **source-reference count** exceeds `expectedReferences` and never inspects a deployment — so a boot could not trip it. Promotion rides shipped-boot evidence; this row is the controlled-fixture control.* `unwired_but_now_has_caller` fires; the typed-out count is the tripwire. |
 
@@ -1303,17 +1349,17 @@ content, secret, or session byte.
 | Requirement | Owning evidence |
 |---|---|
 | D0-T01 focused acceptance | Every ticket's result ledger and the reviewer's rerun on the reviewed revision. |
-| D0-T03 validators | `CLI-008-F4`'s digest/sequence assertions; `CLI-008-F6`'s precision-and-recall matcher suite. |
+| D0-T03 validators | `CLI-013`'s digest/sequence assertions; `CLI-015`'s precision-and-recall matcher suite. |
 | D0-T04 protocol ownership | **N/A by measurement, not by assumption** — `artifact_prepared` is already frozen, already payload-schema'd, already in the DB CHECK (E7-D07). `check:frozen-worker-protocol-v1` is in the F4 row. |
-| D0-T05 hermetic inputs | F1a/F3/F4 use an in-memory sandbox and a recording exporter; F5/F6 use embedded PostgreSQL; only `C5` and `E7-1-JOURNEY-ARM` touch a deployment, and neither dispatches a keyed lane without authorization. |
+| D0-T05 hermetic inputs | `CLI-010`/`CLI-012`/`CLI-013` use an in-memory sandbox and a recording exporter; `CLI-014`/`CLI-015` use embedded PostgreSQL; only `CLI-016` and `E7-1-JOURNEY-ARM` touch a deployment, and neither dispatches a keyed lane without authorization. |
 | H-04 secret containment | No grant URL, file content, path content, or credential in any log, metric label, thrown message, or returned value — asserted in F3 and F4. Zero tolerance. |
 | H-05 sandbox boundary | Bytes leave by a direct provider→object-store PUT under a worker-minted grant; the control plane carries grants and references only (E7-D06). |
 | H-06 network boundary | **NOT claimed.** The DE-08 residual is accepted at the managed-shared tier and **none of the three partial gates — `M1-D1-SPINE`, `M1a-D2-MECHANISM`, `M1-D2-CODING` — may mark H-06 passed.** ★ *Corrected 2026-09-20 (fourth round): this said “neither partial gate”, which describes the old two-gate model and left the new mechanism record outside the prohibition entirely.* Metadata/control-plane reachability is recorded as an unresolved provider-boundary risk, not as denied. |
 | H-08 supply chain | No new runtime dependency; the daemon boundary checker stays green. |
 | H-10 evidence integrity | Append-only ticket results; the unit-F design is amended by appended note, never by deletion. |
 | Exit criterion 3 (**`M1a-D2-MECHANISM`**) | `E7-1-JOURNEY-ARM`, with `capabilityProven=false` explicitly acceptable. ★ *Corrected 2026-09-20 (third round): this row said “`M1-D2-CODING`, mechanism verdict”. There is no mechanism half of `M1-D2-CODING` — a QA record has ONE normative `Result`, which is why the companion change made the mechanism verdict its own gate. Recording this ticket under `M1-D2-CODING` would either falsely pass the capability gate or leave `M1a` unpassable.* |
-| **Exit criterion 4 (useful capability — `M1b` only)** | **`CLI-008-F1b` + `F3` + `F4` + `F5` + `F6`, plus E5's `DAT-009-3c/3d`.** This is the only criterion the split moves, and `F1b` is the one link with no design. |
-| Exit criterion 6 (rollback rehearsal) | `CLI-008-C5`'s config-only disablement is part of the rehearsal. |
+| **Exit criterion 4 (useful capability — `M1b` only)** | **`CLI-011` + `CLI-012` + `CLI-013` + `CLI-014` + `CLI-015`, plus E5's `DAT-009-3c/3d`.** This is the only criterion the split moves, and `CLI-011` is the one link with no design. |
+| Exit criterion 6 (rollback rehearsal) | `CLI-016`'s config-only disablement is part of the rehearsal. |
 
 **What no ticket here satisfies:** the E7 **epic** exit gate. `M1-D1-SPINE`, `M1a-D2-MECHANISM` and
 `M1-D2-CODING` are **all three** non-promoting partial gates; a passing milestone handoff changes no epic status and must not use
@@ -1329,11 +1375,19 @@ M0:    the ledger            DONE 2026-09-21 (M0 unit 4) — ids filed, 2 of 10 
 M1a:   E7-1-JOURNEY-ARM          [gated on E6: adapter-manager image in a shipped CI boot
                                   + DEP-011 Slice 5 daemon consumer]
 
-M1b:   CLI-010 ──────▶ CLI-011      ──(founder ruling)──▶ CLI-015
-              │                                              ▲
-              └──▶ CLI-012 ──▶ CLI-013 ──▶ CLI-014 ──────────┘
-                      ▲
-                      └── E5: DAT-009-3c ──▶ DAT-009-3d
+M1b:   CLI-010 ──▶ CLI-012 ──▶ CLI-013 ──▶ CLI-014 ──▶ CLI-015
+                      ▲                                   ▲
+       DAT-009-3c ─▶ 3d                                   │
+                                                          │
+       CLI-011 ──(founder ruling)──▶ emit build [TO FILE] ─┘
+
+       ★ CLI-010 (enumeration seam) and CLI-011 (mechanism review) are INDEPENDENT — neither
+         precedes the other. The emit build has no id until CLI-011 rules. CLI-012's REAL-RUN
+         acceptance also needs the emit build, because a run produces a file only once the agent
+         is told where to write; before that CLI-012 is proven on a fixture sandbox.
+       ★ Corrected 2026-09-21 (post-M0 regroom): the diagram drew CLI-010 ──▶ CLI-011, which
+         followed M0's mislabelling of CLI-010 as "the EMIT half" and let emit work precede the
+         review that chooses its mechanism.
 
        CLI-016        [gated on E5: DAT-007-S3]   — parallel with the F chain
 
@@ -1345,9 +1399,9 @@ OUT OF M1, named so it is not read as dropped:
        Unit E (workspace, XL), codex MX3 (E7-F027), the M2 sink cutover
 ```
 
-`CLI-008-F1b` runs **in parallel** with `F3`/`F4`/`F5` — that is the whole point of the split. The
-four ordinary links are not blocked by the undesigned one; only `F6` is. `C5` shares no file with
-the F chain. Parallel **PRs** are free; only **merges** serialize.
+`CLI-011` runs **in parallel** with `CLI-012`/`CLI-013`/`CLI-014` — that is the whole point of
+the split. The ordinary links are not blocked by the undesigned one; only `CLI-015` is. `CLI-016`
+shares no file with the chain. Parallel **PRs** are free; only **merges** serialize.
 
 ### Commit/evidence boundaries
 
@@ -1370,7 +1424,7 @@ the F chain. Parallel **PRs** are free; only **merges** serialize.
   substantive change: the six links are sized individually and only one of them is unsizable.
 - Every ticket states its **current on-disk state from evidence** before saying what remains, cited
   by symbol and measured at `e710d8b54`. §1 lists five published citations that have drifted.
-- The split is sequenced so it cannot orphan findings: `CLI-008-LEDGER` files the successors and
+- The split is sequenced so it cannot orphan findings: `CLI-009` files the successors and
   re-points ownership **before** anything else, and is explicitly forbidden from creating
   `tickets/CLI-008-result.md` — the `findCompletedTicketIds` hazard that produced `MIG-010`'s
   deadlock and `E5-F001`'s orphaned residual.
@@ -1398,7 +1452,7 @@ the F chain. Parallel **PRs** are free; only **merges** serialize.
      gate rather than sizing it.
   3. Whether a `CLI-008` Unit C slice **result doc** exists anywhere — the E7 `tickets/` directory
      has none. The ruling, the commits and the shipped-inert code are all verifiable; the ledger is
-     not, and `CLI-008-LEDGER` should record that gap rather than this plan asserting its cause.
+     not, and `CLI-009` should record that gap rather than this plan asserting its cause.
 
 ---
 
@@ -1407,15 +1461,15 @@ the F chain. Parallel **PRs** are free; only **merges** serialize.
 Checkbox only after the named outcome is committed and independently reviewed; these tasks do not
 authorize implementation.
 
-- [ ] **T1 (P1 STOP, S)** — `CLI-008-LEDGER`: file the link-scoped successors, re-point the ten
+- [x] **T1 (P1 STOP, S)** — `CLI-009` ★ **ENACTED by M0 unit 4** (numeric successors filed, two findings re-pointed on subject, no result file by design): file the link-scoped successors, re-point the ten
   findings, correct the five drifted citations. Verify: five record guards green after the last
   edit; **`tickets/CLI-008-result.md` does not exist**.
-- [ ] **T2 (P1, S)** — `CLI-008-F1a`: pin the **metadata-only** `listDir` enumeration seam and
+- [ ] **T2 (P1, S)** — `CLI-010`: pin the **metadata-only** `listDir` enumeration seam and
   **fence** the byte-reading one. ★ *Not “export the capture half” — corrected 2026-09-20 (ninth
   round); `captureSandboxEntries` must stay inert on the E2B and networked lanes.* Verify: a
   directory-returning `listDir` fails loudly; no `readFile`/digest in the enumerator's dependency
   surface; boundary check green.
-- [ ] **T3 (P1 STOP, design)** — `CLI-008-F1b`: produce one of the **two** permitted outcomes —
+- [ ] **T3 (P1 STOP, design)** — `CLI-011`: produce one of the **two** permitted outcomes —
   (i) a surviving fourth candidate mechanism, or (iii) a recorded statement that neither is
   reachable — with a decision request. Verify: every candidate is priced against §6 and given a
   positive control. **No product change.** ★ *Superseded text: "one of the three permitted outcomes
@@ -1424,16 +1478,16 @@ authorize implementation.
   `tickets/CLI-008-unit-f-design.md:1367` records the attack as completed and `:1424` records the
   founder ruling "close the fifth option as SUPERSEDED". The paragraph was corrected first and the
   operative lists were not — the same failure T5 records.*
-- [ ] **T4 (P1, M)** — `CLI-008-F3`: the producer, plus the **E7-D08 `kind` decision** recorded in
+- [ ] **T4 (P1, M)** — `CLI-012`: the producer, plus the **E7-D08 `kind` decision** recorded in
   `decisions.md`. Verify: anti-vacuity, replay-not-duplicate, escape refusal, no grant-URL leak.
-- [ ] **T5 (P2, S)** — `CLI-008-F4`: `artifactPrepared`. Verify: frozen schema validates, digest
+- [ ] **T5 (P2, S)** — `CLI-013`: `artifactPrepared`. Verify: frozen schema validates, digest
   verifies, `seq` contiguous (**unconditional**), and **the sink-failure behaviour matches the
   recorded contiguity decision**, frozen-consumer check green. ★ *Was “sink throw harmless” —
   corrected 2026-09-20 (ninth round): two of F4's three permitted options make a sink failure fail
   the attempt, so that checkbox mandated the very best-effort contract F4's Failure behavior
   rejects. This is the third place that one assertion had to be fixed; the paragraph was corrected
   first and the operative lists were not.*
-- [ ] **T6 (P2, M)** — `CLI-008-F5`: the projection, **routed through
+- [ ] **T6 (P2, M)** — `CLI-014`: the projection, **routed through
   `jobOutputBridge.projectAcceptedOutput`** (one writer), with the `jobOutputBridge` boundary stated
   in the register entry's own words. Verify: no events ⇒ no row; non-distributed runs not projected;
   the written row carries its `output_projection` receipt, so `countProducedOutputs` arm 2
@@ -1441,9 +1495,9 @@ authorize implementation.
   flip no counter"; F5 moves the RECEIPT-BACKED OUTPUT counter and leaves only the QUALIFYING
   ARTIFACT counter (arm 1) to link 3 — verified at
   `server/src/services/e7-distributed-run-verifier-store.ts:579-606`.*
-- [ ] **T7 (P1 STOP, M)** — `CLI-008-F6`: the judge, after F1b's ruling. Verify: the forged row no
+- [ ] **T7 (P1 STOP, M)** — `CLI-015`: the judge, after F1b's ruling. Verify: the forged row no
   longer satisfies; the sibling-attempt leak is caught; both matchers have precision and recall.
-- [ ] **T8 (P1, M)** — `CLI-008-C5`: arm the tool surface after `DAT-007-S3`. Verify: an expired
+- [ ] **T8 (P1, M)** — `CLI-016`: arm the tool surface after `DAT-007-S3`. Verify: an expired
   lease observably **loses the surface** — denied redemption and denied `/mcp` access — plus the
   flag-off control. ★★★ **NOT “mints no handle”: a configuration-only ticket cannot deliver a
   mint-time lease check.** *Corrected 2026-09-20 (ninth round), verified at source:*

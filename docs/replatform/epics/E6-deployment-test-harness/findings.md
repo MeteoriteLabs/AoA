@@ -1598,3 +1598,31 @@ but choosing is a gate-owner decision about what this lane asserts, not a repair
 
 **Blocks gate:** no. It does, however, mean a green `cross-platform-weekly` must not be cited as
 cross-platform TEST health until this is resolved.
+
+### Ruling — 2026-09-21, gate owner: **option 3**
+
+Split advisory from verdict-bearing. `verify-cross-platform` and `e2e-cross-platform` become
+**verdict-bearing** (no `continue-on-error`), so the run concludes `failure` when either fails; the
+test shards stay **advisory**. The lane then asserts only what it can assert today, without going red
+on cross-platform test health, which is a larger piece of work tracked separately.
+
+★ **Implementation must also close the install bypass.** ★ *Corrected 2026-09-21 (Codex, PR #526):* the `Install Playwright`
+step in `e2e-cross-platform` is itself `continue-on-error: true`, and the config and e2e steps run
+only `if: steps.install-playwright.outcome == 'success'`. Removing only the job-level flag would
+leave the job **green with no e2e run** whenever the install fails. So an install failure must fail
+the job, either by dropping the step-level flag or by adding an explicit failing step after it. The
+acceptance adds a control for this: a failed install concludes the job `failure`. **Also:** on
+`windows-latest` the e2e step never runs (Issue #114, embedded-postgres), so a green Windows
+`e2e-cross-platform` asserts only setup and build parity, and the finding must say so when it
+resolves.
+
+★ **Status stays `open` until the workflow change lands** — a ruling is not a repair.
+
+★ **Where it takes effect.** This lane's `schedule` trigger runs only from `main`, and the program
+branch reaches `main` only at the program integration checkpoint (`M5`). So a change landed on
+`docs/replatform-program` does not alter the `cross-platform-weekly.yml@main` stream before then. It
+**can** be verified on the program branch by `workflow_dispatch`: the acceptance is a dispatched run
+whose **run** conclusion is `failure` when a verdict-bearing job fails and `success` only when both
+pass — with a positive control that a failing **advisory** shard alone leaves it `success`.
+
+★ Until then the rule above stands: a green run of this lane is not evidence of test health.
