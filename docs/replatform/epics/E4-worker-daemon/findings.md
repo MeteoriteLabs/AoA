@@ -225,7 +225,7 @@ failure is closed: a stale digest makes the worker **unmatchable**, not wrongly 
 
 > **★ RESOLUTION — WRK-013, 2026-09-21** (`tickets/WRK-013-result.md`). The one blocker this entry
 > names is gone. `leaseCandidates` now has a durable local source: the lease-candidate store
-> (`lease/lease-candidate-store.ts`, `openLeaseCandidateStore`), **written on ACK** in the poll loop's
+> (`lease/lease-candidate-store.ts`, `openLeaseCandidateStore`), **written just before the ACK** in the poll loop's
 > `handleOffer` and **pruned** when that handoff settles (`trackHandoff`). `composeDispatchRuntime`
 > builds `createStartupReconciler` over it inside `start()`, and the reconcile **completes before the
 > poll loop starts**. The probe therefore runs over real prior state, not `[]`: a component test

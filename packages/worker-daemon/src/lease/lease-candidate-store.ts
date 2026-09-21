@@ -6,9 +6,11 @@
  * event outbox persists EVENTS, not offers — so the probe ran over `[]` on every boot:
  * a reconciler that reconciled nothing while its gate clause read as satisfied.
  *
- * A row is WRITTEN when a lease is ACKed (the poll loop's `handleOffer`) and PRUNED when
- * that attempt's handoff settles in this process. A row that survives to the next boot
- * is therefore exactly a lease this daemon ACKed and never saw end: a restart candidate.
+ * A row is WRITTEN just BEFORE a lease is ACKed (the poll loop's `handleOffer`), so no crash
+ * can leave an ACKed lease unrecorded. It is withdrawn if the ACK does not succeed, and PRUNED
+ * when that attempt's handoff settles in this process. A row that survives to the next boot
+ * is a lease this daemon ACKed, or crashed while ACKing, and never saw end: a restart
+ * candidate. A never-ACKed row probes dead and is pruned.
  *
  * Keyed PER LEASE (F10): a daemon serving several Organizations holds one row per
  * lease, and pruning one never touches another. The row also carries the lease's
@@ -60,7 +62,7 @@ export class LeaseCandidateStoreCorruptError extends Error {
   }
 }
 
-/** The narrow write surface the poll loop needs (write on ACK, prune on settle). */
+/** The narrow write surface the poll loop needs (write before ACK, prune on settle). */
 export interface LeaseCandidateWriter {
   put(offer: LeaseOfferV1): void;
   remove(leaseId: string): void;

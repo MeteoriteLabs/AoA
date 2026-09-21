@@ -357,7 +357,7 @@ export async function composeDispatchRuntime(deps: ComposeDispatchRuntimeDeps): 
     backoff: deps.backoff,
     metrics: deps.metrics,
     logger: deps.logger,
-    // WRK-013 — write on ACK, prune when the handoff settles.
+    // WRK-013 — write before the ACK, withdraw if it fails, prune when the handoff settles.
     leaseCandidates: candidateStore ?? undefined,
   });
 

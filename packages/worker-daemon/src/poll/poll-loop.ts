@@ -453,9 +453,10 @@ export interface PollLoopDeps {
   readonly rng?: () => number;
   readonly randomness?: OperationRandomness;
   /**
-   * WRK-013 — the durable lease-candidate store. When present, an ACKed offer is WRITTEN
-   * before it is handed off and PRUNED when that handoff settles, so a lease that survives
-   * in the store at the next boot is exactly one this daemon ACKed and never saw end.
+   * WRK-013 — the durable lease-candidate store. When present, an offer is WRITTEN before it
+   * is ACKed, WITHDRAWN if the ACK does not succeed, and PRUNED when its handoff settles. A
+   * lease that survives in the store at the next boot is therefore one this daemon ACKed (or
+   * crashed while ACKing) and never saw end.
    * Absent = no candidates are recorded (the pre-WRK-013 behaviour). A store fault never
    * fails the lease: it is logged by name and that lease is left to the control-plane
    * reaper — the daemon simply cannot probe what it never recorded.
@@ -575,6 +576,13 @@ export function createPollLoop(deps: PollLoopDeps): PollLoopController {
       return { kind: "continue" };
     }
 
+    // WRK-013 — WRITE BEFORE ACK. The candidate is durable before the control plane can count
+    // the lease as acknowledged, so there is no crash window in which the server holds an ACKed
+    // lease that the store does not name. If the ACK does not succeed the row is removed below.
+    // A crash between this write and the ACK leaves a row for a lease that was never ACKed: the
+    // next boot's probe finds it dead (the renew is refused) and prunes it, which is harmless.
+    recordCandidate("put", offer);
+
     const ack = await ackLease({
       client: deps.client,
       session,
@@ -585,15 +593,18 @@ export function createPollLoop(deps: PollLoopDeps): PollLoopController {
 
     if (ack.kind === "acknowledged") {
       emitAck("acknowledged");
-      // WRK-013 — WRITE ON ACK, before the handoff: from here until the handoff settles this
-      // lease is one a restart must account for.
-      recordCandidate("put", offer);
+      // WRK-013 — the candidate was written before the ACK. From here until the handoff settles,
+      // this lease is one a restart must account for.
       trackHandoff(offer, workloadClass);
       emitPoll("handed_off");
       return { kind: "continue" };
     }
-    // Every non-ack path releases the slot it just took.
+    // Every non-ack path releases the slot it just took, and withdraws the candidate written before
+    // the ACK. ★ A TRANSIENT outcome is ambiguous (the server may have recorded the ACK before the
+    // response was lost). Withdrawing it then means a restart will not probe that lease, and the
+    // control-plane reaper ends it. That is the pre-WRK-013 behaviour and it renews nothing.
     deps.limiter.release(workloadClass);
+    recordCandidate("remove", offer);
     if (ack.kind === "rejected") {
       emitAck("rejected");
       return { kind: "backoff", retryAfterMs: null };

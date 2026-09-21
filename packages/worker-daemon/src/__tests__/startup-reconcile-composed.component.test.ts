@@ -25,6 +25,9 @@
 //   7  positive control: no write-on-ACK ⇒ case 1's probe never happens — "★ 7"
 //   8  two Organizations' leases on one daemon are stored, probed and fenced independently,
 //      each probe carrying ITS OWN lease identity (F10)  — "★ 8"
+//   9  (Codex review, PR #553) the candidate is written BEFORE the ACK: a crash after the server
+//      recorded the ACK but before the worker read the response still leaves it; an ACK the
+//      server refused withdraws it                         — "★ 9"
 // -----------------------------------------------------------------------------
 
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -129,6 +132,8 @@ interface LifetimeOptions {
   /** Records THIS lifetime's own control-plane calls, in call order (lifetime A's lingering
    * requests can never interleave into it — the ordering proof for ★ 5). */
   readonly callLog?: string[];
+  /** Wrap the shared client (models a lost ACK response). */
+  readonly clientWrap?: (base: ControlPlaneClient) => ControlPlaneClient;
   readonly provider?: SandboxProvider;
   readonly makeRunProvider?: () => SandboxProvider;
   readonly withStore?: boolean;
@@ -157,7 +162,7 @@ async function lifetime(opts: LifetimeOptions = {}): Promise<DispatchRuntime> {
     self,
     key: worker.key,
     store,
-    client: opts.callLog ? recordingClient(opts.callLog) : worker.client,
+    client: opts.clientWrap ? opts.clientWrap(worker.client) : opts.callLog ? recordingClient(opts.callLog) : worker.client,
     eventOutboxPath: outboxPath(),
     leaseCandidatePath: opts.withStore === false ? undefined : candidatePath(),
     concurrency: { batch: opts.batch ?? 1, browser: 0, service: 0 },
@@ -213,9 +218,8 @@ async function ackThenCrash(offers: readonly Record<string, unknown>[], opts: Li
   await a.start();
   const acked = await settle(() => offers.every((o) => fake.ackCountFor(String(o.leaseId)) === 1));
   expect(acked).toBe(true);
-  // The plane records the ACK BEFORE the worker reads the response; the write-on-ACK happens after.
-  // Crash only once every run has reached `create` (downstream of the write), or the test would
-  // model a crash BETWEEN the ACK and the write — a real window, but not the case under test.
+  // Crash only once every run has reached `create`, so each run is mid-flight (not merely ACKed)
+  // when the process dies. The write itself precedes the ACK (★ 9 proves that window).
   expect(await settle(() => provider.callCount("create") === offers.length)).toBe(true);
   crash(a);
   await quiesce();
@@ -452,5 +456,51 @@ describe("WRK-013 — a restart reconciles the leases it held (composed, in-proc
     expect(byReason(LEASE_CANDIDATE_REASONS.fenced)).toEqual([[LEASE_X, ORG_X]]);
     expect(byReason(LEASE_CANDIDATE_REASONS.ended)).toEqual([[LEASE_Y, ORG_Y]]);
     expect((b.loopSupervisorSeam as LeaseRenewalDriver).activeRenewalCount()).toBe(0);
+  });
+
+  it("★ 9 — the candidate is written BEFORE the ACK: a crash after the server recorded the ACK, before the worker read it, is still probed", async () => {
+    fake.enqueuePoll({ kind: "offer", offer: offerFor(ORG_X, LEASE_X, JOB_X, FENCE_X) });
+    // The ACK reaches the control plane and is recorded there; the worker never sees the response.
+    const lostResponse = (base: ControlPlaneClient): ControlPlaneClient => ({
+      ...base,
+      leaseAck: async (...args: Parameters<ControlPlaneClient["leaseAck"]>) => {
+        await base.leaseAck(...args);
+        return new Promise<never>(() => {});
+      },
+    });
+    const a = await lifetime({ clientWrap: lostResponse });
+    await a.start();
+    expect(await settle(() => fake.ackCountFor(LEASE_X) === 1)).toBe(true);
+    crash(a);
+    await quiesce();
+    fake.seedLeaseAuthority(LEASE_X, { live: true });
+
+    const lines: LogLine[] = [];
+    const b = await lifetime({ logger: recordingLogger(lines) });
+    await b.start();
+    expect(renewRequestsFor(LEASE_X)).toHaveLength(1);
+    expect(lines.some((l) => l.bindings.reason === LEASE_CANDIDATE_REASONS.fenced && l.bindings.leaseId === LEASE_X)).toBe(true);
+  });
+
+  it("★ 9 — an ACK the control plane REFUSED withdraws the candidate: the restart probes nothing", async () => {
+    fake.enqueueAck({ kind: "rejected", reason: "stale_fence" });
+    fake.enqueuePoll({ kind: "offer", offer: offerFor(ORG_X, LEASE_X, JOB_X, FENCE_X) });
+    const a = await lifetime({});
+    await a.start();
+    // A poll AFTER the refused ACK means handleOffer returned, so the withdrawal has run.
+    const polledAfterAck = () => {
+      const i = fake.requests.findIndex((r) => r.url.endsWith(`/leases/${LEASE_X}/ack`));
+      return i >= 0 && fake.requests.slice(i + 1).some((r) => r.url.endsWith("/api/worker-control/poll"));
+    };
+    expect(await settle(polledAfterAck)).toBe(true);
+    crash(a);
+    await quiesce();
+    fake.seedLeaseAuthority(LEASE_X, { live: true });
+
+    const lines: LogLine[] = [];
+    const b = await lifetime({ logger: recordingLogger(lines) });
+    await b.start();
+    expect(renewRequestsFor(LEASE_X)).toHaveLength(0);
+    expect(reasonsIn(lines)).toContain(LEASE_CANDIDATE_REASONS.empty);
   });
 });
