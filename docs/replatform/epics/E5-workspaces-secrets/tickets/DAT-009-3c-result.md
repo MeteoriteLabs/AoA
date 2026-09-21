@@ -7,7 +7,7 @@
 **Decision:** [`decisions.md`](../decisions.md) **E5-D07**, `accepted` (planning session, founder delegation F2)
 **Implementer:** `DAT-009-3c build session (Claude Opus 5)`
 **Start SHA:** `28a2dd259` (`docs/replatform-program` tip)
-**Reviewed revision (the code commit):** `79961c97c46dda930c7f7ceda6c6ee6175fead6a`
+**Reviewed revision (the code commits):** `79961c97c46dda930c7f7ceda6c6ee6175fead6a` (the hook) + `f5e2aff1f466cd6ecebc9eaa74313e8251ef93fc` (the Codex latch fix); the tree under review is `f5e2aff1f`
 
 The implementer leaves `Status` at `gate_review`. Only a distinct reviewer may change it to
 `complete`.
@@ -28,7 +28,9 @@ The implementer leaves `Status` at `gate_review`. Only a distinct reviewer may c
     withdrawn, the producer is not called (`authority_withdrawn`).
   - **Per-run exporter:** closed over this run's `sandboxId`, and it reads `run.effect` **at call
     time**, so withdrawal refuses inside `EffectAuthority`.
-  - **Window latch:** closes the exporter when the window ends.
+  - **Window latch:** closes the exporter when the window ends. It is checked before **and after**
+    each awaited provider call (Codex, PR #549): a late digest mints nothing, and a late upload is
+    never committed. The uncommitted object is left to the orphan sweep.
   - **Metrics:** `digest_artifact` is emitted per digest call. `export_artifact` is emitted
     **exactly once per window** (`success` / `failed` / `timed_out`).
   - **Logs** carry `{leaseId, resourceLabelsHash, stage, reason, exported}` only. They never include
@@ -60,11 +62,11 @@ The implementer leaves `Status` at `gate_review`. Only a distinct reviewer may c
   no-path), M3 (sequencer-without-producer), M6 (no-path) and M12 (Ruling B). Hook-absent pins
   byte-identity when neither dep is set, and no mutant targets it.
 
-**GREEN** at `79961c97c`:
+**GREEN** at `f5e2aff1f` (21 cases after the Codex fix):
 - The task's verify command (the protocol build, then `vitest run` on
   `supervisor-export-artifacts` + `artifact-export-sequencer` + `supervisor-happy.component`) gives
   **3 files, 50 passed**.
-- The full worker-daemon suite gives **159 files, 1068 passed, 1 skipped**. The worker-daemon typecheck
+- The full worker-daemon suite gives **159 files, 1070 passed, 1 skipped**. The worker-daemon typecheck
   and build exit 0.
 - `check-worker-daemon-boundary` gives PASS, and `check:frozen-worker-protocol-v1` gives OK.
 - The full `pr.yml` guard set plus `check-evidence-immutability`: **0 failures**.
@@ -86,7 +88,11 @@ The implementer leaves `Status` at `gate_review`. Only a distinct reviewer may c
 | M11 | no withdrawn-at-open check | 1 red | authority withdrawn at open |
 | M12 | cancelled-while-executing also opens the window | 1 red | Ruling B (only the normal terminal exports) |
 
-**12 of 12 killed.** ★ M12 first **survived** (19/19 green). The Ruling B case asserted only that the
+| M13 | no latch re-check after the digest await | 1 red | late digest mints no grant |
+| M14 | no latch re-check after the export await | 1 red | late upload is never committed |
+
+**14 of 14 killed.** M13 and M14 were added for the Codex P1 finding on `98428225b`: the latch was
+checked only before each await. They were run against `f5e2aff1f`. ★ M12 first **survived** (19/19 green). The Ruling B case asserted only that the
 producer was not called, and a window opened after a cancel refuses at the withdrawn-authority check
 without calling the producer. The case now also asserts that **no** `export_artifact` outcome is
 emitted, and M12 goes red. This is recorded because a case that survives its own mutant was a check
