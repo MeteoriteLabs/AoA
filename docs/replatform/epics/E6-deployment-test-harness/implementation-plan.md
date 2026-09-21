@@ -1028,6 +1028,17 @@ rollout policy, runs the journey, and runs `pnpm verify:e7-1-distributed-run` on
 5. Keyed spend happens only inside the F8 envelope, on a named candidate.
 6. **Multi-tenant (F10):** the boot seeds two enabled Organizations and one control Organization;
    the journey runs for each enabled tenant; the control tenant's run stays on the legacy path.
+   ★ *Made explicit at M1 Step 0 (S0-8):* the seeding **is** `AOA_DISTRIBUTED_EXECUTION_ROLLOUT`
+   (`DISTRIBUTED_EXECUTION_ROLLOUT_ENV`, `server/src/config/distributed-execution-rollout-source.ts`)
+   on the control-plane service, naming the two enabled Organizations in `organizations` and
+   **omitting** the control Organization (absent from the map = `off`). Neither
+   `docker-compose.staging.yml` nor `docker-compose.d1.yml` sets it today (both set only
+   `AOA_DISTRIBUTED_EXECUTION_ENABLED`; verified), so the overlay or the job must.
+7. **Crew switch off.** *Added at S0-8 (F2 delegation):* the boot asserts
+   `AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED` is unset or false on every control-plane service — it is
+   deployment-wide (`readDistributedCrewRolloutFlag`, `server/src/config/distributed-execution.ts`),
+   so on it would arm crew for both enabled tenants at once — and records the assertion in the
+   retained evidence, matching the M1 plan's §6 freeze checklist.
 
 **Ticket non-goals:** the operator campaign deploy (unchanged); mTLS worker→adapter-manager (M1 plan
 §8, a named residual); promoting `E7-1-coding-journey` (that is `E7-1-JOURNEY-ARM`, which consumes
@@ -1090,13 +1101,24 @@ from, including the rollback rehearsal through the `MIG-009` CLI.
 4. **Multi-tenant (F10):** three Organizations — two enabled, one control; the journey, audit and
    `cost_events` attribution are asserted **per enabled tenant**; the control tenant is refused
    distributed execution and stays on the legacy path.
+   ★ *Added at M1 Step 0 (S0-8), verified at source:* `docker-compose.d1.yml` sets
+   `AOA_DISTRIBUTED_EXECUTION_ENABLED: "true"` on both control-plane replicas and **no
+   `AOA_DISTRIBUTED_EXECUTION_ROLLOUT`**, so as shipped every Organization resolves to `off` and the
+   profile would run nothing distributed. The profile must set `AOA_DISTRIBUTED_EXECUTION_ROLLOUT`
+   (`DISTRIBUTED_EXECUTION_ROLLOUT_ENV`, parsed by `parseDistributedExecutionRolloutMap`) on **both**
+   replicas, identically, with the two enabled Organizations in `organizations` and the control
+   Organization **absent**; the retained bundle records its digest.
+5. **Crew switch off.** *Added at S0-8:* the profile asserts `AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED`
+   is unset or false on both replicas (deployment-wide, per the M1 plan §6 freeze checklist) and
+   records it in the retained bundle.
 
 **Ticket non-goals:** the fault matrix (`DEP-018`); real E2B; changing the `foundation`/`bounded`
 scopes.
 
 **Files:** `docker/d1/campaign.env` and `.github/workflows/d1-merge-train.yml` (the `m1-spine`
 scope and on-pass retention); `docker-compose.d1.yml` (one-worker topology, via profile or
-override); **create** a canned-usage fixture under `tests/fixtures/distributed-execution/`;
+override, **and the `AOA_DISTRIBUTED_EXECUTION_ROLLOUT` tenant set on both control-plane replicas**
+— added S0-8); **create** a canned-usage fixture under `tests/fixtures/distributed-execution/`;
 **create** `tests/d1/m1-spine.test.mjs` (declared in `scripts/test-execution-census.json`);
 `tests/d1/lib/e6f-harness.mjs` for shared helpers; `scripts/collect-d1-evidence.mjs` if on-pass
 collection needs it.
@@ -1152,8 +1174,17 @@ to include — if left out, the record says so; a DE-08 amendment; non-distribut
 **Files:** **create** the probe (a small script staged into the sandbox, under
 `packages/worker-daemon/src/` or `tests/fixtures/distributed-execution/`, decided and recorded);
 **create** its unit test; the campaign profiles that invoke it (`DEP-016`'s `tests/d1/m1-spine.test.mjs`
-and the `DEP-015` lane); `scripts/test-execution-census.json`; an ownership update for `E8-F012` in
-`scripts/finding-ownership.json` narrowed to the M1 path, with its reason.
+and the `DEP-015` lane); `scripts/test-execution-census.json`; `scripts/finding-ownership.json` —
+**`E8-F012` stays `unowned`**; this ticket only **amends that entry's `reason`** to record that
+`DEP-017` covers the M1 distributed stage-in path only, and that the other stage-in paths (Commander,
+U13 extraction, warm resume, and the non-distributed org/crew paths) and the metadata-endpoint half
+remain without an owner. `DEP-017` does **not** take ownership, partial or otherwise.
+★ *Amended 2026-09-21 at M1 Step 0 (S0-8), a planning-session decision under founder delegation
+(ruling F2). Verified at source: the manifest has no partial ownership —
+`FINDING_OWNERSHIP_STATUSES` in `scripts/lib/finding-ownership.mjs` is exactly `owned`, `unowned`,
+`accepted`, and `owned` means *"a ticket owns this finding"* — the whole finding, with no field for a part of it. Superseded text: "an
+ownership update for `E8-F012` in `scripts/finding-ownership.json` narrowed to the M1 path, with its
+reason."*
 
 **Interfaces:** the probe's report: `{checked: string[], present: string[]}` of class names.
 
@@ -1204,6 +1235,25 @@ injects each case:
 3. The control tenant is refused distributed execution and stays on the legacy path.
 4. The checker reds on an undeclared case, a case with no injection evidence, or a profile missing
    the tenant matrix (its own positive controls).
+5. ★★★ **Legacy rows the distributed path writes or reads are tested DIRECTLY — `cost_events`,
+   `activity_log`, `task_outputs` and `provider_credentials`.** *Added 2026-09-21 at M1 Step 0
+   (S0-8), from the E0–E2 delta review
+   (`docs/replatform/milestones/M1a/2026-09-21-e0-e2-delta-review-b71f0dd539fe.md` §4, "F10
+   consequence"); a planning-session decision under founder delegation (ruling F2) carrying ruling
+   F10.* Per **E2-D03** (`docs/replatform/epics/E2-tenant-kernel/decisions.md`, **locked** — not
+   relitigated here), legacy `companyId` tables are granted to the non-owner role and carry **no
+   RLS**; E2-D10 bounds those grants, and `JOB_CONTROL_LEGACY_GRANTS`
+   (`server/src/db/job-control-legacy-grants.ts`) gives `aoa_app` `SELECT`/`INSERT` on `cost_events`
+   and `activity_log`, `SELECT`/`INSERT`/`UPDATE` on `task_outputs`, and `SELECT` on
+   `provider_credentials` (verified at source). So acceptance 2's *"denied … with RLS"* **cannot
+   hold** for these four: isolation rests on **query predicates**, and E2's RLS evidence must not be
+   cited for them. For each table, B's row is planted and A's request goes through the **production
+   query path the distributed path uses** (the bridge, service or route that reads or writes it, not
+   a hand-written test query); the result is **denied or filtered** — B's row absent from what A
+   reads, and A's write never lands on B's Company. Each has a **same-tenant positive control** (the
+   owning tenant's identical request returns or writes the row), and an **anti-vacuity control**: the
+   same read with the tenant predicate removed does return B's row, so an empty result is shown to be
+   the filter's work, not an empty table.
 
 **Ticket non-goals:** HA/replica failover (M4); load/fairness (REL-002); desktop or browser faults.
 
@@ -1226,7 +1276,8 @@ retained bundle.
 **Focused verify command:** see the `DEP-018` row in §3.
 
 **RED → GREEN:** RED — the checker's positive controls; RED — each cross-tenant denial against a
-deliberately unscoped fixture read; GREEN — every case fired and classified on the candidate, per
+deliberately unscoped fixture read; RED — for each of the four legacy tables of acceptance 5, the
+predicate-removed read returns B's row (added S0-8); GREEN — every case fired and classified on the candidate, per
 profile.
 
 **Evidence / commit:** `tickets/DEP-018-result.md` citing the jobs; commits

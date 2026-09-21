@@ -521,10 +521,24 @@ the committed revision `HEAD` (`:353-354`). Two consequences, both fatal to the 
   Commit, as the **base**, `docs/replatform/artifact-policy.md` (the ledger charter the guard uses to
   tell a ledger-bearing base from a pre-ledger one, `:110-112`, `:241`) plus a copy of the a1 record;
   capture `BASE=$(git rev-parse HEAD)`. Commit, as the **candidate**, a mutation of that a1 copy;
-  capture `CAND=$(git rev-parse HEAD)`. Then run the guard with **both revisions explicit and its
-  repo root pointed at the fixture**:
-  `node <this-repo>/scripts/check-evidence-immutability.mjs --base "$BASE" --candidate "$CAND"`.
-  It must exit non-zero and name the mutated record. Delete the fixture. Record both fixture SHAs and
+  capture `CAND=$(git rev-parse HEAD)`. Then **copy the guard and its one import
+  (`scripts/check-evidence-immutability.mjs` and `scripts/check-distributed-execution-foundation.mjs`)
+  untracked into the fixture's own `scripts/`**, and run that copy **from the fixture root**, with
+  both revisions explicit:
+  `node scripts/check-evidence-immutability.mjs --base "$BASE" --candidate "$CAND"`.
+  It must exit non-zero and name the mutated record. Also run the fixture control, `--base "$BASE"
+  --candidate "$BASE"`, which must exit `0`, so the RED is shown to come from the mutation and not
+  the fixture. Delete the fixture.
+  ★★★ *Corrected 2026-09-21 at M1 Step 0 (S0-8), verified at source — the literal command gave a
+  FALSE RED.* The guard has **no repo-root flag**: `runEvidenceImmutability` uses
+  `input.repoRoot ?? REPO_ROOT`, and `REPO_ROOT` is the script's own parent directory
+  (`path.resolve(fileURLToPath(new URL("..", import.meta.url)))`). Run from this repository's path it
+  reads **this** repository, cannot find the fixture's `$BASE`, and exits `1` with
+  `cannot read the base revision … not a tree object` — a red for the wrong reason, a check that never
+  evaluated the mutation. This is the form `tickets/E5-A2-MATRIX-result.md` actually used (§Commands;
+  §Deviations records the false RED, observed exit `1`). *Superseded text: "Then run the guard with
+  **both revisions explicit and its repo root pointed at the fixture**:
+  `node <this-repo>/scripts/check-evidence-immutability.mjs --base "$BASE" --candidate "$CAND"`."* Record both fixture SHAs and
   the guard's verbatim message in `tickets/E5-A2-MATRIX-result.md` — that record, not a mutation of
   the real ledger, is the positive control's evidence.
 - **GREEN — against the UNTOUCHED candidate.**
@@ -637,6 +651,32 @@ would exercise:**
 6. **`signedRunId` vs the header-overridable `req.actor.runId`.** The distinction is load-bearing
    (`server/src/middleware/auth.ts:363`) and unpinned by the integration suite.
 
+★★★ **Step 0 of this ticket — MEASURE which pool the resolver reads through (ruling F10).** *Added
+2026-09-21 at M1 Step 0 (S0-8), from the E0–E2 delta review
+(`docs/replatform/milestones/M1a/2026-09-21-e0-e2-delta-review-b71f0dd539fe.md`), a planning-session
+decision under founder delegation (ruling F2).* `mcpServerRoutes(db)` (`server/src/mcp/server.ts`)
+builds the resolver as `createDistributedRunCurrencyResolver(db)` over whatever `db` `createApp`
+passes it (`server/src/app.ts`, `api.use(mcpServerRoutes(db))`). Before writing case 3, the ticket
+**measures, on the candidate's flag-on configuration**, whether that pool is **RLS-subject**
+(`aoa_app`, `NOSUPERUSER NOBYPASSRLS`) or the **owner** pool — e.g. `select current_user, rolsuper,
+rolbypassrls from pg_roles where rolname = current_user` through the same `db` handle at boot (a
+superuser bypasses RLS even with `rolbypassrls` false) — and
+records the answer in the result doc. *Reading at source points to the owner pool:* the flag-on block
+of `server/src/index.ts` calls `assertPrimaryDbBypassesRls(db)` and its comment says the resolver
+*"reads FORCE-RLS'd leases/job_attempts on this primary owner pool"*; the resolver itself opens no
+`runInTenant`. That reading is a hint, not the measurement.
+- **If the owner pool (expected):** RLS plays **no** part in the wrong-company denial. Read at
+  source, the resolver's query filters only on the signed run id (`where(eq(heartbeatRuns.id,
+  signedRunId))`); its `eq(jobAttempts.companyId, heartbeatRuns.companyId)` join term binds the
+  attempt to the **run's own** Company, not to the caller's. The comparison against the caller's
+  Company is `classifyRunCurrency`'s `runCompanyId !== companyId → deny`
+  (`server/src/mcp/distributed-run-currency.ts`), fed `heartbeat_runs.company_id`. Case 3 must
+  then **prove that directly**: a run seeded under Company B, resolved with `companyId` = A, denies
+  with the coarse forbidden; a same-company positive control admits; and a **mutant that drops the
+  company comparison** reds. E2's RLS evidence may not be cited for this case.
+- **If RLS-subject:** record it, and case 3 still asserts the deny directly (the predicate and RLS
+  are then both in play, and the result doc says which one the test isolates).
+
 **Forced RLS is a DELIBERATE non-goal of that suite — do not record it as covered, and do not record
 its absence as "no real-PG coverage".** The suite seeds and reads as the embedded-pg initdb
 **superuser**, which bypasses even FORCE'd RLS, and states the rationale itself at
@@ -729,6 +769,7 @@ against embedded PostgreSQL with forced RLS — absent today."*
 - RED: a replaced `targetGeneration` denies — genuinely absent.
 - RED: a revoked/disabled execution target denies — genuinely absent.
 - RED: a wrong-company run denies with the **same coarse forbidden** as wrong-tenant — genuinely absent.
+  If Step 0 measures the owner pool, the mutant dropping the company comparison must also red (S0-8).
 - RED: a **Tier-3** resolver throw (a real DB error inside the real resolver) propagates → deny; the
   catch-and-admit mutant must red — genuinely absent **at Tier-3**. The Tier-1 route-level throw case
   already exists and passes (`server/src/__tests__/mcp-run-currency-gate.test.ts`, "flag ON + resolver

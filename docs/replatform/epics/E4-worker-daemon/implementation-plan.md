@@ -1054,8 +1054,16 @@ The two rulings bind the behaviour:
 4. An empty store boots with a **named reason** in the log, never a silent skip; so does a
    platform-scoped target.
 5. The reconciler completes **before the first poll** (an ordering assertion, not a sleep).
-6. A corrupt or unreadable store fails closed with a named reason and does not block the daemon from
-   starting to poll afterwards (the server reaper remains the safety net).
+6. A corrupt or unreadable store: **what is closed is renewal** — the daemon issues **no renewal
+   (no `lease_renew`, including the probe's) for any lease it cannot account for**, i.e. any lease
+   the store would have named; it **logs a named reason** (distinct from the empty-store reason of
+   case 4) and **still starts polling**. Boot is not blocked, and the control-plane reaper ends any
+   attempt the daemon held before the crash. Asserted against the in-process control-plane double:
+   zero `lease_renew` for a pre-crash lease, the named reason logged, and the first poll issued.
+   ★ *Clarified 2026-09-21 at M1 Step 0 (S0-8), a planning-session decision under founder delegation
+   (ruling F2): "fails closed" beside "starts to poll" did not say what was closed. Superseded text:
+   "A corrupt or unreadable store fails closed with a named reason and does not block the daemon from
+   starting to poll afterwards (the server reaper remains the safety net)."*
 7. **Positive control:** removing the write-on-ACK makes case 1 red.
 8. **Multi-tenant (F10):** two leases from two Organizations on one daemon are stored, probed and
    fenced independently; a candidate's probe uses that lease's own identity and never another's.
