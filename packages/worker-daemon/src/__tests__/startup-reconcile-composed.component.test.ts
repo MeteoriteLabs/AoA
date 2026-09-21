@@ -28,6 +28,7 @@
 //   9  (Codex review, PR #553) the candidate is written BEFORE the ACK: a crash after the server
 //      recorded the ACK but before the worker read the response still leaves it; an ACK the
 //      server refused withdraws it                         — "★ 9"
+//  10  (Codex review, PR #553) a candidate write that FAILS is never followed by an ACK — "★ 10"
 // -----------------------------------------------------------------------------
 
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -39,7 +40,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { composeDispatchRuntime, type DispatchRuntime } from "../lifecycle/dispatch-runtime.js";
 import { SessionStore } from "../identity/session.js";
 import type { LeaseRenewalDriver } from "../lease/lease-renewal.js";
-import { LEASE_CANDIDATE_REASONS } from "../lease/lease-candidate-store.js";
+import { LEASE_CANDIDATE_REASONS, openLeaseCandidateStore } from "../lease/lease-candidate-store.js";
 import { SANDBOX_PASS_SKIP_REASONS } from "../supervisor/startup-reconcile.js";
 import type { OwnershipSelector, SandboxProvider } from "../supervisor/provider.js";
 import type { Logger } from "../logging/logger.js";
@@ -134,6 +135,8 @@ interface LifetimeOptions {
   readonly callLog?: string[];
   /** Wrap the shared client (models a lost ACK response). */
   readonly clientWrap?: (base: ControlPlaneClient) => ControlPlaneClient;
+  /** Replace the store opener (models a store whose writes fail). */
+  readonly openLeaseCandidates?: Parameters<typeof composeDispatchRuntime>[0]["openLeaseCandidates"];
   readonly provider?: SandboxProvider;
   readonly makeRunProvider?: () => SandboxProvider;
   readonly withStore?: boolean;
@@ -170,6 +173,7 @@ async function lifetime(opts: LifetimeOptions = {}): Promise<DispatchRuntime> {
     workDir,
     probes: fixtureProbes(),
     logger: opts.logger,
+    openLeaseCandidates: opts.openLeaseCandidates,
   });
   live.push(rt);
   return rt;
@@ -502,5 +506,26 @@ describe("WRK-013 — a restart reconciles the leases it held (composed, in-proc
     await b.start();
     expect(renewRequestsFor(LEASE_X)).toHaveLength(0);
     expect(reasonsIn(lines)).toContain(LEASE_CANDIDATE_REASONS.empty);
+  });
+
+  it("★ 10 — a candidate write that FAILS is never followed by an ACK (the offer is dropped, polling continues)", async () => {
+    fake.enqueuePoll({ kind: "offer", offer: offerFor(ORG_X, LEASE_X, JOB_X, FENCE_X) });
+    const lines: LogLine[] = [];
+    const failingPuts = async (o: { path: string }) => {
+      const real = await openLeaseCandidateStore(o);
+      return Object.assign(real, {
+        put: () => {
+          throw new Error("disk full");
+        },
+      });
+    };
+    const a = await lifetime({ logger: recordingLogger(lines), openLeaseCandidates: failingPuts as never });
+    const pollsBefore = fake.pollCount();
+    await a.start();
+    // The loop keeps polling after the refused write (it backs off, it does not stop) ...
+    expect(await settle(() => fake.pollCount() >= pollsBefore + 3)).toBe(true);
+    // ... and the lease was NEVER acknowledged to the control plane.
+    expect(fake.requests.some((r) => r.url.endsWith(`/leases/${LEASE_X}/ack`))).toBe(false);
+    expect(lines.some((l) => l.bindings.reason === LEASE_CANDIDATE_REASONS.writeFailed && l.bindings.op === "put")).toBe(true);
   });
 });

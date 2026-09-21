@@ -122,6 +122,7 @@ write-on-ACK, never from a test `put()`.
 | 7 | positive control: removing write-on-ACK reds case 1 | Mutation **M1** below (5 cases red). In-suite control ★ 7: lifetime A without a store, so B probes nothing and says `empty`. Also ★ 7: no path configured logs `lease_candidate_store_not_configured` |
 | 8 | two Organizations, independent | ★ 8: A ACKs one lease for Organization X and one for Y. At restart, X is live and Y is dead. Each is probed **once**, with **only its own** job and fence. X is fenced and Y ended, each attributed to its own Organization, and the driver holds neither. Store unit: pruning X leaves Y |
 | 9 | *(Codex P2)* no crash window between ACK and write | ★ 9 ×2: the ACK reaches the plane and the worker never reads the response, then crashes, and the restart still probes and fences the lease. A **refused** ACK withdraws the candidate, so the restart probes nothing |
+| 10 | *(Codex P1)* a failed write is never followed by an ACK | ★ 10: a store whose `put` throws means **no** ACK request reaches the plane for that lease, `lease_candidate_write_failed` (`op: put`) is logged, and polling continues |
 
 ### Mutation and positive-control table (each mutation reverted afterwards; focused command, 65 tests)
 
@@ -141,6 +142,7 @@ write-on-ACK, never from a test `put()`.
 | M12 | start polling even if a shutdown began during the reconcile | 1: the `dispatch-runtime` shutdown-during-reconcile test |
 | M13 | write the candidate **after** the ACK (the Codex P2 window) | 1: ★ 9 (lost response) |
 | M14 | do not withdraw on a non-ACK outcome | 1: ★ 9 (refused ACK) |
+| M15 | ACK even when the pre-ACK write failed (the Codex P1) | 1: ★ 10 |
 
 ### CI
 
@@ -206,6 +208,15 @@ See §7.
    withdrawn. If the server did record that ACK, the lease is not probed at a later restart, and the
    control-plane reaper ends it. That renews nothing, so it is the fail-safe direction. Keeping the
    row instead would mean probing (renewing) a lease the worker never ran.
+6. **Codex P1 on `66cdd9d4a`: do not ACK when the candidate write fails.** Checked at source:
+   `recordCandidate` caught and logged a `put` failure, and `handleOffer` then ACKed anyway, which
+   reopened item 5's window whenever the store was unwritable. `recordCandidate` now returns
+   whether the write is durable. A failed pre-ACK `put` releases the slot, emits
+   `poll_outcome{outcome="candidate_write_failed"}` (a new bounded label in `metrics.ts`), and
+   backs off **without ACKing**. The control plane re-offers the job or lets its `ackDeadline`
+   lapse. With no store composed at all, the behaviour is unchanged. Proven by ★ 10, and M15 (ACK
+   anyway) turns it red. The whole suite after the fix: 164 files, 1142 passed, 1 skipped, no
+   `Errors` line. The focused command: 69 tests.
 
 ## 5. Records amended because the code changed under them
 

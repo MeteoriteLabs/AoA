@@ -520,20 +520,24 @@ export function createPollLoop(deps: PollLoopDeps): PollLoopController {
     await sleep(delay);
   }
 
-  /** WRK-013 — write/prune a lease candidate. Never throws: a store fault is logged by name
-   * and the lease is left to the control-plane reaper (it will simply not be probed). */
-  function recordCandidate(op: "put" | "remove", offer: LeaseOfferV1): void {
+  /** WRK-013 — write/prune a lease candidate. Never throws: a store fault is logged by name.
+   * Returns whether the operation is durable (`true` when no store is composed at all). */
+  function recordCandidate(op: "put" | "remove", offer: LeaseOfferV1): boolean {
     const store = deps.leaseCandidates;
-    if (store === undefined) return;
+    if (store === undefined) return true;
     const leaseId = String(offer.leaseId);
     try {
       if (op === "put") store.put(offer);
       else store.remove(leaseId);
+      return true;
     } catch (err) {
       deps.logger?.warn(
         { reason: LEASE_CANDIDATE_REASONS.writeFailed, op, leaseId, jobId: String(offer.job.jobId), err },
-        "poll-loop: lease-candidate store write failed; this lease is left to the control-plane reaper",
+        op === "put"
+          ? "poll-loop: lease-candidate write failed; the offer is NOT acknowledged"
+          : "poll-loop: lease-candidate prune failed; a later restart probes this lease once and finds it ended",
       );
+      return false;
     }
   }
 
@@ -581,7 +585,14 @@ export function createPollLoop(deps: PollLoopDeps): PollLoopController {
     // lease that the store does not name. If the ACK does not succeed the row is removed below.
     // A crash between this write and the ACK leaves a row for a lease that was never ACKed: the
     // next boot's probe finds it dead (the renew is refused) and prunes it, which is harmless.
-    recordCandidate("put", offer);
+    // ★ Codex P1 (PR #553): a write that FAILS must not be followed by an ACK, or the window this
+    // closes reopens. The offer is dropped un-ACKed (the slot released; the control plane re-offers
+    // it or lets its ackDeadline lapse) and the loop backs off.
+    if (!recordCandidate("put", offer)) {
+      deps.limiter.release(workloadClass);
+      emitPoll("candidate_write_failed");
+      return { kind: "backoff", retryAfterMs: null };
+    }
 
     const ack = await ackLease({
       client: deps.client,
