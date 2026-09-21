@@ -129,3 +129,12 @@ The suite is now **17** tests, and the mutation table has **13** rows: rows M12 
 Pre-rebase run `35586672944` on head `a3d1db48395f8b4bf8954df0736c5223e13a2a5a` (the same code as `3da94a421`, before the rebase onto the program tip) — `ci-required` **success**. Linux `verify (3)` executed `job-accepted-event-seam.integration.test.ts` **(15 tests)** and `job-control-sweeper-pending-projections.test.ts` **(4 tests)**; `verify (2)` executed `job-budget-cost-parity.integration.test.ts` **(13 tests)**. All four `verify` shards, `policy`, `migrations`, `e2e`, `e2e-pgvector`, `distributed-contract`, `browser`, `lint` passed. Codex (`chatgpt-codex-connector`) reviewed `a3d1db4839`: no major issues.
 
 The run on the final head (after the rebase plus the E3-F037 re-point and this record) is cited in PR #547; this record is not rewritten for it.
+
+## CI evidence — final head (addendum, 2026-09-21)
+
+- **Reviewed revision: `9f26bb9cb988197afa0b356474685228397c7f03`.** This is the last commit carrying code and register changes. It is the **parent** of the commit that adds this addendum, and that child changes only this file. Both commits are on `claude/m1-job-016` and become ancestors of the program tip when PR #547 is merged with `--merge`.
+- **Run `35591911282` on `9f26bb9cb988197afa0b356474685228397c7f03`:** `ci-required` **success**, and every job passed.
+  - `verify (3)` executed `job-accepted-event-seam.integration.test.ts` **(17 tests)** and `job-control-sweeper-pending-projections.test.ts` **(4 tests)**.
+  - `verify (2)` executed `job-budget-cost-parity.integration.test.ts` **(13 tests)**.
+- **Codex** (`chatgpt-codex-connector`) reviewed `9f26bb9cb9`: no major issues.
+- **Superseded as evidence:** the pre-rebase run `35586672944` on `a3d1db48395f8b4bf8954df0736c5223e13a2a5a`, cited in "CI evidence" above. That revision is not an ancestor of the program tip after the rebase, and its suite predates the Codex P2 fix (15 tests, not 17). The section above is kept as written.
