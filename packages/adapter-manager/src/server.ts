@@ -100,6 +100,12 @@ const GATE_REQUIRED_OPS: ReadonlySet<string> = new Set([
   // GATED-ONLY (no keyless raw handler below), routed through `gateOwnedOp`. An ungated
   // server 404s it, matching the B2 teardown ops, because it carries a bearer grant.
   "stage_files",
+  // DAT-009-3e — the artifact pair, on the `stage_files` precedent: each reads out of (digest) or
+  // uploads from (export, carrying a bearer UPLOAD grant) ONE live owned sandbox, so each is a
+  // single-sandbox owned op, GATED-ONLY, routed through `gateOwnedOp`. Neither is a member of the
+  // frozen `ProviderOperation` vocabulary, and neither becomes one.
+  "digest_artifact",
+  "export_artifact",
 ]);
 
 export function createProviderServer(options: CreateProviderServerOptions): Server {
@@ -190,6 +196,26 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
         // verifies sha256/maxBytes, and writes; only the result paths cross back.
         const { sandboxId, files } = args as { sandboxId: string; files: readonly StagedFileRequest[] };
         return gateOwnedOp(deps, sandboxId, ctx, capability, () => provider.stageFiles(sandboxId, files, ctx));
+      }
+      case "digest_artifact": {
+        // DAT-009-3e — metadata only (sha256 + byte size), never content. Owned-checked first: a
+        // digest of another tenant's file is itself a disclosure (it confirms content by hash).
+        const { sandboxId, path } = args as { sandboxId: string; path: string };
+        return gateOwnedOp(deps, sandboxId, ctx, capability, () => provider.digestArtifact(sandboxId, path, ctx));
+      }
+      case "export_artifact": {
+        // DAT-009-3e — the far provider re-reads, re-verifies size + sha256 against the grant AT
+        // THE CAUSE, and PUTs to the store; only `{objectKey}` crosses back, never bytes. The grant
+        // is a bearer capability: it is never logged here, and an unmodelled failure's message
+        // (which names the path and digests) is replaced by the leak fence below.
+        // The grant type is taken from the PORT (not imported from worker-protocol), keeping this
+        // package's manifest at its three declared dependencies.
+        const { sandboxId, path, grant } = args as {
+          sandboxId: string;
+          path: string;
+          grant: Parameters<SandboxProvider["exportArtifact"]>[2];
+        };
+        return gateOwnedOp(deps, sandboxId, ctx, capability, () => provider.exportArtifact(sandboxId, path, grant, ctx));
       }
       default:
         // GATE_REQUIRED_OPS is the exhaustive set; this is unreachable.
