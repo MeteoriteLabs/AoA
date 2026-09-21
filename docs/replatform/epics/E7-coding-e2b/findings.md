@@ -199,6 +199,17 @@ It is the flag the campaign flips once Unit F lands.
 capture were built; the capability gap is exactly as wide as it was. What changed is that the
 machine now says so, where before only prose did — which is why the finding stays open.
 
+**★ Tools row NARROWED, not closed — `CLI-016`, 2026-09-21.** The `--mcp-config` / `--strict-mcp-config`
+row can now be armed **per Organization**. A run gets the brokered `aoa` MCP config and its run_jwt
+only when the deployment flag reads `per-organization` **and** its Organization's rollout policy
+carries `tools: true` (`resolveDistributedToolSurface`; decision `E7-D10`). The same decision is
+re-proven at `/mcp` authorization (`classifyToolSurfaceAtUse`). Real PostgreSQL proves it with two
+tenants (`distributed-tool-surface-arming.integration.test.ts`): tenant A's run is armed and
+admitted, tenant B's gets no surface and is denied. The row stays **open**, for two reasons. No
+Organization is armed on any deployment. And the keyed real-E2B +/- controls (F8) that would show a
+sandboxed agent's tool call reaching AoA have **not** run (`tickets/CLI-016-result.md`). Every other
+row in the table above is unchanged.
+
 ## E7-F004 — The canary preflight's inventory is a strict SUPERSET of any reconcile pass's, by construction
 
 **Status:** **resolved** · **Resolved by:** MIG-010 Units 2.4a + 2.4b, 2026-09-02.

@@ -42,7 +42,14 @@ const DISTRIBUTED_AGENT = {
   signedRunId: "run-99",
 };
 
-function buildApp(actor: Record<string, unknown>, resolveDistributedRunCurrency?: unknown) {
+// CLI-016: the per-Organization tool-surface use gate sits beside the currency gate. The
+// DAT-007 cases below inject an ADMITTING stub for it so each still isolates the currency
+// verdict; the CLI-016 block at the end drives it directly.
+function buildApp(
+  actor: Record<string, unknown>,
+  resolveDistributedRunCurrency?: unknown,
+  resolveDistributedToolSurfaceAtUse: unknown = vi.fn().mockResolvedValue("admit"),
+) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -66,6 +73,7 @@ function buildApp(actor: Record<string, unknown>, resolveDistributedRunCurrency?
       ...(resolveDistributedRunCurrency
         ? { resolveDistributedRunCurrency: resolveDistributedRunCurrency as never }
         : {}),
+      resolveDistributedToolSurfaceAtUse: resolveDistributedToolSurfaceAtUse as never,
     }),
   );
   return app;
@@ -158,5 +166,64 @@ describe("DAT-007 item #1 — /mcp fence-bound currency gate (route mount)", () 
     const app = buildApp(DISTRIBUTED_AGENT, resolve);
     const res = await request(app).post("/api/companies/company-1/mcp").send(rpc("initialize"));
     expect(res.status).not.toBe(200);
+  });
+});
+
+describe("CLI-016 — /mcp per-Organization tool-surface use gate (route mount)", () => {
+  let saved: string | undefined;
+  beforeEach(() => {
+    saved = process.env[FLAG];
+  });
+  afterEach(() => {
+    if (saved === undefined) delete process.env[FLAG];
+    else process.env[FLAG] = saved;
+  });
+
+  it("★ currency ADMIT + tool surface DENY (run's Organization not armed) → coarse 403 on every method", async () => {
+    process.env[FLAG] = "1";
+    const currency = vi.fn().mockResolvedValue("admit");
+    const toolSurface = vi.fn().mockResolvedValue("deny");
+    const app = buildApp(DISTRIBUTED_AGENT, currency, toolSurface);
+    for (const method of ["initialize", "tools/list", "tools/call"]) {
+      const params = method === "tools/call" ? { name: "noop", arguments: {} } : {};
+      const res = await request(app).post("/api/companies/company-1/mcp").send(rpc(method, params));
+      expect(res.status).toBe(403);
+    }
+    // keyed on the SIGNED run id and the URL company, like the currency gate
+    expect(toolSurface).toHaveBeenCalledWith({ signedRunId: "run-99", companyId: "company-1" });
+  });
+
+  it("positive control: currency ADMIT + tool surface ADMIT → falls through (200)", async () => {
+    process.env[FLAG] = "1";
+    const toolSurface = vi.fn().mockResolvedValue("admit");
+    const app = buildApp(DISTRIBUTED_AGENT, vi.fn().mockResolvedValue("admit"), toolSurface);
+    const res = await request(app).post("/api/companies/company-1/mcp").send(rpc("initialize"));
+    expect(res.status).toBe(200);
+    expect(toolSurface).toHaveBeenCalledTimes(1);
+  });
+
+  it("the tool-surface resolver THROWS → fails CLOSED (non-2xx)", async () => {
+    process.env[FLAG] = "1";
+    const app = buildApp(
+      DISTRIBUTED_AGENT,
+      vi.fn().mockResolvedValue("admit"),
+      vi.fn().mockRejectedValue(new Error("rollout read failed")),
+    );
+    const res = await request(app).post("/api/companies/company-1/mcp").send(rpc("initialize"));
+    expect(res.status).not.toBe(200);
+  });
+
+  it("scoped like the currency gate: a BOARD actor and a flag-OFF deployment never consult it", async () => {
+    process.env[FLAG] = "1";
+    const toolSurface = vi.fn().mockResolvedValue("deny");
+    await request(buildApp({ type: "board", source: "board", userId: "u-1", companyId: "company-1" }, undefined, toolSurface))
+      .post("/api/companies/company-1/mcp")
+      .send(rpc("initialize"));
+    delete process.env[FLAG];
+    const res = await request(buildApp(DISTRIBUTED_AGENT, vi.fn().mockResolvedValue("admit"), toolSurface))
+      .post("/api/companies/company-1/mcp")
+      .send(rpc("initialize"));
+    expect(res.status).toBe(200);
+    expect(toolSurface).not.toHaveBeenCalled();
   });
 });

@@ -57,6 +57,14 @@ export interface HeartbeatDistributedRolloutHook {
      */
     sourceKind?: string;
   }): Promise<HeartbeatRolloutResolution>;
+  /**
+   * CLI-016 (founder ruling F10) — whether the run's ORGANIZATION has opted in to the
+   * distributed tool surface (`tools: true` in its rollout policy). The deployment flag is NOT
+   * read here: the heartbeat combines the two through `resolveDistributedToolSurface`. A null
+   * Organization, an Organization without `tools: true`, or a throwing source is NOT enabled.
+   * Never throws into the run.
+   */
+  resolveOrganizationToolSurface(organizationId: string | null): boolean;
   /** Active convert (D3): delegate to the orchestrator. Best-effort; never throws. */
   convertActiveRun(input: {
     source: SubmitJobSource;
@@ -140,6 +148,16 @@ export function createHeartbeatDistributedRolloutHook(deps: {
       } catch {
         // Never fail the legacy run over a rollout-resolution error — stay legacy.
         return { state: "off", organizationId: null };
+      }
+    },
+
+    resolveOrganizationToolSurface(organizationId) {
+      if (!organizationId) return false;
+      try {
+        return deps.rolloutSource.resolveOrganizationToolSurface({ organizationId }) === true;
+      } catch {
+        // Fail CLOSED: a tool surface we cannot confirm for THIS tenant is not granted.
+        return false;
       }
     },
 
