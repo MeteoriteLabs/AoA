@@ -199,15 +199,89 @@ None. Item #2 enablement and live proof stays with CLI-008 Unit C / `CLI-016`, a
 
 ## Independent review
 
-**Reviewer:** `pending`
-**Reviewed revision:** `pending`
-**Disposition:** `pending`
-**Review evidence:** `pending`
+**Reviewer:** M1 review-batch-1 independent reviewer (Claude Opus 5) — distinct from the DAT-007-S3 build session and the planning session
+**Reviewed revision:** 28a2dd259ed7bdd8d64d68ad8a5999500d80b69e
+**Disposition:** `approved`
+**Review evidence:** see *Independent review — attempt 1* below
 
 For `approved`, verify the result describes the reviewed revision, all focused acceptance evidence passes, and every accepted finding is resolved; then change the top-level `Status` to `complete` and commit this disposition separately. Otherwise leave `Status` as `gate_review` or set `blocked`, and link stable findings.
+
+### Independent review — attempt 1
+
+**Disposition: `approved`.** Reviewed at `28a2dd259ed7bdd8d64d68ad8a5999500d80b69e`. The start SHA
+`66d1f917619f…` and the implementation revision `9e87b13758bc…` are ancestors of it.
+`git diff 9e87b1375 28a2dd259` over `server/src/mcp`, both test files, `server/src/index.ts`,
+`server/src/app.ts` and `packages/db/src/client.ts` is **empty**, so the evidence describes the
+reviewed tree. `9e87b1375` touches exactly the two test files (300+/4−), so "zero source changes" is
+**true**.
+
+- **Linux Tier-3, by job.** Run `35582715287` (headSha `9e87b13758bc…`, conclusion `success`; every job
+  `success` except `distributed-contract`, which is `skipped`; `ci-required` `106284604205` `success`).
+  - `verify (4)` job `106279057337`:
+    `✓ @armyofagents/server src/__tests__/distributed-run-currency.integration.test.ts (14 tests)`, with
+    no skip annotation, so **14 executed** and the count is non-zero (D2 satisfied). Shard: 656 files,
+    6110 passed / 2 skipped.
+  - The same log carries `[dat-007-s3] resolver plan (enable_seqscan=off)`, with all four hops
+    `Index Scan`: `heartbeat_runs_pkey`, `job_attempts_pkey`, `leases_active_per_attempt_idx` and
+    `execution_targets_authority_id_uq`. The Index Conds match the record's table.
+  - `verify (1)` job `106279057312`: `mcp-run-currency-gate.test.ts (7 tests)` ✓.
+
+  Every CI number in *Commands* matches.
+- **S0-8, at source.**
+  - `createApp(db as any, …)` (`server/src/index.ts`) passes the single `db`, the one assigned by
+    `createDb(config.databaseUrl)` or `createDb(embeddedConnectionString)`.
+  - `createApp` mounts `api.use(mcpServerRoutes(db))` (`server/src/app.ts`). `tenantAppDb` goes only to
+    job-control, worker-control and adapter-manager routes.
+  - `mcpServerRoutes` defaults to `createDistributedRunCurrencyResolver(db).resolve`.
+  - Under `config.distributedExecutionEnabled && distributedExecutionDatabases`, boot awaits
+    `assertPrimaryDbBypassesRls(db)`. `openDistributedExecutionDatabases({enabled: true, …})` returns
+    non-null or throws. `assertPrimaryDbBypassesRls` (`packages/db/src/client.ts`) runs the `pg_roles`
+    query for `current_user`, and `rlsBypassRefusal` refuses unless `rolsuper || rolbypassrls`.
+  - `mcpServerRoutes` reads `readDistributedExecutionDeploymentFlag(process.env)`. That reads
+    `AOA_DISTRIBUTED_EXECUTION_ENABLED`, the same variable `config.distributedExecutionEnabled`
+    derives from.
+  - So "every flag-on boot that reaches `createApp` has measured bypass on the resolver's pool" is
+    **true**. The record correctly labels it as source plus a boot invariant, not a captured boot.
+- **The resolver's SQL.** Its only `WHERE` is `eq(heartbeatRuns.id, signedRunId)`. The only company
+  term is the join's `eq(jobAttempts.companyId, heartbeatRuns.companyId)`. The request `companyId` is
+  compared in `classifyRunCurrency` step (2), `if (snapshot.runCompanyId !== companyId) return "deny"`.
+  §S0-8 is **true**.
+- **Ledger row E5-7 — a ledger defect, not this record's.**
+  `milestones/M1a/reachability/E5-workspaces-secrets.md` row E5-7 says the resolver queries "with a
+  `companyId` predicate". There is no predicate on the **request's** `companyId`; the join's
+  run-to-attempt company term is the only one. The row's RLS question is also answered (owner pool,
+  bypass enforced at boot). Correcting the row is the planning session's. It does not block this ticket.
+- **The Tier-1 pin, at source and by mutant.** The route guard is
+  `distributedExecutionEnabled && protocolActor.source === "agent" && req.actor.signedRunId`, and it
+  passes `signedRunId: req.actor.signedRunId`. I applied M6 (`signedRunId: req.actor.runId`), and the
+  new divergent-ids test failed: **1 failed / 6 passed**, exactly as recorded. Reverted.
+- **Tier-3 mutants reproduced** (`operator-directed windows-local`: I flipped the skip guard in the
+  working tree only, then reverted it; the baseline run was **14 / 14**).
+  - M3 (company comparison dropped) failed **N3, N4 and N5, 3 failed / 11 passed**.
+  - M4 (the join's company term dropped) failed **N6, 1 failed / 13 passed**.
+
+  Both match the table. M1, M2 and M5 I checked by reading. N1 and N2 each flip a single knob that only
+  the generation or disabled arm can deny. N7 and N8 assert `not.toHaveProperty("resolvedWith")` plus
+  a SQLSTATE, which a catch-and-admit reader would fail.
+- **Focused command, rerun locally at the reviewed revision.** `vitest run distributed-run-currency-classify.test.ts mcp-run-currency-gate.test.ts`
+  gives **2 files, 19 passed**.
+- **Acceptance items (E5 plan `### DAT-007-S3`).**
+  - The five existing cases, rerun at a non-zero Linux count: **evidenced** (14 executed).
+  - Replaced generation: N1. Disabled target: N2. Wrong company with the coarse forbidden: N3, N4 and
+    N5, with same-tenant controls. The route maps `deny` to
+    `forbidden(MCP_CROSS_COMPANY_FORBIDDEN_MSG)`, the same constant as wrong-tenant.
+  - Tier-3 throw: N7 and N8. The Tier-1 route throw and the flag-off control are credited, not claimed
+    RED.
+  - The header-override mutant reds: M6.
+  - Step 0 pool measurement is recorded. The plan shape is recorded, as an executed test with a
+    positive control.
+  - Platform decision (a) is stated explicitly, and the skip guard is unchanged at the tip.
+  - Forced RLS is correctly kept a non-goal.
+  - Multi-tenant (F10): N3, N4 and N6 run two Organizations, with same-tenant controls.
 
 ## Review attempt history
 
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
+| 1 | M1 review-batch-1 independent reviewer (Claude Opus 5) | `28a2dd259ed7bdd8d64d68ad8a5999500d80b69e` | `approved` | Tier-3 `verify (4)` job `106279057337`: 14 executed / 14 passed, and the plan log shows four `Index Scan`s on the unique indexes. `verify (1)` job `106279057312`: gate suite 7. S0-8 owner-pool reading true at source; the boot bypass assertion and the `/mcp` gate read the same flag. Reproduced M6 (1/6), M3 (3 failed: N3–N5) and M4 (1 failed: N6); the local Tier-3 baseline is 14/14. Focused Tier-1 rerun 19/19. Ledger row E5-7's "companyId predicate" is a ledger defect, noted for the planning session, not blocking. |
 <!-- First independent reviewer appends attempt 1. -->
