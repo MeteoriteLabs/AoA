@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import type { Request as ExpressRequest, RequestHandler } from "express";
-import { and, asc, eq, exists, gt, ne, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   createDb,
   assertPrimaryDbBypassesRls,
@@ -21,13 +21,13 @@ import {
   companies,
   companyMemberships,
   instanceUserRoles,
-  organizations,
 } from "@armyofagents/db";
 import detectPort from "detect-port";
 import postgres from "postgres";
 import { createApp } from "./app.js";
 import { buildReadinessProbe } from "./routes/readiness.js";
 import { loadSchemaCompatibility } from "./services/schema-compatibility.js";
+import { createAdmittedOrganizationIdsLister } from "./services/admitted-organizations.js";
 import { setDistributedRolloutPort } from "./services/distributed-rollout-port.js";
 import { setProviderCredentialBrokerDb } from "./services/provider-resolution-deps.js";
 import {
@@ -635,34 +635,9 @@ let jobControlMetrics: import("./services/job-control-metrics.js").JobControlMet
 // second copy. Same shape as `onAttemptTerminal`: present only when the pools exist, because
 // flag-off allocates no `aoa_app` pool at all.
 const listAdmittedOrganizationIds = distributedExecutionDatabases
-  ? async (input: {
-  afterOrganizationId: string | null;
-  limit: number;
-  statementTimeoutMs: number;
-}): Promise<string[]> => {
-  const boundedLimit = Math.max(1, Math.min(32, Math.floor(input.limit)));
-  const boundedTimeout = Math.max(1, Math.min(750, Math.floor(input.statementTimeoutMs)));
-  return distributedExecutionDatabases.appDb.transaction(async (tx) => {
-    await tx.execute(sql`SELECT set_config('statement_timeout', ${String(boundedTimeout)}, true)`);
-    const rows = await tx.select({ id: organizations.id })
-      .from(organizations)
-      .where(and(
-        eq(organizations.status, "active"),
-        ne(organizations.id, "00000000-0000-0000-0000-000000000001"),
-        input.afterOrganizationId
-          ? gt(organizations.id, input.afterOrganizationId)
-          : undefined,
-        exists(
-          tx.select({ id: companies.id })
-            .from(companies)
-            .where(eq(companies.organizationId, organizations.id)),
-        ),
-      ))
-      .orderBy(asc(organizations.id))
-      .limit(boundedLimit);
-    return rows.map((row) => row.id);
-  });
-    }
+  // MIG-009 (M1a): extracted verbatim into services/admitted-organizations.ts so the operator
+  // drain trigger reuses this exact enumerator rather than a second copy.
+  ? createAdmittedOrganizationIdsLister(distributedExecutionDatabases.appDb)
   : undefined;
 
 if (config.distributedExecutionEnabled && distributedExecutionDatabases) {

@@ -33,6 +33,13 @@
  * the day a caller appears this file goes red naming it rather than quietly
  * leaving the clause half-audited.
  *   ⇒ **DE-20 DOES NOT CLOSE ON THIS FILE AND STAYS `partial`.**
+ * ★ AMENDED 2026-09-21 (MIG-009, M1a): the day came. The drain now has exactly ONE
+ * production caller, the operator trigger (`distributed-execution-drain-trigger.ts`,
+ * run as `pnpm drain:distributed-execution`), and this file's census arm went red
+ * naming it, as designed. The arm now pins that caller BY FILE: it is operator-invoked
+ * and whole-fleet, NOT bound to the rollout dial, so a dial change still cancels
+ * nothing — and any SECOND caller (e.g. a dial-bound sweep) reds here again. The
+ * paragraph above is left as written. DE-20 is not re-dispositioned by MIG-009.
  * Nor does this touch the separately-amended `revocation` clause.
  *
  * ★ WHY THE WRITER IS PROVOKED DIRECTLY AND THE POSITION IS ASSERTED
@@ -70,7 +77,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { mkdtemp, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { join, relative, sep } from "node:path";
 import { tmpdir } from "node:os";
 import postgres, { type Sql } from "postgres";
 import { applyPendingMigrations } from "@armyofagents/db";
@@ -109,9 +116,14 @@ function stripComments(source: string): string {
  * measurement the register's "zero production callers" claim actually makes.
  */
 function productionCallerCount(symbol: string): number {
+  return productionCallerFiles(symbol).length;
+}
+
+/** The census above, returning WHICH files call `symbol` (relative to server/src, `/`-separated). */
+function productionCallerFiles(symbol: string): string[] {
   const declRe = new RegExp(`export\\s+(?:async\\s+)?(?:function|const|class)\\s+${symbol}\\b`);
   const useRe = new RegExp(`\\b${symbol}\\b`);
-  let count = 0;
+  const files: string[] = [];
   const walk = (dir: string): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const full = join(dir, entry.name);
@@ -123,11 +135,11 @@ function productionCallerCount(symbol: string): number {
       if (!entry.name.endsWith(".ts") || entry.name.endsWith(".test.ts")) continue;
       const code = stripComments(readFileSync(full, "utf8"));
       if (declRe.test(code)) continue; // the declaration site is not a caller
-      if (useRe.test(code)) count += 1;
+      if (useRe.test(code)) files.push(relative(SERVER_SRC, full).split(sep).join("/"));
     }
   };
   walk(SERVER_SRC);
-  return count;
+  return files.sort();
 }
 
 const integration = describe.skipIf(
@@ -359,7 +371,7 @@ integration("DE-20 (selection half) — BOTH arms of the cutover leave a durable
     expect(handoffStmt).toContain("projectionSeqBase");
   });
 
-  it("★★★ THE ROLLBACK CONJUNCT IS STILL VACUOUS, AND THAT IS PINNED BY A REAL CENSUS — `createDistributedExecutionDrain` still has ZERO production callers, so DE-20 does NOT close", () => {
+  it("★★★ THE ROLLBACK CONJUNCT ON THE DIAL, PINNED BY A REAL CENSUS — `createDistributedExecutionDrain`'s ONLY production caller is the MIG-009 operator trigger, so a dial change still cancels nothing", () => {
     // DE-20's audit clause is "cutover selection AND rollback transitions". This
     // file delivers the first. The second cannot be delivered because the
     // TRANSITION DOES NOT OCCUR: the org-wide drain has no caller, so removing an
@@ -373,7 +385,15 @@ integration("DE-20 (selection half) — BOTH arms of the cutover leave a durable
     // names the symbol while explaining that it has no callers. A prose match is
     // not a caller census. This strips comments first and walks the whole of
     // `server/src`, which is what the register's claim actually means.
-    expect(productionCallerCount("createDistributedExecutionDrain")).toBe(0);
+    //
+    // ★ AMENDED 2026-09-21 (MIG-009, M1a). This read `toBe(0)` and went red on the
+    // operator trigger, as it was built to. The caller is now pinned BY FILE: the
+    // operator CLI's core, and nothing else — not heartbeat.ts, not index.ts, not the
+    // rollout hook. A second caller reds here and must be named.
+    expect(productionCallerFiles("createDistributedExecutionDrain")).toEqual([
+      "services/distributed-execution-drain-trigger.ts",
+    ]);
+    expect(productionCallerCount("createDistributedExecutionDrain")).toBe(1);
   });
 
   it("ANTI-VACUITY FOR THE CENSUS — the same census returns NON-ZERO for a symbol that genuinely has production callers", () => {

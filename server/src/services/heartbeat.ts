@@ -5386,8 +5386,8 @@ export function heartbeatService(
         //
         // ★ DE-20 DOES NOT CLOSE ON THIS. Its `audit` clause is a CONJUNCTION —
         // "cutover selection AND rollback transitions" — and the ROLLBACK conjunct
-        // stays vacuous: `createDistributedExecutionDrain` has zero production
-        // callers, so no rollback transition occurs and none can be recorded.
+        // stays vacuous ON THE DIAL: `createDistributedExecutionDrain`'s one caller is
+        // the MIG-009 operator CLI (M1a), so a dial change records no rollback.
         //
         // ★ IT TAKES ITS SEQ FROM THE IN-PROCESS COUNTER (`seq++`), NOT FROM A
         // `max(seq)` READ — Codex P2 on PR #409, verified at source. The first

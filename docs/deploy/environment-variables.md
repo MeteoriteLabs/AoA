@@ -123,8 +123,9 @@ Governed by [`distributed-execution-delivery-policy.md`](../architecture/distrib
 
 ### Rolling distributed execution back
 
-**The rollback path is an ordered pair, and both steps have sharp edges. Read the whole section
-before an incident, not during one.**
+**The rollback path is three ordered steps, and each has sharp edges. Read the whole section
+before an incident, not during one.** (It was an ordered pair until MIG-009 gave step 3 an operator
+trigger on 2026-09-21; before that, step 3 was a manual per-run cancel.)
 
 #### Step 1 — stop new leases (immediate, but there is NO UI and NO API)
 
@@ -168,15 +169,49 @@ or drop a sink from its `sources` list. **This takes effect on the next resoluti
 on a running process: every Organization resolves to `off` (legacy) and an error is logged once.
 Fix the value and it recovers on the next resolution — still no restart.
 
+#### Step 3 — cancel in-flight distributed work (operator command, MIG-009)
+
+With steps 1 and 2 done, and **before** unsetting `AOA_DISTRIBUTED_EXECUTION_ENABLED`, cancel every
+non-terminal distributed attempt in every admitted Organization:
+
+```sh
+DATABASE_URL=postgres://<owner>@<host>/<db> \
+AOA_DISTRIBUTED_EXECUTION_ENABLED=true \
+AOA_APP_DATABASE_URL=postgres://aoa_app:<secret>@<host>/<db> \
+AOA_OPERATOR_DATABASE_URL=postgres://aoa_operator:<secret>@<host>/<db> \
+  pnpm drain:distributed-execution --operator <your-handle>
+```
+
+- It opens the same bounded `aoa_app` / `aoa_operator` pools the server does, through the same
+  startup gate. **With the flag unset in its own environment it refuses and opens no pool.**
+- It is **whole-fleet**: every admitted Organization, one attempt at a time. An Organization
+  with a pending authoritative-cost receipt on **any** of its Companies is skipped, never
+  partially drained.
+- Each attempt's cancel and its `job.drain.requested` activity row (actor
+  `operator-cli:<your-handle>`, reason `distributed_execution_rollback`) commit in **one**
+  transaction under that attempt's own Organization. There is no cancel without its audit row.
+- It prints one JSON line per Organization and one summary line, including the skipped
+  Organizations **by id** and every failed cancel by Organization and job.
+- **Exit 0 only if no Organization was skipped and every cancel committed.** Any other result
+  exits 1: re-run the command. It is idempotent — an attempt already asked to cancel reports
+  `already_requested` and queues no second command.
+- A leased attempt is left `cancel_requested`, not terminal: cancellation is a request, and the
+  worker and reaper finish it. That is a successful drain and exits 0.
+
+The `--operator` value is a label the command records, not an authenticated identity; the
+authority to run it is possession of the three database credentials above. There is no UI or
+automatic trigger for this step; that is REL-005.
+
 #### Why the order matters
 
-Step 1 first, then step 2. Step 1 stops new leases while letting in-flight work finish; step 2
-stops new distributed work being minted at all. Doing step 2 alone leaves a window where a run
-has just been handed off — legacy adapter suppressed, attempt lease-eligible — and there is no
-automated convergence: `createJobControlSweeper`, `createDistributedExecutionDrain` and
-`createExecutionTargetRevocationFanout` all have **zero production callers** today, and the
-drain's `listActiveAttempts` has no SQL implementation at all. The only convergent action left
-is a manual per-run cancel.
+Step 1 first, then step 2, then step 3. Step 1 stops new leases while letting in-flight work
+finish; step 2 stops new distributed work being minted at all; step 3 cancels what is still in
+flight. Doing step 2 alone leaves a window where a run has just been handed off — legacy adapter
+suppressed, attempt lease-eligible. `createJobControlSweeper` and
+`createExecutionTargetRevocationFanout` are not a substitute for step 3. Step 3's
+`createDistributedExecutionDrain` had **zero production callers** until MIG-009 (M1a) gave it the
+operator command above, and it is still never run automatically. Before that, the only
+convergent action was a manual per-run cancel.
 
 **Unsetting `AOA_DISTRIBUTED_EXECUTION_ENABLED` is not a master switch.** It is live for new
 heartbeat conversions (the rollout hook re-reads it per call), but the worker control routes are

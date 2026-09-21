@@ -942,10 +942,17 @@ describe("JOB-003 flag-on job-control runtime", () => {
     expect(indexSource).toContain("afterOrganizationId");
     expect(outboxSource).toMatch(/interface AdmittedOrganizationPageInput[\s\S]{0,200}afterOrganizationId:/);
     expect(outboxSource).not.toMatch(/interface AdmittedOrganizationPageInput[\s\S]{0,200}\bafter\??:/);
-    expect(indexSource).toMatch(/listAdmittedOrganizationIds[\s\S]*?\.limit\(/);
-    expect(indexSource).toContain("eq(organizations.status, \"active\")");
-    expect(indexSource).toContain("ne(organizations.id, \"00000000-0000-0000-0000-000000000001\")");
-    expect(indexSource).toContain("eq(companies.organizationId, organizations.id)");
+    // MIG-009 (M1a) extracted the enumerator VERBATIM into services/admitted-organizations.ts so
+    // the operator drain trigger reuses it; index.ts composes it, and the query text is pinned
+    // where it now lives.
+    expect(indexSource).toMatch(
+      /listAdmittedOrganizationIds = distributedExecutionDatabases[\s\S]{0,300}\? createAdmittedOrganizationIdsLister\(distributedExecutionDatabases\.appDb\)/,
+    );
+    const admittedSource = readFileSync(new URL("../services/admitted-organizations.ts", import.meta.url), "utf8");
+    expect(admittedSource).toMatch(/createAdmittedOrganizationIdsLister[\s\S]*?\.limit\(boundedLimit\)/);
+    expect(admittedSource).toContain("eq(organizations.status, \"active\")");
+    expect(admittedSource).toContain("ne(organizations.id, \"00000000-0000-0000-0000-000000000001\")");
+    expect(admittedSource).toContain("eq(companies.organizationId, organizations.id)");
     expect(indexSource).toContain("jobReadyScheduler: scheduler");
     const appSource = readFileSync(new URL("../app.ts", import.meta.url), "utf8");
     const workerRoutesSource = readFileSync(new URL("../routes/worker-control.ts", import.meta.url), "utf8");

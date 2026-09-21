@@ -50,6 +50,13 @@
  * flight — there is no rollback transition, so there is no transition event.
  * That conjunct is `E0-F013` Decision 1's to rule on and `E0-F014`'s to own.
  * HALF A CONJUNCTION IS NOT THE CONJUNCTION: **DE-20 DOES NOT CLOSE.**
+ * ★ AMENDED 2026-09-21 (MIG-009, M1a): "zero production callers" above is no longer
+ * true. The drain's ONE production caller is the operator CLI
+ * (`pnpm drain:distributed-execution`, `distributed-execution-drain-trigger.ts`),
+ * which audits each cancel as `job.drain.requested` in the cancel's own tenant
+ * transaction. It is whole-fleet and operator-invoked, NOT bound to the rollout dial,
+ * so a dial change still cancels nothing. Whether that revives conjunct 4b is not
+ * decided here; DE-20 is NOT re-dispositioned by MIG-009.
  *
  * ★ AND ONE THING NEITHER HALF FIXES. DE-20's enforcement has never been
  * exercised in a deployment — the rollout source has zero deployment hits, so
