@@ -1052,12 +1052,8 @@ evidence.
 - **Test:** The keyed export lane extended to the full sequence, with a TOCTOU refusal case.
 - ★ **It enumerates PATHS only and must NOT call `captureSandboxEntries`** (see `CLI-010`); the
   provider's `digestArtifact` supplies digest and size, `exportArtifact` does the upload.
-- ★ **Two seams are owed and scheduled nowhere else:** (1) a fenced **metadata-only enumeration
-  operation on the worker's `SandboxProvider` port** and its network binding — `listDir` sits behind
-  the E2B provider's private `#transport`, and the port exposes no enumeration at all; and (2) the
-  **composition surface** that reaches the sequencer — `createArtifactExportSequencer` needs
-  `client`/`key`/`session` at construction (the dispatch runtime's) and an `exporter` at invocation
-  (the supervisor's).
+- ★ **This ticket owns the enumeration PORT — its file list says so.** A fenced **metadata-only enumeration operation** on the worker's `SandboxProvider` port (`packages/worker-daemon/src/supervisor/provider.ts`), implemented by the E2B provider over its private `#transport.listDir` (`packages/sandbox-e2b-provider/src/e2b-provider.ts`) and bound on the networked lane (`packages/provider-wire/src/driver.ts`, which has no enumeration today). The port exposes no enumeration at all at present, so without this the consumer has nothing to call.
+- ★ **The sequencer COMPOSITION surface is NOT this ticket's** — it belongs to E5's `DAT-009-3c`/`3d`, which this ticket waits on (they supply `SupervisorDeps.resolveExportArtifacts` and its composition). ★ *Corrected (Codex, PR #526): an earlier revision of this node said both seams were “scheduled nowhere else”, which assigned the composition surface twice and left the port out of every file list.*
 - ★ **The real-run acceptance also depends on the emit build** (filed after `CLI-011`), because a
   run produces a file only once the agent is told where to write. Before that, this ticket is proven
   against a fixture sandbox, not a real run.

@@ -665,7 +665,14 @@ projection (F5); changing the counter (F6); a Unit-E workspace.
 `packages/worker-daemon/src/index.ts` (barrel); modify the `DAT-009-3d` composition point in
 `packages/worker-daemon/src/lifecycle/dispatch-runtime.ts` to pass the real producer instead of
 nothing; create `packages/worker-daemon/src/__tests__/export-request-producer.test.ts`; append to
-`decisions.md`.
+`decisions.md`. ★ **And the enumeration port** — modify
+`packages/worker-daemon/src/supervisor/provider.ts` (the `SandboxProvider` port gains a fenced,
+metadata-only enumeration operation: paths only, no bytes); modify
+`packages/sandbox-e2b-provider/src/e2b-provider.ts` (implement it over the private
+`#transport.listDir`); modify `packages/provider-wire/src/driver.ts` (the networked-lane binding,
+which has no enumeration today). *Added (Codex, PR #526): the port was assigned to this ticket in
+its graph node but authorized by no file list, so it would have stayed unimplemented. The sequencer
+composition surface stays with `DAT-009-3c`/`3d`, which this ticket already waits on.*
 
 **Interfaces:** `createExportRequestProducer(deps: {capture, outputRoot, kind, contentTypeFor,
 retention}) => (input: {handoff, exec}) => Promise<readonly ArtifactExportRequest[]>` — the exact
