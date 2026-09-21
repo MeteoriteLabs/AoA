@@ -788,6 +788,22 @@ jobs:
           # DEP-014: EXECUTES {sbom,sign,admit}.sh docker-free over all 3 images + 6 refusal controls.
           node --test docker/images/__tests__/image-pipeline.test.mjs
 
+      - name: CLI-011 P-011 output-probe decision logic (proven WITHOUT the key)
+        run: |
+          # The keyed lane `keyed-e2b-cli-011-output-probe.yml` is DISPATCH-ONLY and runs once,
+          # on the planning session's dispatch (ruling F8), against real E2B and a real claude.
+          # Every decision it makes - each of the twelve rows of CLI-011-review.md section 10.5,
+          # the three positive controls (PC-1, PC-2, C-census) that must each produce their
+          # negative, the census classification, and the redactor - is a pure function here,
+          # exercised on every PR, so the keyed run is never the first execution of its reader.
+          #
+          # It also asserts the lane's YAML: workflow_dispatch and NO other trigger (review
+          # section 3.7: a push trigger spends E2B on merge), only the E2B + Anthropic secrets and
+          # only as env bindings, the always() record writer + 90-day upload + skip guard, and the
+          # 45-minute cap; and that the keyed test imports the shipped claude literal rather than
+          # pasting it. (Placed last in `policy` so no register-cited line above it moves.)
+          node --test scripts/lib/__tests__/cli-011-output-probe.test.mjs
+
       - name: Validate dependency resolution when manifests change
         if: github.event_name == 'pull_request'
         run: |

@@ -240,6 +240,11 @@
       "workflow": "pr.yml",
       "step": "Invisible control characters (a shell must not write a regex escape)"
     },
+    "scripts/lib/__tests__/cli-011-output-probe.test.mjs": {
+      "status": "runs",
+      "workflow": "pr.yml",
+      "step": "CLI-011 P-011 output-probe decision logic (proven WITHOUT the key)"
+    },
     "scripts/lib/__tests__/collect-d1-evidence.test.mjs": {
       "status": "runs",
       "workflow": "pr.yml",

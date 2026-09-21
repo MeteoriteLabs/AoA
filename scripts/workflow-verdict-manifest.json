@@ -180,6 +180,13 @@
       "reason": "Same as verdict-reconcile.yml@main: the consumer may not be its own consumer. Declared per-branch because the workflow declares `push` on both branches and the completeness check requires an entry for each.",
       "wouldTakeToWatch": "Nothing here — see verdict-reconcile.yml@main."
     },
+    "keyed-e2b-cli-011-output-probe.yml@*": {
+      "workflow": "keyed-e2b-cli-011-output-probe.yml",
+      "branch": null,
+      "watch": "not-watched",
+      "reason": "`workflow_dispatch` ONLY, by design: CLI-011's P-011 output probe spends E2B time and Anthropic tokens, and CLI-011-review.md section 3.7 measured that a path-filtered push trigger spends E2B on merge with nobody deciding to, so the lane has no push trigger and no schedule. It is an OPERATOR ACTION authorised run-by-run (ruling F8), not a lane: no commit owes it a run and no cadence is late, so a missing run is the normal state. Its verdict is consumed by hand -- the planning session copies the durable `cli-011-output-probe-record` into `tickets/CLI-011-probe-result.md` (review section 10.3) -- and `evaluateWorkflowShape` in the required `policy` job keeps the lane dispatch-only.",
+      "wouldTakeToWatch": "A declared re-run cadence for P-011 (for example, re-probe on every aoa-base template rebuild, which section 10.5 row 1 and A-O2-2 would justify). That would add a trigger this entry then watches in `coverage` or `cadence` mode -- and it would need its own F8 authorisation, because every run spends model tokens."
+    },
     "keyed-e2b-dat-009-export.yml@docs/replatform-program": {
       "workflow": "keyed-e2b-dat-009-export.yml",
       "branch": "docs/replatform-program",
