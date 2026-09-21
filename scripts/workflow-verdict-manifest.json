@@ -191,6 +191,13 @@
       "branch": "claude/e2b-export-artifact",
       "watch": "coverage",
       "note": "The ticket own proving branch, declared because the workflow declares it. If the branch has been deleted the coverage evaluator is silent - nothing is owed for a branch with no commits - so a dead proving branch costs no false incident."
+    },
+    "m1-shipped-boot.yml@*": {
+      "workflow": "m1-shipped-boot.yml",
+      "branch": null,
+      "watch": "not-watched",
+      "reason": "`workflow_dispatch` ONLY (DEP-015, founder ruling F3), with a REQUIRED human-supplied `candidate` (a frozen revision on docs/replatform-program) and a keyed mode that spends E2B + model tokens inside the F8 envelope. Its shape guard (scripts/check-m1-shipped-boot-shape.mjs) forbids every other trigger. No commit owes it a run and there is no cadence it is late for, so a missing run is the normal state rather than an incident; its verdict is consumed by the campaign that dispatches it (the M1a-D2-MECHANISM record, E7-1-JOURNEY-ARM).",
+      "wouldTakeToWatch": "A declared campaign cadence. If the programme schedules shipped-boot runs, add a `cadence` entry; never add a push trigger to make it watchable — the shape guard reds that."
     }
   }
 }

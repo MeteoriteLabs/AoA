@@ -627,10 +627,12 @@ jobs:
           node scripts/check-egress-bypass-vectors.mjs
           node --test scripts/check-egress-bypass-vectors.test.mjs
 
-      - name: Staging manifest config contract (DEP-006)
+      - name: Staging manifest config contract (DEP-006) + shipped CI boot lane (DEP-015)
         run: |
           node scripts/check-staging-manifest.mjs
           node --test scripts/check-staging-manifest.test.mjs
+          node scripts/check-m1-shipped-boot-shape.mjs
+          node --test scripts/check-m1-shipped-boot-shape.test.mjs scripts/lib/__tests__/m1-shipped-boot.test.mjs
 
       - name: CI lane routing invariants (DEP-004)
         run: |

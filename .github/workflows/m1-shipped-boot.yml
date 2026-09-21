@@ -1,0 +1,239 @@
+name: M1 shipped CI boot (DEP-015)
+
+# DEP-015 — the SHIPPED CI BOOT lane, per founder ruling F3 (M1 plan §2):
+#
+#   a DISPATCH-ONLY CI job, never on push, bound to a NAMED FROZEN CANDIDATE, that on that
+#   candidate BUILDS the control-plane, worker and adapter-manager images from source, boots
+#   them together with a CI-GENERATED control-plane keypair, and runs the journey in that
+#   boot. NOT the operator campaign deploy. Boot-only is too weak: the gate asks for a journey.
+#
+# What one run does (every phase is `scripts/m1-shipped-boot/journey.mjs <phase>`):
+#   1. validates the candidate (40-hex, an ancestor of docs/replatform-program) and checks it out;
+#   2. builds + SBOMs + signs + ADMITS all three images from it (docker/images/{build,sbom,sign,
+#      admit}.sh — DEP-014's chain) and asserts each image's revision label IS the candidate;
+#   3. generates the control-plane ed25519 keypair INSIDE the job and runs
+#      `pnpm verify:cp-am-keypair` over it (mint with the control plane's code, verify with the
+#      adapter-manager's) — the runbook's mandatory pair check;
+#   4. boots docker-compose.staging.yml + docker/m1-boot/docker-compose.m1-boot.yml (the worker
+#      provider-URL overlay), after re-checking the REAL render against the DEP-015 manifest
+#      invariants (scoped admission green; the same render reds through the unscoped path);
+#   5. seeds the F10 tenant set — three Organizations through the API, two ENABLED through
+#      `AOA_DISTRIBUTED_EXECUTION_ROLLOUT` on BOTH control-plane replicas and one CONTROL absent
+#      from it — and asserts, on the render AND on each running replica, the exact set with
+#      `AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED` (and the tool surface) OFF (S0-8);
+#   6. provisions each Organization identically (target `aoa-canary-e2b`, ratified profile,
+#      enrolment, reconciliation, canary preflight) so the ONLY difference is the rollout;
+#   7. dispatches: KEYED — one assigned task per tenant; each enabled tenant must run distributed,
+#      name a real provider sandbox in its worker log, and pass `verify-e7-1-distributed-run`
+#      (capabilityProven=false is acceptable for M1a); the control must stay legacy with zero
+#      jobs and a control-plane-logged `rolloutState: "off"`. Audit, cost and failure-
+#      classification signals are recorded per tenant (journey.json).
+#      KEYLESS — only the control tenant is dispatched (it never reaches a provider), and the
+#      adapter-manager is never started, so no E2B call can happen.
+#   8. retains the redacted evidence bundle on pass AND fail; tears everything down.
+#
+# ★ TRIGGERS. `workflow_dispatch` ONLY — never push, pull_request, schedule, merge_group or
+# workflow_call. `scripts/check-m1-shipped-boot-shape.mjs` (pr.yml `policy`) enforces that on
+# every PR, with a positive control (a re-added push trigger reds it). A dispatch from a
+# non-default branch works via `gh workflow run --ref <branch>` (measured 2026-09-03 against
+# keyed-e2b-conformance.yml, per keyed-e2b-unit-d.yml's header).
+#
+# ★ SPEND. The keyed mode spends E2B + model tokens and runs only on the F8 named list, when
+# the planning session dispatches it. The two keys are exposed ONLY as
+# `inputs.mode == 'keyed' && secrets.X || ''`, so a keyless dispatch never holds them (also
+# enforced by the shape guard). The E2B key reaches ONLY the adapter-manager container.
+#
+# Not a required check (only `ci-required` is — scripts/lib/ci-lanes.mjs). Not watched by the
+# DEP-013 consumer: dispatch-only with a required human-supplied candidate, so no commit owes
+# it a run (scripts/workflow-verdict-manifest.json).
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate:
+        description: The frozen candidate — a full 40-character commit SHA on docs/replatform-program
+        required: true
+        type: string
+      mode:
+        description: keyless (boot, tenants, enrolment, control refusal; no provider call) or keyed (the journey; F8 spend)
+        required: true
+        default: keyless
+        type: choice
+        options:
+          - keyless
+          - keyed
+      e2b_template:
+        description: E2B template for the adapter-manager (keyed only)
+        required: false
+        default: aoa-base
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m1-shipped-boot
+  cancel-in-progress: false
+
+jobs:
+  shipped-boot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - name: Validate the named candidate
+        env:
+          CANDIDATE: ${{ inputs.candidate }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::candidate must be 40 lowercase hex characters"; exit 1; }
+          [[ "$MODE" == "keyless" || "$MODE" == "keyed" ]] || { echo "::error::mode must be keyless or keyed"; exit 1; }
+          echo "M1_OUT=${RUNNER_TEMP}/m1-shipped-boot" >> "$GITHUB_ENV"
+          echo "candidate ${CANDIDATE} (${MODE})"
+
+      - name: Check out the candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.candidate }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind the run to the candidate
+        env:
+          CANDIDATE: ${{ inputs.candidate }}
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$CANDIDATE" ]] || { echo "::error::HEAD is not the candidate"; exit 1; }
+          git fetch --no-tags origin docs/replatform-program
+          git merge-base --is-ancestor "$CANDIDATE" FETCH_HEAD || {
+            echo "::error::$CANDIDATE is not an ancestor of docs/replatform-program (not a frozen candidate)"
+            exit 1
+          }
+          for f in docker/m1-boot/docker-compose.m1-boot.yml scripts/m1-shipped-boot/journey.mjs \
+                   docker/images/build.sh docker/images/admit.sh docker/adapter-manager/Dockerfile; do
+            test -f "$f" || { echo "::error::the candidate has no $f (it predates DEP-015/DEP-014)"; exit 1; }
+          done
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Static preflight at the candidate
+        run: |
+          node scripts/check-staging-manifest.mjs
+          node scripts/check-m1-shipped-boot-shape.mjs
+
+      - name: Enable Docker containerd image store (attestation + --load)
+        run: |
+          # Same as d1-merge-train.yml: build.sh builds with `--provenance --sbom --load`.
+          sudo mkdir -p /etc/docker
+          printf '%s\n' '{ "features": { "containerd-snapshotter": true } }' | sudo tee /etc/docker/daemon.json
+          sudo systemctl restart docker
+          for _ in $(seq 1 30); do docker info >/dev/null 2>&1 && break; sleep 1; done
+
+      - name: Build, SBOM, sign and admit the three images from the candidate
+        env:
+          AOA_IMAGE_REVISION: ${{ inputs.candidate }}
+        run: |
+          set -euo pipefail
+          # From SOURCE, at the candidate — never a pulled or operator-built image.
+          bash docker/images/build.sh
+          bash docker/images/sbom.sh
+          bash docker/images/sign.sh
+          bash docker/images/admit.sh
+          for key in CONTROL-PLANE WORKER ADAPTER-MANAGER; do
+            tag="$(grep -E "^${key}_IMAGE=" docker/images/digests.env | cut -d= -f2-)"
+            label="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$tag")"
+            [[ "$label" == "$AOA_IMAGE_REVISION" ]] || { echo "::error::$key image revision label '$label' is not the candidate"; exit 1; }
+            echo "$key $tag revision=$label"
+          done
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 9.15.4
+
+      - name: Install dependencies (for the keypair check)
+        run: pnpm install --frozen-lockfile
+
+      - name: Prepare — job secrets and the CI-generated control-plane keypair
+        env:
+          # Inputs reach the shell as env, never as `${{ }}` text spliced into a script.
+          CANDIDATE: ${{ inputs.candidate }}
+          MODE: ${{ inputs.mode }}
+          E2B_TEMPLATE: ${{ inputs.e2b_template }}
+          E2B_API_KEY: ${{ inputs.mode == 'keyed' && secrets.E2B_API_KEY || '' }}
+          ANTHROPIC_API_KEY: ${{ inputs.mode == 'keyed' && secrets.ANTHROPIC_API_KEY || '' }}
+        run: >-
+          node scripts/m1-shipped-boot/journey.mjs prepare --out "$M1_OUT"
+          --candidate "$CANDIDATE" --mode "$MODE" --e2b-template "$E2B_TEMPLATE"
+
+      - name: Verify the control-plane / adapter-manager keypair
+        run: |
+          AOA_CONTROL_PLANE_SIGNING_KEY_FILE="$M1_OUT/keys/control-plane-signing-key.pem" \
+          AOA_ADAPTER_MANAGER_CONTROL_PLANE_PUBLIC_KEY_FILE="$M1_OUT/keys/adapter-manager-cp-pubkey.pem" \
+            pnpm verify:cp-am-keypair
+
+      - name: Boot the core (stores, migrate, both control-plane replicas)
+        env:
+          AOA_M1_SECRET_OWNER: "1000:1000"
+        run: node scripts/m1-shipped-boot/journey.mjs boot-core --out "$M1_OUT"
+
+      - name: Seed the three Organizations through the API
+        env:
+          E2B_API_KEY: ${{ inputs.mode == 'keyed' && secrets.E2B_API_KEY || '' }}
+          ANTHROPIC_API_KEY: ${{ inputs.mode == 'keyed' && secrets.ANTHROPIC_API_KEY || '' }}
+        run: node scripts/m1-shipped-boot/journey.mjs seed --out "$M1_OUT"
+
+      - name: Apply the F10 tenant set to every control-plane replica
+        run: node scripts/m1-shipped-boot/journey.mjs apply-rollout --out "$M1_OUT"
+
+      - name: Assert the tenant set and the must-be-off switches (render + running replicas)
+        run: node scripts/m1-shipped-boot/journey.mjs assert-tenants --out "$M1_OUT"
+
+      - name: Provision each Organization's target and enrolment ticket
+        env:
+          AOA_M1_SECRET_OWNER: "1000:1000"
+        run: node scripts/m1-shipped-boot/journey.mjs provision-targets --out "$M1_OUT"
+
+      - name: Boot the workers (keyed also boots the adapter-manager)
+        env:
+          E2B_API_KEY: ${{ inputs.mode == 'keyed' && secrets.E2B_API_KEY || '' }}
+        run: node scripts/m1-shipped-boot/journey.mjs boot-workers --out "$M1_OUT"
+
+      - name: Await each worker enrolled on its own Organization's target
+        run: node scripts/m1-shipped-boot/journey.mjs await-workers --out "$M1_OUT"
+
+      - name: Reconcile and preflight every Organization
+        run: node scripts/m1-shipped-boot/journey.mjs reconcile --out "$M1_OUT"
+
+      - name: Run the journey
+        run: node scripts/m1-shipped-boot/journey.mjs dispatch --out "$M1_OUT"
+
+      - name: Collect the evidence (redacted)
+        if: always()
+        run: |
+          if [ -f "$M1_OUT/state.json" ]; then
+            node scripts/m1-shipped-boot/journey.mjs collect --out "$M1_OUT" || true
+          fi
+
+      - name: Upload the evidence bundle (on pass and fail)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: m1-shipped-boot-${{ inputs.mode }}-${{ github.run_id }}
+          path: ${{ env.M1_OUT }}/evidence/
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Tear down (stack, volumes, keypair, secrets)
+        if: always()
+        env:
+          AOA_M1_SECRET_OWNER: "1000:1000"
+        run: |
+          if [ -f "$M1_OUT/state.json" ]; then
+            node scripts/m1-shipped-boot/journey.mjs teardown --out "$M1_OUT" || true
+          fi
+          sudo rm -rf "$M1_OUT/keys"
+          rm -f docker/images/trust-root.key
