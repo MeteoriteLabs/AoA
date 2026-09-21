@@ -11,8 +11,11 @@ adversarial review found that the file did not exist.
 
 ## E3-D-ACC — the in-transaction accepted-event seam
 
-**Status:** `proposed`. This is `JOB-016`'s first commit. It **binds nothing until a distinct
-reviewer approves it**, and no build starts before then. Parts (a) and (b), and the points listed
+**Status:** `accepted` — approved 2026-09-21 by the planning session under founder delegation F2,
+**with three changes**. They are recorded in "Approval and amendments" at the end of this decision,
+and each supersedes the text it names; that text is kept, not rewritten. *History: recorded as
+`proposed` in commit `a377abfcc`; superseded text: "This is `JOB-016`'s first commit. It **binds
+nothing until a distinct reviewer approves it**, and no build starts before then."* Parts (a) and (b), and the points listed
 under (d), were **decided under founder delegation F2**. The planning session decided part (c) at
 S0-8; it is restated here, not re-decided. The question is in `implementation-plan.md` §4b,
 `JOB-016`. Everything was measured at program tip `ba534b16b`. Code is cited by file and symbol;
@@ -251,3 +254,75 @@ re-drive is a new **unfenced** write into governed state.
   **no HTTP route**, because an operator route belongs to the `JOB-008` surface.
 - **Alternative.** 6a's positive control flips the row directly in the test, and the re-drive is
   left to a follow-up. That leaves the drain wedge with no production way out.
+
+### Approval and amendments (2026-09-21, planning session, founder delegation F2)
+
+Accepted as proposed: (a) the transaction-taking cores, with receipts in the seam; (b1) the projector
+list with one savepoint per projector, the replay check before running, `applied` in the same
+savepoint and `pending` on a throw; `pending` directly for an event after a terminal; server time as
+the charge time; tenant scoping from the locked lease with the Company checked against the
+Organization; `pending` receipts pointing at the attempt; the wrapper's fast-path checking receipt
+status; and the terminal-without-usage signal as a log line plus a count-only metric, not a receipt.
+Three changes:
+
+**Amendment 1 — no pricing switch.** *Supersedes "The switch" under "Build-shaping points".* There is
+no `AOA_DISTRIBUTED_USAGE_PRICING_ENABLED` flag and no per-Organization `usagePricing` key. Reason (the
+planning session's): a switch that allows distributed spend with pricing off recreates `E3-F037`
+through configuration; the rollback lever is the rollout dial itself. The planning session's rule is
+"pricing is always on for an Organization whose rollout mode is `active` or `canary`".
+
+*How the build implements it (the author's reading, flagged for review):* the pricing projector is
+registered by `createJobEventIngestService` itself, on **every** ingest, without consulting the
+rollout dial. The ingest exists only when distributed execution is composed, and a `usage` event can
+only be accepted under a live lease, so every accepted `usage` event is distributed spend. Reading
+the dial as well would leave an in-flight attempt unpriced after its Organization is dialled back to
+`shadow` mid-run — the same gap by another route. This is strictly stronger than the rule and
+satisfies its test (a `canary` Organization is always priced).
+
+**Amendment 2 — after a hard-stop breach, nothing more in that scope is leased.** *Supersedes stated
+limit (2) under "Next-dispatch refusal".* Measured at source, the legacy path on a hard stop does:
+
+| Scope | Legacy behaviour | Where |
+|---|---|---|
+| agent | incident; an `approvals` row; **agent `status = 'paused'`**; `emitBudgetExhausted` → cancels that agent's `queued`/`running` heartbeat runs | `createIncidentIfNeeded` and `evaluateCostEvent` (`budgets.ts`); `heartbeat.cancelBudgetScopeWork` via `onBudgetExhausted` (`index.ts`) |
+| agent (legacy field) | `agents.budget_monthly_cents` reached → agent paused | `costService.createEvent` (`costs.ts`) |
+| company | incident; `emitBudgetExhausted` → cancels **every** `queued`/`running` heartbeat run in the Company | same |
+| department | incident only; no pause, no emit ("`BudgetEnforcementScope` has no department variant") | `evaluateCostEvent` |
+
+The distributed charge already runs `evaluateCostEvent` and the existing cost writers, so the
+incident, approval, agent pause and `emitBudgetExhausted` already fire on the distributed path. What
+legacy's cancel does **not** reach is a queued distributed job: `cancelBudgetScopeWork` enumerates
+`heartbeat_runs` only. So, in the same savepoint as the charge, the pricing core cancels the
+**queued** distributed jobs of each breached scope, through the existing `requestCancellation`
+(which finalises a lease-less job and its attempt to `cancelled` and releases the capacity slot —
+the legacy-equivalent state, since legacy cancels the queued run): **company** → every `queued` job
+of the Company; **agent** → every `queued` `task_run` job whose `source_intent.assigneeAgentId` is
+that agent; **department** → none, matching legacy. `evaluateCostEvent` gains an additive
+`breachedScopes` return so the core knows which. A cancelled job is not a lease candidate, so it is
+never leased. Jobs are cancelled in job-id order, so two concurrent breaching ingests in one Company
+lock the same rows in the same order; queued jobs hold no lease, so no lease is locked out of order.
+
+**No lease-time check is added.** Two reasons: the scope cancel leaves no queued job in the scope to
+lease, and a lease-time check is a second repository selection inside the frozen JOB-003 poll chain,
+which the JOB-003 contract (`job-leasing-contract.test.ts`) forbids — the JOB-007 note at the offer
+point in `job-leasing.ts` deferred live capacity for the same reason. **Residual race, stated:** a
+poll that has the queued attempt locked at the instant of the cancel offers it first; the cancel then
+waits on that lock and marks the attempt cancelled, so the worker's ACK finds the attempt no longer
+`offered` and is refused (`activateLeaseAck`). No such attempt reaches `leased`. A job submitted
+concurrently with the breach, before the priced row commits, is admitted by the Company preflight
+and cancelled on its own first charge — the same window legacy has. Running jobs in the scope are
+not cancelled from the ingest transaction (locking another job's live lease there risks a
+lease-order cycle with that job's own ingest); a running `task_run` is reached by legacy's
+`cancelBudgetScopeWork` through its heartbeat run, and every running job is cancelled by its own
+next charge.
+
+**Amendment 3 — the re-drive path is built.** *Resolves the open question above, with the
+recommendation.* One narrow tenant-repository method locks the `pending` receipt row `FOR UPDATE`,
+the units are re-read from the stored `job_events` row the identity names, `priceAcceptedUsageCore`
+runs, and the receipt flips to `applied` with the `cost_events` id. No HTTP route. The `JOB-006`
+job-control sweeper invokes it for stale `pending` `authoritative_cost` receipts on its
+per-Organization rotation, with a bounded number of attempts (`AUTHORITATIVE_COST_REDRIVE_MAX_ATTEMPTS`).
+After the bound, it raises **one** Inbox item per stuck receipt through the existing hub path
+(`hubItemsService.emit`, idempotent on `sourceType`+`sourceId` = the receipt id) and stops retrying
+that receipt. The attempt counter is process-local; the stop is durable (the sweeper skips a receipt
+whose hub item exists), so a restart cannot raise a second item or resume retries.
