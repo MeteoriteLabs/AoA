@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# docker/images/provenance.sh — record source provenance for a DEP-001 image.
+# docker/images/provenance.sh — record source provenance for a split image (DEP-001;
+# the adapter-manager joined in DEP-014).
 #
 # Emits the source-revision provenance a signed image binds to. The recorded
 # revision is `git rev-parse HEAD` (override with AOA_IMAGE_REVISION) and MUST
@@ -12,7 +13,7 @@
 # TEST ROOT ONLY. No network. Pure git + shell.
 set -euo pipefail
 
-image_name="${1:?usage: provenance.sh <control-plane|worker>}"
+image_name="${1:?usage: provenance.sh <control-plane|worker|adapter-manager>}"
 revision="${AOA_IMAGE_REVISION:-$(git rev-parse HEAD)}"
 source_url="$(git config --get remote.origin.url 2>/dev/null || echo 'unknown')"
 built_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

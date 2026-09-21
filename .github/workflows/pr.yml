@@ -783,6 +783,8 @@ jobs:
           #     Tracked separately; stated here rather than delegated to a lane that does
           #     not exist.
           node --test docker/images/__tests__/dockerfile-static.test.mjs
+          # DEP-014: EXECUTES {sbom,sign,admit}.sh docker-free over all 3 images + 6 refusal controls.
+          node --test docker/images/__tests__/image-pipeline.test.mjs
 
       - name: Validate dependency resolution when manifests change
         if: github.event_name == 'pull_request'
