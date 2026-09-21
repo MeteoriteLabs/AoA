@@ -137,13 +137,15 @@ describe("WRK-018 — createRunOutputCapture (the per-run scrubber)", () => {
   });
 
   it("FAIL CLOSED: output that still holds a canary after scrubbing is dropped entirely", () => {
-    // Longest-first single-pass scrubbing turns "abc" into "a«redacted»" via the "bc"
+    // Longest-first single-pass scrubbing turns "wxyzq" into "w«redacted»" via the "xyzq"
     // needle AFTER the longer needle already ran — a residual the post-check must catch.
+    // (Needles are deliberately NON-hex: the sequencer scrubs events with the same canaries,
+    // and a hex needle such as "bc" would also rewrite random event ids and fail the run.)
     const drops: string[] = [];
-    const cap = createRunOutputCapture({ canaries: ["bc", `a${REDACTION_MARKER}`], onDrop: (r) => drops.push(r) });
-    cap.onStdout("abc\n");
+    const cap = createRunOutputCapture({ canaries: ["xyzq", `w${REDACTION_MARKER}`], onDrop: (r) => drops.push(r) });
+    cap.onStdout("wxyzq\n");
     const { stdoutTail } = cap.close();
-    expect(stdoutTail).not.toContain(`a${REDACTION_MARKER}`);
+    expect(stdoutTail).not.toContain(`w${REDACTION_MARKER}`);
     expect(drops).toContain("unscrubbable");
   });
 });
@@ -264,12 +266,12 @@ describe("WRK-018 — the supervisor channel (fake provider lane)", () => {
 
   it("redaction drops are counted on the supervisor's metrics", async () => {
     const metrics = createMetrics();
-    const fake = createFakeSandboxProvider({ stdoutChunks: ["abc\n"] });
+    const fake = createFakeSandboxProvider({ stdoutChunks: ["wxyzq\n"] });
     const supervisor = createSupervisor({
       provider: fake,
       identity: SUPERVISOR_IDENTITY,
       eventSink: collectingSink(),
-      redactionCanaries: ["bc", `a${REDACTION_MARKER}`],
+      redactionCanaries: ["xyzq", `w${REDACTION_MARKER}`],
       observeRun: createUsageObserver({ metrics }),
       metrics,
     });
