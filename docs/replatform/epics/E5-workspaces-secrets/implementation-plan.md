@@ -828,6 +828,14 @@ injected into the supervisor at construction, or the runtime passing a pre-const
 through the lifecycle), record it here, and only then assign `3c`/`3d`. The digest→grant→export→
 commit path itself is already built and correct; what is missing is the seam that reaches it.
 
+★ *Added 2026-09-21 (`DAT-009-3c` design step):* the composition surface and the E5-D07 answer are
+now recorded in [`decisions.md`](./decisions.md) **E5-D07**, with **Status: proposed**. The planning
+session has not yet accepted it. It proposes the first option above: `3d` builds the sequencer and
+injects it at construction as `SupervisorDeps.exportArtifacts`. The producer is
+`resolveExportArtifacts`. The supervisor supplies a per-run `EffectAuthority`-backed exporter. It
+also lists four corrections to this section, to `3d` and to E7's `CLI-012`. None is applied to the
+task text until E5-D07 is accepted. The paragraphs above are unchanged.
+
 **The one design decision this ticket owns and `3a` deliberately did not pre-empt: is a failed
 export a failed ATTEMPT?** Staging fails closed; export is on the other side of the work. The
 recommended answer is **best-effort like `observeRun`** — log, emit `failed`, continue to a truthful
