@@ -1,6 +1,6 @@
 # TRACK-002-B1 Result - the execution census still runs, and its recorded counts are stale
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Date (UTC):** `2026-09-21`
 **Epic:** `E6-deployment-test-harness`
 **Plan task:** `E6 implementation-plan TRACK-002-B1 - current census evidence on the milestone candidate (M0)`
@@ -54,14 +54,32 @@ The 15 unit cases were read, not executed. Recorded as `not re-run`.
 
 ## Independent review
 
-**Reviewer:** `pending`
-**Reviewed revision:** `pending`
-**Disposition:** `pending`
-**Attempt:** none recorded
+**Reviewer:** M0 independent reviewer subagent (Claude) — distinct from the M0 implementation session
+**Reviewed revision:** 5f3b47556d0df152db0d53d76c304861f30ffd37
+**Disposition:** `approved`
+**Attempt:** 1
+**Review evidence:**
+- Measured SHA `8b629fc25` vs reviewed revision: `git diff --stat 8b629fc25 HEAD` touches no census input (`scripts/test-execution-census.json`, `scripts/lib/execution-census.mjs`, `vitest.config.ts`, no `*.test.mjs` added/removed); the only workflow change is `cross-platform-weekly.yml`. Every value was nevertheless RE-MEASURED at `5f3b47556`, not inherited.
+- `node scripts/check-execution-census.mjs` at the reviewed revision -> exit `0`: `70 *.test.mjs on disk, 67 declared running, 3 declared unrun; 28 packages with vitest specs and 25 owning a vitest config, all present among 29 projects`. Independently: `find scripts docker -name '*.test.mjs'` = 70 (the guard's `SEARCH_ROOTS = ["scripts", "docker"]`; repo-wide there are 86, which the guard does not claim to cover); `scripts/test-execution-census.json` `files` = 70 entries, status counter `runs: 67, unrun: 3`; `vitest.config.ts` `projects[]` = 29 entries.
+- Unit-test count: `scripts/lib/__tests__/execution-census.test.mjs` has 15 top-level `test(` cases. The row marked `not re-run` is SATISFIED rather than merely accepted: `node --test scripts/lib/__tests__/execution-census.test.mjs` locally -> `tests 15 / pass 15 / fail 0`; and CI run `35561909654` (PR workflow, head `5f3b47556`) job `policy` = success, step `Execution census (a test file that nothing runs is not coverage)` = success -- that step's `run:` block in `.github/workflows/pr.yml` executes exactly this unit test and the guard.
+- `scripts/guard-inventory.json` key `scripts/check-execution-census.mjs` -> `status: ci`, confirmed genuinely invoked by `pr.yml` (above).
+- Deltas: original `TRACK-002-result.md` records `48 files — 44 running, 4 unrun` and `13 unit tests` -- both deltas are real and correctly stated; the original is unedited in this range.
+- Caveat (section 3): the guard prints `NOTE: 'runs' means the declaration still matches the tree, NOT observed execution — see lib header.` The record's "verbatim" quote omits the trailing ` — see lib header.`; the substantive text is exact. Non-blocking. The record correctly refuses to upgrade the 67 into an execution claim.
+- Not cited: no `cross-platform-weekly` run is cited (the E6-F023 trap is not engaged). Run `35561909654`'s `ci-required` = failure solely from the `do-not-merge` label on the program PR (all 15 other jobs success) -- not a test-health signal either way.
 
 For `approved`, verify each OBSERVED value above against the named source at the reviewed revision,
 and confirm that every row marked `not re-run` is accepted as such rather than read as passing. Then
 change the top-level `Status` to `complete` and commit that disposition separately.
 
-★ `M0` exit criterion 6 requires this result **approved**, not merely committed. It is left at
-`gate_review` because its author may not approve it.
+★ `M0` exit criterion 6 requires this result **approved**, not merely committed. It was left at
+`gate_review` by its author, who may not approve it; a distinct reviewer approved it and set
+`Status` to `complete` (see the review attempt history).
+
+## Review attempt history
+
+The implementation author leaves the table body empty. The first independent reviewer appends attempt 1, and later reviewers append monotonically increasing rows without replacing prior attempts. The summary fields above mirror the latest real attempt. No `Review commit` column: a row cannot embed the SHA of the commit that first contains it.
+
+| Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
+|---:|---|---|---|---|
+| 1 | M0 independent reviewer subagent (Claude) — distinct from the M0 implementation session | `5f3b47556d0df152db0d53d76c304861f30ffd37` | `approved` | Guard re-run at reviewed revision exit 0 with 70/67/3 and 28/25/29; independently re-counted disk (70 under scripts+docker), manifest (67 runs / 3 unrun), `projects[]` (29). Unit tests 15/15 pass locally and in CI run `35561909654` job `policy`, step `Execution census` = success. Both deltas vs original confirmed. Minor non-blocking: section 3 "verbatim" quote drops trailing ` — see lib header.`. |
+<!-- Later reviewers append attempt 2+ below without rewriting attempt 1. -->

@@ -1,6 +1,6 @@
 # DAT-008-A1 Result — narrow the lease-scoped-secrets completion claim to its ledgers
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Date (UTC):** `2026-09-21`
 **Epic:** `E5-workspaces-secrets`
 **Plan task:** `E5 implementation-plan DAT-008-A1 — narrow the lease-scoped-secrets completion claim to the ledgers (M0)`
@@ -97,11 +97,28 @@ never reused, so taking the next free id is the only correct action; the plan's 
 
 ## Independent review
 
-**Reviewer:** `pending`
-**Reviewed revision:** `pending`
-**Disposition:** `pending`
-**Attempt:** none recorded
+**Reviewer:** M0 independent reviewer subagent (Claude) — distinct from the M0 implementation session
+**Reviewed revision:** 5f3b47556d0df152db0d53d76c304861f30ffd37
+**Disposition:** `approved`
+**Attempt:** 1 (see Review attempt history)
+**Review evidence:**
+- **§3 citations, re-read at the reviewed revision (5a796928b and 8b629fc25 are both ancestors of it):** `tickets/DAT-008-design.md:233` is the heading `### Slice 6 — deferral #3, the tautological owner check`; `tickets/DAT-008-result.md:111-113` is the *"Deferral #3 is closed on the MINT side only … placement path is untouched"* bullet; `server/src/services/execution-secret-handle-mint.ts:174-175` is `if (!ownerAuthoritiesAgree(input.placementOwner, input.credentialKind)) { return refuse("owner_authority_disagreement"); }` inside `decideExecutionSecretHandle`, with `ownerAuthoritiesAgree` defined at `:145`. All hold.
+- **Placement-side residual is genuinely open, as recorded:** the self-referential comparison still exists — `server/src/services/job-placement.ts` derives `requiredOwnerPrincipalId` from the routed profile (`:289`) and compares `credentialOwnerPrincipalId` against it (`:568-570`); `canary-credential-binding.ts:42` still documents it as reading off the same profile. The record does not claim the placement side closed. Slice 7: `tickets/DAT-008-slice-7-result.md` says `DEFERRED (no code, no test)`, matching the README narrowing. `git ls-files | grep -i slice-6` returns nothing, so clause (i) stands.
+- **Forbidden word (D7; named in `implementation-plan.md`'s `DAT-008-A1` task):** case-insensitive count is `0` in `README.md`, `findings.md`, `scripts/finding-ownership.json` and this result file.
+- **Scope:** commit `360b2e5d6` touches exactly `README.md`, `findings.md`, `tickets/DAT-008-A1-result.md`, `scripts/finding-ownership.json` — no source file, no register file. `README.md:3` carries the narrowed sentence; `E5-F004` exists in `findings.md` and is `unowned` in `finding-ownership.json`.
+- **§4 positive control, reproduced:** mutated `server/src/db/with-tenant-tx.ts:36` to `:9999` in `docs/architecture/distributed-execution-threat-controls.json` → `check-register-citation-integrity` exit 1 with the exact `DE-01 (audit) … line 9999 is outside the file, which has 78 lines` message; restored → `git diff --quiet` clean, exit 0. Also ran the plan's literal RED (a wrong SYMBOL anchor, `aoa.organization_id` → `aoa.zz_wrong_symbol`) → exit 1 `anchor … does not appear within ±5 lines of line 36`; restored, clean. Register byte-identical afterwards.
+- **§5 guards at the reviewed revision:** `check-register-citation-integrity`, `check-guard-inventory`, `check-distributed-execution-foundation`, `check-gate-clause-wiring`, `check-finding-ownership`, `check-test-inventory`, `check-ticket-graph-coverage`, `check-execution-census`, `check-dependency-graph`, `check-evidence-immutability --base origin/docs/replatform-program` — all exit 0.
+- **Non-blocking observations:** (1) §3 says "all four citations" while its table lists three (the result citation is a line range); (2) §4 describes its run as the plan's "wrong symbol anchor" RED but actually mutated the LINE out of range — a weaker control; the reviewer ran the literal wrong-symbol variant above and it reds, so the plan's RED is satisfied at this revision.
 
 For `approved`, confirm the four §3 citations still resolve at the reviewed revision, that the
 forbidden word appears in none of the three artefacts, and that the register is byte-identical after
 the §4 positive control. Then change `Status` to `complete` and commit that disposition separately.
+
+## Review attempt history
+
+The implementation author leaves the table body empty; the pending summary above is not a review attempt. The first independent reviewer appends attempt 1, and later reviewers append monotonically increasing rows without replacing prior attempts. The summary fields above mirror the latest real attempt. Do not include a `Review commit` column: a row cannot embed the SHA of the commit that first contains it.
+
+| Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
+|---:|---|---|---|---|
+| 1 | M0 independent reviewer subagent (Claude) — distinct from the M0 implementation session | `5f3b47556d0df152db0d53d76c304861f30ffd37` | `approved` | §3 citation targets re-read at source (design:233, result:111-113, mint `ownerAuthoritiesAgree` :145/:174); placement residual confirmed open at `job-placement.ts:568`; slice 7 DEFERRED; no slice-6 file; forbidden-word count 0 in all artefacts; commit `360b2e5d6` docs-only; positive control reproduced (wrong-line AND wrong-symbol both exit 1, restored clean); 10 guards exit 0. Non-blocking: "four" vs three citations; record's RED was wrong-line not wrong-symbol (reviewer ran the latter). |
+<!-- Later reviewers append attempt 2+ below without rewriting attempt 1. -->

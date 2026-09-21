@@ -2863,3 +2863,31 @@ follow-up.
   `security.denied.` namespace, and (4) writes a durable record of the purge — each proven RED-first —
   plus the schema decision that makes (4) legal under the partial CHECK. Resolve = flip this Status and
   delete the `E0-F018` key in `scripts/finding-ownership.json` in the SAME commit.
+
+## E0-F019 — `check-finding-ownership` validates only the JSON register, never the `Owner:` line a reader actually reads
+
+**Status:** open · **Severity:** LOW · **Owner:** `unowned`
+**Filed:** 2026-09-21, M0 exit review (independent review of the eight M0 `gate_review` records).
+
+**What happened.** `E7-F007`'s prose line in `epics/E7-coding-e2b/findings.md` read
+`**Owner:** MIG-010 (… no result doc)` and *"MIG-010 owns choosing"*, while
+`scripts/finding-ownership.json` had already been re-pointed to `MIG-011` and `MIG-010-result.md` had
+been committed. `check-finding-ownership` **passed** throughout, because ownership is
+**declaration-based**: the guard reads the JSON register (`scripts/lib/finding-ownership.mjs`) and
+never the findings prose. So a finding's human-readable owner can silently disagree with its
+enforced owner, and the disagreement is invisible to CI. The reviewer caught it; no guard would have.
+
+**Same class, second instance.** `epics/E5-workspaces-secrets/tickets/DAT-011-result.md` cites
+`worker-control.ts:112`, and **no guard checks ticket result docs for citation currency**:
+and the citation guard would not catch it even if it did: `check-register-citation-integrity.mjs` takes citations **only** from the threat-controls register (`THREAT_CONTROLS_JSON`) — it never scans ticket result docs. And even inside the register it **enforces only explicit, repo-anchored `path/…:LINE` citations** (397 at HEAD); bare `:LINE`, relative-shorthand and filename-only citations are, in the script's own words, *“counted, not failed”* (154 + 11 + 72 = 237 unenforced at HEAD). The original's `worker-control.ts:112` is **filename-only**, so it is outside the enforced form twice over: wrong file set, and wrong citation form. **No guard checks result docs for citation currency, and this guard would not enforce that citation even if it did.**
+(Corrected twice on 2026-09-21. First it blamed a missing symbol anchor; then it claimed that inside
+the guard's scope an unanchored citation fails. Both were assertions about what a guard enforces,
+made without reading its enforcement path — which is this finding's own subject.) At HEAD, `:112` is inside `createWorkerEnrollmentService`; the sweep trigger is
+constructed at `:137`. `DAT-011-B1` then asserted "no delta" over that citation.
+
+**Options (a gate-owner call):** (1) extend `check-finding-ownership` to parse each finding's
+`**Owner:**` line and require it to match the JSON entry; (2) make the prose owner a generated field
+so there is one source; (3) accept the gap and record that the prose owner is non-authoritative.
+
+**Blocks gate:** no. Until resolved, **the JSON register is the only authoritative owner**, and a
+prose `Owner:` line must not be cited as evidence of ownership.

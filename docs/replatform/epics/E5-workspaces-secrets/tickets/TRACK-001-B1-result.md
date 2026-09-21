@@ -1,6 +1,6 @@
 # TRACK-001-B1 Result - the ticket-graph guard still runs, and the authority is still complete
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Date (UTC):** `2026-09-21`
 **Epic:** `E5-workspaces-secrets`
 **Plan task:** `E5 implementation-plan TRACK-001-B1 - current lane evidence for the ticket-graph guard (M0)`
@@ -47,14 +47,29 @@ The 8 unit cases were read, not executed (this worktree has no `node_modules`). 
 
 ## Independent review
 
-**Reviewer:** `pending`
-**Reviewed revision:** `pending`
-**Disposition:** `pending`
-**Attempt:** none recorded
+**Reviewer:** M0 independent reviewer subagent (Claude) — distinct from the M0 implementation session
+**Reviewed revision:** 5f3b47556d0df152db0d53d76c304861f30ffd37
+**Disposition:** `approved`
+**Attempt:** 1 (see Review attempt history)
+**Review evidence:**
+- **Guard runs and passes:** `node scripts/check-ticket-graph-coverage.mjs` → exit 0, `117 ticket ids from files, all present among 131 graph nodes; 14 planned-but-unbuilt ids` — identical at the reviewed revision and at `8b629fc25` (run from a `git archive 8b629fc25 scripts docs` extract). Also green in the `policy` job of CI run `35561909654` (reviewed revision).
+- **Pure logic / tests / inventory:** `scripts/lib/ticket-graph-coverage.mjs` present; `scripts/lib/__tests__/ticket-graph-coverage.test.mjs` has 8 `test(` cases; `scripts/guard-inventory.json:153` declares `scripts/check-ticket-graph-coverage.mjs`; `check-guard-inventory` exit 0.
+- **§3 not-re-run row — now satisfied, not merely accepted:** `node --test scripts/lib/__tests__/ticket-graph-coverage.test.mjs` → `tests 8 / pass 8 / fail 0` locally (it needs no `node_modules`, so the record's stated reason for not running it is inaccurate, though the `not re-run` label was honest), and the same suite ran `tests 8 / pass 8` in the `policy` job ("Programme dependency graph" step) of CI run `35561909654`.
+- **§2 observations:** `docs/replatform/program-design.md` has seven `#### CLI-010`..`CLI-016` nodes while only `CLI-011-design.md` and `CLI-015-design.md` exist → five file-less ids, consistent with the backlog count; exactly one `#### CLI-008` heading now; commit `8ce4c2ab6`'s message records the duplicate-`CLI-008` heading reddening `check-dependency-graph` (whose message text is at `scripts/check-dependency-graph.mjs:51`). "Counts have grown" is true of ids/nodes; the backlog itself went 15 (original §4) → 14, which the record does not contradict.
 
 For `approved`, verify each OBSERVED value above against the named source at the reviewed revision,
 and confirm that every row marked `not re-run` is accepted as such rather than read as passing. Then
 change the top-level `Status` to `complete` and commit that disposition separately.
 
-★ `M0` exit criterion 6 requires this result **approved**, not merely committed. It is left at
-`gate_review` because its author may not approve it.
+★ `M0` exit criterion 6 requires this result **approved**, not merely committed. It was left at
+`gate_review` by its author, who may not approve it; a distinct reviewer approved it and set
+`Status` to `complete` (see the review attempt history).
+
+## Review attempt history
+
+The implementation author leaves the table body empty; the pending summary above is not a review attempt. The first independent reviewer appends attempt 1, and later reviewers append monotonically increasing rows without replacing prior attempts. The summary fields above mirror the latest real attempt. Do not include a `Review commit` column: a row cannot embed the SHA of the commit that first contains it.
+
+| Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
+|---:|---|---|---|---|
+| 1 | M0 independent reviewer subagent (Claude) — distinct from the M0 implementation session | `5f3b47556d0df152db0d53d76c304861f30ffd37` | `approved` | Guard exit 0 with 117/131/14 at both `8b629fc25` and HEAD; lib + 8-case test file + `guard-inventory.json:153` present; 8/8 pass locally and in CI `35561909654` policy job; CLI-01x 7-nodes/2-files and CLI-008 duplicate-heading observations confirmed (`program-design.md`, commit `8ce4c2ab6`). Not-re-run row satisfied by these runs. Minor: "no node_modules" was not a real obstacle. |
+<!-- Later reviewers append attempt 2+ below without rewriting attempt 1. -->

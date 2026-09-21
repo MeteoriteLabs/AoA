@@ -394,7 +394,7 @@ workspace, no output capture) and by the execution substrate. Nothing here is an
 
 ## E7-F007 — After a post-pass owner deletion, the reconciliation pass refuses forever while the gate opens
 
-**Status:** open · **Owner:** MIG-010 (`epics/E10-desktop-migration-realtime/tickets/MIG-010-design.md`, no result doc)
+**Status:** open · **Owner:** MIG-011 (`epics/E10-desktop-migration-realtime/tickets/MIG-011-design.md`) — ★ *Corrected 2026-09-21 in response to review attempt 1:* this line named MIG-010 with “no result doc” after the register (`scripts/finding-ownership.json`) had already been re-pointed to MIG-011 and `MIG-010-result.md` had been committed. The register is authoritative; this prose now agrees with it.
 **Severity:** MEDIUM
 **Filed:** 2026-09-02, by MIG-010 Unit 2.5 Task 1, **measured on a real migrated database** rather than
 reasoned — the plan's Task 1 Step 2 said "assert what you observe, not what you expect about the second
@@ -432,7 +432,7 @@ the pass compare against the persisted record and report a `stale_record` outcom
 `unattributable`; give the pass a reconcile-with-existing path (which reopens "a pass that can rewrite its
 own verdict is not evidence", design §9.2 option 2, and is probably wrong); or accept the divergence and
 make the pass's verdict read from the same persisted records the gate does, so the two cannot disagree by
-construction. MIG-010 owns choosing.
+construction. **MIG-011 owns choosing** (★ *Corrected 2026-09-21 in response to review attempt 1:* was “MIG-010 owns choosing”).
 
 **Not a blocker for E7-1.** E7-1 is gated by E7-F003 and the execution substrate.
 
