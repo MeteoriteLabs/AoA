@@ -44,16 +44,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** A count as the server reads it (`asNumber(v, 0)`), then held to the frozen schema's
- * non-negative-integer rule. `undefined` = not representable ⇒ no usage at all. */
+/** A count: an ABSENT field is 0 (the server's `asNumber(v, 0)`); a present count must be a
+ * non-negative safe integer (the frozen schema). Anything else PRESENT - a string, `null`, or
+ * the redaction marker where a canary overlapped a count - is `undefined` ⇒ no usage at all,
+ * never a silent 0 that would under-report the run (Codex P2, PR #546). */
 function tokenCount(value: unknown): number | undefined {
-  const n = typeof value === "number" && Number.isFinite(value) ? value : 0;
-  return Number.isSafeInteger(n) && n >= 0 ? n : undefined;
+  if (value === undefined) return 0;
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
+
+/** A line that CLAIMS to be the result event, so a parse failure there is a corrupted result
+ * (e.g. a numeric canary redacted inside a bare count), not noise. */
+const RESULT_TYPE_RE = /"type"\s*:\s*"result"/;
 
 /** Parse the agent-reported usage from `claude --output-format stream-json` output, or `null`. */
 export function parseClaudeStreamJsonUsage(stdout: string): ParsedAgentUsage | null {
-  let finalResult: Record<string, unknown> | null = null;
+  // `"corrupt"`: the latest result-claiming line did not parse. It VOIDS usage rather than
+  // letting an earlier result line stand in for the final one; a later valid line still wins.
+  let finalResult: Record<string, unknown> | "corrupt" | null = null;
   for (const rawLine of stdout.split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line) continue;
@@ -61,10 +69,12 @@ export function parseClaudeStreamJsonUsage(stdout: string): ParsedAgentUsage | n
     try {
       event = JSON.parse(line);
     } catch {
+      if (RESULT_TYPE_RE.test(line)) finalResult = "corrupt";
       continue;
     }
     if (isRecord(event) && event.type === "result") finalResult = event;
   }
+  if (finalResult === "corrupt") return null;
   if (finalResult === null || !isRecord(finalResult.usage)) return null;
   const usage = finalResult.usage;
   const inputTokens = tokenCount(usage.input_tokens);

@@ -65,6 +65,21 @@ describe("WRK-018 — parseClaudeStreamJsonUsage (daemon-local port, E4-D13)", (
     expect(parseClaudeStreamJsonUsage(resultLine(undefined))).toBeNull();
   });
 
+  it("a PRESENT but non-numeric count (e.g. redacted to the marker, or a string) is NO usage, never a silent 0 (Codex P2, PR #546)", () => {
+    expect(parseClaudeStreamJsonUsage(resultLine({ input_tokens: "«redacted»", output_tokens: 5 }))).toBeNull();
+    expect(parseClaudeStreamJsonUsage(resultLine({ input_tokens: "12", output_tokens: 5 }))).toBeNull();
+    expect(parseClaudeStreamJsonUsage(resultLine({ input_tokens: null, output_tokens: 5 }))).toBeNull();
+  });
+
+  it("a FINAL result line the scrubber made unparseable voids usage; an EARLIER result line never stands in for it", () => {
+    const earlier = resultLine({ input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 1 });
+    // A numeric canary "4" redacted inside a bare count: no longer valid JSON.
+    const corrupted = '{"type":"result","usage":{"input_tokens":«redacted»2,"output_tokens":9}}';
+    expect(parseClaudeStreamJsonUsage(`${earlier}\n${corrupted}\n`)).toBeNull();
+    // ...while a valid result line AFTER a corrupted one still wins (last valid line = final).
+    expect(parseClaudeStreamJsonUsage(`${corrupted}\n${earlier}\n`)).toEqual({ inputTokens: 1, outputTokens: 1, cachedInputTokens: 1 });
+  });
+
   it("no result line, empty output, or a non-integer/negative count is NO usage (never an invalid event)", () => {
     expect(parseClaudeStreamJsonUsage("")).toBeNull();
     expect(parseClaudeStreamJsonUsage('{"type":"assistant"}\n{"type":"system","subtype":"init"}')).toBeNull();

@@ -77,6 +77,7 @@ adapter-manager, worker-networked-host, worker-keystore, provider-capability.
 | MC1 | AM scrubs with `[]` | all 4 canary-on-the-wire cases (reads the RAW HTTP body) |
 | MC2 | driver never replays the tail | the replay case |
 | MC3 | AM captures regardless of the flag | the no-flag byte-identical case |
+| MP3 | revert tokenCount's present-non-number rule, or the `corrupt` result sentinel | the respective Codex-P2 #2 case |
 | MP2 | revert the Codex P2 fix (plain `includes` residual check) | the marker-substring canary case (`"red"`, `"redacted"`, `"a"` dropped every tail as `unscrubbable`) |
 
 **Positive controls that stop the canary tests being vacuous:** each lane asserts the canary WAS in
@@ -90,6 +91,14 @@ canary that is a substring of the marker `«redacted»` (e.g. `"red"`) matched t
 been replaced by and dropped every tail - usage silently lost. The check now ignores an occurrence
 lying WHOLLY inside a marker span and still refuses one that overlaps outside text (the re-formed
 `w«redacted»` case stays red). RED first: `expected [ 'unscrubbable' ] to deeply equal []`.
+
+**Codex P2 on `4a56c56e5` (verified, fixed at source):** a present non-numeric count fell back to
+0 (server parity), so a count the scrubber hit, or a string count, produced a plausible zero-token
+usage event. Verified detail: a bare JSON number hit by redaction makes the line unparseable (the
+marker is not a JSON token), so the live variant was that an EARLIER result line could then stand in
+for the corrupted final one. Now: a present non-number is no usage, and an unparseable line that
+claims `"type":"result"` voids usage unless a later valid result line follows. RED first
+(`expected { inputTokens: +0, ... } to be null`; `expected { inputTokens: 1, ... } to be null`).
 
 **A vacuous test caught and fixed during the build:** the first "empty tail" case asserted inside
 the observer, whose throw the supervisor swallows, so it passed in RED. It now records and asserts

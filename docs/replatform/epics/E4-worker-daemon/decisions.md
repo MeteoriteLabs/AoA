@@ -111,7 +111,9 @@ daemon cannot import that parser: `@armyofagents/adapters` is outside the E4-D01
 needs — the LAST `type:"result"` line's `usage.{input_tokens, output_tokens,
 cache_read_input_tokens}`, with the server's missing-field-is-0 rule — and deliberately returns NO
 usage (not zeros) for a result line without a `usage` object or with a count the frozen
-`usagePayloadV1Schema` would reject. Injecting the server parser from a composition root was
+`usagePayloadV1Schema` would reject. A PRESENT count that is not a number (a string, `null`, or the redaction marker) and a
+final result line the scrubber made unparseable are likewise NO usage - never a silent 0, and never
+an earlier result line standing in for the final one (Codex P2, PR #546). Injecting the server parser from a composition root was
 rejected: it would make every worker image carry the adapters package (and its transitive server
 utilities) to extract four integers, which is exactly the coupling E4-D01 exists to prevent. The
 cost of porting is drift; it is paid by a conformance test that reads the REAL captured claude
