@@ -230,8 +230,21 @@ which this PR does not touch.
 
 ## 9. CI
 
-*(Filled in after the PR's `pr.yml` run: `ci-required` and the `verify` shard that executes each new
-suite, each with its executed count.)*
+Measured on head `7f7bf5317` (which carries the reviewed code tree `d5e6a3612`), `pr.yml` run
+`35596023016`:
+- **`ci-required`** (job `106326177981`): **success**.
+- **`verify (3)`** (job `106321019295`): ran `adapter-manager` `server-artifact-export.test.ts`,
+  **14 tests**, and `provider-wire` `driver-artifact-export.test.ts`, **14 tests**, all passed. The
+  shard total was 5937 passed and 29 skipped (5966).
+- **`verify (2)`** (job `106321019189`): ran `sandbox-e2b-provider` `put-grant-bytes.test.ts`,
+  **8 tests**, all passed. The shard total was 6239 passed and 33 skipped (6272).
+- `verify (1)`, `verify (4)`, `policy`, `e2e`, `migrations` and `lint`: success.
+
+Codex on `7f7bf5317` reported "Didn't find any major issues". Its one earlier P1, on `d2fc689ac`
+(forged upload grants), is fixed in `d5e6a3612`, replied to and resolved.
+
+This section was added in a docs-only commit after that run, so the final head differs from
+`7f7bf5317` by this file only.
 
 ## 10. Reviewer section
 
