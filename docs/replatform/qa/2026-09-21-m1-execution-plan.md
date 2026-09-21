@@ -17,7 +17,11 @@ frozen candidates, as defined in `epic-regrooming/scope-triage.md`.
   and adds criterion 4.
 
 **Base:** `docs/replatform-program` at `0c6ad7c13` (M0 candidate; M0 `Decision: pass`, PR #529).
-**Status:** DRAFT for founder review. Nothing in it is ruled until §2 is answered.
+**Status:** APPROVED 2026-09-21 by the founder, with two changes to the recommendations.
+- **F10 overruled: M1 is multi-tenant.** "It's not one organization. It's a multi-tenant thing. So we have to make sure that part works for all tenants properly." F10 now reads as below: every campaign runs several tenants and proves per-tenant correctness and cross-tenant isolation.
+- **F2 changed: the founder is the owner of everything and delegates every M1 decision to the planning session** ("I am the owner and you can take a decision for all of it"). The planning session records each decision it takes, with its reason, in the E-epic `decisions.md` or here. QA independence still holds (F2).
+
+F1, F3–F6, F8 and F9 are ruled as recommended, including the F4 narrowing and the F8 named-run spend list. **F7 stays open** until the `CLI-011` design review exists. The planning session then takes it under the delegation.
 
 ---
 
@@ -72,12 +76,12 @@ All ten open, none with a `-result.md`.
 
 ## 2. Founder decisions owed
 
-Ordered by when each is needed. Each carries a recommendation. None is assumed.
+Ordered by when each is needed. ★ **Ruled 2026-09-21: every recommendation below was accepted, except F2 and F10, which the founder changed (rows rewritten below). F7 stays open.**
 
 | # | Decision | Needed by | Recommendation |
 |---|---|---|---|
 | **F1** | Amend `EVID-04` to also permit `docs/replatform/milestones/<M>/qa/<date>-<gate>-<scope>-<sha12>-a<n>.md` | Step 0 — **without it no M1 gate record can exist** | Yes, one sentence; no guard change needed |
-| **F2** | Name the owners: partial-gate owner, QA owner, rollback owner, decision owner. The decision owner may not also certify the QA record. | Step 0 | You: decision + rollback owner. A **distinct review session** (as in M0's exit review): QA owner. |
+| **F2** | Name the owners: partial-gate owner, QA owner, rollback owner, decision owner. The decision owner may not also certify the QA record. | Step 0 | ★ **RULED (changed):** the **founder** owns every role and **delegates all M1 decisions to the planning session**, which records each with its reason. **The QA owner stays a distinct review session**: the session that decides may not certify its own QA record, and a decision it takes may not be approved by itself. |
 | **F3** | Define **"shipped CI boot"** | Before `DEP-015` | (a) A **dispatch-only** CI job, never on push, bound to a named candidate (F8), on the frozen candidate **builds** the control-plane, worker and adapter-manager images from source and boots them together with a CI-generated control-plane keypair. The journey then runs in that boot, in a keyed lane. **Not** the operator campaign deploy. Boot-only is too weak (the gate asks for a journey). |
 | **F4** | `WRK-013`: on the **container** path, a restarted daemon cannot enumerate orphans (its lease capability has lapsed). Is journey item 8 met by the lease probe, outbox recovery **and** the adapter-manager reaper, without a worker-side sandbox teardown? | Before `WRK-013` | Yes for M1, **but this is a real narrowing of the gate's "cleanup/recovery" clause, not a residual**: on the container path no worker-side teardown runs, and orphan reclamation rests on the adapter-manager reaper. Record it as a named narrowing with an owner. |
 | **F5** | `WRK-013`: a "live" probe renews the lease, but D2 forbids re-attaching. Keep, lapse, or fence? | Before `WRK-013` | **Fence**: stop renewing and let the control plane's reaper end the attempt. Keeping a supervisor-less sandbox alive is the worst option. |
@@ -85,7 +89,13 @@ Ordered by when each is needed. Each carries a recommendation. None is assumed.
 | **F7** | **The `CLI-011` output-mechanism ruling**: a fourth mechanism, priced and sized, or "neither is reachable", with a named cause | After the `CLI-011` review; **gates the emit build and `M1b`** | No recommendation until the review exists. It is the M1b long pole. |
 | **F8** | **Keyed E2B spend envelope for M1**: authorize these runs, each dispatched only on a named candidate | Rolling | Authorize as a list, not blanket: the `CLI-011` `files.read` probe, `DAT-009-3e` conformance, `CLI-016` +/- controls, `WRK-018` usage acceptance, `E7-1-JOURNEY-ARM`, the `M1a-D2-MECHANISM` campaign and the `M1-D2-CODING` campaign. |
 | **F9** | Criterion 5: build the live env-absence probe for the distributed stage-in path (closes the `E8-F012` gap for M1), or narrow the claim | Before the M1a campaign | Build it (`DEP-017`, M). Plus the reviewers' acknowledgement that DE-08 leaves H-06 unmet. "Narrow the claim" is available, but it **weakens criterion 5**. |
-| **F10** | "Named internal Organization only": the tools flag (and the dispatch dial) are **deployment-wide** `process.env` | Before `CLI-016` / campaign freeze | Satisfy it **operationally**, and say plainly that this swaps enforcement for an observed fact. Organization count = 1 is asserted at campaign start **and** end and recorded, because Company/Organization creation stays open. A per-org gate is post-M1 work. |
+| **F10** | Tenancy of the M1 deployment | Campaign freeze | ★ **RULED (founder override): MULTI-TENANT.** M1 is proven for **every tenant it serves**, not for one organization:
+- **Topology:** each campaign runs at least **three Organizations**: two enabled through the existing per-Organization rollout policy (`AOA_DISTRIBUTED_EXECUTION_ROLLOUT`, `server/src/config/distributed-execution-rollout-source.ts`), and one **not** enabled, as the control.
+- **Per-tenant correctness:** the journey passes **for each enabled tenant**, with that tenant's own audit, `cost_events` and budget attribution.
+- **Isolation:** hostile cross-tenant cases in **every** gate profile. A cannot lease, read, cancel or see B's jobs, events, secrets, staged inputs, outputs, cost rows or tool calls. Attempts are denied, not merely empty, and run through the non-owner `aoa_app` pool with RLS, which flag-on already uses (`index.ts` `maybeProvisionDistributedExecutionRoles`).
+- **The control tenant** is refused distributed execution and stays on the legacy path.
+- **Every deployment-wide switch gets a per-Organization dimension before M1b.** Today `AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED` is `process.env`-wide, so `CLI-016` must key the tool surface on the per-Organization rollout policy too. Otherwise enabling tools for one tenant enables them for all.
+- **The spec changes to match:** S0-1 amends scope-triage's entry bullet "enabled only for the named internal Organization" to "enabled only for the named set of Organizations via the per-Organization rollout policy, with isolation proven". |
 
 ---
 
@@ -93,7 +103,7 @@ Ordered by when each is needed. Each carries a recommendation. None is assumed.
 
 | Unit | What | Owner | Size |
 |---|---|---|---|
-| **S0-1** | Record F1–F10 rulings in `scope-triage.md` (a dated "M1 rulings" block). F7 stays open. The founder, as epic owner, also **approves the S0-3 plan amendments**, as the first entry bullet requires. | planning session + founder | XS |
+| **S0-1** | Record F1–F10 rulings in `scope-triage.md` (a dated "M1 rulings" block). F7 stays open. Also amend scope-triage's entry bullet for F10 (multi-tenant). The S0-3 plan amendments are approved under the founder's delegation (F2), and a distinct reviewer checks them. | planning session | XS |
 | **S0-2** | Enact **F1**: the EVID-04 amendment in `test-gates.md` + `artifact-policy.md` §milestone paths. Gate-owner commit. | founder | XS |
 | **S0-3** | **File the tickets** (§4 ids): graph nodes in `program-design.md` + task sections in the epic plans + `finding-ownership.json` re-points (`E3-F037` → `JOB-016`; `E4-F009` stays `WRK-013`). Create the missing `epics/E3-*/decisions.md`, `epics/E5-*/decisions.md` and `epics/E7-*/decisions.md` shells. **And rewrite scope-triage's `M1a` required result set with the filed ids**: `MIG-009`, `DAT-007-S3`, `E7-1-JOURNEY-ARM`, `WRK-013`, `WRK-018`, `JOB-016`, `JOB-017`, `DEP-014`, `DEP-015`, `DEP-016`, `DEP-017`, `DEP-018`. Once F7 is ruled, `CLI-017` enters the `M1b` enumeration the same way. The enumeration is the mechanically checkable artefact, so "the parity bridges" and "DEP-011's deploy half" must become ids there, not only here. | planning session | S |
 | **S0-4** | **Record corrections** found by the terrain passes, each verified at source first. See the list below. | planning session | S |
@@ -174,7 +184,7 @@ reviewer-approved before any build).** It must fix four things:
 | `E7-1-JOURNEY-ARM` | Promote `E7-1-coding-journey` on a `DEP-015` run + `pnpm verify:e7-1-distributed-run`; `capabilityProven=false` passes | E7 | `DEP-015` | S | 1 run |
 | **`DEP-016`** *(new)* | **`m1-spine` campaign profile**: a one-worker topology on the D1 compose, evidence retained **on pass**, audit/cost assertions. The reference provider emits **canned usage**, and the profile asserts exactly one `cost_events` row with cost > 0. A positive control (usage suppressed) must red. Without it, the spine prices nothing and still passes. | E6 | `JOB-016`, `JOB-017` | M | no |
 | **`DEP-017`** *(new)* | **Live env-absence probe** on the distributed stage-in path (criterion 5). **Positive control:** a planted canary credential must turn the probe red. | E6 | F9 | M | via campaign |
-| **`DEP-018`** *(new)* | **Campaign fault matrix + injection harness**, per gate profile, with declared cases and expected classifications. `M1-D1-SPINE`: the journey's fault controls (Toxiproxy), restart/reconciliation (`WRK-013`), cancellation. `M1a-D2-MECHANISM`: cancellation, provider failure, reconciliation, every cleanup path. `M1-D2-CODING`: plus hostile-tenant and credential cases. Every case needs a run showing its injection fired. | E6 | `DEP-016`, `DEP-015`, `WRK-013` | M | via campaigns |
+| **`DEP-018`** *(new)* | **Campaign fault matrix + injection harness**, per gate profile, with declared cases and expected classifications. `M1-D1-SPINE`: the journey's fault controls (Toxiproxy), restart/reconciliation (`WRK-013`), cancellation. `M1a-D2-MECHANISM`: cancellation, provider failure, reconciliation, every cleanup path. `M1-D2-CODING`: plus credential cases. **Every profile also carries the F10 tenant matrix**: per-tenant journey correctness for each enabled tenant, cross-tenant denial (lease, read, cancel, events, secrets, staged inputs, outputs, cost rows, tool calls), and refusal of the control tenant. Every case needs a run showing its injection fired, and each tenant denial needs a positive control, a same-tenant request that succeeds. | E6 | `DEP-016`, `DEP-015`, `WRK-013` | M | via campaigns |
 
 ### Track B — `M1b` (starts in parallel with Track A)
 
@@ -190,7 +200,7 @@ reviewer-approved before any build).** It must fix four things:
 | `CLI-014` | Output projection **registered on `E3-D-ACC`** (not a second seam) + `job_artifacts` → `artifacts` | `CLI-013`, `JOB-016` seam | M–L | no |
 | `CLI-017` *(filed after F7)* | The emit build | F7 | ? | yes |
 | `CLI-015` | The judge counts what F7 ruled | F7, `CLI-017`, `CLI-012` | M | no |
-| `CLI-016` | Arm the tool surface (spec reconciled in S0-4) | `DAT-007-S3` complete | M | yes |
+| `CLI-016` | Arm the tool surface (spec reconciled in S0-4), **per Organization** (F10): key the tool surface on the per-Organization rollout policy instead of the deployment-wide `AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED`. A tenant not enabled for tools must be denied even when another tenant is enabled. | `DAT-007-S3` complete | M–L | yes |
 
 **Merge-order constraint:** `DAT-009-3e` and `CLI-012` both edit `provider-wire/src/driver.ts` and
 `adapter-manager/src/server.ts`. `3e` merges first, then `CLI-012` rebases.
@@ -231,7 +241,7 @@ Step 0 (S0-1..S0-7, parallel) ──┬─ Track A ─────────�
 1. Freeze the candidate: revision, topology, config digests and owners. The config digest must assert:
    - `AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED` is **off**, and output is not required (the `M1a` tools + output exemption);
    - **no excluded flag is enabled** (workload, desktop, mobility, cutover, HA, beta);
-   - **Organization count = 1, asserted at campaign start and end** and recorded (F10).
+   - **the tenant set (F10)**: the enabled Organizations and the control Organization, read from the rollout policy digest, and asserted unchanged at campaign start and end.
 2. Then, on that exact candidate:
    - a `M1-D1-SPINE` record (`DEP-016` profile), including the **rollback rehearsal via the `MIG-009`
      CLI**, attributed to the rollback owner (criterion 6);
@@ -265,8 +275,7 @@ minus the tools + output exemption.
 ## 8. Not in scope
 
 - mTLS on the worker→AM hop (`DEP-011` Slice 5 remainder). It is recorded as a named residual.
-- A per-Organization feature gate (F10).
-- The worker-side sandbox pass on the container path (F4 residual).
+- The worker-side sandbox pass on the container path (the F4 narrowing).
 - The codex adapter (`E7-F027`, `claude_local` only).
 - Unit E / `workspace_patch` artifacts.
 - The M2 sink cutover.
@@ -301,6 +310,7 @@ minus the tools + output exemption.
     - `M1b` states criteria 5 and 6 explicitly.
     - The `M1a` freeze asserts the tools flag is off and no excluded flags are on.
     - A planted-canary positive control for `DEP-017`.
-  - **Weakened bars now stated as such:** F4, F9, F10.
+  - **Weakened bars now stated as such:** F4 and F9. (F10 was listed here too, but the founder then overruled it to multi-tenant, which **raises** the bar.)
   - **Minors applied:** the diagram edge and critical path, `CLI-017` into the `M1b` enumeration,
     per-attempt audit atomicity (F6), `DEP-015` dispatch-only, and owner approval in S0-1.
+- **2026-09-21, founder ruling.** "Accept all", with two changes: **F10 → multi-tenant** (a stronger bar: at least three Organizations per campaign, per-tenant correctness, cross-tenant denial in every gate profile, and a per-Organization tool surface in `CLI-016`), and **F2 → founder owns everything and delegates every M1 decision to the planning session**, with QA independence kept.
