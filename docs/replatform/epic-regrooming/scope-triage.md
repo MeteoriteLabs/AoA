@@ -119,7 +119,7 @@ This is an internal alpha, not a private-beta promotion and not proof of the who
 
 #### `M1a` — the spine
 
-Journey items **1, 2, 4, 6, 7, 8**. One Organization, one control-plane instance, one separately
+Journey items **1, 2, 4, 6, 7, 8**. ★ *Amended 2026-09-21 (M1 ruling F10, founder: multi-tenant):* *multiple Organizations — at least two enabled through the per-Organization rollout policy plus one control Organization that is not — (was: "One Organization"),* one control-plane instance, one separately
 deployed worker, external PostgreSQL and object storage, **real E2B**, proven in a **shipped CI
 boot** rather than a manual staging run. It proves the *mechanism*: dispatch → distributed owner →
 lease → secret redemption → sandbox create/execute/teardown → durable terminal → operator-visible
@@ -237,7 +237,7 @@ claim, and unlocks only `M1a`.
 | # | Milestone | Proves | Named gate(s) | Blocked by |
 |---|---|---|---|---|
 | **M0** | Record + lane health | the records match the code, and every lane a milestone will cite is green and read | *(no gate — entry criteria for M1a)* | nothing |
-| **M1a** | The spine | mechanism: one org, one CP, one worker, real E2B, in a **shipped CI boot** | `M1-D1-SPINE` + **`M1a-D2-MECHANISM`** | M0 |
+| **M1a** | The spine | mechanism: **multi-tenant** (≥2 enabled Organizations + 1 control; was "one org" — ruling F10), one CP, one worker, real E2B, in a **shipped CI boot** | `M1-D1-SPINE` + **`M1a-D2-MECHANISM`** | M0 |
 | **M1b** | Useful capability | an agent's output reaches the founder | **all three, fresh on the `M1b` candidate** — `M1-D1-SPINE` + `M1a-D2-MECHANISM` + `M1-D2-CODING` ★ *corrected twelfth round: this named only `M1-D2-CODING`. Criterion 8 derives the required passing records from **the gates a milestone names**, so naming one here permitted an `M1b` handoff omitting the two exact-candidate records the recovery procedure requires.* | M1a, `CLI-008` Unit F, `DAT-009` 3c–3e |
 | **M2** | Sink cutover | the legacy in-process paths stop owning execution | `M2-CUTOVER` *(to be named)* | M1b |
 | **M2-RTF** | Realtime foundation | reconnect-safe realtime, proven on one revision | **`E10-REALTIME-FOUNDATION`** | M1b *(its three input tickets are already shipped)* |
@@ -578,6 +578,45 @@ The accepted managed-shared DE-08 residual conflicts with the still-normative H-
 
 The qualification limits blast radius; it does not turn a dormant control into a delivered one or a hard-invariant failure into a pass.
 
+## M1 rulings — 2026-09-21
+
+*Recorded by the M1 planning session under the founder's delegation (ruling F2). The full table,
+with each recommendation and its reason, is in `docs/replatform/qa/2026-09-21-m1-execution-plan.md` §2.*
+
+- **F1 — `EVID-04` amended** so milestone QA records live under `milestones/<milestone>/qa/`
+  (`test-gates.md`). This lifts the blocking precondition recorded in `artifact-policy.md`.
+- **F2 — Ownership.** The founder owns every role and **delegates every M1 decision to the
+  planning session**. That session records each decision with its reason. **QA independence
+  holds:** the QA owner is a distinct review session, and no session certifies its own decision.
+- **F3 — "Shipped CI boot"** means a **dispatch-only** CI job, bound to a named frozen candidate.
+  It builds the control-plane, worker and adapter-manager images from source, boots them together
+  with a CI-generated control-plane keypair, and runs the journey in that boot. The operator
+  campaign deploy does not count, and a boot-only check is insufficient.
+- **F4 — Restart recovery on the container path.** It is accepted for M1 without a worker-side
+  sandbox teardown. This is **a stated narrowing** of the cleanup/recovery clause, not a residual:
+  orphan reclamation rests on the adapter-manager reaper.
+- **F5 — A live lease found at restart is fenced.** The worker stops renewing it and the control
+  plane's reaper ends the attempt. Nothing re-attaches.
+- **F6 — Rollback trigger.** A CLI now, with the kill-switch UI later (`REL-005`). The audit write
+  is atomic with **each attempt's** cancel.
+- **F7 — The `CLI-011` output mechanism: OPEN.** It is taken under the delegation after the design
+  review, and its reasoning is shown to the founder before any build depends on it.
+- **F8 — Keyed E2B spend.** Authorized as a **named list** only, each run dispatched on a named
+  candidate: the `CLI-011` `files.read` probe, `DAT-009-3e` conformance, `CLI-016` +/- controls,
+  `WRK-018` usage acceptance, `E7-1-JOURNEY-ARM`, the `M1a-D2-MECHANISM` campaign and the
+  `M1-D2-CODING` campaign.
+- **F9 — Criterion 5.** A live env-absence probe on the distributed stage-in path (`DEP-017`), with a
+  planted-canary positive control.
+- **F10 — MULTI-TENANT (founder override of the one-Organization recommendation).** Every campaign
+  runs at least three Organizations: two enabled through `AOA_DISTRIBUTED_EXECUTION_ROLLOUT`, and one
+  control. Each campaign proves:
+  - per-tenant correctness;
+  - cross-tenant denial in every gate profile;
+  - refusal of the control tenant;
+  - a per-Organization tool surface (`CLI-016`).
+
+  The entry bullet above is amended to match.
+
 ## Entry criteria
 
 ★★★ **THESE ENTRY CRITERIA ARE `M1b`'s. `M1a` ENTERS ON THE SUBSET BELOW, AND WITHOUT THAT SPLIT
@@ -588,6 +627,8 @@ cleanup paths”* to be enabled before any integrated campaign may start. That i
 and the output capability `M1a` exists to defer, so an `M1a` candidate could never be admitted — the
 same defect the recovery order had, one document further up, and splitting only the exits did not
 cure it.
+
+★ **LIFTED 2026-09-21 — `EVID-04` now permits `milestones/<milestone>/qa/` (M1 ruling F1, `test-gates.md`).** The note below is kept as history.
 
 ★★★ **`M1a`'s FIRST ENTRY BLOCKER IS `EVID-04`.** *Added 2026-09-21.* M0 needed no milestone QA
 record — its row names no gate — so `EVID-04` did not block it. `M1a` names two gates
@@ -621,7 +662,7 @@ integrated QA campaign only when:
 - E3–E6 have candidate-specific ledgers showing which mechanisms are production-reachable rather than merely present and which clauses are certified only by `M1-D1-SPINE`;
 - every E5 implementation/build gap required by the M1 subset is closed and production-wired, with focused acceptance green;
 - the proposed E5 seven-clause audit matrix, commands, exact topology, QA owner, and decision owner are approved and frozen — ★ *the matrix is frozen once and reused across attempts; `a2` attests the `M1a` candidate and `M1b` owes `a3` or later, corrected twelfth round* — ; the audit record is planned to consume the exact M1 candidate campaigns rather than required to pass before they start;
-- the supported adapter, tools, workspace, output, audit/cost, and cleanup paths are enabled only for the named internal Organization;
+- the supported adapter, tools, workspace, output, audit/cost, and cleanup paths are enabled only for the **named set of Organizations, through the per-Organization rollout policy**, with per-tenant correctness and cross-tenant isolation proven in every partial-gate campaign, and at least one control Organization that is **not** enabled and is shown to be refused. ★ *Amended 2026-09-21 (M1 ruling F10, founder: multi-tenant):* *this read "enabled only for the named internal Organization". AoA is multi-tenant, so a one-Organization proof would not prove the property that matters. Every switch that has no per-Organization dimension today (e.g. `AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED`) must gain one before it is enabled.*;
 - no excluded workload, desktop, mobility, cutover, HA, or beta flag is enabled;
 - the candidate revision, topology, configuration digests, external dependencies, partial-gate owner, QA owner, and rollback owner are frozen before the run starts; and
 - reviewers acknowledge that the accepted DE-08 residual leaves H-06 unsatisfied for full D1/D2 and therefore prevents E6/E7 completion absent a separately approved normative amendment.
