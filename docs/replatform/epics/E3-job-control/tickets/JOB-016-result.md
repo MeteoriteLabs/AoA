@@ -138,3 +138,21 @@ The run on the final head (after the rebase plus the E3-F037 re-point and this r
   - `verify (2)` executed `job-budget-cost-parity.integration.test.ts` **(13 tests)**.
 - **Codex** (`chatgpt-codex-connector`) reviewed `9f26bb9cb9`: no major issues.
 - **Superseded as evidence:** the pre-rebase run `35586672944` on `a3d1db48395f8b4bf8954df0736c5223e13a2a5a`, cited in "CI evidence" above. That revision is not an ancestor of the program tip after the rebase, and its suite predates the Codex P2 fix (15 tests, not 17). The section above is kept as written.
+
+## CI evidence — final head, second round (addendum, 2026-09-21)
+
+**This supersedes the previous addendum.** That addendum names `9f26bb9cb`, and a later rebase onto the program tip rewrote that commit, so it is no longer on this branch. It also predates two Codex fixes.
+
+- **Codex fixes in this round (on `782824f`), both verified at source:**
+  - **P1:** a job with an OFFERED, un-ACKed lease was excluded from the hard-stop scope cancel. It is now cancelled, and its ACK is refused.
+  - **P2:** `budget.incident_created` was published inside the savepoint. It is now deferred to after commit, like `budget.exhausted`.
+  - New or extended tests: `[Codex P1]`, and the rolled-back-savepoint test now also asserts no incident live event. Mutations **M14** and **M15** turn them red.
+  - The full mutation table (**15 rows**) was re-run on this code, and every row turns a named test red. The seam suite is now **18** tests.
+  - The E3-D-ACC decision records both corrections.
+- **Reviewed revision: `9e80493e59fcd949cdaa9a09b206c4cb9c85f58d`.** This is the last commit carrying code and register changes. It is the **parent** of the commit that adds this addendum, and that child changes only this file. Both will be ancestors of the program tip after a `--merge` merge of PR #547.
+- **Run `35596364653` on `9e80493e59fcd949cdaa9a09b206c4cb9c85f58d`:** `ci-required` **success**.
+  - `verify (3)` executed `job-accepted-event-seam.integration.test.ts` **(18 tests)** and `job-control-sweeper-pending-projections.test.ts` **(4 tests)**.
+  - `verify (2)` executed `job-budget-cost-parity.integration.test.ts` **(13 tests)**.
+- **Codex** reviewed `9e80493e59`: no major issues. Both review threads are resolved.
+- **Superseded as evidence:** run `35591911282` on `9f26bb9cb` (previous addendum) and run `35586672944` on `a3d1db483` (the original section). Both sections are kept as written.
+
