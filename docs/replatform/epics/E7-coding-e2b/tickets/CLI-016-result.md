@@ -274,6 +274,18 @@ A reader must not treat `complete` on this record as proof that the tool surface
 sandbox. It proves per-Organization arming at dispatch, and denial at `/mcp` use against real
 PostgreSQL.
 
+★ **`complete` here does NOT satisfy the ticket's own GREEN as written. It rests on a
+planning-session instruction.** The E7 plan's `### CLI-016` RED → GREEN says "GREEN — all of the above
+plus server typecheck and build", and "the above" includes the keyed real-E2B +/- controls. The
+graph node (`program-design.md #### CLI-016`, **Test**) requires them too. Codex (PR #558, P1) raised
+this, and it is true at source. This review moves `Status` to `complete` because the planning
+session's review brief says to approve the code and the record when the keyed controls are honestly
+pending, and to state what remains open. That instruction is **not yet a recorded decision** in the
+repository. The planning session owns it under F2. It should either record it, for example in E7
+`decisions.md`, with the reason the keyed controls may land after `complete` and where they will be
+recorded, or revert this `Status` flip to `gate_review` until the F8 run is committed. Until one of
+those happens, downstream `M1b` work must not read `complete` as meaning the GREEN is met.
+
 - **Not blocking, noted.** §5 says "All 45 … guards … (minus the six)". The count is not load-bearing,
   and I did not re-derive it for `0254c5c67`.
 
@@ -283,4 +295,4 @@ Later reviewers append rows with increasing attempt numbers without replacing ea
 
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
-| 1 | M1 review-batch-2B independent reviewer (Claude Opus 5) | `fc2eb7dde6325803c77950ac4adb1d190db0bd9a` | `approved` | Code verified at source: flag arms only on `per-organization`, legacy truthy values throw, the conjunction, and the `/mcp` use gate keyed on the signed run id and the run's own Organization. The two-Organization real-PG seeding is real. Focused rerun on Windows: 151 passed, integration 7 executed on real PG. Server typecheck 0. M1 reproduced exactly (4 failed). Run `35591990274` per job: `verify (3)` 7 (not skipped) + 30, `verify (1)` 95 + 11 + 8, all matching. Redemption refusal covered by `composed-loop-secret-resolve` (3 executed, `verify (3)`). Codex clean on `04c73866c3`. OPEN, not closed by this approval: keyed real-E2B +/- controls (F8, planning session); no Organization armed in any deployment; `E7-F003` tools row narrowed only. |
+| 1 | M1 review-batch-2B independent reviewer (Claude Opus 5) | `fc2eb7dde6325803c77950ac4adb1d190db0bd9a` | `approved` | Code verified at source: flag arms only on `per-organization`, legacy truthy values throw, the conjunction, and the `/mcp` use gate keyed on the signed run id and the run's own Organization. The two-Organization real-PG seeding is real. Focused rerun on Windows: 151 passed, integration 7 executed on real PG. Server typecheck 0. M1 reproduced exactly (4 failed). Run `35591990274` per job: `verify (3)` 7 (not skipped) + 30, `verify (1)` 95 + 11 + 8, all matching. Redemption refusal covered by `composed-loop-secret-resolve` (3 executed, `verify (3)`). Codex clean on `04c73866c3`. OPEN, not closed by this approval: keyed real-E2B +/- controls (F8, planning session); no Organization armed in any deployment; `E7-F003` tools row narrowed only. The plan's GREEN includes the keyed controls, so `complete` rests on the planning-session brief, which is not yet a recorded decision (Codex P1, PR #558). The planning session must record it or revert the flip. |
