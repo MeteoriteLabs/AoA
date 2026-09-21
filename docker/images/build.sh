@@ -1,11 +1,24 @@
 #!/usr/bin/env bash
-# docker/images/build.sh — reproducibly build BOTH DEP-001 split images from the
-# recorded source revision.
+# docker/images/build.sh — reproducibly build the THREE split images from the
+# recorded source revision: the DEP-001 control-plane and worker, and (DEP-014) the
+# DEP-012 adapter-manager.
 #
-# Builds docker/control-plane/Dockerfile and docker/worker/Dockerfile with buildx,
-# pinning org.opencontainers.image.revision to the recorded source SHA and
-# emitting each image's content digest to docker/images/digests.env for sbom.sh /
-# sign.sh to consume.
+# Builds docker/control-plane/Dockerfile, docker/worker/Dockerfile and
+# docker/adapter-manager/Dockerfile with buildx, pinning
+# org.opencontainers.image.revision to the recorded source SHA and emitting each
+# image's content digest to docker/images/digests.env for sbom.sh / sign.sh /
+# admit.sh to consume.
+#
+# digests.env keys are `${name^^}_IMAGE|_DIGEST|_REVISION`. Bash's `^^` keeps the
+# hyphen, so the keys are `CONTROL-PLANE_…` and `ADAPTER-MANAGER_…`: NOT valid shell
+# variable names. Consumers must PARSE the file (grep the key), never `source` it —
+# sourcing it is exactly how sbom.sh and sign.sh aborted with exit 127 on their
+# first-ever run (DEP-014). d1-merge-train.yml and image-contents.test.mjs read the
+# hyphenated keys, so the form is an interface and stays.
+#
+# Builds only; it pushes nothing and boots nothing. The adapter-manager image is
+# built here so CI produces, signs and admits it (DEP-014); booting it needs a
+# provider key and is DEP-015's.
 #
 # LINUX/CI-ONLY: requires a Docker/buildx daemon. This host has no Docker and CI
 # is billing-blocked, so this runs in CI, not locally. Additive + default-off:
@@ -56,6 +69,7 @@ build_one() {
 
 build_one "control-plane" "docker/control-plane/Dockerfile"
 build_one "worker" "docker/worker/Dockerfile"
+build_one "adapter-manager" "docker/adapter-manager/Dockerfile"
 
 echo ">> digests recorded to ${OUT_DIGESTS}:"
 cat "${OUT_DIGESTS}"

@@ -931,7 +931,7 @@ its own); a new `*.test.mjs` needs a `runs`/`unrun` declaration in `scripts/test
 (TRACK-002); a new guard is declared in `scripts/guard-inventory.json` and wired into the `policy` job;
 only `ci-required` is a required check (`scripts/lib/ci-lanes.mjs`), so no new job becomes one.
 
-### DEP-014 — The adapter-manager image in the signed image build, pushed by CI (M, ≤3 agent-days, M1a)
+### DEP-014 — The adapter-manager image in the signed image build, admitted in CI; NOT pushed (M, ≤3 agent-days, M1a)
 
 **Depends on:** DEP-001 and DEP-012 (shipped).
 
@@ -946,8 +946,18 @@ with `--provenance=true --sbom=true`, writing `docker/images/<name>.metadata.jso
 `docker-compose.staging.yml` names `aoa-adapter-manager:staging` for a service nothing builds in CI,
 and `docker-compose.d1.yml` has no adapter-manager service.
 
-**Outcome:** the adapter-manager is a third image in the same signed build — digest, SBOM, provenance,
-admission — pushed by CI, and the D1 train builds it on every run. Nothing is deployed by this ticket.
+**Outcome:** the adapter-manager is a third image in the same signed build — built, digested, SBOM'd and
+admitted in CI; **NOT pushed** — and the D1 train builds it on every run. Nothing is deployed or published
+by this ticket.
+
+**★ Amended 2026-09-21 — the push is DESCOPED** (decided under founder delegation F2 (M1 planning session, 2026-09-21), after DEP-014's build measured that no push mechanism exists for any of the three split images). Superseded text: title *"…in the signed
+image build, pushed by CI"*; outcome *"digest, SBOM, provenance, admission — pushed by CI, and the D1 train
+builds it on every run"*. Founder ruling **F3** has the shipped CI boot (`DEP-015`) **build** all three
+images from source, so nothing in M1 consumes a pushed tag. No push mechanism exists for the control-plane
+or worker image either (the only push in the repository, `docker.yml`, publishes the combined image), and
+adding GHCR login + `packages: write` to D1 or a new publish lane is an outward-facing publication decision —
+pre-checkpoint publication must be deliberate and authorized, never a side effect. Publishing all three split
+images belongs to the **M5 release lane** at the integration checkpoint.
 
 **Acceptance:**
 1. `build.sh` emits an adapter-manager digest, metadata, SBOM and admission entry beside the other two.
@@ -958,7 +968,7 @@ admission — pushed by CI, and the D1 train builds it on every run. Nothing is 
    `checkProviderControlBoundary` in `scripts/lib/staging-manifest-invariants.mjs`).
 4. `d1-merge-train.yml` builds the image on every run it runs.
 
-**Ticket non-goals:** booting the adapter-manager (that is `DEP-015`); the control-plane keypair;
+**Ticket non-goals:** pushing or publishing any image (M5 release lane; F2 ruling above); booting the adapter-manager (that is `DEP-015`); the control-plane keypair;
 mTLS on worker→adapter-manager (M1 plan §8); release-root signing (REL-004).
 
 **Files:** `docker/images/build.sh`, `docker/images/sbom.sh`, `docker/images/sign.sh`,

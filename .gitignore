@@ -117,3 +117,9 @@ local-connectors.json
 # pin an image nobody else built.
 docker/images/digests.env
 docker/images/*.metadata.json
+# DEP-014: the rest of the chain's per-run record (sbom.sh / sign.sh). Above all the
+# TEST private signing key sign.sh generates, which must never be committed.
+docker/images/trust-root.key
+docker/images/trust-root.pub.pem
+docker/images/sbom/
+docker/images/provenance.*.json

@@ -499,6 +499,16 @@ than left for someone to hit.
    (`packages/sandbox-e2b-provider/src/real-transport.ts:466`) returns **absolute file paths, not
    directories**, and that asymmetry is the one thing a consumer gets wrong silently. Bind and test
    it **metadata-only**: no `readFile`, no hashing, no bytes.
+
+   ★ *Corrected 2026-09-21 (CLI-010 build, verified at source; decided as `E7-D09` in
+   `decisions.md` under founder delegation F2).* The claim above was true of `MockE2bTransport` only.
+   The real binding called `sandbox.files.list(path)` with no options — `e2b@2.30.5`
+   `Filesystem.list` defaults `depth` to 1 and returns files **and** directories — and kept only
+   `e.path ?? e.name`, discarding `type`: it returned the root's immediate children with directories
+   mixed in, and no nested file. `CLI-010` is **widened** to fix the seam: `listDir` is now files
+   only, recursive, absolute and bounded in both transports (one enforcer,
+   `packages/sandbox-e2b-provider/src/list-dir-contract.ts`), with named bound/malformed errors. The
+   live-sandbox behaviour stays unproven until `CLI-012`'s keyed real-run acceptance.
 2. **FENCE the byte-reading seam.** `captureSandboxEntries` stays **inert on the E2B and networked
    lanes**. It is a local/desktop-lane tool — the sandbox analogue of DAT-001's local-FS walk — and
    this ticket makes that explicit in its header rather than leaving a reader to infer it. If it is
@@ -516,6 +526,12 @@ as a supply mechanism**, and no result doc may say capture landed as though outp
 metadata-only enumeration proof); modify `packages/worker-daemon/src/snapshot/capture-sandbox.ts`
 (header only — state the lane restriction and the contract it would breach). ★ **Do NOT export
 `captureSandboxEntries` from `snapshot/index.ts` for the E2B/networked lanes.**
+★ *Widened 2026-09-21 by `E7-D09`:* also create `packages/worker-daemon/src/snapshot/enumerate-sandbox.ts`
+(the Interfaces' enumerator — the Files list omitted the module the Interfaces and RED name; it is **not**
+exported from `snapshot/index.ts` or the package barrel) and
+`packages/sandbox-e2b-provider/src/list-dir-contract.ts` +
+`src/__tests__/list-dir-files-only.test.ts`; modify `transport.ts`, `real-transport.ts`,
+`mock-transport.ts` and `index.ts` in `packages/sandbox-e2b-provider`.
 
 **Interfaces:** a metadata-only path enumerator — `(listDir, root) => readonly string[]`, with the
 same fail-closed relativisation and `isSafeWorkspacePath` refusal the capture helper uses. **No

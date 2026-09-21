@@ -14,7 +14,24 @@
  *     non-root; carries the OCI revision label matching digests.env.
  *   - worker: NO server/db/ui in EITHER deploy tree; runs non-root; ships the
  *     worker-daemon binary AND the networked-host bin; no fake provider and no
- *     emitted test tree by ANY route; carries the OCI revision label.
+ *     emitted test tree by ANY route; NO provider credential baked in; carries
+ *     the OCI revision label.
+ *   - adapter-manager (DEP-014): NO provider credential baked into the image config;
+ *     NO server/db/ui/drizzle and no database client; no docker binary, no agent
+ *     CLIs; runs non-root; ships its bin AND the provider (`e2b`) SDK it hosts;
+ *     carries the OCI revision label.
+ *
+ * NOT asserted, deliberately: "the provider SDK is ONLY in the adapter-manager". The
+ * control-plane image carries `e2b` too — `server/package.json` depends on it and
+ * `server/src/services/sandbox-provider-runtime.ts` imports it for cloud_auth
+ * extraction (Decision #104, PR #320). And the WORKER carries it: `provider-wire`
+ * value-imports `@armyofagents/sandbox-e2b-provider/errors.js` (codec.ts, driver.ts),
+ * so `/worker-net-app` ships `e2b` — recorded as known and "structurally safe (no key,
+ * never imported)" in qa/2026-08-31-blocker-ab-fix-design.md, and MEASURED on the
+ * DEP-014 D1 probe run 35583366997 (a first draft asserting "no e2b in the worker" went
+ * red there). What `checkProviderControlBoundary` fences is the CREDENTIAL and the
+ * provider-control NETWORK, not the SDK — so the image-level statement asserted below
+ * is the credential one, for the worker AND the adapter-manager.
  */
 
 import { test, before } from "node:test";
@@ -138,6 +155,58 @@ test("worker: no server/db/ui, ships the daemon binary, non-root", { skip: SKIP 
     "no test tree in the worker image's own emitted output",
   );
   assert.notEqual(runIn(image, "id -u"), "0", "must run non-root");
+});
+
+// A pnpm deploy root keeps each package's real directory at
+// `node_modules/.pnpm/<pkg>@<ver>/node_modules/<pkg>` (and, if hoisted, also at the top
+// level); `find` without -L does not follow the symlinks, so this sees real directories.
+const findPackageDir = (roots, pkg) =>
+  `find ${roots} -type d -path '*/node_modules/${pkg}' 2>/dev/null | head -1 | grep -q . && echo FOUND || echo NONE`;
+
+test("worker: no provider credential baked into the image config", { skip: SKIP }, () => {
+  const config = JSON.parse(inspect(env.WORKER_IMAGE, "{{json .Config}}"));
+  const envKeys = (config.Env ?? []).map((kv) => kv.split("=")[0]);
+  assert.ok(!envKeys.some((k) => /E2B/i.test(k)), `no E2B* env baked into the worker image: ${envKeys.join(",")}`);
+});
+
+test("adapter-manager: no provider credential baked into the image config", { skip: SKIP }, () => {
+  const image = env.ADAPTER_MANAGER_IMAGE;
+  const config = JSON.parse(inspect(image, "{{json .Config}}"));
+  const envKeys = (config.Env ?? []).map((kv) => kv.split("=")[0]);
+  // The credential is INJECTED at run time on the adapter-management surface only
+  // (docker-compose.staging.yml; checkProviderControlBoundary). Never baked.
+  assert.ok(!envKeys.some((k) => /E2B/i.test(k)), `no E2B* env baked into the image: ${envKeys.join(",")}`);
+  assert.ok(!Object.keys(config.Labels ?? {}).some((k) => /E2B|API_KEY|SECRET|TOKEN/i.test(k)), "no credential-shaped label");
+  assert.equal(
+    // Third-party packages are pruned from the search: they may legitimately ship an
+    // `.env.example`, which we neither control nor load.
+    runIn(image, "find /am-app /am -maxdepth 3 -path '*/node_modules' -prune -o \\( -name '.env' -o -name '.env.*' \\) -print 2>/dev/null | head -1 | grep -q . && echo FOUND || echo NONE"),
+    "NONE",
+    "no .env file shipped in the image",
+  );
+});
+
+test("adapter-manager: no server/db/ui, no database client, no docker, no agent CLIs, non-root", { skip: SKIP }, () => {
+  const image = env.ADAPTER_MANAGER_IMAGE;
+  for (const pkg of ["@armyofagents/server", "@armyofagents/db", "@armyofagents/ui", "drizzle-orm", "postgres", "embedded-postgres"]) {
+    assert.equal(runIn(image, findPackageDir("/am-app", pkg)), "NONE", `no ${pkg} in /am-app`);
+  }
+  for (const bin of ["psql", "pg_dump", "postgres", "docker", "claude", "codex"]) {
+    assert.equal(runIn(image, `command -v ${bin} || echo NONE`), "NONE", `no ${bin} binary`);
+  }
+  assert.notEqual(runIn(image, "id -u"), "0", "must run non-root");
+});
+
+test("adapter-manager: ships its bin and the provider (e2b) SDK it hosts", { skip: SKIP }, () => {
+  const image = env.ADAPTER_MANAGER_IMAGE;
+  assert.equal(runIn(image, "test -f /am-app/dist/bin/adapter-manager.js && echo YES || echo NONE"), "YES", "adapter-manager bin present");
+  assert.equal(runIn(image, findPackageDir("/am-app", "e2b")), "FOUND", "the provider SDK is present on the adapter-manager surface");
+});
+
+test("adapter-manager: carries the OCI revision label from digests.env", { skip: SKIP }, () => {
+  const image = env.ADAPTER_MANAGER_IMAGE;
+  const rev = inspect(image, "{{ index .Config.Labels \"org.opencontainers.image.revision\" }}");
+  assert.equal(rev, env.ADAPTER_MANAGER_REVISION);
 });
 
 test("worker: carries the OCI revision label from digests.env", { skip: SKIP }, () => {

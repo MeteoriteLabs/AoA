@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# docker/images/sign.sh — sign each DEP-001 image digest with the TEST root and
-# record it on the signed-digest allowlist.
+# docker/images/sign.sh — sign each split-image digest (DEP-001; the adapter-manager
+# joined in DEP-014) with the TEST root and record it on the signed-digest allowlist.
 #
 # For each built image (docker/images/digests.env) this:
 #   1. ensures a TEST signing keypair exists (docker/images/trust-root.key +
@@ -21,15 +21,28 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${REPO_ROOT}"
 
-IMAGES_DIR="${REPO_ROOT}/docker/images"
+# Scripts live beside this file; the build RECORD (digests.env, the keypair, the
+# allowlist, provenance) lives in AOA_IMAGES_OUT_DIR — the seam
+# docker/images/__tests__/image-pipeline.test.mjs uses to run this script docker-free
+# on every PR. Unset, both are docker/images/ exactly as before.
+SCRIPTS_DIR="${REPO_ROOT}/docker/images"
+IMAGES_DIR="${AOA_IMAGES_OUT_DIR:-${SCRIPTS_DIR}}"
 KEY="${IMAGES_DIR}/trust-root.key"
 PUB="${IMAGES_DIR}/trust-root.pub.pem"
 ALLOWLIST="${IMAGES_DIR}/allowlist.json"
 DIGESTS="${IMAGES_DIR}/digests.env"
 
 [ -f "${DIGESTS}" ] || { echo "ERROR: ${DIGESTS} missing — run build.sh first" >&2; exit 1; }
-# shellcheck disable=SC1090
-source "${DIGESTS}"
+
+# PARSE digests.env; never `source` it. build.sh writes `${name^^}_…` keys and bash's
+# `^^` keeps the hyphen (`CONTROL-PLANE_DIGEST=…`), which is not an assignment: sourcing
+# it ran the line as a command and aborted this script with exit 127 (DEP-014).
+digest_value() {
+  local key="$1" value
+  value="$(grep -E "^${key}=" "${DIGESTS}" | head -n1 | cut -d= -f2- || true)"
+  [ -n "${value}" ] || { echo "ERROR: ${key} missing from ${DIGESTS}" >&2; exit 1; }
+  printf '%s' "${value}"
+}
 
 # 1. TEST keypair — a deterministic openssl EC P-256 (prime256v1) keypair. This
 # is the ONLY producer that round-trips with the node:crypto admission verifier
@@ -71,7 +84,7 @@ sign_one() {
   signature="$(base64 -w0 < "${sig_file}" 2>/dev/null || base64 < "${sig_file}" | tr -d '\n')"
 
   # Attach provenance next to the signature for auditing.
-  AOA_IMAGE_REVISION="${revision}" "${IMAGES_DIR}/provenance.sh" "${name}" \
+  AOA_IMAGE_REVISION="${revision}" bash "${SCRIPTS_DIR}/provenance.sh" "${name}" \
     > "${IMAGES_DIR}/provenance.${name}.json"
 
   # Append/update the allowlist entry (idempotent by digest).
@@ -87,8 +100,15 @@ sign_one() {
   rm -f "${payload_file}" "${sig_file}"
 }
 
-sign_one "control-plane" "${CONTROL_PLANE_DIGEST}" "${CONTROL_PLANE_REVISION}"
-sign_one "worker" "${WORKER_DIGEST}" "${WORKER_REVISION}"
+# The three split images build.sh builds (DEP-001 + DEP-014), in build order.
+# Each value is ASSIGNED before use: under `set -e` a failed substitution aborts an
+# assignment, but NOT an argument list.
+for name in control-plane worker adapter-manager; do
+  key="${name^^}"
+  digest="$(digest_value "${key}_DIGEST")"
+  revision="$(digest_value "${key}_REVISION")"
+  sign_one "${name}" "${digest}" "${revision}"
+done
 
 echo ">> allowlist updated: ${ALLOWLIST}"
-echo ">> verify with: node scripts/verify-image-admission.mjs --digest <sha256:...> --signature <b64> --source-revision <sha>"
+echo ">> admit with: bash docker/images/admit.sh (runs scripts/verify-image-admission.mjs per image)"
