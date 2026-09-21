@@ -13,7 +13,7 @@ and is the only role that may change it to `complete`.
 ★★★ This is an EVIDENCE-CURRENCY record, not a rebuild and not a re-approval of the original
 ticket. `qa-handoff-recovery.md` section 2 forbids treating a prose `SHIPPED` header as canonical
 ticket approval, so `M0` exit requires a result measured on **this** candidate. The original
-[`MIG-009-result.md`](./MIG-009-result.md) is not edited: where a measurement disagrees with it, the
+[`MIG-009-drain-result.md`](./MIG-009-drain-result.md) is not edited (★ *Corrected 2026-09-21 in response to review attempt 1:* this link read `./MIG-009-result.md`, a file that does not exist): where a measurement disagrees with it, the
 disagreement is recorded here as a **delta**, never repaired in place.
 
 ---
@@ -50,14 +50,28 @@ result. This record does not discharge it and must not be cited as if it did.
 
 ## 4. Not re-run here
 
-The drain's unit and bridge-lane suites were not executed in this worktree. Recorded as `not re-run`.
+The drain's unit and bridge-lane suites were not executed in this worktree. ★ *Corrected 2026-09-21 in response to review attempt 1:* they **were**
+executed at the reviewed revision `5f3b47556` in PR run `35561909654`, job **`verify (3)`**
+(`success`): `job-distributed-drain.test.ts` 8, `job-distributed-drain.integration.test.ts` 5
+(embedded PostgreSQL, Linux), `controller-inline-drain.test.ts` 6. ★ Cite the **job**, not the
+run: the run concludes `failure` solely because `ci-required` refuses a PR carrying the
+`do-not-merge` label; all fifteen other jobs succeeded. This is what backs §0's "the drain is
+correct"; the record previously asserted correctness with no evidence attached.
 
 ## Independent review
 
-**Reviewer:** `pending`
-**Reviewed revision:** `pending`
-**Disposition:** `pending`
-**Attempt:** none recorded
+**Reviewer:** M0 independent reviewer subagent (Claude) — distinct from the M0 implementation session
+**Reviewed revision:** 5f3b47556d0df152db0d53d76c304861f30ffd37
+**Disposition:** `changes_requested`
+**Attempt:** 1
+**Review evidence:**
+- `node scripts/check-gate-clause-wiring.mjs` at the reviewed revision → exit `0`, `gate-clause-wiring: OK (22 wired clause(s), 12 declared dormant, ...)`, and `E10-1-drain` is first in the `DORMANT, on the record` list. §1's two OBSERVED values **hold** at the reviewed revision (the record measured them at `8b629fc25`, an ancestor; `git diff 8b629fc25 HEAD` is empty for `job-distributed-drain.ts`, `job-distributed-drain-store.ts`, `scripts/gate-clause-wiring.json`, `scripts/check-gate-clause-wiring.mjs`, `server/src/index.ts`).
+- Dormancy confirmed at source, not only via the guard: `scripts/gate-clause-wiring.json` → `E10-1-drain` is `status: "unwired"`, `symbol: "createDistributedExecutionDrain"`; `node scripts/check-gate-clause-wiring.mjs --counts` → `0  createDistributedExecutionDrain`; the only non-test mentions outside its definition (`job-distributed-drain.ts` `createDistributedExecutionDrain`) are comments (`cutover-selection-audit.ts`, `heartbeat.ts`, `job-distributed-drain-store.ts`). `drainAll` (defined in `job-distributed-drain.ts`) has no production invoker. §0's "nothing can call it" is **true**.
+- §2 "no delta": `MIG-009-drain-result.md` records `E10-1-drain` as honestly `unwired` (its lines 10, 98, 119, 226) — **true**.
+- §3 split: matches `scope-triage.md` § `M0` (evidence currency is M0's; trigger build is `M1a`'s) and E10 `implementation-plan.md` §8.1a — **true**. The "M0 exit criterion 6" numbering matches `docs/replatform/qa/2026-09-20-m0-record-lane-health-plan.md` row 6 (disposition-B results) — **true**.
+- §4 `not re-run`: honestly unrun locally, but **actually satisfied** at the reviewed revision by CI run `35561909654` (PR workflow, `headSha` = `5f3b47556d0d…`): `verify (3)` → `job-distributed-drain.test.ts (8 tests)` ✓ and `controller-inline-drain.test.ts (6 tests)` ✓; `verify (2)` → `job-distributed-drain.integration.test.ts (5 tests)` ✓ (embedded-PG, Linux). All jobs `success`; `ci-required` is `failure` **only** on `the do-not-merge label is present`. The drain source is unchanged since `c7ead3a73` (#333).
+- ★ **DEFECT (blocks approval, because an approved record is frozen and could not be repaired afterwards):** the preamble cites the original as [`MIG-009-result.md`](./MIG-009-result.md). **That file does not exist** at the reviewed revision (`tickets/` has `MIG-009-drain-design.md`, `MIG-009-drain-result.md`, `MIG-009-B1-result.md` only). The record's own §2/§3 name the right file (`MIG-009-drain-result.md`). The one sentence that says which record this currency check is *against* names a record that is not there. Fix: point the link at `./MIG-009-drain-result.md`.
+- Recommended, not blocking: §0 says "the drain is correct" and the plan (§8.1a *Outcome*) requires the record to state correctness is current, yet §4 records the suites as `not re-run` — so as written the correctness half is asserted, not evidenced. Citing CI run `35561909654` (above) would make it evidenced at this exact revision.
 
 For `approved`, verify each OBSERVED value above against the named source at the reviewed revision,
 and confirm that every row marked `not re-run` is accepted as such rather than read as passing. Then
@@ -65,3 +79,12 @@ change the top-level `Status` to `complete` and commit that disposition separate
 
 ★ `M0` exit criterion 6 requires this result **approved**, not merely committed. It is left at
 `gate_review` because its author may not approve it.
+
+## Review attempt history
+
+The implementation author leaves the table body empty; the pending summary above is not a review attempt. The first independent reviewer appends attempt 1, and later reviewers append monotonically increasing rows without replacing prior attempts. The summary fields above mirror the latest real attempt. Do not include a `Review commit` column: a row cannot embed the SHA of the commit that first contains it.
+
+| Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
+|---:|---|---|---|---|
+| 1 | M0 independent reviewer subagent (Claude) | `5f3b47556d0df152db0d53d76c304861f30ffd37` | `changes_requested` | `check-gate-clause-wiring.mjs` exit 0 (22 wired / 12 dormant, `E10-1-drain` dormant); `--counts` → `createDistributedExecutionDrain` 0 production callers; §2/§3 true at source; §4 unrun rows satisfied by CI run `35561909654` at this SHA (drain unit 8/8, integration 5/5, controller-inline 6/6). DEFECT: preamble link `./MIG-009-result.md` names a file that does not exist — must be `./MIG-009-drain-result.md` before the record is frozen. |
+<!-- Later reviewers append attempt 2+ below without rewriting attempt 1. -->
