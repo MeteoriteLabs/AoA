@@ -217,7 +217,18 @@ so each gets a **dated amendment**, and the earlier text is kept as measured:
 
 ## 7. CI evidence
 
-_Filled in once the PR's checks complete on the final head._
+PR #553, CI run `35593652746`, on head `9b3838c43` (the implementation commit `54daff9b7` plus the
+`start()` fix in §4 item 4). **`ci-required`: pass**, with no unhandled errors on any shard. The
+earlier run `35591729825` on `1b7a8a4ff` failed on those errors (§4 item 4).
+
+| Job | This ticket's files it executed | Shard totals |
+|---|---|---|
+| `verify (1)` (job `106313504269`) | `startup-reconcile-lifecycle.test.ts`: **9 tests** | 655 files passed, 3 skipped; 6400 tests passed, 12 skipped |
+| `verify (3)` (job `106313504295`) | `dispatch-runtime.test.ts`: **29 tests**; `startup-lease-authority.test.ts`: **5 tests** | 654 files passed, 4 skipped; 5889 tests passed, 29 skipped |
+| `verify (4)` (job `106313504210`) | `startup-reconcile-composed.component.test.ts`: **12 tests**; `lease-candidate-store.test.ts`: **10 tests**; `config.test.ts`: **9 tests** | 658 files passed; 6144 tests passed, 2 skipped |
+| `verify (2)` (job `106313504270`) | none of this ticket's files | 656 files passed, 2 skipped; 6216 tests passed, 33 skipped |
+
+None of these suites is Windows-skipped. All of them also ran green locally on Windows (§3).
 
 ## Independent review
 
