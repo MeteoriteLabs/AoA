@@ -82,7 +82,8 @@ export function createJobControlSweeper(input: {
   projectRunTerminal?: (signal: SweeperRunTerminalSignal) => Promise<void>;
   /**
    * JOB-016 / E3-D-ACC Amendment 3 — the per-Organization stale-`pending`-receipt detector and
-   * bounded `authoritative_cost` re-drive (`createAuthoritativeCostRedriveSweep`). Runs on this
+   * bounded `authoritative_cost` re-drive (`createAuthoritativeCostRedriveSweep`; since JOB-017 it
+   * also re-drives `activity_audit` and `output_projection` receipts). Runs on this
    * rotation AFTER the reap, BEST-EFFORT: its failure never fails the tick. Optional: a
    * deployment that has not composed it sweeps exactly as before.
    */
