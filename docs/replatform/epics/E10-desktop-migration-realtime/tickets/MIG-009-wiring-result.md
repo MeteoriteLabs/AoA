@@ -1,6 +1,6 @@
 # MIG-009 Wiring Result — the rollback drain gets an honest operator trigger (M1a)
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Date (UTC):** `2026-09-21`
 **Epic:** `E10-desktop-migration-realtime`
 **Plan task:** E10 implementation plan §8.1, *"`MIG-009` — wire the rollback drain to an honest operator trigger"*
