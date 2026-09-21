@@ -2147,6 +2147,18 @@ promoted by this ticket").
 > `owned` by **`JOB-016`**, and `JOB-016` closes it **only with `WRK-018` merged** — the two-part
 > close above is unchanged. Severity (HIGH) and Status (open) are unchanged. The sentence above
 > saying ownership is `unowned` was true when written and is kept as the record of that state.
+>
+> ★ **PRODUCER HALF AMENDED 2026-09-21 (`WRK-018`, branch `claude/m1-wrk-018`).** Part **(1)** is now
+> delivered in code, and the "observeRun stays absent / uncomposed" measurements above describe the
+> tree before it: `composeDispatchRuntime` passes `observeRun: createUsageObserver(...)` to
+> `makeSupervisor`, the provider port carries an optional stdout channel (`ExecuteInput.onStdout`)
+> through the E2B provider and the provider-wire/adapter-manager lane, and a run whose stdout carries
+> a `claude_local` stream-json result line emits exactly one `usage` event (proven against the fake,
+> the E2B mock transport and the real gated wire; see `docs/replatform/epics/E4-worker-daemon/tickets/WRK-018-result.md`).
+> **Not yet proven live:** the one keyed acceptance run inside the F8 envelope is pending and is the
+> planning session's to dispatch. Part **(2)** (`JOB-016`) is untouched. **Severity (HIGH), Status
+> (open) and ownership (`JOB-016`) are unchanged** — this finding still closes only when a real
+> handed-off run produces a `cost_events` row.
 
 ## E3-F038 — The wiring register's census is not closed, and three symbols the guard's own header names have no clause at all
 

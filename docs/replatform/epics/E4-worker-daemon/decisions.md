@@ -92,3 +92,52 @@ provider-constraint digest, a statically-provisioned worker profile goes stale (
 self-check fails → cannot ACK) until re-provisioned; profile refresh/rotation delivery is a
 JOB-002-family provisioning follow-up (relative of [[E4-F007]]), to be handled when the loop is
 wired for live dispatch.
+
+## E4-D13 — The `claude_local` usage format is PORTED into the daemon, not imported or injected; the stdout channel is an optional callback on `ExecuteInput`, scrubbed per run
+
+**Date:** 2026-09-21 · **Ticket:** WRK-018 · **Status:** proposed (locks on WRK-018's distinct review).
+
+WRK-018 must turn a distributed run's own report into one `usage` event. The only source is the
+agent's stdout: `claude --print - --output-format stream-json --verbose` (the sandbox argv in
+`server/src/services/task-run-sandbox-invocation.ts`, and the local adapter's argv in
+`packages/adapters/claude-local/src/server/execute.ts`) ends with a `{"type":"result"}` line whose
+`usage` object the server parser `parseClaudeStreamJson`
+(`packages/adapters/claude-local/src/server/parse.ts`) already reads for heartbeat cost events. The
+daemon cannot import that parser: `@armyofagents/adapters` is outside the E4-D01 boundary
+(`scripts/check-worker-daemon-boundary.mjs`).
+
+**Decision 1 — port the format, do not inject the parser.** `parseClaudeStreamJsonUsage`
+(`packages/worker-daemon/src/supervisor/usage-observer.ts`) re-implements the one thing the daemon
+needs — the LAST `type:"result"` line's `usage.{input_tokens, output_tokens,
+cache_read_input_tokens}`, with the server's missing-field-is-0 rule — and deliberately returns NO
+usage (not zeros) for a result line without a `usage` object or with a count the frozen
+`usagePayloadV1Schema` would reject. Injecting the server parser from a composition root was
+rejected: it would make every worker image carry the adapters package (and its transitive server
+utilities) to extract four integers, which is exactly the coupling E4-D01 exists to prevent. The
+cost of porting is drift; it is paid by a conformance test that reads the REAL captured claude
+transcript the server suite already pins (`server/src/__tests__/fixtures/claude-stream-json-tool-call.jsonl`)
+by path and asserts the server's field map.
+
+**Decision 2 — the channel is an optional CALLBACK on `ExecuteInput` (`onStdout`), not a sibling op
+or a field on `ExecuteResult`.** A callback streams while the command runs (bounded memory), rides
+the transport handler the E2B provider already had (`E2bStreamHandlers.onStdout`, CLI-003/D1), and
+is ignored by a provider that does not implement it. The supervisor passes it only when an
+`observeRun` is composed, so without one the execute input is byte-identical. On the networked lane
+a callback cannot cross HTTP: the driver sends an additive `captureStdout: true` flag and the
+adapter-manager returns an additive `stdoutTail`; both absent ⇒ both bodies byte-identical, and an
+older adapter-manager degrades to "no usage", never a failure. The frozen `ProviderOperation`
+vocabulary and the worker protocol are untouched.
+
+**Decision 3 — scrub per run, at read time, over whole lines, fail closed (H-04).** The supervisor's
+per-run `createRunOutputCapture` (`supervisor/run-output.ts`) holds a bounded, whole-line stdout
+TAIL and scrubs it with the run's OWN live canary array before `observeRun` sees it; a residual
+needle drops the whole tail. Whole-line retention is what makes a canary split across chunks
+unmissable. The adapter-manager scrubs with the SAME implementation, keyed on that request's env
+values — on this lane exactly the run's canaries (`synthesiseRunSecrets` puts every redeemed value
+into `env` and nothing else) — so raw output never crosses the wire. The composed observer emits
+usage ONLY (four integers); it never re-emits stdout as `log` events.
+
+**Consequence.** A result line longer than the tail bound (1 MiB) yields no usage, which JOB-016's
+terminal-without-usage signal reports. `runtimeMillis` is the supervisor's own execute window, not
+the agent's `duration_ms`. Usage is agent-reported by definition; a non-claude tenant command that
+prints a well-formed result line is priced on what it printed.
