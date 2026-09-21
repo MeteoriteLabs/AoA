@@ -177,10 +177,13 @@ export {
   ArtifactExportFailedError,
   createArtifactExportSequencer,
   exportArtifactId,
+  exportReasonCode,
   grantPutHeaders,
 } from "./lease/artifact-export.js";
 export type {
   ArtifactExportRequest,
+  // DAT-009-3c — the type of `SupervisorDeps.exportArtifacts` (E5-D07).
+  ArtifactExportSequencer,
   ArtifactExportStage,
   ExportedArtifactRef,
   SandboxArtifactExporter,
@@ -717,6 +720,7 @@ export {
   RUN_OP_DEADLINE_CEILING_MS,
   OWNED_LABELS_CAPABILITY_TTL_MS,
   RUN_TEARDOWN_HEADROOM_MS,
+  EXPORT_TEARDOWN_RESERVE_MS,
   resolveRunOpDeadlineMs,
 } from "./lifecycle/run-op-deadline.js";
 export type { StartupStep, StartupReconciler, StartupLogger } from "./lifecycle/startup-steps.js";

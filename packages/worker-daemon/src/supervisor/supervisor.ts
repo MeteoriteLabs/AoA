@@ -54,7 +54,14 @@ import {
   SERVICE_HEALTH_TICK_MS_DEFAULT,
   type ServiceStopHandle,
 } from "./service-lifecycle.js";
-import { RUN_TEARDOWN_HEADROOM_MS } from "../lifecycle/run-op-deadline.js";
+import { EXPORT_TEARDOWN_RESERVE_MS, RUN_TEARDOWN_HEADROOM_MS } from "../lifecycle/run-op-deadline.js";
+import {
+  ArtifactExportFailedError,
+  exportReasonCode,
+  type ArtifactExportRequest,
+  type ArtifactExportSequencer,
+  type SandboxArtifactExporter,
+} from "../lease/artifact-export.js";
 import type { OwnedLabelsCapabilityLike } from "../lease/owned-labels-capability.js";
 
 /** CLI-003/D3 — a captured stdout/stderr/system log line to turn into a `log` event. */
@@ -224,6 +231,30 @@ export interface SupervisorDeps {
    */
   readonly resolveStagedFiles?: (input: { handoff: LeaseHandoff }) => Promise<readonly StagedFileRequest[]>;
   /**
+   * DAT-009-3c (E5-D07) — the artifact-export SEQUENCER, built by the dispatch runtime (slice 3d)
+   * from the control-plane client, device key and session, none of which the supervisor holds.
+   * The supervisor supplies the per-run `exporter` (this run's sandbox, through this run's
+   * `EffectAuthority`). Absent, or present with no producer ⇒ inert: no call, no metric, and the
+   * lifecycle is byte-identical.
+   */
+  readonly exportArtifacts?: ArtifactExportSequencer;
+  /**
+   * DAT-009-3c (E5-D07) — the PRODUCER (CLI-012): names the files this run returns. Requests
+   * only, never bytes. REQUIRES `exportArtifacts` (fail-fast at construction: a producer with no
+   * one to hand its requests to would silently export nothing on every run).
+   *
+   * ★ BEST-EFFORT, like `observeRun` and unlike `resolveStagedFiles` (E5-D07). The work is already
+   * done; a refused, thrown or timed-out export logs, emits `export_artifact` `failed`/`timed_out`,
+   * and continues to the TRUTHFUL terminal — the command's own verdict. The attempt is not failed.
+   */
+  readonly resolveExportArtifacts?: (input: {
+    handoff: LeaseHandoff;
+    exec: ExecuteResult;
+  }) => Promise<readonly ArtifactExportRequest[]>;
+  /** DAT-009-3c — ONE budget for the whole export window (producer + every file), default 30 s.
+   * On the networked lane it is further clamped so destroy keeps `EXPORT_TEARDOWN_RESERVE_MS`. */
+  readonly exportArtifactsDeadlineMs?: number;
+  /**
    * DAT-008 slice 5 — PER-RUN secret materialisation. Given a handoff, redeems the envelope's
    * `env`/`sandbox_local_only` handles and returns the sandbox `env` plus the redeemed values (to
    * seed as per-run redaction canaries). Absent (the default) = no secrets, `env` stays `{}` —
@@ -324,6 +355,11 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
   if (deps.makeRunProvider && !deps.materializeRunSecrets) {
     throw new Error("createSupervisor: makeRunProvider requires materializeRunSecrets (the per-run authorities rebuild after redemption)");
   }
+  // DAT-009-3c (E5-D07) — a producer without a sequencer would silently export nothing on every
+  // run. Pair them or fail now. (A sequencer without a producer is allowed and inert.)
+  if (deps.resolveExportArtifacts && !deps.exportArtifacts) {
+    throw new Error("createSupervisor: resolveExportArtifacts requires exportArtifacts (the sequencer the producer hands its requests to)");
+  }
   const networked = deps.makeRunProvider !== undefined;
   const now = deps.now ?? (() => Date.now());
   const nowIso = deps.nowIso ?? (() => new Date().toISOString());
@@ -339,6 +375,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     typeof deps.opDeadlineMs === "function" ? deps.opDeadlineMs : () => opDeadlineMs;
   const cleanupDeadlineMs = deps.cleanupDeadlineMs ?? 30_000;
   const stageInputDeadlineMs = deps.stageInputDeadlineMs ?? 30_000;
+  const exportArtifactsDeadlineMs = deps.exportArtifactsDeadlineMs ?? 30_000;
   const serviceHealthTickMs =
     typeof deps.serviceHealthTickMs === "number" &&
     Number.isFinite(deps.serviceHealthTickMs) &&
@@ -931,6 +968,16 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       }
     }
 
+    // 3c. DAT-009-3c — the ARTIFACT EXPORT window (E5-D07). After `observeRun`, so usage is
+    // already in the durable outbox and a slow export can never delay or drop it; BEFORE the
+    // terminal, because an upload grant and a commit both need a LIVE fence and the local emit
+    // would race the outbox drain; BEFORE `finishRun`, because export reads from a live sandbox.
+    // Only this (the normal) terminal exports (Ruling B). Best-effort: the terminal below is the
+    // command's verdict whatever the window's outcome.
+    if (deps.resolveExportArtifacts && deps.exportArtifacts) {
+      await runExportWindow(handoff, run, created.sandboxId, exec, deps.resolveExportArtifacts, deps.exportArtifacts);
+    }
+
     // 4. terminal event — ENRICHED with exec.signal/timedOut (CLI-003/D3). The frozen
     // terminal payload has no signal/timedOut field, so they fold into the free
     // errorCode/errorMessage strings; a timed-out or signalled exec is `failed`.
@@ -941,6 +988,124 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
 
     // 5. destroy UNDER EFFECT AUTHORITY (happy-path reclaim).
     await finishRun(run, created.sandboxId);
+  }
+
+  /**
+   * DAT-009-3c (E5-D07) — one artifact-export window for one run. Never throws, never fails the
+   * attempt, and emits `export_artifact` EXACTLY once.
+   *
+   * ★ ATTEMPT-BOUND (F10). Everything tenant-shaped comes from THIS run's `handoff` (the one
+   * `accept` received for this lease — never a lookup by id, never a supervisor-level "current
+   * run"), and the exporter is closed over THIS run's `sandboxId` and `run.effect`, whose fence
+   * was built from the same handoff. The producer cannot name a sandbox; the sequencer derives
+   * the object key and artifact id from the handoff; the control plane re-binds both to the
+   * authenticated authority's lease (`resolveWorkerFenceContext`).
+   *
+   * ★ `run.effect` is read AT CALL TIME: the networked branch reassigns it after redemption, and a
+   * cancel/lease loss withdraws it, so `EffectAuthority`'s guard refuses before the grant reaches
+   * any provider.
+   *
+   * ★ NO PATH, GRANT URL OR BYTES in any log line or label: `ArtifactExportFailedError.message`
+   * embeds the (tenant-authored) path, so only `stage` + the path-free `reason` are logged, never
+   * the error.
+   */
+  async function runExportWindow(
+    handoff: LeaseHandoff,
+    run: ActiveRun,
+    sandboxId: string,
+    exec: ExecuteResult,
+    resolveExportArtifacts: NonNullable<SupervisorDeps["resolveExportArtifacts"]>,
+    exportArtifacts: ArtifactExportSequencer,
+  ): Promise<void> {
+    const report = (outcome: "success" | "failed" | "timed_out", stage: string, reason: string, exported = 0): void => {
+      emitOp("export_artifact", outcome);
+      const fields = {
+        leaseId: run.leaseId,
+        resourceLabelsHash: hashResourceLabels(run.labels),
+        stage,
+        reason,
+        exported,
+      };
+      if (outcome === "success") {
+        deps.logger?.info(fields, "supervisor: artifact export window complete");
+      } else {
+        deps.logger?.warn(fields, "supervisor: artifact export window did not complete (best-effort, E5-D07; attempt NOT failed)");
+      }
+    };
+
+    // One budget for the whole window; on the networked lane never past the point where destroy
+    // would lose its reserve inside the capability window.
+    let budget = exportArtifactsDeadlineMs;
+    if (run.networked) {
+      const room = (run.capExpiresAt ?? Number.NEGATIVE_INFINITY) - now() - EXPORT_TEARDOWN_RESERVE_MS;
+      budget = Math.min(budget, room);
+    }
+    if (!(budget > 0)) {
+      report("failed", "window", "export_window_exhausted");
+      return;
+    }
+    if (!run.effect.isActive()) {
+      report("failed", "window", "authority_withdrawn");
+      return;
+    }
+
+    // The window LATCH: once the window ends (deadline or settle), an abandoned sequencer can no
+    // longer reach the sandbox.
+    let open = true;
+    const assertOpen = (): void => {
+      if (!open) throw new Error("export window closed");
+    };
+    const exporter: SandboxArtifactExporter = {
+      digest: async (path) => {
+        assertOpen();
+        try {
+          const described = await run.effect.digestArtifact(sandboxId, path, run.makeCtx());
+          emitOp("digest_artifact", "success");
+          // Re-checked AFTER the await: a digest that resolves once the window has ended must not
+          // hand the abandoned sequencer a value it would go on to mint a grant with.
+          assertOpen();
+          return { sha256: described.sha256, sizeBytes: described.sizeBytes };
+        } catch (err) {
+          emitOp("digest_artifact", "failed");
+          throw err;
+        }
+      },
+      export: async (path, grant) => {
+        assertOpen();
+        const exported = await run.effect.exportArtifact(sandboxId, path, grant, run.makeCtx());
+        // Re-checked AFTER the await: an upload that lands once the window has ended stops before
+        // the commit. The uncommitted object is the orphan sweep's (`isSweepEligible`), never a late
+        // commit racing the terminal to the control plane.
+        assertOpen();
+        return { objectKey: exported.objectKey };
+      },
+    };
+
+    let phase: "produce" | "sequence" = "produce";
+    const work = (async () => {
+      const requests = await resolveExportArtifacts({ handoff, exec });
+      phase = "sequence";
+      return exportArtifacts({ handoff, exporter, requests });
+    })();
+    // A raced-out window leaves `work` running; its eventual rejection is expected and handled.
+    work.catch(() => undefined);
+
+    try {
+      const raced = await withDeadline(work, budget);
+      open = false;
+      if (raced === TIMEOUT) {
+        report("timed_out", phase, "deadline");
+        return;
+      }
+      report("success", phase, "exported", raced.length);
+    } catch (err) {
+      open = false;
+      if (err instanceof ArtifactExportFailedError) {
+        report("failed", err.stage, exportReasonCode(err.reason));
+      } else {
+        report("failed", phase, phase === "produce" ? "producer_failed" : "sequencer_failed");
+      }
+    }
   }
 
   /**
