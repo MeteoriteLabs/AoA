@@ -233,11 +233,20 @@ export function censusDelta(diff, opts = {}) {
     ...diff.removed.map((e) => ({ ...e, change: "removed" })),
   ].map((e) => ({ ...e, class: classifyPath(e.path, opts) }));
   const files = (cls) => changed.filter((e) => e.class === cls && e.type !== "dir" && e.change !== "removed").map((e) => e.path);
+  const removed = (cls) => changed.filter((e) => e.class === cls && e.type !== "dir" && e.change === "removed").map((e) => e.path);
   return {
     changed,
     filesUnderRoot: files("under-root"),
     filesCwdOther: files("cwd-other"),
     filesCliHomeState: files("cli-home-state"),
+    // Deletions are mutations too (A-neg forbids deleting). Kept apart from the `files*` lists,
+    // which name files that EXIST after the arm (what a compliance arm or a declaration can
+    // point at), so a removed path can never satisfy "the agent wrote X".
+    removedUnderRoot: removed("under-root"),
+    removedCwdOther: removed("cwd-other"),
+    // The run's own staged inputs, changed or deleted during the arm. Reported for every arm;
+    // A-neg counts it as a cwd mutation.
+    stagedMutated: changed.filter((e) => e.class === "staged" && e.type !== "dir").map((e) => e.path),
     rootCreated: diff.added.some((e) => e.path === (opts.root ?? OUTPUT_ROOT)),
   };
 }
@@ -315,8 +324,19 @@ export function readDeclaration(finalResultText, writtenUnderRoot, root = OUTPUT
   const m = new RegExp(`^\`?${DECLARATION_PREFIX}\\s*(.+?)\`?$`).exec(last);
   if (!m) return { present: false, declared: null, resolved: null, matchesWritten: false };
   const declared = m[1].trim();
-  const resolved = declared.startsWith("/") ? declared : `${root}/${declared.replace(/^\.\//, "")}`;
-  return { present: true, declared, resolved, matchesWritten: writtenUnderRoot.includes(resolved) };
+  // §10.4 asks for a RELATIVE path. An absolute path, `~`, a `..` segment, a backslash or an
+  // empty segment is REFUSED rather than normalised: a declaration that may name anything
+  // outside R is option 1's A-O1-1 attack, and accepting it would let R11 certify option 1b
+  // on a form the contract does not allow.
+  const segments = declared.replace(/^\.\//, "").split("/");
+  const relative =
+    !declared.startsWith("/") &&
+    !declared.startsWith("~") &&
+    !declared.includes("\\") &&
+    segments.every((seg) => seg.length > 0 && seg !== "." && seg !== "..");
+  if (!relative) return { present: true, declared, resolved: null, relative: false, matchesWritten: false };
+  const resolved = `${root}/${segments.join("/")}`;
+  return { present: true, declared, resolved, relative: true, matchesWritten: writtenUnderRoot.includes(resolved) };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -502,9 +522,20 @@ export function verdictANeg(obs) {
   const gate = modelArmGate("A-neg", obs);
   if (gate) return gate;
   const d = obs.delta;
-  return observed("A-neg", d.filesUnderRoot.length > 0 ? "cli-wrote-under-root" : d.filesCwdOther.length > 0 ? "cli-wrote-into-cwd" : "nothing-under-root-or-cwd", {
+  const removedUnderRoot = d.removedUnderRoot ?? [];
+  const cwdMutations = [...(d.removedCwdOther ?? []), ...(d.stagedMutated ?? [])];
+  const reason =
+    d.filesUnderRoot.length > 0 || removedUnderRoot.length > 0
+      ? "cli-mutated-under-root"
+      : d.filesCwdOther.length > 0 || cwdMutations.length > 0
+        ? "cli-mutated-cwd"
+        : "nothing-under-root-or-cwd";
+  return observed("A-neg", reason, {
     filesUnderRoot: d.filesUnderRoot,
+    removedUnderRoot,
     filesCwdOther: d.filesCwdOther,
+    // Deleted cwd files and changed/deleted staged inputs: the prompt forbade both.
+    cwdMutations,
     filesCliHomeState: d.filesCliHomeState,
     permissionMode: obs.stream.permissionMode,
     initCwd: obs.stream.initCwd,
@@ -583,17 +614,17 @@ export function evaluateDecisionTable(verdicts, mode = "all") {
     m ? UNDECIDABLE : f("S-P7").noncePresent === true, m ?? `noncePresent=${f("S-P7").noncePresent}`));
 
   m = need("A-neg");
-  const aNegUnderRoot = m ? null : f("A-neg").filesUnderRoot.length > 0;
+  const aNegUnderRoot = m ? null : f("A-neg").filesUnderRoot.length > 0 || f("A-neg").removedUnderRoot.length > 0;
   // The second clause: files also under a DIRECTIVE-only R — A-dir's R holding anything but hello.txt.
   const mDir = need("A-dir");
   const alsoUnderDirective = mDir ? null : f("A-dir").otherFilesUnderRoot.length > 0;
   rows.push(row("R5", "A-neg finds files under R", "SD-1a is refuted; if files also appear under a directive-only R, option 2 is refuted -> outcome (iii)",
     m ? UNDECIDABLE : aNegUnderRoot,
-    m ?? `filesUnderRoot=${JSON.stringify(f("A-neg").filesUnderRoot)}; directive-only R extra files=${mDir ? `undecidable (${mDir})` : JSON.stringify(f("A-dir").otherFilesUnderRoot)}${aNegUnderRoot && alsoUnderDirective ? " -> OPTION 2 REFUTED" : ""}`));
+    m ?? `filesUnderRoot=${JSON.stringify(f("A-neg").filesUnderRoot)} removedUnderRoot=${JSON.stringify(f("A-neg").removedUnderRoot)}; directive-only R extra files=${mDir ? `undecidable (${mDir})` : JSON.stringify(f("A-dir").otherFilesUnderRoot)}${aNegUnderRoot && alsoUnderDirective ? " -> OPTION 2 REFUTED" : ""}`));
 
   rows.push(row("R6", "A-neg: nothing under R or cwd", "6.7 holds for option 2",
-    m ? UNDECIDABLE : f("A-neg").filesUnderRoot.length === 0 && f("A-neg").filesCwdOther.length === 0,
-    m ?? `filesUnderRoot=${f("A-neg").filesUnderRoot.length} filesCwdOther=${JSON.stringify(f("A-neg").filesCwdOther)} (cli-home-state, reported not counted: ${f("A-neg").filesCliHomeState.length})`));
+    m ? UNDECIDABLE : v.get("A-neg").reason === "nothing-under-root-or-cwd",
+    m ?? `filesUnderRoot=${f("A-neg").filesUnderRoot.length} removedUnderRoot=${f("A-neg").removedUnderRoot.length} filesCwdOther=${JSON.stringify(f("A-neg").filesCwdOther)} cwdMutations=${JSON.stringify(f("A-neg").cwdMutations)} (cli-home-state, reported not counted: ${f("A-neg").filesCliHomeState.length})`));
 
   const mc = need("A-dir", "A-cwd");
   const dirW = mc ? null : f("A-dir").wroteHelloAtRoot === true;

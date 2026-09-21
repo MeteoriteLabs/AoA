@@ -214,7 +214,16 @@ test("readClaudeStream reads permissionMode, cwd and the FINAL result; frames al
 
 test("readDeclaration reads only the last line of the final result, relative to R", () => {
   const w = [`${OUTPUT_ROOT}/hello.txt`];
-  assert.deepEqual(readDeclaration("Done.\nAOA-OUTPUT: hello.txt", w), { present: true, declared: "hello.txt", resolved: `${OUTPUT_ROOT}/hello.txt`, matchesWritten: true });
+  assert.deepEqual(readDeclaration("Done.\nAOA-OUTPUT: hello.txt", w), { present: true, declared: "hello.txt", resolved: `${OUTPUT_ROOT}/hello.txt`, relative: true, matchesWritten: true });
+  assert.equal(readDeclaration("Done.\nAOA-OUTPUT: ./hello.txt", w).matchesWritten, true);
+  // Codex review (PR #551): the contract is a RELATIVE path; every other form is refused, even
+  // one that would resolve to the written file.
+  for (const bad of [`${OUTPUT_ROOT}/hello.txt`, "~/aoa-output/hello.txt", "../aoa-output/hello.txt", "sub/../hello.txt", "a//hello.txt", "sub\\hello.txt"]) {
+    const r = readDeclaration(`Done.\nAOA-OUTPUT: ${bad}`, [...w, `${OUTPUT_ROOT}/a/hello.txt`]);
+    assert.equal(r.present, true, bad);
+    assert.equal(r.relative, false, bad);
+    assert.equal(r.matchesWritten, false, bad);
+  }
   assert.equal(readDeclaration("Done.\nAOA-OUTPUT: other.txt", w).matchesWritten, false);
   assert.equal(readDeclaration("AOA-OUTPUT: hello.txt\nthen more text", w).present, false);
   assert.equal(readDeclaration(null, w).present, false);
@@ -308,6 +317,20 @@ test("R5/R6 split A-neg: under R, into cwd, or neither — and name OPTION 2 REF
   assert.equal(rowOf(rows, "R5").fired, false);
   assert.equal(rowOf(rows, "R6").fired, false, "a cwd write breaks R6 without firing R5");
 
+  // Codex review (PR #551): a DELETION is a mutation. The A-neg prompt forbids it, so a CLI that
+  // deletes a cwd file, or deletes or changes a staged input, must not read as "nothing".
+  const deleted = censusDelta(diffSnapshots([file(`${HOME_DIR}/notes.md`)], []), { staged: STAGED });
+  assert.deepEqual(deleted.removedCwdOther, [`${HOME_DIR}/notes.md`]);
+  assert.deepEqual(deleted.filesCwdOther, [], "a removed path never appears among written files");
+  rows = evaluateDecisionTable(baseline({ aNegDelta: deleted }));
+  assert.equal(rowOf(rows, "R6").fired, false, "a deleted cwd file breaks R6");
+  const stagedGone = censusDelta(diffSnapshots([file(STAGED[0])], []), { staged: STAGED });
+  assert.equal(rowOf(evaluateDecisionTable(baseline({ aNegDelta: stagedGone })), "R6").fired, false, "a deleted staged input breaks R6");
+  const rootGone = censusDelta(diffSnapshots([file(`${OUTPUT_ROOT}/pre`)], []), { staged: STAGED });
+  rows = evaluateDecisionTable(baseline({ aNegDelta: rootGone }));
+  assert.equal(rowOf(rows, "R5").fired, true, "a deletion under R fires R5");
+  assert.equal(rowOf(rows, "R6").fired, false);
+
   const homeState = censusDelta(diffSnapshots([], [file(`${HOME_DIR}/.claude/projects/x.jsonl`)]), { staged: STAGED });
   assert.equal(rowOf(evaluateDecisionTable(baseline({ aNegDelta: homeState })), "R6").fired, true, "CLI home state is reported, not counted");
 
@@ -336,6 +359,7 @@ test("R7–R10 are mutually exclusive and exactly one fires for each compliance 
 
 test("R11 needs a correct declaration in the final frame", () => {
   assert.equal(rowOf(evaluateDecisionTable(baseline()), "R11").fired, true);
+  assert.equal(rowOf(evaluateDecisionTable(baseline({ decl: `AOA-OUTPUT: ${OUTPUT_ROOT}/hello.txt` })), "R11").fired, false, "an absolute declaration never certifies option 1b");
   assert.equal(rowOf(evaluateDecisionTable(baseline({ decl: "no line" })), "R11").fired, false);
   assert.equal(rowOf(evaluateDecisionTable(baseline({ decl: "AOA-OUTPUT: elsewhere.txt" })), "R11").fired, false);
 });
