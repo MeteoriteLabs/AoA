@@ -3,7 +3,7 @@
 **Status:** `gate_review`
 **Date (UTC):** `2026-09-21`
 **Epic:** `E6-deployment-test-harness`
-**Plan task:** `E6 implementation-plan §4c DEP-014 — the adapter-manager image in the signed image build, pushed by CI (M1a)`
+**Plan task:** `E6 implementation-plan §4c DEP-014 — the adapter-manager image in the signed image build, admitted in CI; NOT pushed (M1a)` (title amended 2026-09-21; was `…pushed by CI (M1a)`)
 **Implementer:** `M1 build agent (Claude Opus 5)`
 **Start SHA:** `e5bc0bc81` (program tip `docs/replatform-program` after rebase)
 **Reviewed revision (code):** `ebf2c6e6e646cfc56f95cf0f0c7f0a93eb5aa06e`
@@ -25,7 +25,7 @@ Booting the AM is `DEP-015`.
 | 2. Admission rejects a tampered or unsigned AM digest (the **positive control**) | new `docker/images/admit.sh`, which delegates the verdict to the unchanged `scripts/verify-image-admission.mjs` / `evaluateAdmission` | **met.** See §3 |
 | 3. Image content: no baked `E2B_API_KEY`, no server/UI/DB tooling, non-root, provider SDK present | `docker/images/__tests__/image-contents.test.mjs` (four new AM tests plus one worker test) | **met, with one delta.** The clause "provider SDK *only* in the AM" is false at HEAD (§5.2) and is **not** asserted |
 | 4. `d1-merge-train.yml` builds the image on every run | step *"Build split D1 images"* runs `build.sh`; new step *"Sign, SBOM and admit the split images (DEP-014)"* is unconditional | **met** |
-| "pushed by CI" | — | **NOT DONE: stopped** (§5.1) |
+| "pushed by CI" | — | **DESCOPED** by ruling (§5.1) |
 
 Other changes:
 
@@ -152,12 +152,17 @@ recorded in the PR.
 
 ## 5. Where the task section and the code disagree (stopped, not improvised)
 
-1. **"pushed by CI … the same mechanism as the others": there is no such mechanism.** No workflow
-   pushes the control-plane or worker `:staging` image. The only push in the repo is `docker.yml`'s
-   `build-and-push`, and it pushes the **combined** `./Dockerfile` image. `build.sh` loads images
-   locally (`--load`, registry `localhost/aoa`). Mirroring the siblings exactly therefore means *no push*, and
-   none was added. Adding GHCR login and `packages: write` to D1, or creating a push lane, is a design decision
-   and needs a ruling. `DEP-015` (F3) builds from source, so nothing in M1a consumes a pushed tag.
+1. **"pushed by CI … the same mechanism as the others": there is no such mechanism. RESOLVED by ruling.**
+   No workflow pushes the control-plane or worker `:staging` image. The only push in the repo is `docker.yml`'s
+   `build-and-push`, and it pushes the **combined** `./Dockerfile` image. `build.sh` loads images locally
+   (`--load`, registry `localhost/aoa`). So no push was added. Codex raised the same gap (P2, `build.sh`),
+   and it was escalated rather than improvised.
+   **Ruling (2026-09-21, M1 planning session, decided under founder delegation F2): the push is DESCOPED from
+   DEP-014.** Founder ruling F3 has the shipped CI boot (DEP-015) *build* all three images from source, so nothing
+   in M1 consumes a pushed tag. Pre-checkpoint publication must be a deliberate, authorized act, never a lane
+   side effect. Publishing the adapter-manager image, together with the control-plane and worker images,
+   belongs to the **M5 release lane** at the integration checkpoint. The graph node (`program-design.md`) and the
+   E6 task section are amended in this PR, with the superseded text quoted.
 2. **"the provider SDK is present only in the adapter-manager image" is false for both siblings.**
    - The control-plane carries `e2b`: `server/package.json` depends on it, and `sandbox-provider-runtime.ts`
      imports it for cloud_auth extraction (Decision #104).
