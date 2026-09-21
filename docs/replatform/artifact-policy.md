@@ -37,6 +37,8 @@ docs/replatform/milestones/<milestone>/
   handoffs/  <YYYY-MM-DD>-<milestone-or-gate-slug>-<sha12>-a<attempt>.md
 ```
 
+★ **LIFTED 2026-09-21: `test-gates.md` `EVID-04` now permits `milestones/<milestone>/qa/` (M1 ruling F1, gate owner).** The history of the blocker is kept below.
+
 ★★★ **BLOCKING PRECONDITION — `EVID-04` MUST BE AMENDED BEFORE ANY MILESTONE QA RECORD IS FILED,
 AND THIS DOCUMENT CANNOT DO IT.** *Added 2026-09-20 (twelfth round), verified at source.*
 `test-gates.md` `EVID-04` states the record path normatively: *“Use

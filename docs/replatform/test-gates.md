@@ -35,7 +35,7 @@ Every D1–D6 gate requires all of these:
 
 ## Evidence names and retention
 
-**EVID-04 — Record path:** Use `docs/replatform/epics/<epic>/qa/<YYYY-MM-DD>-<lane>-<scope>-<sha12>-a<attempt>.md`. Example: `2026-08-07-d4-service-72h-9b74b888d78b-a1.md`.
+**EVID-04 — Record path:** Use `docs/replatform/epics/<epic>/qa/<YYYY-MM-DD>-<lane>-<scope>-<sha12>-a<attempt>.md`. Example: `2026-08-07-d4-service-72h-9b74b888d78b-a1.md`. **A milestone record** — one that belongs to no single epic because the milestone spans several (founder decision D-11, `milestones/README.md`) — uses `docs/replatform/milestones/<milestone>/qa/<YYYY-MM-DD>-<gate>-<scope>-<sha12>-a<attempt>.md` instead. Both paths carry the same immutability, field and retention rules. *Amended 2026-09-21 by the gate owner (M1 ruling F1). Before this, no milestone QA record could conform, which blocked `M1a`, `M1b` and `M2-RTF`.*
 
 **RET-01 — Evidence retention (INITIAL):** Git retains structured QA summaries permanently; controlled raw logs, traces, load results, manifests, and restore evidence are retained for at least 180 days. The record must remain meaningful after linked CI artifacts expire.
 
