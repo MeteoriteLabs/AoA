@@ -348,7 +348,7 @@ absence of the behavior, never a missing import.
 > is in `program-design.md` immediately before the `CLI-010` node. The task's own blocking banner
 > below called this out and it is confirmed at source: `check-finding-ownership.mjs:423` tests an
 > exact `tickets.has(entry.ticket)` and `findTicketIds` (`:50`) derives ids with
-> `/^([A-Z]+-\d+)/`. There is also no `-LEDGER` result file, because `CLI-009-result.md`
+> `/^([A-Z]+-\d+)/`. There is also no `-LEDGER` result file, because `CLI-008-LEDGER-result.md`
 > would itself resolve to `CLI-008` and be the orphaning act; the work is recorded in
 > `docs/replatform/DECISION-cli-008-successor-id-scheme.md` instead.
 >
@@ -433,8 +433,13 @@ re-ownership is worse than none):
 **Files:** `docs/replatform/program-design.md` (the new `#### CLI-010` … `#### CLI-015`,
 `#### CLI-016` nodes); `scripts/finding-ownership.json`; `findings.md` (owner lines only);
 `tickets/CLI-008-unit-f-design.md` (an **amendment note**, appended — the document's own convention
-— correcting the five drifted citations and recording that `E7-F014` is resolved);
-`tickets/CLI-009-result.md`.
+— correcting the five drifted citations and recording that `E7-F014` is resolved). **No result
+file.** ★ *Corrected 2026-09-21 (Codex, PR #526):* this list ended with `tickets/CLI-009-result.md`. There is no `CLI-009` graph node, and
+`/^([A-Z]+-\d+)/` parses that filename as `CLI-009`, so creating it would mint an undeclared
+completed ticket and fail graph coverage. The ledger is **ENACTED** (M0 unit 4) and its record is
+`docs/replatform/DECISION-cli-008-successor-id-scheme.md`, which says there is *"deliberately no
+`-LEDGER-result.md`"*. (M0 had left this line pointing at `CLI-008-LEDGER-result.md`, contradicting its
+own decision; an id sweep in this PR then renamed it to the worse `CLI-009-result.md`.)
 
 **Interfaces:** none — record work.
 
@@ -451,8 +456,10 @@ and the thing it counts must never be edited in the same commit without a re-cou
 finding id (the positive control — a guard without one is a check that nothing runs); GREEN is all
 five guards passing with the successors declared.
 
-**Evidence / commit:** `tickets/CLI-009-result.md`; one documentation commit
-`docs(e7): split CLI-008 Unit F into link-scoped tickets and re-point its findings`.
+**Evidence / commit:** ★ **ENACTED — nothing further to commit.** The evidence is M0 unit 4's
+commit and `docs/replatform/DECISION-cli-008-successor-id-scheme.md`; there is no result file, for
+the reason given under **Files** above. *(Previously: `tickets/CLI-009-result.md`; see the correction
+above.)*
 
 ---
 
@@ -662,9 +669,12 @@ link 6 to decide what it counts. **This ticket must state which it chose and why
 projection (F5); changing the counter (F6); a Unit-E workspace.
 
 **Files:** create `packages/worker-daemon/src/lease/export-request-producer.ts`; modify
-`packages/worker-daemon/src/index.ts` (barrel); modify the `DAT-009-3d` composition point in
-`packages/worker-daemon/src/lifecycle/dispatch-runtime.ts` to pass the real producer instead of
-nothing; create `packages/worker-daemon/src/__tests__/export-request-producer.test.ts`; append to
+`packages/worker-daemon/src/index.ts` (barrel); pass the real producer into the composition point **that `DAT-009-3d` builds** in
+`packages/worker-daemon/src/lifecycle/dispatch-runtime.ts`, replacing the "nothing" `DAT-009-3d`
+leaves there — a one-argument change at an existing seam, **not** building the composition, which is
+and stays `DAT-009-3d`'s. ★ *Corrected 2026-09-21 (Codex, PR #526):* Codex read the previous wording as assigning the composition to
+this ticket. It never did; but removing this edit, as suggested, would leave the producer
+unconnected, so the edit stays and its scope is now stated exactly; create `packages/worker-daemon/src/__tests__/export-request-producer.test.ts`; append to
 `decisions.md`. ★ **And the enumeration port** — modify
 `packages/worker-daemon/src/supervisor/provider.ts` (the `SandboxProvider` port gains a fenced,
 metadata-only enumeration operation: paths only, no bytes); modify
@@ -1432,7 +1442,7 @@ shares no file with the chain. Parallel **PRs** are free; only **merges** serial
 Checkbox only after the named outcome is committed and independently reviewed; these tasks do not
 authorize implementation.
 
-- [ ] **T1 (P1 STOP, S)** — `CLI-009`: file the link-scoped successors, re-point the ten
+- [x] **T1 (P1 STOP, S)** — `CLI-009` ★ **ENACTED by M0 unit 4** (numeric successors filed, two findings re-pointed on subject, no result file by design): file the link-scoped successors, re-point the ten
   findings, correct the five drifted citations. Verify: five record guards green after the last
   edit; **`tickets/CLI-008-result.md` does not exist**.
 - [ ] **T2 (P1, S)** — `CLI-010`: pin the **metadata-only** `listDir` enumeration seam and

@@ -42,11 +42,11 @@ with the decision rather than staying on the parent.
 
 A committed result naming the chosen mechanism, each option refuted and why, and the pin census the
 choice moves — `CLI-008-unit-f-design.md` §3.2 enumerates 16 pins BY SEARCH and records that 2 move.
-A ruling that does not say which pins move is not actionable by `CLI-010` or `CLI-015`.
+A ruling that does not say which pins move is not actionable by the **emit build** (filed after this ruling; it has no id yet) or by `CLI-015`. ★ *Corrected 2026-09-21 (Codex, PR #526):* this said `CLI-010`. `CLI-010` is the capture-side enumeration seam, not the emit build; routing the ruling to it would let emit work start on the capture ticket.
 
 ## Non-goals
 
-Building the emit half (that is `CLI-010`); changing `captureSandboxEntries`, which is a local-lane
+Building the emit half (that is the emit build, filed **after** this ruling — ★ *Corrected 2026-09-21 (Codex, PR #526):* this said `CLI-010`, which is the capture-side enumeration seam); changing `captureSandboxEntries`, which is a local-lane
 tool that must NOT be composed on the E2B lane; touching the counter (`CLI-015`).
 
 ## Test
