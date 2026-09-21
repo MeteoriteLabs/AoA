@@ -498,6 +498,68 @@ describe("DAT-009-3c — E5-D07: a failed export does NOT fail the attempt", () 
   });
 });
 
+describe("DAT-009-3c — the window latch bounds the export work, not only its start", () => {
+  function gatedProvider(op: "digestArtifact" | "exportArtifact"): { provider: SandboxProvider; release: () => void; reached: () => boolean } {
+    const inner = exportingProvider();
+    const { gate, release } = makeGate();
+    let reached = false;
+    const provider = new Proxy(inner, {
+      get(target, prop, receiver) {
+        if (prop === op) {
+          return async (...args: unknown[]) => {
+            reached = true;
+            await gate;
+            return (target[op] as (...a: unknown[]) => unknown)(...args);
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    return { provider, release, reached: () => reached };
+  }
+
+  it("★ a digest that resolves AFTER the deadline mints no grant", async () => {
+    const g = gatedProvider("digestArtifact");
+    const c = echoClient();
+    const { metrics, incs } = spyMetrics();
+    const supervisor = createSupervisor(
+      baseDeps({
+        provider: g.provider,
+        metrics,
+        exportArtifactsDeadlineMs: 20,
+        resolveExportArtifacts: async () => [REQUEST],
+        exportArtifacts: realSequencer(c),
+      }),
+    );
+    await supervisor.accept(makeHandoff());
+    expect(g.reached()).toBe(true);
+    expect(opOutcomes(incs, "export_artifact")).toEqual(["timed_out"]);
+    g.release();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(c.grantBodies).toEqual([]);
+    expect(c.commitBodies).toEqual([]);
+  });
+
+  it("★ an upload that lands AFTER the deadline is never committed", async () => {
+    const g = gatedProvider("exportArtifact");
+    const c = echoClient();
+    const supervisor = createSupervisor(
+      baseDeps({
+        provider: g.provider,
+        exportArtifactsDeadlineMs: 20,
+        resolveExportArtifacts: async () => [REQUEST],
+        exportArtifacts: realSequencer(c),
+      }),
+    );
+    await supervisor.accept(makeHandoff());
+    expect(g.reached()).toBe(true);
+    expect(c.grantBodies).toHaveLength(1);
+    g.release();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(c.commitBodies).toEqual([]);
+  });
+});
+
 // --- 4. the fence gate ------------------------------------------------------------------
 
 describe("DAT-009-3c — a withdrawn authority refuses before the grant reaches any provider", () => {

@@ -142,6 +142,12 @@ clamped budget is ≤ 0, the window is not opened (`failed`, reason `export_wind
   `run.effect`. **Named residual:** a commit HTTP call already in flight, for an object already
   uploaded, can still land before the terminal drains. That row is real, fenced and attempt-scoped,
   so it is correct evidence reported late, never evidence fabricated.
+  ★ *Refined 2026-09-21 (Codex review of PR #549, verified at source):* the latch is **also
+  re-checked after each awaited provider call**. Before this, a `digest` or `export` that was
+  already in flight when the deadline fired would return normally, and the abandoned sequencer would
+  go on to mint a grant or commit. Now a late digest mints nothing, and a late upload is never
+  committed: the uncommitted object is left to the orphan sweep (`isSweepEligible`). The residual
+  narrows to a commit **already in flight** when the window closes.
 - **Metrics: closed labels only, no new label.** `digest_artifact` is emitted once per provider
   digest call by the exporter adapter (`success`/`failed`). `export_artifact` is emitted **exactly
   once per window**, carrying the window's outcome: `success`, `failed` (any refusal or throw: the

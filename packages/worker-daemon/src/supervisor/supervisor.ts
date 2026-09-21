@@ -1015,6 +1015,9 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         try {
           const described = await run.effect.digestArtifact(sandboxId, path, run.makeCtx());
           emitOp("digest_artifact", "success");
+          // Re-checked AFTER the await: a digest that resolves once the window has ended must not
+          // hand the abandoned sequencer a value it would go on to mint a grant with.
+          assertOpen();
           return { sha256: described.sha256, sizeBytes: described.sizeBytes };
         } catch (err) {
           emitOp("digest_artifact", "failed");
@@ -1024,6 +1027,10 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       export: async (path, grant) => {
         assertOpen();
         const exported = await run.effect.exportArtifact(sandboxId, path, grant, run.makeCtx());
+        // Re-checked AFTER the await: an upload that lands once the window has ended stops before
+        // the commit. The uncommitted object is the orphan sweep's (`isSweepEligible`), never a late
+        // commit racing the terminal to the control plane.
+        assertOpen();
         return { objectKey: exported.objectKey };
       },
     };
