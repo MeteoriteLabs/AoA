@@ -156,13 +156,30 @@ export class ArtifactExportFailedError extends Error {
   readonly stage: ArtifactExportStage;
   readonly path: string;
   readonly artifactId: string;
-  constructor(stage: ArtifactExportStage, path: string, artifactId: string, detail: string) {
+  /**
+   * DAT-009-3c (E5-D07) — a PATH-FREE classification of the failure, safe to log.
+   *
+   * ★ The MESSAGE names the path, and the path is tenant-authored: the supervisor must never log
+   * the message or the error object. It logs `stage` + `reason` instead. For a control-plane
+   * refusal the reason is the server's own code (`attempt_terminal`, `stale_fence`,
+   * `target_revoked`, ...), carried by name because a best-effort export is only safe while the
+   * operator can tell a lifecycle-window mistake from a protocol bug (E7-F017). Anything that is
+   * not a plain snake_case code becomes `unknown` rather than being passed through.
+   */
+  readonly reason: string;
+  constructor(stage: ArtifactExportStage, path: string, artifactId: string, detail: string, reason: string) {
     super(`artifact export failed at ${stage} for ${path}: ${detail}`);
     this.name = "ArtifactExportFailedError";
     this.stage = stage;
     this.path = path;
     this.artifactId = artifactId;
+    this.reason = exportReasonCode(reason);
   }
+}
+
+/** A reason code is a short snake_case token or it is `unknown` — never free text. */
+export function exportReasonCode(value: string | null | undefined): string {
+  return typeof value === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(value) ? value : "unknown";
 }
 
 export interface CreateArtifactExportSequencerDeps {
@@ -236,6 +253,18 @@ function signed(
   return { bytes, sessionToken: session.token, proofHeaders: proof.headers };
 }
 
+/**
+ * DAT-009-3c — the sequencer as the supervisor receives it (`SupervisorDeps.exportArtifacts`, E5-D07).
+ * The dispatch runtime builds it (it owns the client, key and session); the supervisor supplies the
+ * per-run `exporter`. Declared as its own type, not `ReturnType<typeof …>`, so naming the TYPE is
+ * not a reference to the constructor: `gate-clause-wiring`'s `E5-2` count stays a count of CALLERS.
+ */
+export type ArtifactExportSequencer = (input: {
+  handoff: LeaseHandoff;
+  exporter: SandboxArtifactExporter;
+  requests: readonly ArtifactExportRequest[];
+}) => Promise<readonly ExportedArtifactRef[]>;
+
 /** Read `{outcome, reason?}` off a 200 body, or say why it could not be read. */
 function readOutcome(body: unknown): { outcome: string; reason: string | null } | null {
   if (!isRecord(body) || typeof body.outcome !== "string") return null;
@@ -261,13 +290,7 @@ function readOutcome(body: unknown): { outcome: string; reason: string | null } 
  * Fails per-file and does NOT continue: a caller cannot tell which of a partial set is missing,
  * which is the same reasoning that makes staging all-or-nothing.
  */
-export function createArtifactExportSequencer(
-  deps: CreateArtifactExportSequencerDeps,
-): (input: {
-  handoff: LeaseHandoff;
-  exporter: SandboxArtifactExporter;
-  requests: readonly ArtifactExportRequest[];
-}) => Promise<readonly ExportedArtifactRef[]> {
+export function createArtifactExportSequencer(deps: CreateArtifactExportSequencerDeps): ArtifactExportSequencer {
   return async ({ handoff, exporter, requests }) => {
     // ★ Nothing to export ⇒ NO session fetch, NO mint, NO row. §3.3 of the design: since slice 2
     // a mint is a durable record, so a speculative one is litter with a five-minute life.
@@ -299,8 +322,8 @@ export function createArtifactExportSequencer(
       // it. Without the annotation on the VARIABLE the narrowing does not apply and every
       // branch below would need a non-null assertion — assertions that would then survive a
       // later edit that made one of these paths fall through.
-      const fail: (stage: ArtifactExportStage, detail: string) => never = (stage, detail) => {
-        throw new ArtifactExportFailedError(stage, request.path, artifactId, detail);
+      const fail: (stage: ArtifactExportStage, detail: string, reason: string) => never = (stage, detail, reason) => {
+        throw new ArtifactExportFailedError(stage, request.path, artifactId, detail, reason);
       };
 
       // --- 1. DIGEST (metadata only; no bytes cross this call) -----------------------------
@@ -312,7 +335,7 @@ export function createArtifactExportSequencer(
         // lands here BEFORE anything durable was minted. A fabricated digest would be the
         // WRK-009 defect: byte-identical to a real one on every downstream gate, and it would
         // mint a grant against bytes that never existed.
-        fail("digest", error instanceof Error ? error.message : "digest failed");
+        fail("digest", error instanceof Error ? error.message : "digest failed", "digest_failed");
       }
 
       // --- 2. MINT the upload grant --------------------------------------------------------
@@ -343,29 +366,29 @@ export function createArtifactExportSequencer(
           },
         })),
       );
-      if (grantResponse.status !== 200) fail("grant", `status ${grantResponse.status}`);
+      if (grantResponse.status !== 200) fail("grant", `status ${grantResponse.status}`, `http_${grantResponse.status}`);
       const grantOutcome = readOutcome(grantResponse.body);
-      if (!grantOutcome) fail("grant", "unreadable response");
+      if (!grantOutcome) fail("grant", "unreadable response", "unreadable_response");
       // ★ THE REFUSAL REASON SURVIVES. `rejected` is checked FIRST and by name, so
       // `attempt_terminal` / `stale_fence` / `target_revoked` reach the operator as themselves.
       // The download mirror does not do this (E7-F017) and reports every refusal as a malformed
       // grant, which sends someone hunting a protocol bug when the real answer is "this ran
       // outside the lifecycle window".
       if (grantOutcome.outcome === "rejected") {
-        fail("grant", `rejected: ${grantOutcome.reason ?? "unknown"}`);
+        fail("grant", `rejected: ${grantOutcome.reason ?? "unknown"}`, grantOutcome.reason ?? "unknown");
       }
       if (grantOutcome.outcome !== "upload_granted") {
         // A cross-paired `download_granted` lands here rather than being parsed as an upload.
-        fail("grant", `outcome ${grantOutcome.outcome}`);
+        fail("grant", `outcome ${grantOutcome.outcome}`, "unexpected_outcome");
       }
       const parsedGrant = artifactUploadGrantV1Schema.safeParse(
         (grantResponse.body as Record<string, unknown>).grant,
       );
-      if (!parsedGrant.success) fail("grant", "malformed grant");
+      if (!parsedGrant.success) fail("grant", "malformed grant", "malformed_grant");
       const grant = parsedGrant.data;
       // The server echoes the key it authorised. A mismatch means the two sides disagree about
       // what is being written, and the safe reading is "do not upload".
-      if (grant.objectKey !== objectKey) fail("grant", "granted a different object key");
+      if (grant.objectKey !== objectKey) fail("grant", "granted a different object key", "object_key_mismatch");
 
       // --- 3. EXPORT — the only hop that moves bytes, and it is provider → S3 --------------
       let reference: { objectKey: string };
@@ -375,9 +398,9 @@ export function createArtifactExportSequencer(
         // Deliberately NOT interpolating the error into anything that could carry the grant:
         // the message is the implementation's, and an implementation that put the signed url in
         // its own error would leak it here. Only the stage and the path are reported.
-        fail("export", error instanceof Error ? error.name : "export failed");
+        fail("export", error instanceof Error ? error.name : "export failed", "export_failed");
       }
-      if (reference.objectKey !== objectKey) fail("export", "exported a different object key");
+      if (reference.objectKey !== objectKey) fail("export", "exported a different object key", "object_key_mismatch");
 
       // --- 4. COMMIT the reference ---------------------------------------------------------
       const commitResponse = await deps.client.artifactCommit(
@@ -414,17 +437,17 @@ export function createArtifactExportSequencer(
           },
         })),
       );
-      if (commitResponse.status !== 200) fail("commit", `status ${commitResponse.status}`);
+      if (commitResponse.status !== 200) fail("commit", `status ${commitResponse.status}`, `http_${commitResponse.status}`);
       const commitOutcome = readOutcome(commitResponse.body);
-      if (!commitOutcome) fail("commit", "unreadable response");
+      if (!commitOutcome) fail("commit", "unreadable response", "unreadable_response");
       if (commitOutcome.outcome === "rejected") {
         // `event_hash_mismatch` here means the store's OBSERVED digest disagreed with the one
         // step 1 described — the TOCTOU the two-step shape is designed to fail closed on.
-        fail("commit", `rejected: ${commitOutcome.reason ?? "unknown"}`);
+        fail("commit", `rejected: ${commitOutcome.reason ?? "unknown"}`, commitOutcome.reason ?? "unknown");
       }
-      if (commitOutcome.outcome !== "committed") fail("commit", `outcome ${commitOutcome.outcome}`);
+      if (commitOutcome.outcome !== "committed") fail("commit", `outcome ${commitOutcome.outcome}`, "unexpected_outcome");
       const body = commitResponse.body as Record<string, unknown>;
-      if (typeof body.versionNumber !== "number") fail("commit", "committed without a version");
+      if (typeof body.versionNumber !== "number") fail("commit", "committed without a version", "missing_version");
 
       exported.push({
         path: request.path,
