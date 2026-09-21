@@ -154,12 +154,94 @@ against source:
 
 ## Independent review
 
-**Reviewer:** `pending`
-**Reviewed revision:** `pending`
-**Disposition:** `pending`
-**Review evidence:** `pending`
+**Reviewer:** M1 review-batch-1 independent reviewer (Claude Opus 5) — distinct from the S0-6 unit session and the planning session
+**Reviewed revision:** 28a2dd259ed7bdd8d64d68ad8a5999500d80b69e
+**Disposition:** `changes_requested`
+**Review evidence:** see *Independent review — attempt 1* below
 
 For `approved`, verify the result describes the reviewed revision, all focused acceptance evidence passes, and every accepted finding is resolved; then change the top-level `Status` to `complete` and commit this disposition separately. Otherwise leave `Status` as `gate_review` or set `blocked`, and link stable findings.
+
+### Independent review — attempt 1
+
+**Disposition: `changes_requested`.** `Status` stays `gate_review`. Reviewed at
+`28a2dd259ed7bdd8d64d68ad8a5999500d80b69e`. The start SHA `1cc7e2fdba42…` and the ticket's single
+commit `299dca66e6cf…` (parent `1cc7e2fdb`, touching only `qa/README.md` and this result) are
+ancestors of it. Everything the record measures holds. The one blocker is in the freeze mechanism
+itself, and approval is what freezes it, so it has to be fixed first.
+
+**★ BLOCKING — the freeze pin covers the whole `qa/README.md`, including the records index that every
+attempt must update.**
+
+- The recorded pin is the **file** blob: `git rev-parse <sha>:docs/replatform/epics/E5-workspaces-secrets/qa/README.md`
+  = `f6b95d51cc8b96277363f34484bffdfb74867389`. It is correct today; I measured the same value at the
+  reviewed revision.
+- The same file is also the E5 **records index**. Its `## Records` table lists `a1` only, its
+  `## Planned attempts` table lists `a2` and `a3+`, and `artifact-policy.md` §`README.md` makes a
+  README the navigation ledger that "links to the latest accepted evidence".
+- So when `a2` is filed and indexed, the blob changes. Every later attempt then runs the plan's own
+  *"This plan unchanged since freeze"* command, and it **necessarily** fails: `a3`'s `M1b` candidate
+  contains the `a2` index row. The command's only escape is "the attempt cites the recorded decision
+  that changed it", and an index update is not a plan decision.
+- The alternatives are both bad. Either the escape is abused routinely, which empties the freeze
+  guarantee, or the index is never updated, which leaves a stale ledger.
+- The README's own wording already shows the mismatch: *"If this **section's** blob no longer matches"*.
+  Git has no per-section blob; the only blob is the file's.
+- **Fix (either option; then re-record the pin):**
+  - **(a)** Pin the **section**, not the file. Record the hash of
+    `git show <sha>:…/qa/README.md | sed -n '/^## The frozen audit plan/,$p' | git hash-object --stdin`,
+    and state that exact command in both the result and the plan's command table. Keep the frozen plan
+    the last section of the file.
+  - **(b)** Move the frozen plan into a file of its own that holds nothing but the plan, and pin that
+    file's blob. It must not be a `qa/*.md` other than `README.md`, because `EVIDENCE_RECORD_RE` would
+    treat it as an immutable evidence record. `tickets/` or the E5 epic root would work.
+
+  Either way, add a sentence stating that the records and planned-attempts tables are **outside** the pin.
+
+**Verified at source, and needing no change:**
+
+- **Dependencies.** `DAT-011-B1` (attempt 4 `approved`), `TRACK-001-B1` (attempt 1 `approved`) and
+  `DAT-008-A1` (attempt 1 `approved`) each carry top-level `**Status:** \`complete\``.
+- **`a1` untouched.** `git log 1cc7e2fdb..28a2dd259 -- …/qa/2026-08-24-d0-e5-exit-gate-audit-a1.md` is
+  empty, and its blob at the tip is `eb9186f7114d9f3551e55b00c4f6bf4bf38f47b0`, the blob the fixture
+  used. GREEN re-run: `node scripts/check-evidence-immutability.mjs --base 1cc7e2fdba42… --candidate 299dca66e6cf…`
+  gives `OK: 31 base records … byte-identical …; 1 candidate commit(s) walked`.
+- **RED positive control, reproduced** in a disposable fixture at `C:/e5rv`, since deleted, following
+  the plan's corrected procedure. The a1 copy's blob is `eb9186f7…`, and the guard and its one import
+  were copied untracked into the fixture's `scripts/`. The mutated candidate exits **1** with
+  `base record docs/replatform/epics/E5-workspaces-secrets/qa/2026-08-24-d0-e5-exit-gate-audit-a1.md was modified after commit`.
+  The base-vs-base control exits **0** with `OK: 1 base records`. The §Deviations false RED (no
+  repo-root flag; `REPO_ROOT` is the script's parent) is **true**, and the E5 plan has since recorded
+  that correction (S0-8).
+- **State at freeze.** `git diff 1cc7e2fdb 28a2dd259` over `server/src` and `packages` is tests only
+  (CLI-010 and DAT-007-S3), and `scripts/gate-clause-wiring.json` is unchanged.
+  `node scripts/check-gate-clause-wiring.mjs --counts` at the tip reports:
+  - `createArtifactExportSequencer`, `createFenceAwareEgressProxy`, `createPatchApplyService` and `createResultCommitter`: **0** each;
+  - `synthesiseRunSecrets`: **1**;
+  - `createStagedInputResolver`: **1**;
+  - `stageJobInputFiles`: **2**.
+
+  All match. Further checks at `1cc7e2fdb`:
+  - `job-leasing.ts:524` is `workspace: null,`.
+  - The non-test, non-doc references to `buildWorkspaceManifest` are its definition, the two barrels
+    and the `git-runner.ts` comment. `gate-clause-wiring.json` does not name it.
+  - The `E5-6-denied-egress` reason names `e6f-08` as a docker-network analog and cites `E8-F003`.
+  - `DE-08` is `not-delivered` with the 2026-09-11 founder amendment.
+  - `tests/d1/e6f-05-live-minio.test.mjs`, `e6f-14-orphan-sweep.test.mjs` and
+    `packages/worker-daemon/src/__tests__/supervisor-secret-materialization.test.ts` exist.
+  - `maybeProvisionDistributedExecutionRoles` and `assertPrimaryDbBypassesRls` are in `server/src/index.ts`.
+- **Floors versus scope-triage.** `scope-triage.md` §`M1a` entry defers exactly `tools` + `output`, so
+  clauses 2 and 7 floored only at `M1b`, and 4 and 5 floored at `M1a`, are consistent. The verdict
+  vocabulary is `a1`'s, unchanged.
+- **Guard count.** `pr.yml` at `1cc7e2fdb` names 44 distinct `node scripts/check-*.mjs`. Minus the six
+  excluded, that is **38**, as recorded.
+
+**Not blocking; for the planning session.** `scope-triage.md` says of `M1a`: *"Workspace staging IS
+required: the `M1a` journey stages input."* The matrix gives clause 1 (immutable workspace staging) no
+floor at either milestone and plans it blocked. So an `a2` can pass exit criterion 7 with clause 1
+`planned and blocked`. The record raises the missing DAT-001 composition ticket itself (§Follow-up).
+The planning session should confirm, as a recorded decision, that the staged-input path (`proven_weakly`
+at most) satisfies scope-triage's "workspace staging IS required" for `M1a`, **before** the plan is
+frozen. Otherwise clause 1 needs an `M1a` floor.
 
 ## Review attempt history
 
@@ -167,4 +249,5 @@ The implementation author leaves the table body empty; the explicit pending summ
 
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
+| 1 | M1 review-batch-1 independent reviewer (Claude Opus 5) | `28a2dd259ed7bdd8d64d68ad8a5999500d80b69e` | `changes_requested` | BLOCKING: the freeze pin is the whole `qa/README.md` blob (`f6b95d51…`, correct today), but that file is also the records index that must be updated when `a2` lands. `a3`'s "plan unchanged since freeze" command would then necessarily fail. The README's "this section's blob" wording has no git referent. Fix: pin a section hash, stated as an exact command, or move the plan to its own non-`qa/` file; then re-record the pin. Verified with no change needed: dependencies complete; `a1` untouched (GREEN OK, 31 records); RED reproduced in a fixture (exit 1, names the record; control exit 0); state-at-freeze counts all match at source; floors consistent with the `tools` + `output` exemption; 38 guards. Non-blocking: clause 1 has no `M1a` floor despite scope-triage's "workspace staging IS required", so the planning session should confirm. |
 <!-- First independent reviewer appends attempt 1. -->
