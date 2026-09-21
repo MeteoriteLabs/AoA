@@ -623,10 +623,32 @@ channel makes the "captured transcript" option cheaper. The review's result feed
 **F7**, which is recorded separately in `decisions.md`; this ticket still makes neither choice binding
 on its own.*
 
-**Files:** an amendment to `tickets/CLI-008-unit-f-design.md` (appended, per that document's own
-convention — a refuted plan left standing in a design document gets built, so nothing is deleted
+★ *Amended 2026-09-21 (M1 corrections batch 1), per `CLI-011-review.md` §3.2 and §13 item 1, verified
+at source: the core of the "`files.read` probe (§9.2)" named above **has already run**. Run
+`33856478690`, job `keyed-e2b-dat-009-export`, conclusion `success`, 4/4 tests: case "digests a file
+the SANDBOX produced, and exports its bytes byte-identically"
+(`packages/sandbox-e2b-provider/src/__tests__/keyed-dat-009-artifact-export.test.ts`) writes a file by
+a redirected `sh -c` through `RealE2bTransport.runCommand` and reads it back byte-identically through
+`sandbox.files.read(path, { format: "bytes" })`. What stays open is Unit F §9.2's sub-cases (a) and
+(b), which the review's §10 designs as the probe still owed.*
+
+**Files, in order (the review-then-ruling flow actually used):**
+1. **The review document — DONE:** `tickets/CLI-011-review.md` (the evidence for ruling F7: writer
+   census, §6-constraint table, positive-control table, adversarial pass, pins moved, and the
+   `WRK-018` channel priced as an input).
+2. **The probe:** the `files.read` probe the review designs (its §10), dispatched only inside the F8
+   envelope on a named candidate.
+3. **The ruling:** founder ruling **F7**, recorded as an entry in `decisions.md` (this epic).
+4. **The result:** `tickets/CLI-011-result.md`, written after the ruling.
+
+**No source files.** The review is the decision request; no separate `DECISION-REQUEST-…` file is
+written, and where this task (Observability) and plan step T3 say "decision request" they mean the
+review document. ★ *Amended 2026-09-21 (M1 corrections batch 1), per `CLI-011-review.md` §13 item 7.
+Superseded text: "an amendment to `tickets/CLI-008-unit-f-design.md` (appended, per that document's
+own convention — a refuted plan left standing in a design document gets built, so nothing is deleted
 and nothing is silently demoted); a `DECISION-REQUEST-cli-008-unit-f-emit.md` under
-`docs/replatform/`; `tickets/CLI-011-result.md`. **No source files.**
+`docs/replatform/`; `tickets/CLI-011-result.md`." An appended Unit F amendment remains available
+if the F7 ruling calls for one; it is no longer a required file of this task.*
 
 **Interfaces:** none.
 
@@ -639,8 +661,10 @@ blocks it' is the outcome."* That is a successful ticket, not a failed one.
 **Observability:** the decision request must name, for each candidate, which §6 constraint it
 satisfies and which positive control would prove it — not a narrative.
 
-**Evidence / commit:** `tickets/CLI-011-result.md`; one documentation commit
-`docs(e7): CLI-008 Unit F link 1b — candidate analysis and decision request`.
+**Evidence / commit:** `tickets/CLI-011-review.md` (done), the F7 entry in `decisions.md`, and
+`tickets/CLI-011-result.md`. ★ *Amended 2026-09-21 (M1 corrections batch 1), with Files above.
+Superseded text: "`tickets/CLI-011-result.md`; one documentation commit `docs(e7): CLI-008 Unit F
+link 1b — candidate analysis and decision request`."*
 
 ---
 

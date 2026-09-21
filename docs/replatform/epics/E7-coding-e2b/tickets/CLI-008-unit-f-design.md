@@ -549,6 +549,17 @@ pin-lens review re-enumerated this surface by search and confirmed it. ★ **The
 artefact here** — it is valid for *any* future change to this seam, not only for the redirect that
 motivated it.
 
+★ **Amended 2026-09-21 (M1 corrections batch 1) — pins 1 and 2 have drifted; the table above is kept as
+measured.** Per `CLI-011-review.md` §3.6 and §13 item 4, verified at source: in
+`cli-008-unit-b-byte-source.integration.test.ts` the `expect(workloadBytes).toBe(...)` and
+`expect(MEASURED.submissionHeadroomBytes).toBe(...)` assertions now read **`326`** and **`65_210`**
+(lines `:281`/`:282`, hint). They were `295` and `65_241`. The F021/F027 permission-posture PR added a
+fixed +31 bytes to the script literal, and the comment above the pins records it (*"790 UNTIL UNIT D,
+295 AFTER IT, 326 AFTER THE F021/F027 POSTURE"*). The `BEFORE` figures in the measured block, and
+§3.3's *"295 for both today"*, are therefore stale as current values. The same 35-byte redirect would
+take them to `361` / `65_175`; that is arithmetic on the new pins and has **not** been re-measured. The
+census's finding is unchanged: the same two pins move, and they are one measurement stated twice.
+
 ### 3.3 Why that one pin edit would be legitimate — and why "zero test edits" was never the goal
 
 Pins 1 and 2 are a **measurement**. The rule this programme uses for measurement pins is: one may be
@@ -986,6 +997,16 @@ completeness claim is false against three staged-prompt pins.
    **unwritable** redirect target fails at the redirection with the agent never starting. Both remain
    unmeasured. This is a cheap, standalone measurement and is worth taking **whether or not a fourth
    mechanism is ever proposed**, because it bounds the whole option space.
+   ★ **Amended 2026-09-21 (M1 corrections batch 1) — the core question HAS BEEN MEASURED; it was
+   recorded here as open because no record linked the run.** Per `CLI-011-review.md` §3.2, verified at
+   source: `packages/sandbox-e2b-provider/src/__tests__/keyed-dat-009-artifact-export.test.ts`, case
+   *"digests a file the SANDBOX produced, and exports its bytes byte-identically"*, writes the file
+   with `produceInSandbox` (`sh -c "printf '%s' '<b64>' | base64 -d > <path>"`, a redirected `exec`
+   through `RealE2bTransport.runCommand`) and reads it back through `RealE2bTransport.readFile`, which
+   is `sandbox.files.read(path, { format: "bytes" })`. Run **`33856478690`**, job
+   **`keyed-e2b-dat-009-export`**, conclusion `success`, `Tests 4 passed (4)`, head `f6ffc183b`.
+   **Answer: yes.** Sub-cases **(a)** (a redirect after a non-zero exit) and **(b)** (an unwritable
+   redirect target) **remain unmeasured**; per the review they bear only on redirect-based variants.
 3. **One output path or a list?** Unmeasured. A list multiplies grant round-trips, needs a per-file
    failure policy, and cannot be a script constant — which re-opens §4.1's three measurements in full.
 4. ★★★ **Where could a model-turn floor live — or does it not get built?** §3.8 tables three candidate
@@ -1125,7 +1146,7 @@ This section, and the stop condition at §12.3, turn in places on *"the literals
 - **The permission-posture diff MERGED, founder-authorized 2026-09-11.** `task-run-sandbox-invocation.ts` now emits `--dangerously-skip-permissions` on the claude arm (`:186-187`, E7-F021) and `--dangerously-bypass-approvals-and-sandbox --skip-git-repo-check` on the codex arm (`:211-212`, E7-F027). The A2 rewrite the probe performed *inside itself* is now the **shipped literal**. Per §12.3 clause **(i)** — *"a mechanism proposed before the permission posture is IN THE PRODUCT … will be refuted"* — the *"merged posture diff quoted by commit"* third input named there now exists, so **clause (i) is SATISFIED for `claude_local`**.
 - **`E7-F014` resolved** (PR #351, 2026-09-04 — see the §5 note).
 
-★ **What this does NOT do, stated because a lifted precondition reads as permission (§12.3, §13.3):** it does **not** satisfy clause **(ii)** — `codex_local`'s write capability remains **unmeasured** (probe (a)'s codex arms were refused upstream — E7-F027/E7-F028 — and no run since has measured a codex write), so an *adapter-agnostic* mechanism is still refutable; it does **not** discharge §9.1's census (owed for any candidate predicate) or §9.2's unrun `files.read`-after-redirect probe; and it does **not** touch §13 — deleting or retiring clause-6 arm 2 remains **the founder's call**, deliberately open. The only thing that changed: the measure-first stop condition's **first clause is now met**, so the decision this section defers is **ripe**, not made. No mechanism is proposed here, the A–G plan stays deleted, and the bar is untouched.
+★ **What this does NOT do, stated because a lifted precondition reads as permission (§12.3, §13.3):** it does **not** satisfy clause **(ii)** — `codex_local`'s write capability remains **unmeasured** (probe (a)'s codex arms were refused upstream — E7-F027/E7-F028 — and no run since has measured a codex write), so an *adapter-agnostic* mechanism is still refutable; it does **not** discharge §9.1's census (owed for any candidate predicate) or §9.2's unrun `files.read`-after-redirect probe (★ *amended 2026-09-21, M1 corrections batch 1:* its core has run — run `33856478690`, job `keyed-e2b-dat-009-export`, 4/4, see the §9.2 amendment; sub-cases (a) and (b) remain unmeasured); and it does **not** touch §13 — deleting or retiring clause-6 arm 2 remains **the founder's call**, deliberately open. The only thing that changed: the measure-first stop condition's **first clause is now met**, so the decision this section defers is **ripe**, not made. No mechanism is proposed here, the A–G plan stays deleted, and the bar is untouched.
 
 ### 12.1 The status, stated so it cannot be misread in either direction
 
