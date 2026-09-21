@@ -125,8 +125,18 @@ held until both sandboxes exist.
 
 ## 6. CI
 
-To be filled in on the final head: `ci-required`, with the `verify` shard that executed
-`supervisor-export-artifacts.test.ts` and its executed test count.
+Measured on head `a040e3a39` (which carries the reviewed code tree `f5e2aff1f`), `pr.yml` run
+`35590700974`:
+- **`ci-required`** (job `106309376411`): **success**.
+- **`verify (2)`** (job `106304320350`): executed `supervisor-export-artifacts.test.ts`, **21 tests**,
+  all passed. The shard total was **6231 passed, 33 skipped (6264)**.
+- `verify (1)`, `(3)` and `(4)`: success.
+
+Codex review on `a040e3a39`: "Didn't find any major issues". Its one earlier P1 (the latch
+re-check, on `98428225b`) is fixed in `f5e2aff1f`, replied to and resolved.
+
+This section was added in a docs-only commit after that run, so the final head differs from
+`a040e3a39` by this file only.
 
 ## 7. Reviewer section
 
