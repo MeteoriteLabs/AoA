@@ -23,7 +23,8 @@ import { createHash } from "node:crypto";
 import type { ArtifactUploadGrantV1 } from "@armyofagents/worker-protocol";
 import { grantPutHeaders } from "@armyofagents/worker-daemon";
 
-import { putGrantBytes } from "../e2b-provider.js";
+import { E2bSandboxProvider, putGrantBytes } from "../e2b-provider.js";
+import { MockE2bTransport } from "../mock-transport.js";
 
 const enc = (s: string) => new TextEncoder().encode(s);
 const hex = (b: Uint8Array) => createHash("sha256").update(b).digest("hex");
@@ -146,5 +147,72 @@ describe("DAT-009-3e / E5-F002 — putGrantBytes derives its signed-PUT headers 
     expect(err.message).not.toMatch(/status \d+/);
     expect(`${err.message}\n${err.stack ?? ""}\n${String(err.cause ?? "")}`).not.toContain("deadbeefsecret");
     expect(err.cause).toBeUndefined();
+  });
+
+  it("★ never follows a redirect — the PUT body cannot be forwarded past the grant's origin (Codex P2, PR #557)", async () => {
+    const seen = stubFetch();
+    await putGrantBytes(grant(), GRANTED);
+    expect(seen[0]!.init.redirect).toBe("error");
+  });
+
+  it("★ the PUT is abortable: the caller's signal reaches fetch, and an abort is reported as a timeout", async () => {
+    const seen = stubFetch();
+    const controller = new AbortController();
+    await putGrantBytes(grant(), GRANTED, controller.signal);
+    expect(seen[0]!.init.signal).toBe(controller.signal);
+
+    const aborted = AbortSignal.abort();
+    stubFetch(() => {
+      throw new DOMException("This operation was aborted", "AbortError");
+    });
+    const err = (await putGrantBytes(grant(), GRANTED, aborted).catch((e: unknown) => e)) as Error;
+    expect(err.message).toMatch(/timed out/);
+    expect(err.message).not.toContain("deadbeefsecret");
+  });
+});
+
+describe("DAT-009-3e — exportArtifact bounds the upload by ctx.deadlineMs (Codex P1, PR #557)", () => {
+  const LABELS = {
+    organizationId: "org-1",
+    targetId: "tgt-1",
+    workerId: "wkr-1",
+    jobId: "job-1",
+    attempt: 1,
+    leaseId: "lease-1",
+    deviceGeneration: 1,
+  };
+  const PATH = "/home/user/out.txt";
+
+  async function providerWith(performUploadGrant: (g: ArtifactUploadGrantV1, b: Uint8Array, s?: AbortSignal) => Promise<void>) {
+    const transport = new MockE2bTransport();
+    const p = new E2bSandboxProvider({ transport, performUploadGrant });
+    const created = await p.create({ resourceLabels: LABELS, command: "c", args: [], env: {}, workloadType: "batch" }, {
+      deadlineMs: 60_000,
+      idempotencyKey: "c-1",
+    });
+    await transport.writeFiles(created.sandboxId, [{ path: PATH, bytes: GRANTED }]);
+    return { p, sandboxId: created.sandboxId };
+  }
+
+  it("★ a stalled upload is ABORTED at ctx.deadlineMs instead of hanging forever", async () => {
+    let signalSeen: AbortSignal | undefined;
+    const { p, sandboxId } = await providerWith(
+      (_g, _b, signal) =>
+        new Promise<void>((_resolve, reject) => {
+          signalSeen = signal;
+          signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        }),
+    );
+    const started = Date.now();
+    await expect(p.exportArtifact(sandboxId, PATH, grant(), { deadlineMs: 50, idempotencyKey: "e-1" })).rejects.toThrow();
+    expect(signalSeen).toBeDefined();
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it("★ an exhausted budget (deadlineMs <= 0) uploads nothing", async () => {
+    const upload = vi.fn(async () => undefined);
+    const { p, sandboxId } = await providerWith(upload);
+    await expect(p.exportArtifact(sandboxId, PATH, grant(), { deadlineMs: 0, idempotencyKey: "e-0" })).rejects.toThrow();
+    expect(upload).not.toHaveBeenCalled();
   });
 });

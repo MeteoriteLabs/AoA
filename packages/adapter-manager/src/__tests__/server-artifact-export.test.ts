@@ -20,7 +20,7 @@ import { createHash, generateKeyPairSync } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { CreateSandboxSpec, ProviderOpContext, ResourceLabels } from "@armyofagents/worker-daemon";
-import { ResourceNotAvailableError, UnsupportedProviderOperation } from "@armyofagents/worker-daemon";
+import { EXPORT_TEARDOWN_RESERVE_MS, ResourceNotAvailableError, UnsupportedProviderOperation } from "@armyofagents/worker-daemon";
 import {
   NetworkedProviderDriver,
   OWNED_LABELS_CAPABILITY_AUDIENCE,
@@ -106,6 +106,9 @@ class RecordingMockTransport extends MockE2bTransport {
 
 let transport: RecordingMockTransport;
 let uploads: { objectKey: string; bytes: Uint8Array }[];
+/** When set, the injected uploader STALLS until its signal aborts (a hung object store). */
+let stallUploads = false;
+let exportCtxDeadlines: number[];
 let server: ReturnType<typeof createProviderServer>;
 let baseUrl: string;
 
@@ -115,15 +118,35 @@ async function startServer(
   const gated = opts.gated ?? true;
   transport = new RecordingMockTransport();
   uploads = [];
-  const performUploadGrant = async (g: ArtifactUploadGrantV1, bytes: Uint8Array): Promise<void> => {
+  exportCtxDeadlines = [];
+  const performUploadGrant = async (g: ArtifactUploadGrantV1, bytes: Uint8Array, signal?: AbortSignal): Promise<void> => {
+    if (stallUploads) {
+      await new Promise<void>((_resolve, reject) => {
+        if (signal === undefined) return; // an unbounded upload: never settles
+        signal.addEventListener("abort", () => reject(new Error("aborted")));
+      });
+    }
     uploads.push({ objectKey: g.objectKey, bytes: Uint8Array.from(bytes) });
   };
-  const provider =
+  const base =
     opts.exportMode === "none"
       ? new (class extends E2bSandboxProvider {
           override readonly artifactExportMode = "none" as const;
         })({ transport, performUploadGrant })
       : new E2bSandboxProvider({ transport, performUploadGrant });
+  // Records the ctx.deadlineMs the ROUTE hands the provider's exportArtifact.
+  const provider = new Proxy(base, {
+    get(target, prop) {
+      if (prop === "exportArtifact") {
+        return (sandboxId: string, path: string, g: ArtifactUploadGrantV1, c: ProviderOpContext) => {
+          exportCtxDeadlines.push(c.deadlineMs);
+          return target.exportArtifact(sandboxId, path, g, c);
+        };
+      }
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
   const artifactUploadOrigins = opts.uploadOrigins === null ? undefined : (opts.uploadOrigins ?? [STORE_ORIGIN]);
   server = createProviderServer({
     provider,
@@ -139,14 +162,17 @@ async function stopServer(): Promise<void> {
 }
 
 beforeEach(() => startServer());
-afterEach(() => stopServer());
+afterEach(async () => {
+  stallUploads = false;
+  await stopServer();
+});
 
 function ctx(idempotencyKey: string): ProviderOpContext {
   return { deadlineMs: 5_000, idempotencyKey };
 }
-function mint(labels: ResourceLabels): OwnedLabelsCapability {
+function mint(labels: ResourceLabels, expiresAt: number = NOW + 60_000): OwnedLabelsCapability {
   return signOwnedLabelsCapability(
-    { v: OWNED_LABELS_CAPABILITY_VERSION, audience: OWNED_LABELS_CAPABILITY_AUDIENCE, ownedLabels: labels, expiresAt: NOW + 60_000 },
+    { v: OWNED_LABELS_CAPABILITY_VERSION, audience: OWNED_LABELS_CAPABILITY_AUDIENCE, ownedLabels: labels, expiresAt },
     controlPlane.privateKey,
   );
 }
@@ -333,6 +359,47 @@ describe("DAT-009-3e — digest/export over the networked wire (gated owned ops)
       WireProtocolError,
     );
     expect(transport.readFileCalls).toBe(reads);
+    expect(uploads).toHaveLength(0);
+  });
+
+  // ★ Codex P1 on PR #557: `gateOwnedOp` holds the per-sandbox lock across dispatch, so an
+  // unbounded PUT would queue the run's own destroy behind it. The route bounds the export to the
+  // capability's life minus EXPORT_TEARDOWN_RESERVE_MS (the supervisor's own window clamp), and
+  // the provider aborts the upload at that budget.
+  it("★ the export budget is clamped to capability expiry minus the teardown reserve", async () => {
+    const sandboxId = await sandboxWithOutput(ORG_A);
+    const driver = new NetworkedProviderDriver({ baseUrl, capability: mint(ORG_A, NOW + 60_000) });
+    await driver.exportArtifact(sandboxId, OUT_PATH, grant(ORG_A), { deadlineMs: 600_000, idempotencyKey: "e-clamp" });
+    expect(exportCtxDeadlines).toEqual([60_000 - EXPORT_TEARDOWN_RESERVE_MS]);
+    // A tighter caller budget is kept.
+    await driver.exportArtifact(sandboxId, OUT_PATH, grant(ORG_A), { deadlineMs: 5_000, idempotencyKey: "e-clamp-2" });
+    expect(exportCtxDeadlines[1]).toBe(5_000);
+  });
+
+  it("★ inside the teardown reserve the export is refused WITHOUT dispatch", async () => {
+    const sandboxId = await sandboxWithOutput(ORG_A);
+    const reads = transport.readFileCalls;
+    const driver = new NetworkedProviderDriver({ baseUrl, capability: mint(ORG_A, NOW + EXPORT_TEARDOWN_RESERVE_MS) });
+    await expect(driver.exportArtifact(sandboxId, OUT_PATH, grant(ORG_A), ctx("e-reserve"))).rejects.toBeInstanceOf(WireProtocolError);
+    expect(exportCtxDeadlines).toHaveLength(0);
+    expect(transport.readFileCalls).toBe(reads);
+    expect(uploads).toHaveLength(0);
+  });
+
+  it("★ a STALLED upload releases the sandbox lock at its budget, so the run's destroy is not stranded", async () => {
+    const sandboxId = await sandboxWithOutput(ORG_A);
+    stallUploads = true;
+    // 200 ms of budget left before the teardown reserve.
+    const cap = mint(ORG_A, NOW + EXPORT_TEARDOWN_RESERVE_MS + 200);
+    const driver = new NetworkedProviderDriver({ baseUrl, capability: cap });
+    const exporting = driver.exportArtifact(sandboxId, OUT_PATH, grant(ORG_A), { deadlineMs: 600_000, idempotencyKey: "e-stall" });
+    const destroyed = driver.destroy(sandboxId, ctx("destroy-after-stall"));
+    await expect(exporting).rejects.toBeInstanceOf(WireProtocolError);
+    const result = await Promise.race([
+      destroyed,
+      new Promise<"stranded">((resolve) => setTimeout(() => resolve("stranded"), 5_000)),
+    ]);
+    expect(result).not.toBe("stranded");
     expect(uploads).toHaveLength(0);
   });
 

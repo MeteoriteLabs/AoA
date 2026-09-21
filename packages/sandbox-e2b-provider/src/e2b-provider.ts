@@ -125,7 +125,7 @@ export interface E2bSandboxProviderOptions {
    * ★ The implementation MUST NOT log or re-throw the url or headers: the grant is a bearer
    * capability that writes an attempt-scoped object key until it expires.
    */
-  readonly performUploadGrant?: (grant: ArtifactUploadGrantV1, bytes: Uint8Array) => Promise<void>;
+  readonly performUploadGrant?: (grant: ArtifactUploadGrantV1, bytes: Uint8Array, signal?: AbortSignal) => Promise<void>;
 }
 
 /** The default redemption: a plain GET against the presigned url with the grant's headers. */
@@ -169,12 +169,19 @@ async function fetchGrantBytes(grant: ArtifactDownloadGrantV1): Promise<Uint8Arr
  * ★ H-04: neither the url nor the headers ever reach a thrown message. A non-2xx reports its
  * STATUS; a transport failure (a severed connection) is re-thrown as a fixed, distinguishable
  * message with NO `cause`, because a transport error can name the host and query it was reaching.
+ *
+ * ★ NO REDIRECTS (`redirect: "error"`, Codex P2 on PR #557). A redirect would forward the body to
+ * a destination the adapter-manager's origin binding never saw. And the PUT is ABORTABLE: the
+ * caller's `signal` ends a stalled upload (reported as a timeout), so a hung store cannot hold the
+ * per-sandbox lock and strand the run's destroy (Codex P1).
  */
-export async function putGrantBytes(grant: ArtifactUploadGrantV1, bytes: Uint8Array): Promise<void> {
+export async function putGrantBytes(grant: ArtifactUploadGrantV1, bytes: Uint8Array, signal?: AbortSignal): Promise<void> {
   let response: Response;
   try {
     response = await fetch(grant.url, {
       method: "PUT",
+      redirect: "error",
+      ...(signal === undefined ? {} : { signal }),
       headers: {
         "content-type": "application/octet-stream",
         ...grantPutHeaders(grant),
@@ -185,12 +192,34 @@ export async function putGrantBytes(grant: ArtifactUploadGrantV1, bytes: Uint8Ar
     });
   } catch {
     // Deliberately not chained: the transport's own error may carry the url.
+    if (signal?.aborted) throw new Error("artifact export upload timed out before a response");
     throw new Error("artifact export upload did not complete: the connection was severed before a response");
   }
   if (!response.ok) {
     // The status, never the url — the url IS the capability.
     throw new Error(`artifact export upload failed with status ${response.status}`);
   }
+}
+
+/** Settle with `work`, or reject when `signal` aborts first. The abandoned `work` is left to settle
+ * on its own; its rejection is handled so it is never unhandled. */
+function boundedBySignal<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  work.catch(() => undefined);
+  if (signal.aborted) return Promise.reject(new Error("artifact export upload timed out before a response"));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(new Error("artifact export upload timed out before a response"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (err: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(err);
+      },
+    );
+  });
 }
 
 /**
@@ -284,7 +313,7 @@ export class E2bSandboxProvider implements SandboxProvider {
   readonly #templateId: string;
   readonly #defaultTtlMs: number;
   readonly #redeemDownloadGrant: (grant: ArtifactDownloadGrantV1) => Promise<Uint8Array>;
-  readonly #performUploadGrant: (grant: ArtifactUploadGrantV1, bytes: Uint8Array) => Promise<void>;
+  readonly #performUploadGrant: (grant: ArtifactUploadGrantV1, bytes: Uint8Array, signal?: AbortSignal) => Promise<void>;
   readonly advertisedOperations: ReadonlySet<ProviderOperation>;
   readonly checkpointMode: CheckpointMode;
   readonly healthMode: HealthMode;
@@ -694,10 +723,15 @@ export class E2bSandboxProvider implements SandboxProvider {
     sandboxId: string,
     path: string,
     grant: ArtifactUploadGrantV1,
-    _ctx: ProviderOpContext,
+    ctx: ProviderOpContext,
   ): Promise<ArtifactExportResult> {
     // Unreachable by construction, exactly as in `digestArtifact` above — see the note there.
     if (this.artifactExportMode === "none") throw new UnsupportedProviderOperation("export_artifact");
+    // DAT-009-3e (Codex P1, PR #557) — the upload is BOUNDED by the op's budget. An exhausted
+    // budget uploads nothing; otherwise the PUT is aborted at `ctx.deadlineMs`, and the call
+    // settles then even if an injected uploader ignores the signal.
+    if (!(ctx.deadlineMs > 0)) throw new Error("artifact export budget exhausted before the upload");
+    const signal = AbortSignal.timeout(ctx.deadlineMs);
     const bytes = await this.#readArtifactBytes(sandboxId, path);
     if (bytes.byteLength > grant.maxBytes) {
       throw new Error(`artifact at ${path} is ${bytes.byteLength} bytes, over the granted ${grant.maxBytes}`);
@@ -707,7 +741,7 @@ export class E2bSandboxProvider implements SandboxProvider {
       // The digests, never the url.
       throw new Error(`artifact at ${path} hashed ${digest}, expected ${grant.expectedSha256}`);
     }
-    await this.#performUploadGrant(grant, bytes);
+    await boundedBySignal(this.#performUploadGrant(grant, bytes, signal), signal);
     return { objectKey: grant.objectKey };
   }
 

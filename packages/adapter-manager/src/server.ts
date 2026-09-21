@@ -37,6 +37,7 @@ import type {
 } from "@armyofagents/worker-daemon";
 import { WireProtocolError, decodeOpRequest, encodeErrResponse, encodeOkResponse, isModelledWireError } from "@armyofagents/provider-wire/codec";
 import type { OwnedLabelsCapability } from "@armyofagents/provider-wire";
+import { EXPORT_TEARDOWN_RESERVE_MS } from "@armyofagents/worker-daemon";
 
 import { gateList, gateOwnedOp, redactProjection, type OwnedOpGateDeps } from "./owned-op-gate.js";
 import { gateCreate, type CreateGateDeps } from "./create-gate.js";
@@ -231,7 +232,17 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
         // the caller's own verified labels): a refused grant reads nothing and uploads nothing.
         return gateOwnedOp(deps, sandboxId, ctx, capability, (detail) => {
           assertUploadGrantBound(grant, detail.resourceLabels, artifactUploadOrigins);
-          return provider.exportArtifact(sandboxId, path, grant, ctx);
+          // ★ BOUNDED (Codex P1, PR #557). `gateOwnedOp` holds the per-sandbox lock across this
+          // dispatch, so an unbounded PUT would queue the run's own destroy behind a hung store.
+          // The budget is the capability's remaining life minus EXPORT_TEARDOWN_RESERVE_MS, the
+          // same clamp the supervisor applies to its export window, so destroy always keeps its
+          // reserve. The provider aborts the upload at this budget. `capability` is defined here:
+          // the gate verified it before dispatch.
+          const budget = Math.min(ctx.deadlineMs, capability!.expiresAt - now() - EXPORT_TEARDOWN_RESERVE_MS);
+          if (!(budget > 0)) {
+            return Promise.reject(new WireProtocolError("export_artifact refused: no budget left before the teardown reserve"));
+          }
+          return provider.exportArtifact(sandboxId, path, grant, { ...ctx, deadlineMs: budget });
         });
       }
       default:
