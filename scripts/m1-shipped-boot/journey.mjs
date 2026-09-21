@@ -31,6 +31,7 @@
 //                      and pass `verify-e7-1-distributed-run`; the control must stay legacy with
 //                      zero jobs. keyless: the CONTROL tenant only (it never reaches a provider).
 //   collect            redacted service logs + `compose ps` into the evidence dir
+//   leak-scan          HARD check before upload: no job secret (raw/base64/base64url) in the evidence
 //   teardown           `compose down -v`, and the keypair + secrets deleted
 //
 // SECRETS. Every value `prepare` generates, plus E2B_API_KEY / ANTHROPIC_API_KEY, is listed in
@@ -40,7 +41,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes, createPrivateKey, createPublicKey, sign, verify } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -55,6 +56,7 @@ import {
   parseVerifierVerdict,
   classifyTenantOutcome,
   redactSecrets,
+  scanEvidenceForSecrets,
   extractRolloutResolution,
   CANARY_EXECUTION_TARGET_SLUG,
 } from "../lib/m1-shipped-boot.mjs";
@@ -117,6 +119,16 @@ function loadState(out) {
 
 function saveState(state) {
   writeSecretFile(statePath(state.out), JSON.stringify(state, null, 2));
+}
+
+/** Record a job secret under a NAME: redacted from every retained log, and scanned for (by name)
+ * before any evidence is uploaded. Values shorter than 8 characters are not secrets this lane
+ * mints, and would match by accident. */
+function trackSecret(state, name, value) {
+  if (typeof value !== "string" || value.length < 8) return;
+  state.secrets ??= {};
+  state.secrets[name] = value;
+  if (!state.redact.includes(value)) state.redact.push(value);
 }
 
 function evidenceDir(state) {
@@ -291,14 +303,17 @@ function prepare(args) {
     publicKeyFile,
     ticketFiles,
     tenants: {},
-    redact: [
-      ...Object.values(gen),
-      boardToken,
-      privatePem.trim(),
-      process.env.E2B_API_KEY ?? "",
-      process.env.ANTHROPIC_API_KEY ?? "",
-    ].filter((v) => v.length >= 8),
+    redact: [],
+    // NAME -> value of every job secret, for the pre-upload leak scan (which reports names only).
+    secrets: {},
   };
+  for (const [name, value] of Object.entries(gen)) trackSecret(state, name, value);
+  trackSecret(state, "BOARD_API_TOKEN", boardToken);
+  trackSecret(state, "CONTROL_PLANE_SIGNING_KEY_PEM", privatePem.trim());
+  // The PEM body without its armour lines too: a log that printed the key would rarely keep them.
+  trackSecret(state, "CONTROL_PLANE_SIGNING_KEY_BODY", privatePem.replace(/-----[A-Z ]+-----/g, "").replace(/\s+/g, ""));
+  trackSecret(state, "E2B_API_KEY", process.env.E2B_API_KEY ?? "");
+  trackSecret(state, "ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY ?? "");
   writeEnvFile(state);
   saveState(state);
   // Nothing is handed to the containers' uid yet: the workflow runs `pnpm verify:cp-am-keypair`
@@ -406,7 +421,8 @@ finally { client.destroy(); }
     const anthropic = state.mode === "keyed" ? process.env.ANTHROPIC_API_KEY : `keyless-placeholder-${secret(8)}`;
     const e2b = state.mode === "keyed" ? process.env.E2B_API_KEY : `keyless-placeholder-${secret(8)}`;
     if (state.mode === "keyed" && (!anthropic || !e2b)) fail("keyed mode needs ANTHROPIC_API_KEY and E2B_API_KEY in the step env");
-    if (state.mode === "keyless") state.redact.push(anthropic, e2b);
+    trackSecret(state, `TENANT_${t.key.toUpperCase()}_ANTHROPIC_KEY`, anthropic);
+    trackSecret(state, `TENANT_${t.key.toUpperCase()}_E2B_KEY`, e2b);
     await api(state, "POST", `/companies/${company.id}/providers/anthropic/key`, { value: anthropic });
     await api(state, "POST", `/companies/${company.id}/runtime-provider-keys/with-secret`, {
       provider: "e2b",
@@ -516,7 +532,9 @@ report({ digest: createHash("sha256").update(Buffer.from(canonicalProviderConstr
     });
     const issued = await api(state, "POST", `/organizations/${tenant.organizationId}/execution-targets/${target.id}/enrollment-codes`, { scope: "organization" });
     const ticket = encodeEnrollmentTicket({ targetId: target.id, code: issued.code });
-    state.redact.push(issued.code, ticket, target.workerToken ?? "");
+    trackSecret(state, `TENANT_${t.key.toUpperCase()}_ENROLLMENT_CODE`, issued.code);
+    trackSecret(state, `TENANT_${t.key.toUpperCase()}_ENROLLMENT_TICKET`, ticket);
+    trackSecret(state, `TENANT_${t.key.toUpperCase()}_TARGET_WORKER_TOKEN`, target.workerToken ?? "");
     const ticketFile = state.ticketFiles[t.envTicket];
     writeSecretFile(ticketFile, ticket);
     releaseToContainers(ticketFile);
@@ -771,6 +789,34 @@ async function dispatch(state) {
   if (!passed) fail("the journey did not pass for every dispatched tenant — see journey.json");
 }
 
+/**
+ * The pre-upload HARD leak scan (ruled in under F2 after the distinct review). Redaction transforms
+ * the bundle; this verifies the result. Every job secret, by NAME, is searched for in every
+ * evidence file in raw, base64 and base64url form. A match fails the run and deletes the bundle,
+ * so the upload step (gated on this step's success) has nothing to publish. The output names the
+ * file and the secret NAME, never the value.
+ */
+function leakScan(state) {
+  const dir = path.join(state.out, "evidence");
+  const files = [];
+  const walk = (d) => {
+    if (!existsSync(d)) return;
+    for (const entry of readdirSync(d)) {
+      const full = path.join(d, entry);
+      if (statSync(full).isDirectory()) walk(full);
+      else files.push({ name: path.relative(dir, full).split(path.sep).join("/"), text: readFileSync(full, "latin1") });
+    }
+  };
+  walk(dir);
+  const findings = scanEvidenceForSecrets(files, state.secrets ?? {});
+  if (findings.length > 0) {
+    for (const f of findings) console.error(`::error::DEP-015 leak scan: evidence file '${f.file}' contains job secret '${f.secret}' (${f.form} form)`);
+    rmSync(dir, { recursive: true, force: true });
+    fail(`leak scan: ${findings.length} secret occurrence(s) in the evidence; the bundle was deleted and will not be uploaded`);
+  }
+  console.log(`leak-scan: ${files.length} evidence file(s) scanned for ${Object.keys(state.secrets ?? {}).length} named job secret(s) in raw/base64/base64url form: clean`);
+}
+
 function collect(state) {
   const ps = compose(state, ["ps", "-a"], { allowFail: true });
   writeEvidence(state, "compose-ps.txt", `${ps.stdout}${ps.stderr}`);
@@ -810,6 +856,7 @@ const PHASES = {
   "probe-presign": (args) => probePresign(loadState(args.out)),
   dispatch: (args) => dispatch(loadState(args.out)),
   collect: (args) => collect(loadState(args.out)),
+  "leak-scan": (args) => leakScan(loadState(args.out)),
   teardown: (args) => teardown(loadState(args.out)),
 };
 

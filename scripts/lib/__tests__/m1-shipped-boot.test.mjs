@@ -254,3 +254,72 @@ test("redactSecrets removes every occurrence of every secret and ignores short/e
   const out = redactSecrets(text, ["sk-ant-api03-SECRETVALUE", "abc", "", undefined]);
   assert.equal(out, "key=[REDACTED] and again [REDACTED]; pw=abc");
 });
+
+// === the pre-upload leak scan (ruled in under F2 after the distinct review) =================
+
+import { scanEvidenceForSecrets } from "../m1-shipped-boot.mjs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const CANARY = "m1-leak-canary-7f3a9c2e5b1d";
+const SECRETS = { AOA_M1_TRUTH_SHARED_SECRET: CANARY, OTHER: "another-secret-value-123" };
+
+test("leak scan: clean evidence has no findings (the baseline)", () => {
+  assert.deepEqual(scanEvidenceForSecrets([{ name: "logs.txt", text: "all [REDACTED] and fine" }], SECRETS), []);
+});
+
+test("POSITIVE CONTROL: a planted canary in an evidence file is found, by file and secret NAME", () => {
+  const findings = scanEvidenceForSecrets([{ name: "logs-control-plane.txt", text: `boot ok token=${CANARY} done` }], SECRETS);
+  assert.deepEqual(findings, [{ file: "logs-control-plane.txt", secret: "AOA_M1_TRUTH_SHARED_SECRET", form: "raw" }]);
+  assert.ok(!JSON.stringify(findings).includes(CANARY), "the finding must never carry the value");
+});
+
+test("leak scan: the base64 and base64url forms are found too", () => {
+  const b64 = Buffer.from(CANARY).toString("base64");
+  const b64url = Buffer.from("x?>~" + CANARY).toString("base64url"); // a value whose url form differs
+  const secrets = { S1: CANARY, S2: "x?>~" + CANARY };
+  const found = scanEvidenceForSecrets(
+    [{ name: "a.json", text: `{"blob":"${b64}"}` }, { name: "b.txt", text: `q=${b64url}` }],
+    secrets,
+  );
+  assert.ok(found.some((f) => f.file === "a.json" && f.secret === "S1" && f.form === "base64"), JSON.stringify(found));
+  assert.ok(found.some((f) => f.file === "b.txt" && f.secret === "S2" && f.form === "base64url"), JSON.stringify(found));
+});
+
+test("leak scan: values shorter than 8 characters are not scanned (they would match by accident)", () => {
+  assert.deepEqual(scanEvidenceForSecrets([{ name: "x", text: "abc" }], { SHORT: "abc" }), []);
+});
+
+// The PHASE, end to end: `journey.mjs leak-scan` over a planted evidence dir fails the run, names
+// the file and the secret, never prints the value, and deletes the bundle so nothing is uploaded.
+const journey = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "m1-shipped-boot", "journey.mjs");
+
+function runLeakScan(evidenceText) {
+  const out = mkdtempSync(path.join(tmpdir(), "m1-leak-"));
+  mkdirSync(path.join(out, "evidence", "nested"), { recursive: true });
+  writeFileSync(path.join(out, "evidence", "nested", "logs-worker.txt"), evidenceText);
+  writeFileSync(path.join(out, "state.json"), JSON.stringify({ out, redact: Object.values(SECRETS), secrets: SECRETS }));
+  const res = spawnSync(process.execPath, [journey, "leak-scan", "--out", out], { encoding: "utf8" });
+  const evidenceSurvived = existsSync(path.join(out, "evidence"));
+  rmSync(out, { recursive: true, force: true });
+  return { res, evidenceSurvived };
+}
+
+test("POSITIVE CONTROL (phase): a planted canary fails the run, names file + secret, never the value, and deletes the bundle", () => {
+  const { res, evidenceSurvived } = runLeakScan(`line\nleaked ${CANARY}\n`);
+  assert.equal(res.status, 1, res.stdout + res.stderr);
+  const output = `${res.stdout}${res.stderr}`;
+  assert.match(output, /evidence file 'nested\/logs-worker\.txt' contains job secret 'AOA_M1_TRUTH_SHARED_SECRET'/);
+  assert.ok(!output.includes(CANARY), "the scan's own output must never print the secret");
+  assert.equal(evidenceSurvived, false, "a leaking bundle must not survive to the upload step");
+});
+
+test("leak scan (phase): clean evidence passes and the bundle is kept", () => {
+  const { res, evidenceSurvived } = runLeakScan("line\nall [REDACTED]\n");
+  assert.equal(res.status, 0, res.stdout + res.stderr);
+  assert.match(res.stdout, /scanned for 2 named job secret\(s\).*clean/);
+  assert.equal(evidenceSurvived, true);
+});

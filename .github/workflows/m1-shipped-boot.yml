@@ -237,8 +237,21 @@ jobs:
             node scripts/m1-shipped-boot/journey.mjs collect --out "$M1_OUT" || true
           fi
 
-      - name: Upload the evidence bundle (on pass and fail)
+      # HARD pre-upload check (ruled in under F2 after the distinct review of DEP-015): every job
+      # secret, by NAME, in raw / base64 / base64url form, against every evidence file. A match
+      # FAILS the run and deletes the bundle; it reports file + secret NAME, never the value.
+      - name: Scan the evidence for job secrets (fails the run on any match)
+        id: leak-scan
         if: always()
+        run: |
+          if [ -f "$M1_OUT/state.json" ]; then
+            node scripts/m1-shipped-boot/journey.mjs leak-scan --out "$M1_OUT"
+          else
+            echo "leak-scan: no state (the job stopped before prepare); nothing was collected"
+          fi
+
+      - name: Upload the evidence bundle (on pass and fail)
+        if: always() && steps.leak-scan.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: m1-shipped-boot-${{ inputs.mode }}-${{ github.run_id }}

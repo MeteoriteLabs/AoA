@@ -263,3 +263,22 @@ The planning session dispatched the first keyed run: **`35601445269`**, on candi
    - **positive control A**, the adapter-manager without `store-egress-net`, gives `PRESIGN_PROBE_FAIL … codes=ENOTFOUND`;
    - **positive control B**, the adapter-manager without `NODE_EXTRA_CA_CERTS`, gives `PRESIGN_PROBE_FAIL … codes=DEPTH_ZERO_SELF_SIGNED_CERT`.
 4. **E6-F024, filed and resolved.** A provider-op failure is now classified, logged and relayed from a closed vocabulary. Neither the log nor the wire carries the URL, host, grant or key. See E6 `findings.md`.
+
+---
+
+## 10. Addendum, 2026-09-21: corrections after the distinct review
+
+The distinct reviewer requested changes on this record. The sections above are left exactly as written; this addendum corrects them.
+
+- **Reviewed revision.** The header names `1ec5533b5b2c80cf2bcbd7e228efa4d11c7b3662`, but that commit predates the E6-D001 code: the registration-only push, the dispatch-only job gate and the matching shape guard. The revision that contains it is **`dbe6f5da2a9316ac3f9762294d87991d7ec6f885`**, the final head of PR #554, which merged as `947b684d8`. It is the reviewed revision.
+- **CI run.** §4 cites PR run `35591595055` as the green `policy` evidence. That run is on `c31dccf87` and concluded **`cancelled`**: `e2e` and `verify (4)` were cancelled. It covers neither the code nor the final head. The run that covers the reviewed revision is **`35596651522`** (`pull_request` on `dbe6f5da2`, conclusion `success`). Its jobs `policy`, `verify (1–4)`, `e2e`, `migrations` and `ci-required` all concluded `success`.
+- **Registration run (E6-D001).** Merging #554 pushed the workflow file to `docs/replatform-program` and fired the registration-only trigger. That run is **`35598343418`** (`push` on `947b684d8`, run conclusion `skipped`): its only job, `shipped-boot`, concluded **`skipped` with 0 steps**. This is the post-merge citation §8 promised: nothing ran and no secret was read.
+- **Keyless rehearsal on CI.** Run **`35600507289`** (`workflow_dispatch`, candidate `fc2eb7dde`) concluded **`success`**, with job `shipped-boot` = `success` over 28 steps. It is the Linux-runner counterpart of §3's local rehearsal.
+- **First keyed run.** Run **`35601445269`** (`workflow_dispatch`, `mode=keyed`, candidate `fc2eb7dde`) concluded **`failure`**. Every step through "Reconcile and preflight every Organization" passed. The failing step was "Run the journey", for both enabled tenants; the control tenant correctly stayed legacy.
+  - **Root cause:** the E2B provider redeems grants inside the adapter-manager (`fetchGrantBytes`). In the m1-boot overlay the adapter-manager had neither the presign store's network (`store-egress-net`) nor its CA.
+  - **The fix:** the DEP-015 follow-up PR (§9), which covers the overlay, the GRANT-REACH/TRUST invariant, the keyless `probe-presign` phase and E6-F024.
+  - **The keyed acceptance therefore remains PENDING.** It needs a keyed re-run after that PR merges.
+- **Ruled in under F2 after this review: a hard pre-upload leak scan.** The lane now has a `leak-scan` phase: the step "Scan the evidence for job secrets (fails the run on any match)", placed after collect and before upload. The upload is gated `if: always() && steps.leak-scan.outcome == 'success'`, and the shape guard enforces both the step and the gate.
+  - **What it does.** Every job secret (26 named secrets in a full keyless run) is searched for in every evidence file, in raw, base64 and base64url form. A match fails the run and deletes the bundle. The report names the file and the secret NAME, never the value.
+  - **Positive controls.** A planted canary turns the pure check red and turns the phase run end to end red (exit 1, the file and name reported, no value printed, the bundle deleted). Base64 and base64url plantings are found. Mutations that disable the scan, drop the encoded forms or ungate the upload are each killed.
+  - **A real bundle stays green.** Over the 13 files of a local keyless bundle it reported `clean`.

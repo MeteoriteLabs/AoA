@@ -187,6 +187,20 @@ export function evaluateShippedBootWorkflowShape(text) {
   const teardownStep = teardownIdx === -1 ? "" : src.slice(src.lastIndexOf("- name:", teardownIdx), teardownIdx);
   if (teardownIdx === -1 || !/if:\s*always\(\)/.test(teardownStep)) v.push("the teardown (`journey.mjs teardown`) must run `if: always()`");
 
+  // (8b) The HARD pre-upload leak scan (ruled in under F2 after the distinct review): a step running
+  //      `journey.mjs leak-scan` BEFORE the upload, and the upload gated on that step's success, so
+  //      a bundle that fails the scan is never published.
+  const scanIdx = src.indexOf("journey.mjs leak-scan");
+  if (scanIdx === -1) v.push("the lane must run the pre-upload leak scan (`journey.mjs leak-scan`)");
+  else if (uploadIdx !== -1 && scanIdx > uploadIdx) v.push("the leak scan must run BEFORE the evidence upload");
+  const scanStep = scanIdx === -1 ? "" : src.slice(src.lastIndexOf("- name:", scanIdx), scanIdx);
+  const scanId = /\bid:\s*([A-Za-z0-9_-]+)/.exec(scanStep)?.[1];
+  if (scanIdx !== -1 && !scanId) v.push("the leak-scan step must carry an `id:` so the upload can be gated on it");
+  if (scanId && !new RegExp(`if:\\s*always\\(\\)\\s*&&\\s*steps\\.${scanId}\\.outcome\\s*==\\s*'success'`).test(before)) {
+    v.push(`the evidence upload must be gated \`if: always() && steps.${scanId}.outcome == 'success'\` — a bundle that fails the leak scan must never be uploaded`);
+  }
+  if (scanIdx !== -1 && !/if:\s*always\(\)/.test(scanStep)) v.push("the leak-scan step must run `if: always()` (a failed journey's evidence is scanned too)");
+
   // (9) Bounded.
   if (!/timeout-minutes:\s*\d+/.test(src)) v.push("the job must carry a `timeout-minutes` cap");
   if (!/^concurrency:/m.test(src)) v.push("the lane must declare a `concurrency` group (one boot at a time)");

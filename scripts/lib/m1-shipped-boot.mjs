@@ -237,6 +237,46 @@ export function classifyTenantOutcome({ role, run, jobsForOrganization, verifier
   return { pass: reasons.length === 0, reasons };
 }
 
+// --- the pre-upload leak scan ---------------------------------------------------------------
+
+/**
+ * The HARD check that runs before the evidence bundle is uploaded (ruled in under F2 after the
+ * distinct review of DEP-015). Redaction is a transformation; this is a verification of its
+ * result. Every job secret is searched for, in every evidence file, in three forms:
+ *   - raw;
+ *   - standard base64;
+ *   - base64url.
+ * A secret split across a log line's wrap is out of reach; so is one transformed in some other
+ * way. The scan is for the ways a secret actually leaks: printed, or encoded once.
+ *
+ * `files` is `[{ name, text }]`; `secrets` is `{ NAME: value }`. Returns
+ * `[{ file, secret, form }]`, naming the SECRET BY ITS NAME and never by its value. A finding
+ * therefore cannot re-leak through the check's own output.
+ */
+export function scanEvidenceForSecrets(files, secrets) {
+  const findings = [];
+  for (const [secretName, value] of Object.entries(secrets ?? {})) {
+    if (typeof value !== "string" || value.length < 8) continue;
+    const bytes = Buffer.from(value, "utf8");
+    const forms = [
+      ["raw", value],
+      ["base64", bytes.toString("base64")],
+      ["base64url", bytes.toString("base64url")],
+    ];
+    for (const file of files ?? []) {
+      for (const [form, needle] of forms) {
+        // A base64 form ends in padding the surrounding text may not repeat; match its unpadded stem.
+        const stem = form === "raw" ? needle : needle.replace(/=+$/, "");
+        if (stem.length >= 8 && String(file.text).includes(stem)) {
+          findings.push({ file: file.name, secret: secretName, form });
+          break;
+        }
+      }
+    }
+  }
+  return findings;
+}
+
 // --- redaction ---------------------------------------------------------------------------
 
 /** Replace every occurrence of every secret value (length >= 8) with a fixed marker. Applied to
