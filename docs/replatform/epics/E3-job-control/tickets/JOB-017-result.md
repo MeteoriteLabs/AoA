@@ -105,3 +105,20 @@ Also: `[E3-D-OUTPUT-MAP] a source with NO task (one_shot)` checks that no output
 ## CI evidence
 
 To be recorded, by job with its executed count, in an addendum once the PR's run on the reviewed revision completes. This section is not rewritten.
+
+## CI evidence — addendum (2026-09-21)
+
+- **Run `35603384158` on `1cccda8cf79186c0f0a2a2e54b398d4897f67e6d`:** `ci-required` **success**, and every job passed. That commit is the reviewed code revision `f551565de` plus this record's first commit, which changes only this file.
+  - `verify (3)` executed `job-accepted-event-seam.integration.test.ts` **(30 tests)** and `job-output-parity.integration.test.ts` **(20 tests)**. Neither reported skipped tests, so the 12 JOB-017 seam and ingest tests and the 2 retirement-guard tests ran on Linux.
+  - `verify (1)` executed `job-audit-parity.integration.test.ts` **(13 tests)**.
+  - `verify (2)` executed `job-events.integration.test.ts` **(15 tests)**, including the updated receipt count.
+  - `policy`, `lint`, `migrations`, `e2e`, `e2e-pgvector`, `distributed-contract` and `browser` all passed.
+- **Codex** (`chatgpt-codex-connector`) reviewed `1cccda8`. It completed with no findings (a 👍 reaction and no review comments).
+
+## Addendum — one more thing a reviewer should know (2026-09-21)
+
+**This makes arm 2 of the E7-1 capability counter reachable.** `countProducedOutputs` arm 2 counts `task_outputs` rows that carry an applied `output_projection` receipt. The JOB-017 registration writes exactly such a row for any committed `job_artifacts` row that a `task_run` attempt announces with `artifact_prepared`, **whatever its `kind`**. The `CLI-014` graph node says `CLI-014` "moves" this counter. After this ticket, the counter's writer already exists, and it has two limits:
+- it is gated on a **committed** artifact of the same attempt, not merely a declared one;
+- it does not check the artifact's `kind` (the arm-1 question `E7-F019` records).
+
+It still reads 0 on every real run, because no worker emits `artifact_prepared` until `CLI-013`. Whether arm 2 should also require a particular `kind` is left to `CLI-014` and the E7-F018/F019 owners. This record does not decide it.
