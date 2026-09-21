@@ -17,6 +17,14 @@
 //      drops the post-close `network_denied` evidence stream — a fail-open (§4.1.1).
 //   4. The KEK derives from the DEVICE KEY, so a re-enrolled device cannot open a prior
 //      device's rows (they quarantine, fail closed).
+//   5. WRK-013 — `start()` runs the STARTUP RECONCILE to completion BEFORE the drain loop or
+//      the poll loop starts. The reconcile probes every lease the durable lease-candidate store
+//      says this daemon held when it last stopped, FENCES the live ones (F5: the probe's
+//      renewal is their last), and only then may the poll loop lease anything new.
+
+import { randomUUID } from "node:crypto";
+
+import type { LeaseOfferV1 } from "@armyofagents/worker-protocol";
 
 import {
   measureCapacity,
@@ -54,6 +62,20 @@ import type { ControlPlaneClient } from "../transport/client.js";
 import type { BackoffConfig } from "../poll/backoff.js";
 import type { Logger } from "../logging/logger.js";
 import type { Metrics } from "../metrics/metrics.js";
+import {
+  LEASE_CANDIDATE_REASONS,
+  openLeaseCandidateStore,
+  openLeaseCandidateStoreFailClosed,
+  type LeaseCandidateStore,
+} from "../lease/lease-candidate-store.js";
+import {
+  createStartupReconciler,
+  SANDBOX_PASS_SKIP_REASONS,
+  type StartupReconcilePass,
+  type StartupReconcilerDeps,
+} from "../supervisor/startup-reconcile.js";
+import type { OwnershipSelector, ProviderOpContext } from "../supervisor/provider.js";
+import { createStartupSteps, runStartupSteps, type StartupLogger } from "./startup-steps.js";
 import type {
   EventOutboxLifecycle,
   LeasingLifecycle,
@@ -61,6 +83,12 @@ import type {
 } from "./shutdown.js";
 
 const NO_RESERVATION: CapacityReservation = { cpuMillis: 0, memoryMiB: 0, diskMiB: 0 };
+
+/** The per-op deadline the startup SANDBOX pass hands the provider in its op context (list /
+ * cleanup). A duration, like the supervisor's `opDeadlineMs`; the provider enforces it. */
+const STARTUP_RECONCILE_OP_DEADLINE_MS = 30_000;
+
+const NOOP_STARTUP_LOGGER: StartupLogger = { info: () => {}, error: () => {} };
 
 export interface ComposeDispatchRuntimeDeps {
   /**
@@ -82,6 +110,12 @@ export interface ComposeDispatchRuntimeDeps {
   readonly store: SessionStore;
   readonly client: ControlPlaneClient;
   readonly eventOutboxPath: string;
+  /**
+   * WRK-013 — the durable lease-candidate store (`AOA_WORKER_LEASE_CANDIDATE_PATH`, defaulted
+   * beside the event outbox by the config). ABSENT = this daemon records no candidates, and the
+   * startup reconcile says so by name (`lease_candidate_store_not_configured`) — never a silent `[]`.
+   */
+  readonly leaseCandidatePath?: string;
   readonly concurrency: { readonly batch: number; readonly browser: number; readonly service: number };
   readonly backoff: BackoffConfig;
   /** Directory the disk-free probe reads (the worker's working area). */
@@ -98,6 +132,8 @@ export interface ComposeDispatchRuntimeDeps {
   readonly makeDriver?: typeof createLeaseRenewalDriver;
   readonly makePollLoop?: typeof createPollLoop;
   readonly makeSchedule?: typeof createRealRenewalSchedule;
+  readonly openLeaseCandidates?: typeof openLeaseCandidateStore;
+  readonly makeStartupReconciler?: (deps: StartupReconcilerDeps) => StartupReconcilePass;
 }
 
 export interface DispatchRuntime {
@@ -111,8 +147,12 @@ export interface DispatchRuntime {
   readonly loopSupervisorSeam: SupervisorSeam;
   /** The concurrency limiter (backpressure); exposed so `measure()`'s LIVE read is observable. */
   readonly limiter: ConcurrencyLimiter;
-  /** Start the durable drain loop and the poll loop (fire-and-forget: a terminal stop does not exit). */
-  start(): void;
+  /**
+   * WRK-013 — run the startup reconcile to COMPLETION, then start the durable drain loop and the
+   * poll loop (fire-and-forget: a terminal stop does not exit). Resolves once polling is armed —
+   * or without arming it if a shutdown began during the reconcile. Never rejects.
+   */
+  start(): Promise<void>;
   readonly pollLoop: PollLoopController;
 }
 
@@ -139,6 +179,22 @@ export async function composeDispatchRuntime(deps: ComposeDispatchRuntimeDeps): 
 
   // (1) RECOVER before the supervisor can emit into the store.
   drain.recover();
+
+  // WRK-013 — the durable lease-candidate store. An unreadable file FAILS CLOSED without
+  // blocking boot: it is set aside, a fresh store records this lifetime's ACKs, and the fault
+  // is carried to `start()`, whose reconcile then probes (and so renews) NOTHING.
+  let candidateStore: LeaseCandidateStore | null = null;
+  let candidateFault: unknown = null;
+  let candidateSetAside: string | null = null;
+  if (deps.leaseCandidatePath !== undefined) {
+    const opened = await openLeaseCandidateStoreFailClosed({
+      path: deps.leaseCandidatePath,
+      open: deps.openLeaseCandidates ?? openLeaseCandidateStore,
+    });
+    candidateStore = opened.store;
+    candidateFault = opened.unreadable;
+    candidateSetAside = opened.setAsidePath;
+  }
 
   // DAT-008 slice 5 — the per-lease canary coordinator, shared by the supervisor and the driver's
   // fence-close proxy so ONE redemption seeds BOTH event streams (per-run, before create).
@@ -301,21 +357,175 @@ export async function composeDispatchRuntime(deps: ComposeDispatchRuntimeDeps): 
     backoff: deps.backoff,
     metrics: deps.metrics,
     logger: deps.logger,
+    // WRK-013 — write on ACK, prune when the handoff settles.
+    leaseCandidates: candidateStore ?? undefined,
   });
 
+  /**
+   * WRK-013 — read the candidates this daemon must account for. NEVER throws and never returns a
+   * silent `[]`: every empty answer carries a named reason. What an unreadable store closes is
+   * RENEWAL — it yields no candidates, so the probe renews nothing it cannot account for.
+   */
+  function readCandidates(): LeaseOfferV1[] {
+    if (deps.leaseCandidatePath === undefined) {
+      deps.logger?.warn(
+        { reason: LEASE_CANDIDATE_REASONS.notConfigured },
+        "startup-reconcile: no lease-candidate store is configured; no held lease can be accounted for at restart",
+      );
+      return [];
+    }
+    if (candidateFault !== null || candidateStore === null) {
+      deps.logger?.error(
+        { reason: LEASE_CANDIDATE_REASONS.unreadable, err: candidateFault, setAsidePath: candidateSetAside, storeAvailable: candidateStore !== null },
+        "startup-reconcile: the lease-candidate store is unreadable; NO lease it held is renewed — the control-plane reaper ends those attempts",
+      );
+      return [];
+    }
+    let candidates: LeaseOfferV1[];
+    try {
+      candidates = candidateStore.list();
+    } catch (err) {
+      deps.logger?.error(
+        { reason: LEASE_CANDIDATE_REASONS.unreadable, err },
+        "startup-reconcile: a lease-candidate row is unreadable; NO lease the store held is renewed — the control-plane reaper ends those attempts",
+      );
+      try {
+        // Report once: the same unaccountable rows are not re-read on every later boot.
+        candidateStore.clear();
+      } catch (clearErr) {
+        deps.logger?.error({ err: clearErr }, "startup-reconcile: could not clear the unreadable lease-candidate rows");
+      }
+      return [];
+    }
+    if (candidates.length === 0) {
+      deps.logger?.info(
+        { reason: LEASE_CANDIDATE_REASONS.empty },
+        "startup-reconcile: the lease-candidate store is empty; this daemon held no lease when it last stopped",
+      );
+      return [];
+    }
+    // CLAIM before probing: a candidate is removed from the store BEFORE its probe, so the probe's
+    // renewal is the last one this daemon can ever issue for it (F5) — even across a crash loop.
+    // A candidate that cannot be claimed is NOT probed (it could be probed again next boot).
+    const claimed: LeaseOfferV1[] = [];
+    for (const offer of candidates) {
+      try {
+        candidateStore.remove(String(offer.leaseId));
+        claimed.push(offer);
+      } catch (err) {
+        deps.logger?.warn(
+          { reason: LEASE_CANDIDATE_REASONS.writeFailed, leaseId: String(offer.leaseId), err },
+          "startup-reconcile: could not claim a lease candidate; it is NOT probed and is left to the control-plane reaper",
+        );
+      }
+    }
+    return claimed;
+  }
+
+  /** WRK-013 — the sandbox pass needs a PROCESS-level provider and an Organization-scoped
+   * selector. Otherwise it is skipped under a named reason (F4 / platform-scoped target). */
+  function sandboxPassDeps(): Pick<StartupReconcilerDeps, "provider" | "ownershipSelector" | "makeCtx" | "sandboxPassSkipReason"> {
+    if (deps.provider === undefined) {
+      // The container path: only a per-run factory exists, built from a capability that lapsed
+      // with the previous process. No enumeration is possible here (F4, a named narrowing).
+      return { sandboxPassSkipReason: SANDBOX_PASS_SKIP_REASONS.containerPathNoEnumeration };
+    }
+    const organizationId = deps.self.registeredTargetProfile.organizationId;
+    if (organizationId === null) {
+      return { sandboxPassSkipReason: SANDBOX_PASS_SKIP_REASONS.platformScopedTarget };
+    }
+    const ownershipSelector: OwnershipSelector = {
+      organizationId: String(organizationId),
+      targetId: String(identity.targetId),
+      workerId: String(deps.self.report.workerId),
+    };
+    const makeCtx = (): ProviderOpContext => ({ deadlineMs: STARTUP_RECONCILE_OP_DEADLINE_MS, idempotencyKey: randomUUID() });
+    return { provider: deps.provider, ownershipSelector, makeCtx };
+  }
+
+  async function reconcileAtStartup(): Promise<void> {
+    const candidates = readCandidates();
+    const reconciler = (deps.makeStartupReconciler ?? createStartupReconciler)({
+      ...sandboxPassDeps(),
+      client: deps.client,
+      session,
+      key: deps.key,
+      identity,
+      leaseCandidates: candidates,
+      outbox: { store, drain },
+      metrics: deps.metrics,
+      logger: deps.logger,
+    });
+    const result = await reconciler.run();
+    // Name every candidate's verdict, with the lease, attempt and Organization it belongs to.
+    const byLease = new Map(candidates.map((offer) => [String(offer.leaseId), offer]));
+    for (const [leaseId, probe] of result.leaseProbes) {
+      const offer = byLease.get(leaseId);
+      const fields = {
+        leaseId,
+        jobId: offer ? String(offer.job.jobId) : null,
+        attempt: offer ? offer.job.attempt : null,
+        organizationId: offer ? String(offer.job.organizationId) : null,
+        probeKind: probe.probeKind,
+      };
+      if (probe.state === "live") {
+        deps.logger?.info(
+          { ...fields, reason: LEASE_CANDIDATE_REASONS.fenced },
+          "startup-reconcile: lease FENCED (F5) — the probe's renewal was its last; the control-plane reaper ends the attempt",
+        );
+      } else if (probe.state === "dead") {
+        deps.logger?.info(
+          { ...fields, reason: LEASE_CANDIDATE_REASONS.ended },
+          "startup-reconcile: lease already ended at the control plane; candidate pruned",
+        );
+      } else {
+        deps.logger?.warn(
+          { ...fields, reason: LEASE_CANDIDATE_REASONS.unreachable },
+          "startup-reconcile: lease probe could not complete; nothing renewed — the control-plane reaper ends the attempt",
+        );
+      }
+    }
+  }
+
+  let startRequested = false;
+  let stopRequested = false;
+
   return {
-    leasing: { stopLeasing: () => pollLoop.stopLeasing(), drain: () => pollLoop.drain() },
+    leasing: {
+      stopLeasing: () => {
+        stopRequested = true;
+        pollLoop.stopLeasing();
+      },
+      drain: () => pollLoop.drain(),
+    },
     renewal: { stop: () => driver.stop() },
     eventOutbox: {
-      stopDrain: () => drain.stop(),
+      stopDrain: () => {
+        stopRequested = true;
+        drain.stop();
+      },
       flush: () => drain.flush(),
-      closeStore: () => store.close(),
+      closeStore: () => {
+        // Both durable local stores close here, last in the shutdown order.
+        try {
+          candidateStore?.close();
+        } finally {
+          store.close();
+        }
+      },
     },
     self: deps.self,
     measure,
     loopSupervisorSeam: driver,
     limiter,
-    start: () => {
+    start: async () => {
+      if (startRequested) return;
+      startRequested = true;
+      // (5) The reconcile COMPLETES first. `runStartupSteps` awaits it and swallows + logs a
+      // failure, so a broken pass never blocks the daemon from polling (the reaper is the net).
+      await runStartupSteps(createStartupSteps({ run: reconcileAtStartup }), deps.logger ?? NOOP_STARTUP_LOGGER);
+      // A shutdown that began during the reconcile must not start a loop it already stopped.
+      if (stopRequested) return;
       drain.start();
       // Fire-and-forget: a terminal poll-loop stop keeps the daemon UP serving health.
       void pollLoop.run();

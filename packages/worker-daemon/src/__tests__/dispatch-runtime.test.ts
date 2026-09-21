@@ -193,9 +193,51 @@ describe("composeDispatchRuntime — the composition wiring", () => {
 
   it("start() starts the drain then the poll loop (fire-and-forget)", async () => {
     const { runtime, order } = await compose();
-    runtime.start();
+    await runtime.start();
     expect(order).toContain("drainStart");
     expect(order.indexOf("drainStart")).toBeLessThan(order.indexOf("pollRun"));
+  });
+
+  it("★ WRK-013 — start() COMPLETES the startup reconcile before the drain loop or the poll loop starts", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const { runtime, order } = await compose({
+      makeStartupReconciler: (() => ({
+        run: async () => {
+          order.push("reconcileStart");
+          await gate; // a reconcile still in flight must hold the poll loop back
+          order.push("reconcileDone");
+          return { fencedLeaseIds: [], leaseProbes: new Map() } as never;
+        },
+      })) as never,
+    });
+    const started = runtime.start();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(order).toContain("reconcileStart");
+    expect(order).not.toContain("pollRun"); // not yet: the reconcile has not completed
+    expect(order).not.toContain("drainStart");
+    release();
+    await started;
+    expect(order.indexOf("reconcileDone")).toBeLessThan(order.indexOf("drainStart"));
+    expect(order.indexOf("reconcileDone")).toBeLessThan(order.indexOf("pollRun"));
+  });
+
+  it("★ WRK-013 — a shutdown that begins DURING the reconcile never starts the poll loop", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const { runtime, order } = await compose({
+      makeStartupReconciler: (() => ({
+        run: async () => {
+          await gate;
+          return { fencedLeaseIds: [], leaseProbes: new Map() } as never;
+        },
+      })) as never,
+    });
+    const started = runtime.start();
+    runtime.leasing.stopLeasing();
+    release();
+    await started;
+    expect(order).not.toContain("pollRun");
   });
 });
 
