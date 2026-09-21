@@ -63,6 +63,32 @@ import {
 } from "./job-fence.js";
 import { classifyLeaseTruthRow, type LeaseTruthVerdict } from "./lease-truth.js";
 
+/** E3-D-ACC — the detector/re-drive view of one receipt row. */
+function toPendingProjectionReceipt(row: typeof jobProjectionReceipts.$inferSelect): PendingProjectionReceipt {
+  return {
+    id: row.id,
+    organizationId: row.organizationId,
+    companyId: row.companyId,
+    projectionKind: row.projectionKind,
+    sourceIdentity: row.sourceIdentity,
+    sourceDigest: row.sourceDigest,
+    jobId: row.jobId,
+    attemptId: row.attemptId,
+    createdAt: row.createdAt,
+  };
+}
+
+/** E3-D-ACC — a closed, payload-free label for why a seam projector failed. */
+function errorName(error: unknown): string {
+  if (error && typeof error === "object") {
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === "string" && /^[A-Za-z0-9_]{1,64}$/.test(code)) return code;
+    const name = (error as { name?: unknown }).name;
+    if (typeof name === "string" && /^[A-Za-z0-9_]{1,64}$/.test(name)) return name;
+  }
+  return "error";
+}
+
 export interface LeaseRejectionCleanupResult {
   readonly deleted: number;
   readonly cardinalityObserved: number;
@@ -996,7 +1022,53 @@ export interface JobControlRepository {
      *  batch order, whether or not it moved a row. Returned so a refusal is observable
      *  (the ingest logs it) instead of being a silent no-write. */
     serviceProjections?: readonly { eventId: string; result: ServiceProjectionOutcome }[];
+    /** E3-D-ACC — one entry per (new event, registered projector that applied to it). */
+    acceptedEventProjections?: readonly AcceptedEventProjectionOutcome[];
   }>;
+  // ---------------------------------------------------------------------------
+  // E3-D-ACC (JOB-016) — the control-plane surface AROUND the accepted-event seam. None is
+  // worker-reachable and none is fence-guarded: each acts when the fence may already be gone
+  // (a terminal attempt's owed charge, a queued job that never had a lease).
+  /** Whether this attempt has an accepted event of `eventType` (terminal-without-usage). */
+  hasAcceptedEventOfType(input: {
+    organizationId: string;
+    attemptId: string;
+    eventType: string;
+  }): Promise<boolean>;
+  /** The ids of the QUEUED jobs with NO live (offered/active) lease in a hard-stopped budget
+   * scope, in job-id order. With an `assigneeAgentId`, only `task_run` jobs whose stored
+   * source names that agent. */
+  listQueuedJobIdsForBudgetScope(input: {
+    organizationId: string;
+    companyId: string;
+    assigneeAgentId?: string | null;
+  }): Promise<string[]>;
+  /** `pending` projection receipts created before `olderThan`, oldest first. */
+  listStalePendingProjectionReceipts(input: {
+    organizationId: string;
+    olderThan: Date;
+    projectionKind?: string;
+    limit: number;
+  }): Promise<PendingProjectionReceipt[]>;
+  /** Lock ONE receipt FOR UPDATE; `null` unless it exists and is still `pending`. The receipt
+   * lock stands in for the dead fence during a re-drive. */
+  lockPendingProjectionReceipt(input: {
+    organizationId: string;
+    receiptId: string;
+  }): Promise<PendingProjectionReceipt | null>;
+  /** The stored accepted event (type + payload) of an attempt, by event id. */
+  readAcceptedEvent(input: {
+    organizationId: string;
+    attemptId: string;
+    eventId: string;
+  }): Promise<{ eventType: string; payload: Record<string, unknown>; eventDigest: string } | null>;
+  /** Flip a LOCKED `pending` receipt to `applied`, pointing it at the real aggregate. */
+  resolvePendingProjectionReceipt(input: {
+    organizationId: string;
+    receiptId: string;
+    targetAggregateId: string;
+    aggregateKind: string;
+  }): Promise<{ applied: boolean }>;
   authorizeArtifactCommit(
     input: ActiveFenceRequest & { identifier: string },
   ): Promise<JobArtifact>;
@@ -1769,6 +1841,73 @@ export type ServiceProjectionOutcome =
 /** A contiguous, in-order batch (validated + digest-checked by the service). */
 export interface AcceptEventBatchInput {
   events: readonly AcceptEventInput[];
+  /**
+   * E3-D-ACC (JOB-016) — the in-transaction accepted-event seam. Registrations DECIDED by the
+   * server and APPLIED here, inside the per-event loop, while the fence `acceptEvent` took is
+   * still live — the `serviceProjection` inversion (`packages/db` never imports a server
+   * bridge). Absent or empty: the loop does exactly what it did before the seam existed.
+   * See `docs/replatform/epics/E3-job-control/decisions.md`, `E3-D-ACC`.
+   */
+  acceptedEventProjectors?: readonly AcceptedEventProjector[];
+}
+
+/** E3-D-ACC — the receipt kinds a seam projector may own. */
+export type AcceptedEventProjectionKind = "authoritative_cost" | "activity_audit" | "output_projection";
+
+/**
+ * E3-D-ACC — ONE registration on the accepted-event seam.
+ *
+ * `apply` runs inside a SAVEPOINT and receives ONLY the savepoint handle: a registrant builds
+ * whatever repositories it needs from `ctx.tx` and never touches the outer transaction, so its
+ * failure rolls back its own writes and nothing else. It writes the aggregate and returns the
+ * aggregate's id; it NEVER writes the projection receipt (the seam does, in the same
+ * savepoint) and NEVER re-guards the fence (the seam already holds it).
+ */
+export interface AcceptedEventProjector {
+  readonly projectionKind: AcceptedEventProjectionKind;
+  /** The table `targetAggregateId` names on an `applied` receipt. */
+  readonly aggregateKind: string;
+  /** The receipt identity for this event, or `null` when the projector does not apply to it. */
+  sourceIdentity(event: AcceptEventInput, fence: ActiveFenceRequest): string | null;
+  apply(ctx: {
+    tx: Db;
+    event: AcceptEventInput;
+    fence: ActiveFenceRequest;
+  }): Promise<{ targetAggregateId: string }>;
+}
+
+/**
+ * E3-D-ACC — what the seam did for one (event, projector). Returned so every outcome is
+ * observable; the cumulative ACK is never derived from it.
+ *
+ *  - `applied`     — `apply` succeeded and its `applied` receipt was written in its savepoint.
+ *  - `replayed`    — a receipt with this identity already existed; nothing ran.
+ *  - `pending`     — `apply` threw (its savepoint rolled back) OR the event followed a terminal
+ *                    in the same batch; a `pending` receipt now records the owed projection.
+ *  - `unrecorded`  — the `pending` receipt write itself failed (rolled back alone). The append
+ *                    still commits; the caller must log this loudly.
+ */
+export interface AcceptedEventProjectionOutcome {
+  eventId: string;
+  projectionKind: AcceptedEventProjectionKind;
+  sourceIdentity: string;
+  outcome: "applied" | "replayed" | "pending" | "unrecorded";
+  /** Why a `pending`/`unrecorded` outcome happened: `after_terminal` or the error's name. */
+  reason?: string;
+  receiptId?: string | null;
+}
+
+/** E3-D-ACC (c) — one stale `pending` projection receipt, for the detector and re-drive. */
+export interface PendingProjectionReceipt {
+  id: string;
+  organizationId: string;
+  companyId: string;
+  projectionKind: string;
+  sourceIdentity: string;
+  sourceDigest: string;
+  jobId: string;
+  attemptId: string;
+  createdAt: Date;
 }
 
 /** The cumulative-ACK-shaped outcome of a fenced batch append. `stale_fence` and
@@ -2547,6 +2686,129 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
       .limit(1);
     const kind = orgMembership ? requesterKindForOrganizationRole(orgMembership.role) : null;
     return companyMembership && kind ? { kind, id: input.userId } : null;
+  }
+
+  // E3-D-ACC (JOB-016) — write ONE projection receipt for the seam, on `handle`. Idempotent on
+  // the (org, company, kind, identity) unique. NO fence re-guard: the caller is `acceptEvent`,
+  // which already holds the guard for this attempt (E3-D-ACC (a) — never re-lock).
+  async function insertSeamReceipt(
+    handle: Db,
+    fence: ActiveFenceRequest,
+    receipt: {
+      projectionKind: AcceptedEventProjectionKind;
+      sourceIdentity: string;
+      sourceDigest: string;
+      status: "pending" | "applied";
+      targetAggregateId: string;
+      aggregateKind: string;
+    },
+  ): Promise<string | null> {
+    const [inserted] = await handle.insert(jobProjectionReceipts).values({
+      organizationId: fence.organizationId,
+      companyId: fence.companyId,
+      projectionKind: receipt.projectionKind,
+      sourceIdentity: receipt.sourceIdentity,
+      sourceDigest: receipt.sourceDigest,
+      jobId: fence.jobId,
+      attemptId: fence.attemptId,
+      sourceFence: fence.fence,
+      status: receipt.status,
+      targetAggregateId: receipt.targetAggregateId,
+      aggregateKind: receipt.aggregateKind,
+      appliedAt: receipt.status === "applied" ? sql`clock_timestamp()` : null,
+      createdAt: sql`clock_timestamp()`,
+    }).onConflictDoNothing({
+      target: [
+        jobProjectionReceipts.organizationId,
+        jobProjectionReceipts.companyId,
+        jobProjectionReceipts.projectionKind,
+        jobProjectionReceipts.sourceIdentity,
+      ],
+    }).returning({ id: jobProjectionReceipts.id });
+    return inserted?.id ?? null;
+  }
+
+  // E3-D-ACC (JOB-016) — run every registered projector for ONE new-tail event.
+  //
+  // Called from `acceptEvent`'s loop BEFORE that event's attempt projection, under the guard
+  // `acceptEvent` took. The invariant it exists to keep: a projector failure NEVER rolls back
+  // the append (a lost ACK makes the worker replay a terminal forever). PostgreSQL aborts the
+  // whole transaction on an error, so every write a projector makes happens inside its own
+  // SAVEPOINT (`.transaction()` on a transaction handle), and so does the fallback `pending`
+  // receipt — nothing a projector does can reach the outer transaction.
+  async function runAcceptedEventProjectors(
+    fence: ActiveFenceRequest,
+    event: AcceptEventInput,
+    projectors: readonly AcceptedEventProjector[],
+    afterTerminal: boolean,
+  ): Promise<AcceptedEventProjectionOutcome[]> {
+    const outcomes: AcceptedEventProjectionOutcome[] = [];
+    for (const projector of projectors) {
+      let sourceIdentity: string | null;
+      try {
+        sourceIdentity = projector.sourceIdentity(event, fence);
+      } catch {
+        sourceIdentity = null;
+      }
+      if (sourceIdentity === null) continue;
+      const base = { eventId: event.eventId, projectionKind: projector.projectionKind, sourceIdentity };
+
+      // (1) REPLAY — the receipt tables are the idempotency authority, not the loop.
+      const [existing] = await tx.select({ id: jobProjectionReceipts.id }).from(jobProjectionReceipts).where(and(
+        eq(jobProjectionReceipts.organizationId, fence.organizationId),
+        eq(jobProjectionReceipts.companyId, fence.companyId),
+        eq(jobProjectionReceipts.projectionKind, projector.projectionKind),
+        eq(jobProjectionReceipts.sourceIdentity, sourceIdentity),
+      )).limit(1);
+      if (existing) {
+        outcomes.push({ ...base, outcome: "replayed", receiptId: existing.id });
+        continue;
+      }
+
+      const writePending = async (reason: string): Promise<void> => {
+        try {
+          const receiptId = await tx.transaction(async (sp) => insertSeamReceipt(sp as unknown as Db, fence, {
+            projectionKind: projector.projectionKind,
+            sourceIdentity,
+            sourceDigest: event.recomputedDigest,
+            status: "pending",
+            // No aggregate row exists: point at the attempt (the `task_terminal` precedent).
+            targetAggregateId: fence.attemptId,
+            aggregateKind: "job_attempts",
+          }));
+          outcomes.push({ ...base, outcome: "pending", reason, receiptId });
+        } catch (error) {
+          outcomes.push({ ...base, outcome: "unrecorded", reason: errorName(error), receiptId: null });
+        }
+      };
+
+      // (2) An event AFTER a terminal in this batch: the attempt is already terminal, so no
+      // projector can act under a live fence. Record the owed projection; never drop it.
+      if (afterTerminal) {
+        await writePending("after_terminal");
+        continue;
+      }
+
+      // (3) Run it in its own savepoint; the `applied` receipt commits or rolls back with it.
+      try {
+        const receiptId = await tx.transaction(async (sp) => {
+          const spDb = sp as unknown as Db;
+          const applied = await projector.apply({ tx: spDb, event, fence });
+          return insertSeamReceipt(spDb, fence, {
+            projectionKind: projector.projectionKind,
+            sourceIdentity,
+            sourceDigest: event.recomputedDigest,
+            status: "applied",
+            targetAggregateId: applied.targetAggregateId,
+            aggregateKind: projector.aggregateKind,
+          });
+        });
+        outcomes.push({ ...base, outcome: "applied", receiptId });
+      } catch (error) {
+        await writePending(errorName(error));
+      }
+    }
+    return outcomes;
   }
 
   // JOB-015 — bound to a name so `renewLease` can call `listPendingControlCommands`
@@ -4173,6 +4435,7 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
       // OBSERVABLE. A projection that silently declined to write would be indistinguishable
       // from one that was never attempted, which is how a dead arming path stays invisible.
       const serviceProjections: { eventId: string; result: ServiceProjectionOutcome }[] = [];
+      const acceptedEventProjections: AcceptedEventProjectionOutcome[] = [];
 
       // Prior accepted state for THIS attempt, read under the guard's attempt lock
       // (no concurrent appender can interleave: guardActiveFence holds FOR UPDATE).
@@ -4246,7 +4509,17 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
           event: event.payload,
           occurredAt: event.occurredAt,
         })));
+        // E3-D-ACC — the seam. Each new event's projectors run BEFORE its own attempt
+        // projection, so a usage (or cancel) event that precedes the terminal in this batch
+        // acts while the fence is live; an event AFTER the terminal gets a `pending` receipt.
+        const projectors = input.batch.acceptedEventProjectors ?? [];
+        let terminalApplied = false;
         for (const event of newEvents) {
+          if (projectors.length > 0) {
+            acceptedEventProjections.push(
+              ...await runAcceptedEventProjectors(input, event, projectors, terminalApplied),
+            );
+          }
           if (event.eventType === "attempt_started") {
             await applyProjectionForFence(input, {
               projectionKind: "attempt_started",
@@ -4263,6 +4536,7 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
               targetAggregateId: input.attemptId,
               transition: { kind: "attempt_terminal", terminalStatus: event.terminalStatus },
             });
+            terminalApplied = true;
           }
           // SVC-003 — the service-instance projection, applied AFTER the attempt projection
           // for the same event. Order is load-bearing for `attempt_started`, which carries
@@ -4288,6 +4562,7 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         ...guarded,
         ingest: { status: "accepted", acceptedThroughSeq: newAcceptedThroughSeq },
         serviceProjections,
+        ...(acceptedEventProjections.length > 0 ? { acceptedEventProjections } : {}),
       };
     },
 
@@ -5678,6 +5953,88 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
       // use it to serialize concurrent same-fence critical sections (e.g. the
       // product-approval create TOCTOU) before a non-idempotent aggregate authority runs.
       return guardActiveFence(input);
+    },
+
+    // ---- E3-D-ACC (JOB-016) control-plane surface around the seam ------------------------
+    async hasAcceptedEventOfType(input) {
+      const [row] = await tx.select({ id: jobEvents.id }).from(jobEvents).where(and(
+        eq(jobEvents.organizationId, input.organizationId),
+        eq(jobEvents.attemptId, input.attemptId),
+        eq(jobEvents.eventType, input.eventType),
+      )).limit(1);
+      return Boolean(row);
+    },
+
+    async listQueuedJobIdsForBudgetScope(input) {
+      const conditions = [
+        eq(jobs.organizationId, input.organizationId),
+        eq(jobs.companyId, input.companyId),
+        eq(jobs.status, "queued"),
+        // A job with a LIVE lease is not "queued" in the sense that matters: a worker holds it
+        // (the ACK leaves `jobs.status` at `queued` until `attempt_started`). Cancelling it
+        // would lock another attempt's lease from inside an ingest transaction — the
+        // lease-order cycle E3-D-ACC Amendment 2 avoids. Its own next charge cancels it.
+        notExists(tx.select({ one: sql`1` }).from(leases).where(and(
+          eq(leases.organizationId, jobs.organizationId),
+          eq(leases.jobId, jobs.id),
+          inArray(leases.status, ["offered", "active"]),
+        ))),
+      ];
+      if (input.assigneeAgentId) {
+        conditions.push(eq(jobs.sourceKind, "task_run"));
+        conditions.push(sql`${jobs.sourceIntent} ->> 'assigneeAgentId' = ${input.assigneeAgentId}`);
+      }
+      const rows = await tx.select({ id: jobs.id }).from(jobs).where(and(...conditions)).orderBy(asc(jobs.id));
+      return rows.map((row) => row.id);
+    },
+
+    async listStalePendingProjectionReceipts(input) {
+      const conditions = [
+        eq(jobProjectionReceipts.organizationId, input.organizationId),
+        eq(jobProjectionReceipts.status, "pending"),
+        lte(jobProjectionReceipts.createdAt, input.olderThan),
+      ];
+      if (input.projectionKind) conditions.push(eq(jobProjectionReceipts.projectionKind, input.projectionKind));
+      const rows = await tx.select().from(jobProjectionReceipts).where(and(...conditions))
+        .orderBy(asc(jobProjectionReceipts.createdAt), asc(jobProjectionReceipts.id))
+        .limit(Math.max(1, Math.min(500, Math.floor(input.limit))));
+      return rows.map(toPendingProjectionReceipt);
+    },
+
+    async lockPendingProjectionReceipt(input) {
+      const [row] = await tx.select().from(jobProjectionReceipts).where(and(
+        eq(jobProjectionReceipts.organizationId, input.organizationId),
+        eq(jobProjectionReceipts.id, input.receiptId),
+      )).for("update").limit(1);
+      if (!row || row.status !== "pending") return null;
+      return toPendingProjectionReceipt(row);
+    },
+
+    async readAcceptedEvent(input) {
+      const [row] = await tx.select({
+        eventType: jobEvents.eventType,
+        payload: jobEvents.event,
+        eventDigest: jobEvents.eventDigest,
+      }).from(jobEvents).where(and(
+        eq(jobEvents.organizationId, input.organizationId),
+        eq(jobEvents.attemptId, input.attemptId),
+        eq(jobEvents.eventId, input.eventId),
+      )).limit(1);
+      return row ? { eventType: row.eventType, payload: row.payload as Record<string, unknown>, eventDigest: row.eventDigest } : null;
+    },
+
+    async resolvePendingProjectionReceipt(input) {
+      const [row] = await tx.update(jobProjectionReceipts).set({
+        status: "applied",
+        appliedAt: sql`clock_timestamp()`,
+        targetAggregateId: input.targetAggregateId,
+        aggregateKind: input.aggregateKind,
+      }).where(and(
+        eq(jobProjectionReceipts.organizationId, input.organizationId),
+        eq(jobProjectionReceipts.id, input.receiptId),
+        eq(jobProjectionReceipts.status, "pending"),
+      )).returning({ id: jobProjectionReceipts.id });
+      return { applied: Boolean(row) };
     },
   };
   return repository;

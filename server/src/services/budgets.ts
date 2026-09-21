@@ -432,7 +432,13 @@ export function budgetService(db: Db) {
       agentId: string | null,
       companyId: string,
       opts?: { projectId?: string | null },
-    ): Promise<{ hardStopIncidentCreated: boolean; hardStopBreached: boolean }> {
+    ): Promise<{
+      hardStopIncidentCreated: boolean;
+      hardStopBreached: boolean;
+      /** E3-D-ACC Amendment 2 (JOB-016) — every scope whose hard stop this charge is at/over,
+       * so the distributed charge can mirror legacy's per-scope enforcement. Additive. */
+      breachedScopes: { scopeType: "agent" | "company" | "department"; scopeId: string }[];
+    }> {
       const { start, end } = calendarMonthWindow();
       const projectId = opts?.projectId ?? null;
 
@@ -457,6 +463,7 @@ export function budgetService(db: Db) {
 
       let hardStopIncidentCreated = false;
       let hardStopBreached = false;
+      const breachedScopes: { scopeType: "agent" | "company" | "department"; scopeId: string }[] = [];
 
       for (const policy of relevantPolicies) {
         const observed = await getObservedCents(
@@ -477,6 +484,9 @@ export function budgetService(db: Db) {
           // cancelled, else it keeps spending past the hard stop. `requestCancellation`
           // is idempotent, so cancelling each over-budget attempt is safe.
           hardStopBreached = true;
+          if (policy.scopeType === "agent" || policy.scopeType === "company" || policy.scopeType === "department") {
+            breachedScopes.push({ scopeType: policy.scopeType, scopeId: policy.scopeId });
+          }
           const incident = await createIncidentIfNeeded(db, policy, "hard_stop", observed, start, end);
           // Emit the LEGACY in-process cancellation signal only on a newly-created
           // incident so that signal fires once per breach, not on every subsequent
@@ -503,7 +513,7 @@ export function budgetService(db: Db) {
         }
       }
 
-      return { hardStopIncidentCreated, hardStopBreached };
+      return { hardStopIncidentCreated, hardStopBreached, breachedScopes };
     },
 
     // ----- resolveIncident -----

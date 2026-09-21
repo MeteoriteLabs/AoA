@@ -326,3 +326,18 @@ After the bound, it raises **one** Inbox item per stuck receipt through the exis
 (`hubItemsService.emit`, idempotent on `sourceType`+`sourceId` = the receipt id) and stops retrying
 that receipt. The attempt counter is process-local; the stop is durable (the sweeper skips a receipt
 whose hub item exists), so a restart cannot raise a second item or resume retries.
+
+### As-built notes (JOB-016 build commit)
+
+Where the build differs in detail from the text above, the code is the truth and this records it:
+
+- **The count-only telemetry is not on `JobControlMetrics`.** That interface is JOB-003's frozen,
+  closed plan contract (`job-control-metrics.test.ts` pins its exact member set). The accepted-usage
+  counts use their own closed, id-free emitter, `createPinoAcceptedUsageTelemetry` in
+  `server/src/services/job-accepted-usage-pricing.ts`, event `job_control.accepted_usage`.
+- **The Amendment 2 scope cancel excludes a queued job that already has a live lease.** The ACK
+  leaves `jobs.status = 'queued'` until `attempt_started`, so "queued" alone would include jobs a
+  worker holds; `listQueuedJobIdsForBudgetScope` filters them out, which is what keeps the cancel
+  from locking another attempt's lease inside an ingest transaction.
+- **Constants:** `AUTHORITATIVE_COST_REDRIVE_MAX_ATTEMPTS = 3`,
+  `STALE_PENDING_RECEIPT_THRESHOLD_MS = 15 minutes`.
