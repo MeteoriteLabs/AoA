@@ -408,7 +408,15 @@ one-line regex edit, because all three guards and the graph contract move togeth
 exist), each open finding is re-pointed from `CLI-008` to the link that will close it, and the five
 drifted citations in §1 are corrected **by symbol**.
 
-**Proposed finding → link ownership** (the reviewer confirms each against source; a wrong
+★★★ **SUPERSEDED — DO NOT EXECUTE THIS TABLE.** ★ *Corrected 2026-09-21 (Codex, PR #526):* M0 unit 4 enacted
+the founder's subject-based ruling (D5): **only `E7-F016` → `CLI-015` and `E7-F026` → `CLI-011`
+moved.** `E7-F003`, `E7-F015`, `E7-F017`, `E7-F023`, `E7-F024`, `E7-F027`, `E7-F032` and `E7-F033`
+**stay on `CLI-008`**. The authority is `scripts/finding-ownership.json`, not this table. The
+"Proposed owner" column below is the pre-ruling proposal, kept as history; the id sweep in this PR
+had renamed its `CLI-008-Fn` cells to numeric ids, which made it read as an operative instruction
+to undo D5.
+
+**Proposed finding → link ownership** (*historical — pre-D5 proposal*; the reviewer confirms each against source; a wrong
 re-ownership is worse than none):
 
 | Finding | Severity | Proposed owner | Why |
@@ -680,7 +688,18 @@ unconnected, so the edit stays and its scope is now stated exactly; create `pack
 metadata-only enumeration operation: paths only, no bytes); modify
 `packages/sandbox-e2b-provider/src/e2b-provider.ts` (implement it over the private
 `#transport.listDir`); modify `packages/provider-wire/src/driver.ts` (the networked-lane binding,
-which has no enumeration today). *Added (Codex, PR #526): the port was assigned to this ticket in
+which has no enumeration today); modify `packages/adapter-manager/src/server.ts` (the matching
+op route **and** its ownership gate — the server answers any op outside `GATE_REQUIRED_OPS` or its
+raw-handler map with `404 operation not available in this slice`, so a driver-only change is
+unreachable on the networked lane); create
+`packages/provider-wire/src/__tests__/driver-enumerate.test.ts` and
+`packages/adapter-manager/src/__tests__/server-enumerate.test.ts`. Enumeration is a
+**single-sandbox owned op**: route it through `gateOwnedOp` like `stage_files` (E7-F011), never a
+keyless raw handler. **Non-goal:** changing the frozen `PROVIDER_OPERATIONS` vocabulary in
+`@armyofagents/worker-protocol` — the export ops `DAT-009-3e` added are wire routes outside it,
+and this one follows the same pattern. ★ *Corrected 2026-09-21 (Codex, PR #526):* the adapter-manager half was missing; this
+section mirrors `DAT-009-3e`'s file list, which includes `server.ts` and a server test for the same
+reason. *Added (Codex, PR #526): the port was assigned to this ticket in
 its graph node but authorized by no file list, so it would have stayed unimplemented. The sequencer
 composition surface stays with `DAT-009-3c`/`3d`, which this ticket already waits on.*
 
