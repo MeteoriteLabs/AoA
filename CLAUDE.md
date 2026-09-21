@@ -368,10 +368,19 @@ green** and three fail on one test each:
 | Windows | `startRuntimeServicesForWorkspaceControl` batch validation | `E5-F005` — same family |
 | macOS | JOB-003 immutable-tick-deadline (real PostgreSQL) | `E3-F039` — **proven flake** (green in the earlier run, red in the later one, identical shard partition) |
 
-★★★ **But a green run conclusion on this lane does NOT mean its tests passed — `E6-F023`.** Every
-job carries `continue-on-error: true`, so the run conclusion is blind to them: run `35530935808`
-concluded `success` with **8 of 12 jobs failing**. Treat "advisory green" as a claim needing a
-per-job run behind it, not a run conclusion.
+★★★ **What a green run of this lane means — `E6-F023`, resolved 2026-09-21 (option 3).** Until
+then every job carried `continue-on-error: true`, so the run conclusion was blind to all of them: run
+`35530935808` concluded `success` with **8 of 12 jobs failing**. Now `verify-cross-platform` and
+`e2e-cross-platform` are **verdict-bearing** (no flag, and the `Install Playwright` step's own flag is
+gone too, closing the path where a failed install skipped the e2e steps and left the job green),
+while `test-cross-platform` stays **advisory**. So a green **run** means both platforms typecheck and
+build, macOS passes the browser suite, and Windows installs Playwright — it does **not** mean the
+test shards passed, and a green **Windows** e2e job asserts build parity only (Issue #114).
+
+★ **This holds on `docs/replatform-program`, not on `main`.** The weekly `schedule` runs from `main`,
+which still has the old all-advisory workflow until the program integration checkpoint (M5); a green
+scheduled run there still means nothing. **No guard enforces the new shape** — re-adding the flag
+would silently restore the false green.
 
 **CDN fallback:** The required Linux `e2e` job uses a Google Chrome-for-Testing download when `cdn.playwright.dev` stalls (configured in `.github/workflows/pr.yml`). The advisory `e2e-cross-platform` macOS/Windows lanes do NOT use that fallback — they still rely on the default Playwright CDN and time out at 12 min if the CDN stalls. Generalizing the Google-storage fallback to mac/win lanes is tracked for 1.1.
 

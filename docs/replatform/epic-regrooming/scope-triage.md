@@ -310,7 +310,11 @@ removing the thing being counted.
 - **Remove the block at M5** and read the stream on its own verdict — the manifest's `reason` says so. `E6-F023` is a separate register
 finding, cited above only for the lane-health caveat. It is `unowned` in
 `scripts/finding-ownership.json`, which is a legal register state. It is being **resolved** inside
-M0 by implementing its option-3 ruling, not carried as checkpoint-blocked. The ruling's heading,
+M0 by implementing its option-3 ruling, not carried as checkpoint-blocked. ★ *Update 2026-09-21:
+**resolved** — option 3 implemented at `31a4ef91f` and verified against four dispatch controls (clean,
+advisory shard, verdict, install bypass), each failure attributed to its causal step; the resolution
+section in `E6-F023` cites them by job. Its ownership declaration is removed, as the guard requires
+for a finding that is no longer open.* The ruling's heading,
 "gate owner: option 3", records who ruled, not who owns it.
 
 ★ That enumeration is B in full: B has **eight** members. `DEP-013` is named by its own clause

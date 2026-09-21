@@ -1555,7 +1555,7 @@ is unchanged by this finding.
 
 ## E6-F023 - cross-platform-weekly's run conclusion is blind to every job it declares advisory, and the DEP-013 consumer reads that conclusion
 
-**Status:** open
+**Status:** resolved (2026-09-21, option 3 implemented on `docs/replatform-program`; the `@main` stream changes only at M5 — see Resolution)
 **Severity:** MEDIUM (a false GREEN, which is worse than a red: it is indistinguishable from health)
 **Filed:** 2026-09-21 (M0 unit 2), measured on run `35530935808`.
 
@@ -1626,3 +1626,76 @@ whose **run** conclusion is `failure` when a verdict-bearing job fails and `succ
 pass — with a positive control that a failing **advisory** shard alone leaves it `success`.
 
 ★ Until then the rule above stands: a green run of this lane is not evidence of test health.
+
+### Resolution — 2026-09-21, option 3 implemented and verified against controls
+
+**Change** (`.github/workflows/cross-platform-weekly.yml`, commit `31a4ef91f`):
+
+| Job | Before | After |
+|---|---|---|
+| `verify-cross-platform` | `continue-on-error: true` | **no flag — verdict-bearing** |
+| `e2e-cross-platform` | `continue-on-error: true` | **no flag — verdict-bearing** |
+| `test-cross-platform` | `continue-on-error: true` | **flag kept — advisory, deliberately** |
+| `Install Playwright` step | `continue-on-error: true` | **no flag — the install bypass is closed** |
+
+★★★ **The install bypass was the half a job-level fix alone would have missed.** Every later e2e
+step is gated on `steps.install-playwright.outcome == 'success'`, so with the step flag in place a
+failed install SKIPPED the config and e2e steps and the job concluded GREEN having run no browser
+test. Control 4 below proves that path is now red.
+
+**Verified by `workflow_dispatch`, four controls, every failure attributed to its causal STEP rather
+than just its job.** Each dispatch used a distinct ref, so `cancel-in-progress` could not cancel one
+with another.
+
+| # | Control | Run | Job(s) | Causal step | Asserted | Observed |
+|---|---|---|---|---|---|---|
+| 1 | clean — the implementation branch | `35569301716` | verify mac + win, e2e mac + win | — | run `success` | **run `success`** |
+| 2 | advisory — sabotage shard 1 on both OSes | `35569308695` | `test-cross-platform (macos-latest, 1)` `106237378419`; `(windows-latest, 1)` `106237378400` | `SABOTAGE advisory control` → `failure` | run **`success`**, those jobs `failure` | **run `success`**, both jobs `failure` |
+| 3 | verdict — sabotage `verify-cross-platform` | `35569315154` | `verify-cross-platform (macos-latest)` `106237398790`; `(windows-latest)` `106237398822` | `SABOTAGE verdict control` → `failure` | run **`failure`** | **run `failure`** |
+| 4 | install bypass — bogus browser name | `35569315154` | `e2e-cross-platform (macos-latest)` `106237398865` | `Install Playwright` → `failure`; `Generate AoA config`, `Run e2e tests`, `Upload Playwright report` → **skipped** | job **`failure`**, not green-with-skips | **job `failure`** |
+
+★ **One limit, stated rather than blurred.** Controls 3 and 4 were folded into one run, as the brief
+permitted. That run's `failure` is therefore jointly caused — `verify` AND `e2e` both failed — so
+it does not by itself ISOLATE `verify`'s contribution to the run verdict. What is observed is that
+`verify` concludes `failure` on sabotage. That this alone is sufficient to fail the run is inferred,
+not isolated: from the parsed YAML (`verify-cross-platform` carries no `continue-on-error`), and from
+controls 1 and 2, which show that failing advisory shards — three in control 1, five in control 2 —
+leave the run `success`, so only the flag-less jobs can move it.
+
+★ **Advisory noise, recorded because it is real.** Control 2's `test-cross-platform (macos-latest,
+2)` failed on `Run tests (shard 2/4)` — a genuine test failure, not the sabotage (whose step was
+`skipped` there by `if: matrix.shard == 1`), on a shard that passed in control 1. It is advisory,
+does not bear on any assertion above, and is the same cross-platform test-health class as `E5-F005`
+and `E3-F039`.
+
+### What a green run of this lane now means — and what it still does not
+
+A green **run** now means: both platforms typecheck and build, macOS passes the browser suite, and
+Windows installs Playwright. It does **not** mean the unit-test shards passed — they are advisory and
+visible only per job.
+
+- **Windows e2e asserts build parity only.** On `windows-latest` the e2e step never runs (Issue #114,
+  embedded-postgres cannot start under `runneradmin`), so a green Windows `e2e-cross-platform` job
+  proves setup, build and the Playwright install — nothing about browser behaviour.
+- **A Playwright CDN stall now turns the e2e job red.** These lanes lack the required Linux lane's
+  Chrome-for-Testing fallback, so a stall means the browser suite genuinely did not run. Accepted
+  deliberately: a red job says that honestly, where the old flag said nothing.
+
+### Where it takes effect
+
+On `docs/replatform-program` now. **Not** on the `cross-platform-weekly.yml@main` stream: GitHub runs
+`schedule` only from `main`, which the program branch reaches only at the program integration
+checkpoint (M5). Until then `@main` executes the old workflow, where every job still carries the flag
+— so a green `@main` run still means nothing. That stream is recorded **blocked on M5, owned by the
+founder (gate owner)** in `scripts/workflow-verdict-manifest.json`, where the DEP-013 consumer reads
+it.
+
+### Which guard enforces the new shape: none
+
+★★★ **Nothing prevents this regressing.** At source, the only `continue-on-error` assertions in
+any guard are in `scripts/check-verdict-consumer-freshness.test.mjs` and they read
+`verdict-reconcile.yml` and `pr.yml` — never `cross-platform-weekly.yml`. Re-adding the flag to
+`verify-cross-platform` or `e2e-cross-platform`, or to the `Install Playwright` step, would silently
+restore the false green and every guard would stay green. Stated plainly rather than implied: the
+controls above prove the shape at `31a4ef91f`, and nothing proves it at any later revision.
+
