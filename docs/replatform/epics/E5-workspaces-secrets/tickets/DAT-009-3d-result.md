@@ -136,6 +136,33 @@ Measured on head `7292fc942` (which carries the reviewed code tree `c69a8b44f`),
 This section was added in a docs-only commit after that run, so the final head differs from
 `7292fc942` by this file only.
 
+## 7a. Addendum, 2026-09-21: the program tip merged in
+
+The sections above are kept as written. After they were written, the program tip moved on with
+JOB-016 (#547), WRK-018 (#546) and DEP-015 (#554), and #556 then conflicted with it. The tip was
+**merged** into this branch in merge commit `32b70c43e`, not rebased. The reviewed code commit
+`c69a8b44f7d153f9a3ec2310754acae1216543e9` therefore stays an ancestor of the head
+(`git merge-base --is-ancestor` exits 0).
+
+- **The one conflict** was the `packages/worker-daemon` pin in `scripts/test-inventory.json`. It was
+  recomputed from the combined tree: 168 at the tip, plus the one file this branch adds, gives
+  **169**. `check-test-inventory` pins this tree exactly, and it passes.
+- **`dispatch-runtime.ts` auto-merged.** WRK-018's `observeRun: createUsageObserver(...)` and this
+  ticket's `exportArtifacts` are now both composed. The real-run cases in §2 and §4 therefore now run
+  with the usage observer live. They pass unchanged.
+- **`gate-clause-wiring.json` auto-merged.** The tip changed only the `E3-15-budget` row, and that
+  row takes the tip's text. The `E5-2` row, including its `expectedReferences: 1` and this ticket's
+  dated note, is intact. `check-gate-clause-wiring` reports OK, with `E5-2` listed as dormant.
+- **Re-verified on the merged tree:**
+  - the verify pair gives **2 files, 36 passed** (the tip added one case to `dispatch-runtime.test.ts`);
+  - the full worker-daemon suite gives **162 files, 1107 passed, 1 skipped**;
+  - the worker-daemon typecheck and build both exit 0;
+  - the standalone `tsc` over the new test file reports no errors in it;
+  - the full guard set plus `check-evidence-immutability` gives **0 failures**;
+  - the §3 mutation table was re-run, and all five mutants are still killed, with identical red
+    counts (8 / 4 / 2 / 1 / 3).
+- **The §7 CI figures are for the pre-merge head** `7292fc942`. CI for the merged head is on the PR.
+
 ## 8. Reviewer section
 
 *(Distinct reviewer only.)*
