@@ -419,12 +419,16 @@ export function verdictNonZeroExit(obs) {
   const o = obs ?? {};
   const legs = { viaRunCommand: o.viaRunCommand, viaProviderExecute: o.viaProviderExecute };
   for (const [k, leg] of Object.entries(legs)) {
-    // A leg that did not FINISH observed no exit at all: the file may have been written before the
-    // deadline, so "the file survived a non-zero exit" would be read off a command that never
-    // exited. Codex review (PR #551). `threw` stays admissible: whether a non-zero exit throws IS
-    // part of what S-P3 records (E7-F014).
-    if (!leg || leg.channel === "timedOut" || (leg.channel !== "returned" && leg.channel !== "threw")) {
+    // S-P3 claims "a file survives a NON-ZERO EXIT", so a leg counts only when a non-zero exit
+    // was OBSERVED: the command returned, with a numeric exit code other than 0. Codex review
+    // (PR #551), twice. A timed-out leg observed no exit (the file may predate the deadline); a
+    // leg that THREW carries no verifiable exit code; a returned exit 0 is not the case under
+    // test. Each is inconclusive and names which it was.
+    if (!leg || leg.channel !== "returned") {
       return inconclusive("S-P3", `${k}-channel-${String(leg?.channel)}`, {});
+    }
+    if (typeof leg.exitCode !== "number" || leg.exitCode === 0) {
+      return inconclusive("S-P3", `${k}-no-non-zero-exit-observed(${String(leg.exitCode)})`, {});
     }
     if (leg.read?.outcome !== "ok" && leg.read?.outcome !== "not-found") return inconclusive("S-P3", `${k}-read-faulted`, {});
   }

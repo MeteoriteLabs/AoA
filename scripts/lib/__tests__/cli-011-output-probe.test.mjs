@@ -243,7 +243,7 @@ test("S-P1 is inconclusive if the listing cannot even see the staged set", () =>
   assert.equal(verdictStaged("S-P1", { home: ok([]), staged: STAGED, root: OUTPUT_ROOT }).reason, "listing-does-not-show-the-staged-set");
 });
 
-test("S-P3: a leg that TIMED OUT is inconclusive even if its file is there; a throw is a recorded result", () => {
+test("S-P3: only a RETURNED non-zero exit counts; timed out, threw or exit 0 is inconclusive", () => {
   const leg = (channel, exitCode) => ({ channel, exitCode, expected: "N3", read: { outcome: "ok", content: "N3" } });
   const ok = verdictNonZeroExit({ viaRunCommand: leg("returned", 3), viaProviderExecute: leg("returned", 3) });
   assert.equal(ok.state, "observed");
@@ -253,9 +253,14 @@ test("S-P3: a leg that TIMED OUT is inconclusive even if its file is there; a th
   assert.equal(t1.state, "inconclusive");
   assert.match(t1.reason, /viaRunCommand-channel-timedOut/);
   assert.equal(verdictNonZeroExit({ viaRunCommand: leg("returned", 3), viaProviderExecute: leg("timedOut", null) }).state, "inconclusive");
+  // Codex review (PR #551, second pass): a non-zero exit must be OBSERVED on both legs.
   const threw = verdictNonZeroExit({ viaRunCommand: leg("threw", null), viaProviderExecute: leg("returned", 3) });
-  assert.equal(threw.state, "observed");
-  assert.equal(threw.findings.viaRunCommand.returnedNotThrew, false);
+  assert.equal(threw.state, "inconclusive");
+  assert.match(threw.reason, /viaRunCommand-channel-threw/);
+  const zero = verdictNonZeroExit({ viaRunCommand: leg("returned", 3), viaProviderExecute: leg("returned", 0) });
+  assert.equal(zero.state, "inconclusive");
+  assert.match(zero.reason, /viaProviderExecute-no-non-zero-exit-observed\(0\)/);
+  assert.equal(verdictNonZeroExit({ viaRunCommand: leg("returned", null), viaProviderExecute: leg("returned", 3) }).state, "inconclusive");
 });
 
 test("S-P7 is inconclusive when its command did not return", () => {

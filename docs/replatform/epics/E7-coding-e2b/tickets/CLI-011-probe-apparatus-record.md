@@ -122,6 +122,11 @@ imports buildSandboxInvocation…"*).
   before the deadline and no exit was observed. A leg that `threw` stays admissible, since whether a
   non-zero exit throws is part of what S-P3 records (E7-F014). S-P7 gets the same channel check.
   RED: 2 of 36 fail on the previous core. GREEN: 36/36.
+- **P1 (third review): a non-zero exit must actually be observed.** An S-P3 leg counts only if it
+  `returned` with a numeric exit code other than 0. A leg that `threw` has no exit code that can be
+  checked, and a returned exit 0 is not the case under test. Both are now inconclusive, and the
+  reason names which one it was. This supersedes the second review's "`threw` stays admissible".
+  RED: 1 of 37 fails on the previous core. GREEN: 37/37.
 
 **Mutations.** Each mutation was applied, run, and reverted. All eight went RED.
 
