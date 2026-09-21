@@ -180,3 +180,107 @@ corroborating only.
 ## Independent review
 
 _To be completed by a distinct reviewer. The implementer does not set `Status: complete`._
+
+**Reviewer:** M1 review-batch-2B independent reviewer (Claude Opus 5) — distinct from the CLI-016 build agent and the planning session
+**Reviewed revision:** fc2eb7dde6325803c77950ac4adb1d190db0bd9a
+**Disposition:** `approved`
+**Attempt:** 1 (see *Independent review — attempt 1* and the attempt history)
+
+### Independent review — attempt 1
+
+**Disposition: `approved`**, for the code and the record, with the keyed real-E2B +/- controls
+**honestly PENDING** as the record states (see *What remains open*). Reviewed at
+`fc2eb7dde6325803c77950ac4adb1d190db0bd9a` (program tip `docs/replatform-program`, the merge of PR
+#547). The start SHA `1447a2739873…`, the implementation commit `0254c5c67b94…` and the `DAT-007-S3`
+completion commit `9549ac0cc` are all ancestors of it. `git log 0254c5c67..fc2eb7dde` over the nine
+CLI-016 source and test files is empty. PR #555's final head `04c73866c3ba…` differs from
+`0254c5c67` only by this record.
+
+- **The combination, at source.** `readDistributedToolSurfaceFlag` (`config/distributed-execution.ts`)
+  returns true only on `per-organization`, and throws on `1`/`true`/`yes`/`on`.
+  `resolveDistributedToolSurface` checks the deployment flag first, then the Organization.
+  `resolveOrganizationToolSurface` in the rollout source is strictly `policy?.tools === true`.
+  E7-D10 is in `decisions.md`, recorded under F2 with the build agent named as the one exercising it.
+- **The use-side gate, at source.** In `mcp/server.ts`, under
+  `distributedExecutionEnabled && protocolActor.source === "agent" && req.actor.signedRunId`,
+  `resolveDistributedToolSurfaceAtUse` runs after the currency verdict. A deny throws the same
+  `MCP_CROSS_COMPANY_FORBIDDEN_MSG`. The default is `createDistributedToolSurfaceUseResolver(db)`.
+  That resolver keys on the signed run id, left-joins the **run's** company to its `organization_id`,
+  and reads the flag and rollout map on every call. `classifyToolSurfaceAtUse` is: no row → admit;
+  company mismatch → deny; not distributed → admit; distributed → admit only if the Organization is
+  armed. The no-row admit is the DAT-007 fail-open class, and the record states it in §2. I accept it
+  as disclosed, not as a proof.
+- **F10 is real.** `distributed-tool-surface-arming.integration.test.ts` seeds two `organizations`
+  rows, each with its own company and agent, on embedded PostgreSQL. The rollout map arms `tools: true`
+  for `TENANT_A` only, with `TENANT_B` in canary and no `tools`.
+- **Focused command, rerun locally (Windows) at the reviewed tip**, with
+  `AOA_RUN_WIN_INTEGRATION=1`:
+  - `crew-distributed-gate` 8, `distributed-tool-surface-per-organization` 30,
+    `mcp-run-currency-gate` 11, and `distributed-tool-surface-arming.integration` **7, executed on real
+    PostgreSQL (6154 ms)**. All passed.
+  - `task-run-batch-workload` 95 passed. It first failed to load because the `worker-daemon` dist had
+    not been built; after building it, it passed.
+  - Total **151**, matching §3.
+  - `pnpm --filter @armyofagents/server typecheck` exits 0 at the tip, after building the server's
+    workspace dependencies (a clean checkout lacks `plugin-sdk/dist`).
+- **Mutation, reproduced by me and reverted.** M1 (drop the `organizationToolsEnabled` check in
+  `resolveDistributedToolSurface`) gives **4 failed / 44 passed (48)**. The four are unit *F10:
+  deployment ARMED but this Organization not enabled*, real-PG *DISPATCH (F10)*, real-PG *USE (F10)*
+  and real-PG *PER-TENANT ROLLBACK*. That is exactly the table's row. I checked the rest by reading
+  the tests.
+- **CI, by job.** Run `35591990274` (headSha `0254c5c67b94…`, conclusion `success`; all 16 jobs
+  success, `ci-required` `106313954527`). Per-job logs:
+  - `verify (3)` `106308267588`: `distributed-tool-surface-arming.integration.test.ts (7 tests) 3770ms`
+    passed, not skipped. `distributed-tool-surface-per-organization.test.ts (30 tests)` passed. Shard
+    654 / 4 files, 5913 / 29 tests.
+  - `verify (1)` `106308267619`: `task-run-batch-workload` 95, `mcp-run-currency-gate` 11,
+    `crew-distributed-gate` 8. Shard 655 / 3 files, 6401 / 12 tests.
+
+  Every number in §7 matches.
+- **Redemption-side refusal (expired lease).** The record cites it as existing coverage and did not
+  re-run it. I checked it: *"a STALE fence token on the same live handle is DENIED"* is in
+  `composed-loop-secret-resolve.integration.test.ts`, and that file executed in the same run's
+  `verify (3)` (**3 tests**, 3630 ms, passed). So the plan's "refused at redemption" half is
+  evidenced at the reviewed CI head, although not by a CLI-016 test.
+- **Codex.** On PR #555, `chatgpt-codex-connector` reported "Didn't find any major issues" on the final
+  head `04c73866c3`. There are no review-thread comments.
+- **Acceptance items (E7 plan `### CLI-016`).**
+  - Flag on and run fence-current → the argv carries the MCP config: **evidenced** (real-PG DISPATCH,
+    A only).
+  - Flag on and lease expired → denied at MCP authorization: **evidenced** (real-PG). Refused at
+    redemption: **evidenced by existing coverage** (above).
+  - Flag off → neither: **evidenced** (real-PG KILL SWITCH).
+  - Two Organizations, one enabled for tools → A admitted, B denied (F10): **evidenced**, at dispatch
+    and at use.
+  - Absent `tools` means off, and a non-boolean fails the parse: **evidenced** (M4, M5).
+  - GREEN, server typecheck and build, and the Linux executed count recorded: **evidenced**.
+  - The integration file uses `describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")`:
+    **true**.
+  - One commit with the plan's title: **true**.
+  - **Keyed real-E2B +/- controls: PENDING** (below).
+
+**What remains open (this approval does not close it).**
+
+1. **The keyed real-E2B +/- controls** (F8's named list): a tool call from an authorized run reaches
+   AoA from inside an E2B sandbox, and the same call from an unauthorized run id and from an expired
+   lease is denied. This build did not dispatch them, and I did not either; the M1 rules forbid a
+   reviewer dispatching a keyed lane. They are the planning session's to run on a named candidate.
+2. **No deployment arms any Organization.** The plan's Files line "deployment configuration for the
+   named set" is not delivered here, and the record says so (§6). Arming is an operator step tied to
+   (1).
+3. **`E7-F003`'s tools row is narrowed, not closed**, as `findings.md` records.
+
+A reader must not treat `complete` on this record as proof that the tool surface works from a
+sandbox. It proves per-Organization arming at dispatch, and denial at `/mcp` use against real
+PostgreSQL.
+
+- **Not blocking, noted.** §5 says "All 45 … guards … (minus the six)". The count is not load-bearing,
+  and I did not re-derive it for `0254c5c67`.
+
+## Review attempt history
+
+Later reviewers append rows with increasing attempt numbers without replacing earlier ones. Do not include a `Review commit` column: a row cannot embed the SHA of the commit that first contains it.
+
+| Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
+|---:|---|---|---|---|
+| 1 | M1 review-batch-2B independent reviewer (Claude Opus 5) | `fc2eb7dde6325803c77950ac4adb1d190db0bd9a` | `approved` | Code verified at source: flag arms only on `per-organization`, legacy truthy values throw, the conjunction, and the `/mcp` use gate keyed on the signed run id and the run's own Organization. The two-Organization real-PG seeding is real. Focused rerun on Windows: 151 passed, integration 7 executed on real PG. Server typecheck 0. M1 reproduced exactly (4 failed). Run `35591990274` per job: `verify (3)` 7 (not skipped) + 30, `verify (1)` 95 + 11 + 8, all matching. Redemption refusal covered by `composed-loop-secret-resolve` (3 executed, `verify (3)`). Codex clean on `04c73866c3`. OPEN, not closed by this approval: keyed real-E2B +/- controls (F8, planning session); no Organization armed in any deployment; `E7-F003` tools row narrowed only. |
