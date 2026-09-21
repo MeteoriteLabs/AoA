@@ -1,6 +1,6 @@
 # WRK-018 Result - the usage producer: an optional stdout channel on the provider port and a composed `observeRun`
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Date (UTC):** `2026-09-21`
 **Epic:** `E4-worker-daemon`
 **Plan task:** `E4 implementation-plan §4c WRK-018 - the usage producer (M1a Track A)`
