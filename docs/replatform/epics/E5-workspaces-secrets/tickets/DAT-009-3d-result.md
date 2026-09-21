@@ -166,3 +166,83 @@ JOB-016 (#547), WRK-018 (#546) and DEP-015 (#554), and #556 then conflicted with
 ## 8. Reviewer section
 
 *(Distinct reviewer only.)*
+
+**Reviewer:** M1 review-batch-2B independent reviewer (Claude Opus 5) — distinct from the DAT-009-3d build session and the planning session
+**Reviewed revision:** 4a3a0000fac90f2a772648fff8fa28dc9ac75538
+**Disposition:** `approved` — **`Status` NOT flipped**: the dependency `DAT-009-3c` is not `complete` (see below)
+**Attempt:** 1 (see *Independent review — attempt 1* and the attempt history)
+
+### Independent review — attempt 1
+
+**Disposition: `approved` on the merits. The `Status` flip to `complete` is withheld, because this
+ticket's own declared dependency is unmet.** Reviewed at `4a3a0000fac90f2a772648fff8fa28dc9ac75538`
+(program tip `docs/replatform-program`, the merge of PR #556). The start SHA `cec1b48a7`, the code
+commit `c69a8b44f7d1…`, the pre-merge CI head `7292fc942fef…`, the program-tip merge `32b70c43e` and
+the final head `d09e77a3da79…` are all ancestors of it.
+
+**Why `Status` stays `gate_review`.** The E5 plan's `### DAT-009-3d` says "**Depends on:**
+`DAT-009-3c` `complete` at a recorded reviewed revision." §6 item 2 of this record already flags the
+gap. It is still open: in this same batch, `DAT-009-3c` review attempt 1 is `changes_requested`. That
+is for a record defect only (a stale GREEN count, 50 where the tree gives 52), not a code defect. So
+`3c` is not `complete`, and completing `3d` would complete a ticket ahead of its own dependency gate.
+That call belongs to the planning session, not to me.
+**To finish:** once `DAT-009-3c` is `complete`, a distinct reviewer may flip this record's `Status` to
+`complete` in a separate commit, citing that revision. Nothing here needs re-review. Alternatively,
+the planning session may record under F2 that `3d` completes on `3c`'s merged code.
+
+**Verified at source:**
+
+- **The composition.** `composeDispatchRuntime` (`lifecycle/dispatch-runtime.ts`) builds
+  `createArtifactExportSequencer({ client: deps.client, key: deps.key, session: () => session.get() })`,
+  beside `createStagedInputResolver`. It passes the result as `exportArtifacts` to the single
+  `makeSupervisor` call, which receives both `provider` and `makeRunProvider`, so both lanes get it.
+  No `resolveExportArtifacts` is composed. `supervisor.ts` is not in the code commit, which touches
+  only `dispatch-runtime.ts`, the new test, `gate-clause-wiring.json` and `test-inventory.json`. The
+  commit title matches the plan's intent.
+- **Register.** In `E5-2-fenced-object-commit-worker-half`, `status` is `unwired` and
+  `expectedReferences` is `1`, with the reason amended. At the tip, `check-gate-clause-wiring` gives
+  OK with `E5-2` under DORMANT, and `--counts` gives `createArtifactExportSequencer` **1**.
+- **Focused and full suites, rerun locally (Windows) at the reviewed tip.**
+  - The verify pair (`dispatch-runtime.test.ts` + `dispatch-runtime-export-composition.test.ts`)
+    gives **2 files, 36 passed**, matching §7a.
+  - The full `worker-daemon` suite gives **162 files, 1107 passed, 1 skipped**, matching §7a.
+  - `typecheck` exits 0 and `build` exits 0.
+
+  I did not rerun the pre-merge figures in §2 (35 / 1078). They describe `c69a8b44f` before the merge,
+  and §7a supersedes them correctly.
+- **Controls, reproduced by me and reverted.**
+  - **P1:** with `expectedReferences` set back to `0`, `check-gate-clause-wiring` exits **1** with
+    "`E5-2-fenced-object-commit-worker-half`: declared unwired but it now HAS a caller …
+    `createArtifactExportSequencer` has 1 reference(s), expected 0". This matches.
+  - **M1:** with `exportArtifacts` dropped from the `makeSupervisor` call, the new file gives
+    **8 failed (8)**. This matches.
+
+  M2 to M5 I checked by reading the tests.
+- **F10 is real.** The F10 case runs two tenants with distinct Organization, job and lease through one
+  composed runtime, concurrently, holding both producers.
+  - It asserts per-run sandbox digests and exports.
+  - It asserts `expectedAttemptObjectPrefix` for A under A and for B under B, and neither under the
+    other's prefix.
+  - It asserts the manifest `organizationId` and `objectKey` prefix for each commit.
+  - On the container lane, each capability's `ownedLabels` come from the resolving run's own
+    `leaseId`.
+- **§6 item 1 (the guard will not force `CLI-012`'s promotion)** is true by construction. A producer
+  adds no reference to `createArtifactExportSequencer`, so the count stays 1.
+- **CI, by job.**
+  - Pre-merge run `35595160161` (headSha `7292fc942fef…`, `success`): `verify (4)` `106318235095`
+    shows `dispatch-runtime-export-composition.test.ts (8 tests)` passed, with a shard total of
+    658 files and **6131 passed / 2 skipped (6133)**. This matches §7.
+  - Merged-head run `35600903745` (`pull_request` on `d09e77a3da…`, `success`, `ci-required`
+    `106342700233` success): `verify (4)` `106336580869` shows the new file **(8 tests)** passed, and
+    `verify (3)` `106336580923` shows `dispatch-runtime.test.ts` **(28 tests)** passed.
+- **Codex.** On PR #556, `chatgpt-codex-connector` reported "Didn't find any major issues" on
+  `7292fc942f`, `478dafbc34` and the final head `d09e77a3da`. There are no review-thread comments.
+- **Not blocking, noted.** `Start SHA` is a 9-character short SHA. It resolves to an ancestor.
+
+## Review attempt history
+
+Later reviewers append rows with increasing attempt numbers without replacing earlier ones. Do not include a `Review commit` column: a row cannot embed the SHA of the commit that first contains it.
+
+| Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
+|---:|---|---|---|---|
+| 1 | M1 review-batch-2B independent reviewer (Claude Opus 5) | `4a3a0000fac90f2a772648fff8fa28dc9ac75538` | `approved` (Status flip withheld) | The composition was verified at source; both lanes, no producer, `E5-2` unwired at `expectedReferences: 1`. Rerun at the tip: verify pair 36, full suite 162 / 1107 / 1 skipped, typecheck and build 0. P1 reproduced (guard exits 1) and M1 reproduced (8 failed). The F10 two-Organization case is real. CI by job: pre-merge `verify (4)` 8 with shard 6131 / 2, and the merged head's `verify (4)` 8 and `verify (3)` 28. Codex clean on three heads. `Status` stays `gate_review` because the plan's dependency `DAT-009-3c` `complete` is unmet (3c attempt 1 is `changes_requested`, for a record count). Flip once 3c is `complete`, or on a planning-session F2 record. |
