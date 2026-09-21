@@ -1,6 +1,6 @@
 # DEP-008-B1 Result - the isolation conformance suite is still exported and still consumed
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Date (UTC):** `2026-09-21`
 **Epic:** `E6-deployment-test-harness`
 **Plan task:** `E6 implementation-plan DEP-008-B1 - current isolation-conformance evidence on the milestone candidate (M0)`

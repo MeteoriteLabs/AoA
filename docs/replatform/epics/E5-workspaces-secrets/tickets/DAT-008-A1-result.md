@@ -1,6 +1,6 @@
 # DAT-008-A1 Result — narrow the lease-scoped-secrets completion claim to its ledgers
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Date (UTC):** `2026-09-21`
 **Epic:** `E5-workspaces-secrets`
 **Plan task:** `E5 implementation-plan DAT-008-A1 — narrow the lease-scoped-secrets completion claim to the ledgers (M0)`
