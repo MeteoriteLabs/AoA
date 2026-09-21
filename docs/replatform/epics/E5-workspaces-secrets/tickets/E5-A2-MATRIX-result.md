@@ -181,10 +181,10 @@ against source:
 
 ## Independent review
 
-**Reviewer:** M1 review-batch-1 independent reviewer (Claude Opus 5) — distinct from the S0-6 unit session and the planning session
-**Reviewed revision:** 28a2dd259ed7bdd8d64d68ad8a5999500d80b69e
-**Disposition:** `changes_requested`
-**Review evidence:** see *Independent review — attempt 1* below
+**Reviewer:** M1 review-batch-2B independent reviewer (Claude Opus 5) — distinct from the S0-6 unit session, the planning session and the attempt-1 reviewer
+**Reviewed revision:** fc2eb7dde6325803c77950ac4adb1d190db0bd9a
+**Disposition:** `approved`
+**Review evidence:** see *Independent review — attempt 2* below (attempt 1, `changes_requested`, is kept as written)
 
 For `approved`, verify the result describes the reviewed revision, all focused acceptance evidence passes, and every accepted finding is resolved; then change the top-level `Status` to `complete` and commit this disposition separately. Otherwise leave `Status` as `gate_review` or set `blocked`, and link stable findings.
 
@@ -270,6 +270,80 @@ The planning session should confirm, as a recorded decision, that the staged-inp
 at most) satisfies scope-triage's "workspace staging IS required" for `M1a`, **before** the plan is
 frozen. Otherwise clause 1 needs an `M1a` floor.
 
+### Independent review — attempt 2
+
+**Disposition: `approved`.** This is a re-review of the attempt-1 blocker, by a reviewer distinct from
+the attempt-1 reviewer, the S0-6 unit session and the planning session. Reviewed at
+`fc2eb7dde6325803c77950ac4adb1d190db0bd9a` (program tip `docs/replatform-program`). The fix commit
+`e1a56f705a208feef18cc6a128cdc1f55a23a71b` (PR #552, merged as `4904c75e33bb…`), the original commit
+`299dca66e6cf…` and the start SHA `1cc7e2fdba42…` are all ancestors of it.
+
+**The attempt-1 blocker is fixed, by option (b).**
+
+- **The pin is right.** The frozen plan is its own file,
+  `docs/replatform/epics/E5-workspaces-secrets/audit-matrix/2026-09-21-e5-seven-clause-matrix.md`.
+  `git rev-parse e1a56f705:<that path>` gives `4d8a43a55d760bfa6fe84b91c8854082ea488643`, and
+  `git rev-parse fc2eb7dde:<that path>` gives the same. The only commit that touches the file is
+  `e1a56f705`. So the recorded pin equals the blob at the reviewed revision.
+- **The command is exact and consistent.** The result's §Freeze pin, the matrix file's header, and the
+  matrix §Commands row *"This plan unchanged since freeze"* all give
+  `git rev-parse <candidate sha>:docs/replatform/epics/E5-workspaces-secrets/audit-matrix/2026-09-21-e5-seven-clause-matrix.md`.
+  No command still names `qa/README.md`. The old `f6b95d51…` pin survives only as quoted
+  `Superseded text`.
+- **The index is outside the pin, and the pin survives filing.** `qa/README.md` now holds only the
+  Records and Planned-attempts tables, plus a pointer to the matrix file. It no longer holds the plan.
+  I reproduced the simulation. I appended an `a2` row to `qa/README.md`: its blob changed
+  (`ca8d6d1b…` → `3c566ec8…`), and the matrix file stayed `4d8a43a5…`. Then I restored it.
+- **The matrix file is not an evidence record.** `EVIDENCE_RECORD_RE` in
+  `scripts/check-evidence-immutability.mjs` matches only `…/(qa|handoffs)/*.md`, not `audit-matrix/`.
+  The file's own header says the pin covers "this whole file, and nothing else" and that the index is
+  outside it.
+- **The move changed no substance.** I diffed the `## The frozen audit plan` section of `qa/README.md`
+  at `299dca66e` against the new file. The only differences are:
+  - headings promoted one level;
+  - the new pin paragraph and exact command;
+  - the new §Planning-session ruling on clause 1;
+  - one added non-certification bullet for clause 1;
+  - the §Commands pin row re-pointed from `qa/README.md` to the matrix file.
+
+  No matrix row, floor, verdict term, topology line or result rule changed.
+
+**The clause-1 ruling is recorded, and its source is real.** The matrix file's §Planning-session ruling
+on clause 1 says clause 1 has no `M1a` floor. `M1a`'s "workspace staging" requirement is met by the
+wired staged-input path (`stage_files`, `E7-1-staged-input-grant` / `-write`). `buildJobEnvelope` sets
+`workspace: null`, and clause 1 stays an E5 epic-gate gap that M1 does not certify. The clause is also
+added to the retained non-certifications. Its source is the planning-session comment on PR #534
+(2026-09-21T08:42:26Z, "Planning-session decision, under founder delegation F2"), which says the same
+thing. This answers attempt 1's non-blocking question.
+
+**Re-verified at the reviewed tip:**
+
+- The state-at-freeze facts still hold. `check-gate-clause-wiring --counts` gives:
+  - `createArtifactExportSequencer`, `createFenceAwareEgressProxy`, `createPatchApplyService` and
+    `createResultCommitter`: **0** each;
+  - `synthesiseRunSecrets`: **1**;
+  - `createStagedInputResolver`: **1**;
+  - `stageJobInputFiles`: **2**.
+
+  `job-leasing.ts` still has `workspace: null,`. The column is labelled "State at freeze
+  (`1cc7e2fdb`)". It is correctly historical. For example, clause 7's "deployment-wide until
+  `CLI-016`" has since been superseded by `CLI-016`, and an attempt re-measures at its own candidate.
+- **`a1` untouched.** `node scripts/check-evidence-immutability.mjs --base 1cc7e2fdba42… --candidate e1a56f705a20…`
+  gives `OK: 31 base records … byte-identical … (33 records)`. `git log e1a56f705..fc2eb7dde` over the
+  `a1` record is empty.
+- **CI and Codex on the fix.** PR #552 run `35590450420` (head `e1a56f705a`) concluded `success`:
+  `policy` `106303393178` success and `ci-required` `106304092999` success. `chatgpt-codex-connector`
+  reported "Didn't find any major issues" on `e1a56f705a`, and there are no review-thread comments.
+- **F10.** The topology still names `T-A` and `T-B` enabled and `T-C` not enabled. Every clause still
+  carries a per-tenant column. Every isolation clause still carries a cross-tenant denial with a
+  same-tenant control.
+
+Attempt 1's other verifications (dependencies complete, RED fixture reproduced, floors against
+scope-triage, 38 guards) are not affected by the fix. I rely on them as recorded and did not repeat
+them.
+
+Approval freezes the plan at blob `4d8a43a55d760bfa6fe84b91c8854082ea488643`.
+
 ## Review attempt history
 
 The implementation author leaves the table body empty; the explicit pending summary above is not a review attempt. The first independent reviewer appends attempt 1, and later reviewers append monotonically increasing rows without replacing prior attempts. The summary fields above mirror the latest real attempt for existing gate tooling. Do not include a `Review commit` column: a row cannot embed the SHA of the commit that first contains it. Repository history identifies that commit, and handoffs pin the resulting ticket-result blob SHA.
@@ -277,4 +351,5 @@ The implementation author leaves the table body empty; the explicit pending summ
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
 | 1 | M1 review-batch-1 independent reviewer (Claude Opus 5) | `28a2dd259ed7bdd8d64d68ad8a5999500d80b69e` | `changes_requested` | BLOCKING: the freeze pin is the whole `qa/README.md` blob (`f6b95d51…`, correct today), but that file is also the records index that must be updated when `a2` lands. `a3`'s "plan unchanged since freeze" command would then necessarily fail. The README's "this section's blob" wording has no git referent. Fix: pin a section hash, stated as an exact command, or move the plan to its own non-`qa/` file; then re-record the pin. Verified with no change needed: dependencies complete; `a1` untouched (GREEN OK, 31 records); RED reproduced in a fixture (exit 1, names the record; control exit 0); state-at-freeze counts all match at source; floors consistent with the `tools` + `output` exemption; 38 guards. Non-blocking: clause 1 has no `M1a` floor despite scope-triage's "workspace staging IS required", so the planning session should confirm. |
+| 2 | M1 review-batch-2B independent reviewer (Claude Opus 5) | `fc2eb7dde6325803c77950ac4adb1d190db0bd9a` | `approved` | Attempt-1 blocker fixed by option (b): the plan is its own file `audit-matrix/2026-09-21-e5-seven-clause-matrix.md`, and its blob at `e1a56f705` and at the tip is `4d8a43a55d760bfa6fe84b91c8854082ea488643`, the recorded pin. The exact `git rev-parse` command is consistent in the result, the file header and §Commands. `qa/README.md` is index-only and outside the pin; the simulation was reproduced (README blob changes, matrix blob unchanged). `EVIDENCE_RECORD_RE` does not match `audit-matrix/`. The move changed no substance (section diff). The clause-1 ruling is recorded in the matrix and sourced in the PR #534 planning-session comment. State-at-freeze counts still hold. `a1` untouched (OK, 31 records). PR #552 run `35590450420` `ci-required` success. Codex clean on `e1a56f705a`. |
 <!-- First independent reviewer appends attempt 1. -->
