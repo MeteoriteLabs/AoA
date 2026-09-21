@@ -1,6 +1,6 @@
 # JOB-016 — Price accepted usage at ingest, on the E3-D-ACC seam — result
 
-**Status:** `gate_review` — only a DISTINCT reviewer sets `complete`.
+**Status:** `complete`
 **Reviewed revision (code):** `3da94a421d192f1af26cf56f4b608aff266dc683` (branch `claude/m1-job-016`, PR #547). This is the last code commit, rebased onto the program tip; the pre-rebase equivalent was `a3d1db48395f8b4bf8954df0736c5223e13a2a5a`.
 **Date (UTC):** `2026-09-21`
 **Decision:** `E3-D-ACC` in [`../decisions.md`](../decisions.md), accepted with three amendments (planning session, founder delegation F2).
