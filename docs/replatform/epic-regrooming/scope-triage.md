@@ -283,6 +283,15 @@ the same way "quarantined with an owner" satisfies criterion 1. It is **not** cl
 **not** evidence that the lane is healthy: see `E6-F023`, under which a green run of that lane
 does not imply its tests passed.
 
+★ *Corrected 2026-09-21 (Codex, PR #526):* **this amends criterion 2; it does not claim M0 meets it.** The checkpoint-blocked item
+is the DEP-013 consumer's `cross-platform-weekly.yml@main` stream verdict, **not** `E6-F023`. Its
+owner has **not** been named yet: naming it, and recording it where the consumer reads it, is
+remaining M0 work, and M0 does not exit until both are done. `E6-F023` is a separate register
+finding, cited above only for the lane-health caveat. It is `unowned` in
+`scripts/finding-ownership.json`, which is a legal register state. It is being **resolved** inside
+M0 by implementing its option-3 ruling, not carried as checkpoint-blocked. The ruling's heading,
+"gate owner: option 3", records who ruled, not who owns it.
+
 ★ That enumeration is B in full: B has **eight** members. `DEP-013` is named by its own clause
 above (the consumer). **`MIG-010` owes an approved result too, and M0 does not exit without it** —
 ★★★ *corrected 2026-09-20 (eighth round): an earlier revision treated the D-10 clause as

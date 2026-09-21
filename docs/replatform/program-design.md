@@ -1044,7 +1044,14 @@ evidence.
 
 #### CLI-012 — Unit F link 3, the worker-side consumer (M)
 
-- **Depends on:** CLI-010.
+- **Depends on:** CLI-010, DAT-009.
+- ★ *Corrected 2026-09-21 (Codex, PR #526):* the edge read `CLI-010` only, while the prose below makes `DAT-009` slices 3c/3d a
+  prerequisite. The graph is ticket-granular, so `DAT-009` is the finest edge it can express — and
+  it **does not block**: `DAT-009-slice-1-result.md` already exists, and `findCompletedTicketIds`
+  (`/^([A-Z]+-\d+).*-result\.md$/`) reads that as `DAT-009` complete; `check-dependency-graph`
+  checks graph shape, not completion. **The operative precondition is therefore this prose:
+  CLI-012 does not start until `DAT-009-3c` and `-3d` have approved results.** Giving slices their
+  own graph nodes is gate-owner grooming, not done here.
 - **Outcome:** Sequence digest → mint upload grant → export → commit. This is DAT-009 slice 3's
   charter; nothing calls `exportArtifact`/`digestArtifact` today, which is why link 2 being built
   flips no counter.
