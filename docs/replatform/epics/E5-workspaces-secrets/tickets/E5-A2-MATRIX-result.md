@@ -13,22 +13,41 @@ This file is a controlled append-only review ledger until `complete`; do not del
 
 ## Delivered scope
 
-- **The frozen audit plan** is in [`../qa/README.md`](../qa/README.md) §"The frozen audit plan". It
-  contains:
+- **The frozen audit plan** is its own file,
+  [`../audit-matrix/2026-09-21-e5-seven-clause-matrix.md`](../audit-matrix/2026-09-21-e5-seven-clause-matrix.md),
+  which holds nothing but the plan. It contains:
   - the owners;
   - the unchanged `a1` verdict vocabulary;
   - the exact topology, including the F10 tenant set;
   - the consumed campaign records per attempt;
   - the seven-clause matrix, with per-tenant evidence and cross-tenant denial for each clause, an
     `M1a` floor and an `M1b` floor, and a measured state at freeze;
+  - the planning session's ruling on clause 1 (below);
   - the retained non-certifications;
   - a six-part result rule;
   - the exact commands.
 - **One plan for both attempts.** `a2` attests the `M1a` candidate. `a3` or later attests the `M1b`
   candidate and links through `Supersedes`.
-- **Freeze pin.** At freeze, the `qa/README.md` git blob SHA is
+- **Freeze pin.** At freeze, the matrix file's git blob SHA is
+  **`4d8a43a55d760bfa6fe84b91c8854082ea488643`**. Every attempt verifies it with exactly:
+
+  ```
+  git rev-parse <candidate sha>:docs/replatform/epics/E5-workspaces-secrets/audit-matrix/2026-09-21-e5-seven-clause-matrix.md
+  ```
+
+  The output must equal the pinned SHA. The pin covers that file only. The records index and the
+  planned-attempts table stay in [`../qa/README.md`](../qa/README.md), **outside** the pin, so
+  filing and indexing `a2` never changes the pinned blob.
+  ★ *Corrected 2026-09-21 after review attempt 1 (`changes_requested`), by the planning session's
+  ruling under F2. Superseded text: "At freeze, the `qa/README.md` git blob SHA is
   **`f6b95d51cc8b96277363f34484bffdfb74867389`**. Every attempt compares the candidate's blob with
-  this SHA (the plan's "This plan unchanged since freeze" command).
+  this SHA (the plan's "This plan unchanged since freeze" command)." That pinned the whole README,
+  which is also the records index, so the check would have failed at every attempt from `a3` on.*
+- **Clause-1 ruling (planning session, F2, made on PR #534), recorded in the matrix file.** Clause 1
+  (E5's immutable-manifest staging through `buildWorkspaceManifest`) has **no `M1a` floor**. `M1a`'s
+  "workspace staging" entry requirement is met by the wired staged-input path (`stage_files`,
+  `E7-1-staged-input-grant` / `-write`). `buildJobEnvelope` sets `workspace: null`, and E5's clause 1
+  stays an E5 epic-gate gap that M1 does not certify.
 - **Owners (F2).**
   - Decision owner: **founder (delegated to the M1 planning session)**.
   - QA owner: **a distinct review session, never the deciding session**.
@@ -47,13 +66,15 @@ This file is a controlled append-only review ledger until `complete`; do not del
 - No clause is relaxed.
 - H-06 is not marked passed.
 - No file under `qa/` other than `README.md` is created. The attempt records are filed at their
-  campaigns.
+  campaigns. The matrix file is outside `qa/`, so `EVIDENCE_RECORD_RE` does not treat it as an
+  evidence record.
 
 ## Changed files
 
 | File | Responsibility |
 |---|---|
-| `docs/replatform/epics/E5-workspaces-secrets/qa/README.md` | New. It indexes the E5 audit records and holds the planned-`a2`/`a3+` entries and the frozen plan. `README.md` is excluded from the immutable set (`EVIDENCE_RECORD_RE`, `scripts/check-evidence-immutability.mjs`) |
+| `docs/replatform/epics/E5-workspaces-secrets/audit-matrix/2026-09-21-e5-seven-clause-matrix.md` | New (review attempt 1 fix). The frozen plan, moved out of `qa/README.md` unchanged in substance, plus the pin statement with its exact command and the clause-1 ruling. This is the pinned file |
+| `docs/replatform/epics/E5-workspaces-secrets/qa/README.md` | New in `299dca66e`, and now the **index only**: the E5 audit records and the planned-`a2`/`a3+` entries, pointing to the matrix file. `README.md` is excluded from the immutable set (`EVIDENCE_RECORD_RE`, `scripts/check-evidence-immutability.mjs`) |
 | `docs/replatform/epics/E5-workspaces-secrets/tickets/E5-A2-MATRIX-result.md` | This result |
 
 ## Acceptance evidence
@@ -61,12 +82,13 @@ This file is a controlled append-only review ledger until `complete`; do not del
 | Acceptance condition | Evidence | Result |
 |---|---|---|
 | Dependencies `DAT-011-B1`, `TRACK-001-B1`, `DAT-008-A1` have complete results | Each result's top-level `**Status:** \`complete\``. Approved by distinct reviewers: `DAT-011-B1` attempt 4, `TRACK-001-B1` attempt 1, `DAT-008-A1` attempt 1 | `pass` |
-| Per-clause verdict criteria, in `a1`'s vocabulary, unchanged | `qa/README.md` §Verdict vocabulary and the `proven_in_d1 requires` column | `pass` |
-| Exact commands and topology | `qa/README.md` §Exact topology and §Commands. Every command names its revision explicitly, and the immutability command carries `--base` | `pass` |
-| QA owner and decision owner named (F2) | `qa/README.md` §Owners | `pass` |
+| Per-clause verdict criteria, in `a1`'s vocabulary, unchanged | matrix file §Verdict vocabulary and the `proven_in_d1 requires` column | `pass` |
+| Exact commands and topology | matrix file §Exact topology and §Commands. Every command names its revision explicitly, and the immutability command carries `--base` | `pass` |
+| QA owner and decision owner named (F2) | matrix file §Owners | `pass` |
 | Multi-tenant (F10): per-tenant evidence, plus cross-tenant denial where the clause is about isolation | the matrix's two F10 columns, filled for all seven clauses. Result rule R5 | `pass` |
 | A clause that cannot be evidenced is planned and blocked with the blocker named, never dropped | Clauses 1, 3 and 6 carry named blockers. Result rule R1 | `pass` |
-| Frozen for both attempts | `qa/README.md` §Planned attempts and "One plan for every attempt" | `pass` |
+| Frozen for both attempts | `qa/README.md` §Planned attempts, and the matrix file's "One plan for every attempt" | `pass` |
+| The pin survives filing an attempt (review attempt 1) | The pinned blob is the matrix file's, and the index lives in `qa/README.md`. Checked by simulation: appending an `a2` row to `qa/README.md` in the working tree leaves `git hash-object` of the matrix file at `4d8a43a5…` (see Commands) | `pass` |
 | `a1` untouched in every commit of this branch (GREEN) | see Commands | `pass` |
 | RED positive control, in a disposable fixture only | see Commands and Deviations | `pass` |
 
@@ -104,6 +126,7 @@ This file is a controlled append-only review ledger until `complete`; do not del
 | Fixture control, same guard: `--base 0e007ad4… --candidate 0e007ad4…` | `0` | `Evidence-ledger immutability OK: 1 base records (…) all present and byte-identical in the candidate (…, 1 records); 0 candidate commit(s) walked, …`. This shows the RED is caused by the mutation, not by the fixture |
 | **GREEN**: `node scripts/check-evidence-immutability.mjs --base origin/docs/replatform-program --candidate <this branch's head>`, both revisions explicit, run after the commit | `0` | `Evidence-ledger immutability OK: … all present and byte-identical in the candidate …; 1 candidate commit(s) walked, and no record introduced by one of them was rewritten or removed by a later one.` The branch has one commit and it does not touch `a1` |
 | `node scripts/check-register-citation-integrity.mjs` | `0` | `397 enforced (explicit, repo-anchored) citations checked; best-effort (unenforced): 154 bare :LINE, 11 unanchored, 72 filename-only. 1 grandfathered.` / `PASS` |
+| **Pin survives an index update (attempt-1 fix).** In the working tree, before the fix commit: append a simulated `a2` row to `qa/README.md`, then `git hash-object` both files, then restore the README | `0` | `qa/README.md` becomes `a84036ca…` (it changed). The matrix file stays `4d8a43a55d760bfa6fe84b91c8854082ea488643` (unchanged), before and after the restore |
 | The 38 pure-node `pr.yml` guards in the M1 agent-rules set (every `node scripts/check-*.mjs` in `pr.yml` except the six the rules exclude) | `0` each | `failures: 0` |
 
 ## Deviations
@@ -117,9 +140,11 @@ This file is a controlled append-only review ledger until `complete`; do not del
   `1`. It is a RED for the wrong reason: a check that never evaluated the mutation. The control above
   points the root at the fixture by running a copy of the guard from the fixture's own `scripts/`.
   The plan text is not edited here. The correction is recorded for whoever next edits the E5 plan.
-- **Where the matrix lives.** The task's Files list names `qa/README.md` and this result. The frozen
-  matrix is placed in `qa/README.md`, so attempt authors read it next to the records. This result
-  pins its blob SHA.
+- **Where the matrix lives.** The task's Files list names `qa/README.md` and this result. After review
+  attempt 1, the planning session ruled (F2) that the frozen plan moves to its own file outside
+  `qa/`: `audit-matrix/2026-09-21-e5-seven-clause-matrix.md`. `qa/README.md` stays as the index.
+  ★ *Superseded text: "The frozen matrix is placed in `qa/README.md`, so attempt authors read it next
+  to the records. This result pins its blob SHA."*
 
 ## Findings
 
@@ -128,7 +153,8 @@ already has an owner or record:
 
 - Clause 6's `a1` grade rests on a container analog. This is already recorded in the
   `E5-6-denied-egress` register reason, `E8-F003` and DE-08.
-- Clauses 1 and 3 have no M1 ticket. This is recorded as `planned and blocked` in the matrix.
+- Clauses 1 and 3 have no M1 ticket. This is recorded as `planned and blocked` in the matrix, and
+  for clause 1 by the planning session's ruling.
 - The placement-side residual on clause 4 is already `E5-F004`.
 
 ## Follow-up tickets
@@ -143,14 +169,15 @@ so neither blocks criterion 7.
 
 ## Gate recommendation
 
-`ready for independent review`. Approval freezes the plan. The reviewer should check four things
+`ready for independent review` (attempt 2). Approval freezes the plan. The reviewer should check five things
 against source:
 
 1. the matrix's state-at-freeze column;
 2. the floors, especially that clauses 4 and 5 are floored at `M1a`, and clauses 2 and 7 only at
    `M1b` because of the `tools` + `output` exemption;
 3. the result rule;
-4. the recorded blob SHA, which must equal `git rev-parse <reviewed sha>:docs/replatform/epics/E5-workspaces-secrets/qa/README.md`.
+4. the recorded blob SHA, which must equal `git rev-parse <reviewed sha>:docs/replatform/epics/E5-workspaces-secrets/audit-matrix/2026-09-21-e5-seven-clause-matrix.md`;
+5. that the attempt-1 blocker is fixed: the index and the pinned plan are separate files.
 
 ## Independent review
 
