@@ -89,7 +89,10 @@ export interface RecordAcceptedActivityInput {
 }
 
 export interface RecordAcceptedActivityOutcome {
-  status: "recorded" | "replayed";
+  /** `pending` (JOB-017, Codex P2): a seam receipt for this mutation exists but is still OWED —
+   * its target is the attempt, not an activity row — so `activityId` is null and the receipt is
+   * left for the re-drive (`redrivePendingProjection`). Never reported as `replayed`. */
+  status: "recorded" | "replayed" | "pending";
   activityId: string | null;
   receiptId: string | null;
   hubAuditId: string | null;
@@ -289,6 +292,12 @@ export function jobAuditBridge(
         const sourceIdentity = activitySourceIdentity(companyId, input.acceptedEventId);
         const existing = await findAuditReceipt(tx, organizationId, companyId, sourceIdentity);
         if (existing) {
+          // JOB-017 (Codex P2) — a `pending` seam receipt points at the ATTEMPT, not an
+          // activity row. Reporting it as `replayed` would hand the caller an id that is not in
+          // activity_log. It is owed, and the re-drive resolves it; say so.
+          if (existing.status === "pending") {
+            return { status: "pending" as const, activityId: null, receiptId: existing.id, hubAuditId: null };
+          }
           return {
             status: "replayed" as const,
             activityId: existing.targetAggregateId,

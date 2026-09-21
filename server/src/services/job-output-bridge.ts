@@ -108,7 +108,10 @@ export interface ProjectAcceptedOutputInput {
 }
 
 export interface ProjectAcceptedOutputOutcome {
-  status: "recorded" | "replayed" | "skipped";
+  /** `pending` (JOB-017, Codex P2): a seam receipt for this event exists but is still OWED — its
+   * target is the attempt, not a task_outputs row — so `outputId` is null and the receipt is left
+   * for the re-drive (`redrivePendingProjection`). Never reported as `replayed`. */
+  status: "recorded" | "replayed" | "skipped" | "pending";
   outputId: string | null;
 }
 
@@ -352,6 +355,10 @@ export function jobOutputBridge(
         const sourceIdentity = outputSourceIdentity(companyId, input.acceptedEventId);
         const existing = await findReceipt(tx, organizationId, companyId, OUTPUT_PROJECTION_KIND, sourceIdentity);
         if (existing) {
+          // JOB-017 (Codex P2) — a `pending` seam receipt points at the ATTEMPT, not a
+          // task_outputs row. Reporting it as `replayed` would hand the caller an id that is not
+          // an output. It is owed, and the re-drive resolves it; say so.
+          if (existing.status === "pending") return { status: "pending" as const, outputId: null };
           return { status: "replayed" as const, outputId: existing.targetAggregateId };
         }
 

@@ -407,6 +407,23 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
     });
 
     // 15 -------------------------------------------------------------------
+    it("[JOB-017 Codex P2] a PENDING seam receipt is reported `pending` with no outputId — never `replayed` with the attempt id — and nothing is written", async () => {
+      guard();
+      const { identity: fence } = await fixture!.activateLease(40);
+      const eventId = randomUUID();
+      await fixture!.admin`INSERT INTO job_projection_receipts
+        (organization_id, company_id, projection_kind, source_identity, source_digest, job_id, attempt_id, source_fence, status, target_aggregate_id, aggregate_kind, applied_at)
+        VALUES (${ORG}, ${COMPANY}, 'output_projection', ${`output:${COMPANY}:${eventId}`}, ${DIGEST}, ${fence.jobId}, ${fence.attemptId}, ${fence.fence}, 'pending', ${fence.attemptId}, 'job_attempts', NULL)`;
+      const before = await count("task_outputs", "true");
+      const out = await bridge().projectAcceptedOutput({
+        source: TASK_SOURCE, actor, fence, acceptedEventId: eventId, eventDigest: DIGEST,
+        issueId: ISSUE, output: outputInput(),
+      });
+      expect(out).toEqual({ status: "pending", outputId: null });
+      expect(await count("task_outputs", "true")).toBe(before);
+      expect(await count("job_projection_receipts", `projection_kind = 'output_projection' AND status = 'pending'`)).toBe(1);
+    });
+
     it("[flag off] every entrypoint refuses fail-closed and touches nothing", async () => {
       guard();
       const { identity: fence } = await fixture!.activateLease(15);
