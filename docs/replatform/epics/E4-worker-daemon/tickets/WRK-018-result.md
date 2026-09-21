@@ -170,3 +170,80 @@ the review on `ad4cdfdf2` completed with no findings.
   reason is now wrong.
 - **No stderr** is carried; the codex adapter (E7-F027), pricing, and transcripts-as-artifacts are
   out of scope.
+
+## Independent review
+
+**Reviewer:** M1 review-batch-2A independent reviewer (Claude Opus 5). I did not author WRK-018, and I am not the planning session.
+**Reviewed revision:** ad4cdfdf28ddb8bb66b730a4b9f66f7de2e7785f (the record's own reviewed revision; I re-checked it against the program tip `fc2eb7dde6325803c77950ac4adb1d190db0bd9a`)
+**Disposition:** `approved`. The keyed acceptance 1 is **still open**; see below.
+**Attempt:** 1 (see *Independent review — attempt 1* and the attempt history)
+
+### Independent review — attempt 1
+
+**Disposition: `approved` (code and record). Acceptance 1, the one keyed F8 run, stays OPEN.**
+
+`ad4cdfdf28ddb8bb66b730a4b9f66f7de2e7785f` is an ancestor of the program tip `fc2eb7dde`. So are the superseded `5bc5cc71835d…`, the start SHA `e5bc0bc81` and the PR #546 merge `07b028845736e57bfc009a7f71a9d3023fc02fa8`.
+
+`git diff ad4cdfdf2 fc2eb7dde` over every WRK-018 file is empty, except two files:
+- `supervisor/supervisor.ts`
+- `src/index.ts`
+
+Both gained the DAT-009 slice-3c export hook (`79961c97c`, `f5e2aff1f`). That is another ticket's code. It adds an export window **after** `observeRun`, and it does not touch the capture/`observeRun` block (`createRunOutputCapture` … `if (obs.usage) await events.usage(obs.usage)`). I read that block at the tip.
+
+- **§0 CHECK-THIS-FIRST, at source.**
+  - `task-run-sandbox-invocation.ts` runs `exec "$0" --print - --dangerously-skip-permissions --output-format stream-json --verbose`.
+  - `claude-local/src/server/execute.ts` has `args = ["--print", "-", "--output-format", "stream-json", "--verbose"]`.
+  - The final line of the real capture `server/src/__tests__/fixtures/claude-stream-json-tool-call.jsonl` (added in `cdc078d56`) is `type:"result"`, with `input_tokens 7 / output_tokens 352 / cache_read_input_tokens 61348`. Its `modelUsage` block matches.
+  - §0 is **true**, and the stop condition did not fire.
+- **The channel, at source.**
+  - The supervisor opens `createRunOutputCapture({ canaries: runCanaries, … })` only when `deps.observeRun` is set. It spreads `onStdout` into the execute input only in that case.
+  - The capture is closed on the timeout, throw and success paths.
+  - `observeRun` receives `output: { stdoutTail, runtimeMillis }`, where `runtimeMillis` is `now() - execStartedAt`.
+  - `composeDispatchRuntime` composes `observeRun: createUsageObserver({ metrics: deps.metrics })`.
+  - `parseClaudeStreamJsonUsage` reads **only** the final non-empty line. That line must parse, be exactly `type:"result"`, and have no `REDACTION_MARKER` in any `usage` key. A present non-integer count is no usage.
+  - `createUsageObserver` never emits logs.
+  - `scrubOutputText` refuses any residual needle, and never excuses a needle that contains the marker.
+
+  §1 and the three Codex fixes in §3 are **true** as described.
+- **CI, by job.** Run `35593307741` (`pull_request`, headSha `ad4cdfdf28dd…`, conclusion `success`, 16 jobs all `success`, `ci-required` `106317833782`). Per-job logs:
+  - `verify (1)` `106312409044`: none of these files; 656 files passed / 3 skipped, 6403 tests passed / 12 skipped.
+  - `verify (2)` `106312409094`: `usage-stream-redaction.test.ts (15 tests)` ✓ and `supervisor-producers-terminal.test.ts (11 tests)` ✓; 6229 / 33.
+  - `verify (3)` `106312409173`: `dispatch-runtime.test.ts (28)`, `server-usage-stream.test.ts (5)`, `streaming.test.ts (7)`, `usage-observer.test.ts (11)` and `driver-usage-stream.test.ts (5)`, all ✓; 5904 / 29.
+  - `verify (4)` `106312409202`: none of these files; 6123 / 2.
+
+  Every number in §5 matches.
+- **Codex.** `chatgpt-codex-connector` left four findings, on `6642aa412`, `4a56c56e5`, `46e938ecd` and `ef291ded7`. The four review threads are all `isResolved: true`. "Didn't find any major issues" was posted on `c9e57bcf9d`, on `ad4cdfdf28`, and on the final heads `a73f5a4420` and `41b1d244d8`.
+- **Focused commands (§3 `WRK-018` row), rerun locally (Windows) at the tip,** after building `worker-protocol`, `worker-daemon`, `provider-wire` and `sandbox-e2b-provider`:
+
+  | Suite | Files | Result |
+  |---|---|---|
+  | worker | 4 | **65 passed** |
+  | e2b | `streaming.test.ts` | **7/7** |
+  | wire | `driver-usage-stream.test.ts` | **5/5** |
+  | AM | `server-usage-stream.test.ts` | **5/5** |
+
+  `check:worker-daemon-boundary` gives `PASS`. The worker count is 65, not §2's "59/59". The later Codex-fix tests explain the difference, and CI's 15+11+28+11 = 65 agrees.
+- **Mutations, reproduced by me and reverted** (the tree was clean after each):
+  - **M2** (drop `observeRun: createUsageObserver(...)` from `composeDispatchRuntime`) gives **2 failed / 26 passed**, exactly "both flipped `dispatch-runtime` pins".
+  - **M1** (delete the scrub: `scrubOutputText` returns the raw text) gives **9 failed / 56 passed**. The failures include the split-chunk canary, the supervisor-lane canary ("reaches NO event, log, or observeRun input") and the multi-tenant case, which are the three the record names. My variant also disables the fail-closed residual check, so the extra capture-level cases red too. That is consistent.
+  - The rest I checked by reading the tests. The canary tests have real positive controls: `delivered` / `transport.stdoutSeen` assert that the canary **was** in the provider's stream before the tests assert it reached nothing. The AM cases read the raw HTTP body.
+- **Acceptance, clause by clause (E4 plan WRK-018).**
+  1. **One keyed run emits exactly one `usage` equal to the result line.** **OPEN, and PENDING by design** (F8; the planning session dispatches it). The record states this as pending in its header, in §4 and in §6. It does **not** claim it met, so I do not count it as met. The key-less equivalents on the fake, E2B-mock and networked lanes are evidence for the mechanism only.
+  2. **Canary in no event, log or evidence, per lane.** **Evidenced** (key-less), and M1 reproduced.
+  3. **No parseable usage ⇒ no event, and the run does not fail.** **Evidenced** by the "no parseable usage" case and `run_usage_missing_total`.
+  4. **Byte-identical without the channel.** **Evidenced** by the "does NOT implement the channel" case, the one-argument E2B call, and the driver body equalling the pre-channel `encodeOpRequest`.
+  5. **Pin flipped, and a removed composition reds.** **Evidenced**, and M2 reproduced.
+  6. **Multi-tenant (F10).** **Real.** `usage-stream-redaction.test.ts` "two Organizations' concurrent runs on ONE daemon" asserts the two handoffs' `organizationId`s differ and runs both through `Promise.all` on one supervisor with per-lease canaries. It partitions events by `organizationId` (which accounts for every event) and asserts each side's usage equals its own result line (1/2/3 vs 40/50/60). `server-usage-stream.test.ts` runs `org-a` / `org-b` executes and refuses org-a's capability on org-b's sandbox.
+- **Decision.** E4-D13 is in `decisions.md`: a daemon-local port, an optional callback, per-run read-time whole-line fail-closed scrubbing.
+- **Not blocking, noted:**
+  1. `Start SHA` is a 9-character short SHA (`e5bc0bc81`), not the bare 40-hex that E4 §3 step 1 names. It resolves unambiguously to an ancestor.
+  2. §6 lists server comments and `finding-ownership.json` reasons that still say "observeRun uncomposed". The record discloses this and does not edit them. Their conclusions still hold (the observer emits `usage` only), but the stated reason is stale. That belongs to whoever next touches CLI-015 / those findings.
+  3. I did not rerun the full package suites or every typecheck/build §2 lists. I reran the focused commands and the four builds above; all exit 0.
+
+**What remains open after this approval:** WRK-018 acceptance 1, the keyed F8 run with its run URL. `E3-F037` stays open (now owned by `DEP-016`, per the JOB-016 record), and `E3-15-budget` stays `unwired`.
+
+## Review attempt history
+
+| Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
+|---:|---|---|---|---|
+| 1 | M1 review-batch-2A independent reviewer (Claude Opus 5) | `ad4cdfdf28ddb8bb66b730a4b9f66f7de2e7785f` | `approved` | §0 true at source (argv both sides; real fixture's final result line). Run `35593307741` per job: `verify (2)` 15+11, `verify (3)` 28+5+7+11+5 — all match. Four Codex threads resolved, clean on the final heads. Focused rerun 65 + 7 + 5 + 5, boundary PASS. M2 (2 failed) and M1 (9 failed) reproduced. F10 real. **Acceptance 1 (keyed F8 run) OPEN**; not claimed met. |
