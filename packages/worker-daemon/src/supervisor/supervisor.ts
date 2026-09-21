@@ -47,6 +47,7 @@ import {
   type StagedFileRequest,
 } from "./provider.js";
 import type { RunCanaryCoordinator } from "./run-canaries.js";
+import { RUN_OUTPUT_DROPPED_METRIC, createRunOutputCapture } from "./run-output.js";
 import {
   parseServiceWorkload,
   runServiceLifecycle,
@@ -81,6 +82,18 @@ export interface RunObservation {
   readonly logs?: readonly RunObservationLogEntry[];
   readonly progress?: readonly RunObservationProgressEntry[];
   readonly usage?: UsagePayloadV1 | null;
+}
+
+/**
+ * WRK-018 — what the supervisor itself observed of a completed run, handed to `observeRun`:
+ * the run's stdout TAIL from the optional provider stream channel, already scrubbed by the
+ * run's own canaries (`run-output.ts`), and the execute window on the SUPERVISOR's clock.
+ * Present whenever an `observeRun` is composed; `stdoutTail` is `""` when the provider does
+ * not implement the channel or streamed nothing.
+ */
+export interface RunOutputObservation {
+  readonly stdoutTail: string;
+  readonly runtimeMillis: number;
 }
 
 /** The max number of captured `log` events a single run may emit, leaving headroom
@@ -186,7 +199,12 @@ export interface SupervisorDeps {
    * Absent (the default) leaves the lifecycle event stream unchanged. Best-effort:
    * a throw is logged and never fails the run.
    */
-  readonly observeRun?: (input: { handoff: LeaseHandoff; exec: ExecuteResult }) => RunObservation | Promise<RunObservation>;
+  readonly observeRun?: (input: {
+    handoff: LeaseHandoff;
+    exec: ExecuteResult;
+    /** WRK-018 — additive; always set by the supervisor when it calls `observeRun`. */
+    output?: RunOutputObservation;
+  }) => RunObservation | Promise<RunObservation>;
   /**
    * CLI-008 Unit B — resolve the control-plane-staged files for this run, as {path, GRANT}
    * pairs. Absent (the default) ⇒ nothing is staged and the lifecycle is byte-identical to
@@ -813,11 +831,29 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     // reaches a durable terminal within a bound (§2.1 within-policy). A well-behaved
     // provider returns before the race fires (with its own timedOut verdict), so the
     // op wins; the backstop only bites a hung/misbehaving provider.
+    // WRK-018 — the optional stdout stream channel. Opened ONLY when an observer is composed, so
+    // without one the execute input is byte-identical to the pre-channel shape. The capture is
+    // PER RUN (a multi-tenant daemon runs many at once) and scrubs with THIS run's canary array
+    // — the same live reference its event sequencer reads — so one run's stream can neither
+    // reach nor be redacted by another's.
+    const output = deps.observeRun
+      ? createRunOutputCapture({
+          canaries: runCanaries,
+          onDrop: (reason) => deps.metrics?.inc(RUN_OUTPUT_DROPPED_METRIC, { reason }),
+        })
+      : null;
+    const execStartedAt = now();
     let exec;
     try {
       const raced = await withDeadline(
         run.effect.execute(
-          { sandboxId: created.sandboxId, command: spec.command, args: spec.args, env: spec.env },
+          {
+            sandboxId: created.sandboxId,
+            command: spec.command,
+            args: spec.args,
+            env: spec.env,
+            ...(output ? { onStdout: output.onStdout } : {}),
+          },
           // H1 - the run's budget on BOTH sides: the ctx is the provider's own command
           // timeout, and the race below is the supervisor-side backstop for a provider that
           // ignores it. They must be the same number, or the backstop fires first and
@@ -827,6 +863,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         run.opDeadlineMs,
       );
       if (raced === TIMEOUT) {
+        output?.close(); // discard: a late chunk is dropped + counted, never buffered
         emitOp("execute", "timed_out");
         const cancelled = run.cancelled;
         await events.terminal({
@@ -840,6 +877,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       }
       exec = raced;
     } catch (err) {
+      output?.close();
       emitOp("execute", "failed");
       // §2.1 — this is the ONLY lifecycle exit and it MUST still reach a durable
       // terminal. The common cancel/lease-loss path tears down the sandbox
@@ -857,6 +895,10 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       return;
     }
     emitOp("execute", "success");
+    const execRuntimeMillis = now() - execStartedAt;
+    // Close the channel the moment execute returns: the tail is final, and anything a provider
+    // delivers after this point is dropped, not appended to a run that has already ended.
+    const captured = output?.close();
 
     if (run.cancelled) {
       // Cancelled while executing — emit a durable cancelled terminal (CLI-003/D3),
@@ -872,7 +914,11 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     // (the frozen `.strict()` schema rejects any price field — JOB-012 prices).
     if (deps.observeRun) {
       try {
-        const obs = await deps.observeRun({ handoff, exec });
+        const obs = await deps.observeRun({
+          handoff,
+          exec,
+          output: { stdoutTail: captured?.stdoutTail ?? "", runtimeMillis: execRuntimeMillis },
+        });
         for (const entry of (obs.logs ?? []).slice(0, MAX_LOG_EVENTS)) {
           await events.log({ stream: entry.stream, level: entry.level ?? "info", message: entry.message });
         }

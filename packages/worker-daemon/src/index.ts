@@ -542,7 +542,31 @@ export type {
   RunObservation,
   RunObservationLogEntry,
   RunObservationProgressEntry,
+  RunOutputObservation,
 } from "./supervisor/supervisor.js";
+
+// WRK-018 — the optional stdout stream channel's per-run scrubbing capture and the composed
+// usage producer. The capture is exported because the adapter-manager (the networked lane)
+// must scrub a run's stdout with that run's own env values BEFORE it crosses the wire — the
+// SAME fail-closed implementation, not a second copy that could drift.
+export {
+  createRunOutputCapture,
+  scrubOutputText,
+  RUN_OUTPUT_TAIL_MAX_CHARS,
+  RUN_OUTPUT_DROPPED_METRIC,
+} from "./supervisor/run-output.js";
+export type {
+  RunOutputCapture,
+  RunOutputCaptureOptions,
+  RunOutputCaptureResult,
+  RunOutputDropReason,
+} from "./supervisor/run-output.js";
+export {
+  createUsageObserver,
+  parseClaudeStreamJsonUsage,
+  RUN_USAGE_MISSING_METRIC,
+} from "./supervisor/usage-observer.js";
+export type { ParsedAgentUsage, UsageObserverDeps } from "./supervisor/usage-observer.js";
 
 export type { NetworkDenialClass } from "./supervisor/events.js";
 
