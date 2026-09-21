@@ -32,11 +32,15 @@ name: M1 shipped CI boot (DEP-015)
 #      adapter-manager is never started, so no E2B call can happen.
 #   8. retains the redacted evidence bundle on pass AND fail; tears everything down.
 #
-# ★ TRIGGERS. `workflow_dispatch` ONLY — never push, pull_request, schedule, merge_group or
-# workflow_call. `scripts/check-m1-shipped-boot-shape.mjs` (pr.yml `policy`) enforces that on
-# every PR, with a positive control (a re-added push trigger reds it). A dispatch from a
-# non-default branch works via `gh workflow run --ref <branch>` (measured 2026-09-03 against
-# keyed-e2b-conformance.yml, per keyed-e2b-unit-d.yml's header).
+# ★ TRIGGERS — E6-D001 (F3 clarified, planning session under F2, 2026-09-21). The lane RUNS only
+# on `workflow_dispatch`. GitHub will not dispatch a workflow that is not on the default branch
+# until it has run once, and the integration strategy forbids touching `main` before M5, so the
+# file also carries a REGISTRATION-ONLY push trigger: `docs/replatform-program`, paths = THIS
+# FILE ONLY (no code change can ever fire it), and the job is gated
+# `if: github.event_name == 'workflow_dispatch'`, so a push-created run executes ZERO steps and
+# touches ZERO secrets. F3's intent — the journey never runs and nothing spends on push — holds.
+# `scripts/check-m1-shipped-boot-shape.mjs` (pr.yml `policy`) enforces exactly this shape on every
+# PR: an unrestricted push, a widened paths list, an ungated job or any other trigger reds it.
 #
 # ★ SPEND. The keyed mode spends E2B + model tokens and runs only on the F8 named list, when
 # the planning session dispatches it. The two keys are exposed ONLY as
@@ -67,6 +71,12 @@ on:
         required: false
         default: aoa-base
         type: string
+  # REGISTRATION ONLY (E6-D001): the job below is skipped on every push-created run.
+  push:
+    branches:
+      - docs/replatform-program
+    paths:
+      - ".github/workflows/m1-shipped-boot.yml"
 
 permissions:
   contents: read
@@ -77,6 +87,8 @@ concurrency:
 
 jobs:
   shipped-boot:
+    # E6-D001: a push-created (registration) run skips this job — zero steps, zero secrets.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 150
     steps:

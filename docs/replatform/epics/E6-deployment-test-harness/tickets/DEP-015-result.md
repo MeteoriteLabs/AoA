@@ -12,7 +12,7 @@
 
 The implementer leaves `Status` at `gate_review`. Only a DISTINCT reviewer may set `complete`.
 
-**Not dispatched.** No run of `m1-shipped-boot.yml` exists, keyed or keyless, and no `keyed-*` workflow was dispatched. §8 is a blocker for the first dispatch. It needs a planning-session decision.
+**Not dispatched.** No run of `m1-shipped-boot.yml` has been dispatched, keyed or keyless, and no `keyed-*` workflow was dispatched. The dispatch-registration blocker (§8) was ruled by the planning session as **E6-D001** (option (b)) and is implemented here. The lane registers when this PR merges.
 
 ---
 
@@ -23,7 +23,7 @@ The implementer leaves `Status` at `gate_review`. Only a DISTINCT reviewer may s
 | 1. One dispatched run on a named candidate builds all three images from that candidate, boots them, runs the journey and records the verifier verdict. `capabilityProven=false` is acceptable. | `.github/workflows/m1-shipped-boot.yml`, driving `scripts/m1-shipped-boot/journey.mjs` | **Built, not run keyed. PENDING (F8).** The keyless half ran locally end to end (§3). |
 | 2. The keypair exists only inside the job and appears in no artifact or log | `journey.mjs` `prepare` (ed25519, `generateKeyPairSync`, written 0600 under `$RUNNER_TEMP`); `pnpm verify:cp-am-keypair` step; `teardown` deletes it; the upload path is `…/evidence/` only | **Met in design, and measured locally**: 0 of 25 job secrets (the private PEM included) appear in the retained evidence (§3). Keyed confirmation is pending. |
 | 3. The default-off invariant still reds on every manifest except the overlay. **Positive control:** the same env on the base staging manifest reds. | `scripts/lib/staging-manifest-invariants.mjs` `checkDispatchDefaultOff` + `evaluateShippedBootOverlayInvariants`; `scripts/check-staging-manifest.mjs` (`--rendered` for the lane) | **Met.** See §2 and §4. |
-| 4. The workflow-shape guard proves the lane cannot run on push, pull_request or schedule and refuses to start without a candidate. The guard has its own positive control (a re-added `push` trigger reds it). | `scripts/check-m1-shipped-boot-shape.mjs` + `scripts/lib/m1-shipped-boot-shape.mjs`; reds in `scripts/check-m1-shipped-boot-shape.test.mjs` | **Met** (20 cases). |
+| 4. The workflow-shape guard proves the lane cannot run on push, pull_request or schedule and refuses to start without a candidate. The guard has its own positive control. | `scripts/check-m1-shipped-boot-shape.mjs` + `scripts/lib/m1-shipped-boot-shape.mjs`; reds in `scripts/check-m1-shipped-boot-shape.test.mjs` | **Met** (27 cases). Per **E6-D001**, the one allowed push only REGISTERS the lane: branch `docs/replatform-program`, paths = the workflow file only, every job gated `if: github.event_name == 'workflow_dispatch'`. Positive controls: an unrestricted push reds; an ungated job reds. |
 | 5. Keyed spend happens only inside the F8 envelope, on a named candidate | `mode` input: a choice, **default `keyless`**. `E2B_API_KEY` / `ANTHROPIC_API_KEY` are readable only as `inputs.mode == 'keyed' && secrets.X \|\| ''` (enforced by the shape guard). The candidate must be 40-hex and an ancestor of `docs/replatform-program`. | **Met in design.** The spend itself happens only when the planning session dispatches. |
 | 6. F10: two enabled Organizations and one control; the journey runs for each enabled tenant; the control stays on the legacy path | `seed` (three Organizations through the API); `apply-rollout` (`AOA_DISTRIBUTED_EXECUTION_ROLLOUT` on **both** replicas, control absent); `assert-tenants`; `dispatch` + `classifyTenantOutcome` | **Tenant set and control refusal measured locally (§3).** The enabled tenants' journey is keyed and PENDING. |
 | 7. The crew switch is off on every control-plane service, and the assertion is recorded in the evidence | overlay pins `AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED: "false"` on both replicas (static check); `assert-tenants` re-checks the render and each **running** replica (`evaluateMustBeOffFlags`, which also covers `AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED`) → `tenant-set-and-flags.json` | **Met.** Measured locally (§3). |
@@ -33,7 +33,8 @@ The implementer leaves `Status` at `gate_review`. Only a DISTINCT reviewer may s
 - `docker/m1-boot/docker-compose.m1-boot.yml` (the worker provider-URL overlay)
 - `scripts/m1-shipped-boot/journey.mjs`
 - `scripts/lib/m1-shipped-boot.mjs`, with 26 cases in `scripts/lib/__tests__/m1-shipped-boot.test.mjs`
-- `scripts/check-m1-shipped-boot-shape.mjs` + `scripts/lib/m1-shipped-boot-shape.mjs`, with 20 cases
+- `scripts/check-m1-shipped-boot-shape.mjs` + `scripts/lib/m1-shipped-boot-shape.mjs`, with 27 cases
+- `docs/replatform/epics/E6-deployment-test-harness/decisions.md` (new), recording **E6-D001**
 
 **Files changed:**
 - `scripts/lib/staging-manifest-invariants.mjs`
@@ -119,11 +120,11 @@ The rehearsal found three defects in the first version of the driver. All were f
 **Positive controls, each asserted by a test:**
 - The overlay's worker env grafted onto BASE `worker-a1` reds with `DISPATCH-DEFAULT` for `AOA_WORKER_PROVIDER_URL` and `AOA_WORKER_DISPATCH_ENABLED`.
 - `base ⊕ overlay` through the unscoped path reds on all three overlay workers.
-- A re-added `push:` trigger reds the shape guard.
+- A push trigger without the paths restriction reds the shape guard, and so does a job without the dispatch-only `if` (E6-D001). (Superseded wording, kept as first written: "A re-added `push:` trigger reds the shape guard.")
 - A control tenant present in the rollout reds.
 - A control run that went distributed reds.
 
-**Mutations.** Code was mutated in place, the owning suite was run, and the mutation was reverted. **12 of 12 were killed.**
+**Mutations.** Code was mutated in place, the owning suite was run, and the mutation was reverted. **15 of 15 were killed** (M13 to M15 were added with E6-D001).
 
 | # | Mutation | Killed by |
 |---|---|---|
@@ -139,6 +140,11 @@ The rehearsal found three defects in the first version of the driver. All were f
 | M10 | control outcome ignores its jobs | 1 |
 | M11 | control outcome ignores the rollout resolution | 1 |
 | M12 | flag parser reads `true` as off | 2 |
+| M13 | registration push: paths restriction not checked | 2 |
+| M14 | job-level dispatch gate not checked | 3 |
+| M15 | registration push body ignored entirely | 3 |
+
+M7 ("shape guard tolerates `push`") was run before E6-D001, against the dispatch-only guard.
 
 ---
 
@@ -164,6 +170,8 @@ It is dispatched on a named candidate in `mode=keyed`, and it must retain `journ
 
 ## 6. Deltas against the task section
 
+**The planning session ACCEPTED the three deviations below (authenticated, the board-key SQL fixture, keyless dispatching only the control tenant) on 2026-09-21.** The keypair-check `pnpm install` is a cost, not a deviation.
+
 - **`authenticated`, not `cloud_auth`.** The overlay runs both control-plane replicas as `authenticated`, overriding the staging manifest's `cloud_auth`. That matches the only deployment in which the distributed journey has been proven (the campaign overlay, run `8dc34e90`, 2026-09-18). Proving `cloud_auth` is not in the ticket; a reviewer may want it named as a residual.
 - **The keypair check needs `pnpm install`.** `pnpm verify:cp-am-keypair` cannot run inside the control-plane image, because it imports the adapter-manager package, a server devDependency that `pnpm deploy --prod` strips out. The lane therefore installs dependencies on the runner, roughly 2 minutes.
 - **The board identity is a SQL fixture.** No route mints the first board API key in `authenticated` mode without an OAuth session. So the first key (user, `instance_admin` and `board_api_keys`) is seeded with the owner role, and every tenant object after it is created through the API as that user.
@@ -171,14 +179,35 @@ It is dispatched on a named candidate in `mode=keyed`, and it must retain `journ
 
 ---
 
-## 7. Findings for the planning session (not minted here)
+## 7. Findings — FILED 2026-09-21 at the planning session's instruction
+
+Both are `unowned`, with reasons in `scripts/finding-ownership.json`. Each id is the true maximum per epic plus one, checked repo-wide and against the open PRs; the `E2-F900` in `check-distributed-execution-foundation.test.mjs` is a fixture.
+
+- **E2-F017** (MEDIUM), E2 `findings.md`: item 1 below. `maybeProvisionDistributedExecutionRoles` is documented in source as the "corrective successor to E2-D03".
+- **E3-F040** (MEDIUM), E3 `findings.md`: item 2 below. Both the enrolment service (`1d590ea47`, `feat(job-control): enroll device-bound workers`) and the ratify route are E3 job-control. MEDIUM rather than LOW: it fails closed and leaks nothing, but it blocks every worker on the target, and the documented runbook path reaches it with an unnamed 503.
+
+As first recorded:
+
 
 1. **Two control-plane replicas booting together crash one of them.** `maybeProvisionDistributedExecutionRoles` runs `ALTER ROLE … LOGIN PASSWORD` on every replica at boot. Run concurrently, the loser dies with `PostgresError: tuple concurrently updated` (XX000, `heapam.c` `simple_heap_update`). This was measured in the rehearsal on the first recreate of both replicas with `--force-recreate`. `docker-compose.staging.yml` declares two replicas with no ordering, so a real staging boot can hit this. The lane works around it by booting the replicas one at a time (`bootCore`, `applyRollout`). The product fix — an advisory lock or an idempotent guard around the provisioning — is not in this ticket.
 2. **An execution target created without `capabilities.providerConstraints` ratifies cleanly, then every enrolment returns 503** (`worker_enrollment_internal_unavailable`). The enrolment response is built from `providerConstraints(target.capabilities)` (`server/src/services/worker-enrollment.ts`), while ratification writes only `provider_constraint_profile`. Runbook §7(a) does not mention the field. A founder following the runbook through the API would hit this failure, and the log would not name the cause.
 
 ---
 
-## 8. BLOCKER for the first dispatch — needs a decision (Codex raised the same on `1ec5533`; its thread is left OPEN for this ruling)
+## 8. Dispatch registration — RULED: E6-D001, option (b)
+
+The planning session ruled **option (b)** under F2 and recorded it as **E6-D001** (E6 `decisions.md`). Option (a) was rejected because the locked integration strategy forbids any change to `main` before M5. As implemented:
+
+- `on:` = `workflow_dispatch` + `push: { branches: [docs/replatform-program], paths: [".github/workflows/m1-shipped-boot.yml"] }`;
+- the one job carries `if: github.event_name == 'workflow_dispatch'`, so a push-created run executes zero steps and touches zero secrets;
+- the shape guard enforces exactly this (§1, clause 4);
+- the verdict manifest declares `m1-shipped-boot.yml@docs/replatform-program` `not-watched`, because a verdict on a skipped job would be a check that nothing runs.
+
+**Registration.** The lane registers when this PR merges: the merge pushes the file onto `docs/replatform-program`, which matches the push path, so GitHub records one run with the job `skipped`. That run, with all its jobs shown `skipped`, is to be cited here after the merge. The merge is the planning session's, so the citation is a post-merge addendum and is not in this revision.
+
+The original blocker text follows, kept as first written:
+
+### 8 (as first written). BLOCKER for the first dispatch — needs a decision (Codex raised the same on `1ec5533`; its thread was left OPEN for this ruling)
 
 GitHub dispatches a `workflow_dispatch` workflow only in two cases: the file exists on the **default branch**, or the workflow **has already run at least once**. Per the GitHub docs, "This event will only trigger a workflow run if the workflow file exists on the default branch"; the API/CLI can target another ref once the workflow has run.
 
@@ -189,7 +218,7 @@ Every `keyed-*` lane that was dispatched from this branch has a `push:` trigger 
 - **(b)** Rule that a registration-only trigger satisfies F3: a `push` on a never-bumped trigger file, with the job gated `if: github.event_name == 'workflow_dispatch'`. The shape guard would need the matching amendment.
 - **(c)** Something else the planning session prefers.
 
-**The dispatch command, once (a) or (b) holds:**
+**The dispatch command, once the registration run exists:**
 
 ```
 gh workflow run m1-shipped-boot.yml --ref docs/replatform-program \

@@ -2282,3 +2282,39 @@ is the same remedy shape as `E5-F005`, one epic over.
 
 **Blocks gate:** no. It is not in any required lane: the Linux `verify` shards are the required gate
 and this case is green there.
+
+## E3-F040 - a target ratified without `capabilities.providerConstraints` 503s every enrolment, with no cause named
+
+**Status:** open
+**Severity:** MEDIUM. It fails closed and leaks nothing, but it blocks every worker on the target, and the product's own documented path reaches it with an opaque error.
+**Filed:** 2026-09-21 by `DEP-015`, measured in its local keyless rehearsal (E6 `tickets/DEP-015-result.md` §7).
+
+**What.** One execution target carries its provider-constraint reference in **two** places:
+- **The placement column.** `PUT …/execution-targets/:targetId/placement-profile` writes
+  `registered_profile` + `registered_profile_hash` + `provider_constraint_profile`
+  (`ratifyTenantExecutionTargetPlacementProfile`, `server/src/services/execution-targets.ts`). It
+  never writes `capabilities`.
+- **The capabilities field.** The enrolment response is built from `capabilities.providerConstraints`
+  (`providerConstraints(target.capabilities)` in `server/src/services/worker-enrollment.ts`), which is
+  only ever set by whoever created the target (`POST …/execution-targets`, where `capabilities` is
+  optional).
+
+A target created without it ratifies cleanly. Every enrolment then fails the
+`enrollmentResponseV1Schema.parse`, and the route answers **503**
+(`worker_enrollment_internal_unavailable`). The log names no field and no cause.
+
+**Where it was observed.** The `DEP-015` driver's first rehearsal followed runbook §7 (a)–(c) through
+the API. All three workers were refused with 503 at `enrollOnce`. Adding
+`capabilities: { providerConstraints: { profileId, version, digest } }` at create fixed it. The D1
+harness seeds both columns by SQL, which is why it never saw this. The runbook §7(a) body omits the
+field.
+
+**Resolving it.** Two options:
+- derive the enrolment's `providerConstraints` from the ratified `provider_constraint_profile` (one
+  source of truth); or
+- have ratification refuse, or populate, a target whose `capabilities` lacks the reference.
+
+Either way, add a test that creates a target through the route without it, ratifies, and enrols. It
+must fail today and pass after the fix. Correct runbook §7(a) in the same change.
+
+**Blocks gate:** no. Every M1 lane that creates targets now sets the field explicitly.

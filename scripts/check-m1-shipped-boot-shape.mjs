@@ -5,7 +5,9 @@
 //   node scripts/check-m1-shipped-boot-shape.mjs
 //
 // Reads .github/workflows/m1-shipped-boot.yml and fails closed unless it is still the lane
-// founder ruling F3 defines: dispatch-only (no push / pull_request / schedule / …), a
+// founder ruling F3 defines, as clarified by E6-D001: it RUNS only on workflow_dispatch (the one
+// push allowed only REGISTERS it: the program branch, paths = this file, every job gated
+// `if: github.event_name == 'workflow_dispatch'`; no pull_request / schedule / …), a
 // REQUIRED named candidate, images built from source at that candidate and admitted, the
 // control-plane keypair generated in the job, keyed secrets exposed only in keyed mode,
 // evidence retained on pass and fail, and a teardown that always runs. The invariants are
@@ -35,6 +37,6 @@ if (violations.length > 0) {
   for (const violation of violations) console.error(`  - ${violation}`);
   process.exit(1);
 }
-console.log(`OK: ${SHIPPED_BOOT_WORKFLOW} is the F3 shipped CI boot: dispatch-only, candidate-bound,`);
+console.log(`OK: ${SHIPPED_BOOT_WORKFLOW} is the F3 shipped CI boot: runs only on dispatch (push = registration only, E6-D001), candidate-bound,`);
 console.log("    built from source + admitted, in-job keypair, keyed secrets gated to keyed mode,");
 console.log("    evidence retained on pass and fail, teardown always.");

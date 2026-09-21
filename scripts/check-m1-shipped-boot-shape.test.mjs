@@ -3,8 +3,9 @@
 //
 //   node --test scripts/check-m1-shipped-boot-shape.test.mjs
 //
-// Every case mutates the REAL committed workflow one way and asserts the guard reds. The
-// first one is the positive control the ticket names: re-add a `push:` trigger.
+// Every case mutates the REAL committed workflow one way and asserts the guard reds. Per E6-D001
+// the one push allowed is a REGISTRATION-ONLY push (the program branch, paths = this file, every
+// job gated to dispatch); the positive controls red an unrestricted push and an ungated job.
 // -----------------------------------------------------------------------------
 
 import { test } from "node:test";
@@ -13,7 +14,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { evaluateShippedBootWorkflowShape, SHIPPED_BOOT_WORKFLOW } from "./lib/m1-shipped-boot-shape.mjs";
+import { evaluateShippedBootWorkflowShape, jobDispatchGates, SHIPPED_BOOT_WORKFLOW } from "./lib/m1-shipped-boot-shape.mjs";
 import { parseYaml } from "./lib/yaml-lite.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -40,14 +41,60 @@ test("the guard actually PARSES the real `on:` block (non-vacuous): one trigger,
   const start = lines.findIndex((l) => /^on:/.test(l));
   const end = lines.findIndex((l, i) => i > start && /^\S/.test(l) && !/^#/.test(l));
   const on = parseYaml(lines.slice(start, end).join("\n")).on;
-  assert.deepEqual(Object.keys(on), ["workflow_dispatch"]);
+  assert.deepEqual(Object.keys(on).sort(), ["push", "workflow_dispatch"]);
   assert.equal(on.workflow_dispatch.inputs.candidate.required, true);
   assert.equal(on.workflow_dispatch.inputs.mode.default, "keyless");
+  // E6-D001: the push exists ONLY to register the workflow — its own path, the program branch.
+  assert.deepEqual(on.push, { branches: ["docs/replatform-program"], paths: [SHIPPED_BOOT_WORKFLOW] });
 });
 
-test("POSITIVE CONTROL: a re-added `push:` trigger reds the guard", () => {
-  const text = mutate(real(), "on:\n  workflow_dispatch:\n", "on:\n  push:\n    branches:\n      - docs/replatform-program\n  workflow_dispatch:\n");
-  assert.ok(anyMatch(violationsOf(text), /trigger 'push' is forbidden/), violationsOf(text).join("\n"));
+test("the guard actually FINDS the job and its dispatch-only gate (non-vacuous)", () => {
+  assert.deepEqual(jobDispatchGates(real()), { "shipped-boot": true });
+});
+
+// === E6-D001: the registration-only push ====================================================
+
+const PUSH_BLOCK = `  push:\n    branches:\n      - docs/replatform-program\n    paths:\n      - "${SHIPPED_BOOT_WORKFLOW}"\n`;
+
+test("POSITIVE CONTROL: a push trigger WITHOUT the paths restriction reds (it would fire on every code change)", () => {
+  const text = mutate(real(), PUSH_BLOCK, "  push:\n    branches:\n      - docs/replatform-program\n");
+  assert.ok(anyMatch(violationsOf(text), /registration push must be restricted to paths/), violationsOf(text).join("\n"));
+});
+
+test("REJECT: paths listing anything besides the workflow file itself", () => {
+  for (const extra of ["      - \"server/**\"\n", "      - \".github/keyed-e2b-trigger\"\n"]) {
+    const text = mutate(real(), PUSH_BLOCK, `${PUSH_BLOCK}${extra}`);
+    assert.ok(anyMatch(violationsOf(text), /registration push must be restricted to paths/), `${extra}\n${violationsOf(text).join("\n")}`);
+  }
+  const swapped = mutate(real(), `      - "${SHIPPED_BOOT_WORKFLOW}"\n`, "      - \"docker/**\"\n");
+  assert.ok(anyMatch(violationsOf(swapped), /registration push must be restricted to paths/), violationsOf(swapped).join("\n"));
+});
+
+test("REJECT: the registration push on another branch, or with paths-ignore / tags", () => {
+  const branch = mutate(real(), PUSH_BLOCK, PUSH_BLOCK.replace("docs/replatform-program", "main"));
+  assert.ok(anyMatch(violationsOf(branch), /restricted to branches \[docs\/replatform-program\]/), violationsOf(branch).join("\n"));
+  const ignore = mutate(real(), PUSH_BLOCK, `${PUSH_BLOCK}    paths-ignore:\n      - "docs/**"\n`);
+  assert.ok(anyMatch(violationsOf(ignore), /may declare only `branches` \+ `paths`/), violationsOf(ignore).join("\n"));
+});
+
+test("REJECT: a job missing the dispatch-only `if` (a push-created run would execute it)", () => {
+  const text = mutate(real(), "    if: github.event_name == 'workflow_dispatch'\n", "");
+  assert.ok(anyMatch(violationsOf(text), /job 'shipped-boot' must carry `if: github\.event_name == 'workflow_dispatch'`/), violationsOf(text).join("\n"));
+});
+
+test("REJECT: a job whose `if` is weaker than dispatch-only", () => {
+  const text = mutate(real(), "    if: github.event_name == 'workflow_dispatch'\n", "    if: github.event_name != 'pull_request'\n");
+  assert.ok(anyMatch(violationsOf(text), /job 'shipped-boot' must carry/), violationsOf(text).join("\n"));
+});
+
+test("REJECT: a SECOND job without the gate (every job, not just the first)", () => {
+  const text = mutate(real(), "\njobs:\n", "\njobs:\n  sneaky:\n    runs-on: ubuntu-latest\n    timeout-minutes: 5\n");
+  assert.ok(anyMatch(violationsOf(text), /job 'sneaky' must carry/), violationsOf(text).join("\n"));
+});
+
+test("a step-level `if` does not count as the job gate", () => {
+  const text = mutate(real(), "    if: github.event_name == 'workflow_dispatch'\n", "");
+  assert.equal(jobDispatchGates(text)["shipped-boot"], false);
 });
 
 for (const trigger of ["pull_request", "schedule", "merge_group", "workflow_call", "workflow_run"]) {
