@@ -789,6 +789,38 @@ const GUARDED_IF = /(^|\n)\s*if:[^\n]*always\(\)/;
 export const WORKFLOW_ALLOWED_SECRETS = Object.freeze(["ANTHROPIC_API_KEY", "E2B_API_KEY"]);
 export const RECORD_ARTIFACT_NAME = "cli-011-output-probe-record";
 export const PROBE_TEST_PATH = "src/__tests__/keyed-cli-011-output-probe.test.ts";
+/** The lane's own path: the ONLY `push` path E6-D001's registration shape allows. */
+export const WORKFLOW_PATH = ".github/workflows/keyed-e2b-cli-011-output-probe.yml";
+export const REGISTRATION_BRANCH = "docs/replatform-program";
+/** The job-level gate every job must carry, verbatim (E6-D001 rule 2). */
+export const DISPATCH_ONLY_IF = "github.event_name == 'workflow_dispatch'";
+
+/**
+ * The `jobs:` map as `{name, ifExpr}` — read by indentation from the raw YAML, the same
+ * technique `extractOnBlock` uses. A job's `if:` is the one at the job's own key depth + 2.
+ */
+export function readJobGates(text) {
+  const lines = String(text ?? "").split(/\r?\n/);
+  const start = lines.findIndex((l) => /^jobs:\s*$/.test(l));
+  if (start === -1) return [];
+  const jobs = [];
+  let current = null;
+  for (let i = start + 1; i < lines.length; i += 1) {
+    const l = lines[i];
+    if (/^\S/.test(l)) break;
+    const job = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(l);
+    if (job) {
+      current = { name: job[1], ifExpr: null };
+      jobs.push(current);
+      continue;
+    }
+    const cond = /^ {4}if:\s*(.+?)\s*$/.exec(l);
+    if (cond && current && current.ifExpr === null) {
+      current.ifExpr = cond[1].replace(/^\$\{\{\s*(.*?)\s*\}\}$/, "$1").replace(/^(["'])(.*)\1$/, "$2");
+    }
+  }
+  return jobs;
+}
 
 /**
  * Is `keyed-e2b-cli-011-output-probe.yml` still the lane the brief and §10.2 describe?
@@ -814,10 +846,38 @@ export function evaluateWorkflowShape(workflowText) {
   } catch (e) {
     v("on-block-unreadable", String(e?.message ?? e));
   }
+  // ★ E6-D001's REGISTRATION shape, applied to this lane by the planning session (F2). A
+  // `workflow_dispatch`-only file that is not on the default branch answers HTTP 404 to a
+  // dispatch until it has run once, and `main` may not change before M5. So the lane carries a
+  // push trigger that only REGISTERS it: branch = the program branch, paths = this file and
+  // nothing else, and every job gated to dispatch — a push-created run executes zero steps and
+  // reads zero secrets. Everything else stays refused: §3.7 measured that a path-filtered push
+  // on a code path spends E2B on merge.
   const keys = Object.keys(triggers);
   if (!keys.includes("workflow_dispatch")) v("not-dispatchable", "no `workflow_dispatch` trigger");
-  const extra = keys.filter((k) => k !== "workflow_dispatch");
-  if (extra.length > 0) v("non-dispatch-trigger", `triggers other than workflow_dispatch: ${extra.join(", ")} — any of them can spend E2B money (and model tokens) without an operator dispatch (review §3.7)`);
+  const extra = keys.filter((k) => k !== "workflow_dispatch" && k !== "push");
+  if (extra.length > 0) v("non-dispatch-trigger", `triggers other than workflow_dispatch and the registration push: ${extra.join(", ")} — any of them can spend E2B money (and model tokens) without an operator dispatch (review §3.7)`);
+  if (!keys.includes("push")) {
+    v("registration-push-missing", "no registration `push` trigger: a dispatch-only file off the default branch is never registered and answers 404 (E6-D001)");
+  } else {
+    const push = triggers.push && typeof triggers.push === "object" ? triggers.push : null;
+    if (!push) v("push-unrestricted", "the `push` trigger has no filters: every push to every branch would create a run");
+    else {
+      const pkeys = Object.keys(push);
+      const otherFilters = pkeys.filter((k) => k !== "branches" && k !== "paths");
+      if (otherFilters.length > 0) v("push-other-filter", `push filters other than branches/paths: ${otherFilters.join(", ")}`);
+      const paths = Array.isArray(push.paths) ? push.paths.map(String) : null;
+      if (!paths) v("push-without-paths", "the registration push has no `paths` restriction: any change on the branch would create a run");
+      else if (paths.length !== 1 || paths[0] !== WORKFLOW_PATH) v("push-extra-paths", `push paths must be exactly [${WORKFLOW_PATH}], got ${JSON.stringify(paths)}`);
+      const branches = Array.isArray(push.branches) ? push.branches.map(String) : null;
+      if (!branches || branches.length !== 1 || branches[0] !== REGISTRATION_BRANCH) v("push-branch", `push branches must be exactly [${REGISTRATION_BRANCH}], got ${JSON.stringify(branches)}`);
+    }
+  }
+  const jobs = readJobGates(text);
+  if (jobs.length === 0) v("jobs-unreadable", "no jobs were read, so no job gate could be checked");
+  for (const j of jobs) {
+    if (j.ifExpr !== DISPATCH_ONLY_IF) v("job-not-dispatch-gated", `job \`${j.name}\` must carry exactly \`if: ${DISPATCH_ONLY_IF}\` at job level (got ${JSON.stringify(j.ifExpr)}): a push-created run must execute zero steps`);
+  }
 
   const secretRefs = [...text.matchAll(/secrets\.([A-Za-z0-9_]+)/g)].map((m) => m[1]);
   const unknown = [...new Set(secretRefs)].filter((s) => !WORKFLOW_ALLOWED_SECRETS.includes(s));

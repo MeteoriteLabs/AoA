@@ -18,11 +18,19 @@ name: Keyed E2B — CLI-011 P-011 output probe
 # (PC-1, PC-2, C-census) each expect the NEGATIVE outcome; if one does not produce it the
 # apparatus cannot distinguish, and the lane reds as inconclusive.
 #
-# ★★★ DISPATCH ONLY — NO `push` TRIGGER, AND THAT IS THE BRIEF. §3.7 of the review measured
-# that a path-filtered push trigger (keyed-e2b-unit-d.yml) spends E2B money on merge with
-# nobody deciding to. This lane spends E2B time AND Anthropic tokens, so it runs only when an
-# operator dispatches it. `evaluateWorkflowShape` (scripts/lib/cli-011-output-probe.mjs),
-# run in the required `policy` job, reds if any other trigger is added.
+# ★★★ IT RUNS ONLY ON DISPATCH. §3.7 of the review measured that a path-filtered push trigger
+# (keyed-e2b-unit-d.yml) spends E2B money on merge with nobody deciding to. This lane spends E2B
+# time AND Anthropic tokens, so it runs only when an operator dispatches it.
+#
+# ★★ THE `push` TRIGGER BELOW ONLY REGISTERS THE LANE (E6-D001's shape, applied to CLI-011 by the
+# planning session under F2). A `workflow_dispatch`-only file that is not on the default branch
+# answers HTTP 404 to `gh workflow run` until it has run once (measured on this lane, 2026-09-21),
+# and `main` may not change before M5. So: the push's only path is THIS FILE (no code change can
+# ever fire it), and EVERY job is gated `if: github.event_name == 'workflow_dispatch'`, so a
+# push-created run executes zero steps and reads zero secrets. `evaluateWorkflowShape`
+# (scripts/lib/cli-011-output-probe.mjs), run in the required `policy` job, reds on any
+# deviation: a push without the paths restriction, extra paths, another branch or filter, a job
+# without the gate, or any other trigger.
 #
 # HOW TO FIRE IT (the planning session, after merge — authorised under ruling F8, "the
 # CLI-011 files.read probe"; record the candidate sha in the dispatch note):
@@ -57,6 +65,9 @@ on:
         options:
           - all
           - shell-only
+  push:
+    branches: [docs/replatform-program]
+    paths: [".github/workflows/keyed-e2b-cli-011-output-probe.yml"]
 
 permissions:
   contents: read
@@ -67,6 +78,8 @@ concurrency:
 
 jobs:
   probe:
+    # E6-D001: a push-created (registration) run skips this job — zero steps, zero secrets.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     env:
       CLI011_RECORD_PATH: ${{ github.workspace }}/cli-011-record/cli-011-output-probe-record.json

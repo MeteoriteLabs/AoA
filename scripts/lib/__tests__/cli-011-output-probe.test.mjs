@@ -31,6 +31,7 @@ import {
   packDisposition,
   readClaudeStream,
   readDeclaration,
+  readJobGates,
   redactSecrets,
   resolveArmsMode,
   resolveTemplate,
@@ -449,6 +450,16 @@ test("the committed workflow satisfies every shape rule", () => {
   assert.deepEqual(violations, []);
 });
 
+test("readJobGates reads every job and its job-level if (anti-vacuity)", () => {
+  const jobs = readJobGates(readFileSync(WORKFLOW, "utf8"));
+  assert.ok(jobs.length >= 1);
+  for (const j of jobs) assert.equal(j.ifExpr, "github.event_name == 'workflow_dispatch'", j.name);
+  assert.deepEqual(readJobGates("jobs:\n  a:\n    if: ${{ github.event_name == 'workflow_dispatch' }}\n    steps:\n      - if: always()\n  b:\n    runs-on: x\n"), [
+    { name: "a", ifExpr: "github.event_name == 'workflow_dispatch'" },
+    { name: "b", ifExpr: null },
+  ]);
+});
+
 test("POSITIVE CONTROL: each workflow mutation reds with its own code", () => {
   const good = readFileSync(WORKFLOW, "utf8");
   const codes = (t) => evaluateWorkflowShape(t).violations.map((x) => x.code);
@@ -456,8 +467,30 @@ test("POSITIVE CONTROL: each workflow mutation reds with its own code", () => {
     assert.ok(good.includes(from), `mutation anchor missing: ${from}`);
     return good.replace(from, to);
   };
-  // A push trigger on the trigger file (§10.2's route) is refused: the brief is dispatch-only.
-  assert.ok(codes(mutate("\npermissions:", '  push:\n    branches: [docs/replatform-program]\n    paths: [".github/keyed-e2b-cli-011-output-probe-trigger"]\n\npermissions:')).includes("non-dispatch-trigger"));
+  // ── E6-D001's registration shape: each deviation reds with its own code ──
+  const PATHS_LINE = '    paths: [".github/workflows/keyed-e2b-cli-011-output-probe.yml"]\n';
+  const BRANCH_LINE = "    branches: [docs/replatform-program]\n";
+  // push without the paths restriction
+  assert.ok(codes(mutate(PATHS_LINE, "")).includes("push-without-paths"));
+  // extra paths
+  assert.ok(codes(mutate(PATHS_LINE, '    paths: [".github/workflows/keyed-e2b-cli-011-output-probe.yml", "packages/sandbox-e2b-provider/src/**"]\n')).includes("push-extra-paths"));
+  // §10.2's trigger-file route instead of the workflow's own path
+  assert.ok(codes(mutate(PATHS_LINE, '    paths: [".github/keyed-e2b-cli-011-output-probe-trigger"]\n')).includes("push-extra-paths"));
+  // another branch
+  assert.ok(codes(mutate(BRANCH_LINE, "    branches: [docs/replatform-program, main]\n")).includes("push-branch"));
+  // another push filter
+  assert.ok(codes(mutate(BRANCH_LINE, BRANCH_LINE + '    paths-ignore: ["docs/**"]\n')).includes("push-other-filter"));
+  // no registration push at all
+  assert.ok(codes(mutate("  push:\n" + BRANCH_LINE + PATHS_LINE, "")).includes("registration-push-missing"));
+  // a job without the dispatch-only gate, or with a weaker one
+  assert.ok(codes(mutate("    if: github.event_name == 'workflow_dispatch'\n", "")).includes("job-not-dispatch-gated"));
+  assert.ok(codes(mutate("    if: github.event_name == 'workflow_dispatch'\n", "    if: always()\n")).includes("job-not-dispatch-gated"));
+  // a SECOND job without the gate
+  assert.ok(codes(`${good}\n  extra:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n`).includes("job-not-dispatch-gated"));
+  // any other trigger
+  for (const trig of ["pull_request:", "schedule:\n    - cron: '0 0 * * *'", "workflow_call:", "merge_group:", "workflow_run:\n    workflows: [PR]"]) {
+    assert.ok(codes(mutate("\npermissions:", `  ${trig}\n\npermissions:`)).includes("non-dispatch-trigger"), trig);
+  }
   assert.ok(codes(`${good}\n# secrets.OPENAI_API_KEY\n`.replace("# secrets.OPENAI_API_KEY", "      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}")).includes("secret-not-allowed"));
   assert.ok(codes(`${good}\n      - run: echo "\${{ secrets.E2B_API_KEY }}"\n`).includes("secret-interpolated"));
   assert.ok(codes(mutate("retention-days: 90", "retention-days: 1")).includes("record-retention"));

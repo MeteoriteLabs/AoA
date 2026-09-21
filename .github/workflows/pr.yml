@@ -797,8 +797,8 @@ jobs:
           # negative, the census classification, and the redactor - is a pure function here,
           # exercised on every PR, so the keyed run is never the first execution of its reader.
           #
-          # It also asserts the lane's YAML: workflow_dispatch and NO other trigger (review
-          # section 3.7: a push trigger spends E2B on merge), only the E2B + Anthropic secrets and
+          # It also asserts the lane's YAML: dispatch plus E6-D001's registration-only push (own path,
+          # every job dispatch-gated; review section 3.7), only the E2B + Anthropic secrets and
           # only as env bindings, the always() record writer + 90-day upload + skip guard, and the
           # 45-minute cap; and that the keyed test imports the shipped claude literal rather than
           # pasting it. (Placed last in `policy` so no register-cited line above it moves.)

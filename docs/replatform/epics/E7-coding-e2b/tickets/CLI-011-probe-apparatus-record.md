@@ -29,7 +29,7 @@ it dispatches (§10.3). **Nothing here is evidence about the output mechanism ye
 
 | path | what |
 |---|---|
-| `.github/workflows/keyed-e2b-cli-011-output-probe.yml` | **`workflow_dispatch` only**. Inputs are `e2b_template` (empty means `aoa-base`) and `arms` (`all` or `shell-only`). Secrets are `E2B_API_KEY` and `ANTHROPIC_API_KEY`, bound as env only. It has an `always()` fallback record, an `always()` upload of `cli-011-output-probe-record` (90 days), an `always()` skip guard, and `timeout-minutes: 45`. |
+| `.github/workflows/keyed-e2b-cli-011-output-probe.yml` | **It runs only on `workflow_dispatch`**, plus a push trigger that only registers the lane (§6). Inputs are `e2b_template` (empty means `aoa-base`) and `arms` (`all` or `shell-only`). Secrets are `E2B_API_KEY` and `ANTHROPIC_API_KEY`, bound as env only. It has an `always()` fallback record, an `always()` upload of `cli-011-output-probe-record` (90 days), an `always()` skip guard, and `timeout-minutes: 45`. |
 | `scripts/lib/cli-011-output-probe.mjs` | The pure core. It holds the verdict for each arm, the `$HOME` census diff and its classification, `evaluateDecisionTable` (all 12 rows of §10.5), `evaluateControls`, `packDisposition`, `buildProbeRecord`, and `evaluateWorkflowShape`. |
 | `packages/sandbox-e2b-provider/src/__tests__/keyed-cli-011-output-probe.test.ts` | The keyed observer: P-011a in one sandbox, and P-011b with one fresh sandbox per claude arm. The no-key wiring tests run in `verify`. |
 | `scripts/lib/__tests__/cli-011-output-probe.test.mjs` | 36 tests at the final head (34 before the second Codex fix), run in `policy` (step *"CLI-011 P-011 output-probe decision logic (proven WITHOUT the key)"*). |
@@ -155,21 +155,53 @@ now `8ee8e1de3`; the later commits are this record, a scratch-file removal, and 
 - Earlier heads, before the rebases, produced the same `policy` and file counts: runs `35590097325`
   and `35592633983`.
 
-## 6. ★ Stop item: a dispatch-only workflow may not be dispatchable
+## 6. Registration: the E6-D001 shape (ruled)
 
-After this branch was pushed, `gh api repos/{owner}/{repo}/actions/workflows/keyed-e2b-cli-011-output-probe.yml`
-returned **HTTP 404**. The workflow is not indexed. Two records point the same way:
-- `keyed-e2b-w7u1-output-probe.yml`'s header records the same 404 for a lane that had never run
-  (`keyed-e2b-egress-constraint-probe.yml`, 2026-09-04).
-- Every sibling keyed lane on this branch was first indexed by a **push** run.
+**What was measured.** After this branch was pushed as dispatch-only,
+`gh api repos/{owner}/{repo}/actions/workflows/keyed-e2b-cli-011-output-probe.yml` returned **HTTP 404**.
+A `workflow_dispatch`-only file that is not on the default branch cannot be dispatched until it has
+run once.
 
-§10.2 designed a push route on **only** `.github/keyed-e2b-cli-011-output-probe-trigger`, a file
-the PR does not create, so merging fires nothing. The brief for this build said "workflow_dispatch
-ONLY — NO push trigger", and this PR follows the brief; `evaluateWorkflowShape` reds on any other
-trigger. **If the dispatch 404s after merge**, the planning session has to choose between two
-options:
-- (a) add §10.2's trigger-file-only push route, and relax the shape check to allow exactly that one
-  path;
-- (b) land the workflow file on `main` so that it gets indexed.
+**The ruling.** The planning session (under founder delegation F2) applied the registration pattern
+already ruled for DEP-015: **`E6-D001`** in
+[`../../E6-deployment-test-harness/decisions.md`](../../E6-deployment-test-harness/decisions.md).
+Putting the file on `main` is out, because the locked strategy forbids any change to `main` before
+M5. The lane now has this shape:
 
-This record does not choose.
+1. `on:` keeps `workflow_dispatch` and adds
+   `push: { branches: [docs/replatform-program], paths: [".github/workflows/keyed-e2b-cli-011-output-probe.yml"] }`.
+   The only push path is the workflow's own path, so no code change can fire it.
+2. The one job, `probe`, has the job-level guard `if: github.event_name == 'workflow_dispatch'`. A
+   run created by a push executes **zero steps** and reads **zero secrets**. §3.7's warning about
+   pushes that spend money on merge does not apply, because every job is skipped.
+
+**Enforcement.** `evaluateWorkflowShape` runs in `policy` and accepts exactly this shape. Each
+deviation fails with its own code, and each has a positive-control test:
+- a push without `paths` (`push-without-paths`);
+- extra paths, or §10.2's trigger-file path instead of the workflow's own (`push-extra-paths`);
+- another branch (`push-branch`);
+- `paths-ignore` or another filter (`push-other-filter`);
+- no registration push (`registration-push-missing`);
+- a job with no guard, or with a weaker `if` (`job-not-dispatch-gated`), and a second, unguarded job;
+- `pull_request`, `schedule`, `workflow_call`, `merge_group` or `workflow_run` (`non-dispatch-trigger`).
+
+`readJobGates` is tested against the committed file (anti-vacuity: it must read at least one job).
+
+- **RED:** the previous shape check, run on the ruled workflow, rejects the ruled shape
+  (`["non-dispatch-trigger"]`). It also has no job-guard check: a workflow with the guard removed
+  produced the same single code.
+- **GREEN:** 37/37.
+- **Mutations:** disabling the guard check, or the `paths` check, turns the positive-control test RED.
+
+`workflow-verdict-manifest.json` declares the stream `keyed-e2b-cli-011-output-probe.yml@docs/replatform-program`
+as `not-watched`, the same as DEP-015's: a verdict on a skipped job would be a check that nothing runs.
+
+**Registration run.** GitHub records one run when #551 merges. The planning session cites that run
+here and checks that its `probe` job was `skipped`. **(Pending merge.)**
+
+## 7. Known limits
+
+- **The CLI-016 MCP tool surface.** The probe does not run the claude invocation with CLI-016's MCP
+  tool surface turned on. M1-D2-CODING exercises that combination.
+- **Two deviations, accepted by the planning session:** a separate sandbox for each claude arm, and
+  the record name `CLI-011-probe-apparatus-record.md`, which avoids the `-result.md` trap.
