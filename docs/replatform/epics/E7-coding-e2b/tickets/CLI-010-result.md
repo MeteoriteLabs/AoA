@@ -1,6 +1,6 @@
 # CLI-010 Result - the metadata-only enumeration seam is proven, and the byte-reading helper is fenced
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Date (UTC):** `2026-09-21`
 **Epic:** `E7-coding-e2b`
 **Plan task:** `E7 implementation-plan ### CLI-010 - prove the enumeration seam, and FENCE the byte-reading one (M1b)`, widened by `E7-D09`
