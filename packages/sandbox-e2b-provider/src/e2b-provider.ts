@@ -441,14 +441,25 @@ export class E2bSandboxProvider implements SandboxProvider {
       };
     }
     try {
-      const result = await this.#transport.runCommand({
+      const request = {
         sandboxId: input.sandboxId,
         command: input.command,
         args: input.args,
         envVars: input.env,
         // Positive command budget: forwarded as the transport command timeout.
         timeoutMs: ctx.deadlineMs,
-      });
+      };
+      // WRK-018 — the OPTIONAL stdout stream channel rides the transport's existing
+      // `onStdout` handler (CLI-003/D1). Only stdout is carried: the channel exists for the
+      // agent's own report (claude's stream-json usage), and stderr is not needed for it.
+      // Absent the channel the call keeps its pre-channel ONE-argument shape. The chunks are
+      // handed ONLY to the callback — never logged or kept here; the supervisor's per-run
+      // capture scrubs them with the run's canaries.
+      const onStdout = input.onStdout;
+      const result =
+        onStdout === undefined
+          ? await this.#transport.runCommand(request)
+          : await this.#transport.runCommand(request, { onStdout: (chunk) => onStdout(chunk) });
       return {
         providerOpId: this.#nextOpId("execute"),
         exitCode: result.exitCode,
