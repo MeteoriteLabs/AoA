@@ -31,6 +31,7 @@ import type {
   ExecuteInput,
   ListInput,
   ProviderOpContext,
+  ResourceLabels,
   SandboxProvider,
   StagedFileRequest,
 } from "@armyofagents/worker-daemon";
@@ -73,6 +74,15 @@ export interface CreateProviderServerOptions {
    * `createProviderServer`, and a gated server with the reaper flag off has no loop).
    */
   readonly reaperMetrics?: ReaperMetricsCounter;
+  /**
+   * DAT-009-3e — the object-store ORIGINS (`https://host[:port]`) an `export_artifact` upload grant
+   * may target. The grant is WORKER-SUPPLIED, so without this a worker holding a valid capability
+   * for its own sandbox could hand in a forged grant and have the far provider PUT the sandbox's
+   * bytes to any HTTPS endpoint (Codex P1, PR #557). FAIL-CLOSED: absent or empty ⇒ every export
+   * is refused. The shipped bin does not set it yet, so a deployed adapter-manager refuses exports
+   * until the store origin is configured.
+   */
+  readonly artifactUploadOrigins?: readonly string[];
 }
 
 type OpHandler = (args: unknown, ctx: ProviderOpContext) => Promise<unknown>;
@@ -142,6 +152,8 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
         createLock: new KeyedMutex(),
       }
     : null;
+
+  const artifactUploadOrigins: ReadonlySet<string> = new Set(options.artifactUploadOrigins ?? []);
 
   const gateDeps: OwnedOpGateDeps | null = gated
     ? { provider, controlPlanePublicKey: controlPlanePublicKey!, now, sandboxLock: new KeyedMutex() }
@@ -215,7 +227,12 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
           path: string;
           grant: Parameters<SandboxProvider["exportArtifact"]>[2];
         };
-        return gateOwnedOp(deps, sandboxId, ctx, capability, () => provider.exportArtifact(sandboxId, path, grant, ctx));
+        // ★ The grant is bound BEFORE the provider runs (after the owned-check, so `detail` carries
+        // the caller's own verified labels): a refused grant reads nothing and uploads nothing.
+        return gateOwnedOp(deps, sandboxId, ctx, capability, (detail) => {
+          assertUploadGrantBound(grant, detail.resourceLabels, artifactUploadOrigins);
+          return provider.exportArtifact(sandboxId, path, grant, ctx);
+        });
       }
       default:
         // GATE_REQUIRED_OPS is the exhaustive set; this is unreachable.
@@ -300,6 +317,50 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
       })();
     });
   });
+}
+
+/**
+ * DAT-009-3e — bind a WORKER-SUPPLIED upload grant to the verified caller and a configured store,
+ * or throw a FIXED `WireProtocolError` (never the url, the key or the labels).
+ *
+ * 1. Shape: an `upload` / `PUT` grant with string `url` and `objectKey`.
+ * 2. Destination: `https:`, and the url's ORIGIN is one the deployment configured
+ *    (`artifactUploadOrigins`). None configured ⇒ refused.
+ * 3. Tenancy: `objectKey` sits under the caller's OWN attempt prefix,
+ *    `organizations/<org>/jobs/<job>/attempts/<attempt>/` — the format of worker-protocol's
+ *    `expectedAttemptObjectPrefix` (restated here because this package may not declare
+ *    worker-protocol; `check-adapter-manager-boundary`). The labels are the owned-checked ones.
+ * 4. The url TARGETS that key: its decoded path ends with `/<objectKey>` (path- or host-style).
+ *
+ * This does not authenticate the grant — nothing can, since a presigned url carries no
+ * control-plane signature the adapter-manager could check. It confines where a grant can send
+ * bytes to the configured store, under the caller's own attempt, which is the most a forged grant
+ * could then do and is what the caller's own lease may already write.
+ */
+function assertUploadGrantBound(grant: unknown, owned: ResourceLabels, allowedOrigins: ReadonlySet<string>): void {
+  const refuse = (): never => {
+    throw new WireProtocolError("export_artifact refused: the upload grant is not bound to this attempt and a configured artifact store");
+  };
+  if (typeof grant !== "object" || grant === null) refuse();
+  const g = grant as Record<string, unknown>;
+  if (g.operation !== "upload" || g.method !== "PUT" || typeof g.url !== "string" || typeof g.objectKey !== "string") refuse();
+  const objectKey = g.objectKey as string;
+  let url: URL;
+  try {
+    url = new URL(g.url as string);
+  } catch {
+    return refuse();
+  }
+  if (url.protocol !== "https:" || !allowedOrigins.has(url.origin)) refuse();
+  const prefix = `organizations/${owned.organizationId}/jobs/${owned.jobId}/attempts/${owned.attempt}/`;
+  if (!objectKey.startsWith(prefix) || objectKey.length === prefix.length) refuse();
+  let path: string;
+  try {
+    path = decodeURIComponent(url.pathname);
+  } catch {
+    return refuse();
+  }
+  if (!path.endsWith(`/${objectKey}`)) refuse();
 }
 
 /** Write a JSON body exactly once. Idempotent: a second call (e.g. after a mid-flight

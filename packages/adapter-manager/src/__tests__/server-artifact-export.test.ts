@@ -66,7 +66,12 @@ const controlPlane = generateKeyPairSync("ed25519");
 const OUT_PATH = "/home/user/out.txt";
 const BODY = new TextEncoder().encode("result bytes ✓ é\n");
 const BODY_SHA = createHash("sha256").update(BODY).digest("hex");
-const GRANT_URL = "https://store.example/put/out.txt?X-Amz-Signature=deadbeefsecret";
+const STORE_ORIGIN = "https://store.example";
+const SIGNATURE = "X-Amz-Signature=deadbeefsecret";
+/** A presigned-PUT url that targets `objectKey` on the configured store (path-style bucket). */
+function urlFor(objectKey: string, origin: string = STORE_ORIGIN): string {
+  return `${origin}/aoa-artifacts/${objectKey}?${SIGNATURE}`;
+}
 
 function objectKeyFor(labels: ResourceLabels): string {
   return `organizations/${labels.organizationId}/jobs/${labels.jobId}/attempts/${labels.attempt}/00000000-0000-4000-8000-0000000000b1`;
@@ -78,7 +83,7 @@ function grant(labels: ResourceLabels, overrides: Partial<ArtifactUploadGrantV1>
     operation: "upload",
     artifactId: "00000000-0000-4000-8000-0000000000b1",
     method: "PUT",
-    url: GRANT_URL,
+    url: urlFor(objectKeyFor(labels)),
     headers: {},
     issuedAt: "2026-09-21T12:00:00.000Z",
     expiresAt: "2126-09-21T12:05:00.000Z",
@@ -104,7 +109,9 @@ let uploads: { objectKey: string; bytes: Uint8Array }[];
 let server: ReturnType<typeof createProviderServer>;
 let baseUrl: string;
 
-async function startServer(opts: { gated?: boolean; exportMode?: "grant_upload" | "none" } = {}): Promise<void> {
+async function startServer(
+  opts: { gated?: boolean; exportMode?: "grant_upload" | "none"; uploadOrigins?: readonly string[] | null } = {},
+): Promise<void> {
   const gated = opts.gated ?? true;
   transport = new RecordingMockTransport();
   uploads = [];
@@ -117,7 +124,13 @@ async function startServer(opts: { gated?: boolean; exportMode?: "grant_upload" 
           override readonly artifactExportMode = "none" as const;
         })({ transport, performUploadGrant })
       : new E2bSandboxProvider({ transport, performUploadGrant });
-  server = createProviderServer({ provider, controlPlanePublicKey: gated ? controlPlane.publicKey : undefined, now: () => NOW });
+  const artifactUploadOrigins = opts.uploadOrigins === null ? undefined : (opts.uploadOrigins ?? [STORE_ORIGIN]);
+  server = createProviderServer({
+    provider,
+    controlPlanePublicKey: gated ? controlPlane.publicKey : undefined,
+    now: () => NOW,
+    artifactUploadOrigins,
+  });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 }
@@ -261,6 +274,66 @@ describe("DAT-009-3e — digest/export over the networked wire (gated owned ops)
     await expect(driverFor(ORG_A).exportArtifact(sandboxId, OUT_PATH, grant(ORG_A), ctx("e-toctou-2"))).rejects.toBeInstanceOf(
       WireProtocolError,
     );
+  });
+
+  // ★ Codex P1 on PR #557: the grant is WORKER-SUPPLIED. A worker holding a valid capability for its
+  // own sandbox could otherwise hand the adapter-manager a forged grant and have the far provider
+  // PUT the sandbox's bytes to any HTTPS endpoint: an egress channel around the sandbox's own
+  // network policy, run by the adapter-manager. The route binds the grant BEFORE the provider runs.
+  it("★ a forged grant whose url points at ANOTHER origin is refused — nothing read, nothing uploaded", async () => {
+    const sandboxId = await sandboxWithOutput(ORG_A);
+    const reads = transport.readFileCalls;
+    const forged = grant(ORG_A, { url: urlFor(objectKeyFor(ORG_A), "https://attacker.example") });
+    const body = await rawOp("export_artifact", { args: { sandboxId, path: OUT_PATH, grant: forged }, ctx: ctx("e-forged"), capability: mint(ORG_A) });
+    expect(body).toContain("WireProtocolError");
+    expect(body).not.toContain("attacker.example");
+    expect(body).not.toContain("deadbeefsecret");
+    expect(transport.readFileCalls).toBe(reads);
+    expect(uploads).toHaveLength(0);
+  });
+
+  it("★ F10: a grant for ANOTHER ORGANIZATION's object key is refused on the caller's own sandbox", async () => {
+    const sandboxId = await sandboxWithOutput(ORG_A);
+    const reads = transport.readFileCalls;
+    // A's capability, A's sandbox, but a grant (correct store origin) writing under B's prefix.
+    await expect(driverFor(ORG_A).exportArtifact(sandboxId, OUT_PATH, grant(ORG_B), ctx("e-foreign-key"))).rejects.toBeInstanceOf(
+      WireProtocolError,
+    );
+    expect(transport.readFileCalls).toBe(reads);
+    expect(uploads).toHaveLength(0);
+  });
+
+  it("★ a grant for another ATTEMPT of the same job is refused (the key is bound to the capability's attempt)", async () => {
+    const sandboxId = await sandboxWithOutput(ORG_A);
+    await expect(
+      driverFor(ORG_A).exportArtifact(sandboxId, OUT_PATH, grant(ORG_A_OTHER_LEASE), ctx("e-other-attempt")),
+    ).rejects.toBeInstanceOf(WireProtocolError);
+    expect(uploads).toHaveLength(0);
+  });
+
+  it("★ a grant whose url does not target its own objectKey is refused", async () => {
+    const sandboxId = await sandboxWithOutput(ORG_A);
+    const mismatched = grant(ORG_A, { url: urlFor("organizations/org-a/jobs/job-a/attempts/1/some-other-object") });
+    await expect(driverFor(ORG_A).exportArtifact(sandboxId, OUT_PATH, mismatched, ctx("e-url-key"))).rejects.toBeInstanceOf(
+      WireProtocolError,
+    );
+    expect(uploads).toHaveLength(0);
+  });
+
+  it("★ FAIL-CLOSED: a server with NO configured upload origin refuses every export (digest still works)", async () => {
+    await stopServer();
+    await startServer({ uploadOrigins: null });
+    const sandboxId = await sandboxWithOutput(ORG_A);
+    expect(await driverFor(ORG_A).digestArtifact(sandboxId, OUT_PATH, ctx("d-noorigin"))).toEqual({
+      sha256: BODY_SHA,
+      sizeBytes: BODY.byteLength,
+    });
+    const reads = transport.readFileCalls;
+    await expect(driverFor(ORG_A).exportArtifact(sandboxId, OUT_PATH, grant(ORG_A), ctx("e-noorigin"))).rejects.toBeInstanceOf(
+      WireProtocolError,
+    );
+    expect(transport.readFileCalls).toBe(reads);
+    expect(uploads).toHaveLength(0);
   });
 
   it("a FAR provider that declares artifactExportMode='none' declines honestly, as its own class", async () => {
