@@ -22,10 +22,21 @@ import {
 import { createDistributedExecutionDrainStore } from "../services/job-distributed-drain-store.js";
 import { createDistributedExecutionDrain } from "../services/job-distributed-drain.js";
 import { jobBudgetCostBridge } from "../services/job-budget-cost-bridge.js";
+import {
+  deriveDrainCommandId,
+  OPERATOR_DRAIN_REASON,
+  runDrainDistributedExecutionCli,
+  type DrainTriggerDeps,
+} from "../services/distributed-execution-drain-trigger.js";
+import { composeDistributedExecutionDrainTriggerDeps } from "../services/distributed-execution-drain-trigger-store.js";
 
 const ENABLED_ENV = { AOA_DISTRIBUTED_EXECUTION_ENABLED: "true" } as const;
 // A SECOND Company under the same Organization — the whole point of the per-Company grain.
 const COMPANY_B = "a6000000-0000-4000-8000-0000000000b2";
+// MIG-009 (M1a, ruling F10): a SECOND Organization with its own Company, so the operator
+// trigger is proven to cancel each tenant's attempts under that tenant's own binding.
+const ORG_2 = "a6000000-0000-4000-8000-0000000002a1";
+const COMPANY_2 = "a6000000-0000-4000-8000-0000000002c1";
 
 let fixture: JobControlFixture | null = null;
 let setupError: unknown = null;
@@ -42,14 +53,15 @@ async function seedAttempt(
   status: string,
   attemptNumber = 1,
   jobId: string = randomUUID(),
+  organizationId: string = ORG,
 ): Promise<{ jobId: string; attemptId: string }> {
   const attemptId = randomUUID();
   await fixture!.admin`INSERT INTO jobs (id, organization_id, company_id)
-    VALUES (${jobId}, ${ORG}, ${company})
+    VALUES (${jobId}, ${organizationId}, ${company})
     ON CONFLICT (id) DO NOTHING`;
   await fixture!.admin`INSERT INTO job_attempts
       (id, organization_id, company_id, job_id, attempt_number, status)
-    VALUES (${attemptId}, ${ORG}, ${company}, ${jobId}, ${attemptNumber}, ${status})`;
+    VALUES (${attemptId}, ${organizationId}, ${company}, ${jobId}, ${attemptNumber}, ${status})`;
   return { jobId, attemptId };
 }
 
@@ -82,6 +94,10 @@ beforeAll(async () => {
     // A sibling Company under the same Organization.
     await fixture.admin`INSERT INTO companies (id, organization_id, name, issue_prefix)
       VALUES (${COMPANY_B}, ${ORG}, 'MIG-009 sibling', 'M9B')`;
+    await fixture.admin`INSERT INTO organizations (id, name, slug)
+      VALUES (${ORG_2}, 'MIG-009 second tenant', 'mig-009-second-tenant')`;
+    await fixture.admin`INSERT INTO companies (id, organization_id, name, issue_prefix)
+      VALUES (${COMPANY_2}, ${ORG_2}, 'MIG-009 second tenant co', 'M92')`;
   } catch (error) {
     setupError = error;
   }
@@ -94,6 +110,7 @@ afterAll(async () => {
 beforeEach(async () => {
   if (!fixture) return;
   await fixture.resetRuntimeRows();
+  await fixture.admin`DELETE FROM activity_log WHERE action = 'job.drain.requested'`;
 });
 
 describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")(
@@ -188,6 +205,191 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         skipped: false,
         cancelled: 0,
       });
+    });
+  },
+);
+
+// ── MIG-009 (M1a): the OPERATOR TRIGGER's composition root, over the REAL store, the REAL
+// budget-cost bridge, the REAL `requestCancellation` and the REAL activity_log. This drives
+// `composeDistributedExecutionDrainTriggerDeps` + `runDrainDistributedExecutionCli` — exactly what
+// `pnpm drain:distributed-execution` runs — not a hand-built dep bag.
+
+async function runTrigger(wrap?: (deps: DrainTriggerDeps) => DrainTriggerDeps) {
+  const out: string[] = [];
+  const err: string[] = [];
+  const composed = composeDistributedExecutionDrainTriggerDeps({
+    appDb: fixture!.app.db,
+    operatorDb: fixture!.operator.db,
+    env: ENABLED_ENV,
+  });
+  const code = await runDrainDistributedExecutionCli({
+    argv: ["node", "drain-distributed-execution", "--operator", "mig009-rehearsal"],
+    distributedExecutionEnabled: true,
+    openPools: async () => ({ close: async () => {} }),
+    composeDeps: () => (wrap ? wrap(composed) : composed),
+    out: (line) => out.push(line),
+    err: (line) => err.push(line),
+  });
+  const summaryLine = out.find((line) => line.includes('"summary"'));
+  if (!summaryLine) throw new Error(`no summary line (exit ${code}):\n${[...out, ...err].join("\n")}`);
+  const summary = JSON.parse(summaryLine).summary as {
+    cancelled: number;
+    skippedOrganizations: string[];
+    failedCancellations: Array<{ organizationId: string; jobId: string }>;
+  };
+  return { code, out, err, summary };
+}
+
+async function attemptStatus(attemptId: string): Promise<string> {
+  const [row] = await fixture!.admin`SELECT status FROM job_attempts WHERE id = ${attemptId}`;
+  return row!.status as string;
+}
+
+async function drainAuditRows() {
+  return fixture!.admin`SELECT company_id, actor_type, actor_id, entity_id, details
+    FROM activity_log WHERE action = 'job.drain.requested' ORDER BY created_at, id`;
+}
+
+describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")(
+  "MIG-009 (M1a) operator drain trigger — composition root (embedded PG)",
+  () => {
+    it("[trigger] a sibling-Company pending receipt skips the WHOLE org: exit 1, nothing cancelled, nothing audited", async () => {
+      guard();
+      const own = await seedAttempt(COMPANY, "running");
+      const sibling = await seedAttempt(COMPANY_B, "leased");
+      await seedPendingReceipt(COMPANY_B, sibling);
+
+      const { code, summary } = await runTrigger();
+
+      expect(code).toBe(1);
+      expect(summary.skippedOrganizations).toContain(ORG);
+      expect(await attemptStatus(own.attemptId)).toBe("running");
+      expect(await attemptStatus(sibling.attemptId)).toBe("leased");
+      expect(await drainAuditRows()).toHaveLength(0);
+    });
+
+    it("[trigger / positive control] clearing the receipt lets the SAME org drain, each cancel with its actor-attributed audit row", async () => {
+      guard();
+      const own = await seedAttempt(COMPANY, "running");
+      const sibling = await seedAttempt(COMPANY_B, "leased");
+
+      const { code, summary } = await runTrigger();
+
+      expect(code).toBe(0);
+      expect(summary.skippedOrganizations).toEqual([]);
+      expect(summary.cancelled).toBe(2);
+      // Unleased attempts are finalized directly by requestCancellation.
+      expect(await attemptStatus(own.attemptId)).toBe("cancelled");
+      expect(await attemptStatus(sibling.attemptId)).toBe("cancelled");
+      const rows = await drainAuditRows();
+      expect(rows).toHaveLength(2);
+      for (const row of rows) {
+        expect(row.actor_type).toBe("system");
+        expect(row.actor_id).toBe("operator-cli:mig009-rehearsal");
+        expect((row.details as { reason: string }).reason).toBe(OPERATOR_DRAIN_REASON);
+        expect((row.details as { outcome: string }).outcome).toBe("cancelled");
+      }
+      expect(new Set(rows.map((row) => row.entity_id))).toEqual(new Set([own.jobId, sibling.jobId]));
+      expect(new Set(rows.map((row) => row.company_id))).toEqual(new Set([COMPANY, COMPANY_B]));
+    });
+
+    it("[trigger] a terminal-only fleet drains zero as a clean sweep (exit 0, no audit rows)", async () => {
+      guard();
+      await seedAttempt(COMPANY, "succeeded");
+      await seedAttempt(COMPANY_B, "cancelled");
+      await seedAttempt(COMPANY_2, "expired", 1, randomUUID(), ORG_2);
+
+      const { code, summary } = await runTrigger();
+
+      expect(code).toBe(0);
+      expect(summary.cancelled).toBe(0);
+      expect(summary.skippedOrganizations).toEqual([]);
+      expect(await drainAuditRows()).toHaveLength(0);
+    });
+
+    it("[trigger / silent-cancel (ii)] a LEASED attempt is left cancel_requested and the clean run still exits 0; a re-run queues no second command", async () => {
+      guard();
+      const { seeded } = await fixture!.activateLease(91);
+
+      const first = await runTrigger();
+      expect(first.code).toBe(0);
+      expect(first.summary.cancelled).toBe(1);
+      // Cancellation is a REQUEST: the attempt is still non-terminal when the sweep returns.
+      expect(await attemptStatus(seeded.attemptId)).toBe("cancel_requested");
+      const commands = await fixture!.admin`SELECT command_id FROM job_control_commands
+        WHERE job_id = ${seeded.jobId} AND command_kind = 'cancel'`;
+      expect(commands.map((row) => row.command_id)).toEqual([deriveDrainCommandId(seeded.jobId)]);
+
+      const second = await runTrigger();
+      expect(second.code).toBe(0);
+      const after = await fixture!.admin`SELECT count(*)::int AS n FROM job_control_commands
+        WHERE job_id = ${seeded.jobId} AND command_kind = 'cancel'`;
+      expect(after[0]!.n).toBe(1);
+      const rows = await drainAuditRows();
+      expect(rows.map((row) => (row.details as { outcome: string }).outcome)).toEqual(["queued", "already_requested"]);
+      expect(rows[0]!.details).toMatchObject({ commandId: deriveDrainCommandId(seeded.jobId) });
+    });
+
+    it("[trigger / multi-tenant] two Organizations each drain under their OWN tenant binding; one org's failure is reported for that org only", async () => {
+      guard();
+      const org1 = await seedAttempt(COMPANY, "running");
+      const org2 = await seedAttempt(COMPANY_2, "running", 1, randomUUID(), ORG_2);
+
+      // Same-tenant positive control: both tenants drain, each audit row carries its own Company.
+      const clean = await runTrigger();
+      expect(clean.code).toBe(0);
+      expect(await attemptStatus(org1.attemptId)).toBe("cancelled");
+      expect(await attemptStatus(org2.attemptId)).toBe("cancelled");
+      const rows = await drainAuditRows();
+      expect(rows.map((row) => [row.entity_id, row.company_id]).sort()).toEqual(
+        [[org1.jobId, COMPANY], [org2.jobId, COMPANY_2]].sort(),
+      );
+
+      // ORG_2's tenant transaction fails; ORG's still commits, and only ORG_2 is reported.
+      await fixture!.resetRuntimeRows();
+      await fixture!.admin`DELETE FROM activity_log WHERE action = 'job.drain.requested'`;
+      const again1 = await seedAttempt(COMPANY, "running");
+      const again2 = await seedAttempt(COMPANY_2, "running", 1, randomUUID(), ORG_2);
+      const failing = await runTrigger((deps) => ({
+        ...deps,
+        withTenant: (organizationId, work) =>
+          organizationId === ORG_2
+            ? Promise.reject(Object.assign(new Error("tenant transaction failed"), { code: "40001" }))
+            : deps.withTenant(organizationId, work),
+      }));
+      expect(failing.code).toBe(1);
+      expect(failing.summary.skippedOrganizations).toEqual([]);
+      expect(failing.summary.failedCancellations.map((f) => [f.organizationId, f.jobId])).toEqual([
+        [ORG_2, again2.jobId],
+      ]);
+      expect(await attemptStatus(again1.attemptId)).toBe("cancelled");
+      expect(await attemptStatus(again2.attemptId)).toBe("running");
+    });
+
+    it("[trigger / atomicity] an audit insert that fails rolls the REAL cancel back in the same tenant transaction (exit 1)", async () => {
+      guard();
+      const seeded = await seedAttempt(COMPANY, "running");
+
+      const { code, summary } = await runTrigger((deps) => ({
+        ...deps,
+        withTenant: (organizationId, work) =>
+          deps.withTenant(organizationId, (scope) =>
+            work({
+              ...scope,
+              recordDrainAudit: async () => {
+                throw new Error("audit insert failed");
+              },
+            })),
+      }));
+
+      expect(code).toBe(1);
+      expect(summary.failedCancellations.map((f) => f.jobId)).toEqual([seeded.jobId]);
+      // requestCancellation ran and UPDATEd the attempt inside the transaction — and was rolled
+      // back with the failed audit write. Never a cancelled attempt with no record of who did it.
+      expect(await attemptStatus(seeded.attemptId)).toBe("running");
+      const [job] = await fixture!.admin`SELECT status FROM jobs WHERE id = ${seeded.jobId}`;
+      expect(job!.status).not.toBe("cancelled");
+      expect(await drainAuditRows()).toHaveLength(0);
     });
   },
 );

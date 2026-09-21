@@ -2527,7 +2527,7 @@ this would not move. It is `unowned` on the record so that the next reader who w
 
 ## E7-F026 — The 'agent declares its own output' option's "no test edits" claim is false against three existing pins, because its mechanism touches the staged PROMPT while its argument is about the WORKLOAD
 
-**Status:** open · **Owner:** CLI-008 (`epics/E7-coding-e2b/tickets/CLI-008-unit-f-design.md`, no result doc)
+**Status:** open · **Owner:** CLI-011 (`epics/E7-coding-e2b/tickets/CLI-011-review.md`, no result doc) — ★ *Corrected 2026-09-21 (M1 corrections batch 1), per `CLI-011-review.md` §3.6/§13 item 3:* this line read *"**Owner:** CLI-008 (`epics/E7-coding-e2b/tickets/CLI-008-unit-f-design.md`, no result doc)"* after the register (`scripts/finding-ownership.json`, key `E7-F026`) had been re-pointed to `CLI-011` by M0 unit 4 (founder decisions D1 + D5). The register is authoritative; this prose now agrees with it.
 **Severity:** LOW
 **Filed:** W6U1, 2026-09-06, by re-verifying the 26-agent wave's fourth candidate answer against the
 pin corpus.
@@ -2553,6 +2553,23 @@ Verified individually in `server/src/__tests__/task-run-batch-workload.test.ts` 
 `:438`'s three cases are the E7-F008 anti-regression pins (`FROZEN_MAX_ARG_CHARS + 1`, `× 8`, `× 100`),
 so appending any directive reds five assertions across three tests, not one.
 
+★ **Re-measured 2026-09-21 (M1 corrections batch 1), per `CLI-011-review.md` §3.6; cite by symbol.**
+The table above records the lines as filed and is kept as written. At the current program tip the
+three pins sit at:
+
+| pin (by symbol, in `server/src/__tests__/task-run-batch-workload.test.ts`) | line now (hint) | was |
+|---|---|---|
+| the hostile-content `it.each` *"never puts task content into the %s script"*: `toBe(nasty)` | `:195` | `:180` |
+| *"carries the REAL assembled task markdown, trimmed, as STAGED BYTES"*: `toBe(PROMPT)` | `:548` | `:415` |
+| the E7-F008 `it.each` *"dispatches a prompt at %s"*: `staged!.bytes.byteLength` `toBe(length)` | `:571` | `:438` |
+
+★ **The finding also under-counts by one test.** *"accepts a prompt exactly at the staging ceiling"*
+(`:587`, hint) builds a prompt of exactly `MAX_STAGED_FILE_BYTES` (`1_048_576`,
+`server/src/services/task-run-batch-workload.ts`). A mechanism that appends a directive to the staged
+prompt either reds that test, if the append is counted against the ceiling, or pushes the staged file
+past the ceiling, if it is not. Either way one more invariant moves. The completeness claim is false
+by one more test than the table above states.
+
 **Why this is worth a register entry and not just a review note.** ★ It is the SAME slip that refuted
 Unit F round 2, mirrored. Round 2 claimed *"measured against each pin, no test needs editing"* and was
 false because it enumerated the wrong pin set (§4.2, §10). This option repeats the error with the
@@ -2570,7 +2587,7 @@ mechanism is being built. It is filed because comparative sizing under time pres
 option gets chosen, and this option's stated cost was understated by exactly the measurement §4.4
 already tells the next author to make first.
 
-**Owner — CLI-008**, which owns the option space this belongs to. ★ The ticket carries the finding,
+**Owner — CLI-008**, which owns the option space this belongs to. ★ *Kept as filed; the owner is now `CLI-011` (see the Status line).* ★ The ticket carries the finding,
 not a fix — there is nothing to fix until a mechanism is chosen, and choosing one before probe (a)
 is what §12 now forbids.
 ★ **AMENDED 2026-09-07 (W12): probe (a) has returned and §12.3's stop condition is REPLACED, not
