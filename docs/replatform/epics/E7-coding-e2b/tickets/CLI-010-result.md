@@ -103,7 +103,7 @@ but any such import changes the pinned import set and turns the test red.
 
 ### CI
 
-Filled in after CI on the PR head, in a later commit. Jobs and executed counts are recorded in §7.
+See §7.
 
 ## 4. Choices and contradictions recorded
 
@@ -133,8 +133,12 @@ Filled in after CI on the PR head, in a later commit. Jobs and executed counts a
 
 ## 5. Guards
 
-Run before push, on the rebased head: the full `pr.yml` guard set minus the six excluded by the rules,
-plus `check-evidence-immutability --base origin/docs/replatform-program`.
+Run before push, on the rebased head `c0d582baf0bf4394b683fd4fc1b41f194cf0ef9e`: the full `pr.yml`
+guard set minus the six excluded by the rules, plus
+`check-evidence-immutability --base origin/docs/replatform-program`. Result: **failures: 0**
+(immutability: 32 base records byte-identical, 2 candidate commits walked). Before the pin was bumped,
+`check-test-inventory` was red on `packages/worker-daemon: 1 test file(s) added (165, pinned at 164)`,
+which is the guard seeing the new file.
 
 ## 6. Not proven here
 
@@ -147,7 +151,20 @@ is **`CLI-012`'s keyed real-run acceptance**. No keyed workflow was dispatched f
 
 ## 7. CI evidence
 
-_Pending: filled in after CI on the PR head._
+PR #542, CI run `35583109339`, on head `c0d582baf0bf4394b683fd4fc1b41f194cf0ef9e` (the code is
+identical to `a38f916135bfcfb62414d5048581b58d69c615fd`; the head adds only this record).
+**`ci-required`: pass.** Every other check passed too: `policy`, `lint`, `verify (1..4)`,
+`distributed-contract`, `browser`, `e2e`, `e2e-pgvector`, `migrations`, `brand-check`, and
+`worker-protocol-contract-bytes` on ubuntu and windows.
+
+| Job | This ticket's files it executed | Shard totals |
+|---|---|---|
+| `verify (1)` (job `106280266861`) | `worker-daemon` `sandbox-listdir-binding.test.ts`: **10 tests** passed | 655 files passed, 3 skipped; 6396 tests passed, 12 skipped |
+| `verify (2)` (job `106280266970`) | `sandbox-e2b-provider` `list-dir-files-only.test.ts`: **11 tests** passed | 656 files passed, 2 skipped; 6210 tests passed, 33 skipped |
+| `verify (4)` (job `106280266854`) | `worker-daemon` `capture-sandbox.test.ts`: **6 tests** passed | 655 files passed; 6097 tests passed, 2 skipped |
+| `verify (3)` (job `106280266878`) | none of this ticket's files | 654 files passed, 4 skipped; 5885 tests passed, 29 skipped |
+
+Codex (`chatgpt-codex-connector`) reviewed `c0d582baf0` with no findings. This commit is docs-only.
 
 ## Independent review
 
