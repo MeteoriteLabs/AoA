@@ -33,6 +33,7 @@ on:
     branches:
       - main
       - docs/replatform-program
+      - claude/m1-dep-014-d1-probe  # THROWAWAY probe branch, never merged (DEP-014 pre-merge D1 run)
     paths:
       - ".github/workflows/d1-merge-train.yml"
       - "docker-compose.d1.yml"
