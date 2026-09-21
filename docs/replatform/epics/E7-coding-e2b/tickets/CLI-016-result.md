@@ -1,6 +1,6 @@
 # CLI-016 Result - the distributed tool surface is armed per Organization, and denied at use for a tenant that is not
 
-**Status:** `complete`
+**Status:** `gate_review`
 **Date (UTC):** `2026-09-21`
 **Epic:** `E7-coding-e2b`
 **Plan task:** `E7 implementation-plan ### CLI-016 - arm the distributed tool surface behind the fence-bound gate (M1b)`, as amended by S0-4 and S0-8 (ruling F10)
