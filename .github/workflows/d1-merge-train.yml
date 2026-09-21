@@ -95,6 +95,8 @@ on:
       - "scripts/lib/d1-compose-invariants.mjs"
       - "scripts/lib/d1-evidence-bundle.mjs"
       - "scripts/lib/image-admission.mjs"
+      # DEP-014: the lane now RUNS the admission verifier on every image it builds.
+      - "scripts/verify-image-admission.mjs"
       - "scripts/lib/ci-lanes.mjs"
 
 concurrency:
@@ -109,12 +111,17 @@ jobs:
       COMPOSE_FILE_PATH: docker-compose.d1.yml
       EVIDENCE_DIR: ${{ github.workspace }}/d1-evidence
       # DEP-001 admission: the compose stack pins images by digest via these vars.
-      # The build step below populates docker/d1/.env. This lane does NOT verify
-      # admission, and until REL-004 nothing else did either — the verifier this
-      # comment used to delegate to had no caller anywhere. The REL-004 gate
-      # (scripts/check-release-admission.mjs) now runs on every PR; wiring it to
-      # THIS lane is not meaningful, because the lane signs and verifies images it
-      # built itself, which proves nothing about approval.
+      # The build step below populates docker/d1/.env.
+      #
+      # ★ Corrected by DEP-014. This comment used to say "This lane does NOT verify
+      # admission". It now does: the "Sign, SBOM and admit" step below runs
+      # docker/images/{sbom,sign,admit}.sh over all three split images, and admit.sh
+      # calls scripts/verify-image-admission.mjs per image. What that proves is
+      # CHAIN INTEGRITY — every image this run built was recorded, signed and admitted,
+      # and none was swapped in between. It still proves NOTHING about approval: the
+      # lane signs with an ephemeral TEST root it generated itself. Approval stays
+      # REL-004's scripts/check-release-admission.mjs (every PR), which this lane does
+      # not call and whose frozen artifact set the adapter-manager is not in.
       AOA_D1_FAKE_PROVIDER_IMAGE: aoa-d1-fake-provider:merge-train
 
     steps:
@@ -149,8 +156,10 @@ jobs:
         run: |
           set -euo pipefail
           # Least-privilege split images (DEP-001) + the fixture-driven fake provider.
-          # build.sh builds control-plane + worker into the local image store and records
-          # their exact tags in docker/images/digests.env.
+          # build.sh builds control-plane, worker AND (DEP-014) adapter-manager into the
+          # local image store and records their exact tags in docker/images/digests.env.
+          # The adapter-manager is BUILT here, never booted: docker-compose.d1.yml has no
+          # adapter-manager service, and booting one needs a provider key (DEP-015).
           bash docker/images/build.sh
           docker build -f docker/d1/fake-provider.Dockerfile -t "$AOA_D1_FAKE_PROVIDER_IMAGE" .
           # Point the compose services at the just-built LOCAL tags. Without this, compose
@@ -158,19 +167,78 @@ jobs:
           # to PULL images that were never pushed ("pull access denied for aoa-worker").
           CP_TAG="$(grep -E '^CONTROL-PLANE_IMAGE=' docker/images/digests.env | cut -d= -f2-)"
           WK_TAG="$(grep -E '^WORKER_IMAGE=' docker/images/digests.env | cut -d= -f2-)"
-          test -n "$CP_TAG" && test -n "$WK_TAG"
+          AM_TAG="$(grep -E '^ADAPTER-MANAGER_IMAGE=' docker/images/digests.env | cut -d= -f2-)"
+          test -n "$CP_TAG" && test -n "$WK_TAG" && test -n "$AM_TAG"
           {
             echo "AOA_D1_CONTROL_PLANE_IMAGE=${CP_TAG}"
             echo "AOA_D1_WORKER_IMAGE=${WK_TAG}"
           } >> "$GITHUB_ENV"
           echo "control-plane image: ${CP_TAG}"
           echo "worker image:        ${WK_TAG}"
+          echo "adapter-manager image (built, not booted): ${AM_TAG}"
           mkdir -p docker/d1
           {
             echo "AOA_D1_FAKE_PROVIDER_IMAGE=${AOA_D1_FAKE_PROVIDER_IMAGE}"
             echo "AOA_D1_CONTROL_PLANE_IMAGE=${CP_TAG}"
             echo "AOA_D1_WORKER_IMAGE=${WK_TAG}"
           } > docker/d1/.env
+
+      - name: Sign, SBOM and admit the split images (DEP-014)
+        run: |
+          set -euo pipefail
+          # DEP-014 — the supply-chain half of DEP-001, run for the FIRST time. sbom.sh and
+          # sign.sh had never executed: both `source`d digests.env, whose hyphenated keys
+          # (`CONTROL-PLANE_IMAGE=…`) are not assignments, so they aborted with exit 127
+          # on build.sh's own output. They now parse it, and cover all three images.
+          bash docker/images/sbom.sh
+          bash docker/images/sign.sh
+          bash docker/images/admit.sh
+
+          # In-run POSITIVE CONTROLS against the real, just-built images: each mutates one
+          # input for the adapter-manager in a scratch copy and admit.sh MUST refuse it. A
+          # control that admits fails the lane — an admission step nobody has watched
+          # refuse is not an admission step.
+          ctl="${RUNNER_TEMP}/dep014-controls"
+          mkdir -p "$ctl"
+          must_refuse() {
+            local label="$1"; shift
+            if env "$@" bash docker/images/admit.sh > "$ctl/out.txt" 2>&1; then
+              cat "$ctl/out.txt"
+              echo "::error::DEP-014 positive control ADMITTED: ${label}"
+              exit 1
+            fi
+            grep -E 'adapter-manager: REFUSED' "$ctl/out.txt"               || { cat "$ctl/out.txt"; echo "::error::DEP-014 control '${label}' refused for the wrong image"; exit 1; }
+          }
+          WK_TAG="$(grep -E '^WORKER_IMAGE=' docker/images/digests.env | cut -d= -f2-)"
+          # (1) no admission entry for the adapter-manager — the pre-DEP-014 state.
+          node -e 'const fs=require("fs");const a=JSON.parse(fs.readFileSync(process.argv[1]));a.entries=a.entries.filter(e=>e.image!=="adapter-manager");fs.writeFileSync(process.argv[2],JSON.stringify(a))'             docker/images/allowlist.json "$ctl/no-am-entry.json"
+          must_refuse "no admission entry" AOA_IMAGES_ALLOWLIST="$ctl/no-am-entry.json"
+          # (2) a retagged image: the recorded adapter-manager tag now names another image,
+          #     so its live digest no longer matches the signed one.
+          sed "s#^ADAPTER-MANAGER_IMAGE=.*#ADAPTER-MANAGER_IMAGE=${WK_TAG}#" docker/images/digests.env > "$ctl/retagged.env"
+          must_refuse "retagged image" AOA_IMAGES_DIGESTS="$ctl/retagged.env"
+          # (3) a real signature over a DIFFERENT payload (the worker's) on the AM entry.
+          node -e 'const fs=require("fs");const a=JSON.parse(fs.readFileSync(process.argv[1]));const w=a.entries.find(e=>e.image==="worker");a.entries.find(e=>e.image==="adapter-manager").signature=w.signature;fs.writeFileSync(process.argv[2],JSON.stringify(a))'             docker/images/allowlist.json "$ctl/bad-sig.json"
+          must_refuse "corrupted signature" AOA_IMAGES_ALLOWLIST="$ctl/bad-sig.json"
+          echo "DEP-014: 3/3 in-run positive controls refused"
+
+      - name: Upload the image-chain record (DEP-014)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: d1-image-chain-${{ github.run_id }}
+          # digests, buildx metadata, SBOMs, provenance, the admission allowlist and the
+          # TEST public key. The TEST private key sign.sh generates is never uploaded.
+          path: |
+            docker/images/digests.env
+            docker/images/*.metadata.json
+            docker/images/sbom/
+            docker/images/provenance.*.json
+            docker/images/allowlist.json
+            docker/images/trust-root.pub.pem
+            !docker/images/trust-root.key
+          retention-days: 14
+          if-no-files-found: warn
 
       - name: Least-privilege assertions on the BUILT images (DEP-001 / WRK-009)
         run: |
