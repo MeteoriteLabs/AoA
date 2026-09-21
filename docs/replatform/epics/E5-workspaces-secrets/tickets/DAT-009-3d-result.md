@@ -126,7 +126,15 @@ Organizations.
 
 ## 7. CI
 
-*(Filled in after the PR's CI run; see the PR.)*
+Measured on head `7292fc942` (which carries the reviewed code tree `c69a8b44f`), `pr.yml` run
+`35595160161`:
+- **`ci-required`** (job `106323329828`): **success**.
+- **`verify (4)`** (job `106318235095`): executed `dispatch-runtime-export-composition.test.ts`,
+  **8 tests**, all passed. The shard total was **6131 passed, 2 skipped (6133)** across 658 files.
+- `verify (1)`, `(2)` and `(3)`, `policy`, `e2e` and `migrations`: success.
+
+This section was added in a docs-only commit after that run, so the final head differs from
+`7292fc942` by this file only.
 
 ## 8. Reviewer section
 
