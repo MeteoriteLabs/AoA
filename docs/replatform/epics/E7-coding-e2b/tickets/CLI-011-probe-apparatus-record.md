@@ -5,8 +5,8 @@
 **Epic:** `E7-coding-e2b`
 **Design:** [`CLI-011-review.md`](./CLI-011-review.md) §10.1–10.5 (with §3.2 and §3.7)
 **Implementer:** `M1 CLI-011 probe build agent (Claude Opus 5)`
-**Start SHA:** `28a2dd259` (program tip), rebased onto `3ee376b19`
-**Reviewed revision (apparatus code):** `7dcc22d3ffd07b1cf4c2a1ebe8f5a27f1e3923cf`
+**Start SHA:** `28a2dd259` (program tip), rebased (last) onto the program tip of 2026-09-21 ~12:30 UTC
+**Reviewed revision (apparatus code):** `4cc9d9aa91c853005459dfb3eccdd834ad2ff6ac`
 **PR:** #551 (base `docs/replatform-program`)
 
 The implementer leaves `Status` at `gate_review`. Only a separate reviewer may set it to
@@ -36,7 +36,7 @@ it dispatches (§10.3). **Nothing here is evidence about the output mechanism ye
 
 Registrations:
 - `scripts/test-execution-census.json`.
-- `scripts/test-inventory.json`: `scripts` 66→67 and `packages/sandbox-e2b-provider` 19→20.
+- `scripts/test-inventory.json`: +1 on `scripts` and +1 on `packages/sandbox-e2b-provider` (68→69 and 19→20 at the last rebase).
 - `scripts/workflow-verdict-manifest.json`: `keyed-e2b-cli-011-output-probe.yml@*`, `not-watched`, with a reason and `wouldTakeToWatch`.
 - The `policy` step went in as the job's last step, so no register-cited `policy` line moves. It still shifts the downstream `verify` and `distributed-contract` lines. The 15 citations in `docs/architecture/distributed-execution-threat-controls.json` were re-pointed: `pr.yml:1118→1134` and `pr.yml:1599→1615`. Their anchors are unchanged, and `check-register-citation-integrity` passes.
 
@@ -121,8 +121,10 @@ imports buildSandboxInvocation…"*).
 | M7 | the record is written unredacted | vitest, no-key: the record test (the canary appears) |
 | M8 | CLI home state is counted as cwd | policy: the classification and census tests |
 
-**CI.** Run `35596503559`, on head `8eb3a8e52` after the rebase onto `3ee376b19`. The apparatus code
-is commit `7dcc22d3f`; the commits after it change only this record or remove a scratch file.
+**CI.** The run on the PR's final head is on PR #551. The evidence below is from run `35596503559`, on
+head `8eb3a8e52`: the same apparatus content, before the last rebase, which touched only the
+`test-inventory` pin and the register re-point. That apparatus code was then commit `7dcc22d3f`, and is
+now `4cc9d9aa9`; the commits after it change only this record or remove a scratch file.
 - Job **`policy`** (`106327652760`), success. Step *"CLI-011 P-011 output-probe decision logic
   (proven WITHOUT the key)"*: `tests 34 / pass 34 / fail 0`.
 - Job **`verify (1)`** (`106327652902`, attempt 2), success. `keyed-cli-011-output-probe.test.ts (9
