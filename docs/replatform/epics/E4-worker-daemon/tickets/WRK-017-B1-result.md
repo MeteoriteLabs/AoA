@@ -57,11 +57,20 @@ A static read must not present itself as a live enrolment, and this section exis
 
 ## Independent review
 
-**Reviewer:** M0 independent reviewer subagent (Claude) — distinct from the M0 implementation session
-**Reviewed revision:** 5f3b47556d0df152db0d53d76c304861f30ffd37
-**Disposition:** `changes_requested`
-**Attempt:** 1
-**Review evidence:**
+**Reviewer:** M0 attempt-2 independent reviewer subagent (Claude) — distinct from the M0 implementation session, from the attempt-1 reviewer, and from the correcting session
+**Reviewed revision:** 6f9031220bd2a20a6485b83a5b2b74cf6b5782d0
+**Disposition:** `approved`
+**Attempt:** 2 (see Review attempt history)
+**Review evidence (attempt 2):**
+- Revision currency: `git diff --stat 8b629fc25 6f9031220 -- docker-compose.d1.yml tests/d1 docker/d1` is empty, so the static rows (measured at `8b629fc25`) describe the reviewed revision.
+- Attempt-1 finding (row 2 cited the `migrate` job's `:145-146`) — FIXED at source: service boundaries (`grep -n '^  [a-z0-9-]*:$'`) are `migrate:` `:110`, `worker-a:` `:328`, `worker-b:` `:370`, `fake-provider:` `:434`, so `:391`, `:417`, `:420` all lie inside `worker-b`. `:391` = `AOA_WORKER_ENROLLMENT_CODE_FILE: "/enrollment-code"`; `:417` = `./docker/d1/worker-b.profile.json:/profile.json:ro`; `:420` = `./docker/d1/worker-b.enrollment-ticket:/enrollment-code:ro`. `:145-146` are confirmed to be `migrate`'s `/seed-*` mounts, now cited only by row 3.
+- Attempt-1 finding (row 4 cited header comments `:19`/`:25`) — FIXED at source: `:365-368` is `networks:` + `control-net`/`worker-net`/`provider-ctl-net` inside `worker-a` (`:328-369`); `:428-431` is the same three inside `worker-b`. `grep -n data-net` hits only header comments, other services (`:55`, `:89`, `:105`, `:151`, `:249`, `:322`) and the network definition `:505` — neither worker lists it.
+- Attempt-1 finding (§2 "coverage satisfied" overstated) — FIXED: `node scripts/reconcile-workflow-verdicts.mjs --dry-run` at the reviewed revision prints `d1-merge-train.yml@docs/replatform-program: no paths-matching commit in the last 40 (window exhausted) — nothing owed`, which is exactly what the corrected text says.
+- Attempt-1 finding (§4 understated the live enrolment) — FIXED and the new claim holds: `gh run view 35504786263 --json` → workflow `D1 Merge Train`, `push` on `docs/replatform-program`, head `52626d80e9fc…`, created 2026-09-20T10:20Z, conclusion `success`; single job `d1-merge-train` `success`, every step success (`Build split D1 images`, `Bring up the D1 stack`, `Run the E6F campaign (live)`), failure-only steps skipped. `--log`: the campaign's `BOUNDED` list includes `tests/d1/container-enrol.test.mjs`, and the log shows ✔ `worker-b persisted a DeviceIdentityRecord + receipt…`, ✔ `worker-a (mounted_secret control) persisted NOTHING`, ✔ `…exactly ONE enrolled worker row…`, ✔ `…consumed exactly once`, ✔ `restarting worker-b does NOT enrol again…`; those test names are defined in `tests/d1/container-enrol.test.mjs` (`:94`, `:182`). Totals `tests 47 / pass 47 / fail 0 / skipped 0`.
+- `52626d80e` is an ancestor of `6f9031220`; since then only `packages/worker-daemon/src/snapshot/capture-sandbox.ts` + its test changed in D1-relevant paths, and `capture-sandbox` has no importer outside its own test — "no D1-relevant change since" holds.
+- Rest of record re-checked: row 1 (`:370`, `:375`) and row 3 (`:142-146`) hold; §4 wiring holds (`command:` `:409`, `restart` appears only in the `:136` comment, `file_record` `:398`). No new overstatement found.
+
+**Review evidence (attempt 1):**
 - Revision currency: the record was measured at `8b629fc25`, an ancestor of the reviewed revision; `git diff 8b629fc25 5f3b47556 -- docker-compose.d1.yml` is empty, so the static rows describe the reviewed revision.
 - Row 1 (`worker-b` exists, profile id) HOLDS: `docker-compose.d1.yml:370` is `worker-b:` and `:375` is `AOA_WORKER_TARGET_PROFILE_ID: "d1-worker-b"`.
 - Row 3 (seeding job mounts the same two files) HOLDS: `:142-146` is the `migrate` service's `volumes:` — `worker-b.profile.json:/seed-worker.profile.json:ro` and `worker-b.enrollment-ticket:/seed-enrolment-ticket:ro`.
@@ -84,4 +93,5 @@ change the top-level `Status` to `complete` and commit that disposition separate
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
 | 1 | M0 independent reviewer subagent (Claude) | `5f3b47556d0df152db0d53d76c304861f30ffd37` | `changes_requested` | Rows 1, 3 and all §4 wiring (`command:` `:409`, no `restart:` key, `file_record` `:398`) hold; compose unchanged since `8b629fc25`. BLOCKING: row 2 cites `:145-146` (the `migrate` job's mounts) as worker-b's read-only ticket mount — worker-b's are `:391`/`:417`/`:420`. Row 4 cites header comments `:19`/`:25` rather than the `networks:` blocks `:365-368`/`:428-431` (claim true). d1-merge-train run `35504786263` @ `52626d80e` verified `success` at job+step level (no continue-on-error); DEP-013 dry-run says "window exhausted — nothing owed", not an affirmative green. The same run executed `container-enrol.test.mjs` live (47/47 pass), so the live enrolment is evidenced and the record understates it. |
+| 2 | M0 attempt-2 independent reviewer subagent (Claude) | `6f9031220bd2a20a6485b83a5b2b74cf6b5782d0` | `approved` | All four attempt-1 findings fixed at source: row 2 now cites worker-b's own `:391`/`:417`/`:420` (service span `worker-b` `:370-432`); row 4 cites `networks:` `:365-368` (worker-a) / `:428-431` (worker-b), no `data-net`; §2 wording matches the DEP-013 dry-run ("window exhausted — nothing owed"); run `35504786263` re-read: `success` at job+step level, `container-enrol.test.mjs` in the BOUNDED set, its enrolment assertions ✔, 47/47, 0 skipped. Compose unchanged `8b629fc25`→reviewed revision. Nothing new false. |
 <!-- Later reviewers append attempt 2+ below without rewriting attempt 1. -->

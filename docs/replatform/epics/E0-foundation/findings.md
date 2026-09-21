@@ -2878,8 +2878,11 @@ never the findings prose. So a finding's human-readable owner can silently disag
 enforced owner, and the disagreement is invisible to CI. The reviewer caught it; no guard would have.
 
 **Same class, second instance.** `epics/E5-workspaces-secrets/tickets/DAT-011-result.md` cites
-`worker-control.ts:112` — a bare line number with no symbol anchor, so it is outside the citation
-guard's enforced set. At HEAD, `:112` is inside `createWorkerEnrollmentService`; the sweep trigger is
+`worker-control.ts:112`, and **no guard checks ticket result docs for citation currency**:
+`check-register-citation-integrity.mjs` reads only the threat-controls register and its
+grandfather/census files. (Corrected 2026-09-21: this sentence first blamed a missing symbol anchor,
+which was wrong — inside the guard's scope an unanchored citation fails; result docs are simply
+outside its scope.) At HEAD, `:112` is inside `createWorkerEnrollmentService`; the sweep trigger is
 constructed at `:137`. `DAT-011-B1` then asserted "no delta" over that citation.
 
 **Options (a gate-owner call):** (1) extend `check-finding-ownership` to parse each finding's
