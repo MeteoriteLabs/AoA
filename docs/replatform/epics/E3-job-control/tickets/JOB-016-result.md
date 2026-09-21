@@ -156,3 +156,67 @@ The run on the final head (after the rebase plus the E3-F037 re-point and this r
 - **Codex** reviewed `9e80493e59`: no major issues. Both review threads are resolved.
 - **Superseded as evidence:** run `35591911282` on `9f26bb9cb` (previous addendum) and run `35586672944` on `a3d1db483` (the original section). Both sections are kept as written.
 
+
+## Independent review
+
+**Reviewer:** M1 review-batch-2A independent reviewer (Claude Opus 5). I did not author JOB-016, and I am not the planning session.
+**Reviewed revision:** 9e80493e59fcd949cdaa9a09b206c4cb9c85f58d (as named by the second-round addendum)
+**Disposition:** `approved`, with the TDD deviation judged knowingly; see below.
+**Attempt:** 1 (see *Independent review — attempt 1* and the attempt history)
+
+### Independent review — attempt 1
+
+**Disposition: `approved`.**
+
+**Which revision this record really pins.** Four revisions are named in this record, and three of them are no longer ancestors of the program tip:
+- **The header's** `Reviewed revision (code): 3da94a421d192f1af26cf56f4b608aff266dc683`, and its "pre-rebase equivalent" `a3d1db48395f…`, are **not** ancestors of `fc2eb7dde`. Both objects still exist locally, but a rebase removed them from the branch. The header was never amended to say so. The second-round addendum supersedes it only implicitly, so a reader who stops at the header is misled.
+- **The first addendum's** `9f26bb9cb988197afa0b356474685228397c7f03` is **not** an ancestor either, as the second-round addendum itself says ("a later rebase … rewrote that commit"). Its run `35591911282` is therefore evidence for a commit that is not in the tree.
+- **The second-round addendum's** `9e80493e59fcd949cdaa9a09b206c4cb9c85f58d` **is** an ancestor of `fc2eb7dde`, the merge of PR #547. `git diff 9e80493e5 fc2eb7dde` over every JOB-016 code and test file is empty. `git diff 9e80493e5 0274d89e16` touches only this record. **This is the revision I reviewed.**
+
+At source, at the reviewed revision:
+- **The seam (b1).** `acceptEvent` (`packages/db/src/repositories/tenant/job-control.ts`) reads `input.batch.acceptedEventProjectors`. It calls `runAcceptedEventProjectors` for each new event **before** that event's `attempt_started` / `attempt_terminal` projection, and passes `terminalApplied` as the after-terminal flag. `runAcceptedEventProjectors` checks for an existing receipt first (`replayed`). It runs `projector.apply` and the `applied` receipt in one `tx.transaction` savepoint. On a throw it writes a `pending` receipt, in its own savepoint, targeting `fence.attemptId` / `job_attempts`. After a terminal it writes `pending("after_terminal")` directly. With no projectors, the loop is skipped.
+- **Registration, always on.** `createJobEventIngestService` (`job-events.ts`) builds `acceptedEventProjectors = [createAcceptedUsagePricingProjector(...)]` unconditionally and passes it in `batch`. There is no switch.
+- **Re-drive and stale-pending detection.** `AUTHORITATIVE_COST_REDRIVE_MAX_ATTEMPTS = 3`, `STALE_PENDING_RECEIPT_THRESHOLD_MS` and `createAuthoritativeCostRedriveSweep` are all in `job-accepted-usage-pricing.ts`.
+- **E3-F037.** It is `owned` by `DEP-016` in `scripts/finding-ownership.json`, with the dated re-point reason. `E3-15-budget` stays `unwired`, with `expectedReferences: 1`.
+- **CI, by job.** Run `35596364653` (`pull_request`, headSha `9e80493e59fc…`, conclusion `success`, 16 jobs all `success`, `ci-required` `106326852608`). Per-job logs:
+  - `verify (3)` `106322039096`: `job-accepted-event-seam.integration.test.ts (18 tests)` ✓, `job-control-sweeper-pending-projections.test.ts (4 tests)` ✓ and `job-leasing-contract.test.ts (20 tests)` ✓; 655 files passed / 4 skipped, 5933 tests passed / 29 skipped.
+  - `verify (2)` `106322039059`: `job-budget-cost-parity.integration.test.ts (13 tests)` ✓ and `job-distributed-drain.integration.test.ts (11 tests)` ✓; 6233 / 33.
+  - `verify (1)` `106322039099`: `job-fence-surface.contract.test.ts (8 tests)` ✓.
+
+  The second-round addendum's numbers (18, 4, 13) match.
+- **Codex.** "Didn't find any major issues" on `9e80493e59` and on the final head `650ff17cb2`. The three review threads (P2 on the deferred `budget.exhausted`, P1 on OFFERED leases, P2 on `budget.incident_created`) are all `isResolved: true`.
+- **Focused command, rerun locally (Windows, embedded PG, `AOA_RUN_WIN_INTEGRATION=1`) at the tip.** `job-accepted-event-seam.integration.test.ts` plus `job-control-sweeper-pending-projections.test.ts` gives **2 files, 22 passed** (18 + 4).
+- **Mutation, reproduced by me and reverted.** **M1** replaces the ingest's `createAcceptedUsagePricingProjector` registration with an empty list. It gives **2 failed / 16 passed**: `[acc 1 / acc 8 target]` and `[Codex P2] a committed breach through the REAL ingest…`. That matches the record exactly, including "M1 additionally reds the new ingest emit test". The tree was clean afterwards. This is acceptance 8's positive control, **evidenced**.
+
+**The TDD deviation, judged knowingly.** The record says openly that the code came before the tests, and that no test-first RED exists. That breaks the E4 §3 step-2 protocol and the ticket's own RED → GREEN list. I **accept the substitute** for three reasons:
+- **(i)** Each acceptance item maps to a named test in `job-accepted-event-seam.integration.test.ts`. I read `[acc 5]`, `[acc 7 / F10]` and `[acc 6a]` in full.
+- **(ii)** Each of the 15 mutations deletes one behaviour and reds a named test. That proves the thing a RED proves: the test fails on a tree that lacks the behaviour. I reproduced M1 exactly.
+- **(iii)** The behaviours that matter most have their own positive controls: `[acc 3 positive control]` (no breach → offered) and, in `[acc 7]`, B admitted while A is refused.
+
+A mutation sweep does not show that the tests were written against the specification rather than against the code. I checked that directly for the acceptance items above, by reading them against the E3 plan text. This acceptance does **not** set a precedent that code-first is acceptable. It says that here the evidence substitutes adequately, and that the deviation is disclosed.
+
+**Acceptance, clause by clause (E3 plan `JOB-016`).**
+1. **One `cost_events` row, cost > 0, one receipt.** **Evidenced** by `[acc 1 + d]` and `[acc 1 / acc 8 target]`, the real poll → ack → ingest.
+2. **Replay ⇒ `replayed`, no second row.** **Evidenced** by `[acc 2 + d]` and the receipt-table `[d]`.
+3. **Next dispatch refused after a hard stop.** **Evidenced** by `[acc 3 + Amendment 2]`, `[acc 3 positive control]` and `[Codex P1]`. The refusal rides submit-time admission (`admitIn` → `{ admitted: false, reason: "budget" }`), plus the cancel of queued and OFFERED jobs.
+4. **Terminal without usage ⇒ classified signal.** **Evidenced** by `[acc 4]`.
+5. **A projector failure keeps the append committed; the receipt is `pending`; the detector surfaces it.** **Evidenced**. `[acc 5]` asserts 2 `job_events` rows, an attempt of `succeeded`, 0 `cost_events`, a `pending` receipt targeting the attempt, and a `stale_pending_projection_receipt` warn carrying org, company, kind and ids.
+6. **Same-transaction cases (d).** **Evidenced**.
+   - **6a (drain blocked while pending; re-driven, it proceeds).** **Evidenced** by `[acc 6a]`, through the real `assertRollbackSafe`.
+7. **F10.** **Real.** `[acc 7 / F10]` uses two Organizations (`ORG`, `ORG_B`), each with its own Company. It asserts each cost row's `source_idempotency_key` and each receipt's `organization_id` / `company_id`. It asserts one `budget_incidents` row for A and 0 for B, and that A's queued job is `cancelled` while B's stays `queued`. Finally, A's next dispatch is refused and B's is admitted, which is the positive control. `[F10]` also refuses a foreign Company.
+8. **Positive control (registration removed ⇒ acceptance 1 reds).** **Evidenced**, reproduced above.
+
+**Not blocking, noted:**
+1. **Stale revisions.** The header and the first addendum name non-ancestor revisions (above). The planning session may want a dated one-line note under the header pointing at `9e80493e5`. I did not edit the author's text.
+2. **The mutation table.** Its body lists M1–M13 only. M14 and M15 (the Codex P1/P2 round) appear only in the second addendum's prose. The "11 single-behaviour mutations" sentence in *TDD deviation* is the first-written count; the addenda raise it to 13 and then 15.
+3. **Plan delta not listed under "Other differences".** The plan's *Files* line says to **extend** `job-budget-cost-parity.integration.test.ts` for the core wrapper. That file has no commit since the start SHA and still runs 13 tests. The wrapper's new `pending` / `replayed` fast-path reporting is asserted in the seam suite instead (`[acc 2 + d]`, `[acc 6a]`), so the behaviour is covered.
+4. **Deviation 1 (always-on pricing).** `decisions.md` E3-D-ACC Amendment 1 still labels the build's reading "the author's reading, flagged for review". The planning session's acceptance is recorded only in this result record. On the merits, registering on every ingest is strictly stronger than "on for `active`/`canary`": an in-flight attempt dialled back mid-run stays priced. I accept it.
+5. **The plan's "default-off switch" Outcome.** Amendment 1 superseded it, so the switch is correctly absent.
+
+**What remains open after this approval:** closing `E3-F037`. That needs WRK-018's keyed run and DEP-016's end-to-end cost assertion; it is not this ticket's. `E3-15-budget` stays `unwired` until then.
+
+## Review attempt history
+
+| Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
+|---:|---|---|---|---|
+| 1 | M1 review-batch-2A independent reviewer (Claude Opus 5) | `9e80493e59fcd949cdaa9a09b206c4cb9c85f58d` | `approved` | Header `3da94a421`/`a3d1db483` and first-addendum `9f26bb9cb` are NOT ancestors (rebase); `9e80493e5` is, with no code drift to tip. Run `35596364653` per job: `verify (3)` 18+4 (+ leasing-contract 20), `verify (2)` 13 — all match. Codex clean on `9e80493e59` and `650ff17cb2`; 3 threads resolved. Local embedded-PG rerun 22/22. M1 reproduced (2 failed, exactly as recorded). TDD deviation (code before tests) accepted knowingly on the mutation substitute; not a precedent. F10 real. |
