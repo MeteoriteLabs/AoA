@@ -1237,14 +1237,30 @@ the form the rest of `server/src/__tests__` uses; with a bare `win32` skip the W
 runs zero tests and exits 0; `findings.md` for `E7-F003`'s tools row (**narrowed, not closed**).
 ★ *Superseded text: "deployment configuration for the named Organization; create …"* (S0-4).
 
-**Interfaces:** none new — the flag and the gate both exist.
+**Interfaces:** one new, config-level field — an optional per-Organization **`tools`** field on
+`OrganizationRolloutPolicy` (`server/src/config/distributed-execution-rollout-source.ts`), parsed by
+`parseDistributedExecutionRolloutMap` from the `organizations.<organizationId>` object of
+`AOA_DISTRIBUTED_EXECUTION_ROLLOUT` and validated by `assertDistributedExecutionRolloutSourceValid`
+(a non-boolean value fails the parse loudly, as a malformed `mode` or `sources` does). ★ **Absent
+means NOT enabled** — the opposite of the MIG-002 `sources` axis, where absent means all sinks. The
+tool surface is fail-closed per tenant: an Organization whose policy carries no `tools: true` gets no
+surface even when `AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED` is on. The deployment flag and the fence-bound
+gate already exist and are unchanged. *Recorded at M1 Step 0 (S0-8), a planning-session decision under
+founder delegation (ruling F2), to carry ruling F10 into this field. Superseded text: "none new — the
+flag and the gate both exist."*
 
 **Failure behavior:** the gate denies a stale/replaced run with the **same coarse forbidden** as
 wrong-tenant, leaking no oracle; a resolver throw propagates and denies (fail-closed). With the flag
 off, nothing is emitted and nothing is minted — the default until this ticket.
 
-**Migration/compatibility:** configuration only in the product; no schema, route, or wire change.
-Every other deployment is unaffected (flag default false).
+**Migration/compatibility:** a code change in the rollout source and its one consumer in
+`heartbeat.ts`, plus an additive, optional key in the per-Organization rollout JSON; **no database
+schema, route, or `packages/worker-protocol` wire change**. Every other deployment is unaffected (flag
+default false, and `tools` absent means off for every Organization). ★ An older binary's
+`parseDistributedExecutionRolloutMap` does not reject unknown keys, so it would silently ignore
+`tools` and fall back to the deployment-wide flag alone — roll the binary before setting the flag on a
+multi-tenant deployment. *Superseded text (S0-8): "configuration only in the product; no schema,
+route, or wire change." — it assumed the single named Organization, which needed no new field.*
 
 **Observability:** record, on the milestone candidate, that a run whose lease has expired
 **observably loses the surface — denied at MCP authorization, refused at redemption**. ★ *Not
@@ -1278,8 +1294,9 @@ negative controls and this task did not; the task now carries them, as the M1 pl
 ("Keyed? yes") and F8 ("`CLI-016` +/- controls") require.*
 
 **Evidence / commit:** `tickets/CLI-016-result.md`; one commit
-`feat(server): arm the distributed tool surface for the named internal Organization`.
-Maps H-04, H-05.
+`feat(server): arm the distributed tool surface per Organization via the rollout policy`.
+Maps H-04, H-05. ★ *Superseded commit title (S0-8, ruling F10): "`feat(server): arm the distributed
+tool surface for the named internal Organization`".*
 
 ---
 
@@ -1568,6 +1585,11 @@ authorize implementation.
   at **MCP authorization**. Requiring mint-time prevention from a ticket whose scope is
   configuration made the checkbox unreachable; if mint-time prevention is genuinely wanted, it must
   be **scheduled as its own implementation work**, not smuggled into an arming ticket.
+  ★ *Added at M1 Step 0 (S0-8):* since F10 the ticket is no longer configuration-only — it adds the
+  per-Organization `tools` field on `OrganizationRolloutPolicy` (see the task's **Interfaces**) — but
+  that field gates **which tenant gets the surface**, not currency, so the rule above stands: currency
+  is still enforced at use. Verify also the two-Organization case (tool-enabled tenant admitted, the
+  other denied).
 - [ ] **T9 (P2, S)** — `E7-1-JOURNEY-ARM`: promote the clause once E6 ships both preconditions.
   Verify: the positive control fired on a **controlled checker fixture** (not on the boot — ★ the
   checker counts references and cannot see a deployment); promotion carried by shipped-boot

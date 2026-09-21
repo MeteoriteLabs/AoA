@@ -2751,6 +2751,34 @@ approved by a distinct reviewer before any build).** The decision must fix all f
   (`packages/db/src/schema/job_projection_receipts.ts`, `job_projection_receipts_status_check`),
   so a `failed` state is a schema change: `db:generate` output, never hand-written SQL (Critical
   Rule 1). The decision states which it uses and which detector reads it.
+
+  ★★★ **(c) is DECIDED — `pending`, never a new `failed` status.** *Recorded 2026-09-21 at M1 Step 0
+  (S0-8) by the planning session under founder delegation (ruling F2); the (c) text above is kept as
+  the question it answers.* A projector failure rolls back only its own savepoint and then writes the
+  projection's receipt, **in the outer ingest transaction**, as **`status = 'pending'`**
+  (`applied_at` NULL); a **detector surfaces stale `pending` receipts** (older than a stated
+  threshold, per Organization and Company, with the projection kind and the attempt's ids). Two
+  reasons, both verified at source:
+  - **(i) No schema change.** `job_projection_receipts_status_check`
+    (`packages/db/src/schema/job_projection_receipts.ts`, `jobProjectionReceipts` → `statusValid`)
+    admits only `'pending'` and `'applied'`, and the table's own header already defines `pending` as
+    the crash-recoverable state. A `failed` status would need a `db:generate` migration widening the
+    CHECK, for no gain.
+  - **(ii) It keeps the drain's rollback gate load-bearing.** `job-distributed-drain.ts` (header,
+    "Rollback safety", ~:12–32) refuses an Organization's drain while any Company has a pending
+    `authoritative_cost` receipt, through `jobBudgetCostBridge.assertRollbackSafe`
+    (`job-budget-cost-bridge.ts`), which counts rows with `status = 'pending'` only. An unpriced
+    usage receipt written as `pending` therefore **blocks** a drain — correct, because a charge is
+    owed and not yet written — whereas a new `failed` status would be invisible to that count and
+    let the drain proceed past an unpriced charge. The same file notes the gate is *"currently
+    FORWARD-LOOKING"* because today's bridge writes `applied` atomically; this decision is what
+    makes it load-bearing.
+  - **Consequence to state in the decision:** a `pending` receipt that never resolves holds that
+    Organization's drain until an operator re-drives or resolves it, which is why the detector is
+    required, not optional.
+
+  Nothing else of `E3-D-ACC` is pre-decided here: (a), (b) and (d) remain the ticket's step-1
+  decision.
 - **(d) The same-transaction test.** Cancel-then-terminal and usage-then-terminal **in one batch**
   do not trip `guardActiveFence`; a replay of the batch re-runs nothing, and the idempotency comes
   from the receipt tables (`authoritative_cost` identity `cost:{company}:{eventId}`), not from luck.
@@ -2781,7 +2809,15 @@ per-Organization dimension read from the rollout policy
    producer is best-effort, so without this a parse miss silently reproduces `E3-F037`.
 5. A projector failure leaves the `job_events` append committed and writes the surfaced receipt of
    (c); a test injects the failure (for example an unknown-rate model) and asserts both.
+   ★ *Since S0-8:* the receipt is asserted as `status = 'pending'`, and the stale-pending detector is
+   asserted to surface it.
 6. The same-transaction cases of (d).
+6a. **A drain is blocked while a priced-usage receipt is `pending`.** *Added at M1 Step 0 (S0-8),
+   from decision (c).* With an injected projector failure leaving an `authoritative_cost` receipt
+   `pending`, the `MIG-009` drain (`job-distributed-drain.ts`, via `assertRollbackSafe`) refuses that
+   Organization's drain step; the positive control re-drives the receipt to `applied` and the same
+   drain proceeds. This pins reason (ii): a status the gate cannot see would pass this test's first
+   half and must not.
 7. **Multi-tenant (F10):** two enabled Organizations, each with its own Company, run priced attempts
    in one test; each `cost_events` row, receipt and budget evaluation carries its own
    `organization_id`/`company_id`; a hard-stop breach in one refuses the next dispatch **only** in
@@ -2809,8 +2845,9 @@ worker-supplied price; changing `AUTHORITATIVE_RATE_VERSION` or the rounding pol
   `server/src/config/distributed-execution.ts` — default-off composition and its switch.
 - `server/src/services/org-concurrency.ts` / `server/src/services/job-submission.ts` — only if the
   decision puts the next-dispatch refusal there.
-- `packages/db/src/schema/job_projection_receipts.ts` — only if (c) adds a status; migration by
-  `pnpm db:generate`.
+- ~~`packages/db/src/schema/job_projection_receipts.ts` — only if (c) adds a status; migration by
+  `pnpm db:generate`.~~ ★ *Struck at S0-8: decision (c) uses the existing `pending` status, so this
+  ticket does not touch the schema.*
 - Tests — **create** `server/src/__tests__/job-accepted-event-seam.integration.test.ts` (the
   same-transaction, replay, projector-failure, terminal-without-usage and two-Organization cases);
   extend `server/src/__tests__/job-budget-cost-parity.integration.test.ts` for the core wrapper.
@@ -2824,11 +2861,15 @@ Company, or a bridge error writes the surfaced receipt and a log line with the a
 Organization; the event stays accepted. A disabled switch registers nothing and the ingest is
 byte-identical to today.
 
-**Migration/compatibility:** none, unless (c) adds a receipt status (then a `db:generate` migration
-that only widens a CHECK). Self-hosted deployments are unaffected (distributed execution off).
+**Migration/compatibility:** none — decision (c) writes the existing `pending` status, so no
+receipt-status migration. ★ *Superseded text (S0-8): "none, unless (c) adds a receipt status (then a
+`db:generate` migration that only widens a CHECK)."* Self-hosted deployments are unaffected
+(distributed execution off).
 
 **Observability:** the receipt row per priced event; the classified signal for
-terminal-without-usage; a count of surfaced failed/pending receipts the detector reads.
+terminal-without-usage; a count of stale `pending` receipts the detector reads, per Organization
+and Company. ★ *Superseded text (S0-8): "a count of surfaced failed/pending receipts the detector
+reads" — there is no `failed` status under decision (c).*
 
 **Rollback/disablement:** the default-off switch. With it off, no projector is registered and the
 legacy behaviour (no distributed pricing) returns. The `MIG-009` drain's `assertRollbackSafe` already
@@ -2843,6 +2884,8 @@ refuses to drain an Organization with a pending `authoritative_cost` receipt, an
 - RED — the next dispatch after a hard-stop breach is refused.
 - RED — a terminal with no `usage` event emits the classified signal.
 - RED — an injected projector failure leaves the append committed and the receipt surfaced.
+- RED — while that `authoritative_cost` receipt is `pending`, the drain refuses the Organization;
+  re-driven to `applied`, the drain proceeds (acceptance 6a, added S0-8).
 - RED — the two-Organization isolation case.
 - Positive control — remove the registration; acceptance 1 reds.
 - GREEN — the identical commands, plus db/server typecheck and build.
