@@ -1035,8 +1035,8 @@ export interface JobControlRepository {
     attemptId: string;
     eventType: string;
   }): Promise<boolean>;
-  /** The ids of the QUEUED jobs with NO live (offered/active) lease in a hard-stopped budget
-   * scope, in job-id order. With an `assigneeAgentId`, only `task_run` jobs whose stored
+  /** The ids of the QUEUED jobs with NO ACTIVE lease (an offered, un-ACKed one is included) in a
+   * hard-stopped budget scope, in job-id order. With an `assigneeAgentId`, only `task_run` jobs whose stored
    * source names that agent. */
   listQueuedJobIdsForBudgetScope(input: {
     organizationId: string;
@@ -5970,14 +5970,20 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         eq(jobs.organizationId, input.organizationId),
         eq(jobs.companyId, input.companyId),
         eq(jobs.status, "queued"),
-        // A job with a LIVE lease is not "queued" in the sense that matters: a worker holds it
-        // (the ACK leaves `jobs.status` at `queued` until `attempt_started`). Cancelling it
-        // would lock another attempt's lease from inside an ingest transaction — the
-        // lease-order cycle E3-D-ACC Amendment 2 avoids. Its own next charge cancels it.
+        // Excludes ONLY a job with an ACTIVE lease: a worker is running it and ingesting under that
+        // lease, so cancelling it from another job's ingest transaction could lock its lease out of
+        // order against its own ingest. Its own next charge cancels it.
+        //
+        // An OFFERED lease is INCLUDED (Codex P1 on #547): `jobs.status` stays `queued` until the
+        // worker ACKs, and leaving it out would let that worker ACK and become `leased` after the
+        // breach. An offered lease has no ingest holding it (the fence guard admits only an active
+        // lease), so locking it here cannot cycle against an ingest. `requestCancellation` marks
+        // its attempt `cancel_requested`, and `activateLeaseAck` then refuses the ACK (it only
+        // moves an attempt that is still `offered`).
         notExists(tx.select({ one: sql`1` }).from(leases).where(and(
           eq(leases.organizationId, jobs.organizationId),
           eq(leases.jobId, jobs.id),
-          inArray(leases.status, ["offered", "active"]),
+          eq(leases.status, "active"),
         ))),
       ];
       if (input.assigneeAgentId) {

@@ -47,6 +47,7 @@ import { resolveCompanyOrganizationId } from "./org-concurrency.js";
 import { assertAdmissibleMappedOrganization } from "./tenant-admission.js";
 import { budgetService } from "./budgets.js";
 import { emitBudgetExhausted, type BudgetEnforcementScope } from "./budget-hooks.js";
+import { publishLiveEvent } from "./live-events.js";
 import { costService } from "./costs.js";
 import { recordOneShotCliCost } from "./one-shot-cli-budget.js";
 import { resolveAuthoritativeRate, type AuthoritativeUsageUnits } from "./job-authoritative-rate.js";
@@ -188,11 +189,25 @@ export interface PriceAcceptedUsageCoreOutcome {
    * (`emitDeferredBudgetExhausted`), so a rolled-back charge cancels nothing.
    */
   exhaustedScopes: BudgetEnforcementScope[];
+  /** Owed `budget.incident_created` live events, deferred for the same reason (Codex P2). */
+  incidentLiveEvents: Parameters<typeof publishLiveEvent>[0][];
 }
 
-/** Emit owed `budget.exhausted` signals — call only after the charge's transaction committed. */
-export function emitDeferredBudgetExhausted(scopes: readonly BudgetEnforcementScope[]): void {
-  for (const scope of scopes) emitBudgetExhausted(scope);
+/** The side effects a charge OWES once it commits: never performed inside the transaction. */
+export interface DeferredBudgetSignals {
+  exhaustedScopes: readonly BudgetEnforcementScope[];
+  incidentLiveEvents: readonly Parameters<typeof publishLiveEvent>[0][];
+}
+
+export const NO_DEFERRED_BUDGET_SIGNALS: DeferredBudgetSignals = Object.freeze({
+  exhaustedScopes: [],
+  incidentLiveEvents: [],
+});
+
+/** Perform owed budget side effects — call ONLY after the charge's transaction committed. */
+export function flushDeferredBudgetSignals(signals: DeferredBudgetSignals): void {
+  for (const event of signals.incidentLiveEvents) publishLiveEvent(event);
+  for (const scope of signals.exhaustedScopes) emitBudgetExhausted(scope);
 }
 
 /** Charge the EXISTING cost writer ONCE. task_run rolls up its owning agent; every
@@ -288,9 +303,11 @@ export async function priceAcceptedUsageCore(
   // SYNCHRONOUS budget evaluation (not the legacy fire-and-forget), so a newly-created
   // incident — and legacy's agent pause — is visible in this committed state.
   const exhaustedScopes: BudgetEnforcementScope[] = [];
+  const incidentLiveEvents: Parameters<typeof publishLiveEvent>[0][] = [];
   const evaluated = await budgetService(tx).evaluateCostEvent(evalAgentId, companyId, {
     projectId,
     deferExhaustedEmit: exhaustedScopes,
+    deferLiveEvents: incidentLiveEvents,
   });
 
   // Exhaustion → cancel through the EXISTING engine (which releases the capacity slot EXACTLY
@@ -350,6 +367,7 @@ export async function priceAcceptedUsageCore(
     cancelled,
     scopeCancelled,
     exhaustedScopes,
+    incidentLiveEvents,
   };
 }
 
@@ -382,7 +400,7 @@ export function jobBudgetCostBridge(
       const organizationId = await resolveAdmissibleOrganization(companyId);
       const projectId = input.projectId ?? null;
 
-      let owedEmits: BudgetEnforcementScope[] = [];
+      let owed: DeferredBudgetSignals = NO_DEFERRED_BUDGET_SIGNALS;
       const outcome = await runInTenant(appDb, organizationId, async (repos, tx) => {
         // (a) TOCTOU guard — lock the lease+attempt FOR UPDATE (write nothing) so two
         // concurrent same-event charges serialize: the 2nd blocks until the 1st commits
@@ -433,7 +451,7 @@ export function jobBudgetCostBridge(
           },
         });
 
-        owedEmits = core.exhaustedScopes;
+        owed = core;
         return {
           status: "charged" as const,
           costEventId: core.costEventId,
@@ -444,7 +462,7 @@ export function jobBudgetCostBridge(
         };
       });
       // AFTER COMMIT: the charge and its incident are durable, so the in-process signal may fire.
-      emitDeferredBudgetExhausted(owedEmits);
+      flushDeferredBudgetSignals(owed);
       return outcome;
     },
 

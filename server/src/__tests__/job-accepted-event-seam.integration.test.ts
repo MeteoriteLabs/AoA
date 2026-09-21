@@ -51,6 +51,8 @@ import { createDistributedExecutionDrainStore } from "../services/job-distribute
 import { createDistributedExecutionDrain } from "../services/job-distributed-drain.js";
 import { logger } from "../middleware/logger.js";
 import { clearBudgetHooks, onBudgetExhausted, type BudgetEnforcementScope } from "../services/budget-hooks.js";
+import { subscribeCompanyLiveEvents } from "../services/live-events.js";
+import { ackRequest, pollRequest } from "./helpers/job-control-fixture.js";
 
 const ENABLED_ENV = { AOA_DISTRIBUTED_EXECUTION_ENABLED: "true" } as const;
 const KNOWN_MODEL = "claude-sonnet-4-6";
@@ -448,7 +450,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(await count("jobs", `id = '${placed.jobId}' AND status = 'cancelled'`)).toBe(1);
       expect(await count("job_attempts", `id = '${placed.attemptId}' AND status = 'cancelled'`)).toBe(1);
       // J is not leased: the real poll finds nothing to offer.
-      const polled = await f.leasing.poll({ auth: auth("j016-poll"), request: (await import("./helpers/job-control-fixture.js")).pollRequest("j016-poll") });
+      const polled = await f.leasing.poll({ auth: auth("j016-poll"), request: pollRequest("j016-poll") });
       expect(polled.outcome).not.toBe("offer");
       expect(await count("leases", `job_id = '${placed.jobId}'`)).toBe(0);
 
@@ -467,7 +469,6 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       const other = await seedLeasedAttempt(TENANT_A, taskSource(AGENT_A));
       await accept(other, [usage(other, 1)]);
       expect(await count("jobs", `id = '${placed.jobId}' AND status = 'queued'`)).toBe(1);
-      const { pollRequest } = await import("./helpers/job-control-fixture.js");
       const polled = await f.leasing.poll({ auth: auth("j016-poll-pc"), request: pollRequest("j016-poll-pc") });
       expect(polled.outcome).toBe("offer");
     });
@@ -476,6 +477,9 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       clearBudgetHooks();
       const emitted: BudgetEnforcementScope[] = [];
       onBudgetExhausted((scope) => { emitted.push(scope); });
+      // Codex P2 (second round): nor may a `budget.incident_created` live event escape.
+      const liveTypes: string[] = [];
+      const unsubscribe = subscribeCompanyLiveEvents(COMPANY, (event) => { liveTypes.push(event.type); });
       try {
         await seedCompanyHardStop(COMPANY, 1);
         const fence = await seedLeasedAttempt(TENANT_A, taskSource(AGENT_A));
@@ -493,9 +497,35 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         expect(await count("budget_incidents", "true")).toBe(0);
         await new Promise((resolve) => setTimeout(resolve, 20));
         expect(emitted).toEqual([]);
+        expect(liveTypes).not.toContain("budget.incident_created");
       } finally {
+        unsubscribe();
         clearBudgetHooks();
       }
+    });
+
+    it("[Codex P1] a job whose lease was OFFERED but not yet ACKed at the breach is cancelled, and its ACK is refused (never leased)", async () => {
+      const f = guard();
+      const placed = await f.seedPlacedJob(43);
+      // The worker has polled: an OFFERED lease exists; jobs.status is still `queued`.
+      const polled = await f.leasing.poll({ auth: auth("j016-p1-poll"), request: pollRequest("j016-p1-poll") });
+      expect(polled.outcome).toBe("offer");
+      if (polled.outcome !== "offer") return;
+      expect(await count("leases", `job_id = '${placed.jobId}' AND status = 'offered'`)).toBe(1);
+      expect(await count("jobs", `id = '${placed.jobId}' AND status = 'queued'`)).toBe(1);
+
+      await seedCompanyHardStop(COMPANY, 1);
+      const breaching = await seedLeasedAttempt(TENANT_A, taskSource(AGENT_A));
+      await accept(breaching, [usage(breaching, 1)]);
+
+      expect(await count("jobs", `id = '${placed.jobId}' AND status = 'cancel_requested'`)).toBe(1);
+      expect(await count("job_attempts", `id = '${placed.attemptId}' AND status = 'cancel_requested'`)).toBe(1);
+      // The worker's late ACK does not make the attempt leased.
+      const acked = await f.leasing.ack({ auth: auth("j016-p1-ack"), request: ackRequest(polled.body) })
+        .then((r) => r.outcome, () => "refused");
+      expect(acked).not.toBe("acknowledged");
+      expect(await count("job_attempts", `id = '${placed.attemptId}' AND status IN ('leased', 'running')`)).toBe(0);
+      expect(await count("leases", `job_id = '${placed.jobId}' AND status = 'active'`)).toBe(0);
     });
 
     it("[acc 7 / F10] two Organizations price side by side; each row carries its own tenant; a hard stop in A refuses only A", async () => {

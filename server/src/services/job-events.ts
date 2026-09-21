@@ -69,8 +69,7 @@ import {
   type AcceptedUsageTelemetry,
   type TerminalWithoutUsageSignal,
 } from "./job-accepted-usage-pricing.js";
-import { emitDeferredBudgetExhausted } from "./job-budget-cost-bridge.js";
-import type { BudgetEnforcementScope } from "./budget-hooks.js";
+import { flushDeferredBudgetSignals, type DeferredBudgetSignals } from "./job-budget-cost-bridge.js";
 
 function sha256Hex(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
@@ -199,11 +198,12 @@ export function createJobEventIngestService(input: {
       // INSIDE the tx and reported AFTER it commits (so a report is never for a rolled-back append).
       let acceptedEventProjections: readonly AcceptedEventProjectionOutcome[] = [];
       let usageGap: TerminalWithoutUsageSignal | null = null;
-      // Owed `budget.exhausted` signals by accepted event id. Emitted AFTER commit, and only for
-      // events whose seam outcome is `applied`: a rolled-back savepoint owes nothing.
-      const owedBudgetExhausted = new Map<string, BudgetEnforcementScope[]>();
+      // Owed budget side effects (`budget.exhausted`, `budget.incident_created`) by accepted event
+      // id. Flushed AFTER commit, and only for events whose seam outcome is `applied`: a
+      // rolled-back savepoint owes nothing.
+      const owedBudgetSignals = new Map<string, DeferredBudgetSignals>();
       const acceptedEventProjectors = [createAcceptedUsagePricingProjector({
-        onOwedBudgetExhausted: (eventId, scopes) => { owedBudgetExhausted.set(eventId, scopes); },
+        onOwedBudgetSignals: (eventId, signals) => { owedBudgetSignals.set(eventId, signals); },
       })];
 
       // ★ DE-03, replay-rejection conjunct — the refusal below THROWS out of
@@ -427,7 +427,8 @@ export function createJobEventIngestService(input: {
       for (const projection of acceptedEventProjections) {
         acceptedUsageTelemetry.count({ outcome: telemetryOutcomeFor(projection), count: 1 });
         if (projection.outcome === "applied") {
-          emitDeferredBudgetExhausted(owedBudgetExhausted.get(projection.eventId) ?? []);
+          const owed = owedBudgetSignals.get(projection.eventId);
+          if (owed) flushDeferredBudgetSignals(owed);
         }
         if (projection.outcome === "pending" || projection.outcome === "unrecorded") {
           logger.warn({

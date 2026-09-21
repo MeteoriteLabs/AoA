@@ -58,6 +58,9 @@ async function createIncidentIfNeeded(
   observedCents: number,
   windowStart: Date,
   windowEnd: Date,
+  /** JOB-016 — when given, the `budget.incident_created` live event is queued here instead of
+   * published, so an uncommitted caller can publish it only after its transaction commits. */
+  deferLiveEvents?: Parameters<typeof publishLiveEvent>[0][],
 ): Promise<typeof budgetIncidents.$inferSelect | null> {
   // Dedup: check for existing incident with same policyId + windowStart + thresholdType
   // where status <> 'dismissed' (the unique index enforces this)
@@ -147,7 +150,7 @@ async function createIncidentIfNeeded(
     );
   }
 
-  publishLiveEvent({
+  const incidentEvent: Parameters<typeof publishLiveEvent>[0] = {
     companyId: policy.companyId,
     type: "budget.incident_created",
     payload: {
@@ -156,7 +159,9 @@ async function createIncidentIfNeeded(
       thresholdType,
       observedCents,
     },
-  });
+  };
+  if (deferLiveEvents) deferLiveEvents.push(incidentEvent);
+  else publishLiveEvent(incidentEvent);
 
   return incident;
 }
@@ -441,6 +446,8 @@ export function budgetService(db: Db) {
          * Absent (every legacy caller): emitted immediately, exactly as before.
          */
         deferExhaustedEmit?: BudgetEnforcementScope[];
+        /** JOB-016 — the incident live events, deferred the same way (Codex P2 on #547). */
+        deferLiveEvents?: Parameters<typeof publishLiveEvent>[0][];
       },
     ): Promise<{
       hardStopIncidentCreated: boolean;
@@ -497,7 +504,7 @@ export function budgetService(db: Db) {
           if (policy.scopeType === "agent" || policy.scopeType === "company" || policy.scopeType === "department") {
             breachedScopes.push({ scopeType: policy.scopeType, scopeId: policy.scopeId });
           }
-          const incident = await createIncidentIfNeeded(db, policy, "hard_stop", observed, start, end);
+          const incident = await createIncidentIfNeeded(db, policy, "hard_stop", observed, start, end, opts?.deferLiveEvents);
           // Emit the LEGACY in-process cancellation signal only on a newly-created
           // incident so that signal fires once per breach, not on every subsequent
           // cost event. (The distributed cancel is driven by hardStopBreached above.)
@@ -520,7 +527,7 @@ export function budgetService(db: Db) {
         }
         // Check warning threshold
         else if (observed >= (policy.amountCents * policy.warnPercent) / 100) {
-          await createIncidentIfNeeded(db, policy, "warning", observed, start, end);
+          await createIncidentIfNeeded(db, policy, "warning", observed, start, end, opts?.deferLiveEvents);
         }
       }
 

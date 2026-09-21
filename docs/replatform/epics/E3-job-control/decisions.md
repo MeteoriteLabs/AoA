@@ -349,3 +349,16 @@ Where the build differs in detail from the text above, the code is the truth and
   `budget.exhausted` listener cancels live heartbeat work, so the core never emits it; callers emit
   the returned `exhaustedScopes` only after their transaction commits (the ingest: only for events
   whose seam outcome is `applied`). `evaluateCostEvent`'s `deferExhaustedEmit` is additive.
+- **Amendment 2 corrected — an OFFERED lease is cancelled too (post-review, Codex P1).** The
+  scope cancel above said "queued, lease-less" jobs, and the as-built note excluded any job with a
+  live lease. That let a worker holding an un-ACKed offer ACK after the breach, because
+  `jobs.status` stays `queued` until the ACK. `listQueuedJobIdsForBudgetScope` now excludes only
+  an ACTIVE lease. An offered lease has no ingest holding it, since the fence guard admits only an
+  active lease, so locking it cannot cycle against an ingest. `requestCancellation` marks the
+  attempt `cancel_requested`, and `activateLeaseAck` then refuses the ACK. A job with an ACTIVE
+  lease is still left to its own next charge. The earlier wording is kept above as the record.
+- **Incident live events deferred too (post-review, Codex P2).** `createIncidentIfNeeded`
+  published `budget.incident_created` inside the savepoint. Callers on the seam now pass a
+  `deferLiveEvents` collector. The core returns the events with `exhaustedScopes`, and
+  `flushDeferredBudgetSignals` performs both only after commit.
+
