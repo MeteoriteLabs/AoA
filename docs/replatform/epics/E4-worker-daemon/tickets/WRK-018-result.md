@@ -6,7 +6,7 @@
 **Plan task:** `E4 implementation-plan §4c WRK-018 - the usage producer (M1a Track A)`
 **Implementer:** `Claude Opus 5 (M1 build agent)`
 **Start SHA:** `e5bc0bc81` (`origin/docs/replatform-program` after the rebase)
-**Reviewed revision:** `5bc5cc71835d0c1ddb01376233c43f298f061f22` (code + registers; this record is committed on top)
+**Reviewed revision:** `ad4cdfdf28ddb8bb66b730a4b9f66f7de2e7785f` (code + registers after four Codex fixes; only this record's CI section changes after it). *Superseded value: `5bc5cc71835d0c1ddb01376233c43f298f061f22`, the pre-Codex head.*
 **PR:** #546 (base `docs/replatform-program`)
 
 The implementer leaves `Status` at `gate_review`. A separate reviewer is the only role that may
@@ -136,22 +136,22 @@ sequencer's event scrub also applied to random event ids (~1 run in 10 failed); 
 
 ## 5. CI
 
-PR run `35585686144` on head `c9e57bcf9d1cd209902ce7d2a206f25e5cef8597` (code at that head = the
-reviewed code; this CI section is the only later change): **`ci-required` success**, every job
-success (`policy`, `lint`, `migrations`, `e2e`, `e2e-pgvector`, `browser`, `distributed-contract`,
-`brand-check`, both `worker-protocol-contract-bytes`, `verify` 1-4).
+PR run `35593307741` on head `ad4cdfdf28ddb8bb66b730a4b9f66f7de2e7785f`: **`ci-required` success**
+(job `106317833782`), every job success. *(An earlier record of run `35585686144` on `c9e57bcf9`,
+also all-green, predates the last three Codex fixes and is superseded by this run.)*
 
 | `verify` shard (job) | executed | WRK-018 suites in the shard (executed count) |
 |---|---|---|
-| 106288509907 | 6106 passed / 2 skipped | - |
-| 106288509922 | 6392 passed / 12 skipped | - |
-| 106288510027 | 5895 passed / 29 skipped | `dispatch-runtime` 28, `server-usage-stream` 5, `streaming` 7, `usage-observer` 7, `driver-usage-stream` 5 |
-| 106288510073 | 6211 passed / 33 skipped | `usage-stream-redaction` 14, `supervisor-producers-terminal` 11 |
+| 106312409044 | 6403 passed / 12 skipped | - |
+| 106312409094 | 6229 passed / 33 skipped | `usage-stream-redaction` 15, `supervisor-producers-terminal` 11 |
+| 106312409173 | 5904 passed / 29 skipped | `dispatch-runtime` 28, `server-usage-stream` 5, `streaming` 7, `usage-observer` 11, `driver-usage-stream` 5 |
+| 106312409202 | 6123 passed / 2 skipped | - |
 
 Every WRK-018 suite executed on Linux with a non-zero count; none is `skipIf(win32)`-gated.
 
-Codex (`chatgpt-codex-connector`): one P2 on `6642aa412` (fixed, replied, resolved - section 3);
-review on `c9e57bcf9` completed with no findings.
+Codex (`chatgpt-codex-connector`): four findings across `6642aa412`, `4a56c56e5`, `46e938ecd` and
+`ef291ded7` (three P2, one P1), each verified, fixed at source, replied to and resolved (section 3);
+the review on `ad4cdfdf2` completed with no findings.
 
 ## 6. What this does NOT do, and records now stale
 
