@@ -242,6 +242,26 @@ test("S-P1 is inconclusive if the listing cannot even see the staged set", () =>
   assert.equal(verdictStaged("S-P1", { home: ok([]), staged: STAGED, root: OUTPUT_ROOT }).reason, "listing-does-not-show-the-staged-set");
 });
 
+test("S-P3: a leg that TIMED OUT is inconclusive even if its file is there; a throw is a recorded result", () => {
+  const leg = (channel, exitCode) => ({ channel, exitCode, expected: "N3", read: { outcome: "ok", content: "N3" } });
+  const ok = verdictNonZeroExit({ viaRunCommand: leg("returned", 3), viaProviderExecute: leg("returned", 3) });
+  assert.equal(ok.state, "observed");
+  assert.equal(ok.findings.viaRunCommand.fileSurvived, true);
+  // Codex review (PR #551): the file may predate the deadline; no exit was observed.
+  const t1 = verdictNonZeroExit({ viaRunCommand: leg("timedOut", null), viaProviderExecute: leg("returned", 3) });
+  assert.equal(t1.state, "inconclusive");
+  assert.match(t1.reason, /viaRunCommand-channel-timedOut/);
+  assert.equal(verdictNonZeroExit({ viaRunCommand: leg("returned", 3), viaProviderExecute: leg("timedOut", null) }).state, "inconclusive");
+  const threw = verdictNonZeroExit({ viaRunCommand: leg("threw", null), viaProviderExecute: leg("returned", 3) });
+  assert.equal(threw.state, "observed");
+  assert.equal(threw.findings.viaRunCommand.returnedNotThrew, false);
+});
+
+test("S-P7 is inconclusive when its command did not return", () => {
+  assert.equal(verdictEnvSecret({ channel: "timedOut", envSeenByShell: true, read: { outcome: "ok", content: "C" }, nonce: "C" }).state, "inconclusive");
+  assert.equal(verdictEnvSecret({ channel: "returned", envSeenByShell: true, read: { outcome: "ok", content: "C" }, nonce: "C" }).state, "observed");
+});
+
 test("S-P4 distinguishes a redirect that failed first from one that let the command run", () => {
   assert.equal(verdictUnwritableRedirect({ channel: "returned", exitCode: 2, stdout: "", marker: "M" }).findings.failedClosed, true);
   assert.equal(verdictUnwritableRedirect({ channel: "returned", exitCode: 0, stdout: "M", marker: "M" }).reason, "command-ran-despite-redirect");

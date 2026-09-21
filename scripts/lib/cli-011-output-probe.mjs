@@ -419,7 +419,14 @@ export function verdictNonZeroExit(obs) {
   const o = obs ?? {};
   const legs = { viaRunCommand: o.viaRunCommand, viaProviderExecute: o.viaProviderExecute };
   for (const [k, leg] of Object.entries(legs)) {
-    if (!leg || (leg.read?.outcome !== "ok" && leg.read?.outcome !== "not-found")) return inconclusive("S-P3", `${k}-read-faulted`, {});
+    // A leg that did not FINISH observed no exit at all: the file may have been written before the
+    // deadline, so "the file survived a non-zero exit" would be read off a command that never
+    // exited. Codex review (PR #551). `threw` stays admissible: whether a non-zero exit throws IS
+    // part of what S-P3 records (E7-F014).
+    if (!leg || leg.channel === "timedOut" || (leg.channel !== "returned" && leg.channel !== "threw")) {
+      return inconclusive("S-P3", `${k}-channel-${String(leg?.channel)}`, {});
+    }
+    if (leg.read?.outcome !== "ok" && leg.read?.outcome !== "not-found") return inconclusive("S-P3", `${k}-read-faulted`, {});
   }
   const leg = (l) => ({
     returnedNotThrew: l.channel === "returned",
@@ -478,9 +485,10 @@ export function verdictSizeMetadata(obs) {
   });
 }
 
-/** S-P7. obs: {envSeenByShell: boolean, read:{outcome, content}, nonce} */
+/** S-P7. obs: {channel, envSeenByShell: boolean, read:{outcome, content}, nonce} */
 export function verdictEnvSecret(obs) {
   const o = obs ?? {};
+  if (o.channel !== undefined && o.channel !== "returned") return inconclusive("S-P7", `channel-${String(o.channel)}`, {});
   if (o.envSeenByShell !== true) return inconclusive("S-P7", "canary-env-did-not-reach-the-sandbox", {});
   if (o.read?.outcome !== "ok") return inconclusive("S-P7", "read-faulted-or-missing", { readOutcome: o.read?.outcome ?? null });
   const present = String(o.read.content ?? "").includes(o.nonce);

@@ -32,7 +32,7 @@ it dispatches (§10.3). **Nothing here is evidence about the output mechanism ye
 | `.github/workflows/keyed-e2b-cli-011-output-probe.yml` | **`workflow_dispatch` only**. Inputs are `e2b_template` (empty means `aoa-base`) and `arms` (`all` or `shell-only`). Secrets are `E2B_API_KEY` and `ANTHROPIC_API_KEY`, bound as env only. It has an `always()` fallback record, an `always()` upload of `cli-011-output-probe-record` (90 days), an `always()` skip guard, and `timeout-minutes: 45`. |
 | `scripts/lib/cli-011-output-probe.mjs` | The pure core. It holds the verdict for each arm, the `$HOME` census diff and its classification, `evaluateDecisionTable` (all 12 rows of §10.5), `evaluateControls`, `packDisposition`, `buildProbeRecord`, and `evaluateWorkflowShape`. |
 | `packages/sandbox-e2b-provider/src/__tests__/keyed-cli-011-output-probe.test.ts` | The keyed observer: P-011a in one sandbox, and P-011b with one fresh sandbox per claude arm. The no-key wiring tests run in `verify`. |
-| `scripts/lib/__tests__/cli-011-output-probe.test.mjs` | 34 tests, run in `policy` (step *"CLI-011 P-011 output-probe decision logic (proven WITHOUT the key)"*). |
+| `scripts/lib/__tests__/cli-011-output-probe.test.mjs` | 36 tests at the final head (34 before the second Codex fix), run in `policy` (step *"CLI-011 P-011 output-probe decision logic (proven WITHOUT the key)"*). |
 
 Registrations:
 - `scripts/test-execution-census.json`.
@@ -117,6 +117,11 @@ imports buildSandboxInvocation…"*).
   three lists to be empty.
 - **P2: an A-decl path must be relative.** An absolute path, `~`, a `.`/`..` segment, an empty
   segment or a backslash is refused (`relative:false`), so it can never fire R11.
+- **P2 (second review): a timed-out leg is not a measurement.** An S-P3 leg whose command timed
+  out is now `inconclusive`, even when its file is there, because the file may have been written
+  before the deadline and no exit was observed. A leg that `threw` stays admissible, since whether a
+  non-zero exit throws is part of what S-P3 records (E7-F014). S-P7 gets the same channel check.
+  RED: 2 of 36 fail on the previous core. GREEN: 36/36.
 
 **Mutations.** Each mutation was applied, run, and reverted. All eight went RED.
 

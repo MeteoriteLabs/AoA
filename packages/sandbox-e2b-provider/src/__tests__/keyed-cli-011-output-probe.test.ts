@@ -432,7 +432,7 @@ async function p011a(): Promise<Verdict[]> {
         await guarded("S-P7", async () => {
           const w = await sh(t, id, `if [ -n "$AOA_PROBE_CANARY" ]; then echo ENV_SET; fi; printf "%s" "$AOA_PROBE_CANARY" > ${OUTPUT_ROOT}/env.txt`);
           const r = await readBack(t, id, `${OUTPUT_ROOT}/env.txt`);
-          const obs = { envSeenByShell: w.stdout.includes("ENV_SET"), read: { outcome: r.outcome, content: r.bytes ? DEC.decode(r.bytes) : null }, nonce: CANARY };
+          const obs = { channel: w.channel, envSeenByShell: w.stdout.includes("ENV_SET"), read: { outcome: r.outcome, content: r.bytes ? DEC.decode(r.bytes) : null }, nonce: CANARY };
           evidence("S-P7", { envSeenByShell: obs.envSeenByShell, readOutcome: r.outcome, noncePresent: obs.read.content?.includes(CANARY) ?? false });
           return verdictEnvSecret(obs) as Verdict;
         }),
