@@ -168,10 +168,10 @@ Codex (`chatgpt-codex-connector`) reviewed `c0d582baf0` with no findings. This c
 
 ## Independent review
 
-**Reviewer:** _pending_
-**Reviewed revision:** _pending_
-**Disposition:** _pending_
-**Attempt:** _none yet_
+**Reviewer:** M1 review-batch-1 independent reviewer (Claude Opus 5) — distinct from the CLI-010 build agent and the planning session
+**Reviewed revision:** 28a2dd259ed7bdd8d64d68ad8a5999500d80b69e
+**Disposition:** `approved`
+**Attempt:** 1 (see *Independent review — attempt 1* and the attempt history)
 
 For `approved`, check each claim above against its named source at the reviewed revision. In
 particular, confirm three things: the SDK citation (`e2b@2.30.5`, `Filesystem2.list`,
@@ -179,10 +179,76 @@ particular, confirm three things: the SDK citation (`e2b@2.30.5`, `Filesystem2.l
 and that §6's "not proven" is accepted as such rather than read as passing. Then change the top-level
 `Status` to `complete` and commit that disposition separately.
 
+### Independent review — attempt 1
+
+**Disposition: `approved`.** Reviewed at `28a2dd259ed7bdd8d64d68ad8a5999500d80b69e` (program tip
+`docs/replatform-program`, the merge of PR #545). The implementation commit
+`a38f916135bfcfb62414d5048581b58d69c615fd`, the CI head `c0d582baf0bf…` and the start SHAs `66d1f9176` /
+`e5bc0bc81` are all ancestors of it. `git diff a38f91613 28a2dd259 -- packages/sandbox-e2b-provider packages/worker-daemon/src/snapshot packages/worker-daemon/src/__tests__/sandbox-listdir-binding.test.ts packages/worker-daemon/src/__tests__/capture-sandbox.test.ts`
+is empty, so every claim below about the implementation still describes the reviewed tree.
+
+- **SDK citation, at source.** In an installed `e2b@2.30.5` (`node_modules/.pnpm/e2b@2.30.5/node_modules/e2b/dist`),
+  `index.js` class `Filesystem2`, method `list(path2, opts)`, sends `depth: opts?.depth ?? 1` to the
+  `listDir` RPC and `continue`s past any entry for which `mapFileType(e.type)` is falsy. `mapFileType`
+  maps only `2`→`"dir"` and `1`→`"file"`. `mapEntryInfo` returns `{name, type, path, …}`. In
+  `index.d.ts`, `interface EntryInfo extends WriteInfo`, and `WriteInfo` carries `type?: FileType`.
+  The lockfile resolves `e2b@2.30.5`. §1 is **true**.
+- **The binding, at source.** `RealE2bTransport.listDir` calls
+  `sandbox.files.list(path, { depth: E2B_LIST_DIR_MAX_DEPTH + 1 })` once, rejects a non-array, and hands
+  the entries to `filesOnlyFromListing` (`list-dir-contract.ts`). That enforcer rejects a relative root,
+  throws `E2bListDirBoundExceededError` on entries > 100,000 or depth > 64, throws
+  `E2bListDirMalformedEntryError` on a non-string, outside-root or untyped entry, and keeps only
+  `type === "file"`. `MockE2bTransport.listDir` synthesises implied directories and uses the same
+  enforcer. §2 is **true**.
+- **Neither barrel exports the enumerator or `captureSandboxEntries`.** `snapshot/index.ts` and
+  `src/index.ts` name neither module. The package `exports` map is `"."` only, so there is no subpath
+  route. The only non-test references to either symbol are their definitions and comments.
+- **Header fence.** `capture-sandbox.ts` carries `FENCE — LOCAL-LANE ONLY`, names E7-D06 / Option D,
+  points to `enumerate-sandbox.ts`, and keeps the old claim only inside `Superseded text: "…"`.
+- **Test counts.** `list-dir-files-only.test.ts` has 11 `it`s and `sandbox-listdir-binding.test.ts` has
+  10. `scripts/test-inventory.json` moves `sandbox-e2b-provider` 18→19 and `worker-daemon` 164→165 in
+  `a38f91613`.
+- **CI, by job.** Run `35583109339` (`pull_request`, headSha `c0d582baf0bf…`, conclusion `success`, 16
+  jobs all `success`, including `ci-required` `106285162812`). Per-job logs:
+  - `verify (1)` `106280266861`: `sandbox-listdir-binding.test.ts (10 tests)` ✓; shard 655 files passed / 3 skipped, 6396 tests passed / 12 skipped.
+  - `verify (2)` `106280266970`: `list-dir-files-only.test.ts (11 tests)` ✓; 656 / 2 files, 6210 / 33 tests.
+  - `verify (4)` `106280266854`: `capture-sandbox.test.ts (6 tests)` ✓; 655 files, 6097 / 2 tests.
+  - `verify (3)` `106280266878`: none of these files; 654 / 4 files, 5885 / 29 tests.
+
+  Every number in §7 matches. `git diff a38f91613 c0d582baf` touches only this record, so "code identical" is true.
+- **Codex.** On PR #542, `chatgpt-codex-connector` reported "Didn't find any major issues" on `c0d582baf0`
+  and again on the final head `b5c4ea362b`. There are no review-thread comments.
+- **Focused command, rerun locally (Windows) at the reviewed revision.** `worker-protocol` build exit 0.
+  The `CLI-010` row, `vitest run capture-sandbox.test.ts sandbox-listdir-binding.test.ts`, gives
+  **2 files, 16 passed**. `check:worker-daemon-boundary` gives `PASS`. `worker-daemon` typecheck exit 0, build exit 0.
+  `list-dir-files-only.test.ts` gives **11/11**.
+- **Mutations, reproduced by me and reverted.**
+  - M1 (enforcer keeps directories) reproduced exactly: **4 failed**, namely *returns ONLY files*, *BINDING*, *AT the bound* and the mock *files only*.
+  - M6 (a `readFile` reference appended to the enumerator) reproduced exactly: **1 failed**, the *POSITIVE CONTROL* source scan.
+  - The rest checked by reading the tests. M7 (SDK default depth 1) would fail *ONLY files*, *depth MAX+1*, *DEPTH BOUND* (no throw) and *AT the bound*, which is 4 and matches. M2 fails exactly the real and mock *DEPTH BOUND*, M3 fails *ENTRY BOUND*, and M4 fails *no usable type* (an untyped entry would be silently dropped). M5, M8 and M9 each map to exactly one daemon test.
+- **Acceptance items (E7 plan `### CLI-010`).**
+  - Outcome 1 (metadata-only enumeration seam, bound and tested): **evidenced**.
+  - Outcome 2 (fence the byte-reading helper and do not export it): **evidenced**.
+  - RED "listDir returns directories fails loudly": **evidenced** by the RED transcript and M1/M5.
+  - RED "enumerator does not exist": **evidenced** by the load failure.
+  - GREEN, plus boundary, typecheck and build: **evidenced**.
+  - The widening is recorded as `E7-D09` in `decisions.md`, with `E7-D08` reserved. §4's two plan contradictions (Files vs Interfaces, Migration vs Rollback) are true readings of the task text.
+- **§6 "not proven" is accepted AS NOT PROVEN, and is not read as passing.** Nothing here proves what a
+  live envd returns for `depth > 1` or for entry kinds the SDK drops. The record says so, and so does the
+  code comment on `RealE2bTransport.listDir`. That belongs to `CLI-012`'s keyed acceptance. For context
+  only, and as no substitute: keyed run `35588332370` (*Keyed E2B — CLI-008 Unit D invocation shape*,
+  push to `docs/replatform-program` at `81fb6dfb58e5…`, the #542 merge) concluded `success`. That is a
+  regression signal that the merged provider did not break the Unit D invocation lane. It is **not** a
+  listDir depth proof.
+- **Not blocking, noted.** `Start SHA` is a 9-character short SHA rather than the bare 40-hex that the E4
+  §3 protocol names. It resolves unambiguously to an ancestor, and the implementation commit is pinned
+  40-hex. I found no false statement.
+
 ## Review attempt history
 
 The implementation author leaves the table body empty. The first independent reviewer appends attempt 1, and later reviewers append rows with increasing attempt numbers without replacing earlier ones. Do not include a `Review commit` column: a row cannot embed the SHA of the commit that first contains it.
 
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
+| 1 | M1 review-batch-1 independent reviewer (Claude Opus 5) | `28a2dd259ed7bdd8d64d68ad8a5999500d80b69e` | `approved` | SDK citation true at source (`e2b@2.30.5` `Filesystem2.list` depth default 1, `mapFileType` drops non-file/dir, `mapEntryInfo`). Neither barrel nor the `exports` map exposes the enumerator or `captureSandboxEntries`. Run `35583109339` per job: `verify (1)` 10, `verify (2)` 11, `verify (4)` 6 — all counts match. Codex clean on `c0d582baf0` and `b5c4ea362b`. Focused command rerun 16/16, plus boundary PASS and typecheck/build 0. M1 and M6 reproduced exactly (4 and 1 failed). §6 accepted as NOT proven; that is `CLI-012`'s keyed acceptance. |
 <!-- The first reviewer appends attempt 1 below. -->
