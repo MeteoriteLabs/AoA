@@ -370,7 +370,9 @@ export function createAuthoritativeCostRedriveSweep(input: {
 }): AuthoritativeCostRedriveSweep {
   const maxAttempts = Math.max(1, Math.floor(input.maxAttempts ?? AUTHORITATIVE_COST_REDRIVE_MAX_ATTEMPTS));
   const staleAfterMs = Math.max(0, Math.floor(input.staleAfterMs ?? STALE_PENDING_RECEIPT_THRESHOLD_MS));
-  const batchLimit = Math.max(1, Math.min(100, Math.floor(input.batchLimit ?? 16)));
+  // Generous by default: a receipt already escalated to the Inbox still matches the stale query, so
+  // a small page could fill with escalated receipts and starve a newer one of its re-drive.
+  const batchLimit = Math.max(1, Math.min(500, Math.floor(input.batchLimit ?? 200)));
   const now = input.now ?? (() => new Date());
   const telemetry = input.telemetry ?? NOOP_ACCEPTED_USAGE_TELEMETRY;
   const redrive = input.redrive ?? redrivePendingAuthoritativeCost;
@@ -383,6 +385,10 @@ export function createAuthoritativeCostRedriveSweep(input: {
       const stale = await runInTenant(input.appDb, organizationId, (repos) =>
         repos.jobControl.listStalePendingProjectionReceipts({ organizationId, olderThan, limit: batchLimit }));
       for (const receipt of stale) {
+        const isCost = receipt.projectionKind === "authoritative_cost";
+        // An escalated cost receipt is already visible in the Inbox; re-logging it every tick
+        // would only bury the new ones. The durable stop: never retried again.
+        if (isCost && await input.notifier.isNotified(receipt)) continue;
         result.stale += 1;
         telemetry.count({ outcome: "stale_pending", count: 1 });
         input.log.warn({
@@ -395,8 +401,7 @@ export function createAuthoritativeCostRedriveSweep(input: {
           attemptId: receipt.attemptId,
           createdAt: receipt.createdAt.toISOString(),
         }, "stale pending projection receipt");
-        if (receipt.projectionKind !== "authoritative_cost") continue;
-        if (await input.notifier.isNotified(receipt)) continue;
+        if (!isCost) continue;
 
         const tried = attempts.get(receipt.id) ?? 0;
         if (tried < maxAttempts) {

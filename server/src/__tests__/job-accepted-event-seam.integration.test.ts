@@ -376,8 +376,11 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       const warn = vi.fn();
       const sweep = createAuthoritativeCostRedriveSweep({
         appDb: f.app.db,
-        notifier: { isNotified: async () => true, notify: async () => {} },
+        notifier: { isNotified: async () => false, notify: async () => {} },
         log: { warn, info: () => {} },
+        // Keep the failure persistent so this test observes only the detector.
+        redrive: async () => { throw new Error("still unpriceable"); },
+        maxAttempts: 100,
         staleAfterMs: 0,
         now: () => new Date(Date.now() + 1_000),
       });
