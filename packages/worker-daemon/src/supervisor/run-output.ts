@@ -86,8 +86,20 @@ export function scrubOutputText(text: string, canaries: readonly string[]): stri
   const needles = redactionNeedles(canaries);
   if (needles.length === 0) return text;
   const scrubbed = redactString(text, needles);
+  // ★ An occurrence lying WHOLLY inside a replacement marker is the marker, not a leak: a
+  // canary that is a substring of «redacted» (e.g. "red") would otherwise drop every tail
+  // (Codex P2, PR #546). An occurrence that overlaps text outside a marker - including one
+  // re-formed by marker + neighbours - is a residual, and the whole text is refused.
+  const markerSpans: Array<[number, number]> = [];
+  for (let at = scrubbed.indexOf(REDACTION_MARKER); at >= 0; at = scrubbed.indexOf(REDACTION_MARKER, at + 1)) {
+    markerSpans.push([at, at + REDACTION_MARKER.length]);
+  }
+  const insideMarker = (start: number, end: number): boolean =>
+    markerSpans.some(([s, e]) => start >= s && end <= e);
   for (const needle of needles) {
-    if (scrubbed.includes(needle)) return null;
+    for (let at = scrubbed.indexOf(needle); at >= 0; at = scrubbed.indexOf(needle, at + 1)) {
+      if (!insideMarker(at, at + needle.length)) return null;
+    }
   }
   return scrubbed;
 }

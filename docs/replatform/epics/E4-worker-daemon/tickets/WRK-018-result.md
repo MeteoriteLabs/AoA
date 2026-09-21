@@ -77,12 +77,19 @@ adapter-manager, worker-networked-host, worker-keystore, provider-capability.
 | MC1 | AM scrubs with `[]` | all 4 canary-on-the-wire cases (reads the RAW HTTP body) |
 | MC2 | driver never replays the tail | the replay case |
 | MC3 | AM captures regardless of the flag | the no-flag byte-identical case |
+| MP2 | revert the Codex P2 fix (plain `includes` residual check) | the marker-substring canary case (`"red"`, `"redacted"`, `"a"` dropped every tail as `unscrubbable`) |
 
 **Positive controls that stop the canary tests being vacuous:** each lane asserts the canary WAS in
 the stream the provider delivered (`delivered` / `transport.stdoutSeen`) before asserting it reached
 nothing. The assertions look at what `observeRun` RECEIVES and at the raw HTTP response, not only at
 events: the usage event is four integers, so an events-only check would stay green with the scrubber
 deleted.
+
+**Codex P2 on `6642aa412` (fixed at source):** the fail-closed residual check used `includes`, so a
+canary that is a substring of the marker `«redacted»` (e.g. `"red"`) matched the marker it had just
+been replaced by and dropped every tail - usage silently lost. The check now ignores an occurrence
+lying WHOLLY inside a marker span and still refuses one that overlaps outside text (the re-formed
+`w«redacted»` case stays red). RED first: `expected [ 'unscrubbable' ] to deeply equal []`.
 
 **A vacuous test caught and fixed during the build:** the first "empty tail" case asserted inside
 the observer, whose throw the supervisor swallows, so it passed in RED. It now records and asserts

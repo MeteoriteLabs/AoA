@@ -136,6 +136,20 @@ describe("WRK-018 — createRunOutputCapture (the per-run scrubber)", () => {
     expect(drops).toEqual(["late_chunk"]);
   });
 
+  it("a canary that is a SUBSTRING of the marker is scrubbed, not mistaken for a residual (Codex P2, PR #546)", () => {
+    // "red"/"redacted"/"a" all occur inside «redacted»; the residual check must ignore
+    // occurrences that lie wholly inside a replacement marker, or every tail is dropped.
+    for (const canary of ["red", "redacted", "a"]) {
+      const drops: string[] = [];
+      const cap = createRunOutputCapture({ canaries: [canary], onDrop: (r) => drops.push(r) });
+      cap.onStdout(`x ${canary} y\n{"type":"result"}\n`);
+      const { stdoutTail } = cap.close();
+      expect(drops).toEqual([]);
+      expect(stdoutTail).toContain(REDACTION_MARKER);
+      expect(stdoutTail.split(REDACTION_MARKER).join("")).not.toContain(canary);
+    }
+  });
+
   it("FAIL CLOSED: output that still holds a canary after scrubbing is dropped entirely", () => {
     // Longest-first single-pass scrubbing turns "wxyzq" into "w«redacted»" via the "xyzq"
     // needle AFTER the longer needle already ran — a residual the post-check must catch.
