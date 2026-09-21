@@ -35,7 +35,16 @@ import type {
   SandboxProvider,
   StagedFileRequest,
 } from "@armyofagents/worker-daemon";
-import { WireProtocolError, decodeOpRequest, encodeErrResponse, encodeOkResponse, isModelledWireError } from "@armyofagents/provider-wire/codec";
+import { createRunOutputCapture } from "@armyofagents/worker-daemon";
+import {
+  EXECUTE_CAPTURE_STDOUT_KEY,
+  EXECUTE_STDOUT_TAIL_KEY,
+  WireProtocolError,
+  decodeOpRequest,
+  encodeErrResponse,
+  encodeOkResponse,
+  isModelledWireError,
+} from "@armyofagents/provider-wire/codec";
 import type { OwnedLabelsCapability } from "@armyofagents/provider-wire";
 import { EXPORT_TEARDOWN_RESERVE_MS } from "@armyofagents/worker-daemon";
 
@@ -44,6 +53,7 @@ import { gateCreate, type CreateGateDeps } from "./create-gate.js";
 import { IdempotencyLedger } from "./idempotency-ledger.js";
 import { KeyedMutex } from "./keyed-mutex.js";
 import { createReaperMetrics, renderReaperMetrics, type ReaperMetricsCounter } from "./reaper-metrics.js";
+import { classifyOpFailure, formatOpFailure, type OpFailureClassification } from "./op-failure-classification.js";
 
 export interface CreateProviderServerOptions {
   readonly provider: SandboxProvider;
@@ -84,6 +94,17 @@ export interface CreateProviderServerOptions {
    * until the store origin is configured.
    */
   readonly artifactUploadOrigins?: readonly string[];
+  /**
+   * E6-F024 — receives the REDACTED classification of every provider-op failure that the leak
+   * fence below maps to the generic `WireProtocolError`. Every field is from a closed
+   * vocabulary (`op-failure-classification.ts`): never a URL, header, grant, key or message.
+   * Defaults to one `console.error` line, so a failure is never silent on the adapter-manager.
+   */
+  readonly onOpFailure?: (classification: OpFailureClassification) => void;
+}
+
+function logOpFailure(classification: OpFailureClassification): void {
+  console.error("adapter-manager provider operation failed", classification);
 }
 
 type OpHandler = (args: unknown, ctx: ProviderOpContext) => Promise<unknown>;
@@ -129,6 +150,7 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
   // The shared reaper metric counter (or a fresh zeroed one so `/metrics` renders zeros
   // when no reaper is wired). Slice C's loop mutates the SAME ref on the single event loop.
   const reaperMetrics = options.reaperMetrics ?? createReaperMetrics();
+  const onOpFailure = options.onOpFailure ?? logOpFailure;
 
   // A Map (not an object literal) so an inherited prototype key like
   // `constructor`/`__proto__` can NEVER resolve to a handler and return a spurious ok.
@@ -136,7 +158,7 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
   // five B2 ops are deliberately ABSENT so an ungated server 404s them (never raw).
   const handlers = new Map<string, OpHandler>([
     ["create", (args, ctx) => provider.create(args as CreateSandboxSpec, ctx)],
-    ["execute", (args, ctx) => provider.execute(args as ExecuteInput, ctx)],
+    ["execute", (args, ctx) => executeRelayingStdout(provider, args, ctx)],
   ]);
 
   // The durable ledger + the per-(identity,key) create mutex exist ONLY on a gated
@@ -176,7 +198,7 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
       }
       case "execute": {
         const input = args as ExecuteInput;
-        return gateOwnedOp(deps, input.sandboxId, ctx, capability, () => provider.execute(input, ctx));
+        return gateOwnedOp(deps, input.sandboxId, ctx, capability, () => executeRelayingStdout(provider, args, ctx));
       }
       case "cancel": {
         const sandboxId = args as string;
@@ -320,10 +342,30 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
           // that is not a MODELLED wire class to a FIXED generic WireProtocolError BEFORE
           // encoding — dropping both raw-text arms at once. Modelled classes pass as-is (their
           // messages are fixed by the class vocabulary, never tenant data).
-          const safe = isModelledWireError(err)
-            ? err
-            : new WireProtocolError("adapter-manager provider operation failed");
-          sendJson(res, 200, encodeErrResponse(safe));
+          //
+          // ★ E6-F024 — the fence dropped the CAUSE along with the text, so every failure read
+          // the same on both sides (the DEP-015 keyed run: a presign host the AM could not
+          // reach, logged nowhere). The classification restores the cause from a CLOSED
+          // vocabulary only — op, a known error class, a coarse cause, a known error code, an
+          // HTTP status — never message text, so the fence still holds. It is logged here and
+          // carried in the fixed message for the worker to log.
+          if (isModelledWireError(err)) {
+            sendJson(res, 200, encodeErrResponse(err));
+            return;
+          }
+          const classification = classifyOpFailure(op, err);
+          try {
+            onOpFailure(classification);
+          } catch {
+            // A logging sink must never turn a coded failure into a crash or a hang.
+          }
+          sendJson(
+            res,
+            200,
+            encodeErrResponse(
+              new WireProtocolError(`adapter-manager provider operation failed (${formatOpFailure(classification)})`),
+            ),
+          );
         }
       })();
     });
@@ -372,6 +414,45 @@ function assertUploadGrantBound(grant: unknown, owned: ResourceLabels, allowedOr
     return refuse();
   }
   if (!path.endsWith(`/${objectKey}`)) refuse();
+}
+
+/**
+ * WRK-018 — `execute`, relaying the optional stdout stream channel across the wire.
+ *
+ * Without the driver's `captureStdout` flag this is exactly `provider.execute(args, ctx)` — the
+ * same input object, no handler, no extra response field. With it, the provider is handed a
+ * per-request `onStdout` that feeds the worker-daemon's own `createRunOutputCapture` (bounded,
+ * whole-line, fail-closed), and the response gains `stdoutTail`: the tail SCRUBBED with THIS
+ * request's env values before it is encoded.
+ *
+ * ★ Why the env values are the right canaries. On this lane the run's per-run canaries are
+ * exactly the redeemed secret values, and the worker puts every one of them — and nothing
+ * else — into the sandbox `env` it sends on create AND on execute
+ * (`synthesiseRunSecrets`, packages/worker-daemon/src/lease/secret-redemption.ts). The capture
+ * is per REQUEST, so one tenant's run can neither read nor be scrubbed by another's; raw
+ * output never crosses the wire (a WRK-018 non-goal), and the daemon scrubs again on arrival.
+ */
+async function executeRelayingStdout(provider: SandboxProvider, args: unknown, ctx: ProviderOpContext): Promise<unknown> {
+  const requested = args as ExecuteInput & Record<string, unknown>;
+  if (requested[EXECUTE_CAPTURE_STDOUT_KEY] !== true) return provider.execute(requested, ctx);
+  const { [EXECUTE_CAPTURE_STDOUT_KEY]: _flag, ...input } = requested;
+  const env = isRecordOfUnknown(input.env) ? input.env : {};
+  const canaries = Object.values(env).filter((v): v is string => typeof v === "string" && v.length > 0);
+  const capture = createRunOutputCapture({ canaries });
+  let result;
+  try {
+    result = await provider.execute({ ...(input as unknown as ExecuteInput), onStdout: capture.onStdout }, ctx);
+  } catch (err) {
+    // Close on the failure path too: a chunk the provider delivers late is dropped, not held.
+    capture.close();
+    throw err;
+  }
+  const { stdoutTail } = capture.close();
+  return { ...result, [EXECUTE_STDOUT_TAIL_KEY]: stdoutTail };
+}
+
+function isRecordOfUnknown(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** Write a JSON body exactly once. Idempotent: a second call (e.g. after a mid-flight

@@ -27,6 +27,14 @@ import {
   AUTOSCALE_MIN_LABEL,
   AUTOSCALE_MAX_LABEL,
   DRAIN_HOOK_LABEL,
+  evaluateShippedBootOverlayInvariants,
+  mergeComposeModel,
+  SHIPPED_BOOT_OVERLAY_PATH,
+  SHIPPED_BOOT_OVERLAY_WORKERS,
+  SHIPPED_BOOT_ADMITTED_DISPATCH_ENV,
+  DISTRIBUTED_EXECUTION_ROLLOUT_ENV,
+  DISTRIBUTED_CREW_ROLLOUT_ENABLED_ENV,
+  GRANT_REDEEMING_SERVICES,
 } from "./lib/staging-manifest-invariants.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -437,4 +445,269 @@ test("REJECT (image ref): a hardcoded attacker image that merely embeds the inje
   c.services["worker-a1"].image = "ghcr.io/evil/AOA_STAGING_WORKER_IMAGE@sha256:deadbeef";
   const { violations } = evalValid(c);
   assert.ok(anyMatch(violations, /image.*must be injected/i), violations.join("\n"));
+});
+
+// =============================================================================
+// DEP-015 — the shipped CI boot overlay and the ONE scoped default-off admission.
+//
+// The admission is the dangerous edit in this ticket: it lets a worker carry the switches
+// DEP-010 bans. So the tests below are mostly REDS. The load-bearing one is the positive
+// control the ticket names — the overlay's own worker env, grafted onto the BASE staging
+// manifest, still reds — plus proof that every way of widening the admission (another path,
+// another worker, another value, the base workers, the inline vector, the in-worker provider)
+// reds too.
+// =============================================================================
+
+const overlayPath = path.join(repoRoot, SHIPPED_BOOT_OVERLAY_PATH);
+const realBase = () => parseYaml(readFileSync(composePath, "utf8"));
+const realOverlay = () => parseYaml(readFileSync(overlayPath, "utf8"));
+const evalOverlay = (base, overlay, overlayPathArg = SHIPPED_BOOT_OVERLAY_PATH) =>
+  evaluateShippedBootOverlayInvariants(base, overlay, { overlayPath: overlayPathArg }).violations;
+
+test("DEP-015: the REAL overlay over the REAL staging manifest satisfies the shipped-boot contract", () => {
+  const violations = evalOverlay(realBase(), realOverlay());
+  assert.deepEqual(violations, [], violations.join("\n"));
+});
+
+test("DEP-015: the real overlay declares exactly the three shipped-boot workers, each armed", () => {
+  const overlay = realOverlay();
+  for (const name of SHIPPED_BOOT_OVERLAY_WORKERS) {
+    const env = overlay.services[name].environment;
+    for (const [key, value] of Object.entries(SHIPPED_BOOT_ADMITTED_DISPATCH_ENV)) {
+      assert.equal(env[key], value, `${name} ${key}`);
+    }
+  }
+});
+
+test("DEP-015 POSITIVE CONTROL: the overlay's worker env on the BASE staging manifest still reds", () => {
+  const base = realBase();
+  const armed = realOverlay().services["m1-worker-a"].environment;
+  base.services["worker-a1"].environment = { ...base.services["worker-a1"].environment, ...armed };
+  const documentedEnvKeys = collectDocumentedEnvKeys(readFileSync(envDocPath, "utf8"));
+  const { violations } = evaluateStagingManifestInvariants(base, { documentedEnvKeys });
+  assert.ok(anyMatch(violations, /DISPATCH-DEFAULT.*worker-a1.*AOA_WORKER_PROVIDER_URL/), violations.join("\n"));
+  assert.ok(anyMatch(violations, /DISPATCH-DEFAULT.*worker-a1.*AOA_WORKER_DISPATCH_ENABLED/), violations.join("\n"));
+});
+
+test("DEP-015 POSITIVE CONTROL: base + overlay through the UNSCOPED staging path reds on every overlay worker", () => {
+  const merged = mergeComposeModel(realBase(), realOverlay());
+  // Even handed options that LOOK like an allowance — the unscoped path has no parameter that
+  // can carry the module-private admission.
+  const violations = evaluateStagingManifestInvariants(merged, {
+    dispatchAllowance: true,
+    overlayPath: SHIPPED_BOOT_OVERLAY_PATH,
+  }).violations;
+  for (const name of SHIPPED_BOOT_OVERLAY_WORKERS) {
+    assert.ok(
+      anyMatch(violations, new RegExp(`DISPATCH-DEFAULT.*'${name}'.*AOA_WORKER_PROVIDER_URL`)),
+      `${name}:\n${violations.join("\n")}`,
+    );
+  }
+});
+
+test("DEP-015 REJECT: the admission is bound to the one overlay path", () => {
+  const violations = evalOverlay(realBase(), realOverlay(), "docker/campaign/docker-compose.campaign.yml");
+  assert.ok(anyMatch(violations, /scoped to 'docker\/m1-boot\/docker-compose\.m1-boot\.yml' ONLY/), violations.join("\n"));
+});
+
+test("DEP-015 REJECT: the admission never reaches a BASE staging worker, even inside the overlay", () => {
+  const overlay = realOverlay();
+  overlay.services["worker-a1"] = { environment: { AOA_WORKER_PROVIDER_URL: "http://adapter-manager:8090" } };
+  const violations = evalOverlay(realBase(), overlay);
+  assert.ok(anyMatch(violations, /DISPATCH-DEFAULT.*'worker-a1'.*AOA_WORKER_PROVIDER_URL/), violations.join("\n"));
+});
+
+test("DEP-015 REJECT: an UNLISTED worker in the overlay is held to default-off (enumerated by image/name)", () => {
+  const overlay = realOverlay();
+  overlay.services["m1-worker-d"] = structuredClone(overlay.services["m1-worker-a"]);
+  const violations = evalOverlay(realBase(), overlay);
+  assert.ok(anyMatch(violations, /DISPATCH-DEFAULT.*'m1-worker-d'/), violations.join("\n"));
+  assert.ok(anyMatch(violations, /shipped-boot workers .* != the declared/), violations.join("\n"));
+});
+
+test("DEP-015 REJECT: a provider URL that is not the adapter-manager (e.g. a fabricating fake provider)", () => {
+  const overlay = realOverlay();
+  overlay.services["m1-worker-b"].environment.AOA_WORKER_PROVIDER_URL = "http://fake-provider:8080";
+  const violations = evalOverlay(realBase(), overlay);
+  assert.ok(anyMatch(violations, /DISPATCH-DEFAULT.*'m1-worker-b'.*AOA_WORKER_PROVIDER_URL/), violations.join("\n"));
+});
+
+test("DEP-015 REJECT: an in-worker sandbox provider is never admitted", () => {
+  const overlay = realOverlay();
+  overlay.services["m1-worker-a"].environment.AOA_WORKER_SANDBOX_PROVIDER = "e2b";
+  const violations = evalOverlay(realBase(), overlay);
+  assert.ok(anyMatch(violations, /DISPATCH-DEFAULT.*'m1-worker-a'.*AOA_WORKER_SANDBOX_PROVIDER/), violations.join("\n"));
+});
+
+test("DEP-015 REJECT: the inline command vector is never admitted, even for an admitted key", () => {
+  const overlay = realOverlay();
+  overlay.services["m1-worker-c"].command = ["sh", "-c", "AOA_WORKER_PROVIDER_URL=http://adapter-manager:8090 exec node x.js"];
+  const violations = evalOverlay(realBase(), overlay);
+  assert.ok(anyMatch(violations, /DISPATCH-DEFAULT.*'m1-worker-c'.*inline-injection/), violations.join("\n"));
+});
+
+test("DEP-015 REJECT: an overlay worker that LOST its provider URL (boots, enrols, never runs a job)", () => {
+  const overlay = realOverlay();
+  delete overlay.services["m1-worker-a"].environment.AOA_WORKER_PROVIDER_URL;
+  const violations = evalOverlay(realBase(), overlay);
+  assert.ok(anyMatch(violations, /'m1-worker-a' must set 'AOA_WORKER_PROVIDER_URL'/), violations.join("\n"));
+});
+
+test("DEP-015 REJECT: the E2B key on a shipped-boot worker (the provider-control boundary still holds)", () => {
+  const overlay = realOverlay();
+  overlay.services["m1-worker-a"].environment.E2B_API_KEY = "${E2B_API_KEY}";
+  const violations = evalOverlay(realBase(), overlay);
+  assert.ok(anyMatch(violations, /PROVIDER-CONTROL VIOLATION: service 'm1-worker-a'/), violations.join("\n"));
+});
+
+test("DEP-015 REJECT (F10): a control-plane replica without the tenant-set rollout", () => {
+  const overlay = realOverlay();
+  delete overlay.services["control-plane-b"].environment[DISTRIBUTED_EXECUTION_ROLLOUT_ENV];
+  const violations = evalOverlay(realBase(), overlay);
+  assert.ok(anyMatch(violations, /replica 'control-plane-b' must set 'AOA_DISTRIBUTED_EXECUTION_ROLLOUT'/), violations.join("\n"));
+});
+
+test("DEP-015 REJECT (F10): a rollout that can render empty instead of the one fail-loud job variable", () => {
+  const overlay = realOverlay();
+  overlay.services["control-plane"].environment[DISTRIBUTED_EXECUTION_ROLLOUT_ENV] = "${AOA_M1_DISTRIBUTED_EXECUTION_ROLLOUT:-}";
+  const violations = evalOverlay(realBase(), overlay);
+  assert.ok(
+    anyMatch(violations, /replica 'control-plane' 'AOA_DISTRIBUTED_EXECUTION_ROLLOUT' must be injected/),
+    violations.join("\n"),
+  );
+});
+
+test("DEP-015 REJECT (S0-8): the crew switch on, or merely unpinned, on any control-plane replica", () => {
+  for (const value of ["true", "1", undefined]) {
+    const overlay = realOverlay();
+    if (value === undefined) delete overlay.services["control-plane-b"].environment[DISTRIBUTED_CREW_ROLLOUT_ENABLED_ENV];
+    else overlay.services["control-plane-b"].environment[DISTRIBUTED_CREW_ROLLOUT_ENABLED_ENV] = value;
+    const violations = evalOverlay(realBase(), overlay);
+    assert.ok(
+      anyMatch(violations, /replica 'control-plane-b' must set 'AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED' to exactly "false"/),
+      `${String(value)}:\n${violations.join("\n")}`,
+    );
+  }
+});
+
+test("DEP-015 rendered mode: an engine-merged render passes scoped and reds unscoped", () => {
+  // The shape of `docker compose config --format json`: concrete tags, concrete env values.
+  const rendered = mergeComposeModel(realBase(), realOverlay());
+  for (const svc of Object.values(rendered.services)) {
+    if (typeof svc.image === "string" && svc.image.includes("WORKER_IMAGE")) svc.image = "localhost/aoa/worker:0123abc";
+  }
+  rendered.services["control-plane"].environment[DISTRIBUTED_EXECUTION_ROLLOUT_ENV] = '{"organizations":{}}';
+  rendered.services["control-plane-b"].environment[DISTRIBUTED_EXECUTION_ROLLOUT_ENV] = '{"organizations":{}}';
+  rendered.services["adapter-manager"].environment.E2B_API_KEY = "";
+  const scoped = evaluateShippedBootOverlayInvariants(rendered, null, {
+    overlayPath: SHIPPED_BOOT_OVERLAY_PATH,
+    rendered: true,
+  }).violations;
+  assert.deepEqual(scoped, [], scoped.join("\n"));
+  const unscoped = evaluateStagingManifestInvariants(rendered).violations;
+  assert.ok(anyMatch(unscoped, /DISPATCH-DEFAULT/), unscoped.join("\n"));
+
+  rendered.services["control-plane"].environment[DISTRIBUTED_CREW_ROLLOUT_ENABLED_ENV] = "true";
+  const red = evaluateShippedBootOverlayInvariants(rendered, null, {
+    overlayPath: SHIPPED_BOOT_OVERLAY_PATH,
+    rendered: true,
+  }).violations;
+  assert.ok(anyMatch(red, /replica 'control-plane' must set 'AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED'/), red.join("\n"));
+});
+
+// =============================================================================
+// DEP-015 follow-up (keyed run 35601445269) — the grant redeemers reach and trust the store.
+//
+// The E2B provider redeems staged-file grants IN THE ADAPTER-MANAGER. The first keyed run
+// failed at `stage_files` because the adapter-manager had neither the presign store's network
+// nor its CA, and no check looked. These cases pin both, with the reds that make it a check.
+// =============================================================================
+
+test("GRANT-REACH/TRUST: the adapter-manager is the declared grant redeemer", () => {
+  assert.deepEqual(GRANT_REDEEMING_SERVICES, ["adapter-manager"]);
+});
+
+test("GRANT-REACH/TRUST: the REAL overlay puts the adapter-manager on the store network with the store CA", () => {
+  const merged = mergeComposeModel(realBase(), realOverlay());
+  const am = merged.services["adapter-manager"];
+  assert.ok(am.networks.includes("store-egress-net"), JSON.stringify(am.networks));
+  assert.equal(am.environment.NODE_EXTRA_CA_CERTS, "/certs/ca.crt");
+  assert.ok(am.volumes.some((vol) => String(vol).endsWith(":/certs/ca.crt:ro")), JSON.stringify(am.volumes));
+  // The base staging manifest is NOT touched: its adapter-manager stays off the store net.
+  assert.ok(!realBase().services["adapter-manager"].networks.includes("store-egress-net"));
+});
+
+test("POSITIVE CONTROL (GRANT-REACH): drop the store network from the adapter-manager and it reds", () => {
+  const overlay = realOverlay();
+  overlay.services["adapter-manager"].networks = ["control-net", "provider-ctl-net"];
+  const violations = evalOverlay(realBase(), overlay);
+  assert.ok(anyMatch(violations, /GRANT-REACH VIOLATION: 'adapter-manager'.*presign store 'minio'/), violations.join("\n"));
+});
+
+test("POSITIVE CONTROL (GRANT-TRUST): drop the CA env from the adapter-manager and it reds", () => {
+  const overlay = realOverlay();
+  delete overlay.services["adapter-manager"].environment.NODE_EXTRA_CA_CERTS;
+  const violations = evalOverlay(realBase(), overlay);
+  assert.ok(anyMatch(violations, /GRANT-TRUST VIOLATION: 'adapter-manager'.*does not trust its CA/), violations.join("\n"));
+});
+
+test("REJECT (GRANT-TRUST): the CA env set but no file mounted at it", () => {
+  const overlay = realOverlay();
+  delete overlay.services["adapter-manager"].volumes;
+  const violations = evalOverlay(realBase(), overlay);
+  assert.ok(anyMatch(violations, /GRANT-TRUST VIOLATION: 'adapter-manager'.*mounted: false/), violations.join("\n"));
+});
+
+test("REJECT (GRANT-TRUST): a CA that is not the one the signing control plane trusts", () => {
+  const overlay = realOverlay();
+  overlay.services["adapter-manager"].volumes = ["./docker/other/ca.crt:/certs/ca.crt:ro"];
+  const violations = evalOverlay(realBase(), overlay);
+  assert.ok(anyMatch(violations, /GRANT-TRUST VIOLATION: 'adapter-manager' trusts/), violations.join("\n"));
+});
+
+test("REJECT: the two control-plane replicas presigning for different stores", () => {
+  const overlay = realOverlay();
+  overlay.services["control-plane-b"].environment.AOA_STORAGE_S3_PRESIGN_ENDPOINT = "https://other-store:9000";
+  const violations = evalOverlay(realBase(), overlay);
+  assert.ok(anyMatch(violations, /disagree on 'AOA_STORAGE_S3_PRESIGN_ENDPOINT'/), violations.join("\n"));
+});
+
+test("GRANT-REACH/TRUST in rendered mode (the lane's live check): absolute bind paths and long-form volumes", () => {
+  const rendered = mergeComposeModel(realBase(), realOverlay());
+  for (const svc of Object.values(rendered.services)) {
+    if (typeof svc.image === "string" && svc.image.includes("WORKER_IMAGE")) svc.image = "localhost/aoa/worker:0123abc";
+    svc.volumes = (svc.volumes ?? []).map((vol) => {
+      const [source, target] = String(vol).split(":");
+      return { type: "bind", source: source.replace(/^\.\//, "/home/runner/work/AoA/AoA/"), target, read_only: true };
+    });
+  }
+  for (const cp of ["control-plane", "control-plane-b"]) rendered.services[cp].environment[DISTRIBUTED_EXECUTION_ROLLOUT_ENV] = '{"organizations":{}}';
+  rendered.services["adapter-manager"].environment.E2B_API_KEY = "";
+  const ok = evaluateShippedBootOverlayInvariants(rendered, null, { overlayPath: SHIPPED_BOOT_OVERLAY_PATH, rendered: true }).violations;
+  assert.deepEqual(ok, [], ok.join("\n"));
+  rendered.services["adapter-manager"].networks = ["control-net", "provider-ctl-net"];
+  const red = evaluateShippedBootOverlayInvariants(rendered, null, { overlayPath: SHIPPED_BOOT_OVERLAY_PATH, rendered: true }).violations;
+  assert.ok(anyMatch(red, /GRANT-REACH VIOLATION/), red.join("\n"));
+});
+
+// Codex (PR #561): the CA reference must hold on EVERY control-plane replica, not only the first.
+test("REJECT (GRANT-TRUST): the SECOND control-plane replica without the store CA", () => {
+  const overlay = realOverlay();
+  delete overlay.services["control-plane-b"].environment.NODE_EXTRA_CA_CERTS;
+  const violations = evalOverlay(realBase(), overlay);
+  assert.ok(anyMatch(violations, /GRANT-TRUST VIOLATION: control-plane replica 'control-plane-b'.*does not trust its CA/), violations.join("\n"));
+});
+
+test("REJECT (GRANT-TRUST): the FIRST control-plane replica without the CA mount (no silent pass for the redeemer)", () => {
+  const overlay = realOverlay();
+  delete overlay.services["control-plane"].volumes;
+  const violations = evalOverlay(realBase(), overlay);
+  assert.ok(anyMatch(violations, /GRANT-TRUST VIOLATION: control-plane replica 'control-plane'.*does not trust its CA/), violations.join("\n"));
+});
+
+test("REJECT (GRANT-TRUST): the replicas trusting DIFFERENT CAs", () => {
+  const overlay = realOverlay();
+  overlay.services["control-plane-b"].volumes = ["./docker/other/ca.crt:/certs/ca.crt:ro"];
+  const violations = evalOverlay(realBase(), overlay);
+  assert.ok(anyMatch(violations, /the control-plane replicas trust different CAs/), violations.join("\n"));
 });

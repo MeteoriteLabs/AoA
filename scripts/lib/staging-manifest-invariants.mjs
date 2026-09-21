@@ -433,7 +433,7 @@ function checkSharedAdmission(services, v) {
 }
 
 /** §2.5 — provider-control credential confined + absent. */
-function checkProviderControlBoundary(services, v) {
+function checkProviderControlBoundary(services, v, { rendered = false } = {}) {
   // (a) provider-ctl-net members are EXACTLY {adapter-manager}.
   for (const [name, svc] of Object.entries(services)) {
     if (name === ADAPTER_MANAGER_SERVICE) continue;
@@ -481,9 +481,11 @@ function checkProviderControlBoundary(services, v) {
     }
   }
   if (adapter) {
+    // A RENDERED manifest (`docker compose config`) has already interpolated the value, so the
+    // injected-not-baked form is only checkable on the authored file; presence still is.
     if (!hasEnvKey(adapter, PROVIDER_CONTROL_CRED_ENV)) {
       v.push(`'${ADAPTER_MANAGER_SERVICE}' must inject '${PROVIDER_CONTROL_CRED_ENV}' (the provider-control credential lives ONLY on the adapter-management surface)`);
-    } else {
+    } else if (!rendered) {
       const val = String(envValue(adapter, PROVIDER_CONTROL_CRED_ENV) ?? "");
       if (!INJECTION_VALUE_RE.test(val) && !MOUNTED_SECRET_VALUE_RE.test(val)) {
         v.push(`PROVIDER-CONTROL VIOLATION: '${ADAPTER_MANAGER_SERVICE}' '${PROVIDER_CONTROL_CRED_ENV}' must be an injected value (\${VAR} interpolation or a /run/secrets mount) so it is rotatable without an image rebuild — a baked literal is forbidden; got ${JSON.stringify(val)}`);
@@ -524,12 +526,54 @@ export const DISPATCH_SWITCH_ENVS = [
   "AOA_WORKER_PROVIDER_URL",
 ];
 
-function checkDispatchDefaultOff(services, v) {
-  for (const name of WORKER_SERVICES) {
+// ★ DEP-015 — THE ONE SCOPED EXCEPTION, and why it is shaped the way it is.
+//
+// Founder ruling F3 makes the shipped CI boot RUN the journey, and a worker that runs a job
+// must dial the adapter-manager: `AOA_WORKER_PROVIDER_URL` set, `AOA_WORKER_DISPATCH_ENABLED`
+// exactly "1" (SK-3). Both are on the ban list above. The amendment admits them on EXACTLY
+// the worker services the shipped-boot overlay declares, with EXACTLY the values below, and
+// only when the caller is `evaluateShippedBootOverlayInvariants` evaluating THAT overlay. The
+// admission is a module-private Symbol, so `evaluateStagingManifestInvariants` — the path
+// every other manifest takes — cannot be handed it: the staging manifest, a clone of it, or
+// any other overlay still reds on the same env. `AOA_WORKER_SANDBOX_PROVIDER` (an IN-WORKER
+// provider) is never admitted, and the inline `command`/`entrypoint` vector is never admitted.
+export const SHIPPED_BOOT_OVERLAY_PATH = "docker/m1-boot/docker-compose.m1-boot.yml";
+export const SHIPPED_BOOT_OVERLAY_WORKERS = ["m1-worker-a", "m1-worker-b", "m1-worker-c"];
+export const SHIPPED_BOOT_ADMITTED_DISPATCH_ENV = Object.freeze({
+  AOA_WORKER_PROVIDER_URL: "http://adapter-manager:8090",
+  AOA_WORKER_DISPATCH_ENABLED: "1",
+});
+const SHIPPED_BOOT_ALLOWANCE = Symbol("dep-015-shipped-boot-overlay");
+
+/** Every service that RUNS the worker image — the four named staging workers plus any other
+ * service whose image is a worker image OR whose name says it is a worker (a rendered manifest
+ * carries a concrete tag, so the image test alone could miss one). Enumerating by a fixed name
+ * list is how the campaign overlay's `worker` sat outside this check: a new service is
+ * invisible to a list. */
+function workerServiceNames(services) {
+  const names = new Set(WORKER_SERVICES.filter((name) => services[name]));
+  for (const [name, svc] of Object.entries(services)) {
+    const image = typeof svc?.image === "string" ? svc.image : "";
+    if (/_WORKER_IMAGE\b|aoa-worker[:@]|\/worker[:@]/.test(image) || /(^|-)worker(-|\d|$)/.test(name)) {
+      names.add(name);
+    }
+  }
+  return [...names];
+}
+
+function dispatchEnvAdmitted(name, key, value, allowance) {
+  return allowance === SHIPPED_BOOT_ALLOWANCE &&
+    SHIPPED_BOOT_OVERLAY_WORKERS.includes(name) &&
+    Object.prototype.hasOwnProperty.call(SHIPPED_BOOT_ADMITTED_DISPATCH_ENV, key) &&
+    String(value) === SHIPPED_BOOT_ADMITTED_DISPATCH_ENV[key];
+}
+
+function checkDispatchDefaultOff(services, v, allowance = null) {
+  for (const name of workerServiceNames(services)) {
     const svc = services[name];
     if (!svc) continue;
     for (const key of DISPATCH_SWITCH_ENVS) {
-      if (hasEnvKey(svc, key)) {
+      if (hasEnvKey(svc, key) && !dispatchEnvAdmitted(name, key, envValue(svc, key), allowance)) {
         v.push(`DISPATCH-DEFAULT VIOLATION: worker '${name}' declares '${key}' in 'environment' — dispatch stays OFF by default; no staging worker may set the switches that turn it on (DEP-010)`);
       }
       // Inline-injection vector — the same command/entrypoint join idiom as the provider-control
@@ -669,4 +713,217 @@ export function evaluateStagingManifestInvariants(compose, options = {}) {
   }
 
   return { violations: v };
+}
+
+// --- DEP-015: the shipped CI boot overlay ------------------------------------
+
+/** The env var that seeds the F10 tenant set (`DISTRIBUTED_EXECUTION_ROLLOUT_ENV`,
+ * server/src/config/distributed-execution-rollout-source.ts) and the deployment-wide crew
+ * switch (`DISTRIBUTED_CREW_ROLLOUT_ENABLED_ENV`, server/src/config/distributed-execution.ts). */
+export const DISTRIBUTED_EXECUTION_ROLLOUT_ENV = "AOA_DISTRIBUTED_EXECUTION_ROLLOUT";
+export const DISTRIBUTED_CREW_ROLLOUT_ENABLED_ENV = "AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED";
+/** The overlay must inject the rollout from ONE job-generated variable, and fail the render
+ * when it is missing (`:?`) — an unset rollout is SK-2, every Organization silently legacy. */
+export const SHIPPED_BOOT_ROLLOUT_INJECTION = /^\$\{AOA_M1_DISTRIBUTED_EXECUTION_ROLLOUT:\?[^}]*\}$/;
+
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * A deliberately SMALL model of `docker compose -f base -f overlay` merging, enough for these
+ * invariants: mappings merge key-by-key (so `environment:` maps merge, an overlay key wins),
+ * everything else (scalars, sequences such as `command:`) is REPLACED by the overlay. The real
+ * engine merges a few sequences (ports, volumes, secrets) by union; no invariant here reads
+ * those, and the lane re-runs these invariants over the REAL `docker compose config` render,
+ * which is the authority. This model exists so the always-on `policy` gate needs no Docker.
+ */
+export function mergeComposeModel(base, overlay) {
+  if (!isPlainObject(base) || !isPlainObject(overlay)) return overlay === undefined ? base : overlay;
+  const out = { ...base };
+  for (const [key, value] of Object.entries(overlay)) {
+    // The engine UNIONS a service's `networks` and `volumes` sequences across files rather than
+    // replacing them; model that for the two the grant-reach check reads.
+    if ((key === "networks" || key === "volumes") && Array.isArray(base[key]) && Array.isArray(value)) {
+      out[key] = [...new Set([...base[key], ...value].map(String))];
+      continue;
+    }
+    out[key] = key in base ? mergeComposeModel(base[key], value) : value;
+  }
+  return out;
+}
+
+/** Every control-plane REPLICA (the migrate one-shot runs the same image but serves nothing). */
+function controlPlaneReplicaNames(services) {
+  const names = new Set(CONTROL_PLANE_SERVICES.filter((name) => services[name]));
+  for (const [name, svc] of Object.entries(services)) {
+    if (name === MIGRATE_SERVICE) continue;
+    const image = typeof svc?.image === "string" ? svc.image : "";
+    if (/_CONTROL_PLANE_IMAGE\b|aoa-control-plane[:@]|\/control-plane:/.test(image)) names.add(name);
+  }
+  return [...names];
+}
+
+/**
+ * DEP-015 — the invariants of the shipped CI boot, evaluated over base ⊕ overlay.
+ *
+ *   evaluateShippedBootOverlayInvariants(base, overlay, { overlayPath, rendered? })
+ *
+ * `overlayPath` must be SHIPPED_BOOT_OVERLAY_PATH: the dispatch allowance is bound to that one
+ * file, never to "an overlay". `rendered: true` means `base` is already the engine's merged
+ * render (`docker compose config --format json`) and `overlay` is ignored — the lane's live
+ * re-check — so the rollout value is a concrete JSON string rather than an injection token.
+ */
+export function evaluateShippedBootOverlayInvariants(base, overlay, options = {}) {
+  const v = [];
+  if (options.overlayPath !== SHIPPED_BOOT_OVERLAY_PATH) {
+    v.push(`the DEP-015 dispatch allowance is scoped to '${SHIPPED_BOOT_OVERLAY_PATH}' ONLY; refusing to evaluate ${JSON.stringify(options.overlayPath)} with it`);
+    return { violations: v };
+  }
+  const merged = options.rendered ? base : mergeComposeModel(base, overlay);
+  const services = merged?.services;
+  if (!isPlainObject(services)) return { violations: ["merged compose has no 'services' block"] };
+
+  // (1) Dispatch default-off, with the ONE scoped admission.
+  checkDispatchDefaultOff(services, v, SHIPPED_BOOT_ALLOWANCE);
+  // (2) The overlay's workers are exactly the declared set, and each one IS armed — an overlay
+  //     worker that silently lost its provider URL would boot, enrol, poll, and never run a job.
+  const workers = workerServiceNames(services).filter((name) => !WORKER_SERVICES.includes(name));
+  if (!setsEqual(workers, SHIPPED_BOOT_OVERLAY_WORKERS)) {
+    v.push(`the shipped-boot workers {${workers.sort().join(", ")}} != the declared {${[...SHIPPED_BOOT_OVERLAY_WORKERS].sort().join(", ")}}`);
+  }
+  for (const name of SHIPPED_BOOT_OVERLAY_WORKERS) {
+    const svc = services[name];
+    if (!svc) continue;
+    for (const [key, expected] of Object.entries(SHIPPED_BOOT_ADMITTED_DISPATCH_ENV)) {
+      if (String(envValue(svc, key) ?? "") !== expected) {
+        v.push(`shipped-boot worker '${name}' must set '${key}' to exactly ${JSON.stringify(expected)}`);
+      }
+    }
+    if (hasEnvKey(svc, "AOA_WORKER_SANDBOX_PROVIDER")) {
+      v.push(`shipped-boot worker '${name}' must NOT construct an in-worker provider ('AOA_WORKER_SANDBOX_PROVIDER')`);
+    }
+  }
+  // (3) The provider-control boundary still holds on the merged manifest: E2B_API_KEY only on
+  //     the adapter-manager, which alone reaches provider-ctl-net.
+  checkProviderControlBoundary(services, v, { rendered: Boolean(options.rendered) });
+  // (4) F10 + S0-8: EVERY control-plane replica carries the rollout (so the tenant set is not a
+  //     property of whichever replica a request lands on) and has the crew switch OFF.
+  const replicas = controlPlaneReplicaNames(services);
+  if (replicas.length === 0) v.push("the shipped boot declares no control-plane replica");
+  for (const name of replicas) {
+    const svc = services[name];
+    const rollout = envValue(svc, DISTRIBUTED_EXECUTION_ROLLOUT_ENV);
+    if (rollout === undefined || String(rollout).trim() === "") {
+      v.push(`control-plane replica '${name}' must set '${DISTRIBUTED_EXECUTION_ROLLOUT_ENV}' (unset = every Organization silently legacy, SK-2)`);
+    } else if (!options.rendered && !SHIPPED_BOOT_ROLLOUT_INJECTION.test(String(rollout))) {
+      v.push(`control-plane replica '${name}' '${DISTRIBUTED_EXECUTION_ROLLOUT_ENV}' must be injected as \${AOA_M1_DISTRIBUTED_EXECUTION_ROLLOUT:?…} (one job-generated tenant set, fail-loud when absent); got ${JSON.stringify(rollout)}`);
+    }
+    const crew = envValue(svc, DISTRIBUTED_CREW_ROLLOUT_ENABLED_ENV);
+    if (String(crew ?? "") !== "false") {
+      v.push(`control-plane replica '${name}' must set '${DISTRIBUTED_CREW_ROLLOUT_ENABLED_ENV}' to exactly "false" (deployment-wide crew switch; crew is outside the M1 claim); got ${JSON.stringify(crew)}`);
+    }
+  }
+  // (5) E6-F024 follow-up: every grant-redeeming service can REACH the presign host and TRUST it.
+  checkGrantRedeemersReachPresignStore(services, v);
+  return { violations: v };
+}
+
+// --- DEP-015 follow-up: the grant redeemers reach and trust the presign store --------------
+
+/**
+ * The services that REDEEM or PERFORM an artifact grant themselves. The E2B provider fetches the
+ * presigned URL IN THE ADAPTER-MANAGER PROCESS (`fetchGrantBytes` / `putGrantBytes`,
+ * packages/sandbox-e2b-provider/src/e2b-provider.ts). The first keyed shipped-boot run
+ * (35601445269) failed at `stage_files` because the adapter-manager had neither the store's
+ * network nor its CA. On the operator campaign it fetched real S3 over the internet, so this
+ * never surfaced there.
+ */
+export const GRANT_REDEEMING_SERVICES = [ADAPTER_MANAGER_SERVICE];
+export const PRESIGN_ENDPOINT_ENV = "AOA_STORAGE_S3_PRESIGN_ENDPOINT";
+export const EXTRA_CA_ENV = "NODE_EXTRA_CA_CERTS";
+
+/** A volume entry as `{ source, target }`, from the short `src:dst[:mode]` string or the long
+ * (rendered) mapping. */
+function volumeEntries(service) {
+  return asArray(service?.volumes).map((entry) => {
+    if (entry && typeof entry === "object") return { source: String(entry.source ?? ""), target: String(entry.target ?? "") };
+    const parts = String(entry).split(":");
+    return { source: parts[0] ?? "", target: parts[1] ?? "" };
+  });
+}
+
+/** Normalise a bind source so the authored `./docker/d1/certs/public.crt` and the rendered
+ * absolute path compare equal (the render resolves `.` against the project directory). */
+function bindSourceKey(source) {
+  return String(source).replace(/\\/g, "/").replace(/^\.\//, "").replace(/^.*?(docker\/)/, "$1");
+}
+
+function checkGrantRedeemersReachPresignStore(services, v) {
+  // The presign endpoint is the host a grant URL names: the one the control plane signs for.
+  const endpoints = new Set(
+    controlPlaneReplicaNames(services)
+      .map((name) => envValue(services[name], PRESIGN_ENDPOINT_ENV))
+      .filter((value) => typeof value === "string" && value.trim() !== ""),
+  );
+  if (endpoints.size === 0) return; // nothing presigns; nothing to redeem
+  if (endpoints.size > 1) {
+    v.push(`the control-plane replicas disagree on '${PRESIGN_ENDPOINT_ENV}' (${[...endpoints].join(", ")}); a grant must name ONE store`);
+    return;
+  }
+  let url;
+  try {
+    url = new URL([...endpoints][0]);
+  } catch {
+    v.push(`'${PRESIGN_ENDPOINT_ENV}' is not a URL: ${JSON.stringify([...endpoints][0])}`);
+    return;
+  }
+  const storeName = url.hostname;
+  const store = services[storeName];
+  // An external store (not a service in this manifest) is reached over egress; the check is for
+  // a store THIS manifest runs, which is exactly where a missing network or CA goes unseen.
+  if (!store) return;
+  const storeNets = new Set(serviceNetworks(store));
+
+  // The CA a TLS store is trusted with: the one EVERY control-plane replica (each is a signer, and
+  // each reads the store) mounts at its NODE_EXTRA_CA_CERTS path. Checked on every replica, not
+  // only the first (Codex, PR #561): a replica with a missing or different CA would fail every
+  // request it handles against the store, while the first replica passed.
+  let signerCa;
+  if (url.protocol === "https:") {
+    const replicaCas = [];
+    for (const replica of controlPlaneReplicaNames(services)) {
+      const svc = services[replica];
+      const caPath = envValue(svc, EXTRA_CA_ENV);
+      const mounted = caPath ? volumeEntries(svc).find((vol) => vol.target === caPath) : undefined;
+      if (!caPath || !mounted) {
+        v.push(`GRANT-TRUST VIOLATION: control-plane replica '${replica}' presigns for and reads the TLS store '${storeName}' but does not trust its CA — it needs '${EXTRA_CA_ENV}' pointing at a mounted CA file`);
+      } else {
+        replicaCas.push({ replica, source: mounted.source });
+      }
+    }
+    const distinct = [...new Set(replicaCas.map((ca) => bindSourceKey(ca.source)))];
+    if (distinct.length > 1) {
+      v.push(`GRANT-TRUST VIOLATION: the control-plane replicas trust different CAs for '${storeName}' (${replicaCas.map((ca) => `${ca.replica}: ${ca.source}`).join("; ")})`);
+    }
+    signerCa = replicaCas[0];
+  }
+
+  for (const name of GRANT_REDEEMING_SERVICES) {
+    const svc = services[name];
+    if (!svc) continue;
+    const shared = serviceNetworks(svc).filter((net) => storeNets.has(net));
+    if (shared.length === 0) {
+      v.push(`GRANT-REACH VIOLATION: '${name}' redeems artifact grants but shares no network with the presign store '${storeName}' (store on {${[...storeNets].sort().join(", ")}}, '${name}' on {${serviceNetworks(svc).sort().join(", ")}}) — every staged file fails at redemption`);
+    }
+    if (url.protocol === "https:") {
+      const caPath = envValue(svc, EXTRA_CA_ENV);
+      const mounted = caPath ? volumeEntries(svc).find((vol) => vol.target === caPath) : undefined;
+      if (!caPath || !mounted) {
+        v.push(`GRANT-TRUST VIOLATION: '${name}' redeems grants from the TLS store '${storeName}' but does not trust its CA — it needs '${EXTRA_CA_ENV}' pointing at a mounted CA file (got ${JSON.stringify(caPath ?? null)}, mounted: ${Boolean(mounted)})`);
+      } else if (signerCa && bindSourceKey(mounted.source) !== bindSourceKey(signerCa.source)) {
+        v.push(`GRANT-TRUST VIOLATION: '${name}' trusts '${mounted.source}', not the CA the signing control plane trusts ('${signerCa.source}')`);
+      }
+    }
+  }
 }

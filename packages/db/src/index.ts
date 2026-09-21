@@ -59,6 +59,11 @@ export type {
   GuardedFenceResult,
   AcceptEventInput,
   AcceptEventBatchInput,
+  // E3-D-ACC (JOB-016) — the in-transaction accepted-event seam.
+  AcceptedEventProjector,
+  AcceptedEventProjectionKind,
+  AcceptedEventProjectionOutcome,
+  PendingProjectionReceipt,
   EventIngestOutcome,
   ProjectionInput,
   ProjectionTransition,

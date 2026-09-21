@@ -284,6 +284,23 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(await count("activity_log", `company_id = '${COMPANY}'`)).toBe(0);
     });
 
+    it("[JOB-017 Codex P2] a PENDING seam receipt is reported `pending` with no activityId — never `replayed` with the attempt id — and nothing is written", async () => {
+      guard();
+      const { identity: fence } = await fixture!.activateLease(14);
+      const eventId = randomUUID();
+      // The seam's owed-audit shape: pending, target = the ATTEMPT, aggregate_kind = job_attempts.
+      await fixture!.admin`INSERT INTO job_projection_receipts
+        (organization_id, company_id, projection_kind, source_identity, source_digest, job_id, attempt_id, source_fence, status, target_aggregate_id, aggregate_kind, applied_at)
+        VALUES (${ORG}, ${COMPANY}, 'activity_audit', ${`activity:${COMPANY}:${eventId}`}, ${DIGEST}, ${fence.jobId}, ${fence.attemptId}, ${fence.fence}, 'pending', ${fence.attemptId}, 'job_attempts', NULL)`;
+      const out = await bridge().recordAcceptedActivity({
+        source: taskSource(AGENT), actor, fence, acceptedEventId: eventId, eventDigest: DIGEST, activity: activityInput(),
+      });
+      expect(out).toMatchObject({ status: "pending", activityId: null });
+      expect(out.activityId).not.toBe(fence.attemptId);
+      expect(await count("activity_log", `company_id = '${COMPANY}'`)).toBe(0);
+      expect(await count("job_projection_receipts", `projection_kind = 'activity_audit' AND status = 'pending'`)).toBe(1);
+    });
+
     it("[flag off] every entrypoint refuses fail-closed and touches nothing", async () => {
       guard();
       const { identity: fence } = await fixture!.activateLease(12);

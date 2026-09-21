@@ -69,8 +69,13 @@ describe("readDistributedToolSurfaceFlag — CLI-008 Unit C tool-surface gate", 
   it("defaults OFF (opt-in; the whole tool-surface slice is inert until set)", () => {
     expect(readDistributedToolSurfaceFlag({})).toBe(false);
   });
-  it("is ON only when the env is explicitly set truthy", () => {
-    expect(readDistributedToolSurfaceFlag({ [DISTRIBUTED_TOOL_SURFACE_ENABLED_ENV]: "true" })).toBe(true);
+  // CLI-016 / E7-D10 superseded this row's contract. It read: "is ON only when the env is
+  // explicitly set truthy", asserting `"true"` → true. The arming value is now `per-organization`
+  // and the legacy truthy spellings are REFUSED (an older binary reads them as "arm every
+  // tenant"); the full matrix is `distributed-tool-surface-per-organization.test.ts`.
+  it("is ON only when the env is explicitly set to `per-organization`; legacy `true` is refused", () => {
+    expect(readDistributedToolSurfaceFlag({ [DISTRIBUTED_TOOL_SURFACE_ENABLED_ENV]: "per-organization" })).toBe(true);
+    expect(() => readDistributedToolSurfaceFlag({ [DISTRIBUTED_TOOL_SURFACE_ENABLED_ENV]: "true" })).toThrow();
     expect(readDistributedToolSurfaceFlag({ [DISTRIBUTED_TOOL_SURFACE_ENABLED_ENV]: "false" })).toBe(false);
   });
 });

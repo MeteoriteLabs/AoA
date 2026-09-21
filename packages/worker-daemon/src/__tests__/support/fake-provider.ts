@@ -126,6 +126,14 @@ export interface FakeProviderScript {
    * (absent) ⇒ execute resolves immediately. */
   readonly executeGate?: Promise<void>;
   /**
+   * WRK-018 — the fake IMPLEMENTS the optional stdout stream channel: during `execute` it
+   * delivers these chunks, in order, to `input.onStdout` (yielding a macrotask between
+   * chunks so two concurrent runs genuinely INTERLEAVE). A function form receives the
+   * `ExecuteInput`, so each run can stream its own output. Absent ⇒ the fake does NOT
+   * implement the channel and never calls `onStdout` (the pre-WRK-018 provider).
+   */
+  readonly stdoutChunks?: readonly string[] | ((input: ExecuteInput) => readonly string[]);
+  /**
    * Model the REAL E2B provider's DEFERRED REGISTRATION: `create` awaits this gate
    * and the sandbox is registered (listable / inspectable) ONLY when create
    * RESOLVES — never while it is in-flight. This is the honest model of
@@ -466,6 +474,13 @@ export function createFakeSandboxProvider(script: FakeProviderScript = {}): Fake
       if (script.executeGate !== undefined) {
         // Hold the run in-flight at execute (deterministic cancel/shutdown tests).
         await script.executeGate;
+      }
+      if (script.stdoutChunks !== undefined && input.onStdout !== undefined) {
+        const chunks = typeof script.stdoutChunks === "function" ? script.stdoutChunks(input) : script.stdoutChunks;
+        for (const chunk of chunks) {
+          input.onStdout(chunk);
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        }
       }
       const result: ExecuteResult = {
         providerOpId: nextOpId(),

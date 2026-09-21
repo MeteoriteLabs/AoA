@@ -59,7 +59,13 @@ import type { ArtifactUploadGrantV1 } from "@armyofagents/worker-protocol";
 import { CORE_PROVIDER_OPERATIONS } from "@armyofagents/worker-protocol";
 import { ResourceNotAvailableError, UnsupportedProviderOperation } from "@armyofagents/sandbox-e2b-provider/errors.js";
 
-import { WireProtocolError, decodeOpResponse, encodeOpRequest } from "./codec.js";
+import {
+  EXECUTE_CAPTURE_STDOUT_KEY,
+  EXECUTE_STDOUT_TAIL_KEY,
+  WireProtocolError,
+  decodeOpResponse,
+  encodeOpRequest,
+} from "./codec.js";
 import type { OwnedLabelsCapability } from "./capability.js";
 import type { RedactedListResult } from "./projection.js";
 
@@ -166,7 +172,25 @@ export class NetworkedProviderDriver implements SandboxProvider {
     }
     // execute is GATE-REQUIRED — attach the owned-labels capability (undefined when the
     // driver was constructed without one; the server then refuses with the uniform error).
-    return this.#post<ExecuteResult>("execute", input, ctx, this.#capability);
+    const { onStdout, ...wireInput } = input;
+    if (onStdout === undefined) {
+      // No stdout channel requested: the pre-WRK-018 body, byte for byte.
+      return this.#post<ExecuteResult>("execute", input, ctx, this.#capability);
+    }
+    // WRK-018 — the stdout channel over the wire: a callback cannot cross HTTP, so ask the
+    // adapter-manager to capture (a FLAG, never the function) and replay its returned,
+    // already-scrubbed tail into the caller's callback. The tail is stripped from the result
+    // so the port's `ExecuteResult` shape is unchanged. A missing or non-string tail (an older
+    // adapter-manager, or a garbled body) is "no output", never a failure of the run.
+    const raw = await this.#post<ExecuteResult & Record<string, unknown>>(
+      "execute",
+      { ...wireInput, [EXECUTE_CAPTURE_STDOUT_KEY]: true },
+      ctx,
+      this.#capability,
+    );
+    const { [EXECUTE_STDOUT_TAIL_KEY]: tail, ...result } = raw;
+    if (typeof tail === "string" && tail.length > 0) onStdout(tail);
+    return result as unknown as ExecuteResult;
   }
 
   // --- the gate-required teardown ops (DEP-012 Unit B2) -----------------------------

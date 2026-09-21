@@ -13,9 +13,12 @@
 // Format (JSON in the env var):
 //   {
 //     "organizations": {
-//       "<organizationId>": { "mode": "shadow" | "active", "workloads": ["batch", "*"] }
+//       "<organizationId>": { "mode": "shadow" | "active", "workloads": ["batch", "*"],
+//                             "tools": true }
 //     }
 //   }
+// `tools` (CLI-016, optional, boolean) opts the Organization in to the distributed TOOL
+// SURFACE; absent or `false` means NOT enabled. See `OrganizationRolloutPolicy.tools`.
 // An Organization absent from the map is disabled. A workload absent from an enabled
 // Organization's `workloads` list (and no "*") is disabled. `mode` is one of
 // `shadow` | `active` | `canary` for that Organization's enabled workloads
@@ -70,6 +73,15 @@ export interface OrganizationRolloutPolicy {
    * discarded. Nothing in the FROZEN `packages/worker-protocol` changes.
    */
   readonly sources?: ReadonlySet<string>;
+  /**
+   * CLI-016 (founder ruling F10) — the per-Organization TOOL-SURFACE axis. `true` opts this
+   * Organization's distributed runs in to the brokered `aoa` MCP config and its run_jwt bearer.
+   * ★ **Absent means NOT enabled** — the opposite of `sources`, where absent means all sinks —
+   * so every pre-CLI-016 config leaves every tenant without tools. It is necessary, not
+   * sufficient: the deployment kill switch `AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED` must also be
+   * armed (`resolveDistributedToolSurface`, decision E7-D10).
+   */
+  readonly tools?: boolean;
 }
 
 export interface DistributedExecutionRolloutSource {
@@ -111,6 +123,13 @@ export interface DistributedExecutionRolloutSource {
    * resolvers' return values, and a memo nothing checks silently stops memoizing.
    */
   __parseCountForTests?(): number;
+  /**
+   * CLI-016 — whether this Organization's policy opts in to the distributed tool surface
+   * (`tools: true`). False for an Organization absent from the map, for `tools` absent or
+   * `false`, and for a malformed map (which fails closed to empty). The deployment flag is NOT
+   * read here; callers combine the two through `resolveDistributedToolSurface`.
+   */
+  resolveOrganizationToolSurface(input: { organizationId: string }): boolean;
 }
 
 class DistributedExecutionRolloutSourceConfigError extends Error {
@@ -187,10 +206,20 @@ export function parseDistributedExecutionRolloutMap(
       }
       sources = new Set(sourcesRaw as string[]);
     }
+    // CLI-016: `tools` is OPTIONAL and absent means NOT enabled. A non-boolean fails the parse
+    // loudly, as a malformed `mode` or `sources` does — a typo such as `"tools": "true"` must
+    // not silently leave a tenant disarmed, or be read as armed.
+    const toolsRaw = record.tools;
+    if (toolsRaw !== undefined && typeof toolsRaw !== "boolean") {
+      throw new DistributedExecutionRolloutSourceConfigError(
+        `organization ${organizationId} tools must be a boolean`,
+      );
+    }
     map.set(organizationId, {
       mode,
       workloads: new Set(workloadsRaw as string[]),
       ...(sources ? { sources } : {}),
+      ...(toolsRaw !== undefined ? { tools: toolsRaw } : {}),
     });
   }
   return map;
@@ -297,6 +326,10 @@ export function createDistributedExecutionRolloutSource(
       if (!decision.enabled) return "off";
       // `policy` is defined here (organizationEnabled was true).
       return policy!.mode;
+    },
+    resolveOrganizationToolSurface({ organizationId }) {
+      // Strictly `=== true`: absent, `false` and an unknown Organization are all NOT enabled.
+      return organizationPolicy(organizationId)?.tools === true;
     },
     __parseCountForTests: () => parseCount,
   };

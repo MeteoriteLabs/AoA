@@ -26,7 +26,7 @@
 // a documented follow-up (arguably JOB-009 placement territory) and is intentionally
 // OUT of this ticket's schema scope.
 
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { agents, internalAgentConfig, type Db } from "@armyofagents/db";
 import type { SubmitJobSource } from "@armyofagents/shared";
 import { computeCostCents, isKnownRateModel } from "./internal-agent/cost-model.js";
@@ -108,7 +108,9 @@ async function resolveModelForSource(
       const [agent] = await tx
         .select({ adapterType: agents.adapterType, adapterConfig: agents.adapterConfig })
         .from(agents)
-        .where(eq(agents.id, source.assigneeAgentId))
+        // E3-D-ACC (JOB-016, F10) — tenant-scoped: `agents` has no RLS (E2-D03), so the charge's
+        // own Company is the filter. An agent of another Company resolves no model → fail closed.
+        .where(and(eq(agents.id, source.assigneeAgentId), eq(agents.companyId, companyId)))
         .limit(1);
       if (!agent) return null;
       const model = asModelString((agent.adapterConfig as Record<string, unknown>)?.model);

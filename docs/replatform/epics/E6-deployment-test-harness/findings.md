@@ -1723,3 +1723,41 @@ step of those jobs (`Install Playwright` included), and when either job or the `
 step cannot be found. `test-cross-platform` may keep its flag. It reads the program-branch file only;
 it says nothing about the `cross-platform-weekly.yml@main` stream, which stays blocked on M5.
 
+
+## E6-F024 - an adapter-manager provider-op failure was undiagnosable: the leak fence dropped the cause with the text
+
+**Status:** resolved (2026-09-21, in the DEP-015 follow-up PR that files it)
+**Severity:** MEDIUM. It masks, rather than causes, a failure, but it made the first keyed shipped-boot run's failure unattributable from the logs.
+**Filed:** 2026-09-21. Measured on keyed shipped-boot run `35601445269` (candidate `fc2eb7dde`), job `shipped-boot`, step "Run the journey".
+
+**What.** Both enabled tenants failed at `stage_files`.
+- The worker logged `WireProtocolError … (adapter-manager provider operation failed)`.
+- The adapter-manager logged **nothing** about the operation, only boot and reaper sweeps.
+
+The cause was a missing network and CA on the adapter-manager, which redeems grants in-process through `fetchGrantBytes`. It had to be found by reading source.
+
+**Why the fence produced this.** `createProviderServer` (`packages/adapter-manager/src/server.ts`) maps every unmodelled error to one fixed `WireProtocolError` ([Cred-2], DEP-012 Slice 4+5). That is correct: an SDK or fetch error can carry a provider key, a presigned URL or a grant header. But it dropped the *cause* along with the *text*, and it logged nothing. So every failure — DNS, TLS, refused connection, HTTP status, digest mismatch — read the same on both sides.
+
+**Resolution.**
+- `packages/adapter-manager/src/op-failure-classification.ts` (`classifyOpFailure`) derives a classification from a **closed vocabulary only**:
+  - op (a known set);
+  - error class (a known set, else `other`);
+  - cause (`dns|tls|connect|timeout|http_status|fetch_failed|digest_mismatch|size_exceeded|unclassified`);
+  - error code (a known set);
+  - HTTP status.
+- No message text is ever copied out. Messages are only matched against fixed patterns.
+- The server logs the classification (a new `onOpFailure` option; the default is one `console.error` line) and appends it to the fixed wire message, for example `adapter-manager provider operation failed (op=stage_files class=TypeError cause=dns code=ENOTFOUND)`. The worker already logs that message.
+- The [Cred-2] fence is otherwise unchanged. Modelled classes still pass as-is, and unmodelled text still never crosses.
+
+**Proof.** `packages/adapter-manager/src/__tests__/op-failure-classification.test.ts` drives the REAL default grant redemption through the REAL gated server and wire driver, in four cases: a refused connection, an untrusted TLS certificate, an unresolvable host and a 403. Each case asserts two things:
+- **The classification arrives:** it is logged and carried to the worker.
+- **Nothing leaks:** neither the log nor the wire nor the worker's rejection carries the URL, its host, an `X-Amz-Signature` canary or a grant-header canary.
+
+A default-sink case covers the log itself. Pure cases pin the fallbacks:
+- a secret-bearing class name falls to `other`;
+- a secret-bearing code is dropped;
+- a secret-bearing message is not copied;
+- a non-Error throw is classified, not stringified;
+- a cyclic cause chain terminates.
+
+Run against the pre-fix `server.ts`, the five wire cases fail (RED) and the four pure ones pass. With the fix, all nine pass, and the whole adapter-manager suite passes: 169 tests in 19 files.

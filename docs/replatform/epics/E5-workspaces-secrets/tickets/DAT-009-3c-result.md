@@ -65,7 +65,7 @@ The implementer leaves `Status` at `gate_review`. Only a distinct reviewer may c
 **GREEN** at `f5e2aff1f` (21 cases after the Codex fix):
 - The task's verify command (the protocol build, then `vitest run` on
   `supervisor-export-artifacts` + `artifact-export-sequencer` + `supervisor-happy.component`) gives
-  **3 files, 50 passed**.
+  **3 files, 52 passed** (21 + 16 + 15). *Corrected 2026-09-21 per the attempt-1 review, by the planning session (not the reviewer): Superseded text: "3 files, 50 passed", the count from before the Codex fix. The reviewer reproduced 52 on a clean detached checkout of `f5e2aff1f`.*
 - The full worker-daemon suite gives **159 files, 1070 passed, 1 skipped**. The worker-daemon typecheck
   and build exit 0.
 - `check-worker-daemon-boundary` gives PASS, and `check:frozen-worker-protocol-v1` gives OK.
@@ -141,3 +141,103 @@ This section was added in a docs-only commit after that run, so the final head d
 ## 7. Reviewer section
 
 *(Distinct reviewer only.)*
+
+**Reviewer:** M1 review-batch-2B independent reviewer (Claude Opus 5) — distinct from the DAT-009-3c build session and the planning session
+**Reviewed revision:** fc2eb7dde6325803c77950ac4adb1d190db0bd9a
+**Disposition:** `changes_requested`
+**Attempt:** 1 (see *Independent review — attempt 1* and the attempt history)
+
+### Independent review — attempt 1
+
+**Disposition: `changes_requested`.** `Status` stays `gate_review`. Reviewed at
+`fc2eb7dde6325803c77950ac4adb1d190db0bd9a` (program tip `docs/replatform-program`, the merge of PR
+#547). The start SHA `28a2dd259`, the hook commit `79961c97c46d…`, the Codex fix `f5e2aff1f466…`, the
+CI head `a040e3a39df2…` and the Codex-P1 head `98428225b` are all ancestors of it.
+`git diff f5e2aff1f fc2eb7dde` over the three focused test files and `lease/artifact-export.ts` is
+empty, so for everything this ticket touched the tree the record describes is the tree under review.
+
+**★ BLOCKING — the GREEN focused-command count is false.** §2 says the task's verify command at
+`f5e2aff1f` "gives **3 files, 50 passed**". I ran it on a clean detached checkout of
+`f5e2aff1f466cd6ecebc9eaa74313e8251ef93fc` (fresh `pnpm install --frozen-lockfile`, protocol build
+exit 0) and got **3 files, 52 passed**: `supervisor-export-artifacts.test.ts` 21,
+`artifact-export-sequencer.test.ts` 16, `supervisor-happy.component.test.ts` 15. The reviewed tip gives
+the same. 50 is the pre-Codex figure (19 + 16 + 15, at `79961c97c`), and the same paragraph already
+says there are 21 cases after the Codex fix. A GREEN count that does not match its own command is the
+records-disagree-with-code class that this programme treats as a defect, however small.
+**Fix:** in §2, state the verify-command result at `f5e2aff1f` as **3 files, 52 passed** (21 + 16 +
+15), and keep the old figure as `Superseded text: "3 files, 50 passed"`. Nothing else needs to change.
+
+**Verified at source, and needing no change:**
+
+- **The hook, at source** (`supervisor.ts`: the batch arm of the lifecycle, and `runExportWindow`).
+  - The window runs only when both `resolveExportArtifacts` and `exportArtifacts` are set. It runs
+    after the `observeRun` block and before the normal `events.terminal` and `finishRun`. The
+    cancelled-while-executing branch returns before it (Ruling B).
+  - `createSupervisor` throws on a producer with no sequencer.
+  - The budget is `exportArtifactsDeadlineMs` (default 30 000). On the networked lane it is clamped to
+    `capExpiresAt − now() − EXPORT_TEARDOWN_RESERVE_MS`. `!(budget > 0)` gives
+    `export_window_exhausted`. An inactive `run.effect` gives `authority_withdrawn` before the
+    producer is called.
+  - The exporter is closed over this run's `sandboxId`. It calls `run.effect.digestArtifact` and
+    `.exportArtifact` at call time, and runs `assertOpen()` before and after each await.
+  - `report()` emits `export_artifact` once per window. It logs only
+    `{leaseId, resourceLabelsHash, stage, reason, exported}` and never logs the error object.
+- **Path-free reason.** `ArtifactExportFailedError.reason` is set through `exportReasonCode` in
+  `lease/artifact-export.ts`. `ArtifactExportSequencer` is a declared function type in the same file.
+- **Positive control on the type, reproduced.** I changed `SupervisorDeps.exportArtifacts` to
+  `ReturnType<typeof createArtifactExportSequencer>`. `check-gate-clause-wiring` then reported
+  "`E5-2-fenced-object-commit-worker-half`: declared unwired but it now HAS a caller …
+  `createArtifactExportSequencer` has 1 reference(s), expected 0". After I restored the file, the guard
+  was OK and `E5-2` was still dormant. At the tip, `--counts` still gives `createArtifactExportSequencer`
+  **0**.
+- **Ruling 6.** `timed_out` is a member of the `SANDBOX_OP_METRIC` outcome set in
+  `metrics/metrics.ts`. `grep -rn timed_out packages/worker-protocol/src` returns nothing.
+  `pnpm check:frozen-worker-protocol-v1` at `f5e2aff1f` gives `frozen worker-protocol v1 consumer: OK`.
+- **The eight E5-D07 rulings** (`decisions.md`, "Rulings of record"), each evidenced:
+  1. Wiring as designed: the code above. The F10 case and M7 exist.
+  2. Best-effort: every failure path calls `report("failed" | "timed_out", …)` and returns. The
+     terminal is computed from `exec` alone.
+  3. Path-free `reason`: above. `artifact-export.ts` is in the hook commit.
+  4. `3d` does not promote `E5-2`: the `3d` task text in `implementation-plan.md` is amended with its
+     history kept, and so is T7's checklist line. `E5-2` stays `unwired`.
+  5. `CLI-012`'s Files add `effect-authority.ts` and `supervisor.ts`: both are present in the E7 plan
+     `### CLI-012`.
+  6. `timed_out`: above.
+  7. Per-file policy is left to `CLI-012`: the window reports the first failing file's `stage` and
+     `reason`.
+  8. Design points 1 and 6 are noted in the result: §5 items 1 and 2.
+- **F10 is real.** `makeTenantBHandoff` gives a different `organizationId`, `companyId`, `jobId` and
+  `leaseId`. The case runs both `accept`s concurrently and holds both producers until both sandboxes
+  exist. It asserts digests and exports per sandbox, `expectedObjectKey` prefixes per Organization,
+  and the manifest `organizationId` per lease.
+- **Full suite, typecheck, build and boundary at `f5e2aff1f`.** `vitest run` in `worker-daemon` gives
+  **159 files, 1070 passed, 1 skipped**, which matches. `typecheck` exits 0, `build` exits 0, and
+  `check:worker-daemon-boundary` gives PASS.
+- **Mutations, reproduced by me and reverted.**
+  - M13 (drop the `assertOpen()` after the digest await): **1 failed**, *a digest that resolves AFTER
+    the deadline mints no grant*.
+  - M14 (drop it after the export await): **1 failed**, *an upload that lands AFTER the deadline is
+    never committed*.
+
+  Both match the table. I checked the rest by reading the tests.
+- **CI, by job.** Run `35590700974` (`pull_request`, headSha `a040e3a39df2…`, conclusion `success`,
+  `ci-required` `106309376411` success). In `verify (2)` (job `106304320350`),
+  `supervisor-export-artifacts.test.ts (21 tests)` and `artifact-export-sequencer.test.ts (16 tests)`
+  both passed. The shard total is **656 files passed / 2 skipped, 6231 tests passed / 33 skipped
+  (6264)**, which matches §6.
+- **Codex.** On PR #549, the P1 (latch re-check) was answered as real and fixed in `f5e2aff1f`.
+  `chatgpt-codex-connector` then reported "Didn't find any major issues" on `a040e3a39d` and again on
+  the final head `17a85bf8c8`.
+- **Not blocking, noted.**
+  - `Start SHA` is a 9-character short SHA, not the bare 40-hex that the E4 §3 protocol names. It
+    resolves unambiguously to an ancestor.
+  - The plan asks for one commit. There are two code commits; the second is the Codex fix, and the
+    record says so.
+
+## Review attempt history
+
+Later reviewers append rows with increasing attempt numbers without replacing earlier ones. Do not include a `Review commit` column: a row cannot embed the SHA of the commit that first contains it.
+
+| Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
+|---:|---|---|---|---|
+| 1 | M1 review-batch-2B independent reviewer (Claude Opus 5) | `fc2eb7dde6325803c77950ac4adb1d190db0bd9a` | `changes_requested` | BLOCKING: §2's GREEN focused count "3 files, 50 passed" is false. A rerun at `f5e2aff1f` on a clean checkout gives **52** (21 + 16 + 15); 50 is the pre-Codex figure. Fix: state 52 and keep the old figure as superseded text. Verified with no change needed: hook placement, clamp, latch and path-free logging at source; all eight E5-D07 rulings evidenced; the ReturnType positive control reproduced (guard red, `E5-2` has 1 reference); the F10 two-Organization case is real; full suite 159 / 1070 / 1 skipped; typecheck and build exit 0; boundary PASS; frozen-protocol OK; M13 and M14 reproduced (1 failed each); run `35590700974` `verify (2)` executed 21 + 16, shard 6231 / 33; Codex clean on `a040e3a39d` and `17a85bf8c8`. |

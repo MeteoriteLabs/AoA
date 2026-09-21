@@ -64,7 +64,10 @@ import {
 } from "./heartbeat-distributed-rollout.js";
 import { getDistributedRolloutPort } from "./distributed-rollout-port.js";
 import type { RunRolloutState } from "../config/distributed-execution-rollout-source.js";
-import { readDistributedToolSurfaceFlag } from "../config/distributed-execution.js";
+import {
+  readDistributedToolSurfaceFlag,
+  resolveDistributedToolSurface,
+} from "../config/distributed-execution.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { resolveWarmSandboxPreference, readAgentWarmOverride } from "./warm-sandbox-policy.js";
 import { conflict, notFound, HttpError } from "../errors.js";
@@ -5308,7 +5311,17 @@ export function heartbeatService(
         // and its bearer are provisioned together or not at all. The config needs a sandbox-targeted run
         // and a resolved control-plane base URL; buildSandboxInvocation still emits it only for
         // claude_local, and buildTaskRunBatchWorkload folds an empty/whitespace config to absent.
-        const toolSurfaceAuthorized = readDistributedToolSurfaceFlag(process.env);
+        //
+        // CLI-016 (founder ruling F10) — PER ORGANIZATION. The deployment flag is a kill switch,
+        // not an arming of every tenant: the surface is granted only when THIS run's Organization
+        // also opts in (`tools: true` in its AOA_DISTRIBUTED_EXECUTION_ROLLOUT policy). Decision
+        // E7-D10 records why the flag's arming value is `per-organization`, never `true`.
+        // Currency is NOT decided here — it is enforced at USE, at /mcp authorization.
+        const toolSurfaceDecision = resolveDistributedToolSurface({
+          deploymentArmed: readDistributedToolSurfaceFlag(process.env),
+          organizationToolsEnabled: distributedRolloutHook.resolveOrganizationToolSurface(distributedRolloutOrganizationId),
+        });
+        const toolSurfaceAuthorized = toolSurfaceDecision.authorized;
         const toolSurfaceApiBaseUrl = adapterEnv.AOA_API_URL ?? process.env.AOA_API_URL ?? undefined;
         const aoaMcpConfig =
           toolSurfaceAuthorized && runTargetsSandbox && toolSurfaceApiBaseUrl
@@ -5444,6 +5457,8 @@ export function heartbeatService(
               maxRuntimeSeconds: canaryWorkload.ok
                 ? canaryWorkload.workload.maxRuntimeSeconds
                 : null,
+              // CLI-016 — which tenants' runs were dispatched WITH the tool surface, and why not.
+              toolSurface: toolSurfaceDecision.reason,
             },
             "[CLI-006] canary execution owner = DISTRIBUTED — legacy executor will be suppressed",
           );

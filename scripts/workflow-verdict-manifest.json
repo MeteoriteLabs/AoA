@@ -191,6 +191,13 @@
       "branch": "claude/e2b-export-artifact",
       "watch": "coverage",
       "note": "The ticket own proving branch, declared because the workflow declares it. If the branch has been deleted the coverage evaluator is silent - nothing is owed for a branch with no commits - so a dead proving branch costs no false incident."
+    },
+    "m1-shipped-boot.yml@docs/replatform-program": {
+      "workflow": "m1-shipped-boot.yml",
+      "branch": "docs/replatform-program",
+      "watch": "not-watched",
+      "reason": "The lane RUNS only on `workflow_dispatch` (DEP-015, founder ruling F3), with a REQUIRED human-supplied `candidate` and a keyed mode that spends inside the F8 envelope. Its `push` trigger is REGISTRATION-ONLY (E6-D001): paths = the workflow file itself and every job is gated `if: github.event_name == 'workflow_dispatch'`, so a push-created run executes zero steps and concludes with every job `skipped`. Watching that stream would read a green that tested nothing; no commit owes the lane a real run and there is no cadence it is late for. Its verdict is consumed by the campaign that dispatches it (the M1a-D2-MECHANISM record, E7-1-JOURNEY-ARM).",
+      "wouldTakeToWatch": "A declared campaign cadence (then a `cadence` entry). Never widen the registration push's paths to make it watchable — scripts/check-m1-shipped-boot-shape.mjs reds that, because a coverage verdict on a skipped job is a check that nothing runs."
     }
   }
 }
