@@ -131,6 +131,27 @@ describe("DAT-007 item #1 — /mcp fence-bound currency gate (route mount)", () 
     expect(resolve).not.toHaveBeenCalled();
   });
 
+  it("DAT-007-S3: keyed on the SIGNED run id, never the header-overridable runId (divergent ids pin)", async () => {
+    // Every fixture above sets runId === signedRunId ("run-99"), so a gate that read the
+    // header-overridable `req.actor.runId` (auth.ts sets it from x-aoa-run-id OVER the signed
+    // claim) would pass them all. Here the two DIFFER: the signed run is stale, the header names
+    // a live run. The stub resolver answers per id, so reading the header id would ADMIT (200).
+    process.env[FLAG] = "1";
+    const actor = { ...DISTRIBUTED_AGENT, runId: "run-header-live", signedRunId: "run-signed-stale" };
+    const resolve = vi.fn(async ({ signedRunId }: { signedRunId: string }) =>
+      signedRunId === "run-header-live" ? "admit" : "deny",
+    );
+    const app = buildApp(actor, resolve);
+    const res = await request(app).post("/api/companies/company-1/mcp").send(rpc("initialize"));
+    expect(res.status).toBe(403);
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(resolve).toHaveBeenCalledWith({
+      signedRunId: "run-signed-stale",
+      companyId: "company-1",
+      agentId: "agent-42",
+    });
+  });
+
   it("flag ON + resolver THROWS → fails CLOSED (non-2xx), never swallowed to admit (Correction A)", async () => {
     process.env[FLAG] = "1";
     const resolve = vi.fn().mockRejectedValue(new Error("kernel db unreachable"));

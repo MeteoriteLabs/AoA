@@ -30,6 +30,13 @@
 // beforeAll; each case then seeds its OWN fresh leaf chain (execution_target ->
 // worker -> job -> job_attempt -> lease -> heartbeat_run) with `randomUUID()` ids,
 // so no case can leak into another (every resolver join is keyed by id).
+//
+// DAT-007-S3 extends the five original cases (unchanged) with: a replaced target
+// generation, a disabled target, wrong-Organization / wrong-company / cross-tenant
+// attempt-pointer denials against a SECOND tenant (ruling F10) each with a same-tenant
+// positive control, two real-database throws that must propagate (fail-closed), and a
+// plan-shape pin that every hop is an index probe. Mutants are in
+// docs/replatform/epics/E5-workspaces-secrets/tickets/DAT-007-S3-result.md.
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -37,6 +44,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
+import { drizzle as drizzlePg } from "drizzle-orm/postgres-js";
+import postgres from "postgres";
 import { applyPendingMigrations, createDb, type Db } from "@armyofagents/db";
 import { allocateEmbeddedPgPort } from "./helpers/embedded-pg-port.js";
 import { createDistributedRunCurrencyResolver } from "../mcp/distributed-run-currency-resolver.js";
@@ -73,6 +82,8 @@ describe.skipIf(process.platform === "win32")(
     let db: Db;
     let setupError: unknown = null;
     let setupFailed = false;
+    let connectionString = "";
+    let pgPort = 0;
 
     // Shared tenant spine (seeded once). Fresh random ids so a re-run never
     // collides with a leftover row and organizations_slug_uq stays unique.
@@ -82,6 +93,21 @@ describe.skipIf(process.platform === "win32")(
     // execution_targets_authority_scope_check (execution_targets.ts:67-68) requires
     // the organization-scope authority key to be exactly this string.
     const AUTHORITY_KEY = `organization:${ORG}`;
+
+    // DAT-007-S3 (ruling F10, multi-tenant): a SECOND Organization with its own company and
+    // agent, and a SECOND company inside the FIRST Organization. Both are seeded in beforeAll
+    // alongside the original spine. TENANT_A is exactly the original spine above.
+    type Tenant = { org: string; company: string; agent: string; authorityKey: string };
+    const TENANT_A: Tenant = { org: ORG, company: COMPANY, agent: AGENT, authorityKey: AUTHORITY_KEY };
+    const ORG_B = randomUUID();
+    const TENANT_B: Tenant = {
+      org: ORG_B,
+      company: randomUUID(),
+      agent: randomUUID(),
+      authorityKey: `organization:${ORG_B}`,
+    };
+    // Same Organization as TENANT_A, different company: the wrong-COMPANY (not wrong-org) case.
+    const COMPANY_A2 = randomUUID();
 
     function assertSetupOk(): void {
       const dbReady = (db as Db | undefined) !== undefined;
@@ -110,7 +136,8 @@ describe.skipIf(process.platform === "win32")(
         });
         await pg.initialise();
         await pg.start();
-        const connectionString = `postgres://test:test@localhost:${port}/postgres`;
+        connectionString = `postgres://test:test@localhost:${port}/postgres`;
+        pgPort = port;
         await applyPendingMigrations(connectionString);
         db = createDb(connectionString);
 
@@ -127,6 +154,21 @@ describe.skipIf(process.platform === "win32")(
         await db.execute(sql`
           INSERT INTO agents (id, company_id, name, kind, status)
           VALUES (${AGENT}, ${COMPANY}, 'DAT-007 currency agent', 'org', 'idle')`);
+
+        // DAT-007-S3: the second tenant spine (Organization B) and a second company in
+        // Organization A. issue_prefix is globally unique (companies_issue_prefix_idx).
+        await db.execute(sql`
+          INSERT INTO organizations (id, name, slug)
+          VALUES (${TENANT_B.org}, 'DAT-007 currency org B', ${`dat-007-currency-${TENANT_B.org}`})`);
+        await db.execute(sql`
+          INSERT INTO companies (id, organization_id, name, issue_prefix)
+          VALUES (${TENANT_B.company}, ${TENANT_B.org}, 'DAT-007 currency co B', 'D07B')`);
+        await db.execute(sql`
+          INSERT INTO agents (id, company_id, name, kind, status)
+          VALUES (${TENANT_B.agent}, ${TENANT_B.company}, 'DAT-007 currency agent B', 'org', 'idle')`);
+        await db.execute(sql`
+          INSERT INTO companies (id, organization_id, name, issue_prefix)
+          VALUES (${COMPANY_A2}, ${ORG}, 'DAT-007 currency co A2', 'D07C')`);
       } catch (err) {
         setupError = err;
         setupFailed = true;
@@ -159,6 +201,32 @@ describe.skipIf(process.platform === "win32")(
       attemptStatus: "running" | "expired";
       leaseExpiry: "future" | "past";
     }): Promise<string> {
+      return (await seedDistributedChain(opts)).runId;
+    }
+
+    // DAT-007-S3: the same chain with three further single knobs, each defaulting to the
+    // value the five original cases use (so those cases are byte-identical in effect):
+    //   - `targetDeviceGeneration` — the execution target's CURRENT generation. The lease
+    //     always stores target_generation 1, so 2 models a target re-enrolled/replaced
+    //     after the lease was granted (the generation half of the target_revoked cutoff).
+    //   - `targetStatus` — 'disabled' models a revoked execution target.
+    //   - `tenant` — which Organization/Company/Agent spine the whole chain belongs to
+    //     (ruling F10: M1 is multi-tenant; cross-tenant cases need a second tenant).
+    // Returns every id so the cross-tenant pointer case can reuse another tenant's attempt.
+    async function seedDistributedChain(opts: {
+      attemptStatus: "running" | "expired";
+      leaseExpiry: "future" | "past";
+      targetDeviceGeneration?: number;
+      targetStatus?: "active" | "disabled";
+      tenant?: Tenant;
+    }): Promise<{ runId: string; attemptId: string; jobId: string }> {
+      const tenant = opts.tenant ?? TENANT_A;
+      const ORG = tenant.org;
+      const COMPANY = tenant.company;
+      const AGENT = tenant.agent;
+      const AUTHORITY_KEY = tenant.authorityKey;
+      const targetDeviceGeneration = opts.targetDeviceGeneration ?? 1;
+      const targetStatus = opts.targetStatus ?? "active";
       const runId = randomUUID();
       const jobId = randomUUID();
       const attemptId = randomUUID();
@@ -174,8 +242,8 @@ describe.skipIf(process.platform === "win32")(
           (id, organization_id, scope, target_authority_key, device_generation,
            slug, kind, trust_class, status)
         VALUES
-          (${targetId}, ${ORG}, 'organization', ${AUTHORITY_KEY}, 1,
-           ${`dat007-target-${targetId}`}, 'dedicated_worker', 'dedicated_tenant', 'active')`);
+          (${targetId}, ${ORG}, 'organization', ${AUTHORITY_KEY}, ${targetDeviceGeneration},
+           ${`dat007-target-${targetId}`}, 'dedicated_worker', 'dedicated_tenant', ${targetStatus})`);
 
       // worker: mandatory because leases_org_worker_fk (leases.ts:92-96) binds
       // (organization_id, worker_id) -> workers(organization_id, id) and the rich
@@ -242,7 +310,7 @@ describe.skipIf(process.platform === "win32")(
         VALUES
           (${runId}, ${COMPANY}, ${AGENT}, 'distributed', ${jobId}, ${attemptId})`);
 
-      return runId;
+      return { runId, attemptId, jobId };
     }
 
     // Local org run: ONLY a heartbeat_runs row, execution_owner left NULL. No
@@ -311,6 +379,213 @@ describe.skipIf(process.platform === "win32")(
         agentId: AGENT,
       });
       expect(verdict).toBe("admit");
+    });
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // DAT-007-S3 — the genuinely-missing Tier-3 cases (E5 implementation plan,
+    // `DAT-007-S3`). Each is a SINGLE-KNOB flip from the live-run admit baseline above
+    // (case 1), and each is paired with the mutant of the resolver/classifier line it
+    // exercises in `tickets/DAT-007-S3-result.md`.
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    const resolveFor = (signedRunId: string, tenant: { company: string; agent: string }) =>
+      createDistributedRunCurrencyResolver(db).resolve({
+        signedRunId,
+        companyId: tenant.company,
+        agentId: tenant.agent,
+      });
+
+    // Pull a Postgres SQLSTATE out of a thrown error, whether the driver error is thrown
+    // directly or wrapped (drizzle wraps query errors and keeps the driver error as `cause`).
+    function pgCode(err: unknown): string | undefined {
+      let cur: unknown = err;
+      for (let depth = 0; depth < 5 && cur && typeof cur === "object"; depth += 1) {
+        const code = (cur as { code?: unknown }).code;
+        if (typeof code === "string" && /^[0-9A-Z]{5}$/.test(code)) return code;
+        cur = (cur as { cause?: unknown }).cause;
+      }
+      return undefined;
+    }
+
+    it("DENY — replaced target generation: target device_generation moved past the lease's target_generation", async () => {
+      assertSetupOk();
+      // Single-knob flip from the admit baseline: the target's CURRENT generation is 2 while
+      // the lease still carries target_generation 1 (the target was re-enrolled/replaced after
+      // the lease was granted). Lease active+fresh, attempt running, target not disabled.
+      const { runId } = await seedDistributedChain({
+        attemptStatus: "running",
+        leaseExpiry: "future",
+        targetDeviceGeneration: 2,
+      });
+      expect(await resolveFor(runId, TENANT_A)).toBe("deny");
+    });
+
+    it("DENY — revoked target: execution_targets.status = 'disabled' under a live lease", async () => {
+      assertSetupOk();
+      // Single-knob flip from the admit baseline: target status active -> disabled. The
+      // generations still match (1/1), so only the disabled arm can produce the deny.
+      const { runId } = await seedDistributedChain({
+        attemptStatus: "running",
+        leaseExpiry: "future",
+        targetStatus: "disabled",
+      });
+      expect(await resolveFor(runId, TENANT_A)).toBe("deny");
+    });
+
+    it("DENY — wrong ORGANIZATION: a live Org-A run presented against Org B's company (same-tenant control admits)", async () => {
+      assertSetupOk();
+      const { runId } = await seedDistributedChain({ attemptStatus: "running", leaseExpiry: "future" });
+      // Same-tenant positive control: the SAME live run, presented against its own company.
+      expect(await resolveFor(runId, TENANT_A)).toBe("admit");
+      // Cross-tenant: the identical signed run id presented at Org B's company URL.
+      expect(await resolveFor(runId, TENANT_B)).toBe("deny");
+    });
+
+    it("DENY — wrong ORGANIZATION, reversed: a live Org-B run presented against Org A's company (same-tenant control admits)", async () => {
+      assertSetupOk();
+      const { runId } = await seedDistributedChain({
+        attemptStatus: "running",
+        leaseExpiry: "future",
+        tenant: TENANT_B,
+      });
+      // Same-tenant positive control: proves the Org-B chain is itself a live, admissible run.
+      expect(await resolveFor(runId, TENANT_B)).toBe("admit");
+      expect(await resolveFor(runId, TENANT_A)).toBe("deny");
+    });
+
+    it("DENY — wrong COMPANY in the SAME Organization: a live company-A run presented against company A2", async () => {
+      assertSetupOk();
+      const { runId } = await seedDistributedChain({ attemptStatus: "running", leaseExpiry: "future" });
+      expect(await resolveFor(runId, TENANT_A)).toBe("admit");
+      expect(await resolveFor(runId, { company: COMPANY_A2, agent: AGENT })).toBe("deny");
+    });
+
+    it("DENY — cross-tenant attempt pointer: an Org-A run whose distributed_attempt_id names Org B's LIVE attempt", async () => {
+      assertSetupOk();
+      // Org B holds a fully live chain. Its own run admits — the positive control that the
+      // attempt/lease/target being pointed at really is live.
+      const b = await seedDistributedChain({
+        attemptStatus: "running",
+        leaseExpiry: "future",
+        tenant: TENANT_B,
+      });
+      expect(await resolveFor(b.runId, TENANT_B)).toBe("admit");
+      // An Org-A distributed run row whose attempt pointer names Org B's attempt (the
+      // distributed_* columns carry no FK). It must NOT borrow B's liveness: the resolver's
+      // attempt join requires job_attempts.company_id = heartbeat_runs.company_id, so the
+      // attempt/lease/target hops all miss and the distributed run is denied.
+      const foreignRunId = randomUUID();
+      await db.execute(sql`
+        INSERT INTO heartbeat_runs
+          (id, company_id, agent_id, execution_owner, distributed_job_id, distributed_attempt_id)
+        VALUES
+          (${foreignRunId}, ${COMPANY}, ${AGENT}, 'distributed', ${b.jobId}, ${b.attemptId})`);
+      expect(await resolveFor(foreignRunId, TENANT_A)).toBe("deny");
+    });
+
+    it("FAIL-CLOSED — a real query error inside the real resolver propagates (malformed signed run id → 22P02)", async () => {
+      assertSetupOk();
+      // heartbeat_runs.id is uuid; a signed run_id that is not a uuid makes Postgres itself
+      // reject the real query (invalid_text_representation). The resolver must REJECT — a
+      // catch-and-admit reader would resolve "admit" here and this test would red.
+      const err = await resolveFor("not-a-uuid", TENANT_A).then(
+        (verdict) => ({ resolvedWith: verdict }),
+        (e: unknown) => e,
+      );
+      expect(err).not.toHaveProperty("resolvedWith");
+      expect(pgCode(err)).toBe("22P02");
+    });
+
+    it("FAIL-CLOSED — a real connection-level error inside the real resolver propagates (absent database → 3D000)", async () => {
+      assertSetupOk();
+      // Same real server, a database that does not exist: the pool itself fails on connect.
+      const brokenDb = createDb(`postgres://test:test@localhost:${pgPort}/dat007_absent_database`);
+      try {
+        const err = await createDistributedRunCurrencyResolver(brokenDb)
+          .resolve({ signedRunId: randomUUID(), companyId: COMPANY, agentId: AGENT })
+          .then(
+            (verdict) => ({ resolvedWith: verdict }),
+            (e: unknown) => e,
+          );
+        expect(err).not.toHaveProperty("resolvedWith");
+        expect(pgCode(err)).toBe("3D000");
+      } finally {
+        await (brokenDb as unknown as { $client: { end(): Promise<void> } }).$client.end();
+      }
+    });
+
+    it("PLAN SHAPE — every hop of the real resolver query is an index probe (no scan), with a scan-detecting positive control", async () => {
+      assertSetupOk();
+      // Capture the EXACT statement the real resolver sends, via a traced client.
+      const captured: Array<{ query: string; params: unknown[] }> = [];
+      const client = postgres(connectionString, {
+        connection: { client_encoding: "UTF8" },
+        debug: (_conn: number, query: string, params: unknown[]) => {
+          captured.push({ query, params });
+        },
+      });
+      try {
+        const tracedDb = drizzlePg(client) as unknown as Db;
+        const { runId } = await seedDistributedChain({ attemptStatus: "running", leaseExpiry: "future" });
+        expect(
+          await createDistributedRunCurrencyResolver(tracedDb).resolve({
+            signedRunId: runId,
+            companyId: COMPANY,
+            agentId: AGENT,
+          }),
+        ).toBe("admit");
+        const statement = captured.find((c) => c.query.includes('"heartbeat_runs"'));
+        expect(statement, "the resolver's statement was captured").toBeDefined();
+
+        type PlanNode = {
+          "Node Type": string;
+          "Relation Name"?: string;
+          "Index Name"?: string;
+          "Index Cond"?: string;
+          Plans?: PlanNode[];
+        };
+        const explain = async (query: string, params: unknown[]): Promise<PlanNode> =>
+          client.begin(async (tx) => {
+            // Seq scans OFF: on tiny test tables the planner would otherwise prefer a scan
+            // even where an index exists. With them off, any relation that STILL appears as a
+            // non-probe scan has no usable index for this predicate — the regression we pin.
+            await tx.unsafe("SET LOCAL enable_seqscan = off");
+            const rows = (await tx.unsafe(`EXPLAIN (FORMAT JSON) ${query}`, params as never[])) as unknown as Array<
+              Record<string, Array<{ Plan: PlanNode }>>
+            >;
+            return rows[0]!["QUERY PLAN"]![0]!.Plan;
+          }) as Promise<PlanNode>;
+        const relationScans = (node: PlanNode, out: PlanNode[] = []): PlanNode[] => {
+          if (node["Relation Name"]) out.push(node);
+          for (const child of node.Plans ?? []) relationScans(child, out);
+          return out;
+        };
+        const nonProbes = (plan: PlanNode) =>
+          relationScans(plan).filter(
+            (n) => !(/^Index (Only )?Scan$/.test(n["Node Type"]) && typeof n["Index Cond"] === "string"),
+          );
+
+        const plan = await explain(statement!.query, statement!.params);
+        const scans = relationScans(plan);
+        // eslint-disable-next-line no-console
+        console.log(
+          "[dat-007-s3] resolver plan (enable_seqscan=off):",
+          JSON.stringify(scans.map((n) => [n["Relation Name"], n["Node Type"], n["Index Name"] ?? null, n["Index Cond"] ?? null])),
+        );
+        // All four hops are present (no join was elided) ...
+        expect(new Set(scans.map((n) => n["Relation Name"]))).toEqual(
+          new Set(["heartbeat_runs", "job_attempts", "leases", "execution_targets"]),
+        );
+        // ... and every one is an index probe with an index condition.
+        expect(nonProbes(plan)).toEqual([]);
+
+        // Positive control: the same detector on a predicate with NO index (organizations.name)
+        // must report a non-probe scan, or the assertion above could be vacuous.
+        const control = await explain("SELECT id FROM organizations WHERE name = $1", ["x"]);
+        expect(nonProbes(control).length).toBeGreaterThan(0);
+      } finally {
+        await client.end();
+      }
     });
   },
 );
