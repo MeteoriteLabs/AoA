@@ -1,6 +1,6 @@
 # WRK-017-B1 Result - the D1 worker enrolment wiring is intact, and the lane it repaired is green
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Date (UTC):** `2026-09-21`
 **Epic:** `E4-worker-daemon`
 **Plan task:** `E4 implementation-plan WRK-017-B1 - current enrolment evidence on the milestone candidate (M0)`
