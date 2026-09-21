@@ -661,6 +661,17 @@ jobs:
           node scripts/check-ci-timeout-budgets.mjs
           node --test scripts/check-ci-timeout-budgets.test.mjs
 
+      # E6-F023 (option 3, gate-owner ruling 2026-09-21). cross-platform-weekly.yml's
+      # `verify-cross-platform` and `e2e-cross-platform` jobs, and the `Install Playwright`
+      # step, must carry NO `continue-on-error`: the DEP-013 consumer reads that lane's RUN
+      # conclusion, which a flagged job or step cannot move, so re-adding any flag silently
+      # restores the false green measured on run 35530935808. `test-cross-platform` stays
+      # advisory. A renamed or removed job/step reds - the guard never checks nothing.
+      - name: Cross-platform lane verdict-bearing shape (E6-F023)
+        run: |
+          node --test scripts/check-cross-platform-verdict-shape.test.mjs
+          node scripts/check-cross-platform-verdict-shape.mjs
+
       # DEP-013 Slice A — INERT. It queries no live verdict and blocks nothing new: it asserts
       # only that the declaration still matches the tree (every workflow file has an entry,
       # every `push` branch has its own, every not-watched entry says what would have to change,

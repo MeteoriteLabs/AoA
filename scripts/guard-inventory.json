@@ -32,6 +32,10 @@
       "status": "ci",
       "reason": "policy job — CI timeout caps derive from budgets bounded by declared measurements (E3-F036 class)"
     },
+    "scripts/check-cross-platform-verdict-shape.mjs": {
+      "status": "ci",
+      "reason": "policy job — Cross-platform lane verdict-bearing shape (E6-F023)"
+    },
     "scripts/check-d1-compose.mjs": {
       "status": "ci",
       "reason": "invoked by a workflow"
