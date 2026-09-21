@@ -214,3 +214,29 @@ Today arm 2 still reads 0 on every real run, because no worker emits `artifact_p
   - `verify (2)` executed `job-events.integration.test.ts` **(15)**.
 - **Codex** (`chatgpt-codex-connector`) reviewed `a58278c`. It completed with no findings (a 👍
   reaction and no review comments).
+
+## Post-review fix — Codex P2 ×2 on `37a9c72` (2026-09-21)
+
+- **The findings.** Both were verified at source.
+  - A `pending` seam receipt points at the **attempt** (`aggregateKind = 'job_attempts'`).
+  - The fast paths of `recordAcceptedActivity` and `projectAcceptedOutput` returned any existing
+    receipt as `replayed`, with its target as `activityId` / `outputId`. So a caller could be handed
+    an attempt id as if it were an `activity_log` or `task_outputs` row.
+  - JOB-016 had already fixed the same shape in the pricing wrapper.
+- **The fix.** Commit `56313ae361ba2ea652e432cbf2e0cd0bdce6d2fb`.
+  - Both fast paths now check the receipt's status. A `pending` receipt returns `status: "pending"`
+    with a null id, and the receipt is left for the re-drive.
+  - The change to the public outcome types is **additive**: the `status` union gains `pending`.
+- **Tests.** One test per wrapper, `[JOB-017 Codex P2]`, in `job-audit-parity` and
+  `job-output-parity`.
+- **Mutations.**
+  - **M15** removes the audit check and turns the audit test red (1 failed).
+  - **M16** removes the output check and turns the output test red (1 failed).
+- **Local GREEN.** The three focused files pass **71/71**. `tsc` passes.
+- **Threads.** Both review threads were answered and resolved.
+- **Citation.** The fix moved `drainFenceGuardDenial` in `job-output-bridge.ts` down 7 lines, so
+  the DE-18 citation is re-pointed by symbol from `:508` to `:515`. The commit that carries it also
+  carries this record, and the guard set passes there.
+- **The previous addendum.** Its Codex line records the `a58278c` review. The `37a9c72` review then
+  raised these two findings, so the reviewed revision moves to the head that carries this fix. CI
+  for that head is cited in PR #560; this record is not rewritten for it.
