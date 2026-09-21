@@ -36,6 +36,7 @@ import { ConcurrencyLimiter } from "../poll/concurrency.js";
 import { createHostCapacityProbes, defaultHostProbeReaders } from "../poll/host-probes.js";
 import { createSupervisor } from "../supervisor/supervisor.js";
 import { createRunCanaryCoordinator } from "../supervisor/run-canaries.js";
+import { createUsageObserver } from "../supervisor/usage-observer.js";
 import { resolveRunOpDeadlineMs } from "./run-op-deadline.js";
 import { createRedeemer, synthesiseRunSecrets } from "../lease/secret-redemption.js";
 import { createStagedInputResolver } from "../lease/staged-input.js";
@@ -177,9 +178,15 @@ export async function composeDispatchRuntime(deps: ComposeDispatchRuntimeDeps): 
 
   // `redactionCanaries: []` is the construction-time PREFIX; the run's real canaries are seeded
   // PER-RUN into the coordinator's per-lease array (below), never at construction — so no
-  // construction-time secret exists and a forgotten seeding cannot fail open. observeRun stays
-  // absent (no sandbox stdout/stderr rides the stream yet), but the redeemed provider key does now
-  // transit the supervisor transiently, which is exactly what the per-run canaries scrub.
+  // construction-time secret exists and a forgotten seeding cannot fail open. The redeemed
+  // provider key transits the supervisor transiently, which is exactly what the per-run canaries
+  // scrub.
+  //
+  // WRK-018 — `observeRun` is COMPOSED: the usage producer. (Superseded text: "observeRun stays
+  // absent (no sandbox stdout/stderr rides the stream yet)".) Its presence is what opens the
+  // optional stdout stream channel on `execute`; the supervisor scrubs every byte with the run's
+  // own canaries before the observer sees it (H-04), and the observer emits usage ONLY — four
+  // integers, never text. Rollback = drop this one line: the channel is inert without a consumer.
   // DEP-011 Slice 2a — pass EXACTLY the injected provider path through to the supervisor: the
   // DESKTOP `provider` OR the container `makeRunProvider` (the supervisor fail-fasts if both, and
   // the boot gate refuses if neither). `materializeRunSecrets` is always present here, so the
@@ -193,6 +200,7 @@ export async function composeDispatchRuntime(deps: ComposeDispatchRuntimeDeps): 
     materializeRunSecrets,
     resolveStagedFiles,
     canaryCoordinator,
+    observeRun: createUsageObserver({ metrics: deps.metrics }),
     // ★ H1 — the run's OWN budget, from `workload.maxRuntimeSeconds`. Before this the
     // supervisor's 60 s default stood for every run, and that one number is simultaneously
     // the execute race, the E2B sandbox TTL, and the E2B command timeout — so every task
