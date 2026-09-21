@@ -417,6 +417,8 @@ identical command GREEN; append the protocol build + worker typecheck/build abov
 | WRK-003 | `Invoke-NativeGate 'WRK-003 worker' { pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/capacity.test.ts src/__tests__/backoff.test.ts src/__tests__/concurrency.test.ts src/__tests__/poll-empty.component.test.ts src/__tests__/poll-offer-ack.component.test.ts src/__tests__/poll-incompatible.test.ts src/__tests__/poll-backpressure.test.ts src/__tests__/poll-outage.component.test.ts src/__tests__/poll-drain.component.test.ts } ` |
 | WRK-004 | `Invoke-NativeGate 'WRK-004 worker' { pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/provider-contract.test.ts src/__tests__/supervisor-happy.component.test.ts src/__tests__/capability-negotiation.test.ts src/__tests__/optional-ops-unsupported.test.ts src/__tests__/supervisor-hung-create.test.ts src/__tests__/supervisor-cancel-escalation.test.ts src/__tests__/cleanup-authority-denial.test.ts src/__tests__/cleanup-cross-resource-denial.test.ts src/__tests__/cleanup-redaction.test.ts src/__tests__/provider-idempotency-replay.test.ts src/__tests__/list-inspect-pagination.test.ts src/__tests__/cleanup-idempotent.test.ts src/__tests__/cleanup-expiry-escalation.test.ts src/__tests__/destroy-failure.test.ts src/__tests__/checkpoint-restore-health.test.ts src/__tests__/reconcile-leaked.test.ts src/__tests__/no-local-tenant-spawn.test.ts src/__tests__/supervisor-shutdown.test.ts }` |
 | WRK-005 | `Invoke-NativeGate 'WRK-005 worker' { pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/lease-renewal-schedule.test.ts src/__tests__/lease-renewal-happy.component.test.ts src/__tests__/lease-renewal-cancel-requested.test.ts src/__tests__/lease-renewal-rejected.test.ts src/__tests__/lease-renewal-deadline-lapse.test.ts src/__tests__/lease-renewal-401-recovery.test.ts src/__tests__/lease-renewal-idempotent-replay.test.ts src/__tests__/lease-renewal-clock-bounds.test.ts src/__tests__/lease-renewal-shutdown.test.ts src/__tests__/fence-close-proxy-permit.test.ts src/__tests__/fence-close-proxy-deny.test.ts src/__tests__/fence-close-idempotent-terminal.test.ts src/__tests__/governed-egress-denied-emits-event.test.ts src/__tests__/quarantine-routing-decision.test.ts src/__tests__/quarantine-grant-finalize.component.test.ts src/__tests__/quarantine-requires-device-session.test.ts }` |
+| WRK-013 | `Invoke-NativeGate 'WRK-013 worker' { pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/lease-candidate-store.test.ts src/__tests__/startup-reconcile-composed.component.test.ts src/__tests__/startup-lease-authority.test.ts src/__tests__/startup-reconcile-lifecycle.test.ts src/__tests__/dispatch-runtime.test.ts }; Invoke-NativeGate 'gate clause wiring' { node scripts/check-gate-clause-wiring.mjs }; Invoke-NativeGate 'worker boundary' { pnpm check:worker-daemon-boundary }` — the first two files are **created** by the ticket (§4c). |
+| WRK-018 | `Invoke-NativeGate 'WRK-018 worker' { pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/usage-observer.test.ts src/__tests__/usage-stream-redaction.test.ts src/__tests__/dispatch-runtime.test.ts src/__tests__/supervisor-producers-terminal.test.ts }; Invoke-NativeGate 'WRK-018 e2b' { pnpm --filter @armyofagents/sandbox-e2b-provider exec vitest run src/__tests__/streaming.test.ts }; Invoke-NativeGate 'WRK-018 wire' { pnpm --filter @armyofagents/provider-wire exec vitest run src/__tests__/driver-usage-stream.test.ts }; Invoke-NativeGate 'WRK-018 AM' { pnpm --filter @armyofagents/adapter-manager exec vitest run src/__tests__/server-usage-stream.test.ts }; Invoke-NativeGate 'worker boundary' { pnpm check:worker-daemon-boundary }` — the new test files are **created** by the ticket (§4c). The keyed acceptance run is separate, dispatched only inside the F8 envelope. |
 
 ---
 
@@ -974,6 +976,248 @@ by symbol and line.
 
 **Evidence / commit:** `tickets/WRK-017-B1-result.md`; one documentation commit
 `docs(e4): re-measure the D1 worker enrolment wiring on the M0 candidate`.
+
+---
+
+## 4c. M1a tasks — filed at M1 Step 0 (S0-3)
+
+*Filed 2026-09-21 from `docs/replatform/qa/2026-09-21-m1-execution-plan.md` §4 (founder-approved,
+F10 overruled to **multi-tenant**). Every file path below was checked to exist at the program tip
+`1cc7e2fdb`, or is marked **create**. Line numbers are hints; re-find by symbol. §3's protocol
+applies: a distinct reviewer alone sets `complete`. Both tickets change only the worker daemon and
+its provider packages, which import no server or database code (E4-D01), so their suites run on this
+Windows host with no `AOA_RUN_WIN_INTEGRATION` gate.*
+
+★★★ **M1 IS MULTI-TENANT (founder ruling F10).** The daemon serves leases for any Organization its
+target admits. Nothing in these tickets may key durable state, canaries or streams by anything
+coarser than the lease/attempt, and each ticket carries a case with two Organizations' leases on one
+daemon.
+
+### WRK-013 — A durable lease-candidate source for the startup reconciler (M, ≤3 agent-days, M1a)
+
+**Depends on:** WRK-008 slice 2b and WRK-007 (both shipped); founder rulings **F4** and **F5**
+(ruled 2026-09-21). **Owns:** `E4-F009` (MED). Ticket file:
+[`tickets/WRK-013-design.md`](./tickets/WRK-013-design.md), which records both rulings.
+
+**Current state, measured at `1cc7e2fdb`:**
+- `createStartupReconciler` (`packages/worker-daemon/src/supervisor/startup-reconcile.ts`, ~:292) is
+  fully built (WRK-007). Its `StartupReconcilerDeps.leaseCandidates` is
+  `readonly LeaseOfferV1[]` (~:257), and only tests supply it.
+- `run()` probes each unique lease with `probeLeaseAuthority` (~:101), which calls `renewLeaseOnce`
+  (`lease/lease-renewal.ts`); `livenessOf` maps `renewed` to `live`. **A live verdict is itself a
+  renewal.** It then reconciles outbox streams, lists and classifies sandboxes (a live, same-
+  generation sandbox gets the `keep` disposition and is never re-attached, per WRK-007 D2), and
+  quarantines unknown artifacts.
+- `createStartupSteps(reconciler?)` (`lifecycle/startup-steps.ts`) returns `[]` without a
+  reconciler. Its only production call is in `bootstrapWorkerDaemon`
+  (`bin/worker-daemon.ts`, ~:643: `deps.reconciler ? createStartupSteps(deps.reconciler) : []`), and
+  **no production caller sets `reconciler`** — not `bin/container-host.ts`, not
+  `packages/worker-networked-host/src/bin/networked-host.ts`.
+- **Ordering hazard:** `composeDispatchRuntime` (`lifecycle/dispatch-runtime.ts`) runs and the poll
+  loop is armed (`heartbeatLoop.firstBeat.then(() => composed.start())`, `bin/worker-daemon.ts`
+  ~:592–611) **before** the startup steps at ~:643. Composed as-is, the loop could lease before the
+  reconcile finishes.
+- The natural write point is `handleOffer` in `poll/poll-loop.ts`: on
+  `ack.kind === "acknowledged"` it calls `trackHandoff(offer, workloadClass)` with the full
+  `LeaseOfferV1` in hand. The natural prune point is `trackHandoff`'s settle `finally`, or the
+  renewal driver's `completeLease` (`lease/lease-renewal.ts`).
+- The pattern to copy is the durable event outbox: `openEventOutboxStore` / `SqliteEventOutboxStore`
+  in `events/event-outbox-store.ts` — `node:sqlite` loaded dynamically, **no npm SQLite dependency**
+  (E4-D01), path from config.
+- The register row `E4-3-survives-restart` (`scripts/gate-clause-wiring.json`, symbol
+  `createStartupReconciler`) is `unwired`.
+
+**Outcome:** a durable local lease-candidate store — **written on ACK, pruned when the attempt
+ends** — replayed into `leaseCandidates` at boot; `createStartupReconciler` composed **before** the
+poll loop starts, conditionally on `selfModel.registeredTargetProfile.organizationId !== null`
+(platform-scoped targets skip with a named reason); `E4-3-survives-restart` → `wired` on evidence.
+The two rulings bind the behaviour:
+- **F5 — fence.** A candidate the probe finds `live` is **not renewed again** after the probe and is
+  not kept alive by the daemon; the control plane's reaper (`reapExpiredLeases`, run by
+  `createJobReconciliationService` in `server/src/services/job-reconciliation.ts`) ends the attempt
+  and JOB-006 mints a fresh one. The reconciler's `keep` disposition must therefore not keep a lease
+  alive — the probe's own renewal is the last one.
+- **F4 — named narrowing.** On the container path (no process-level provider; `list` is
+  capability-gated in `packages/provider-wire/src/driver.ts` and `packages/adapter-manager/src/server.ts`,
+  and the restarted daemon's capability has lapsed) **no worker-side teardown runs**, and orphan
+  reclamation rests on the adapter-manager reaper (`reconcileReaper`,
+  `packages/adapter-manager/src/reconcile-reaper.ts`; `startReaperLoop`, `reaper-loop.ts`). The result
+  doc records this as **a named narrowing of journey item 8's "cleanup/recovery" clause, owned by
+  WRK-013** — not as a residual — and the `M1a` gate records must repeat it.
+
+**Acceptance:**
+1. A restart with a stored candidate runs the probe **over that candidate**, not `[]`.
+2. A `live` candidate is fenced: no renewal after the probe; the attempt ends through the control-plane
+   reaper (asserted against the in-process control-plane double: no further `lease_renew` for that
+   lease).
+3. A candidate whose attempt ended before the crash was pruned and is not probed.
+4. An empty store boots with a **named reason** in the log, never a silent skip; so does a
+   platform-scoped target.
+5. The reconciler completes **before the first poll** (an ordering assertion, not a sleep).
+6. A corrupt or unreadable store fails closed with a named reason and does not block the daemon from
+   starting to poll afterwards (the server reaper remains the safety net).
+7. **Positive control:** removing the write-on-ACK makes case 1 red.
+8. **Multi-tenant (F10):** two leases from two Organizations on one daemon are stored, probed and
+   fenced independently; a candidate's probe uses that lease's own identity and never another's.
+
+**Ticket non-goals:** re-attaching to a live sandbox (WRK-007 D2); a worker-side orphan pass on the
+container path (the F4 narrowing; M1 plan §8); mTLS on the worker→adapter-manager hop; changing the
+frozen protocol (there is still no lease-state query op, so authority stays inferred by renewal).
+
+**Files:**
+- **create** `packages/worker-daemon/src/lease/lease-candidate-store.ts` (SQLite, on the
+  `event-outbox-store.ts` pattern; `node:` builtins only).
+- `packages/worker-daemon/src/poll/poll-loop.ts` (write on ACK, in `handleOffer`), and the prune
+  point (`trackHandoff`'s settle, or `lease/lease-renewal.ts` `completeLease`).
+- `packages/worker-daemon/src/lifecycle/dispatch-runtime.ts` and/or
+  `packages/worker-daemon/src/bin/worker-daemon.ts` (compose the reconciler, awaited before
+  `composed.start()`); `packages/worker-daemon/src/lifecycle/startup-steps.ts` if its contract moves.
+- `packages/worker-daemon/src/supervisor/startup-reconcile.ts` (the F5 fence: `keep` stops
+  renewing).
+- `packages/worker-daemon/src/config/config.ts` (the store path, beside `eventOutboxPath`).
+- `scripts/gate-clause-wiring.json` (`E4-3-survives-restart` → `wired`, cited by symbol).
+- Tests: **create** `packages/worker-daemon/src/__tests__/lease-candidate-store.test.ts` and
+  `packages/worker-daemon/src/__tests__/startup-reconcile-composed.component.test.ts`; extend
+  `startup-lease-authority.test.ts` and `startup-reconcile-lifecycle.test.ts`.
+
+**Interfaces:** a store with `put(offer)` / `remove(leaseId)` / `list(): LeaseOfferV1[]`, replayed
+into `StartupReconcilerDeps.leaseCandidates`. `createStartupReconciler`'s signature is unchanged.
+
+**Failure behavior:** fail closed and loud. A store error never lets the daemon renew a lease it
+cannot account for, and never blocks boot indefinitely; the control-plane reaper is the backstop.
+
+**Migration/compatibility:** a new local file under the worker's state directory; no protocol,
+server or database change. A daemon without the file behaves as today (empty store, named reason).
+
+**Observability:** log lines for stored/pruned/probed/fenced candidates with lease and attempt ids;
+the reconciler's existing metrics; the named reason on an empty store.
+
+**Rollback/disablement:** do not compose the reconciler (the pre-ticket state). The store is inert
+without it.
+
+**Focused verify command:** see the `WRK-013` row in §3.
+
+**RED → GREEN:** RED — cases 1–6 and 8 against the uncomposed reconciler; positive control 7; GREEN —
+the identical command, plus the protocol build and worker typecheck/build, and
+`node scripts/check-gate-clause-wiring.mjs` green with `E4-3-survives-restart` `wired`.
+
+**Evidence / commit:** `tickets/WRK-013-result.md` (records the F4 narrowing and its owner); one
+commit `feat(worker-daemon): durable lease candidates and a composed startup reconciler`. Maps H-05,
+H-08. Closes `E4-F009` (its `findings.md` Status and the manifest key change in the same commit).
+
+---
+
+### WRK-018 — The usage producer: a stdout stream channel and a composed `observeRun` (L — three slices, each ≤3 agent-days, M1a)
+
+**Depends on:** WRK-008 slice 2b, CLI-003, DEP-012 (all shipped). **Gates:** the closure of
+`E3-F037` together with `JOB-016`. **Keyed:** one acceptance run, inside the F8 envelope.
+
+★★★ **CHECK THIS FIRST (M1 plan §9).** Before the L estimate stands, confirm with **one local
+transcript** that `claude_local` under the sandbox argv emits a parseable usage record. The argv
+already runs `--print - … --output-format stream-json --verbose`
+(`server/src/services/task-run-sandbox-invocation.ts`), and `parseClaudeStreamJson`
+(`packages/adapters/claude-local/src/server/parse.ts`) reads the `type:"result"` line's `usage`. If
+no usage appears, **stop and report**: `JOB-016`'s closure breaks, `E3-F037` stays open and `M1a` is
+blocked.
+
+**Current state, measured at `1cc7e2fdb`:**
+- The port (`packages/worker-daemon/src/supervisor/provider.ts`): `ExecuteInput` has
+  `{sandboxId, command, args, env}` and **no stream callbacks**; `ExecuteResult` has
+  `{providerOpId, exitCode, signal, timedOut, stdoutRef, stderrRef}` — refs only.
+- `makeSupervisor({...})` in `lifecycle/dispatch-runtime.ts` (~:187) omits `observeRun`, with a
+  comment that no sandbox output rides the stream yet. `dispatch-runtime.test.ts` pins it:
+  `expect(captured.observeRun).toBeUndefined()`.
+- The supervisor's `observeRun` dep (`supervisor/supervisor.ts`, ~:189) returns a `RunObservation`
+  with `usage?: UsagePayloadV1`; after execute and before terminal it emits
+  `events.usage(obs.usage)` (~:873/:882) and swallows a throw. `usagePayloadV1Schema`
+  (`packages/worker-protocol/src/events.ts`) is `.strict()`: `{inputTokens, outputTokens,
+  cachedInputTokens, runtimeMillis}`, no price field — **the protocol is not edited**.
+- E2B: `E2bStreamHandlers {onStdout?, onStderr?}` exist on the transport
+  (`packages/sandbox-e2b-provider/src/transport.ts`; real and mock transports implement them), but
+  `E2bSandboxProvider.execute` (`e2b-provider.ts`) calls `runCommand` without handlers and returns
+  placeholder refs `ref:stdout:<sandboxId>`.
+- Networked lane: `packages/provider-wire/src/driver.ts` `execute` is one request/response `#post`;
+  `packages/adapter-manager/src/server.ts` `case "execute"` returns JSON. **No streaming anywhere.**
+- Redaction: `synthesiseRunSecrets` (`lease/secret-redemption.ts`) yields per-run canaries;
+  `createRunCanaryCoordinator` (`supervisor/run-canaries.ts`) holds them per lease; `redactString`
+  (`supervisor/redaction.ts`) and `scrubEventStrings` (`supervisor/events.ts`) scrub every event
+  before its digest.
+- Boundary: worker-daemon **cannot import** `@armyofagents/adapters` (E4-D01,
+  `scripts/check-worker-daemon-boundary.mjs`), so the parser is injected from outside the daemon or
+  re-implemented inside it; the choice is recorded in `decisions.md` as an E4 decision.
+
+**Outcome:** an **optional** stdout/usage stream channel on the provider port — a provider that does
+not implement it behaves exactly as today — carried through the E2B provider (`onStdout`) **and**
+through provider-wire/adapter-manager; every chunk **redacted by the per-run canaries before it
+leaves the worker** (H-04, zero tolerance); `claude_local` usage parsed from the `stream-json`
+result line into `UsagePayloadV1` (`runtimeMillis` from the supervisor's own clock, since the parser
+has none); `observeRun` composed in `makeSupervisor`; the pinning test flipped.
+
+**Slices (one ticket, one final reviewer):** **A** — the port channel, the supervisor composition and
+the parser, proven against the fake provider; **B** — E2B `onStdout` wiring, proven against the mock
+transport's stream directive; **C** — the provider-wire and adapter-manager relay, proven by
+component tests; then the one keyed acceptance run.
+
+**Acceptance:**
+1. One real run (keyed, F8) emits **exactly one** `usage` event whose token counts equal the agent's
+   result line.
+2. A planted canary in stdout appears in **no** event, log or evidence, on each lane (fake, E2B mock,
+   networked). Zero tolerance.
+3. A run with no parseable usage emits **no** `usage` event and does not fail; `JOB-016`'s
+   terminal-without-usage signal is what reports it.
+4. A provider that does not implement the channel produces byte-identical supervisor behaviour.
+5. The `observeRun`-absent pin is flipped to assert presence, and a test proves a removed
+   composition reds (positive control).
+6. **Multi-tenant (F10):** two concurrent runs for two Organizations on one daemon: each stream and
+   each canary set is per attempt; neither run's usage, stdout or canaries reach the other's events.
+
+**Ticket non-goals:** pricing (`JOB-016`); the codex adapter (`E7-F027`); shipping transcripts as
+artifacts (the `CLI-011` review prices the channel as an **input**, not this ticket's output);
+editing the frozen protocol; carrying raw output over the wire unredacted.
+
+**Files:**
+- `packages/worker-daemon/src/supervisor/provider.ts` (the optional channel on `ExecuteInput` or a
+  sibling op; decide and record).
+- `packages/worker-daemon/src/lifecycle/dispatch-runtime.ts` (compose `observeRun`);
+  `packages/worker-daemon/src/supervisor/supervisor.ts` only if the observation seam moves.
+- **create** `packages/worker-daemon/src/supervisor/usage-observer.ts` (or an injected parser — per
+  the recorded decision).
+- `packages/sandbox-e2b-provider/src/e2b-provider.ts` (pass `onStdout` to `runCommand`).
+- `packages/provider-wire/src/driver.ts`, `packages/provider-wire/src/codec.ts`,
+  `packages/adapter-manager/src/server.ts` (relay the channel).
+- `docs/replatform/epics/E4-worker-daemon/decisions.md` (the parser-boundary decision).
+- Tests: flip `packages/worker-daemon/src/__tests__/dispatch-runtime.test.ts`; extend
+  `supervisor-producers-terminal.test.ts`; **create**
+  `packages/worker-daemon/src/__tests__/usage-observer.test.ts` and
+  `usage-stream-redaction.test.ts`; extend
+  `packages/sandbox-e2b-provider/src/__tests__/streaming.test.ts`; **create**
+  `packages/provider-wire/src/__tests__/driver-usage-stream.test.ts` and
+  `packages/adapter-manager/src/__tests__/server-usage-stream.test.ts`.
+
+**Interfaces:** `observeRun` returns `RunObservation.usage: UsagePayloadV1 | null`, unchanged. The
+channel is additive and optional on the port.
+
+**Failure behavior:** best-effort for usage (a parse miss is silent at the worker and loud at the
+control plane via `JOB-016`); **fail-closed for redaction** — a chunk that cannot be scrubbed is
+dropped, never forwarded.
+
+**Migration/compatibility:** no protocol, schema or server change. Providers without the channel are
+unaffected.
+
+**Observability:** the `usage` event itself; a counter for runs that ended with no parseable usage;
+redaction drops counted.
+
+**Rollback/disablement:** leave `observeRun` uncomposed (the pre-ticket state); the channel is inert
+without a consumer.
+
+**Focused verify command:** see the `WRK-018` row in §3.
+
+**RED → GREEN:** RED — each acceptance above, slice by slice; the planted-canary cases first; GREEN —
+the identical commands, plus the protocol build, worker typecheck/build, and each touched package's
+typecheck/build, then the keyed acceptance run recorded with its run URL.
+
+**Evidence / commit:** `tickets/WRK-018-result.md`; one commit per slice, e.g.
+`feat(worker-daemon): compose observeRun over an optional usage stream channel`. Maps H-04, H-05.
 
 ---
 

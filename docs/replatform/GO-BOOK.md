@@ -74,7 +74,14 @@ guards/residuals.
   names a **DEP-011 daemon-consumer precondition**, and a manual staging run satisfies neither — it stays
   `unwired` until the operator builds/deploys the adapter-manager image in a shipped boot AND DEP-011 wires
   the daemon consumer. **REL-003** DR staging rehearsal (measured RPO/RTO) is now the one still-owed
-  live-infra run. ★ **NOT "blocked only on the
+  live-infra run. ★ *Corrected 2026-09-21 (M1 Step 0, S0-4), verified at source: the DEP-011
+  daemon consumer **is built** — `packages/worker-networked-host/src/bin/networked-host.ts` (DEP-011
+  Slice 2b-ii, commit `45d930066`) boots the daemon with a networked `makeRunProvider` when
+  `AOA_WORKER_PROVIDER_URL` is set, and ships inert. What the clause still lacks is the adapter-manager
+  image built in CI (**`DEP-014`**) and a **shipped CI boot** that runs it (**`DEP-015`**, per founder
+  ruling F3) — not an unbuilt consumer. The two sentences above and below that name "a DEP-011
+  daemon-consumer precondition" as outstanding are kept as written on 2026-09-18 and are superseded by
+  this note.* ★ **NOT "blocked only on the
   staging fleet"**: the E7-1 clause also names a DEP-011 daemon-consumer precondition, and a green E7-1
   proves the MECHANISM, not capability — capability needs CLI-008 Unit F **and, upstream of it, an
   operator/deployment precondition no code unit can supply (E7-F018: both `capabilityProven` arms are

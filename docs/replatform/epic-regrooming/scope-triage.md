@@ -714,6 +714,35 @@ Ticket shipment or an earlier mechanism run cannot substitute for items 2–9. P
 > ★ **If the companion change does not land, these three rows become `TO FILE` and `M1a` Step 0
 > files seven tickets instead of four.** That is the honest contingency; it is not the plan.
 >
+> ★★★ **REWRITTEN 2026-09-21 AT M1 STEP 0 (S0-3) — THE SET IS NOW TWELVE FILED IDS, EACH WITH A
+> TASK.** The M1 execution plan (`docs/replatform/qa/2026-09-21-m1-execution-plan.md` §3, S0-3)
+> requires this enumeration to name ids, because it is the mechanically checkable artefact: "the
+> parity bridges" and "DEP-011's deploy half" had to become ids here, not only in the plan. The six
+> rows it replaces are kept below, marked superseded, as the record of what this set said before.
+> Every "task defined" cell below names a section that exists in the tree **as of this commit** — nine written by it, three already on the base.
+>
+> | Ticket | Epic | Task defined | What it owes M1a |
+> |---|---|---|---|
+> | `MIG-009` | E10 | ✅ E10 plan **§8.1**, *“wire the rollback drain to an honest operator trigger”* | the drain **and its trigger** (D-9; trigger grain ruled by **F6**: a whole-fleet CLI now), with the audit write atomic with **each attempt's** cancel, and the two silent-cancel RED tests; `E10-1-drain` → `wired`, recorded in a **new** `MIG-009-wiring-result.md`. ★★★ **The frozen `MIG-009-drain-result.md` DOES NOT SATISFY THIS ROW and may not be reused for criterion 1** — it records the trigger as deliberately `unwired`, which is the precise thing `M1a` must change. |
+> | `DAT-007-S3` | E5 | ✅ E5 plan, *“prove the `/mcp` run-currency gate against real PostgreSQL”* | the `/mcp` run-currency gate proven against real PostgreSQL, with a non-zero executed-test count from a Linux `verify` shard |
+> | `E7-1-JOURNEY-ARM` | E7 | ✅ E7 plan, *“promote the coding-journey clause when its two preconditions ship”* | promote `E7-1-coding-journey` on a `DEP-015` run plus `pnpm verify:e7-1-distributed-run`; `capabilityProven=false` passes. Ordered behind `DEP-014` and `DEP-015`. |
+> | `WRK-013` | E4 | ✅ E4 plan **§4c** | the startup reconciler composed before the poll loop over a durable lease-candidate store — journey item 8's restart recovery — built against rulings **F4** (the container-path narrowing, named, owned by `WRK-013`) and **F5** (fence: stop renewing, let the control-plane reaper end the attempt); closes `E4-F009` |
+> | `WRK-018` | E4 | ✅ E4 plan **§4c** | the usage producer: an optional stdout channel on the provider port through E2B and provider-wire, canary-redacted, `claude_local` usage parsed, `observeRun` composed — **D-8**; one keyed acceptance run (F8) |
+> | `JOB-016` | E3 | ✅ E3 plan **§4b** | decision `E3-D-ACC` (the in-transaction accepted-event seam) then `priceAcceptedUsage` registered on it and `jobBudgetCostBridge` composed default-off — **D-8**; owns `E3-F037`, which closes only with `WRK-018` merged |
+> | `JOB-017` | E3 | ✅ E3 plan **§4b** | `jobAuditBridge` and `jobOutputBridge` registered on the `E3-D-ACC` seam, the `projectTerminalWinner` decision recorded, `E3-17-output` and `E3-audit-parity-bridge` → `wired` — **D-8** |
+> | `DEP-014` | E6 | ✅ E6 plan **§4c** | the adapter-manager image built, signed and admitted in CI and built by the D1 train — the image half of what this set called *“DEP-011's remaining deploy half”* |
+> | `DEP-015` | E6 | ✅ E6 plan **§4c** | the **shipped CI boot** lane per ruling **F3** (dispatch-only, candidate-bound, CI-generated keypair, provider-URL overlay, journey in the boot) — the boot half of that deploy row. The daemon consumer it runs is **already built** (`networked-host.ts`, DEP-011 Slice 2b-ii). |
+> | `DEP-016` | E6 | ✅ E6 plan **§4c** | the `m1-spine` campaign profile: one worker, evidence retained on pass, canned usage priced to exactly one `cost_events` row with cost > 0, with a usage-suppressed positive control |
+> | `DEP-017` | E6 | ✅ E6 plan **§4c** | the live env-absence probe on the distributed stage-in path (ruling **F9**), with a planted-canary positive control — criterion 5 observed |
+> | `DEP-018` | E6 | ✅ E6 plan **§4c** | the declared campaign fault matrix and injection harness, per gate profile, each carrying the **F10** tenant matrix |
+>
+> ★★★ **MULTI-TENANT (founder ruling F10, 2026-09-21).** Every row above is proven for **each
+> enabled Organization**, and every campaign runs at least three Organizations — two enabled through
+> the per-Organization rollout policy and one control that is not — with cross-tenant denial in every
+> gate profile. A result that proves one Organization does not satisfy its row.
+>
+> ★ *Superseded rows (the set as it stood before M1 Step 0), kept as written:*
+>
 > | Ticket | Epic | Task defined | What it owes M1a |
 > |---|---|---|---|
 > | `MIG-009` | E10 | ✅ companion — E10 plan **§8.1**, *“wire the rollback drain to an honest operator trigger”* | the drain **and its trigger** (D-9), for criterion 6's rehearsal. ★★★ **The frozen `MIG-009-drain-result.md` DOES NOT SATISFY THIS ROW and may not be reused for criterion 1** — it records the trigger as deliberately `unwired`, which is the precise thing `M1a` must change. A **new** result is required. |
@@ -727,6 +756,11 @@ Ticket shipment or an earlier mechanism run cannot substitute for items 2–9. P
 > task today. `M1a` cannot pass until every row carries a result, and a row cannot carry a result
 > until it has a task — which makes the gap visible rather than letting a gate owner discover it
 > mid-milestone.
+> ★ *Done 2026-09-21 at M1 Step 0 (S0-3): the three `TO FILE` rows became **nine** tickets with tasks —
+> eight newly filed, plus `WRK-013`, which already had a node and now has its task — "DEP-011's remaining deploy half" became `DEP-014` + `DEP-015`,
+> "the parity bridges + the usage producer" became `JOB-016` + `JOB-017` + `WRK-018`, and the campaign
+> harness the gates need became `DEP-016`, `DEP-017` and `DEP-018`. The twelve-row table above is the
+> set.*
 >
 > **`M1b` required result set:** `CLI-010`, **`CLI-011`**, `CLI-012`, `CLI-013`, `CLI-014`, `CLI-015`, `CLI-016`, `DAT-009-3c`, `DAT-009-3d`, `DAT-009-3e`, **and the emit build** (❌ **TO FILE** once `CLI-011` rules; it has no id until then).
 > ★ *Corrected 2026-09-21 (Codex, PR #526):* the emit build was missing from this set. Without it every listed result can land without the chosen emit mechanism ever being built, and then `CLI-012`'s real-run acceptance and the useful-capability gate cannot be met. So `M1b`'s Step 0 files it right after the `CLI-011` ruling, and its result is a prerequisite of `CLI-012`'s real-run acceptance and of `CLI-015`.

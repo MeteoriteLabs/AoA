@@ -577,6 +577,20 @@ The backlog contains 105 implementation tickets (audited 2026-08-25 against the 
 - **Acceptance:** The `cancelRequested` boolean is preserved unchanged so an unadopted worker is byte-unaffected, and the extension is non-critical so it is ignored rather than rejected. Delivery is at-least-once per fresh renewal and never within a replayed renewal, whose stored response body is reproduced verbatim. Redelivery stops at an ACK whose echoed command sequence matches the stored command; a mismatched sequence leaves it pending. An over-budget command list is still delivered, carrying an explicit overflow marker so a partial view is never indistinguishable from an empty one, and a single command too large for the channel is terminal rather than stalling — the marker names it and a rejected ACK clears the queue behind it, and a malformed extension is a delivery fault rather than an absence of commands. A command counts as delivered only when a worker-side handler applies it, not when it appears in the projection. No worker-protocol edit is required.
 - **Test:** Pending/absent projection parity, unadopted-worker compatibility, boolean-and-extension redundancy, sequence gap, duplicate command id, stale fence, overflow-marked truncation with its under-budget twin and its distinguishability from an empty extension, an oversized leading command whose rejected ACK unblocks the command behind it, replayed-renewal body identity, matched- versus mismatched-sequence ACK, and worker-side application of each delivered kind.
 
+#### JOB-016 — Price accepted usage at ingest, on the in-transaction accepted-event seam (M–L)
+
+- **Depends on:** JOB-005, JOB-012, WRK-018. ★ The `WRK-018` edge is for **closing `E3-F037` only**: the seam and the pricing registration do not wait on it, but the finding may not close until a real producer emits `usage`. Filed at M1 Step 0 (S0-3, `docs/replatform/qa/2026-09-21-m1-execution-plan.md` §4); `M1a` Track A.
+- **Outcome:** Build decision `E3-D-ACC` (recorded in the E3 `decisions.md` as this ticket's first commit and approved by a distinct reviewer before any build): a seam through which an accepted event is projected **inside the ingest transaction while the attempt's fence is still live**, because the after-commit `onAttemptTerminal` hook is too late (ingest has already made the attempt terminal, so `lockActiveFence` throws). The existing bridges each open their own `runInTenant` and re-lock the fence, so registering them as they are would deadlock; each gains a core that takes the caller's transaction. Register `priceAcceptedUsage` onto the seam and compose `jobBudgetCostBridge` default-off. Owns finding **E3-F037**.
+- **Acceptance:** (1) one handed-off run produces exactly one `cost_events` row with cost > 0 plus one `authoritative_cost` receipt; (2) a replay of the same batch produces `replayed` and no second row; (3) after a hard-stop breach the **next dispatch is refused or paused** — usage arrives just before `terminal`, so cancelling the breaching attempt proves nothing; (4) an attempt that goes terminal with no `usage` event emits a classified signal, tested — the producer is best-effort, so without it a parse miss silently reproduces `E3-F037`; (5) a projector failure never rolls back the append — it writes a `pending`/`failed` receipt a detector surfaces; (6) usage-then-terminal and cancel-then-terminal in one batch do not trip `guardActiveFence`. Multi-tenant (F10): pricing, the receipt and the refusal are attributed to the attempt's own Organization and Company, and a second enabled tenant's attempts in the same test are unaffected. `E3-F037` closes only with `WRK-018` merged.
+- **Test:** Embedded-PostgreSQL same-transaction suite over the seam (usage-then-terminal, cancel-then-terminal, replay, projector-throw), the next-dispatch refusal after a hard-stop breach, the terminal-without-usage signal, a two-Organization attribution case, and a positive control: removing the registration reds the cost-row assertion.
+
+#### JOB-017 — Audit and output bridges registered on the accepted-event seam (M)
+
+- **Depends on:** JOB-016, JOB-013, JOB-014. Filed at M1 Step 0 (S0-3); `M1a` Track A.
+- **Outcome:** Register `recordAcceptedActivity` (for a named, recorded set of accepted mutations) and the output projection onto the `E3-D-ACC` seam that `JOB-016` builds — not a second seam. Record the decision on `projectTerminalWinner`: **retired**, because the ingest's `attempt_terminal` projection already makes the attempt terminal and the canary and crew terminal projections already write the run summary, or reworked, with the reason. Promote `E3-17-output` and `E3-audit-parity-bridge` to `wired` on evidence.
+- **Acceptance:** Each named accepted mutation writes exactly one activity row and one `activity_audit` receipt in the ingest transaction; a replay writes none; a rejected or stale observation writes none; the output projection writes one `task_outputs` row with its receipt and no `attempt_terminal` throw when the output event and the terminal event arrive in one batch; a projector failure leaves the append committed and a surfaced receipt. Multi-tenant (F10): every row carries the attempt's own Organization and Company, and a second tenant's activity is untouched.
+- **Test:** Embedded-PostgreSQL same-batch cases for audit and output, replay, rejected-observation, projector-throw, a two-Organization isolation case, and the `check-gate-clause-wiring` promotion with a positive control that unregistering reds.
+
 ### E4 — Worker daemon
 
 #### WRK-001 — Scaffold the separately deployable worker (S)
@@ -662,11 +676,12 @@ The backlog contains 105 implementation tickets (audited 2026-08-25 against the 
 - **Outcome:** Add a self-model refresh channel (a periodic or poll-triggered re-read of `client.selfModelRead` that updates `PollLoopDeps.self`) plus a stated policy for leases in flight when the provider-constraint digest rotates (finish under the old constraints, or fence). WRK-008 slice 2b reads the self-model ONCE at boot and never re-reads it, so a mid-life provider-constraint rotation cannot be observed. Filed at WRK-008 completion so E4-F008 is owned by a ticket that exists and has not shipped (finding E4-F013), not left `owned` by shipped WRK-008. Owns finding E4-F008. LOW: the direction of failure is closed (a stale digest makes the worker unmatchable, not wrongly matched — `capabilities.ts:466-467`).
 - **Acceptance:** Written at sprint start (post-Sprint-5), against the tree as it exists then; no result doc until the channel is built. E4-F008 stays open (LOW) until then.
 
-#### WRK-013 — A durable lease-candidate source for the startup reconciler (E4-F009 successor) (scope)
+#### WRK-013 — A durable lease-candidate source for the startup reconciler (E4-F009 successor) (M)
 
-- **Depends on:** WRK-008.
-- **Outcome:** Add a durable local store of accepted lease offers a restarting daemon can replay into `StartupReconcilerDeps.leaseCandidates`, then compose `createStartupReconciler` at boot (conditionally on an org/owner-scoped target) and promote E4-3-survives-restart. WRK-008 slice 2b deferred the reconciler for ONE real blocker: `leaseCandidates` has no durable local source (the outbox persists events, not offers), so the lease-authority probe would run over `[]` every boot — a guard that evaluated nothing. Filed at WRK-008 completion so E4-F009 is owned by a ticket that exists and has not shipped (E4-F013). Owns finding E4-F009.
-- **Acceptance:** Written at sprint start (post-Sprint-5); no result doc until the source is built. E4-F009 stays open (MED) until then.
+- **Depends on:** WRK-008, WRK-007. Founder rulings F4 and F5 (`docs/replatform/qa/2026-09-21-m1-execution-plan.md` §2) are its design inputs; both were ruled 2026-09-21.
+- **Outcome:** Add a durable local store of accepted lease offers a restarting daemon can replay into `StartupReconcilerDeps.leaseCandidates`, written on ACK and pruned when the attempt ends, then compose `createStartupReconciler` at boot (conditionally on an org/owner-scoped target) **before** the poll loop starts, and promote E4-3-survives-restart. WRK-008 slice 2b deferred the reconciler for ONE real blocker: `leaseCandidates` has no durable local source (the outbox persists events, not offers), so the lease-authority probe would run over `[]` every boot — a guard that evaluated nothing. Filed at WRK-008 completion so E4-F009 is owned by a ticket that exists and has not shipped (E4-F013). Owns finding E4-F009. **F5 (fence):** a candidate the probe finds live is not re-attached (D2) and is not kept alive — the daemon stops renewing it and lets the control plane's lease reaper end the attempt. **F4 (named narrowing):** on the container path a restarted daemon cannot enumerate orphan sandboxes (its lease capability has lapsed), so no worker-side teardown runs there and orphan reclamation rests on the adapter-manager reaper; this is recorded as a named narrowing of journey item 8's "cleanup/recovery" clause with an owner, not as a residual.
+- **Acceptance:** A restart with a stored candidate runs the probe over that candidate, not `[]`; a live candidate is fenced (no further renewal) and ends through the control-plane reaper; a dead candidate is pruned; an empty store boots with a **named reason** rather than a silent skip; the reconciler completes before the first poll; a platform-scoped target skips with a named reason. Positive control: removing the store's write-on-ACK reds the restart case. Multi-tenant (F10): the store is keyed per lease and never lets one Organization's candidate be probed under another's session. ★ *Superseded acceptance: "Written at sprint start (post-Sprint-5); no result doc until the source is built. E4-F009 stays open (MED) until then."* — the task is now written (E4 implementation plan §4c, M1 Step 0).
+- **Test:** Component suite over a composed daemon with an in-memory control plane: ACK → persist, restart → probe → fence, end → prune, empty store → named reason, ordering before the poll loop, and the store-removed positive control.
 
 #### WRK-014 — Container device identity: a `mounted_secret` custody key-load + enrolment path (scope)
 
@@ -691,6 +706,13 @@ The backlog contains 105 implementation tickets (audited 2026-08-25 against the 
 - **Depends on:** WRK-015.
 - **Outcome:** Prove WRK-014 + WRK-015 end to end by having the d1 merge-train ENROL a real `file_record` container worker in CI: switch ONE d1 worker (`worker-a`) to `file_record` + a compose `command:` override onto `container-host.js` (NOT an image-CMD repoint — that crash-loops every still-`mounted_secret` container), seed its platform target + a bound enrolment code, deliver a ticket file, and assert a persisted `DeviceIdentityRecord`+receipt (with `worker-b` on `mounted_secret` as the regression control). SPLIT from WRK-015 at its own Step-0 gate (WRK-015-design §3/§4/§8 Q1): a source-cited investigation found the d1 harness has NO worker-enrol flow and adding one is LARGE — the harness acts as the HTTP client itself (no live daemon loop), registers targets org-scope only via fresh-UUID superuser SQL AFTER `up`, `worker-a` is platform-scope (a mint path with no HTTP route + un-exercised operator-DB authority machinery), there is no ticket-file delivery mechanism, and a first-boot enrol failure is terminal for `up --wait` (no `restart:` policy). Part 1 (the POSIX validator) shipped alone under WRK-015; this closes the "no real container has ever enrolled in CI" gap.
 - **Acceptance:** Written at implementation start (post-WRK-015), against the tree as it exists then; no result doc until the d1 stack brings `worker-a` to healthy AND it enrols (a persisted identity in its volume) while `worker-b` does not. Reaches ENROL only, not dispatch (needs DEP-012/DEP-011 + the dispatch flag + an outbox). NOT on the E7-1 critical path (the campaign enrols one worker at campaign time via the CLI-006 runbook). Owns NO finding. Blocks nothing shipped.
+
+#### WRK-018 — The usage producer: a stdout stream channel and a composed `observeRun` (L)
+
+- **Depends on:** WRK-008, CLI-003, DEP-012. Filed at M1 Step 0 (S0-3, `docs/replatform/qa/2026-09-21-m1-execution-plan.md` §4); `M1a` Track A. Sized L; the E4 plan splits it into slices, each at most three agent-days.
+- **Outcome:** A distributed attempt emits a `usage` event built from what the agent actually reported. Today `makeSupervisor` is composed without `observeRun` and `ExecuteResult` carries only placeholder `stdoutRef`/`stderrRef`, so there is nothing to read. Add an optional stdout/usage stream channel to the provider port, carried through the E2B provider (its transport already supports `onStdout`) **and** through the provider-wire/adapter-manager lane, redacted by the per-run canaries before it leaves the worker (H-04, zero tolerance); parse `claude_local` usage from its `stream-json` result line; compose `observeRun`; flip the pinning test that asserts it absent. Without this, `JOB-016` has no units to price and `E3-F037` cannot close.
+- **Acceptance:** One real run (keyed, inside the F8 envelope) emits exactly one `usage` event whose token counts match the agent's result line; a planted canary in stdout never appears in any event, log or evidence; a run whose output carries no parseable usage emits no `usage` event and does not fail (the `JOB-016` terminal-without-usage signal then fires); the networked lane carries the same channel; a provider that does not implement the channel behaves exactly as today. Multi-tenant (F10): the channel is per attempt, and canaries are per run, so a second tenant's run in the same test cannot read or redact into the first's stream.
+- **Test:** Port-contract and supervisor unit suites, E2B mock-transport stream cases, provider-wire/adapter-manager stream cases, a canary-redaction case per lane, the flipped `observeRun` pin, and the one keyed acceptance run.
 
 ### E5 — Workspaces, artifacts, secrets, and network policy
 
@@ -892,6 +914,41 @@ It unblocks JOB-004 through JOB-008, JOB-011 through JOB-014, and WRK-005 onward
 - **Acceptance:** Stated in terms of the CONSUMER, never the check — an acceptance of "`d1-merge-train` passes" would re-file this bug. The unit is a `(workflow, branch)` **stream**, not a workflow: `d1-merge-train` declares `branches: [main, docs/replatform-program]`, so one query per workflow would let a green on `main` mask a red on the integration branch — i.e. would not have reported the very incident that motivated this. A stream whose latest completed run is anything other than `success` (the evaluator is **success-only**, never an enumeration of bad conclusions — GitHub also terminates runs `neutral`/`skipped`/`stale`/`startup_failure`/`action_required`), or which fails the test its declared mode names, produces a consumed artifact within one bounded reconciliation interval. Two modes, because wall-clock staleness is wrong for a `paths:`-filtered workflow: `coverage` (is the newest commit matching the workflow's own path filter covered by a run?) for push-triggered streams, so a merely quiet path reports nothing and no incident exists that only a forced push could close; `cadence` for schedules, which is the only mode that can see `cross-platform-weekly`'s three blank weeks. **The absence of consumption is itself detectable and is the ONLY thing that blocks — and it is measured on the PUBLISH, never on the run:** `policy` fails when the tracking issue's `last-reconciled` marker is stale, because a reconciler that starts and dies still records a recent *completed* run and would keep a run-based heartbeat beating while nothing was consumed. A red watched stream never fails `policy`. Every workflow file carries an entry and every declared branch its own; zero workflows or zero entries fails. Promotion to a required check is REJECTED on measurement, not taste: `docs/replatform-program` has no branch protection at all (404), `main` requires exactly `ci-required`, the lane never runs on `pull_request`, and a second required context violates the hard rule `scripts/lib/ci-lanes.mjs` machine-enforces. Sliced A–E in [`DEP-013-design.md`](epics/E6-deployment-test-harness/tickets/DEP-013-design.md) §7; the blocking reader (C) lands LAST, only after it has been observed failing.
 - **Test:** Manifest completeness (including per-declared-branch), empty-reason and anti-vacuity refusals; the success-only predicate exercised over the FULL conclusion vocabulary — including the five this repository has never produced, since those are the ones no future reader will think to add — with a mutant reverting it to an enumeration killed by them; coverage mode reporting an uncovered matching commit while staying silent on a quiet path; cadence mode reporting `cross-platform-weekly`'s real blank weeks that coverage mode provably cannot see; a green on one branch not masking a red on the other; green stays silent but STILL publishes; issue idempotency. Plus four positive controls, because a consumer nobody has watched fail is the same defect one level up: a **replay against the recorded 08-25→09-03 run history** (reports from 08-29, stops at `ee74f9c8c`) rather than a fixture; the live consumer firing on `cross-platform-weekly`, which is genuinely cancelled today so nothing must be broken to arrange it; the reader made to fail by starving the publish; and — the control that would have caught this design's own first draft — a reconciler that RAN, COMPLETED and never published, which must still red `policy` and `ci-required`.
 
+#### DEP-014 — The adapter-manager image in the signed image build, pushed by CI (M)
+
+- **Depends on:** DEP-001, DEP-012. Filed at M1 Step 0 (S0-3, `docs/replatform/qa/2026-09-21-m1-execution-plan.md` §4); `M1a` Track A.
+- **Outcome:** `docker/images/build.sh` builds today only the control-plane and worker images; `docker/adapter-manager/Dockerfile` exists but only the operator-dispatched `deploy-replatform-campaign.yml` builds it. Add the adapter-manager to the same signed build — digest, SBOM, provenance and admission, exactly as its two siblings — pushed by CI, and have the D1 merge train build it. This is the image half of what was recorded as "DEP-011's deploy half"; it deploys nothing by itself.
+- **Acceptance:** The build emits an adapter-manager digest, SBOM and admission entry alongside the other two; admission rejects a tampered or unsigned adapter-manager digest; the image carries no `E2B_API_KEY` and no worker or server tooling; the D1 train builds it on every run. Positive control: an image with no admission entry is refused.
+- **Test:** Image-content and admission allow/deny cases for the new image in the D1 lane, plus the existing build/SBOM/sign scripts' checks extended to three images.
+
+#### DEP-015 — The shipped CI boot lane (M)
+
+- **Depends on:** DEP-014, DEP-011. Founder ruling F3 (the definition of "shipped CI boot", `docs/replatform/qa/2026-09-21-m1-execution-plan.md` §2) is its specification. The through-the-daemon consumer (`packages/worker-networked-host/src/bin/networked-host.ts`, DEP-011 Slice 2b-ii) is BUILT and ships inert; this ticket is the boot that runs it. Filed at M1 Step 0 (S0-3); `M1a` Track A.
+- **Outcome:** Per F3: a **dispatch-only** CI job, never on push, bound to a named candidate, that on that exact candidate **builds** the control-plane, worker and adapter-manager images from source, boots them together with a **CI-generated control-plane keypair**, applies a worker provider-URL overlay, and runs the journey in that boot in a keyed lane. `checkDispatchDefaultOff` is amended **only for that overlay** — every other manifest keeps rejecting `AOA_WORKER_PROVIDER_URL` on a worker. It is not the operator campaign deploy.
+- **Acceptance:** One dispatched run on a named candidate builds all three images from that candidate's source, boots them, and runs `pnpm verify:e7-1-distributed-run` against a run the boot executed; the keypair exists only for that job; the default-off invariant still reds on every manifest except the overlay (positive control: the same env on the base staging manifest reds); the job cannot trigger on push; the keyed spend happens only inside the F8 envelope. Multi-tenant (F10): the boot seeds the campaign's Organization set through the per-Organization rollout policy — at least two enabled Organizations and one control Organization that is not.
+- **Test:** Workflow-shape guard (dispatch-only, candidate input required, no push trigger), the scoped `checkDispatchDefaultOff` amendment with its positive control, and one keyed dispatched run as the acceptance evidence.
+
+#### DEP-016 — The `m1-spine` campaign profile on the D1 compose (M)
+
+- **Depends on:** JOB-016, JOB-017, DEP-004. Filed at M1 Step 0 (S0-3); `M1a` Track A.
+- **Outcome:** A campaign profile the `M1-D1-SPINE` gate record is produced from: a one-worker topology on the D1 compose, evidence retained **on pass** (the D1 train keeps it only on failure today), and audit and cost assertions. The reference provider emits **canned usage**, and the profile asserts exactly one `cost_events` row with cost > 0 per priced attempt. Without the canned usage and its assertion, the spine prices nothing and still passes.
+- **Acceptance:** A passing profile run retains its evidence bundle; the cost and audit assertions hold per attempt; a **positive control** with usage suppressed reds the profile. Multi-tenant (F10): the profile runs at least three Organizations — two enabled through the per-Organization rollout policy and one control that is not — and asserts each enabled tenant's journey, audit and `cost_events` attribution separately, and the control tenant's refusal.
+- **Test:** The profile run itself, its usage-suppressed positive control, and a per-tenant assertion case for each enabled Organization.
+
+#### DEP-017 — A live env-absence probe on the distributed stage-in path (M)
+
+- **Depends on:** DEP-008, DAT-008. Founder ruling F9 (`docs/replatform/qa/2026-09-21-m1-execution-plan.md` §2) chose to build this rather than narrow criterion 5. Filed at M1 Step 0 (S0-3); `M1a` Track A.
+- **Outcome:** Criterion 5 observed, not argued: a probe that runs inside a distributed sandbox after stage-in and reports whether any host, infrastructure or cross-tenant credential is present in its environment. This closes finding E8-F012's gap **for the M1 distributed path only**; it does not make DE-08 meet H-06, and the reviewers' acknowledgement that H-06 remains unmet is part of the record.
+- **Acceptance:** On a clean run the probe reports absence and the evidence names every variable class it checked; a **positive control** plants a canary credential in the stage-in path and the probe turns red; the probe's own output passes through the per-run canary redaction. Multi-tenant (F10): the probe runs for each enabled tenant, and a credential belonging to another tenant is one of the planted cases.
+- **Test:** The probe unit suite, the planted-canary positive control, and one observed run per campaign profile that uses it.
+
+#### DEP-018 — Campaign fault matrix and injection harness, per gate profile (M)
+
+- **Depends on:** DEP-016, DEP-015, WRK-013, DEP-005. Filed at M1 Step 0 (S0-3); `M1a` Track A.
+- **Outcome:** A declared fault matrix per gate profile, each case with its expected classification, and a harness that injects it. `M1-D1-SPINE`: the journey's fault controls (Toxiproxy), restart and reconciliation (`WRK-013`), and cancellation. `M1a-D2-MECHANISM`: cancellation, provider failure, reconciliation and every cleanup path. `M1-D2-CODING`: all of that plus the credential cases. **Every profile also carries the F10 tenant matrix.**
+- **Acceptance:** Every declared case has a run showing its injection fired and the observed classification matching the expected one; a case whose injection did not fire is a failure, not a pass. The tenant matrix in every profile: the journey passes for each enabled tenant; A cannot lease, read, cancel or see B's jobs, events, secrets, staged inputs, outputs, cost rows or tool calls — each attempt denied, not merely empty, through the non-owner `aoa_app` pool with RLS; the control tenant is refused distributed execution and stays on the legacy path. Each tenant denial has a positive control: the same request made by the owning tenant succeeds.
+- **Test:** The matrix declaration and its checker, one injection-fired record per case, and the paired same-tenant success for every cross-tenant denial.
+
 ### E7 — Coding/CLI workload on E2B
 
 #### CLI-001 — E2B provider implementation (M)
@@ -1030,14 +1087,21 @@ evidence.
   before the mechanism was chosen. It also described `captureSandboxEntries` as "the CAPTURE half",
   reversing the data-plane correction.*
 
-#### CLI-011 — Unit F link 1, the output-mechanism design review (S)
+#### CLI-011 — Unit F link 1, the output-mechanism design review (M)
 
 - **Depends on:** CLI-008.
-- **Outcome:** The founder ruling on HOW output leaves the sandbox, recorded. Design-only as to
+- **Outcome:** The design review that the founder's output-mechanism ruling (**F7**, `docs/replatform/qa/2026-09-21-m1-execution-plan.md` §2) is taken on: the candidate analysis, the writer census, the keyed `files.read` probe (inside the F8 envelope), the §6-constraint table, the positive-control table and an adversarial pass, with the `WRK-018` stdout channel priced as an input. **This ticket makes neither choice binding on its own** — the ruling follows it and is recorded separately. Design-only as to
   BUILD — no build may be assigned from it — but its result is required before `M1b` passes, because
   `CLI-015` cannot proceed without the ruling and exit criterion 4 depends on it. Owns **E7-F026**.
-- **Acceptance:** A committed result naming the chosen mechanism, the options refuted, and the pins
-  each option would move.
+- **Acceptance:** A committed result naming each candidate mechanism with its price and size (or a
+  recorded "neither is reachable" with a named cause), the options refuted, and the pins each option
+  would move; followed by a separately recorded F7 ruling.
+- ★ *Corrected 2026-09-21 (M1 Step 0, S0-4), verified against the E7 implementation plan's `CLI-011`
+  task.* *Superseded text: size "(S)"; Outcome "The founder ruling on HOW output leaves the sandbox,
+  recorded."; Acceptance "A committed result naming the chosen mechanism, the options refuted, and
+  the pins each option would move."* The plan sizes it "≤3 agent-days" and says the ticket "makes
+  neither choice binding on its own"; a node saying the ruling itself is the ticket's output let a
+  reader treat the review's result as the ruling.
 - **Test:** Not a build ticket; the evidence is the decision record and the pin census it cites.
 - ★ **The emit-half BUILD has no id yet, deliberately.** It is filed **after** this ruling, because
   what it builds depends on which mechanism is chosen. Filing it earlier would pre-empt the ruling.
@@ -1108,7 +1172,10 @@ evidence.
 
 #### CLI-015 — Unit F link 6, the judge (M)
 
-- **Depends on:** CLI-011.
+- **Depends on:** CLI-011, CLI-012.
+- ★ *Corrected 2026-09-21 (M1 Step 0, S0-4):* the edge read `CLI-011` only, while the E7
+  implementation plan's `CLI-015` task depends on "`CLI-011`'s **ruling** and `CLI-012`". The
+  `CLI-012` edge is added.
 - ★ *Corrected 2026-09-21 (Codex, PR #526):* CLI-015 **also** requires the approved result of the **emit build**, which is TO FILE after the `CLI-011` ruling. That edge cannot be written in the machine-readable line above until the ticket has an id. Until then the prerequisite is this prose, and `scope-triage.md` lists the emit build in the `M1b` required set.
 - **Outcome:** A verifier that counts the right things. Owns **E7-F016** — clause 6's operator-facing
   text misdescribes its own subject, blaming four links of which three flip neither counter. ★ The
@@ -1132,9 +1199,17 @@ evidence.
   behind a default-off flag; this slice arms it. `M1b`'s capability evidence depends on it, and it
   cannot start before `DAT-007`'s `/mcp` run-currency gate is proven against real PostgreSQL.
 - **Acceptance:** A distributed run in which the agent invokes an AoA tool and the call is authorized
-  by the run's own identity.
-- **Test:** A keyed real-E2B case asserting a tool call reaches AoA, with a negative control on an
-  unauthorized run id **and** on an expired lease.
+  by the run's own identity. **Per Organization (founder ruling F10):** the tool surface is keyed on
+  the per-Organization rollout policy (`server/src/config/distributed-execution-rollout-source.ts`),
+  not only on the deployment-wide `AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED`, which today is read once
+  from `process.env` (`readDistributedToolSurfaceFlag`) — so enabling tools for one tenant would
+  enable them for all. A tenant not enabled for tools is denied even when another tenant is enabled.
+- **Test:** A keyed real-E2B case (inside the F8 envelope) asserting a tool call reaches AoA, with a
+  negative control on an unauthorized run id **and** on an expired lease, plus a two-Organization
+  case in which the tool-enabled tenant's call is admitted and the not-enabled tenant's is denied.
+- ★ *Corrected 2026-09-21 (M1 Step 0, S0-4):* this node required a keyed run while the E7 plan's
+  task did not; the task now carries the same keyed +/- controls. The per-Organization acceptance is
+  added by F10.
 - ★ **Currency is enforced at USE — MCP authorization and redemption — not at mint.**
   `mintRunJwtHandleForPlacement` takes no lease or clock input, so an arming ticket cannot add a
   mint-time check; the observable is denial at use.

@@ -736,6 +736,8 @@ the identical command GREEN; append the affected package typecheck/build command
 | JOB-012 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-012 db' { pnpm --filter @armyofagents/db exec vitest run src/__tests__/migration-idempotency.test.ts }; Invoke-NativeGate 'JOB-012 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-budget-cost-parity.integration.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts src/__tests__/job-legacy-after-commit.integration.test.ts } }` |
 | JOB-013 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-013 db' { pnpm --filter @armyofagents/db exec vitest run src/__tests__/migration-idempotency.test.ts }; Invoke-NativeGate 'JOB-013 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-audit-parity.integration.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts src/__tests__/job-legacy-after-commit.integration.test.ts } }` |
 | JOB-014 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-014 db' { pnpm --filter @armyofagents/db exec vitest run src/__tests__/migration-idempotency.test.ts }; Invoke-NativeGate 'JOB-014 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-output-parity.integration.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts src/__tests__/job-legacy-after-commit.integration.test.ts } }` |
+| JOB-016 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-016 db' { pnpm --filter @armyofagents/db exec vitest run src/__tests__/migration-idempotency.test.ts }; Invoke-NativeGate 'JOB-016 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-accepted-event-seam.integration.test.ts src/__tests__/job-budget-cost-parity.integration.test.ts src/__tests__/job-distributed-drain.integration.test.ts --reporter=verbose } }` — `job-accepted-event-seam.integration.test.ts` is **created** by this ticket and must use the `describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")` form, or the Windows command runs zero tests. The evidence is the **non-zero executed-test count** from a Linux `verify` shard, not an exit code. |
+| JOB-017 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-017 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-accepted-event-seam.integration.test.ts src/__tests__/job-audit-parity.integration.test.ts src/__tests__/job-output-parity.integration.test.ts --reporter=verbose } }; Invoke-NativeGate 'gate clause wiring' { node scripts/check-gate-clause-wiring.mjs }` — same executed-count rule as `JOB-016`. |
 
 ---
 
@@ -2682,6 +2684,249 @@ terminal, pending-receipt flag-off, and rollback before/after accepted artifact;
 existing output/comment regressions + focused lane. Evidence
 `tickets/JOB-014-result.md`; commit `feat(job-control): project outputs and run summaries`.
 Maps D0-T01/T02/T05, H-01/H-02/H-03/H-10, D1-06/D1-07 inputs.
+
+---
+
+## 4b. M1a tasks — filed at M1 Step 0 (S0-3)
+
+*Filed 2026-09-21 from `docs/replatform/qa/2026-09-21-m1-execution-plan.md` §4 (founder-approved,
+with F10 overruled to **multi-tenant**). Every file path below was checked to exist at the program
+tip `1cc7e2fdb`, or is marked **create**. Line numbers are hints; cite and re-find by symbol. Both
+tickets follow §3's protocol: a distinct reviewer alone sets `complete`.*
+
+★★★ **M1 IS MULTI-TENANT (founder ruling F10).** Every acceptance below is proven for **each
+enabled Organization**, with that Organization's own audit, `cost_events` and budget attribution, and
+at least one test per ticket runs **two enabled Organizations side by side** and shows neither
+touches the other. No test, fixture or default in these tickets may assume a single Organization.
+
+### JOB-016 — Price accepted usage at ingest, on the in-transaction accepted-event seam (M–L, ≤3 agent-days per slice, M1a)
+
+**Depends on:** JOB-005 and JOB-012 (both `complete`). **`WRK-018` gates only the closure of
+`E3-F037`**, not the seam: the seam and the pricing registration are built and proven against a
+scripted `usage` event, and the finding closes only once `WRK-018` has merged and a real run emits
+`usage`. **Owns:** `E3-F037` (HIGH). Ticket file: [`tickets/JOB-016-design.md`](./tickets/JOB-016-design.md).
+
+**Why a seam, and why not the obvious one (measured at `1cc7e2fdb`):**
+- `acceptEvent` (`packages/db/src/repositories/tenant/job-control.ts`, implementation ~:4164) runs
+  `guardActiveFence`, inserts the whole batch into `job_events`, then loops per event. For a
+  `terminal` event with a `terminalStatus` it applies the `attempt_terminal` projection
+  (~:4258–4265), which makes the attempt terminal **inside the loop**. Any step after that point
+  that re-checks the fence throws `attempt_terminal`.
+- The after-commit hook is too late. `createJobEventIngestService`
+  (`server/src/services/job-events.ts`) captures the terminal signal in the transaction and fires
+  `onAttemptTerminal` **after commit** (~:394–399). By then `lockActiveFence` throws and
+  `projectAcceptedOutput` throws `attempt_terminal`.
+- **Registering the existing bridges would deadlock.** `priceAcceptedUsage`
+  (`server/src/services/job-budget-cost-bridge.ts`, ~:231), `recordAcceptedActivity`
+  (`job-audit-bridge.ts`, ~:181) and `projectAcceptedOutput` (`job-output-bridge.ts`, ~:251) each
+  open their **own** `runInTenant(appDb, …)` and then call `lockActiveFence` (`FOR UPDATE`) on the
+  attempt the outer ingest transaction already holds.
+- `packages/db` cannot import server bridges, so the seam cannot live in `acceptEvent` as a direct
+  call.
+- **A throwing projector would roll back the append.** `job-events.ts` forbids that (the hook doc
+  ~:151–156 and ~:393): a lost ACK makes the worker replay a terminal forever. An unknown-rate
+  fail-closed would do exactly this — `resolveAuthoritativeRate`
+  (`server/src/services/job-authoritative-rate.ts`) throws `JobBudgetCostRateError` for an unknown
+  model before any write.
+- **Precedent:** `serviceProjection` on `AcceptEventInput` is decided by the server and applied by
+  the repository through `applyServiceProjectionForFence` inside the same loop.
+
+**Step 1 — decision `E3-D-ACC` (the ticket's FIRST commit, into [`decisions.md`](./decisions.md);
+approved by a distinct reviewer before any build).** The decision must fix all four of:
+- **(a) Transaction-taking cores.** Each bridge (`jobBudgetCostBridge`, `jobAuditBridge`,
+  `jobOutputBridge`) gains a core that takes the caller's `tx`/`repos` and **never opens its own
+  transaction** and never re-locks a fence the caller holds. Today's `runInTenant` entry points stay
+  as thin wrappers over the cores, so their existing parity suites keep passing unchanged.
+- **(b) Where the seam lives.** Choose one, and record why:
+  - **(b1)** a projector callback passed through `AcceptEventInput` (or the batch input), on the
+    `serviceProjection` precedent, run by the repository for each non-terminal accepted event
+    **before** the `attempt_terminal` projection; or
+  - **(b2)** `job-events.ts` splits the batch into two `acceptEvent` calls in one transaction: the
+    events before the terminal event first (fence live; projectors run in that transaction), then
+    the terminal event.
+- **(c) Failure semantics.** A projector failure **never** rolls back the append. The decision must
+  say how, given that an error inside a PostgreSQL transaction aborts it: e.g. each projector runs
+  in a savepoint whose failure rolls back only its own writes. It then writes a receipt a detector
+  surfaces. `job_projection_receipts.status` today admits only `pending` and `applied`
+  (`packages/db/src/schema/job_projection_receipts.ts`, `job_projection_receipts_status_check`),
+  so a `failed` state is a schema change: `db:generate` output, never hand-written SQL (Critical
+  Rule 1). The decision states which it uses and which detector reads it.
+- **(d) The same-transaction test.** Cancel-then-terminal and usage-then-terminal **in one batch**
+  do not trip `guardActiveFence`; a replay of the batch re-runs nothing, and the idempotency comes
+  from the receipt tables (`authoritative_cost` identity `cost:{company}:{eventId}`), not from luck.
+
+The decision also records the **terminal-without-usage signal**'s shape (acceptance 4 below) and
+the **next-dispatch refusal** point (acceptance 3). ★ `JOB-017` and `CLI-014` register onto this
+seam; neither may build a second one.
+
+**Outcome:** the seam exists; `priceAcceptedUsage` is registered on it through its transaction-taking
+core; `jobBudgetCostBridge` is composed **default-off** at the ingest composition point
+(`workerControlRoutes` in `server/src/routes/worker-control.ts` builds the ingest service; the
+server composition root is `server/src/index.ts`, inside the `config.distributedExecutionEnabled`
+block that already builds `onAttemptTerminal`). The enabling switch follows the existing
+`AOA_DISTRIBUTED_*_ENABLED` pattern in `server/src/config/distributed-execution.ts` **and** has a
+per-Organization dimension read from the rollout policy
+(`server/src/config/distributed-execution-rollout-source.ts`), per F10.
+
+**Acceptance (verbatim in substance from the M1 plan):**
+1. One handed-off run produces **exactly one** `cost_events` row **with cost > 0**, plus one
+   `authoritative_cost` receipt.
+2. A replay produces `replayed` and no second row.
+3. After a hard-stop breach, **the next dispatch is refused or paused.** Usage arrives just before
+   `terminal`, so cancelling the breaching attempt proves nothing. Today the only spend check on the
+   distributed path is at submit (`admitAttemptCapacity` in `server/src/services/org-concurrency.ts`,
+   called from `job-submission.ts`, using `defaultCapacityBudgetBridge`; `budgetAwareCapacityBridge`
+   has no production caller). The decision names which one the refusal rides.
+4. **An attempt that goes terminal with no `usage` event emits a classified signal**, tested. The
+   producer is best-effort, so without this a parse miss silently reproduces `E3-F037`.
+5. A projector failure leaves the `job_events` append committed and writes the surfaced receipt of
+   (c); a test injects the failure (for example an unknown-rate model) and asserts both.
+6. The same-transaction cases of (d).
+7. **Multi-tenant (F10):** two enabled Organizations, each with its own Company, run priced attempts
+   in one test; each `cost_events` row, receipt and budget evaluation carries its own
+   `organization_id`/`company_id`; a hard-stop breach in one refuses the next dispatch **only** in
+   that one; the other's next dispatch is admitted (the positive control for the refusal).
+8. **Positive control for the whole ticket:** with the registration removed, acceptance 1 reds.
+
+**Closure of `E3-F037`:** only when (1) holds on a **real** handed-off run with `WRK-018` merged. Then
+`findings.md` `Status` flips and the `E3-F037` key in `scripts/finding-ownership.json` is deleted in
+the **same commit**. `E3-15-budget` in `scripts/gate-clause-wiring.json` is promoted to `wired` on the
+same evidence.
+
+**Ticket non-goals:** the usage producer (`WRK-018`); the audit and output registrations
+(`JOB-017`); the output projection for artifacts (`CLI-014`); a second pricing engine or a
+worker-supplied price; changing `AUTHORITATIVE_RATE_VERSION` or the rounding policy.
+
+**Files:**
+- `docs/replatform/epics/E3-job-control/decisions.md` — `E3-D-ACC` (step 1).
+- `packages/db/src/repositories/tenant/job-control.ts` — the seam if (b1): `AcceptEventInput` /
+  batch input and the per-event loop in `acceptEvent`.
+- `server/src/services/job-events.ts` — `createJobEventIngestService`: seam wiring, or the split if
+  (b2).
+- `server/src/services/job-budget-cost-bridge.ts` — the transaction-taking core under
+  `priceAcceptedUsage`.
+- `server/src/routes/worker-control.ts`, `server/src/index.ts`,
+  `server/src/config/distributed-execution.ts` — default-off composition and its switch.
+- `server/src/services/org-concurrency.ts` / `server/src/services/job-submission.ts` — only if the
+  decision puts the next-dispatch refusal there.
+- `packages/db/src/schema/job_projection_receipts.ts` — only if (c) adds a status; migration by
+  `pnpm db:generate`.
+- Tests — **create** `server/src/__tests__/job-accepted-event-seam.integration.test.ts` (the
+  same-transaction, replay, projector-failure, terminal-without-usage and two-Organization cases);
+  extend `server/src/__tests__/job-budget-cost-parity.integration.test.ts` for the core wrapper.
+
+**Interfaces:** the projector contract `E3-D-ACC` fixes (input: the accepted event, the attempt's
+fence context, the caller's `tx`/`repos`; output: a receipt outcome). `priceAcceptedUsage`'s public
+shape is unchanged; the core is additive.
+
+**Failure behavior:** fail closed on money and never on the append. An unknown rate, a missing
+Company, or a bridge error writes the surfaced receipt and a log line with the attempt's ids and the
+Organization; the event stays accepted. A disabled switch registers nothing and the ingest is
+byte-identical to today.
+
+**Migration/compatibility:** none, unless (c) adds a receipt status (then a `db:generate` migration
+that only widens a CHECK). Self-hosted deployments are unaffected (distributed execution off).
+
+**Observability:** the receipt row per priced event; the classified signal for
+terminal-without-usage; a count of surfaced failed/pending receipts the detector reads.
+
+**Rollback/disablement:** the default-off switch. With it off, no projector is registered and the
+legacy behaviour (no distributed pricing) returns. The `MIG-009` drain's `assertRollbackSafe` already
+refuses to drain an Organization with a pending `authoritative_cost` receipt, and must keep doing so.
+
+**Focused verify command:** see the `JOB-016` row in §3.
+
+**RED → GREEN:**
+- RED — usage-then-terminal in one batch with the registration present: exactly one `cost_events`
+  row with cost > 0 is **absent today** (no production caller).
+- RED — the same batch replayed: `replayed`, no second row.
+- RED — the next dispatch after a hard-stop breach is refused.
+- RED — a terminal with no `usage` event emits the classified signal.
+- RED — an injected projector failure leaves the append committed and the receipt surfaced.
+- RED — the two-Organization isolation case.
+- Positive control — remove the registration; acceptance 1 reds.
+- GREEN — the identical commands, plus db/server typecheck and build.
+
+**Evidence / commit:** `tickets/JOB-016-result.md`; commits
+`docs(e3): record E3-D-ACC, the in-transaction accepted-event seam` (step 1, reviewed first) then
+`feat(job-control): price accepted usage at ingest on the E3-D-ACC seam`. Maps H-01, H-02, H-03.
+
+---
+
+### JOB-017 — Audit and output bridges registered on the accepted-event seam (M, ≤3 agent-days, M1a)
+
+**Depends on:** `JOB-016`'s seam (`E3-D-ACC` approved and the seam merged); JOB-013 and JOB-014
+(both `complete`).
+
+**Already built:** `jobAuditBridge` (`server/src/services/job-audit-bridge.ts`, `recordAcceptedActivity`)
+and `jobOutputBridge` (`server/src/services/job-output-bridge.ts`, `projectAcceptedOutput`,
+`projectTerminalWinner`), each with **zero production callers** and each opening its own
+`runInTenant` and re-locking the fence. Their register rows `E3-audit-parity-bridge` and
+`E3-17-output` in `scripts/gate-clause-wiring.json` are `unwired`. Terminal state and the run summary
+are already written after commit by the heartbeat canary projection
+(`server/src/services/canary-terminal-projection.ts`, `server/src/services/canary-run-projector.ts`)
+and the crew projection
+(`server/src/services/internal-agent/aoa-agents/crew-terminal-projection.ts`).
+
+**Outcome:** `recordAcceptedActivity` is registered on the seam, through the transaction-taking core
+`E3-D-ACC` (a) requires, for a **named set** of accepted mutations recorded in `decisions.md`; the
+output projection is registered on the same seam; and a recorded decision on
+`projectTerminalWinner`: **retired**, because the ingest's `attempt_terminal` projection already makes
+the attempt terminal and the canary and crew projections already write the run summary (so a
+second writer would race them), **or** reworked, with the reason. ★ *The M1 plan's wording is "the
+canary/crew projections already complete the attempt"; at `1cc7e2fdb` the canary projector does not
+call `completeAttempt` — the attempt is already terminal from ingest — so the decision must cite
+the writer that actually does each half.*
+`E3-17-output` and `E3-audit-parity-bridge` → `wired`, on evidence.
+
+**Acceptance:**
+1. Each named accepted mutation writes exactly one activity row and one `activity_audit` receipt in
+   the ingest transaction; a replay writes none; a rejected or stale observation writes none.
+2. An output event and the terminal event in **one batch** yield one `task_outputs` row with its
+   `output_projection` receipt and **no** `attempt_terminal` throw.
+3. A projector failure leaves the append committed and the receipt surfaced, per `E3-D-ACC` (c).
+4. The `projectTerminalWinner` decision is recorded; if retired, no production path can call it,
+   the ingest remains the single writer of terminal state, and the canary/crew projections remain
+   the single writer of the run summary.
+5. **Multi-tenant (F10):** every activity and output row carries the attempt's own Organization and
+   Company; a two-Organization case shows neither tenant's rows appear in the other's reads.
+6. Positive control: with either registration removed, the matching acceptance reds, and
+   `check-gate-clause-wiring` reports the clause back to zero callers.
+
+**Ticket non-goals:** a second seam; artifact output from a real run (that is `CLI-014`, which also
+registers on this seam); the approval bridge `jobApprovalBridge` (`E3-5-product-approval`, not an
+`M1a` row); changing the review/primary contract.
+
+**Files:** `server/src/services/job-audit-bridge.ts` and `server/src/services/job-output-bridge.ts`
+(transaction-taking cores); the seam registration site `E3-D-ACC` chose (`server/src/services/job-events.ts`
+or `packages/db/src/repositories/tenant/job-control.ts`); `server/src/routes/worker-control.ts` /
+`server/src/index.ts` (default-off composition, same switch as `JOB-016`);
+`docs/replatform/epics/E3-job-control/decisions.md` (the named mutation set and the
+`projectTerminalWinner` decision); `scripts/gate-clause-wiring.json` (`E3-17-output`,
+`E3-audit-parity-bridge` → `wired`, cited by symbol); tests — extend
+`server/src/__tests__/job-accepted-event-seam.integration.test.ts` (created by `JOB-016`),
+`server/src/__tests__/job-audit-parity.integration.test.ts` and
+`server/src/__tests__/job-output-parity.integration.test.ts`.
+
+**Interfaces:** the `E3-D-ACC` projector contract; the bridges' public entry points keep their
+shapes.
+
+**Failure behavior:** as `JOB-016`: never roll back the append; surface the failure.
+
+**Migration/compatibility / rollback:** none beyond `JOB-016`'s; the same default-off switch
+disables both registrations.
+
+**Observability:** activity rows and receipts per accepted mutation; the gate-clause checker's caller
+counts.
+
+**Focused verify command:** see the `JOB-017` row in §3.
+
+**RED → GREEN:** RED — each acceptance above against the unregistered bridges; GREEN — the identical
+command plus db/server typecheck and build, and `node scripts/check-gate-clause-wiring.mjs` green with
+both clauses `wired`.
+
+**Evidence / commit:** `tickets/JOB-017-result.md`; one commit
+`feat(job-control): register audit and output bridges on the E3-D-ACC seam`. Maps H-01, H-02, H-03.
 
 ---
 

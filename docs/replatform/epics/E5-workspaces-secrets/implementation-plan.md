@@ -614,8 +614,16 @@ would exercise:**
 3. **Wrong-company run (deny, same coarse forbidden as wrong-tenant, no existence oracle).** A single
    `COMPANY` constant is used for every seed and for every `resolve({ companyId: COMPANY })` call
    (`:80`, `:263-310`), so the cross-tenant arm (`resolver.ts:60,91,114`) is never taken.
-4. **Resolver throw → propagates → deny.** No case injects a database error; the catch-and-admit
-   mutant has nothing to die against.
+4. **Resolver throw → propagates → deny — at Tier-3.** No Tier-3 case injects a database error into
+   the **real** resolver, so a catch-and-admit mutant inside `createDistributedRunCurrencyResolver`
+   has nothing to die against there.
+   ★ *Corrected 2026-09-21 (M1 Step 0, S0-4), verified at source.* The **route-level** throw case
+   already exists at Tier-1: `server/src/__tests__/mcp-run-currency-gate.test.ts`, *"flag ON +
+   resolver THROWS → fails CLOSED (non-2xx), never swallowed to admit (Correction A)"* — a mocked
+   resolver that rejects, asserting `res.status` is not 200. It is rerun and credited. What is
+   missing is only the Tier-3 case, where a real database error is raised inside the real resolver.
+   *Superseded text: "**Resolver throw → propagates → deny.** No case injects a database error; the
+   catch-and-admit mutant has nothing to die against."*
 5. **★★★ Corrected 2026-09-20 (D8), verified at source — this one is NOT missing.** The flag-off
    positive control **already exists and passes**:
    `server/src/__tests__/mcp-run-currency-gate.test.ts:125-132` — *"flag OFF (unset) + distributed
@@ -651,7 +659,10 @@ merely rerun:
 - a replaced `targetGeneration` (deny) — **NEW**
 - a revoked/disabled execution target (deny) — **NEW**
 - a run in another company (deny with the **same coarse forbidden** as wrong-tenant, no oracle) — **NEW**
-- a resolver throw (propagates → 500 → deny) — **NEW**
+- a resolver throw (propagates → 500 → deny) — **NEW at Tier-3** (a real DB error inside the real
+  resolver); the route-level Tier-1 case **EXISTS** (`mcp-run-currency-gate.test.ts`, "flag ON +
+  resolver THROWS → fails CLOSED") and is rerun and credited. ★ *Superseded text: "a resolver throw
+  (propagates → 500 → deny) — **NEW**" (S0-4).*
 - a positive control: the gate off (flag false) leaves the resolver unconsulted — **EXISTS**
   (`server/src/__tests__/mcp-run-currency-gate.test.ts:125`), rerun and credited.
   ★ *Superseded text: "a positive control: the gate off (flag false) admits every one of those —
@@ -718,7 +729,12 @@ against embedded PostgreSQL with forced RLS — absent today."*
 - RED: a replaced `targetGeneration` denies — genuinely absent.
 - RED: a revoked/disabled execution target denies — genuinely absent.
 - RED: a wrong-company run denies with the **same coarse forbidden** as wrong-tenant — genuinely absent.
-- RED: a resolver throw propagates → deny; the catch-and-admit mutant must red — genuinely absent.
+- RED: a **Tier-3** resolver throw (a real DB error inside the real resolver) propagates → deny; the
+  catch-and-admit mutant must red — genuinely absent **at Tier-3**. The Tier-1 route-level throw case
+  already exists and passes (`server/src/__tests__/mcp-run-currency-gate.test.ts`, "flag ON + resolver
+  THROWS → fails CLOSED"); it is rerun and credited, never claimed RED. ★ *Superseded text: "RED: a
+  resolver throw propagates → deny; the catch-and-admit mutant must red — genuinely absent." (S0-4,
+  verified at source.)*
 - RED: the header-override mutant (resolve on `req.actor.runId` instead of `signedRunId`) must red.
 - **NOT RED — already GREEN; rerun and credit.** The flag-off positive control
   (`server/src/__tests__/mcp-run-currency-gate.test.ts:125`) already asserts HTTP 200 plus

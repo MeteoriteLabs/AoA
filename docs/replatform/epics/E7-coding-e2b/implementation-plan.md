@@ -272,8 +272,13 @@ It is `unwired` **in a shipped CI boot**, for two separate reasons, and both bel
    public key, the boot envs and the matched CP mint key — but **the image is not built/pushed in
    CI**. `.github/workflows/deploy-replatform-campaign.yml` builds it (`:408-409`) under
    `workflow_dispatch` on the campaign host, which is an **operator-dispatched deploy, not a shipped
-   CI boot**; `M1a`'s bar is explicitly a shipped CI boot. The through-the-daemon consumer is
-   **DEP-011 Slice 5**, disposition **M**, and is not built.
+   CI boot**; `M1a`'s bar is explicitly a shipped CI boot. ★ The through-the-daemon consumer **is
+   built**: `packages/worker-networked-host/src/bin/networked-host.ts` (DEP-011 Slice 2b-ii) reads
+   `AOA_WORKER_PROVIDER_URL` and boots the daemon with a networked `makeRunProvider`; it ships inert.
+   What is missing is the **image in CI** (`DEP-014`) and the **shipped CI boot that runs it**
+   (`DEP-015`), both filed at M1 Step 0.
+   ★ *Corrected 2026-09-21 (M1 Step 0, S0-4), verified at source. Superseded text: "The
+   through-the-daemon consumer is **DEP-011 Slice 5**, disposition **M**, and is not built."*
 
 The bin **fail-closes** without the CP public key, and `pnpm verify:cp-am-keypair` smoke-checks the
 matched pair at C0 before the canary. The `expectedReferences` number is typed out, not computed, so
@@ -329,7 +334,7 @@ function Invoke-NativeGate([string]$Label, [scriptblock]$Command) {
 | `CLI-013` | `Invoke-NativeGate 'protocol build' { pnpm --filter @armyofagents/worker-protocol build }; Invoke-NativeGate 'F4' { pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/events-artifact-prepared.test.ts }; Invoke-NativeGate 'frozen v1' { pnpm check:frozen-worker-protocol-v1 }; Invoke-NativeGate 'worker typecheck' { pnpm --filter @armyofagents/worker-daemon typecheck }; Invoke-NativeGate 'worker build' { pnpm --filter @armyofagents/worker-daemon build }` |
 | `CLI-014` | `$env:AOA_RUN_WIN_INTEGRATION='1'; Invoke-NativeGate 'F5' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/canary-run-projector.test.ts src/__tests__/canary-terminal-projection.test.ts src/__tests__/canary-output-projection.integration.test.ts }; Invoke-NativeGate 'gate clause wiring' { node scripts/check-gate-clause-wiring.mjs }; Invoke-NativeGate 'server typecheck' { pnpm --filter @armyofagents/server typecheck }; Invoke-NativeGate 'server build' { pnpm --filter @armyofagents/server build }` |
 | `CLI-015` | `Invoke-NativeGate 'F6' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/e7-distributed-run-verifier.test.ts src/__tests__/e7-distributed-run-verifier-store.test.ts src/__tests__/e7-verifier-capability-fixture.test.ts }; Invoke-NativeGate 'server typecheck' { pnpm --filter @armyofagents/server typecheck }; Invoke-NativeGate 'server build' { pnpm --filter @armyofagents/server build }` |
-| `CLI-016` | `$env:AOA_RUN_WIN_INTEGRATION='1'; Invoke-NativeGate 'C5' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/task-run-batch-workload.test.ts src/__tests__/mcp-run-currency-gate.test.ts src/__tests__/distributed-tool-surface-arming.integration.test.ts }; Invoke-NativeGate 'server typecheck' { pnpm --filter @armyofagents/server typecheck }; Invoke-NativeGate 'server build' { pnpm --filter @armyofagents/server build }` |
+| `CLI-016` | `$env:AOA_RUN_WIN_INTEGRATION='1'; Invoke-NativeGate 'C5' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/task-run-batch-workload.test.ts src/__tests__/mcp-run-currency-gate.test.ts src/__tests__/distributed-tool-surface-arming.integration.test.ts --reporter=verbose }; Invoke-NativeGate 'server typecheck' { pnpm --filter @armyofagents/server typecheck }; Invoke-NativeGate 'server build' { pnpm --filter @armyofagents/server build }` ★ *Corrected 2026-09-21 (M1 Step 0, S0-4):* the environment variable only helps if the new integration test **honours** it — `describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")`. With a bare `win32` skip (the `distributed-run-currency.integration.test.ts` shape) this command runs zero tests and exits 0. Record the **executed-test count**, and take the formal evidence from a Linux `verify` shard; the keyed +/- controls are a separate F8 dispatch. |
 | `E7-1-JOURNEY-ARM` | `Invoke-NativeGate 'gate clause wiring' { node scripts/check-gate-clause-wiring.mjs }; Invoke-NativeGate 'cp/am keypair' { pnpm verify:cp-am-keypair }; Invoke-NativeGate 'E7-1 verifier' { pnpm verify:e7-1-distributed-run }` |
 
 Test filenames not already on disk are **new files this plan authorizes**; the RED is the genuine
@@ -590,7 +595,17 @@ forgeable gate into an **unpassable** one, which forced the widening that §4.3 
 pressure is real and remains unrelieved** — a proposal that does not address it is not a proposal.
 
 **Ticket non-goals:** **any product change.** No literal in `task-run-sandbox-invocation.ts`, no
-argv, no template, no test edit. No adapter-agnostic mechanism. No keyed dispatch.
+argv, no template, no test edit. No adapter-agnostic mechanism. No keyed dispatch **other than the
+`files.read` probe**, which founder ruling F8 authorizes for this review on a named candidate.
+
+★ *Amended 2026-09-21 (M1 Step 0, S0-4), from the approved M1 plan
+(`docs/replatform/qa/2026-09-21-m1-execution-plan.md` §2 F7/F8 and §4 Track B). Superseded text:
+"No keyed dispatch." The M1 plan's review scope is: the writer census (Unit F §9.1), the keyed
+`files.read` probe (§9.2), the §6-constraint table, the positive-control table, an adversarial pass,
+and the pins moved; and it **must price the `WRK-018` stdout channel as an input**, because that
+channel makes the "captured transcript" option cheaper. The review's result feeds founder ruling
+**F7**, which is recorded separately in `decisions.md`; this ticket still makes neither choice binding
+on its own.*
 
 **Files:** an amendment to `tickets/CLI-008-unit-f-design.md` (appended, per that document's own
 convention — a refuted plan left standing in a design document gets built, so nothing is deleted
@@ -1097,15 +1112,26 @@ ticket must still read it before touching either arm, for the scanner/counter bo
 state.
 
 **Outcome:** clause 6 asserts something both **provable** and **non-forgeable**, given whatever
-`CLI-011` ruled; and the four scanner/evidence findings are dispositioned with evidence.
+`CLI-011` ruled; and this ticket does the **work** the scanner/evidence findings below call for,
+with evidence.
 
-| Finding | Disposition this ticket owes |
+★★★ **OWNERSHIP IS NOT THIS TICKET'S TO MOVE.** *Corrected 2026-09-21 (M1 Step 0, S0-4), verified
+at source. Superseded text: "and the four scanner/evidence findings are dispositioned with
+evidence."* Under the founder's subject-based ruling **D5** (§ `CLI-008` ledger above), and in
+`scripts/finding-ownership.json`, `CLI-015` **owns only `E7-F016`**. `E7-F015`, `E7-F023`,
+`E7-F032` and `E7-F033` remain **owned by `CLI-008`**. This ticket may do the work each row below
+describes and record the evidence in its result, but a closing edit to any of those four — its
+`findings.md` `Status` and the deletion of its manifest key — is a `CLI-008`-owned closure and must
+say so; it may not re-point them to `CLI-015`. The heading's "four" also undercounts the table,
+which has five rows (four owned by `CLI-008`, one by this ticket).
+
+| Finding | Work this ticket does (owner per `scripts/finding-ownership.json`) |
 |---|---|
-| `E7-F015` (MEDIUM, narrowed) | The `capabilityProven` flip is already closed; the **forged field still feeds clause 4's leak scan**. Either bound it or record why it is acceptable. |
-| `E7-F016` (LOW, two parts) | Part (a) — the structural attribution at `:509-515` — is repairable here. Part (b) is recorded. |
-| `E7-F023` (MEDIUM) | Clause 4 **does** scan `job_events`, and its scanned set is composed at the call site: a hard-fail gate reads model-influenced content. Bound it. |
-| `E7-F032` (LOW) | Clause 4 does not scan a sibling attempt's `job_events`, so a retried job's leak can reach a clean verdict. |
-| `E7-F033` (MEDIUM) | The residual over-matching hard matchers (`provider_key`, `e2b_api_key_assignment`) and the standing precision-AND-recall suite obligation. |
+| `E7-F015` (MEDIUM, narrowed) — owner CLI-008 | The `capabilityProven` flip is already closed; the **forged field still feeds clause 4's leak scan**. Either bound it or record why it is acceptable. |
+| `E7-F016` (LOW, two parts) — owner **CLI-015** | Part (a) — the structural attribution at `:509-515` — is repairable here. Part (b) is recorded. |
+| `E7-F023` (MEDIUM) — owner CLI-008 | Clause 4 **does** scan `job_events`, and its scanned set is composed at the call site: a hard-fail gate reads model-influenced content. Bound it. |
+| `E7-F032` (LOW) — owner CLI-008 | Clause 4 does not scan a sibling attempt's `job_events`, so a retried job's leak can reach a clean verdict. |
+| `E7-F033` (MEDIUM) — owner CLI-008 | The residual over-matching hard matchers (`provider_key`, `e2b_api_key_assignment`) and the standing precision-AND-recall suite obligation. |
 
 **Ticket non-goals:** re-opening `E7-F031`'s attempt-scoping; ★★★ **reconciling the clause-4
 SECRET SCANNER (`listRunSecretScanSurfaces`) with the capability COUNTER in either direction — THAT
@@ -1167,8 +1193,19 @@ have precision **and** recall cases; GREEN — all of the above plus server type
 (`server/src/services/task-run-sandbox-invocation.ts:218`). `scripts/finding-ownership.json` calls it
 *"tool surface, SHIPPED inert"*. **`E7-F003`'s tools row legitimately stays open** — the flag is off.
 
-**Outcome:** the flag is armed for the named internal Organization only, and the arming is **proven
-to be gated at USE**: a run whose lease has expired is **denied at MCP authorization and refused at
+★★★ **PER ORGANIZATION (founder ruling F10, 2026-09-21).** *Amended at M1 Step 0 (S0-4).*
+`readDistributedToolSurfaceFlag(process.env)` is read once, deployment-wide, at its only direct
+caller (`server/src/services/heartbeat.ts`, ~:5311) and threaded as `toolSurfaceAuthorized` through
+`run-execution-owner.ts`, `job-placement.ts`, `heartbeat-distributed-rollout.ts` and the run-JWT
+mint — **no per-Organization dimension exists**, so arming it for one tenant arms it for all. This
+ticket therefore keys the tool surface on the **per-Organization rollout policy**
+(`server/src/config/distributed-execution-rollout-source.ts`, `OrganizationRolloutPolicy`) as well:
+the deployment flag stays a kill switch, and a run gets the surface only if its Organization is also
+enabled for tools. **A tenant not enabled for tools is denied even when another tenant is enabled.**
+
+**Outcome:** the tool surface is armed for the **named set of Organizations, via the per-Organization
+rollout policy** (★ *superseded text: "the flag is armed for the named internal Organization only"*),
+and the arming is **proven to be gated at USE**: a run whose lease has expired is **denied at MCP authorization and refused at
 redemption**, which is exactly what DAT-007 item #1's resolver decides.
 
 ★★★ **NOT “emitted only when fence-current” — that is an emission-time gate this ticket cannot
@@ -1188,11 +1225,17 @@ preference; it is the ruling.
 **Ticket non-goals:** codex (`E7-F027`, E7-D04 — the approved first-milestone adapter set is
 `claude_local`; a codex `CODEX_HOME` MCP staging sub-unit is **out of M1** and stays with the parent
 ticket); re-opening the DE-08 ruling; any egress allowlist (mechanism B was rejected); enabling the
-flag for any Organization but the named one.
+tool surface for any Organization outside the named set.
 
-**Files:** deployment configuration for the named Organization; create
-`server/src/__tests__/distributed-tool-surface-arming.integration.test.ts`; `findings.md` for
-`E7-F003`'s tools row (**narrowed, not closed**).
+**Files:** `server/src/config/distributed-execution-rollout-source.ts` (a per-Organization tools
+dimension on `OrganizationRolloutPolicy`, validated by `assertDistributedExecutionRolloutSourceValid`);
+`server/src/services/heartbeat.ts` (the one read site of `readDistributedToolSurfaceFlag`, now combined
+with the run's Organization policy); deployment configuration for the named set; create
+`server/src/__tests__/distributed-tool-surface-arming.integration.test.ts` — ★ **it must use
+`describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")`**,
+the form the rest of `server/src/__tests__` uses; with a bare `win32` skip the Windows command in §3
+runs zero tests and exits 0; `findings.md` for `E7-F003`'s tools row (**narrowed, not closed**).
+★ *Superseded text: "deployment configuration for the named Organization; create …"* (S0-4).
 
 **Interfaces:** none new — the flag and the gate both exist.
 
@@ -1225,7 +1268,14 @@ is enforced where the gate actually runs: **MCP authorization**. The checklist e
 earlier and this acceptance list was not — the same propagation failure, again.
 
 *(Superseded RED, retained for the record: “the handle is **not** minted”.)*
-measure the flag); GREEN — all three plus server typecheck and build.
+measure the flag); RED — **two Organizations, one enabled for tools and one not**: the enabled one's
+run gets the surface and its call is admitted, the other's is denied (F10); **keyed real-E2B +/-
+controls** (inside the F8 envelope, on a named candidate): a tool call from an authorized run reaches
+AoA, and the same call from an unauthorized run id and from an expired lease is denied; GREEN — all of
+the above plus server typecheck and build, with the Linux executed-test count recorded.
+★ *Corrected 2026-09-21 (M1 Step 0, S0-4): the graph node required a keyed real-E2B case with
+negative controls and this task did not; the task now carries them, as the M1 plan's Track B row
+("Keyed? yes") and F8 ("`CLI-016` +/- controls") require.*
 
 **Evidence / commit:** `tickets/CLI-016-result.md`; one commit
 `feat(server): arm the distributed tool surface for the named internal Organization`.
@@ -1235,9 +1285,15 @@ Maps H-04, H-05.
 
 ### `E7-1-JOURNEY-ARM` — promote the coding-journey clause when its two preconditions ship (S, ≤1 agent-day, M1a)
 
-**Depends on:** **E6** — (1) the adapter-manager image built and started in a **shipped CI boot**,
-and (2) **DEP-011 Slice 5** (disposition **M**) wiring the through-the-daemon consumer. **This ticket
-builds neither.** It may not be assigned until both have committed passing evidence.
+**Depends on:** **E6** — **`DEP-014`** (the adapter-manager image built, signed and admitted in CI)
+and **`DEP-015`** (the shipped CI boot lane, per founder ruling F3, that boots it and runs the
+journey). **This ticket builds neither.** It may not be assigned until both have committed passing
+evidence. ★ *Corrected 2026-09-21 (M1 Step 0, S0-4), verified at source. Superseded text: "(1) the
+adapter-manager image built and started in a **shipped CI boot**, and (2) **DEP-011 Slice 5**
+(disposition **M**) wiring the through-the-daemon consumer."* The consumer is already built
+(`packages/worker-networked-host/src/bin/networked-host.ts`, DEP-011 Slice 2b-ii, shipped inert);
+"Slice 5" is a slice name in the DEP-011 design (its deploy step), not a ticket, and the two real
+preconditions it stood for are now filed tickets.
 
 **Current state, measured:** `E7-1-coding-journey` is `unwired` with `expectedReferences: 4`; both
 construction seams exist (`packages/worker-keystore/src/bin/sandbox-provider.ts`;
@@ -1258,8 +1314,8 @@ reader converts a mechanism verdict into a capability one.
 filed under that gate, its `Result` is the mechanism verdict, and it never contributes to the
 capability gate — whose `Result` a `capabilityProven=false` run **fails**.
 
-**Ticket non-goals:** building the image or the daemon consumer; flipping any other clause; running
-a keyed E2B lane without founder authorization.
+**Ticket non-goals:** building the image (`DEP-014`) or the boot (`DEP-015`) — the daemon consumer
+is already built; flipping any other clause; running a keyed E2B lane outside the F8 envelope.
 
 **Files:** `scripts/gate-clause-wiring.json` (`E7-1-coding-journey` → `wired`, cited **by symbol**);
 `tickets/E7-1-JOURNEY-ARM-result.md`.
@@ -1372,8 +1428,9 @@ content, secret, or session byte.
 ```text
 M0:    the ledger            DONE 2026-09-21 (M0 unit 4) — ids filed, 2 of 10 findings re-pointed
 
-M1a:   E7-1-JOURNEY-ARM          [gated on E6: adapter-manager image in a shipped CI boot
-                                  + DEP-011 Slice 5 daemon consumer]
+M1a:   E7-1-JOURNEY-ARM          [gated on E6: DEP-014 (adapter-manager image in CI)
+                                  + DEP-015 (the shipped CI boot lane, F3); the daemon
+                                  consumer is already built — corrected M1 Step 0]
 
 M1b:   CLI-010 ──▶ CLI-012 ──▶ CLI-013 ──▶ CLI-014 ──▶ CLI-015
                       ▲                                   ▲
@@ -1450,6 +1507,9 @@ shares no file with the chain. Parallel **PRs** are free; only **merges** serial
      image, the compose…" across several sections; I did not find a Slice 5 result doc, so I have
      recorded it as unbuilt on the triage's authority (disposition **M**) and named it as an external
      gate rather than sizing it.
+     ★ *Resolved 2026-09-21 (M1 Step 0, S0-3/S0-4), measured at `1cc7e2fdb`: the daemon consumer
+     is built (`networked-host.ts`, DEP-011 Slice 2b-ii, inert); the image-in-CI and the shipped boot
+     are filed as `DEP-014` and `DEP-015`. Items 1 and 2 are answered there.*
   3. Whether a `CLI-008` Unit C slice **result doc** exists anywhere — the E7 `tickets/` directory
      has none. The ruling, the commits and the shipped-inert code are all verifiable; the ledger is
      not, and `CLI-009` should record that gap rather than this plan asserting its cause.

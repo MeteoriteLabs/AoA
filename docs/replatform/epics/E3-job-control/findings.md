@@ -2138,6 +2138,15 @@ promoted by this ticket").
 > sink cutover" understates the work: the consumer (bridge) is ready, the producer (usage event) is
 > not, and it has no ticket either. **Severity (HIGH), Status (open) and ownership (`unowned`) are
 > unchanged** — this amendment sharpens what closing it requires; it closes and reclassifies nothing.
+>
+> ★ **OWNERSHIP AMENDED 2026-09-21 (M1 Step 0, S0-3).** Both halves now have a ticket:
+> **(1)** the producer is **`WRK-018`** (E4 — a stdout stream channel on the provider port and a
+> composed `observeRun`), and **(2)** the consumer is **`JOB-016`** (E3 — the in-transaction
+> accepted-event seam `E3-D-ACC`, with `priceAcceptedUsage` registered onto it). Founder decision
+> D-8 made both `M1a` gates. `scripts/finding-ownership.json` now declares this finding
+> `owned` by **`JOB-016`**, and `JOB-016` closes it **only with `WRK-018` merged** — the two-part
+> close above is unchanged. Severity (HIGH) and Status (open) are unchanged. The sentence above
+> saying ownership is `unowned` was true when written and is kept as the record of that state.
 
 ## E3-F038 — The wiring register's census is not closed, and three symbols the guard's own header names have no clause at all
 
