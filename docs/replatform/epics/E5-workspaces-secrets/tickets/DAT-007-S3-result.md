@@ -1,6 +1,6 @@
 # DAT-007-S3 Result — prove the `/mcp` run-currency gate against real PostgreSQL
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Date (UTC):** `2026-09-21`
 **Epic:** `E5-workspaces-secrets`
 **Plan task:** `E5 implementation-plan DAT-007-S3 — prove the /mcp run-currency gate against real PostgreSQL (M, ≤3 agent-days, M1a)`
