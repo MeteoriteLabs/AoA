@@ -6,7 +6,7 @@
 **Plan task:** `E5 implementation-plan DAT-009-3e — the networked-lane export route, and E5-F002 at the cause (M, M1b)`
 **Implementer:** `DAT-009-3e build session (Claude Opus 5)`
 **Start SHA:** `cec1b48a796f177c6184884dc3c5043f5aa57ea8` (`docs/replatform-program` tip, the `3c` merge)
-**Reviewed revision (the two code commits):** `b853ff0ffae57966241a7d123df9675eea84dade` (the wire route) + `8849a12066188c79393aa509fbada49d2e6d1328` (the `E5-F002` fix). The tree under review is `8849a1206`.
+**Reviewed revision (the code commits):** `b853ff0ffae57966241a7d123df9675eea84dade` (the wire route) + `8849a12066188c79393aa509fbada49d2e6d1328` (the `E5-F002` fix) + `d5e6a3612cd73cca3f6874baefa357a40a1d2e3d` (the Codex P1 grant-binding fix, §1 commit 3). The tree under review is `d5e6a3612`.
 
 The implementer leaves `Status` at `gate_review`. Only a distinct reviewer may change it to
 `complete`.
@@ -70,6 +70,30 @@ The implementer leaves `Status` at `gate_review`. Only a distinct reviewer may c
   `this.#transport.list`, and the `templateId ?? "base"` line). `check-register-citation-integrity`
   went red on `DE-26` before the re-point.
 
+### Commit 3: `fix(adapter-manager): bind relayed upload grants to the caller's attempt and a configured store` (Codex P1, PR #557)
+
+Codex found that the export route trusted the **worker-supplied** grant. A worker holding a valid
+capability for its own sandbox could send a forged grant whose `url` points at any HTTPS endpoint,
+and the far provider would read the sandbox file and PUT it there. That turns the adapter-manager
+into an egress channel around the sandbox's own network policy. **Verified at source before
+fixing:** the new RED case got an `ok` envelope back, and the injected uploader received the bytes.
+
+- `createProviderServer` gains **`artifactUploadOrigins`**. Inside `gateOwnedOp`, after the
+  owned-check, `assertUploadGrantBound` runs **before** the provider. It requires all of these:
+  - an `upload` / `PUT` grant;
+  - an `https:` url whose **origin is configured**;
+  - an `objectKey` under the caller's **own** `organizations/<org>/jobs/<job>/attempts/<attempt>/`
+    prefix, taken from the owned-checked labels;
+  - a url whose decoded path ends with `/<objectKey>`.
+- A refusal is a fixed `WireProtocolError` that carries no url, key or labels. Nothing is read or
+  uploaded.
+- **Fail-closed:** when no origin is configured, every export is refused. Digest is unaffected.
+- **Not done here:** the shipped bin (`src/bin/adapter-manager.ts`) does not set
+  `artifactUploadOrigins`, so a deployed adapter-manager refuses exports until a deploy ticket adds
+  the store origin to its boot config. That is fail-closed and honest, and it is recorded in §8.
+- This confines a forged grant; it does not authenticate one. A presigned url carries no
+  control-plane signature the adapter-manager could check.
+
 ## 2. RED → GREEN
 
 RED runs used unchanged behaviour. The only source change made before the `put-grant-bytes` RED was
@@ -80,6 +104,7 @@ an assertion failure, not a missing import.
 |---|---|---|---|
 | `provider-wire` `driver-artifact-export.test.ts` | **11 failed / 3 passed (14)** | the mode-`"none"` case passed **vacuously**, because the old code threw without reading the mode (the exact defect the task names; mutants M1/M2 now kill it); far-side refusal and H-04 were true by construction | **14 passed** |
 | `adapter-manager` `server-artifact-export.test.ts` | **7 failed / 2 passed (9)** | ungated-404 was true by construction; the far-`"none"` case passed vacuously through the driver's unconditional throw | **9 passed** |
+| `adapter-manager` grant-binding cases (commit 3) | **5 failed / 9 passed (14)**: the forged-origin case got an `ok` and the bytes were uploaded | the 9 were the commit-1 cases | **14 passed** (full package 169) |
 | `sandbox-e2b-provider` `put-grant-bytes.test.ts` | **4 failed / 4 passed (8)** | failed: both header names (`expected undefined to be 'SHA256'`), the digest source, one home, severed PUT (the raw transport message escaped). Passed: base64 encoding, header precedence, body and non-2xx were already correct | **8 passed** |
 
 **The task's focused verify command at `8849a1206` (Windows, local):** wire build OK; driver suite
@@ -117,8 +142,13 @@ an assertion failure, not a missing import.
 | M14 | algorithm header dropped | 2 red |
 | M15 | severed PUT re-thrown raw | 1 red |
 | M16 | the `content-type` default overrides the grant | 1 red |
+| M17 | no origin check | 2 red |
+| M18 | an absent allowlist allows every origin (fail-open) | 1 red |
+| M19 | no attempt-prefix binding on `objectKey` | 2 red (**incl. F10 foreign-Organization key**) |
+| M20 | no url-targets-key binding | 1 red |
+| M21 | the binding is never called | 5 red |
 
-**16 of 16 killed.**
+**21 of 21 killed.**
 
 ## 4. Multi-tenant (F10)
 
@@ -183,7 +213,16 @@ which this PR does not touch.
    edits the same `E5-2` entry in `scripts/gate-clause-wiring.json` (`expectedReferences`). This PR
    changes that entry's `reason` and one `providerCapabilityClaims` value, so a textual conflict on
    the one-line `reason` string is possible. Whichever merges second rebases.
-3. A process note: the session's shared scratchpad held another session's mutation script under a
+3. **Deploy follow-up (commit 3):** the adapter-manager bin does not yet configure
+   `artifactUploadOrigins`, so a deployed networked lane refuses every export (fail-closed) until
+   the store origin reaches its boot env.
+4. **The same class, pre-existing and not fixed here:** `stage_files` (E7-F011) relays a
+   worker-supplied **download** grant, and `fetchGrantBytes` (`e2b-provider.ts`) GETs any
+   `grant.url`. A forged download grant would therefore make the adapter-manager fetch an arbitrary
+   HTTPS url and write the response into the caller's own sandbox, which is an SSRF read from the
+   adapter-manager's network position. It is outside this ticket's files and is reported to the
+   planning session rather than filed with a newly minted id.
+5. A process note: the session's shared scratchpad held another session's mutation script under a
    generic name. One of this session's runs executed that script, and it overwrote
    `packages/worker-daemon/src/lifecycle/dispatch-runtime.ts` in this worktree with a `3d` draft.
    The file was restored with `git checkout` before any commit. It is in neither commit, and the
