@@ -16,11 +16,15 @@ implementation plan's §0.
 **Status: proposed**. It binds nothing until the planning session accepts it, and no hook code is
 written before then. The two paragraphs above are kept as the shell's original text.
 
+★ *Updated 2026-09-21 (`DAT-009-3c`, build step):* the planning session **accepted** `E5-D07` with the
+rulings recorded under "Rulings of record" at the end of the entry. It now binds.
+
 ---
 
 ## E5-D07 — The export hook's composition surface, and a failed export is NOT a failed attempt
 
-**Date:** 2026-09-21 · **Ticket:** `DAT-009-3c` · **Status:** proposed ·
+**Date:** 2026-09-21 · **Ticket:** `DAT-009-3c` · **Status:** accepted (2026-09-21, by the planning
+session under founder delegation F2; *was* `proposed` in `8efe322bd`, the design-step commit) ·
 **Authority:** decided under founder delegation **F2** (M1 execution plan §2: the founder delegates
 every M1 decision to the planning session, which records it with its reason). Proposed by the
 `DAT-009-3c` build session; the planning session accepts or amends it. The QA owner stays distinct (F2).
@@ -238,6 +242,44 @@ ruling before `CLI-012` is assigned.**
    input). Neither file is in `CLI-012`'s list today. Without them, the producer has no fenced way to
    see the sandbox it enumerates.
 4. **Per-file policy** (above): a ruling is owed before `CLI-012`.
+
+### Rulings of record (2026-09-21, planning session, under founder delegation F2)
+
+The proposal above is kept as written. Where a ruling changes or settles it, **the ruling governs**.
+
+1. **(a) The wiring is accepted as designed**: `exportArtifacts` is injected at construction, a
+   producer without a sequencer throws at construction, the window fires only before the normal
+   terminal and after `observeRun`, there is one 30 s deadline, clamped on the networked lane so
+   destroy keeps 30 s, and every export is bound to its own attempt, with the cross-tenant test and
+   mutant specified in 6.
+2. **(b) E5-D07 is accepted**: a failed export does **not** fail the attempt. It logs, emits a
+   metric, and the terminal reports the command's true result.
+3. **Plan correction 1 (the path-free reason) is accepted.** `ArtifactExportFailedError` gains a
+   non-path `reason` field. `DAT-009-3c`'s Files add `artifact-export.ts`. The path is never logged.
+4. **Plan correction 2 is ruled DIFFERENTLY from the proposal: `DAT-009-3d` does NOT promote `E5-2`
+   to `wired`.** "Built at boot, run by nothing" is the vacuous-claim class this programme forbids.
+   `E5-2` is promoted when a **production producer drives it**, which is `CLI-012`. The `3d` task
+   text is amended to say so, with its history kept.
+5. **Plan correction 3 is accepted.** `CLI-012`'s Files in the E7 plan add `effect-authority.ts` and
+   `supervisor.ts`.
+6. **`timed_out` versus `failed` for the deadline: `timed_out` is used.** The ruling allowed
+   `timed_out` **only if** it adds no value to a status vocabulary inside the frozen
+   `@armyofagents/worker-protocol` v1. Measured:
+   - `emitOp` labels are validated by the **worker-daemon's own** closed allow-list:
+     `SANDBOX_OP_METRIC`'s `outcome` set in `packages/worker-daemon/src/metrics/metrics.ts`.
+     `timed_out` has been a member since WRK-004, used by `execute` and `stage_files`.
+   - `grep -rn "timed_out" packages/worker-protocol/src` returns **no hits**, so the frozen package
+     has no such vocabulary member to add to or change.
+   - `pnpm check:frozen-worker-protocol-v1` passes on the build commit.
+
+   So `timed_out` adds nothing to the frozen protocol, and it keeps "the store is slow" distinguishable
+   from "a refusal" on the same metric. The log also carries `reason: "deadline"`.
+7. **Per-file policy: `CLI-012` owns it, gated on ruling F7.** `DAT-009-3c` builds against the
+   sequencer as it is today. The first failing file aborts the window, and the window reports `failed`
+   with that file's `stage` and `reason`.
+8. **Points 1 and 6 of the design report are noted in the `3c` result, not here.** Point 1: the E5
+   `decisions.md` already existed when the M1 plan said it did not. Point 6: there are 16 terminal
+   call sites, not 14.
 
 ### Rollback
 
