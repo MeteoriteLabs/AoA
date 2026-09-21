@@ -443,7 +443,12 @@ export function verdictNonZeroExit(obs) {
 /** S-P4. obs: {channel, exitCode, stdout, stderr, marker} */
 export function verdictUnwritableRedirect(obs) {
   const o = obs ?? {};
-  if (o.channel !== "returned" && o.channel !== "threw") return inconclusive("S-P4", `channel-${String(o.channel)}`, {});
+  // Only a RETURNED command with a numeric exit code is evidence the shell reached the redirect.
+  // A transport throw (network, sandbox) shows nothing about the redirect at all, and
+  // `null !== 0` must not read as "failed closed" (Codex review, PR #551). The real transport
+  // returns a non-zero exit rather than throwing (E7-F014), so a throw here is a fault.
+  if (o.channel !== "returned") return inconclusive("S-P4", `channel-${String(o.channel)}`, {});
+  if (typeof o.exitCode !== "number") return inconclusive("S-P4", `no-exit-code(${String(o.exitCode)})`, {});
   const ran = String(o.stdout ?? "").includes(o.marker);
   return observed("S-P4", ran ? "command-ran-despite-redirect" : "redirect-failed-before-command", {
     channel: o.channel,

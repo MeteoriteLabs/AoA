@@ -271,6 +271,10 @@ test("S-P7 is inconclusive when its command did not return", () => {
 test("S-P4 distinguishes a redirect that failed first from one that let the command run", () => {
   assert.equal(verdictUnwritableRedirect({ channel: "returned", exitCode: 2, stdout: "", marker: "M" }).findings.failedClosed, true);
   assert.equal(verdictUnwritableRedirect({ channel: "returned", exitCode: 0, stdout: "M", marker: "M" }).reason, "command-ran-despite-redirect");
+  // Codex review (PR #551): a transport throw shows nothing about the redirect.
+  assert.equal(verdictUnwritableRedirect({ channel: "threw", exitCode: null, stdout: "", marker: "M" }).state, "inconclusive");
+  assert.equal(verdictUnwritableRedirect({ channel: "timedOut", exitCode: null, stdout: "", marker: "M" }).state, "inconclusive");
+  assert.equal(verdictUnwritableRedirect({ channel: "returned", exitCode: null, stdout: "", marker: "M" }).state, "inconclusive");
 });
 
 test("S-P7 is inconclusive if the canary never reached the shell (else `absent` would be vacuous)", () => {

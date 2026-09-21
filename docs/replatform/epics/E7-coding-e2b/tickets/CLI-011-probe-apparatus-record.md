@@ -133,6 +133,10 @@ imports buildSandboxInvocation…"*).
   `json.dumps` first. `evaluateWorkflowShape` fails a raw `": "${…}"` interpolation with the code
   `fallback-unescaped-input`, and there is a positive control for each input. I ran the step
   locally with the template ``bad"name<newline>x``, and it wrote valid JSON.
+- **P1 (fifth review): S-P4 needs a returned exit code.** When the transport threw, S-P4 used to
+  read `null !== 0` as "failed closed". It is now inconclusive unless the command `returned` with a
+  numeric exit code. The other shell arms (and C-census) already required a returned command, or a
+  returned command with exit code 0, before any conclusion; I swept them for this class.
 
 **Mutations.** Each mutation was applied, run, and reverted. All eight went RED.
 
