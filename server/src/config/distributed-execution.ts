@@ -28,6 +28,21 @@ export const DISTRIBUTED_CREW_ROLLOUT_ENABLED_ENV = "AOA_DISTRIBUTED_CREW_ROLLOU
  */
 export const DISTRIBUTED_TOOL_SURFACE_ENABLED_ENV = "AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED";
 
+/**
+ * CLI-016 / E7-D10 — the ONLY value that arms the tool-surface deployment flag. It arms the
+ * deployment as a KILL SWITCH over a per-Organization opt-in (`tools: true` on the
+ * Organization's `AOA_DISTRIBUTED_EXECUTION_ROLLOUT` policy); it never arms a tenant by itself.
+ *
+ * ★ WHY NOT `true`. A binary built before CLI-016 reads this flag as a plain boolean and has no
+ * per-Organization dimension: to it, `true` means "every tenant's distributed run gets the tool
+ * surface". This value is one that older parser REJECTS (it throws "not a boolean flag" at its
+ * one read site, the canary dispatch), so a binary rollback with the flag set fails LOUD and
+ * closed instead of silently arming every tenant. And the new binary refuses the legacy truthy
+ * spellings (at startup, via `assertHostedExecutionStartupSafe`), so no deployment running the
+ * new binary can carry a value that an older binary would read as "arm everyone".
+ */
+export const DISTRIBUTED_TOOL_SURFACE_PER_ORGANIZATION = "per-organization";
+
 type Env = Record<string, string | undefined>;
 
 function parseBooleanEnv(env: Env, name: string, defaultValue: boolean): boolean {
@@ -47,9 +62,45 @@ export function readDistributedCrewRolloutFlag(env: Env): boolean {
   return parseBooleanEnv(env, DISTRIBUTED_CREW_ROLLOUT_ENABLED_ENV, false);
 }
 
-/** CLI-008 Unit C — read the separate, off-by-default distributed tool-surface gate. */
+/**
+ * CLI-008 Unit C — read the separate, off-by-default distributed tool-surface gate.
+ *
+ * CLI-016 / E7-D10 — `true` here means the DEPLOYMENT is armed, never that any tenant is: the
+ * run's Organization must also opt in (`resolveDistributedToolSurface`). Unset and the falsy
+ * spellings are off; `per-organization` is the only arming value; the legacy truthy spellings
+ * (`1`/`true`/`yes`/`on`) THROW, because an older binary reads them as "arm every tenant".
+ */
 export function readDistributedToolSurfaceFlag(env: Env): boolean {
+  const raw = env[DISTRIBUTED_TOOL_SURFACE_ENABLED_ENV]?.trim().toLowerCase();
+  if (raw === DISTRIBUTED_TOOL_SURFACE_PER_ORGANIZATION) return true;
+  if (raw && ["1", "true", "yes", "on"].includes(raw)) {
+    throw new Error(
+      `${DISTRIBUTED_TOOL_SURFACE_ENABLED_ENV}=${JSON.stringify(env[DISTRIBUTED_TOOL_SURFACE_ENABLED_ENV])} ` +
+        `is refused: the tool surface is armed per Organization. Set it to ` +
+        `"${DISTRIBUTED_TOOL_SURFACE_PER_ORGANIZATION}" and opt each Organization in with ` +
+        `\`tools: true\` in AOA_DISTRIBUTED_EXECUTION_ROLLOUT (a binary older than CLI-016 would ` +
+        `read this value as "arm every tenant")`,
+    );
+  }
   return parseBooleanEnv(env, DISTRIBUTED_TOOL_SURFACE_ENABLED_ENV, false);
+}
+
+export type DistributedToolSurfaceDecision =
+  | { authorized: true; reason: "enabled" }
+  | { authorized: false; reason: "deployment_disabled" | "organization_not_enabled" };
+
+/**
+ * CLI-016 / E7-D10 — the tool surface is the CONJUNCTION of the deployment kill switch and the
+ * run's Organization opt-in (founder ruling F10: enabling tools for one tenant must not enable
+ * them for another). The deployment flag is checked first, so unsetting it disarms every tenant.
+ */
+export function resolveDistributedToolSurface(input: {
+  deploymentArmed: boolean;
+  organizationToolsEnabled: boolean;
+}): DistributedToolSurfaceDecision {
+  if (!input.deploymentArmed) return { authorized: false, reason: "deployment_disabled" };
+  if (!input.organizationToolsEnabled) return { authorized: false, reason: "organization_not_enabled" };
+  return { authorized: true, reason: "enabled" };
 }
 
 export interface DistributedExecutionRolloutInput {
@@ -94,7 +145,8 @@ export type HostedExecutionStartupRefusalReason =
   | "excluded_surface_enabled"
   /** The process-wide unsandboxed-multitenant override is set in `cloud_auth`. */
   | "unsandboxed_multitenant_in_cloud_auth"
-  /** One of the flags this assertion reads is not a boolean, so it fails closed. */
+  /** One of the flags this assertion reads is not a boolean, so it fails closed. CLI-016: also
+   *  the tool-surface flag carrying anything but off or `per-organization` (E7-D10). */
   | "env_flag_unparseable";
 
 /** The PASS outcome. Returned, so a caller records what the assertion decided
@@ -206,6 +258,15 @@ export function assertHostedExecutionStartupSafe(input: {
         deploymentMode: input.deploymentMode,
       });
     }
+  }
+  // CLI-016 / E7-D10 — refuse, at STARTUP, a tool-surface flag value that is not
+  // `per-organization` or off. The legacy truthy spellings are the ones a pre-CLI-016 binary
+  // reads as "arm every tenant", so a deployment on this binary must never carry one: then a
+  // binary rollback cannot silently widen the tool surface to every Organization.
+  try {
+    readDistributedToolSurfaceFlag(input.env);
+  } catch (err) {
+    throw unparseableFlag(err, DISTRIBUTED_TOOL_SURFACE_ENABLED_ENV, input.deploymentMode);
   }
   if (input.deploymentMode === "cloud_auth") {
     let optedIn: boolean;
