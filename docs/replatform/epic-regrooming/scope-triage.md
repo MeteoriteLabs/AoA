@@ -469,8 +469,13 @@ E11 exit, which is the release gate. Nothing before M5 merges to `main`.
 ★ **Consequences to plan around, not to fix early:** (1) any lane that runs only on `schedule`
 measures `main`'s code, not the program branch, for the whole programme — cross-platform health of
 the program branch is unmeasured by schedule until then, and needs a `workflow_dispatch` or push
-trigger on `docs/replatform-program` if it is wanted sooner; (2) `release.yml` and `docker.yml` run
-only from `main`, so no re-platform artifact is published before the checkpoint.
+trigger on `docs/replatform-program` if it is wanted sooner; (2) `release.yml` and `docker.yml`
+publish **automatically** only on `push` to `main`, so nothing is published by merge before the
+checkpoint — ★ **but both also declare `workflow_dispatch`**, and a manual `docker.yml` dispatch
+from `docs/replatform-program` pushes a `type=sha` image to GHCR (`latest` is applied only on the
+default branch). So pre-checkpoint publication is **possible by manual action**, not impossible; it
+must be treated as a deliberate, authorized act, never a side effect. *Corrected 2026-09-21 (Codex,
+PR #526): an earlier revision said no artifact could be published before the checkpoint.*
 
 **Scope.** `REL-001`, `REL-002`, `REL-005` — none of which has a ticket file today — plus the D6
 campaign itself.
@@ -559,7 +564,7 @@ the same way.
 ★ **`M1a` entry — THE EXACT DEFERRED SUBSET IS `tools` AND `output`.** The **adapter**,
 **workspace**, **audit/cost** and **cleanup** paths must be enabled for the named internal
 Organization; the **tools** and **output** paths need not be. `M1a` is satisfied by a run reporting
-`capabilityProven=false`, and the tool surface is armed by `CLI-016` (was `CLI-016`), which is an **`M1b`**
+`capabilityProven=false`, and the tool surface is armed by `CLI-016` (was `CLI-008-C5`), which is an **`M1b`**
 ticket — so requiring tools at `M1a` entry would make the checkpoint depend on `M1b` work. Workspace
 staging IS required: the `M1a` journey stages input. The required-ticket bullet is scoped to
 **`M1a`'s own required result set**, not to every E3–E7 ticket. Every other bullet applies to both
@@ -649,21 +654,21 @@ Ticket shipment or an earlier mechanism run cannot substitute for items 2–9. P
 > **`M1b` required result set:** `CLI-010`, **`CLI-011`**, `CLI-012`, `CLI-013`, `CLI-014`, `CLI-015`, `CLI-016`, `DAT-009-3c`, `DAT-009-3d`, `DAT-009-3e`.
 > ★★★ **RENUMBERED 2026-09-21 (M0 unit 4, founder decisions D1 + D5) — the ids changed, the
 > set did not.** *Superseded text: `CLI-008-F1a`, `CLI-008-F1b`, `CLI-008-F3`, `CLI-008-F4`,
-> `CLI-014`, `CLI-015`, `CLI-016`.* Those link-scoped ids **cannot be expressed to the
+> `CLI-008-F5`, `CLI-008-F6`, `CLI-008-C5`.* Those link-scoped ids **cannot be expressed to the
 > guards**: `check-finding-ownership.mjs:423` tests an exact `tickets.has(entry.ticket)` and
-> `findTicketIds` (`:50`) derives ids from filenames with `/^([A-Z]+-\d+)/`, so `CLI-010`
-> resolves to nothing — and a `CLI-010-result.md` resolves to **`CLI-008`**, marking the
+> `findTicketIds` (`:50`) derives ids from filenames with `/^([A-Z]+-\d+)/`, so `CLI-008-F1a`
+> resolves to nothing — and a `CLI-008-F1a-result.md` resolves to **`CLI-008`**, marking the
 > parent shipped and orphaning every finding it owns. This enumeration is corrected because it
 > is the **mechanically checkable artefact**: a coverage check reads the list, not the prose —
 > the same reason `CLI-008-F1b` was added to it in the twelfth round. The full old→new mapping
 > is in `program-design.md`, immediately before the `CLI-010` node.
-> ★★★ *`CLI-011` added to the LIST twelfth round: the sentence after it already said its result
+> ★★★ *`CLI-008-F1b` added to the LIST twelfth round: the sentence after it already said its result
 > is required and mandatory before `M1b` passes, while the enumeration omitted it — and the
 > enumeration is the mechanically checkable artefact. A coverage check reads the list, not the
 > prose, so this inconsistency would have let the output-mechanism design review be dropped by
 > exactly the kind of automated check written to prevent that.* ★★★ **`CLI-011`'s result IS in the `M1b` set** — it is
 > **design-only as to BUILD** (no build may be assigned from it), but its
-> `CLI-011-result.md` (was `CLI-011-result.md`) is required and must be **approved before `M1b` passes**.
+> `CLI-011-result.md` (was `CLI-008-F1b-result.md`) is required and must be **approved before `M1b` passes**.
 > *Corrected 2026-09-20 (eighth round): an earlier revision listed F1b as “not in either set”, which
 > read as exempting its record. But the E7 plan requires that result by name, exit criterion 4
 > depends on F1b, and `F6` cannot proceed without its founder ruling — so `M1b` could have passed on

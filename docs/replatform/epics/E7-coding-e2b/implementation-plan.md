@@ -374,21 +374,29 @@ as `ticket` for exactly ten open findings. Its own design's Status line has been
 says so: *"If you are reading a Status line here, check it against `git log --oneline -- <this file>`
 and the GO-BOOK row before trusting it."*
 
+★★★ **RESOLVED 2026-09-21 by M0 unit 4 (founder D1): numeric ids `CLI-009`…`CLI-016` were
+allocated — option (a) below — and they parse cleanly under all three guards.** What follows is the
+**historical** statement of why the link-scoped ids could not be used, kept verbatim with its
+original `CLI-008-Fn` / `CLI-008-LEDGER` examples. ★ *Corrected 2026-09-21 (Codex, PR #526):* an id sweep in this PR renamed those
+examples to the new numeric ids, which turned this block into a false claim that the **enacted**
+scheme fails the guards (`/^([A-Z]+-\d+)/` parses `CLI-015` as `CLI-015`, and `#### CLI-015 —`
+matches the graph regex). Restored byte-for-byte from `docs/replatform-program`.
+
 ★★★ **BLOCKING — THE `CLI-008-Fn` ID SHAPE CANNOT BE EXPRESSED TO THE GUARDS, AND USING IT WOULD
 SILENTLY COMPLETE THE PARENT.** *Added 2026-09-20 (ninth round), verified by reading the parsers.*
-This scheme must be resolved **before** `CLI-009` is assigned:
+This scheme must be resolved **before** `CLI-008-LEDGER` is assigned:
 
-| Guard | Code | What it does with `CLI-015` |
+| Guard | Code | What it does with `CLI-008-F6` |
 |---|---|---|
-| `check-finding-ownership.mjs:49` | `/^([A-Z]+-\d+)/` over ticket filenames | extracts **`CLI-008`** — `CLI-015` is **not a known owner**, so re-pointing a finding to it yields `owner_ticket_missing` |
-| `check-finding-ownership.mjs:67` | `/^([A-Z]+-\d+).*-result\.md$/` | reads **`CLI-009-result.md` as a result for `CLI-008` itself** — ★★★ **which is precisely the act that orphans all ten findings**, and which this plan and the triage both forbid |
-| `ticket-graph-coverage.mjs:68` | `/^####\s+([A-Z]{2,5}-\d{3})\s/` | does **not** match `#### CLI-015` (the id is followed by `-`, not whitespace), so the required graph node cannot be declared at all |
+| `check-finding-ownership.mjs:49` | `/^([A-Z]+-\d+)/` over ticket filenames | extracts **`CLI-008`** — `CLI-008-F6` is **not a known owner**, so re-pointing a finding to it yields `owner_ticket_missing` |
+| `check-finding-ownership.mjs:67` | `/^([A-Z]+-\d+).*-result\.md$/` | reads **`CLI-008-LEDGER-result.md` as a result for `CLI-008` itself** — ★★★ **which is precisely the act that orphans all ten findings**, and which this plan and the triage both forbid |
+| `ticket-graph-coverage.mjs:68` | `/^####\s+([A-Z]{2,5}-\d{3})\s/` | does **not** match `#### CLI-008-F6` (the id is followed by `-`, not whitespace), so the required graph node cannot be declared at all |
 
 ★ **So the Outcome below is currently unreachable**, and the danger is not merely that the guards
 red — it is that the ledger's own result file **reads as the parent's**, turning the one forbidden
 act into the default outcome of following this ticket.
 
-**The fix is a decision, recorded in `decisions.md` before `CLI-009` is assigned:** either
+**The fix is a decision, recorded in `decisions.md` before `CLI-008-LEDGER` is assigned:** either
 (a) allocate **distinct numeric ids** in the supported `CLI-0NN` shape for every link **and for the
 ledger**, keeping `CLI-008` as the narrative parent only; or (b) **schedule the parser changes
 first**, as their own unit with their own tests, and make the split depend on them. Option (a)
@@ -528,7 +536,7 @@ instruction survives.
 
 ### `CLI-011` — the emit half: DESIGN ONLY, founder-ruling gated (≤3 agent-days, M1b, **NOT ASSIGNABLE AS BUILD**)
 
-**Depends on:** `CLI-010`. **Blocks:** `CLI-015`, and exit criterion 4 in full.
+**Depends on:** `CLI-009` (the ledger), like `CLI-010` — **not** on `CLI-010`. ★ *Corrected 2026-09-21 (Codex, PR #526):* this read `CLI-010` (renamed from `CLI-008-F1a`), which serialized the mechanism review behind the enumeration seam and contradicted the diagram that declares them independent. **Blocks:** `CLI-015`, and exit criterion 4 in full.
 
 **Current state, measured:** three mechanisms have been proposed and refuted — argv **shape**, argv
 **size**, then **the predicate itself**. The ruling of record is **measure first**
@@ -621,8 +629,10 @@ STRONG.** *Corrected eleventh round, verified at source.* `listDir` exists on th
 behind the provider's **private `#transport`** field (`packages/sandbox-e2b-provider/src/e2b-provider.ts`),
 while the worker's `SandboxProvider` port (`packages/worker-daemon/src/supervisor/provider.ts`)
 exposes **no enumeration operation at all** — and neither do the effect authority, the network
-driver or the adapter manager. `F1a` schedules a test and a header note; `F3` schedules producer and
-composition changes; `DAT-009-3e` supplies digest and export only. **Nobody schedules the port.**
+driver or the adapter manager. `CLI-010` schedules a test and a header note; `CLI-012` schedules
+producer and composition changes; `DAT-009-3e` supplies digest and export only. **`CLI-012` now
+owns the port** (see its graph node in `program-design.md`) — ★ *Corrected 2026-09-21 (Codex, PR #526):* this said “Nobody schedules
+the port”, which was true before the post-M0 regroom assigned it.
 
 ★ **So this ticket owes, before it is assignable: a fenced metadata-only enumeration operation on
 the `SandboxProvider` port and its network binding** — or an explicitly named alternative source of
@@ -1305,14 +1315,14 @@ content, secret, or session byte.
 | D0-T01 focused acceptance | Every ticket's result ledger and the reviewer's rerun on the reviewed revision. |
 | D0-T03 validators | `CLI-013`'s digest/sequence assertions; `CLI-015`'s precision-and-recall matcher suite. |
 | D0-T04 protocol ownership | **N/A by measurement, not by assumption** — `artifact_prepared` is already frozen, already payload-schema'd, already in the DB CHECK (E7-D07). `check:frozen-worker-protocol-v1` is in the F4 row. |
-| D0-T05 hermetic inputs | F1a/F3/F4 use an in-memory sandbox and a recording exporter; F5/F6 use embedded PostgreSQL; only `C5` and `E7-1-JOURNEY-ARM` touch a deployment, and neither dispatches a keyed lane without authorization. |
+| D0-T05 hermetic inputs | `CLI-010`/`CLI-012`/`CLI-013` use an in-memory sandbox and a recording exporter; `CLI-014`/`CLI-015` use embedded PostgreSQL; only `CLI-016` and `E7-1-JOURNEY-ARM` touch a deployment, and neither dispatches a keyed lane without authorization. |
 | H-04 secret containment | No grant URL, file content, path content, or credential in any log, metric label, thrown message, or returned value — asserted in F3 and F4. Zero tolerance. |
 | H-05 sandbox boundary | Bytes leave by a direct provider→object-store PUT under a worker-minted grant; the control plane carries grants and references only (E7-D06). |
 | H-06 network boundary | **NOT claimed.** The DE-08 residual is accepted at the managed-shared tier and **none of the three partial gates — `M1-D1-SPINE`, `M1a-D2-MECHANISM`, `M1-D2-CODING` — may mark H-06 passed.** ★ *Corrected 2026-09-20 (fourth round): this said “neither partial gate”, which describes the old two-gate model and left the new mechanism record outside the prohibition entirely.* Metadata/control-plane reachability is recorded as an unresolved provider-boundary risk, not as denied. |
 | H-08 supply chain | No new runtime dependency; the daemon boundary checker stays green. |
 | H-10 evidence integrity | Append-only ticket results; the unit-F design is amended by appended note, never by deletion. |
 | Exit criterion 3 (**`M1a-D2-MECHANISM`**) | `E7-1-JOURNEY-ARM`, with `capabilityProven=false` explicitly acceptable. ★ *Corrected 2026-09-20 (third round): this row said “`M1-D2-CODING`, mechanism verdict”. There is no mechanism half of `M1-D2-CODING` — a QA record has ONE normative `Result`, which is why the companion change made the mechanism verdict its own gate. Recording this ticket under `M1-D2-CODING` would either falsely pass the capability gate or leave `M1a` unpassable.* |
-| **Exit criterion 4 (useful capability — `M1b` only)** | **`CLI-011` + `F3` + `F4` + `F5` + `F6`, plus E5's `DAT-009-3c/3d`.** This is the only criterion the split moves, and `F1b` is the one link with no design. |
+| **Exit criterion 4 (useful capability — `M1b` only)** | **`CLI-011` + `CLI-012` + `CLI-013` + `CLI-014` + `CLI-015`, plus E5's `DAT-009-3c/3d`.** This is the only criterion the split moves, and `CLI-011` is the one link with no design. |
 | Exit criterion 6 (rollback rehearsal) | `CLI-016`'s config-only disablement is part of the rehearsal. |
 
 **What no ticket here satisfies:** the E7 **epic** exit gate. `M1-D1-SPINE`, `M1a-D2-MECHANISM` and
@@ -1353,9 +1363,9 @@ OUT OF M1, named so it is not read as dropped:
        Unit E (workspace, XL), codex MX3 (E7-F027), the M2 sink cutover
 ```
 
-`CLI-011` runs **in parallel** with `F3`/`F4`/`F5` — that is the whole point of the split. The
-four ordinary links are not blocked by the undesigned one; only `F6` is. `C5` shares no file with
-the F chain. Parallel **PRs** are free; only **merges** serialize.
+`CLI-011` runs **in parallel** with `CLI-012`/`CLI-013`/`CLI-014` — that is the whole point of
+the split. The ordinary links are not blocked by the undesigned one; only `CLI-015` is. `CLI-016`
+shares no file with the chain. Parallel **PRs** are free; only **merges** serialize.
 
 ### Commit/evidence boundaries
 

@@ -990,7 +990,7 @@ therefore numeric, and the mapping is fixed here so no reader has to guess it:
 
 | Old link-scoped id | Ticket | Unit F §1.6 link |
 |---|---|---|
-| `CLI-008-F1a` | **`CLI-010`** | link 1, the EMIT half — tell the agent where to write |
+| `CLI-008-F1a` | **`CLI-010`** | link 1, the CAPTURE side — the metadata-only enumeration seam; fences `captureSandboxEntries` ★ *(corrected 2026-09-21: read “the EMIT half — tell the agent where to write”. F1a was always the capture side; the emit build has no id until `CLI-011` rules. This row is the AUTHORITATIVE crosswalk, so it had to change with the node below it.)* |
 | `CLI-008-F1b` | **`CLI-011`** | link 1, the output-mechanism design review (design-only as to BUILD) |
 | `CLI-008-F3` | **`CLI-012`** | link 3, the worker-side consumer: digest → mint grant → export → commit |
 | `CLI-008-F4` | **`CLI-013`** | link 4, the announcement: `EventSequencer.artifactPrepared` |
