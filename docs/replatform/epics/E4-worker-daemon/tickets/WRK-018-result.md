@@ -70,7 +70,7 @@ adapter-manager, worker-networked-host, worker-keystore, provider-capability.
 | M1-x | M1 in the daemon, dist rebuilt, then run the OTHER lanes | E2B-lane canary; all 4 adapter-manager canary/lane cases |
 | M2 | drop `observeRun` from `makeSupervisor({...})` | both flipped `dispatch-runtime` pins |
 | M3 | capture scrubs with `[]` instead of the run's canaries | supervisor canary; drop counter; multi-tenant |
-| M4 | FIRST result line wins | the last-line parity case |
+| M4 | FIRST result line wins (pre-P1 scanner; superseded by the final-line rule) | the last-line parity case |
 | M5 | one capture shared across runs | 6 cases incl. multi-tenant and byte-identical |
 | M6 | pass `onStdout` even with no `observeRun` | the channel-is-inert case |
 | MB | E2B provider always passes a handlers object | the one-argument/no-handlers case |
@@ -78,6 +78,7 @@ adapter-manager, worker-networked-host, worker-keystore, provider-capability.
 | MC2 | driver never replays the tail | the replay case |
 | MC3 | AM captures regardless of the flag | the no-flag byte-identical case |
 | MP3 | revert tokenCount's present-non-number rule, or the `corrupt` result sentinel | the respective Codex-P2 #2 case |
+| MP4 | drop the `usage`-key marker check | the structural-redaction case |
 | MP2 | revert the Codex P2 fix (plain `includes` residual check) | the marker-substring canary case (`"red"`, `"redacted"`, `"a"` dropped every tail as `unscrubbable`) |
 
 **Positive controls that stop the canary tests being vacuous:** each lane asserts the canary WAS in
@@ -99,6 +100,14 @@ marker is not a JSON token), so the live variant was that an EARLIER result line
 for the corrupted final one. Now: a present non-number is no usage, and an unparseable line that
 claims `"type":"result"` voids usage unless a later valid result line follows. RED first
 (`expected { inputTokens: +0, ... } to be null`; `expected { inputTokens: 1, ... } to be null`).
+
+**Codex P1 on `46e938ecd` (verified, fixed by closing the class):** a canary overlapping a
+structural token (`result`, or a `usage` key) can leave valid JSON that is misread - an earlier
+result line standing in, or a redacted key reading as 0. The three Codex findings are one class
+(redaction interacting with structure), so the fix removes the class rather than the variant:
+usage is read ONLY from the final non-empty line, which must be exactly `type:"result"` with no
+marker in any `usage` key; otherwise no usage. RED first (`expected { inputTokens: 1, ... } to be
+null`); mutation MP4 (drop the key-marker check) reds the structural case.
 
 **A vacuous test caught and fixed during the build:** the first "empty tail" case asserted inside
 the observer, whose throw the supervisor swallows, so it passed in RED. It now records and asserts

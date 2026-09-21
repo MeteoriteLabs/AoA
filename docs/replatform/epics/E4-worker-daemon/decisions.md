@@ -113,7 +113,12 @@ cache_read_input_tokens}`, with the server's missing-field-is-0 rule — and del
 usage (not zeros) for a result line without a `usage` object or with a count the frozen
 `usagePayloadV1Schema` would reject. A PRESENT count that is not a number (a string, `null`, or the redaction marker) and a
 final result line the scrubber made unparseable are likewise NO usage - never a silent 0, and never
-an earlier result line standing in for the final one (Codex P2, PR #546). Injecting the server parser from a composition root was
+an earlier result line standing in for the final one (Codex P2, PR #546).
+The port reads usage ONLY from the stream's FINAL non-empty line, which must parse as exactly
+`type:"result"` with no redaction marker in any `usage` key; this departs from the server's
+"last result line anywhere" scan on purpose, because the input is canary-scrubbed and a canary can
+overlap structure (a digit, the word `result`, a key) - a trailing non-result line, or any structural
+redaction, is therefore no usage (Codex P1, PR #546). Injecting the server parser from a composition root was
 rejected: it would make every worker image carry the adapters package (and its transitive server
 utilities) to extract four integers, which is exactly the coupling E4-D01 exists to prevent. The
 cost of porting is drift; it is paid by a conformance test that reads the REAL captured claude

@@ -9,7 +9,8 @@
  * from a composition root would make the worker image carry the adapters package for four
  * integers. The port mirrors `parseClaudeStreamJson`
  * (`packages/adapters/claude-local/src/server/parse.ts`) exactly where it matters:
- *   - the LAST `{"type":"result"}` line wins (the server overwrites `finalResult`);
+ *   - the result event is the stream's LAST line (the server keeps the last result line; this
+ *     port reads ONLY the final non-empty line - see `parseClaudeStreamJsonUsage` for why);
  *   - `usage.input_tokens -> inputTokens`, `usage.output_tokens -> outputTokens`,
  *     `usage.cache_read_input_tokens -> cachedInputTokens`;
  *   - a missing numeric FIELD is 0 (the server's `asNumber(…, 0)`).
@@ -33,6 +34,7 @@
 import type { UsagePayloadV1 } from "@armyofagents/worker-protocol";
 
 import type { Metrics } from "../metrics/metrics.js";
+import { REDACTION_MARKER } from "./redaction.js";
 import type { RunObservation, SupervisorDeps } from "./supervisor.js";
 
 /** Counter: runs whose output carried no parseable usage (no labels — no content, no id). */
@@ -53,30 +55,39 @@ function tokenCount(value: unknown): number | undefined {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
-/** A line that CLAIMS to be the result event, so a parse failure there is a corrupted result
- * (e.g. a numeric canary redacted inside a bare count), not noise. */
-const RESULT_TYPE_RE = /"type"\s*:\s*"result"/;
-
-/** Parse the agent-reported usage from `claude --output-format stream-json` output, or `null`. */
+/**
+ * Parse the agent-reported usage from `claude --output-format stream-json` output, or `null`.
+ *
+ * ★ Read from the FINAL non-empty line ONLY (claude writes its `type:"result"` event last).
+ * The input has been scrubbed by the run's canaries, and a canary can overlap STRUCTURE - a
+ * digit inside a bare count (the line no longer parses), the word `result` (valid JSON with
+ * another type), or a `usage` key (a field that then reads as missing, i.e. 0). Scanning for
+ * the "last result line" would let an EARLIER result stand in for a structurally redacted final
+ * one (Codex P1/P2, PR #546). So: the final line must parse, be exactly `type:"result"`, and its
+ * `usage` keys must carry no redaction marker; anything else is NO usage, which JOB-016's
+ * terminal-without-usage signal reports. Free text in the line's string VALUES (the `result`
+ * prose) may be redacted without affecting usage.
+ */
 export function parseClaudeStreamJsonUsage(stdout: string): ParsedAgentUsage | null {
-  // `"corrupt"`: the latest result-claiming line did not parse. It VOIDS usage rather than
-  // letting an earlier result line stand in for the final one; a later valid line still wins.
-  let finalResult: Record<string, unknown> | "corrupt" | null = null;
-  for (const rawLine of stdout.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) continue;
-    let event: unknown;
-    try {
-      event = JSON.parse(line);
-    } catch {
-      if (RESULT_TYPE_RE.test(line)) finalResult = "corrupt";
-      continue;
+  const lines = stdout.split(/\r?\n/);
+  let last = "";
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const trimmed = lines[i]!.trim();
+    if (trimmed) {
+      last = trimmed;
+      break;
     }
-    if (isRecord(event) && event.type === "result") finalResult = event;
   }
-  if (finalResult === "corrupt") return null;
-  if (finalResult === null || !isRecord(finalResult.usage)) return null;
-  const usage = finalResult.usage;
+  if (!last) return null;
+  let event: unknown;
+  try {
+    event = JSON.parse(last);
+  } catch {
+    return null;
+  }
+  if (!isRecord(event) || event.type !== "result" || !isRecord(event.usage)) return null;
+  const usage = event.usage;
+  if (Object.keys(usage).some((key) => key.includes(REDACTION_MARKER))) return null;
   const inputTokens = tokenCount(usage.input_tokens);
   const outputTokens = tokenCount(usage.output_tokens);
   const cachedInputTokens = tokenCount(usage.cache_read_input_tokens);

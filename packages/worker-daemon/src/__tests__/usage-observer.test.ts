@@ -80,6 +80,25 @@ describe("WRK-018 — parseClaudeStreamJsonUsage (daemon-local port, E4-D13)", (
     expect(parseClaudeStreamJsonUsage(`${corrupted}\n${earlier}\n`)).toEqual({ inputTokens: 1, outputTokens: 1, cachedInputTokens: 1 });
   });
 
+  it("STRUCTURAL redaction of the final line is no usage - never a stale earlier result (Codex P1, PR #546)", () => {
+    const earlier = resultLine({ input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 1 });
+    // A canary overlapping "result" turns the final line into valid JSON with another type.
+    const typeRedacted = JSON.stringify({ type: "«redacted»", usage: { input_tokens: 9, output_tokens: 9 } });
+    expect(parseClaudeStreamJsonUsage(`${earlier}\n${typeRedacted}\n`)).toBeNull();
+    // A canary overlapping a usage KEY would read as a missing field (0): refused instead.
+    const keyRedacted = JSON.stringify({ type: "result", usage: { "«redacted»": 9, output_tokens: 9 } });
+    expect(parseClaudeStreamJsonUsage(keyRedacted)).toBeNull();
+    // Free text in the result's own string VALUES may be redacted without losing usage.
+    const textRedacted = JSON.stringify({ type: "result", result: "key «redacted»", usage: { input_tokens: 3, output_tokens: 4 } });
+    expect(parseClaudeStreamJsonUsage(textRedacted)).toEqual({ inputTokens: 3, outputTokens: 4, cachedInputTokens: 0 });
+  });
+
+  it("usage is read ONLY from the final non-empty line: a result line followed by other output is no usage", () => {
+    const line = resultLine({ input_tokens: 5, output_tokens: 6 });
+    expect(parseClaudeStreamJsonUsage(`${line}\n{"type":"assistant"}\n`)).toBeNull();
+    expect(parseClaudeStreamJsonUsage(`${line}\n\n  \n`)).toEqual({ inputTokens: 5, outputTokens: 6, cachedInputTokens: 0 });
+  });
+
   it("no result line, empty output, or a non-integer/negative count is NO usage (never an invalid event)", () => {
     expect(parseClaudeStreamJsonUsage("")).toBeNull();
     expect(parseClaudeStreamJsonUsage('{"type":"assistant"}\n{"type":"system","subtype":"init"}')).toBeNull();
