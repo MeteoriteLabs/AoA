@@ -615,8 +615,9 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
           // control plane refuses a renew (`target_revoked`) whose worker heartbeat is older than its
           // bound (`ackAuthorityCurrent`, server/src/services/job-fencing.ts) — after a long enough
           // outage, probing before the first beat would misread a live lease as revoked.
-          // `start()` never rejects.
-          void composed.start().then(() => {
+          // `start()` never rejects; `Promise.resolve` also tolerates an injected runtime (the
+          // `composeDispatch` observation seam) whose `start` returns nothing.
+          void Promise.resolve(composed.start()).then(() => {
             logger.info(
               { workerId: identity.workerId, targetId: identity.targetId },
               "worker-daemon dispatch COMPOSED; heartbeat seeded; startup reconcile complete; leasing through the poll loop",

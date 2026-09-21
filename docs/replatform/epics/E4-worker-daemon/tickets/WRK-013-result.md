@@ -177,7 +177,17 @@ See §7.
    torn down by this boot, and the candidate is claimed, so a later boot sees it as
    `unknown_sandbox`. Whether F5 should also tear down a fenced lease's sandbox is **not decided
    here**. It does not affect the M1 container path, where the pass is skipped (F4).
-4. **`start()` became `Promise<void>`.** This was needed to order the reconcile before the poll loop
+4. **`start()` became `Promise<void>`.** ★ *CI caught a defect here.* The first CI run on
+   `1b7a8a4ff` (run `35591729825`) passed every test but failed `verify (2)`, `verify (3)` and
+   `verify (4)` on **5 unhandled rejections**. They came from `bin/worker-daemon.ts`, where
+   `composed.start().then` read `.then` of `undefined`: the `composeDispatch` observation seam
+   injects fake runtimes whose `start` returns nothing (`dispatch-composition-2b.test.ts`,
+   `dep-011-slice-2b-bin.test.ts`, `shipped-binary-refuses.test.ts`). My local GREEN had grepped only
+   the pass counts, and vitest's `Errors` line was never read. The fix is
+   `void Promise.resolve(composed.start()).then(...)`. It was reproduced locally first:
+   `dispatch-composition-2b.test.ts` shows **4 errors** without the fix and **0** with it. The whole
+   worker-daemon suite is now clean, with no `Errors` line.
+   Original item: This was needed to order the reconcile before the poll loop
    from inside the runtime, which the task allowed (*"dispatch-runtime.ts and/or bin"*). The bin
    `void`s it. Existing callers that did not await it still work.
 
