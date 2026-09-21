@@ -1,6 +1,6 @@
 # DEP-014 Result — the adapter-manager image in the signed split-image build
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Date (UTC):** `2026-09-21`
 **Epic:** `E6-deployment-test-harness`
 **Plan task:** `E6 implementation-plan §4c DEP-014 — the adapter-manager image in the signed image build, admitted in CI; NOT pushed (M1a)` (title amended 2026-09-21; was `…pushed by CI (M1a)`)
