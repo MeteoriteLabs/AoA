@@ -6,7 +6,7 @@
 **Plan task:** `E6 implementation-plan §4c DEP-014 — the adapter-manager image in the signed image build, admitted in CI; NOT pushed (M1a)` (title amended 2026-09-21; was `…pushed by CI (M1a)`)
 **Implementer:** `M1 build agent (Claude Opus 5)`
 **Start SHA:** `e5bc0bc81` (program tip `docs/replatform-program` after rebase)
-**Reviewed revision (code):** `ebf2c6e6e646cfc56f95cf0f0c7f0a93eb5aa06e`
+**Reviewed revision (code):** `ebf2c6e6e646cfc56f95cf0f0c7f0a93eb5aa06e` — the revision the D1 probe ran. After the later rebase onto the program tip, `git diff ebf2c6e6e HEAD -- docker .github scripts/test-execution-census.json scripts/test-inventory.json .gitignore` is **empty**: the code and CI are byte-identical, and only docs and base registers differ.
 **PR:** #543 (base `docs/replatform-program`)
 
 The implementer leaves `Status` at `gate_review`. Only a DISTINCT reviewer may set `complete`.
