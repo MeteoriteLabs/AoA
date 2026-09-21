@@ -14,8 +14,8 @@
  *     non-root; carries the OCI revision label matching digests.env.
  *   - worker: NO server/db/ui in EITHER deploy tree; runs non-root; ships the
  *     worker-daemon binary AND the networked-host bin; no fake provider and no
- *     emitted test tree by ANY route; NO provider (`e2b`) SDK; carries the OCI
- *     revision label.
+ *     emitted test tree by ANY route; NO provider credential baked in; carries
+ *     the OCI revision label.
  *   - adapter-manager (DEP-014): NO provider credential baked into the image config;
  *     NO server/db/ui/drizzle and no database client; no docker binary, no agent
  *     CLIs; runs non-root; ships its bin AND the provider (`e2b`) SDK it hosts;
@@ -24,9 +24,14 @@
  * NOT asserted, deliberately: "the provider SDK is ONLY in the adapter-manager". The
  * control-plane image carries `e2b` too — `server/package.json` depends on it and
  * `server/src/services/sandbox-provider-runtime.ts` imports it for cloud_auth
- * extraction (Decision #104, PR #320). What `checkProviderControlBoundary` fences is
- * the CREDENTIAL and the provider-control NETWORK, not the SDK; the image-level
- * statement that holds is "no provider SDK in the WORKER", asserted below.
+ * extraction (Decision #104, PR #320). And the WORKER carries it: `provider-wire`
+ * value-imports `@armyofagents/sandbox-e2b-provider/errors.js` (codec.ts, driver.ts),
+ * so `/worker-net-app` ships `e2b` — recorded as known and "structurally safe (no key,
+ * never imported)" in qa/2026-08-31-blocker-ab-fix-design.md, and MEASURED on the
+ * DEP-014 D1 probe run 35583366997 (a first draft asserting "no e2b in the worker" went
+ * red there). What `checkProviderControlBoundary` fences is the CREDENTIAL and the
+ * provider-control NETWORK, not the SDK — so the image-level statement asserted below
+ * is the credential one, for the worker AND the adapter-manager.
  */
 
 import { test, before } from "node:test";
@@ -158,12 +163,10 @@ test("worker: no server/db/ui, ships the daemon binary, non-root", { skip: SKIP 
 const findPackageDir = (roots, pkg) =>
   `find ${roots} -type d -path '*/node_modules/${pkg}' 2>/dev/null | head -1 | grep -q . && echo FOUND || echo NONE`;
 
-test("worker: ships NO provider (e2b) SDK in either deploy tree", { skip: SKIP }, () => {
-  assert.equal(
-    runIn(env.WORKER_IMAGE, findPackageDir("/worker-app /worker-net-app", "e2b")),
-    "NONE",
-    "the provider SDK belongs to the adapter-manager surface, never the worker",
-  );
+test("worker: no provider credential baked into the image config", { skip: SKIP }, () => {
+  const config = JSON.parse(inspect(env.WORKER_IMAGE, "{{json .Config}}"));
+  const envKeys = (config.Env ?? []).map((kv) => kv.split("=")[0]);
+  assert.ok(!envKeys.some((k) => /E2B/i.test(k)), `no E2B* env baked into the worker image: ${envKeys.join(",")}`);
 });
 
 test("adapter-manager: no provider credential baked into the image config", { skip: SKIP }, () => {
