@@ -41,10 +41,7 @@ trigger is reachable **by construction** rather than by a test harness.
 at `:145`, injected at `:158`. The original is `complete` and is not edited; the delta is recorded
 here, which is what this record exists to do. ★ *Corrected 2026-09-21 in response to review attempt 2:* this sentence previously said
 "the citation guard did not catch it because the original's citation carries no symbol anchor". That
-was false. `check-register-citation-integrity.mjs` reads only the threat-controls register
-(`THREAT_CONTROLS_JSON`) and its grandfather and census files; it **never scans ticket result docs**,
-and within its own scope an unanchored citation fails rather than slips through. **No guard checks
-result docs for citation currency** — which is the actual reason nothing caught it.
+was false. ★ *Corrected 2026-09-21 in response to review attempt 3 — my attempt-2 correction was itself wrong:* it claimed that inside the guard's own scope “an unanchored citation fails rather than slips through”, which I asserted without reading the enforcement path. Read at source (lines 395–399 define `inScope` as explicit **and** repo-anchored; lines 522–528 skip every other citation): `check-register-citation-integrity.mjs` takes citations **only** from the threat-controls register (`THREAT_CONTROLS_JSON`) — it never scans ticket result docs. And even inside the register it **enforces only explicit, repo-anchored `path/…:LINE` citations** (397 at HEAD); bare `:LINE`, relative-shorthand and filename-only citations are, in the script's own words, *“counted, not failed”* (154 + 11 + 72 = 237 unenforced at HEAD). The original's `worker-control.ts:112` is **filename-only**, so it is outside the enforced form twice over: wrong file set, and wrong citation form. **No guard checks result docs for citation currency, and this guard would not enforce that citation even if it did.**
 
 ## 3. The residual, restated because it belongs in the milestone record
 
@@ -62,10 +59,28 @@ require a run.
 
 ## Independent review
 
-**Reviewer:** M0 attempt-2 independent reviewer subagent (Claude) — distinct from the M0 implementation session, from the attempt-1 reviewer, and from the correcting session
-**Reviewed revision:** 6f9031220bd2a20a6485b83a5b2b74cf6b5782d0
+**Reviewer:** M0 attempt-3 independent reviewer subagent (Claude) — distinct from the M0 implementation session, the attempt-1 and attempt-2 reviewers, and the correcting session
+**Reviewed revision:** bbfc7cfbc0e0a58e86c9bd0c50af56960bd24b6e
 **Disposition:** `changes_requested`
-**Attempt:** 2 (see Review attempt history)
+**Attempt:** 3 (see Review attempt history)
+**Review evidence (attempt 3):**
+- §1 and the §2 wiring, re-read at the reviewed revision with `sed -n` on `server/src/routes/worker-control.ts`:
+  - `:44` is `import { createSweepTrigger } …`.
+  - `:112` is `operatorDb: opts.operatorDb,`, inside `const enrollment = createWorkerEnrollmentService({` (`:110`).
+  - `:137` is `const artifactSweepTrigger = createSweepTrigger({`.
+  - `:145` is `runArtifactOrphanSweep({`.
+  - `:158` is `sweepTrigger: artifactSweepTrigger,`.
+  - All five hold. `grep -nE ':[0-9]+|line [0-9]+|L[0-9]+' DAT-011-result.md` returns one hit, `worker-control.ts:112` (line 12), so "only line citation" is TRUE.
+- First half of the attempt-2 correction: TRUE in substance. `check-register-citation-integrity.mjs` parses citations only from `THREAT_CONTROLS_JSON` (`:109`; `collect` `:368`; `parseRegisterCitations` iterates `register.crossings`). It also loads `GRANDFATHER_JSON` and `CENSUS_JSON` (`:369-370`). It never scans ticket result docs. One imprecision, not blocking on its own: "reads only" is not literally true, because the script also reads each cited source file to verify it (`:381`).
+- ★ **NEW DEFECT (introduced by the attempt-2 correction; it blocks because a `complete` record is frozen):** the second half, *"within its own scope an unanchored citation fails rather than slips through"*, is FALSE as written.
+  - Only an **enforced** citation fails on a missing symbol anchor (`missing-anchor`, `:565-570`). An enforced citation is a repo-rooted slash path: `parseRegisterCitations` `:397-398`, `inScope = c.kind === "explicit-slash" && isAnchored(...)`.
+  - In the same register, every other citation form is skipped before any check runs (`:522-528`, `if (!c.inScope) { … bestEffort… ; continue; }`). That covers three forms: bare `:LINE` refs, relative-shorthand paths, and filename-only `file.ts:LINE`. The script itself calls the relative-shorthand paths **"UNANCHORED"** and says they are "Counted, not failed" (header `:67-69`).
+  - At the reviewed revision the live run prints `397 enforced … best-effort (unenforced): 154 bare :LINE, 11 unanchored, 72 filename-only` and `PASS`. So 237 citations inside the guard's own scope slip through. "Unanchored" is the script's own name for one of the forms that slips through.
+  - The original's citation, `worker-control.ts:112`, is itself **filename-only**. This guard would not fail it even if it scanned result docs.
+  - This is the same false-enforcement class as attempt 2's finding: the sentence tells a reader the guard enforces more than it does.
+  - Fix: drop the clause, or scope it precisely. For example: "within its own scope, only repo-rooted `path/…:LINE` citations are enforced, and a missing symbol anchor on one of those fails; bare `:LINE`, relative-shorthand and filename-only citations (the form the original uses) are counted, not failed."
+- The §3 residual and the §4 `not re-run` rows are unchanged and honest (attempts 1 and 2 verified them).
+- The closing sentence, "No guard checks result docs for citation currency", is not contradicted by anything I read. I did not audit every guard under `scripts/`. Fixing the clause above is enough for approval.
 **Review evidence (attempt 2):**
 - §1 re-measured at the reviewed revision (`worker-control.ts` unchanged since `8b629fc25`, `git diff --stat` empty): `:44` `import { createSweepTrigger } …`; `:137` `const artifactSweepTrigger = createSweepTrigger({`; `:145` `runArtifactOrphanSweep({`; `:158` `sweepTrigger: artifactSweepTrigger,`. All hold.
 - Attempt-1 finding (§2 "None" was false) — FIXED at source: `DAT-011-result.md`'s only `path:LINE` citation (`grep -nE ':[0-9]+'`, plus a check for `line N`/`L<n>` forms) is `worker-control.ts:112` (its §1, line 12); at the reviewed revision `:112` is `operatorDb: opts.operatorDb,` inside `createWorkerEnrollmentService({` (`:110`). The corrected §2 states this delta and the actual wiring accurately.
@@ -95,4 +110,5 @@ The implementation author leaves the table body empty; the pending summary above
 |---:|---|---|---|---|
 | 1 | M0 independent reviewer subagent (Claude) — distinct from the M0 implementation session | `5f3b47556d0df152db0d53d76c304861f30ffd37` | `changes_requested` | §1 values `:44/:137/:145/:158` hold at `8b629fc25` and HEAD. **§2 false:** original `DAT-011-result.md` cites only `worker-control.ts:112` (stale — now `operatorDb:` in enrollment), never `:44/:137`; the "no delta" claim is wrong. 11 unit tests green in CI `35561909654` verify(3); mutation corpus unrun (acceptable as unrun). Routes mounted only under `distributedExecutionEnabled`. |
 | 2 | M0 attempt-2 independent reviewer subagent (Claude) | `6f9031220bd2a20a6485b83a5b2b74cf6b5782d0` | `changes_requested` | Attempt-1 §2 finding FIXED at source: the original's only line citation is `worker-control.ts:112` = `operatorDb: opts.operatorDb,` in `createWorkerEnrollmentService`; `:44/:137/:145/:158` re-verified. NEW DEFECT from the correction: §2's "the citation guard did not catch it because the original's citation carries no symbol anchor" is false — `check-register-citation-integrity.mjs` scans only the threat-controls JSON (`:109`), never ticket result docs, and a missing anchor REDS inside its scope. Must be removed/reworded before freeze. |
+| 3 | M0 attempt-3 independent reviewer subagent (Claude) | `bbfc7cfbc0e0a58e86c9bd0c50af56960bd24b6e` | `changes_requested` | `worker-control.ts` `:44/:112/:137/:145/:158` verified; `:112` is the only line citation in `DAT-011-result.md`. First half of the attempt-2 correction is true: the guard scans only the threat-controls register. NEW DEFECT from that correction: "within its own scope an unanchored citation fails rather than slips through" is false. Only enforced repo-rooted slash citations fail on a missing anchor (`:397-398`, `:565-570`). Bare, relative-shorthand (the script's own "unanchored") and filename-only citations are skipped (`:522-528`); the live run reports 154 bare / 11 unanchored / 72 filename-only unenforced and PASS. The original's `worker-control.ts:112` is filename-only, so the guard would not catch it even in scope. Reword before freeze. |
 <!-- Later reviewers append attempt 2+ below without rewriting attempt 1. -->

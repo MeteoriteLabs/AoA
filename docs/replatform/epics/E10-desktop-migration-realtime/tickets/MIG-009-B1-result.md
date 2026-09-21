@@ -62,10 +62,20 @@ correct"; the record previously asserted correctness with no evidence attached.
 
 ## Independent review
 
-**Reviewer:** M0 attempt-2 independent reviewer subagent (Claude) — distinct from the M0 implementation session, from the attempt-1 reviewer, and from the correcting session
-**Reviewed revision:** 6f9031220bd2a20a6485b83a5b2b74cf6b5782d0
-**Disposition:** `changes_requested`
-**Attempt:** 2 (see Review attempt history)
+**Reviewer:** M0 attempt-3 independent reviewer subagent (Claude) — distinct from the M0 implementation session, the attempt-1 and attempt-2 reviewers, and the correcting session
+**Reviewed revision:** bbfc7cfbc0e0a58e86c9bd0c50af56960bd24b6e
+**Disposition:** `approved`
+**Attempt:** 3 (see Review attempt history)
+**Review evidence (attempt 3):**
+- Attempt-1 finding (link): still FIXED. `tickets/` at the reviewed revision holds `MIG-009-B1-result.md`, `MIG-009-drain-design.md` and `MIG-009-drain-result.md`; there is no `MIG-009-result.md`. The preamble links `./MIG-009-drain-result.md`.
+- Attempt-2 finding (job attribution): FIXED at source. `gh run view 35561909654 --json jobs` maps `106216273934` → `verify (3)` and `106216273935` → `verify (2)`, both `success`. Per-job logs (`gh run view --job <id> --log | grep drain`):
+  - `verify (3)` → `job-distributed-drain.test.ts (8 tests)` ✓ and `controller-inline-drain.test.ts (6 tests)` ✓. The integration suite does not appear in this job.
+  - `verify (2)` → `job-distributed-drain.integration.test.ts (5 tests)` ✓.
+  - The counts 8 / 6 / 5 match. `verify (2)` runs on `ubuntu-24.04`, and its log shows `@embedded-postgres/linux-x64` `pg_ctl` starts, so "embedded PostgreSQL, Linux" is true.
+- Run conclusion: the run's `headSha` is `5f3b47556d0d…` and its conclusion is `failure`. It has 16 jobs: 15 `success` and one `failure`, `ci-required` (`106218693107`). That job's only emitted `##[error]` is ``the `do-not-merge` label is present — remove it when this PR is genuinely ready to merge`` (`R_LABELS: do-not-merge`), plus the exit-code line. So "solely because `ci-required` refuses … `do-not-merge` … all fifteen other jobs succeeded" is TRUE.
+- §1 re-run at the reviewed revision: `node scripts/check-gate-clause-wiring.mjs` → exit 0 with `OK (22 wired clause(s), 12 declared dormant, …)`, and `E10-1-drain` is first in `DORMANT, on the record`. `--counts` → `0  createDistributedExecutionDrain`.
+- `git diff --name-only 5f3b47556 HEAD` touches only `docs/` and `scripts/finding-ownership.json`, and no drain source. The CI evidence at `5f3b47556` therefore still describes the reviewed tree.
+- §0, §2 and §3 are unchanged since attempts 1 and 2 verified them. I found no new false or overstated statement.
 **Review evidence (attempt 2):**
 - Attempt-1 finding (preamble linked non-existent `./MIG-009-result.md`) — FIXED: the link now reads `./MIG-009-drain-result.md`, and `tickets/` at the reviewed revision contains `MIG-009-drain-result.md` (no `MIG-009-result.md`).
 - §1 still holds at the reviewed revision: `node scripts/check-gate-clause-wiring.mjs` → exit 0, `OK (22 wired clause(s), 12 declared dormant, …)`, `E10-1-drain` first in `DORMANT, on the record`. The commits between `5f3b47556` and the reviewed revision touch only `docs/` records, `findings.md` and `scripts/finding-ownership.json` — no drain source.
@@ -97,4 +107,5 @@ The implementation author leaves the table body empty; the pending summary above
 |---:|---|---|---|---|
 | 1 | M0 independent reviewer subagent (Claude) | `5f3b47556d0df152db0d53d76c304861f30ffd37` | `changes_requested` | `check-gate-clause-wiring.mjs` exit 0 (22 wired / 12 dormant, `E10-1-drain` dormant); `--counts` → `createDistributedExecutionDrain` 0 production callers; §2/§3 true at source; §4 unrun rows satisfied by CI run `35561909654` at this SHA (drain unit 8/8, integration 5/5, controller-inline 6/6). DEFECT: preamble link `./MIG-009-result.md` names a file that does not exist — must be `./MIG-009-drain-result.md` before the record is frozen. |
 | 2 | M0 attempt-2 independent reviewer subagent (Claude) | `6f9031220bd2a20a6485b83a5b2b74cf6b5782d0` | `changes_requested` | Attempt-1 link defect FIXED (`./MIG-009-drain-result.md` exists; no `MIG-009-result.md`). §1 re-run at reviewed revision: exit 0, 22 wired / 12 dormant, `E10-1-drain` dormant. Run `35561909654`: 16 jobs, only `ci-required` failed, sole error = do-not-merge label (claim true). NEW DEFECT from the correction: §4 says all three suites ran in `verify (3)`; `job-distributed-drain.integration.test.ts (5 tests)` ran in `verify (2)` (job `106216273935`) and is absent from `verify (3)`'s log. The record insists on citing the job, so the wrong job must be fixed before freeze. |
+| 3 | M0 attempt-3 independent reviewer subagent (Claude) | `bbfc7cfbc0e0a58e86c9bd0c50af56960bd24b6e` | `approved` | Attempt-2 job-attribution defect FIXED. Per-job logs of run `35561909654`: `verify (3)` (`106216273934`) ran drain unit 8 and controller-inline 6; `verify (2)` (`106216273935`, ubuntu-24.04, embedded-PG linux-x64) ran drain integration 5. Only `ci-required` failed, and its sole error is the `do-not-merge` label; the other 15 jobs are `success`. §1 re-run: exit 0, 22 wired / 12 dormant, `E10-1-drain` dormant, 0 callers of `createDistributedExecutionDrain`. Link fix intact. No new false statement. |
 <!-- Later reviewers append attempt 2+ below without rewriting attempt 1. -->
