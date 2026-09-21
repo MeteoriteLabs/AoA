@@ -29,6 +29,7 @@ import {
   matchesPathFilter,
   parseMarker,
   renderIssueBody,
+  unownedFindings,
 } from "../workflow-verdict.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
@@ -715,4 +716,118 @@ test("★ the bootstrap tolerance is EXACTLY ONE CONDITION and is self-terminati
 test("an unreadable tolerance is a FAILURE, never a pass", () => {
   assert.equal(evaluateConsumerFreshness({ issue: issueAged(1), reconcilerCompletedRuns: 1, now: NOW, toleratedSilenceHours: undefined }).code, "tolerance_unreadable");
   assert.equal(evaluateConsumerFreshness({ issue: issueAged(1), reconcilerCompletedRuns: 1, now: NOW, toleratedSilenceHours: 0 }).ok, false);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BLOCKED — a finding with a named owner, waiting on something outside the lane
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// M0 exit criterion 2 reads "the DEP-013 consumer reporting zero UNOWNED findings", and until
+// this block the consumer had NO concept of ownership: WATCH_MODES was coverage | cadence |
+// not-watched and a finding carried no owner. The founder ruled (2026-09-21) for a real
+// `blocked` state rather than `not-watched`, because `not-watched` stops the sweep looking at
+// the stream at all, and `cross-platform-weekly.yml@main` is this manifest's declared FREE
+// POSITIVE CONTROL. Unwatching it would make "zero unowned" true by removing the thing counted.
+//
+// So the two properties that matter are the two cheap shortcuts would break:
+//   1. a blocked stream is STILL EVALUATED — a block records ownership, it does not suppress;
+//   2. a block owns only the LANE'S VERDICT — it cannot launder a broken mechanism
+//      (a missing workflow file, an unreadable cron) into "owned".
+
+const BLOCK = {
+  on: "program integration checkpoint (M5)",
+  owner: "founder (gate owner)",
+  reason: "schedule runs only from main, which the program branch reaches only at M5",
+};
+const blockedManifest = (streams) => ({ consumer: goodConsumer, streams });
+const weeklyInfo = { "cross-platform-weekly.yml": describeWorkflow(WF("cross-platform-weekly.yml")) };
+const failingCadence = { runs: [completed("cancelled", { completedAt: hoursAgo(2), url: "u" })] };
+
+test("★★★ BLOCKED — a blocked stream is STILL EVALUATED, and its finding carries the owner", () => {
+  const findings = evaluateStreams({
+    manifest: blockedManifest({ "cross-platform-weekly.yml@main": { ...cadenceStream, blocked: BLOCK } }),
+    workflows: weeklyInfo,
+    data: { "cross-platform-weekly.yml@main": failingCadence },
+    now: NOW,
+  });
+  assert.equal(findings.length, 1, "a block must not suppress the finding — it records who owns it");
+  assert.equal(findings[0].code, "not_success");
+  assert.deepEqual(findings[0].blocked, { on: BLOCK.on, owner: BLOCK.owner });
+});
+
+test("★★★ BLOCKED — a blocked finding is OWNED; the same failure unblocked is UNOWNED", () => {
+  const streams = {
+    "cross-platform-weekly.yml@main": { ...cadenceStream, blocked: BLOCK },
+    "cross-platform-weekly.yml@*": { ...cadenceStream, branch: null },
+  };
+  const findings = evaluateStreams({
+    manifest: blockedManifest(streams),
+    workflows: weeklyInfo,
+    data: { "cross-platform-weekly.yml@main": failingCadence, "cross-platform-weekly.yml@*": failingCadence },
+    now: NOW,
+  });
+  assert.equal(findings.length, 2, "both streams fail and both are reported");
+  const unowned = unownedFindings(findings);
+  assert.equal(unowned.length, 1, "only the unblocked one is unowned");
+  assert.equal(unowned[0].stream, "cross-platform-weekly.yml@*");
+});
+
+test("★★★ BLOCKED — a block cannot LAUNDER a broken mechanism into 'owned'", () => {
+  // The workflow file is absent: that is the manifest being wrong, not the lane's verdict, and
+  // the owner of an M5 block never signed up for it. It must stay unowned.
+  const findings = evaluateStreams({
+    manifest: blockedManifest({ "cross-platform-weekly.yml@main": { ...cadenceStream, blocked: BLOCK } }),
+    workflows: {},
+    data: {},
+    now: NOW,
+  });
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].code, "workflow_file_missing");
+  assert.equal(findings[0].blocked, undefined, "a mechanism failure is never tagged with a lane block");
+  assert.equal(unownedFindings(findings).length, 1);
+});
+
+test("BLOCKED — a HEALTHY blocked stream yields no finding (a block invents nothing)", () => {
+  const findings = evaluateStreams({
+    manifest: blockedManifest({ "cross-platform-weekly.yml@main": { ...cadenceStream, blocked: BLOCK } }),
+    workflows: weeklyInfo,
+    data: { "cross-platform-weekly.yml@main": { runs: [completed("success", { completedAt: hoursAgo(2) })] } },
+    now: NOW,
+  });
+  assert.deepEqual(findings, []);
+});
+
+test("BLOCKED — manifest completeness: a block needs `on`, `owner` and `reason`, and only on a WATCHED stream", () => {
+  const base = (entry) => ({
+    workflowFiles: ["a.yml"],
+    workflowInfo: { "a.yml": cronInfo },
+    manifest: { consumer: goodConsumer, streams: { "a.yml@main": { workflow: "a.yml", branch: "main", ...entry } } },
+  });
+  const ok = { watch: "cadence", toleranceMultiplier: 2 };
+  assert.ok(!codes(base({ ...ok, blocked: BLOCK })).includes("blocked_shape"), "a complete block on a watched stream is legal");
+  for (const missing of ["on", "owner", "reason"]) {
+    const partial = { ...BLOCK };
+    delete partial[missing];
+    assert.ok(codes(base({ ...ok, blocked: partial })).includes("blocked_shape"), `a block without \`${missing}\` FAILS`);
+  }
+  assert.ok(
+    codes(base({ watch: "not-watched", reason: "r", wouldTakeToWatch: "w", blocked: BLOCK })).includes("blocked_shape"),
+    "a block on a NOT-watched stream is meaningless — nothing evaluates it — so it FAILS",
+  );
+  assert.ok(codes(base({ ...ok, blocked: "M5" })).includes("blocked_shape"), "a block must be an object, not a bare string");
+});
+
+test("BLOCKED — the published issue states the UNOWNED count and names each owner", () => {
+  const findings = [
+    { stream: "a.yml@main", code: "not_success", detail: "d", runUrl: null, blocked: { on: BLOCK.on, owner: BLOCK.owner } },
+    { stream: "b.yml@main", code: "not_success", detail: "d", runUrl: null },
+  ];
+  const body = renderIssueBody({
+    findings,
+    marker: { lastReconciledAt: NOW, runUrl: null, runId: null, findingCount: 2, unownedCount: 1 },
+    streamsWatched: 2,
+  });
+  assert.match(body, /\*\*Findings:\*\* 2 · \*\*Unowned:\*\* 1/);
+  assert.match(body, /founder \(gate owner\)/);
+  assert.match(body, /program integration checkpoint \(M5\)/);
 });

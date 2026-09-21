@@ -53,7 +53,12 @@
       "branch": "main",
       "watch": "cadence",
       "toleranceMultiplier": 2,
-      "note": "THE FREE POSITIVE CONTROL. Measured 2026-09-04: the last three scheduled runs (08-16, 08-23, 08-30) are all `cancelled` — three consecutive weeks with NO cross-platform verdict at all — so this entry reports on its first reconciliation with nothing broken to arrange it. It reports on the CONCLUSION, not on staleness, which is why a ×2 tolerance does not hide it. Making it green is that lane's own work (DEP-013 §8)."
+      "note": "THE FREE POSITIVE CONTROL. Measured 2026-09-04: the last three scheduled runs (08-16, 08-23, 08-30) are all `cancelled` — three consecutive weeks with NO cross-platform verdict at all — so this entry reports on its first reconciliation with nothing broken to arrange it. It reports on the CONCLUSION, not on staleness, which is why a ×2 tolerance does not hide it. Making it green is that lane's own work (DEP-013 §8).",
+      "blocked": {
+        "on": "the program integration checkpoint (M5)",
+        "owner": "founder (gate owner)",
+        "reason": "Founder ruling 2026-09-21, 'blocked, with owner' (scope-triage.md, M0 section). GitHub runs `schedule` triggers ONLY from the default branch, so this cadence stream executes main's copy of cross-platform-weekly.yml. docs/replatform-program is not an ancestor of main and, by the LOCKED integration strategy (program-design.md, 'Integration branch and PR strategy'), reaches it only at the program integration checkpoint (M5). A fix landed on the program branch -- including E6-F023's option-3 change -- therefore cannot change THIS stream's verdict before M5. The stream STAYS WATCHED: it is this manifest's free positive control, and a block records who holds the verdict; it does not stop the sweep looking. NOT EVIDENCE OF LANE HEALTH: under E6-F023 a green run of this lane does not imply its tests passed. WHAT WOULD HAVE TO CHANGE: the program branch reaches main at M5; then REMOVE this block and read the stream on its own verdict."
+      }
     },
     "catalog-audit.yml@main": {
       "workflow": "catalog-audit.yml",

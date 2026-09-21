@@ -451,20 +451,55 @@ export function evaluateStreams({ manifest, workflows, data, now }) {
         findings.push(finding(stream, "cron_unreadable", err instanceof Error ? err.message : String(err)));
         continue;
       }
-      const f = evaluateCadenceStream({ stream, runs: bucket.runs ?? [], intervalHours, now });
+      // A block is STILL EVALUATED — it records who owns the verdict, it never suppresses it.
+      const f = tagBlocked(stream, evaluateCadenceStream({ stream, runs: bucket.runs ?? [], intervalHours, now }));
       if (f) findings.push(f);
       continue;
     }
-    const f = evaluateCoverageStream({
+    const f = tagBlocked(stream, evaluateCoverageStream({
       stream,
       commits: bucket.commits ?? null,
       runs: bucket.runs ?? [],
       paths: info.pushPaths,
       workflowPresentOnBranch: bucket.workflowPresentOnBranch ?? true,
-    });
+    }));
     if (f) findings.push(f);
   }
   return findings;
+}
+
+/**
+ * The findings nobody owns.
+ *
+ * ★★★ WHY THIS EXISTS. M0 exit criterion 2 reads "the DEP-013 consumer reporting zero UNOWNED
+ * findings", and until 2026-09-21 the consumer had no ownership concept at all: every finding
+ * was, by construction, unowned. The founder ruled for a real `blocked` state rather than
+ * `not-watched`, because `not-watched` stops the sweep LOOKING at a stream — and the stream in
+ * question, `cross-platform-weekly.yml@main`, is this manifest's declared FREE POSITIVE CONTROL.
+ * Unwatching it would make "zero unowned" true by removing the thing being counted.
+ *
+ * A finding is owned exactly when it carries a `blocked` tag, which only `tagBlocked` sets.
+ */
+export function unownedFindings(findings) {
+  return (Array.isArray(findings) ? findings : []).filter((f) => !(f && f.blocked));
+}
+
+/**
+ * Tag a LANE-VERDICT finding with its stream's block, if the stream declares one.
+ *
+ * ★★★ ONLY the lane's verdict is tagged — never a mechanism failure. A block records that a
+ * lane's verdict cannot change until something outside the lane happens (for
+ * `cross-platform-weekly.yml@main`: GitHub runs `schedule` only from `main`, which the program
+ * branch reaches only at the M5 integration checkpoint). It says nothing about a MISSING
+ * workflow file or an UNREADABLE cron — those mean the consumer itself is broken, and the owner of
+ * an M5 block never signed up for them. So `evaluateStreams` calls this only on the result of
+ * `evaluateCadenceStream` / `evaluateCoverageStream`, never on `workflow_file_missing` or
+ * `cron_unreadable`. Tagging every finding of a blocked stream would let a block LAUNDER a dead
+ * mechanism into "owned" — pinned by the test "a block cannot LAUNDER a broken mechanism".
+ */
+function tagBlocked(stream, f) {
+  if (!f || !stream.blocked) return f;
+  return { ...f, blocked: { on: stream.blocked.on, owner: stream.blocked.owner } };
 }
 
 /** Manifest `streams` object → array of stream records carrying their own key fields. */
@@ -536,6 +571,22 @@ export function evaluateManifestCompleteness({ workflowFiles, workflowInfo, mani
     if (!WATCH_MODES.includes(s.watch)) {
       push("stream_shape", `${s.key}: \`watch\` must be one of ${WATCH_MODES.join(" | ")}`);
       continue;
+    }
+    // A block names what the verdict waits on, WHO owns it, and why. All three or none: a block
+    // without an owner is exactly the "unowned" state it exists to remove.
+    if (s.blocked !== undefined) {
+      const b = s.blocked;
+      if (!b || typeof b !== "object" || Array.isArray(b)) {
+        push("blocked_shape", `${s.key}: \`blocked\` must be an object { on, owner, reason }`);
+      } else {
+        for (const field of ["on", "owner", "reason"]) {
+          if (!isNonEmptyString(b[field])) push("blocked_shape", `${s.key}: \`blocked.${field}\` is required`);
+        }
+      }
+      // Nothing evaluates a not-watched stream, so a block on one owns nothing.
+      if (s.watch === "not-watched") {
+        push("blocked_shape", `${s.key}: a block on a NOT-watched stream is meaningless — nothing evaluates it`);
+      }
     }
     const info = workflowInfo[s.workflow];
     if (!info) {
@@ -641,7 +692,11 @@ export function renderIssueBody({ findings, marker, streamsWatched }) {
       "healthy is indistinguishable from a dead one.",
   );
   lines.push("");
-  lines.push(`**Reconciled:** ${marker.lastReconciledAt} · **Streams watched:** ${streamsWatched} · **Findings:** ${list.length}`);
+  const unownedCount = unownedFindings(list).length;
+  lines.push(
+    `**Reconciled:** ${marker.lastReconciledAt} · **Streams watched:** ${streamsWatched} · ` +
+      `**Findings:** ${list.length} · **Unowned:** ${unownedCount}`,
+  );
   lines.push("");
   if (list.length === 0) {
     lines.push("## No findings");
@@ -650,11 +705,12 @@ export function renderIssueBody({ findings, marker, streamsWatched }) {
   } else {
     lines.push("## Findings");
     lines.push("");
-    lines.push("| stream | code | detail | run |");
-    lines.push("|---|---|---|---|");
+    lines.push("| stream | code | detail | owner | run |");
+    lines.push("|---|---|---|---|---|");
     for (const f of list) {
       const run = f.runUrl ? `[run](${f.runUrl})` : "—";
-      lines.push(`| \`${f.stream}\` | \`${f.code}\` | ${f.detail} | ${run} |`);
+      const owner = f.blocked ? `**${f.blocked.owner}** — blocked on ${f.blocked.on}` : "**UNOWNED**";
+      lines.push(`| \`${f.stream}\` | \`${f.code}\` | ${f.detail} | ${owner} | ${run} |`);
     }
     lines.push("");
     lines.push(
