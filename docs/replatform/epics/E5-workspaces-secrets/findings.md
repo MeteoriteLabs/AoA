@@ -166,6 +166,27 @@ a production caller. Not done here: `putGrantBytes` is on the export path DAT-00
 changing which digest a signed PUT carries is a correctness decision with live-store consequences
 that must be re-proven on the keyed lane, not asserted from a filing unit.
 
+**Progress, 2026-09-21 (`DAT-009-3e`): decided and built, NOT live-proven. Status stays `open`.**
+
+- **Built.** `putGrantBytes` (`packages/sandbox-e2b-provider/src/e2b-provider.ts`) now takes its
+  header set from `grantPutHeaders` and re-derives nothing. That gives the designated home its
+  first production caller, and the uploader now sends `x-amz-sdk-checksum-algorithm`. Its only own
+  addition is a `content-type` default placed before the grant's headers.
+- **Decided: the digest source is the GRANT's `expectedSha256`.** The reason: the signer binds the
+  algorithm and not the value, so the store checks the body against whatever this header says.
+  With the grant's value, the store refuses bytes the grant was not minted for at the PUT, instead
+  of the commit refusing `hash_mismatch` later. On `exportArtifact`'s own path the two values are
+  equal, because it re-hashes and refuses a mismatch before calling the uploader.
+  `put-grant-bytes.test.ts` pins this, and a bytes-digest mutant goes red.
+- **Why this is not closed.** The `DAT-009-3e` task says the finding stays open until the keyed lane
+  re-proves the choice. Measured at source, the named lane cannot do that:
+  `keyed-dat-009-artifact-export.test.ts` injects its uploader, so no real PUT happens. Its own
+  header says the store half is not exercised there, and the workflow header says the same. A re-run
+  of `keyed-e2b-dat-009-export.yml` would re-prove the sandbox half and would not execute
+  `putGrantBytes` at all. Closing this needs a live PUT through the default uploader against a real
+  store. That choice belongs to the planning session, and the `DAT-009-3e` result records it as a
+  stop.
+
 ---
 
 ## E5-F003 - the approved-workspace-root check compares paths lexically while git resolves symlinks, so cleanup refuses on any symlinked root
