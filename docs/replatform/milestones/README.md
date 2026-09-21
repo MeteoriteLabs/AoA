@@ -68,3 +68,12 @@ own normative gate, and only the Integration Gate Owner flips it. A handoff here
 ★ **A partial gate is not its normative gate.** `M1-D1-SPINE` is not D1 — D1-00 requires at least
 two workers and H-06 stays normative. `M1-D2-CODING` is not D2. A record here may support a
 milestone decision and nothing further.
+
+## Working documents beside the records
+
+*Added 2026-09-21 (M1 Step 0, S0-7).* A milestone folder may also hold **mutable working
+documents** outside `qa/` and `handoffs/`, such as a delta review or a reachability ledger. They are
+not evidence records. They carry no `Result` or `Decision`, grant nothing, and may be corrected in
+place. A record that relies on one pins the document's blob SHA at the candidate. The immutability guard (`EVIDENCE_RECORD_RE` in
+`scripts/check-evidence-immutability.mjs`) matches only files under `qa/` and `handoffs/`. See
+[`M1a/README.md`](./M1a/README.md).
