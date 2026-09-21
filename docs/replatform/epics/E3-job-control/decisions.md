@@ -361,6 +361,34 @@ Where the build differs in detail from the text above, the code is the truth and
   published `budget.incident_created` inside the savepoint. Callers on the seam now pass a
   `deferLiveEvents` collector. The core returns the events with `exhaustedScopes`, and
   `flushDeferredBudgetSignals` performs both only after commit.
+- **The re-drive is generalized to every seam receipt kind (JOB-017, 2026-09-21, planning-session
+  ruling under founder delegation F2).** *Amends (c) and Amendment 3, which named only
+  `authoritative_cost`; that text is kept above.* The ruling: a `pending` `activity_audit` receipt
+  with no re-drive means the event is accepted and durable but its audit row is permanently lost,
+  which is the programme's lost-audit class. A `pending` `output_projection` receipt means the output
+  silently never appears. Surfacing either through the detector is not enough. As built:
+  - **One dispatcher, not a fork.** `redrivePendingProjection`
+    (`server/src/services/job-accepted-usage-pricing.ts`) is keyed by receipt kind over
+    `REDRIVABLE_PROJECTION_KINDS` = `authoritative_cost`, `activity_audit`, `output_projection`.
+    The JOB-016 name `redrivePendingAuthoritativeCost` is kept, as the same function, because the
+    composition root and the Amendment 3 tests call it.
+  - **Each kind uses the seam's own mapping.** The re-drive locks the `pending` receipt row
+    `FOR UPDATE` and re-reads the stored `job_events` row that the identity names. It then runs the
+    same function the seam registration runs: `priceAcceptedUsageCore`, `applyAcceptedEventAudit` or
+    `applyAcceptedOutputEvent`. Finally `resolvePendingProjectionReceipt` flips the receipt to
+    `applied`. A re-driven row is therefore the row the seam would have written.
+    `readAcceptedEvent` additively returns the stored sequence, attempt number and lease id, and the
+    lease's worker from `leases`, so the audit re-drive never takes identity from the worker's
+    payload.
+  - **Same bound, same single Inbox item.** The JOB-006 sweep re-drives every re-drivable kind with
+    the same bound, `AUTHORITATIVE_COST_REDRIVE_MAX_ATTEMPTS`. It then raises the same single,
+    durable Inbox item through the same hub path. Only the copy is per kind: `budget_alert` for a
+    charge, `run_failed` for an audit or an output.
+  - **After commit only.** Owed live events (`budget.exhausted`, `budget.incident_created`,
+    `activity.logged`) are performed only after the re-drive's transaction commits. A failed
+    re-drive rolls back and owes nothing.
+  - **Unchanged.** The MIG-009 drain still reads only `authoritative_cost` receipts, so a
+    `pending` audit or output receipt does not hold the drain.
 
 
 ---
@@ -408,6 +436,9 @@ The set is closed. Adding an entry is a new decision here, not an edit to the ma
 accepted event, so it is audited even though it changed nothing. The worker protocol emits
 `attempt_started` once per attempt, so no such event is expected.
 
+**Re-drive (added 2026-09-21).** A `pending` `activity_audit` receipt is re-driven by the
+generalized re-drive recorded in `E3-D-ACC`'s as-built notes, through this same mapping.
+
 **Publication.** The live `activity.logged` event is published by the ingest only **after** its
 transaction commits, and only for an `applied` outcome (`createJobEventIngestService`,
 `owedActivityPublishes`). This follows the same after-commit pattern as JOB-016's Codex P2 fixes.
@@ -440,6 +471,9 @@ transaction commits, and only for an `applied` outcome (`createJobEventIngestSer
   - `isPrimary = false` (forced by the core) and `reviewState = 'none'`;
   - `createdByAgentId` = the job's recorded assignee;
   - `artifactId = null`.
+- **Re-drive (added 2026-09-21).** A `pending` `output_projection` receipt is re-driven by the
+  generalized re-drive recorded in `E3-D-ACC`'s as-built notes, through this same mapping. For
+  example, an event announced before its commit is visible projects once the commit lands.
 - **Boundary with `CLI-014`.** Promoting a `job_artifacts` row into a product `artifacts` row, and
   folding `detectedFiles` into the run summary, belong to `CLI-014`. `CLI-014` reuses
   `projectAcceptedOutputCore`, and it replaces this minimal mapping at the same registration, under

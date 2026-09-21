@@ -122,3 +122,75 @@ To be recorded, by job with its executed count, in an addendum once the PR's run
 - it does not check the artifact's `kind` (the arm-1 question `E7-F019` records).
 
 It still reads 0 on every real run, because no worker emits `artifact_prepared` until `CLI-013`. Whether arm 2 should also require a particular `kind` is left to `CLI-014` and the E7-F018/F019 owners. This record does not decide it.
+
+## Addendum — the re-drive is generalized (2026-09-21, planning-session ruling, F2)
+
+**The ruling.** The "Things a reviewer should know" section above states as a residual that a
+`pending` `activity_audit` or `output_projection` receipt has no re-drive. The planning session
+ruled, under founder delegation F2, that this is the programme's lost-audit class, and required the
+change in this PR. That residual is **closed** by the change below. The earlier text is kept as
+written.
+
+**The change.** Commit `dbf4628cf3b36fe907410ed0f2b8ba111eaa7b5e`, `feat(job-control): re-drive
+pending activity_audit and output_projection receipts`. It is recorded in `E3-D-ACC`'s as-built
+notes in `decisions.md`.
+- **One dispatcher, `redrivePendingProjection`, keyed by receipt kind.** This is JOB-016's method,
+  generalized in place; the name `redrivePendingAuthoritativeCost` is kept as the same function. It
+  locks the pending receipt, re-reads the stored event and runs the kind's core through the seam's
+  own mapping. The seam and the re-drive now share `applyAcceptedEventAudit` and
+  `applyAcceptedOutputEvent`, which were extracted from the projectors. It then flips the receipt to
+  `applied`.
+- **The JOB-006 sweep** drives it with the same bound, `AUTHORITATIVE_COST_REDRIVE_MAX_ATTEMPTS`, and
+  raises the same single, durable Inbox item.
+- **Live events** are performed only after the re-drive commits.
+- **`readAcceptedEvent`** (`packages/db`) additively returns the stored sequence, attempt number,
+  lease id and the lease's worker.
+
+**Tests** (`job-accepted-event-seam.integration.test.ts`, describe "JOB-017 re-drive of pending
+activity_audit and output_projection receipts", 6 tests):
+
+| Test | Asserts |
+|---|---|
+| `[re-drive audit]` | A pending audit receipt is re-driven to `applied`, producing exactly one `activity_log` row (the seam's row: action, entity, worker actor, `terminalStatus`, `leaseId`). `activity.logged` is published once, after commit: the listener's separate connection already sees the row. A second re-drive returns `not_pending`, and a replayed batch adds nothing. |
+| `[re-drive output]` | An output announced before its commit is `pending`. Once the artifact is committed, the re-drive produces exactly one `task_outputs` row, and a replay adds nothing. |
+| `[re-drive via the sweeper]` | The job-control sweep re-drives both kinds in one pass. |
+| `[bound, output]` and `[bound, audit]` | A persistent failure makes exactly `AUTHORITATIVE_COST_REDRIVE_MAX_ATTEMPTS` re-drive calls and raises exactly one Inbox item. A restarted sweep neither retries nor raises again. |
+| `[re-drive F10]` | Two Organizations. Organization B's sweep re-drives only B's receipts, and A's stay pending (the same-tenant control is A's own sweep). Every row lands in its receipt's own Organization and Company. |
+
+**Mutations** (script `j017-mutate2.py`; each is reverted after the run):
+
+| Mutation | Removes | Red |
+|---|---|---|
+| M11 | `activity_audit` from the dispatcher | `[re-drive audit]`, `[re-drive via the sweeper]`, `[bound, audit]`, `[re-drive F10]` |
+| M12 | `output_projection` from the dispatcher | `[re-drive output]`, `[re-drive via the sweeper]`, `[bound, output]`, `[re-drive F10]` |
+| M13 | the re-drive's after-commit publish (publishes inside the transaction) | `[re-drive audit]` |
+| M14 | the shared mapping (the re-drive audits a different action than the seam would) | `[re-drive audit]` |
+
+**GREEN (local, embedded PG, `AOA_RUN_WIN_INTEGRATION=1`, at `dbf4628cf`, which includes a merge of
+program tip `81c5a940c`):**
+- The seam suite passes **36/36**.
+- 22 related files pass **343/343**. These are the earlier 19 plus the three service/legacy-grants
+  files, and they include the JOB-016 Amendment 3 tests, which still exercise the kept name.
+- `tsc` passes for `@armyofagents/db` and `@armyofagents/server`, and server lint passes.
+- The full guard set passes.
+
+CI evidence for the new head will be cited in PR #560; this section is not rewritten for it.
+
+## Open question handed to CLI-014, CLI-015 and ruling F7 (2026-09-21)
+
+**Arm 2 of the E7-1 capability counter currently counts any committed artifact, regardless of its
+`kind`.** `countProducedOutputs` arm 2 counts `task_outputs` rows that carry an applied
+`output_projection` receipt. The JOB-017 registration, and now its re-drive, writes such a row for
+every committed `job_artifacts` row that a `task_run` attempt announces with `artifact_prepared`,
+whatever its `kind` (`E3-D-OUTPUT-MAP` checks commitment, not kind). So once `CLI-013` makes a worker
+emit `artifact_prepared`, **any** committed artifact would move arm 2, including one that is not a
+work product (the arm-1 question, `E7-F019`, in a new place).
+
+JOB-017 does not decide this. It is handed to:
+- **`CLI-014` / `CLI-015`**, which own the output projection's rich mapping and the capability
+  counter;
+- **ruling F7**, which governs what `M1b` must show.
+
+The question is whether arm 2, or the registration's mapping, must require a particular `kind`
+before a row counts toward capability, or whether "any committed artifact" is the intended meaning.
+Today arm 2 still reads 0 on every real run, because no worker emits `artifact_prepared`.
