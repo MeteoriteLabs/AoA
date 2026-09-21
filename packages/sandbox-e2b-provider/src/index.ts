@@ -32,6 +32,10 @@ export {
   E2bTransportTransientError,
   E2bTransportEgressBlockedError,
   E2bProcessLaunchNotAcknowledgedError,
+  E2bListDirBoundExceededError,
+  E2bListDirMalformedEntryError,
+  E2B_LIST_DIR_MAX_ENTRIES,
+  E2B_LIST_DIR_MAX_DEPTH,
 } from "./transport.js";
 
 // The deterministic, key-less mock transport (no-key core proof).

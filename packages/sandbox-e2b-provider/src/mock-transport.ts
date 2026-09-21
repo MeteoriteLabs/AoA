@@ -15,6 +15,7 @@
 // -----------------------------------------------------------------------------
 
 import { decodeCreateFaults, decodeExecuteFaults } from "./directives.js";
+import { filesOnlyFromListing } from "./list-dir-contract.js";
 import {
   E2bProcessLaunchNotAcknowledgedError,
   E2bTransportEgressBlockedError,
@@ -311,10 +312,24 @@ export class MockE2bTransport implements E2bTransport {
     return Uint8Array.from(bytes);
   }
 
+  /** CLI-010 (E7-D09) — the SAME contract as the real binding: the in-memory fs holds files
+   * only, so the typed listing is every file strictly under `path` PLUS each implied
+   * directory between it and `path` (so the entry-count bound counts what a real recursive
+   * listing would), handed to the one contract enforcer. */
   async listDir(sandboxId: string, path: string): Promise<readonly string[]> {
     const record = this.#requireRecord(sandboxId);
-    const prefix = path.endsWith("/") ? path : `${path}/`;
-    return [...record.fs.keys()].filter((p) => p === path || p.startsWith(prefix)).sort();
+    const prefix = `${path.replace(/\/+$/, "")}/`;
+    const entries = new Map<string, "file" | "dir">();
+    for (const p of record.fs.keys()) {
+      if (!p.startsWith(prefix) || p.length === prefix.length) continue;
+      entries.set(p, "file");
+      const segments = p.slice(prefix.length).split("/");
+      for (let i = 1; i < segments.length; i++) {
+        const dir = `${prefix}${segments.slice(0, i).join("/")}`;
+        if (!entries.has(dir)) entries.set(dir, "dir");
+      }
+    }
+    return filesOnlyFromListing(path, [...entries].map(([p, type]) => ({ path: p, type })));
   }
 
   /** Test-only: current live sandbox count (zero after a full converge). */

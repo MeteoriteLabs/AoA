@@ -74,7 +74,40 @@ export interface E2bListPage {
   readonly nextPageToken: string | null;
 }
 
+// --- CLI-010 (E7-D09) — the `listDir` bounds ---------------------------------
+
+/** The most entries (files AND directories) one `listDir` call may enumerate. A breach
+ * throws {@link E2bListDirBoundExceededError}; the list is never truncated. */
+export const E2B_LIST_DIR_MAX_ENTRIES = 100_000;
+
+/** The deepest an entry may sit below the listed root (a direct child is depth 1). A breach
+ * throws {@link E2bListDirBoundExceededError}; the list is never truncated. */
+export const E2B_LIST_DIR_MAX_DEPTH = 64;
+
 // --- Transport-level errors (never authority) --------------------------------
+
+/** CLI-010 (E7-D09) — a `listDir` breached {@link E2B_LIST_DIR_MAX_ENTRIES} or
+ * {@link E2B_LIST_DIR_MAX_DEPTH}. Loud by design: a silently shortened listing is the
+ * output-loss class, so the whole enumeration is refused instead. */
+export class E2bListDirBoundExceededError extends Error {
+  readonly bound: "entries" | "depth";
+  readonly limit: number;
+  constructor(root: string, bound: "entries" | "depth", limit: number) {
+    super(`e2b transport: listDir(${root}) exceeded the ${bound} bound (${limit})`);
+    this.name = "E2bListDirBoundExceededError";
+    this.bound = bound;
+    this.limit = limit;
+  }
+}
+
+/** CLI-010 (E7-D09) — a `listDir` entry that cannot be honoured under the files-only
+ * contract: no absolute path under the root, or no `file`/`dir` type to classify it by. */
+export class E2bListDirMalformedEntryError extends Error {
+  constructor(root: string, detail: string) {
+    super(`e2b transport: listDir(${root}) returned a malformed entry: ${detail}`);
+    this.name = "E2bListDirMalformedEntryError";
+  }
+}
 
 /** The transport could not confirm a sandbox exists. The provider maps this to
  * the domain `SandboxNotFoundError` (which the cleanup authority further collapses
@@ -239,8 +272,17 @@ export interface E2bTransport {
   /** CLI-002/D1 — read a staged/mutated file's bytes back (assertions + result
    * collection). Missing sandbox OR path throws {@link E2bTransportNotFoundError}. */
   readFile(sandboxId: string, path: string): Promise<Uint8Array>;
-  /** CLI-002/D1 — enumerate the absolute paths of files under a directory prefix
-   * (assertions). Missing sandbox throws {@link E2bTransportNotFoundError}. */
+  /**
+   * CLI-002/D1, contract fixed by CLI-010 (E7-D09) — enumerate the files under `path`:
+   * FILES ONLY (never a directory), RECURSIVELY, as ABSOLUTE paths strictly under `path`
+   * (never `path` itself), sorted. METADATA ONLY — no bytes cross this call.
+   *
+   * BOUNDED: a listing with more than {@link E2B_LIST_DIR_MAX_ENTRIES} entries, or any entry
+   * deeper than {@link E2B_LIST_DIR_MAX_DEPTH} levels below `path`, throws
+   * {@link E2bListDirBoundExceededError}. An entry that cannot be classified file-vs-directory
+   * or does not sit under `path` throws {@link E2bListDirMalformedEntryError}. It NEVER
+   * returns a silently shortened list. Missing sandbox throws {@link E2bTransportNotFoundError}.
+   */
   listDir(sandboxId: string, path: string): Promise<readonly string[]>;
   /** Deliver a graceful-cancel or forced-kill signal to a live sandbox. */
   signal(sandboxId: string, kind: "cancel" | "kill"): Promise<E2bSignalResult>;

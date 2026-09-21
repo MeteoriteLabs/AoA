@@ -1082,6 +1082,12 @@ evidence.
 - **Acceptance:** A `listDir` returning directory entries fails loudly rather than silently
   enumerating nothing; the enumerator's dependency surface contains no byte-returning read.
 - **Test:** `packages/worker-daemon/src/__tests__/sandbox-listdir-binding.test.ts`.
+- ★ *Corrected 2026-09-21 (CLI-010 build, verified at source; `E7-D09`, decided under founder
+  delegation F2).* The Outcome's first sentence was true of the mock only: the real
+  `E2bTransport.listDir` listed one level, directories included, and discarded each entry's type.
+  The ticket is widened to fix the seam — files only, recursive, absolute, bounded, failing loudly
+  on a bound breach — with an added test `packages/sandbox-e2b-provider/src/__tests__/list-dir-files-only.test.ts`.
+  Live-sandbox behaviour stays unproven until `CLI-012`'s keyed real-run acceptance.
 - ★ *Corrected: M0 labelled this node "the EMIT half: tell the agent where to write (M)" and gave
   it a real-E2B build acceptance. That is `F1b`'s subject, not `F1a`'s — and the emit half is
   **design-only until `CLI-011` rules**, so a build ticket for it here would have let emit work start

@@ -23,6 +23,8 @@ import { CommandExitError, Sandbox } from "e2b";
 
 import {
   E2bProcessLaunchNotAcknowledgedError,
+  E2B_LIST_DIR_MAX_DEPTH,
+  E2bListDirMalformedEntryError,
   E2bTransportNotFoundError,
   E2bTransportTransientError,
   type E2bCommandResult,
@@ -44,6 +46,7 @@ import {
   type E2bTransport,
 } from "./transport.js";
 import { isE2bNotFound, shellJoin } from "./real-transport-helpers.js";
+import { filesOnlyFromListing, type ListingEntry } from "./list-dir-contract.js";
 
 /** Loose facade over the version-sensitive `e2b` SDK surface (keyed lane only). */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -463,16 +466,36 @@ export class RealE2bTransport implements E2bTransport {
     }
   }
 
+  /**
+   * CLI-010 (E7-D09) — files only, recursive, absolute, bounded (see `E2bTransport.listDir`).
+   *
+   * The installed `e2b@2.30.5` `Filesystem.list(path, opts)` (`dist/index.js`, `Filesystem2`
+   * `list`) defaults `depth` to 1 and returns every entry — files AND directories — as an
+   * `EntryInfo` whose `type` is `"file"`/`"dir"` (`mapEntryInfo`/`mapFileType`). The old
+   * binding passed no depth and kept only `e.path ?? e.name`, DISCARDING `type`, so it listed
+   * the root's immediate children with directories mixed in and never a nested file.
+   *
+   * Here the SDK is asked for `depth: MAX_DEPTH + 1` in ONE call, so any entry past the depth
+   * bound is present in the response and trips it (loudly) rather than being silently cut
+   * off; the typed entries then go through the single contract enforcer.
+   *
+   * ★ UNPROVEN ON A LIVE SANDBOX: what a real envd returns for `depth > 1`, and for entry
+   * kinds the SDK itself skips (`Filesystem.list` drops any entry whose wire type is neither
+   * FILE nor DIRECTORY before it reaches this code), is CLI-012's keyed real-run acceptance.
+   */
   async listDir(sandboxId: string, path: string): Promise<readonly string[]> {
+    let entries: unknown;
     try {
       const sandbox = await this.#sdk.connect(sandboxId, { apiKey: this.#apiKey });
-      const entries = await sandbox.files.list(path);
-      const arr = Array.isArray(entries) ? entries : [];
-      return arr.map((e: SandboxSdk) => String(e?.path ?? e?.name ?? ""));
+      entries = await sandbox.files.list(path, { depth: E2B_LIST_DIR_MAX_DEPTH + 1 });
     } catch (err) {
       if (this.#isNotFound(err)) throw new E2bTransportNotFoundError(`${sandboxId}:${path}`);
       throw err;
     }
+    if (!Array.isArray(entries)) {
+      throw new E2bListDirMalformedEntryError(path, "the SDK listing is not an array");
+    }
+    return filesOnlyFromListing(path, entries as readonly ListingEntry[]);
   }
 
   async isRunning(sandboxId: string): Promise<boolean> {
