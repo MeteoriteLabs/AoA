@@ -1,0 +1,199 @@
+# DAT-009-3e Result: the networked-lane export route, and `E5-F002` at the cause
+
+**Status:** `gate_review`
+**Date (UTC):** `2026-09-21`
+**Epic:** `E5-workspaces-secrets`
+**Plan task:** `E5 implementation-plan DAT-009-3e — the networked-lane export route, and E5-F002 at the cause (M, M1b)`
+**Implementer:** `DAT-009-3e build session (Claude Opus 5)`
+**Start SHA:** `cec1b48a796f177c6184884dc3c5043f5aa57ea8` (`docs/replatform-program` tip, the `3c` merge)
+**Reviewed revision (the two code commits):** `b853ff0ffae57966241a7d123df9675eea84dade` (the wire route) + `8849a12066188c79393aa509fbada49d2e6d1328` (the `E5-F002` fix). The tree under review is `8849a1206`.
+
+The implementer leaves `Status` at `gate_review`. Only a distinct reviewer may change it to
+`complete`.
+
+## 1. What was built
+
+### Commit 1: `feat(provider-wire): relay digest/export artifact ops to adapter-manager`
+
+- **`NetworkedProviderDriver`** (`packages/provider-wire/src/driver.ts`):
+  - `artifactExportMode` is now `"grant_upload"`.
+  - `digestArtifact` and `exportArtifact` **read the mode first**. When it is `"none"` they throw
+    `UnsupportedProviderOperation` before any RPC is made.
+  - Otherwise each call makes **one** POST, to `/op/digest_artifact` or `/op/export_artifact`, and
+    carries the owned-labels capability. The driver never retries, prefetches or buffers.
+  - `#post`'s op type is widened **locally** to add the two ops, following the `stage_files`
+    precedent (`E7-F011`). The frozen `ProviderOperation` vocabulary is unchanged.
+- **Grant in, reference out.** The export body carries the grant, and the result is `{objectKey}`.
+  - If the returned reference is not the grant's own `objectKey`, or is missing, the driver throws
+    `WireProtocolError`. It never hands the commit a reference it cannot vouch for.
+  - A malformed digest throws `WireProtocolError` before the sequencer can mint a grant from it.
+    Malformed means the sha256 is not 64 lowercase hex characters, or the size is not a
+    non-negative safe integer.
+- **adapter-manager** (`packages/adapter-manager/src/server.ts`, `createProviderServer`):
+  - `digest_artifact` and `export_artifact` join `GATE_REQUIRED_OPS`.
+  - `routeGated` sends both through **`gateOwnedOp`**. Each is a single-sandbox owned op, gated
+    only, like `stage_files`. An ungated server has no raw handler for them and returns 404.
+  - The grant type comes from the port, as `Parameters<SandboxProvider["exportArtifact"]>[2]`, so
+    the package still declares exactly its three dependencies (`check-adapter-manager-boundary`).
+- **`scripts/gate-clause-wiring.json` `E5-2`:**
+  - The provider-wire `providerCapabilityClaims` value moves to `grant_upload`, with a dated
+    amendment in the reason. **Positive control:** before this register edit,
+    `check-gate-clause-wiring` went red (`driver.ts declares artifactExportMode = "grant_upload",
+    register claims "none"`).
+  - One 2026-09-06 sentence was put in the past tense, and the amendment says so. The guard's value
+    regex reads the present-tense form as a *current* claim, so it went red on the old wording.
+  - **`E5-2` stays `unwired`.** Promotion is `CLI-012`'s (E5-D07 ruling 4).
+
+### Commit 2: `fix(sandbox-e2b-provider): derive signed-PUT headers from grantPutHeaders (E5-F002)`
+
+- **`putGrantBytes`** (`packages/sandbox-e2b-provider/src/e2b-provider.ts`) now sends
+  `{"content-type": "application/octet-stream", ...grantPutHeaders(grant)}`.
+  - `grantPutHeaders` is the single home and now has its **first production caller**.
+  - `x-amz-sdk-checksum-algorithm` is now sent.
+  - The grant's own headers still win, because `grantPutHeaders` spreads them last.
+- **The digest-source decision: the GRANT's `expectedSha256`.**
+  - The signer binds the algorithm, not the value (`grantPutHeaders` docstring), so the store checks
+    the body against whatever this header says.
+  - With the grant's value, the store refuses bytes the grant was not minted for at the PUT.
+    Without it, the store would accept them and the fenced commit would refuse `hash_mismatch`
+    later, in another process.
+  - On `exportArtifact`'s own path the two values are equal, because it re-hashes and refuses a
+    mismatch first.
+- **Severed PUT.** A transport rejection is re-thrown as a fixed message with **no `cause`**. That
+  makes it distinguishable from a status failure, and the transport's error (which may name the url)
+  cannot escape (H-04).
+- `putGrantBytes` gains `export`, a module-level export only. It is not re-exported from the package
+  index. The test calls it directly because `exportArtifact` never hands it mismatched bytes.
+- `scripts/test-inventory.json`: the `packages/sandbox-e2b-provider` pin goes from 19 to 20.
+- `docs/architecture/distributed-execution-threat-controls.json`: two `e2b-provider.ts` line
+  citations moved down 22 lines and were re-pointed, with the same anchors (`DE-26`'s
+  `this.#transport.list`, and the `templateId ?? "base"` line). `check-register-citation-integrity`
+  went red on `DE-26` before the re-point.
+
+## 2. RED → GREEN
+
+RED runs used unchanged behaviour. The only source change made before the `put-grant-bytes` RED was
+adding the `export` keyword to `putGrantBytes`, which changes no behaviour, so each failure below is
+an assertion failure, not a missing import.
+
+| Suite | RED | Green-at-RED cases, and why | GREEN |
+|---|---|---|---|
+| `provider-wire` `driver-artifact-export.test.ts` | **11 failed / 3 passed (14)** | the mode-`"none"` case passed **vacuously**, because the old code threw without reading the mode (the exact defect the task names; mutants M1/M2 now kill it); far-side refusal and H-04 were true by construction | **14 passed** |
+| `adapter-manager` `server-artifact-export.test.ts` | **7 failed / 2 passed (9)** | ungated-404 was true by construction; the far-`"none"` case passed vacuously through the driver's unconditional throw | **9 passed** |
+| `sandbox-e2b-provider` `put-grant-bytes.test.ts` | **4 failed / 4 passed (8)** | failed: both header names (`expected undefined to be 'SHA256'`), the digest source, one home, severed PUT (the raw transport message escaped). Passed: base64 encoding, header precedence, body and non-2xx were already correct | **8 passed** |
+
+**The task's focused verify command at `8849a1206` (Windows, local):** wire build OK; driver suite
+14/14; adapter-manager suite 9/9; e2b headers suite 8/8; `check-adapter-manager-boundary` PASS;
+`check-sandbox-e2b-provider-boundary` PASS; wire typecheck OK; wire build OK.
+
+**Wider runs:**
+- Full `provider-wire`: 77 passed, 1 skipped.
+- Full `adapter-manager`: 18 files, 164 passed.
+- Full `sandbox-e2b-provider`: 147 passed, 31 skipped. The skips are the keyed suites, with no key
+  present.
+- `worker-networked-host`: 6 passed.
+- Typecheck and build exit 0 for `provider-wire`, `adapter-manager` and `sandbox-e2b-provider`.
+- `check:frozen-worker-protocol-v1`: OK.
+- The full `pr.yml` guard set plus `check-evidence-immutability --base origin/docs/replatform-program`:
+  **0 failures**.
+
+## 3. Mutation table (each applied alone, suite rerun, source restored)
+
+| # | Mutant | Result |
+|---|---|---|
+| M1 | `digestArtifact` does not read the mode | 1 red (mode-`none`) |
+| M2 | `exportArtifact` does not read the mode | 1 red (mode-`none`) |
+| M3 | no reference check (any `objectKey` returned) | 3 red |
+| M4 | no digest-shape validation | 5 red |
+| M5 | export sent without the capability | 1 red |
+| M6 | the unconditional throw restored | 6 red |
+| M7 | `digest_artifact` dispatched raw, bypassing `gateOwnedOp` | 4 red (**incl. F10 cross-Organization**) |
+| M8 | `export_artifact` dispatched raw, bypassing `gateOwnedOp` | 4 red (**incl. F10 cross-Organization**) |
+| M9 | owned-check weakened (Organization-blind, lease-only) | 3 red |
+| M10 | both ops dropped from `GATE_REQUIRED_OPS` | 7 red |
+| M11 | the old derivation (bytes digest, no algorithm header) | 3 red |
+| M12 | digest source = bytes uploaded (**the opposite decision**) | 2 red |
+| M13 | hex forwarded instead of base64 | 5 red |
+| M14 | algorithm header dropped | 2 red |
+| M15 | severed PUT re-thrown raw | 1 red |
+| M16 | the `content-type` default overrides the grant | 1 red |
+
+**16 of 16 killed.**
+
+## 4. Multi-tenant (F10)
+
+The adapter-manager serves every Organization's workers from one process. The component suite
+creates sandboxes for **Organization A**, **Organization B** and **A under another lease** on one
+server.
+- **Same-tenant positive control:** A digests and exports its own sandbox's output. The far uploader
+  receives A's bytes under A's own key.
+- **A's capability aimed at B's sandbox:** digest and export are both refused with the uniform
+  `ResourceNotAvailableError`. `transport.readFile` is never called and nothing is uploaded. For
+  export, that holds even with a grant naming B's own key.
+- **A under another lease:** refused the same way, with no read and no upload.
+- The cross-Organization refusal body is **byte-identical** to not-found, for both ops.
+- A missing capability is refused, and an ungated server returns 404.
+- Mutants M7/M8/M9 turn the cross-Organization cases red.
+
+## 5. The supervisor window (3c) and the wire
+
+The export window latch is the supervisor's (`runExportWindow`, DAT-009-3c). It re-checks after
+every awaited provider call, so a late digest mints nothing and a late upload is never committed.
+The relay respects it by adding no behaviour of its own:
+- each port call is exactly one RPC, made only when invoked (`one call is ONE RPC`);
+- there is no retry and no prefetch;
+- the driver returns what came back or throws.
+
+An in-flight export whose window has already closed can still complete its PUT on the far side,
+because a redeemed grant cannot be recalled. That object is never committed and is left to the
+orphan sweep, as in 3c.
+
+## 6. `E5-F002`: decided and built, NOT closed (a stop)
+
+The brief handed to this session said to flip `E5-F002` to resolved and delete its ownership key in
+the same commit. **This was not done.** The task section itself says (RED → GREEN, keyed lane):
+*"Until that run exists, the result records the header decision as decided but not live-proven, and
+`E5-F002` stays open."* No keyed run exists at this revision.
+
+★ **Verified at source: the named keyed lane cannot supply that proof.**
+`keyed-dat-009-artifact-export.test.ts` injects its uploader, so no real PUT happens. Its header and
+the `keyed-e2b-dat-009-export.yml` header both say so. A re-run re-proves the sandbox half and does
+not execute `putGrantBytes`. So the plan's closing condition ("re-run
+`keyed-e2b-dat-009-export.yml`") would not re-prove the header decision.
+
+`findings.md` `E5-F002` carries a dated progress note, and its `finding-ownership.json` reason
+carries an amendment. **Status stays `open`.** Closing it needs a live PUT through the default
+uploader against a real store, which is the planning session's decision. One option is the D1
+MinIO lane using `putGrantBytes`.
+
+## 7. Keyed-workflow trigger note
+
+Commit 2 edits `packages/sandbox-e2b-provider/src/e2b-provider.ts`. That file is in the
+`push`-trigger `paths` of **`keyed-e2b-dat-009-export.yml`**, on branch `docs/replatform-program`.
+**Merging this PR will auto-fire that lane.** The founder has authorized that under F8. Nothing was
+dispatched by this session. Per §6, that run proves the sandbox half only. No other `keyed-e2b-*`
+workflow's `paths` names a file this PR touches. `keyed-e2b-unit-d.yml` watches `real-transport.ts`,
+which this PR does not touch.
+
+## 8. Findings and plan deltas
+
+1. The `E5-F002` close condition is unsatisfiable by the named lane (§6).
+2. **Merge-order note for `CLI-012` and `3d`.** `CLI-012` edits the same `driver.ts` and `server.ts`.
+   This PR's changes to both are confined to the artifact pair and one `#post` type widening. `3d`
+   edits the same `E5-2` entry in `scripts/gate-clause-wiring.json` (`expectedReferences`). This PR
+   changes that entry's `reason` and one `providerCapabilityClaims` value, so a textual conflict on
+   the one-line `reason` string is possible. Whichever merges second rebases.
+3. A process note: the session's shared scratchpad held another session's mutation script under a
+   generic name. One of this session's runs executed that script, and it overwrote
+   `packages/worker-daemon/src/lifecycle/dispatch-runtime.ts` in this worktree with a `3d` draft.
+   The file was restored with `git checkout` before any commit. It is in neither commit, and the
+   mutation runs above were redone with a uniquely named script.
+
+## 9. CI
+
+*(Filled in after the PR's `pr.yml` run: `ci-required` and the `verify` shard that executes each new
+suite, each with its executed count.)*
+
+## 10. Reviewer section
+
+*(Distinct reviewer only.)*
