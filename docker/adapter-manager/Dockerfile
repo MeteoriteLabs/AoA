@@ -15,12 +15,16 @@
 # It runs as a NON-ROOT user on a READ-ONLY-capable root filesystem: all writable
 # state (the β1 durable idempotency ledger + TMPDIR) is externalized to the /am
 # volume. The bin fail-closes without the mounted ed25519 control-plane PUBLIC key
-# (Slice-5 deploy-owed); nothing here is built or run in CI (the staging compose is
-# render-only). Actually building/pushing aoa-adapter-manager:staging is a C0 concern.
+# (Slice-5 deploy-owed). The staging compose is render-only.
 #
-# This file is ADDITIVE and default-off: it is OUTSIDE the frozen release-admission
-# set (RELEASE_ARTIFACT_CLASSES) — staging is pre-release, so build/sbom/sign.sh are
-# deliberately NOT wired to it.
+# ★ Superseded by DEP-014 (2026-09-21). This header used to say "nothing here is built
+# or run in CI" and "build/sbom/sign.sh are deliberately NOT wired to it". Both are now
+# false: docker/images/build.sh builds this image as the third split image, and
+# sbom.sh, sign.sh and admit.sh record, sign (TEST root) and admit it on every
+# d1-merge-train run. It is still NOT RUN in CI — no D1 service boots it; that needs a
+# provider key and is DEP-015's — and it is still OUTSIDE the frozen release-admission
+# set (RELEASE_ARTIFACT_CLASSES): the lane's TEST-root admission is chain integrity,
+# not release approval, which stays REL-004's.
 #
 # Base pinned BY DIGEST (node:lts-trixie-slim multi-arch index digest, the same the
 # control-plane + worker images pin; re-verify/refresh at the first CI build).
