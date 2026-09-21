@@ -1010,18 +1010,25 @@ exist exactly where a finding is re-pointed, because `check-finding-ownership` n
 to accept an owner. Minting five more design docs with no design behind them would be inventing
 evidence.
 
-#### CLI-010 — Unit F link 1, the EMIT half: tell the agent where to write (M)
+★★★ *Corrected 2026-09-21 (post-M0 regroom). The M0 unit-4 renumbering wrote these nodes from an older reading of Unit F, and four of them contradicted the corrected E7 implementation plan — which a later session reads from HERE, not from the plan. The id mapping the founder ruled (D1, D5) is unchanged; only the subjects, dependencies and outcomes are corrected to match what the code requires.*
+
+#### CLI-010 — Unit F link 1, the CAPTURE side: pin the metadata-only enumeration seam, fence the byte-reading one (S)
 
 - **Depends on:** CLI-008.
-- **Outcome:** An agreed absolute path inside the sandbox that this run's output lands in, and an
-  instruction that makes the agent use it. The CAPTURE half exists and is inert
-  (`captureSandboxEntries`, zero callers); it has nothing to walk until this lands. The three
-  refutations in `CLI-008-unit-f-design.md` §4 are about this half and must be answered, not
-  re-argued.
-- **Acceptance:** A real distributed run leaves at least one file under the designated root, observed
-  rather than argued.
-- **Test:** A keyed real-E2B case asserting the root is populated, with a positive control on a run
-  that was not given the instruction.
+- **Outcome:** `E2bTransport.listDir` returns **absolute file paths, not directories** — the one
+  asymmetry a consumer gets wrong silently. Pin it with a **metadata-only** enumeration test: no
+  `readFile`, no digest, no bytes. And **fence `captureSandboxEntries`**: it calls `readFile` and
+  hashes the bytes **in the daemon**, which the E2B and networked lanes' data-plane contract forbids
+  (*"GRANTS OUT, NEVER BYTES"*, `packages/worker-daemon/src/lease/artifact-export.ts`). It is a
+  local/desktop-lane tool and stays **inert** on those lanes; it is **not** "the capture half" there.
+- **Acceptance:** A `listDir` returning directory entries fails loudly rather than silently
+  enumerating nothing; the enumerator's dependency surface contains no byte-returning read.
+- **Test:** `packages/worker-daemon/src/__tests__/sandbox-listdir-binding.test.ts`.
+- ★ *Corrected: M0 labelled this node "the EMIT half: tell the agent where to write (M)" and gave
+  it a real-E2B build acceptance. That is `F1b`'s subject, not `F1a`'s — and the emit half is
+  **design-only until `CLI-011` rules**, so a build ticket for it here would have let emit work start
+  before the mechanism was chosen. It also described `captureSandboxEntries` as "the CAPTURE half",
+  reversing the data-plane correction.*
 
 #### CLI-011 — Unit F link 1, the output-mechanism design review (S)
 
@@ -1032,6 +1039,8 @@ evidence.
 - **Acceptance:** A committed result naming the chosen mechanism, the options refuted, and the pins
   each option would move.
 - **Test:** Not a build ticket; the evidence is the decision record and the pin census it cites.
+- ★ **The emit-half BUILD has no id yet, deliberately.** It is filed **after** this ruling, because
+  what it builds depends on which mechanism is chosen. Filing it earlier would pre-empt the ruling.
 
 #### CLI-012 — Unit F link 3, the worker-side consumer (M)
 
@@ -1041,6 +1050,17 @@ evidence.
   flips no counter.
 - **Acceptance:** A committed `job_artifacts` row of the counted kind, produced by a real run.
 - **Test:** The keyed export lane extended to the full sequence, with a TOCTOU refusal case.
+- ★ **It enumerates PATHS only and must NOT call `captureSandboxEntries`** (see `CLI-010`); the
+  provider's `digestArtifact` supplies digest and size, `exportArtifact` does the upload.
+- ★ **Two seams are owed and scheduled nowhere else:** (1) a fenced **metadata-only enumeration
+  operation on the worker's `SandboxProvider` port** and its network binding — `listDir` sits behind
+  the E2B provider's private `#transport`, and the port exposes no enumeration at all; and (2) the
+  **composition surface** that reaches the sequencer — `createArtifactExportSequencer` needs
+  `client`/`key`/`session` at construction (the dispatch runtime's) and an `exporter` at invocation
+  (the supervisor's).
+- ★ **The real-run acceptance also depends on the emit build** (filed after `CLI-011`), because a
+  run produces a file only once the agent is told where to write. Before that, this ticket is proven
+  against a fixture sandbox, not a real run.
 
 #### CLI-013 — Unit F link 4, the announcement (S)
 
@@ -1051,15 +1071,37 @@ evidence.
   Conflating the two is the error Unit F's design exists to correct.
 - **Acceptance:** The event appears in the stream for a run that committed an artifact.
 - **Test:** Sequencer unit coverage plus one end-to-end observation.
+- ★ **Not best-effort.** `EventSequencer.#emit` increments `#seq` **before** awaiting the sink, so a
+  failed emit leaves a hole the control plane classifies as a `gap` and the terminal never lands.
+  This ticket owes a recorded contiguity decision — fatal, allocate-on-success, or retry-until-land
+  — and its sink-failure test follows that decision.
+- ★ **Emission belongs on the sequencer-completion / supervisor path**, not in `CLI-012`'s producer:
+  the producer returns export *requests* and has already returned before any commit exists.
 
-#### CLI-014 — Unit F link 5, the projector (S)
+#### CLI-014 — Unit F link 5, the output projection (M — design first)
 
 - **Depends on:** CLI-013.
-- **Outcome:** Stop hard-coding `detectedFiles: []` (`canary-terminal-projection.ts:251`) and write
-  `task_outputs` from the terminal projection — `createCanaryRunProjector.projectTerminal` has four
-  steps today and none of them writes it.
-- **Acceptance:** A distributed run's produced files reach the task surface the founder reads.
-- **Test:** Projection unit coverage with a fixture carrying a real artifact.
+- **Outcome:** A distributed run's committed artifact reaches the task surface through **the one
+  sanctioned writer**, `jobOutputBridge.projectAcceptedOutput`, which writes the `task_outputs` row
+  **and** its `output_projection` receipt in one tenant transaction **while the attempt's fence is
+  still open**.
+- **The owed design comes first.** The write cannot happen from the terminal projection: the canary
+  projector fires **after** the ingest transaction commits and terminalizes the attempt, and the
+  bridge throws `attempt_terminal` once the fence closes. `job-events.ts` is also one layer too late,
+  because `acceptEvent` does fence-check and append in a single transaction holding the row lock, and
+  the bridge opens its **own** `runInTenant`. The design is one of exactly two shapes: a
+  **transaction-aware callback inside `acceptEvent`**, or a **bridge operation that accepts the
+  existing repository transaction**. Until one is recorded, no file list is meaningful.
+- **Moves a counter:** the receipt-backed output counter (`countProducedOutputs` arm 2,
+  `taskOutputs`). It does **not** move the qualifying-artifact counter (arm 1, link 3).
+- **Acceptance:** `artifact_prepared` and the terminal event ingested **in the same batch** yield one
+  `task_outputs` row with its receipt and no `attempt_terminal` throw. Projection-failure behaviour
+  follows the recorded design; rollback removes the chosen hook.
+- **Test:** That same-batch integration case — it fails against any design that writes from the
+  post-commit hook, which is why it is the one owed.
+- ★ *Corrected: M0's node said "write `task_outputs` from the terminal projection" and sized it
+  (S) — the exact design four review rounds removed. Built from this node, it would have thrown
+  `attempt_terminal` on every projection.*
 
 #### CLI-015 — Unit F link 6, the judge (M)
 
@@ -1073,6 +1115,11 @@ evidence.
   its operator text names only what it actually reads.
 - **Test:** The existing four-mutation corpus extended to the corrected clause, each mutation
   reddening a named row.
+- ★ **Two counters, not one:** arm 1 counts **qualifying artifacts** (moved by link 3); arm 2 counts
+  **receipt-backed outputs** (moved by link 5). Both bind to the run's **attempt**, not its job
+  (`e7-distributed-run-verifier-store.ts`: *"BOTH ARMS BIND TO THE RUN'S ATTEMPT, NOT ITS JOB
+  (E7-F031)"*). The store's *"DO NOT MAKE THIS CONSISTENT"* warning is about the **secret scanner vs
+  the capability counter**, not the two arms.
 
 #### CLI-016 — Unit C slice 5: arm the tool surface (M)
 
@@ -1083,7 +1130,10 @@ evidence.
 - **Acceptance:** A distributed run in which the agent invokes an AoA tool and the call is authorized
   by the run's own identity.
 - **Test:** A keyed real-E2B case asserting a tool call reaches AoA, with a negative control on an
-  unauthorized run id.
+  unauthorized run id **and** on an expired lease.
+- ★ **Currency is enforced at USE — MCP authorization and redemption — not at mint.**
+  `mintRunJwtHandleForPlacement` takes no lease or clock input, so an arming ticket cannot add a
+  mint-time check; the observable is denial at use.
 
 ### E8 — Browser automation
 

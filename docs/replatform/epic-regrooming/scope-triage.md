@@ -243,7 +243,7 @@ claim, and unlocks only `M1a`.
 | **M2-RTF** | Realtime foundation | reconnect-safe realtime, proven on one revision | **`E10-REALTIME-FOUNDATION`** | M1b *(its three input tickets are already shipped)* |
 | **M3** | Workload breadth | browser and service workloads run distributed | full **D3** + full **D4** | M2 **and `E10-REALTIME-FOUNDATION`** |
 | **M4** | HA and disaster recovery | two replicas preserve correctness; a measured restore | full **D5** | M3 |
-| **M5** | Private beta | three external Organizations, all workloads, 14 days | full **D6** → **E11 exit** | M4 |
+| **M5** | Private beta | three external Organizations, all workloads, 14 days | full **D6** → **E11 exit** → **program integration checkpoint** (merge to `main`) | M4 |
 
 ### `M0` — record and lane health
 
@@ -263,10 +263,25 @@ produce one. `E6-F021` is the worked example: the `E6-D1-FOUNDATION` lane was re
 deleted upstream image and the consumer built to report that could not see it.
 
 **Exit.** `d1-merge-train` and every keyed lane green or explicitly quarantined with an owner; the
-DEP-013 consumer reporting zero unowned findings; disposition-A record corrections landed; a
+DEP-013 consumer reporting zero unowned findings — ★ *where a finding is on a stream that can only
+run from `main`, it is satisfied by being recorded **blocked on the program integration checkpoint,
+with a named owner**, not by clearing (founder ruling 2026-09-21; see below)*; disposition-A record corrections landed; a
 successor filed for `E7-F007` so `MIG-010` can carry a result (**D-10**); **and an approved,
 candidate-current result for every disposition-B ticket — `TRACK-001`, `TRACK-002`, `DAT-011`,
 `DEP-008`, `WRK-017`, and `MIG-009`'s evidence-currency record** (its trigger build is `M1a`'s).
+
+★★★ **A SCHEDULED LANE CANNOT BE CLEARED FROM THE PROGRAM BRANCH, and criterion 2 as first written
+did not know that.** *Added 2026-09-21 after M0 executed; founder ruling "blocked, with owner".*
+GitHub runs `schedule` triggers **only from the default branch**, so a `cadence`-mode stream such as
+`cross-platform-weekly.yml@main` executes `main`'s copy of the workflow. `docs/replatform-program`
+is **not** an ancestor of `main` and, by the LOCKED integration strategy
+(`program-design.md` §*Integration branch and PR strategy*), does not reach it until the **program
+integration checkpoint**. A fix landed on the program branch therefore **cannot** change that
+stream's verdict inside M0 — or inside any milestone before the checkpoint. Such a finding is
+recorded **blocked on the integration checkpoint** with a named owner, which satisfies criterion 2
+the same way "quarantined with an owner" satisfies criterion 1. It is **not** cleared, and it is
+**not** evidence that the lane is healthy: see `E6-F023`, under which a green run of that lane
+does not imply its tests passed.
 
 ★ That enumeration is B in full: B has **eight** members. `DEP-013` is named by its own clause
 above (the consumer). **`MIG-010` owes an approved result too, and M0 does not exit without it** —
@@ -444,6 +459,19 @@ exists to catch.
 
 ### `M5` — private beta
 
+★★★ **M5 IS WHERE THE PROGRAM BRANCH REACHES `main`, and this is a LOCKED decision, not a new one.**
+*Pinned 2026-09-21.* `program-design.md` §*Integration branch and PR strategy (LOCKED)*: *"No
+per-epic PRs and no per-epic merges to `main`"*; *"Merge to `main` happens only at the program
+integration checkpoint (governed by the Release/gate policy), never per epic."* The milestone
+sequence never said which milestone that checkpoint is. It is the end of the programme — after the
+E11 exit, which is the release gate. Nothing before M5 merges to `main`.
+
+★ **Consequences to plan around, not to fix early:** (1) any lane that runs only on `schedule`
+measures `main`'s code, not the program branch, for the whole programme — cross-platform health of
+the program branch is unmeasured by schedule until then, and needs a `workflow_dispatch` or push
+trigger on `docs/replatform-program` if it is wanted sooner; (2) `release.yml` and `docker.yml` run
+only from `main`, so no re-platform artifact is published before the checkpoint.
+
 **Scope.** `REL-001`, `REL-002`, `REL-005` — none of which has a ticket file today — plus the D6
 campaign itself.
 
@@ -520,10 +548,18 @@ and the output capability `M1a` exists to defer, so an `M1a` candidate could nev
 same defect the recovery order had, one document further up, and splitting only the exits did not
 cure it.
 
+★★★ **`M1a`'s FIRST ENTRY BLOCKER IS `EVID-04`.** *Added 2026-09-21.* M0 needed no milestone QA
+record — its row names no gate — so `EVID-04` did not block it. `M1a` names two gates
+(`M1-D1-SPINE`, `M1a-D2-MECHANISM`) and owes their QA records under
+`docs/replatform/milestones/M1a/qa/`, a path `test-gates.md` `EVID-04` does not permit
+(*"Use `docs/replatform/epics/<epic>/qa/…`"*). Amending a gate is a **gate-owner action**. Until
+it is amended, `M1a` cannot file a conforming gate record and so cannot pass. `M2-RTF` is blocked
+the same way.
+
 ★ **`M1a` entry — THE EXACT DEFERRED SUBSET IS `tools` AND `output`.** The **adapter**,
 **workspace**, **audit/cost** and **cleanup** paths must be enabled for the named internal
 Organization; the **tools** and **output** paths need not be. `M1a` is satisfied by a run reporting
-`capabilityProven=false`, and the tool surface is armed by `CLI-016` (was `CLI-008-C5`), which is an **`M1b`**
+`capabilityProven=false`, and the tool surface is armed by `CLI-016` (was `CLI-016`), which is an **`M1b`**
 ticket — so requiring tools at `M1a` entry would make the checkpoint depend on `M1b` work. Workspace
 staging IS required: the `M1a` journey stages input. The required-ticket bullet is scoped to
 **`M1a`'s own required result set**, not to every E3–E7 ticket. Every other bullet applies to both
@@ -613,21 +649,21 @@ Ticket shipment or an earlier mechanism run cannot substitute for items 2–9. P
 > **`M1b` required result set:** `CLI-010`, **`CLI-011`**, `CLI-012`, `CLI-013`, `CLI-014`, `CLI-015`, `CLI-016`, `DAT-009-3c`, `DAT-009-3d`, `DAT-009-3e`.
 > ★★★ **RENUMBERED 2026-09-21 (M0 unit 4, founder decisions D1 + D5) — the ids changed, the
 > set did not.** *Superseded text: `CLI-008-F1a`, `CLI-008-F1b`, `CLI-008-F3`, `CLI-008-F4`,
-> `CLI-008-F5`, `CLI-008-F6`, `CLI-008-C5`.* Those link-scoped ids **cannot be expressed to the
+> `CLI-014`, `CLI-015`, `CLI-016`.* Those link-scoped ids **cannot be expressed to the
 > guards**: `check-finding-ownership.mjs:423` tests an exact `tickets.has(entry.ticket)` and
-> `findTicketIds` (`:50`) derives ids from filenames with `/^([A-Z]+-\d+)/`, so `CLI-008-F1a`
-> resolves to nothing — and a `CLI-008-F1a-result.md` resolves to **`CLI-008`**, marking the
+> `findTicketIds` (`:50`) derives ids from filenames with `/^([A-Z]+-\d+)/`, so `CLI-010`
+> resolves to nothing — and a `CLI-010-result.md` resolves to **`CLI-008`**, marking the
 > parent shipped and orphaning every finding it owns. This enumeration is corrected because it
 > is the **mechanically checkable artefact**: a coverage check reads the list, not the prose —
 > the same reason `CLI-008-F1b` was added to it in the twelfth round. The full old→new mapping
 > is in `program-design.md`, immediately before the `CLI-010` node.
-> ★★★ *`CLI-008-F1b` added to the LIST twelfth round: the sentence after it already said its result
+> ★★★ *`CLI-011` added to the LIST twelfth round: the sentence after it already said its result
 > is required and mandatory before `M1b` passes, while the enumeration omitted it — and the
 > enumeration is the mechanically checkable artefact. A coverage check reads the list, not the
 > prose, so this inconsistency would have let the output-mechanism design review be dropped by
-> exactly the kind of automated check written to prevent that.* ★★★ **`CLI-008-F1b`'s result IS in the `M1b` set** — it is
+> exactly the kind of automated check written to prevent that.* ★★★ **`CLI-011`'s result IS in the `M1b` set** — it is
 > **design-only as to BUILD** (no build may be assigned from it), but its
-> `CLI-011-result.md` (was `CLI-008-F1b-result.md`) is required and must be **approved before `M1b` passes**.
+> `CLI-011-result.md` (was `CLI-011-result.md`) is required and must be **approved before `M1b` passes**.
 > *Corrected 2026-09-20 (eighth round): an earlier revision listed F1b as “not in either set”, which
 > read as exempting its record. But the E7 plan requires that result by name, exit criterion 4
 > depends on F1b, and `F6` cannot proceed without its founder ruling — so `M1b` could have passed on
