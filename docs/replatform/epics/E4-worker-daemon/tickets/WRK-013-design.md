@@ -1,7 +1,9 @@
 # WRK-013 — A durable lease-candidate source for the startup reconciler (E4-F009 successor)
 
 **Epic:** E4 · **Plan node:** `docs/replatform/program-design.md`, `#### WRK-013`
-**Depends on:** WRK-008 slice 2b · **Size:** (scope only) · **Status:** scoping
+**Depends on:** WRK-008 slice 2b, WRK-007 · **Size:** M · **Status:** `design` — task defined, not built
+(★ *was `scoping`, and **Size:** (scope only); changed 2026-09-21 at M1 Step 0, S0-3, when the task was
+written into the E4 implementation plan §4c against founder rulings F4 and F5*)
 **Owns:** finding **E4-F009** (`epics/E4-worker-daemon/findings.md`)
 
 ---
@@ -41,7 +43,32 @@ prior state rather than `[]`. Then compose `createStartupReconciler` at boot, co
 When a composed daemon runs leases for real (post-Sprint-5) and a restart mid-lease is a real
 operational event whose recovery must be proven. E4-F009 stays **open** (MED) until then.
 
+## The two founder rulings this ticket builds against (2026-09-21)
+
+Both are recorded in `docs/replatform/qa/2026-09-21-m1-execution-plan.md` §2 and were ruled as
+recommended. They settle the two questions a restart-reconciler design could not settle alone.
+
+- **F5 — a candidate the probe finds live is FENCED, not kept.** The reconciler's lease-authority
+  probe (`probeLeaseAuthority` in `supervisor/startup-reconcile.ts`) calls `renewLeaseOnce` and maps
+  a successful renewal to `live` (`livenessOf`) — so a "live" verdict is itself a renewal. WRK-007's
+  decision D2 (`WRK-007-design.md` §4: "NEVER re-attach") forbids re-attaching to a sandbox after
+  restart, and today the reconciler's `keep` disposition leaves such a sandbox in place. Keeping the lease renewed with no supervisor
+  behind it is the worst of the three options, so the daemon **stops renewing** such a lease and
+  lets the control plane's lease reaper (`reapExpiredLeases`, run by `createJobReconciliationService`
+  in `server/src/services/job-reconciliation.ts`) end the attempt.
+- **F4 — the container-path narrowing, accepted and NAMED.** On the container path a restarted daemon
+  cannot enumerate orphan sandboxes: it has no process-level provider, only a per-run
+  `makeRunProvider`, and the networked `list` is capability-gated, and that capability has lapsed.
+  So no worker-side teardown runs there, and orphan reclamation rests on the adapter-manager reaper
+  (`reconcileReaper` in `packages/adapter-manager/src/reconcile-reaper.ts`, looped by
+  `startReaperLoop`). **This is a real narrowing of journey item 8's "cleanup/recovery" clause, not a
+  residual.** Its owner is **`WRK-013`**, which records it in its result and in the `M1a` gate
+  records; M1 plan §8 lists the worker-side pass on the container path as out of M1 scope.
+
 ## Status
 
-Scoping stub. No design steps and no result doc yet — deliberately. Its full design is written at
-that sprint's start.
+★ *Superseded text: "Scoping stub. No design steps and no result doc yet — deliberately. Its full
+design is written at that sprint's start."*
+
+The task is written: `docs/replatform/epics/E4-worker-daemon/implementation-plan.md` §4c, `WRK-013`
+(M1 Step 0, S0-3, 2026-09-21). No result doc yet; a distinct reviewer alone sets `complete`.

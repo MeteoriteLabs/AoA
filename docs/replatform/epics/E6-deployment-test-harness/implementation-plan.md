@@ -368,6 +368,11 @@ code, test count, duration, platform, and exact revision.
 | DEP-002 | **Local (static):** `Invoke-NativeGate 'DEP-002 compose-config' { node scripts/check-d1-compose.mjs; node --test scripts/lib/__tests__/d1-compose-invariants.test.mjs }`. **Linux/CI only (compose up):** `Invoke-NativeGate 'DEP-002 topology' { node --test tests/d1/network-denial.test.mjs tests/d1/fake-provider-job.test.mjs }` |
 | DEP-003 | **Local (pure):** `Invoke-NativeGate 'DEP-003 preflight' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/cutover-0188-preflight.test.ts src/__tests__/readiness-liveness.test.ts }`. **Local (embedded PG):** `Invoke-E3Integration { Invoke-NativeGate 'DEP-003 db' { pnpm --filter @armyofagents/db exec vitest run src/__tests__/distributed-cutover-marker-schema.integration.test.ts src/__tests__/migration-idempotency.test.ts }; Invoke-NativeGate 'DEP-003 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/migration-readiness.integration.test.ts src/__tests__/migration-rollback-startup.integration.test.ts } }` |
 | DEP-004 | **Local (pure):** `Invoke-NativeGate 'DEP-004 ci-lanes' { node scripts/check-ci-lanes.mjs; node --test scripts/lib/__tests__/ci-lanes.test.mjs scripts/lib/__tests__/d1-evidence-bundle.test.mjs }`. **Linux/CI only:** the `d1-merge-train.yml` deliberate-failing-fixture proof + evidence-artifact retention. |
+| DEP-014 | **Local (pure):** `Invoke-NativeGate 'DEP-014 admission' { node --test scripts/lib/__tests__/image-admission.test.mjs }`. **Linux/CI only (docker):** the `d1-merge-train` job that builds, signs and admits all three images; the evidence is that job, cited by job name. |
+| DEP-015 | **Local (pure):** `Invoke-NativeGate 'DEP-015 staging manifest' { node scripts/check-staging-manifest.mjs; node --test scripts/check-staging-manifest.test.mjs scripts/lib/__tests__/staging-manifest.test.mjs }; Invoke-NativeGate 'DEP-015 boot shape' { node scripts/check-m1-shipped-boot-shape.mjs; node --test scripts/check-m1-shipped-boot-shape.test.mjs }` (the shape guard is **created** by the ticket). **Linux/CI only, keyed (F8):** one `workflow_dispatch` of `m1-shipped-boot.yml` on a named candidate. |
+| DEP-016 | **Local (static):** `Invoke-NativeGate 'DEP-016 compose' { node scripts/check-d1-compose.mjs; node --test scripts/lib/__tests__/d1-compose-invariants.test.mjs }`. **Linux/CI only (docker):** `AOA_D1_LIVE=1 node --test tests/d1/m1-spine.test.mjs` inside the `d1-merge-train` job with `AOA_D1_CAMPAIGN=m1-spine`, plus the usage-suppressed positive-control run; the evidence is the retained on-pass bundle. |
+| DEP-017 | **Local (pure):** the probe's unit test (created by the ticket). **Linux/CI:** the probe observed inside the `DEP-016` profile run and the `DEP-015` lane, plus the planted-canary positive-control run. |
+| DEP-018 | **Local (pure):** `Invoke-NativeGate 'DEP-018 matrix' { node scripts/check-campaign-fault-matrix.mjs; node --test scripts/check-campaign-fault-matrix.test.mjs }` (created by the ticket). **Linux/CI only (docker):** `AOA_D1_LIVE=1 node --test tests/d1/m1-fault-matrix.test.mjs` per profile; the evidence is one injection-fired line per declared case. |
 
 ---
 
@@ -895,6 +900,337 @@ recorded.
 
 **Evidence / commit:** `tickets/DEP-008-B1-result.md`; one documentation commit
 `docs(e6): re-measure the sandbox isolation conformance suite on the M0 candidate`.
+
+---
+
+## 4c. M1a tasks — filed at M1 Step 0 (S0-3)
+
+*Filed 2026-09-21 from `docs/replatform/qa/2026-09-21-m1-execution-plan.md` §4 (founder-approved,
+F10 overruled to **multi-tenant**). Every file path below was checked to exist at the program tip
+`1cc7e2fdb`, or is marked **create**. Line numbers are hints; re-find by symbol. §3's protocol
+applies: a distinct reviewer alone sets `complete`.*
+
+★ **What these replace.** `scope-triage.md`'s `M1a` result set carried two rows with no id —
+*"DEP-011's remaining deploy half"* and *"the parity bridges + the usage producer"* — and a
+campaign that no ticket owned. `DEP-014` + `DEP-015` are the deploy half; `DEP-016`, `DEP-017` and
+`DEP-018` are the campaign's harness. **The daemon consumer is not among them because it is built:**
+`packages/worker-networked-host/src/bin/networked-host.ts` (DEP-011 Slice 2b-ii) ships inert.
+
+★★★ **M1 IS MULTI-TENANT (founder ruling F10).** Every campaign runs **at least three
+Organizations**: two enabled through the existing per-Organization rollout policy
+(`AOA_DISTRIBUTED_EXECUTION_ROLLOUT`, parsed by `parseDistributedExecutionRolloutMap` in
+`server/src/config/distributed-execution-rollout-source.ts`) and one **not** enabled, as the control.
+Isolation runs through the non-owner `aoa_app` pool with RLS, which flag-on already provisions
+(`maybeProvisionDistributedExecutionRoles` in `server/src/index.ts`). No lane, fixture or profile
+in this section may seed a single Organization. The live D1 tenancy suite
+`tests/d1/e6f-04-tenancy.test.mjs` is the existing precedent to build on.
+
+**Registration rules these tickets inherit (each one reds `policy` if skipped):** a new workflow file
+needs an entry in `scripts/workflow-verdict-manifest.json` (DEP-013's consumer; every declared branch
+its own); a new `*.test.mjs` needs a `runs`/`unrun` declaration in `scripts/test-execution-census.json`
+(TRACK-002); a new guard is declared in `scripts/guard-inventory.json` and wired into the `policy` job;
+only `ci-required` is a required check (`scripts/lib/ci-lanes.mjs`), so no new job becomes one.
+
+### DEP-014 — The adapter-manager image in the signed image build, pushed by CI (M, ≤3 agent-days, M1a)
+
+**Depends on:** DEP-001 and DEP-012 (shipped).
+
+**Current state, measured:** `build_one()` in `docker/images/build.sh` builds **two** images —
+`control-plane` (`docker/control-plane/Dockerfile`) and `worker` (`docker/worker/Dockerfile`) —
+with `--provenance=true --sbom=true`, writing `docker/images/<name>.metadata.json` and appending to
+`docker/images/digests.env`. `docker/images/sbom.sh`, `sign.sh` (test-root signing into
+`docker/images/allowlist.json` via `scripts/lib/image-admission.mjs`) and `provenance.sh` follow.
+`docker/adapter-manager/Dockerfile` exists, but the **only** build of it is
+`.github/workflows/deploy-replatform-campaign.yml` (`docker build … -f docker/adapter-manager/Dockerfile
+-t aoa-adapter-manager:campaign`), which is `workflow_dispatch` to the operator's staging host.
+`docker-compose.staging.yml` names `aoa-adapter-manager:staging` for a service nothing builds in CI,
+and `docker-compose.d1.yml` has no adapter-manager service.
+
+**Outcome:** the adapter-manager is a third image in the same signed build — digest, SBOM, provenance,
+admission — pushed by CI, and the D1 train builds it on every run. Nothing is deployed by this ticket.
+
+**Acceptance:**
+1. `build.sh` emits an adapter-manager digest, metadata, SBOM and admission entry beside the other two.
+2. Admission (`scripts/verify-image-admission.mjs`) rejects a tampered or unsigned adapter-manager
+   digest — the **positive control**.
+3. Image-content assertions: no `E2B_API_KEY` baked in, no server/UI/database tooling, non-root; the
+   provider SDK is present only in the adapter-manager image (matching
+   `checkProviderControlBoundary` in `scripts/lib/staging-manifest-invariants.mjs`).
+4. `d1-merge-train.yml` builds the image on every run it runs.
+
+**Ticket non-goals:** booting the adapter-manager (that is `DEP-015`); the control-plane keypair;
+mTLS on worker→adapter-manager (M1 plan §8); release-root signing (REL-004).
+
+**Files:** `docker/images/build.sh`, `docker/images/sbom.sh`, `docker/images/sign.sh`,
+`docker/images/provenance.sh`; `docker/adapter-manager/Dockerfile` only if an image-content assertion
+reds; `.github/workflows/d1-merge-train.yml` (build step); the image-content and admission tests the
+D1 lane already runs for the two existing images, extended to three (`scripts/verify-image-admission.mjs`,
+`scripts/check-release-admission.mjs`).
+
+**Interfaces:** `digests.env` gains an `ADAPTER-MANAGER_IMAGE` key in the existing `${name^^}` form;
+consumers read it by that key.
+
+**Failure behavior:** a failed build or admission fails the lane; no fallback to an operator-built
+image.
+
+**Migration/compatibility / rollback:** CI-only; revert the build step.
+
+**Observability:** the digest, SBOM and admission record in the lane's evidence.
+
+**Focused verify command:** see the `DEP-014` row in §3.
+
+**RED → GREEN:** RED — the admission check for an adapter-manager digest fails today (no entry);
+positive control — a tampered digest is refused; GREEN — all three images built, signed and admitted
+in one D1 run.
+
+**Evidence / commit:** `tickets/DEP-014-result.md` citing the D1 job (not only the run id); one commit
+`ci(images): build, sign and admit the adapter-manager image`.
+
+---
+
+### DEP-015 — The shipped CI boot lane (M, ≤3 agent-days, M1a)
+
+**Depends on:** `DEP-014`; DEP-011 (the consumer, built); founder ruling **F3** — ruled 2026-09-21,
+which is this ticket's specification. **Keyed:** yes, inside the F8 envelope.
+
+**F3, verbatim in substance:** a **dispatch-only** CI job, never on push, bound to a named candidate,
+that on the frozen candidate **builds** the control-plane, worker and adapter-manager images from
+source and boots them together with a **CI-generated control-plane keypair**. The journey then runs in
+that boot, in a keyed lane. **Not** the operator campaign deploy. Boot-only is too weak: the gate asks
+for a journey.
+
+**Current state, measured:** `checkDispatchDefaultOff` (`scripts/lib/staging-manifest-invariants.mjs`)
+rejects any worker service that declares `AOA_WORKER_DISPATCH_ENABLED`, `AOA_WORKER_SANDBOX_PROVIDER`
+or `AOA_WORKER_PROVIDER_URL` (`DISPATCH_SWITCH_ENVS`) as a "DISPATCH-DEFAULT VIOLATION". The
+consumer bin exists (`networked-host.ts`, which reads `AOA_WORKER_PROVIDER_URL` through
+`resolveProviderUrl`) and runs only in the operator's `docker/campaign/docker-compose.campaign.yml`.
+**No workflow runs `pnpm verify:e7-1-distributed-run`** (`server/src/cli/verify-e7-1-distributed-run.ts`);
+it is run by hand today. The adapter-manager bin fail-closes without the control-plane public key.
+
+**Outcome:** **create** `.github/workflows/m1-shipped-boot.yml` — `on: workflow_dispatch` only, with
+a required candidate input — that checks out the candidate, builds the three images from its source,
+generates a control-plane keypair inside the job, boots the stack with a **worker provider-URL
+overlay** (**create** an overlay compose file beside `docker-compose.staging.yml`) that runs
+`networked-host.js` with `AOA_WORKER_PROVIDER_URL` set, seeds the F10 Organization set through the
+rollout policy, runs the journey, and runs `pnpm verify:e7-1-distributed-run` on a run it executed.
+`checkDispatchDefaultOff` is amended **for that overlay only**.
+
+**Acceptance:**
+1. One dispatched run on a named candidate builds all three images from that candidate, boots them,
+   runs the journey and records the verifier's verdict; `capabilityProven=false` is acceptable for
+   `M1a` (the verdict recorded is the mechanism verdict).
+2. The keypair exists only inside that job and appears in no artifact or log.
+3. The default-off invariant still reds on **every** manifest except the overlay — **positive
+   control**: the same env on the base `docker-compose.staging.yml` reds.
+4. A workflow-shape guard proves the job cannot run on `push`/`pull_request`/`schedule` and refuses
+   to start without a candidate input; the guard itself has a positive control (a re-added `push`
+   trigger reds it).
+5. Keyed spend happens only inside the F8 envelope, on a named candidate.
+6. **Multi-tenant (F10):** the boot seeds two enabled Organizations and one control Organization;
+   the journey runs for each enabled tenant; the control tenant's run stays on the legacy path.
+
+**Ticket non-goals:** the operator campaign deploy (unchanged); mTLS worker→adapter-manager (M1 plan
+§8, a named residual); promoting `E7-1-coding-journey` (that is `E7-1-JOURNEY-ARM`, which consumes
+this lane's run); a required check.
+
+**Files:** **create** `.github/workflows/m1-shipped-boot.yml`; **create** the worker provider-URL
+overlay compose file; `scripts/lib/staging-manifest-invariants.mjs` (the scoped amendment) and
+`scripts/check-staging-manifest.test.mjs` (its positive control); **create**
+`scripts/check-m1-shipped-boot-shape.mjs` + its `.test.mjs` (the workflow-shape guard, declared in
+`scripts/guard-inventory.json` and wired into `policy`); `scripts/workflow-verdict-manifest.json`
+(the new workflow's entry); `scripts/test-execution-census.json` (the new `.test.mjs`).
+
+**Interfaces:** the workflow's `candidate` input; the overlay's env contract
+(`AOA_WORKER_PROVIDER_URL`, the control-plane public key path).
+
+**Failure behavior:** any build, admission, boot or verifier failure fails the job with evidence
+retained; the job never falls back to a pre-built image.
+
+**Migration/compatibility / rollback:** CI and manifests only; delete the workflow and the overlay.
+
+**Observability:** retained evidence on pass and fail — image digests, boot logs (redacted), the
+verifier's RESULT line and exit code.
+
+**Focused verify command:** see the `DEP-015` row in §3.
+
+**RED → GREEN:** RED — the scoped amendment's positive control (base manifest still reds) and the
+shape guard's positive control; GREEN — both guards and the staging-manifest self-test pass, then one
+dispatched keyed run recorded as the acceptance evidence.
+
+**Evidence / commit:** `tickets/DEP-015-result.md` citing the dispatched job; commits
+`ci(m1): a dispatch-only shipped CI boot lane` and the guard commit.
+
+---
+
+### DEP-016 — The `m1-spine` campaign profile on the D1 compose (M, ≤3 agent-days, M1a)
+
+**Depends on:** `JOB-016` and `JOB-017` merged; DEP-004 (shipped).
+
+**Current state, measured:** `d1-merge-train.yml` runs `docker-compose.d1.yml` — postgres, minio,
+toxiproxy, migrate, two control-plane replicas, `worker-a`, `worker-b`, `fake-provider`,
+`test-runner`. Evidence is collected (`scripts/collect-d1-evidence.mjs`) and uploaded **only under
+`if: failure()`**. The campaign scope is `AOA_D1_CAMPAIGN=bounded|foundation` in
+`docker/d1/campaign.env`; there is **no `m1-spine` scope**. The fake provider
+(`packages/sandbox-fake-provider`, served by `docker/d1/fake-provider-entry.mjs`) replays fixture
+`expectedEvents` from `tests/fixtures/distributed-execution/*.json`; it has **no usage-specific
+code**, so canned usage must be a scripted `usage` event in a fixture (the protocol's
+`usagePayloadV1Schema`), verified before relying on it.
+
+**Outcome:** an `m1-spine` profile: one worker, evidence retained **on pass**, the reference provider
+emitting **canned usage**, and assertions that each priced attempt produced exactly one `cost_events`
+row with cost > 0 and the named audit rows. It is the harness the `M1-D1-SPINE` gate record is made
+from, including the rollback rehearsal through the `MIG-009` CLI.
+
+**Acceptance:**
+1. A passing profile run retains its evidence bundle.
+2. Per priced attempt: exactly one `cost_events` row with cost > 0 and one `authoritative_cost`
+   receipt; the named audit rows present.
+3. **Positive control:** the same profile with usage suppressed **reds**. Without it, the spine prices
+   nothing and still passes.
+4. **Multi-tenant (F10):** three Organizations — two enabled, one control; the journey, audit and
+   `cost_events` attribution are asserted **per enabled tenant**; the control tenant is refused
+   distributed execution and stays on the legacy path.
+
+**Ticket non-goals:** the fault matrix (`DEP-018`); real E2B; changing the `foundation`/`bounded`
+scopes.
+
+**Files:** `docker/d1/campaign.env` and `.github/workflows/d1-merge-train.yml` (the `m1-spine`
+scope and on-pass retention); `docker-compose.d1.yml` (one-worker topology, via profile or
+override); **create** a canned-usage fixture under `tests/fixtures/distributed-execution/`;
+**create** `tests/d1/m1-spine.test.mjs` (declared in `scripts/test-execution-census.json`);
+`tests/d1/lib/e6f-harness.mjs` for shared helpers; `scripts/collect-d1-evidence.mjs` if on-pass
+collection needs it.
+
+**Interfaces:** the `m1-spine` scope value; the fixture's `usage` event.
+
+**Failure behavior:** a missing cost row, a zero-cost row or a missing audit row fails the profile.
+
+**Migration/compatibility / rollback:** CI and fixtures only; the existing scopes are untouched.
+
+**Observability:** the retained bundle: per-tenant cost, receipt and audit rows.
+
+**Focused verify command:** see the `DEP-016` row in §3.
+
+**RED → GREEN:** RED — the profile against a tree without `JOB-016`'s registration (no cost row);
+positive control — usage suppressed reds; GREEN — the profile passes on the candidate and retains
+evidence.
+
+**Evidence / commit:** `tickets/DEP-016-result.md` citing the D1 job; one commit
+`test(d1): an m1-spine campaign profile with priced canned usage`.
+
+---
+
+### DEP-017 — A live env-absence probe on the distributed stage-in path (M, ≤3 agent-days, M1a)
+
+**Depends on:** DEP-008 and DAT-008 (shipped); founder ruling **F9** — build it (ruled 2026-09-21).
+
+**Current state, measured:** `E8-F012` (HIGH, `unowned`, `docs/replatform/epics/E8-browser-automation/findings.md`)
+records that DE-08's confidentiality now rests on the credential taxonomy and that no CI-run test
+checks it on every sandbox stage-in path. **No env-absence probe exists** (no code matches it). The
+closest checks are allow-list unit tests: `buildSandboxEnvAllowlist`
+(`packages/adapter-utils/src/sandbox-env-allowlist.ts`), `server/src/__tests__/commander-sandbox-env-allowlist.test.ts`
+and `server/src/__tests__/sandbox-env-allowlist-interlock.test.ts`. They check what is **built**, not
+what a sandbox **observes**.
+
+**Outcome:** a probe that runs **inside** a distributed sandbox after stage-in and reports which
+credential classes are present in its environment (names and classes only, never values), used by
+the campaign profiles to observe criterion 5. It closes `E8-F012`'s gap **for the M1 distributed path
+only**. It does not make DE-08 meet H-06; the reviewers' acknowledgement that H-06 is still unmet is
+part of every record that cites the probe.
+
+**Acceptance:**
+1. On a clean run the probe reports absence, naming every variable class it checked.
+2. **Positive control:** a canary credential planted in the stage-in path turns the probe **red**.
+3. The probe's output passes through the per-run canary redaction before it leaves the worker.
+4. **Multi-tenant (F10):** the probe runs for each enabled tenant, and another tenant's credential is
+   one of the planted cases.
+
+**Ticket non-goals:** the metadata-endpoint half of `E8-F012` (`169.254.169.254`) unless it is cheap
+to include — if left out, the record says so; a DE-08 amendment; non-distributed stage-in paths
+(Commander, warm resume) — named as outside the M1 claim.
+
+**Files:** **create** the probe (a small script staged into the sandbox, under
+`packages/worker-daemon/src/` or `tests/fixtures/distributed-execution/`, decided and recorded);
+**create** its unit test; the campaign profiles that invoke it (`DEP-016`'s `tests/d1/m1-spine.test.mjs`
+and the `DEP-015` lane); `scripts/test-execution-census.json`; an ownership update for `E8-F012` in
+`scripts/finding-ownership.json` narrowed to the M1 path, with its reason.
+
+**Interfaces:** the probe's report: `{checked: string[], present: string[]}` of class names.
+
+**Failure behavior:** any present credential class fails the run; a probe that did not run fails the
+run (a check that nothing runs is not a check).
+
+**Migration/compatibility / rollback:** test/harness only.
+
+**Observability:** the report in the retained evidence.
+
+**Focused verify command:** see the `DEP-017` row in §3.
+
+**RED → GREEN:** RED — the planted-canary positive control; GREEN — a clean run reports absence, per
+tenant.
+
+**Evidence / commit:** `tickets/DEP-017-result.md`; one commit
+`test(e6): a live env-absence probe on the distributed stage-in path`.
+
+---
+
+### DEP-018 — Campaign fault matrix and injection harness, per gate profile (M, ≤3 agent-days, M1a)
+
+**Depends on:** `DEP-016`, `DEP-015`, `WRK-013`; DEP-005 (shipped).
+
+**Current state, measured:** Toxiproxy runs in D1 (`docker-compose.d1.yml`, configured by
+`docker/d1/toxiproxy.json`: control-plane→postgres, worker→control-plane, worker→control-plane-b,
+worker→minio), and faults are injected through `setToxiproxyToxic`, `removeToxiproxyToxic`,
+`setProxyEnabled` and `probeProxyReachable` in `tests/d1/lib/e6f-harness.mjs`, used by
+`e6f-05-live-minio`, `e6f-09-lease-faults` and `e6f-11-two-replica`. **No declared, per-profile
+matrix exists**, and no record proves an injection fired.
+
+**Outcome:** a committed, declared fault matrix — per gate profile, each case with its expected
+classification — a checker that refuses an undeclared or unevidenced case, and the harness that
+injects each case:
+- **`M1-D1-SPINE`:** the journey's fault controls (Toxiproxy), restart and reconciliation
+  (`WRK-013`), cancellation.
+- **`M1a-D2-MECHANISM`:** cancellation, provider failure, reconciliation, every cleanup path.
+- **`M1-D2-CODING`:** all of that plus the credential cases.
+- **Every profile — the F10 tenant matrix:** per-tenant journey correctness for each enabled
+  tenant; cross-tenant denial — A cannot lease, read, cancel or see B's jobs, events, secrets, staged
+  inputs, outputs, cost rows or tool calls; refusal of the control tenant.
+
+**Acceptance:**
+1. Every declared case has a run showing **its injection fired** and the observed classification
+   matching the expected one; a case whose injection did not fire is a failure, not a pass.
+2. Every cross-tenant denial is **denied, not merely empty**, through the non-owner `aoa_app` pool
+   with RLS, and has a **positive control**: the same request by the owning tenant succeeds.
+3. The control tenant is refused distributed execution and stays on the legacy path.
+4. The checker reds on an undeclared case, a case with no injection evidence, or a profile missing
+   the tenant matrix (its own positive controls).
+
+**Ticket non-goals:** HA/replica failover (M4); load/fairness (REL-002); desktop or browser faults.
+
+**Files:** **create** `tests/d1/fault-matrix.json` (the declaration) and
+`scripts/check-campaign-fault-matrix.mjs` + its `.test.mjs` (declared in `scripts/guard-inventory.json`);
+**create** `tests/d1/m1-fault-matrix.test.mjs`; `tests/d1/lib/e6f-harness.mjs` (injection helpers);
+`docker/d1/toxiproxy.json` if a new link is needed; the `DEP-015` workflow for the D2 profiles;
+`scripts/test-execution-census.json`.
+
+**Interfaces:** the matrix schema: `{profile, case, injection, expectedClassification, tenantCase?}`.
+
+**Failure behavior:** an unfired injection, a mismatched classification, or an empty-rather-than-
+denied cross-tenant result fails the profile.
+
+**Migration/compatibility / rollback:** test/harness only.
+
+**Observability:** a per-case evidence line (injection fired, classification observed) in each
+retained bundle.
+
+**Focused verify command:** see the `DEP-018` row in §3.
+
+**RED → GREEN:** RED — the checker's positive controls; RED — each cross-tenant denial against a
+deliberately unscoped fixture read; GREEN — every case fired and classified on the candidate, per
+profile.
+
+**Evidence / commit:** `tickets/DEP-018-result.md` citing the jobs; commits
+`test(d1): a declared campaign fault matrix with injection evidence` and the checker commit.
 
 ---
 

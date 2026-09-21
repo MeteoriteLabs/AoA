@@ -19,6 +19,20 @@ transitive); no `adapter-utils`; no server/db/shared/drizzle.
 
 **Status:** `open` · Severity: HIGH (cross-plan seam; mirrors E4-F002).
 
+> ★★★ **THE TITLE IS STALE — THE WIRE IS SPECIFIED AND BUILT. Corrected 2026-09-21 (M1 Step 0,
+> S0-4), verified at source; the title is kept because it is the finding's name.** The
+> request/response wire now exists end to end: the driver `packages/provider-wire/src/driver.ts`
+> (codec and capability in the same package), the server `createProviderServer` in
+> `packages/adapter-manager/src/server.ts` with its gated owned-op routes, and the worker-side
+> container root `packages/worker-networked-host/src/bin/networked-host.ts` (DEP-011 Slice 2b-ii,
+> commit `45d930066`), which boots the daemon with `makeNetworkedRunProvider` when
+> `AOA_WORKER_PROVIDER_URL` is set. DEP-012 units A/B and waves β1/β2 and DEP-011 slices 1, 2a and 2b
+> built it. **What is still open is deployment, not specification:** the adapter-manager image is not
+> built in CI and no shipped CI boot runs this wire — filed at M1 Step 0 as **`DEP-014`** and
+> **`DEP-015`** — and mTLS on the worker→adapter-manager hop is a named residual (M1 plan §8).
+> Status, severity and owner (`DEP-011`) are unchanged by this note; the finding closes when
+> `DEP-011` ships, which now means when the wire runs in a shipped boot.
+
 ★ NARROWED and DEFERRED by DEP-010 (Sprint 2); DEP-010 does not build the wire and
 does not pretend to. See `DEP-010-design.md` §2.1.
 
