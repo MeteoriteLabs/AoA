@@ -362,3 +362,118 @@ Where the build differs in detail from the text above, the code is the truth and
   `deferLiveEvents` collector. The core returns the events with `exhaustedScopes`, and
   `flushDeferredBudgetSignals` performs both only after commit.
 
+
+---
+
+## E3-D-AUDIT-SET — the accepted mutations the seam audits (JOB-017)
+
+**Status:** `accepted` — decided by `JOB-017` under founder delegation F2, as the task section
+requires ("for a **named set** of accepted mutations recorded in `decisions.md`"). Measured at
+program tip `fc2eb7dde`. Code is cited by file and symbol.
+
+**The named set.** `createAcceptedActivityAuditProjector`
+(`server/src/services/job-accepted-activity-audit.ts`, `ACCEPTED_ACTIVITY_AUDIT_ACTIONS`) audits
+exactly two accepted event types. Each is a state mutation that the ingest itself performs inside
+`acceptEvent` (`applyProjectionForFence`):
+
+| Accepted event | The mutation it drives | Activity action |
+|---|---|---|
+| `attempt_started` | attempt `leased` → `running`, job `queued` → `running` | `job.attempt_started` |
+| `terminal` | attempt driven to its terminal status | `job.attempt_terminal` (details carry `terminalStatus`) |
+
+Each row carries `entityType = 'job'` and `entityId = jobId`, which is the `job.*` family that
+`job-control-audit.ts` already uses for `job.submitted` and `job.drain.requested`. It also carries
+`actorType = 'system'` and `actorId = 'worker:<workerId>'`, because a worker is neither a user nor an
+agent, and `runId` is null. The details carry the Organization, job, attempt, lease, worker, event id
+and sequence. The Organization and Company come from the fence the ingest guard locked, never from
+the worker. `recordAcceptedActivityCore` refuses a Company that its Organization does not own
+(`activity_log` has no RLS, E2-D03).
+
+**What is outside the set, and why.**
+- **Observations** are not accepted product mutations (JOB-013's rule): `log`, `progress`,
+  `network_denied`, `browser_observation`, `browser_approval_requested`,
+  `runtime_decision_requested` and the `service_*` events.
+- **`usage`** already has a durable record on this seam: the `cost_events` row plus its
+  `authoritative_cost` receipt, which the pricing registration (JOB-016) writes atomically. Legacy
+  parity writes no activity row for a heartbeat charge; only the agent's own `POST /costs` writes
+  `cost.reported`. An audit row whose content depended on a sibling projector's outcome would couple
+  two savepoints, so a `pending` charge would leave the audit either false or owed.
+- **`artifact_prepared`** already has a durable record on this seam: its `task_outputs` row and
+  `output_projection` receipt (`E3-D-OUTPUT-MAP`).
+
+The set is closed. Adding an entry is a new decision here, not an edit to the map alone.
+
+**Stated residual.** `attempt_started` is conditional: it moves only a `leased` attempt. A second
+`attempt_started` event with a new event id, on an attempt that is already running, is still a newly
+accepted event, so it is audited even though it changed nothing. The worker protocol emits
+`attempt_started` once per attempt, so no such event is expected.
+
+**Publication.** The live `activity.logged` event is published by the ingest only **after** its
+transaction commits, and only for an `applied` outcome (`createJobEventIngestService`,
+`owedActivityPublishes`). This follows the same after-commit pattern as JOB-016's Codex P2 fixes.
+
+## E3-D-OUTPUT-MAP — what an accepted output event projects to (JOB-017)
+
+**Status:** `accepted`, decided by `JOB-017` under founder delegation F2.
+
+- **The event.** `artifact_prepared` is the only output event in the frozen protocol
+  (`WORKER_EVENT_TYPES`). Its payload is `{ artifactId, kind }`, and `artifactId` is the identifier
+  the worker committed through `commitArtifactVersion` (`artifact-commit.ts` passes
+  `identifier: manifest.artifactId`).
+- **When it is registered.** The output projection is registered only for a `task_run` job, because
+  every other source has no task, and the JOB-014 contract is "no fabricated task IDs".
+  `resolveAcceptedOutputProjector` (`server/src/services/job-accepted-output-projection.ts`) reads
+  `jobs.source_intent` inside the ingest transaction, under the fence it holds, and only when the
+  batch contains an `artifact_prepared` event. Because the read runs in its own savepoint, a failed
+  read cannot abort the append. Instead, it registers a projector that records every output event of
+  the batch as owed.
+- **Provenance is fail-closed.** The event projects only if its `artifactId` names a **committed**
+  `job_artifacts` row of the same Organization, job and attempt number. Otherwise the savepoint
+  throws `ACCEPTED_OUTPUT_ARTIFACT_NOT_COMMITTED` and the seam writes a surfaced `pending` receipt.
+  A worker that announces an artifact it never committed therefore projects nothing.
+- **What it writes.** It writes one `task_outputs` row through `projectAcceptedOutputCore`, on the
+  job's own task, with these fields:
+  - `type = 'artifact'`;
+  - `provider = 'aoa_distributed_job'`, a namespace that only this projector writes;
+  - `externalId` = the committed row's **server-minted** id, so no worker-chosen string can upsert
+    onto a platform or legacy row (the `E7-F020` residual);
+  - `isPrimary = false` (forced by the core) and `reviewState = 'none'`;
+  - `createdByAgentId` = the job's recorded assignee;
+  - `artifactId = null`.
+- **Boundary with `CLI-014`.** Promoting a `job_artifacts` row into a product `artifacts` row, and
+  folding `detectedFiles` into the run summary, belong to `CLI-014`. `CLI-014` reuses
+  `projectAcceptedOutputCore`, and it replaces this minimal mapping at the same registration, under
+  the same receipt identity `output:{company}:{eventId}`. It must not add a second output registration
+  for the same event, because the seam's receipt identity admits only one.
+
+## E3-D-TERMINAL-WINNER — `projectTerminalWinner` is retired (JOB-017)
+
+**Status:** `accepted`, **decided under founder delegation F2** by `JOB-017`.
+
+**Measured at `fc2eb7dde`: who writes each half today.**
+
+| Half | The writer on the distributed worker path | Where |
+|---|---|---|
+| Attempt (and job) terminal state | the ingest: `acceptEvent` applies `attempt_terminal` through `applyProjectionForFence`, in the same transaction as the append | `packages/db/src/repositories/tenant/job-control.ts`, `acceptEvent` |
+| Heartbeat run terminal + run summary (heartbeat canary) | the after-commit `onAttemptTerminal` hook → `createCanaryRunProjector`: `setRunStatus`, then step (4) `postRunSummary`, which `heartbeat.ts` binds to `postRunSummaryComment` | `server/src/services/canary-run-projector.ts`; the `postRunSummary:` binding in `server/src/services/heartbeat.ts` |
+| Crew run terminal + run summary | `crew-terminal-projection.ts` → `releaseIssueLockAndLoopback` → `postCrewRunSuccess` / `postCrewRunFailure` (`crew-run-outcome.ts`, which calls `postRunSummaryComment`); the projector's own summary step is a deliberate no-op | `server/src/services/internal-agent/aoa-agents/crew-terminal-projection.ts` |
+
+`completeAttempt` has **no** production caller: its only non-test caller is `projectTerminalWinner`,
+and `projectTerminalWinner` has none either. This confirms the S0-3 note that the canary projector
+does not call `completeAttempt`. The attempt is already terminal from ingest when the hook fires.
+
+**Decision: retire.** The task offered to retire it or to rework it with a reason. It is retired
+because both of its halves already have a single writer. Wiring it would create a second writer of
+the run summary, racing the canary and crew projections, and it would call `completeAttempt` on an
+attempt the ingest has already terminalized (it throws `attempt_terminal`). It is **retired in
+place**, not deleted. The method stays because it is the subject of the DE-04 dormant-arm test, and
+the threat-control register cites its `drainFenceGuardDenial` site. Deleting it would rewrite a
+Critical crossing's evidence, which is outside this ticket. The retirement is made mechanical in two
+ways:
+- the interface carries `@deprecated` with this decision's id;
+- a zero-production-caller guard (`job-output-parity.integration.test.ts`, "projectTerminalWinner
+  is retired") fails if any non-test file outside `job-output-bridge.ts` references it. It has a
+  positive control that the same scanner does find the method in tests.
+
+No duplicate summary writer is created: the JOB-017 registrations write no `issue_comments` row and
+no `task_terminal` receipt. The real-ingest test asserts both.

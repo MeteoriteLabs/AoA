@@ -53,6 +53,12 @@ import { logger } from "../middleware/logger.js";
 import { clearBudgetHooks, onBudgetExhausted, type BudgetEnforcementScope } from "../services/budget-hooks.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 import { ackRequest, pollRequest } from "./helpers/job-control-fixture.js";
+import { eq } from "drizzle-orm";
+import { jobProjectionReceipts } from "@armyofagents/db";
+import { createAcceptedActivityAuditProjector } from "../services/job-accepted-activity-audit.js";
+import { resolveAcceptedOutputProjector } from "../services/job-accepted-output-projection.js";
+import { recordAcceptedActivityCore, JobAuditBridgeTenantError } from "../services/job-audit-bridge.js";
+import { projectAcceptedOutputCore, JobOutputBridgeTenantError } from "../services/job-output-bridge.js";
 
 const ENABLED_ENV = { AOA_DISTRIBUTED_EXECUTION_ENABLED: "true" } as const;
 const KNOWN_MODEL = "claude-sonnet-4-6";
@@ -807,6 +813,392 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       } finally {
         warn.mockRestore();
       }
+    });
+  },
+);
+
+// =================================================================================================
+// JOB-017 — the audit and output bridges registered on the SAME E3-D-ACC seam.
+// Decisions: E3-D-AUDIT-SET (the named audited mutations), E3-D-OUTPUT-MAP (what an accepted
+// output event projects to), E3-D-TERMINAL-WINNER (projectTerminalWinner retired), all in
+// docs/replatform/epics/E3-job-control/decisions.md. Everything below runs the REAL repository
+// `acceptEvent` (or the REAL poll -> ack -> ingest path) under a REAL fence.
+// =================================================================================================
+
+async function seedIssue(companyId: string, title = "JOB-017 task"): Promise<string> {
+  const id = randomUUID();
+  await guard().admin`INSERT INTO issues (id, company_id, title) VALUES (${id}, ${companyId}, ${title})`;
+  return id;
+}
+
+function taskSourceFor(agentId: string, issueId: string): SubmitJobSource {
+  return { kind: "task_run", runId: randomUUID(), issueId, assigneeAgentId: agentId };
+}
+
+/** A COMMITTED job_artifacts row for this attempt — the control plane's fenced-commit record. */
+async function seedCommittedArtifact(fence: ActiveFenceRequest, identifier: string, kind = "workspace_patch"): Promise<string> {
+  const id = randomUUID();
+  await guard().admin`INSERT INTO job_artifacts
+    (id, organization_id, job_id, identifier, kind, attempt, status, version_number, lease_id, fence_token)
+    VALUES (${id}, ${fence.organizationId}, ${fence.jobId}, ${identifier}, ${kind}, ${fence.attemptNumber},
+      'committed', 1, ${fence.leaseId}, ${fence.fence})`;
+  return id;
+}
+
+const startedEv = (fence: ActiveFenceRequest, seq: number) =>
+  acceptInput(fence, seq, "attempt_started", { sandboxId: `sbx-${seq}` });
+const artifactEv = (fence: ActiveFenceRequest, seq: number, artifactId: string, kind = "workspace_patch") =>
+  acceptInput(fence, seq, "artifact_prepared", { artifactId, kind });
+const logEv = (fence: ActiveFenceRequest, seq: number) =>
+  acceptInput(fence, seq, "log", { stream: "stdout", level: "info", message: "observation only" });
+
+/**
+ * Drive the REAL `acceptEvent` with the registrations the PRODUCTION ingest builds (pricing +
+ * audit on every batch; output decided per batch by `resolveAcceptedOutputProjector`, inside the
+ * same tenant transaction). `mutate` lets a test wrap a registration (the injected-failure cases).
+ */
+async function acceptWithBridges(
+  fence: ActiveFenceRequest,
+  events: AcceptEventInput[],
+  opts: { mutate?: (p: AcceptedEventProjector) => AcceptedEventProjector } = {},
+) {
+  const prepared: string[] = [];
+  const result = await runInTenant(guard().app.db, fence.organizationId, async (repos, tx) => {
+    const projectors: AcceptedEventProjector[] = [
+      createAcceptedUsagePricingProjector(),
+      createAcceptedActivityAuditProjector({ onPreparedActivity: (id) => { prepared.push(id); } }),
+    ];
+    const output = await resolveAcceptedOutputProjector(tx, fence, events);
+    if (output) projectors.push(output);
+    return repos.jobControl.acceptEvent({
+      ...fence,
+      batch: { events, acceptedEventProjectors: opts.mutate ? projectors.map(opts.mutate) : projectors },
+    });
+  });
+  return { result, prepared };
+}
+
+async function resetBridgeRows(): Promise<void> {
+  const f = guard();
+  await f.admin`DELETE FROM task_outputs`;
+  await f.admin`DELETE FROM activity_log`;
+  await f.admin`DELETE FROM issue_comments`;
+  await f.admin`DELETE FROM job_artifacts`;
+  await f.admin`DELETE FROM issues`;
+}
+
+describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")(
+  "JOB-017 audit + output bridges on the E3-D-ACC seam (embedded PG)",
+  () => {
+    beforeEach(async () => { if (fixture) await resetBridgeRows(); });
+
+    it("[acc 1] each named accepted mutation (attempt_started, terminal) writes exactly ONE activity row and ONE applied activity_audit receipt, in the ingest transaction", async () => {
+      const f = guard();
+      const fence = await seedLeasedAttempt(TENANT_A, taskSource(AGENT_A));
+      const s = startedEv(fence, 1);
+      const t = terminal(fence, 2);
+      const { result, prepared } = await acceptWithBridges(fence, [s, t]);
+
+      expect(result.ingest?.status).toBe("accepted");
+      expect(result.acceptedEventProjections?.map((p) => [p.projectionKind, p.outcome])).toEqual([
+        ["activity_audit", "applied"],
+        ["activity_audit", "applied"],
+      ]);
+      const rows = await f.admin`SELECT id, action, company_id, entity_type, entity_id, actor_type, actor_id, run_id, details
+        FROM activity_log ORDER BY action`;
+      expect(rows.map((r) => r.action)).toEqual(["job.attempt_started", "job.attempt_terminal"]);
+      for (const row of rows) {
+        expect(row).toMatchObject({
+          company_id: COMPANY, entity_type: "job", entity_id: fence.jobId,
+          actor_type: "system", actor_id: `worker:${fence.workerId}`, run_id: null,
+        });
+        expect((row.details as Record<string, unknown>).organizationId).toBe(ORG);
+        expect((row.details as Record<string, unknown>).attemptId).toBe(fence.attemptId);
+      }
+      const term = rows.find((r) => r.action === "job.attempt_terminal")!;
+      expect((term.details as Record<string, unknown>).terminalStatus).toBe("succeeded");
+      // One applied receipt per audited event, each pointing at ITS activity row.
+      for (const ev of [s, t]) {
+        const [receipt] = await f.admin`SELECT status, aggregate_kind, target_aggregate_id, organization_id, company_id
+          FROM job_projection_receipts WHERE projection_kind = 'activity_audit'
+            AND source_identity = ${`activity:${COMPANY}:${ev.eventId}`}`;
+        expect(receipt).toMatchObject({ status: "applied", aggregate_kind: "activity_log", organization_id: ORG, company_id: COMPANY });
+        expect(rows.map((r) => r.id)).toContain(receipt!.target_aggregate_id);
+      }
+      expect([...prepared].sort()).toEqual([s.eventId, t.eventId].sort());
+      // The terminal was applied AFTER its audit, in the same transaction, without a throw.
+      expect(await count("job_attempts", `id = '${fence.attemptId}' AND status = 'succeeded'`)).toBe(1);
+    });
+
+    it("[acc 1 replay] a replayed batch writes NO second activity row and no second receipt", async () => {
+      const fence = await seedLeasedAttempt(TENANT_A, taskSource(AGENT_A));
+      const batch = [startedEv(fence, 1), logEv(fence, 2)];
+      await acceptWithBridges(fence, batch);
+      expect(await count("activity_log", "true")).toBe(1);
+      const replay = await acceptWithBridges(fence, batch);
+      expect(replay.result.ingest?.status).toBe("accepted");
+      expect(replay.result.acceptedEventProjections ?? []).toEqual([]);
+      expect(await count("activity_log", "true")).toBe(1);
+      expect(await count("job_projection_receipts", "projection_kind = 'activity_audit'")).toBe(1);
+    });
+
+    it("[acc 1 rejected/stale/observation] a rejected batch, a stale fence and an observation-only event write NO activity row", async () => {
+      const fence = await seedLeasedAttempt(TENANT_A, taskSource(AGENT_A));
+      // (a) observation only: log/progress are not accepted product mutations.
+      const obs = await acceptWithBridges(fence, [logEv(fence, 1)]);
+      expect(obs.result.ingest?.status).toBe("accepted");
+      expect(await count("activity_log", "true")).toBe(0);
+      // (b) REJECTED: a digest mismatch rejects the whole batch before any write.
+      const bad = startedEv(fence, 2);
+      const rejected = await acceptWithBridges(fence, [{ ...bad, suppliedDigest: "0".repeat(64) }]);
+      expect(rejected.result.ingest?.status).toBe("hash_mismatch");
+      // (c) STALE: a wrong fence token is refused by the guard before any write.
+      await expect(acceptWithBridges({ ...fence, fence: `${fence.fence}-stale` }, [startedEv(fence, 2)]))
+        .rejects.toThrow();
+      expect(await count("activity_log", "true")).toBe(0);
+      expect(await count("job_projection_receipts", "projection_kind = 'activity_audit'")).toBe(0);
+      // Positive control: the SAME kind of event, accepted under the live fence, IS audited.
+      await acceptWithBridges(fence, [startedEv(fence, 2)]);
+      expect(await count("activity_log", `action = 'job.attempt_started'`)).toBe(1);
+    });
+
+    it("[acc 2] an output event and the terminal event in ONE batch yield ONE task_outputs row with its output_projection receipt, and no attempt_terminal throw", async () => {
+      const f = guard();
+      const issueId = await seedIssue(COMPANY);
+      const fence = await seedLeasedAttempt(TENANT_A, taskSourceFor(AGENT_A, issueId));
+      const artifactIdentifier = randomUUID();
+      const jobArtifactId = await seedCommittedArtifact(fence, artifactIdentifier);
+      const a = artifactEv(fence, 1, artifactIdentifier);
+      const t = terminal(fence, 2);
+      const { result } = await acceptWithBridges(fence, [a, t]);
+
+      expect(result.ingest?.status).toBe("accepted");
+      expect(result.acceptedEventProjections?.find((p) => p.projectionKind === "output_projection")?.outcome).toBe("applied");
+      const outputs = await f.admin`SELECT id, company_id, issue_id, type, provider, external_id, is_primary, created_by_agent_id, metadata
+        FROM task_outputs`;
+      expect(outputs).toHaveLength(1);
+      expect(outputs[0]).toMatchObject({
+        company_id: COMPANY, issue_id: issueId, type: "artifact", provider: "aoa_distributed_job",
+        external_id: jobArtifactId, is_primary: false, created_by_agent_id: AGENT_A,
+      });
+      expect((outputs[0]!.metadata as Record<string, unknown>).attemptId).toBe(fence.attemptId);
+      const [receipt] = await f.admin`SELECT status, aggregate_kind, target_aggregate_id, job_id, attempt_id
+        FROM job_projection_receipts WHERE projection_kind = 'output_projection'
+          AND source_identity = ${`output:${COMPANY}:${a.eventId}`}`;
+      expect(receipt).toMatchObject({
+        status: "applied", aggregate_kind: "task_outputs", target_aggregate_id: outputs[0]!.id,
+        job_id: fence.jobId, attempt_id: fence.attemptId,
+      });
+      expect(await count("job_attempts", `id = '${fence.attemptId}' AND status = 'succeeded'`)).toBe(1);
+    });
+
+    it("[E3-D-OUTPUT-MAP] provenance is fail-closed: an announced artifact that was never COMMITTED projects nothing and leaves a surfaced pending receipt", async () => {
+      const issueId = await seedIssue(COMPANY);
+      const fence = await seedLeasedAttempt(TENANT_A, taskSourceFor(AGENT_A, issueId));
+      const a = artifactEv(fence, 1, randomUUID());
+      const { result } = await acceptWithBridges(fence, [a, terminal(fence, 2)]);
+      expect(result.ingest?.status).toBe("accepted");
+      expect(result.acceptedEventProjections?.find((p) => p.projectionKind === "output_projection")).toMatchObject({
+        outcome: "pending", reason: "ACCEPTED_OUTPUT_ARTIFACT_NOT_COMMITTED",
+      });
+      expect(await count("task_outputs", "true")).toBe(0);
+      expect(await count("job_projection_receipts", `projection_kind = 'output_projection' AND status = 'pending'`)).toBe(1);
+      expect(await count("job_attempts", `id = '${fence.attemptId}' AND status = 'succeeded'`)).toBe(1);
+    });
+
+    it("[E3-D-OUTPUT-MAP] a source with NO task (one_shot) registers no output projection: no row and no receipt", async () => {
+      const fence = await seedLeasedAttempt(TENANT_A, { kind: "one_shot", operationId: randomUUID(), operationKind: "extraction" } as SubmitJobSource);
+      const identifier = randomUUID();
+      await seedCommittedArtifact(fence, identifier);
+      const { result } = await acceptWithBridges(fence, [artifactEv(fence, 1, identifier)]);
+      expect(result.ingest?.status).toBe("accepted");
+      expect(result.acceptedEventProjections ?? []).toEqual([]);
+      expect(await count("task_outputs", "true")).toBe(0);
+      expect(await count("job_projection_receipts", `projection_kind = 'output_projection'`)).toBe(0);
+    });
+
+    it("[acc 3] a projector failure leaves the append COMMITTED, rolls back the projector's own write, and surfaces a pending receipt (audit and output)", async () => {
+      const issueId = await seedIssue(COMPANY);
+      const fence = await seedLeasedAttempt(TENANT_A, taskSourceFor(AGENT_A, issueId));
+      const identifier = randomUUID();
+      await seedCommittedArtifact(fence, identifier);
+      // Each audit/output registration WRITES its row through the real core, then throws.
+      const failAfterWrite = (p: AcceptedEventProjector): AcceptedEventProjector =>
+        p.projectionKind === "authoritative_cost" ? p : {
+          projectionKind: p.projectionKind,
+          aggregateKind: p.aggregateKind,
+          sourceIdentity: (e, fe) => p.sourceIdentity(e, fe),
+          apply: async (ctx) => { await p.apply(ctx); throw new Error("injected after the write"); },
+        };
+      const { result, prepared } = await acceptWithBridges(
+        fence,
+        [startedEv(fence, 1), artifactEv(fence, 2, identifier), terminal(fence, 3)],
+        { mutate: failAfterWrite },
+      );
+      expect(result.ingest?.status).toBe("accepted");
+      expect(result.ingest?.acceptedThroughSeq).toBe(3);
+      expect(result.acceptedEventProjections?.map((p) => p.outcome)).toEqual(["pending", "pending", "pending"]);
+      expect(await count("job_events", `attempt_id = '${fence.attemptId}'`)).toBe(3);
+      expect(await count("activity_log", "true")).toBe(0);
+      expect(await count("task_outputs", "true")).toBe(0);
+      expect(await count("job_projection_receipts",
+        `status = 'pending' AND aggregate_kind = 'job_attempts' AND target_aggregate_id = '${fence.attemptId}'`)).toBe(3);
+      expect(await count("job_attempts", `id = '${fence.attemptId}' AND status = 'succeeded'`)).toBe(1);
+      // The prepared events were handed over, but the ingest publishes only for `applied`.
+      expect(prepared).toHaveLength(2);
+    });
+
+    it("[acc 5 / F10] two Organizations side by side: every activity row, task output and receipt carries the attempt's OWN Organization and Company, and neither tenant's reads see the other's", async () => {
+      const f = guard();
+      const issueA = await seedIssue(COMPANY);
+      const issueB = await seedIssue(COMPANY_B);
+      const fenceA = await seedLeasedAttempt(TENANT_A, taskSourceFor(AGENT_A, issueA));
+      const fenceB = await seedLeasedAttempt(TENANT_B, taskSourceFor(AGENT_B, issueB));
+      const idA = randomUUID();
+      const idB = randomUUID();
+      await seedCommittedArtifact(fenceA, idA);
+      await seedCommittedArtifact(fenceB, idB);
+      await acceptWithBridges(fenceA, [startedEv(fenceA, 1), artifactEv(fenceA, 2, idA), terminal(fenceA, 3)]);
+      await acceptWithBridges(fenceB, [startedEv(fenceB, 1), artifactEv(fenceB, 2, idB), terminal(fenceB, 3)]);
+
+      const activity = await f.admin`SELECT company_id, entity_id FROM activity_log`;
+      expect(activity.filter((r) => r.company_id === COMPANY).map((r) => r.entity_id)).toEqual([fenceA.jobId, fenceA.jobId]);
+      expect(activity.filter((r) => r.company_id === COMPANY_B).map((r) => r.entity_id)).toEqual([fenceB.jobId, fenceB.jobId]);
+      const outputs = await f.admin`SELECT company_id, issue_id FROM task_outputs`;
+      expect(outputs.map((r) => `${r.company_id}:${r.issue_id}`).sort())
+        .toEqual([`${COMPANY}:${issueA}`, `${COMPANY_B}:${issueB}`].sort());
+      const receipts = await f.admin`SELECT organization_id, company_id, job_id FROM job_projection_receipts
+        WHERE projection_kind IN ('activity_audit', 'output_projection')`;
+      expect(receipts).toHaveLength(6);
+      for (const r of receipts) {
+        expect([r.organization_id, r.company_id]).toEqual(r.job_id === fenceA.jobId ? [ORG, COMPANY] : [ORG_B, COMPANY_B]);
+      }
+      // Tenant READS: Organization B's tenant transaction sees none of A's receipts (forced RLS) but
+      // does see its own (the same-tenant control), and A's task shows only A's output.
+      const seenByB = await runInTenant(f.app.db, ORG_B, async (_repos, tx) => ({
+        foreign: await tx.select({ id: jobProjectionReceipts.id }).from(jobProjectionReceipts)
+          .where(eq(jobProjectionReceipts.organizationId, ORG)),
+        own: await tx.select({ id: jobProjectionReceipts.id }).from(jobProjectionReceipts)
+          .where(eq(jobProjectionReceipts.organizationId, ORG_B)),
+      }));
+      expect(seenByB.foreign).toHaveLength(0);
+      expect(seenByB.own.length).toBeGreaterThanOrEqual(3);
+      expect(await count("task_outputs", `issue_id = '${issueA}' AND company_id <> '${COMPANY}'`)).toBe(0);
+    });
+
+    it("[acc 5 / F10 cross-tenant denial] Organization B's job naming Organization A's task projects NOTHING into A (pending); the same job naming B's own task projects (same-tenant control)", async () => {
+      const issueA = await seedIssue(COMPANY);
+      const issueB = await seedIssue(COMPANY_B);
+      const hostile = await seedLeasedAttempt(TENANT_B, taskSourceFor(AGENT_B, issueA));
+      const idH = randomUUID();
+      await seedCommittedArtifact(hostile, idH);
+      const denied = await acceptWithBridges(hostile, [artifactEv(hostile, 1, idH)]);
+      expect(denied.result.acceptedEventProjections?.[0]).toMatchObject({ projectionKind: "output_projection", outcome: "pending" });
+      expect(await count("task_outputs", "true")).toBe(0);
+
+      const control = await seedLeasedAttempt(TENANT_B, taskSourceFor(AGENT_B, issueB));
+      const idC = randomUUID();
+      await seedCommittedArtifact(control, idC);
+      const allowed = await acceptWithBridges(control, [artifactEv(control, 1, idC)]);
+      expect(allowed.result.acceptedEventProjections?.[0]).toMatchObject({ outcome: "applied" });
+      expect(await count("task_outputs", `company_id = '${COMPANY_B}' AND issue_id = '${issueB}'`)).toBe(1);
+      expect(await count("task_outputs", `company_id = '${COMPANY}'`)).toBe(0);
+    });
+
+    it("[F10] both cores refuse a Company the Organization does not own (nothing written); the same Company under its own Organization is accepted", async () => {
+      const f = guard();
+      const issueA = await seedIssue(COMPANY);
+      const activity = {
+        companyId: COMPANY, actorType: "system" as const, actorId: "t",
+        action: "job.attempt_started", entityType: "job", entityId: randomUUID(),
+      };
+      await expect(runInTenant(f.app.db, ORG_B, (_r, tx) => recordAcceptedActivityCore({ tx }, {
+        organizationId: ORG_B, companyId: COMPANY, acceptedEventId: randomUUID(), activity,
+      }))).rejects.toBeInstanceOf(JobAuditBridgeTenantError);
+      await expect(runInTenant(f.app.db, ORG_B, (_r, tx) => projectAcceptedOutputCore({ tx }, {
+        organizationId: ORG_B, companyId: COMPANY, issueId: issueA, output: { type: "artifact", title: "x" },
+      }))).rejects.toBeInstanceOf(JobOutputBridgeTenantError);
+      expect(await count("activity_log", "true")).toBe(0);
+      expect(await count("task_outputs", "true")).toBe(0);
+      // Same-tenant control.
+      await runInTenant(f.app.db, ORG, (_r, tx) => recordAcceptedActivityCore({ tx }, {
+        organizationId: ORG, companyId: COMPANY, acceptedEventId: randomUUID(), activity,
+      }));
+      await runInTenant(f.app.db, ORG, (_r, tx) => projectAcceptedOutputCore({ tx }, {
+        organizationId: ORG, companyId: COMPANY, issueId: issueA, output: { type: "artifact", title: "x" },
+      }));
+      expect(await count("activity_log", `company_id = '${COMPANY}'`)).toBe(1);
+      expect(await count("task_outputs", `company_id = '${COMPANY}'`)).toBe(1);
+    });
+  },
+);
+
+describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")(
+  "JOB-017 production ingest composition (embedded PG)",
+  () => {
+    beforeEach(async () => { if (fixture) await resetBridgeRows(); });
+
+    it("[acc 1 + acc 2 + acc 4] the REAL ingest audits start + terminal, projects the output, terminalizes the attempt itself, and writes NO run summary; activity.logged publishes only AFTER commit", async () => {
+      const f = guard();
+      const { offer, seeded } = await f.activateLease(71);
+      const issueId = await seedIssue(COMPANY);
+      await f.admin`UPDATE jobs SET source_kind = 'task_run',
+        source_intent = ${f.admin.json(taskSourceFor(AGENT_A, issueId) as never)} WHERE id = ${seeded.jobId}`;
+      const identifier = randomUUID();
+      await f.admin`INSERT INTO job_artifacts (organization_id, job_id, identifier, kind, attempt, status, version_number)
+        VALUES (${ORG}, ${seeded.jobId}, ${identifier}, 'workspace_patch', ${offer.job.attempt}, 'committed', 1)`;
+      const published: Array<{ action: string; rowsVisible: Promise<number> }> = [];
+      const off = subscribeCompanyLiveEvents(COMPANY, (e) => {
+        if (e.type !== "activity.logged") return;
+        // Read on a SEPARATE connection: a pre-commit publish would see 0 rows.
+        published.push({ action: String((e.payload as { action?: unknown }).action), rowsVisible: count("activity_log", "true") });
+      });
+      try {
+        const ingest = createJobEventIngestService({ appDb: f.app.db });
+        const events = [
+          wireEvent(offer, 1, "attempt_started", { sandboxId: "sbx-j017" }),
+          wireEvent(offer, 2, "artifact_prepared", { artifactId: identifier, kind: "workspace_patch" }),
+          wireEvent(offer, 3, "terminal", { status: "succeeded", exitCode: 0, errorCode: null, errorMessage: null }),
+        ];
+        const response = await ingest.ingest({ auth: auth("j017-ev-1"), request: batchRequest(offer, events) });
+        expect(response.ack.status).toBe("accepted");
+        expect(response.ack.acceptedThroughSeq).toBe(3);
+
+        expect((await f.admin`SELECT action FROM activity_log ORDER BY action`).map((r) => r.action))
+          .toEqual(["job.attempt_started", "job.attempt_terminal"]);
+        expect(await count("job_projection_receipts", `projection_kind = 'activity_audit' AND status = 'applied'`)).toBe(2);
+        expect(await count("task_outputs", `issue_id = '${issueId}' AND provider = 'aoa_distributed_job'`)).toBe(1);
+        expect(await count("job_projection_receipts", `projection_kind = 'output_projection' AND status = 'applied'`)).toBe(1);
+        // acc 4 — the INGEST is the single writer of terminal state; it wrote no run summary and no
+        // task_terminal receipt (projectTerminalWinner is retired; the canary/crew projections own it).
+        expect(await count("job_attempts", `id = '${seeded.attemptId}' AND status = 'succeeded'`)).toBe(1);
+        expect(await count("job_projection_receipts", `projection_kind = 'task_terminal'`)).toBe(0);
+        expect(await count("issue_comments", `issue_id = '${issueId}'`)).toBe(0);
+
+        expect(published.map((p) => p.action).sort()).toEqual(["job.attempt_started", "job.attempt_terminal"]);
+        for (const p of published) expect(await p.rowsVisible).toBe(2);
+      } finally {
+        off();
+      }
+    });
+
+    it("[acc 1 stale] a batch presented with a stale fence token is refused and writes no activity row", async () => {
+      const f = guard();
+      const { offer } = await f.activateLease(72);
+      const ingest = createJobEventIngestService({ appDb: f.app.db });
+      const stale = { ...offer, fenceToken: `${offer.fenceToken}-stale` };
+      await expect(ingest.ingest({
+        auth: auth("j017-ev-2"),
+        request: batchRequest(stale, [wireEvent(stale, 1, "attempt_started", { sandboxId: "sbx-stale" })]),
+      })).rejects.toThrow();
+      expect(await count("activity_log", "true")).toBe(0);
+      // Positive control: the live fence IS audited.
+      const live = await ingest.ingest({
+        auth: auth("j017-ev-3"),
+        request: batchRequest(offer, [wireEvent(offer, 1, "attempt_started", { sandboxId: "sbx-live" })]),
+      });
+      expect(live.ack.status).toBe("accepted");
+      expect(await count("activity_log", `action = 'job.attempt_started'`)).toBe(1);
     });
   },
 );

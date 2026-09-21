@@ -10,6 +10,9 @@
 //     change terminal state; a null-issue/opt-out winner still replay-guards via a
 //     job_attempts receipt. The bridge NEVER elects primary and NEVER fabricates task IDs.
 import { randomUUID } from "node:crypto";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { SubmitJobSource } from "@armyofagents/shared";
 import {
@@ -494,3 +497,54 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
     });
   },
 );
+
+// JOB-017 — E3-D-TERMINAL-WINNER: `projectTerminalWinner` is RETIRED (decisions.md). The ingest's
+// `attempt_terminal` projection is the single writer of terminal state and the canary/crew
+// terminal projections are the single writer of the run summary, so a production call of the
+// retired method would be a SECOND writer racing them. This guard makes "no production path can
+// call it" mechanical. Not a DB test: it runs on every platform.
+const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
+const PRODUCTION_ROOTS = ["server/src", "packages", "cli"];
+const TEST_MARKERS = ["__tests__", ".test.", ".spec.", "/tests/", "/testing/"];
+
+/** Every non-comment reference to `symbol` in `roots`, skipping `excludeFile`. Comments are
+ * stripped so a sentence that NAMES the method is never mistaken for a call. */
+function referencesTo(symbol: string, roots: string[], opts: { tests: boolean; excludeFile: string }): string[] {
+  const hits: string[] = [];
+  const walk = (dir: string): void => {
+    let entries: string[];
+    try { entries = readdirSync(dir); } catch { return; }
+    for (const name of entries) {
+      if (name === "node_modules" || name === "dist" || name.startsWith(".")) continue;
+      const full = join(dir, name);
+      if (statSync(full).isDirectory()) { walk(full); continue; }
+      if (!/\.(ts|tsx|js|mjs|cjs)$/.test(name)) continue;
+      const rel = relative(REPO_ROOT, full).replaceAll("\\", "/");
+      const isTest = TEST_MARKERS.some((m) => rel.includes(m));
+      if (isTest !== opts.tests || rel === opts.excludeFile) continue;
+      const text = readFileSync(full, "utf8")
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/(^|[^:])\/\/.*$/gm, "$1");
+      if (new RegExp(`\\b${symbol}\\b`).test(text)) hits.push(rel);
+    }
+  };
+  for (const root of roots) walk(join(REPO_ROOT, root));
+  return hits;
+}
+
+describe("JOB-017 E3-D-TERMINAL-WINNER — projectTerminalWinner is retired", () => {
+  const DEFINITION = "server/src/services/job-output-bridge.ts";
+
+  it("has ZERO production callers outside its own definition file", () => {
+    expect(referencesTo("projectTerminalWinner", PRODUCTION_ROOTS, { tests: false, excludeFile: DEFINITION })).toEqual([]);
+  });
+
+  it("positive control: the same scanner DOES see the method where it is referenced (tests), so a zero above is not a blind scan", () => {
+    expect(referencesTo("projectTerminalWinner", ["server/src"], { tests: true, excludeFile: DEFINITION }).length)
+      .toBeGreaterThan(0);
+    // And it sees a production symbol that IS called, e.g. the JOB-017 audit registration.
+    expect(referencesTo("createAcceptedActivityAuditProjector", PRODUCTION_ROOTS, {
+      tests: false, excludeFile: "server/src/services/job-accepted-activity-audit.ts",
+    })).toContain("server/src/services/job-events.ts");
+  });
+});

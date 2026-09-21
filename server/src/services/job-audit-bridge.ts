@@ -32,14 +32,19 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
-import { jobProjectionReceipts, hubAudit } from "@armyofagents/db";
+import { companies, jobProjectionReceipts, hubAudit } from "@armyofagents/db";
 import type { ActiveFenceRequest, Db } from "@armyofagents/db";
 import type { SubmitJobSource } from "@armyofagents/shared";
 import { runInTenant } from "../db/tenant-context.js";
 import { readDistributedExecutionDeploymentFlag } from "../config/distributed-execution.js";
 import { resolveCompanyOrganizationId } from "./org-concurrency.js";
 import { assertAdmissibleMappedOrganization } from "./tenant-admission.js";
-import { insertActivity, publishActivity, type LogActivityInput } from "./activity-log.js";
+import {
+  insertActivity,
+  publishActivity,
+  type LogActivityInput,
+  type PreparedActivityEvent,
+} from "./activity-log.js";
 import type { AuthenticatedJobPrincipal } from "./job-submission.js";
 
 /** The actor a bridge caller presents — the authenticated principal plus the Company
@@ -119,9 +124,97 @@ export interface JobAuditBridge {
 const ACTIVITY_AUDIT_KIND = "activity_audit" as const;
 
 /** The activity-audit receipt source identity — keyed on the accepted mutation id, since
- * insertActivityLog has NO native dedup and the receipt is the sole replay guard. */
-function activitySourceIdentity(companyId: string, acceptedEventId: string): string {
+ * insertActivityLog has NO native dedup and the receipt is the sole replay guard. Exported so
+ * the JOB-017 seam registration and this wrapper share ONE identity per accepted mutation. */
+export function activitySourceIdentity(companyId: string, acceptedEventId: string): string {
   return `activity:${companyId}:${acceptedEventId}`;
+}
+
+/** Thrown by the core when the Company is not the Organization's own (F10: `activity_log` has
+ * no RLS, E2-D03, so the tenant check is the core's). Nothing is written. */
+export class JobAuditBridgeTenantError extends Error {
+  readonly code = "JOB_AUDIT_BRIDGE_TENANT_MISMATCH";
+  constructor() {
+    super("The Company does not belong to the Organization; no activity was recorded");
+    this.name = "JobAuditBridgeTenantError";
+  }
+}
+
+export interface RecordAcceptedActivityCoreInput {
+  organizationId: string;
+  companyId: string;
+  /** The accepted-mutation id; names the optional hub_audit idempotency key. */
+  acceptedEventId: string;
+  /** The EXISTING activity action. `runId` is IGNORED (forced null) and `companyId` must equal
+   * the core's `companyId` (a mismatch is refused, never silently rewritten). */
+  activity: LogActivityInput;
+  hubAudit?: RecordAcceptedActivityHubAudit;
+}
+
+export interface RecordAcceptedActivityCoreOutcome {
+  activityId: string;
+  hubAuditId: string | null;
+  /** The prepared live event. The core NEVER publishes it: the caller publishes it only after
+   * its own transaction has committed. */
+  prepared: PreparedActivityEvent;
+}
+
+/**
+ * JOB-017 / E3-D-ACC (a) — the TRANSACTION-TAKING audit core.
+ *
+ * It writes the activity_log row (and the optional hub_audit row) on the CALLER'S handle and
+ * returns the prepared live event. It never opens a transaction, never locks or guards the fence,
+ * never reads or writes a projection receipt, never reads a flag and never publishes. The
+ * JOB-013 wrapper below and the JOB-017 seam registration both call it; the wrapper supplies
+ * its own fence lock + receipt, the seam supplies its savepoint + receipt.
+ */
+export async function recordAcceptedActivityCore(
+  scope: { tx: Db },
+  input: RecordAcceptedActivityCoreInput,
+): Promise<RecordAcceptedActivityCoreOutcome> {
+  const { tx } = scope;
+  const companyId = input.companyId;
+  if (input.activity.companyId !== companyId) throw new JobAuditBridgeTenantError();
+  const [owner] = await tx
+    .select({ organizationId: companies.organizationId })
+    .from(companies)
+    .where(eq(companies.id, companyId))
+    .limit(1);
+  if (!owner || owner.organizationId !== input.organizationId) throw new JobAuditBridgeTenantError();
+
+  // The EXISTING activity_log write, on the caller's handle, publishing NOTHING. runId is FORCED
+  // null: a distributed attemptId is not a heartbeat_runs row (activity_log.run_id FK), so a
+  // passed-through runId would roll the caller's transaction back.
+  const prepared = await insertActivity(tx, { ...input.activity, runId: null });
+
+  // OPTIONAL hub audit — same handle. NO ON CONFLICT: aoa_app is INSERT-ONLY on hub_audit (no
+  // SELECT), and Postgres requires SELECT on the columns in a conflict-target's index predicate —
+  // so `ON CONFLICT (…) WHERE idempotency_key IS NOT NULL` would be denied. Idempotency is the
+  // CALLER'S receipt: a replay short-circuits before reaching this core. The
+  // `activity_audit:{eventId}` idempotency key + the (company_id, idempotency_key) partial unique
+  // remain a fail-closed DB backstop (a true duplicate key → 23505 → rollback). aoa_app cannot
+  // read hub_audit back (INSERT-only), so the id is generated client-side.
+  let hubAuditId: string | null = null;
+  if (input.hubAudit) {
+    hubAuditId = randomUUID();
+    await tx.insert(hubAudit).values({
+      id: hubAuditId,
+      companyId,
+      hubItemId: input.hubAudit.hubItemId ?? null,
+      idempotencyKey: `activity_audit:${input.acceptedEventId}`,
+      actorType: input.hubAudit.actorType,
+      actorId: input.hubAudit.actorId,
+      action: input.hubAudit.action,
+      authorityBasis: input.hubAudit.authorityBasis ?? null,
+      autonomyLevel: input.hubAudit.autonomyLevel ?? null,
+      priorState: input.hubAudit.priorState ?? null,
+      sourceRevision: input.hubAudit.sourceRevision ?? null,
+      reason: input.hubAudit.reason ?? null,
+      decisionContext: input.hubAudit.decisionContext ?? null,
+      undoDeadline: input.hubAudit.undoDeadline ?? null,
+    });
+  }
+  return { activityId: prepared.id, hubAuditId, prepared };
 }
 
 /** Normalize the caller's event digest to the 64-hex the receipt CHECK requires. */
@@ -204,43 +297,16 @@ export function jobAuditBridge(
           };
         }
 
-        // (c) MUTATION — the EXISTING activity_log write, callback-local on tx, publishes
-        // NOTHING. runId is FORCED null: a distributed attemptId is not a heartbeat_runs row
-        // (activity_log.run_id FK), so a passed-through runId would roll the whole tx back.
-        const prepared = await insertActivity(tx, { ...input.activity, runId: null });
-
-        // (d) OPTIONAL hub audit — same tx. NO ON CONFLICT: aoa_app is INSERT-ONLY on
-        // hub_audit (no SELECT), and Postgres requires SELECT on the columns in a
-        // conflict-target's index predicate — so `ON CONFLICT (…) WHERE idempotency_key
-        // IS NOT NULL` would be denied. Idempotency is already guaranteed upstream: a
-        // replay SHORT-CIRCUITS at the receipt fast-path (b) BEFORE reaching this insert,
-        // and lockActiveFence (a) serializes concurrent same-fence callers so the 2nd sees
-        // the committed receipt and replays. The `activity_audit:{eventId}` idempotency key
-        // + the (company_id, idempotency_key) partial unique remain a fail-closed DB
-        // backstop (a true duplicate key → 23505 → whole-tx rollback). Matches the existing
-        // recordLifecycleAction insert, which likewise writes hub_audit without ON CONFLICT.
-        // aoa_app cannot read hub_audit back (INSERT-only), so the id is generated
-        // client-side for the outcome rather than via RETURNING.
-        let hubAuditId: string | null = null;
-        if (input.hubAudit) {
-          hubAuditId = randomUUID();
-          await tx.insert(hubAudit).values({
-            id: hubAuditId,
-            companyId,
-            hubItemId: input.hubAudit.hubItemId ?? null,
-            idempotencyKey: `activity_audit:${input.acceptedEventId}`,
-            actorType: input.hubAudit.actorType,
-            actorId: input.hubAudit.actorId,
-            action: input.hubAudit.action,
-            authorityBasis: input.hubAudit.authorityBasis ?? null,
-            autonomyLevel: input.hubAudit.autonomyLevel ?? null,
-            priorState: input.hubAudit.priorState ?? null,
-            sourceRevision: input.hubAudit.sourceRevision ?? null,
-            reason: input.hubAudit.reason ?? null,
-            decisionContext: input.hubAudit.decisionContext ?? null,
-            undoDeadline: input.hubAudit.undoDeadline ?? null,
-          });
-        }
+        // (c)+(d) MUTATION — the JOB-017 transaction-taking core: the EXISTING activity_log
+        // write (runId forced null) and the OPTIONAL hub audit, on this tenant tx, publishing
+        // NOTHING. The lock (a) and the receipt fast-path (b) above are the replay guards.
+        const { prepared, hubAuditId } = await recordAcceptedActivityCore({ tx }, {
+          organizationId,
+          companyId,
+          acceptedEventId: input.acceptedEventId,
+          activity: input.activity,
+          hubAudit: input.hubAudit,
+        });
 
         // (e) RECEIPT applied in the SAME tenant transaction, fence-guarded, linking the
         // activity_log row.
