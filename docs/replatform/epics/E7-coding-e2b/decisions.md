@@ -86,3 +86,61 @@ Reasons, as given by the planning session:
 - `server/src/services/sandbox-coding-staging.ts` declares `listDir` on `FileStagingTransport` but has no
   production call site; its only exercise is test code over `MockE2bTransport`, whose recursive
   files-only behaviour is unchanged except that the listed root itself is no longer returned.
+
+---
+
+## Amendment to E7-D06 — `WRK-018`'s stdout/usage stream is instrumentation, not an output-capture path
+
+**Date (UTC):** 2026-09-21
+**Status:** `locked` — **decided under founder delegation F2** (`docs/replatform/qa/2026-09-21-m1-execution-plan.md` §2,
+F2: the founder delegates every M1 decision to the planning session, which records each with its reason).
+QA independence still holds: a distinct reviewer approves this, not the session that decided it.
+**Owner role:** planning session (decision owner, under F2)
+**Amends:** `E7-D06`, which stays where it is (E7 `implementation-plan.md` §0). No new decision id is
+minted; this is a dated amendment to an existing one.
+**Affected tickets:** `WRK-018` (E4), `CLI-011` (the F7 output-mechanism review)
+
+### Context
+
+`E7-D06` reads, in the implementation plan's §0: *"Grants inbound, references outbound, never
+bytes."* The provider reads the file inside its sandbox and PUTs it directly to object storage
+under a worker-minted grant (Option D of `DECISION-byte-egress-and-provider-topology.md`). The
+plan's runtime rule restates it: *"The control plane carries grants and references. No payload
+crosses the dependency-pinned daemon."*
+
+`WRK-018` (E4 `implementation-plan.md`, `### WRK-018`) adds an optional stdout/usage stream channel
+on the provider port. It is carried through the E2B provider (`onStdout`) and through
+provider-wire/adapter-manager, with *"every chunk redacted by the per-run canaries before it leaves
+the worker"*. Read literally, that is stdout bytes crossing the daemon, which the runtime rule's
+"no payload" wording does not allow for. `CLI-011-review.md` §3.8 and §13 item 6 record the gap. They
+also warn that unless it is closed, option 4's "just persist the stream" reads as licensed by
+`WRK-018`, and it is not (review §7.1).
+
+### Decision
+
+1. **`WRK-018`'s stdout/usage stream is instrumentation.** It exists to derive usage (`UsagePayloadV1`
+   from the `stream-json` result line) and logs. `WRK-018` requires every chunk to be redacted by the
+   per-run canaries before it leaves the worker, fail-closed (its Outcome and acceptance 2; the
+   canaries come from `synthesiseRunSecrets` and are held by `createRunCanaryCoordinator`). It is
+   **not** an output-capture path, and a run's deliverable is never taken from it. `WRK-018` is not
+   yet built; this amendment binds it as specified.
+2. **`E7-D06`'s intent stands unchanged.** The daemon never reads, hashes or relays artifact
+   **bytes**. Artifact bytes leave the sandbox only by the provider's direct PUT under a
+   worker-minted grant. The control plane carries grants and references for artifacts.
+3. **Read the runtime rule "No payload crosses the dependency-pinned daemon" as "no artifact
+   payload"**. Redacted stdout instrumentation under `WRK-018` is the one named, bounded exception.
+
+### Reasons
+
+- `WRK-018`'s own non-goals already exclude it from output capture: *"shipping transcripts as
+  artifacts (the `CLI-011` review prices the channel as an **input**, not this ticket's output)"*
+  and *"carrying raw output over the wire unredacted"*.
+- Recording the narrowing now stops an output mechanism from being justified by `WRK-018` without
+  going through F7. If a transcript is ever adopted as an output (review §9.3, option 4, as a
+  supplement only), that is an F7 ruling and it needs its own amendment here.
+
+### Consequences
+
+- Nothing in `WRK-018`'s scope changes, and no code changes.
+- Any `CLI-011` option that persists the stdout stream as an artifact must say so explicitly, and it
+  cannot cite `WRK-018` or this amendment as its licence.
