@@ -1109,6 +1109,7 @@ evidence.
 #### CLI-015 — Unit F link 6, the judge (M)
 
 - **Depends on:** CLI-011.
+- ★ *Corrected 2026-09-21 (Codex, PR #526):* CLI-015 **also** requires the approved result of the **emit build**, which is TO FILE after the `CLI-011` ruling. That edge cannot be written in the machine-readable line above until the ticket has an id. Until then the prerequisite is this prose, and `scope-triage.md` lists the emit build in the `M1b` required set.
 - **Outcome:** A verifier that counts the right things. Owns **E7-F016** — clause 6's operator-facing
   text misdescribes its own subject, blaming four links of which three flip neither counter. ★ The
   obvious repair is REFUTED (§4.3): folding a clause 6 failure into `ok` would make E7-1 permanently
