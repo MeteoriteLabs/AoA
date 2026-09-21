@@ -6,7 +6,7 @@
 **Design:** [`CLI-011-review.md`](./CLI-011-review.md) §10.1–10.5 (with §3.2 and §3.7)
 **Implementer:** `M1 CLI-011 probe build agent (Claude Opus 5)`
 **Start SHA:** `28a2dd259` (program tip), rebased (last) onto the program tip of 2026-09-21 ~12:30 UTC
-**Reviewed revision (apparatus code):** `4cc9d9aa91c853005459dfb3eccdd834ad2ff6ac`
+**Reviewed revision (apparatus code):** `c467e47ddb96bb2ef8737ba63c1dc0624a3e1a25` (apparatus `8ee8e1de3` plus the Codex-review fix)
 **PR:** #551 (base `docs/replatform-program`)
 
 The implementer leaves `Status` at `gate_review`. Only a separate reviewer may set it to
@@ -108,6 +108,16 @@ imports buildSandboxInvocation…"*).
 - The full `pr.yml` guard set and `check-evidence-immutability --base origin/docs/replatform-program`
   report 0 failures.
 
+**Codex review fixes** (commit `c467e47dd`). RED: the new tests against the previous core fail 3 of 34
+(*readDeclaration…*, *R5/R6 split A-neg…*, *R11 needs a correct declaration…*). GREEN: 34/34.
+- **P1: deletions count as A-neg mutations.** `censusDelta` used to drop removed entries, so a
+  CLI that deleted a file under R or in cwd read as `nothing-under-root-or-cwd`, even though the
+  A-neg prompt forbids deleting. It now keeps `removedUnderRoot` and `removedCwdOther`, and
+  `stagedMutated` for the run's own inputs. R5 fires on a deletion under R, and R6 requires all
+  three lists to be empty.
+- **P2: an A-decl path must be relative.** An absolute path, `~`, a `.`/`..` segment, an empty
+  segment or a backslash is refused (`relative:false`), so it can never fire R11.
+
 **Mutations.** Each mutation was applied, run, and reverted. All eight went RED.
 
 | # | mutation | suite that reds |
@@ -124,7 +134,7 @@ imports buildSandboxInvocation…"*).
 **CI.** The run on the PR's final head is on PR #551. The evidence below is from run `35596503559`, on
 head `8eb3a8e52`: the same apparatus content, before the last rebase, which touched only the
 `test-inventory` pin and the register re-point. That apparatus code was then commit `7dcc22d3f`, and is
-now `4cc9d9aa9`; the commits after it change only this record or remove a scratch file.
+now `8ee8e1de3`; the later commits are this record, a scratch-file removal, and the Codex fix above. The fix touches only the pure core and its `policy` test, so it runs in `policy` on the final head.
 - Job **`policy`** (`106327652760`), success. Step *"CLI-011 P-011 output-probe decision logic
   (proven WITHOUT the key)"*: `tests 34 / pass 34 / fail 0`.
 - Job **`verify (1)`** (`106327652902`, attempt 2), success. `keyed-cli-011-output-probe.test.ts (9
