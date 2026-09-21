@@ -523,7 +523,7 @@ cure it.
 ★ **`M1a` entry — THE EXACT DEFERRED SUBSET IS `tools` AND `output`.** The **adapter**,
 **workspace**, **audit/cost** and **cleanup** paths must be enabled for the named internal
 Organization; the **tools** and **output** paths need not be. `M1a` is satisfied by a run reporting
-`capabilityProven=false`, and the tool surface is armed by `CLI-008-C5`, which is an **`M1b`**
+`capabilityProven=false`, and the tool surface is armed by `CLI-016` (was `CLI-008-C5`), which is an **`M1b`**
 ticket — so requiring tools at `M1a` entry would make the checkpoint depend on `M1b` work. Workspace
 staging IS required: the `M1a` journey stages input. The required-ticket bullet is scoped to
 **`M1a`'s own required result set**, not to every E3–E7 ticket. Every other bullet applies to both
@@ -610,15 +610,24 @@ Ticket shipment or an earlier mechanism run cannot substitute for items 2–9. P
 > until it has a task — which makes the gap visible rather than letting a gate owner discover it
 > mid-milestone.
 >
-> **`M1b` required result set:** `CLI-008-F1a`, **`CLI-008-F1b`**, `CLI-008-F3`, `CLI-008-F4`,
-> `CLI-008-F5`, `CLI-008-F6`, `CLI-008-C5`, `DAT-009-3c`, `DAT-009-3d`, `DAT-009-3e`.
+> **`M1b` required result set:** `CLI-010`, **`CLI-011`**, `CLI-012`, `CLI-013`, `CLI-014`, `CLI-015`, `CLI-016`, `DAT-009-3c`, `DAT-009-3d`, `DAT-009-3e`.
+> ★★★ **RENUMBERED 2026-09-21 (M0 unit 4, founder decisions D1 + D5) — the ids changed, the
+> set did not.** *Superseded text: `CLI-008-F1a`, `CLI-008-F1b`, `CLI-008-F3`, `CLI-008-F4`,
+> `CLI-008-F5`, `CLI-008-F6`, `CLI-008-C5`.* Those link-scoped ids **cannot be expressed to the
+> guards**: `check-finding-ownership.mjs:423` tests an exact `tickets.has(entry.ticket)` and
+> `findTicketIds` (`:50`) derives ids from filenames with `/^([A-Z]+-\d+)/`, so `CLI-008-F1a`
+> resolves to nothing — and a `CLI-008-F1a-result.md` resolves to **`CLI-008`**, marking the
+> parent shipped and orphaning every finding it owns. This enumeration is corrected because it
+> is the **mechanically checkable artefact**: a coverage check reads the list, not the prose —
+> the same reason `CLI-008-F1b` was added to it in the twelfth round. The full old→new mapping
+> is in `program-design.md`, immediately before the `CLI-010` node.
 > ★★★ *`CLI-008-F1b` added to the LIST twelfth round: the sentence after it already said its result
 > is required and mandatory before `M1b` passes, while the enumeration omitted it — and the
 > enumeration is the mechanically checkable artefact. A coverage check reads the list, not the
 > prose, so this inconsistency would have let the output-mechanism design review be dropped by
 > exactly the kind of automated check written to prevent that.* ★★★ **`CLI-008-F1b`'s result IS in the `M1b` set** — it is
 > **design-only as to BUILD** (no build may be assigned from it), but its
-> `CLI-008-F1b-result.md` is required and must be **approved before `M1b` passes**.
+> `CLI-011-result.md` (was `CLI-008-F1b-result.md`) is required and must be **approved before `M1b` passes**.
 > *Corrected 2026-09-20 (eighth round): an earlier revision listed F1b as “not in either set”, which
 > read as exempting its record. But the E7 plan requires that result by name, exit criterion 4
 > depends on F1b, and `F6` cannot proceed without its founder ruling — so `M1b` could have passed on
@@ -630,7 +639,7 @@ Ticket shipment or an earlier mechanism run cannot substitute for items 2–9. P
 > ★ The parent `CLI-008` produces **no result for M1**, and none may be created while it still owns
 > open findings (one written today would orphan ten at once). ★ *Corrected 2026-09-20 (fifth round):
 > this said “no result, ever”, which contradicts the E7 plan's “only then can `CLI-008` carry a
-> result honestly” — after `CLI-008-LEDGER` re-points the ten findings the bar lifts. It is not in
+> result honestly” — after the ledger re-points the findings the bar lifts. ★ *M0 unit 4 re-pointed the two that genuinely map (`E7-F026`→`CLI-011`, `E7-F016`→`CLI-015`); **eight remain on `CLI-008`** because the ten findings do not correspond to the six Unit F links (D5). The bar has NOT lifted.* It is not in
 > either required set either way.*
 > | 2 — fresh `M1-D1-SPINE` campaign | ✅ | ✅ | |
 > | 3 — fresh real-E2B campaign | ✅ **`M1a-D2-MECHANISM`** | ✅ **`M1-D2-CODING`** | two gates, two QA records, two `Result` fields. One campaign run may produce both, but a QA record has ONE normative `Result`, so the mechanism verdict needed its own gate — see above. |

@@ -333,10 +333,45 @@ rollback, and smoke-test runbook.
 | Platform | Verify | E2E |
 |----------|--------|-----|
 | Linux | Required gate | Required gate |
-| macOS | Advisory (green) | Advisory (green) |
-| Windows | Advisory (4 tests skipped — Issues #113/#127) | Skipped — embedded-postgres can't start on `runneradmin` runner (Issue #114) |
+| macOS | Advisory — see status below | Advisory (green) |
+| Windows | Advisory — see status below (4 tests skipped — Issues #113/#127) | Skipped — embedded-postgres can't start on `runneradmin` runner (Issue #114) |
 
 Windows e2e skip is implemented at playwright config level (`tests/e2e/playwright.config.ts`).
+
+**Advisory `verify` status, corrected 2026-09-21 (M0 unit 2).** This table said macOS verify was
+*"Advisory (green)"* and described Windows only by its skipped tests. Both were false at
+`169be1f2c`: `cross-platform-weekly` had concluded `cancelled` on **every** scheduled run from
+2026-08-16 to 2026-09-20 — six consecutive weeks with no cross-platform verdict at all, which is
+what the DEP-013 consumer reports as `not_success`.
+
+- **macOS** failed 4 tests on the `/var` → `/private/var` symlink class
+  (`company-workspace-fs-routes.test.ts`, `workspace-runtime.test.ts`, and a third site found once
+  the lane could finish: `browser-runtime/path-adapter.test.ts`). Fixtures now resolve their temp
+  roots at creation; the underlying lexical path comparison is recorded as `E5-F003`.
+- **Windows** never finished: the single job ran typecheck + the whole suite + build under one
+  25-minute cap, and a timed-out job concludes `cancelled`. The lane is now **split into
+  `verify-cross-platform` (typecheck + build) and `test-cross-platform` (tests, sharded 4 ways)**,
+  mirroring the required Linux lane rather than raising the cap (GO-BOOK §2.0). Three further
+  causes surfaced behind the cap and are fixed: a missing dist build, a missing
+  `NODE_OPTIONS` heap ceiling, and a missing `plugin-sdk/dist` that `pnpm -r typecheck` had been
+  producing as a side effect.
+
+**Measured status (runs `35532248020`, `35533383104`).** ★ *Corrected 2026-09-21 after Codex review
+of PR #525: this paragraph still said Windows's failure set was "unmeasured", which was written
+before the lane could finish and was false once it could.* Both `verify-cross-platform` jobs and
+both `e2e-cross-platform` jobs are **green on both platforms**. Of the eight test shards, **five are
+green** and three fail on one test each:
+
+| Platform | Failing test | Disposition |
+|---|---|---|
+| Windows | `ensureRuntimeServicesForRun` late-exit rollback | `E5-F005` — real-process race |
+| Windows | `startRuntimeServicesForWorkspaceControl` batch validation | `E5-F005` — same family |
+| macOS | JOB-003 immutable-tick-deadline (real PostgreSQL) | `E3-F039` — **proven flake** (green in the earlier run, red in the later one, identical shard partition) |
+
+★★★ **But a green run conclusion on this lane does NOT mean its tests passed — `E6-F023`.** Every
+job carries `continue-on-error: true`, so the run conclusion is blind to them: run `35530935808`
+concluded `success` with **8 of 12 jobs failing**. Treat "advisory green" as a claim needing a
+per-job run behind it, not a run conclusion.
 
 **CDN fallback:** The required Linux `e2e` job uses a Google Chrome-for-Testing download when `cdn.playwright.dev` stalls (configured in `.github/workflows/pr.yml`). The advisory `e2e-cross-platform` macOS/Windows lanes do NOT use that fallback — they still rely on the default Playwright CDN and time out at 12 min if the CDN stalls. Generalizing the Google-storage fallback to mac/win lanes is tracked for 1.1.
 

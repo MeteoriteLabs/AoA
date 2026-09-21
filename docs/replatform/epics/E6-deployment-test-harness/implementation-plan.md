@@ -789,6 +789,115 @@ reviewer completes.
 
 ---
 
+## 4b. M0 disposition-B evidence-currency tasks
+
+> **Added 2026-09-21 (M0 unit 3).** `scope-triage.md`'s `M0` exit requires *"an approved,
+> candidate-current result for every disposition-B ticket"*, and `qa-handoff-recovery.md` section 2
+> forbids treating a prose `LANDED` / `complete` header as canonical approval. E6 owns two B
+> tickets and the epic-implementation-plan wave (PR #524) did not cover E6, so neither had a task.
+> A required result with no task cannot be produced, which is why M0 files these before building —
+> the same Step-0 shape `M1a` has.
+
+### `TRACK-002-B1` - current census evidence on the milestone candidate (S, <=1 agent-day, M0)
+
+**Disposition:** B. **Depends on:** nothing. **Already built:**
+[`tickets/TRACK-002-result.md`](./tickets/TRACK-002-result.md) records `Status: LANDED` -
+`scripts/check-execution-census.mjs` plus pure logic and 13 unit tests, wired into the `policy` job.
+Re-measured at this tip: the guard runs and exits 0. **Nothing here is a rebuild.**
+
+★★★ **AND THE RE-MEASURE HAS ALREADY FOUND ITS DELTA, so this task starts from a known one rather
+than from a hope.** The result doc records the manifest as **"48 files - 44 running, 4 unrun"**. At
+`169be1f2c` the guard reports **70 `*.test.mjs` on disk, 67 declared running, 3 declared unrun**,
+across 28 packages with vitest specs of which 25 own a vitest config, among 29 projects. The
+mechanism is intact; the *numbers* in the record are stale, which is precisely the condition an
+evidence-currency record exists to correct.
+
+**Outcome:** a committed re-measure on the exact milestone candidate carrying the current counts,
+confirming the guard is still wired into `policy`, still declared in `guard-inventory.json`, and
+that every `*.test.mjs` on disk is still declared either `runs` (naming a workflow + step, verified
+against that step's `run:` block) or `unrun` (with a reason). Exit criterion 1 can then cite a
+current record instead of a landed-once one.
+
+★ **Carry the guard's own caveat verbatim into the record.** It prints it: *"'runs' means the
+declaration still matches the tree, NOT observed execution"*. A currency record that quotes the
+count without the caveat would upgrade a declaration check into an execution claim - this
+programme's most repeated failure class, one register over.
+
+**Ticket non-goals:** changing the manifest's declarations; wiring a currently-`unrun` file; adding
+a package to `vitest.config.ts`'s `projects[]`; making the guard assert observed execution.
+
+**Files:** `tickets/TRACK-002-B1-result.md`. `TRACK-002-result.md` is `LANDED`, so it is **not**
+edited - a correction gets a new ticket and a new record. No source file changes expected.
+
+**Interfaces:** unchanged.
+
+**Failure behavior:** if a `*.test.mjs` is found undeclared, or a declared-`runs` file names a step
+whose `run:` block no longer invokes it, the ticket **stops** and files an E6 finding rather than
+amending the manifest to match - amending it is how a census stops being a census.
+
+**Migration/compatibility / rollback:** documentation only; revert the commit.
+
+**Observability:** the record must state both the old and new counts and say plainly that the
+difference is tree growth, not a regression, if that is what the measurement shows.
+
+**RED -> GREEN:** RED is the positive control the guard already supports - introduce a deliberately
+undeclared `*.test.mjs` and observe the guard fail, then remove it. GREEN is
+`node scripts/check-execution-census.mjs` exiting 0 with the counts recorded verbatim.
+
+**Evidence / commit:** `tickets/TRACK-002-B1-result.md`; one documentation commit
+`docs(e6): re-measure the execution census on the M0 candidate`.
+
+---
+
+### `DEP-008-B1` - current isolation-conformance evidence on the milestone candidate (S, <=1 agent-day, M0)
+
+**Disposition:** B. **Depends on:** nothing. **Already built:**
+[`tickets/DEP-008-result.md`](./tickets/DEP-008-result.md) records `Status: complete` /
+`Disposition: pass` - `runSandboxIsolationConformance` with 8 hostile checks, a separate
+`HostileSandboxProvider` reference driver, and 9 sabotage tests each asserting the target's failure
+*reason*. Production wiring re-measured at this tip: exported from
+`packages/sandbox-provider-contract/src/index.ts:36`, defined at
+`src/isolation-contract.ts:89`, and **consumed** at
+`packages/sandbox-e2b-provider/src/__tests__/conformance.test.ts:46`. It is not a zero-caller
+suite. **Nothing here is a rebuild.**
+
+**Outcome:** a committed re-measure on the exact milestone candidate showing the eight hostile
+checks are all still present and still paired with a sabotage mutant that must fail them, and
+restating the ticket's own `CI caveat` in current terms: the live `tests/d1/e6f-08-*.mjs` probes
+are Docker/CI-only and have no Windows-local substitute (DEC-03).
+
+★ **The acceptance boundary must be restated, not softened.** `DEP-008-result.md` says E6 certifies
+*"the suite + hostile reference over the frozen invoke-driver port - NOT E2B and NOT any real
+adapter"*. The currency record repeats that limit in its own words; a record that omits it would
+read as isolation proof against a real provider, which no evidence here supports.
+
+**Ticket non-goals:** running the hostile suite against real E2B; adding a ninth check; changing
+`HostileSandboxProvider`; re-opening the two finder framings the adversarial review correctly
+refuted (the section 2.6 "circular egress check" and the "params-handshake overclaim").
+
+**Files:** `tickets/DEP-008-B1-result.md`. `DEP-008-result.md` is `complete` and therefore **frozen**
+- a correction is a finding plus a new ticket, never an edit. No source file changes expected.
+
+**Interfaces:** unchanged.
+
+**Failure behavior:** if a sabotage mutant no longer reds its target check, that is a **vacuous
+test** and the ticket stops and files an E6 finding. A check that cannot fail is the thing this
+programme counts as not existing.
+
+**Migration/compatibility / rollback:** documentation only; revert the commit.
+
+**Observability:** the record names the exact focused command and its exit code, and states the
+Docker/CI-only probes as unrun-here rather than passing.
+
+**RED -> GREEN:** RED is a sabotage mutant reddening its paired check (the suite ships nine of
+them; run them, do not assume them). GREEN is the focused conformance suite passing with its counts
+recorded.
+
+**Evidence / commit:** `tickets/DEP-008-B1-result.md`; one documentation commit
+`docs(e6): re-measure the sandbox isolation conformance suite on the M0 candidate`.
+
+---
+
 ## 5. Existing-infra crosswalk (what DEP extends vs leaves authoritative)
 
 | Concern | Existing authority | DEP disposition |

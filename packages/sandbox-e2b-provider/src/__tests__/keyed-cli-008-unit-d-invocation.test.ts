@@ -50,6 +50,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildSandboxInvocation,
+  STAGED_AOA_MCP_CONFIG_PATH,
   STAGED_INSTRUCTIONS_PATH,
   STAGED_INPUT_MISSING_EXIT_CODE,
   STAGED_PROMPT_PATH,
@@ -167,10 +168,21 @@ describeKeyed("CLI-008 Unit D — the invocation shape, executed in a REAL E2B s
         expect(res.exitCode).toBe(0);
 
         // (3) `$2` became its own argv element and points at the staged bundle.
+        //
+        // ★ `--dangerously-skip-permissions` IS ASSERTED POSTURE, NOT INCIDENTAL DRIFT.
+        // E7-F021, founder-authorized 2026-09-11: an unattended distributed run has no
+        // human to answer claude's permission prompt, and the flag is scoped to this
+        // throwaway sandbox. Three other observers already pin it — the emitter's own
+        // literals (`task-run-sandbox-invocation.ts:220-225`), the W7U1 permission-posture
+        // guard (`scripts/lib/__tests__/w7u1-agent-output-probe.test.mjs:103-104, :115`)
+        // and `server/src/__tests__/task-run-batch-workload.test.ts`. This lane was the
+        // one observer still denying it, which is why it was red from `db0edd932` onward.
+        // Dropping the flag from the emitter must RED this case on purpose.
         const argv = (await readText(t, sandboxId, PROBE_ARGV_OUT)).split("\n").filter((l) => l.length > 0);
         expect(argv).toEqual([
           "--print",
           "-",
+          "--dangerously-skip-permissions",
           "--output-format",
           "stream-json",
           "--verbose",
@@ -187,6 +199,88 @@ describeKeyed("CLI-008 Unit D — the invocation shape, executed in a REAL E2B s
         // bytes staged — `--append-system-prompt-file` has something real to open.
         expect(await readText(t, sandboxId, STAGED_INSTRUCTIONS_PATH)).toBe(instructions);
         expect(await readText(t, sandboxId, STAGED_PROMPT_PATH)).toBe(prompt);
+      });
+    },
+    240_000,
+  );
+
+  it(
+    "claude shape with the brokered MCP config: the Unit C segment survives the collapse and $3 is the staged config",
+    async () => {
+      // ★★★ THE BRANCH NOBODY WAS WATCHING. Until this case, the lane exercised only
+      // `stageAoaConfig === false`. Unit C's config branch
+      // (`task-run-sandbox-invocation.ts:217-221`) had NO keyed coverage at all — and that
+      // blind spot has already cost something real: when this lane went red on the E7-F021
+      // posture flags, the failure was recorded as "the argv shapes drifted when Unit C
+      // added MCP flags", and no observed MCP argv existed to contradict it. It was wrong;
+      // runs 34533429893 (`db0edd932`, nine days BEFORE Unit C) and 35438996937
+      // (`74103f95d`) fail with byte-identical assertions and neither diff contains an MCP
+      // flag. A branch that cannot be observed gets described from memory.
+      //
+      // The config is opaque to this lane by design: the probe is not a real `claude`, so
+      // nothing here claims the MCP server is reachable or that the tool surface works.
+      // What is claimed is exactly the Unit D question, one branch over — does the emitted
+      // segment survive `shellJoin` with `$3` intact as its own argv element.
+      const prompt = "# Task\nUse the aoa tools; don't `break` \"quoting\" $HOME | & > <";
+      const instructions = "# Standing instructions\nAlways answer in one word.";
+      const aoaMcpConfig = JSON.stringify({
+        mcpServers: { aoa: { type: "http", url: "https://example.invalid/mcp" } },
+      });
+
+      const inv = buildSandboxInvocation({
+        adapterType: "claude_local",
+        binary: PROBE_PATH,
+        prompt,
+        instructions,
+        aoaMcpConfig,
+      });
+      expect(inv).not.toBeNull();
+      if (inv === null) return;
+
+      await withSandbox(async (t, sandboxId) => {
+        await installProbe(t, sandboxId);
+        await t.writeFiles(sandboxId, toE2bFiles(inv.stagedFiles));
+
+        const res = await t.runCommand({
+          sandboxId,
+          command: inv.command,
+          args: [...inv.args],
+          envVars: {},
+          timeoutMs: 60_000,
+        });
+        expect(res.exitCode).toBe(0);
+
+        // The whole config-branch argv, in order. `--mcp-config "$3"` is the element that
+        // proves the collapse survived a THIRD positional; `--strict-mcp-config` and
+        // `--allowedTools mcp__aoa` are the scoping half — an argv that kept the config
+        // but lost the scoping would hand the agent a wider tool surface than authorized,
+        // so they are asserted, not assumed.
+        const argv = (await readText(t, sandboxId, PROBE_ARGV_OUT)).split("\n").filter((l) => l.length > 0);
+        expect(argv).toEqual([
+          "--print",
+          "-",
+          "--dangerously-skip-permissions",
+          "--output-format",
+          "stream-json",
+          "--verbose",
+          "--append-system-prompt-file",
+          STAGED_INSTRUCTIONS_PATH,
+          "--mcp-config",
+          STAGED_AOA_MCP_CONFIG_PATH,
+          "--strict-mcp-config",
+          "--allowedTools",
+          "mcp__aoa",
+        ]);
+
+        // The prompt still reaches stdin — staging a third file must not disturb `< "$1"`.
+        expect(await readText(t, sandboxId, PROBE_STDIN_OUT)).toBe(prompt);
+
+        // All three staged files are readable at the paths the argv names, byte for byte.
+        // The readable-or-refuse guard is emitted for `$1 $2 $3` here, so a config that
+        // staged but did not arrive would have exited 78 above rather than reaching this.
+        expect(await readText(t, sandboxId, STAGED_PROMPT_PATH)).toBe(prompt);
+        expect(await readText(t, sandboxId, STAGED_INSTRUCTIONS_PATH)).toBe(instructions);
+        expect(await readText(t, sandboxId, STAGED_AOA_MCP_CONFIG_PATH)).toBe(aoaMcpConfig);
       });
     },
     240_000,
@@ -244,8 +338,20 @@ describeKeyed("CLI-008 Unit D — the invocation shape, executed in a REAL E2B s
           });
           expect(res.exitCode, label).toBe(0);
 
+          // ★ THE TWO POSTURE FLAGS ARE ASSERTED, for the same reason as the claude case
+          // above. E7-F027, founder-authorized 2026-09-11: codex's approval prompt has
+          // nobody to answer it in an unattended sandbox. They are options of the `exec`
+          // SUBCOMMAND, so they sit after `exec --json` and before the `-` stdin
+          // positional — that ordering is the assertion, not just their presence
+          // (`task-run-sandbox-invocation.ts:250-251`).
           const argv = (await readText(t, sandboxId, PROBE_ARGV_OUT)).split("\n").filter((l) => l.length > 0);
-          expect(argv, label).toEqual(["exec", "--json", "-"]);
+          expect(argv, label).toEqual([
+            "exec",
+            "--json",
+            "--skip-git-repo-check",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "-",
+          ]);
 
           const stdin = await readText(t, sandboxId, PROBE_STDIN_OUT);
           expect(stdin, label).toBe(expected);

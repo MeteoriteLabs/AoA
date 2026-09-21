@@ -55,7 +55,15 @@ const localImplicitActor = {
 let tmpBase: string;
 
 beforeEach(async () => {
-  tmpBase = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-company-fs-routes-test-"));
+  // ★ REALPATH, AND THIS IS NOT COSMETIC. On macOS `os.tmpdir()` is `/var/folders/…`, a symlink
+  // to `/private/var/folders/…`. The browse route resolves the path it returns, so every
+  // expectation built from an unresolved `tmpBase` compares `/private/var/…` against `/var/…`
+  // and fails on macOS only — which is exactly what reddened `cross-platform-weekly` while the
+  // required Linux lane stayed green. Resolving here makes the fixture's world match what the
+  // routes will report, on every platform: on Linux and Windows `realpath` of a directory just
+  // created is identity, so no other lane changes behaviour. Same idiom as `git-service.test.ts:35`
+  // and `local-execution-target.test.ts:9`.
+  tmpBase = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "aoa-company-fs-routes-test-")));
 });
 
 afterEach(async () => {

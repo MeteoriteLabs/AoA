@@ -203,6 +203,25 @@ import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 const AGENT_ID = "a-1";
 const AGENT_HOME = resolveDefaultAgentWorkspaceDir(AGENT_ID);
 
+/**
+ * T5's real assertion: `candidate` is neither `process.cwd()` nor a descendant of it.
+ *
+ * ★★★ WHY THIS IS NOT `relative(...).startsWith("..")`. On Windows the agent home
+ * resolves under the instance root (`C:\Users\<user>\.aoa\workspaces\...`) while the checkout
+ * lives on another drive (`D:\a\AoA\AoA` on a hosted runner). `path.relative` cannot express a
+ * cross-ROOT relationship, so it returns an ABSOLUTE path -- which does not start with `..`, so
+ * the guard failed on Windows only. A different drive is the strongest possible form of "not
+ * inside", and the guard was reporting that safest case as the unsafe one.
+ *
+ * Measured on `cross-platform-weekly` run 35532248020 (M0 unit 2). The required Linux lane could
+ * never see it, because there is only one root there.
+ */
+function expectOutsideCwd(candidate: string): void {
+  const rel = path.relative(process.cwd(), candidate);
+  // "" means the two paths are the SAME, which is the thing being forbidden.
+  expect(rel !== "" && (path.isAbsolute(rel) || rel.startsWith(".."))).toBe(true);
+}
+
 const AGENT_ROW = {
   id: AGENT_ID,
   companyId: "co-1",
@@ -411,7 +430,7 @@ describe("T5: crew execution-workspace resolution", () => {
     const cwd = String(ws.cwd);
     expect(cwd).not.toBe(process.cwd());
     expect(path.resolve(cwd)).not.toBe(path.resolve(process.cwd()));
-    expect(path.relative(process.cwd(), cwd).startsWith("..")).toBe(true);
+    expectOutsideCwd(cwd);
     // …and the resolved cwd is under the AoA instance root, not a source tree.
     expect(path.resolve(cwd).startsWith(path.resolve(AGENT_HOME))).toBe(true);
     // Created eagerly so the adapter's ensureAbsoluteDirectory finds it.
@@ -523,7 +542,7 @@ describe("T5: crew execution-workspace resolution", () => {
     expect(ws.source).toBe("agent_home");
     expect(ws.projectId).toBeNull();
     expect(String(ws.cwd)).not.toBe(process.cwd());
-    expect(path.relative(process.cwd(), String(ws.cwd)).startsWith("..")).toBe(true);
+    expectOutsideCwd(String(ws.cwd));
   });
 
   it("(g) a thread SCOPED TO A PROJECT resolves that project's workspace", async () => {

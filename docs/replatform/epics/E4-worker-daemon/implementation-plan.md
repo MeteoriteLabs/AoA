@@ -919,6 +919,64 @@ reviewer reruns the full acceptance matrix — including every fence-close denia
 
 ---
 
+## 4b. M0 disposition-B evidence-currency task
+
+> **Added 2026-09-21 (M0 unit 3).** `scope-triage.md`'s `M0` exit requires a candidate-current
+> result for every disposition-B ticket, and `qa-handoff-recovery.md` section 2 forbids treating a
+> prose `BUILT` header as canonical approval. E4 owns one B ticket and the epic-implementation-plan
+> wave (PR #524) did not cover E4, so it had no task. A required result with no task cannot be
+> produced.
+
+### `WRK-017-B1` - current enrolment evidence on the milestone candidate (S, <=1 agent-day, M0)
+
+**Disposition:** B. **Depends on:** nothing. **Already built:**
+[`tickets/WRK-017-result.md`](./tickets/WRK-017-result.md) records `Status: BUILT` - `worker-b`
+boots the container custody root (`dist/bin/container-host.js`) via a compose `command:` override,
+reads a POSIX enrolment ticket from a read-only mount, and enrols against the live control plane.
+Re-measured at this tip: `worker-b` is present at `docker-compose.d1.yml:370`, its profile and
+enrolment-ticket mounts at `:145-146`, and the load-bearing network invariant (`worker-a` /
+`worker-b` NOT attached to `data-net`) is still stated at `:25`. **Nothing here is a rebuild.**
+
+**Outcome:** a committed re-measure on the exact milestone candidate confirming three things that
+the result doc claims and that a later gate will lean on: the enrolment is **load-bearing for
+bring-up** (a first-boot enrol failure is `proc.exit(1)` with no `restart:` policy, so it fails
+`up --wait` outright rather than being merely asserted by a test); `worker-a` remains the
+`mounted_secret` negative control; and the authority is still seeded by the privileged migrate job,
+which is the only place early enough.
+
+★ **The lane the result had to repair is the one M0 criterion 1 depends on.** `WRK-017-result.md`
+records that it found `d1-merge-train` red for five days and three merges. That lane is green at
+`52626d80e` and coverage-satisfied at this candidate; the record should say so, because a currency
+record for this ticket that ignored the lane would omit the reason the ticket is interesting.
+
+**Ticket non-goals:** changing the compose topology; attaching either worker to `data-net`;
+repointing the image CMD (the override is deliberate); moving the authority seed out of the migrate
+job; running a D1 bring-up locally (Docker/CI-only - there is no Windows-local substitute).
+
+**Files:** `tickets/WRK-017-B1-result.md`. `WRK-017-result.md` is not edited. No source changes.
+
+**Interfaces:** unchanged.
+
+**Failure behavior:** if `worker-b` no longer boots the custody root, or a `restart:` policy has
+appeared that would mask an enrol failure, the ticket **stops** and files an E4 finding. A
+`restart:` policy here would convert a load-bearing check into a retry loop, which is the same
+class as a check that cannot fail.
+
+**Migration/compatibility / rollback:** documentation only; revert the commit.
+
+**Observability:** the record must state plainly which clauses were verified **statically** (compose
+topology, mounts, absence of `restart:`) and which require a Docker bring-up and were therefore
+**not** re-run here. Do not let a static read present itself as a live enrolment.
+
+**RED -> GREEN:** RED is a deliberate local mutation of the compose `command:` override showing the
+static assertion reds; GREEN is the assertions passing at the candidate with the citations recorded
+by symbol and line.
+
+**Evidence / commit:** `tickets/WRK-017-B1-result.md`; one documentation commit
+`docs(e4): re-measure the D1 worker enrolment wiring on the M0 candidate`.
+
+---
+
 ## 5. Legacy parity mapping (FND-007 / frozen-main crosswalk)
 
 The worker daemon is a **net-new** artifact; there is no legacy in-repo worker to preserve

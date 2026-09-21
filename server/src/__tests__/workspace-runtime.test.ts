@@ -143,7 +143,20 @@ describe("runtime service process cleanup", () => {
 });
 
 async function createTempRepo() {
-  const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-repo-"));
+  // ★ REALPATH, BECAUSE GIT WILL. On macOS `os.tmpdir()` is `/var/folders/…`, a symlink to
+  // `/private/var/folders/…`. Git normalises symlinks when it creates a worktree, so the realized
+  // workspace's `cwd` comes back RESOLVED while an unresolved repo root stays symlinked — and
+  // `isApprovedRuntimeWorkspacePath` (`services/runtime-workspace-path-policy.ts:14-27`) compares
+  // them LEXICALLY via `isStrictDescendant`, never `realpath`. The resolved candidate is then not a
+  // descendant of the symlinked root, cleanup refuses with "outside approved runtime workspace
+  // roots" and sets `preserve = true`, which is the single cause of all three macOS cleanup
+  // failures on `cross-platform-weekly`. Resolving here gives the fixture the same path shape git
+  // produces. On Linux and Windows this is identity.
+  //
+  // The underlying lexical comparison is a real product inconsistency for any deployment whose
+  // project root traverses a symlink; it fails CLOSED (preserve + warn), and it is recorded as a
+  // finding rather than changed here — that predicate bounds recursive deletion.
+  const repoRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-repo-")));
   await runGit(repoRoot, ["init"]);
   await runGit(repoRoot, ["config", "user.email", "paperclip@example.com"]);
   await runGit(repoRoot, ["config", "user.name", "Paperclip Test"]);

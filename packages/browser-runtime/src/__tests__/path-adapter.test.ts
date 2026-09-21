@@ -9,13 +9,19 @@
 //     `_.._escape.txt`) and writes to a GUID. The surface that can ACTUALLY escape is
 //     `download.saveAs(path)`, which takes a caller-supplied path. That is what this guards.
 import { describe, expect, it } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { resolveUnderRoot, safeDownloadName } from "../path-adapter.js";
 
 function withRoot<T>(fn: (root: string, outside: string) => T): T {
-  const base = mkdtempSync(join(tmpdir(), "brw002-"));
+  // ★ REALPATH, because `resolveUnderRoot` does. On macOS `tmpdir()` is `/var/folders/…`, a
+  // symlink to `/private/var/folders/…`. The adapter deliberately resolves the ROOT (and
+  // deliberately does NOT resolve the candidate — see the `saveAs` case below, where the target
+  // does not exist yet), so an unresolved `root` here fails `result.path.startsWith(root + sep)`
+  // on macOS only, while every confinement REFUSAL still passes — the shape that reddened
+  // `cross-platform-weekly` without ever reddening the required Linux lane.
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "brw002-")));
   const root = join(base, "job-root");
   const outside = join(base, "outside");
   mkdirSync(root, { recursive: true });
@@ -176,7 +182,7 @@ describe("BRW-002 resolveUnderRoot — sibling-prefix confusion", () => {
   it("refuses a sibling directory whose name merely starts with the root's name", () => {
     // `/tmp/x/job-root-evil` must not pass a prefix test against `/tmp/x/job-root`. This is
     // why the comparison appends a separator; without it the guard is a substring check.
-    const base = mkdtempSync(join(tmpdir(), "brw002-sib-"));
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "brw002-sib-")));
     try {
       const root = join(base, "job-root");
       const evil = join(base, "job-root-evil");

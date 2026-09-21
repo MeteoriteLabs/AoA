@@ -165,3 +165,147 @@ semantics — that choice is DAT-009's, not this filing's), which would also giv
 a production caller. Not done here: `putGrantBytes` is on the export path DAT-009 slice 3 owns, and
 changing which digest a signed PUT carries is a correctness decision with live-store consequences
 that must be re-proven on the keyed lane, not asserted from a filing unit.
+
+---
+
+## E5-F003 - the approved-workspace-root check compares paths lexically while git resolves symlinks, so cleanup refuses on any symlinked root
+
+**Status:** open
+**Severity:** MEDIUM (fails CLOSED - it preserves the worktree and warns, so nothing is deleted
+wrongly; the defect is that legitimate cleanup never happens and the operator is told the path is
+"outside approved runtime workspace roots", which reads like a misconfiguration)
+**Filed:** 2026-09-21 (M0 unit 2), measured at `169be1f2c` from `cross-platform-weekly` run
+`35493290194`.
+
+**What.** `isApprovedRuntimeWorkspacePath`
+([`server/src/services/runtime-workspace-path-policy.ts:14-27`](../../../../server/src/services/runtime-workspace-path-policy.ts))
+builds its approved roots with `path.resolve` and tests membership with `isStrictDescendant`
+(`:4-7`), which is `path.relative` over `path.resolve`. Both are **lexical**: neither resolves
+symlinks. Git, however, normalises symlinks when it creates a worktree, so a realized workspace's
+`cwd` comes back RESOLVED while the project root it was derived from stays as configured.
+
+When the configured root traverses a symlink, the resolved candidate is not a lexical descendant of
+the unresolved root. `realizeExecutionWorkspace` cleanup then takes the refusal arm at
+[`workspace-runtime.ts:1531-1537`](../../../../server/src/services/workspace-runtime.ts), sets
+`preserve = true`, and pushes
+*"Refusing to remove path ... because it is outside approved runtime workspace roots."*
+
+**Evidence.** macOS makes this reproducible for free: `os.tmpdir()` is `/var/folders/...`, a symlink
+to `/private/var/folders/...`. Three `workspace-runtime.test.ts` cases failed on
+`cross-platform-weekly` for exactly this reason - the cleanup-and-remove case, the keep-unmerged-
+branch case and the teardown-operations case - all three reporting the same refusal against
+`/private/var/.../paperclip-worktree-repo-*/.aoa/worktrees/...`. It is not macOS-specific: a
+symlinked home directory or a bind-mounted checkout produces the same shape on Linux.
+
+**Not fixed here, and why.** M0 unit 2 repairs the LANE by resolving the fixtures' temp roots at
+creation, which is what git will produce anyway; it does not touch the predicate. That predicate is
+the boundary that bounds recursive deletion ("Recursive workspace cleanup is limited to server-owned
+allocation roots ... Persisted row metadata is deliberately not trusted", `:9-13`), so changing it
+is a security-sensitive change, and M0 introduces no new product capability. Any repair must resolve
+BOTH sides - resolving only the candidate would widen the boundary rather than align it.
+
+**Blocks gate:** no.
+
+---
+
+## E5-F004 - DAT-008 slice 6 is closed on the mint side only, and no standalone slice-6 record indexes it
+
+**Status:** open
+**Severity:** LOW (record-indexing) and MEDIUM (the placement-side residual) - two separable facts,
+kept apart deliberately so neither is read as the other
+**Filed:** 2026-09-21 (`DAT-008-A1`, M0 unit 7), verified at `5a796928bc1a64773ad7ca77971e18f9a58b6f66`.
+
+★★★ **THIS FINDING EXISTS BECAUSE AN EARLIER DRAFT OF ITS OWN TICKET WAS WRONG.** The E5 plan
+records that `DAT-008-A1` was first written to assert *"slice 6 has no record on disk at all"* and
+that founder decision **D7** struck it as a **false absence claim**, verified at source. What is
+absent is a `DAT-008-slice-6-*` FILENAME, not the slice. D7 also forbids a specific absence-claiming
+word in any artefact this ticket writes; that word is named in the E5 plan's `DAT-008-A1` task and
+is deliberately not reproduced here, because reproducing it in a register is how a struck claim
+comes back through a search.
+
+### (i) The record-indexing gap - LOW
+
+No standalone `DAT-008-slice-6-*` result file exists. The slice is nonetheless accounted for three
+times over, each re-verified at `5a796928bc1a64773ad7ca77971e18f9a58b6f66`:
+
+- **Named:** *"Slice 6 - deferral #3, the tautological owner check"* -
+  [`tickets/DAT-008-design.md:233`](./tickets/DAT-008-design.md).
+- **Dispositioned:** *"Deferral #3 is closed on the MINT side only. The mint refuses unless two
+  independently-derived owner authorities agree. The *original* tautological comparison in the
+  placement path is untouched - DAT-008 stops relying on it; it does not delete it."* -
+  [`tickets/DAT-008-result.md:111-113`](./tickets/DAT-008-result.md).
+- **Implemented (mint side):** `server/src/services/execution-secret-handle-mint.ts:174` -
+  `if (!ownerAuthoritiesAgree(input.placementOwner, input.credentialKind)) return
+  refuse("owner_authority_disagreement");`
+
+So the defect is that nothing INDEXES those three under a slice-6 name - a navigability problem,
+not a missing-work problem.
+
+### (ii) The placement-side residual - MEDIUM
+
+The original tautological owner comparison **in the placement path is untouched**, deliberately.
+`DAT-008` stopped relying on it; it did not delete it. Only the mint side is closed.
+
+★ **What this is NOT.** It is not a live escape: the mint refuses unless two independently-derived
+owner authorities agree, so the path `DAT-008` armed is guarded. The residual is that a second,
+older comparison still exists in the placement path and still compares a value with itself.
+
+### Disposition
+
+`DAT-008-A1` narrows the E5 README's completion sentence to what the ledgers support and files this.
+It builds neither half: the placement-side residual and slice 7 are unbuilt and stay that way, and
+re-deriving the mint-side evidence is a non-goal because it is cited above.
+
+**Blocks gate:** no.
+
+---
+
+## E5-F005 - the late-exit runtime-service rollback case is a real-process RACE, and it resolves differently on Windows
+
+**Status:** open
+**Severity:** LOW (one test, on an advisory lane; no product claim rests on it)
+**Filed:** 2026-09-21 (M0 unit 2), measured on `cross-platform-weekly` run `35532248020`.
+
+**What.** `ensureRuntimeServicesForRun > rejects and rolls back the whole run batch when an earlier
+service exits during later readiness`
+(`server/src/__tests__/workspace-runtime.test.ts:1031`) spawns **real** `node -e` child processes
+and depends on their relative timing: a survivor service sleeps 700ms before listening, against a
+3s readiness timeout polled every 100ms. It then asserts the failure is specifically a
+`RuntimeServiceActivationFenceError`.
+
+OBSERVED on Windows: the rejection is a plain
+`Error: Failed to start runtime service "d..."` instead. The batch **is** rejected - the behaviour
+under test happens - but the race resolves down a different arm, so the type assertion fails.
+Green on macOS and on the required Linux lane.
+
+★★★ **NOT FIXED BY RAISING THE TIMEOUT, DELIBERATELY.** Widening the window until Windows
+wins the race would make the test pass without making it deterministic, and this repo has already
+paid for that lesson in the opposite direction: a probe asserting strict `<` on same-millisecond
+timestamps passed on Windows and failed on Linux, and the record of it says *"an assertion that
+holds only on slow hardware is a flake, not a check."* The same applies to one that holds only on
+fast hardware.
+
+★ **Nor is it fixed by skipping on Windows.** A skip would restore the green without changing
+what is known, and this lane has just finished paying for a green that hid its failures
+(`E6-F023`).
+
+### What a fix would be
+
+Make the ordering **injected rather than raced** - the test owns the child processes it spawns, so
+the survivor's listen moment and the earlier service's exit can be sequenced explicitly instead of
+being scheduled against a wall clock. Then the assertion tests the fence arm because the fence arm
+is the one the test arranged, on every platform.
+
+★★★ **AMENDED 2026-09-21 - IT IS A FAMILY OF TWO, NOT ONE CASE.** Run `35533383104` turned up
+a sibling with the same shape on Windows:
+`startRuntimeServicesForWorkspaceControl > validates the whole batch before committing any service`
+(`server/src/__tests__/runtime-service-control.test.ts`). Same subject - batch validation and
+rollback over REAL spawned services - same platform, same single-test failure. Filing it as a second
+finding would have split one cause across two records, so it is named here instead.
+
+★ **That makes the fix scope clearer, not larger.** Both cases race real child processes against a
+wall clock to reach a specific arm. Injecting the ordering fixes the family; widening a timeout
+fixes neither, because the two cases want opposite timings.
+
+**Blocks gate:** no. These are two advisory tests, and the batch-rejection behaviour they exercise
+is observed on all three platforms - only the error TYPE, or which arm is reached, differs.

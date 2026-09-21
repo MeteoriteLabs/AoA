@@ -753,6 +753,62 @@ genuinely reached.
 
 ---
 
+### 8.1a `MIG-009-B1` - the M0 half: current drain evidence on the milestone candidate (S, <=1 agent-day, M0)
+
+> **Added 2026-09-21 (M0 unit 3).** `scope-triage.md` splits `MIG-009` across two milestones: its
+> **evidence currency** is `M0`'s and its **trigger build** is `M1a`'s. Section 8.1 above is the
+> trigger build. Until this task existed, the M0 half had no task anywhere - section 8.1 cannot
+> serve, because it is explicitly the `M1a` item and `scope-triage.md` states in terms that the
+> frozen `MIG-009-drain-result.md` **may not be reused** for `M1a` criterion 1. Two milestones, two
+> records.
+
+**Disposition:** B (evidence-currency half). **Depends on:** nothing. **Does NOT depend on section
+8.1** - and must not wait for it, or M0 would block on `M1a`'s build.
+
+**Already built:** [`tickets/MIG-009-drain-result.md`](./tickets/MIG-009-drain-result.md) records
+`Status: SHIPPED` - the flag-disable rollback drain, grain-safe and SQL-backed, with `E10-1-drain`
+left honestly `unwired`. Re-measured at this tip: `check-gate-clause-wiring` still reports
+`E10-1-drain` in its **DORMANT, on the record** list, so the register and the code still agree that
+the trigger is absent.
+
+**Outcome:** a committed record on the exact M0 candidate stating that the drain's *correctness* is
+current and that its *trigger* is still absent - and that the two facts are separate. That is what
+lets `M0` exit with `MIG-009`'s B obligation discharged while `M1a` still owes the build.
+
+★★★ **THIS RECORD MUST NOT READ AS A REHEARSAL.** Exit criterion 6's rollback rehearsal **uses**
+the drain, and D-9 is explicit that wiring it is what gives that criterion a mechanism rather than a
+runbook. A currency record that said "the drain is verified" without saying "and nothing can call
+it" would let a later gate owner read criterion 6 as satisfiable today. State the dormancy in the
+record's own summary line, not only in its body.
+
+**Ticket non-goals:** wiring the trigger (that is 8.1, `M1a`); flipping `E10-1-drain` out of the
+dormant list; cutting over any execution sink; touching any credential path (E10-F001 - the drain is
+sink-agnostic).
+
+**Files:** `tickets/MIG-009-B1-result.md`. `MIG-009-drain-result.md` is frozen and is **not**
+edited. No source file changes.
+
+**Interfaces:** unchanged.
+
+**Failure behavior:** if `E10-1-drain` is found **wired** at the candidate - i.e. section 8.1 landed
+first - this task does not silently absorb that. It stops, records that the M0 and `M1a` halves have
+converged, and the `M1a` result becomes the one that carries the clause.
+
+**Migration/compatibility / rollback:** documentation only; revert the commit.
+
+**Observability:** the record names `node scripts/check-gate-clause-wiring.mjs` and quotes the
+`E10-1-drain` dormant line verbatim, so the dormancy claim has a command behind it rather than a
+memory.
+
+**RED -> GREEN:** RED is the positive control the guard already supports - assert `E10-1-drain` is
+`wired` and observe the assertion fail against the real register. GREEN is the guard passing with
+the dormant list recorded verbatim.
+
+**Evidence / commit:** `tickets/MIG-009-B1-result.md`; one documentation commit
+`docs(e10): record current drain evidence and its dormant trigger on the M0 candidate`.
+
+---
+
 ## 9. Reopen triggers
 
 Reopen this plan — not merely amend a ticket — when any of the following becomes true:
