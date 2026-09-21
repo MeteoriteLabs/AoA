@@ -1,6 +1,6 @@
 # DAT-011-B1 Result - the orphan sweep still has production callers end to end
 
-**Status:** `complete`
+**Status:** `gate_review`
 **Date (UTC):** `2026-09-21`
 **Epic:** `E5-workspaces-secrets`
 **Plan task:** `E5 implementation-plan DAT-011-B1 - current orphan-sweep evidence on the milestone candidate (M0)`

@@ -1,6 +1,6 @@
 # WRK-017-B1 Result - the D1 worker enrolment wiring is intact, and the lane it repaired is green
 
-**Status:** `complete`
+**Status:** `gate_review`
 **Date (UTC):** `2026-09-21`
 **Epic:** `E4-worker-daemon`
 **Plan task:** `E4 implementation-plan WRK-017-B1 - current enrolment evidence on the milestone candidate (M0)`
@@ -40,9 +40,11 @@ record for this ticket that ignored the lane would omit the reason it matters to
 
 **None in the static clauses.**
 
-## 4. What was NOT verified, and this boundary is the point
+## 4. What was NOT re-run LOCALLY, and where CI supplied it instead
 
-★★★ The enrolment itself was not exercised. The result's strongest claim is that a first-boot enrol
+★ *Corrected 2026-09-21 (Codex, PR #527): this heading read “What was NOT verified” and this paragraph opened “The enrolment itself was not exercised” — which the correction further down contradicts: `d1-merge-train` run `35504786263` DID exercise the live enrolment (47/47). The boundary is that it was not re-run **in this worktree**, not that it was never exercised.*
+
+★★★ The enrolment was not re-run in this worktree. The result's strongest claim is that a first-boot enrol
 failure is `proc.exit(1)` with no `restart:` policy, so it fails `up --wait` outright - which makes
 the enrol **load-bearing for bring-up** rather than merely asserted by a test. Proving that needs a
 Docker compose bring-up: Linux-CI-only, no Windows-local substitute. This record verifies the

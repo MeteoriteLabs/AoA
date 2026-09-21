@@ -1,6 +1,6 @@
 # MIG-009-B1 Result - the drain is still correct, and its trigger is still absent
 
-**Status:** `complete`
+**Status:** `gate_review`
 **Date (UTC):** `2026-09-21`
 **Epic:** `E10-desktop-migration-realtime`
 **Plan task:** `E10 implementation-plan section 8.1a MIG-009-B1 - the M0 half: current drain evidence (M0)`

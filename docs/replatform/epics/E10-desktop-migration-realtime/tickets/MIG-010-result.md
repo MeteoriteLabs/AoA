@@ -1,6 +1,6 @@
 # MIG-010 Result — legacy-resource reconciliation becomes runnable, and closure becomes decidable
 
-**Status:** `complete`
+**Status:** `gate_review`
 **Date (UTC):** `2026-09-21`
 **Epic:** `E10-desktop-migration-realtime`
 **Plan task:** `M0 unit 5 — the disposition-B result owed for MIG-010 (scope-triage.md, exit criterion 5)`

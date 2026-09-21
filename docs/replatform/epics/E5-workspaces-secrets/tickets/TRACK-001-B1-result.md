@@ -1,6 +1,6 @@
 # TRACK-001-B1 Result - the ticket-graph guard still runs, and the authority is still complete
 
-**Status:** `complete`
+**Status:** `gate_review`
 **Date (UTC):** `2026-09-21`
 **Epic:** `E5-workspaces-secrets`
 **Plan task:** `E5 implementation-plan TRACK-001-B1 - current lane evidence for the ticket-graph guard (M0)`
