@@ -5,7 +5,8 @@
 **Epic:** `E7-coding-e2b`
 **Design:** [`CLI-011-review.md`](./CLI-011-review.md) §10.1–10.5 (with §3.2 and §3.7)
 **Implementer:** `M1 CLI-011 probe build agent (Claude Opus 5)`
-**Start SHA:** `28a2dd259` (program tip)
+**Start SHA:** `28a2dd259` (program tip), rebased onto `4904c75e3`
+**Reviewed revision (apparatus code):** `3b265e1e85cbae931f71ed2443b6b997c731dd2f`
 **PR:** #551 (base `docs/replatform-program`)
 
 The implementer leaves `Status` at `gate_review`. Only a separate reviewer may set it to
@@ -116,14 +117,15 @@ imports buildSandboxInvocation…"*).
 | M7 | the record is written unredacted | vitest, no-key: the record test (the canary appears) |
 | M8 | CLI home state is counted as cwd | policy: the classification and census tests |
 
-**CI.** Run `35590097325` on code head `d30847e57f031b2e56996e98b525ed99ca547db4`. That commit
-holds all the apparatus code. The only later commits change this record.
-- Job **`policy`** (`106302304785`), success. In step *"CLI-011 P-011 output-probe decision logic
+**CI.** Run `35592633983`, on head `355887895` after the rebase onto `4904c75e3`. The apparatus code
+is commit `3b265e1e8`; the two commits after it change only this record.
+- Job **`policy`** (`106310197568`), success. Step *"CLI-011 P-011 output-probe decision logic
   (proven WITHOUT the key)"*: `tests 34 / pass 34 / fail 0`.
-- Job **`verify (1)`** (`106302356653`), success. `keyed-cli-011-output-probe.test.ts (9 tests | 1
+- Job **`verify (1)`** (`106310546973`), success. `keyed-cli-011-output-probe.test.ts (9 tests | 1
   skipped)`: the 8 no-key wiring tests ran, and the keyed block was skipped because CI has no key.
   Shard total: `655 passed | 3 skipped` files and `6396 passed | 13 skipped` tests.
-- **`ci-required`** (`106307552159`): success.
+- **`ci-required`**: success.
+- The pre-rebase head `d30847e57` (run `35590097325`) produced the same counts.
 
 ## 6. ★ Stop item: a dispatch-only workflow may not be dispatchable
 
