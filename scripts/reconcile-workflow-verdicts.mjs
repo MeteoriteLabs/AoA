@@ -38,6 +38,7 @@ import {
   matchesPathFilter,
   renderIssueBody,
   streamKey,
+  unownedFindings,
 } from "./lib/workflow-verdict.mjs";
 import {
   countCompletedRuns,
@@ -160,8 +161,15 @@ async function main() {
   const now = new Date().toISOString();
   const findings = evaluateStreams({ manifest, workflows, data, now });
 
-  for (const f of findings) log(`  FINDING ${f.stream}: ${f.code} — ${f.detail}`);
+  const unowned = unownedFindings(findings);
+  for (const f of findings) {
+    const who = f.blocked ? `OWNED by ${f.blocked.owner}, blocked on ${f.blocked.on}` : "UNOWNED";
+    log(`  FINDING ${f.stream}: ${f.code} — ${f.detail} [${who}]`);
+  }
   if (findings.length === 0) log("  no findings — every watched stream's latest verdict is success");
+  // M0 exit criterion 2 reads this line: "the DEP-013 consumer reporting zero UNOWNED findings".
+  // A blocked finding is still REPORTED above — ownership records who holds it, it never hides it.
+  log(`  ${findings.length} finding(s), ${unowned.length} UNOWNED`);
 
   const runUrl =
     process.env.GITHUB_RUN_ID && process.env.GITHUB_SERVER_URL
@@ -172,6 +180,7 @@ async function main() {
     runUrl,
     runId: process.env.GITHUB_RUN_ID ?? null,
     findingCount: findings.length,
+    unownedCount: unowned.length,
     streamsWatched: streams.length,
   };
   const body = renderIssueBody({ findings, marker, streamsWatched: streams.length });

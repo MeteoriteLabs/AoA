@@ -286,7 +286,28 @@ does not imply its tests passed.
 ★ *Corrected 2026-09-21 (Codex, PR #526):* **this amends criterion 2; it does not claim M0 meets it.** The checkpoint-blocked item
 is the DEP-013 consumer's `cross-platform-weekly.yml@main` stream verdict, **not** `E6-F023`. Its
 owner has **not** been named yet: naming it, and recording it where the consumer reads it, is
-remaining M0 work, and M0 does not exit until both are done. `E6-F023` is a separate register
+remaining M0 work, and M0 does not exit until both are done.
+
+★★★ **BOTH DONE 2026-09-21 — and the consumer had to be taught what "owned" means first.** At
+source the DEP-013 consumer had **no ownership concept at all**: `WATCH_MODES` was exactly
+`coverage | cadence | not-watched` (`scripts/lib/workflow-verdict.mjs`) and a finding carried no
+owner, so every finding it reported was unowned by construction and "zero unowned" was unreachable
+except by reporting nothing. Founder ruling: add a real **`blocked`** state rather than marking the
+stream `not-watched`, because `not-watched` stops the sweep looking and this stream is the
+manifest's declared **free positive control** — unwatching it would make "zero unowned" true by
+removing the thing being counted.
+
+- **Owner:** `founder (gate owner)` — named by the founder.
+- **Recorded where the consumer reads it:** `scripts/workflow-verdict-manifest.json` →
+  `cross-platform-weekly.yml@main.blocked` `{ on, owner, reason }`.
+- **Still evaluated, still reported:** a block tags the lane's VERDICT with its owner; it never
+  suppresses evaluation, and it never tags a mechanism failure (`workflow_file_missing`,
+  `cron_unreadable`), so it cannot launder a broken consumer into "owned".
+- **Measured on this branch** (`reconcile-workflow-verdicts.mjs --dry-run`, 17 watched streams):
+  `FINDING cross-platform-weekly.yml@main: not_success … [OWNED by founder (gate owner), blocked on
+  the program integration checkpoint (M5)]` → **`1 finding(s), 0 UNOWNED`**. The published issue
+  confirms it on `docs/replatform-program` once the reconciler runs after merge.
+- **Remove the block at M5** and read the stream on its own verdict — the manifest's `reason` says so. `E6-F023` is a separate register
 finding, cited above only for the lane-health caveat. It is `unowned` in
 `scripts/finding-ownership.json`, which is a legal register state. It is being **resolved** inside
 M0 by implementing its option-3 ruling, not carried as checkpoint-blocked. The ruling's heading,
