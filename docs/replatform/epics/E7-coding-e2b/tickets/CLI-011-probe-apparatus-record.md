@@ -5,8 +5,8 @@
 **Epic:** `E7-coding-e2b`
 **Design:** [`CLI-011-review.md`](./CLI-011-review.md) §10.1–10.5 (with §3.2 and §3.7)
 **Implementer:** `M1 CLI-011 probe build agent (Claude Opus 5)`
-**Start SHA:** `28a2dd259` (program tip), rebased onto `4904c75e3`
-**Reviewed revision (apparatus code):** `3b265e1e85cbae931f71ed2443b6b997c731dd2f`
+**Start SHA:** `28a2dd259` (program tip), rebased onto `3ee376b19`
+**Reviewed revision (apparatus code):** `7dcc22d3ffd07b1cf4c2a1ebe8f5a27f1e3923cf`
 **PR:** #551 (base `docs/replatform-program`)
 
 The implementer leaves `Status` at `gate_review`. Only a separate reviewer may set it to
@@ -79,9 +79,13 @@ The `policy` suite reds if PC-1 or PC-2 is forced to the wrong outcome. That is 
    cwd = R" could read false only because the CLI had nothing left to create. Production runs one
    attempt per fresh sandbox (review §9.1 A-O2-12). The number of claude turns is unchanged: four,
    each capped at 180 s.
-2. **The claude arms stage the no-bundle, no-MCP-config literal.** That is the production default
-   while Unit C's tool surface is off (`distributed-execution.ts`). S-P1 stages the full set, as
-   §10.4 asks.
+2. **The claude arms stage the no-bundle, no-MCP-config literal.** That is the production literal for
+   any Organization whose rollout policy has not armed the tool surface: CLI-016 made arming
+   per-Organization, and an absent `tools` means not armed. S-P1 stages the full set, as §10.4
+   asks. ★ **Not measured:** the claude literal for a tools-armed Organization. That literal adds
+   `--mcp-config "$N" --strict-mcp-config --allowedTools mcp__aoa`
+   (`buildSandboxInvocation`, the `stageAoaConfig` branch). A probe cannot mint the run JWT or the
+   control-plane `/mcp` that branch needs, so A-neg's census says nothing about MCP-side writes.
 3. **`cli-home-state`.** Changed paths under `~/.claude/`, `~/.claude.json`, `~/.config/`,
    `~/.cache/`, `~/.npm/` and `~/.local/` are reported but not counted as cwd writes, because
    `$HOME` = cwd = `/home/user` here (§3.4). The prefix list is written into the record, so a reader
@@ -117,15 +121,22 @@ imports buildSandboxInvocation…"*).
 | M7 | the record is written unredacted | vitest, no-key: the record test (the canary appears) |
 | M8 | CLI home state is counted as cwd | policy: the classification and census tests |
 
-**CI.** Run `35592633983`, on head `355887895` after the rebase onto `4904c75e3`. The apparatus code
-is commit `3b265e1e8`; the two commits after it change only this record.
-- Job **`policy`** (`106310197568`), success. Step *"CLI-011 P-011 output-probe decision logic
+**CI.** Run `35596503559`, on head `8eb3a8e52` after the rebase onto `3ee376b19`. The apparatus code
+is commit `7dcc22d3f`; the commits after it change only this record or remove a scratch file.
+- Job **`policy`** (`106327652760`), success. Step *"CLI-011 P-011 output-probe decision logic
   (proven WITHOUT the key)"*: `tests 34 / pass 34 / fail 0`.
-- Job **`verify (1)`** (`106310546973`), success. `keyed-cli-011-output-probe.test.ts (9 tests | 1
-  skipped)`: the 8 no-key wiring tests ran, and the keyed block was skipped because CI has no key.
-  Shard total: `655 passed | 3 skipped` files and `6396 passed | 13 skipped` tests.
-- **`ci-required`**: success.
-- The pre-rebase head `d30847e57` (run `35590097325`) produced the same counts.
+- Job **`verify (1)`** (`106327652902`, attempt 2), success. `keyed-cli-011-output-probe.test.ts (9
+  tests | 1 skipped)`: the 8 no-key wiring tests ran, and the keyed block was skipped because CI has
+  no key. Shard total: `656 passed | 3 skipped` files and `6409 passed | 13 skipped` tests.
+  - ★ **Attempt 1 of `verify (1)` (`106322491391`) failed on one unrelated test.** The failure was
+    `distributed-execution-db-startup.integration.test.ts` › *"promptly settles
+    operator-negative-pending after the exact startup controller is externally aborted"*, a timing
+    assertion (`{kind:'watchdog'}` where `{kind:'settled'}` was expected). This PR touches no
+    server code. In the same attempt, this file's `(9 tests | 1 skipped)` passed. A rerun of only
+    the failed jobs went green.
+- **`ci-required`** (`106333603479`): success.
+- Earlier heads, before the rebases, produced the same `policy` and file counts: runs `35590097325`
+  and `35592633983`.
 
 ## 6. ★ Stop item: a dispatch-only workflow may not be dispatchable
 
