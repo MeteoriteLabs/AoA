@@ -616,6 +616,17 @@ with each recommendation and its reason, is in `docs/replatform/qa/2026-09-21-m1
   - a per-Organization tool surface (`CLI-016`).
 
   The entry bullet above is amended to match.
+- **E0–E2 entry bullet — MET (2026-09-21, decided under F2).** The evidence:
+  - the delta review `milestones/M1a/2026-09-21-e0-e2-delta-review-b71f0dd539fe.md` (no change
+    invalidates an E0, E1 or E2 completion claim);
+  - the E2 superseding pair `a6`: QA `Result: fail` and handoff `Decision: fail`, which repairs
+    `a5`'s immutability breach.
+
+  `a6` fails because two P1 exact-grant clauses were **superseded by design** by `JOB-002` (`0221`)
+  and `JOB-009` (`0224`). That is not a regression, and P1 stands at its accepted revision. The
+  bullet requires a delta review and a superseding record, not a `pass`. M1's tenant isolation on
+  the current tree is proven by F10's tenant matrix (`DEP-018`), not by P1's historical wording.
+  QA F-2 is filed as `E2-F016`.
 
 ## Entry criteria
 

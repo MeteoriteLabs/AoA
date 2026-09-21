@@ -252,3 +252,33 @@ awaiting-review paragraphs are the contemporaneous record and stay exactly as wr
 round *not* passed, two open HIGH findings would have sat in a `complete` epic with no
 guard able to see them. That is the case for failing closed on an unreadable status rather
 than treating it as "not open"; see the guard's `unparseable_status` arm.
+
+## E2-F016 — the `e2-serving-role-correction` suite re-applies `0214` and certifies a grant set production no longer has
+
+**Status:** open · **Severity:** MEDIUM · **Owner:** `unowned`
+**Filed:** 2026-09-21. It is QA observation F-2 in
+`qa/2026-09-21-d0-e2-tenant-kernel-589854ddb019-a6.md`, promoted to a finding by the gate owner in
+`handoffs/2026-09-21-epic-completion-589854ddb019-a6.md`.
+
+**What.** `server/src/__tests__/e2-serving-role-correction.integration.test.ts` re-applies migration
+`0214` in its setup. `0214` revokes the tenant role's grants and restores the E2-era set, so the suite
+asserts P1's exact seven-column grant against a database that no longer matches production. The
+suite concludes **green**. Meanwhile the real tree, after `0221` (`JOB-002`) and `0224`
+(`JOB-009`), grants `aoa_app` more on `execution_targets`. P1's exact-grant claim is therefore
+false on that tree. The `a6` QA record measured this.
+
+**Why it matters.** It is the "a check that nothing runs" class. A green run of this suite reads
+as proof of the current serving-role posture, but it proves the posture of a database it built
+itself. A reader citing it for the current tree is misled.
+
+**Not a security regression.** The widening is deliberate and reviewed: see `JOB-002-result.md`
+and `JOB-009-result.md`. H-01 row visibility stays with forced RLS.
+
+**Resolving it** (the gate owner chooses). Either:
+- re-scope the suite to assert the *current* expected grants, i.e. `PLAN_DERIVED_ACL_MATRIX`,
+  against the migrated database without re-applying `0214`; or
+- rename it and document it as a historical-revision proof that must never be cited for the
+  current tree.
+
+Whichever is chosen, a positive control must show the suite goes red when the live grant set
+drifts from the matrix.
