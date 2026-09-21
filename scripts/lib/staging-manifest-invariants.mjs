@@ -742,6 +742,12 @@ export function mergeComposeModel(base, overlay) {
   if (!isPlainObject(base) || !isPlainObject(overlay)) return overlay === undefined ? base : overlay;
   const out = { ...base };
   for (const [key, value] of Object.entries(overlay)) {
+    // The engine UNIONS a service's `networks` and `volumes` sequences across files rather than
+    // replacing them; model that for the two the grant-reach check reads.
+    if ((key === "networks" || key === "volumes") && Array.isArray(base[key]) && Array.isArray(value)) {
+      out[key] = [...new Set([...base[key], ...value].map(String))];
+      continue;
+    }
     out[key] = key in base ? mergeComposeModel(base[key], value) : value;
   }
   return out;
@@ -818,5 +824,88 @@ export function evaluateShippedBootOverlayInvariants(base, overlay, options = {}
       v.push(`control-plane replica '${name}' must set '${DISTRIBUTED_CREW_ROLLOUT_ENABLED_ENV}' to exactly "false" (deployment-wide crew switch; crew is outside the M1 claim); got ${JSON.stringify(crew)}`);
     }
   }
+  // (5) E6-F024 follow-up: every grant-redeeming service can REACH the presign host and TRUST it.
+  checkGrantRedeemersReachPresignStore(services, v);
   return { violations: v };
+}
+
+// --- DEP-015 follow-up: the grant redeemers reach and trust the presign store --------------
+
+/**
+ * The services that REDEEM or PERFORM an artifact grant themselves. The E2B provider fetches the
+ * presigned URL IN THE ADAPTER-MANAGER PROCESS (`fetchGrantBytes` / `putGrantBytes`,
+ * packages/sandbox-e2b-provider/src/e2b-provider.ts). The first keyed shipped-boot run
+ * (35601445269) failed at `stage_files` because the adapter-manager had neither the store's
+ * network nor its CA. On the operator campaign it fetched real S3 over the internet, so this
+ * never surfaced there.
+ */
+export const GRANT_REDEEMING_SERVICES = [ADAPTER_MANAGER_SERVICE];
+export const PRESIGN_ENDPOINT_ENV = "AOA_STORAGE_S3_PRESIGN_ENDPOINT";
+export const EXTRA_CA_ENV = "NODE_EXTRA_CA_CERTS";
+
+/** A volume entry as `{ source, target }`, from the short `src:dst[:mode]` string or the long
+ * (rendered) mapping. */
+function volumeEntries(service) {
+  return asArray(service?.volumes).map((entry) => {
+    if (entry && typeof entry === "object") return { source: String(entry.source ?? ""), target: String(entry.target ?? "") };
+    const parts = String(entry).split(":");
+    return { source: parts[0] ?? "", target: parts[1] ?? "" };
+  });
+}
+
+/** Normalise a bind source so the authored `./docker/d1/certs/public.crt` and the rendered
+ * absolute path compare equal (the render resolves `.` against the project directory). */
+function bindSourceKey(source) {
+  return String(source).replace(/\\/g, "/").replace(/^\.\//, "").replace(/^.*?(docker\/)/, "$1");
+}
+
+function checkGrantRedeemersReachPresignStore(services, v) {
+  // The presign endpoint is the host a grant URL names: the one the control plane signs for.
+  const endpoints = new Set(
+    controlPlaneReplicaNames(services)
+      .map((name) => envValue(services[name], PRESIGN_ENDPOINT_ENV))
+      .filter((value) => typeof value === "string" && value.trim() !== ""),
+  );
+  if (endpoints.size === 0) return; // nothing presigns; nothing to redeem
+  if (endpoints.size > 1) {
+    v.push(`the control-plane replicas disagree on '${PRESIGN_ENDPOINT_ENV}' (${[...endpoints].join(", ")}); a grant must name ONE store`);
+    return;
+  }
+  let url;
+  try {
+    url = new URL([...endpoints][0]);
+  } catch {
+    v.push(`'${PRESIGN_ENDPOINT_ENV}' is not a URL: ${JSON.stringify([...endpoints][0])}`);
+    return;
+  }
+  const storeName = url.hostname;
+  const store = services[storeName];
+  // An external store (not a service in this manifest) is reached over egress; the check is for
+  // a store THIS manifest runs, which is exactly where a missing network or CA goes unseen.
+  if (!store) return;
+  const storeNets = new Set(serviceNetworks(store));
+
+  // The CA a TLS store is trusted with: the one the control plane (the SIGNER, which also reads
+  // the store) mounts at its NODE_EXTRA_CA_CERTS path.
+  const signer = services[controlPlaneReplicaNames(services)[0]];
+  const signerCaPath = envValue(signer, EXTRA_CA_ENV);
+  const signerCa = signerCaPath ? volumeEntries(signer).find((vol) => vol.target === signerCaPath) : undefined;
+
+  for (const name of GRANT_REDEEMING_SERVICES) {
+    const svc = services[name];
+    if (!svc) continue;
+    const shared = serviceNetworks(svc).filter((net) => storeNets.has(net));
+    if (shared.length === 0) {
+      v.push(`GRANT-REACH VIOLATION: '${name}' redeems artifact grants but shares no network with the presign store '${storeName}' (store on {${[...storeNets].sort().join(", ")}}, '${name}' on {${serviceNetworks(svc).sort().join(", ")}}) — every staged file fails at redemption`);
+    }
+    if (url.protocol === "https:") {
+      const caPath = envValue(svc, EXTRA_CA_ENV);
+      const mounted = caPath ? volumeEntries(svc).find((vol) => vol.target === caPath) : undefined;
+      if (!caPath || !mounted) {
+        v.push(`GRANT-TRUST VIOLATION: '${name}' redeems grants from the TLS store '${storeName}' but does not trust its CA — it needs '${EXTRA_CA_ENV}' pointing at a mounted CA file (got ${JSON.stringify(caPath ?? null)}, mounted: ${Boolean(mounted)})`);
+      } else if (signerCa && bindSourceKey(mounted.source) !== bindSourceKey(signerCa.source)) {
+        v.push(`GRANT-TRUST VIOLATION: '${name}' trusts '${mounted.source}', not the CA the signing control plane trusts ('${signerCa.source}')`);
+      }
+    }
+  }
 }

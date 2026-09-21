@@ -226,3 +226,40 @@ gh workflow run m1-shipped-boot.yml --ref docs/replatform-program \
 ```
 
 `mode=keyless` with the same candidate is a free rehearsal of §3 on the Linux runner.
+
+---
+
+## 9. Follow-up — the first keyed run failed at `stage_files` (2026-09-21)
+
+The planning session dispatched the first keyed run: **`35601445269`**, on candidate `fc2eb7dde`. Before it, the keyless rehearsal `35600507289` passed. Every step through "Reconcile and preflight every Organization" succeeded. Then "Run the journey" failed for **both enabled tenants**. The control tenant correctly stayed legacy.
+
+**The evidence**, all from the retained bundle:
+- **Worker:** the supervisor logged "staging the control plane's input failed", with `stagedCount` 2 and the error `WireProtocolError … (adapter-manager provider operation failed)`.
+- **Verifier:** `leases=1`, `attempt_started=0`.
+- **adapter-manager:** its log recorded nothing about the operation.
+
+**Root cause, measured at source by the planning session.** The E2B provider redeems the download grant *inside the adapter-manager process* (`fetchGrantBytes`, `packages/sandbox-e2b-provider/src/e2b-provider.ts`). The overlay's presign endpoint is `https://minio:9000`. The adapter-manager had neither of the two things that fetch needs:
+- **the network:** it had no `store-egress-net`; the base manifest gives it only `control-net` + `provider-ctl-net`;
+- **the CA:** it had no `NODE_EXTRA_CA_CERTS` and no mounted CA.
+
+**Why the rehearsals missed it.** On the Hetzner campaign the adapter-manager fetched real S3 over the internet, so this never surfaced there. The keyless mode never starts the adapter-manager, so it could not see it either. And §3's rehearsal was keyless.
+
+**Fixed in the follow-up PR:**
+1. **The overlay.** In `docker/m1-boot/docker-compose.m1-boot.yml` only, the adapter-manager joins `store-egress-net` and gets `NODE_EXTRA_CA_CERTS=/certs/ca.crt` plus the same CA mount as the workers and the control plane. The base staging manifest is untouched; a test asserts that.
+2. **A static invariant.** `checkGrantRedeemersReachPresignStore`, inside `evaluateShippedBootOverlayInvariants`, checks that every grant-redeeming service (`GRANT_REDEEMING_SERVICES`, the adapter-manager):
+   - shares a network with the presign store;
+   - trusts the store's CA through a mounted `NODE_EXTRA_CA_CERTS`, and that CA is the same one the signing control plane trusts.
+
+   It runs statically in `policy` and again on the lane's real render. Run against the unfixed overlay it reports exactly the two defects of run `35601445269`. Positive controls:
+   - dropping the network reds it;
+   - dropping the CA env reds it;
+   - dropping the mount reds it;
+   - a different CA reds it;
+   - replicas that disagree on the store red it.
+
+   In mutation testing, disabling either arm, or unwiring the check, kills two to six cases.
+3. **A keyless runtime probe.** The new phase `probe-presign`, in the workflow step "Probe the presign store from the adapter-manager's seat" before "Run the journey", is a throwaway `docker compose run --no-deps --entrypoint node` of the **adapter-manager service**. It gets the service's networks, env and mounts, but the bin never starts, so no E2B call is possible. It sends an HTTPS `HEAD` to the presign endpoint. Local rehearsal on Docker Desktop:
+   - the fixed overlay gives `PRESIGN_PROBE_OK status=200`;
+   - **positive control A**, the adapter-manager without `store-egress-net`, gives `PRESIGN_PROBE_FAIL … codes=ENOTFOUND`;
+   - **positive control B**, the adapter-manager without `NODE_EXTRA_CA_CERTS`, gives `PRESIGN_PROBE_FAIL … codes=DEPTH_ZERO_SELF_SIGNED_CERT`.
+4. **E6-F024, filed and resolved.** A provider-op failure is now classified, logged and relayed from a closed vocabulary. Neither the log nor the wire carries the URL, host, grant or key. See E6 `findings.md`.

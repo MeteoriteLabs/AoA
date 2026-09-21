@@ -25,6 +25,8 @@
 //   await-workers      each worker enrolled on its own Organization's target and seen live
 //   reconcile          reconcile-legacy-resources per Organization (as aoa_operator), then the
 //                      canary preflight per Organization
+//   probe-presign      a throwaway run of the adapter-manager SERVICE (its networks, CA env, mounts;
+//                      the bin never starts) HEADs the presign store: DNS + connect + TLS, free
 //   dispatch           keyed: one assigned task per tenant; the enabled ones must run distributed
 //                      and pass `verify-e7-1-distributed-run`; the control must stay legacy with
 //                      zero jobs. keyless: the CONTROL tenant only (it never reaches a provider).
@@ -572,6 +574,42 @@ async function awaitWorkers(state) {
   console.log("await-workers: each tenant has exactly one worker, enrolled on its OWN Organization's target, heartbeating");
 }
 
+/**
+ * DEP-015 follow-up: probe the presign store FROM THE ADAPTER-MANAGER'S SEAT, before any journey.
+ *
+ * The adapter-manager redeems staged-file grants itself (`fetchGrantBytes`). Keyed run 35601445269
+ * failed at `stage_files` because it could not reach the presign host. Nothing before the journey
+ * looked, and the keyless mode never starts the adapter-manager, so it could not see this either.
+ *
+ * This is a throwaway `docker compose run` of the adapter-manager SERVICE with the entrypoint
+ * replaced by a one-line `node` HEAD. It therefore has exactly the service's networks, env
+ * (`NODE_EXTRA_CA_CERTS`) and mounts. The adapter-manager bin never starts, so no provider is
+ * constructed and no E2B call is possible: the probe is free, and runs in BOTH modes. ANY HTTP
+ * response passes, because the point is DNS + connect + TLS trust. A thrown fetch fails with its
+ * error code. The presign endpoint is config, not a grant, so naming it in the log leaks nothing.
+ */
+function probePresign(state) {
+  const renderedCp = JSON.parse(compose(state, ["config", "--format", "json"]).stdout).services?.[CP_REPLICAS[0]];
+  const endpoint = renderedCp?.environment?.AOA_STORAGE_S3_PRESIGN_ENDPOINT;
+  if (!endpoint) fail("probe-presign: the control plane declares no AOA_STORAGE_S3_PRESIGN_ENDPOINT");
+  const script = [
+    "const u=process.argv[1];",
+    "fetch(u,{method:'HEAD'}).then(r=>{console.log('PRESIGN_PROBE_OK status='+r.status);process.exit(0)})",
+    ".catch(e=>{let c=e,codes=[];for(let i=0;i<6&&c;i++){if(c.code)codes.push(c.code);c=c.cause}",
+    "console.log('PRESIGN_PROBE_FAIL name='+(e&&e.name)+' codes='+codes.join(','));process.exit(1)})",
+  ].join("");
+  const res = compose(state, [
+    "run", "--rm", "--no-deps", "--entrypoint", "node", "adapter-manager",
+    "-e", script, new URL("/minio/health/live", endpoint).toString(),
+  ], { allowFail: true, timeout: 180_000 });
+  const out = `${res.stdout}${res.stderr}`.split(/\r?\n/).filter((l) => /PRESIGN_PROBE_/.test(l)).join("\n");
+  writeEvidence(state, "presign-probe.txt", `endpoint=${endpoint}\nexit=${res.status}\n${out}`);
+  if (res.status !== 0 || !/PRESIGN_PROBE_OK/.test(out)) {
+    fail(`probe-presign: the adapter-manager's seat cannot reach or trust the presign store ${endpoint} — ${out || "no probe output"}`);
+  }
+  console.log(`probe-presign: the adapter-manager's seat reaches and trusts ${endpoint} (${out.trim()})`);
+}
+
 function reconcile(state) {
   const results = {};
   for (const [k, t] of Object.entries(state.tenants)) {
@@ -769,6 +807,7 @@ const PHASES = {
   "boot-workers": (args) => bootWorkers(loadState(args.out)),
   "await-workers": (args) => awaitWorkers(loadState(args.out)),
   reconcile: (args) => reconcile(loadState(args.out)),
+  "probe-presign": (args) => probePresign(loadState(args.out)),
   dispatch: (args) => dispatch(loadState(args.out)),
   collect: (args) => collect(loadState(args.out)),
   teardown: (args) => teardown(loadState(args.out)),

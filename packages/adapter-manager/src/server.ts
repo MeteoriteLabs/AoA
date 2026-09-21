@@ -51,6 +51,7 @@ import { gateCreate, type CreateGateDeps } from "./create-gate.js";
 import { IdempotencyLedger } from "./idempotency-ledger.js";
 import { KeyedMutex } from "./keyed-mutex.js";
 import { createReaperMetrics, renderReaperMetrics, type ReaperMetricsCounter } from "./reaper-metrics.js";
+import { classifyOpFailure, formatOpFailure, type OpFailureClassification } from "./op-failure-classification.js";
 
 export interface CreateProviderServerOptions {
   readonly provider: SandboxProvider;
@@ -82,6 +83,17 @@ export interface CreateProviderServerOptions {
    * `createProviderServer`, and a gated server with the reaper flag off has no loop).
    */
   readonly reaperMetrics?: ReaperMetricsCounter;
+  /**
+   * E6-F024 — receives the REDACTED classification of every provider-op failure that the leak
+   * fence below maps to the generic `WireProtocolError`. Every field is from a closed
+   * vocabulary (`op-failure-classification.ts`): never a URL, header, grant, key or message.
+   * Defaults to one `console.error` line, so a failure is never silent on the adapter-manager.
+   */
+  readonly onOpFailure?: (classification: OpFailureClassification) => void;
+}
+
+function logOpFailure(classification: OpFailureClassification): void {
+  console.error("adapter-manager provider operation failed", classification);
 }
 
 type OpHandler = (args: unknown, ctx: ProviderOpContext) => Promise<unknown>;
@@ -121,6 +133,7 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
   // The shared reaper metric counter (or a fresh zeroed one so `/metrics` renders zeros
   // when no reaper is wired). Slice C's loop mutates the SAME ref on the single event loop.
   const reaperMetrics = options.reaperMetrics ?? createReaperMetrics();
+  const onOpFailure = options.onOpFailure ?? logOpFailure;
 
   // A Map (not an object literal) so an inherited prototype key like
   // `constructor`/`__proto__` can NEVER resolve to a handler and return a spurious ok.
@@ -275,10 +288,30 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
           // that is not a MODELLED wire class to a FIXED generic WireProtocolError BEFORE
           // encoding — dropping both raw-text arms at once. Modelled classes pass as-is (their
           // messages are fixed by the class vocabulary, never tenant data).
-          const safe = isModelledWireError(err)
-            ? err
-            : new WireProtocolError("adapter-manager provider operation failed");
-          sendJson(res, 200, encodeErrResponse(safe));
+          //
+          // ★ E6-F024 — the fence dropped the CAUSE along with the text, so every failure read
+          // the same on both sides (the DEP-015 keyed run: a presign host the AM could not
+          // reach, logged nowhere). The classification restores the cause from a CLOSED
+          // vocabulary only — op, a known error class, a coarse cause, a known error code, an
+          // HTTP status — never message text, so the fence still holds. It is logged here and
+          // carried in the fixed message for the worker to log.
+          if (isModelledWireError(err)) {
+            sendJson(res, 200, encodeErrResponse(err));
+            return;
+          }
+          const classification = classifyOpFailure(op, err);
+          try {
+            onOpFailure(classification);
+          } catch {
+            // A logging sink must never turn a coded failure into a crash or a hang.
+          }
+          sendJson(
+            res,
+            200,
+            encodeErrResponse(
+              new WireProtocolError(`adapter-manager provider operation failed (${formatOpFailure(classification)})`),
+            ),
+          );
         }
       })();
     });

@@ -220,6 +220,13 @@ jobs:
       - name: Reconcile and preflight every Organization
         run: node scripts/m1-shipped-boot/journey.mjs reconcile --out "$M1_OUT"
 
+      # DEP-015 follow-up (keyed run 35601445269 failed at stage_files: the adapter-manager could
+      # not reach the presign store). A throwaway `compose run` of the adapter-manager SERVICE —
+      # its networks, CA env and mounts, the bin never started, so no E2B call — HEADs the
+      # presign endpoint. Free, and in BOTH modes, so the keyless rehearsal catches this class.
+      - name: Probe the presign store from the adapter-manager's seat
+        run: node scripts/m1-shipped-boot/journey.mjs probe-presign --out "$M1_OUT"
+
       - name: Run the journey
         run: node scripts/m1-shipped-boot/journey.mjs dispatch --out "$M1_OUT"
 
