@@ -341,3 +341,7 @@ Where the build differs in detail from the text above, the code is the truth and
   from locking another attempt's lease inside an ingest transaction.
 - **Constants:** `AUTHORITATIVE_COST_REDRIVE_MAX_ATTEMPTS = 3`,
   `STALE_PENDING_RECEIPT_THRESHOLD_MS = 15 minutes`.
+
+- **E3-F037 owner re-pointed to `DEP-016` (2026-09-21, planning session, F2).** `JOB-016` ships the
+  seam and pricing; the finding closes at `DEP-016`'s end-to-end cost assertion, which also needs
+  `WRK-018`'s producer and its keyed E2B parser acceptance (`scripts/finding-ownership.json`).
