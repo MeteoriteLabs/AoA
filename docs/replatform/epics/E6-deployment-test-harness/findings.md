@@ -1606,6 +1606,16 @@ Split advisory from verdict-bearing. `verify-cross-platform` and `e2e-cross-plat
 test shards stay **advisory**. The lane then asserts only what it can assert today, without going red
 on cross-platform test health, which is a larger piece of work tracked separately.
 
+★ **Implementation must also close the install bypass.** ★ *Corrected 2026-09-21 (Codex, PR #526):* the `Install Playwright`
+step in `e2e-cross-platform` is itself `continue-on-error: true`, and the config and e2e steps run
+only `if: steps.install-playwright.outcome == 'success'`. Removing only the job-level flag would
+leave the job **green with no e2e run** whenever the install fails. So an install failure must fail
+the job, either by dropping the step-level flag or by adding an explicit failing step after it. The
+acceptance adds a control for this: a failed install concludes the job `failure`. **Also:** on
+`windows-latest` the e2e step never runs (Issue #114, embedded-postgres), so a green Windows
+`e2e-cross-platform` asserts only setup and build parity, and the finding must say so when it
+resolves.
+
 ★ **Status stays `open` until the workflow change lands** — a ruling is not a repair.
 
 ★ **Where it takes effect.** This lane's `schedule` trigger runs only from `main`, and the program

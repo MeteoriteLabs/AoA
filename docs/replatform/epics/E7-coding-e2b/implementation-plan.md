@@ -473,7 +473,7 @@ above.)*
 
 ### `CLI-010` — prove the enumeration seam, and FENCE the byte-reading one (S, ≤1 agent-day, M1b)
 
-**Depends on:** `CLI-009`.
+**Depends on:** the enacted ledger — `docs/replatform/DECISION-cli-008-successor-id-scheme.md`, ENACTED by M0 unit 4, so **already satisfied**; its graph edge is `CLI-008` (`program-design.md`). `CLI-009` names that ledger but has no graph node, ticket or result file by design, so it cannot itself be a satisfiable prerequisite. ★ *Corrected 2026-09-21 (Codex, PR #526):* this read `CLI-009`.
 
 **Current state, measured:** `captureSandboxEntries`
 (`packages/worker-daemon/src/snapshot/capture-sandbox.ts:67`) is **built and tested**
@@ -551,7 +551,7 @@ instruction survives.
 
 ### `CLI-011` — the emit half: DESIGN ONLY, founder-ruling gated (≤3 agent-days, M1b, **NOT ASSIGNABLE AS BUILD**)
 
-**Depends on:** `CLI-009` (the ledger), like `CLI-010` — **not** on `CLI-010`. ★ *Corrected 2026-09-21 (Codex, PR #526):* this read `CLI-010` (renamed from `CLI-008-F1a`), which serialized the mechanism review behind the enumeration seam and contradicted the diagram that declares them independent. **Blocks:** `CLI-015`, and exit criterion 4 in full.
+**Depends on:** the enacted ledger — `docs/replatform/DECISION-cli-008-successor-id-scheme.md`, ENACTED by M0 unit 4, so **already satisfied**; its graph edge is `CLI-008` (`program-design.md`). `CLI-009` names that ledger but has no graph node, ticket or result file by design, so it cannot itself be a satisfiable prerequisite, like `CLI-010` — **not** on `CLI-010`. ★ *Corrected 2026-09-21 (Codex, PR #526):* this read `CLI-009` (the ledger). ★ *Corrected 2026-09-21 (Codex, PR #526):* this read `CLI-010` (renamed from `CLI-008-F1a`), which serialized the mechanism review behind the enumeration seam and contradicted the diagram that declares them independent. **Blocks:** `CLI-015`, and exit criterion 4 in full.
 
 **Current state, measured:** three mechanisms have been proposed and refuted — argv **shape**, argv
 **size**, then **the predicate itself**. The ruling of record is **measure first**
@@ -1330,11 +1330,11 @@ recorded as net-new, never as "parity passed."
 | Producer | Export fails after successful work | `CLI-012` | Best-effort: `emitOp failed`, truthful terminal, attempt **not** failed. |
 | Producer | A grant URL reaches a log or a thrown message | `CLI-012` | Asserted absent — H-04, zero tolerance. |
 | Announcement | The event sink fails | `CLI-013` | ★ **Per F4's recorded contiguity decision — NOT “best-effort”.** The commit is already durable and is never retracted either way, but the emit consumed a `seq`, so a hole makes the control plane reject the tail as a `gap`. Fatal, allocate-on-success, or retry-until-land; the row follows whichever `decisions.md` records. |
-| Announcement | A reconstructed transcript is corrupt | `E7-F024` disposition in `CLI-013` | Recorded: the artifact route carries a reference, not bytes, so it does not inherit the `log` truncation. |
-| Projection | Two mechanisms write `task_outputs` | `CLI-014` | Scoped to `execution_owner = distributed`; the `jobOutputBridge` boundary is stated for M2. |
+| Announcement | A reconstructed transcript is corrupt | `CLI-013` (addresses `E7-F024`; the finding stays owned by `CLI-008` under D5) | Recorded: the artifact route carries a reference, not bytes, so it does not inherit the `log` truncation. |
+| Projection | Two mechanisms write `task_outputs` | `CLI-014` | **There is one sanctioned writer:** `CLI-014` projects through `jobOutputBridge` inside `acceptEvent`'s transaction, per its corrected contract above; it adds no second writer. ★ *Corrected 2026-09-21 (Codex, PR #526):* *this row said the writers were separated by `execution_owner = distributed` with the `jobOutputBridge` boundary deferred to M2 — the superseded design, which would reintroduce an unreceipted, uncounted duplicate writer.* |
 | Projection | An empty row is written on every run | `CLI-014` | No events ⇒ no row (anti-vacuity). |
-| Judge | A board POST forges the bar | `CLI-015` (`E7-F015`) | The `capabilityProven` flip is already closed; the clause-4 leak-scan feed is bounded here. |
-| Judge | A retried job's leak reaches a clean verdict | `CLI-015` (`E7-F032`) | Sibling-attempt scan. |
+| Judge | A board POST forges the bar | `CLI-015` (addresses `E7-F015`; owned by `CLI-008` under D5) | The `capabilityProven` flip is already closed; the clause-4 leak-scan feed is bounded here. |
+| Judge | A retried job's leak reaches a clean verdict | `CLI-015` (addresses `E7-F032`; owned by `CLI-008` under D5) | Sibling-attempt scan. |
 | Tool surface | A stale/replaced sandbox keeps calling tools | `CLI-016` + E5's `DAT-007-S3` | Denied by the fence-bound resolver with the coarse wrong-tenant forbidden — no oracle. |
 | Tool surface | Armed without the resolver | forbidden by the founder ruling | Not an implementable option. |
 | Gate clause | The register's reference count drifts above `expectedReferences` | `E7-1-JOURNEY-ARM` | ★ *corrected twelfth round: the row said “a boot appears and the register does not notice”, but `gate-clause-wiring.mjs` emits this only when the **source-reference count** exceeds `expectedReferences` and never inspects a deployment — so a boot could not trip it. Promotion rides shipped-boot evidence; this row is the controlled-fixture control.* `unwired_but_now_has_caller` fires; the typed-out count is the tripwire. |
