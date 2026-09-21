@@ -433,7 +433,7 @@ function checkSharedAdmission(services, v) {
 }
 
 /** §2.5 — provider-control credential confined + absent. */
-function checkProviderControlBoundary(services, v) {
+function checkProviderControlBoundary(services, v, { rendered = false } = {}) {
   // (a) provider-ctl-net members are EXACTLY {adapter-manager}.
   for (const [name, svc] of Object.entries(services)) {
     if (name === ADAPTER_MANAGER_SERVICE) continue;
@@ -481,9 +481,11 @@ function checkProviderControlBoundary(services, v) {
     }
   }
   if (adapter) {
+    // A RENDERED manifest (`docker compose config`) has already interpolated the value, so the
+    // injected-not-baked form is only checkable on the authored file; presence still is.
     if (!hasEnvKey(adapter, PROVIDER_CONTROL_CRED_ENV)) {
       v.push(`'${ADAPTER_MANAGER_SERVICE}' must inject '${PROVIDER_CONTROL_CRED_ENV}' (the provider-control credential lives ONLY on the adapter-management surface)`);
-    } else {
+    } else if (!rendered) {
       const val = String(envValue(adapter, PROVIDER_CONTROL_CRED_ENV) ?? "");
       if (!INJECTION_VALUE_RE.test(val) && !MOUNTED_SECRET_VALUE_RE.test(val)) {
         v.push(`PROVIDER-CONTROL VIOLATION: '${ADAPTER_MANAGER_SERVICE}' '${PROVIDER_CONTROL_CRED_ENV}' must be an injected value (\${VAR} interpolation or a /run/secrets mount) so it is rotatable without an image rebuild — a baked literal is forbidden; got ${JSON.stringify(val)}`);
@@ -524,12 +526,54 @@ export const DISPATCH_SWITCH_ENVS = [
   "AOA_WORKER_PROVIDER_URL",
 ];
 
-function checkDispatchDefaultOff(services, v) {
-  for (const name of WORKER_SERVICES) {
+// ★ DEP-015 — THE ONE SCOPED EXCEPTION, and why it is shaped the way it is.
+//
+// Founder ruling F3 makes the shipped CI boot RUN the journey, and a worker that runs a job
+// must dial the adapter-manager: `AOA_WORKER_PROVIDER_URL` set, `AOA_WORKER_DISPATCH_ENABLED`
+// exactly "1" (SK-3). Both are on the ban list above. The amendment admits them on EXACTLY
+// the worker services the shipped-boot overlay declares, with EXACTLY the values below, and
+// only when the caller is `evaluateShippedBootOverlayInvariants` evaluating THAT overlay. The
+// admission is a module-private Symbol, so `evaluateStagingManifestInvariants` — the path
+// every other manifest takes — cannot be handed it: the staging manifest, a clone of it, or
+// any other overlay still reds on the same env. `AOA_WORKER_SANDBOX_PROVIDER` (an IN-WORKER
+// provider) is never admitted, and the inline `command`/`entrypoint` vector is never admitted.
+export const SHIPPED_BOOT_OVERLAY_PATH = "docker/m1-boot/docker-compose.m1-boot.yml";
+export const SHIPPED_BOOT_OVERLAY_WORKERS = ["m1-worker-a", "m1-worker-b", "m1-worker-c"];
+export const SHIPPED_BOOT_ADMITTED_DISPATCH_ENV = Object.freeze({
+  AOA_WORKER_PROVIDER_URL: "http://adapter-manager:8090",
+  AOA_WORKER_DISPATCH_ENABLED: "1",
+});
+const SHIPPED_BOOT_ALLOWANCE = Symbol("dep-015-shipped-boot-overlay");
+
+/** Every service that RUNS the worker image — the four named staging workers plus any other
+ * service whose image is a worker image OR whose name says it is a worker (a rendered manifest
+ * carries a concrete tag, so the image test alone could miss one). Enumerating by a fixed name
+ * list is how the campaign overlay's `worker` sat outside this check: a new service is
+ * invisible to a list. */
+function workerServiceNames(services) {
+  const names = new Set(WORKER_SERVICES.filter((name) => services[name]));
+  for (const [name, svc] of Object.entries(services)) {
+    const image = typeof svc?.image === "string" ? svc.image : "";
+    if (/_WORKER_IMAGE\b|aoa-worker[:@]|\/worker[:@]/.test(image) || /(^|-)worker(-|\d|$)/.test(name)) {
+      names.add(name);
+    }
+  }
+  return [...names];
+}
+
+function dispatchEnvAdmitted(name, key, value, allowance) {
+  return allowance === SHIPPED_BOOT_ALLOWANCE &&
+    SHIPPED_BOOT_OVERLAY_WORKERS.includes(name) &&
+    Object.prototype.hasOwnProperty.call(SHIPPED_BOOT_ADMITTED_DISPATCH_ENV, key) &&
+    String(value) === SHIPPED_BOOT_ADMITTED_DISPATCH_ENV[key];
+}
+
+function checkDispatchDefaultOff(services, v, allowance = null) {
+  for (const name of workerServiceNames(services)) {
     const svc = services[name];
     if (!svc) continue;
     for (const key of DISPATCH_SWITCH_ENVS) {
-      if (hasEnvKey(svc, key)) {
+      if (hasEnvKey(svc, key) && !dispatchEnvAdmitted(name, key, envValue(svc, key), allowance)) {
         v.push(`DISPATCH-DEFAULT VIOLATION: worker '${name}' declares '${key}' in 'environment' — dispatch stays OFF by default; no staging worker may set the switches that turn it on (DEP-010)`);
       }
       // Inline-injection vector — the same command/entrypoint join idiom as the provider-control
@@ -668,5 +712,111 @@ export function evaluateStagingManifestInvariants(compose, options = {}) {
     checkEnvDocumented(services, options.documentedEnvKeys, v);
   }
 
+  return { violations: v };
+}
+
+// --- DEP-015: the shipped CI boot overlay ------------------------------------
+
+/** The env var that seeds the F10 tenant set (`DISTRIBUTED_EXECUTION_ROLLOUT_ENV`,
+ * server/src/config/distributed-execution-rollout-source.ts) and the deployment-wide crew
+ * switch (`DISTRIBUTED_CREW_ROLLOUT_ENABLED_ENV`, server/src/config/distributed-execution.ts). */
+export const DISTRIBUTED_EXECUTION_ROLLOUT_ENV = "AOA_DISTRIBUTED_EXECUTION_ROLLOUT";
+export const DISTRIBUTED_CREW_ROLLOUT_ENABLED_ENV = "AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED";
+/** The overlay must inject the rollout from ONE job-generated variable, and fail the render
+ * when it is missing (`:?`) — an unset rollout is SK-2, every Organization silently legacy. */
+export const SHIPPED_BOOT_ROLLOUT_INJECTION = /^\$\{AOA_M1_DISTRIBUTED_EXECUTION_ROLLOUT:\?[^}]*\}$/;
+
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * A deliberately SMALL model of `docker compose -f base -f overlay` merging, enough for these
+ * invariants: mappings merge key-by-key (so `environment:` maps merge, an overlay key wins),
+ * everything else (scalars, sequences such as `command:`) is REPLACED by the overlay. The real
+ * engine merges a few sequences (ports, volumes, secrets) by union; no invariant here reads
+ * those, and the lane re-runs these invariants over the REAL `docker compose config` render,
+ * which is the authority. This model exists so the always-on `policy` gate needs no Docker.
+ */
+export function mergeComposeModel(base, overlay) {
+  if (!isPlainObject(base) || !isPlainObject(overlay)) return overlay === undefined ? base : overlay;
+  const out = { ...base };
+  for (const [key, value] of Object.entries(overlay)) {
+    out[key] = key in base ? mergeComposeModel(base[key], value) : value;
+  }
+  return out;
+}
+
+/** Every control-plane REPLICA (the migrate one-shot runs the same image but serves nothing). */
+function controlPlaneReplicaNames(services) {
+  const names = new Set(CONTROL_PLANE_SERVICES.filter((name) => services[name]));
+  for (const [name, svc] of Object.entries(services)) {
+    if (name === MIGRATE_SERVICE) continue;
+    const image = typeof svc?.image === "string" ? svc.image : "";
+    if (/_CONTROL_PLANE_IMAGE\b|aoa-control-plane[:@]|\/control-plane:/.test(image)) names.add(name);
+  }
+  return [...names];
+}
+
+/**
+ * DEP-015 — the invariants of the shipped CI boot, evaluated over base ⊕ overlay.
+ *
+ *   evaluateShippedBootOverlayInvariants(base, overlay, { overlayPath, rendered? })
+ *
+ * `overlayPath` must be SHIPPED_BOOT_OVERLAY_PATH: the dispatch allowance is bound to that one
+ * file, never to "an overlay". `rendered: true` means `base` is already the engine's merged
+ * render (`docker compose config --format json`) and `overlay` is ignored — the lane's live
+ * re-check — so the rollout value is a concrete JSON string rather than an injection token.
+ */
+export function evaluateShippedBootOverlayInvariants(base, overlay, options = {}) {
+  const v = [];
+  if (options.overlayPath !== SHIPPED_BOOT_OVERLAY_PATH) {
+    v.push(`the DEP-015 dispatch allowance is scoped to '${SHIPPED_BOOT_OVERLAY_PATH}' ONLY; refusing to evaluate ${JSON.stringify(options.overlayPath)} with it`);
+    return { violations: v };
+  }
+  const merged = options.rendered ? base : mergeComposeModel(base, overlay);
+  const services = merged?.services;
+  if (!isPlainObject(services)) return { violations: ["merged compose has no 'services' block"] };
+
+  // (1) Dispatch default-off, with the ONE scoped admission.
+  checkDispatchDefaultOff(services, v, SHIPPED_BOOT_ALLOWANCE);
+  // (2) The overlay's workers are exactly the declared set, and each one IS armed — an overlay
+  //     worker that silently lost its provider URL would boot, enrol, poll, and never run a job.
+  const workers = workerServiceNames(services).filter((name) => !WORKER_SERVICES.includes(name));
+  if (!setsEqual(workers, SHIPPED_BOOT_OVERLAY_WORKERS)) {
+    v.push(`the shipped-boot workers {${workers.sort().join(", ")}} != the declared {${[...SHIPPED_BOOT_OVERLAY_WORKERS].sort().join(", ")}}`);
+  }
+  for (const name of SHIPPED_BOOT_OVERLAY_WORKERS) {
+    const svc = services[name];
+    if (!svc) continue;
+    for (const [key, expected] of Object.entries(SHIPPED_BOOT_ADMITTED_DISPATCH_ENV)) {
+      if (String(envValue(svc, key) ?? "") !== expected) {
+        v.push(`shipped-boot worker '${name}' must set '${key}' to exactly ${JSON.stringify(expected)}`);
+      }
+    }
+    if (hasEnvKey(svc, "AOA_WORKER_SANDBOX_PROVIDER")) {
+      v.push(`shipped-boot worker '${name}' must NOT construct an in-worker provider ('AOA_WORKER_SANDBOX_PROVIDER')`);
+    }
+  }
+  // (3) The provider-control boundary still holds on the merged manifest: E2B_API_KEY only on
+  //     the adapter-manager, which alone reaches provider-ctl-net.
+  checkProviderControlBoundary(services, v, { rendered: Boolean(options.rendered) });
+  // (4) F10 + S0-8: EVERY control-plane replica carries the rollout (so the tenant set is not a
+  //     property of whichever replica a request lands on) and has the crew switch OFF.
+  const replicas = controlPlaneReplicaNames(services);
+  if (replicas.length === 0) v.push("the shipped boot declares no control-plane replica");
+  for (const name of replicas) {
+    const svc = services[name];
+    const rollout = envValue(svc, DISTRIBUTED_EXECUTION_ROLLOUT_ENV);
+    if (rollout === undefined || String(rollout).trim() === "") {
+      v.push(`control-plane replica '${name}' must set '${DISTRIBUTED_EXECUTION_ROLLOUT_ENV}' (unset = every Organization silently legacy, SK-2)`);
+    } else if (!options.rendered && !SHIPPED_BOOT_ROLLOUT_INJECTION.test(String(rollout))) {
+      v.push(`control-plane replica '${name}' '${DISTRIBUTED_EXECUTION_ROLLOUT_ENV}' must be injected as \${AOA_M1_DISTRIBUTED_EXECUTION_ROLLOUT:?…} (one job-generated tenant set, fail-loud when absent); got ${JSON.stringify(rollout)}`);
+    }
+    const crew = envValue(svc, DISTRIBUTED_CREW_ROLLOUT_ENABLED_ENV);
+    if (String(crew ?? "") !== "false") {
+      v.push(`control-plane replica '${name}' must set '${DISTRIBUTED_CREW_ROLLOUT_ENABLED_ENV}' to exactly "false" (deployment-wide crew switch; crew is outside the M1 claim); got ${JSON.stringify(crew)}`);
+    }
+  }
   return { violations: v };
 }

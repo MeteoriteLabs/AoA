@@ -25,14 +25,53 @@ import { fileURLToPath } from "node:url";
 import { parseYaml } from "./lib/yaml-lite.mjs";
 import {
   evaluateStagingManifestInvariants,
+  evaluateShippedBootOverlayInvariants,
   collectDocumentedEnvKeys,
+  SHIPPED_BOOT_OVERLAY_PATH,
 } from "./lib/staging-manifest-invariants.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const composePath = path.join(repoRoot, "docker-compose.staging.yml");
 const envDocPath = path.join(repoRoot, "docs", "deploy", "environment-variables.md");
 
+/**
+ * `--rendered <file.json>` — the lane's LIVE re-check (DEP-015). The file is the engine's own
+ * merge, `docker compose -f docker-compose.staging.yml -f <overlay> config --format json`, so
+ * this evaluates exactly what will boot, not the yaml-lite model of it. Two assertions, and
+ * the second is the positive control: the SAME render must red through the unscoped staging
+ * path, or the scoped admission is not what is making it green.
+ */
+function checkRendered(renderedPath) {
+  let rendered;
+  try {
+    rendered = JSON.parse(readFileSync(renderedPath, "utf8"));
+  } catch (err) {
+    console.error(`FAIL: could not read the rendered manifest ${renderedPath}: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(2);
+  }
+  const scoped = evaluateShippedBootOverlayInvariants(rendered, null, {
+    overlayPath: SHIPPED_BOOT_OVERLAY_PATH,
+    rendered: true,
+  });
+  if (scoped.violations.length > 0) {
+    console.error(`FAIL: the rendered shipped boot violates ${scoped.violations.length} DEP-015 invariant(s):`);
+    for (const violation of scoped.violations) console.error(`  - ${violation}`);
+    process.exit(1);
+  }
+  const unscoped = evaluateStagingManifestInvariants(rendered).violations.filter((x) => /DISPATCH-DEFAULT/.test(x));
+  if (unscoped.length === 0) {
+    console.error("FAIL: positive control — the rendered shipped boot passed the UNSCOPED default-off check; the admission is not what is scoping it");
+    process.exit(1);
+  }
+  console.log(`OK: rendered shipped boot satisfies DEP-015 (scoped), and the unscoped default-off check reds it (${unscoped.length} violation(s)) — the admission is scoped`);
+}
+
 function main() {
+  const renderedFlag = process.argv.indexOf("--rendered");
+  if (renderedFlag !== -1) {
+    checkRendered(process.argv[renderedFlag + 1]);
+    return;
+  }
   let compose;
   try {
     compose = parseYaml(readFileSync(composePath, "utf8"));
@@ -68,6 +107,28 @@ function main() {
   console.log("    adapter-management surface on provider-ctl-net, and is ABSENT from every");
   console.log("    control-plane / worker / migrate surface. Rotation/revocation/old-key-denial");
   console.log("    rehearsal is contracted against DEP-008 + deferred to CLI-001/D2 (crosswalk CM-010/CM-012).");
+
+  // DEP-015 — the shipped CI boot overlay, evaluated over staging ⊕ overlay. This is the ONE
+  // manifest whose workers may carry the dispatch switches, and only with the admitted values;
+  // the staging evaluation above has no way to be handed that admission.
+  let overlay;
+  try {
+    overlay = parseYaml(readFileSync(path.join(repoRoot, SHIPPED_BOOT_OVERLAY_PATH), "utf8"));
+  } catch (err) {
+    console.error(`FAIL: could not parse ${SHIPPED_BOOT_OVERLAY_PATH}: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(2);
+  }
+  const overlayResult = evaluateShippedBootOverlayInvariants(compose, overlay, { overlayPath: SHIPPED_BOOT_OVERLAY_PATH });
+  if (overlayResult.violations.length > 0) {
+    console.error(`FAIL: ${SHIPPED_BOOT_OVERLAY_PATH} violates ${overlayResult.violations.length} DEP-015 shipped-boot invariant(s):`);
+    for (const violation of overlayResult.violations) console.error(`  - ${violation}`);
+    process.exit(1);
+  }
+  console.log("");
+  console.log(`OK: ${SHIPPED_BOOT_OVERLAY_PATH} satisfies the DEP-015 shipped-boot contract`);
+  console.log("    (dispatch admitted ONLY on its three declared workers with the exact admitted values;");
+  console.log("     E2B_API_KEY only on the adapter-manager; the F10 rollout injected on EVERY");
+  console.log("     control-plane replica; the deployment-wide crew switch pinned \"false\").");
 }
 
 main();
