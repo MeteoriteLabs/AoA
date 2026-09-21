@@ -194,3 +194,23 @@ JOB-017 does not decide this. It is handed to:
 The question is whether arm 2, or the registration's mapping, must require a particular `kind`
 before a row counts toward capability, or whether "any committed artifact" is the intended meaning.
 Today arm 2 still reads 0 on every real run, because no worker emits `artifact_prepared`.
+
+## CI evidence — the re-drive head (addendum, 2026-09-21)
+
+- **Correction to the re-drive addendum above.** That addendum says the full guard set passed at
+  `dbf4628cf`, and **that is not accurate for that commit**. Growing `readAcceptedEvent` shifted
+  lines in `packages/db/src/repositories/tenant/job-control.ts`, so `check-register-citation-integrity`
+  failed on three DE-30 citations there. The fix is commit `a58278c3928cd9e43be719cea23328780ccc10a7`:
+  it re-points the file's citations in `distributed-execution-threat-controls.json` through the
+  exact `git diff -U0` line map. The one historical SVC-007a citation ("of that commit") is left at
+  its original line, as its grandfather entry requires. The full guard set is green at `a58278c`.
+  The addendum above is not rewritten.
+- **Run `35608914951` on `a58278c3928cd9e43be719cea23328780ccc10a7`:** `ci-required` **success**, and
+  every job passed.
+  - `verify (3)` executed `job-accepted-event-seam.integration.test.ts` **(36 tests)**, which includes
+    the 6 re-drive tests, `job-output-parity.integration.test.ts` **(20)** and
+    `job-control-sweeper-pending-projections.test.ts` **(4)**.
+  - `verify (1)` executed `job-audit-parity.integration.test.ts` **(13)**.
+  - `verify (2)` executed `job-events.integration.test.ts` **(15)**.
+- **Codex** (`chatgpt-codex-connector`) reviewed `a58278c`. It completed with no findings (a 👍
+  reaction and no review comments).
