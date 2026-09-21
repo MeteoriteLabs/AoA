@@ -394,6 +394,11 @@ finally { client.destroy(); }
       adapterType: "claude_local",
       runtimeConfig: { heartbeat: { maxConcurrentRuns: 2 } },
     });
+    // `POST /companies/:cid/agents` creates the agent `idle` unconditionally (server/src/routes/
+    // agents.ts, the direct-create route); only `/agent-hires` honours
+    // `requireBoardApprovalForNewAgents` and parks a hire as `pending_approval`. Asserted, not
+    // assumed: a pending agent cannot be assigned, and the journey would die at dispatch.
+    if (agent.status !== "idle") fail(`tenant ${t.key}: the created agent is ${JSON.stringify(agent.status)}, not "idle"`);
     // The Company keys. keyless: placeholders — nothing in the keyless mode ever presents them to
     // a provider (the adapter-manager is never started). keyed: the repository secrets.
     const anthropic = state.mode === "keyed" ? process.env.ANTHROPIC_API_KEY : `keyless-placeholder-${secret(8)}`;
