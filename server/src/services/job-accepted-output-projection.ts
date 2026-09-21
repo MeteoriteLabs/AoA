@@ -60,9 +60,102 @@ export class AcceptedOutputProjectionError extends Error {
 }
 
 /** The task a `task_run` job projects onto, from the job's submit-time source. */
-interface OutputTarget {
+export interface OutputTarget {
   issueId: string;
   assigneeAgentId: string;
+}
+
+/** Everything the projection of ONE accepted `artifact_prepared` event needs. The seam fills it
+ * from the live fence; the re-drive fills it from the locked receipt and the STORED event row. */
+export interface AcceptedOutputContext {
+  organizationId: string;
+  companyId: string;
+  jobId: string;
+  attemptId: string;
+  attemptNumber: number;
+  eventId: string;
+  /** The whole stored/accepted wire event; its `payload` is the frozen artifact_prepared payload. */
+  wireEvent: Record<string, unknown>;
+}
+
+/** Read the job's SERVER-recorded source: its task for a `task_run`, `null` for any other source.
+ * Throws `source_unreadable` when the job is missing or its source does not parse. */
+export async function loadAcceptedOutputTarget(
+  db: Db,
+  input: { organizationId: string; companyId: string; jobId: string },
+): Promise<OutputTarget | null> {
+  const [job] = await db
+    .select({ sourceIntent: jobs.sourceIntent })
+    .from(jobs)
+    .where(and(
+      eq(jobs.organizationId, input.organizationId),
+      eq(jobs.companyId, input.companyId),
+      eq(jobs.id, input.jobId),
+    ))
+    .limit(1);
+  if (!job) throw new AcceptedOutputProjectionError("source_unreadable");
+  const parsed = submitJobSourceSchema.safeParse(job.sourceIntent);
+  if (!parsed.success) throw new AcceptedOutputProjectionError("source_unreadable");
+  return parsed.data.kind === "task_run"
+    ? { issueId: parsed.data.issueId, assigneeAgentId: parsed.data.assigneeAgentId }
+    : null;
+}
+
+/**
+ * THE one mapping from an accepted `artifact_prepared` event to its `task_outputs` row, shared by
+ * the seam registration and the JOB-017 re-drive (`redrivePendingProjection`), so a re-driven
+ * output is exactly the row the seam would have written. Fail-closed provenance: the artifact must
+ * be a COMMITTED `job_artifacts` row of this Organization, job and attempt.
+ */
+export async function applyAcceptedOutputEvent(
+  tx: Db,
+  ctx: AcceptedOutputContext,
+  target: OutputTarget,
+): Promise<{ outputId: string }> {
+  const parsed = artifactPreparedPayloadV1Schema.safeParse(ctx.wireEvent.payload);
+  if (!parsed.success) throw new AcceptedOutputProjectionError("payload_unparseable");
+  const [committed] = await tx
+    .select({
+      id: jobArtifacts.id,
+      kind: jobArtifacts.kind,
+      versionNumber: jobArtifacts.versionNumber,
+    })
+    .from(jobArtifacts)
+    .where(and(
+      eq(jobArtifacts.organizationId, ctx.organizationId),
+      eq(jobArtifacts.jobId, ctx.jobId),
+      eq(jobArtifacts.attempt, ctx.attemptNumber),
+      eq(jobArtifacts.identifier, parsed.data.artifactId),
+      eq(jobArtifacts.status, "committed"),
+    ))
+    .limit(1);
+  if (!committed) throw new AcceptedOutputProjectionError("artifact_not_committed");
+  const kind = committed.kind ?? parsed.data.kind;
+  return projectAcceptedOutputCore({ tx }, {
+    organizationId: ctx.organizationId,
+    companyId: ctx.companyId,
+    issueId: target.issueId,
+    output: {
+      type: "artifact",
+      provider: DISTRIBUTED_JOB_ARTIFACT_PROVIDER,
+      externalId: committed.id,
+      title: `Distributed run artifact (${kind})`,
+      status: "active",
+      reviewState: "none",
+      createdByAgentId: target.assigneeAgentId,
+      metadata: {
+        organizationId: ctx.organizationId,
+        jobId: ctx.jobId,
+        attemptId: ctx.attemptId,
+        attemptNumber: ctx.attemptNumber,
+        jobArtifactId: committed.id,
+        artifactIdentifier: parsed.data.artifactId,
+        artifactKind: kind,
+        versionNumber: committed.versionNumber ?? null,
+        eventId: ctx.eventId,
+      },
+    },
+  });
 }
 
 function artifactOutputProjector(target: OutputTarget | Error): AcceptedEventProjector {
@@ -74,52 +167,17 @@ function artifactOutputProjector(target: OutputTarget | Error): AcceptedEventPro
     },
     async apply({ tx, event, fence }) {
       // The job's source could not be read: every output event of this batch is OWED (a surfaced
-      // pending receipt), never silently dropped.
+      // pending receipt, which the re-drive retries), never silently dropped.
       if (target instanceof Error) throw target;
-      const parsed = artifactPreparedPayloadV1Schema.safeParse(event.payload.payload);
-      if (!parsed.success) throw new AcceptedOutputProjectionError("payload_unparseable");
-      const [committed] = await tx
-        .select({
-          id: jobArtifacts.id,
-          kind: jobArtifacts.kind,
-          versionNumber: jobArtifacts.versionNumber,
-        })
-        .from(jobArtifacts)
-        .where(and(
-          eq(jobArtifacts.organizationId, fence.organizationId),
-          eq(jobArtifacts.jobId, fence.jobId),
-          eq(jobArtifacts.attempt, fence.attemptNumber),
-          eq(jobArtifacts.identifier, parsed.data.artifactId),
-          eq(jobArtifacts.status, "committed"),
-        ))
-        .limit(1);
-      if (!committed) throw new AcceptedOutputProjectionError("artifact_not_committed");
-      const kind = committed.kind ?? parsed.data.kind;
-      const projected = await projectAcceptedOutputCore({ tx }, {
+      const projected = await applyAcceptedOutputEvent(tx, {
         organizationId: fence.organizationId,
         companyId: fence.companyId,
-        issueId: target.issueId,
-        output: {
-          type: "artifact",
-          provider: DISTRIBUTED_JOB_ARTIFACT_PROVIDER,
-          externalId: committed.id,
-          title: `Distributed run artifact (${kind})`,
-          status: "active",
-          reviewState: "none",
-          createdByAgentId: target.assigneeAgentId,
-          metadata: {
-            organizationId: fence.organizationId,
-            jobId: fence.jobId,
-            attemptId: fence.attemptId,
-            attemptNumber: fence.attemptNumber,
-            jobArtifactId: committed.id,
-            artifactIdentifier: parsed.data.artifactId,
-            artifactKind: kind,
-            versionNumber: committed.versionNumber ?? null,
-            eventId: event.eventId,
-          },
-        },
-      });
+        jobId: fence.jobId,
+        attemptId: fence.attemptId,
+        attemptNumber: fence.attemptNumber,
+        eventId: event.eventId,
+        wireEvent: event.payload,
+      }, target);
       return { targetAggregateId: projected.outputId };
     },
   };
@@ -140,23 +198,7 @@ export async function resolveAcceptedOutputProjector(
   if (!events.some((event) => event.eventType === "artifact_prepared")) return null;
   let target: OutputTarget | null;
   try {
-    target = await tx.transaction(async (sp) => {
-      const [job] = await (sp as unknown as Db)
-        .select({ sourceIntent: jobs.sourceIntent })
-        .from(jobs)
-        .where(and(
-          eq(jobs.organizationId, fence.organizationId),
-          eq(jobs.companyId, fence.companyId),
-          eq(jobs.id, fence.jobId),
-        ))
-        .limit(1);
-      if (!job) throw new AcceptedOutputProjectionError("source_unreadable");
-      const parsed = submitJobSourceSchema.safeParse(job.sourceIntent);
-      if (!parsed.success) throw new AcceptedOutputProjectionError("source_unreadable");
-      return parsed.data.kind === "task_run"
-        ? { issueId: parsed.data.issueId, assigneeAgentId: parsed.data.assigneeAgentId }
-        : null;
-    });
+    target = await tx.transaction(async (sp) => loadAcceptedOutputTarget(sp as unknown as Db, fence));
   } catch (error) {
     return artifactOutputProjector(error instanceof Error ? error : new AcceptedOutputProjectionError("source_unreadable"));
   }

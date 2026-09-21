@@ -36,6 +36,8 @@ import {
   createAuthoritativeCostRedriveSweep,
   createHubStuckChargeNotifier,
   redrivePendingAuthoritativeCost,
+  redrivePendingProjection,
+  AUTHORITATIVE_COST_REDRIVE_MAX_ATTEMPTS,
   STUCK_CHARGE_HUB_SOURCE_TYPE,
   type AcceptedUsageOutcome,
 } from "../services/job-accepted-usage-pricing.js";
@@ -1199,6 +1201,208 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       });
       expect(live.ack.status).toBe("accepted");
       expect(await count("activity_log", `action = 'job.attempt_started'`)).toBe(1);
+    });
+  },
+);
+
+// =================================================================================================
+// JOB-017 addendum (planning-session ruling, F2) — the E3-D-ACC (c) re-drive GENERALIZED to the
+// `activity_audit` and `output_projection` receipt kinds. A pending audit or output receipt with no
+// re-drive is the lost-audit class: the event is durable but its row would be permanently owed.
+// =================================================================================================
+
+/** A registration that WRITES through the real mapping, then throws — so the seam leaves a pending
+ * receipt whose owed row the re-drive must produce. */
+const failAfterWriteKinds = (kinds: string[]) => (p: AcceptedEventProjector): AcceptedEventProjector =>
+  !kinds.includes(p.projectionKind) ? p : {
+    projectionKind: p.projectionKind,
+    aggregateKind: p.aggregateKind,
+    sourceIdentity: (e, fe) => p.sourceIdentity(e, fe),
+    apply: async (ctx) => { await p.apply(ctx); throw new Error("injected after the write"); },
+  };
+
+async function pendingReceipt(kind: string, identity: string) {
+  const [row] = await guard().admin`SELECT id, status, target_aggregate_id, aggregate_kind, organization_id, company_id
+    FROM job_projection_receipts WHERE projection_kind = ${kind} AND source_identity = ${identity}`;
+  return row as { id: string; status: string; target_aggregate_id: string; aggregate_kind: string; organization_id: string; company_id: string } | undefined;
+}
+
+function redriveSweep(f: JobControlFixture, redrive = redrivePendingProjection) {
+  return createAuthoritativeCostRedriveSweep({
+    appDb: f.app.db,
+    notifier: createHubStuckChargeNotifier(ownerDb()),
+    log: { warn: () => {}, info: () => {} },
+    maxAttempts: AUTHORITATIVE_COST_REDRIVE_MAX_ATTEMPTS,
+    staleAfterMs: 0,
+    now: () => new Date(Date.now() + 1_000),
+    redrive,
+  });
+}
+
+describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")(
+  "JOB-017 re-drive of pending activity_audit and output_projection receipts (embedded PG)",
+  () => {
+    beforeEach(async () => {
+      if (!fixture) return;
+      await resetBridgeRows();
+      await fixture.admin`DELETE FROM notifications WHERE source_type = ${STUCK_CHARGE_HUB_SOURCE_TYPE}`;
+    });
+
+    it("[re-drive audit] a pending activity_audit receipt is re-driven to applied: exactly ONE activity row (the row the seam would have written), activity.logged AFTER commit, and a replay adds none", async () => {
+      const f = guard();
+      const fence = await seedLeasedAttempt(TENANT_A, taskSource(AGENT_A));
+      const t = terminal(fence, 1);
+      const { result } = await acceptWithBridges(fence, [t], { mutate: failAfterWriteKinds(["activity_audit"]) });
+      expect(result.acceptedEventProjections?.map((p) => p.outcome)).toEqual(["pending"]);
+      expect(await count("activity_log", "true")).toBe(0);
+      const receipt = await pendingReceipt("activity_audit", `activity:${COMPANY}:${t.eventId}`);
+      expect(receipt?.status).toBe("pending");
+
+      const published: Array<Promise<number>> = [];
+      const off = subscribeCompanyLiveEvents(COMPANY, (e) => {
+        if (e.type === "activity.logged") published.push(count("activity_log", "true"));
+      });
+      try {
+        const redriven = await redrivePendingProjection(f.app.db, { organizationId: ORG, receiptId: receipt!.id });
+        expect(redriven).toMatchObject({ status: "redriven", projectionKind: "activity_audit" });
+      } finally {
+        off();
+      }
+      const rows = await f.admin`SELECT id, action, company_id, entity_id, actor_id, details FROM activity_log`;
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        action: "job.attempt_terminal", company_id: COMPANY, entity_id: fence.jobId, actor_id: `worker:${fence.workerId}`,
+      });
+      expect((rows[0]!.details as Record<string, unknown>).terminalStatus).toBe("succeeded");
+      expect((rows[0]!.details as Record<string, unknown>).leaseId).toBe(fence.leaseId);
+      const after = await pendingReceipt("activity_audit", `activity:${COMPANY}:${t.eventId}`);
+      expect(after).toMatchObject({ status: "applied", aggregate_kind: "activity_log", target_aggregate_id: rows[0]!.id });
+      // Published exactly once, and the listener's SEPARATE connection already saw the committed row.
+      expect(published).toHaveLength(1);
+      expect(await published[0]!).toBe(1);
+      // A replay (a second re-drive, then the ingest re-sending the batch) adds nothing.
+      expect((await redrivePendingProjection(f.app.db, { organizationId: ORG, receiptId: receipt!.id })).status).toBe("not_pending");
+      await acceptWithBridges(fence, [t]).catch(() => undefined);
+      expect(await count("activity_log", "true")).toBe(1);
+    });
+
+    it("[re-drive output] a pending output_projection receipt is re-driven to applied once its artifact is committed: exactly ONE task_outputs row, and a replay adds none", async () => {
+      const f = guard();
+      const issueId = await seedIssue(COMPANY);
+      const fence = await seedLeasedAttempt(TENANT_A, taskSourceFor(AGENT_A, issueId));
+      const identifier = randomUUID();
+      const a = artifactEv(fence, 1, identifier);
+      // Announced before its commit is visible: the seam records the projection as OWED.
+      const { result } = await acceptWithBridges(fence, [a, terminal(fence, 2)]);
+      expect(result.acceptedEventProjections?.find((p) => p.projectionKind === "output_projection")?.outcome).toBe("pending");
+      const receipt = await pendingReceipt("output_projection", `output:${COMPANY}:${a.eventId}`);
+      expect(receipt?.status).toBe("pending");
+      const jobArtifactId = await seedCommittedArtifact(fence, identifier);
+
+      const redriven = await redrivePendingProjection(f.app.db, { organizationId: ORG, receiptId: receipt!.id });
+      expect(redriven).toMatchObject({ status: "redriven", projectionKind: "output_projection" });
+      const outputs = await f.admin`SELECT id, company_id, issue_id, provider, external_id, is_primary FROM task_outputs`;
+      expect(outputs).toHaveLength(1);
+      expect(outputs[0]).toMatchObject({
+        company_id: COMPANY, issue_id: issueId, provider: "aoa_distributed_job", external_id: jobArtifactId, is_primary: false,
+      });
+      expect(await pendingReceipt("output_projection", `output:${COMPANY}:${a.eventId}`))
+        .toMatchObject({ status: "applied", aggregate_kind: "task_outputs", target_aggregate_id: outputs[0]!.id });
+      expect((await redrivePendingProjection(f.app.db, { organizationId: ORG, receiptId: receipt!.id })).status).toBe("not_pending");
+      expect(await count("task_outputs", "true")).toBe(1);
+    });
+
+    it("[re-drive via the sweeper] the job-control sweep re-drives BOTH kinds with the same bound constant", async () => {
+      const f = guard();
+      const issueId = await seedIssue(COMPANY);
+      const fence = await seedLeasedAttempt(TENANT_A, taskSourceFor(AGENT_A, issueId));
+      const identifier = randomUUID();
+      await acceptWithBridges(fence, [startedEv(fence, 1), artifactEv(fence, 2, identifier)], {
+        mutate: failAfterWriteKinds(["activity_audit"]),
+      });
+      expect(await count("job_projection_receipts", `status = 'pending'`)).toBe(2);
+      await seedCommittedArtifact(fence, identifier);
+      const result = await redriveSweep(f).sweepOrganization(ORG);
+      expect(result).toMatchObject({ redriven: 2, failed: 0, notified: 0 });
+      expect(await count("job_projection_receipts", `status = 'pending'`)).toBe(0);
+      expect(await count("activity_log", "true")).toBe(1);
+      expect(await count("task_outputs", "true")).toBe(1);
+    });
+
+    it("[bound, output] a PERSISTENT output failure (the artifact is never committed) stops at the bound and raises EXACTLY ONE Inbox item, durably", async () => {
+      const f = guard();
+      const issueId = await seedIssue(COMPANY);
+      const fence = await seedLeasedAttempt(TENANT_A, taskSourceFor(AGENT_A, issueId));
+      const a = artifactEv(fence, 1, randomUUID());
+      await acceptWithBridges(fence, [a]);
+      const receipt = await pendingReceipt("output_projection", `output:${COMPANY}:${a.eventId}`);
+      expect(receipt?.status).toBe("pending");
+      let calls = 0;
+      const counting: typeof redrivePendingProjection = async (db, input) => { calls += 1; return redrivePendingProjection(db, input); };
+      const sweep = redriveSweep(f, counting);
+      for (let tick = 0; tick < AUTHORITATIVE_COST_REDRIVE_MAX_ATTEMPTS + 3; tick += 1) await sweep.sweepOrganization(ORG);
+      expect(calls).toBe(AUTHORITATIVE_COST_REDRIVE_MAX_ATTEMPTS);
+      expect(await count("notifications", `source_type = '${STUCK_CHARGE_HUB_SOURCE_TYPE}' AND source_id = '${receipt!.id}'`)).toBe(1);
+      const restarted = redriveSweep(f, counting);
+      for (let tick = 0; tick < 3; tick += 1) await restarted.sweepOrganization(ORG);
+      expect(calls).toBe(AUTHORITATIVE_COST_REDRIVE_MAX_ATTEMPTS);
+      expect(await count("notifications", `source_type = '${STUCK_CHARGE_HUB_SOURCE_TYPE}'`)).toBe(1);
+      expect(await count("task_outputs", "true")).toBe(0);
+    });
+
+    it("[bound, audit] a PERSISTENT audit failure stops at the bound and raises EXACTLY ONE Inbox item, durably", async () => {
+      const f = guard();
+      const fence = await seedLeasedAttempt(TENANT_A, taskSource(AGENT_A));
+      // A pending audit receipt that can never apply: it names a stored event outside the named
+      // set (a `log` observation), so every re-drive refuses it.
+      const l = logEv(fence, 1);
+      await acceptWithBridges(fence, [l]);
+      await f.admin`INSERT INTO job_projection_receipts
+        (organization_id, company_id, projection_kind, source_identity, source_digest, job_id, attempt_id, source_fence, status, target_aggregate_id, aggregate_kind, applied_at)
+        VALUES (${ORG}, ${COMPANY}, 'activity_audit', ${`activity:${COMPANY}:${l.eventId}`}, ${l.recomputedDigest},
+          ${fence.jobId}, ${fence.attemptId}, ${fence.fence}, 'pending', ${fence.attemptId}, 'job_attempts', NULL)`;
+      const receipt = await pendingReceipt("activity_audit", `activity:${COMPANY}:${l.eventId}`);
+      let calls = 0;
+      const counting: typeof redrivePendingProjection = async (db, input) => { calls += 1; return redrivePendingProjection(db, input); };
+      const sweep = redriveSweep(f, counting);
+      for (let tick = 0; tick < AUTHORITATIVE_COST_REDRIVE_MAX_ATTEMPTS + 3; tick += 1) await sweep.sweepOrganization(ORG);
+      expect(calls).toBe(AUTHORITATIVE_COST_REDRIVE_MAX_ATTEMPTS);
+      expect(await count("notifications", `source_type = '${STUCK_CHARGE_HUB_SOURCE_TYPE}' AND source_id = '${receipt!.id}'`)).toBe(1);
+      const restarted = redriveSweep(f, counting);
+      for (let tick = 0; tick < 3; tick += 1) await restarted.sweepOrganization(ORG);
+      expect(calls).toBe(AUTHORITATIVE_COST_REDRIVE_MAX_ATTEMPTS);
+      expect(await count("notifications", `source_type = '${STUCK_CHARGE_HUB_SOURCE_TYPE}'`)).toBe(1);
+      expect(await count("activity_log", "true")).toBe(0);
+    });
+
+    it("[re-drive F10] two Organizations: each Organization's sweep re-drives ONLY its own receipts, and every re-driven row lands in the receipt's own Organization and Company", async () => {
+      const f = guard();
+      const issueA = await seedIssue(COMPANY);
+      const issueB = await seedIssue(COMPANY_B);
+      const fenceA = await seedLeasedAttempt(TENANT_A, taskSourceFor(AGENT_A, issueA));
+      const fenceB = await seedLeasedAttempt(TENANT_B, taskSourceFor(AGENT_B, issueB));
+      const idA = randomUUID();
+      const idB = randomUUID();
+      await acceptWithBridges(fenceA, [startedEv(fenceA, 1), artifactEv(fenceA, 2, idA)], { mutate: failAfterWriteKinds(["activity_audit"]) });
+      await acceptWithBridges(fenceB, [startedEv(fenceB, 1), artifactEv(fenceB, 2, idB)], { mutate: failAfterWriteKinds(["activity_audit"]) });
+      await seedCommittedArtifact(fenceA, idA);
+      await seedCommittedArtifact(fenceB, idB);
+      expect(await count("job_projection_receipts", `status = 'pending'`)).toBe(4);
+
+      // Organization B's sweep first: A's receipts are invisible to it (forced RLS) and stay pending.
+      expect(await redriveSweep(f).sweepOrganization(ORG_B)).toMatchObject({ redriven: 2 });
+      expect(await count("job_projection_receipts", `status = 'pending' AND organization_id = '${ORG}'`)).toBe(2);
+      expect(await count("activity_log", `company_id = '${COMPANY}'`)).toBe(0);
+      expect(await count("task_outputs", `company_id = '${COMPANY}'`)).toBe(0);
+      // Same-tenant control: A's own sweep re-drives A's.
+      expect(await redriveSweep(f).sweepOrganization(ORG)).toMatchObject({ redriven: 2 });
+      expect(await count("job_projection_receipts", `status = 'pending'`)).toBe(0);
+      const activity = await f.admin`SELECT company_id, entity_id FROM activity_log`;
+      expect(activity.map((r) => `${r.company_id}:${r.entity_id}`).sort())
+        .toEqual([`${COMPANY}:${fenceA.jobId}`, `${COMPANY_B}:${fenceB.jobId}`].sort());
+      const outputs = await f.admin`SELECT company_id, issue_id FROM task_outputs`;
+      expect(outputs.map((r) => `${r.company_id}:${r.issue_id}`).sort())
+        .toEqual([`${COMPANY}:${issueA}`, `${COMPANY_B}:${issueB}`].sort());
     });
   },
 );

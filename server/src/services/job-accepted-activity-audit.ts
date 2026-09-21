@@ -25,7 +25,7 @@
 // the FENCE's — the lease the ingest guard locked — never the worker's, and the core refuses a
 // Company its Organization does not own.
 
-import type { AcceptEventInput, AcceptedEventProjector, ActiveFenceRequest } from "@armyofagents/db";
+import type { AcceptEventInput, AcceptedEventProjector, ActiveFenceRequest, Db } from "@armyofagents/db";
 import type { PreparedActivityEvent } from "./activity-log.js";
 import { activitySourceIdentity, recordAcceptedActivityCore } from "./job-audit-bridge.js";
 import { JOB_AUDIT_ENTITY_TYPE } from "./job-control-audit.js";
@@ -42,10 +42,71 @@ export function acceptedEventActorId(workerId: string): string {
   return `worker:${workerId}`;
 }
 
-function auditedAction(event: AcceptEventInput): string | null {
-  return Object.prototype.hasOwnProperty.call(ACCEPTED_ACTIVITY_AUDIT_ACTIONS, event.eventType)
-    ? ACCEPTED_ACTIVITY_AUDIT_ACTIONS[event.eventType]!
+function auditedActionFor(eventType: string): string | null {
+  return Object.prototype.hasOwnProperty.call(ACCEPTED_ACTIVITY_AUDIT_ACTIONS, eventType)
+    ? ACCEPTED_ACTIVITY_AUDIT_ACTIONS[eventType]!
     : null;
+}
+
+/** Everything the audit of ONE accepted event needs. The seam fills it from the live fence and the
+ * accepted input; the re-drive fills it from the locked receipt and the STORED event row. */
+export interface AcceptedEventAuditContext {
+  organizationId: string;
+  companyId: string;
+  jobId: string;
+  attemptId: string;
+  attemptNumber: number;
+  leaseId: string;
+  workerId: string;
+  eventId: string;
+  sequence: number;
+  eventType: string;
+  /** The server-applied terminal status (a `terminal` event only). */
+  terminalStatus: string | null;
+}
+
+/** Thrown when an audit is asked for an event outside the named set (E3-D-AUDIT-SET). */
+export class AcceptedActivityAuditError extends Error {
+  readonly code = "ACCEPTED_ACTIVITY_NOT_AUDITED";
+  constructor() {
+    super("accepted-activity audit applied to an event type outside E3-D-AUDIT-SET");
+    this.name = "AcceptedActivityAuditError";
+  }
+}
+
+/**
+ * THE one mapping from an accepted event to its audit row, shared by the seam registration and
+ * the JOB-017 re-drive (`redrivePendingProjection`), so a re-driven audit is exactly the row the
+ * seam would have written. Writes through the transaction-taking core; never publishes.
+ */
+export async function applyAcceptedEventAudit(tx: Db, ctx: AcceptedEventAuditContext) {
+  const action = auditedActionFor(ctx.eventType);
+  if (action === null) throw new AcceptedActivityAuditError();
+  return recordAcceptedActivityCore({ tx }, {
+    organizationId: ctx.organizationId,
+    companyId: ctx.companyId,
+    acceptedEventId: ctx.eventId,
+    activity: {
+      companyId: ctx.companyId,
+      actorType: "system",
+      actorId: acceptedEventActorId(ctx.workerId),
+      action,
+      entityType: JOB_AUDIT_ENTITY_TYPE,
+      entityId: ctx.jobId,
+      agentId: null,
+      details: {
+        organizationId: ctx.organizationId,
+        jobId: ctx.jobId,
+        attemptId: ctx.attemptId,
+        attemptNumber: ctx.attemptNumber,
+        leaseId: ctx.leaseId,
+        workerId: ctx.workerId,
+        eventId: ctx.eventId,
+        sequence: ctx.sequence,
+        ...(ctx.terminalStatus ? { terminalStatus: ctx.terminalStatus } : {}),
+      },
+    },
+  });
 }
 
 /**
@@ -62,36 +123,22 @@ export function createAcceptedActivityAuditProjector(options?: {
     projectionKind: "activity_audit",
     aggregateKind: "activity_log",
     sourceIdentity(event: AcceptEventInput, fence: ActiveFenceRequest) {
-      return auditedAction(event) === null ? null : activitySourceIdentity(fence.companyId, event.eventId);
+      return auditedActionFor(event.eventType) === null ? null : activitySourceIdentity(fence.companyId, event.eventId);
     },
     async apply({ tx, event, fence }) {
-      const action = auditedAction(event);
-      if (action === null) throw new Error("accepted-activity audit applied to an unaudited event type");
-      const recorded = await recordAcceptedActivityCore({ tx }, {
+      const recorded = await applyAcceptedEventAudit(tx, {
         organizationId: fence.organizationId,
         companyId: fence.companyId,
-        acceptedEventId: event.eventId,
-        activity: {
-          companyId: fence.companyId,
-          actorType: "system",
-          actorId: acceptedEventActorId(fence.workerId),
-          action,
-          entityType: JOB_AUDIT_ENTITY_TYPE,
-          entityId: fence.jobId,
-          agentId: null,
-          details: {
-            organizationId: fence.organizationId,
-            jobId: fence.jobId,
-            attemptId: fence.attemptId,
-            attemptNumber: fence.attemptNumber,
-            leaseId: fence.leaseId,
-            workerId: fence.workerId,
-            eventId: event.eventId,
-            sequence: event.sequence,
-            // The SERVER-applied transition input (`toAcceptInputs` sets it for a terminal only).
-            ...(event.terminalStatus ? { terminalStatus: event.terminalStatus } : {}),
-          },
-        },
+        jobId: fence.jobId,
+        attemptId: fence.attemptId,
+        attemptNumber: fence.attemptNumber,
+        leaseId: fence.leaseId,
+        workerId: fence.workerId,
+        eventId: event.eventId,
+        sequence: event.sequence,
+        eventType: event.eventType,
+        // The SERVER-applied transition input (`toAcceptInputs` sets it for a terminal only).
+        terminalStatus: event.terminalStatus ?? null,
       });
       options?.onPreparedActivity?.(event.eventId, recorded.prepared);
       return { targetAggregateId: recorded.activityId };
