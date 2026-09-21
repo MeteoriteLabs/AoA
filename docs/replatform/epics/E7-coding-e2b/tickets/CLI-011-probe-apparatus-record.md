@@ -116,7 +116,14 @@ imports buildSandboxInvocation…"*).
 | M7 | the record is written unredacted | vitest, no-key: the record test (the canary appears) |
 | M8 | CLI home state is counted as cwd | policy: the classification and census tests |
 
-**CI.** This section is filled in on the PR's final head (the `policy` and `verify` shard counts).
+**CI.** Run `35590097325` on code head `d30847e57f031b2e56996e98b525ed99ca547db4`. That commit
+holds all the apparatus code. The only later commits change this record.
+- Job **`policy`** (`106302304785`), success. In step *"CLI-011 P-011 output-probe decision logic
+  (proven WITHOUT the key)"*: `tests 34 / pass 34 / fail 0`.
+- Job **`verify (1)`** (`106302356653`), success. `keyed-cli-011-output-probe.test.ts (9 tests | 1
+  skipped)`: the 8 no-key wiring tests ran, and the keyed block was skipped because CI has no key.
+  Shard total: `655 passed | 3 skipped` files and `6396 passed | 13 skipped` tests.
+- **`ci-required`** (`106307552159`): success.
 
 ## 6. ★ Stop item: a dispatch-only workflow may not be dispatchable
 
