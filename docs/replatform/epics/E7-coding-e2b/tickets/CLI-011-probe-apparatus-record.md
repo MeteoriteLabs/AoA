@@ -127,6 +127,12 @@ imports buildSandboxInvocation…"*).
   checked, and a returned exit 0 is not the case under test. Both are now inconclusive, and the
   reason names which one it was. This supersedes the second review's "`threw` stays admissible".
   RED: 1 of 37 fails on the previous core. GREEN: 37/37.
+- **P2 (fourth review): the fallback record JSON-encodes operator input.** The `always()` fallback
+  step used to insert `e2b_template` and `arms` raw into a JSON string, so a `"` or a newline would
+  have made the one record a failed run leaves unparseable. They are now encoded with
+  `json.dumps` first. `evaluateWorkflowShape` fails a raw `": "${…}"` interpolation with the code
+  `fallback-unescaped-input`, and there is a positive control for each input. I ran the step
+  locally with the template ``bad"name<newline>x``, and it wrote valid JSON.
 
 **Mutations.** Each mutation was applied, run, and reverted. All eight went RED.
 

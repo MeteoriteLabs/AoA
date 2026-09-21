@@ -499,6 +499,8 @@ test("POSITIVE CONTROL: each workflow mutation reds with its own code", () => {
   assert.ok(codes(`${good}\n# secrets.OPENAI_API_KEY\n`.replace("# secrets.OPENAI_API_KEY", "      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}")).includes("secret-not-allowed"));
   assert.ok(codes(`${good}\n      - run: echo "\${{ secrets.E2B_API_KEY }}"\n`).includes("secret-interpolated"));
   assert.ok(codes(mutate("retention-days: 90", "retention-days: 1")).includes("record-retention"));
+  assert.ok(codes(mutate('"resolved": ${TEMPLATE_JSON}', '"resolved": "${RESOLVED_TEMPLATE}"')).includes("fallback-unescaped-input"));
+  assert.ok(codes(mutate('"armsMode": ${ARMS_JSON}', '"armsMode": "${ARMS_INPUT:-all}"')).includes("fallback-unescaped-input"));
   assert.ok(codes(good.replace(/name: cli-011-output-probe-record/, "name: something-else")).includes("record-upload-missing"));
   assert.ok(codes(mutate("timeout-minutes: 45", "timeout-minutes: 90")).includes("job-timeout"));
   assert.ok(codes(good.replace(/CLI011_DEFAULT_TEMPLATE: aoa-base/, "CLI011_DEFAULT_TEMPLATE: base")).includes("default-template-mismatch"));

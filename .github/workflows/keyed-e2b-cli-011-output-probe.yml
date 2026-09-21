@@ -144,6 +144,14 @@ jobs:
               RESOLVED_TEMPLATE="$CLI011_DEFAULT_TEMPLATE"
               RESOLVED_SOURCE="default-cli-bearing"
             fi
+            # The operator inputs are JSON-ENCODED before they enter the heredoc: a template
+            # alias carrying `"` or a newline must not turn the fallback record into invalid
+            # JSON (Codex review, PR #551). python3 is on every ubuntu-latest image.
+            export RESOLVED_TEMPLATE
+            ARMS_VALUE="${ARMS_INPUT:-all}"
+            export ARMS_VALUE
+            TEMPLATE_JSON="$(python3 -c 'import json,os;print(json.dumps(os.environ["RESOLVED_TEMPLATE"]))')"
+            ARMS_JSON="$(python3 -c 'import json,os;print(json.dumps(os.environ["ARMS_VALUE"]))')"
             cat > "$CLI011_RECORD_PATH" <<EOF
           {
             "schema": "aoa.cli-011.output-probe-record/1",
@@ -151,8 +159,8 @@ jobs:
             "commitSha": "${GITHUB_SHA}",
             "workflowRunUrl": "${RUN_URL}",
             "runNonce": "unknown",
-            "template": { "resolved": "${RESOLVED_TEMPLATE}", "source": "${RESOLVED_SOURCE}" },
-            "armsMode": "${ARMS_INPUT:-all}",
+            "template": { "resolved": ${TEMPLATE_JSON}, "source": "${RESOLVED_SOURCE}" },
+            "armsMode": ${ARMS_JSON},
             "disposition": { "disposition": "inconclusive", "detail": "the probe produced NO record: it did not reach its reporting stage. Read the job log for the failing step." },
             "controls": [],
             "decisionTable": [],

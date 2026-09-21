@@ -916,6 +916,12 @@ export function evaluateWorkflowShape(workflowText) {
     if (/CLI011_RECORD_PATH/.test(block) && /cat\s*>\s*"\$CLI011_RECORD_PATH"/.test(block)) fallback = true;
     if (/-z\s+"\$\{?E2B_API_KEY\}?"/.test(block) && /exit 1/.test(block)) skipGuard = true;
   }
+  // The fallback heredoc must not interpolate an operator input raw into a JSON string: a `"` or
+  // a newline in the template alias would make the one record a dead run leaves unparseable.
+  // (A JSON value position: `": "${...}"`. A shell assignment `X="${...}"` is not one.)
+  if (/":\s*"\$\{(RESOLVED_TEMPLATE|E2B_TEMPLATE_INPUT|ARMS_INPUT)[^}]*\}"/.test(text)) {
+    v("fallback-unescaped-input", "the fallback record interpolates an operator input raw inside a JSON string; JSON-encode it first");
+  }
   if (!fallback) v("record-fallback-missing", "no `always()` step writes a fallback record to $CLI011_RECORD_PATH");
   if (!skipGuard) v("skip-guard-missing", "no `always()` step fails the lane when E2B_API_KEY was empty (a skip is not a measurement)");
 
