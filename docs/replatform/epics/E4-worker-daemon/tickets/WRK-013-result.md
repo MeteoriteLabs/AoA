@@ -5,8 +5,8 @@
 **Epic:** `E4-worker-daemon`
 **Plan task:** `E4 implementation-plan ### WRK-013 - A durable lease-candidate source for the startup reconciler (M1a)` (§4c)
 **Implementer:** `M1 WRK-013 build agent (Claude Opus 5)`
-**Start SHA:** `28a2dd259` (program tip at start); rebased onto `4904c75e3`
-**Implementation commit:** `54daff9b78ea3245f3eacb4f95120d223191ff55`
+**Start SHA:** `28a2dd259` (program tip at start); rebased onto `4904c75e3`, then onto `fc2eb7dde` (which brought WRK-018 and JOB-016; the merge into `dispatch-runtime.ts` was clean)
+**Implementation commit:** `cd071fa083999d386aa7837e7b9a480b105dec8a`, plus the `start()` fix (§4 item 4) and the Codex P2 fix `4a66606d1d0594bb21583013e016e0d371f70dce` (§4 item 5)
 **Resolves:** `E4-F009` (MED). Its `findings.md` Status is flipped to `resolved` and its manifest key is
 deleted in the implementation commit. `E4-3-survives-restart` moves to `wired` in the same commit.
 
@@ -96,7 +96,8 @@ The focused command (§3 of the plan) was run with the new and extended tests an
   `create`, and it then ran green 3 times in a row under full-suite load. ★ *That window was real in
   the code too. Codex flagged it (P2), and it is now closed: see §4 item 5.*
 - After the Codex fix (write before ACK, withdraw on non-ACK): focused **5 files, 67 tests**; whole
-  suite **160 files, 1083 passed, 1 skipped**, with no `Errors` line.
+  suite **160 files, 1083 passed, 1 skipped**, with no `Errors` line. After the rebase onto
+  `fc2eb7dde`: **163 files, 1133 passed, 1 skipped**, no `Errors` line; `tsc --noEmit` clean.
 - `tsc --noEmit` and `build` for `worker-daemon`, the `worker-protocol` build, and
   `tsc --noEmit` for `worker-networked-host` all passed.
 - `node scripts/check-gate-clause-wiring.mjs` → OK, with 23 wired clauses, including `E4-3-survives-restart`.
