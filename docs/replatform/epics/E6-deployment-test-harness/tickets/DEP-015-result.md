@@ -7,7 +7,7 @@
 **Specification:** founder ruling **F3** (M1 plan §2), plus the S0-8 amendments (acceptance 6 and 7).
 **Implementer:** `M1 build agent (Claude Opus 5)`
 **Start SHA:** `28a2dd259ed7bdd8d64d68ad8a5999500d80b69e` (program tip `docs/replatform-program`)
-**Reviewed revision (code):** `c3c014bce7a8e05a98b1c17220bd00dc167eac9c` (§3 records exactly which revision each piece of evidence ran at)
+**Reviewed revision (code):** `1ec5533b5b2c80cf2bcbd7e228efa4d11c7b3662` (§3 records exactly which revision each piece of evidence ran at; after the rehearsal, `c3c014bce..1ec5533b5b2c80cf2bcbd7e228efa4d11c7b3662` adds only the `seed` assertion that each created agent is `idle`, from Codex's first review)
 **PR:** #554 (base `docs/replatform-program`)
 
 The implementer leaves `Status` at `gate_review`. Only a DISTINCT reviewer may set `complete`.
@@ -178,7 +178,7 @@ It is dispatched on a named candidate in `mode=keyed`, and it must retain `journ
 
 ---
 
-## 8. BLOCKER for the first dispatch — needs a decision
+## 8. BLOCKER for the first dispatch — needs a decision (Codex raised the same on `1ec5533`; its thread is left OPEN for this ruling)
 
 GitHub dispatches a `workflow_dispatch` workflow only in two cases: the file exists on the **default branch**, or the workflow **has already run at least once**. Per the GitHub docs, "This event will only trigger a workflow run if the workflow file exists on the default branch"; the API/CLI can target another ref once the workflow has run.
 
