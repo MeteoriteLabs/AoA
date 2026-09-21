@@ -1699,3 +1699,13 @@ any guard are in `scripts/check-verdict-consumer-freshness.test.mjs` and they re
 restore the false green and every guard would stay green. Stated plainly rather than implied: the
 controls above prove the shape at `31a4ef91f`, and nothing proves it at any later revision.
 
+★ **Enforcement added — 2026-09-21 (M1 plan §3, S0-5(a)).** The paragraph above was true when
+written and is kept as written. The shape is now enforced by `scripts/check-cross-platform-verdict-shape.mjs`
+(pure logic in `scripts/lib/cross-platform-verdict-shape.mjs`, symbol `evaluateCrossPlatformVerdictShape`),
+run in `pr.yml`'s `policy` job, step "Cross-platform lane verdict-bearing shape (E6-F023)", with its
+self-test `scripts/check-cross-platform-verdict-shape.test.mjs`. It reds on a job-level
+`continue-on-error` on `verify-cross-platform` or `e2e-cross-platform`, on a step-level flag on any
+step of those jobs (`Install Playwright` included), and when either job or the `Install Playwright`
+step cannot be found. `test-cross-platform` may keep its flag. It reads the program-branch file only;
+it says nothing about the `cross-platform-weekly.yml@main` stream, which stays blocked on M5.
+

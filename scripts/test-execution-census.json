@@ -55,6 +55,11 @@
       "workflow": "pr.yml",
       "step": "CI timeout caps derive from budgets bounded by declared measurements (E3-F036 class)"
     },
+    "scripts/check-cross-platform-verdict-shape.test.mjs": {
+      "status": "runs",
+      "workflow": "pr.yml",
+      "step": "Cross-platform lane verdict-bearing shape (E6-F023)"
+    },
     "scripts/check-d1-compose.test.mjs": {
       "status": "runs",
       "workflow": "pr.yml",
