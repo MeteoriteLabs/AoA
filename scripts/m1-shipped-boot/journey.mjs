@@ -343,7 +343,18 @@ function bootCore(state) {
   // two key files are handed to the containers' uid now.
   for (const file of [state.signingKeyFile, state.publicKeyFile]) releaseToContainers(file);
   renderAndCheck(state, "pre-boot");
-  compose(state, ["up", "-d", "--wait", "--wait-timeout", "600", "postgres", "minio", "migrate", ...CP_REPLICAS], { timeout: 1_200_000 });
+  // ★ ONE REPLICA AT A TIME. Each control-plane replica runs `maybeProvisionDistributedExecutionRoles`
+  // (`ALTER ROLE … LOGIN PASSWORD`) at boot; two booting together race on the same pg_authid
+  // tuples and the loser dies with `PostgresError: tuple concurrently updated` (XX000) —
+  // measured on this lane's local rehearsal, 2026-09-21. The lane serialises the boots; the race
+  // itself is a product defect recorded in DEP-015-result.md for the planning session to file.
+  // Replica A pulls in its dependency closure (postgres, minio, and migrate run to completion —
+  // `--wait` treats a one-shot named DIRECTLY as a failure once it exits, so it is reached only
+  // as a dependency); replica B then boots alone.
+  compose(state, ["up", "-d", "--wait", "--wait-timeout", "600", CP_REPLICAS[0]], { timeout: 1_200_000 });
+  for (const replica of CP_REPLICAS.slice(1)) {
+    compose(state, ["up", "-d", "--no-deps", "--wait", "--wait-timeout", "600", replica], { timeout: 900_000 });
+  }
   console.log("boot-core: postgres, minio, migrate (completed), control-plane + control-plane-b healthy");
 }
 
@@ -423,7 +434,10 @@ function applyRollout(state) {
   state.envValues.AOA_M1_DISTRIBUTED_EXECUTION_ROLLOUT = policy;
   writeEnvFile(state);
   saveState(state);
-  compose(state, ["up", "-d", "--no-deps", "--force-recreate", "--wait", "--wait-timeout", "600", ...CP_REPLICAS], { timeout: 900_000 });
+  // One replica at a time — see `bootCore` (the boot-time ALTER ROLE race).
+  for (const replica of CP_REPLICAS) {
+    compose(state, ["up", "-d", "--no-deps", "--force-recreate", "--wait", "--wait-timeout", "600", replica], { timeout: 900_000 });
+  }
   console.log(`apply-rollout: both replicas recreated with the F10 tenant set (enabled ${enabled.join(", ")}; control ${control} absent)`);
 }
 
