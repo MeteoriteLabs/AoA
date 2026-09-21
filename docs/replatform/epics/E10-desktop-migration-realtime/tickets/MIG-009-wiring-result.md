@@ -1,6 +1,6 @@
 # MIG-009 Wiring Result — the rollback drain gets an honest operator trigger (M1a)
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Date (UTC):** `2026-09-21`
 **Epic:** `E10-desktop-migration-realtime`
 **Plan task:** E10 implementation plan §8.1, *"`MIG-009` — wire the rollback drain to an honest operator trigger"*
@@ -227,3 +227,63 @@ lanes: pass.
 - **The service's own comment is now stale.** `job-distributed-drain.ts` still says the wiring
   adapter is *"REL-005"* and repeats the false duplicate-cancel rationale §8.1 corrected. It was not
   edited, because §8.1 forbids editing that file.
+
+## Independent review
+
+**Reviewer:** M1 review-batch-2A independent reviewer (Claude Opus 5). I did not author MIG-009, and I am not the planning session.
+**Reviewed revision:** 9f756e22a99a6ba36a8323489d83aaf657479b24 (the `--merge` of PR #544 into `docs/replatform-program`)
+**Disposition:** `approved`
+**Attempt:** 1 (see *Independent review — attempt 1* and the attempt history)
+
+### Independent review — attempt 1
+
+**Disposition: `approved`.** I reviewed at `9f756e22a99a6ba36a8323489d83aaf657479b24`, the merge of PR #544. The following are all ancestors of it and of the program tip `fc2eb7dde6325803c77950ac4adb1d190db0bd9a`: the Start SHA `66d1f917619f…`, the feature commit `de2664b3d4695ed2ffcb19316e9f220cc483b8fd`, the DE-20 fix `6687b23cd405881d23149be08ee023b9bbd544d7`, the CI head `b911376ea7444f9c119e56301312d1dc2b6e3cde` and the final head `65c346c7a00b…`. Three diffs are empty:
+- `git diff b911376ea fc2eb7dde` over the trigger, its store, `admitted-organizations.ts`, the CLI, both test files and the two drain service files;
+- `git diff 66d1f9176 b911376ea -- job-distributed-drain.ts job-distributed-drain-store.ts`, so the "do not modify" rule held;
+- `git diff b911376ea 65c346c7a`, apart from this record.
+
+So every claim below still describes the tree at the tip.
+
+- **The caller really reaches `drainAll`.** `runDistributedExecutionDrainTrigger` (`distributed-execution-drain-trigger.ts`) composes `createDistributedExecutionDrain` over `createAuditedDrainCancellation` and calls `drain.drainAll({ reason: OPERATOR_DRAIN_REASON })` exactly once. It passes no `pageSize` or `statementTimeoutMs`, so the module clamps stand. The entrypoint `server/src/cli/drain-distributed-execution.ts` is process wiring only, and root `package.json` has `"drain:distributed-execution"` beside `reconcile:legacy-resources`.
+- **The dead lever is closed at the seam (E10-D001).** `createAuditedDrainCancellation` pushes to `failures` and re-throws inside its `catch`, before `drainAll`'s bare `catch {}` swallows the error. `drainExitCode` returns 0 only when `skippedOrganizations` is empty **and** `failedCancellations` is empty. There is no terminal-state recheck, so SILENT-CANCEL (ii) holds.
+- **The audit is atomic with the cancel (E10-D002).** `composeDistributedExecutionDrainTriggerDeps` builds `withTenant` as `runInTenant(appDb, organizationId, (repos, tx) => …)`. Both `repos.jobControl.requestCancellation` and `recordJobDrainActivity(tx, …)` (`job-control-audit.ts`, `JOB_DRAIN_ACTION`) run on that one transaction. `not_found` and `job_terminal` are the only unaudited outcomes. `runInTenant` binds to the attempt's own `organizationId`, per call.
+- **`deriveDrainCommandId`** matches §5: SHA-256 over the namespace and jobId, the first 16 bytes, v5/variant bits. The code comment states the "it does not dedup a re-run" rationale correctly.
+- **Register.** `E10-1-drain` is `wired` against `createDistributedExecutionDrain`, and `E3-15-budget` stays `unwired` with `expectedReferences: 1`. At the tip, `node scripts/check-gate-clause-wiring.mjs` reports `OK (23 wired clause(s), 11 declared dormant…)`. I reproduced **M-register** myself: flipping `E10-1-drain` back to `unwired` exits 1 with `declared unwired but it now HAS a caller`. Reverted; the tree was clean.
+- **CI, by job.** Run `35585928427` (`pull_request`, headSha `b911376ea744…`, conclusion `success`, 16 jobs all `success`, `ci-required` `106294563893`). Per-job logs:
+  - `verify (2)` `106289186394`: `job-distributed-drain.integration.test.ts (11 tests)` ✓; 655 files passed / 2 skipped; 6205 tests passed / 33 skipped.
+  - `verify (3)` `106289186363`: `de-20-cutover-selection-audit.integration.test.ts (10 tests)` ✓ and `job-distributed-drain.test.ts (8 tests)` ✓; 653 / 4 files; 5881 / 29 tests.
+  - `verify (4)` `106289186374`: `drain-distributed-execution-cli.test.ts (13 tests)` ✓ and `job-control-runtime.test.ts (25 tests)` ✓; 657 files; 6114 / 2 tests.
+  - `verify (1)` `106289186409`: `service-reconciler.integration.test.ts (17 tests)` ✓; 654 / 3 files; 6386 / 12 tests.
+
+  Every number in §7 matches.
+- **Codex.** On PR #544, `chatgpt-codex-connector` reported "Didn't find any major issues" on the final head `65c346c7a0`. There are 0 inline review comments.
+- **Focused command, rerun locally (Windows) at the tip.** `vitest run job-distributed-drain.test.ts drain-distributed-execution-cli.test.ts` gives **2 files, 21 passed**.
+- **Mutations, reproduced by me and reverted** (`git status --porcelain` was empty after each):
+  - **M-reach** (replace `drain.drainAll(...)` with a synthetic empty result) gives **10 failed / 3 passed**, exactly the record's 10, and `REACH` is among them.
+  - **M-ledger** (the exit code reads `skippedOrganizations` only) gives **3 failed**: `SILENT-CANCEL (i)`, `AUDIT ATOMICITY` and `MULTI-TENANT`. That is exactly the record's 3.
+  - The PG columns I checked by reading `job-distributed-drain.integration.test.ts`. The atomicity arm injects a throwing `recordDrainAudit` **inside** the real `runInTenant`, then asserts the real attempt is still `running` and there are 0 audit rows. The leased arm asserts `cancel_requested`, exit 0, one `job_control_commands` row whose `command_id = deriveDrainCommandId(jobId)`, and audit outcomes `["queued","already_requested"]`.
+- **Acceptance items (E10 plan §8.1 RED list and failure behaviour).**
+  - Positive control, clean org drains: **evidenced** (`POSITIVE CONTROL`, M0).
+  - `drainAll` reached exactly once: **evidenced** (`REACH`, M-reach reproduced).
+  - `commandId` asserted at the adapter boundary: **evidenced** (`COMMAND ID` + the PG leased arm).
+  - Skipped org ⇒ non-zero: **evidenced**.
+  - Flag-off opens no pool: **evidenced** (`FLAG-OFF`: `openPools` is called only after the flag check).
+  - `skippedOrganizations` printed verbatim: **evidenced**.
+  - Embedded PG through the **composition root**, not a hand-built dep bag: **evidenced**. `runTrigger` calls `composeDistributedExecutionDrainTriggerDeps` plus `runDrainDistributedExecutionCli`; the sibling-receipt skip, clearing it as the positive control, and the terminal-only clean sweep are all present.
+  - The two owed REDs, (i) thrown cancel ⇒ non-zero and (ii) clean `cancel_requested` ⇒ zero: **evidenced**.
+  - Actor-attributed audit, atomic with the mutation: **evidenced**, and E10-D001 and E10-D002 are in `decisions.md`.
+  - Register flip plus M-register: **evidenced**.
+  - Docs Step 3: present at `environment-variables.md` "Step 3 — cancel in-flight distributed work".
+- **Multi-tenant (F10): real.** The integration fixture inserts a second `organizations` row (`ORG_2`) with its own Company (`COMPANY_2`). The multi-tenant arm first drains both tenants and checks each audit row's `company_id`, which is the same-tenant positive control. It then fails only `ORG_2`'s tenant transaction and asserts that exit is 1, that `failedCancellations` is exactly `[[ORG_2, jobId]]`, that `ORG`'s attempt is `cancelled` and that `ORG_2`'s attempt is `running`. The record's explanation for not having a refused control Organization (a rollback must reach every admitted Organization) is sound.
+- **TDD.** RED 1 and RED 2 are recorded in §3 but not committed. The plan's commit boundary (§8.1) asks for one feat commit, so this is consistent with it. RED 2 reproduces the dead lever behaviourally. The record says plainly that the integration arm was written after the unit GREEN, and its bite is shown by mutation. I accept that as disclosed.
+- **Not blocking, noted:**
+  1. **Observability vs. the plan.** §8.1 *Observability* says the console lines carry "no actor". The summary line prints `actorId` (`operator-cli:<who>`), and §9 does not list this as a deviation. It is the operator's own self-declared label, which the later E10-D002 audit requirement makes the point of the run. I judge it harmless, but it is an undisclosed plan delta.
+  2. **§9's four plan-vs-code findings are true at source.** `check-execution-census.mjs` scans only `*.test.mjs`. The hand SQL in the rollback doc is Step 1, the kill-switch. `listAdmittedOrganizationIds` was an inline closure. `job-distributed-drain.ts`'s comment still says "REL-005" and repeats the duplicate-cancel rationale.
+  3. **Open item that this approval does not decide.** Does an audited, operator-run, whole-fleet rollback now satisfy DE-20's rollback-audit conjunct (E0-F013 Decision 1, 4b)? The record says rightly that the planning session owns that question. `E0` `findings.md`'s DE-20 row still says "zero production callers".
+  4. **A flag-on run against a real deployment has not been performed.** The record says so. The embedded-PG arm is the evidence for the composition root.
+
+## Review attempt history
+
+| Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
+|---:|---|---|---|---|
+| 1 | M1 review-batch-2A independent reviewer (Claude Opus 5) | `9f756e22a99a6ba36a8323489d83aaf657479b24` | `approved` | Code unchanged from CI head `b911376ea` to tip. Run `35585928427` per job: `verify (2)` 11, `verify (3)` 10+8, `verify (4)` 13+25, `verify (1)` 17 — all match. Codex clean on `65c346c7a0`. Focused unit rerun 21/21. M-reach (10 failed), M-ledger (3 failed) and M-register (exit 1) reproduced exactly. F10 real (`ORG_2` row, per-org failure isolation on real RLS). Open, not decided here: DE-20 conjunct 4b (planning session); no flag-on real-deployment run. |

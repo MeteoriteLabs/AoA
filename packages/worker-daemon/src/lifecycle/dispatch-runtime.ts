@@ -40,6 +40,7 @@ import { createUsageObserver } from "../supervisor/usage-observer.js";
 import { resolveRunOpDeadlineMs } from "./run-op-deadline.js";
 import { createRedeemer, synthesiseRunSecrets } from "../lease/secret-redemption.js";
 import { createStagedInputResolver } from "../lease/staged-input.js";
+import { createArtifactExportSequencer } from "../lease/artifact-export.js";
 import { createLeaseRenewalDriver, createRealRenewalSchedule } from "../lease/lease-renewal.js";
 import { openEventOutboxStore, type DurableEventStore } from "../events/event-outbox-store.js";
 import { DurableWorkerEventSink } from "../events/durable-event-sink.js";
@@ -176,6 +177,21 @@ export async function composeDispatchRuntime(deps: ComposeDispatchRuntimeDeps): 
     session: () => session.get(),
   });
 
+  // DAT-009-3d (E5-D07) — the artifact-export SEQUENCER: digest → upload grant → export → commit,
+  // from the same client, device key and live session as the staged-input resolver above. It is
+  // bound to no run here: the supervisor hands it THIS run's handoff and a per-run exporter over
+  // THIS run's sandbox, so every tenant identity it writes comes from the lease (F10).
+  //
+  // ★ NO PRODUCER is composed (`resolveExportArtifacts` is CLI-012's). The supervisor opens an
+  // export window only when both are present, so until CLI-012 this sequencer is built at boot
+  // and run by nothing — which is why `E5-2` stays `unwired` (E5-D07 ruling 4). A `[]` stub
+  // producer here would be the vacuous clause E5-D03 forbids.
+  const exportArtifacts = createArtifactExportSequencer({
+    client: deps.client,
+    key: deps.key,
+    session: () => session.get(),
+  });
+
   // `redactionCanaries: []` is the construction-time PREFIX; the run's real canaries are seeded
   // PER-RUN into the coordinator's per-lease array (below), never at construction — so no
   // construction-time secret exists and a forgotten seeding cannot fail open. The redeemed
@@ -199,6 +215,7 @@ export async function composeDispatchRuntime(deps: ComposeDispatchRuntimeDeps): 
     redactionCanaries: [],
     materializeRunSecrets,
     resolveStagedFiles,
+    exportArtifacts,
     canaryCoordinator,
     observeRun: createUsageObserver({ metrics: deps.metrics }),
     // ★ H1 — the run's OWN budget, from `workload.maxRuntimeSeconds`. Before this the

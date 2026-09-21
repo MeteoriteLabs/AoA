@@ -227,6 +227,87 @@ gh workflow run m1-shipped-boot.yml --ref docs/replatform-program \
 
 `mode=keyless` with the same candidate is a free rehearsal of §3 on the Linux runner.
 
+## Independent review
+
+**Reviewer:** M1 review-batch-2A independent reviewer (Claude Opus 5). I did not author DEP-015, and I am not the planning session.
+**Reviewed revision:** dbe6f5da2a9316ac3f9762294d87991d7ec6f885 (the final PR #554 head, merged as `947b684d8a5bf1fcdacb20c5ff077668db54c517`). This is not the record's stated `1ec5533b5`; see below.
+**Disposition:** `changes_requested`. The request is about the record only; the code needs no change.
+**Attempt:** 1 (see *Independent review — attempt 1* and the attempt history)
+
+### Independent review — attempt 1
+
+**Disposition: `changes_requested`.** The lane, the guards and the overlay hold up at source and in CI. The record, however, pins the wrong revision and cites CI that does not cover the code it describes. That is the "record disagreeing with code" class, and it lives in the two fields a later reader relies on. `Status` stays `gate_review`.
+
+**What is wrong in the record (blocking):**
+
+1. **The `Reviewed revision (code)` field is false.** The header names `1ec5533b5b2c80cf2bcbd7e228efa4d11c7b3662`. The last PR commit, `dbe6f5da2a9316ac3f9762294d87991d7ec6f885` (`ci(m1): E6-D001 registration-only push…`), changes code after that revision:
+   - `.github/workflows/m1-shipped-boot.yml` (+22/−);
+   - `scripts/lib/m1-shipped-boot-shape.mjs` (+52/−);
+   - `scripts/check-m1-shipped-boot-shape.mjs`;
+   - `scripts/check-m1-shipped-boot-shape.test.mjs` (+61/−);
+   - `scripts/workflow-verdict-manifest.json`;
+   - `scripts/finding-ownership.json`.
+
+   The record's body already describes that later code: §1 clause 4 "27 cases", the E6-D001 push shape, mutations M13–M15, and §8 "As implemented". So the header pins a revision that does **not** contain what the record says was built. Both SHAs are ancestors of the tip. Only one of them is the right one.
+2. **The CI evidence in §4 does not cover the reviewed code.**
+   - "GREEN in CI. PR run `35591595055`, job `policy` (`106306988724`)" is a run on headSha `c31dccf87…`, the PR's **second** commit. That run concluded **`cancelled`**: all four `verify` shards, `e2e` and `ci-required` were `cancelled`, and only `policy` and a few other jobs completed.
+   - Its `policy` log shows the pre-E6-D001 guard: "dispatch-only, candidate-bound" and **46** shape+lib tests.
+   - The run that covers the final code is **`35596651522`** (headSha `dbe6f5da2a…`, conclusion `success`, `ci-required` `106327999223`), and the record never cites it. Its `policy` job **`106322893461`** executed the DEP-015 step:
+     - `OK: docker/m1-boot/docker-compose.m1-boot.yml satisfies the DEP-015 shipped-boot contract`;
+     - `check-staging-manifest.test.mjs` **49/49**;
+     - `OK: .github/workflows/m1-shipped-boot.yml is the F3 shipped CI boot: runs only on dispatch (push = registration only, E6-D001), candidate-bound, …`;
+     - shape + lib **53/53** (27 + 26).
+3. **The §8 promise is not kept yet.** §8 says the registration run "is to be cited here after the merge", in a post-merge addendum. No addendum exists.
+
+**Required changes.** Append a dated addendum, keeping the existing text as written, that does the following:
+- **(a)** Re-points the reviewed revision to `dbe6f5da2a9316ac3f9762294d87991d7ec6f885`, with `1ec5533b5…` kept as superseded.
+- **(b)** Cites run `35596651522` by job with the counts above, and records that `35591595055` was a cancelled run on `c31dccf87`.
+- **(c)** Cites the registration run and the keyless rehearsal:
+  - Registration run **`35598343418`**: `push` on `docs/replatform-program`, headSha `947b684d8a5b…`, conclusion `skipped`, job `shipped-boot` **`106328314759`** `skipped` with **0 steps**. This shows that the E6-D001 push executes nothing.
+  - Keyless rehearsal **`35600507289`**: `workflow_dispatch`, candidate `fc2eb7dde6325803c77950ac4adb1d190db0bd9a`, `MODE: keyless`, conclusion `success`, job **`106335219133`** with 28 steps. Its logs show:
+    - `prepare` generated the keypair in the job; `✓ CP↔AM keypair smoke: PASS`;
+    - both control-plane replicas were healthy;
+    - three Organizations were seeded, with distinct org ids;
+    - `assert-tenants` "both replicas (rendered AND running) hold exactly {A, B} canary, control … absent; crew + tool surface OFF";
+    - three workers were enrolled, each on its own Organization's target, and the adapter-manager was **not** started;
+    - `dispatch: tenant c (control) … owner=null … → PASS`;
+    - 17 evidence files were uploaded (`m1-shipped-boot-keyless-35600507289`);
+    - `teardown` reported "keys dir gone".
+
+    This is the §3 rehearsal repeated on the Linux runner, at a candidate that contains this code.
+
+Once the addendum lands, a re-review should be short. Nothing else I checked needs to change.
+
+**What I verified and found sound (for the next attempt to reuse):**
+- **Ancestry.** Start SHA `28a2dd259…`, `c31dccf87…`, `c3c014bce`, `1ec5533b5…` and `dbe6f5da2…` are all ancestors of `fc2eb7dde`.
+- **Guards, rerun locally at the tip.**
+  - `node scripts/check-m1-shipped-boot-shape.mjs` passes.
+  - `node scripts/check-staging-manifest.mjs` passes, including the overlay.
+  - `node --test` shows shape + lib **53/53** and `check-staging-manifest.test.mjs` **49/49**.
+- **Mutation M13, reproduced by me.** Disabling the registration-push `paths` check in `m1-shipped-boot-shape.mjs` gives **2 failed / 25 passed**, exactly the "2 cases" the record gives. Reverted; the tree was clean.
+- **The workflow shape.** `on:` has `workflow_dispatch` plus a push restricted to `docs/replatform-program` / the workflow file. The job is gated `if: github.event_name == 'workflow_dispatch'`. The candidate must be 40-hex, and the mode must be `keyless|keyed` (the "Validate the named candidate" step). E6-D001 is recorded in E6 `decisions.md`.
+- **Keypair and evidence.** `journey.mjs` `writeEvidence` passes every retained file through `redactSecrets(text, state.redact)`. `state.redact` includes the generated secrets, the board token, the private PEM and both provider keys. `teardown` deletes `keys/`, the env file and the state file. The "0 of 25 secrets" measurement is the author's local scan. The lane itself has no leak **assertion**: it redacts, but it does not fail on a residual. I did not download the rehearsal artifact, so I have not re-measured it. Acceptance 2 is therefore "met in design", with keyed confirmation pending, as the record says.
+- **Codex.** "Didn't find any major issues" on `78f9d85912` and on the final head `dbe6f5da2a`. Both P1 threads (seeded agents idle; workflow registration) are resolved.
+- **Multi-tenant (F10): real where it has run.** Three Organizations are seeded through the API. The rollout on **both** replicas is asserted rendered **and** running. The control run stays legacy, with `rolloutState: "off"` for the control org. The **enabled tenants' journey has not run.** That is keyed and pending, and the record says so.
+
+**Acceptance status (E6 plan `DEP-015`).**
+
+| # | Status |
+|---|---|
+| 1 | **OPEN**: the keyed run is pending (F8), and the record says so. |
+| 2 | Met in design; keyed confirmation pending. |
+| 3 | **Evidenced**. |
+| 4 | **Evidenced** as amended by E6-D001, and the registration run proves the push is inert. |
+| 5 | Met in design. The `mode` default is `keyless`, and the keys are gated to `inputs.mode == 'keyed'`. |
+| 6 | Control half evidenced (keyless, CI); enabled-tenant half **OPEN** (keyed). |
+| 7 | **Evidenced**. |
+
+## Review attempt history
+
+| Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
+|---:|---|---|---|---|
+| 1 | M1 review-batch-2A independent reviewer (Claude Opus 5) | `dbe6f5da2a9316ac3f9762294d87991d7ec6f885` | `changes_requested` | Record only. The header's reviewed revision `1ec5533b5` predates the E6-D001 code (`dbe6f5da2`) that the record describes. §4's CI run `35591595055` was `cancelled`, on `c31dccf87`, with the pre-E6-D001 guard (46 tests). The covering run `35596651522` (policy `106322893461`: 49/49, 53/53) is uncited, and §8's post-merge citation is missing: registration `35598343418` (job `106328314759` skipped, 0 steps) and keyless rehearsal `35600507289` (job `106335219133` success). Code sound: guards green locally, M13 reproduced (2 failed), Codex clean on `dbe6f5da2a`. Acceptance 1 and the enabled half of 6 are OPEN (keyed). |
+
 ---
 
 ## 9. Follow-up — the first keyed run failed at `stage_files` (2026-09-21)
@@ -268,12 +349,26 @@ The planning session dispatched the first keyed run: **`35601445269`**, on candi
 
 ## 10. Addendum, 2026-09-21: corrections after the distinct review
 
-The distinct reviewer requested changes on this record. The sections above are left exactly as written; this addendum corrects them.
+Independent review attempt 1 (above) requested changes to this record. The sections above are left exactly as written; this addendum makes the required changes (a)–(c).
 
-- **Reviewed revision.** The header names `1ec5533b5b2c80cf2bcbd7e228efa4d11c7b3662`, but that commit predates the E6-D001 code: the registration-only push, the dispatch-only job gate and the matching shape guard. The revision that contains it is **`dbe6f5da2a9316ac3f9762294d87991d7ec6f885`**, the final head of PR #554, which merged as `947b684d8`. It is the reviewed revision.
-- **CI run.** §4 cites PR run `35591595055` as the green `policy` evidence. That run is on `c31dccf87` and concluded **`cancelled`**: `e2e` and `verify (4)` were cancelled. It covers neither the code nor the final head. The run that covers the reviewed revision is **`35596651522`** (`pull_request` on `dbe6f5da2`, conclusion `success`). Its jobs `policy`, `verify (1–4)`, `e2e`, `migrations` and `ci-required` all concluded `success`.
-- **Registration run (E6-D001).** Merging #554 pushed the workflow file to `docs/replatform-program` and fired the registration-only trigger. That run is **`35598343418`** (`push` on `947b684d8`, run conclusion `skipped`): its only job, `shipped-boot`, concluded **`skipped` with 0 steps**. This is the post-merge citation §8 promised: nothing ran and no secret was read.
-- **Keyless rehearsal on CI.** Run **`35600507289`** (`workflow_dispatch`, candidate `fc2eb7dde`) concluded **`success`**, with job `shipped-boot` = `success` over 28 steps. It is the Linux-runner counterpart of §3's local rehearsal.
+- **Reviewed revision.** The header names `1ec5533b5b2c80cf2bcbd7e228efa4d11c7b3662`, but that commit predates the E6-D001 code: the registration-only push, the dispatch-only job gate and the matching shape guard. The revision that contains it is **`dbe6f5da2a9316ac3f9762294d87991d7ec6f885`**, the final head of PR #554, which merged as `947b684d8a5bf1fcdacb20c5ff077668db54c517`. It is the reviewed revision. `1ec5533b5…` is kept as superseded.
+- **CI run.** §4 cites PR run `35591595055` as the green `policy` evidence. That run is on `c31dccf87` and concluded **`cancelled`**: `e2e` and `verify (4)` were cancelled. It covers neither the code nor the final head. The run that covers the reviewed revision is **`35596651522`** (`pull_request` on `dbe6f5da2`, conclusion `success`). Its jobs `policy`, `verify (1–4)`, `e2e`, `migrations` and `ci-required` (`106327999223`) all concluded `success`. The `policy` job **`106322893461`** executed the DEP-015 step, which printed:
+  - `OK: docker/m1-boot/docker-compose.m1-boot.yml satisfies the DEP-015 shipped-boot contract`;
+  - `check-staging-manifest.test.mjs` **49/49**;
+  - `OK: .github/workflows/m1-shipped-boot.yml is the F3 shipped CI boot: runs only on dispatch (push = registration only, E6-D001), …`;
+  - shape + lib **53/53** (27 + 26).
+
+  The cancelled run's `policy` log shows the pre-E6-D001 guard (46 tests).
+- **Registration run (E6-D001).** Merging #554 pushed the workflow file to `docs/replatform-program` and fired the registration-only trigger. That run is **`35598343418`** (`push` on `947b684d8`, run conclusion `skipped`): its only job, `shipped-boot` **`106328314759`**, concluded **`skipped` with 0 steps**. This is the post-merge citation §8 promised: nothing ran and no secret was read.
+- **Keyless rehearsal on CI.** Run **`35600507289`** (`workflow_dispatch`, candidate `fc2eb7dde`) concluded **`success`**, with job `shipped-boot` **`106335219133`** = `success` over 28 steps. It is the Linux-runner counterpart of §3's local rehearsal, at a candidate that contains the E6-D001 code. Its logs show:
+  - the keypair generated in the job, and `✓ CP↔AM keypair smoke: PASS`;
+  - both replicas healthy;
+  - three Organizations seeded, each with a distinct id;
+  - `assert-tenants` holding exactly {A, B} canary, with the control absent and crew + tool surface OFF;
+  - three workers enrolled, each on its own Organization's target, and the adapter-manager **not** started;
+  - the control dispatch passed, with `owner=null`;
+  - 17 evidence files uploaded (`m1-shipped-boot-keyless-35600507289`);
+  - `teardown` reported "keys dir gone".
 - **First keyed run.** Run **`35601445269`** (`workflow_dispatch`, `mode=keyed`, candidate `fc2eb7dde`) concluded **`failure`**. Every step through "Reconcile and preflight every Organization" passed. The failing step was "Run the journey", for both enabled tenants; the control tenant correctly stayed legacy.
   - **Root cause:** the E2B provider redeems grants inside the adapter-manager (`fetchGrantBytes`). In the m1-boot overlay the adapter-manager had neither the presign store's network (`store-egress-net`) nor its CA.
   - **The fix:** the DEP-015 follow-up PR (§9), which covers the overlay, the GRANT-REACH/TRUST invariant, the keyless `probe-presign` phase and E6-F024.
