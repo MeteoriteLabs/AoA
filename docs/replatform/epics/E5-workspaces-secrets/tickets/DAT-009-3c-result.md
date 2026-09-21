@@ -65,7 +65,7 @@ The implementer leaves `Status` at `gate_review`. Only a distinct reviewer may c
 **GREEN** at `f5e2aff1f` (21 cases after the Codex fix):
 - The task's verify command (the protocol build, then `vitest run` on
   `supervisor-export-artifacts` + `artifact-export-sequencer` + `supervisor-happy.component`) gives
-  **3 files, 50 passed**.
+  **3 files, 52 passed** (21 + 16 + 15). *Corrected 2026-09-21 per the attempt-1 review, by the planning session (not the reviewer): Superseded text: "3 files, 50 passed", the count from before the Codex fix. The reviewer reproduced 52 on a clean detached checkout of `f5e2aff1f`.*
 - The full worker-daemon suite gives **159 files, 1070 passed, 1 skipped**. The worker-daemon typecheck
   and build exit 0.
 - `check-worker-daemon-boundary` gives PASS, and `check:frozen-worker-protocol-v1` gives OK.
