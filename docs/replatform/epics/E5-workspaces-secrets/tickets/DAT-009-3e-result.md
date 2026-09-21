@@ -6,7 +6,7 @@
 **Plan task:** `E5 implementation-plan DAT-009-3e — the networked-lane export route, and E5-F002 at the cause (M, M1b)`
 **Implementer:** `DAT-009-3e build session (Claude Opus 5)`
 **Start SHA:** `cec1b48a796f177c6184884dc3c5043f5aa57ea8` (`docs/replatform-program` tip, the `3c` merge)
-**Reviewed revision (the code commits):** `b853ff0ffae57966241a7d123df9675eea84dade` (the wire route) + `8849a12066188c79393aa509fbada49d2e6d1328` (the `E5-F002` fix) + `d5e6a3612cd73cca3f6874baefa357a40a1d2e3d` (the Codex P1 grant-binding fix, §1 commit 3). The tree under review is `d5e6a3612`.
+**Reviewed revision (the code commits):** `b853ff0ffae57966241a7d123df9675eea84dade` (the wire route) + `8849a12066188c79393aa509fbada49d2e6d1328` (the `E5-F002` fix) + `d5e6a3612cd73cca3f6874baefa357a40a1d2e3d` (the Codex P1 grant-binding fix, §1 commit 3) + `ddfa0e61e57214aebda1d8d70b1337b0a7112799` (the second-round Codex P1/P2 fix, §1 commit 4). The tree under review is `ddfa0e61e`.
 
 The implementer leaves `Status` at `gate_review`. Only a distinct reviewer may change it to
 `complete`.
@@ -94,6 +94,27 @@ fixing:** the new RED case got an `ok` envelope back, and the injected uploader 
 - This confines a forged grant; it does not authenticate one. A presigned url carries no
   control-plane signature the adapter-manager could check.
 
+### Commit 4: `fix(adapter-manager,sandbox-e2b-provider): bound the export upload and refuse redirects` (Codex P1 + P2 on `210991f7d`)
+
+- **P1, a stalled upload strands the destroy.** `gateOwnedOp` holds the per-sandbox lock across
+  dispatch. The supervisor's window races the export but cannot cancel the RPC, so a hung PUT would
+  queue the run's own `destroy` behind it. **Verified by RED:** a stalled uploader held the lock, and
+  `destroy` had not settled after 25 s.
+  - The route now dispatches with `deadlineMs = min(ctx.deadlineMs, capability.expiresAt − now −
+    EXPORT_TEARDOWN_RESERVE_MS)`. That is the supervisor's own export-window clamp
+    (`runExportWindow`, 3c), so destroy keeps its 30 s reserve. With no budget left, the route
+    refuses before any read.
+  - `E2bSandboxProvider.exportArtifact` refuses an exhausted budget before reading. It aborts the
+    upload with `AbortSignal.timeout(ctx.deadlineMs)` and settles at that point even if an injected
+    uploader ignores the signal.
+  - `performUploadGrant` gains an optional `signal` parameter, so existing two-argument uploaders
+    still typecheck.
+- **P2, redirects.** `putGrantBytes` sends `redirect: "error"`, so a redirect from the store origin
+  cannot forward the body past the origin binding. The caller's signal reaches `fetch`, and an abort
+  is reported as a timeout, not as "severed".
+- Two `e2b-provider.ts` line citations in `distributed-execution-threat-controls.json` moved again
+  (+29 lines) and were re-pointed, with the same anchors.
+
 ## 2. RED → GREEN
 
 RED runs used unchanged behaviour. The only source change made before the `put-grant-bytes` RED was
@@ -105,6 +126,7 @@ an assertion failure, not a missing import.
 | `provider-wire` `driver-artifact-export.test.ts` | **11 failed / 3 passed (14)** | the mode-`"none"` case passed **vacuously**, because the old code threw without reading the mode (the exact defect the task names; mutants M1/M2 now kill it); far-side refusal and H-04 were true by construction | **14 passed** |
 | `adapter-manager` `server-artifact-export.test.ts` | **7 failed / 2 passed (9)** | ungated-404 was true by construction; the far-`"none"` case passed vacuously through the driver's unconditional throw | **9 passed** |
 | `adapter-manager` grant-binding cases (commit 3) | **5 failed / 9 passed (14)**: the forged-origin case got an `ok` and the bytes were uploaded | the 9 were the commit-1 cases | **14 passed** (full package 169) |
+| commit 4 (`put-grant-bytes` + `server-artifact-export`) | **4 failed / 8 passed (12)** and **3 failed / 14 passed (17)**; the stall case timed out, which is the strand itself | — | **12 passed** and **17 passed** (full packages: e2b 151 passed / 31 skipped; adapter-manager 172) |
 | `sandbox-e2b-provider` `put-grant-bytes.test.ts` | **4 failed / 4 passed (8)** | failed: both header names (`expected undefined to be 'SHA256'`), the digest source, one home, severed PUT (the raw transport message escaped). Passed: base64 encoding, header precedence, body and non-2xx were already correct | **8 passed** |
 
 **The task's focused verify command at `8849a1206` (Windows, local):** wire build OK; driver suite
@@ -147,8 +169,14 @@ an assertion failure, not a missing import.
 | M19 | no attempt-prefix binding on `objectKey` | 2 red (**incl. F10 foreign-Organization key**) |
 | M20 | no url-targets-key binding | 1 red |
 | M21 | the binding is never called | 5 red |
+| M22 | the PUT follows redirects | 1 red |
+| M23 | the signal is not passed to `fetch` | 1 red |
+| M24 | no exhausted-budget check | 1 red |
+| M25 | no signal-bounded race (unbounded uploader call) | 1 red |
+| M26 | the route passes the caller's unclamped ctx | 2 red (incl. the stall/strand case) |
+| M27 | clamp without the teardown reserve | 3 red |
 
-**21 of 21 killed.**
+**27 of 27 killed.**
 
 ## 4. Multi-tenant (F10)
 
@@ -230,6 +258,9 @@ which this PR does not touch.
 
 ## 9. CI
 
+★ *Superseded by the round after it: this section records the CI on `7f7bf5317`. Commit 4 followed,
+and its CI is recorded in the addendum below.*
+
 Measured on head `7f7bf5317` (which carries the reviewed code tree `d5e6a3612`), `pr.yml` run
 `35596023016`:
 - **`ci-required`** (job `106326177981`): **success**.
@@ -245,6 +276,10 @@ Codex on `7f7bf5317` reported "Didn't find any major issues". Its one earlier P1
 
 This section was added in a docs-only commit after that run, so the final head differs from
 `7f7bf5317` by this file only.
+
+### CI addendum (commit 4)
+
+*(Filled in after the `pr.yml` run on the commit-4 head.)*
 
 ## 10. Reviewer section
 
