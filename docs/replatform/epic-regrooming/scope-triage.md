@@ -521,6 +521,8 @@ conjunctive per-workload floors: ≥100 coding jobs, ≥50 browser journeys, ≥
 
 **Exit.** Full **D6** → the E11 exit gate → `REL-005` selected-Organization private beta.
 
+★ **And the `cross-platform-weekly.yml@main` block comes off.** *Added 2026-09-21 (M0 follow-up, founder ruling "blocked, with owner").* `scripts/workflow-verdict-manifest.json` declares that stream `blocked` on the program integration checkpoint, owned by the founder, which is how M0 criterion 2 was met. The block is correct only until `main` carries the program branch's workflow. **M5 does not exit until the block is removed** and the DEP-013 consumer (#358) has read at least one scheduled `@main` run of the verdict-bearing workflow (E6-F023 option 3). A green run there is the first one that means the verdict-bearing jobs passed. Leaving the block in place after the checkpoint would make "owned" permanent, which the ruling never granted.
+
 ---
 
 ### Retained after the first milestone
