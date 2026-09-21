@@ -377,3 +377,40 @@ Independent review attempt 1 (above) requested changes to this record. The secti
   - **What it does.** Every job secret (26 named secrets in a full keyless run) is searched for in every evidence file, in raw, base64 and base64url form. A match fails the run and deletes the bundle. The report names the file and the secret NAME, never the value.
   - **Positive controls.** A planted canary turns the pure check red and turns the phase run end to end red (exit 1, the file and name reported, no value printed, the bundle deleted). Base64 and base64url plantings are found. Mutations that disable the scan, drop the encoded forms or ungate the upload are each killed.
   - **A real bundle stays green.** Over the 13 files of a local keyless bundle it reported `clean`.
+
+---
+
+## 11. Addendum, 2026-09-21: keyed re-run 35613849443 — the mechanism is corroborated; the lane failed on a driver defect
+
+The planning session dispatched keyed run **`35613849443`** on candidate `d0f065b13`, after the
+§9 follow-up (#561) merged. It got through every phase the first keyed run failed at.
+
+**What the run showed:**
+- **Both enabled tenants reached `verifierExit=0`**, so `verify-e7-1-distributed-run` corroborated the mechanism.
+  - Tenant a: run `599e1fd6-86c0-4656-b91a-816598cee0f4`, attempt `a7450882-b475-4c98-ad42-b824313b046b`.
+  - Tenant b: run `4e36f912-3da4-4bef-8a29-588e091d4016`, attempt `4fde4236-e1c3-4ec0-9b8a-71175b6394e1`.
+- **The control tenant passed, on the legacy path.** Run `04c09414-4d63-40d7-9cad-46192643fedc`.
+- **Real provider-sandbox evidence is in the retained worker logs.** Each enabled tenant's worker logged exactly one `supervisor: run complete` line, with `cleanupStatus: "success"`, naming a real E2B sandbox on that tenant's own lease:
+  - `logs-m1-worker-a.txt`: `sandboxId: "ir2yj6bc4zh81x258k47b"`, lease `84b237c8-0228-427c-8bf4-08e68e7e04f8`. That lease was acked on `control-plane`, the replica worker A talks to.
+  - `logs-m1-worker-b.txt`: `sandboxId: "i1pbzfz6n7y4wb3q5k616"`, lease `2d3d4984-cb59-43ef-bb5b-22e1db4282a6`. That lease was acked on `control-plane-b`.
+  - `logs-m1-worker-c.txt`: no sandbox line. The control never leased.
+
+**The lane still failed, and on its own driver's check.** The check reported "no worker log line names a provider sandbox for this tenant", for a and b.
+
+**The defect.** `dispatch` in `scripts/m1-shipped-boot/journey.mjs` filtered worker log lines with `/sandboxId=/`. The worker logs pino JSON (`"sandboxId":"…"`), so that filter could never match a real line. This was a driver bug, not a product failure: the evidence the check wanted was present.
+
+**The fix, in the follow-up PR:**
+- **`parseSandboxLogLine`** (`scripts/lib/m1-shipped-boot.mjs`) reads the JSON record through the compose prefix and timestamp. It still accepts a `sandboxId=` text form, in case a logger emits one.
+- **`E2B_SANDBOX_ID_SHAPE`, `/^[a-z0-9]{16,32}$/`.** An id counts only if it matches.
+  - **Measured at source.** The e2b SDK passes the server's `sandboxID` through opaquely, then embeds it in the DNS label `${port}-${sandboxId}.${domain}`. The two observed ids are 21 characters of `[a-z0-9]`.
+  - **Every test double's id has a hyphen, so none can match.** The D1 fake provider's is `${providerId}-res-${n}`, and the mock transport's is `sbx-000001`. A fake provider can therefore never satisfy §11.
+- **`extractSandboxEvidence` scopes each id to THIS run.** If a line carries a `leaseId`, it must be one of the run attempt's leases (`leases.attempt_id`). The worker's line does carry one, as measured above. A line without a lease id is scoped by the worker alone: one worker per tenant, on that tenant's own target.
+- **Tests** (`scripts/lib/__tests__/m1-shipped-boot.test.mjs`):
+  - A redacted minimal replay of this run's three worker logs gives 1 id for a, 1 for b and 0 for c.
+  - The original filter finds 0 in the same logs, which pins the defect.
+  - The fake-provider and mock-transport ids are rejected on shape.
+  - A line with no `sandboxId` does not count.
+  - B's real sandbox line replayed against A's leases is rejected as a foreign lease.
+- **Mutations:** disabling the shape check, the lease check or the JSON parse each kills at least one case.
+
+**The keyed acceptance remains PENDING.** It needs one keyed re-run in which the lane's own verdict is green. From this run's evidence, the only thing that stood between it and green was the driver defect.

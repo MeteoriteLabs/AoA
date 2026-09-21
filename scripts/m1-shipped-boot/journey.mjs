@@ -56,6 +56,7 @@ import {
   parseVerifierVerdict,
   classifyTenantOutcome,
   redactSecrets,
+  extractSandboxEvidence,
   scanEvidenceForSecrets,
   extractRolloutResolution,
   CANARY_EXECUTION_TARGET_SLUG,
@@ -729,9 +730,20 @@ async function dispatch(state) {
       verdict = parseVerifierVerdict(v.stdout);
       // The verifier reads no provider identity (runbook §11): a fake provider's lease + events
       // would pass it. The worker's own log line naming a real sandbox is required as well.
+      // The worker logs pino JSON (`"sandboxId":"…"`); the original `/sandboxId=/` filter could
+      // never match it (keyed run 35613849443). An id counts only with the real E2B shape and,
+      // when the line names a lease, only for a lease of THIS run's attempt.
       const logs = compose(state, ["logs", "--no-color", t.worker], { allowFail: true });
-      const sandboxLines = `${logs.stdout}`.split(/\r?\n/).filter((l) => /sandboxId=/.test(l));
-      providerEvidence = { sandboxLogLines: sandboxLines.length, sample: redactSecrets(sandboxLines.slice(-3).join("\n"), state.redact) };
+      const leaseIds = run.distributed_attempt_id
+        ? ownerSql(state, `SELECT id FROM leases WHERE attempt_id = $1`, [run.distributed_attempt_id]).map((r) => r.id)
+        : [];
+      const evidence = extractSandboxEvidence(`${logs.stdout}`, { leaseIds });
+      providerEvidence = {
+        sandboxLogLines: evidence.count,
+        sandboxIds: evidence.sandboxIds,
+        leaseIds,
+        rejected: evidence.rejected,
+      };
     }
     // The control plane's own account of the rollout decision for THIS run (either replica may
     // have executed it; the wake lands on whichever served the assignment).
