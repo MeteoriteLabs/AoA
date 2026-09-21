@@ -689,3 +689,25 @@ test("GRANT-REACH/TRUST in rendered mode (the lane's live check): absolute bind 
   const red = evaluateShippedBootOverlayInvariants(rendered, null, { overlayPath: SHIPPED_BOOT_OVERLAY_PATH, rendered: true }).violations;
   assert.ok(anyMatch(red, /GRANT-REACH VIOLATION/), red.join("\n"));
 });
+
+// Codex (PR #561): the CA reference must hold on EVERY control-plane replica, not only the first.
+test("REJECT (GRANT-TRUST): the SECOND control-plane replica without the store CA", () => {
+  const overlay = realOverlay();
+  delete overlay.services["control-plane-b"].environment.NODE_EXTRA_CA_CERTS;
+  const violations = evalOverlay(realBase(), overlay);
+  assert.ok(anyMatch(violations, /GRANT-TRUST VIOLATION: control-plane replica 'control-plane-b'.*does not trust its CA/), violations.join("\n"));
+});
+
+test("REJECT (GRANT-TRUST): the FIRST control-plane replica without the CA mount (no silent pass for the redeemer)", () => {
+  const overlay = realOverlay();
+  delete overlay.services["control-plane"].volumes;
+  const violations = evalOverlay(realBase(), overlay);
+  assert.ok(anyMatch(violations, /GRANT-TRUST VIOLATION: control-plane replica 'control-plane'.*does not trust its CA/), violations.join("\n"));
+});
+
+test("REJECT (GRANT-TRUST): the replicas trusting DIFFERENT CAs", () => {
+  const overlay = realOverlay();
+  overlay.services["control-plane-b"].volumes = ["./docker/other/ca.crt:/certs/ca.crt:ro"];
+  const violations = evalOverlay(realBase(), overlay);
+  assert.ok(anyMatch(violations, /the control-plane replicas trust different CAs/), violations.join("\n"));
+});

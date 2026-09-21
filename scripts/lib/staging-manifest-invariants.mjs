@@ -885,11 +885,29 @@ function checkGrantRedeemersReachPresignStore(services, v) {
   if (!store) return;
   const storeNets = new Set(serviceNetworks(store));
 
-  // The CA a TLS store is trusted with: the one the control plane (the SIGNER, which also reads
-  // the store) mounts at its NODE_EXTRA_CA_CERTS path.
-  const signer = services[controlPlaneReplicaNames(services)[0]];
-  const signerCaPath = envValue(signer, EXTRA_CA_ENV);
-  const signerCa = signerCaPath ? volumeEntries(signer).find((vol) => vol.target === signerCaPath) : undefined;
+  // The CA a TLS store is trusted with: the one EVERY control-plane replica (each is a signer, and
+  // each reads the store) mounts at its NODE_EXTRA_CA_CERTS path. Checked on every replica, not
+  // only the first (Codex, PR #561): a replica with a missing or different CA would fail every
+  // request it handles against the store, while the first replica passed.
+  let signerCa;
+  if (url.protocol === "https:") {
+    const replicaCas = [];
+    for (const replica of controlPlaneReplicaNames(services)) {
+      const svc = services[replica];
+      const caPath = envValue(svc, EXTRA_CA_ENV);
+      const mounted = caPath ? volumeEntries(svc).find((vol) => vol.target === caPath) : undefined;
+      if (!caPath || !mounted) {
+        v.push(`GRANT-TRUST VIOLATION: control-plane replica '${replica}' presigns for and reads the TLS store '${storeName}' but does not trust its CA — it needs '${EXTRA_CA_ENV}' pointing at a mounted CA file`);
+      } else {
+        replicaCas.push({ replica, source: mounted.source });
+      }
+    }
+    const distinct = [...new Set(replicaCas.map((ca) => bindSourceKey(ca.source)))];
+    if (distinct.length > 1) {
+      v.push(`GRANT-TRUST VIOLATION: the control-plane replicas trust different CAs for '${storeName}' (${replicaCas.map((ca) => `${ca.replica}: ${ca.source}`).join("; ")})`);
+    }
+    signerCa = replicaCas[0];
+  }
 
   for (const name of GRANT_REDEEMING_SERVICES) {
     const svc = services[name];
