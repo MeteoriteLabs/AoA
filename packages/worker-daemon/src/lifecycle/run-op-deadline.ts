@@ -41,6 +41,16 @@ export const OWNED_LABELS_CAPABILITY_TTL_MS = 300_000;
  * the cap still verifies, or the sandbox is recorded `orphaned` and keeps billing. */
 export const RUN_TEARDOWN_HEADROOM_MS = 60_000;
 
+/**
+ * DAT-009-3c (E5-D07) — the share of `RUN_TEARDOWN_HEADROOM_MS` the artifact-export window may
+ * NEVER spend. On the networked lane the export budget is clamped to
+ * `capExpiresAt − now − EXPORT_TEARDOWN_RESERVE_MS`, so the happy-path destroy always keeps at
+ * least this long inside the capability window. Without it, an export after a near-budget
+ * `execute` would push destroy past the capability's expiry and leave a billable sandbox recorded
+ * `orphaned` for the server reaper.
+ */
+export const EXPORT_TEARDOWN_RESERVE_MS = RUN_TEARDOWN_HEADROOM_MS / 2;
+
 /** The ceiling, DERIVED so it cannot drift away from its reason. */
 export const RUN_OP_DEADLINE_CEILING_MS =
   OWNED_LABELS_CAPABILITY_TTL_MS - RUN_TEARDOWN_HEADROOM_MS;

@@ -758,6 +758,25 @@ reason. *Added (Codex, PR #526): the port was assigned to this ticket in
 its graph node but authorized by no file list, so it would have stayed unimplemented. The sequencer
 composition surface stays with `DAT-009-3c`/`3d`, which this ticket already waits on.*
 
+★ *Amended 2026-09-21 (E5-D07, accepted by the planning session under founder delegation F2; see
+`docs/replatform/epics/E5-workspaces-secrets/decisions.md`):*
+- **Files also: modify `packages/worker-daemon/src/supervisor/effect-authority.ts`.** The
+  enumeration is fenced, so it goes through `EffectAuthority`'s guard, like `digestArtifact` and
+  `exportArtifact`. Otherwise it becomes a second, unguarded door to the sandbox.
+- **Files also: modify `packages/worker-daemon/src/supervisor/supervisor.ts`.** The producer is
+  composed at the boot root and has no sandbox of its own. The supervisor passes it a per-run view
+  bound to this run's sandbox and `run.effect`, as an additive field on `resolveExportArtifacts`'s
+  input, which is `{handoff, exec}` today.
+- **This ticket promotes `E5-2-fenced-object-commit-worker-half` to `wired`** (E5-D07 ruling 4), in
+  the commit that connects the production producer: `scripts/gate-clause-wiring.json`, with the
+  caller cited by symbol. `DAT-009-3d` does not promote it.
+- **The per-file failure policy is this ticket's, gated on ruling F7** (E5-D07 ruling 7). The
+  sequencer as built aborts at the first failing file. The `CLI-011` review expects every file to
+  succeed or fail on its own, with each refusal classified. Changing that changes the sequencer's
+  return contract, and that change belongs here.
+- The "The composition point that `DAT-009-3d` builds" above is `SupervisorDeps.exportArtifacts`
+  plus `resolveExportArtifacts`. This ticket passes the producer as `resolveExportArtifacts`.
+
 **Interfaces:** `createExportRequestProducer(deps: {capture, outputRoot, kind, contentTypeFor,
 retention}) => (input: {handoff, exec}) => Promise<readonly ArtifactExportRequest[]>` — the exact
 shape `SupervisorDeps.resolveExportArtifacts` expects. The object key stays **derived**, never a

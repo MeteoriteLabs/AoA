@@ -828,6 +828,19 @@ injected into the supervisor at construction, or the runtime passing a pre-const
 through the lifecycle), record it here, and only then assign `3c`/`3d`. The digest→grant→export→
 commit path itself is already built and correct; what is missing is the seam that reaches it.
 
+★ *Added 2026-09-21 (`DAT-009-3c` design step):* the composition surface and the E5-D07 answer are
+now recorded in [`decisions.md`](./decisions.md) **E5-D07**, with **Status: proposed**. The planning
+session has not yet accepted it. It proposes the first option above: `3d` builds the sequencer and
+injects it at construction as `SupervisorDeps.exportArtifacts`. The producer is
+`resolveExportArtifacts`. The supervisor supplies a per-run `EffectAuthority`-backed exporter. It
+also lists four corrections to this section, to `3d` and to E7's `CLI-012`. None is applied to the
+task text until E5-D07 is accepted. The paragraphs above are unchanged.
+
+★ *Added 2026-09-21 (planning-session rulings, founder delegation F2):* **E5-D07 is `accepted`**, and
+its "Rulings of record" govern. The composition surface is settled: `SupervisorDeps.exportArtifacts`
+(the sequencer, injected at construction), `resolveExportArtifacts` (the producer), and
+`exportArtifactsDeadlineMs`. `3c`/`3d` are no longer blocked on it.
+
 **The one design decision this ticket owns and `3a` deliberately did not pre-empt: is a failed
 export a failed ATTEMPT?** Staging fails closed; export is on the other side of the work. The
 recommended answer is **best-effort like `observeRun`** — log, emit `failed`, continue to a truthful
@@ -843,6 +856,13 @@ production caller sits behind `E4-3-survives-restart`, which is `unwired`, so it
 windowed call); modify `packages/worker-daemon/src/index.ts` (barrel the new dep type); create
 `packages/worker-daemon/src/__tests__/supervisor-export-artifacts.test.ts`; append to
 `decisions.md`.
+
+★ *Amended 2026-09-21 (E5-D07 ruling 3):* **Files also:** modify
+`packages/worker-daemon/src/lease/artifact-export.ts`, which gains a non-path `reason` field on
+`ArtifactExportFailedError` and the named `ArtifactExportSequencer` type. Modify
+`packages/worker-daemon/src/lifecycle/run-op-deadline.ts`, which gains `EXPORT_TEARDOWN_RESERVE_MS`,
+the networked clamp's reserve. Modify `scripts/test-inventory.json` for the worker-daemon pin. The
+line above is kept as filed.
 
 **Interfaces:** the hook above, plus the `SandboxArtifactExporter` the sequencer already expects —
 satisfied by `EffectAuthority`, so the fence gate stays at the boundary and this module never
@@ -881,6 +901,24 @@ the disablement switch, and `3d` is the only thing that sets it.
 ### `DAT-009-3d` — compose the sequencer and promote `E5-2` (S, ≤1 agent-day, M1b)
 
 **Disposition:** M. **Depends on:** `DAT-009-3c` `complete` at a recorded reviewed revision.
+
+★★★ *Amended 2026-09-21 (E5-D07 ruling 4, planning session under founder delegation F2):* **this
+ticket does NOT promote `E5-2` to `wired`.** Composing the sequencer at the boot root with no
+producer is "built at boot, run by nothing", which is the vacuous-claim class this programme
+forbids. **`E5-2` is promoted by `CLI-012`**, in the commit that connects a production producer, so
+that a real run drives the sequencer. What `3d` does now:
+- It composes `exportArtifacts: createArtifactExportSequencer({client, key, session})` into the
+  supervisor (not `resolveExportArtifacts`, which is the producer and arrives with `CLI-012`).
+- It **keeps `E5-2` `unwired`**. `check-gate-clause-wiring` counts that construction as a
+  reference, so `3d` raises the entry's `expectedReferences` to `1` and says why: constructed at the
+  boot root and invoked by no run, because the supervisor opens the window only when a producer is
+  also present (E5-D07 (a) 1).
+- Its RED becomes: `composeDispatchRuntime` passes `exportArtifacts` to the supervisor; the checker
+  fires on the new reference before the register edit (the positive control); and a supervisor
+  composed with the sequencer but no producer calls it zero times.
+
+The Outcome, Files, Observability, RED and Evidence text below, and T7 in §8, are superseded where
+they say `3d` promotes `E5-2` or passes `resolveExportArtifacts`. They are kept as filed.
 
 **Already built:** the exact exemplar — `createStagedInputResolver` composed at
 `packages/worker-daemon/src/lifecycle/dispatch-runtime.ts:172-178` and handed to the supervisor as
@@ -1214,6 +1252,8 @@ authorize implementation.
   whether a failed export fails the attempt, with its own mutant.
 - [ ] **T7 (P1, S)** — `DAT-009-3d`: compose it, promote `E5-2` with evidence, and state plainly in
   the result that no byte moves yet. Verify: `unwired_but_now_has_caller` fires before the edit.
+  ★ *Amended 2026-09-21 (E5-D07 ruling 4):* `3d` does **not** promote `E5-2`. `CLI-012` does, when a
+  production producer drives the sequencer. See the `3d` task.
 - [ ] **T8 (P1, M)** — `DAT-009-3e`: the networked-lane route and `E5-F002` at the cause. Verify:
   the mode property is actually read; both header names sent; the keyed-lane proof requested and
   recorded, or the finding left open.
