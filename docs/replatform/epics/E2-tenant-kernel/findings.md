@@ -282,3 +282,38 @@ and `JOB-009-result.md`. H-01 row visibility stays with forced RLS.
 
 Whichever is chosen, a positive control must show the suite goes red when the live grant set
 drifts from the matrix.
+
+## E2-F017 — two control-plane replicas booting together crash one: the boot-time `ALTER ROLE` provisioning races itself
+
+**Status:** open · **Severity:** MEDIUM · **Owner:** `unowned`
+**Filed:** 2026-09-21 by `DEP-015`, measured in its local keyless rehearsal (E6 `tickets/DEP-015-result.md` §7).
+
+**What.** `maybeProvisionDistributedExecutionRoles` in `server/src/index.ts` (the "corrective successor
+to E2-D03") runs `ALTER ROLE … WITH LOGIN PASSWORD …` for `aoa_app` and `aoa_operator` on every boot
+while distributed execution is on and `AOA_APP_DB_PASSWORD` / `AOA_OPERATOR_DB_PASSWORD` are set.
+Nothing serialises it across replicas. When two replicas boot together, both update the same
+`pg_authid` tuples. The loser's boot dies on an uncaught
+`PostgresError: tuple concurrently updated` (SQLSTATE `XX000`, `heapam.c` `simple_heap_update`).
+The process exits and the replica does not come up.
+
+**Where it was observed.** The `DEP-015` shipped-boot overlay, recreating `control-plane` and
+`control-plane-b` together with `docker compose up --force-recreate`. `control-plane-b` exited 1
+with the stack above.
+
+**Why it matters.** It is a boot and HA hazard, not a security defect. `docker-compose.staging.yml`
+declares two interchangeable replicas with no start ordering. Any orchestrator that starts or rolls
+them concurrently can lose one on boot, and a restart loop can keep losing the race.
+- **D1 does not hit it**, because D1 provisions the serving roles in the one-shot `migrate` job
+  (`AOA_D1_PROVISION_SERVING_ROLES`).
+- **The DEP-015 lane does not hit it**, because it boots its replicas one at a time. That is a
+  workaround, not a fix.
+
+**Resolving it.** Two options:
+- make the provisioning safe under concurrency: a transaction-scoped advisory lock around the
+  `ALTER ROLE`s, or retry once on `XX000`; or
+- move provisioning to the migration one-shot for every topology.
+
+Either way, a two-replica concurrent boot must come up whole. A positive control must show the
+unfixed boot losing a replica.
+
+**Blocks gate:** no M1 exit item names it. It becomes blocking for any HA / two-replica gate.

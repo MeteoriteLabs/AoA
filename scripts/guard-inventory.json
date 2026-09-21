@@ -209,6 +209,10 @@
     "scripts/verify-marketplace-recovery-preflight.mjs": {
       "status": "dormant",
       "reason": "One-off preflight from the marketplace supply-chain recovery (PR #313). No self-test and no workflow reference; kept as the record of that recovery."
+    },
+    "scripts/check-m1-shipped-boot-shape.mjs": {
+      "status": "ci",
+      "reason": "policy job — Shipped CI boot lane shape + decisions (DEP-015): the dispatch-only, candidate-bound, keyed-gated shape of m1-shipped-boot.yml"
     }
   }
 }

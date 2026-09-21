@@ -143,10 +143,24 @@ describe("composeDispatchRuntime — the composition wiring", () => {
     expect(captured.sinkKek).toEqual(captured.drainKek);
   });
 
-  it("★ redactionCanaries is [] and observeRun is undefined (nothing to redact)", async () => {
+  // WRK-018 — FLIPPED. This pinned `observeRun` UNDEFINED while no sandbox output rode the
+  // stream (superseded text: "redactionCanaries is [] and observeRun is undefined (nothing to
+  // redact)"). The usage producer is now composed, so the pin asserts PRESENCE — and not merely
+  // "a function": a stub `() => ({})` would satisfy `typeof`, so the second case drives the
+  // captured observer with a real claude result line and requires the usage it must build.
+  // Removing the composition from `makeSupervisor({...})` reds both (mutation M2).
+  it("★ redactionCanaries is [] and observeRun is COMPOSED (WRK-018)", async () => {
     const { captured } = await compose();
     expect(captured.redactionCanaries).toEqual([]);
-    expect(captured.observeRun).toBeUndefined();
+    expect(typeof captured.observeRun).toBe("function");
+  });
+
+  it("★ the composed observeRun is the claude usage producer, not a stub", async () => {
+    const { captured } = await compose();
+    const observe = captured.observeRun as (input: unknown) => Promise<{ usage?: unknown }> | { usage?: unknown };
+    const line = JSON.stringify({ type: "result", usage: { input_tokens: 4, output_tokens: 5, cache_read_input_tokens: 6 } });
+    const obs = await observe({ handoff: {}, exec: {}, output: { stdoutTail: `${line}\n`, runtimeMillis: 77 } });
+    expect(obs.usage).toEqual({ inputTokens: 4, outputTokens: 5, cachedInputTokens: 6, runtimeMillis: 77 });
   });
 
   it("★ capacity is CLAMPED to the server-owned provider ceiling", async () => {

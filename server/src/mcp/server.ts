@@ -9,6 +9,10 @@ import {
   type DistributedRunCurrencyResolver,
 } from "./distributed-run-currency-resolver.js";
 import {
+  createDistributedToolSurfaceUseResolver,
+  type DistributedToolSurfaceUseResolver,
+} from "./distributed-tool-surface-use-resolver.js";
+import {
   accessService,
   agentService,
   approvalService,
@@ -139,6 +143,8 @@ interface McpRouteDeps {
   resolveScopedAgentIds?: (companyId: string, scope: McpUserScope) => Promise<Set<string> | null>;
   /** DAT-007 item #1 — the fence-bound run-JWT currency gate (injectable for tests). */
   resolveDistributedRunCurrency?: DistributedRunCurrencyResolver["resolve"];
+  /** CLI-016 — the per-Organization tool-surface gate at use. Injected in route tests. */
+  resolveDistributedToolSurfaceAtUse?: DistributedToolSurfaceUseResolver["resolve"];
 }
 
 function jsonRpcResult(id: unknown, result: unknown) {
@@ -300,6 +306,8 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
   const distributedExecutionEnabled = readDistributedExecutionDeploymentFlag(process.env);
   const resolveDistributedRunCurrency =
     deps.resolveDistributedRunCurrency ?? createDistributedRunCurrencyResolver(db).resolve;
+  const resolveDistributedToolSurfaceAtUse =
+    deps.resolveDistributedToolSurfaceAtUse ?? createDistributedToolSurfaceUseResolver(db).resolve;
   const issuesSvc = deps.issuesSvc ?? issueService(db);
   const goalsSvc = deps.goalsSvc ?? goalService(db);
   const memorySvc = deps.memorySvc ?? memoryService(db);
@@ -476,6 +484,18 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
           agentId: protocolActor.agentId,
         });
         if (verdict === "deny") {
+          throw forbidden(MCP_CROSS_COMPANY_FORBIDDEN_MSG);
+        }
+        // CLI-016 (founder ruling F10) — the PER-ORGANIZATION tool-surface gate, at the same
+        // seam and under the same scoping. A fence-current distributed run is still denied when
+        // its Organization is not armed (deployment kill switch AND `tools: true`), so enabling
+        // tools for one tenant never admits another, and a rollback reaches runs already
+        // dispatched. Same coarse forbidden (no oracle); a throw fails CLOSED via the catch.
+        const toolSurfaceVerdict = await resolveDistributedToolSurfaceAtUse({
+          signedRunId: req.actor.signedRunId,
+          companyId,
+        });
+        if (toolSurfaceVerdict === "deny") {
           throw forbidden(MCP_CROSS_COMPANY_FORBIDDEN_MSG);
         }
       }

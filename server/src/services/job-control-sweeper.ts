@@ -80,6 +80,13 @@ export function createJobControlSweeper(input: {
    * Optional: a deployment that has not composed it sweeps exactly as before.
    */
   projectRunTerminal?: (signal: SweeperRunTerminalSignal) => Promise<void>;
+  /**
+   * JOB-016 / E3-D-ACC Amendment 3 — the per-Organization stale-`pending`-receipt detector and
+   * bounded `authoritative_cost` re-drive (`createAuthoritativeCostRedriveSweep`). Runs on this
+   * rotation AFTER the reap, BEST-EFFORT: its failure never fails the tick. Optional: a
+   * deployment that has not composed it sweeps exactly as before.
+   */
+  sweepPendingProjections?: (organizationId: string) => Promise<unknown>;
   enabled?: boolean;
   maxOrganizationShards?: number;
   reapBatchLimit?: number;
@@ -158,6 +165,15 @@ export function createJobControlSweeper(input: {
           } catch {
             // Visibility lost for this run; the sweep continues.
           }
+        }
+      }
+
+      if (input.sweepPendingProjections) {
+        try {
+          await input.sweepPendingProjections(organizationId);
+        } catch {
+          // Best-effort: the receipt stays `pending` (so the drain stays blocked) and the next
+          // rotation retries. Never fails the tick.
         }
       }
     }

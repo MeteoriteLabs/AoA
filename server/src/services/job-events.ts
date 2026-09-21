@@ -28,6 +28,7 @@
 import { createHash } from "node:crypto";
 import {
   JobFenceError as DbJobFenceError,
+  type AcceptedEventProjectionOutcome,
   type AcceptEventInput,
   type Db,
 } from "@armyofagents/db";
@@ -60,6 +61,15 @@ import {
 import { logger } from "../middleware/logger.js";
 import { bindJobTraceLogger } from "./job-trace-log.js";
 import { decideServiceProjectionForEvent } from "./service-health-projection.js";
+import {
+  createAcceptedUsagePricingProjector,
+  createPinoAcceptedUsageTelemetry,
+  detectTerminalWithoutUsage,
+  telemetryOutcomeFor,
+  type AcceptedUsageTelemetry,
+  type TerminalWithoutUsageSignal,
+} from "./job-accepted-usage-pricing.js";
+import { flushDeferredBudgetSignals, type DeferredBudgetSignals } from "./job-budget-cost-bridge.js";
 
 function sha256Hex(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
@@ -156,8 +166,16 @@ export function createJobEventIngestService(input: {
    * swallowed so the worker's ACK is never lost to a projection error.
    */
   onAttemptTerminal?: JobEventIngestTerminalHook;
+  /** JOB-016 — count-only accepted-usage telemetry. Defaults to the pino adapter. */
+  acceptedUsageTelemetry?: AcceptedUsageTelemetry;
 }) {
   const maxHeartbeatAgeMs = Math.max(1000, input.maxHeartbeatAgeMs ?? 300_000);
+  const acceptedUsageTelemetry = input.acceptedUsageTelemetry ?? createPinoAcceptedUsageTelemetry(logger);
+  // ★ JOB-016 / E3-D-ACC Amendment 1 — pricing is ALWAYS registered. There is no switch: a
+  // switch that allows distributed spend with pricing off recreates E3-F037 through config, and
+  // this ingest exists only when distributed execution is composed, so every usage event it
+  // accepts is distributed spend. The rollback lever is the rollout dial.
+  // The projector itself is built per ingest (below), so its owed budget signals belong to one call.
   return {
     async ingest(ingestInput: {
       auth: VerifiedWorkerOperation;
@@ -176,6 +194,17 @@ export function createJobEventIngestService(input: {
 
       // CLI-006: captured INSIDE the tx, fired AFTER it commits (see the hook doc).
       let terminalSignal: AttemptTerminalSignal | null = null;
+      // JOB-016 — the seam's per-event outcomes and the terminal-without-usage signal, captured
+      // INSIDE the tx and reported AFTER it commits (so a report is never for a rolled-back append).
+      let acceptedEventProjections: readonly AcceptedEventProjectionOutcome[] = [];
+      let usageGap: TerminalWithoutUsageSignal | null = null;
+      // Owed budget side effects (`budget.exhausted`, `budget.incident_created`) by accepted event
+      // id. Flushed AFTER commit, and only for events whose seam outcome is `applied`: a
+      // rolled-back savepoint owes nothing.
+      const owedBudgetSignals = new Map<string, DeferredBudgetSignals>();
+      const acceptedEventProjectors = [createAcceptedUsagePricingProjector({
+        onOwedBudgetSignals: (eventId, signals) => { owedBudgetSignals.set(eventId, signals); },
+      })];
 
       // ★ DE-03, replay-rejection conjunct — the refusal below THROWS out of
       // `runInTenant`, so its record is collected as an INTENT and drained on the
@@ -187,7 +216,7 @@ export function createJobEventIngestService(input: {
       // the inner catch and drained on the pool handle in the `.finally`.
       const fenceGuardDenial = createFenceGuardDenialSink();
 
-      const response = await runInTenant(input.appDb, auth.organizationId, async (repos) => {
+      const response = await runInTenant(input.appDb, auth.organizationId, async (repos, tx) => {
         const databaseNow = await repos.jobControl.currentDatabaseTime();
         await repos.workerEnrollment.cleanupExpiredProofs(databaseNow, 100);
         await repos.jobControl.cleanupExpiredOperationReceipts(databaseNow, 100);
@@ -283,8 +312,11 @@ export function createJobEventIngestService(input: {
         try {
           const result = await repos.jobControl.acceptEvent({
             ...fenceIdentity,
-            batch: { events: acceptInputs },
+            // E3-D-ACC — the registrations run in-transaction, before each event's attempt
+            // projection, each in its own savepoint (a failure never rolls back the append).
+            batch: { events: acceptInputs, acceptedEventProjectors },
           });
+          acceptedEventProjections = result.acceptedEventProjections ?? [];
           const ack = result.ingest;
           if (!ack) throw new JobLeasingError("internal_unavailable");
           status = ack.status;
@@ -346,6 +378,9 @@ export function createJobEventIngestService(input: {
           ackStatus: status,
           identity: fenceIdentity,
         });
+        // JOB-016 acceptance 4 — an attempt this ingest just terminalized with NO accepted usage.
+        // Savepoint-isolated and error-swallowing inside the helper: it can never cost the append.
+        if (terminalSignal) usageGap = await detectTerminalWithoutUsage(tx, terminalSignal);
 
         return eventUploadOperationResponseV1Schema.parse({
           protocolVersion: 1,
@@ -385,6 +420,36 @@ export function createJobEventIngestService(input: {
             operation: "event_upload",
           });
         });
+
+      // JOB-016 — AFTER COMMIT: report the seam. A `pending`/`unrecorded` outcome is an owed
+      // projection (a surfaced receipt, or — `unrecorded` — not even that), so it is a warn line
+      // carrying the attempt's ids; every outcome is also counted (count-only, no ids).
+      for (const projection of acceptedEventProjections) {
+        acceptedUsageTelemetry.count({ outcome: telemetryOutcomeFor(projection), count: 1 });
+        if (projection.outcome === "applied") {
+          const owed = owedBudgetSignals.get(projection.eventId);
+          if (owed) flushDeferredBudgetSignals(owed);
+        }
+        if (projection.outcome === "pending" || projection.outcome === "unrecorded") {
+          logger.warn({
+            classification: projection.outcome === "pending" ? "projection_pending" : "projection_unrecorded",
+            organizationId: auth.organizationId,
+            companyId: batch.companyId,
+            jobId: batch.jobId,
+            leaseId: batch.leaseId,
+            eventId: projection.eventId,
+            projectionKind: projection.projectionKind,
+            reason: projection.reason,
+            receiptId: projection.receiptId ?? null,
+          }, "accepted-event projection did not apply");
+        }
+      }
+      // (Assigned inside the transaction callback, so TypeScript's flow analysis still sees `null`.)
+      const terminalWithoutUsage = usageGap as TerminalWithoutUsageSignal | null;
+      if (terminalWithoutUsage) {
+        acceptedUsageTelemetry.count({ outcome: "terminal_without_usage", count: 1 });
+        logger.warn({ ...terminalWithoutUsage }, "distributed attempt terminal without an accepted usage event");
+      }
 
       // AFTER COMMIT ONLY. The attempt's durable terminal is already persisted; the
       // heartbeat-side projection is a downstream read of it, so a projection failure

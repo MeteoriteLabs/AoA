@@ -120,6 +120,11 @@
       "workflow": "pr.yml",
       "step": "Validate split-image deps stages (DEP-001)"
     },
+    "scripts/check-m1-shipped-boot-shape.test.mjs": {
+      "status": "runs",
+      "workflow": "pr.yml",
+      "step": "Staging manifest config contract (DEP-006) + shipped CI boot lane (DEP-015)"
+    },
     "scripts/check-register-citation-integrity.test.mjs": {
       "status": "runs",
       "workflow": "pr.yml",
@@ -158,7 +163,7 @@
     "scripts/check-staging-manifest.test.mjs": {
       "status": "runs",
       "workflow": "pr.yml",
-      "step": "Staging manifest config contract (DEP-006)"
+      "step": "Staging manifest config contract (DEP-006) + shipped CI boot lane (DEP-015)"
     },
     "scripts/check-test-inventory.test.mjs": {
       "status": "runs",
@@ -299,6 +304,11 @@
       "status": "runs",
       "workflow": "pr.yml",
       "step": "Invisible control characters (a shell must not write a regex escape)"
+    },
+    "scripts/lib/__tests__/m1-shipped-boot.test.mjs": {
+      "status": "runs",
+      "workflow": "pr.yml",
+      "step": "Staging manifest config contract (DEP-006) + shipped CI boot lane (DEP-015)"
     },
     "scripts/lib/__tests__/register-id-uniqueness.test.mjs": {
       "status": "runs",

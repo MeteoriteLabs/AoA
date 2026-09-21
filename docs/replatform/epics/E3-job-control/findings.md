@@ -2147,6 +2147,28 @@ promoted by this ticket").
 > `owned` by **`JOB-016`**, and `JOB-016` closes it **only with `WRK-018` merged** — the two-part
 > close above is unchanged. Severity (HIGH) and Status (open) are unchanged. The sentence above
 > saying ownership is `unowned` was true when written and is kept as the record of that state.
+>
+> ★ **PRODUCER HALF AMENDED 2026-09-21 (`WRK-018`, branch `claude/m1-wrk-018`).** Part **(1)** is now
+> delivered in code, and the "observeRun stays absent / uncomposed" measurements above describe the
+> tree before it: `composeDispatchRuntime` passes `observeRun: createUsageObserver(...)` to
+> `makeSupervisor`, the provider port carries an optional stdout channel (`ExecuteInput.onStdout`)
+> through the E2B provider and the provider-wire/adapter-manager lane, and a run whose stdout carries
+> a `claude_local` stream-json result line emits exactly one `usage` event (proven against the fake,
+> the E2B mock transport and the real gated wire; see `docs/replatform/epics/E4-worker-daemon/tickets/WRK-018-result.md`).
+> **Not yet proven live:** the one keyed acceptance run inside the F8 envelope is pending and is the
+> planning session's to dispatch. Part **(2)** (`JOB-016`) is untouched. **Severity (HIGH), Status
+> (open) and ownership (`JOB-016`) are unchanged** — this finding still closes only when a real
+> handed-off run produces a `cost_events` row.
+>
+> ★ **OWNER RE-POINTED 2026-09-21 to `DEP-016`** (planning-session ruling under founder delegation
+> F2, applied in JOB-016's PR). `JOB-016` has built the seam and the pricing and filed its result
+> record, so it no longer holds the open finding. The finding closes at the **end-to-end proof**,
+> and that proof is `DEP-016`'s: its acceptance asserts that a handed-off attempt through the
+> real ingest writes exactly ONE `cost_events` row with cost > 0, with a usage-suppressed control
+> that must red. Closure needs all of: `JOB-016` (the seam and pricing, built), `WRK-018` (the
+> usage producer), `DEP-016`'s end-to-end assertion, and `WRK-018`'s keyed E2B acceptance for the
+> real claude usage parser. Severity (HIGH) and Status (open) are unchanged; the `JOB-016`
+> ownership line above is kept as the record of that state.
 
 ## E3-F038 — The wiring register's census is not closed, and three symbols the guard's own header names have no clause at all
 
@@ -2282,3 +2304,39 @@ is the same remedy shape as `E5-F005`, one epic over.
 
 **Blocks gate:** no. It is not in any required lane: the Linux `verify` shards are the required gate
 and this case is green there.
+
+## E3-F040 - a target ratified without `capabilities.providerConstraints` 503s every enrolment, with no cause named
+
+**Status:** open
+**Severity:** MEDIUM. It fails closed and leaks nothing, but it blocks every worker on the target, and the product's own documented path reaches it with an opaque error.
+**Filed:** 2026-09-21 by `DEP-015`, measured in its local keyless rehearsal (E6 `tickets/DEP-015-result.md` §7).
+
+**What.** One execution target carries its provider-constraint reference in **two** places:
+- **The placement column.** `PUT …/execution-targets/:targetId/placement-profile` writes
+  `registered_profile` + `registered_profile_hash` + `provider_constraint_profile`
+  (`ratifyTenantExecutionTargetPlacementProfile`, `server/src/services/execution-targets.ts`). It
+  never writes `capabilities`.
+- **The capabilities field.** The enrolment response is built from `capabilities.providerConstraints`
+  (`providerConstraints(target.capabilities)` in `server/src/services/worker-enrollment.ts`), which is
+  only ever set by whoever created the target (`POST …/execution-targets`, where `capabilities` is
+  optional).
+
+A target created without it ratifies cleanly. Every enrolment then fails the
+`enrollmentResponseV1Schema.parse`, and the route answers **503**
+(`worker_enrollment_internal_unavailable`). The log names no field and no cause.
+
+**Where it was observed.** The `DEP-015` driver's first rehearsal followed runbook §7 (a)–(c) through
+the API. All three workers were refused with 503 at `enrollOnce`. Adding
+`capabilities: { providerConstraints: { profileId, version, digest } }` at create fixed it. The D1
+harness seeds both columns by SQL, which is why it never saw this. The runbook §7(a) body omits the
+field.
+
+**Resolving it.** Two options:
+- derive the enrolment's `providerConstraints` from the ratified `provider_constraint_profile` (one
+  source of truth); or
+- have ratification refuse, or populate, a target whose `capabilities` lacks the reference.
+
+Either way, add a test that creates a target through the route without it, ratifies, and enrols. It
+must fail today and pass after the fix. Correct runbook §7(a) in the same change.
+
+**Blocks gate:** no. Every M1 lane that creates targets now sets the field explicitly.

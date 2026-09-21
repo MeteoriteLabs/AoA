@@ -356,6 +356,20 @@ export interface ExecuteInput {
   readonly command: string;
   readonly args: readonly string[];
   readonly env: Readonly<Record<string, string>>;
+  /**
+   * WRK-018 — the OPTIONAL stdout stream channel. When present, a provider that implements
+   * the channel delivers the tenant command's stdout to it, chunk by chunk, while `execute`
+   * runs. A provider that does not implement it ignores the field and behaves exactly as
+   * before; the supervisor passes it only when an `observeRun` is composed, so without one
+   * the input is byte-identical to the pre-channel shape.
+   *
+   * ★ The chunks are RAW tenant output and may hold the run's own secrets: the supervisor's
+   * per-run capture (`run-output.ts`) scrubs them with the run's canaries before anything
+   * derived from them can leave the worker. A provider must deliver them ONLY to this
+   * callback — never log, persist, or forward them. Honoured by `execute` only (not
+   * `startProcess`). Decision recorded as E4-D13.
+   */
+  readonly onStdout?: (chunk: string) => void;
 }
 
 /**

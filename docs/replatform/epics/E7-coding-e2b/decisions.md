@@ -144,3 +144,90 @@ also warn that unless it is closed, option 4's "just persist the stream" reads a
 - Nothing in `WRK-018`'s scope changes, and no code changes.
 - Any `CLI-011` option that persists the stdout stream as an artifact must say so explicitly, and it
   cannot cite `WRK-018` or this amendment as its licence.
+
+---
+
+## E7-D10 — the tool surface is the deployment kill switch AND a per-Organization opt-in; the flag's arming value is `per-organization`, never `true`
+
+**Date (UTC):** 2026-09-21
+**Status:** `locked` — **decided under founder delegation F2** (`docs/replatform/qa/2026-09-21-m1-execution-plan.md` §2,
+F2: the founder delegates every M1 decision to the planning session, which records each with its reason).
+The planning session's `CLI-016` brief passed this one choice to the `CLI-016` build agent ("your call,
+recorded"); the build agent took it and records it here. QA independence still holds: a distinct
+reviewer approves `CLI-016`, not the session that decided this.
+**Owner role:** planning session (decision owner, under F2), exercised by the `CLI-016` build agent
+**Affected tickets:** `CLI-016` (implements it); every later ticket or campaign that arms tools for an
+Organization (`M1-D2-CODING`, `E7-1-JOURNEY-ARM`)
+
+### Context
+
+Founder ruling F10 makes M1 multi-tenant: enabling the distributed tool surface for one Organization
+must not enable it for another. Before `CLI-016`, `readDistributedToolSurfaceFlag(process.env)`
+(`server/src/config/distributed-execution.ts`) was the whole decision, read deployment-wide at the
+canary dispatch in `server/src/services/heartbeat.ts`. `CLI-016` adds an optional per-Organization
+`tools` field to `OrganizationRolloutPolicy` (`server/src/config/distributed-execution-rollout-source.ts`),
+absent meaning not enabled (S0-8).
+
+S0-8 also recorded the hazard this decision exists for. A binary built before `CLI-016` parses the
+rollout map without rejecting unknown keys, so it **silently ignores `tools`** and falls back to the
+deployment flag alone. If that flag reads `true`, the older binary arms **every tenant**. That can
+happen through a normal binary rollback: the operator arms tools on the new binary, then rolls the
+binary back and leaves the flag set.
+
+### Decision
+
+1. **The surface is a conjunction.** A run gets the tool surface only if the deployment flag is armed
+   **and** its Organization's policy carries `tools: true` (`resolveDistributedToolSurface`,
+   `server/src/config/distributed-execution.ts`). The deployment flag is checked first and stays the
+   **kill switch**: unsetting it disarms every tenant, and the rollback rehearsal step
+   ("unset `AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED`") is unchanged.
+2. **The flag's only arming value is `per-organization`.** Unset and the falsy spellings
+   (`0`/`false`/`no`/`off`) are off. The legacy truthy spellings (`1`/`true`/`yes`/`on`) are
+   **refused**: `readDistributedToolSurfaceFlag` throws, and `assertHostedExecutionStartupSafe`
+   turns that into a classified startup refusal (`env_flag_unparseable`, env name
+   `AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED`). The new binary will not boot with them.
+3. **The same decision is re-proven at use.** At `/mcp` authorization, beside the DAT-007 currency
+   gate and under the same scoping (flag `AOA_DISTRIBUTED_EXECUTION_ENABLED` on, agent actor, signed
+   run id), a **distributed** run whose Organization is not armed is denied with the same coarse
+   forbidden (`classifyToolSurfaceAtUse`, `server/src/mcp/distributed-tool-surface-use.ts`). Local
+   runs, and runs with no row, are not this gate's business and are admitted, as DAT-007 admits them.
+
+### Why this makes the unsafe combination impossible, not just loud
+
+- A deployment running the new binary **cannot** carry a legacy truthy value, because the new binary
+  refuses to start with one. So no deployment can be rolled back to an older binary with a value the
+  older binary reads as "arm everyone".
+- The one arming value the new binary accepts, `per-organization`, is a value the **older** parser
+  (`parseBooleanEnv`) **rejects**. At its only read site, the canary dispatch, it throws. So an older
+  binary with the flag armed fails the canary runs **loudly and closed**. It never arms a tenant.
+- Rollout order stays **binary first**: roll the `CLI-016` binary, then set `tools: true` on the named
+  Organizations, then set the flag to `per-organization`. Rollback order: unset the flag first, then
+  roll the binary back.
+
+### Alternatives considered
+
+- **Keep `true`, conjunction only, and document "binary first".** Rejected. It relies on the
+  operator remembering the order, and a binary rollback with the flag still set reproduces exactly
+  the cross-tenant arming F10 forbids, with no signal at all.
+- **Refuse to arm (or refuse to boot) when the flag is on and no Organization carries `tools`.**
+  Rejected as the primary control. The new binary is already fail-closed in that state (no tenant
+  gets tools). The danger is the older binary, which this check cannot reach.
+- **Drop the deployment flag and arm on per-Organization `tools` alone.** Rejected. It removes the
+  one-switch kill the rollback rehearsal (exit criterion 6) relies on. It also changes the flag's
+  default from off to "defer to per-Organization".
+- **A new environment variable name.** Rejected. It would work, but it leaves the old name as a
+  dormant "arm everyone" switch on older binaries. It also churns every record that names the flag.
+  A new value on the same name gets the same property: an older binary cannot read it as true.
+
+### Consequences
+
+- `readDistributedToolSurfaceFlag({ AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED: "true" })` now throws where
+  it returned `true`. One existing unit row (`crew-distributed-gate.test.ts`) encoded the old
+  contract and was updated with the superseded wording quoted beside it.
+- The E7 plan's `CLI-016` Interfaces line *"The deployment flag and the fence-bound gate already
+  exist and are unchanged"* no longer holds for the flag's accepted values. The plan section carries
+  a dated note.
+- Per-tenant rollback (removing one Organization's `tools`) and the kill switch both reach
+  **already-dispatched** runs at their next `/mcp` call once the changed configuration is in the
+  process's environment, not only new dispatches. The run-JWT's TTL
+  (≤48h) no longer bounds how long a disarmed tenant keeps its tools.

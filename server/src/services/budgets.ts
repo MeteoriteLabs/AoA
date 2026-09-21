@@ -58,6 +58,9 @@ async function createIncidentIfNeeded(
   observedCents: number,
   windowStart: Date,
   windowEnd: Date,
+  /** JOB-016 — when given, the `budget.incident_created` live event is queued here instead of
+   * published, so an uncommitted caller can publish it only after its transaction commits. */
+  deferLiveEvents?: Parameters<typeof publishLiveEvent>[0][],
 ): Promise<typeof budgetIncidents.$inferSelect | null> {
   // Dedup: check for existing incident with same policyId + windowStart + thresholdType
   // where status <> 'dismissed' (the unique index enforces this)
@@ -147,7 +150,7 @@ async function createIncidentIfNeeded(
     );
   }
 
-  publishLiveEvent({
+  const incidentEvent: Parameters<typeof publishLiveEvent>[0] = {
     companyId: policy.companyId,
     type: "budget.incident_created",
     payload: {
@@ -156,7 +159,9 @@ async function createIncidentIfNeeded(
       thresholdType,
       observedCents,
     },
-  });
+  };
+  if (deferLiveEvents) deferLiveEvents.push(incidentEvent);
+  else publishLiveEvent(incidentEvent);
 
   return incident;
 }
@@ -431,8 +436,26 @@ export function budgetService(db: Db) {
     async evaluateCostEvent(
       agentId: string | null,
       companyId: string,
-      opts?: { projectId?: string | null },
-    ): Promise<{ hardStopIncidentCreated: boolean; hardStopBreached: boolean }> {
+      opts?: {
+        projectId?: string | null;
+        /**
+         * JOB-016 — when given, a newly-exhausted scope is PUSHED here instead of emitted. The
+         * in-process `budget.exhausted` listener cancels live heartbeat work on the global
+         * handle, so a caller whose charge is still inside an uncommitted transaction (or a
+         * savepoint that may yet roll back) collects the scopes and emits them AFTER commit.
+         * Absent (every legacy caller): emitted immediately, exactly as before.
+         */
+        deferExhaustedEmit?: BudgetEnforcementScope[];
+        /** JOB-016 — the incident live events, deferred the same way (Codex P2 on #547). */
+        deferLiveEvents?: Parameters<typeof publishLiveEvent>[0][];
+      },
+    ): Promise<{
+      hardStopIncidentCreated: boolean;
+      hardStopBreached: boolean;
+      /** E3-D-ACC Amendment 2 (JOB-016) — every scope whose hard stop this charge is at/over,
+       * so the distributed charge can mirror legacy's per-scope enforcement. Additive. */
+      breachedScopes: { scopeType: "agent" | "company" | "department"; scopeId: string }[];
+    }> {
       const { start, end } = calendarMonthWindow();
       const projectId = opts?.projectId ?? null;
 
@@ -457,6 +480,7 @@ export function budgetService(db: Db) {
 
       let hardStopIncidentCreated = false;
       let hardStopBreached = false;
+      const breachedScopes: { scopeType: "agent" | "company" | "department"; scopeId: string }[] = [];
 
       for (const policy of relevantPolicies) {
         const observed = await getObservedCents(
@@ -477,7 +501,10 @@ export function budgetService(db: Db) {
           // cancelled, else it keeps spending past the hard stop. `requestCancellation`
           // is idempotent, so cancelling each over-budget attempt is safe.
           hardStopBreached = true;
-          const incident = await createIncidentIfNeeded(db, policy, "hard_stop", observed, start, end);
+          if (policy.scopeType === "agent" || policy.scopeType === "company" || policy.scopeType === "department") {
+            breachedScopes.push({ scopeType: policy.scopeType, scopeId: policy.scopeId });
+          }
+          const incident = await createIncidentIfNeeded(db, policy, "hard_stop", observed, start, end, opts?.deferLiveEvents);
           // Emit the LEGACY in-process cancellation signal only on a newly-created
           // incident so that signal fires once per breach, not on every subsequent
           // cost event. (The distributed cancel is driven by hardStopBreached above.)
@@ -493,17 +520,18 @@ export function budgetService(db: Db) {
                 scopeType: policy.scopeType,
                 scopeId: policy.scopeId,
               };
-              emitBudgetExhausted(scope);
+              if (opts?.deferExhaustedEmit) opts.deferExhaustedEmit.push(scope);
+              else emitBudgetExhausted(scope);
             }
           }
         }
         // Check warning threshold
         else if (observed >= (policy.amountCents * policy.warnPercent) / 100) {
-          await createIncidentIfNeeded(db, policy, "warning", observed, start, end);
+          await createIncidentIfNeeded(db, policy, "warning", observed, start, end, opts?.deferLiveEvents);
         }
       }
 
-      return { hardStopIncidentCreated, hardStopBreached };
+      return { hardStopIncidentCreated, hardStopBreached, breachedScopes };
     },
 
     // ----- resolveIncident -----

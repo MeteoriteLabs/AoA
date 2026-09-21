@@ -80,3 +80,16 @@ export async function runInTenantReadOnly<T>(
   }
   return withReadOnlyTenantTx(appDb, organizationId, (tx) => fn(tenantRepositories(tx), tx));
 }
+
+/**
+ * E3-D-ACC (JOB-016) — the tenant repositories over a SAVEPOINT of a transaction `runInTenant`
+ * (or `runInTenantReadOnly`) already opened. The accepted-event seam hands each projector only
+ * its savepoint handle, so the projector's writes roll back with that savepoint and never reach
+ * the outer transaction; this builds the repositories the projector needs from that handle.
+ *
+ * Valid ONLY on a handle derived from a `runInTenant` transaction, inside its `fn`: the savepoint
+ * inherits that transaction's `aoa.organization_id` GUC. It opens nothing and sets nothing.
+ */
+export function tenantRepositoriesForSavepoint(savepoint: Db): TenantRepositories {
+  return tenantRepositories(savepoint);
+}

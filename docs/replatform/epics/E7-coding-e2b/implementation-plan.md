@@ -1307,6 +1307,12 @@ surface even when `AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED` is on. The deployment f
 gate already exist and are unchanged. *Recorded at M1 Step 0 (S0-8), a planning-session decision under
 founder delegation (ruling F2), to carry ruling F10 into this field. Superseded text: "none new — the
 flag and the gate both exist."*
+★ *Amended 2026-09-21 by `E7-D10` (decided by the `CLI-016` build under F2).* The sentence "The
+deployment flag and the fence-bound gate already exist and are unchanged" no longer holds for the
+flag's **accepted values**. `AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED` now arms only on
+`per-organization`. The legacy truthy spellings are refused at startup, because an older binary
+reads them as "arm every tenant". The same per-Organization decision is also re-proven at `/mcp`
+authorization. The fence-bound gate itself is unchanged. The sentence stays above as written.
 
 **Failure behavior:** the gate denies a stale/replaced run with the **same coarse forbidden** as
 wrong-tenant, leaking no oracle; a resolver throw propagates and denies (fail-closed). With the flag
