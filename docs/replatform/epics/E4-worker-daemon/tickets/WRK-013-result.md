@@ -5,8 +5,8 @@
 **Epic:** `E4-worker-daemon`
 **Plan task:** `E4 implementation-plan ### WRK-013 - A durable lease-candidate source for the startup reconciler (M1a)` (§4c)
 **Implementer:** `M1 WRK-013 build agent (Claude Opus 5)`
-**Start SHA:** `28a2dd259` (program tip at start); rebased onto `4904c75e3`, then onto `fc2eb7dde` (which brought WRK-018 and JOB-016; the merge into `dispatch-runtime.ts` was clean)
-**Implementation commit:** `cd071fa083999d386aa7837e7b9a480b105dec8a`, plus the `start()` fix (§4 item 4) and the Codex P2 fix `4a66606d1d0594bb21583013e016e0d371f70dce` (§4 item 5)
+**Start SHA:** `28a2dd259` (program tip at start); rebased onto `4904c75e3`, then onto `fc2eb7dde` (which brought WRK-018 and JOB-016; the merge into `dispatch-runtime.ts` was clean), then onto `81c5a940c` (clean except the test-inventory pin, re-derived as base + 2 = 171; the whole worker-daemon suite ran again locally: 164 files, 1141 passed, 1 skipped, no `Errors` line)
+**Implementation commit:** `01fd612a8a1b6fe635d567c36e94e7f41a71018b`, plus the `start()` fix (§4 item 4) and the Codex P2 fix `1627681bd09fb7f4ed9245c9b3aa3fdbd6e855ac` (§4 item 5). ★ *These SHAs are after the final rebase onto `81c5a940c`. The CI runs in §7 name pre-rebase heads.*
 **Resolves:** `E4-F009` (MED). Its `findings.md` Status is flipped to `resolved` and its manifest key is
 deleted in the implementation commit. `E4-3-survives-restart` moves to `wired` in the same commit.
 
