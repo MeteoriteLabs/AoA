@@ -199,8 +199,22 @@ services:
       AOA_ADAPTER_MANAGER_TRUTH_SHARED_SECRET: "${AOA_M1_TRUTH_SHARED_SECRET}"
       AOA_ADAPTER_MANAGER_REAPER_ENABLED: "1"
       AOA_ADAPTER_MANAGER_CONTROL_PLANE_URL: "http://control-plane:3100"
+      # ★ The adapter-manager REDEEMS the staged-file grants itself: the E2B provider fetches the
+      # presigned URL in THIS process (`fetchGrantBytes`, sandbox-e2b-provider). So it must reach
+      # the presign host (`minio`, on store-egress-net) and trust its CA, exactly as the
+      # control plane does. Keyed run 35601445269 failed at `stage_files` without both. The base
+      # staging manifest is untouched: there the store is external and reached over egress.
+      # Enforced by the GRANT-REACH / GRANT-TRUST invariants in
+      # scripts/lib/staging-manifest-invariants.mjs.
+      NODE_EXTRA_CA_CERTS: "/certs/ca.crt"
     secrets:
       - adapter-manager-cp-pubkey
+    volumes:
+      - "./docker/d1/certs/public.crt:/certs/ca.crt:ro"
+    networks:
+      - control-net
+      - provider-ctl-net
+      - store-egress-net
 
   # --- the three shipped-boot workers (networked-host → adapter-manager) -------------
   m1-worker-a:

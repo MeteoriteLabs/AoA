@@ -307,3 +307,73 @@ Once the addendum lands, a re-review should be short. Nothing else I checked nee
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
 | 1 | M1 review-batch-2A independent reviewer (Claude Opus 5) | `dbe6f5da2a9316ac3f9762294d87991d7ec6f885` | `changes_requested` | Record only. The header's reviewed revision `1ec5533b5` predates the E6-D001 code (`dbe6f5da2`) that the record describes. §4's CI run `35591595055` was `cancelled`, on `c31dccf87`, with the pre-E6-D001 guard (46 tests). The covering run `35596651522` (policy `106322893461`: 49/49, 53/53) is uncited, and §8's post-merge citation is missing: registration `35598343418` (job `106328314759` skipped, 0 steps) and keyless rehearsal `35600507289` (job `106335219133` success). Code sound: guards green locally, M13 reproduced (2 failed), Codex clean on `dbe6f5da2a`. Acceptance 1 and the enabled half of 6 are OPEN (keyed). |
+
+---
+
+## 9. Follow-up — the first keyed run failed at `stage_files` (2026-09-21)
+
+The planning session dispatched the first keyed run: **`35601445269`**, on candidate `fc2eb7dde`. Before it, the keyless rehearsal `35600507289` passed. Every step through "Reconcile and preflight every Organization" succeeded. Then "Run the journey" failed for **both enabled tenants**. The control tenant correctly stayed legacy.
+
+**The evidence**, all from the retained bundle:
+- **Worker:** the supervisor logged "staging the control plane's input failed", with `stagedCount` 2 and the error `WireProtocolError … (adapter-manager provider operation failed)`.
+- **Verifier:** `leases=1`, `attempt_started=0`.
+- **adapter-manager:** its log recorded nothing about the operation.
+
+**Root cause, measured at source by the planning session.** The E2B provider redeems the download grant *inside the adapter-manager process* (`fetchGrantBytes`, `packages/sandbox-e2b-provider/src/e2b-provider.ts`). The overlay's presign endpoint is `https://minio:9000`. The adapter-manager had neither of the two things that fetch needs:
+- **the network:** it had no `store-egress-net`; the base manifest gives it only `control-net` + `provider-ctl-net`;
+- **the CA:** it had no `NODE_EXTRA_CA_CERTS` and no mounted CA.
+
+**Why the rehearsals missed it.** On the Hetzner campaign the adapter-manager fetched real S3 over the internet, so this never surfaced there. The keyless mode never starts the adapter-manager, so it could not see it either. And §3's rehearsal was keyless.
+
+**Fixed in the follow-up PR:**
+1. **The overlay.** In `docker/m1-boot/docker-compose.m1-boot.yml` only, the adapter-manager joins `store-egress-net` and gets `NODE_EXTRA_CA_CERTS=/certs/ca.crt` plus the same CA mount as the workers and the control plane. The base staging manifest is untouched; a test asserts that.
+2. **A static invariant.** `checkGrantRedeemersReachPresignStore`, inside `evaluateShippedBootOverlayInvariants`, checks that every grant-redeeming service (`GRANT_REDEEMING_SERVICES`, the adapter-manager):
+   - shares a network with the presign store;
+   - trusts the store's CA through a mounted `NODE_EXTRA_CA_CERTS`, and that CA is the same one the signing control plane trusts.
+
+   It runs statically in `policy` and again on the lane's real render. Run against the unfixed overlay it reports exactly the two defects of run `35601445269`. Positive controls:
+   - dropping the network reds it;
+   - dropping the CA env reds it;
+   - dropping the mount reds it;
+   - a different CA reds it;
+   - replicas that disagree on the store red it.
+
+   In mutation testing, disabling either arm, or unwiring the check, kills two to six cases.
+3. **A keyless runtime probe.** The new phase `probe-presign`, in the workflow step "Probe the presign store from the adapter-manager's seat" before "Run the journey", is a throwaway `docker compose run --no-deps --entrypoint node` of the **adapter-manager service**. It gets the service's networks, env and mounts, but the bin never starts, so no E2B call is possible. It sends an HTTPS `HEAD` to the presign endpoint. Local rehearsal on Docker Desktop:
+   - the fixed overlay gives `PRESIGN_PROBE_OK status=200`;
+   - **positive control A**, the adapter-manager without `store-egress-net`, gives `PRESIGN_PROBE_FAIL … codes=ENOTFOUND`;
+   - **positive control B**, the adapter-manager without `NODE_EXTRA_CA_CERTS`, gives `PRESIGN_PROBE_FAIL … codes=DEPTH_ZERO_SELF_SIGNED_CERT`.
+4. **E6-F024, filed and resolved.** A provider-op failure is now classified, logged and relayed from a closed vocabulary. Neither the log nor the wire carries the URL, host, grant or key. See E6 `findings.md`.
+
+---
+
+## 10. Addendum, 2026-09-21: corrections after the distinct review
+
+Independent review attempt 1 (above) requested changes to this record. The sections above are left exactly as written; this addendum makes the required changes (a)–(c).
+
+- **Reviewed revision.** The header names `1ec5533b5b2c80cf2bcbd7e228efa4d11c7b3662`, but that commit predates the E6-D001 code: the registration-only push, the dispatch-only job gate and the matching shape guard. The revision that contains it is **`dbe6f5da2a9316ac3f9762294d87991d7ec6f885`**, the final head of PR #554, which merged as `947b684d8a5bf1fcdacb20c5ff077668db54c517`. It is the reviewed revision. `1ec5533b5…` is kept as superseded.
+- **CI run.** §4 cites PR run `35591595055` as the green `policy` evidence. That run is on `c31dccf87` and concluded **`cancelled`**: `e2e` and `verify (4)` were cancelled. It covers neither the code nor the final head. The run that covers the reviewed revision is **`35596651522`** (`pull_request` on `dbe6f5da2`, conclusion `success`). Its jobs `policy`, `verify (1–4)`, `e2e`, `migrations` and `ci-required` (`106327999223`) all concluded `success`. The `policy` job **`106322893461`** executed the DEP-015 step, which printed:
+  - `OK: docker/m1-boot/docker-compose.m1-boot.yml satisfies the DEP-015 shipped-boot contract`;
+  - `check-staging-manifest.test.mjs` **49/49**;
+  - `OK: .github/workflows/m1-shipped-boot.yml is the F3 shipped CI boot: runs only on dispatch (push = registration only, E6-D001), …`;
+  - shape + lib **53/53** (27 + 26).
+
+  The cancelled run's `policy` log shows the pre-E6-D001 guard (46 tests).
+- **Registration run (E6-D001).** Merging #554 pushed the workflow file to `docs/replatform-program` and fired the registration-only trigger. That run is **`35598343418`** (`push` on `947b684d8`, run conclusion `skipped`): its only job, `shipped-boot` **`106328314759`**, concluded **`skipped` with 0 steps**. This is the post-merge citation §8 promised: nothing ran and no secret was read.
+- **Keyless rehearsal on CI.** Run **`35600507289`** (`workflow_dispatch`, candidate `fc2eb7dde`) concluded **`success`**, with job `shipped-boot` **`106335219133`** = `success` over 28 steps. It is the Linux-runner counterpart of §3's local rehearsal, at a candidate that contains the E6-D001 code. Its logs show:
+  - the keypair generated in the job, and `✓ CP↔AM keypair smoke: PASS`;
+  - both replicas healthy;
+  - three Organizations seeded, each with a distinct id;
+  - `assert-tenants` holding exactly {A, B} canary, with the control absent and crew + tool surface OFF;
+  - three workers enrolled, each on its own Organization's target, and the adapter-manager **not** started;
+  - the control dispatch passed, with `owner=null`;
+  - 17 evidence files uploaded (`m1-shipped-boot-keyless-35600507289`);
+  - `teardown` reported "keys dir gone".
+- **First keyed run.** Run **`35601445269`** (`workflow_dispatch`, `mode=keyed`, candidate `fc2eb7dde`) concluded **`failure`**. Every step through "Reconcile and preflight every Organization" passed. The failing step was "Run the journey", for both enabled tenants; the control tenant correctly stayed legacy.
+  - **Root cause:** the E2B provider redeems grants inside the adapter-manager (`fetchGrantBytes`). In the m1-boot overlay the adapter-manager had neither the presign store's network (`store-egress-net`) nor its CA.
+  - **The fix:** the DEP-015 follow-up PR (§9), which covers the overlay, the GRANT-REACH/TRUST invariant, the keyless `probe-presign` phase and E6-F024.
+  - **The keyed acceptance therefore remains PENDING.** It needs a keyed re-run after that PR merges.
+- **Ruled in under F2 after this review: a hard pre-upload leak scan.** The lane now has a `leak-scan` phase: the step "Scan the evidence for job secrets (fails the run on any match)", placed after collect and before upload. The upload is gated `if: always() && steps.leak-scan.outcome == 'success'`, and the shape guard enforces both the step and the gate.
+  - **What it does.** Every job secret (26 named secrets in a full keyless run) is searched for in every evidence file, in raw, base64 and base64url form. A match fails the run and deletes the bundle. The report names the file and the secret NAME, never the value.
+  - **Positive controls.** A planted canary turns the pure check red and turns the phase run end to end red (exit 1, the file and name reported, no value printed, the bundle deleted). Base64 and base64url plantings are found. Mutations that disable the scan, drop the encoded forms or ungate the upload are each killed.
+  - **A real bundle stays green.** Over the 13 files of a local keyless bundle it reported `clean`.

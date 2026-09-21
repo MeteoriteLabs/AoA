@@ -158,7 +158,11 @@ test("REJECT: the evidence upload widened to the whole output dir (keys, env, st
 });
 
 test("REJECT: the evidence upload only on success, or the teardown not always", () => {
-  const upload = mutate(real(), "      - name: Upload the evidence bundle (on pass and fail)\n        if: always()\n", "      - name: Upload the evidence bundle (on pass and fail)\n");
+  const upload = mutate(
+    real(),
+    "      - name: Upload the evidence bundle (on pass and fail)\n        if: always() && steps.leak-scan.outcome == 'success'\n",
+    "      - name: Upload the evidence bundle (on pass and fail)\n",
+  );
   assert.ok(anyMatch(violationsOf(upload), /evidence upload must run `if: always\(\)`/), violationsOf(upload).join("\n"));
   const teardown = mutate(real(), "      - name: Tear down (stack, volumes, keypair, secrets)\n        if: always()\n", "      - name: Tear down (stack, volumes, keypair, secrets)\n");
   assert.ok(anyMatch(violationsOf(teardown), /teardown .* must run `if: always\(\)`/), violationsOf(teardown).join("\n"));
@@ -179,4 +183,23 @@ test("REJECT: write permissions", () => {
 test("REJECT: the in-job keypair check removed", () => {
   const text = mutate(real(), "            pnpm verify:cp-am-keypair\n", "            true\n");
   assert.ok(anyMatch(violationsOf(text), /verify:cp-am-keypair/), violationsOf(text).join("\n"));
+});
+
+// === the HARD pre-upload leak scan (ruled in under F2 after the distinct review) ============
+
+test("REJECT: the leak-scan step removed", () => {
+  const text = mutate(real(), '            node scripts/m1-shipped-boot/journey.mjs leak-scan --out "$M1_OUT"\n', "            true\n");
+  assert.ok(anyMatch(violationsOf(text), /must run the pre-upload leak scan/), violationsOf(text).join("\n"));
+});
+
+test("REJECT: the upload NOT gated on the leak scan's success (a leaking bundle would publish)", () => {
+  const text = mutate(real(), "        if: always() && steps.leak-scan.outcome == 'success'\n", "        if: always()\n");
+  assert.ok(anyMatch(violationsOf(text), /upload must be gated `if: always\(\) && steps\.leak-scan\.outcome == 'success'`/), violationsOf(text).join("\n"));
+});
+
+test("REJECT: the leak-scan step without an id, or not always()", () => {
+  const noId = mutate(real(), "        id: leak-scan\n", "");
+  assert.ok(anyMatch(violationsOf(noId), /must carry an `id:`/), violationsOf(noId).join("\n"));
+  const notAlways = mutate(real(), "        id: leak-scan\n        if: always()\n", "        id: leak-scan\n");
+  assert.ok(anyMatch(violationsOf(notAlways), /leak-scan step must run `if: always\(\)`/), violationsOf(notAlways).join("\n"));
 });

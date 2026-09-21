@@ -34,6 +34,7 @@ import {
   SHIPPED_BOOT_ADMITTED_DISPATCH_ENV,
   DISTRIBUTED_EXECUTION_ROLLOUT_ENV,
   DISTRIBUTED_CREW_ROLLOUT_ENABLED_ENV,
+  GRANT_REDEEMING_SERVICES,
 } from "./lib/staging-manifest-invariants.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -612,4 +613,101 @@ test("DEP-015 rendered mode: an engine-merged render passes scoped and reds unsc
     rendered: true,
   }).violations;
   assert.ok(anyMatch(red, /replica 'control-plane' must set 'AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED'/), red.join("\n"));
+});
+
+// =============================================================================
+// DEP-015 follow-up (keyed run 35601445269) — the grant redeemers reach and trust the store.
+//
+// The E2B provider redeems staged-file grants IN THE ADAPTER-MANAGER. The first keyed run
+// failed at `stage_files` because the adapter-manager had neither the presign store's network
+// nor its CA, and no check looked. These cases pin both, with the reds that make it a check.
+// =============================================================================
+
+test("GRANT-REACH/TRUST: the adapter-manager is the declared grant redeemer", () => {
+  assert.deepEqual(GRANT_REDEEMING_SERVICES, ["adapter-manager"]);
+});
+
+test("GRANT-REACH/TRUST: the REAL overlay puts the adapter-manager on the store network with the store CA", () => {
+  const merged = mergeComposeModel(realBase(), realOverlay());
+  const am = merged.services["adapter-manager"];
+  assert.ok(am.networks.includes("store-egress-net"), JSON.stringify(am.networks));
+  assert.equal(am.environment.NODE_EXTRA_CA_CERTS, "/certs/ca.crt");
+  assert.ok(am.volumes.some((vol) => String(vol).endsWith(":/certs/ca.crt:ro")), JSON.stringify(am.volumes));
+  // The base staging manifest is NOT touched: its adapter-manager stays off the store net.
+  assert.ok(!realBase().services["adapter-manager"].networks.includes("store-egress-net"));
+});
+
+test("POSITIVE CONTROL (GRANT-REACH): drop the store network from the adapter-manager and it reds", () => {
+  const overlay = realOverlay();
+  overlay.services["adapter-manager"].networks = ["control-net", "provider-ctl-net"];
+  const violations = evalOverlay(realBase(), overlay);
+  assert.ok(anyMatch(violations, /GRANT-REACH VIOLATION: 'adapter-manager'.*presign store 'minio'/), violations.join("\n"));
+});
+
+test("POSITIVE CONTROL (GRANT-TRUST): drop the CA env from the adapter-manager and it reds", () => {
+  const overlay = realOverlay();
+  delete overlay.services["adapter-manager"].environment.NODE_EXTRA_CA_CERTS;
+  const violations = evalOverlay(realBase(), overlay);
+  assert.ok(anyMatch(violations, /GRANT-TRUST VIOLATION: 'adapter-manager'.*does not trust its CA/), violations.join("\n"));
+});
+
+test("REJECT (GRANT-TRUST): the CA env set but no file mounted at it", () => {
+  const overlay = realOverlay();
+  delete overlay.services["adapter-manager"].volumes;
+  const violations = evalOverlay(realBase(), overlay);
+  assert.ok(anyMatch(violations, /GRANT-TRUST VIOLATION: 'adapter-manager'.*mounted: false/), violations.join("\n"));
+});
+
+test("REJECT (GRANT-TRUST): a CA that is not the one the signing control plane trusts", () => {
+  const overlay = realOverlay();
+  overlay.services["adapter-manager"].volumes = ["./docker/other/ca.crt:/certs/ca.crt:ro"];
+  const violations = evalOverlay(realBase(), overlay);
+  assert.ok(anyMatch(violations, /GRANT-TRUST VIOLATION: 'adapter-manager' trusts/), violations.join("\n"));
+});
+
+test("REJECT: the two control-plane replicas presigning for different stores", () => {
+  const overlay = realOverlay();
+  overlay.services["control-plane-b"].environment.AOA_STORAGE_S3_PRESIGN_ENDPOINT = "https://other-store:9000";
+  const violations = evalOverlay(realBase(), overlay);
+  assert.ok(anyMatch(violations, /disagree on 'AOA_STORAGE_S3_PRESIGN_ENDPOINT'/), violations.join("\n"));
+});
+
+test("GRANT-REACH/TRUST in rendered mode (the lane's live check): absolute bind paths and long-form volumes", () => {
+  const rendered = mergeComposeModel(realBase(), realOverlay());
+  for (const svc of Object.values(rendered.services)) {
+    if (typeof svc.image === "string" && svc.image.includes("WORKER_IMAGE")) svc.image = "localhost/aoa/worker:0123abc";
+    svc.volumes = (svc.volumes ?? []).map((vol) => {
+      const [source, target] = String(vol).split(":");
+      return { type: "bind", source: source.replace(/^\.\//, "/home/runner/work/AoA/AoA/"), target, read_only: true };
+    });
+  }
+  for (const cp of ["control-plane", "control-plane-b"]) rendered.services[cp].environment[DISTRIBUTED_EXECUTION_ROLLOUT_ENV] = '{"organizations":{}}';
+  rendered.services["adapter-manager"].environment.E2B_API_KEY = "";
+  const ok = evaluateShippedBootOverlayInvariants(rendered, null, { overlayPath: SHIPPED_BOOT_OVERLAY_PATH, rendered: true }).violations;
+  assert.deepEqual(ok, [], ok.join("\n"));
+  rendered.services["adapter-manager"].networks = ["control-net", "provider-ctl-net"];
+  const red = evaluateShippedBootOverlayInvariants(rendered, null, { overlayPath: SHIPPED_BOOT_OVERLAY_PATH, rendered: true }).violations;
+  assert.ok(anyMatch(red, /GRANT-REACH VIOLATION/), red.join("\n"));
+});
+
+// Codex (PR #561): the CA reference must hold on EVERY control-plane replica, not only the first.
+test("REJECT (GRANT-TRUST): the SECOND control-plane replica without the store CA", () => {
+  const overlay = realOverlay();
+  delete overlay.services["control-plane-b"].environment.NODE_EXTRA_CA_CERTS;
+  const violations = evalOverlay(realBase(), overlay);
+  assert.ok(anyMatch(violations, /GRANT-TRUST VIOLATION: control-plane replica 'control-plane-b'.*does not trust its CA/), violations.join("\n"));
+});
+
+test("REJECT (GRANT-TRUST): the FIRST control-plane replica without the CA mount (no silent pass for the redeemer)", () => {
+  const overlay = realOverlay();
+  delete overlay.services["control-plane"].volumes;
+  const violations = evalOverlay(realBase(), overlay);
+  assert.ok(anyMatch(violations, /GRANT-TRUST VIOLATION: control-plane replica 'control-plane'.*does not trust its CA/), violations.join("\n"));
+});
+
+test("REJECT (GRANT-TRUST): the replicas trusting DIFFERENT CAs", () => {
+  const overlay = realOverlay();
+  overlay.services["control-plane-b"].volumes = ["./docker/other/ca.crt:/certs/ca.crt:ro"];
+  const violations = evalOverlay(realBase(), overlay);
+  assert.ok(anyMatch(violations, /the control-plane replicas trust different CAs/), violations.join("\n"));
 });
