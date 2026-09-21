@@ -431,7 +431,17 @@ export function budgetService(db: Db) {
     async evaluateCostEvent(
       agentId: string | null,
       companyId: string,
-      opts?: { projectId?: string | null },
+      opts?: {
+        projectId?: string | null;
+        /**
+         * JOB-016 — when given, a newly-exhausted scope is PUSHED here instead of emitted. The
+         * in-process `budget.exhausted` listener cancels live heartbeat work on the global
+         * handle, so a caller whose charge is still inside an uncommitted transaction (or a
+         * savepoint that may yet roll back) collects the scopes and emits them AFTER commit.
+         * Absent (every legacy caller): emitted immediately, exactly as before.
+         */
+        deferExhaustedEmit?: BudgetEnforcementScope[];
+      },
     ): Promise<{
       hardStopIncidentCreated: boolean;
       hardStopBreached: boolean;
@@ -503,7 +513,8 @@ export function budgetService(db: Db) {
                 scopeType: policy.scopeType,
                 scopeId: policy.scopeId,
               };
-              emitBudgetExhausted(scope);
+              if (opts?.deferExhaustedEmit) opts.deferExhaustedEmit.push(scope);
+              else emitBudgetExhausted(scope);
             }
           }
         }

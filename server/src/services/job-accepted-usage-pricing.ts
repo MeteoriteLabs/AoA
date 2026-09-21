@@ -35,7 +35,12 @@ import {
 import { submitJobSourceSchema, type SubmitJobSource } from "@armyofagents/shared";
 import { usagePayloadV1Schema } from "@armyofagents/worker-protocol";
 import { runInTenant, tenantRepositoriesForSavepoint } from "../db/tenant-context.js";
-import { costSourceIdentity, priceAcceptedUsageCore } from "./job-budget-cost-bridge.js";
+import {
+  costSourceIdentity,
+  emitDeferredBudgetExhausted,
+  priceAcceptedUsageCore,
+} from "./job-budget-cost-bridge.js";
+import type { BudgetEnforcementScope } from "./budget-hooks.js";
 import type { AuthoritativeUsageUnits } from "./job-authoritative-rate.js";
 
 /** Amendment 3 — re-drive attempts per stuck receipt before ONE Inbox item is raised. */
@@ -157,7 +162,14 @@ function usageUnitsOf(wireEvent: Record<string, unknown>): AuthoritativeUsageUni
  * identity is the JOB-012 one, `cost:{company}:{eventId}`, so the wrapper and the seam share one
  * idempotency key and can never charge the same event twice.
  */
-export function createAcceptedUsagePricingProjector(): AcceptedEventProjector {
+export function createAcceptedUsagePricingProjector(options?: {
+  /**
+   * Receives each charged event's owed `budget.exhausted` scopes. The projector runs inside a
+   * savepoint of an uncommitted ingest, so it must NOT emit; the ingest emits these after commit,
+   * and only for events whose seam outcome is `applied` (a rolled-back savepoint owes nothing).
+   */
+  onOwedBudgetExhausted?: (eventId: string, scopes: BudgetEnforcementScope[]) => void;
+}): AcceptedEventProjector {
   return {
     projectionKind: "authoritative_cost",
     aggregateKind: "cost_events",
@@ -181,6 +193,9 @@ export function createAcceptedUsagePricingProjector(): AcceptedEventProjector {
           occurredAt: new Date(),
         },
       );
+      if (priced.exhaustedScopes.length > 0) {
+        options?.onOwedBudgetExhausted?.(event.eventId, priced.exhaustedScopes);
+      }
       return { targetAggregateId: priced.costEventId };
     },
   };
@@ -259,7 +274,8 @@ export async function redrivePendingAuthoritativeCost(
   appDb: Db,
   input: { organizationId: string; receiptId: string },
 ): Promise<RedriveOutcome> {
-  return runInTenant(appDb, input.organizationId, async (repos, tx) => {
+  let owedEmits: BudgetEnforcementScope[] = [];
+  const outcome = await runInTenant(appDb, input.organizationId, async (repos, tx): Promise<RedriveOutcome> => {
     const receipt = await repos.jobControl.lockPendingProjectionReceipt(input);
     if (!receipt || receipt.projectionKind !== "authoritative_cost") return { status: "not_pending" as const };
     const prefix = `cost:${receipt.companyId}:`;
@@ -290,8 +306,11 @@ export async function redrivePendingAuthoritativeCost(
       aggregateKind: "cost_events",
     });
     if (!resolved.applied) throw new Error("pending receipt changed under its own lock");
+    owedEmits = priced.exhaustedScopes;
     return { status: "redriven" as const, costEventId: priced.costEventId };
   });
+  emitDeferredBudgetExhausted(owedEmits); // after commit only
+  return outcome;
 }
 
 /** The Inbox side of Amendment 3, injectable so the sweep is testable without a hub. */

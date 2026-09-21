@@ -46,6 +46,7 @@ import { readDistributedExecutionDeploymentFlag } from "../config/distributed-ex
 import { resolveCompanyOrganizationId } from "./org-concurrency.js";
 import { assertAdmissibleMappedOrganization } from "./tenant-admission.js";
 import { budgetService } from "./budgets.js";
+import { emitBudgetExhausted, type BudgetEnforcementScope } from "./budget-hooks.js";
 import { costService } from "./costs.js";
 import { recordOneShotCliCost } from "./one-shot-cli-budget.js";
 import { resolveAuthoritativeRate, type AuthoritativeUsageUnits } from "./job-authoritative-rate.js";
@@ -180,6 +181,18 @@ export interface PriceAcceptedUsageCoreOutcome {
   cancelled: boolean;
   /** Queued jobs of a breached scope cancelled by this charge (E3-D-ACC Amendment 2). */
   scopeCancelled: number;
+  /**
+   * Newly-exhausted budget scopes whose in-process `budget.exhausted` signal is OWED. The core
+   * never emits it: the listener cancels live heartbeat work on the global handle, and this charge
+   * is still uncommitted. The caller emits these only AFTER its transaction commits
+   * (`emitDeferredBudgetExhausted`), so a rolled-back charge cancels nothing.
+   */
+  exhaustedScopes: BudgetEnforcementScope[];
+}
+
+/** Emit owed `budget.exhausted` signals — call only after the charge's transaction committed. */
+export function emitDeferredBudgetExhausted(scopes: readonly BudgetEnforcementScope[]): void {
+  for (const scope of scopes) emitBudgetExhausted(scope);
 }
 
 /** Charge the EXISTING cost writer ONCE. task_run rolls up its owning agent; every
@@ -274,7 +287,11 @@ export async function priceAcceptedUsageCore(
 
   // SYNCHRONOUS budget evaluation (not the legacy fire-and-forget), so a newly-created
   // incident — and legacy's agent pause — is visible in this committed state.
-  const evaluated = await budgetService(tx).evaluateCostEvent(evalAgentId, companyId, { projectId });
+  const exhaustedScopes: BudgetEnforcementScope[] = [];
+  const evaluated = await budgetService(tx).evaluateCostEvent(evalAgentId, companyId, {
+    projectId,
+    deferExhaustedEmit: exhaustedScopes,
+  });
 
   // Exhaustion → cancel through the EXISTING engine (which releases the capacity slot EXACTLY
   // ONCE). Cancel whenever THIS charge crosses an applicable hard stop — NOT only when it won the
@@ -332,6 +349,7 @@ export async function priceAcceptedUsageCore(
     incidentCreated: evaluated.hardStopIncidentCreated,
     cancelled,
     scopeCancelled,
+    exhaustedScopes,
   };
 }
 
@@ -364,7 +382,8 @@ export function jobBudgetCostBridge(
       const organizationId = await resolveAdmissibleOrganization(companyId);
       const projectId = input.projectId ?? null;
 
-      return runInTenant(appDb, organizationId, async (repos, tx) => {
+      let owedEmits: BudgetEnforcementScope[] = [];
+      const outcome = await runInTenant(appDb, organizationId, async (repos, tx) => {
         // (a) TOCTOU guard — lock the lease+attempt FOR UPDATE (write nothing) so two
         // concurrent same-event charges serialize: the 2nd blocks until the 1st commits
         // its receipt, then observes it and replays. Without this the cost writers'
@@ -414,6 +433,7 @@ export function jobBudgetCostBridge(
           },
         });
 
+        owedEmits = core.exhaustedScopes;
         return {
           status: "charged" as const,
           costEventId: core.costEventId,
@@ -423,6 +443,9 @@ export function jobBudgetCostBridge(
           cancelled: core.cancelled,
         };
       });
+      // AFTER COMMIT: the charge and its incident are durable, so the in-process signal may fire.
+      emitDeferredBudgetExhausted(owedEmits);
+      return outcome;
     },
 
     async assertRollbackSafe(companyId) {

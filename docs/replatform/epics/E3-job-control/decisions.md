@@ -345,3 +345,7 @@ Where the build differs in detail from the text above, the code is the truth and
 - **E3-F037 owner re-pointed to `DEP-016` (2026-09-21, planning session, F2).** `JOB-016` ships the
   seam and pricing; the finding closes at `DEP-016`'s end-to-end cost assertion, which also needs
   `WRK-018`'s producer and its keyed E2B parser acceptance (`scripts/finding-ownership.json`).
+- **Budget-exhausted signal deferred to after commit (post-review, Codex P2).** The in-process
+  `budget.exhausted` listener cancels live heartbeat work, so the core never emits it; callers emit
+  the returned `exhaustedScopes` only after their transaction commits (the ingest: only for events
+  whose seam outcome is `applied`). `evaluateCostEvent`'s `deferExhaustedEmit` is additive.

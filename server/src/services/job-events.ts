@@ -69,6 +69,8 @@ import {
   type AcceptedUsageTelemetry,
   type TerminalWithoutUsageSignal,
 } from "./job-accepted-usage-pricing.js";
+import { emitDeferredBudgetExhausted } from "./job-budget-cost-bridge.js";
+import type { BudgetEnforcementScope } from "./budget-hooks.js";
 
 function sha256Hex(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
@@ -174,7 +176,7 @@ export function createJobEventIngestService(input: {
   // switch that allows distributed spend with pricing off recreates E3-F037 through config, and
   // this ingest exists only when distributed execution is composed, so every usage event it
   // accepts is distributed spend. The rollback lever is the rollout dial.
-  const acceptedEventProjectors = [createAcceptedUsagePricingProjector()] as const;
+  // The projector itself is built per ingest (below), so its owed budget signals belong to one call.
   return {
     async ingest(ingestInput: {
       auth: VerifiedWorkerOperation;
@@ -197,6 +199,12 @@ export function createJobEventIngestService(input: {
       // INSIDE the tx and reported AFTER it commits (so a report is never for a rolled-back append).
       let acceptedEventProjections: readonly AcceptedEventProjectionOutcome[] = [];
       let usageGap: TerminalWithoutUsageSignal | null = null;
+      // Owed `budget.exhausted` signals by accepted event id. Emitted AFTER commit, and only for
+      // events whose seam outcome is `applied`: a rolled-back savepoint owes nothing.
+      const owedBudgetExhausted = new Map<string, BudgetEnforcementScope[]>();
+      const acceptedEventProjectors = [createAcceptedUsagePricingProjector({
+        onOwedBudgetExhausted: (eventId, scopes) => { owedBudgetExhausted.set(eventId, scopes); },
+      })];
 
       // ★ DE-03, replay-rejection conjunct — the refusal below THROWS out of
       // `runInTenant`, so its record is collected as an INTENT and drained on the
@@ -418,6 +426,9 @@ export function createJobEventIngestService(input: {
       // carrying the attempt's ids; every outcome is also counted (count-only, no ids).
       for (const projection of acceptedEventProjections) {
         acceptedUsageTelemetry.count({ outcome: telemetryOutcomeFor(projection), count: 1 });
+        if (projection.outcome === "applied") {
+          emitDeferredBudgetExhausted(owedBudgetExhausted.get(projection.eventId) ?? []);
+        }
         if (projection.outcome === "pending" || projection.outcome === "unrecorded") {
           logger.warn({
             classification: projection.outcome === "pending" ? "projection_pending" : "projection_unrecorded",

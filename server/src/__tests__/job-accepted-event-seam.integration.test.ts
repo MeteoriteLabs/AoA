@@ -50,6 +50,7 @@ import { createJobEventIngestService } from "../services/job-events.js";
 import { createDistributedExecutionDrainStore } from "../services/job-distributed-drain-store.js";
 import { createDistributedExecutionDrain } from "../services/job-distributed-drain.js";
 import { logger } from "../middleware/logger.js";
+import { clearBudgetHooks, onBudgetExhausted, type BudgetEnforcementScope } from "../services/budget-hooks.js";
 
 const ENABLED_ENV = { AOA_DISTRIBUTED_EXECUTION_ENABLED: "true" } as const;
 const KNOWN_MODEL = "claude-sonnet-4-6";
@@ -471,6 +472,32 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(polled.outcome).toBe("offer");
     });
 
+    it("[Codex P2] a savepoint that rolls back AFTER the core ran emits NO budget.exhausted signal (no live work is cancelled for a charge that never committed)", async () => {
+      clearBudgetHooks();
+      const emitted: BudgetEnforcementScope[] = [];
+      onBudgetExhausted((scope) => { emitted.push(scope); });
+      try {
+        await seedCompanyHardStop(COMPANY, 1);
+        const fence = await seedLeasedAttempt(TENANT_A, taskSource(AGENT_A));
+        const real = createAcceptedUsagePricingProjector();
+        const failsLate: AcceptedEventProjector = {
+          ...real,
+          async apply(ctx) {
+            await real.apply(ctx); // the whole core ran: charge, incident, breach
+            throw new Error("a later step in the savepoint failed");
+          },
+        };
+        const result = await accept(fence, [usage(fence, 1)], [failsLate]);
+        expect(result.acceptedEventProjections?.[0]?.outcome).toBe("pending");
+        expect(await count("cost_events", "true")).toBe(0);
+        expect(await count("budget_incidents", "true")).toBe(0);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(emitted).toEqual([]);
+      } finally {
+        clearBudgetHooks();
+      }
+    });
+
     it("[acc 7 / F10] two Organizations price side by side; each row carries its own tenant; a hard stop in A refuses only A", async () => {
       const f = guard();
       await seedCompanyHardStop(COMPANY, 1);
@@ -694,6 +721,31 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         `projection_kind = 'authoritative_cost' AND status = 'applied' AND target_aggregate_id = '${rows[0]!.id}'`)).toBe(1);
       expect(outcomes).toContain("priced");
       expect(outcomes).not.toContain("terminal_without_usage");
+    });
+
+    it("[Codex P2] a committed breach through the REAL ingest emits budget.exhausted exactly once, AFTER commit", async () => {
+      const f = guard();
+      const { offer } = await f.activateLease(53);
+      await seedCompanyHardStop(COMPANY, 1);
+      clearBudgetHooks();
+      const seen: { scope: BudgetEnforcementScope; costRowsVisible: Promise<number> }[] = [];
+      // The listener reads the ledger on a SEPARATE connection: a pre-commit emit would see 0.
+      onBudgetExhausted((scope) => { seen.push({ scope, costRowsVisible: count("cost_events", "true") }); });
+      try {
+        const ingest = createJobEventIngestService({ appDb: f.app.db });
+        const events = [
+          wireEvent(offer, 1, "attempt_started", { sandboxId: "sbx-j016c" }),
+          wireEvent(offer, 2, "usage", { inputTokens: 1_000_000, outputTokens: 1_000_000, cachedInputTokens: 0, runtimeMillis: 1 }),
+        ];
+        const response = await ingest.ingest({ auth: auth("j016-ev-3"), request: batchRequest(offer, events) });
+        expect(response.ack.status).toBe("accepted");
+        expect(seen.map((entry) => entry.scope)).toEqual([
+          { companyId: COMPANY, scopeType: "company", scopeId: COMPANY },
+        ]);
+        expect(await seen[0]!.costRowsVisible).toBe(1);
+      } finally {
+        clearBudgetHooks();
+      }
     });
 
     it("[acc 4] a terminal with NO usage event emits the classified terminal_without_usage signal (log + count)", async () => {

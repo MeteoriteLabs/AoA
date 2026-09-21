@@ -60,6 +60,8 @@ There is also a structural base-revision fact: at the base, `acceptEvent` has no
 | M9 | the `agents.company_id` filter in the rate lookup | `[F10]` |
 | M10 | the retry bound (unbounded attempts) | `[Amendment 3]` |
 | M11 | the Inbox notify call | `[Amendment 3]` |
+| M12 | the deferred emit (emit inside the transaction) | both `[Codex P2]` tests |
+| M13 | the ingest's after-commit emit | `[Codex P2] … REAL ingest` |
 
 **GREEN (local, at the reviewed revision):**
 - The new suite passed **15/15**, and the sweeper-hook suite passed **4/4**.
@@ -69,6 +71,23 @@ There is also a structural base-revision fact: at the base, `acceptEvent` has no
 - The full policy guard set is green, including `check-register-citation-integrity`. The line citations my insertions moved in `docs/architecture/distributed-execution-threat-controls.json` were re-pointed through the exact `git diff -U0` line map, not by a nearest-anchor guess.
 
 **CI (Linux, formal authority):** see the "CI evidence" section below, which is filled from the PR's `verify` shard for this file.
+
+## Post-review fix — Codex P2 on `f8c68df` (budget signal deferred to after commit)
+
+**The finding.** Codex found that `evaluateCostEvent` emits the in-process `budget.exhausted` signal synchronously. That signal's listener (`heartbeat.cancelBudgetScopeWork`, subscribed in `server/src/index.ts`) cancels live heartbeat work on the global handle. Inside the seam, the emit happened within a savepoint that could still roll back, so live work could be cancelled for a charge that never committed.
+
+**Verified at source; fixed.**
+- `evaluateCostEvent` takes an additive `deferExhaustedEmit` collector. Legacy callers pass nothing and are unchanged.
+- The core never emits. It returns `exhaustedScopes`.
+- The emit then happens only **after commit**, in three places:
+  - the JOB-012 wrapper emits after its `runInTenant`;
+  - the re-drive does the same;
+  - the ingest emits per event, only for events whose seam outcome is `applied`.
+- Two tests cover it, and each is red under its own mutation:
+  - a savepoint rolled back after the core ran emits nothing (M12);
+  - a committed breach through the real ingest emits exactly once, and the listener already sees the committed row (M12, M13).
+
+The suite is now **17** tests, and the mutation table has **13** rows: rows M12 and M13 are new. The full table was re-run on the fixed code. Every row reds a named test; M1 additionally reds the new ingest emit test.
 
 ## Accepted deviations (planning session, F2)
 
