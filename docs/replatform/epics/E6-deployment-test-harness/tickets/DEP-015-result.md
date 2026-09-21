@@ -412,5 +412,6 @@ The planning session dispatched keyed run **`35613849443`** on candidate `d0f065
   - A line with no `sandboxId` does not count.
   - B's real sandbox line replayed against A's leases is rejected as a foreign lease.
 - **Mutations:** disabling the shape check, the lease check or the JSON parse each kills at least one case.
+- **Polled, not one-shot** (Codex on PR #563, verified at source). The worker emits `terminal` before it destroys the sandbox (`supervisor.ts`: `events.terminal` then `finishRun`), and the lease-and-sandbox line is logged only after `destroy` returns. The worker log is therefore re-read every 5 s, up to 180 s, until the attempt-bound record appears. `providerEvidence.polls` records how many reads it took.
 
 **The keyed acceptance remains PENDING.** It needs one keyed re-run in which the lane's own verdict is green. From this run's evidence, the only thing that stood between it and green was the driver defect.

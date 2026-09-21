@@ -76,6 +76,10 @@ const TENANTS = [
   { key: "c", role: "control", name: "M1 Control C", worker: "m1-worker-c", envTicket: "AOA_M1_WORKER_C_TICKET_FILE" },
 ];
 const CP_REPLICAS = ["control-plane", "control-plane-b"];
+/** The sandbox-evidence poll (see `dispatch`): cleanup after `terminal` is bounded by the
+ * destroy op deadline, so three minutes is generous without hiding a real absence. */
+const SANDBOX_EVIDENCE_DEADLINE_MS = 180_000;
+const SANDBOX_EVIDENCE_POLL_MS = 5_000;
 
 // --- plumbing -----------------------------------------------------------------------------
 
@@ -733,16 +737,32 @@ async function dispatch(state) {
       // The worker logs pino JSON (`"sandboxId":"…"`); the original `/sandboxId=/` filter could
       // never match it (keyed run 35613849443). An id counts only with the real E2B shape and,
       // when the line names a lease, only for a lease of THIS run's attempt.
-      const logs = compose(state, ["logs", "--no-color", t.worker], { allowFail: true });
+      //
+      // ★ POLLED, not one-shot (Codex, PR #563). The worker emits `terminal` BEFORE it destroys
+      // the sandbox (`packages/worker-daemon/src/supervisor/supervisor.ts`: `events.terminal`,
+      // then `finishRun`). The only line carrying both `leaseId` and `sandboxId` is logged
+      // AFTER `destroy` returns. A run the control plane already sees as terminal can therefore
+      // still be mid-cleanup, and a single snapshot would lose that race. So the log is re-read
+      // until the attempt-bound record appears, or a bounded deadline passes.
       const leaseIds = run.distributed_attempt_id
         ? ownerSql(state, `SELECT id FROM leases WHERE attempt_id = $1`, [run.distributed_attempt_id]).map((r) => r.id)
         : [];
-      const evidence = extractSandboxEvidence(`${logs.stdout}`, { leaseIds });
+      const deadline = Date.now() + SANDBOX_EVIDENCE_DEADLINE_MS;
+      let evidence = { count: 0, sandboxIds: [], rejected: { shape: 0, foreignLease: 0 } };
+      let polls = 0;
+      for (;;) {
+        polls += 1;
+        const logs = compose(state, ["logs", "--no-color", t.worker], { allowFail: true });
+        evidence = extractSandboxEvidence(`${logs.stdout}`, { leaseIds });
+        if (evidence.count > 0 || Date.now() >= deadline) break;
+        await sleep(SANDBOX_EVIDENCE_POLL_MS);
+      }
       providerEvidence = {
         sandboxLogLines: evidence.count,
         sandboxIds: evidence.sandboxIds,
         leaseIds,
         rejected: evidence.rejected,
+        polls,
       };
     }
     // The control plane's own account of the rollout decision for THIS run (either replica may
