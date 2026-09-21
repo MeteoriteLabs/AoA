@@ -1,0 +1,348 @@
+# =============================================================================
+# DEP-015 — the SHIPPED CI BOOT overlay (founder ruling F3; M1a).
+#
+# Layered over the staging manifest by ONE workflow, `.github/workflows/m1-shipped-boot.yml`,
+# which is `workflow_dispatch` only and bound to a named candidate revision:
+#
+#   docker compose -p aoa-m1-boot \
+#     -f docker-compose.staging.yml \
+#     -f docker/m1-boot/docker-compose.m1-boot.yml \
+#     up ...
+#
+# It is NOT the operator campaign deploy (docker/campaign/…, unchanged) and it is not a
+# staging deployment intent. It is the one topology in which the three images CI built from
+# the candidate's source — control-plane, worker, adapter-manager — run a real journey.
+#
+# -----------------------------------------------------------------------------
+# ★ THE WORKER PROVIDER-URL OVERLAY, AND THE ONE SCOPED EXCEPTION IT NEEDS.
+#
+# A worker that runs a job must dial the adapter-manager: `AOA_WORKER_PROVIDER_URL` and
+# `AOA_WORKER_DISPATCH_ENABLED=1` (SK-3). `checkDispatchDefaultOff`
+# (scripts/lib/staging-manifest-invariants.mjs) bans both on every worker. DEP-015 admits
+# them ONLY on the three workers declared below, ONLY with exactly these values, and ONLY
+# when `evaluateShippedBootOverlayInvariants` evaluates THIS file — the admission is a
+# module-private token the staging path cannot be handed, so the same env on
+# docker-compose.staging.yml (or any other manifest) still reds. `policy` runs that check
+# on every PR (`node scripts/check-staging-manifest.mjs`), and the lane re-runs it over the
+# REAL `docker compose config` render before anything boots.
+#
+# The campaign overlay armed dispatch by living in a file no guard read. This overlay is
+# read: the guard enumerates workers by IMAGE, not by a fixed name list, so an unlisted
+# worker added here is still held to default-off.
+#
+# -----------------------------------------------------------------------------
+# ★ MULTI-TENANT (F10) — THREE ORGANIZATIONS, THREE WORKERS.
+#
+#   m1-worker-a → Organization A (enabled)  → control-plane    (replica A)
+#   m1-worker-b → Organization B (enabled)  → control-plane-b  (replica B)
+#   m1-worker-c → Organization C (CONTROL)  → control-plane    (never leases: C is absent
+#                                                               from the rollout = `off`)
+#
+# C is provisioned EXACTLY like A and B — target, worker, keys, reconciliation — so the only
+# thing that keeps its run on the legacy path is the rollout policy. A control tenant with
+# no worker would be refused for a reason that is not the one under test.
+#
+# The tenant set is `AOA_DISTRIBUTED_EXECUTION_ROLLOUT` on EVERY control-plane replica,
+# injected from ONE job-generated variable with `:?` so a missing value fails the render
+# instead of silently turning every Organization off (SK-2). The deployment-wide crew
+# switch is pinned "false" on every replica (S0-8): it has no per-Organization dimension.
+#
+# -----------------------------------------------------------------------------
+# ★ THE PROVIDER-CONTROL BOUNDARY IS PRESERVED. E2B_API_KEY is injected ONLY into the
+# adapter-manager (bare `${E2B_API_KEY}`); the adapter-manager alone is on provider-ctl-net.
+# No worker, control plane, migrate or store service carries it.
+#
+# ★ STORES. The staging manifest points at EXTERNAL stores; a CI job has none, so this
+# overlay adds a throwaway pgvector Postgres and a TLS MinIO (the committed CI-only
+# self-signed cert under docker/d1/certs — artifact grant URLs are https-only). Every
+# password, key and bearer is `${VAR}` generated inside the job and discarded with it.
+#
+# ★ yaml-lite subset: no anchors, no block scalars, no sequences of mappings — the
+# always-on static check parses this file with scripts/lib/yaml-lite.mjs.
+# =============================================================================
+
+services:
+  # --- CI stores (the staging manifest's external pointers, made concrete) ----
+  postgres:
+    image: "${AOA_M1_POSTGRES_IMAGE:-pgvector/pgvector:pg18}"
+    environment:
+      POSTGRES_USER: "aoa"
+      POSTGRES_PASSWORD: "${AOA_M1_OWNER_DB_PASSWORD:?the job generates the owner password}"
+      POSTGRES_DB: "aoa"
+      PGDATA: "/var/lib/postgresql/data"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aoa -d aoa"]
+      interval: "3s"
+      timeout: "5s"
+      retries: 40
+    volumes:
+      - "m1-postgres-data:/var/lib/postgresql/data"
+    networks:
+      - store-egress-net
+
+  minio:
+    image: "${AOA_M1_MINIO_IMAGE:-quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z}"
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: "aoa-m1"
+      MINIO_ROOT_PASSWORD: "${AOA_M1_MINIO_PASSWORD:?the job generates the MinIO password}"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsSk https://127.0.0.1:9000/minio/health/live || exit 1"]
+      interval: "5s"
+      timeout: "5s"
+      retries: 30
+    volumes:
+      - "m1-minio-data:/data"
+      - "./docker/d1/certs:/root/.minio/certs:ro"
+    networks:
+      - store-egress-net
+
+  # --- migration one-shot (control-plane image, OWNER login) -------------------
+  migrate:
+    image: "${AOA_M1_CONTROL_PLANE_IMAGE:?the job builds the control-plane image from the candidate}"
+    environment:
+      DATABASE_URL: "postgres://aoa:${AOA_M1_OWNER_DB_PASSWORD}@postgres:5432/aoa"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # --- control plane, replica A --------------------------------------------------
+  control-plane:
+    image: "${AOA_M1_CONTROL_PLANE_IMAGE:?the job builds the control-plane image from the candidate}"
+    ports:
+      - "127.0.0.1:3100:3100"
+    environment:
+      AOA_DEPLOYMENT_MODE: "authenticated"
+      AOA_DEPLOYMENT_EXPOSURE: "private"
+      AOA_ALLOWED_HOSTNAMES: "control-plane,control-plane-b,localhost,127.0.0.1"
+      AOA_DISTRIBUTED_EXECUTION_ROLLOUT: "${AOA_M1_DISTRIBUTED_EXECUTION_ROLLOUT:?the job must generate the F10 tenant set}"
+      AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED: "false"
+      AOA_MIGRATION_PROMPT: "never"
+      DATABASE_URL: "postgres://aoa:${AOA_M1_OWNER_DB_PASSWORD}@postgres:5432/aoa"
+      AOA_APP_DATABASE_URL: "postgres://aoa_app:${AOA_M1_APP_DB_PASSWORD}@postgres:5432/aoa"
+      AOA_OPERATOR_DATABASE_URL: "postgres://aoa_operator:${AOA_M1_OPERATOR_DB_PASSWORD}@postgres:5432/aoa"
+      AOA_APP_DB_PASSWORD: "${AOA_M1_APP_DB_PASSWORD}"
+      AOA_OPERATOR_DB_PASSWORD: "${AOA_M1_OPERATOR_DB_PASSWORD}"
+      AOA_WORKER_SESSION_SIGNING_KEY: "${AOA_M1_WORKER_SESSION_SIGNING_KEY}"
+      AOA_ADAPTER_MANAGER_TRUTH_ROUTE_ENABLED: "1"
+      AOA_ADAPTER_MANAGER_TRUTH_SHARED_SECRET: "${AOA_M1_TRUTH_SHARED_SECRET}"
+      AOA_SECRETS_MASTER_KEY: "${AOA_M1_SECRETS_MASTER_KEY}"
+      BETTER_AUTH_SECRET: "${AOA_M1_BETTER_AUTH_SECRET}"
+      GOOGLE_CLIENT_ID: "m1-shipped-boot-unused-client-id"
+      GOOGLE_CLIENT_SECRET: "m1-shipped-boot-unused-client-secret"
+      AOA_STORAGE_S3_ENDPOINT: "https://minio:9000"
+      AOA_STORAGE_S3_PRESIGN_ENDPOINT: "https://minio:9000"
+      AOA_STORAGE_S3_BUCKET: "aoa-artifacts"
+      AWS_ACCESS_KEY_ID: "aoa-m1"
+      AWS_SECRET_ACCESS_KEY: "${AOA_M1_MINIO_PASSWORD}"
+      NODE_EXTRA_CA_CERTS: "/certs/ca.crt"
+    secrets:
+      - control-plane-signing-key
+    volumes:
+      - "./docker/d1/certs/public.crt:/certs/ca.crt:ro"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  # --- control plane, replica B (same env; the F10 tenant set lives on BOTH) ----
+  control-plane-b:
+    image: "${AOA_M1_CONTROL_PLANE_IMAGE:?the job builds the control-plane image from the candidate}"
+    ports:
+      - "127.0.0.1:3101:3100"
+    environment:
+      AOA_DEPLOYMENT_MODE: "authenticated"
+      AOA_DEPLOYMENT_EXPOSURE: "private"
+      AOA_ALLOWED_HOSTNAMES: "control-plane,control-plane-b,localhost,127.0.0.1"
+      AOA_DISTRIBUTED_EXECUTION_ROLLOUT: "${AOA_M1_DISTRIBUTED_EXECUTION_ROLLOUT:?the job must generate the F10 tenant set}"
+      AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED: "false"
+      AOA_MIGRATION_PROMPT: "never"
+      DATABASE_URL: "postgres://aoa:${AOA_M1_OWNER_DB_PASSWORD}@postgres:5432/aoa"
+      AOA_APP_DATABASE_URL: "postgres://aoa_app:${AOA_M1_APP_DB_PASSWORD}@postgres:5432/aoa"
+      AOA_OPERATOR_DATABASE_URL: "postgres://aoa_operator:${AOA_M1_OPERATOR_DB_PASSWORD}@postgres:5432/aoa"
+      AOA_APP_DB_PASSWORD: "${AOA_M1_APP_DB_PASSWORD}"
+      AOA_OPERATOR_DB_PASSWORD: "${AOA_M1_OPERATOR_DB_PASSWORD}"
+      AOA_WORKER_SESSION_SIGNING_KEY: "${AOA_M1_WORKER_SESSION_SIGNING_KEY}"
+      AOA_ADAPTER_MANAGER_TRUTH_ROUTE_ENABLED: "1"
+      AOA_ADAPTER_MANAGER_TRUTH_SHARED_SECRET: "${AOA_M1_TRUTH_SHARED_SECRET}"
+      AOA_SECRETS_MASTER_KEY: "${AOA_M1_SECRETS_MASTER_KEY}"
+      BETTER_AUTH_SECRET: "${AOA_M1_BETTER_AUTH_SECRET}"
+      GOOGLE_CLIENT_ID: "m1-shipped-boot-unused-client-id"
+      GOOGLE_CLIENT_SECRET: "m1-shipped-boot-unused-client-secret"
+      AOA_STORAGE_S3_ENDPOINT: "https://minio:9000"
+      AOA_STORAGE_S3_PRESIGN_ENDPOINT: "https://minio:9000"
+      AOA_STORAGE_S3_BUCKET: "aoa-artifacts"
+      AWS_ACCESS_KEY_ID: "aoa-m1"
+      AWS_SECRET_ACCESS_KEY: "${AOA_M1_MINIO_PASSWORD}"
+      NODE_EXTRA_CA_CERTS: "/certs/ca.crt"
+    secrets:
+      - control-plane-signing-key
+    volumes:
+      - "./docker/d1/certs/public.crt:/certs/ca.crt:ro"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  # --- adapter-manager: the ONLY E2B-key surface -----------------------------------
+  # Started ONLY in the keyed mode. Its bin fail-closes without provider=e2b, a template, a
+  # usable E2B_API_KEY and the mounted control-plane PUBLIC key; the keyless mode never
+  # starts it, so the keyless mode makes no E2B call.
+  adapter-manager:
+    image: "${AOA_M1_ADAPTER_MANAGER_IMAGE:?the job builds the adapter-manager image from the candidate}"
+    environment:
+      AOA_DEPLOYMENT_MODE: "authenticated"
+      E2B_API_KEY: "${E2B_API_KEY}"
+      AOA_ADAPTER_MANAGER_E2B_TEMPLATE: "${AOA_M1_E2B_TEMPLATE:?the job names the E2B template}"
+      AOA_ADAPTER_MANAGER_TRUTH_SHARED_SECRET: "${AOA_M1_TRUTH_SHARED_SECRET}"
+      AOA_ADAPTER_MANAGER_REAPER_ENABLED: "1"
+      AOA_ADAPTER_MANAGER_CONTROL_PLANE_URL: "http://control-plane:3100"
+    secrets:
+      - adapter-manager-cp-pubkey
+
+  # --- the three shipped-boot workers (networked-host → adapter-manager) -------------
+  m1-worker-a:
+    image: "${AOA_M1_WORKER_IMAGE:?the job builds the worker image from the candidate}"
+    command: ["node", "/worker-net-app/dist/bin/networked-host.js"]
+    environment:
+      AOA_WORKER_TARGET_PROFILE_ID: "m1-worker-a"
+      AOA_WORKER_TARGET_SCOPE: "organization"
+      AOA_WORKER_CONTROL_PLANE_URL: "http://control-plane:3100"
+      AOA_WORKER_PROVIDER_URL: "http://adapter-manager:8090"
+      AOA_WORKER_DISPATCH_ENABLED: "1"
+      AOA_WORKER_KEY_STORE_MODE: "file_record"
+      AOA_WORKER_STATE_DIR: "/worker"
+      AOA_WORKER_EVENT_OUTBOX_PATH: "/worker/event-outbox.db"
+      AOA_WORKER_ENROLLMENT_CODE_FILE: "/run/secrets/m1-worker-a-ticket"
+      AOA_WORKER_S3_ENDPOINT: "https://minio:9000"
+      AOA_WORKER_HEALTH_HOST: "127.0.0.1"
+      AOA_WORKER_HEALTH_PORT: "9464"
+      NODE_EXTRA_CA_CERTS: "/certs/ca.crt"
+    secrets:
+      - m1-worker-a-ticket
+    volumes:
+      - "m1-worker-a-state:/worker"
+      - "./docker/d1/certs/public.crt:/certs/ca.crt:ro"
+    depends_on:
+      control-plane:
+        condition: service_healthy
+      adapter-manager:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9464/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: "10s"
+      timeout: "5s"
+      retries: 30
+    stop_grace_period: "120s"
+    stop_signal: "SIGTERM"
+    labels:
+      com.aoa.role: "m1-shipped-boot-worker"
+      com.aoa.tenant: "enabled-a"
+    networks:
+      - control-net
+      - store-egress-net
+
+  m1-worker-b:
+    image: "${AOA_M1_WORKER_IMAGE:?the job builds the worker image from the candidate}"
+    command: ["node", "/worker-net-app/dist/bin/networked-host.js"]
+    environment:
+      AOA_WORKER_TARGET_PROFILE_ID: "m1-worker-b"
+      AOA_WORKER_TARGET_SCOPE: "organization"
+      AOA_WORKER_CONTROL_PLANE_URL: "http://control-plane-b:3100"
+      AOA_WORKER_PROVIDER_URL: "http://adapter-manager:8090"
+      AOA_WORKER_DISPATCH_ENABLED: "1"
+      AOA_WORKER_KEY_STORE_MODE: "file_record"
+      AOA_WORKER_STATE_DIR: "/worker"
+      AOA_WORKER_EVENT_OUTBOX_PATH: "/worker/event-outbox.db"
+      AOA_WORKER_ENROLLMENT_CODE_FILE: "/run/secrets/m1-worker-b-ticket"
+      AOA_WORKER_S3_ENDPOINT: "https://minio:9000"
+      AOA_WORKER_HEALTH_HOST: "127.0.0.1"
+      AOA_WORKER_HEALTH_PORT: "9464"
+      NODE_EXTRA_CA_CERTS: "/certs/ca.crt"
+    secrets:
+      - m1-worker-b-ticket
+    volumes:
+      - "m1-worker-b-state:/worker"
+      - "./docker/d1/certs/public.crt:/certs/ca.crt:ro"
+    depends_on:
+      control-plane-b:
+        condition: service_healthy
+      adapter-manager:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9464/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: "10s"
+      timeout: "5s"
+      retries: 30
+    stop_grace_period: "120s"
+    stop_signal: "SIGTERM"
+    labels:
+      com.aoa.role: "m1-shipped-boot-worker"
+      com.aoa.tenant: "enabled-b"
+    networks:
+      - control-net
+      - store-egress-net
+
+  m1-worker-c:
+    image: "${AOA_M1_WORKER_IMAGE:?the job builds the worker image from the candidate}"
+    command: ["node", "/worker-net-app/dist/bin/networked-host.js"]
+    environment:
+      AOA_WORKER_TARGET_PROFILE_ID: "m1-worker-c"
+      AOA_WORKER_TARGET_SCOPE: "organization"
+      AOA_WORKER_CONTROL_PLANE_URL: "http://control-plane:3100"
+      AOA_WORKER_PROVIDER_URL: "http://adapter-manager:8090"
+      AOA_WORKER_DISPATCH_ENABLED: "1"
+      AOA_WORKER_KEY_STORE_MODE: "file_record"
+      AOA_WORKER_STATE_DIR: "/worker"
+      AOA_WORKER_EVENT_OUTBOX_PATH: "/worker/event-outbox.db"
+      AOA_WORKER_ENROLLMENT_CODE_FILE: "/run/secrets/m1-worker-c-ticket"
+      AOA_WORKER_S3_ENDPOINT: "https://minio:9000"
+      AOA_WORKER_HEALTH_HOST: "127.0.0.1"
+      AOA_WORKER_HEALTH_PORT: "9464"
+      NODE_EXTRA_CA_CERTS: "/certs/ca.crt"
+    secrets:
+      - m1-worker-c-ticket
+    volumes:
+      - "m1-worker-c-state:/worker"
+      - "./docker/d1/certs/public.crt:/certs/ca.crt:ro"
+    depends_on:
+      control-plane:
+        condition: service_healthy
+      adapter-manager:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9464/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: "10s"
+      timeout: "5s"
+      retries: 30
+    stop_grace_period: "120s"
+    stop_signal: "SIGTERM"
+    labels:
+      com.aoa.role: "m1-shipped-boot-worker"
+      com.aoa.tenant: "control-c"
+    networks:
+      - control-net
+      - store-egress-net
+
+volumes:
+  m1-postgres-data: {}
+  m1-minio-data: {}
+  m1-worker-a-state: {}
+  m1-worker-b-state: {}
+  m1-worker-c-state: {}
+
+# Compose file-secrets, mounted at /run/secrets/<name>. Every source is a 0600 file the job
+# writes under $RUNNER_TEMP and deletes at the end; none is committed and none is uploaded.
+secrets:
+  control-plane-signing-key:
+    file: "${AOA_M1_CP_SIGNING_KEY_FILE:?the job generates the control-plane keypair}"
+  adapter-manager-cp-pubkey:
+    file: "${AOA_M1_CP_PUBLIC_KEY_FILE:?the job generates the control-plane keypair}"
+  m1-worker-a-ticket:
+    file: "${AOA_M1_WORKER_A_TICKET_FILE:?the job mints the enrolment tickets}"
+  m1-worker-b-ticket:
+    file: "${AOA_M1_WORKER_B_TICKET_FILE:?the job mints the enrolment tickets}"
+  m1-worker-c-ticket:
+    file: "${AOA_M1_WORKER_C_TICKET_FILE:?the job mints the enrolment tickets}"
