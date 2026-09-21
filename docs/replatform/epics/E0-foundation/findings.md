@@ -2891,3 +2891,40 @@ so there is one source; (3) accept the gap and record that the prose owner is no
 
 **Blocks gate:** no. Until resolved, **the JSON register is the only authoritative owner**, and a
 prose `Owner:` line must not be cited as evidence of ownership.
+
+## E0-F020 — no guard validates a milestone record's filename or required fields; the record walks enforce immutability only
+
+**Status:** open · **Severity:** LOW · **Owner:** `unowned`
+**Filed:** 2026-09-21, M0 handoff (follow-up #4 in `milestones/M0/handoffs/2026-09-21-M0-0c6ad7c13535-a1.md`).
+
+**What the contract says.** `docs/replatform/milestones/README.md` (D-11) requires every milestone
+record to carry `**Supersedes:**`, `**Attempt:**`, a revision field (`**Revision:**` on a QA record,
+`**Reviewed revision:**` on a handoff), and a verdict field (`**Result:**` on a QA record,
+`**Decision:**` on a handoff). It also requires a 12-character revision in every filename. The
+milestone exit criteria consume `Result: pass` and `Decision: pass` from these records.
+
+**What the guards check, read at source.**
+
+- `check-evidence-immutability.mjs` (`EVIDENCE_RECORD_RE`) and `check-distributed-execution-foundation.mjs`
+  (`collectEvidenceRecords` → `checkEvidenceImmutability`) both walk
+  `{epics,milestones}/<owner>/{qa,handoffs}/*.md`. They reject modification, deletion or rename of
+  a committed record. **Neither reads a record's filename shape or any of its fields.**
+- The foundation checker does list `**Supersedes:**` and `**Reviewed revision:**` among its required
+  strings (`QA_TEMPLATE_FRAGMENTS`, `HANDOFF_TEMPLATE_FRAGMENTS`), but those check the **templates**
+  under `docs/replatform/templates/`, never a record.
+
+So a milestone record with no `**Decision:**`, a `Decision:` on a QA record, the wrong revision field,
+or a filename with no 12-character revision would pass every guard. It would then also be immutable,
+so the mistake could not be fixed in place; only a superseding attempt could correct it. The M0
+handoff's name and fields were checked by hand against the README. No guard did it.
+
+**Options (a gate-owner call, the same as `E0-F019`):** (1) extend the immutability walk to validate
+*new* milestone records (filename shape plus required fields by record kind) at the moment they are
+added, leaving existing records alone; (2) a separate record-shape guard in the `policy` job;
+(3) accept the gap and record that record shape is reviewer-checked only. An option that also
+covers epic records must exempt the eleven the README already carries as filename debt, because
+renaming an immutable record is itself a breach.
+
+**Blocks gate:** no. Not an M0 or M1 exit item. Until resolved, **a milestone record's shape is
+checked by its reviewer, not by CI**, and a reviewer approving a milestone record must check its
+filename and fields against `milestones/README.md` by hand.
