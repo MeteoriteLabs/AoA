@@ -170,3 +170,32 @@ describe("lease-candidate-store — a store it cannot read FAILS CLOSED (S0-8 am
     expect(store.list()).toEqual([]);
   });
 });
+
+describe("lease-candidate-store — claimed state (Codex review, PR #553)", () => {
+  it("a claimed candidate leaves list() but stays in listEntries(), durably, until removed", async () => {
+    const first = await open();
+    const x = offerFor(ORG_X, LEASE_X, JOB_X);
+    const y = offerFor(ORG_Y, LEASE_Y, JOB_Y);
+    first.put(x);
+    first.put(y);
+    first.claim(LEASE_X);
+    first.close();
+    const second = await open();
+    expect(second.list()).toEqual([y]);
+    expect(second.listEntries()).toEqual([
+      { offer: x, claimed: true },
+      { offer: y, claimed: false },
+    ]);
+    second.remove(LEASE_X);
+    expect(second.listEntries()).toEqual([{ offer: y, claimed: false }]);
+  });
+
+  it("a re-put clears a stale claim (a lease re-ACKed in a later lifetime is a fresh candidate)", async () => {
+    const store = await open();
+    const x = offerFor(ORG_X, LEASE_X, JOB_X);
+    store.put(x);
+    store.claim(LEASE_X);
+    store.put(x);
+    expect(store.list()).toEqual([x]);
+  });
+});

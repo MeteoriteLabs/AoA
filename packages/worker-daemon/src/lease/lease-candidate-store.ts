@@ -52,6 +52,12 @@ export const LEASE_CANDIDATE_REASONS = {
   ended: "lease_candidate_ended",
   /** The probe could not complete; nothing was renewed, the reaper ends the attempt. */
   unreachable: "lease_candidate_unreachable",
+  /** A PREVIOUS boot claimed this lease for its probe and died before pruning it. It is
+   * accounted for by name and pruned, but NOT probed again: F5 allows the lease ONE renewal
+   * (the probe), and whether the earlier probe was sent is unknowable. */
+  claimedUnprobed: "lease_candidate_claimed_by_previous_boot",
+  /** A store path is configured but no store could be opened: every ACK is refused. */
+  unavailable: "lease_candidate_store_unavailable",
 } as const;
 
 /** The store could not be read or a row did not decode to the offer its key names. */
@@ -68,10 +74,23 @@ export interface LeaseCandidateWriter {
   remove(leaseId: string): void;
 }
 
+/** A stored candidate and whether a startup reconcile has CLAIMED it for its probe. */
+export interface LeaseCandidateEntry {
+  readonly offer: LeaseOfferV1;
+  readonly claimed: boolean;
+}
+
 export interface LeaseCandidateStore extends LeaseCandidateWriter {
-  /** Every stored candidate. Throws {@link LeaseCandidateStoreCorruptError} rather than
-   * returning a partial list when ANY row cannot be decoded. */
+  /** Every stored candidate that no startup reconcile has claimed yet. Throws
+   * {@link LeaseCandidateStoreCorruptError} rather than returning a partial list when ANY row
+   * cannot be decoded. */
   list(): LeaseOfferV1[];
+  /** Every stored candidate WITH its claimed state (same fail-closed decoding as `list`). */
+  listEntries(): LeaseCandidateEntry[];
+  /** Durably mark a candidate as claimed by the running startup reconcile, BEFORE its probe.
+   * The row stays until the reconcile completes and removes it, so a crash in between leaves
+   * it accounted for — never lost — and a later boot never probes (renews) it a second time. */
+  claim(leaseId: string): void;
   /** Drop every row — used once an unreadable store has been reported, so the same
    * unaccountable rows are not re-read (and re-reported) on every later boot. */
   clear(): void;
@@ -138,6 +157,7 @@ interface RawCandidateRow {
   lease_id: string;
   organization_id: string;
   offer_json: string;
+  claimed_at: number | null;
 }
 
 export class SqliteLeaseCandidateStore implements LeaseCandidateStore {
@@ -165,7 +185,8 @@ export class SqliteLeaseCandidateStore implements LeaseCandidateStore {
           job_id TEXT NOT NULL,
           attempt INTEGER NOT NULL,
           offer_json TEXT NOT NULL,
-          stored_at INTEGER NOT NULL
+          stored_at INTEGER NOT NULL,
+          claimed_at INTEGER
         );
       `);
       // Force a read of the schema so a garbage file fails HERE, not at the first list().
@@ -196,7 +217,8 @@ export class SqliteLeaseCandidateStore implements LeaseCandidateStore {
          VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(lease_id) DO UPDATE SET
            organization_id = excluded.organization_id, job_id = excluded.job_id,
-           attempt = excluded.attempt, offer_json = excluded.offer_json, stored_at = excluded.stored_at`,
+           attempt = excluded.attempt, offer_json = excluded.offer_json, stored_at = excluded.stored_at,
+           claimed_at = NULL`,
       )
       .run(
         String(offer.leaseId),
@@ -213,15 +235,27 @@ export class SqliteLeaseCandidateStore implements LeaseCandidateStore {
   }
 
   list(): LeaseOfferV1[] {
+    return this.listEntries()
+      .filter((entry) => !entry.claimed)
+      .map((entry) => entry.offer);
+  }
+
+  claim(leaseId: string): void {
+    this.#db.prepare(`UPDATE lease_candidate SET claimed_at = ? WHERE lease_id = ?`).run(this.#now(), leaseId);
+  }
+
+  listEntries(): LeaseCandidateEntry[] {
     let rows: RawCandidateRow[];
     try {
       rows = this.#db
-        .prepare(`SELECT lease_id, organization_id, offer_json FROM lease_candidate ORDER BY stored_at ASC, lease_id ASC`)
+        .prepare(
+          `SELECT lease_id, organization_id, offer_json, claimed_at FROM lease_candidate ORDER BY stored_at ASC, lease_id ASC`,
+        )
         .all() as unknown as RawCandidateRow[];
     } catch (err) {
       throw new LeaseCandidateStoreCorruptError("lease-candidate store could not be read", { cause: err });
     }
-    const offers: LeaseOfferV1[] = [];
+    const entries: LeaseCandidateEntry[] = [];
     for (const row of rows) {
       let json: unknown;
       try {
@@ -239,9 +273,9 @@ export class SqliteLeaseCandidateStore implements LeaseCandidateStore {
       ) {
         throw new LeaseCandidateStoreCorruptError("a lease-candidate row does not decode to the lease it is keyed by");
       }
-      offers.push(parsed.data);
+      entries.push({ offer: parsed.data, claimed: row.claimed_at !== null });
     }
-    return offers;
+    return entries;
   }
 
   clear(): void {

@@ -29,6 +29,9 @@
 //      recorded the ACK but before the worker read the response still leaves it; an ACK the
 //      server refused withdraws it                         — "★ 9"
 //  10  (Codex review, PR #553) a candidate write that FAILS is never followed by an ACK — "★ 10"
+//  11  (Codex review, PR #553) a boot that dies between claiming and pruning loses nothing: the
+//      next boot names the lease and prunes it, WITHOUT a second probe (F5)  — "★ 11"
+//  12  (Codex review, PR #553) a configured store that cannot be opened refuses every ACK — "★ 12"
 // -----------------------------------------------------------------------------
 
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -137,6 +140,7 @@ interface LifetimeOptions {
   readonly clientWrap?: (base: ControlPlaneClient) => ControlPlaneClient;
   /** Replace the store opener (models a store whose writes fail). */
   readonly openLeaseCandidates?: Parameters<typeof composeDispatchRuntime>[0]["openLeaseCandidates"];
+  readonly makeStartupReconciler?: Parameters<typeof composeDispatchRuntime>[0]["makeStartupReconciler"];
   readonly provider?: SandboxProvider;
   readonly makeRunProvider?: () => SandboxProvider;
   readonly withStore?: boolean;
@@ -174,6 +178,7 @@ async function lifetime(opts: LifetimeOptions = {}): Promise<DispatchRuntime> {
     probes: fixtureProbes(),
     logger: opts.logger,
     openLeaseCandidates: opts.openLeaseCandidates,
+    makeStartupReconciler: opts.makeStartupReconciler,
   });
   live.push(rt);
   return rt;
@@ -527,5 +532,53 @@ describe("WRK-013 — a restart reconciles the leases it held (composed, in-proc
     // ... and the lease was NEVER acknowledged to the control plane.
     expect(fake.requests.some((r) => r.url.endsWith(`/leases/${LEASE_X}/ack`))).toBe(false);
     expect(lines.some((l) => l.bindings.reason === LEASE_CANDIDATE_REASONS.writeFailed && l.bindings.op === "put")).toBe(true);
+  });
+
+  it("★ 11 — a boot that dies between CLAIMING and PRUNING loses nothing, and the next boot never probes it again (F5)", async () => {
+    await ackThenCrash([offerFor(ORG_X, LEASE_X, JOB_X, FENCE_X)]);
+    fake.seedLeaseAuthority(LEASE_X, { live: true });
+
+    // Lifetime B claims the candidate, then its reconcile dies before the prune (no probe issued).
+    const b = await lifetime({
+      makeStartupReconciler: () => ({
+        run: async () => {
+          throw new Error("process died mid-reconcile");
+        },
+      }),
+    });
+    await b.start();
+    crash(b);
+    expect(renewRequestsFor(LEASE_X)).toHaveLength(0);
+
+    // Lifetime C: the claimed row is still there — accounted for BY NAME, never probed, then pruned.
+    const lines: LogLine[] = [];
+    const c = await lifetime({ logger: recordingLogger(lines) });
+    await c.start();
+    const carried = lines.find((l) => l.bindings.reason === LEASE_CANDIDATE_REASONS.claimedUnprobed);
+    expect(carried?.bindings).toMatchObject({ leaseId: LEASE_X, jobId: JOB_X, attempt: 1, organizationId: ORG_X });
+    expect(renewRequestsFor(LEASE_X)).toHaveLength(0);
+    crash(c);
+
+    // Lifetime D: nothing left.
+    const dLines: LogLine[] = [];
+    const d = await lifetime({ logger: recordingLogger(dLines) });
+    await d.start();
+    expect(reasonsIn(dLines)).toContain(LEASE_CANDIDATE_REASONS.empty);
+  });
+
+  it("★ 12 — a CONFIGURED store that cannot be opened refuses every ACK (never silently records nothing)", async () => {
+    fake.enqueuePoll({ kind: "offer", offer: offerFor(ORG_X, LEASE_X, JOB_X, FENCE_X) });
+    const lines: LogLine[] = [];
+    const neverOpens = async () => {
+      throw new Error("volume is read-only");
+    };
+    const a = await lifetime({ logger: recordingLogger(lines), openLeaseCandidates: neverOpens as never });
+    const pollsBefore = fake.pollCount();
+    await a.start();
+    expect(await settle(() => fake.pollCount() >= pollsBefore + 3)).toBe(true);
+    expect(fake.requests.some((r) => r.url.endsWith(`/leases/${LEASE_X}/ack`))).toBe(false);
+    const reasons = reasonsIn(lines);
+    expect(reasons).toContain(LEASE_CANDIDATE_REASONS.unavailable);
+    expect(reasons).toContain(LEASE_CANDIDATE_REASONS.writeFailed);
   });
 });

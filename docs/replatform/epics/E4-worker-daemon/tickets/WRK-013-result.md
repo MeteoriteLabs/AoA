@@ -123,6 +123,8 @@ write-on-ACK, never from a test `put()`.
 | 8 | two Organizations, independent | ★ 8: A ACKs one lease for Organization X and one for Y. At restart, X is live and Y is dead. Each is probed **once**, with **only its own** job and fence. X is fenced and Y ended, each attributed to its own Organization, and the driver holds neither. Store unit: pruning X leaves Y |
 | 9 | *(Codex P2)* no crash window between ACK and write | ★ 9 ×2: the ACK reaches the plane and the worker never reads the response, then crashes, and the restart still probes and fences the lease. A **refused** ACK withdraws the candidate, so the restart probes nothing |
 | 10 | *(Codex P1)* a failed write is never followed by an ACK | ★ 10: a store whose `put` throws means **no** ACK request reaches the plane for that lease, `lease_candidate_write_failed` (`op: put`) is logged, and polling continues |
+| 11 | *(Codex P1)* a boot that dies mid-reconcile loses no candidate | ★ 11: lifetime B claims the candidate, then its reconcile dies before the prune. Lifetime C names the lease under `lease_candidate_claimed_by_previous_boot`, with its lease, job, attempt and Organization, issues **0** renews (F5), and prunes it. Lifetime D is `empty`. Store unit: a claim is durable across reopen, and a re-put clears it |
+| 12 | *(Codex P2)* a configured but unopenable store refuses every ACK | ★ 12: the opener always fails, so there is **no** ACK request, both `lease_candidate_store_unavailable` and `lease_candidate_write_failed` are logged, and polling continues |
 
 ### Mutation and positive-control table (each mutation reverted afterwards; focused command, 65 tests)
 
@@ -131,7 +133,7 @@ write-on-ACK, never from a test `put()`.
 | M1 | **remove the candidate write** (positive control 7) | **5** (re-run after the Codex fix): ★ 1+5, ★ 2, ★ 6 (row), ★ 8, ★ 9 (lost response). At first commit: 4, without ★ 9 |
 | M2 | remove the prune-on-settle | 1: ★ 3 |
 | M3 | reconcile **after** the poll loop starts | 3: ★ 1+5, and both `dispatch-runtime` WRK-013 ordering tests |
-| M4 | do not claim before probing | 1: ★ 2 (the third lifetime renews again) |
+| M4 | do not claim before probing | 1: ★ 2 (the third lifetime renews again). ★ *At that revision the claim was a removal. Since §4 item 7 it is a durable mark, and M16 and M17 are its mutations.* |
 | M5 | re-attach a fenced lease to the renewal driver (F5 violation) | 2: ★ 2, ★ 8 |
 | M6 | treat a set-aside (unreadable-at-open) store as clean | 1: ★ 6 (garbage file) |
 | M7 | skip an undecodable row instead of failing | 2: ★ 6 (row), and the store unit test *an undecodable row makes list() THROW* |
@@ -142,7 +144,10 @@ write-on-ACK, never from a test `put()`.
 | M12 | start polling even if a shutdown began during the reconcile | 1: the `dispatch-runtime` shutdown-during-reconcile test |
 | M13 | write the candidate **after** the ACK (the Codex P2 window) | 1: ★ 9 (lost response) |
 | M14 | do not withdraw on a non-ACK outcome | 1: ★ 9 (refused ACK) |
-| M15 | ACK even when the pre-ACK write failed (the Codex P1) | 1: ★ 10 |
+| M15 | ACK even when the pre-ACK write failed (the Codex P1) | 1: ★ 10. Re-run after the second fix as M19: 2 (★ 10, ★ 12) |
+| M16 | remove (not claim) the candidate before its probe, which is the second Codex P1's shape | 1: ★ 11 |
+| M17 | probe a row a previous boot already claimed (a second renewal, breaking F5) | 1: ★ 11 |
+| M18 | a configured but unopenable store silently records nothing, which is the Codex P2's shape | 1: ★ 12 |
 
 ### CI
 
@@ -217,6 +222,28 @@ See §7.
    lapse. With no store composed at all, the behaviour is unchanged. Proven by ★ 10, and M15 (ACK
    anyway) turns it red. The whole suite after the fix: 164 files, 1142 passed, 1 skipped, no
    `Errors` line. The focused command: 69 tests.
+7. **Codex P1 on `17f0d9c3c`: preserve candidates until their probe completes.** Checked at source:
+   `readCandidates` **removed** each row before probing it, so a daemon that died between that
+   removal and the probe lost the lease. It was then never probed, and it rested on the server
+   reaper alone. The store now has a durable **claimed** state (`claim(leaseId)`, a `claimed_at`
+   column, and `listEntries()`; `list()` returns unclaimed rows only, and a re-put clears a claim).
+   The reconcile **claims** each candidate before its probe and **removes** the claimed rows only
+   after `run()` completes. ★ *What the fix deliberately does NOT do: it does not probe a
+   previously-claimed row again.* F5 allows a lease **one** renewal, the probe, and after a crash
+   it is unknowable whether the earlier probe was sent. A row a previous boot claimed is therefore
+   **accounted for by name** (`lease_candidate_claimed_by_previous_boot`, with lease, job, attempt
+   and Organization), is not probed, and is pruned with the pass. Re-probing it would let a crash
+   loop renew a supervisor-less lease indefinitely, which is the outcome F5 calls worst. Proven by
+   ★ 11 (M16 and M17 turn it red).
+8. **Codex P2 on `17f0d9c3c`: do not silently disable recording when reopening fails.** Checked at
+   source: `openLeaseCandidateStoreFailClosed` could return `store: null`, and the composition then
+   passed `undefined` to the poll loop, which ACKed every later lease with no candidate. A
+   **configured** path whose store cannot be opened now gets `UNAVAILABLE_CANDIDATE_WRITER`, whose
+   `put` always fails, so every ACK is refused (item 6). `lease_candidate_store_unavailable` is
+   logged at composition. The daemon keeps polling and serving health but takes no lease until it
+   can record one. With **no** path configured the behaviour is unchanged. Proven by ★ 12 (M18
+   turns it red). After both fixes: whole suite 164 files, 1146 passed, 1 skipped, no `Errors` line;
+   focused command 73 tests.
 
 ## 5. Records amended because the code changed under them
 

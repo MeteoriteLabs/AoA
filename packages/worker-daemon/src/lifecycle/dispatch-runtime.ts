@@ -67,6 +67,7 @@ import {
   openLeaseCandidateStore,
   openLeaseCandidateStoreFailClosed,
   type LeaseCandidateStore,
+  type LeaseCandidateWriter,
 } from "../lease/lease-candidate-store.js";
 import {
   createStartupReconciler,
@@ -89,6 +90,15 @@ const NO_RESERVATION: CapacityReservation = { cpuMillis: 0, memoryMiB: 0, diskMi
 const STARTUP_RECONCILE_OP_DEADLINE_MS = 30_000;
 
 const NOOP_STARTUP_LOGGER: StartupLogger = { info: () => {}, error: () => {} };
+
+/** WRK-013 — the writer a configured-but-unopenable store degrades to: every write FAILS, so the
+ * poll loop never ACKs a lease it could not record (write-before-ACK stays closed). */
+const UNAVAILABLE_CANDIDATE_WRITER: LeaseCandidateWriter = {
+  put: () => {
+    throw new Error(`${LEASE_CANDIDATE_REASONS.unavailable}: no lease-candidate store could be opened`);
+  },
+  remove: () => {},
+};
 
 export interface ComposeDispatchRuntimeDeps {
   /**
@@ -194,6 +204,12 @@ export async function composeDispatchRuntime(deps: ComposeDispatchRuntimeDeps): 
     candidateStore = opened.store;
     candidateFault = opened.unreadable;
     candidateSetAside = opened.setAsidePath;
+    if (candidateStore === null) {
+      deps.logger?.error(
+        { reason: LEASE_CANDIDATE_REASONS.unavailable, setAsidePath: candidateSetAside },
+        "worker: no lease-candidate store could be opened; this daemon will poll but ACK NO lease until it can record one",
+      );
+    }
   }
 
   // DAT-008 slice 5 — the per-lease canary coordinator, shared by the supervisor and the driver's
@@ -357,8 +373,11 @@ export async function composeDispatchRuntime(deps: ComposeDispatchRuntimeDeps): 
     backoff: deps.backoff,
     metrics: deps.metrics,
     logger: deps.logger,
-    // WRK-013 — write before the ACK, withdraw if it fails, prune when the handoff settles.
-    leaseCandidates: candidateStore ?? undefined,
+    // WRK-013 — write before the ACK, withdraw if it fails, prune when the handoff settles. ★ A
+    // CONFIGURED path whose store could not be opened gets a writer that always fails, so every
+    // ACK is refused (Codex P2, PR #553) rather than silently recording nothing.
+    leaseCandidates:
+      candidateStore ?? (deps.leaseCandidatePath !== undefined ? UNAVAILABLE_CANDIDATE_WRITER : undefined),
   });
 
   /**
@@ -366,6 +385,9 @@ export async function composeDispatchRuntime(deps: ComposeDispatchRuntimeDeps): 
    * silent `[]`: every empty answer carries a named reason. What an unreadable store closes is
    * RENEWAL — it yields no candidates, so the probe renews nothing it cannot account for.
    */
+  /** Leases a PREVIOUS boot claimed and never pruned: accounted for, never probed again. */
+  let carriedClaims: LeaseOfferV1[] = [];
+
   function readCandidates(): LeaseOfferV1[] {
     if (deps.leaseCandidatePath === undefined) {
       deps.logger?.warn(
@@ -381,9 +403,9 @@ export async function composeDispatchRuntime(deps: ComposeDispatchRuntimeDeps): 
       );
       return [];
     }
-    let candidates: LeaseOfferV1[];
+    let entries: ReturnType<LeaseCandidateStore["listEntries"]>;
     try {
-      candidates = candidateStore.list();
+      entries = candidateStore.listEntries();
     } catch (err) {
       deps.logger?.error(
         { reason: LEASE_CANDIDATE_REASONS.unreadable, err },
@@ -397,20 +419,40 @@ export async function composeDispatchRuntime(deps: ComposeDispatchRuntimeDeps): 
       }
       return [];
     }
-    if (candidates.length === 0) {
-      deps.logger?.info(
-        { reason: LEASE_CANDIDATE_REASONS.empty },
-        "startup-reconcile: the lease-candidate store is empty; this daemon held no lease when it last stopped",
+    // A row a PREVIOUS boot claimed and never pruned: that boot died between its claim and its
+    // prune, and whether its probe was sent is unknowable. F5 allows the lease ONE renewal, so it is
+    // NOT probed again — it is named, and pruned with this pass's candidates.
+    carriedClaims = entries.filter((entry) => entry.claimed).map((entry) => entry.offer);
+    for (const offer of carriedClaims) {
+      deps.logger?.warn(
+        {
+          reason: LEASE_CANDIDATE_REASONS.claimedUnprobed,
+          leaseId: String(offer.leaseId),
+          jobId: String(offer.job.jobId),
+          attempt: offer.job.attempt,
+          organizationId: String(offer.job.organizationId),
+        },
+        "startup-reconcile: a previous boot claimed this lease and stopped before finishing; it is NOT probed again — the control-plane reaper ends the attempt",
       );
+    }
+    const candidates = entries.filter((entry) => !entry.claimed).map((entry) => entry.offer);
+    if (candidates.length === 0) {
+      if (carriedClaims.length === 0) {
+        deps.logger?.info(
+          { reason: LEASE_CANDIDATE_REASONS.empty },
+          "startup-reconcile: the lease-candidate store is empty; this daemon held no lease when it last stopped",
+        );
+      }
       return [];
     }
-    // CLAIM before probing: a candidate is removed from the store BEFORE its probe, so the probe's
-    // renewal is the last one this daemon can ever issue for it (F5) — even across a crash loop.
-    // A candidate that cannot be claimed is NOT probed (it could be probed again next boot).
+    // CLAIM before probing: each candidate is durably marked claimed BEFORE its probe, and the row
+    // is removed only once the whole reconcile completes. So a crash in between never loses it (a
+    // later boot accounts for it by name), and the probe's renewal is the last this daemon ever
+    // issues for it (F5) even across a crash loop. A candidate that cannot be claimed is NOT probed.
     const claimed: LeaseOfferV1[] = [];
     for (const offer of candidates) {
       try {
-        candidateStore.remove(String(offer.leaseId));
+        candidateStore.claim(String(offer.leaseId));
         claimed.push(offer);
       } catch (err) {
         deps.logger?.warn(
@@ -457,6 +499,19 @@ export async function composeDispatchRuntime(deps: ComposeDispatchRuntimeDeps): 
       logger: deps.logger,
     });
     const result = await reconciler.run();
+    // The reconcile COMPLETED: every claimed row (this pass's, and any a previous boot left) has been
+    // accounted for, so prune them now. A prune failure leaves a claimed row, which a later boot names
+    // and prunes without probing.
+    for (const offer of [...candidates, ...carriedClaims]) {
+      try {
+        candidateStore?.remove(String(offer.leaseId));
+      } catch (err) {
+        deps.logger?.warn(
+          { reason: LEASE_CANDIDATE_REASONS.writeFailed, leaseId: String(offer.leaseId), err },
+          "startup-reconcile: could not prune a reconciled lease candidate; a later boot accounts for it without probing",
+        );
+      }
+    }
     // Name every candidate's verdict, with the lease, attempt and Organization it belongs to.
     const byLease = new Map(candidates.map((offer) => [String(offer.leaseId), offer]));
     for (const [leaseId, probe] of result.leaseProbes) {
