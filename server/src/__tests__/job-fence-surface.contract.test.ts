@@ -249,6 +249,27 @@ const EXPECTED_UNGUARDED = [
   // a row it fails to return is a placement admitted on no evidence — which is why its NULL
   // arm is spelled out explicitly and why the join to `job_attempts` is LEFT rather than INNER.
   "listUnwitnessedGenerationPredecessors",
+  // ★ JOB-016 (E3-D-ACC) — the control-plane surface AROUND the accepted-event seam, classified
+  // in the SAME commit that adds it. The seam itself adds NO method: it lives inside the guarded
+  // `acceptEvent`, under the guard `acceptEvent` already took (E3-D-ACC (a) forbids re-guarding).
+  //
+  // `hasAcceptedEventOfType` and `readAcceptedEvent` are READS of the append-only `job_events`
+  // (terminal-without-usage detection; the re-drive's stored units). Nothing to gate.
+  "hasAcceptedEventOfType",
+  "readAcceptedEvent",
+  // `listQueuedJobIdsForBudgetScope` is a READ that feeds `requestCancellation` (itself outside
+  // the fence, above). It deliberately EXCLUDES any job with a live lease, so the cancel it feeds
+  // never locks another attempt's lease from inside an ingest transaction (Amendment 2).
+  "listQueuedJobIdsForBudgetScope",
+  // The re-drive surface (Amendment 3). It acts precisely WHEN the fence may be gone — a
+  // `pending` charge on an attempt that already went terminal — so `guardActiveFence` would be
+  // unsatisfiable, not stricter (the `reapExpiredLeases` species). WHAT STANDS IN FOR THE FENCE:
+  // `lockPendingProjectionReceipt` takes the receipt row FOR UPDATE and returns only a `pending`
+  // row, and `resolvePendingProjectionReceipt` is a compare-and-set on `status = 'pending'`, so a
+  // receipt is resolved at most once. `listStalePendingProjectionReceipts` is the detector READ.
+  "listStalePendingProjectionReceipts",
+  "lockPendingProjectionReceipt",
+  "resolvePendingProjectionReceipt",
 ];
 
 function parse(path: string): ts.SourceFile {

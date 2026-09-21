@@ -2159,6 +2159,16 @@ promoted by this ticket").
 > planning session's to dispatch. Part **(2)** (`JOB-016`) is untouched. **Severity (HIGH), Status
 > (open) and ownership (`JOB-016`) are unchanged** — this finding still closes only when a real
 > handed-off run produces a `cost_events` row.
+>
+> ★ **OWNER RE-POINTED 2026-09-21 to `DEP-016`** (planning-session ruling under founder delegation
+> F2, applied in JOB-016's PR). `JOB-016` has built the seam and the pricing and filed its result
+> record, so it no longer holds the open finding. The finding closes at the **end-to-end proof**,
+> and that proof is `DEP-016`'s: its acceptance asserts that a handed-off attempt through the
+> real ingest writes exactly ONE `cost_events` row with cost > 0, with a usage-suppressed control
+> that must red. Closure needs all of: `JOB-016` (the seam and pricing, built), `WRK-018` (the
+> usage producer), `DEP-016`'s end-to-end assertion, and `WRK-018`'s keyed E2B acceptance for the
+> real claude usage parser. Severity (HIGH) and Status (open) are unchanged; the `JOB-016`
+> ownership line above is kept as the record of that state.
 
 ## E3-F038 — The wiring register's census is not closed, and three symbols the guard's own header names have no clause at all
 

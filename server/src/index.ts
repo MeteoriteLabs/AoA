@@ -1394,6 +1394,20 @@ if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
   // CANNOT run there — `runInTenant` has nothing to open. Convergence flag-off is structurally
   // impossible, not a policy choice, which is exactly why the rollback runbook says to keep
   // AOA_DISTRIBUTED_EXECUTION_ENABLED set across a restart.
+  // JOB-016 / E3-D-ACC Amendment 3 — the stale-pending detector + bounded authoritative-cost
+  // re-drive, run on the convergence sweeper's per-Organization rotation below. The stuck-charge
+  // Inbox item goes through the existing hub path on the owner pool (`db`).
+  const {
+    createAuthoritativeCostRedriveSweep,
+    createHubStuckChargeNotifier,
+    createPinoAcceptedUsageTelemetry,
+  } = await import("./services/job-accepted-usage-pricing.js");
+  const costRedrive = createAuthoritativeCostRedriveSweep({
+    appDb,
+    notifier: createHubStuckChargeNotifier(db as any),
+    log: logger,
+    telemetry: createPinoAcceptedUsageTelemetry(logger),
+  });
   const convergenceSweeper = createJobControlSweeper({
     reconciliation: jobReconciliationForCancel,
     listAdmittedOrganizationIds: (page) =>
@@ -1401,6 +1415,7 @@ if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
     projectRunTerminal: onAttemptTerminal
       ? (signal) => onAttemptTerminal(signal as Parameters<typeof onAttemptTerminal>[0])
       : undefined,
+    sweepPendingProjections: costRedrive.sweepOrganization,
   });
 
   let convergenceStopped = false;
