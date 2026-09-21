@@ -68,6 +68,22 @@ export interface SerializedError {
   readonly destinationClass?: string;
 }
 
+// ---- WRK-018: the execute stdout channel, as wire fields ---------------------
+//
+// The port's optional `ExecuteInput.onStdout` is a CALLBACK, which cannot cross HTTP. On the
+// networked lane it becomes two additive, optional fields on the existing execute envelope:
+//   - request  `args.captureStdout: true` — the driver asks the adapter-manager to capture;
+//   - response `ok.stdoutTail: string`    — the adapter-manager's captured stdout TAIL, already
+//     scrubbed with that request's own env values (the run's canaries) BEFORE encoding.
+// Absent the flag, neither field exists and both bodies are byte-identical to the pre-channel
+// shape; a server that predates the channel ignores the flag and returns no tail, which the
+// driver reads as "no output" (no usage), never as a failure. `ProviderOperation` is untouched.
+
+/** Request flag on `execute` args: capture the run's stdout and return its scrubbed tail. */
+export const EXECUTE_CAPTURE_STDOUT_KEY = "captureStdout";
+/** Response field on an `execute` ok result: the run's scrubbed stdout tail. */
+export const EXECUTE_STDOUT_TAIL_KEY = "stdoutTail";
+
 // ---- request codec (client encodes, server decodes) -------------------------
 
 export function encodeOpRequest(args: unknown, ctx: ProviderOpContext, capability?: OwnedLabelsCapability): string {

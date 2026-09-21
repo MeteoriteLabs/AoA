@@ -86,6 +86,50 @@ describe("CLI-003/D3 — producers wired around execute", () => {
   });
 });
 
+describe("WRK-018 — observeRun receives the run's scrubbed stdout and its supervisor-clock runtime", () => {
+  it("passes output.stdoutTail (from the stream channel) and runtimeMillis measured around execute", async () => {
+    // A deterministic clock: every read advances 250 ms, so the execute window is a known
+    // non-zero span measured by the SUPERVISOR, not taken from the agent's own report.
+    let t = 1_000;
+    const fake = createFakeSandboxProvider({ stdoutChunks: ["hel", "lo\n", "world\n"] });
+    const sink = collectingSink();
+    const inputs: Array<{ stdoutTail: string; runtimeMillis: number } | undefined> = [];
+    const supervisor = createSupervisor({
+      provider: fake,
+      identity: SUPERVISOR_IDENTITY,
+      eventSink: sink,
+      redactionCanaries: [],
+      now: () => (t += 250),
+      observeRun: (input) => {
+        inputs.push(input.output);
+        return {};
+      },
+    });
+    await supervisor.accept(makeHandoff());
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0]?.stdoutTail).toBe("hello\nworld\n");
+    expect(inputs[0]?.runtimeMillis).toBe(250);
+  });
+
+  it("a provider that streams nothing still gives observeRun an EMPTY tail (not undefined)", async () => {
+    // Recorded and asserted OUTSIDE the observer: the supervisor swallows an observer
+    // throw (best-effort), so an `expect` inside it could never fail this test.
+    const tails: Array<string | undefined> = [];
+    const supervisor = createSupervisor({
+      provider: createFakeSandboxProvider(),
+      identity: SUPERVISOR_IDENTITY,
+      eventSink: collectingSink(),
+      redactionCanaries: [],
+      observeRun: (input) => {
+        tails.push(input.output?.stdoutTail);
+        return {};
+      },
+    });
+    await supervisor.accept(makeHandoff());
+    expect(tails).toEqual([""]);
+  });
+});
+
 describe("CLI-003/D3 — terminal enrichment (signal/timedOut → errorCode/errorMessage)", () => {
   it("folds a signalled exec into the terminal errorCode/errorMessage", async () => {
     const fake = createFakeSandboxProvider({ exitCode: 137, execSignal: "SIGKILL" });
