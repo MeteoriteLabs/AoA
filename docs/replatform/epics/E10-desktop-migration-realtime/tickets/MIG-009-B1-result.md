@@ -96,8 +96,9 @@ For `approved`, verify each OBSERVED value above against the named source at the
 and confirm that every row marked `not re-run` is accepted as such rather than read as passing. Then
 change the top-level `Status` to `complete` and commit that disposition separately.
 
-★ `M0` exit criterion 6 requires this result **approved**, not merely committed. It is left at
-`gate_review` because its author may not approve it.
+★ `M0` exit criterion 6 requires this result **approved**, not merely committed. It was left at
+`gate_review` by its author, who may not approve it; a distinct reviewer approved it and set
+`Status` to `complete` (see the review attempt history).
 
 ## Review attempt history
 

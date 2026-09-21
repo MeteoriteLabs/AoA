@@ -125,9 +125,10 @@ marked *verified* still holds at that revision, and that the §3 `unrun` row is 
 unrun or satisfied by a run; then change the top-level `Status` to `complete` and commit that
 disposition separately. Otherwise leave `Status` at `gate_review` and link stable findings.
 
-★ **`M0` exit criterion 5 requires this result *approved*, not merely committed.** It is left at
-`gate_review` on purpose: the record's author may not approve it, and self-certification is what
-`artifact-policy.md` forbids.
+★ **`M0` exit criterion 5 requires this result *approved*, not merely committed.** It was left at
+`gate_review` on purpose by the record's author, who may not approve it, because self-certification
+is what `artifact-policy.md` forbids; a distinct reviewer approved it and set `Status` to
+`complete` (see the review attempt history).
 
 ## Review attempt history
 
