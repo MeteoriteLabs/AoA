@@ -195,9 +195,12 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
    * covering the integrity fields would, and that is a frozen-`worker-protocol` change this ticket
    * may not make (see the result doc's stop).
    *
-   * A FAILED export records nothing, so an honest retry still works.
+   * A FAILED export records nothing, so an honest retry still works, and a REPLAY under the same
+   * `idempotencyKey` returns the recorded result rather than being refused — `ProviderOpContext`'s
+   * own contract is "a repeated key returns the recorded result and does not double-apply", and a
+   * lost response must not turn a stored object into a missing output (Codex P2, PR #557).
    */
-  const redeemedUploadKeys = new Set<string>();
+  const redeemedUploads = new Map<string, { idempotencyKey: string; result: unknown }>();
 
   const gateDeps: OwnedOpGateDeps | null = gated
     ? { provider, controlPlanePublicKey: controlPlanePublicKey!, now, sandboxLock: new KeyedMutex() }
@@ -257,14 +260,23 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
         // DAT-009-3e — metadata only (sha256 + byte size), never content. Owned-checked first: a
         // digest of another tenant's file is itself a disclosure (it confirms content by hash).
         const { sandboxId, path } = args as { sandboxId: string; path: string };
-        return gateOwnedOp(deps, sandboxId, ctx, capability, () => {
-          // Bounded for the same reason the export is: this runs under the per-sandbox lock.
-          const budget = artifactOpBudgetMs(ctx, capability, now());
-          if (!(budget > 0)) {
-            return Promise.reject(new WireProtocolError("digest_artifact refused: no budget left before the teardown reserve"));
-          }
-          return provider.digestArtifact(sandboxId, path, { ...ctx, deadlineMs: budget });
-        });
+        const digestBudget = artifactOpBudgetMs(ctx, capability, now());
+        return gateOwnedOp(
+          deps,
+          sandboxId,
+          ctx,
+          capability,
+          () => {
+            // Bounded for the same reason the export is: this runs under the per-sandbox lock.
+            if (!(digestBudget > 0)) {
+              return Promise.reject(new WireProtocolError("digest_artifact refused: no budget left before the teardown reserve"));
+            }
+            return provider.digestArtifact(sandboxId, path, { ...ctx, deadlineMs: digestBudget });
+          },
+          // The bound covers the ownership inspection too — the provider's `inspect` honours no
+          // deadline of its own, and it runs inside the lock.
+          digestBudget,
+        );
       }
       case "export_artifact": {
         // DAT-009-3e — the far provider re-reads, re-verifies size + sha256 against the grant AT
@@ -280,28 +292,39 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
         };
         // ★ The grant is bound BEFORE the provider runs (after the owned-check, so `detail` carries
         // the caller's own verified labels): a refused grant reads nothing and uploads nothing.
-        return gateOwnedOp(deps, sandboxId, ctx, capability, (detail) => {
-          assertUploadGrantBound(grant, detail.resourceLabels, artifactUploadOrigins);
-          // ★ BOUNDED (Codex P1, PR #557). `gateOwnedOp` holds the per-sandbox lock across this
-          // dispatch, so an unbounded PUT would queue the run's own destroy behind a hung store.
-          // The budget is the capability's remaining life minus EXPORT_TEARDOWN_RESERVE_MS, the
-          // same clamp the supervisor applies to its export window, so destroy always keeps its
-          // reserve. The provider aborts the upload at this budget. `capability` is defined here:
-          // the gate verified it before dispatch.
-          const budget = artifactOpBudgetMs(ctx, capability, now());
-          if (!(budget > 0)) {
-            return Promise.reject(new WireProtocolError("export_artifact refused: no budget left before the teardown reserve"));
-          }
-          const objectKey = (grant as { objectKey: string }).objectKey;
-          if (redeemedUploadKeys.has(objectKey)) {
-            return Promise.reject(new WireProtocolError("export_artifact refused: this object key has already been uploaded"));
-          }
-          return provider.exportArtifact(sandboxId, path, grant, { ...ctx, deadlineMs: budget }).then((result) => {
-            // Recorded only on SUCCESS: a failed export must stay retryable.
-            redeemedUploadKeys.add(objectKey);
-            return result;
-          });
-        });
+        // ★ BOUNDED (Codex P1, PR #557). `gateOwnedOp` holds the per-sandbox lock across the
+        // ownership inspection AND this dispatch, so anything unbounded in either would queue the
+        // run's own destroy behind it. The budget is the capability's remaining life minus
+        // EXPORT_TEARDOWN_RESERVE_MS, the same clamp the supervisor applies to its export window,
+        // so destroy always keeps its reserve. It is passed BOTH to the provider (which aborts the
+        // read and the upload on it) and to the gate (which releases the lock on it).
+        const exportBudget = artifactOpBudgetMs(ctx, capability, now());
+        return gateOwnedOp(
+          deps,
+          sandboxId,
+          ctx,
+          capability,
+          (detail) => {
+            assertUploadGrantBound(grant, detail.resourceLabels, artifactUploadOrigins);
+            if (!(exportBudget > 0)) {
+              return Promise.reject(new WireProtocolError("export_artifact refused: no budget left before the teardown reserve"));
+            }
+            const objectKey = (grant as { objectKey: string }).objectKey;
+            const redeemed = redeemedUploads.get(objectKey);
+            if (redeemed !== undefined) {
+              // Lost-response REPLAY under the same key: hand back the recorded result, upload
+              // nothing. Any OTHER key is a re-PUT of an already-stored object and is refused.
+              if (redeemed.idempotencyKey === ctx.idempotencyKey) return Promise.resolve(redeemed.result);
+              return Promise.reject(new WireProtocolError("export_artifact refused: this object key has already been uploaded"));
+            }
+            return provider.exportArtifact(sandboxId, path, grant, { ...ctx, deadlineMs: exportBudget }).then((result) => {
+              // Recorded only on SUCCESS: a failed export must stay retryable.
+              redeemedUploads.set(objectKey, { idempotencyKey: ctx.idempotencyKey, result });
+              return result;
+            });
+          },
+          exportBudget,
+        );
       }
       default:
         // GATE_REQUIRED_OPS is the exhaustive set; this is unreachable.

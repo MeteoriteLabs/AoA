@@ -100,6 +100,17 @@ function grant(labels: ResourceLabels, overrides: Partial<ArtifactUploadGrantV1>
 class RecordingMockTransport extends MockE2bTransport {
   readFileCalls = 0;
   stallReads = false;
+  /** How many further `getInfo` calls must hang — the ownership inspection the gate runs UNDER the
+   * per-sandbox lock (Codex P1, fourth round). A counter, not a flag, so a later op can succeed and
+   * prove the lock was actually released. */
+  stallInfoCalls = 0;
+  override async getInfo(...args: Parameters<MockE2bTransport["getInfo"]>): ReturnType<MockE2bTransport["getInfo"]> {
+    if (this.stallInfoCalls > 0) {
+      this.stallInfoCalls -= 1;
+      return new Promise(() => undefined) as ReturnType<MockE2bTransport["getInfo"]>;
+    }
+    return super.getInfo(...args);
+  }
   override async readFile(...args: Parameters<MockE2bTransport["readFile"]>): ReturnType<MockE2bTransport["readFile"]> {
     this.readFileCalls += 1;
     if (this.stallReads) return new Promise<Uint8Array>(() => undefined);
@@ -496,6 +507,59 @@ describe("DAT-009-3e — digest/export over the networked wire (gated owned ops)
     const otherKey = `${objectKeyFor(ORG_A)}-2`;
     await driver.exportArtifact(sandboxId, OUT_PATH, grant(ORG_A, { objectKey: otherKey, url: urlFor(otherKey) }), ctx("e-other"));
     expect(uploads.map((u) => u.objectKey)).toEqual([objectKeyFor(ORG_A), otherKey]);
+  });
+
+  // ★ Codex P1 (fourth round): the OWNERSHIP INSPECTION runs inside `gateOwnedOp`'s per-sandbox
+  // mutex and the provider ignores `ctx.deadlineMs`, so a hung `getInfo` held the lock however long
+  // the transport hung — the strand again, one step earlier than the read and the upload.
+  it("★ a STALLED ownership inspection releases the lock at the op budget, so the next op is not stranded", async () => {
+    const sandboxId = await sandboxWithOutput(ORG_A);
+    transport.stallInfoCalls = 1; // only the export's own inspect hangs
+    const cap = mint(ORG_A, NOW + EXPORT_TEARDOWN_RESERVE_MS + 200);
+    const driver = new NetworkedProviderDriver({ baseUrl, capability: cap });
+    const exporting = driver.exportArtifact(sandboxId, OUT_PATH, grant(ORG_A), { deadlineMs: 600_000, idempotencyKey: "e-inspect-stall" });
+    const destroyed = driver.destroy(sandboxId, ctx("destroy-after-inspect-stall"));
+    await expect(exporting).rejects.toBeInstanceOf(WireProtocolError);
+    const result = await Promise.race([
+      destroyed,
+      new Promise<"stranded">((resolve) => setTimeout(() => resolve("stranded"), 5_000)),
+    ]);
+    expect(result).not.toBe("stranded");
+    expect(uploads).toHaveLength(0);
+  });
+
+  it("★ a stalled inspection on DIGEST is bounded the same way", async () => {
+    const sandboxId = await sandboxWithOutput(ORG_A);
+    transport.stallInfoCalls = 1;
+    const driver = new NetworkedProviderDriver({ baseUrl, capability: mint(ORG_A, NOW + EXPORT_TEARDOWN_RESERVE_MS + 200) });
+    await expect(
+      driver.digestArtifact(sandboxId, OUT_PATH, { deadlineMs: 600_000, idempotencyKey: "d-inspect-stall" }),
+    ).rejects.toBeInstanceOf(WireProtocolError);
+    // The lock is free: the same sandbox answers the next request.
+    expect(await driver.digestArtifact(sandboxId, OUT_PATH, ctx("d-after-stall"))).toEqual({
+      sha256: BODY_SHA,
+      sizeBytes: BODY.byteLength,
+    });
+  });
+
+  // ★ Codex P2 (fourth round): `ProviderOpContext`'s contract is "a repeated key returns the
+  // recorded result and does not double-apply". A lost response must not turn into a missing output.
+  it("★ a REPLAY with the same idempotency key returns the recorded result; a DIFFERENT key is refused", async () => {
+    const sandboxId = await sandboxWithOutput(ORG_A);
+    const driver = driverFor(ORG_A);
+    const first = await driver.exportArtifact(sandboxId, OUT_PATH, grant(ORG_A), ctx("e-replay"));
+    expect(uploads).toHaveLength(1);
+
+    // The lost-response replay: same key, same grant. Recorded result, and NO second upload.
+    const replayed = await driver.exportArtifact(sandboxId, OUT_PATH, grant(ORG_A), ctx("e-replay"));
+    expect(replayed).toEqual(first);
+    expect(uploads).toHaveLength(1);
+
+    // A re-PUT under a NEW idempotency key is still refused, tampered fields or not.
+    await expect(driver.exportArtifact(sandboxId, OUT_PATH, grant(ORG_A), ctx("e-replay-other"))).rejects.toBeInstanceOf(
+      WireProtocolError,
+    );
+    expect(uploads).toHaveLength(1);
   });
 
   it("a FAR provider that declares artifactExportMode='none' declines honestly, as its own class", async () => {
