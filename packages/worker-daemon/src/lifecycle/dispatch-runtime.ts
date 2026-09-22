@@ -445,23 +445,33 @@ export async function composeDispatchRuntime(deps: ComposeDispatchRuntimeDeps): 
       }
       return [];
     }
-    // CLAIM before probing: each candidate is durably marked claimed BEFORE its probe, and the row
-    // is removed only once the whole reconcile completes. So a crash in between never loses it (a
-    // later boot accounts for it by name), and the probe's renewal is the last this daemon ever
-    // issues for it (F5) even across a crash loop. A candidate that cannot be claimed is NOT probed.
-    const claimed: LeaseOfferV1[] = [];
-    for (const offer of candidates) {
-      try {
-        candidateStore.claim(String(offer.leaseId));
-        claimed.push(offer);
-      } catch (err) {
-        deps.logger?.warn(
-          { reason: LEASE_CANDIDATE_REASONS.writeFailed, leaseId: String(offer.leaseId), err },
-          "startup-reconcile: could not claim a lease candidate; it is NOT probed and is left to the control-plane reaper",
-        );
-      }
+    return candidates;
+  }
+
+  /**
+   * WRK-013 — claim ONE candidate, immediately before its own probe (`beforeProbe`).
+   *
+   * ★ Not a batch, and that is the point (Codex P1, PR #553): claiming every candidate up front
+   * means a crash while probing the FIRST one leaves the rest durably claimed though no request was
+   * ever sent for them, and the next boot would skip their probes. Claimed one at a time, a crash
+   * leaves every later candidate unclaimed, so the next boot probes it normally.
+   *
+   * The claim is durable BEFORE the request, so the probe's renewal is still the last this daemon
+   * can issue for that lease (F5) even across a crash loop. A claim that fails means the lease
+   * cannot be accounted for, so it is NOT probed and NOT renewed.
+   */
+  function claimForProbe(offer: LeaseOfferV1): boolean {
+    if (candidateStore === null) return false;
+    try {
+      candidateStore.claim(String(offer.leaseId));
+      return true;
+    } catch (err) {
+      deps.logger?.warn(
+        { reason: LEASE_CANDIDATE_REASONS.writeFailed, leaseId: String(offer.leaseId), err },
+        "startup-reconcile: could not claim a lease candidate; it is NOT probed and is left to the control-plane reaper",
+      );
+      return false;
     }
-    return claimed;
   }
 
   /** WRK-013 — the sandbox pass needs a PROCESS-level provider and an Organization-scoped
@@ -494,15 +504,18 @@ export async function composeDispatchRuntime(deps: ComposeDispatchRuntimeDeps): 
       key: deps.key,
       identity,
       leaseCandidates: candidates,
+      beforeProbe: claimForProbe,
       outbox: { store, drain },
       metrics: deps.metrics,
       logger: deps.logger,
     });
     const result = await reconciler.run();
-    // The reconcile COMPLETED: every claimed row (this pass's, and any a previous boot left) has been
-    // accounted for, so prune them now. A prune failure leaves a claimed row, which a later boot names
-    // and prunes without probing.
-    for (const offer of [...candidates, ...carriedClaims]) {
+    // The reconcile COMPLETED. Prune every row it accounted for: the candidates it actually PROBED
+    // (a map entry exists for each) and any a previous boot left claimed. A candidate that was never
+    // probed — because its claim failed — is left in the store, unclaimed, for the next boot. A prune
+    // failure leaves a claimed row, which a later boot names and prunes without probing.
+    const probed = candidates.filter((offer) => result.leaseProbes.has(String(offer.leaseId)));
+    for (const offer of [...probed, ...carriedClaims]) {
       try {
         candidateStore?.remove(String(offer.leaseId));
       } catch (err) {

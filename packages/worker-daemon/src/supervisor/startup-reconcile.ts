@@ -99,6 +99,15 @@ export interface ProbeLeaseAuthorityDeps {
   /** Full lease offers reconstructed from durable local state (test-injected in
    * CORE — the durable persisted-offer index is the deferred enumeration gap, D5). */
   readonly candidates: readonly LeaseOfferV1[];
+  /**
+   * WRK-013 — called IMMEDIATELY BEFORE this candidate's own `lease_renew`, never earlier and
+   * never in a batch. It is where the composition durably CLAIMS the candidate, so a crash while
+   * probing one lease leaves every later one unclaimed and probeable on the next boot (Codex P1,
+   * PR #553). Returning `false` (a claim that did not become durable) SKIPS that candidate: it is
+   * not probed and gets no map entry, because a lease the daemon cannot account for must not be
+   * renewed. Absent ⇒ every candidate is probed, which is the unit-test shape.
+   */
+  readonly beforeProbe?: (offer: LeaseOfferV1) => boolean;
   readonly now?: () => number;
   readonly randomness?: OperationRandomness;
   readonly logger?: Logger;
@@ -139,6 +148,11 @@ export async function probeLeaseAuthority(deps: ProbeLeaseAuthorityDeps): Promis
 
   for (const offer of candidates) {
     const leaseId = String(offer.leaseId);
+    // Claim THIS lease, now, immediately before its own request.
+    if (deps.beforeProbe !== undefined && !deps.beforeProbe(offer)) {
+      deps.logger?.warn({ leaseId }, "startup-reconcile: candidate not claimed; NOT probed");
+      continue;
+    }
     let entry: LeaseAuthorityEntry;
     try {
       const attempt = await renewLeaseOnce({
@@ -294,6 +308,9 @@ export interface StartupReconcilerDeps {
   readonly identity: RenewalIdentity;
   /** Full lease offers reconstructed from durable local state (test-injected). */
   readonly leaseCandidates: readonly LeaseOfferV1[];
+  /** WRK-013 — see {@link ProbeLeaseAuthorityDeps.beforeProbe}: claim one candidate, immediately
+   * before its own probe. A `false` return skips that candidate. */
+  readonly beforeProbe?: (offer: LeaseOfferV1) => boolean;
   // --- optional outbox + quarantine (Slices 3–4) ---
   readonly outbox?: StartupOutboxDeps;
   readonly quarantineCandidates?: readonly StartupQuarantineCandidate[];
@@ -558,6 +575,7 @@ export function createStartupReconciler(deps: StartupReconcilerDeps): StartupRec
         session: deps.session,
         key: deps.key,
         candidates: deps.leaseCandidates,
+        beforeProbe: deps.beforeProbe,
         now: deps.now,
         randomness: deps.randomness,
         logger: deps.logger,

@@ -125,6 +125,8 @@ write-on-ACK, never from a test `put()`.
 | 10 | *(Codex P1)* a failed write is never followed by an ACK | ★ 10: a store whose `put` throws means **no** ACK request reaches the plane for that lease, `lease_candidate_write_failed` (`op: put`) is logged, and polling continues |
 | 11 | *(Codex P1)* a boot that dies mid-reconcile loses no candidate | ★ 11: lifetime B claims the candidate, then its reconcile dies before the prune. Lifetime C names the lease under `lease_candidate_claimed_by_previous_boot`, with its lease, job, attempt and Organization, issues **0** renews (F5), and prunes it. Lifetime D is `empty`. Store unit: a claim is durable across reopen, and a re-put clears it |
 | 12 | *(Codex P2)* a configured but unopenable store refuses every ACK | ★ 12: the opener always fails, so there is **no** ACK request, both `lease_candidate_store_unavailable` and `lease_candidate_write_failed` are logged, and polling continues |
+| 13 | *(Codex P1)* the claim is per lease, at its own probe | ★ 13: two candidates; the boot claims only the one it is about to probe and dies. The next boot names **X** `claimed_by_previous_boot` with **0** renews, and **probes Y** (one renew, Y's own identity) and fences it |
+| 14 | a candidate whose CLAIM fails is neither probed nor pruned | ★ 14: a store whose `claim` throws produces **0** renews and a named `lease_candidate_write_failed`; the row survives, and the next lifetime probes it once and fences it |
 
 ### Mutation and positive-control table (each mutation reverted afterwards; focused command, 65 tests)
 
@@ -148,6 +150,9 @@ write-on-ACK, never from a test `put()`.
 | M16 | remove (not claim) the candidate before its probe, which is the second Codex P1's shape | 1: ★ 11 |
 | M17 | probe a row a previous boot already claimed (a second renewal, breaking F5) | 1: ★ 11 |
 | M18 | a configured but unopenable store silently records nothing, which is the Codex P2's shape | 1: ★ 12 |
+| M20 | claim the whole batch up front, which is the third Codex P1's shape | 1: ★ 13 |
+| M21 | probe a candidate whose claim failed | 1: ★ 14 |
+| M22 | prune every candidate, probed or not | 1: ★ 14 |
 
 ### CI
 
@@ -321,6 +326,30 @@ reviewed commits stay ancestors. Merge commit: `80af143b1a76ba668c252b0a96cac540
   set minus the six excluded by the rules, plus `check-evidence-immutability --base
   origin/docs/replatform-program`: **failures: 0**.
 - CI on the merged head is recorded in §7 once it completes.
+
+### ★ A third Codex P1, on the merge head `c60f74c2d`: claim each lease at ITS OWN probe
+
+Checked at source and **real**. §4 item 7's fix claimed the whole batch in `readCandidates` before
+`probeLeaseAuthority` began its sequential requests. With several stored candidates, a crash while
+probing the **first** left every later one durably claimed although no request had been sent for it,
+and the next boot would name them `claimed_by_previous_boot` and prune them **unprobed** — the very
+guarantee item 7 existed to restore.
+
+The claim is now **lazy and per lease**. `ProbeLeaseAuthorityDeps.beforeProbe(offer)` is called
+immediately before that candidate's own `lease_renew`; the composition's `claimForProbe` marks it
+claimed there, and a `false` return (a claim that did not become durable) **skips** the candidate,
+so a lease the daemon cannot account for is never renewed. The post-pass prune now removes only the
+candidates that were actually **probed** (a `leaseProbes` entry exists) plus rows a previous boot
+left claimed; a candidate whose claim failed stays in the store, unclaimed, for the next boot.
+
+Nothing else moves: the claim is still durable **before** the request, so the probe's renewal is
+still the last this daemon can issue for that lease (F5) even across a crash loop.
+
+Evidence: ★ 13 and ★ 14 (above). Mutations **M20** (claim the batch up front), **M21** (probe a
+candidate whose claim failed) and **M22** (prune the unprobed) each turn one of them red — M21 and
+M22 survived the first pass, which is why ★ 14 exists. Re-verified after the fix: focused command
+**75 tests**; the whole `@armyofagents/worker-daemon` suite **164 files, 1148 passed, 1 skipped**,
+no `Errors` line; `tsc --noEmit` clean; `check-test-inventory` OK; the full guard set: failures 0.
 
 ## Independent review
 

@@ -32,6 +32,9 @@
 //  11  (Codex review, PR #553) a boot that dies between claiming and pruning loses nothing: the
 //      next boot names the lease and prunes it, WITHOUT a second probe (F5)  — "★ 11"
 //  12  (Codex review, PR #553) a configured store that cannot be opened refuses every ACK — "★ 12"
+//  13  (Codex review, PR #553) the claim is per-lease, taken immediately before THAT lease's
+//      probe: a crash while probing the first candidate leaves the rest probeable — "★ 13"
+//  14  a candidate whose CLAIM fails is neither probed nor pruned: the next boot still has it — "★ 14"
 // -----------------------------------------------------------------------------
 
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -538,10 +541,11 @@ describe("WRK-013 — a restart reconciles the leases it held (composed, in-proc
     await ackThenCrash([offerFor(ORG_X, LEASE_X, JOB_X, FENCE_X)]);
     fake.seedLeaseAuthority(LEASE_X, { live: true });
 
-    // Lifetime B claims the candidate, then its reconcile dies before the prune (no probe issued).
+    // Lifetime B claims the candidate for its probe (`beforeProbe`), then dies mid-reconcile.
     const b = await lifetime({
-      makeStartupReconciler: () => ({
+      makeStartupReconciler: (d) => ({
         run: async () => {
+          d.beforeProbe?.(d.leaseCandidates[0]!);
           throw new Error("process died mid-reconcile");
         },
       }),
@@ -580,5 +584,67 @@ describe("WRK-013 — a restart reconciles the leases it held (composed, in-proc
     const reasons = reasonsIn(lines);
     expect(reasons).toContain(LEASE_CANDIDATE_REASONS.unavailable);
     expect(reasons).toContain(LEASE_CANDIDATE_REASONS.writeFailed);
+  });
+
+  it("★ 13 — the claim is PER LEASE: a crash while probing the first candidate leaves the second probeable", async () => {
+    await ackThenCrash([offerFor(ORG_X, LEASE_X, JOB_X, FENCE_X), offerFor(ORG_Y, LEASE_Y, JOB_Y, FENCE_Y)]);
+    fake.seedLeaseAuthority(LEASE_X, { live: true });
+    fake.seedLeaseAuthority(LEASE_Y, { live: true });
+
+    // Lifetime B claims ONLY the candidate it is about to probe, then dies. The other is untouched.
+    const b = await lifetime({
+      makeStartupReconciler: (d) => ({
+        run: async () => {
+          const first = d.leaseCandidates.find((o) => String(o.leaseId) === LEASE_X)!;
+          d.beforeProbe?.(first);
+          throw new Error("died while probing the first candidate");
+        },
+      }),
+    });
+    await b.start();
+    crash(b);
+
+    const lines: LogLine[] = [];
+    const c = await lifetime({ logger: recordingLogger(lines) });
+    await c.start();
+
+    // X was claimed by the dead boot: named, never re-probed (F5). Y was never claimed, so it is
+    // PROBED normally — the whole point of claiming one lease at a time.
+    expect(lines.filter((l) => l.bindings.reason === LEASE_CANDIDATE_REASONS.claimedUnprobed).map((l) => l.bindings.leaseId)).toEqual([LEASE_X]);
+    expect(renewRequestsFor(LEASE_X)).toHaveLength(0);
+    expect(renewRequestsFor(LEASE_Y)).toEqual([
+      { leaseId: LEASE_Y, workerId: POLL_FIXTURE_IDS.worker, jobId: JOB_Y, attempt: 1, fenceToken: FENCE_Y },
+    ]);
+    expect(lines.some((l) => l.bindings.reason === LEASE_CANDIDATE_REASONS.fenced && l.bindings.leaseId === LEASE_Y)).toBe(true);
+  });
+
+  it("★ 14 — a candidate whose CLAIM fails is NOT probed and NOT pruned; the next boot still probes it", async () => {
+    await ackThenCrash([offerFor(ORG_X, LEASE_X, JOB_X, FENCE_X)]);
+    fake.seedLeaseAuthority(LEASE_X, { live: true });
+
+    // Lifetime B's store cannot mark the claim durable, so the lease cannot be accounted for.
+    const claimFails = async (o: { path: string }) => {
+      const real = await openLeaseCandidateStore(o);
+      return Object.assign(real, {
+        claim: () => {
+          throw new Error("disk full");
+        },
+      });
+    };
+    const lines: LogLine[] = [];
+    const b = await lifetime({ logger: recordingLogger(lines), openLeaseCandidates: claimFails as never });
+    await b.start();
+    // Nothing was renewed: a lease the daemon cannot account for is never probed.
+    expect(renewRequestsFor(LEASE_X)).toHaveLength(0);
+    expect(lines.some((l) => l.bindings.reason === LEASE_CANDIDATE_REASONS.writeFailed && l.bindings.leaseId === LEASE_X)).toBe(true);
+    crash(b);
+
+    // And it was NOT pruned: a normal lifetime still finds it, and probes it once.
+    const cLines: LogLine[] = [];
+    const c = await lifetime({ logger: recordingLogger(cLines) });
+    await c.start();
+    expect(renewRequestsFor(LEASE_X)).toHaveLength(1);
+    expect(reasonsIn(cLines)).not.toContain(LEASE_CANDIDATE_REASONS.empty);
+    expect(cLines.some((l) => l.bindings.reason === LEASE_CANDIDATE_REASONS.fenced && l.bindings.leaseId === LEASE_X)).toBe(true);
   });
 });
