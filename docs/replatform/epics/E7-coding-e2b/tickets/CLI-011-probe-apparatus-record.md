@@ -211,6 +211,13 @@ deviation fails with its own code, and each has a positive-control test:
 `workflow-verdict-manifest.json` declares the stream `keyed-e2b-cli-011-output-probe.yml@docs/replatform-program`
 as `not-watched`, the same as DEP-015's: a verdict on a skipped job would be a check that nothing runs.
 
+**The pattern is live on its first lane.** DEP-015's `m1-shipped-boot.yml` registered exactly this
+way: run `35598343418` (`push`, conclusion `skipped`, head `947b684d8`) and again `35612758100`
+(`push`, `skipped`, head `d0f065b13`) — a push-created run whose job executed nothing — after which
+`gh workflow run m1-shipped-boot.yml` dispatched for real (runs `35618468241` and `35619555883`,
+both `workflow_dispatch`, both `success`). So the shape both registers the lane and spends nothing on
+merge.
+
 **Registration run.** GitHub records one run when #551 merges. The planning session cites that run
 here and checks that its `probe` job was `skipped`. **(Pending merge.)**
 

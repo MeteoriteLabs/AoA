@@ -237,6 +237,88 @@ export function classifyTenantOutcome({ role, run, jobsForOrganization, verifier
   return { pass: reasons.length === 0, reasons };
 }
 
+// --- provider-sandbox evidence (runbook §11) ------------------------------------------------
+
+/**
+ * The shape of a REAL E2B sandbox id, measured at source (2026-09-21):
+ * - The e2b SDK (`e2b@2.30.5`) passes the server's `sandboxID` through opaquely
+ *   (`sandboxId: res.data.sandboxID`). It then embeds it in a DNS label, `${port}-${sandboxId}.${domain}`
+ *   (`ConnectionConfig.getHost`), so a real id is a lowercase DNS-safe token.
+ * - Keyed run 35613849443 observed `ir2yj6bc4zh81x258k47b` and `i1pbzfz6n7y4wb3q5k616`:
+ *   21 characters, `[a-z0-9]`.
+ * - Neither the adapter-manager nor the E2B provider reshapes the id.
+ *
+ * Every test double emits a HYPHENATED id, and this shape rejects all of them:
+ * - the D1 fake provider: `${providerId}-res-${n}` (`packages/sandbox-fake-provider/src/fake-driver.ts`);
+ * - the keyless mock transport: `sbx-000001` (`packages/sandbox-e2b-provider/src/mock-transport.ts`).
+ *
+ * So a fake provider can never satisfy the §11 check.
+ */
+export const E2B_SANDBOX_ID_SHAPE = /^[a-z0-9]{16,32}$/;
+
+/**
+ * One worker log line → `{ sandboxId, leaseId }`, or null when the line names no sandbox.
+ *
+ * The worker logs through pino, so a real line is JSON: `{"leaseId":"…","sandboxId":"…",…}`. It
+ * may carry the `docker compose logs` prefix (`svc-1  | `) and a `--timestamps` stamp. A
+ * `sandboxId=<id>` text form (with an optional `leaseId=<id>`) is accepted too, in case a logger
+ * emits one. The original driver matched ONLY that text form, which a JSON log never contains;
+ * that is why keyed run 35613849443 failed the lane with both tenants' verifier at exit 0.
+ */
+export function parseSandboxLogLine(line) {
+  const text = String(line ?? "");
+  const brace = text.indexOf("{");
+  if (brace !== -1) {
+    try {
+      const record = JSON.parse(text.slice(brace));
+      if (record && typeof record === "object" && typeof record.sandboxId === "string") {
+        return { sandboxId: record.sandboxId, leaseId: typeof record.leaseId === "string" ? record.leaseId : null };
+      }
+    } catch {
+      // not a JSON record; fall through to the text form
+    }
+  }
+  const sandbox = /\bsandboxId=([^\s,;"']+)/.exec(text);
+  if (!sandbox) return null;
+  const lease = /\bleaseId=([^\s,;"']+)/.exec(text);
+  return { sandboxId: sandbox[1], leaseId: lease ? lease[1] : null };
+}
+
+/**
+ * Provider-sandbox evidence for ONE tenant, from that tenant's own worker log.
+ *
+ * An id counts only when BOTH hold:
+ * - it has the real E2B shape; and
+ * - if the line carries a `leaseId`, that lease is one of `leaseIds`: the leases of THIS tenant's
+ *   run attempt, read from `leases.attempt_id`.
+ *
+ * The worker's `supervisor: run complete` line carries the lease id (measured on run
+ * 35613849443), so the scoping is by lease, not only by which worker logged it. A line that
+ * carries no lease id is scoped by the worker alone: one worker per tenant, enrolled on that
+ * tenant's own target.
+ *
+ * Returns `{ count, sandboxIds, rejected: { shape, foreignLease } }`.
+ */
+export function extractSandboxEvidence(logText, { leaseIds = [] } = {}) {
+  const allowed = new Set(leaseIds);
+  const sandboxIds = new Set();
+  const rejected = { shape: 0, foreignLease: 0 };
+  for (const line of String(logText ?? "").split(/\r?\n/)) {
+    const parsed = parseSandboxLogLine(line);
+    if (!parsed) continue;
+    if (!E2B_SANDBOX_ID_SHAPE.test(parsed.sandboxId)) {
+      rejected.shape += 1;
+      continue;
+    }
+    if (parsed.leaseId !== null && !allowed.has(parsed.leaseId)) {
+      rejected.foreignLease += 1;
+      continue;
+    }
+    sandboxIds.add(parsed.sandboxId);
+  }
+  return { count: sandboxIds.size, sandboxIds: [...sandboxIds], rejected };
+}
+
 // --- the pre-upload leak scan ---------------------------------------------------------------
 
 /**
