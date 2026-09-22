@@ -6,7 +6,7 @@
 **Plan task:** `E5 implementation-plan DAT-009-3e — the networked-lane export route, and E5-F002 at the cause (M, M1b)`
 **Implementer:** `DAT-009-3e build session (Claude Opus 5)`
 **Start SHA:** `cec1b48a796f177c6184884dc3c5043f5aa57ea8` (`docs/replatform-program` tip, the `3c` merge)
-**Reviewed revision (the code commits):** `b853ff0ffae57966241a7d123df9675eea84dade` (the wire route) + `8849a12066188c79393aa509fbada49d2e6d1328` (the `E5-F002` fix) + `d5e6a3612cd73cca3f6874baefa357a40a1d2e3d` (the Codex P1 grant-binding fix, §1 commit 3) + `ddfa0e61e57214aebda1d8d70b1337b0a7112799` (the second-round Codex P1/P2 fix, §1 commit 4) + `ffd0c65d44e38de2e0367d448378d301982bf6cf` (the third-round Codex P1 fix, §1 commit 5). The tree under review is `ffd0c65d4`.
+**Reviewed revision (the code commits):** `b853ff0ffae57966241a7d123df9675eea84dade` (the wire route) + `8849a12066188c79393aa509fbada49d2e6d1328` (the `E5-F002` fix) + `d5e6a3612cd73cca3f6874baefa357a40a1d2e3d` (the Codex P1 grant-binding fix, §1 commit 3) + `ddfa0e61e57214aebda1d8d70b1337b0a7112799` (the second-round Codex P1/P2 fix, §1 commit 4) + `ffd0c65d44e38de2e0367d448378d301982bf6cf` (the third-round Codex P1 fix, §1 commit 5) + `3fd71f2072b6ae358c4f0d7c4f066daf8e669c6c` (the fourth-round Codex P1 fix, §1 commit 6). The tree under review is `3fd71f207`.
 
 The implementer leaves `Status` at `gate_review`. Only a distinct reviewer may change it to
 `complete`.
@@ -130,6 +130,28 @@ destroy exactly as a hung PUT would. **Verified by RED:** with a stalling read, 
   `export_artifact`, on the server's injected clock. With no budget left the route refuses and the
   provider is never called.
 
+### Commit 6: `fix(adapter-manager): make an export redemption one-time per object key` (Codex P1 on `168a540c`)
+
+The grant's INTEGRITY fields (`expectedSha256`, `maxBytes`) are worker-supplied, and no
+control-plane signature covers them — the presigned url binds the checksum **algorithm**, never the
+value. So a worker that keeps a url it already redeemed can hand in the same url and object key with
+a different `expectedSha256` and re-PUT different bytes under the key the fenced commit already
+verified. `artifact-transfer-grant.ts` refuses to MINT a second grant for a committed artifact;
+replaying the first grant went around that guard. **Verified by RED:** a second export with a
+tampered `expectedSha256` succeeded and stored the second bytes.
+
+- The route records an object key on **successful** export and refuses a second redemption of that
+  key **before** the provider is called.
+- A **failed** export records nothing, so an honest retry still works, and a different key is
+  unaffected. Both are asserted, so the refusal is not a blanket "one export per server".
+
+★ **Honest limit, and a STOP.** The ledger is per-instance and in-memory: it does not survive a
+restart, does not reach a second replica, and two concurrent first-exports of one key can both pass.
+It narrows the replay; it does not authenticate the grant. The complete fix is a control-plane
+signature over the grant's integrity fields, which is a change to the **frozen** `worker-protocol`
+package — named as a STOP in this ticket's own plan text and not taken here. It is carried to the
+planning session in §8.
+
 ### The two merges of `origin/docs/replatform-program`
 
 - `f34b65a` merged JOB-016/JOB-017, DAT-009-3d and DEP-015. Conflicts in `driver.ts`, `server.ts`,
@@ -152,6 +174,7 @@ an assertion failure, not a missing import.
 | `adapter-manager` `server-artifact-export.test.ts` | **7 failed / 2 passed (9)** | ungated-404 was true by construction; the far-`"none"` case passed vacuously through the driver's unconditional throw | **9 passed** |
 | `adapter-manager` grant-binding cases (commit 3) | **5 failed / 9 passed (14)**: the forged-origin case got an `ok` and the bytes were uploaded | the 9 were the commit-1 cases | **14 passed** (full package 169) |
 | commit 4 (`put-grant-bytes` + `server-artifact-export`) | **4 failed / 8 passed (12)** and **3 failed / 14 passed (17)**; the stall case timed out, which is the strand itself | — | **12 passed** and **17 passed** (full packages: e2b 151 passed / 31 skipped; adapter-manager 172) |
+| commit 6 (replay) | **1 failed / 20 passed (21)**: the tampered re-PUT succeeded and was stored | — | **21 passed** (full package 190) |
 | commit 5 (read phase) | **3 failed / 12 passed (15)** and **2 failed / 17 passed (19)**; both stall cases timed out | — | **15 passed** and **19 passed** (full packages: e2b 157 passed / 31 skipped; adapter-manager 188) |
 | `sandbox-e2b-provider` `put-grant-bytes.test.ts` | **4 failed / 4 passed (8)** | failed: both header names (`expected undefined to be 'SHA256'`), the digest source, one home, severed PUT (the raw transport message escaped). Passed: base64 encoding, header precedence, body and non-2xx were already correct | **8 passed** |
 
@@ -207,8 +230,10 @@ an assertion failure, not a missing import.
 | M31 | the digest route passes the unclamped ctx | 1 red |
 | M32 | the digest route does not refuse inside the reserve | 1 red |
 | M33 | the shared clamp drops the teardown reserve | 5 red |
+| M34 | no one-time-redemption check | 1 red |
+| M35 | the key is recorded before the export, so a failure also burns it | 1 red |
 
-**33 of 33 killed.**
+**35 of 35 killed.**
 
 ★ **M31 and M32 first SURVIVED, and the test was the problem.** The digest case asserted only that
 the call rejected, which an *unclamped* route still produces via the provider's own budget check —
@@ -288,7 +313,12 @@ which this PR does not touch.
    HTTPS url and write the response into the caller's own sandbox, which is an SSRF read from the
    adapter-manager's network position. It is outside this ticket's files and is reported to the
    planning session rather than filed with a newly minted id.
-5. A process note: the session's shared scratchpad held another session's mutation script under a
+5. **A stop for the planning session (commit 6).** The relayed upload grant cannot be
+   authenticated at the adapter-manager: `ArtifactUploadGrantV1` carries no control-plane signature,
+   and adding one is a frozen-`worker-protocol` change, which this ticket's own plan text calls a
+   STOP. The one-time redemption above is a per-instance narrowing, not authentication. A durable,
+   shared decision (sign the grant, or make redemption durable and cross-replica) is owed.
+6. A process note: the session's shared scratchpad held another session's mutation script under a
    generic name. One of this session's runs executed that script, and it overwrote
    `packages/worker-daemon/src/lifecycle/dispatch-runtime.ts` in this worktree with a `3d` draft.
    The file was restored with `git checkout` before any commit. It is in neither commit, and the
