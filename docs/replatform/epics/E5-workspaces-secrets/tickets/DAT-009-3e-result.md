@@ -6,7 +6,7 @@
 **Plan task:** `E5 implementation-plan DAT-009-3e — the networked-lane export route, and E5-F002 at the cause (M, M1b)`
 **Implementer:** `DAT-009-3e build session (Claude Opus 5)`
 **Start SHA:** `cec1b48a796f177c6184884dc3c5043f5aa57ea8` (`docs/replatform-program` tip, the `3c` merge)
-**Reviewed revision (the code commits):** `b853ff0ffae57966241a7d123df9675eea84dade` (the wire route) + `8849a12066188c79393aa509fbada49d2e6d1328` (the `E5-F002` fix) + `d5e6a3612cd73cca3f6874baefa357a40a1d2e3d` (the Codex P1 grant-binding fix, §1 commit 3) + `ddfa0e61e57214aebda1d8d70b1337b0a7112799` (the second-round Codex P1/P2 fix, §1 commit 4). The tree under review is `ddfa0e61e`.
+**Reviewed revision (the code commits):** `b853ff0ffae57966241a7d123df9675eea84dade` (the wire route) + `8849a12066188c79393aa509fbada49d2e6d1328` (the `E5-F002` fix) + `d5e6a3612cd73cca3f6874baefa357a40a1d2e3d` (the Codex P1 grant-binding fix, §1 commit 3) + `ddfa0e61e57214aebda1d8d70b1337b0a7112799` (the second-round Codex P1/P2 fix, §1 commit 4) + `ffd0c65d44e38de2e0367d448378d301982bf6cf` (the third-round Codex P1 fix, §1 commit 5). The tree under review is `ffd0c65d4`.
 
 The implementer leaves `Status` at `gate_review`. Only a distinct reviewer may change it to
 `complete`.
@@ -115,6 +115,31 @@ fixing:** the new RED case got an `ok` envelope back, and the injected uploader 
 - Two `e2b-provider.ts` line citations in `distributed-execution-threat-controls.json` moved again
   (+29 lines) and were re-pointed, with the same anchors.
 
+### Commit 5: `fix(...): bound the artifact READ phase too` (Codex P1 on `f34b65a`)
+
+Commit 4 bounded the upload and left the sandbox READ unbounded. The adapter-manager holds its
+per-sandbox lock across the whole dispatch, so a stalled `transport.readFile` strands the run's
+destroy exactly as a hung PUT would. **Verified by RED:** with a stalling read, the export hung and
+`destroy` had not settled after 25 s.
+
+- `#readArtifactBytes` now runs under `boundedBySignal` in **both** `exportArtifact` (the upload's
+  own signal) and `digestArtifact` (its own `AbortSignal.timeout(ctx.deadlineMs)`).
+  `digestArtifact` takes `ctx` rather than `_ctx` and refuses an exhausted budget before reading.
+  `boundedBySignal` takes the fixed timeout message, which carries no path, grant or url.
+- `artifactOpBudgetMs` is now the single clamp, applied to `digest_artifact` as well as
+  `export_artifact`, on the server's injected clock. With no budget left the route refuses and the
+  provider is never called.
+
+### The two merges of `origin/docs/replatform-program`
+
+- `f34b65a` merged JOB-016/JOB-017, DAT-009-3d and DEP-015. Conflicts in `driver.ts`, `server.ts`,
+  `gate-clause-wiring.json` and the threat-control register were resolved by keeping **both** sides:
+  3d's `expectedReferences` with this ticket's `E5-2` amendment re-applied, and WRK-018's
+  `executeRelayingStdout` and E6-F024's `onOpFailure` beside this ticket's own additions.
+- `da4886dc` merged the DEP-015 follow-ups (#561, #563) with no conflicts, **and committed the
+  DE-17 citation re-point (`server.ts:122-131`, anchor `ReadonlySet`) that the first merge left
+  uncommitted.** That omission is what reddened `policy` on `f34b65a` (§9).
+
 ## 2. RED → GREEN
 
 RED runs used unchanged behaviour. The only source change made before the `put-grant-bytes` RED was
@@ -127,6 +152,7 @@ an assertion failure, not a missing import.
 | `adapter-manager` `server-artifact-export.test.ts` | **7 failed / 2 passed (9)** | ungated-404 was true by construction; the far-`"none"` case passed vacuously through the driver's unconditional throw | **9 passed** |
 | `adapter-manager` grant-binding cases (commit 3) | **5 failed / 9 passed (14)**: the forged-origin case got an `ok` and the bytes were uploaded | the 9 were the commit-1 cases | **14 passed** (full package 169) |
 | commit 4 (`put-grant-bytes` + `server-artifact-export`) | **4 failed / 8 passed (12)** and **3 failed / 14 passed (17)**; the stall case timed out, which is the strand itself | — | **12 passed** and **17 passed** (full packages: e2b 151 passed / 31 skipped; adapter-manager 172) |
+| commit 5 (read phase) | **3 failed / 12 passed (15)** and **2 failed / 17 passed (19)**; both stall cases timed out | — | **15 passed** and **19 passed** (full packages: e2b 157 passed / 31 skipped; adapter-manager 188) |
 | `sandbox-e2b-provider` `put-grant-bytes.test.ts` | **4 failed / 4 passed (8)** | failed: both header names (`expected undefined to be 'SHA256'`), the digest source, one home, severed PUT (the raw transport message escaped). Passed: base64 encoding, header precedence, body and non-2xx were already correct | **8 passed** |
 
 **The task's focused verify command at `8849a1206` (Windows, local):** wire build OK; driver suite
@@ -175,8 +201,20 @@ an assertion failure, not a missing import.
 | M25 | no signal-bounded race (unbounded uploader call) | 1 red |
 | M26 | the route passes the caller's unclamped ctx | 2 red (incl. the stall/strand case) |
 | M27 | clamp without the teardown reserve | 3 red |
+| M28 | the export READ is unbounded | 1 red |
+| M29 | the digest READ is unbounded | 1 red |
+| M30 | no exhausted-budget check on digest | 1 red |
+| M31 | the digest route passes the unclamped ctx | 1 red |
+| M32 | the digest route does not refuse inside the reserve | 1 red |
+| M33 | the shared clamp drops the teardown reserve | 5 red |
 
-**27 of 27 killed.**
+**33 of 33 killed.**
+
+★ **M31 and M32 first SURVIVED, and the test was the problem.** The digest case asserted only that
+the call rejected, which an *unclamped* route still produces via the provider's own budget check —
+a check that could not tell where the refusal came from. The case now records the `ctx` the provider
+receives, so it asserts the clamped value AND that the route's own refusal never calls the provider.
+A case that survives its own mutant is a check that evaluates nothing.
 
 ## 4. Multi-tenant (F10)
 
@@ -277,9 +315,23 @@ Codex on `7f7bf5317` reported "Didn't find any major issues". Its one earlier P1
 This section was added in a docs-only commit after that run, so the final head differs from
 `7f7bf5317` by this file only.
 
-### CI addendum (commit 4)
+### CI addendum (commits 4 and 5)
 
-*(Filled in after the `pr.yml` run on the commit-4 head.)*
+**The `f34b65a` run (`35617140536`) FAILED, and one failure was real.**
+- **`policy`** — the citation-integrity guard's own positive control (`the migrated tree passes with
+  zero errors`) went red. Cause: the DE-17 re-point was made while resolving that merge and never
+  staged, so the committed tree still cited `server.ts:101-110`. Committed in `da4886dc`; the guard
+  is green locally on the merged tree.
+- **`verify (1)`** — one file failed,
+  `server/src/__tests__/distributed-execution-db-startup.integration.test.ts`, on the
+  *"promptly settles operator-negative-pending after the exact startup controller is externally
+  aborted"* case (4 soft assertions: `kind: "watchdog"` instead of `"settled"`, and an unsettled
+  transaction against a ~143 s deadline). It is a deadline-shaped case in a suite this ticket does
+  not touch: nothing in this PR reaches `server/`, the startup gate or PostgreSQL. It is recorded
+  here as observed-and-not-diagnosed rather than asserted to be a flake; the next run is the
+  evidence.
+
+*(The run on the commit-5 head is recorded below once it completes.)*
 
 ## 10. Reviewer section
 
