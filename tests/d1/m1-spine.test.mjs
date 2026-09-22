@@ -62,6 +62,7 @@ import {
   ack,
   containerFetch,
   computeEventDigests,
+  queryJobEventsAsApp,
   uploadEvents,
   seedSpineOrganization,
   seedSpineTarget,
@@ -79,6 +80,7 @@ import {
   evaluateReplicaRollout,
   evaluateEnabledTenantSpine,
   evaluateControlTenant,
+  evaluateCrossTenantIsolation,
   formatViolations,
 } from "../../scripts/lib/m1-spine-assertions.mjs";
 
@@ -123,6 +125,9 @@ after(() => {
   writeFileSync(path.join(EVIDENCE_DIR, "m1-spine-evidence.json"), `${JSON.stringify(evidence, null, 2)}\n`);
 });
 
+/** Each enabled tenant's leased-worker context, kept for the hostile cross-tenant case below. */
+const leased = new Map();
+
 function truncate(value, max = 6000) {
   const text = typeof value === "string" ? value : JSON.stringify(value);
   return text.length > max ? `${text.slice(0, max)}… [+${text.length - max} chars]` : text;
@@ -154,6 +159,20 @@ function makeEvent(ids, tenant, offer, { eventType, seq, payload }) {
     extensions: [],
     eventType,
     payload,
+  };
+}
+
+/** The delivery identity every batch repeats (workerEventBatchV1 requires it on the batch too). */
+function batchIdentity(ids, tenant, offer) {
+  return {
+    protocolVersion: 1,
+    organizationId: tenant.organizationId,
+    companyId: tenant.companyId,
+    workerId: ids.workerId,
+    jobId: ids.jobId,
+    attempt: offer.job.attempt,
+    leaseId: offer.leaseId,
+    fenceToken: offer.fenceToken,
   };
 }
 
@@ -274,17 +293,7 @@ for (const tenant of M1_SPINE_TENANTS.enabled) {
     const uploaded = step(uploadEvents({
       session: worker.session,
       deviceKey: worker.deviceKey,
-      batch: {
-        protocolVersion: 1,
-        organizationId: tenant.organizationId,
-        companyId: tenant.companyId,
-        workerId: ids.workerId,
-        jobId: ids.jobId,
-        attempt: offer.job.attempt,
-        leaseId: offer.leaseId,
-        fenceToken: offer.fenceToken,
-        events: digested.events,
-      },
+      batch: { ...batchIdentity(ids, tenant, offer), events: digested.events },
     }), `${tenant.key} events`);
     assert.equal(uploaded.status, 200, `${tenant.key} event upload: ${truncate(uploaded.body)}`);
     assert.equal(uploaded.body.ack.status, "accepted", `${tenant.key} events accepted: ${truncate(uploaded.body)}`);
@@ -301,6 +310,8 @@ for (const tenant of M1_SPINE_TENANTS.enabled) {
       receipts: rows.receipts,
       activity: rows.activity,
     });
+    leased.set(tenant.key, { ids, offer, session: worker.session, deviceKey: worker.deviceKey, target: worker.target });
+
     const violations = evaluateEnabledTenantSpine({
       tenant,
       observation: {
@@ -311,6 +322,7 @@ for (const tenant of M1_SPINE_TENANTS.enabled) {
         costRows: rows.costRows,
         costReceipts: rows.receipts.filter((r) => r.projectionKind === "authoritative_cost"),
         activity: rows.activity,
+        expectedActorId: `worker:${ids.workerId}`,
         auditReceipts: rows.receipts.filter((r) => r.projectionKind === "activity_audit"),
       },
     });
@@ -318,6 +330,91 @@ for (const tenant of M1_SPINE_TENANTS.enabled) {
     assert.deepEqual(violations, [], `tenant ${tenant.key} spine violations:\n${formatViolations(violations)}`);
   });
 }
+
+// ── 2a. hostile cross-tenant cases (F10: denied, not merely empty) ───────────
+
+test("m1-spine: tenant B cannot write to, acknowledge or read tenant A's attempt", { skip: SKIP }, () => {
+  const [A, B] = M1_SPINE_TENANTS.enabled;
+  const victim = leased.get(A.key);
+  const attacker = leased.get(B.key);
+  assert.ok(victim && attacker, "both enabled tenants must have run before the isolation case");
+
+  // A FRESH attempt of tenant A, leased by a fresh A worker, so the hostile writes are aimed at a
+  // LIVE fence rather than at an attempt the ingest would refuse anyway for being terminal.
+  const ids = { ...newScenarioIds(), issueId: randomUUID(), runId: randomUUID() };
+  const worker = enrollWorker(A, ids);
+  const job = step(seedSpineJob({
+    tenant: A, issueId: ids.issueId, runId: ids.runId, jobId: ids.jobId, attemptId: ids.attemptId,
+    placement: { targetId: ids.targetId, registeredProfileHash: worker.target.registeredProfileHash, providerDigest: worker.target.providerDigest },
+  }), "isolation job");
+  assert.equal(job.ok, true, `isolation job seed: ${truncate(job)}`);
+  const polled = step(poll({ session: worker.session, workerId: ids.workerId, targetId: ids.targetId, deviceKey: worker.deviceKey }), "isolation poll");
+  assert.equal(polled.body.outcome, "offer", `isolation poll must offer A's job: ${truncate(polled.body)}`);
+  const offer = polled.body.body;
+  const acked = step(ack({
+    session: worker.session, workerId: ids.workerId, jobId: ids.jobId, attempt: offer.job.attempt,
+    leaseId: offer.leaseId, fenceToken: offer.fenceToken, deviceKey: worker.deviceKey,
+  }), "isolation ack");
+  assert.equal(acked.body.outcome, "acknowledged", `isolation ack: ${truncate(acked.body)}`);
+
+  // (1) SAME-TENANT POSITIVE CONTROL FIRST. A's own worker uploads a usage event onto its own live
+  //     lease and it is accepted — so everything the hostile attempts below are denied for is
+  //     demonstrably possible on this exact attempt, with this exact batch shape.
+  const ownEvents = [makeEvent(ids, A, offer, {
+    eventType: "usage", seq: 1,
+    payload: { inputTokens: 1_000, outputTokens: 1_000, cachedInputTokens: 0, runtimeMillis: 1 },
+  })];
+  const ownDigested = step(computeEventDigests({ events: ownEvents }), "isolation own digests");
+  assert.equal(ownDigested.ok, true, `isolation own digests: ${truncate(ownDigested)}`);
+  const ownBatch = { ...batchIdentity(ids, A, offer), events: ownDigested.events };
+  const ownUpload = step(uploadEvents({ session: worker.session, deviceKey: worker.deviceKey, batch: ownBatch }), "isolation own upload");
+
+  const before = step(querySpineAttempt({ organizationId: A.organizationId, jobId: ids.jobId }), "isolation rows before");
+  assert.equal(before.ok, true, `isolation rows before: ${truncate(before)}`);
+
+  // (2) HOSTILE WRITE. Tenant B's real worker session and device key, naming A's Organization,
+  //     Company, job, lease and fence — a `usage` event, the very thing this profile prices. A
+  //     distinct seq, so a denial can never be a sequence clash with the control above.
+  const hostileEvents = [makeEvent(ids, A, offer, {
+    eventType: "usage", seq: 2,
+    payload: { inputTokens: 999_999, outputTokens: 999_999, cachedInputTokens: 0, runtimeMillis: 1 },
+  })];
+  const hostileDigested = step(computeEventDigests({ events: hostileEvents }), "isolation hostile digests");
+  const hostileBatch = { ...batchIdentity(ids, A, offer), events: hostileDigested.events };
+  const hostileUpload = step(uploadEvents({ session: attacker.session, deviceKey: attacker.deviceKey, batch: hostileBatch }), "isolation hostile upload");
+
+  // (3) HOSTILE ACK of A's lease by B's worker.
+  const hostileAck = step(ack({
+    session: attacker.session, workerId: attacker.ids.workerId, jobId: ids.jobId, attempt: offer.job.attempt,
+    leaseId: offer.leaseId, fenceToken: offer.fenceToken, deviceKey: attacker.deviceKey,
+  }), "isolation hostile ack");
+
+  // (4) HOSTILE READ through the non-owner `aoa_app` pool under RLS, with its own control.
+  const foreignRead = step(queryJobEventsAsApp({ jobId: ids.jobId, scopeOrganizationId: B.organizationId }), "isolation foreign read");
+  const ownRead = step(queryJobEventsAsApp({ jobId: ids.jobId, scopeOrganizationId: A.organizationId }), "isolation own read");
+
+  const after = step(querySpineAttempt({ organizationId: A.organizationId, jobId: ids.jobId }), "isolation rows after");
+  const observation = {
+    hostileEventUpload: { status: hostileUpload.status, ackStatus: hostileUpload.body?.ack?.status ?? null },
+    ownEventUpload: { status: ownUpload.status, ackStatus: ownUpload.body?.ack?.status ?? null },
+    hostileAck: { status: hostileAck.status, outcome: hostileAck.body?.outcome ?? null },
+    foreignScopeEventCount: foreignRead.total,
+    ownScopeEventCount: ownRead.total,
+    costRowsBeforeHostile: before.costRows.length,
+    costRowsAfterHostile: after.costRows.length,
+    usageEventsBeforeHostile: before.usageEvents.length,
+    usageEventsAfterHostile: after.usageEvents.length,
+  };
+  evidence.isolation = {
+    victim: A.key, attacker: B.key, jobId: ids.jobId, ...observation,
+    hostileUploadBody: hostileUpload.body, hostileAckBody: hostileAck.body,
+    costRowsAfter: after.costRows.map((r) => ({ companyId: r.companyId, agentId: r.agentId, costCents: r.costCents })),
+  };
+  const violations = evaluateCrossTenantIsolation(observation);
+  evidence.verdicts.isolation = violations;
+  assert.deepEqual(violations, [], `cross-tenant isolation violations:
+${formatViolations(violations)}`);
+});
 
 // ── 3. the control tenant ────────────────────────────────────────────────────
 

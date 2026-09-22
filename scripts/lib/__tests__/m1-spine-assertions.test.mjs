@@ -23,6 +23,7 @@ import {
   evaluateReplicaRollout,
   evaluateEnabledTenantSpine,
   evaluateControlTenant,
+  evaluateCrossTenantIsolation,
 } from "../m1-spine-assertions.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
@@ -137,8 +138,10 @@ function goodEnabled(tenant = A, overrides = {}) {
         companyId: tenant.companyId,
         payload: { inputTokens: 120000, outputTokens: 30000, cachedInputTokens: 0, runtimeMillis: 4200 },
       }],
+      expectedActorId: "worker:33333333-3333-4333-8333-333333333333",
       costRows: [{
         companyId: tenant.companyId,
+        agentId: tenant.agentId,
         costCents: 81,
         inputTokens: 120000,
         outputTokens: 30000,
@@ -147,8 +150,8 @@ function goodEnabled(tenant = A, overrides = {}) {
       }],
       costReceipts: [{ status: "applied", organizationId: tenant.organizationId, companyId: tenant.companyId }],
       activity: [
-        { action: "job.attempt_started", companyId: tenant.companyId },
-        { action: "job.attempt_terminal", companyId: tenant.companyId },
+        { action: "job.attempt_started", companyId: tenant.companyId, actorType: "system", actorId: "worker:33333333-3333-4333-8333-333333333333" },
+        { action: "job.attempt_terminal", companyId: tenant.companyId, actorType: "system", actorId: "worker:33333333-3333-4333-8333-333333333333" },
       ],
       auditReceipts: [
         { status: "applied", organizationId: tenant.organizationId, companyId: tenant.companyId },
@@ -250,9 +253,78 @@ test("a cost row whose tokens or key are not the accepted usage event's is refus
   assert.ok(codes(wrongKey).includes("usage:row_not_keyed_to_event"));
 });
 
+test("a cost row rolled up to ANOTHER agent of the same Company is refused (Codex P2)", () => {
+  const obs = goodEnabled(A).observation;
+  const v = evaluateEnabledTenantSpine(goodEnabled(A, { costRows: [{ ...obs.costRows[0], agentId: B.agentId }] }));
+  assert.ok(codes(v).includes("cost:wrong_agent"));
+  assert.ok(!codes(v).includes("cost:wrong_company"), "the Company is still right — only the agent moved");
+});
+
+test("an audit row naming a DIFFERENT worker, or a non-system actor, is refused (Codex P2)", () => {
+  const obs = goodEnabled(A).observation;
+  const otherWorker = evaluateEnabledTenantSpine(goodEnabled(A, {
+    activity: [obs.activity[0], { ...obs.activity[1], actorId: "worker:44444444-4444-4444-8444-444444444444" }],
+  }));
+  assert.ok(codes(otherWorker).includes("audit:wrong_actor"));
+  const wrongType = evaluateEnabledTenantSpine(goodEnabled(A, {
+    activity: [obs.activity[0], { ...obs.activity[1], actorType: "user" }],
+  }));
+  assert.ok(codes(wrongType).includes("audit:wrong_actor"));
+});
+
 test("a journey the ingest did not fully accept is refused before cost is judged", () => {
   const v = evaluateEnabledTenantSpine(goodEnabled(A, { attemptStatus: "running" }));
   assert.ok(codes(v).includes("journey:attempt_not_succeeded"));
+});
+
+// ── hostile cross-tenant isolation (F10) ────────────────────────────────────
+
+function goodIsolation(overrides = {}) {
+  return {
+    hostileEventUpload: { status: 403, ackStatus: null },
+    ownEventUpload: { status: 200, ackStatus: "accepted" },
+    hostileAck: { status: 403, outcome: null },
+    foreignScopeEventCount: 0,
+    ownScopeEventCount: 3,
+    costRowsBeforeHostile: 1,
+    costRowsAfterHostile: 1,
+    usageEventsBeforeHostile: 1,
+    usageEventsAfterHostile: 1,
+    ...overrides,
+  };
+}
+
+test("a denied hostile pair with its same-tenant control has zero violations (anchor)", () => {
+  assert.deepEqual(evaluateCrossTenantIsolation(goodIsolation()), []);
+});
+
+test("a foreign worker whose event upload is ACCEPTED is refused", () => {
+  const v = evaluateCrossTenantIsolation(goodIsolation({ hostileEventUpload: { status: 200, ackStatus: "accepted" } }));
+  assert.ok(v.map((x) => x.code).includes("isolation:foreign_event_accepted"));
+});
+
+test("a denial whose SAME-TENANT control also failed proves nothing and is refused", () => {
+  const v = evaluateCrossTenantIsolation(goodIsolation({ ownEventUpload: { status: 409, ackStatus: null } }));
+  assert.ok(v.map((x) => x.code).includes("isolation:own_event_denied"));
+});
+
+test("a foreign worker acknowledging another tenant's lease is refused", () => {
+  const v = evaluateCrossTenantIsolation(goodIsolation({ hostileAck: { status: 200, outcome: "acknowledged" } }));
+  assert.ok(v.map((x) => x.code).includes("isolation:foreign_ack_accepted"));
+});
+
+test("a foreign tenant scope that can READ the victim's events is refused, and an empty own-scope read voids it", () => {
+  assert.ok(evaluateCrossTenantIsolation(goodIsolation({ foreignScopeEventCount: 3 })).map((x) => x.code)
+    .includes("isolation:foreign_scope_reads_events"));
+  assert.ok(evaluateCrossTenantIsolation(goodIsolation({ ownScopeEventCount: 0 })).map((x) => x.code)
+    .includes("isolation:own_scope_reads_nothing"));
+});
+
+test("hostile traffic that changed the victim's cost rows or usage events is refused", () => {
+  assert.ok(evaluateCrossTenantIsolation(goodIsolation({ costRowsAfterHostile: 2 })).map((x) => x.code)
+    .includes("isolation:cost_moved"));
+  assert.ok(evaluateCrossTenantIsolation(goodIsolation({ usageEventsAfterHostile: 2 })).map((x) => x.code)
+    .includes("isolation:usage_moved"));
 });
 
 // ── the control tenant ──────────────────────────────────────────────────────

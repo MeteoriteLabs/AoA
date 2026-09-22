@@ -167,7 +167,8 @@ export function evaluateReplicaRollout(o) {
  *   costRows: [{companyId, costCents, sourceIdempotencyKey}]  — every cost_events row whose key
  *             names ANY event of this attempt, across ALL Companies (so a misattributed row is seen),
  *   costReceipts: [{status, organizationId, companyId}]        — authoritative_cost, this job,
- *   activity: [{action, companyId}]                            — job.attempt_* rows for this job,
+ *   activity: [{action, companyId, actorType, actorId}]        — job.attempt_* rows for this job,
+ *   expectedActorId — `worker:<the leased worker id>`, the actor JOB-017 must have recorded,
  *   auditReceipts: [{status, organizationId, companyId}] }     — activity_audit, this job
  */
 export function evaluateEnabledTenantSpine({ tenant: t, observation: o }) {
@@ -186,6 +187,18 @@ export function evaluateEnabledTenantSpine({ tenant: t, observation: o }) {
   }
   if ((o.activity ?? []).some((a) => a.companyId !== t.companyId)) {
     out.push(violation("audit:wrong_company", `${k}: an audit row is attributed to another Company`));
+  }
+  // Codex P2 (PR #566): an audit row with the right action and Company but the WRONG actor records
+  // false provenance — it says a different worker did the thing. JOB-017's actor for an accepted
+  // mutation is `system` / `worker:<the worker whose fenced event was accepted>`.
+  if (o.expectedActorId) {
+    const wrong = (o.activity ?? []).filter((a) => a.actorType !== "system" || a.actorId !== o.expectedActorId);
+    if (wrong.length > 0) {
+      out.push(violation(
+        "audit:wrong_actor",
+        `${k}: ${wrong.length} audit row(s) name ${JSON.stringify(wrong.map((a) => `${a.actorType}/${a.actorId}`))}, not system/${o.expectedActorId}`,
+      ));
+    }
   }
   const auditReceipts = o.auditReceipts ?? [];
   if (auditReceipts.length !== 2 || auditReceipts.some((r) => r.status !== "applied")) {
@@ -235,6 +248,15 @@ export function evaluateEnabledTenantSpine({ tenant: t, observation: o }) {
   }
   if (costRows.some((row) => row.companyId !== t.companyId)) {
     out.push(violation("cost:wrong_company", `${k}: a cost_events row is attributed to another Company`));
+  }
+  // Codex P2 (PR #566): the Company is not the whole attribution. A charge rolled up to a DIFFERENT
+  // agent of the same Company corrupts per-agent spend and the agent-scope hard stop while every
+  // company-level number stays right, so the agent is checked too.
+  if (costRows.some((row) => row.agentId !== t.agentId)) {
+    out.push(violation(
+      "cost:wrong_agent",
+      `${k}: a cost_events row rolls up to ${JSON.stringify(costRows.map((r) => r.agentId))}, not this tenant's agent ${t.agentId}`,
+    ));
   }
   const receipts = o.costReceipts ?? [];
   if (receipts.length === 0) {
@@ -306,6 +328,71 @@ export function evaluateControlTenant({ tenant: t, observation: o }) {
   if (o.jobEvents !== 0) out.push(violation("control:has_job_events", `${k}: ${o.jobEvents} job_events`));
   if (o.costRowsForCompany !== 0) out.push(violation("control:has_cost_rows", `${k}: ${o.costRowsForCompany} cost_events rows`));
   if (o.receipts !== 0) out.push(violation("control:has_receipts", `${k}: ${o.receipts} projection receipts`));
+  return out;
+}
+
+// ── hostile cross-tenant cases (F10: "denied, not merely empty") ─────────────
+
+/**
+ * The isolation half of F10, which the per-tenant verdicts above cannot see: they only ever look at
+ * matching identities. Each case pairs a HOSTILE attempt by tenant B against tenant A's attempt with
+ * the SAME-TENANT positive control, so "denied" is never confused with "nothing works".
+ *
+ * @param {object} o
+ * @param {{status:number, ackStatus:string|null}} o.hostileEventUpload  B's worker uploading an event
+ *        onto A's lease over the real fenced ingest.
+ * @param {{status:number, ackStatus:string|null}} o.ownEventUpload      the SAME upload by A's own worker.
+ * @param {{status:number, outcome:string|null}} o.hostileAck            B acknowledging A's lease.
+ * @param {number} o.foreignScopeEventCount  A's `job_events` read under B's tenant scope through the
+ *        non-owner `aoa_app` pool with RLS (must be 0).
+ * @param {number} o.ownScopeEventCount      the same read under A's own scope (must be > 0).
+ * @param {number} o.costRowsAfterHostile    A's cost rows after the hostile traffic (must be unchanged).
+ * @param {number} o.costRowsBeforeHostile
+ * @param {number} o.usageEventsBeforeHostile / o.usageEventsAfterHostile — likewise for the accepted
+ *        `usage` events of A's attempt: a foreign worker must not be able to add one.
+ */
+export function evaluateCrossTenantIsolation(o) {
+  const out = [];
+  const accepted = (r) => r && r.status === 200 && r.ackStatus === "accepted";
+  if (accepted(o.hostileEventUpload)) {
+    out.push(violation(
+      "isolation:foreign_event_accepted",
+      `a foreign tenant's worker uploaded an event onto another tenant's lease and it was ACCEPTED (status ${o.hostileEventUpload.status})`,
+    ));
+  }
+  if (!accepted(o.ownEventUpload)) {
+    out.push(violation(
+      "isolation:own_event_denied",
+      `the SAME upload by the owning tenant's own worker was not accepted (status ${o.ownEventUpload?.status}, ack ${o.ownEventUpload?.ackStatus}) — the denial above proves nothing`,
+    ));
+  }
+  if (o.hostileAck && o.hostileAck.status === 200 && o.hostileAck.outcome === "acknowledged") {
+    out.push(violation("isolation:foreign_ack_accepted", "a foreign tenant's worker acknowledged another tenant's lease"));
+  }
+  if (o.foreignScopeEventCount !== 0) {
+    out.push(violation(
+      "isolation:foreign_scope_reads_events",
+      `a foreign tenant scope read ${o.foreignScopeEventCount} of another tenant's job_events through the non-owner pool`,
+    ));
+  }
+  if (!(o.ownScopeEventCount > 0)) {
+    out.push(violation(
+      "isolation:own_scope_reads_nothing",
+      `the owning tenant's own scope read ${o.ownScopeEventCount} rows — the 0 above is not RLS isolation`,
+    ));
+  }
+  if (o.usageEventsAfterHostile !== o.usageEventsBeforeHostile) {
+    out.push(violation(
+      "isolation:usage_moved",
+      `the hostile traffic changed the victim's accepted usage events from ${o.usageEventsBeforeHostile} to ${o.usageEventsAfterHostile}`,
+    ));
+  }
+  if (o.costRowsAfterHostile !== o.costRowsBeforeHostile) {
+    out.push(violation(
+      "isolation:cost_moved",
+      `the hostile traffic changed the victim's cost rows from ${o.costRowsBeforeHostile} to ${o.costRowsAfterHostile}`,
+    ));
+  }
   return out;
 }
 

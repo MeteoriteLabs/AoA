@@ -17,8 +17,8 @@
 | Canned usage on the reference provider | `packages/sandbox-fake-provider/src/fake-driver.ts` (`FAKE_PROVIDER_CANNED_USAGE_V1`, `FAKE_PROVIDER_USAGE_MODES`) | `execute` now reports fixed units (120 000 in / 30 000 out / 0 cached / 4 200 ms) that satisfy the frozen `usagePayloadV1Schema`. A provider id scripted `usageMode: "suppressed"` reports `usage: null`. An unknown mode is refused. `reset()` restores the default. Threaded through both control servers (`control-server.ts`, `docker/d1/fake-provider-entry.mjs`). |
 | The one-worker topology | `docker/d1/m1-spine.override.yml` | A compose OVERRIDE, never an edit of the train: `worker-a` moves into a profile nothing enables, `test-runner`'s `depends_on` is `!override`-replaced, and the F10 rollout policy is set on BOTH control-plane replicas, identically. The crew switch is not set. |
 | The tenant set + the verdicts | `scripts/lib/m1-spine-assertions.mjs` | `M1_SPINE_TENANTS` (two enabled Organizations, one control), `M1_SPINE_ROLLOUT_ENV_VALUE`, and four pure verdict functions: `evaluateSpineOverrideText`, `evaluateReplicaRollout`, `evaluateEnabledTenantSpine`, `evaluateControlTenant`. |
-| The verdicts' self-test | `scripts/lib/__tests__/m1-spine-assertions.test.mjs` (31 tests) | Each verdict has a zero-violation anchor and defect fixtures. Wired into `pr.yml` `policy` → *m1-spine profile verdict self-test (DEP-016)*, declared in `scripts/test-execution-census.json`. |
-| The live profile | `tests/d1/m1-spine.test.mjs` (4 tests) + helpers in `tests/d1/lib/e6f-harness.mjs` (`seedSpineOrganization`, `seedSpineTarget`, `seedSpineJob`, `probeReplicaRollout`, `placeSpineAttemptOnReplica`, `querySpineAttempt`, `querySpineControl` — all additive) | The profile itself. |
+| The verdicts' self-test | `scripts/lib/__tests__/m1-spine-assertions.test.mjs` (39 tests) | Each verdict has a zero-violation anchor and defect fixtures. Wired into `pr.yml` `policy` → *m1-spine profile verdict self-test (DEP-016)*, declared in `scripts/test-execution-census.json`. |
+| The live profile | `tests/d1/m1-spine.test.mjs` (5 tests) + helpers in `tests/d1/lib/e6f-harness.mjs` (`seedSpineOrganization`, `seedSpineTarget`, `seedSpineJob`, `probeReplicaRollout`, `placeSpineAttemptOnReplica`, `querySpineAttempt`, `querySpineControl` — all additive) | The profile itself. |
 | The lane | `.github/workflows/d1-merge-train.yml` job **`m1-spine`** | Builds the split images, brings up the override, asserts exactly ONE worker service is running, runs the profile, runs the usage-suppressed POSITIVE CONTROL and fails the lane if it passes, collects the evidence bundle **`if: always()`** (on pass as well as on failure) and uploads it. New path triggers: `scripts/lib/m1-spine-assertions.mjs`, `packages/sandbox-fake-provider/**`. |
 
 **Not a scope of `AOA_D1_CAMPAIGN` — a second job, deliberately.** The plan's §3 row names
@@ -39,6 +39,7 @@ value, so it can never be run against the two-worker train by accident. The exis
 | 2 | Per priced attempt: exactly one `cost_events` row with cost > 0 and one `authoritative_cost` receipt; the named audit rows present | `evaluateEnabledTenantSpine`, live: §3 GREEN |
 | 2a | **Usage cardinality** (added 2026-09-23 — the `WRK-018` acceptance-1 collection point, see §7): per attempt, EXACTLY ONE accepted `usage` event in `job_events`, of this tenant, whose stored units are the ones the provider reported, and to which the single cost row is keyed | `evaluateEnabledTenantSpine` (`usage:*` codes), live: §3 |
 | 3 | **Positive control:** the same profile with usage suppressed **reds**, and a DUPLICATE usage event **reds** | §4 row PC, and the lane step *POSITIVE CONTROL — with usage suppressed, the profile MUST go red* |
+| 4a | **F10 isolation** (added 2026-09-23, Codex P1 — the plan's F10 requires *hostile cross-tenant cases in EVERY gate profile*, `docs/replatform/qa/2026-09-21-m1-execution-plan.md` §2 F10) | `evaluateCrossTenantIsolation`, live: §3a |
 | 4 | **F10:** three Organizations — two enabled, one control; journey, audit and cost attribution asserted PER enabled tenant; the control tenant refused and left legacy. The rollout is set on BOTH replicas, identically, and the bundle records its digest | `evaluateReplicaRollout` + `evaluateControlTenant`, live: §3 |
 | 5 | **Crew switch off** on both replicas, recorded in the bundle | `evaluateReplicaRollout` (`crew:switch_on` / `crew:switch_unparseable`); live: `crewRaw: null`, `crewEnabled: false` on both replicas |
 
@@ -51,7 +52,7 @@ brought up with images built from this branch's tree (the server tree of the bra
 
 ```
 AOA_D1_LIVE=1 AOA_D1_CAMPAIGN=m1-spine node --test --test-concurrency=1 tests/d1/m1-spine.test.mjs
-→ pass 4, fail 0
+→ pass 5, fail 0
 ```
 
 What the server actually wrote, from `m1-spine-evidence.json`:
@@ -81,6 +82,18 @@ What the server actually wrote, from `m1-spine-evidence.json`:
   `mode: active`, `reasonCode: invalid_placement_input`, i.e. a real non-legacy decision, so the
   refusal is the rollout's and not "placement refuses everything".
 
+### 3a. Hostile cross-tenant cases, live (F10 isolation — denied, not merely empty)
+
+Against a FRESH, LIVE-fenced attempt of tenant A, with tenant B's real worker session and device key:
+
+| Case | Result |
+|---|---|
+| **Same-tenant control, first:** A's own worker uploads a `usage` event onto its own lease | `200`, ack `accepted` — so everything below is demonstrably possible on this exact attempt and batch shape |
+| B's worker uploads a `usage` event naming A's Organization, Company, job, lease and fence (distinct seq, so a denial cannot be a sequence clash) | **`401 unauthorized`** — `"Worker control request denied"` |
+| B's worker acknowledges A's lease | **`409 stale_fence`** |
+| A's `job_events` read under **B's** tenant scope through the non-owner `aoa_app` pool with RLS | **0 rows**, while the same read under A's own scope returns **1** (the control that makes the 0 isolation, not a broken grant) |
+| A's cost rows and accepted usage events, before → after the hostile traffic | **1 → 1** and **1 → 1**: the foreign worker moved neither money nor usage |
+
 ## 4. RED and the mutation table
 
 Each row is a real run of the same test file against the same stack with ONE thing changed; every
@@ -93,6 +106,8 @@ receipts still pass), and each was reverted afterwards.
 | **PC-1** (acceptance 3) | The shipped provider, scripted `usageMode: "suppressed"` | identical: `pass 2 / fail 2`, the same two cost codes plus `usage:no_usage_event` (0 accepted usage events), `usage: null` |
 | **RED-2** | A control-plane image built with **`JOB-016`'s `createAcceptedUsagePricingProjector` registration removed** from `server/src/services/job-events.ts` | `pass 2 / fail 2` — and here the `usage` event **is** accepted (events `attempt_started,usage,terminal`) and the `activity_audit` receipts **are** written, yet there is still **no cost row and no `authoritative_cost` receipt**. This is what shows the assertion measures the pricing registration specifically, not merely the presence of a usage event |
 | **PC-2** (acceptance 3, cardinality) | The worker sends a SECOND `usage` event for the same attempt with a DISTINCT event id (`AOA_M1_SPINE_USAGE_MODE=duplicate`) | `pass 2 / fail 2` — `usage:not_exactly_one` (2 accepted usage events) **and** `cost:not_exactly_one` (2 cost rows) + `cost:receipt_not_exactly_one` for both tenants. Two things this measured, both worth the reviewer's attention: the ingest's replay guard keys on the EVENT ID, so a distinct-id duplicate is accepted and priced again — which is exactly why a stored usage row cannot establish a cardinality claim; and the "exactly one" arms are shown to fail in the `> 1` direction, not only the `0` direction |
+| **Codex P2a** | `cost:wrong_agent` — a row rolled up to another agent of the SAME Company | self-test fixture; the Company check alone stays green, which is the point |
+| **Codex P2b** | `audit:wrong_actor` — an audit row with the right action and Company but a different worker, or a non-`system` actor | self-test fixtures |
 | **F1–F4** | Four single-behaviour mutations of the canned-usage code (suppression ignored; no canned default; `reset()` keeps modes; unknown mode accepted) | each reds its named test in `packages/sandbox-fake-provider/src/__tests__/canned-usage.test.ts` (2, 2, 1, 1 failures) |
 
 The verdict functions' own non-vacuity is `scripts/lib/__tests__/m1-spine-assertions.test.mjs`: 26
@@ -110,6 +125,14 @@ D1 runs, and its first two runs were red for real defects of my own (a `task_run
 principal was not the assignee agent → the offer's envelope parse refused it with
 `internal_unavailable`); it is the RED-1 / RED-2 / PC rows above, not a test-first run, that show the
 live assertion can fail.
+
+## 4a. Codex review findings on this PR, verified at source and fixed
+
+| Finding | Verified | Fix |
+|---|---|---|
+| **P1** — the profile had no hostile cross-tenant case; F10 requires them in **every** gate profile | True. Read at source: the plan's F10 bullet *"Isolation: hostile cross-tenant cases in every gate profile … denied, not merely empty, and run through the non-owner `aoa_app` pool with RLS"*. The per-tenant loop only ever used matching identities, and the control tenant case only shows an un-enabled tenant gets no work | The new live case (§3a) + `evaluateCrossTenantIsolation`, with a same-tenant positive control for **every** denial. The full tenant matrix (secrets, staged inputs, outputs, tool calls, cancel) remains `DEP-018`'s |
+| **P2** — the cost verdict checked only the Company, not the agent | True; `querySpineAttempt` already returned `agentId` | `cost:wrong_agent` compares every row's `agent_id` with the tenant's own agent |
+| **P2** — the audit verdict never inspected `actorType`/`actorId` | True; both were already returned | `audit:wrong_actor` requires `system` / `worker:<the leased worker>` |
 
 ## 5. Deviations from the task section, measured
 
@@ -181,7 +204,7 @@ carries the keyed acceptance, or to record that run and close the finding. `E3-1
   through the exact line map, anchor by anchor.
 - `packages/sandbox-fake-provider`: `vitest run` **20/20**, `tsc --noEmit` clean;
   `packages/sandbox-provider-contract`: **22/22** (the fake is its reference driver).
-- `scripts/lib/__tests__/m1-spine-assertions.test.mjs`: **31/31**.
+- `scripts/lib/__tests__/m1-spine-assertions.test.mjs`: **39/39**.
 - `scripts/test-inventory.json`: three pinned counts bumped (`packages/sandbox-fake-provider` 4 → 5,
   `scripts` 68 → 69, `tests` 107 → 108). `--write` also wanted to raise unrelated FLOOR counts; those
   were reverted, since they are other tickets' growth.
