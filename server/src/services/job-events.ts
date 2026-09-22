@@ -29,6 +29,7 @@ import { createHash } from "node:crypto";
 import {
   JobFenceError as DbJobFenceError,
   type AcceptedEventProjectionOutcome,
+  type AcceptedEventProjector,
   type AcceptEventInput,
   type Db,
 } from "@armyofagents/db";
@@ -70,6 +71,9 @@ import {
   type TerminalWithoutUsageSignal,
 } from "./job-accepted-usage-pricing.js";
 import { flushDeferredBudgetSignals, type DeferredBudgetSignals } from "./job-budget-cost-bridge.js";
+import { createAcceptedActivityAuditProjector } from "./job-accepted-activity-audit.js";
+import { resolveAcceptedOutputProjector } from "./job-accepted-output-projection.js";
+import { publishActivity, type PreparedActivityEvent } from "./activity-log.js";
 
 function sha256Hex(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
@@ -202,9 +206,23 @@ export function createJobEventIngestService(input: {
       // id. Flushed AFTER commit, and only for events whose seam outcome is `applied`: a
       // rolled-back savepoint owes nothing.
       const owedBudgetSignals = new Map<string, DeferredBudgetSignals>();
-      const acceptedEventProjectors = [createAcceptedUsagePricingProjector({
-        onOwedBudgetSignals: (eventId, signals) => { owedBudgetSignals.set(eventId, signals); },
-      })];
+      // JOB-017 — the prepared `activity.logged` events of the audit registration, by accepted
+      // event id. Published AFTER commit, and only for events whose `activity_audit` outcome is
+      // `applied` (a rolled-back savepoint wrote no row, so it announces nothing).
+      const owedActivityPublishes = new Map<string, PreparedActivityEvent>();
+      // E3-D-ACC registrations, in order. Pricing (JOB-016) and the audit of the named accepted
+      // mutations (JOB-017, E3-D-AUDIT-SET) are registered on EVERY ingest, like pricing
+      // (Amendment 1: the ingest exists only when distributed execution is composed). The output
+      // registration (JOB-017, E3-D-OUTPUT-MAP) is decided per batch inside the transaction,
+      // because it depends on the job's source (only a `task_run` has a task to project onto).
+      const acceptedEventProjectors: AcceptedEventProjector[] = [
+        createAcceptedUsagePricingProjector({
+          onOwedBudgetSignals: (eventId, signals) => { owedBudgetSignals.set(eventId, signals); },
+        }),
+        createAcceptedActivityAuditProjector({
+          onPreparedActivity: (eventId, prepared) => { owedActivityPublishes.set(eventId, prepared); },
+        }),
+      ];
 
       // ★ DE-03, replay-rejection conjunct — the refusal below THROWS out of
       // `runInTenant`, so its record is collected as an INTENT and drained on the
@@ -300,6 +318,10 @@ export function createJobEventIngestService(input: {
           providerConstraintHash: target.providerConstraintHash,
           fence: batch.fenceToken,
         };
+
+        // JOB-017 — the output registration for THIS batch (null: no output event, or no task).
+        const outputProjector = await resolveAcceptedOutputProjector(tx, fenceIdentity, acceptInputs);
+        if (outputProjector) acceptedEventProjectors.push(outputProjector);
 
         let status: "accepted" | "gap" | "hash_mismatch" | "stale_fence" | "terminal";
         let acceptedThroughSeq: number;
@@ -425,10 +447,20 @@ export function createJobEventIngestService(input: {
       // projection (a surfaced receipt, or — `unrecorded` — not even that), so it is a warn line
       // carrying the attempt's ids; every outcome is also counted (count-only, no ids).
       for (const projection of acceptedEventProjections) {
-        acceptedUsageTelemetry.count({ outcome: telemetryOutcomeFor(projection), count: 1 });
-        if (projection.outcome === "applied") {
-          const owed = owedBudgetSignals.get(projection.eventId);
-          if (owed) flushDeferredBudgetSignals(owed);
+        if (projection.projectionKind === "authoritative_cost") {
+          // The accepted-USAGE telemetry counts the pricing registration only (JOB-017: the audit
+          // and output registrations share the seam, not this vocabulary).
+          acceptedUsageTelemetry.count({ outcome: telemetryOutcomeFor(projection), count: 1 });
+          if (projection.outcome === "applied") {
+            const owed = owedBudgetSignals.get(projection.eventId);
+            if (owed) flushDeferredBudgetSignals(owed);
+          }
+        }
+        if (projection.projectionKind === "activity_audit" && projection.outcome === "applied") {
+          const prepared = owedActivityPublishes.get(projection.eventId);
+          if (prepared) {
+            try { publishActivity(prepared); } catch { /* best-effort live poke; the row is durable */ }
+          }
         }
         if (projection.outcome === "pending" || projection.outcome === "unrecorded") {
           logger.warn({

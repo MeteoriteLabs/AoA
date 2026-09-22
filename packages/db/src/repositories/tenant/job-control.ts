@@ -1056,12 +1056,22 @@ export interface JobControlRepository {
     organizationId: string;
     receiptId: string;
   }): Promise<PendingProjectionReceipt | null>;
-  /** The stored accepted event (type + payload) of an attempt, by event id. */
+  /** The stored accepted event (type + payload) of an attempt, by event id. JOB-017 (additive):
+   * also the SERVER-stored columns a non-cost re-drive needs — sequence, attempt number, lease id
+   * and the lease's worker (read from `leases`, never from the worker's payload). */
   readAcceptedEvent(input: {
     organizationId: string;
     attemptId: string;
     eventId: string;
-  }): Promise<{ eventType: string; payload: Record<string, unknown>; eventDigest: string } | null>;
+  }): Promise<{
+    eventType: string;
+    payload: Record<string, unknown>;
+    eventDigest: string;
+    sequence: number;
+    attemptNumber: number;
+    leaseId: string;
+    workerId: string | null;
+  } | null>;
   /** Flip a LOCKED `pending` receipt to `applied`, pointing it at the real aggregate. */
   resolvePendingProjectionReceipt(input: {
     organizationId: string;
@@ -6021,12 +6031,29 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         eventType: jobEvents.eventType,
         payload: jobEvents.event,
         eventDigest: jobEvents.eventDigest,
-      }).from(jobEvents).where(and(
+        sequence: jobEvents.sequence,
+        attemptNumber: jobEvents.attemptNumber,
+        leaseId: jobEvents.leaseId,
+        workerId: leases.workerId,
+      }).from(jobEvents).leftJoin(leases, and(
+        eq(leases.organizationId, jobEvents.organizationId),
+        eq(leases.id, jobEvents.leaseId),
+      )).where(and(
         eq(jobEvents.organizationId, input.organizationId),
         eq(jobEvents.attemptId, input.attemptId),
         eq(jobEvents.eventId, input.eventId),
       )).limit(1);
-      return row ? { eventType: row.eventType, payload: row.payload as Record<string, unknown>, eventDigest: row.eventDigest } : null;
+      return row
+        ? {
+          eventType: row.eventType,
+          payload: row.payload as Record<string, unknown>,
+          eventDigest: row.eventDigest,
+          sequence: row.sequence,
+          attemptNumber: row.attemptNumber,
+          leaseId: row.leaseId,
+          workerId: row.workerId ?? null,
+        }
+        : null;
     },
 
     async resolvePendingProjectionReceipt(input) {

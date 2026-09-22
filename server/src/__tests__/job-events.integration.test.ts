@@ -304,6 +304,10 @@ integration("JOB-005 fenced event ingest", () => {
     return { seeded, offer, ingest };
   }
 
+  // `receipts` counts EVERY projection receipt on the attempt. Since JOB-017 an accepted
+  // `attempt_started` writes TWO: its JOB-005 `attempt_started` projection receipt and the
+  // E3-D-AUDIT-SET `activity_audit` receipt (the seam registration audits the mutation). A replay
+  // or a rejected reuse must still leave exactly those two, never a third.
   async function state(attemptId: string, jobId: string) {
     const { admin } = guardCtx();
     const [row] = await admin<{ events: number; receipts: number; attemptStatus: string; jobStatus: string }[]>`SELECT
@@ -490,7 +494,7 @@ integration("JOB-005 fenced event ingest", () => {
     expect(response.ack.acceptedThroughSeq).toBe(1);
     expect(response.ack.expectedNextSeq).toBe(2);
     expect(await state(seeded.attemptId, seeded.jobId)).toEqual({
-      events: 1, receipts: 1, attemptStatus: "running", jobStatus: "running",
+      events: 1, receipts: 2, attemptStatus: "running", jobStatus: "running",
     });
   }, 60_000);
 
@@ -504,7 +508,7 @@ integration("JOB-005 fenced event ingest", () => {
     expect(replay.ack.status).toBe("accepted");
     expect(replay.ack.acceptedThroughSeq).toBe(1);
     expect(await state(seeded.attemptId, seeded.jobId)).toEqual({
-      events: 1, receipts: 1, attemptStatus: "running", jobStatus: "running",
+      events: 1, receipts: 2, attemptStatus: "running", jobStatus: "running",
     });
   }, 60_000);
 
@@ -538,7 +542,7 @@ integration("JOB-005 fenced event ingest", () => {
     expect(response.ack.acceptedThroughSeq).toBe(1);
     // Unchanged: only the seq-1 event + its projection persist; no phantom seq-2 row/receipt.
     expect(await state(seeded.attemptId, seeded.jobId)).toEqual({
-      events: 1, receipts: 1, attemptStatus: "running", jobStatus: "running",
+      events: 1, receipts: 2, attemptStatus: "running", jobStatus: "running",
     });
   }, 60_000);
 

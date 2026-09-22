@@ -10,7 +10,8 @@
 //   * projectAcceptedOutput → writes ONE `task_outputs` row (the EXISTING output projection)
 //     + an `output_projection` receipt in ONE tenant tx. The attempt stays RUNNING (an
 //     output event is not a terminal event). Replay is guarded by the receipt fast-path.
-//   * projectTerminalWinner → the terminal-winner-once guard: `completeAttempt` + (optional)
+//   * projectTerminalWinner (RETIRED by JOB-017, E3-D-TERMINAL-WINNER — see the interface doc)
+//     → the terminal-winner-once guard: `completeAttempt` + (optional)
 //     ONE run-summary `issue_comments` row + a `task_terminal` receipt in ONE tenant tx.
 //
 // THE load-bearing correctness (projectTerminalWinner): the receipt fast-path runs FIRST,
@@ -42,7 +43,7 @@
 
 import { randomUUID, createHash } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { jobProjectionReceipts } from "@armyofagents/db";
+import { companies, jobProjectionReceipts } from "@armyofagents/db";
 import { JobFenceError } from "@armyofagents/db";
 import type {
   ActiveFenceRequest,
@@ -107,7 +108,10 @@ export interface ProjectAcceptedOutputInput {
 }
 
 export interface ProjectAcceptedOutputOutcome {
-  status: "recorded" | "replayed" | "skipped";
+  /** `pending` (JOB-017, Codex P2): a seam receipt for this event exists but is still OWED — its
+   * target is the attempt, not a task_outputs row — so `outputId` is null and the receipt is left
+   * for the re-drive (`redrivePendingProjection`). Never reported as `replayed`. */
+  status: "recorded" | "replayed" | "skipped" | "pending";
   outputId: string | null;
 }
 
@@ -174,6 +178,14 @@ export class JobOutputBridgeRollbackPendingError extends Error {
 export interface JobOutputBridge {
   isEnabled(): boolean;
   projectAcceptedOutput(input: ProjectAcceptedOutputInput): Promise<ProjectAcceptedOutputOutcome>;
+  /**
+   * @deprecated RETIRED by JOB-017 (`E3-D-TERMINAL-WINNER`, E3 decisions.md). It has no
+   * production caller and must not gain one: the ingest's `attempt_terminal` projection
+   * (`acceptEvent`) is the single writer of distributed terminal state, and the canary/crew
+   * terminal projections are the single writer of the run summary, so a production call would
+   * be a second writer racing both. Kept only as the subject of the DE-04 dormant-arm test; a
+   * zero-production-caller guard in `job-output-parity.integration.test.ts` pins the retirement.
+   */
   projectTerminalWinner(input: ProjectTerminalWinnerInput): Promise<ProjectTerminalWinnerOutcome>;
   assertRollbackSafe(companyId: string): Promise<void>;
 }
@@ -181,9 +193,84 @@ export interface JobOutputBridge {
 const OUTPUT_PROJECTION_KIND = "output_projection" as const;
 const TASK_TERMINAL_KIND = "task_terminal" as const;
 
-/** The output-projection receipt source identity — keyed on the accepted output event id. */
-function outputSourceIdentity(companyId: string, acceptedEventId: string): string {
+/** The output-projection receipt source identity — keyed on the accepted output event id.
+ * Exported so the JOB-017 seam registration and this wrapper share ONE identity per event. */
+export function outputSourceIdentity(companyId: string, acceptedEventId: string): string {
   return `output:${companyId}:${acceptedEventId}`;
+}
+
+/** Thrown by the core when the Company is not the Organization's own (F10: `task_outputs` has
+ * no RLS, E2-D03, so the tenant check is the core's). Nothing is written. */
+export class JobOutputBridgeTenantError extends Error {
+  readonly code = "JOB_OUTPUT_BRIDGE_TENANT_MISMATCH";
+  constructor() {
+    super("The Company does not belong to the Organization; no task output was projected");
+    this.name = "JobOutputBridgeTenantError";
+  }
+}
+
+export interface ProjectAcceptedOutputCoreInput {
+  organizationId: string;
+  companyId: string;
+  /** A REAL task of `companyId`. The core never derives it; `upsertTaskOutputForIssue` refuses
+   * an issue of any other Company (not found), so a foreign issue writes nothing. */
+  issueId: string;
+  output: BridgeOutputInput;
+  /** Present for a stale/losing output → `metadata.quarantined` only; never primary/terminal. */
+  quarantine?: { reason: string };
+}
+
+/**
+ * JOB-017 / E3-D-ACC (a) — the TRANSACTION-TAKING output core.
+ *
+ * It writes ONE `task_outputs` row through the EXISTING `upsertTaskOutputForIssue` on the
+ * CALLER'S handle and returns its id. It never opens a transaction, never locks or guards the
+ * fence, never reads or writes a projection receipt and never reads a flag. `isPrimary` is ALWAYS
+ * false (it never elects primary). The JOB-014 wrapper below and the JOB-017 seam registration
+ * both call it; `CLI-014` is meant to call it too, supplying a richer `output` (the promoted
+ * product artifact) — the core is the reusable half, the mapping is the caller's.
+ */
+export async function projectAcceptedOutputCore(
+  scope: { tx: Db },
+  input: ProjectAcceptedOutputCoreInput,
+): Promise<{ outputId: string }> {
+  const { tx } = scope;
+  const [owner] = await tx
+    .select({ organizationId: companies.organizationId })
+    .from(companies)
+    .where(eq(companies.id, input.companyId))
+    .limit(1);
+  if (!owner || owner.organizationId !== input.organizationId) throw new JobOutputBridgeTenantError();
+
+  const baseMetadata = input.output.metadata ?? null;
+  const metadata = input.quarantine
+    ? { ...(baseMetadata ?? {}), quarantined: true, quarantineReason: input.quarantine.reason }
+    : baseMetadata;
+  const upsert: UpsertTaskOutput = {
+    type: input.output.type,
+    provider: input.output.provider ?? "aoa",
+    externalId: input.output.externalId ?? null,
+    title: input.output.title,
+    url: input.output.url ?? null,
+    status: input.output.status ?? "active",
+    reviewState: input.output.reviewState ?? "none",
+    isPrimary: false,
+    healthStatus: input.output.healthStatus ?? "unknown",
+    summary: input.output.summary ?? null,
+    metadata,
+    createdByRunId: input.output.createdByRunId ?? null,
+    createdByAgentId: input.output.createdByAgentId ?? null,
+    createdByUserId: input.output.createdByUserId ?? null,
+    artifactId: input.output.artifactId ?? null,
+    artifactVersionId: input.output.artifactVersionId ?? null,
+    assetId: input.output.assetId ?? null,
+    executionWorkspaceId: input.output.executionWorkspaceId ?? null,
+    runtimeServiceId: input.output.runtimeServiceId ?? null,
+  };
+  // The EXISTING task-output write, on the caller's handle (no nested transaction). A bad ref
+  // or a foreign issue throws, and the caller's transaction/savepoint decides what rolls back.
+  const output = await upsertTaskOutputForIssue(tx as Db, input.companyId, input.issueId, upsert);
+  return { outputId: output.id };
 }
 
 /** The terminal-winner receipt source identity — keyed on the terminal event id. It is the
@@ -268,40 +355,23 @@ export function jobOutputBridge(
         const sourceIdentity = outputSourceIdentity(companyId, input.acceptedEventId);
         const existing = await findReceipt(tx, organizationId, companyId, OUTPUT_PROJECTION_KIND, sourceIdentity);
         if (existing) {
+          // JOB-017 (Codex P2) — a `pending` seam receipt points at the ATTEMPT, not a
+          // task_outputs row. Reporting it as `replayed` would hand the caller an id that is not
+          // an output. It is owed, and the re-drive resolves it; say so.
+          if (existing.status === "pending") return { status: "pending" as const, outputId: null };
           return { status: "replayed" as const, outputId: existing.targetAggregateId };
         }
 
-        // (c) Build the UpsertTaskOutput. isPrimary is ALWAYS false (never elect primary);
-        // a quarantine block records `metadata.quarantined` only.
-        const baseMetadata = input.output.metadata ?? null;
-        const metadata = input.quarantine
-          ? { ...(baseMetadata ?? {}), quarantined: true, quarantineReason: input.quarantine.reason }
-          : baseMetadata;
-        const upsert: UpsertTaskOutput = {
-          type: input.output.type,
-          provider: input.output.provider ?? "aoa",
-          externalId: input.output.externalId ?? null,
-          title: input.output.title,
-          url: input.output.url ?? null,
-          status: input.output.status ?? "active",
-          reviewState: input.output.reviewState ?? "none",
-          isPrimary: false,
-          healthStatus: input.output.healthStatus ?? "unknown",
-          summary: input.output.summary ?? null,
-          metadata,
-          createdByRunId: input.output.createdByRunId ?? null,
-          createdByAgentId: input.output.createdByAgentId ?? null,
-          createdByUserId: input.output.createdByUserId ?? null,
-          artifactId: input.output.artifactId ?? null,
-          artifactVersionId: input.output.artifactVersionId ?? null,
-          assetId: input.output.assetId ?? null,
-          executionWorkspaceId: input.output.executionWorkspaceId ?? null,
-          runtimeServiceId: input.output.runtimeServiceId ?? null,
-        };
-
-        // (d) MUTATION — the EXISTING task-output write, callback-local on the tenant tx
-        // (no nested transaction). Throws (e.g. bad ref) roll back the whole tx.
-        const output = await upsertTaskOutputForIssue(tx as Db, companyId, issueId, upsert);
+        // (c)+(d) MUTATION — the JOB-017 transaction-taking core: ONE task_outputs row through
+        // the EXISTING upsert on this tenant tx (isPrimary forced false; a quarantine block is
+        // metadata only). Throws (e.g. bad ref) roll back the whole tx.
+        const output = { id: (await projectAcceptedOutputCore({ tx }, {
+          organizationId,
+          companyId,
+          issueId,
+          output: input.output,
+          quarantine: input.quarantine,
+        })).outputId };
 
         // (e) RECEIPT applied in the SAME tenant tx, fence-guarded, linking the output row.
         await repos.jobControl.recordGovernedProjection({

@@ -548,6 +548,17 @@ export function createDrizzleE7RunVerifierStore(db: Db): E7RunVerifierStore {
       // attempt on THIS run's job had an accepted output event projected under an active
       // lease fence. That is provenance, not a heuristic over `type` or `provider`.
       //
+      // ★ JOB-017 (2026-09-21) — A SECOND WRITER OF THE SAME RECEIPT, recorded rather than
+      // left for the "ONLY code in the tree" sentence above to go silently false. The E3-D-ACC
+      // seam registration (`resolveAcceptedOutputProjector`, job-accepted-output-projection.ts)
+      // calls `projectAcceptedOutputCore` inside the worker-event ingest, and the seam writes the
+      // `output_projection` / `task_outputs` receipt in the same savepoint, under the fence
+      // `acceptEvent` already holds (its `guardActiveFence` at the top of the append) — so
+      // `job_id` / `attempt_id` are still the control plane's live fence, never a caller's
+      // assertion. It projects only an `artifact_prepared` event naming a COMMITTED
+      // `job_artifacts` row of the same Organization, job and attempt, into a provider namespace
+      // (`aoa_distributed_job`) no legacy writer uses. The sentence above is kept as written.
+      //
       // WHAT IT EXCLUDES — every one of the ten legacy callers, including both live
       // writers above. None of them writes a receipt and none of them can: the receipt
       // insert is fence-guarded on a live distributed attempt, which a pre-handoff

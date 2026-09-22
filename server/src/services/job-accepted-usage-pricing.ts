@@ -14,7 +14,10 @@
 //   * `redrivePendingAuthoritativeCost` + `createAuthoritativeCostRedriveSweep` — Amendment 3:
 //     the re-drive of a `pending` `authoritative_cost` receipt, run by the JOB-006 sweeper on its
 //     per-Organization rotation, bounded by `AUTHORITATIVE_COST_REDRIVE_MAX_ATTEMPTS`, after which
-//     ONE Inbox item is raised per stuck receipt and retries stop.
+//     ONE Inbox item is raised per stuck receipt and retries stop. ★ JOB-017 generalized both
+//     (the dispatcher is `redrivePendingProjection`; the JOB-016 names are kept): the same
+//     bounded re-drive and single Inbox item now cover `activity_audit` and `output_projection`
+//     receipts too, each through the seam registration's own mapping.
 //
 // Multi-tenant (F10): `cost_events` has no RLS (E2-D03). Every charge takes its Organization and
 // Company from the lease the ingest guard locked (or the receipt row the re-drive locked), never
@@ -43,6 +46,9 @@ import {
   type DeferredBudgetSignals,
 } from "./job-budget-cost-bridge.js";
 import type { AuthoritativeUsageUnits } from "./job-authoritative-rate.js";
+import { publishActivity, type PreparedActivityEvent } from "./activity-log.js";
+import { applyAcceptedEventAudit } from "./job-accepted-activity-audit.js";
+import { applyAcceptedOutputEvent, loadAcceptedOutputTarget } from "./job-accepted-output-projection.js";
 
 /** Amendment 3 — re-drive attempts per stuck receipt before ONE Inbox item is raised. */
 export const AUTHORITATIVE_COST_REDRIVE_MAX_ATTEMPTS = 3;
@@ -257,61 +263,165 @@ export async function detectTerminalWithoutUsage(
 }
 
 // ---------------------------------------------------------------------------------------------
-// Amendment 3 — re-drive.
+// Amendment 3 — re-drive. GENERALIZED by JOB-017 (E3-D-ACC (c) as-built note, 2026-09-21): one
+// dispatcher keyed by receipt kind re-drives `authoritative_cost`, `activity_audit` and
+// `output_projection`, each through the SAME mapping the seam registration uses.
+
+/** The receipt kinds the re-drive can resolve. Any other kind is detected and logged only. */
+export const REDRIVABLE_PROJECTION_KINDS: ReadonlySet<string> = new Set([
+  "authoritative_cost",
+  "activity_audit",
+  "output_projection",
+]);
 
 export type RedriveOutcome =
-  | { status: "redriven"; costEventId: string }
+  | {
+    status: "redriven";
+    projectionKind: string;
+    targetAggregateId: string;
+    /** Set for an `authoritative_cost` receipt (the JOB-016 shape, kept). */
+    costEventId?: string;
+  }
   | { status: "not_pending" };
 
+/** Why a re-drive refused a receipt it could lock. */
+export class ProjectionRedriveError extends Error {
+  readonly code: string;
+  constructor(code: "identity_mismatch" | "event_missing" | "event_type_mismatch" | "no_task" | "worker_unknown") {
+    super(`pending projection could not be re-driven: ${code}`);
+    this.name = "ProjectionRedriveError";
+    this.code = `PROJECTION_REDRIVE_${code.toUpperCase()}`;
+  }
+}
+
+/** The event id a receipt identity names, or a refusal when the identity is not this kind's. */
+function eventIdOf(receipt: PendingProjectionReceipt, prefix: string): string {
+  const full = `${prefix}:${receipt.companyId}:`;
+  if (!receipt.sourceIdentity.startsWith(full)) throw new ProjectionRedriveError("identity_mismatch");
+  return receipt.sourceIdentity.slice(full.length);
+}
+
 /**
- * Re-drive ONE `pending` `authoritative_cost` receipt. The attempt may be terminal, so there is
- * no fence: the receipt row, locked FOR UPDATE, stands in for it (a concurrent re-drive of the
- * same receipt blocks, then sees it `applied` and returns `not_pending`). The units come from
- * the stored `job_events` row the identity names; the charge runs through the SAME core as the
- * ingest. Any failure throws and rolls the whole transaction back — the receipt stays `pending`.
+ * Re-drive ONE `pending` projection receipt of a re-drivable kind. The attempt may be terminal, so
+ * there is no fence: the receipt row, locked FOR UPDATE, stands in for it (a concurrent re-drive of
+ * the same receipt blocks, then sees it `applied` and returns `not_pending`). The event comes from
+ * the stored `job_events` row the identity names; the Organization and Company come from the
+ * locked receipt, never from a payload. Each kind runs through the SAME core and mapping the seam
+ * uses, so a re-driven row is the row the seam would have written. Any failure throws and rolls
+ * the whole transaction back — the receipt stays `pending` for the sweep's next bounded attempt.
+ * Owed live events (budget signals, `activity.logged`) are performed only AFTER commit.
  */
-export async function redrivePendingAuthoritativeCost(
+export async function redrivePendingProjection(
   appDb: Db,
   input: { organizationId: string; receiptId: string },
 ): Promise<RedriveOutcome> {
-  let owed: DeferredBudgetSignals = NO_DEFERRED_BUDGET_SIGNALS;
+  let owedBudget: DeferredBudgetSignals = NO_DEFERRED_BUDGET_SIGNALS;
+  let owedActivity: PreparedActivityEvent | null = null;
   const outcome = await runInTenant(appDb, input.organizationId, async (repos, tx): Promise<RedriveOutcome> => {
     const receipt = await repos.jobControl.lockPendingProjectionReceipt(input);
-    if (!receipt || receipt.projectionKind !== "authoritative_cost") return { status: "not_pending" as const };
-    const prefix = `cost:${receipt.companyId}:`;
-    if (!receipt.sourceIdentity.startsWith(prefix)) throw new AcceptedUsagePricingError("identity_mismatch");
-    const eventId = receipt.sourceIdentity.slice(prefix.length);
-    const stored = await repos.jobControl.readAcceptedEvent({
-      organizationId: receipt.organizationId,
-      attemptId: receipt.attemptId,
-      eventId,
-    });
-    if (!stored || stored.eventType !== "usage") throw new AcceptedUsagePricingError("not_usage");
-    const units = usageUnitsOf(stored.payload);
-    const context = await loadPricingContext(tx, receipt);
-    const priced = await priceAcceptedUsageCore({ tx, repos }, {
-      source: context.source,
+    if (!receipt || !REDRIVABLE_PROJECTION_KINDS.has(receipt.projectionKind)) return { status: "not_pending" as const };
+    const readStored = async (eventId: string) => {
+      const stored = await repos.jobControl.readAcceptedEvent({
+        organizationId: receipt.organizationId,
+        attemptId: receipt.attemptId,
+        eventId,
+      });
+      if (!stored) throw new ProjectionRedriveError("event_missing");
+      return stored;
+    };
+    const resolve = async (targetAggregateId: string, aggregateKind: string) => {
+      const resolved = await repos.jobControl.resolvePendingProjectionReceipt({
+        organizationId: receipt.organizationId,
+        receiptId: receipt.id,
+        targetAggregateId,
+        aggregateKind,
+      });
+      if (!resolved.applied) throw new Error("pending receipt changed under its own lock");
+    };
+
+    if (receipt.projectionKind === "authoritative_cost") {
+      const eventId = eventIdOf(receipt, "cost");
+      const stored = await readStored(eventId);
+      if (stored.eventType !== "usage") throw new AcceptedUsagePricingError("not_usage");
+      const units = usageUnitsOf(stored.payload);
+      const context = await loadPricingContext(tx, receipt);
+      const priced = await priceAcceptedUsageCore({ tx, repos }, {
+        source: context.source,
+        organizationId: receipt.organizationId,
+        companyId: receipt.companyId,
+        jobId: receipt.jobId,
+        acceptedEventId: eventId,
+        units,
+        projectId: context.projectId,
+        occurredAt: new Date(),
+      });
+      await resolve(priced.costEventId, "cost_events");
+      owedBudget = priced;
+      return {
+        status: "redriven" as const,
+        projectionKind: receipt.projectionKind,
+        targetAggregateId: priced.costEventId,
+        costEventId: priced.costEventId,
+      };
+    }
+
+    if (receipt.projectionKind === "activity_audit") {
+      const eventId = eventIdOf(receipt, "activity");
+      const stored = await readStored(eventId);
+      if (!stored.workerId) throw new ProjectionRedriveError("worker_unknown");
+      const wire = stored.payload as { payload?: { status?: unknown } };
+      const recorded = await applyAcceptedEventAudit(tx, {
+        organizationId: receipt.organizationId,
+        companyId: receipt.companyId,
+        jobId: receipt.jobId,
+        attemptId: receipt.attemptId,
+        attemptNumber: stored.attemptNumber,
+        leaseId: stored.leaseId,
+        workerId: stored.workerId,
+        eventId,
+        sequence: stored.sequence,
+        eventType: stored.eventType,
+        terminalStatus: stored.eventType === "terminal" && typeof wire.payload?.status === "string"
+          ? wire.payload.status
+          : null,
+      });
+      await resolve(recorded.activityId, "activity_log");
+      owedActivity = recorded.prepared;
+      return { status: "redriven" as const, projectionKind: receipt.projectionKind, targetAggregateId: recorded.activityId };
+    }
+
+    // output_projection
+    const eventId = eventIdOf(receipt, "output");
+    const stored = await readStored(eventId);
+    if (stored.eventType !== "artifact_prepared") throw new ProjectionRedriveError("event_type_mismatch");
+    const target = await loadAcceptedOutputTarget(tx, receipt);
+    if (!target) throw new ProjectionRedriveError("no_task");
+    const projected = await applyAcceptedOutputEvent(tx, {
       organizationId: receipt.organizationId,
       companyId: receipt.companyId,
       jobId: receipt.jobId,
-      acceptedEventId: eventId,
-      units,
-      projectId: context.projectId,
-      occurredAt: new Date(),
-    });
-    const resolved = await repos.jobControl.resolvePendingProjectionReceipt({
-      organizationId: receipt.organizationId,
-      receiptId: receipt.id,
-      targetAggregateId: priced.costEventId,
-      aggregateKind: "cost_events",
-    });
-    if (!resolved.applied) throw new Error("pending receipt changed under its own lock");
-    owed = priced;
-    return { status: "redriven" as const, costEventId: priced.costEventId };
+      attemptId: receipt.attemptId,
+      attemptNumber: stored.attemptNumber,
+      eventId,
+      wireEvent: stored.payload,
+    }, target);
+    await resolve(projected.outputId, "task_outputs");
+    return { status: "redriven" as const, projectionKind: receipt.projectionKind, targetAggregateId: projected.outputId };
   });
-  flushDeferredBudgetSignals(owed); // after commit only
+  // AFTER COMMIT ONLY — a rolled-back re-drive threw above and owes nothing.
+  flushDeferredBudgetSignals(owedBudget);
+  const activity = owedActivity as PreparedActivityEvent | null;
+  if (activity) {
+    try { publishActivity(activity); } catch { /* best-effort live poke; the row is durable */ }
+  }
   return outcome;
 }
+
+/**
+ * The JOB-016 name, kept because the composition root and the Amendment 3 tests call it. Since
+ * JOB-017 it IS the generalized dispatcher (`redrivePendingProjection`) — not a fork of it.
+ */
+export const redrivePendingAuthoritativeCost = redrivePendingProjection;
 
 /** The Inbox side of Amendment 3, injectable so the sweep is testable without a hub. */
 export interface StuckChargeNotifier {
@@ -319,6 +429,40 @@ export interface StuckChargeNotifier {
   isNotified(receipt: PendingProjectionReceipt): Promise<boolean>;
   /** Raise ONE item for this receipt. Idempotent on (company, sourceType, receipt id). */
   notify(receipt: PendingProjectionReceipt, attempts: number): Promise<void>;
+}
+
+/** The Inbox copy for a receipt whose re-drive exhausted its bound, per receipt kind. */
+function stuckProjectionCopy(projectionKind: string, attempts: number): {
+  semanticType: "budget_alert" | "run_failed";
+  title: string;
+  summary: string;
+} {
+  if (projectionKind === "activity_audit") {
+    return {
+      semanticType: "run_failed",
+      title: "A distributed run's audit record could not be written",
+      summary:
+        `An accepted change to a distributed job could not be recorded in the activity log after ${attempts} ` +
+        "attempts. The change itself is durable; its audit row is still owed.",
+    };
+  }
+  if (projectionKind === "output_projection") {
+    return {
+      semanticType: "run_failed",
+      title: "A distributed run's output could not be added to its task",
+      summary:
+        `An artifact a distributed job produced could not be added to its task after ${attempts} attempts. ` +
+        "The artifact is stored; it is not yet visible on the task.",
+    };
+  }
+  return {
+    semanticType: "budget_alert",
+    title: "A distributed run's usage could not be charged",
+    summary:
+      `The usage of a distributed job could not be priced after ${attempts} attempts. ` +
+      "The charge is still owed, and this Organization's rollback drain stays blocked " +
+      "until it is resolved.",
+  };
 }
 
 /** The production notifier: the existing hub emit path (`hubItemsService.emit`). */
@@ -339,16 +483,14 @@ export function createHubStuckChargeNotifier(db: Db): StuckChargeNotifier {
     async notify(receipt, attempts) {
       // Dynamic: keeps the hub/live-event graph out of the ingest's static import graph.
       const { hubItemsService } = await import("./hub-items.js");
+      const copy = stuckProjectionCopy(receipt.projectionKind, attempts);
       await hubItemsService(db).emit({
         companyId: receipt.companyId,
-        semanticType: "budget_alert",
+        semanticType: copy.semanticType,
         sourceType: STUCK_CHARGE_HUB_SOURCE_TYPE,
         sourceId: receipt.id,
-        title: "A distributed run's usage could not be charged",
-        summary:
-          `The usage of a distributed job could not be priced after ${attempts} attempts. ` +
-          "The charge is still owed, and this Organization's rollback drain stays blocked " +
-          "until it is resolved.",
+        title: copy.title,
+        summary: copy.summary,
         relatedEntityType: "job",
         relatedEntityId: receipt.jobId,
         priority: "high",
@@ -371,7 +513,8 @@ export interface AuthoritativeCostRedriveSweep {
 /**
  * The per-Organization detector + re-drive the JOB-006 sweeper runs. For every `pending` receipt
  * older than the threshold it logs the detector line (ids on the logger, never a metric label);
- * for an `authoritative_cost` receipt it then re-drives, at most `maxAttempts` times per receipt
+ * for a re-drivable receipt (`REDRIVABLE_PROJECTION_KINDS`: `authoritative_cost`, and since JOB-017
+ * `activity_audit` and `output_projection`) it then re-drives, at most `maxAttempts` times per receipt
  * in this process, after which it raises ONE Inbox item and stops. The stop is DURABLE: a receipt
  * whose item exists is never retried again, so a restart cannot resume retries or raise a second
  * item. A notifier failure leaves the receipt eligible for the next tick.
@@ -385,7 +528,7 @@ export function createAuthoritativeCostRedriveSweep(input: {
   staleAfterMs?: number;
   batchLimit?: number;
   now?: () => Date;
-  redrive?: typeof redrivePendingAuthoritativeCost;
+  redrive?: typeof redrivePendingProjection;
 }): AuthoritativeCostRedriveSweep {
   const maxAttempts = Math.max(1, Math.floor(input.maxAttempts ?? AUTHORITATIVE_COST_REDRIVE_MAX_ATTEMPTS));
   const staleAfterMs = Math.max(0, Math.floor(input.staleAfterMs ?? STALE_PENDING_RECEIPT_THRESHOLD_MS));
@@ -394,7 +537,7 @@ export function createAuthoritativeCostRedriveSweep(input: {
   const batchLimit = Math.max(1, Math.min(500, Math.floor(input.batchLimit ?? 200)));
   const now = input.now ?? (() => new Date());
   const telemetry = input.telemetry ?? NOOP_ACCEPTED_USAGE_TELEMETRY;
-  const redrive = input.redrive ?? redrivePendingAuthoritativeCost;
+  const redrive = input.redrive ?? redrivePendingProjection;
   const attempts = new Map<string, number>();
 
   return {
@@ -404,10 +547,12 @@ export function createAuthoritativeCostRedriveSweep(input: {
       const stale = await runInTenant(input.appDb, organizationId, (repos) =>
         repos.jobControl.listStalePendingProjectionReceipts({ organizationId, olderThan, limit: batchLimit }));
       for (const receipt of stale) {
-        const isCost = receipt.projectionKind === "authoritative_cost";
-        // An escalated cost receipt is already visible in the Inbox; re-logging it every tick
-        // would only bury the new ones. The durable stop: never retried again.
-        if (isCost && await input.notifier.isNotified(receipt)) continue;
+        // JOB-017 — every re-drivable kind (cost, audit, output) goes through the same bounded
+        // re-drive and the same single Inbox item; any other kind is detected and logged only.
+        const isRedrivable = REDRIVABLE_PROJECTION_KINDS.has(receipt.projectionKind);
+        // An escalated receipt is already visible in the Inbox; re-logging it every tick would
+        // only bury the new ones. The durable stop: never retried again.
+        if (isRedrivable && await input.notifier.isNotified(receipt)) continue;
         result.stale += 1;
         telemetry.count({ outcome: "stale_pending", count: 1 });
         input.log.warn({
@@ -420,7 +565,7 @@ export function createAuthoritativeCostRedriveSweep(input: {
           attemptId: receipt.attemptId,
           createdAt: receipt.createdAt.toISOString(),
         }, "stale pending projection receipt");
-        if (!isCost) continue;
+        if (!isRedrivable) continue;
 
         const tried = attempts.get(receipt.id) ?? 0;
         if (tried < maxAttempts) {
@@ -439,7 +584,8 @@ export function createAuthoritativeCostRedriveSweep(input: {
             input.log.warn({
               err, organizationId, companyId: receipt.companyId, receiptId: receipt.id,
               jobId: receipt.jobId, attemptId: receipt.attemptId, attempt: tried + 1, maxAttempts,
-            }, "authoritative-cost re-drive failed");
+              projectionKind: receipt.projectionKind,
+            }, "pending-projection re-drive failed");
             if (tried + 1 < maxAttempts) continue;
           }
         }

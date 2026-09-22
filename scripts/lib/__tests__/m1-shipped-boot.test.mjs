@@ -323,3 +323,92 @@ test("leak scan (phase): clean evidence passes and the bundle is kept", () => {
   assert.match(res.stdout, /scanned for 2 named job secret\(s\).*clean/);
   assert.equal(evidenceSurvived, true);
 });
+
+// === provider-sandbox evidence (runbook §11) — keyed run 35613849443 ========================
+//
+// That run's enabled tenants both reached verifierExit=0, and the lane still failed. Its own
+// `/sandboxId=/` filter could never match the worker's pino JSON. These cases pin the parser, the
+// E2B id shape (every test double's hyphenated id is rejected) and the lease scoping.
+
+import { extractSandboxEvidence, parseSandboxLogLine, E2B_SANDBOX_ID_SHAPE } from "../m1-shipped-boot.mjs";
+
+// A REDACTED minimal fixture of the three worker logs in run 35613849443's evidence bundle
+// (`m1-shipped-boot-keyed-35613849443`, logs-m1-worker-{a,b,c}.txt). Each line is replayed with
+// its compose prefix and `--timestamps` stamp intact. Kept: level, time, msg, leaseId, sandboxId,
+// providerOpId, cleanupStatus. Dropped: resourceLabelsHash, and the workerId / targetId /
+// deviceThumbprint of the enrolment lines. The two sandbox ids are real, already-destroyed E2B
+// sandboxes (`cleanupStatus: success`). They are not credentials.
+const RUN_35613849443 = {
+  a: [
+    'm1-worker-a-1  | 2026-09-21T14:50:20.038698833Z {"level":30,"time":1790002220037,"msg":"worker-daemon starting"}',
+    'm1-worker-a-1  | 2026-09-21T14:50:20.451377245Z {"level":30,"time":1790002220440,"msg":"worker-daemon session acquired"}',
+    'm1-worker-a-1  | 2026-09-21T14:50:21.034490472Z {"level":30,"time":1790002221034,"msg":"worker-daemon dispatch COMPOSED; heartbeat seeded; leasing through the poll loop"}',
+    'm1-worker-a-1  | 2026-09-21T14:50:56.557961137Z {"level":30,"time":1790002256557,"leaseId":"84b237c8-0228-427c-8bf4-08e68e7e04f8","sandboxId":"ir2yj6bc4zh81x258k47b","providerOpId":"e2b-destroy-7","cleanupStatus":"success","msg":"supervisor: run complete"}',
+  ].join("\n"),
+  b: [
+    'm1-worker-b-1  | 2026-09-21T14:50:20.040000000Z {"level":30,"time":1790002220040,"msg":"worker-daemon starting"}',
+    'm1-worker-b-1  | 2026-09-21T14:51:32.325974615Z {"level":30,"time":1790002292325,"leaseId":"2d3d4984-cb59-43ef-bb5b-22e1db4282a6","sandboxId":"i1pbzfz6n7y4wb3q5k616","providerOpId":"e2b-destroy-14","cleanupStatus":"success","msg":"supervisor: run complete"}',
+  ].join("\n"),
+  c: [
+    'm1-worker-c-1  | 2026-09-21T14:50:20.027900470Z {"level":30,"time":1790002220027,"msg":"worker-daemon starting"}',
+    'm1-worker-c-1  | 2026-09-21T14:50:20.387957981Z {"level":30,"time":1790002220387,"msg":"worker-daemon enrolled"}',
+    'm1-worker-c-1  | 2026-09-21T14:50:21.000000000Z {"level":30,"time":1790002221000,"msg":"worker-daemon dispatch COMPOSED; heartbeat seeded; leasing through the poll loop"}',
+  ].join("\n"),
+};
+// Each enabled tenant's leases, i.e. what the lane reads from `leases.attempt_id` for its run.
+// In the bundle, the control plane that acked each lease is the one that tenant's worker talks
+// to: A's lease on `control-plane`, B's on `control-plane-b`.
+const LEASES = {
+  a: ["84b237c8-0228-427c-8bf4-08e68e7e04f8"],
+  b: ["2d3d4984-cb59-43ef-bb5b-22e1db4282a6"],
+  c: [],
+};
+
+test("POSITIVE CONTROL: replaying run 35613849443's three worker logs gives >=1 for a and b, 0 for c", () => {
+  const a = extractSandboxEvidence(RUN_35613849443.a, { leaseIds: LEASES.a });
+  const b = extractSandboxEvidence(RUN_35613849443.b, { leaseIds: LEASES.b });
+  const c = extractSandboxEvidence(RUN_35613849443.c, { leaseIds: LEASES.c });
+  assert.deepEqual(a.sandboxIds, ["ir2yj6bc4zh81x258k47b"]);
+  assert.deepEqual(b.sandboxIds, ["i1pbzfz6n7y4wb3q5k616"]);
+  assert.equal(c.count, 0);
+});
+
+test("the ORIGINAL filter (/sandboxId=/) finds nothing in the same logs — the defect, pinned", () => {
+  for (const key of ["a", "b"]) {
+    assert.equal(RUN_35613849443[key].split("\n").filter((l) => /sandboxId=/.test(l)).length, 0);
+  }
+});
+
+test("the real JSON line counts; the sandboxId= text form counts too", () => {
+  assert.deepEqual(parseSandboxLogLine(RUN_35613849443.a.split("\n")[3]), {
+    sandboxId: "ir2yj6bc4zh81x258k47b",
+    leaseId: "84b237c8-0228-427c-8bf4-08e68e7e04f8",
+  });
+  const text = extractSandboxEvidence("supervisor: run complete sandboxId=ir2yj6bc4zh81x258k47b cleanupStatus=success");
+  assert.equal(text.count, 1, "a text-form line with no lease id is scoped by the tenant's own worker");
+});
+
+test("REJECT: every test double's sandbox id (fake provider `<providerId>-res-<n>`, mock transport `sbx-000001`)", () => {
+  for (const fake of ["fake-provider-res-1", "d1-fake-res-12", "sbx-000001"]) {
+    assert.equal(E2B_SANDBOX_ID_SHAPE.test(fake), false, fake);
+    const line = JSON.stringify({ level: 30, leaseId: LEASES.a[0], sandboxId: fake, msg: "supervisor: run complete" });
+    const evidence = extractSandboxEvidence(`m1-worker-a-1  | ${line}`, { leaseIds: LEASES.a });
+    assert.equal(evidence.count, 0, fake);
+    assert.equal(evidence.rejected.shape, 1, fake);
+  }
+});
+
+test("REJECT: a line with no sandboxId, and a sandboxId that is not a string", () => {
+  assert.equal(parseSandboxLogLine('{"level":30,"leaseId":"x","msg":"supervisor: run complete"}'), null);
+  assert.equal(extractSandboxEvidence('{"sandboxId":12345678901234567890}').count, 0);
+  assert.equal(extractSandboxEvidence("").count, 0);
+});
+
+test("REJECT: a real-shaped sandbox on ANOTHER run's lease (tenant/run scoping by lease)", () => {
+  // Tenant B's line replayed against tenant A's leases: right shape, wrong lease.
+  const cross = extractSandboxEvidence(RUN_35613849443.b, { leaseIds: LEASES.a });
+  assert.equal(cross.count, 0);
+  assert.equal(cross.rejected.foreignLease, 1);
+  // With no lease known for the run, a lease-bearing line cannot be attributed to it.
+  assert.equal(extractSandboxEvidence(RUN_35613849443.a, { leaseIds: [] }).count, 0);
+});
