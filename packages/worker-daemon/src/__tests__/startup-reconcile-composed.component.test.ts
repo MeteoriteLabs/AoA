@@ -35,6 +35,8 @@
 //  13  (Codex review, PR #553) the claim is per-lease, taken immediately before THAT lease's
 //      probe: a crash while probing the first candidate leaves the rest probeable — "★ 13"
 //  14  a candidate whose CLAIM fails is neither probed nor pruned: the next boot still has it — "★ 14"
+//  15  (Codex review, PR #553) on the desktop path a FENCED lease's sandbox is torn down, not
+//      left running to the provider's TTL                                              — "★ 15"
 // -----------------------------------------------------------------------------
 
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -646,5 +648,47 @@ describe("WRK-013 — a restart reconciles the leases it held (composed, in-proc
     expect(renewRequestsFor(LEASE_X)).toHaveLength(1);
     expect(reasonsIn(cLines)).not.toContain(LEASE_CANDIDATE_REASONS.empty);
     expect(cLines.some((l) => l.bindings.reason === LEASE_CANDIDATE_REASONS.fenced && l.bindings.leaseId === LEASE_X)).toBe(true);
+  });
+
+  it("★ 15 — desktop path: a FENCED lease's sandbox is TORN DOWN, not left to the provider TTL", async () => {
+    await ackThenCrash([offerFor(ORG_X, LEASE_X, JOB_X, FENCE_X)]);
+    fake.seedLeaseAuthority(LEASE_X, { live: true });
+
+    // The crashed run's sandbox is still there, under this worker's own labels and generation.
+    const provider = createFakeSandboxProvider({
+      ignoreCancel: true, // a bare cancel is ignored, so the cleanup authority must escalate
+      seededResources: [
+        {
+          sandboxId: "sbx-fenced",
+          labels: {
+            organizationId: ORG_X,
+            targetId: POLL_FIXTURE_IDS.target,
+            workerId: POLL_FIXTURE_IDS.worker,
+            jobId: JOB_X,
+            attempt: 1,
+            leaseId: LEASE_X,
+            deviceGeneration: 1,
+          },
+          hasLiveLease: true,
+          state: "running",
+        },
+      ],
+    });
+    const base = await makeSelfModel();
+    const self: WorkerSelfModel = {
+      ...base,
+      registeredTargetProfile: { ...base.registeredTargetProfile, scope: "organization", organizationId: ORG_X },
+    };
+
+    const lines: LogLine[] = [];
+    const b = await lifetime({ provider, self, logger: recordingLogger(lines) });
+    await b.start();
+
+    // The lease was probed once and fenced ...
+    expect(renewRequestsFor(LEASE_X)).toHaveLength(1);
+    expect(lines.some((l) => l.bindings.reason === LEASE_CANDIDATE_REASONS.fenced && l.bindings.leaseId === LEASE_X)).toBe(true);
+    // ... and its supervisor-less sandbox was destroyed, its process tree provably gone.
+    expect(provider.peek("sbx-fenced")?.state).toBe("destroyed");
+    expect(provider.processTreeAlive("sbx-fenced")).toBe(false);
   });
 });

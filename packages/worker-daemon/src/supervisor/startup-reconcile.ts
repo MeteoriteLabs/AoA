@@ -301,6 +301,18 @@ export interface StartupReconcilerDeps {
   readonly makeCtx?: () => ProviderOpContext;
   /** WRK-013 — the named reason logged when the sandbox pass cannot run. */
   readonly sandboxPassSkipReason?: string;
+  /**
+   * WRK-013 / F5 — treat a LIVE-probed lease's sandbox as STALE and tear it down.
+   *
+   * ★ Off by default, which keeps WRK-007 CORE's `keep` disposition exactly as it shipped. The
+   * COMPOSED daemon turns it on, because under founder ruling F5 a live-probed lease is FENCED:
+   * the probe's renewal was its last, nothing re-attaches (D2), and no later pass will see the
+   * sandbox again — so leaving it alive abandons a running tenant command to the provider's TTL
+   * while the control plane mints a fresh attempt. That is what WRK-007's own D2 prescribes:
+   * "regardless of `renewed`, do NOT re-attach … kill it via the cleanup authority, and let
+   * JOB-006 mint a fresh fenced attempt". (Codex P1, PR #553.)
+   */
+  readonly fencedLeasesAreStale?: boolean;
   // --- control-plane lease-authority probe ---
   readonly client: ControlPlaneClient;
   readonly session: SessionProvider;
@@ -456,11 +468,20 @@ export function createStartupReconciler(deps: StartupReconcilerDeps): StartupRec
     // the lease's last (it is in `fencedLeaseIds`), so the control-plane reaper ends it.
     const generationMatches = summary.resourceLabels.deviceGeneration === deps.identity.deviceGeneration;
     if (probe.state === "live" && generationMatches && summary.hasLiveLease) {
+      if (deps.fencedLeasesAreStale !== true) {
+        deps.logger?.info(
+          { ...base, disposition: "keep" },
+          "startup-reconcile: keeping live-owned sandbox (never re-attached; its lease is fenced, not renewed)",
+        );
+        return { ...base, disposition: "keep" };
+      }
+      // F5 — the lease is fenced, so this sandbox has no supervisor and no future pass of its own.
+      // Tear it down through the cleanup authority rather than abandon it to the provider TTL.
       deps.logger?.info(
-        { ...base, disposition: "keep" },
-        "startup-reconcile: keeping live-owned sandbox (never re-attached; its lease is fenced, not renewed)",
+        { ...base, disposition: "fenced_stale" },
+        "startup-reconcile: tearing down a FENCED lease's sandbox (never re-attached; no supervisor remains)",
       );
-      return { ...base, disposition: "keep" };
+      return teardownStale(summary, base, provider, makeCtx);
     }
 
     // Otherwise stale → teardown.

@@ -505,6 +505,9 @@ export async function composeDispatchRuntime(deps: ComposeDispatchRuntimeDeps): 
       identity,
       leaseCandidates: candidates,
       beforeProbe: claimForProbe,
+      // F5 — every candidate this pass probes is FENCED by construction (nothing renews it again),
+      // so a live-probed sandbox has no supervisor and no later pass: tear it down (Codex P1).
+      fencedLeasesAreStale: true,
       outbox: { store, drain },
       metrics: deps.metrics,
       logger: deps.logger,

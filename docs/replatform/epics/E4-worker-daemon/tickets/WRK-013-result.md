@@ -127,6 +127,7 @@ write-on-ACK, never from a test `put()`.
 | 12 | *(Codex P2)* a configured but unopenable store refuses every ACK | ★ 12: the opener always fails, so there is **no** ACK request, both `lease_candidate_store_unavailable` and `lease_candidate_write_failed` are logged, and polling continues |
 | 13 | *(Codex P1)* the claim is per lease, at its own probe | ★ 13: two candidates; the boot claims only the one it is about to probe and dies. The next boot names **X** `claimed_by_previous_boot` with **0** renews, and **probes Y** (one renew, Y's own identity) and fences it |
 | 14 | a candidate whose CLAIM fails is neither probed nor pruned | ★ 14: a store whose `claim` throws produces **0** renews and a named `lease_candidate_write_failed`; the row survives, and the next lifetime probes it once and fences it |
+| 15 | *(Codex P1)* a fenced lease's sandbox is torn down | ★ 15: on the desktop path (a process-level provider, an Organization-scoped target) the crashed run's sandbox is **destroyed** and its process tree is provably gone, through the cleanup authority with an ignored cancel escalated. Unit: the flag tears down; **without** it the sandbox survives (positive control) |
 
 ### Mutation and positive-control table (each mutation reverted afterwards; focused command, 65 tests)
 
@@ -153,6 +154,8 @@ write-on-ACK, never from a test `put()`.
 | M20 | claim the whole batch up front, which is the third Codex P1's shape | 1: ★ 13 |
 | M21 | probe a candidate whose claim failed | 1: ★ 14 |
 | M22 | prune every candidate, probed or not | 1: ★ 14 |
+| M23 | the composed daemon does not set `fencedLeasesAreStale` (the fourth Codex P1's shape) | 1: ★ 15 |
+| M24 | tear down a live-owned sandbox regardless of the flag | 4: the new unit case and three WRK-007 CORE cases — the flag's default is what keeps them green |
 
 ### CI
 
@@ -187,7 +190,10 @@ See §7.
    and the outbox pass need no Organization. So on a platform-scoped target the **sandbox pass** is
    skipped under a named reason, and the lease and outbox passes still run. That satisfies both
    acceptance 4 (*"so does a platform-scoped target"*) and acceptance 8.
-3. **`keep` still leaves the sandbox in place.** F5 is about the **lease**, and the task says only
+3. **`keep` still leaves the sandbox in place.** ★★★ *SUPERSEDED on 2026-09-23 by §8's fourth Codex
+   P1 — on the composed path a fenced lease's sandbox is now torn down. The original item is kept
+   below as written, because it is what the ticket shipped on and it named this as undecided.*
+   Original item: F5 is about the **lease**, and the task says only
    that *"keep must not keep a lease alive"*. On the desktop path (process-level provider,
    Organization-scoped target) a live same-generation sandbox is still `keep` (WRK-007 D2, never
    re-attached). Its lease is fenced, so the reaper ends the attempt. But the sandbox itself is not
@@ -326,6 +332,31 @@ reviewed commits stay ancestors. Merge commit: `80af143b1a76ba668c252b0a96cac540
   set minus the six excluded by the rules, plus `check-evidence-immutability --base
   origin/docs/replatform-program`: **failures: 0**.
 - CI on the merged head is recorded in §7 once it completes.
+
+### ★ A fourth Codex P1, on `2cafa51c6`: tear down a FENCED lease's sandbox
+
+Checked at source and **real**, and it decides the question §4 item 3 left open. On the desktop path
+the reconciler's `keep` disposition left a live-owned sandbox running. Under F5 that lease is
+**fenced**: its renewal was the last, nothing re-attaches (D2), the candidate row is pruned, and no
+later pass can associate that sandbox with a probe. The control-plane reaper ends the *attempt* but
+cannot destroy a *provider resource*, so the abandoned tenant command would run to the provider's
+TTL, possibly beside the retry attempt. **WRK-007's own D2 prescribes the opposite of `keep`:**
+*"regardless of `renewed`, do NOT re-attach … kill it via the cleanup authority, and let JOB-006 mint
+a fresh fenced attempt N+1"* (`WRK-007-design.md` §4). The shipped code diverged from that text.
+
+**What changed, and how narrowly.** `StartupReconcilerDeps.fencedLeasesAreStale` is **off by
+default**, so WRK-007 CORE's `keep` and its shipped cases are untouched (M24 proves it: forcing the
+teardown reds three of them). The **composed daemon** sets it, because every candidate it probes is
+fenced by construction. A live-probed sandbox then routes through the same `teardownStale` path as
+any stale one — the monotonic `CleanupAuthority`, escalating cancel → kill → forced destroy.
+
+★ **This is a behaviour change on a shipped ticket's disposition, and the planning session should
+ratify it.** It is confined to the composed desktop path: the M1 container path skips the sandbox
+pass entirely (F4), so nothing in the M1 journey changes. Rollback is one flag.
+
+Evidence: ★ 15 and the new unit case (with its no-flag positive control). Mutations **M23** and
+**M24**. After it: focused command **76 tests**; the whole suite **164 files, 1150 passed, 1
+skipped**, no `Errors` line; `tsc --noEmit` clean; the full guard set: failures 0.
 
 ### ★ A third Codex P1, on the merge head `c60f74c2d`: claim each lease at ITS OWN probe
 
