@@ -351,7 +351,21 @@ fenced by construction. A live-probed sandbox then routes through the same `tear
 any stale one — the monotonic `CleanupAuthority`, escalating cancel → kill → forced destroy.
 
 ★ **This is a behaviour change on a shipped ticket's disposition, and the planning session should
-ratify it.** It is confined to the composed desktop path: the M1 container path skips the sandbox
+ratify it.** ★★★ **RATIFIED 2026-09-23 by the M1 planning session, under founder delegation F2.**
+Reasons, recorded so a later reader need not re-derive them:
+- It agrees with founder ruling **F5**, which decided that a live lease found at restart is
+  **fenced** — the worker stops renewing and nothing re-attaches. A fenced lease whose sandbox keeps
+  running is the residue F5 exists to prevent.
+- It agrees with **WRK-007's own D2** (*"kill it via the cleanup authority"*), so this closes a gap
+  between two records rather than opening a new position.
+- Of the three options the design left open, keeping a supervisor-less sandbox alive is the worst:
+  it burns provider resources with nobody accountable for them, and it is exactly the orphan class
+  the reaper exists to catch.
+- The blast radius is bounded and measured: off by default (M24), on only for the composed daemon,
+  and the **M1 container path skips the sandbox pass entirely (F4)**, so nothing in the M1 journey
+  changes. Rollback is one flag.
+
+★ The distinct reviewer still judges the EVIDENCE for it; this ratifies the DECISION only. It is confined to the composed desktop path: the M1 container path skips the sandbox
 pass entirely (F4), so nothing in the M1 journey changes. Rollback is one flag.
 
 Evidence: ★ 15 and the new unit case (with its no-flag positive control). Mutations **M23** and
