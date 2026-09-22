@@ -382,8 +382,14 @@ describe("DAT-009-3e — digest/export over the networked wire (gated owned ops)
     const driver = new NetworkedProviderDriver({ baseUrl, capability: mint(ORG_A, NOW + 60_000) });
     await driver.exportArtifact(sandboxId, OUT_PATH, grant(ORG_A), { deadlineMs: 600_000, idempotencyKey: "e-clamp" });
     expect(exportCtxDeadlines).toEqual([60_000 - EXPORT_TEARDOWN_RESERVE_MS]);
-    // A tighter caller budget is kept.
-    await driver.exportArtifact(sandboxId, OUT_PATH, grant(ORG_A), { deadlineMs: 5_000, idempotencyKey: "e-clamp-2" });
+    // A tighter caller budget is kept. (A second object key: a redemption is one-time per key.)
+    const secondKey = `${objectKeyFor(ORG_A)}-clamp2`;
+    await driver.exportArtifact(
+      sandboxId,
+      OUT_PATH,
+      grant(ORG_A, { objectKey: secondKey, url: urlFor(secondKey) }),
+      { deadlineMs: 5_000, idempotencyKey: "e-clamp-2" },
+    );
     expect(exportCtxDeadlines[1]).toBe(5_000);
   });
 
@@ -444,6 +450,52 @@ describe("DAT-009-3e — digest/export over the networked wire (gated owned ops)
     await expect(tight.digestArtifact(sandboxId, OUT_PATH, ctx("d-reserve"))).rejects.toBeInstanceOf(WireProtocolError);
     expect(digestCtxDeadlines).toHaveLength(1);
     expect(transport.readFileCalls).toBe(reads);
+  });
+
+  // ★ Codex P1 (third round, PR #557): the grant's INTEGRITY fields are worker-supplied and no
+  // control-plane signature covers them, so a worker that keeps a redeemed presigned url could
+  // re-PUT different bytes under the SAME object key — after the fenced commit already verified
+  // the first ones — by handing in a grant with a different expectedSha256. The route makes a
+  // successful redemption ONE-TIME per object key, so the replay never reaches the provider.
+  it("★ a SECOND successful export of the same objectKey is refused — the re-PUT never reaches the provider", async () => {
+    const sandboxId = await sandboxWithOutput(ORG_A);
+    const driver = driverFor(ORG_A);
+    await driver.exportArtifact(sandboxId, OUT_PATH, grant(ORG_A), ctx("e-once-1"));
+    expect(uploads).toHaveLength(1);
+
+    // The replay: the same accepted url/objectKey, different integrity fields and different bytes.
+    const tampered = new TextEncoder().encode("second bytes");
+    await transport.writeFiles(sandboxId, [{ path: OUT_PATH, bytes: tampered }]);
+    const replay = grant(ORG_A, {
+      expectedSha256: createHash("sha256").update(tampered).digest("hex"),
+      maxBytes: tampered.byteLength,
+    });
+    const before = exportCtxDeadlines.length;
+    await expect(driver.exportArtifact(sandboxId, OUT_PATH, replay, ctx("e-once-2"))).rejects.toBeInstanceOf(
+      WireProtocolError,
+    );
+    expect(exportCtxDeadlines).toHaveLength(before); // the provider was never called
+    expect(uploads).toHaveLength(1); // and the stored object still has only the first bytes
+    expect(uploads[0]!.bytes).toEqual(BODY);
+  });
+
+  it("★ positive control: a retry after a FAILED export is still allowed, and a DIFFERENT key always is", async () => {
+    const sandboxId = await sandboxWithOutput(ORG_A);
+    const driver = driverFor(ORG_A);
+    // A failed export (the file no longer matches the grant) records no redemption...
+    await transport.writeFiles(sandboxId, [{ path: OUT_PATH, bytes: new TextEncoder().encode("mismatched") }]);
+    await expect(driver.exportArtifact(sandboxId, OUT_PATH, grant(ORG_A), ctx("e-fail"))).rejects.toBeInstanceOf(
+      WireProtocolError,
+    );
+    // ...so the same key can still be exported once the sandbox holds the granted bytes.
+    await transport.writeFiles(sandboxId, [{ path: OUT_PATH, bytes: BODY }]);
+    await driver.exportArtifact(sandboxId, OUT_PATH, grant(ORG_A), ctx("e-retry"));
+    expect(uploads).toHaveLength(1);
+
+    // A different object key (a different artifact of the same attempt) is unaffected.
+    const otherKey = `${objectKeyFor(ORG_A)}-2`;
+    await driver.exportArtifact(sandboxId, OUT_PATH, grant(ORG_A, { objectKey: otherKey, url: urlFor(otherKey) }), ctx("e-other"));
+    expect(uploads.map((u) => u.objectKey)).toEqual([objectKeyFor(ORG_A), otherKey]);
   });
 
   it("a FAR provider that declares artifactExportMode='none' declines honestly, as its own class", async () => {

@@ -177,6 +177,27 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
     : null;
 
   const artifactUploadOrigins: ReadonlySet<string> = new Set(options.artifactUploadOrigins ?? []);
+  /**
+   * DAT-009-3e (Codex P1, third round on PR #557) — object keys whose export has already SUCCEEDED
+   * on this instance. A redemption is ONE-TIME.
+   *
+   * ★ WHY. The grant's integrity fields (`expectedSha256`, `maxBytes`) are WORKER-SUPPLIED and no
+   * control-plane signature covers them — the presigned url binds the checksum ALGORITHM, never the
+   * value. A worker that keeps a url it already redeemed could therefore hand in the same
+   * url/objectKey with a different `expectedSha256` and re-PUT different bytes under the key the
+   * fenced commit already verified. The control plane refuses to MINT a second grant for a
+   * committed artifact (`artifact-transfer-grant.ts`); replaying the first grant went around that,
+   * so the adapter-manager refuses the second redemption itself.
+   *
+   * ★ WHAT THIS IS NOT. It is per-INSTANCE and in-memory: it does not survive a restart and does
+   * not reach a second replica, and two concurrent first-exports of one key can both pass. It
+   * narrows the replay; it does not authenticate the grant. Only a control-plane-signed grant
+   * covering the integrity fields would, and that is a frozen-`worker-protocol` change this ticket
+   * may not make (see the result doc's stop).
+   *
+   * A FAILED export records nothing, so an honest retry still works.
+   */
+  const redeemedUploadKeys = new Set<string>();
 
   const gateDeps: OwnedOpGateDeps | null = gated
     ? { provider, controlPlanePublicKey: controlPlanePublicKey!, now, sandboxLock: new KeyedMutex() }
@@ -271,7 +292,15 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
           if (!(budget > 0)) {
             return Promise.reject(new WireProtocolError("export_artifact refused: no budget left before the teardown reserve"));
           }
-          return provider.exportArtifact(sandboxId, path, grant, { ...ctx, deadlineMs: budget });
+          const objectKey = (grant as { objectKey: string }).objectKey;
+          if (redeemedUploadKeys.has(objectKey)) {
+            return Promise.reject(new WireProtocolError("export_artifact refused: this object key has already been uploaded"));
+          }
+          return provider.exportArtifact(sandboxId, path, grant, { ...ctx, deadlineMs: budget }).then((result) => {
+            // Recorded only on SUCCESS: a failed export must stay retryable.
+            redeemedUploadKeys.add(objectKey);
+            return result;
+          });
         });
       }
       default:
