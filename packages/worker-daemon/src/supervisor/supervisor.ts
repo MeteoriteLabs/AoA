@@ -48,6 +48,8 @@ import {
 } from "./provider.js";
 import type { RunCanaryCoordinator } from "./run-canaries.js";
 import { RUN_OUTPUT_DROPPED_METRIC, createRunOutputCapture } from "./run-output.js";
+import { ENV_PROBE_DEFAULT_DEADLINE_MS, ENV_PROBE_ERROR_CODES, envProbeLogMessage, runEnvProbe } from "./env-probe.js";
+import { PROVIDER_AUTH_ENV_TARGETS } from "../lease/secret-redemption.js";
 import {
   parseServiceWorkload,
   runServiceLifecycle,
@@ -276,6 +278,23 @@ export interface SupervisorDeps {
    * clock. Default 5000.
    */
   readonly secretRedeemDeadlineMs?: number;
+  /**
+   * DEP-017 — the live env-absence probe (`env-probe.ts`). PRESENT = composed: after stage-in and
+   * `attempt_started`, before the tenant command, the probe runs INSIDE the run's sandbox with the
+   * run's own env, then again with two planted canaries (the positive control). Any present
+   * credential class, a probe that did not run, or a control that did not turn red FAILS the
+   * attempt closed. ABSENT (the default) = no probe; the lifecycle is byte-identical. Composed only
+   * when the worker boots with `AOA_WORKER_ENV_PROBE=1` (the DEP-015 shipped-boot overlay).
+   */
+  readonly envProbe?: {
+    /** Per probe execute; default 60 s, clamped to the run's op deadline. */
+    readonly deadlineMs?: number;
+    /** The metadata endpoint to OBSERVE (default `169.254.169.254`); `null` skips it. Test seam. */
+    readonly metadataUrl?: string | null;
+    /** Test seams for the planted control's random values. */
+    readonly randomToken?: () => string;
+    readonly foreignOrganizationId?: () => string;
+  };
 }
 
 export type SupervisorRunStatus = "succeeded" | "failed" | "cancelled" | "create_timeout";
@@ -316,7 +335,10 @@ interface ActiveRun {
   /** H1 — this run's provider-op budget, resolved ONCE at `buildRun` from the handoff (i.e.
    * from `workload.maxRuntimeSeconds`). Governs `create` (⇒ the sandbox TTL) and `execute`;
    * cleanup/teardown keep the base deadline. */
-  readonly opDeadlineMs: number;
+  /** MUTABLE since DEP-017: the env probe CARVES its own elapsed time out of the run's budget
+   * (the R6 "subtracted, not added" rule), and `makeCtx` reads this field LIVE so the supervisor
+   * race and the provider's own ctx stay the SAME number (H1). Without a probe it never moves. */
+  opDeadlineMs: number;
   /**
    * SVC-008b — the live service sequencer's stop handle, or null (every batch run, and a
    * service run before its launch / after it settles).
@@ -807,6 +829,47 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     // 2. attempt_started — the tenant command is running INSIDE the sandbox.
     await events.attemptStarted(created.sandboxId);
 
+    // 2a. DEP-017 — the live env-absence probe, INSIDE this sandbox, with THIS run's env, after
+    // stage-in and before the tenant command. The summary is a `system` log event (scrubbed by the
+    // run's canaries, which the planted values join before they execute) emitted BEFORE any
+    // terminal, so the evidence survives a failure. A failing verdict fails the attempt closed.
+    if (deps.envProbe) {
+      const probeStartedAt = now();
+      const probeSummary = await runEnvProbe({
+        sandboxId: created.sandboxId,
+        env: spec.env,
+        ownOrganizationId: String(handoff.offer.job.organizationId),
+        allowedNames: [...PROVIDER_AUTH_ENV_TARGETS],
+        runCanaries,
+        execute: (input) => run.effect.execute(input, run.makeCtx()),
+        withDeadline,
+        deadlineMs: Math.min(deps.envProbe.deadlineMs ?? ENV_PROBE_DEFAULT_DEADLINE_MS, run.opDeadlineMs),
+        ...(deps.envProbe.metadataUrl !== undefined ? { metadataUrl: deps.envProbe.metadataUrl } : {}),
+        ...(deps.envProbe.randomToken ? { randomToken: deps.envProbe.randomToken } : {}),
+        ...(deps.envProbe.foreignOrganizationId ? { foreignOrganizationId: deps.envProbe.foreignOrganizationId } : {}),
+      });
+      // ★ CARVED FROM the run's budget, never added to it (the R6 rule). The ceiling sits one
+      // teardown headroom under the owned-labels capability window, so a probe that ADDED its
+      // time to a near-ceiling run would push `destroy` past the capability's expiry and leave a
+      // BILLABLE sandbox recorded `orphaned`. `makeCtx` reads this field live, so the provider's
+      // own command timeout shrinks with the supervisor's race.
+      run.opDeadlineMs = Math.max(1_000, run.opDeadlineMs - (now() - probeStartedAt));
+      const absent = probeSummary.verdict === "absent";
+      await events.log({ stream: "system", level: absent ? "info" : "error", message: envProbeLogMessage(probeSummary) });
+      emitOp("env_probe", absent ? "success" : "failed");
+      if (!absent) {
+        const cancelled = run.cancelled;
+        await events.terminal({
+          status: cancelled ? "cancelled" : "failed",
+          exitCode: null,
+          errorCode: cancelled ? "cancelled" : ENV_PROBE_ERROR_CODES[probeSummary.verdict],
+          errorMessage: null,
+        });
+        await escalateCleanup(run, cancelled ? "cancelled_during_env_probe" : "env_probe_failed");
+        return;
+      }
+    }
+
     // 2b. SVC-008b — THE SERVICE BRANCH.
     //
     // ★ Position: after `attempt_started` (the attempt HAS started — the sandbox exists and
@@ -1200,13 +1263,16 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     } catch {
       // Keep the base deadline; a budget-resolution error must never fail a lease.
     }
-    return {
+    const built: ActiveRun = {
       leaseId: handoff.leaseId,
       labels,
       fence,
       effect,
       cleanup,
-      makeCtx: () => ctx(runOpDeadlineMs),
+      // LIVE: `built.opDeadlineMs`, never the captured local — the probe below carves from it,
+      // and a ctx built from a stale copy would hand the provider a budget the supervisor no
+      // longer honours (H1: the race and the ctx must be the same number).
+      makeCtx: () => ctx(built.opDeadlineMs),
       sandboxId: null,
       cancelled: false,
       cleanedUp: false,
@@ -1215,6 +1281,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       opDeadlineMs: runOpDeadlineMs,
       serviceStop: null,
     };
+    return built;
   }
 
   /**

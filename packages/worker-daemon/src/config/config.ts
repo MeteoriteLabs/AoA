@@ -46,6 +46,8 @@ export interface WorkerConfig {
    * flag is what stands between "someone wrote a composition root" and "every daemon
    * running that build starts taking real leases". */
   readonly dispatchEnabled: boolean;
+  /** DEP-017 — `AOA_WORKER_ENV_PROBE`: run the live env-absence probe in every sandbox. Default off. */
+  readonly envProbe: boolean;
   /** `AOA_WORKER_EVENT_OUTBOX_PATH`. `null` when unset — NOT defaulted to a path (a default the
    * container cannot write would turn every inert boot into a failure). The durable event outbox
    * opens here; absence is a dispatch REFUSAL (`no_event_outbox_path`), never a no-op sink. */
@@ -78,6 +80,7 @@ export const ENV = {
   keyStoreMode: "AOA_WORKER_KEY_STORE_MODE",
   targetScope: "AOA_WORKER_TARGET_SCOPE",
   dispatchEnabled: "AOA_WORKER_DISPATCH_ENABLED",
+  envProbe: "AOA_WORKER_ENV_PROBE",
   eventOutboxPath: "AOA_WORKER_EVENT_OUTBOX_PATH",
   concurrencyBatch: "AOA_WORKER_CONCURRENCY_BATCH",
   concurrencyBrowser: "AOA_WORKER_CONCURRENCY_BROWSER",
@@ -174,12 +177,28 @@ function parseDispatchEnabled(env: Env): boolean {
   );
 }
 
+/**
+ * DEP-017 — `AOA_WORKER_ENV_PROBE`. Same strict grammar as the dispatch switch: exactly `"1"`
+ * enables; unset/empty/`"0"` disable; anything else throws, so an intended probe can never be
+ * silently off (a campaign would then read "no probe report" as a lane failure — loud — but the
+ * boot is where the typo is cheapest to name).
+ */
+function parseEnvProbe(env: Env): boolean {
+  const raw = env[ENV.envProbe];
+  if (raw === undefined) return false;
+  const value = raw.trim();
+  if (value === "" || value === "0") return false;
+  if (value === "1") return true;
+  throw new Error(`${ENV.envProbe}=${JSON.stringify(raw)} is not recognised; use "1" to enable the DEP-017 env probe or leave it unset.`);
+}
+
 export function loadWorkerConfig(env: Env): WorkerConfig {
   const controlPlaneBaseUrl = parseControlPlaneUrl(env);
   const enrollmentCodeSource = parseEnrollmentCodeSource(env);
   const keyStoreMode = parseEnumEnv(env, ENV.keyStoreMode, KEY_STORE_MODES);
   const targetScope = parseEnumEnv(env, ENV.targetScope, TARGET_SCOPES);
   const dispatchEnabled = parseDispatchEnabled(env);
+  const envProbe = parseEnvProbe(env);
   // Whitespace is ABSENCE: `openEventOutboxStore("")` would open an anonymous DB that vanishes
   // on restart. `|| null` (NOT `?? null`) folds empty/whitespace to null.
   const eventOutboxPath = env[ENV.eventOutboxPath]?.trim() || null;
@@ -228,6 +247,7 @@ export function loadWorkerConfig(env: Env): WorkerConfig {
     keyStoreMode,
     targetScope,
     dispatchEnabled,
+    envProbe,
     eventOutboxPath,
     concurrency,
     pollTimeoutMs,

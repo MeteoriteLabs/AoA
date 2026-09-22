@@ -545,6 +545,11 @@ export const SHIPPED_BOOT_ADMITTED_DISPATCH_ENV = Object.freeze({
 });
 const SHIPPED_BOOT_ALLOWANCE = Symbol("dep-015-shipped-boot-overlay");
 
+// ★ DEP-017 — every shipped-boot worker runs the live env-absence probe. A worker that loses the
+// flag still runs the journey, and the journey would then read "no probe report" as a lane
+// failure at the end of a paid run; this makes the drop a free, pre-boot red instead.
+export const SHIPPED_BOOT_ENV_PROBE_ENV = Object.freeze({ AOA_WORKER_ENV_PROBE: "1" });
+
 /** Every service that RUNS the worker image — the four named staging workers plus any other
  * service whose image is a worker image OR whose name says it is a worker (a rendered manifest
  * carries a concrete tag, so the image test alone could miss one). Enumerating by a fixed name
@@ -802,6 +807,11 @@ export function evaluateShippedBootOverlayInvariants(base, overlay, options = {}
     }
     if (hasEnvKey(svc, "AOA_WORKER_SANDBOX_PROVIDER")) {
       v.push(`shipped-boot worker '${name}' must NOT construct an in-worker provider ('AOA_WORKER_SANDBOX_PROVIDER')`);
+    }
+    for (const [key, expected] of Object.entries(SHIPPED_BOOT_ENV_PROBE_ENV)) {
+      if (String(envValue(svc, key) ?? "") !== expected) {
+        v.push(`shipped-boot worker '${name}' must set '${key}' to exactly ${JSON.stringify(expected)} (DEP-017: the live env-absence probe runs in every shipped-boot sandbox)`);
+      }
     }
   }
   // (3) The provider-control boundary still holds on the merged manifest: E2B_API_KEY only on

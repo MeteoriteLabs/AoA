@@ -1761,3 +1761,56 @@ A default-sink case covers the log itself. Pure cases pin the fallbacks:
 - a cyclic cause chain terminates.
 
 Run against the pre-fix `server.ts`, the five wire cases fail (RED) and the four pure ones pass. With the fix, all nine pass, and the whole adapter-manager suite passes: 169 tests in 19 files.
+
+---
+
+## E6-F025 - the DEP-017 env probe cannot see a control-plane MIS-RESOLUTION of a tenant's provider key, and the keyed lane shares one key across tenants so the case is invisible by value
+
+**Status:** `open` - Owner: `unowned`
+**Severity:** MEDIUM
+**Filed:** 2026-09-23, by the `DEP-017` build, from the Codex review of PR #565; disposition ruled by
+the M1 planning session under founder delegation **F2** - *file it, do not build it*.
+
+**The property, stated precisely.** The live env-absence probe
+(`packages/worker-daemon/src/supervisor/env-probe.ts`) detects, inside a real distributed sandbox:
+
+- any credential class of the section-9 taxonomy present under any name, POSIX or not;
+- a FOREIGN tenant's credential by VALUE, under ANY name including an allowed one, because the
+  lane plants a per-tenant marked canary (`plantedTenantCanary`, `ENV_PROBE_CANARY_MARKER`) whose
+  Organization the probe compares against the run's own;
+- an allowed provider-auth name the run did not redeem (`unredeemed_provider_credential`);
+- a value under an allowed name that is not the one THIS WORKER REDEEMED
+  (`provider_credential_value_mismatch`, a salted per-run digest comparison).
+
+**What it CANNOT see.** A control-plane **mis-resolution**: a redemption that hands this run a
+legitimate-looking credential belonging to another Company. The worker's expectation is derived from
+`spec.env`, i.e. from whatever redemption returned, so a wrong value defines its own expectation and
+the digest comparison passes. The marker check is what would catch it - and only when the leaked
+value is one of the lane's planted canaries.
+
+**Why it is invisible in the keyed lane today.** The shipped-boot journey seeds every enabled tenant
+with the SAME repository `ANTHROPIC_API_KEY` (`scripts/m1-shipped-boot/journey.mjs`, the `seed`
+phase), because only one such secret exists. For that credential the tenants' values are equal by
+construction, so no value-based check - marker or digest - can separate them. The per-tenant marked
+canary is saved as each tenant's OpenAI key, which `claude_local` never redeems, so the marker arm
+is exercised by the in-sandbox planted control rather than by a real redemption.
+
+**Closure routes (both outside `DEP-017`).**
+1. **A company-scoped value fingerprint on the resolve reply.** The control plane mints, beside the
+   value, a fingerprint bound to the owning Company (the resolve reply today carries `envTarget`,
+   `value` and an optional owned-labels capability - `classifyResolveResponse`,
+   `packages/worker-daemon/src/lease/secret-redemption.ts` - and nothing that binds the value to a
+   tenant). The worker would then compare against an expectation it did not derive from the value.
+   This is a server change plus a new reply field.
+2. **Tenant-distinct exercised credentials in the keyed lane.** Give each enabled tenant its own
+   real provider key, so a mis-resolution shows up as a value difference. This is a founder/ops
+   action with cost (more provisioned keys), not an engineering change.
+
+**Consequence for the M1a claim.** The `M1a` isolation claim built on criterion 5 EXCLUDES
+control-plane mis-resolution of a tenant's provider key. It covers what a sandbox OBSERVES, not
+whether the control plane resolved the right credential in the first place.
+
+**Not `accepted`:** nobody has accepted the residual; it is filed so the gate record cannot read the
+probe as broader than it is. Resolve = build route 1 or provision route 2, prove it with a
+cross-tenant mis-resolution case, then flip this Status and delete the `E6-F025` key in
+`scripts/finding-ownership.json` in the SAME commit.

@@ -568,6 +568,8 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
           workDir: process.cwd(),
           logger,
           metrics,
+          // DEP-017 — the live env-absence probe (default off; the shipped-boot overlay sets it).
+          envProbe: config.envProbe,
         });
         runtime = composed;
         // Wave-4 — seed the heartbeat, and start the poll loop ONLY after the first SUCCESSFUL beat.
