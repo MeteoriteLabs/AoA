@@ -297,6 +297,44 @@ test("a model arm is NOT a measurement without a CLI, a key, a returned exec, or
   assert.equal(verdictANeg({ ...good, census: { before: { outcome: "faulted" }, after: { outcome: "ok" } } }).reason, "census-listing-faulted");
 });
 
+test("a model arm that FAILED after reaching the model is inconclusive unless it holds its positive signal", () => {
+  // Codex review (PR #551): a non-zero exit, or an is_error final frame, must not be read as
+  // "the agent chose not to write" — R10's "neither writes" is outcome (iii).
+  const failedStream = readClaudeStream(
+    [
+      JSON.stringify({ type: "system", subtype: "init", cwd: HOME_DIR, permissionMode: "bypassPermissions" }),
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "working" }] } }),
+      JSON.stringify({ type: "result", subtype: "error_during_execution", is_error: true, result: "tool failure" }),
+    ].join("\n"),
+  );
+  const helloDelta = censusDelta(diffSnapshots([], [file(`${OUTPUT_ROOT}/hello.txt`)]), { staged: STAGED });
+  const noDelta = censusDelta(diffSnapshots([], []), { staged: STAGED });
+
+  const exit1 = (o) => ({ ...o, exec: { channel: "returned", exitCode: 1 } });
+  // A-dir: no deliverable + a failed run = INCONCLUSIVE, never "did-not-write".
+  assert.equal(verdictCompliance("A-dir", exit1(modelObs("A-dir", { delta: noDelta }))).state, "inconclusive");
+  assert.match(verdictCompliance("A-dir", exit1(modelObs("A-dir", { delta: noDelta }))).reason, /failed-run-without-a-positive-signal\(exit=1/);
+  // …but a file written BEFORE the failure is real evidence (PC-10's case).
+  const wroteThenFailed = verdictCompliance("A-dir", exit1(modelObs("A-dir", { delta: helloDelta, hello: { outcome: "ok", content: "N-1" } })));
+  assert.equal(wroteThenFailed.state, "observed");
+  assert.equal(wroteThenFailed.findings.wroteHelloAtRoot, true);
+  assert.equal(wroteThenFailed.findings.exitCode, 1);
+  // An is_error final frame counts as failure even on exit 0.
+  const errFrame = { ...modelObs("A-dir", { delta: noDelta }), stream: failedStream };
+  assert.equal(verdictCompliance("A-dir", errFrame).state, "inconclusive");
+  // A-neg: a failed run that mutated NOTHING proves nothing; one that mutated is still evidence.
+  assert.equal(verdictANeg(exit1(modelObs("A-neg", { delta: noDelta }))).state, "inconclusive");
+  const mutatedThenFailed = verdictANeg(exit1(modelObs("A-neg", { delta: censusDelta(diffSnapshots([], [file(`${OUTPUT_ROOT}/x`)]), { staged: STAGED }) })));
+  assert.equal(mutatedThenFailed.state, "observed");
+  assert.equal(mutatedThenFailed.reason, "cli-mutated-under-root");
+  // And the rows that read a failed arm become undecidable rather than false.
+  const v = baseline();
+  v[13] = verdictCompliance("A-dir", exit1(modelObs("A-dir", { delta: noDelta })));
+  const rows = evaluateDecisionTable(v);
+  assert.equal(rowOf(rows, "R10").fired, "undecidable");
+  assert.equal(rowOf(rows, "R12").fired, true);
+});
+
 test("compliance needs the nonce in R/hello.txt, not merely a file of that name", () => {
   const d = censusDelta(diffSnapshots([], [file(`${OUTPUT_ROOT}/hello.txt`)]), { staged: STAGED });
   assert.equal(verdictCompliance("A-dir", modelObs("A-dir", { delta: d, hello: { outcome: "ok", content: "wrong" } })).findings.wroteHelloAtRoot, false);

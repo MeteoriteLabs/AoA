@@ -523,12 +523,24 @@ export function verdictCensusControl(obs) {
  * The common gate of a model arm. It is NOT a measurement unless the CLI ran to a return
  * and a model actually answered (§3.8: an auth-failed CLI still emits frames).
  */
-function modelArmGate(arm, obs) {
+function modelArmGate(arm, obs, positiveSignal = false) {
   if (obs?.cli?.present !== true) return inconclusive(arm, "template-without-cli");
   if (obs.keyPresent !== true) return inconclusive(arm, "no-model-provider-key");
   if (obs.census?.before?.outcome !== "ok" || obs.census?.after?.outcome !== "ok") return inconclusive(arm, "census-listing-faulted");
   if (obs.exec?.channel !== "returned") return inconclusive(arm, `exec-${String(obs.exec?.channel)}`);
   if (!obs.stream?.modelContact) return inconclusive(arm, "no-model-contact-evidence");
+  // ★★★ A FAILED RUN IS NOT A NEGATIVE RESULT — but it can still carry a POSITIVE one.
+  // Codex review (PR #551). The CLI can reach a model and then fail during a tool call or at
+  // finalisation. Reading "no file appeared" off such a run is a false negative, and the rows it
+  // feeds are the dangerous ones: R10's "neither writes" is outcome (iii). So a non-zero exit, or
+  // a final `result` frame with `is_error`, makes the arm INCONCLUSIVE — unless the arm already
+  // holds its positive signal (a file it was looking for exists), because a write that happened
+  // before the failure is real evidence and PC-10 is exactly the "output survives a non-zero
+  // exit" case.
+  const failed = obs.exec?.exitCode !== 0 || obs.stream?.finalIsError === true;
+  if (failed && !positiveSignal) {
+    return inconclusive(arm, `failed-run-without-a-positive-signal(exit=${String(obs.exec?.exitCode)},finalIsError=${String(obs.stream?.finalIsError)})`);
+  }
   return null;
 }
 
@@ -536,11 +548,18 @@ function modelArmGate(arm, obs) {
  * A-neg — the CLI self-write census (W2). obs: {cli, keyPresent, census:{before,after}, delta, stream, exec}
  */
 export function verdictANeg(obs) {
-  const gate = modelArmGate("A-neg", obs);
+  const d = obs?.delta;
+  const removedUnderRoot = d?.removedUnderRoot ?? [];
+  const cwdMutations = [...(d?.removedCwdOther ?? []), ...(d?.stagedMutated ?? [])];
+  // A-neg's positive signal is a MUTATION: the CLI wrote or deleted something. That survives a
+  // failed exit; "nothing happened" does not.
+  const mutated =
+    (d?.filesUnderRoot?.length ?? 0) > 0 ||
+    removedUnderRoot.length > 0 ||
+    (d?.filesCwdOther?.length ?? 0) > 0 ||
+    cwdMutations.length > 0;
+  const gate = modelArmGate("A-neg", obs, mutated);
   if (gate) return gate;
-  const d = obs.delta;
-  const removedUnderRoot = d.removedUnderRoot ?? [];
-  const cwdMutations = [...(d.removedCwdOther ?? []), ...(d.stagedMutated ?? [])];
   const reason =
     d.filesUnderRoot.length > 0 || removedUnderRoot.length > 0
       ? "cli-mutated-under-root"
@@ -556,6 +575,8 @@ export function verdictANeg(obs) {
     filesCliHomeState: d.filesCliHomeState,
     permissionMode: obs.stream.permissionMode,
     initCwd: obs.stream.initCwd,
+    exitCode: obs.exec.exitCode,
+    finalIsError: obs.stream.finalIsError,
   });
 }
 
@@ -563,12 +584,14 @@ export function verdictANeg(obs) {
  * A-dir / A-cwd / A-decl. obs adds {nonce, helloAtRoot:{outcome, content}, helloElsewhere: string[]}
  */
 export function verdictCompliance(arm, obs) {
-  const gate = modelArmGate(arm, obs);
+  // The compliance arms' positive signal is the deliverable itself: if `R/hello.txt` holds the
+  // arm's nonce, the placement question is answered whatever the exit code did afterwards.
+  const wroteAtRoot = obs?.helloAtRoot?.outcome === "ok" && String(obs.helloAtRoot.content ?? "").includes(obs.nonce);
+  const gate = modelArmGate(arm, obs, wroteAtRoot);
   if (gate) return gate;
   if (obs.helloAtRoot?.outcome === "faulted") return inconclusive(arm, "read-faulted");
   const d = obs.delta;
   const helloPath = `${OUTPUT_ROOT}/${HELLO_FILE}`;
-  const wroteAtRoot = obs.helloAtRoot?.outcome === "ok" && String(obs.helloAtRoot.content ?? "").includes(obs.nonce);
   const findings = {
     wroteHelloAtRoot: wroteAtRoot,
     helloElsewhere: obs.helloElsewhere ?? [],
@@ -578,6 +601,8 @@ export function verdictCompliance(arm, obs) {
     filesCliHomeState: d.filesCliHomeState,
     permissionMode: obs.stream.permissionMode,
     initCwd: obs.stream.initCwd,
+    exitCode: obs.exec.exitCode,
+    finalIsError: obs.stream.finalIsError,
   };
   if (arm === "A-decl") {
     findings.declaration = readDeclaration(obs.stream.finalResultText, d.filesUnderRoot);

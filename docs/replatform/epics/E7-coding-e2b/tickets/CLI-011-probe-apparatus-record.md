@@ -133,6 +133,14 @@ imports buildSandboxInvocation…"*).
   `json.dumps` first. `evaluateWorkflowShape` fails a raw `": "${…}"` interpolation with the code
   `fallback-unescaped-input`, and there is a positive control for each input. I ran the step
   locally with the template ``bad"name<newline>x``, and it wrote valid JSON.
+- **P1 (seventh review): a failed model run is not a negative result.** The CLI can reach a model
+  and then fail during a tool call or at finalisation. An arm with a non-zero exit, or an
+  `is_error` final `result` frame, is now **inconclusive** — unless it already holds its positive
+  signal, because a write that happened before the failure is real evidence (PC-10's case). The
+  positive signal is `R/hello.txt` carrying the arm's nonce for A-dir/A-cwd/A-decl, and any
+  mutation for A-neg. This matters most for R10 ("neither writes" is outcome (iii)), which now
+  reads `undecidable` instead of firing on a broken run. `exitCode` and `finalIsError` are in every
+  model arm's findings. RED: 1 of 38 fails on the previous core. GREEN: 38/38.
 - **P2 (sixth review): a record that cannot be written FAILS the run.** A failed `writeFileSync`
   used to be caught and logged, so a run that measured everything could finish green while the only
   artefact published was the workflow's `inconclusive` fallback — E7-F025 from the other side.
