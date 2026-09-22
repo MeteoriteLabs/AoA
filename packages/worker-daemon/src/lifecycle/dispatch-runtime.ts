@@ -513,11 +513,23 @@ export async function composeDispatchRuntime(deps: ComposeDispatchRuntimeDeps): 
       logger: deps.logger,
     });
     const result = await reconciler.run();
-    // The reconcile COMPLETED. Prune every row it accounted for: the candidates it actually PROBED
-    // (a map entry exists for each) and any a previous boot left claimed. A candidate that was never
-    // probed — because its claim failed — is left in the store, unclaimed, for the next boot. A prune
-    // failure leaves a claimed row, which a later boot names and prunes without probing.
-    const probed = candidates.filter((offer) => result.leaseProbes.has(String(offer.leaseId)));
+    // The reconcile COMPLETED. Prune every row it accounted for: the candidates whose probe was
+    // actually ATTEMPTED, and any a previous boot left claimed. A candidate that was never probed is
+    // left in the store for the next boot — either because its claim failed, or because the pass
+    // could not obtain a session at all. A prune failure leaves a claimed row, which a later boot
+    // names and prunes without probing.
+    //
+    // ★ A map ENTRY is not proof of a probe (Codex P2, PR #553). When `session.get()` throws,
+    // `probeLeaseAuthority` marks EVERY candidate `unreachable` with `probeKind: "unprobed"` without
+    // calling `beforeProbe` and without sending a request, so a presence-only filter would delete
+    // rows this daemon never probed, never claimed and never renewed — a transient session failure
+    // at boot would permanently lose exactly the state WRK-013 exists to keep. `"unprobed"` is
+    // written at ONE site (`startup-reconcile.ts`, the no-session arm); every other entry carries
+    // the renew attempt's own kind, so it is an exact discriminator.
+    const probed = candidates.filter((offer) => {
+      const entry = result.leaseProbes.get(String(offer.leaseId));
+      return entry !== undefined && entry.probeKind !== "unprobed";
+    });
     for (const offer of [...probed, ...carriedClaims]) {
       try {
         candidateStore?.remove(String(offer.leaseId));

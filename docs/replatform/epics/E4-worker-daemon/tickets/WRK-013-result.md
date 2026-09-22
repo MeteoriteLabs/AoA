@@ -128,6 +128,7 @@ write-on-ACK, never from a test `put()`.
 | 13 | *(Codex P1)* the claim is per lease, at its own probe | ★ 13: two candidates; the boot claims only the one it is about to probe and dies. The next boot names **X** `claimed_by_previous_boot` with **0** renews, and **probes Y** (one renew, Y's own identity) and fences it |
 | 14 | a candidate whose CLAIM fails is neither probed nor pruned | ★ 14: a store whose `claim` throws produces **0** renews and a named `lease_candidate_write_failed`; the row survives, and the next lifetime probes it once and fences it |
 | 15 | *(Codex P1)* a fenced lease's sandbox is torn down | ★ 15: on the desktop path (a process-level provider, an Organization-scoped target) the crashed run's sandbox is **destroyed** and its process tree is provably gone, through the cleanup authority with an ignored cancel escalated. Unit: the flag tears down; **without** it the sandbox survives (positive control) |
+| 16 | *(Codex P2)* a boot with no SESSION keeps its candidates | ★ 16: the pass cannot obtain a session, so it probes nothing (**0** renews) and the row **survives**; the next lifetime probes it once and fences it |
 
 ### Mutation and positive-control table (each mutation reverted afterwards; focused command, 65 tests)
 
@@ -156,6 +157,7 @@ write-on-ACK, never from a test `put()`.
 | M22 | prune every candidate, probed or not | 1: ★ 14 |
 | M23 | the composed daemon does not set `fencedLeasesAreStale` (the fourth Codex P1's shape) | 1: ★ 15 |
 | M24 | tear down a live-owned sandbox regardless of the flag | 4: the new unit case and three WRK-007 CORE cases — the flag's default is what keeps them green |
+| M25 | prune on map PRESENCE alone (the fifth Codex finding's shape) | 1: ★ 16 |
 
 ### CI
 
@@ -332,6 +334,29 @@ reviewed commits stay ancestors. Merge commit: `80af143b1a76ba668c252b0a96cac540
   set minus the six excluded by the rules, plus `check-evidence-immutability --base
   origin/docs/replatform-program`: **failures: 0**.
 - CI on the merged head is recorded in §7 once it completes.
+
+### ★ A fifth Codex finding (P2), on `189f5d921`: a boot with no session must KEEP its candidates
+
+Checked at source and **real**, and it is the same class as the third P1: state this reconciler
+exists to keep, discarded. When `session.get()` throws, `probeLeaseAuthority` marks **every**
+candidate `unreachable` with `probeKind: "unprobed"` — without calling `beforeProbe` and without
+sending a request. The post-pass prune filtered on **presence** in `leaseProbes`, so a transient
+session failure at boot deleted rows this daemon never probed, never claimed and never renewed. A
+later restart could then neither probe nor fence those leases, nor associate their sandboxes.
+
+The prune now keeps only entries whose probe was actually **attempted**:
+`entry !== undefined && entry.probeKind !== "unprobed"`. The discriminator is exact — confirmed at
+source, `"unprobed"` is written at exactly ONE site (`startup-reconcile.ts`, the no-session arm);
+the other two assignments carry the renew attempt's own kind and `"transient"`. Direction of
+failure before the fix was "lose the record", never "renew twice", so F5 was not breached.
+
+Evidence: ★ 16. Mutation **M25** (prune on presence alone) turns it red. After it: focused command
+**83 tests**; the whole `@armyofagents/worker-daemon` suite **164 files, 1151 passed, 1 skipped**,
+no `Errors` line; `tsc --noEmit` and `build` clean; the full guard set: failures 0.
+
+★ *One full-suite run between these two fixes reported a single failure that the next two runs did
+not reproduce (1151 passed each), and its name was not captured. It is recorded here rather than
+omitted. The composed suite specifically ran green four times in a row afterwards.*
 
 ### ★ A fourth Codex P1, on `2cafa51c6`: tear down a FENCED lease's sandbox
 

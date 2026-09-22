@@ -37,6 +37,8 @@
 //  14  a candidate whose CLAIM fails is neither probed nor pruned: the next boot still has it — "★ 14"
 //  15  (Codex review, PR #553) on the desktop path a FENCED lease's sandbox is torn down, not
 //      left running to the provider's TTL                                              — "★ 15"
+//  16  (Codex review, PR #553) a boot that cannot get a SESSION probes nothing and KEEPS every
+//      candidate: a transient failure never discards the state WRK-013 exists to keep — "★ 16"
 // -----------------------------------------------------------------------------
 
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -146,6 +148,8 @@ interface LifetimeOptions {
   /** Replace the store opener (models a store whose writes fail). */
   readonly openLeaseCandidates?: Parameters<typeof composeDispatchRuntime>[0]["openLeaseCandidates"];
   readonly makeStartupReconciler?: Parameters<typeof composeDispatchRuntime>[0]["makeStartupReconciler"];
+  /** Compose with a session store that cannot produce a session (a TRANSIENT failure, not terminal). */
+  readonly sessionBroken?: boolean;
   readonly provider?: SandboxProvider;
   readonly makeRunProvider?: () => SandboxProvider;
   readonly withStore?: boolean;
@@ -156,18 +160,31 @@ interface LifetimeOptions {
 
 async function lifetime(opts: LifetimeOptions = {}): Promise<DispatchRuntime> {
   const self = opts.self ?? (await makeSelfModel());
-  const store = new SessionStore(
-    {
-      now: () => Date.now(),
-      renew: async () => {
-        throw new Error("unexpected session renew");
-      },
-      bootstrap: async () => {
-        throw new Error("unexpected session bootstrap");
-      },
-    },
-    worker.session,
-  );
+  const store = opts.sessionBroken
+    ? new SessionStore(
+        {
+          now: () => Date.now(),
+          renew: async () => {
+            throw new Error("control plane unreachable");
+          },
+          bootstrap: async () => {
+            throw new Error("control plane unreachable");
+          },
+        },
+        null, // no seeded session: ensureFresh fails TRANSIENTLY (the store never goes stopped)
+      )
+    : new SessionStore(
+        {
+          now: () => Date.now(),
+          renew: async () => {
+            throw new Error("unexpected session renew");
+          },
+          bootstrap: async () => {
+            throw new Error("unexpected session bootstrap");
+          },
+        },
+        worker.session,
+      );
   const rt = await composeDispatchRuntime({
     provider: opts.makeRunProvider ? undefined : (opts.provider ?? createFakeSandboxProvider({})),
     makeRunProvider: opts.makeRunProvider ? (() => opts.makeRunProvider!()) : undefined,
@@ -690,5 +707,27 @@ describe("WRK-013 — a restart reconciles the leases it held (composed, in-proc
     // ... and its supervisor-less sandbox was destroyed, its process tree provably gone.
     expect(provider.peek("sbx-fenced")?.state).toBe("destroyed");
     expect(provider.processTreeAlive("sbx-fenced")).toBe(false);
+  });
+
+  it("★ 16 — a boot that cannot obtain a SESSION probes nothing and KEEPS its candidates for the next boot", async () => {
+    await ackThenCrash([offerFor(ORG_X, LEASE_X, JOB_X, FENCE_X)]);
+    fake.seedLeaseAuthority(LEASE_X, { live: true });
+
+    // Lifetime B cannot acquire a session. probeLeaseAuthority marks every candidate `unprobed`
+    // WITHOUT calling beforeProbe and without sending a request.
+    const b = await lifetime({ sessionBroken: true });
+    await b.start();
+    expect(renewRequestsFor(LEASE_X)).toHaveLength(0); // nothing was probed, so nothing was renewed
+    crash(b);
+
+    // The candidate SURVIVED that boot: a later lifetime with a working session probes and fences it.
+    const lines: LogLine[] = [];
+    const c = await lifetime({ logger: recordingLogger(lines) });
+    await c.start();
+    expect(renewRequestsFor(LEASE_X)).toEqual([
+      { leaseId: LEASE_X, workerId: POLL_FIXTURE_IDS.worker, jobId: JOB_X, attempt: 1, fenceToken: FENCE_X },
+    ]);
+    expect(reasonsIn(lines)).not.toContain(LEASE_CANDIDATE_REASONS.empty);
+    expect(lines.some((l) => l.bindings.reason === LEASE_CANDIDATE_REASONS.fenced && l.bindings.leaseId === LEASE_X)).toBe(true);
   });
 });
