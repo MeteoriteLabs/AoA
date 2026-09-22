@@ -456,6 +456,9 @@ terms** and says nothing about capability.
   The usage **producer** is proven live (real tokens, below); pricing end-to-end is `DEP-016`'s
   assertion and `E3-F037`'s remaining half.
 - Nothing about tools (`CLI-016`'s surface is off here) or output (`M1b`).
+- **Not `usage` CARDINALITY.** The bundle shows the STORED per-run usage, not a count of accepted
+  `usage` events. `WRK-018`'s acceptance 1 therefore stays PENDING on this run (Codex P1 on PR #564);
+  the count-per-attempt assertion is `DEP-016`'s.
 
 **Status:** this record's acceptance items are now met. `Status` stays `gate_review` until a
 **distinct reviewer** re-reviews (attempt 2) — attempt 1 was `changes_requested` on the citation

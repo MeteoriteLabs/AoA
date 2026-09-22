@@ -248,7 +248,7 @@ Both gained the DAT-009 slice-3c export hook (`79961c97c`, `f5e2aff1f`). That is
 |---:|---|---|---|---|
 | 1 | M1 review-batch-2A independent reviewer (Claude Opus 5) | `ad4cdfdf28ddb8bb66b730a4b9f66f7de2e7785f` | `approved` | §0 true at source (argv both sides; real fixture's final result line). Run `35593307741` per job: `verify (2)` 15+11, `verify (3)` 28+5+7+11+5 — all match. Four Codex threads resolved, clean on the final heads. Focused rerun 65 + 7 + 5 + 5, boundary PASS. M2 (2 failed) and M1 (9 failed) reproduced. F10 real. **Acceptance 1 (keyed F8 run) OPEN**; not claimed met. |
 
-## Keyed acceptance 1 — MET (added 2026-09-23 by the M1 planning session)
+## Keyed acceptance 1 — the keyed run HAPPENED; acceptance 1 stays **PENDING** (added 2026-09-23, corrected the same day)
 
 Acceptance 1 (*"one real keyed run emits exactly one `usage` equal to the result line"*) was recorded
 as **PENDING** above, because the keyed dispatch is the planning session's under founder ruling F8.
@@ -278,5 +278,25 @@ stays open until that lands. `E3-15-budget` stays `unwired`.
 events on the wire. "Exactly one `usage` event" is pinned by this ticket's keyless tests on all three
 lanes; the keyed run corroborates that the one stored usage carries the result line's real numbers.
 
-**Status:** `gate_review`. The distinct reviewer approved the code at attempt 1 and held the flip for
-exactly this item; a short re-review (attempt 2) may now set `complete`.
+★★★ **CORRECTION, same day (Codex P1 on PR #564, and it is right).** An earlier revision of this
+section marked acceptance 1 **MET** while its own "exactness caveat" conceded that the evidence does
+not count `usage` events. That is the programme's own failure class — an acceptance declared met on
+evidence that does not establish it — so it is withdrawn here rather than argued.
+
+**What the keyed run DOES establish:** the producer works live. Real `claude_local` token counts,
+parsed from the shipped stream inside a real E2B sandbox, reached the control plane and were stored
+(the table above). Before this run, nothing proved the channel end to end on the real lane.
+
+**What acceptance 1 additionally requires, and what is still owed:** *"exactly one `usage` equal to
+the result line"* is a CARDINALITY claim about the event stream. A stored `usage_json` row cannot
+distinguish one event from a duplicate or a replay. What is owed is, for the keyed attempt:
+- the count of accepted `usage` events in `job_events` for that attempt — which must be exactly 1; and
+- a comparison of that event's numbers with the CLI result line.
+
+**Where that is being collected:** `DEP-016`'s spine assertions run against the real ingest and
+already count rows per attempt; the cardinality assertion is added there, and the keyed lane records
+it. Until a keyed run carries that assertion, acceptance 1 is **NOT met**.
+
+**Status:** `gate_review`, and it must stay there. The distinct reviewer approved the CODE at attempt
+1 and held the flip for exactly this item. A `complete` flip is not available until the cardinality
+evidence exists.
