@@ -46,7 +46,7 @@
     },
     "packages/sandbox-fake-provider": {
       "mode": "pinned",
-      "count": 4
+      "count": 5
     },
     "packages/sandbox-provider-contract": {
       "mode": "pinned",
@@ -74,7 +74,7 @@
     },
     "scripts": {
       "mode": "pinned",
-      "count": 68
+      "count": 69
     },
     "server": {
       "mode": "floor",
@@ -82,7 +82,7 @@
     },
     "tests": {
       "mode": "pinned",
-      "count": 107
+      "count": 108
     },
     "ui": {
       "mode": "floor",

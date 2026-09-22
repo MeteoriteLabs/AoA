@@ -295,6 +295,11 @@
       "workflow": "pr.yml",
       "step": "Image admission verifier (DEP-001)"
     },
+    "scripts/lib/__tests__/m1-spine-assertions.test.mjs": {
+      "status": "runs",
+      "workflow": "pr.yml",
+      "step": "m1-spine profile verdict self-test (DEP-016)"
+    },
     "scripts/lib/__tests__/installer-admission.test.mjs": {
       "status": "runs",
       "workflow": "pr.yml",

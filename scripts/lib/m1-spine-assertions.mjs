@@ -1,0 +1,252 @@
+// -----------------------------------------------------------------------------
+// DEP-016 — the m1-spine campaign profile's tenant set and its VERDICT functions.
+//
+// Pure: no I/O, no Docker, no PostgreSQL. The LIVE profile (tests/d1/m1-spine.test.mjs) gathers
+// rows from a running D1 stack and passes them here; the self-test
+// (scripts/lib/__tests__/m1-spine-assertions.test.mjs) proves each verdict can say NO. Keeping
+// the verdicts pure is what lets a PR prove them: the live half runs only in the D1 merge-train.
+//
+// What the profile asserts (E6 implementation plan §4c DEP-016, as amended at S0-8):
+//   * F10 multi-tenant: three Organizations — two enabled through the per-Organization rollout
+//     policy (`AOA_DISTRIBUTED_EXECUTION_ROLLOUT`) and one CONTROL that is absent from it — with
+//     the SAME policy on every control-plane replica;
+//   * the deployment-wide crew switch `AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED` is off on every
+//     replica (it has no per-Organization dimension, so it would arm crew for every tenant);
+//   * per enabled tenant, a handed-off attempt through the REAL ingest writes EXACTLY ONE
+//     `cost_events` row with cost > 0 attributed to that tenant's own Company, ONE applied
+//     `authoritative_cost` receipt of that tenant, and the JOB-017 audit rows
+//     (`job.attempt_started`, `job.attempt_terminal`) of that tenant;
+//   * the control tenant is refused: the real placement authority, on every replica, decides
+//     `legacy` because the Organization is disabled, it is offered no work, and it has no events,
+//     cost rows or receipts.
+// -----------------------------------------------------------------------------
+
+/** Every cost violation's message carries this, so the workflow's usage-suppressed positive
+ * control can prove it went red for the RIGHT reason (and not, say, a bring-up failure). */
+export const M1_SPINE_COST_MARKER = "[m1-spine:cost]";
+
+function tenant(key, n) {
+  // Fixed ids: the rollout policy is static env on the replicas, so the Organizations it names
+  // must be known before the stack boots. Version-4-shaped so every uuid validator accepts them.
+  const hex = n.toString(16);
+  return Object.freeze({
+    key,
+    organizationId: `0d016${hex}00-0000-4000-8000-00000000000${hex}`,
+    companyId: `0d016${hex}01-0000-4000-8000-00000000000${hex}`,
+    agentId: `0d016${hex}02-0000-4000-8000-00000000000${hex}`,
+    issuePrefix: `M1S${key}`,
+  });
+}
+
+/** The F10 tenant set: two enabled Organizations and one control. */
+export const M1_SPINE_TENANTS = Object.freeze({
+  enabled: Object.freeze([tenant("A", 0xa), tenant("B", 0xb)]),
+  control: tenant("C", 0xc),
+});
+
+/** The model every enabled tenant's agent runs; a KNOWN rate in the versioned schedule
+ * (`server/src/services/internal-agent/cost-model.ts` RATES), so the fail-closed resolver prices it. */
+export const M1_SPINE_AGENT_MODEL = "claude-sonnet-4-6";
+
+/** The workload the profile runs and the rollout enables. */
+export const M1_SPINE_WORKLOAD = "batch";
+
+/**
+ * The exact `AOA_DISTRIBUTED_EXECUTION_ROLLOUT` value on every control-plane replica. The two
+ * enabled Organizations are `canary` (CLI-006: placement sees `active`, so their attempts are
+ * lease-eligible); the control Organization is ABSENT, which `parseDistributedExecutionRolloutMap`
+ * reads as disabled.
+ */
+export const M1_SPINE_ROLLOUT_ENV_VALUE = JSON.stringify({
+  organizations: Object.fromEntries(
+    M1_SPINE_TENANTS.enabled.map((t) => [t.organizationId, { mode: "canary", workloads: [M1_SPINE_WORKLOAD] }]),
+  ),
+});
+
+const CONTROL_PLANE_REPLICAS = Object.freeze(["control-plane", "control-plane-b"]);
+export { CONTROL_PLANE_REPLICAS as M1_SPINE_CONTROL_PLANE_REPLICAS };
+
+function violation(code, message) {
+  return { code, message: code.startsWith("cost:") ? `${M1_SPINE_COST_MARKER} ${message}` : message };
+}
+
+// ── the committed override (static; runs in pr.yml) ───────────────────────────
+
+/**
+ * Text-level checks of `docker/d1/m1-spine.override.yml`. Deliberately textual: the file uses
+ * compose's `!override` tag, which the repo's dependency-free yaml-lite does not parse, and the
+ * three properties below are all a matter of what the file literally says.
+ */
+export function evaluateSpineOverrideText(text) {
+  const out = [];
+  const src = String(text);
+  const rolloutLines = src.match(/^\s*AOA_DISTRIBUTED_EXECUTION_ROLLOUT:\s*'([^'\n]*)'\s*$/gm) ?? [];
+  const values = rolloutLines.map((line) => line.replace(/^\s*AOA_DISTRIBUTED_EXECUTION_ROLLOUT:\s*'/, "").replace(/'\s*$/, ""));
+  const exact = values.filter((v) => v === M1_SPINE_ROLLOUT_ENV_VALUE).length;
+  if (exact !== CONTROL_PLANE_REPLICAS.length || values.length !== CONTROL_PLANE_REPLICAS.length) {
+    out.push(violation(
+      "override:rollout_not_on_every_replica",
+      `expected the declared rollout value on exactly ${CONTROL_PLANE_REPLICAS.length} replicas, found ${exact} exact of ${values.length}`,
+    ));
+  }
+  for (const replica of CONTROL_PLANE_REPLICAS) {
+    if (!new RegExp(`^  ${replica}:\\s*$`, "m").test(src)) {
+      out.push(violation("override:rollout_not_on_every_replica", `replica ${replica} has no service block`));
+    }
+  }
+  if (/AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED/.test(src.replace(/^\s*#.*$/gm, ""))) {
+    out.push(violation("override:crew_switch_present", "the profile must not set the deployment-wide crew switch"));
+  }
+  if (!/^  worker-a:\n    profiles: \[[^\]]+\]\s*$/m.test(src)) {
+    out.push(violation("override:worker_a_not_excluded", "worker-a must be moved out of the default profile (one-worker topology)"));
+  }
+  return out;
+}
+
+// ── per replica ──────────────────────────────────────────────────────────────
+
+/**
+ * @param {object} o
+ * @param {string} o.replica
+ * @param {string|null} o.rolloutRaw   the replica's raw AOA_DISTRIBUTED_EXECUTION_ROLLOUT
+ * @param {boolean} o.deploymentEnabled readDistributedExecutionDeploymentFlag on the replica
+ * @param {Record<string,string>} o.resolved organizationId -> resolveRunRolloutState(...)
+ * @param {string|null} o.crewRaw       the raw AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED (null = unset)
+ * @param {boolean|null} o.crewEnabled  readDistributedCrewRolloutFlag, or null if it threw
+ */
+export function evaluateReplicaRollout(o) {
+  const out = [];
+  const r = o.replica;
+  if (o.deploymentEnabled !== true) {
+    out.push(violation("rollout:deployment_disabled", `${r}: AOA_DISTRIBUTED_EXECUTION_ENABLED is not on`));
+  }
+  if (o.rolloutRaw !== M1_SPINE_ROLLOUT_ENV_VALUE) {
+    out.push(violation("rollout:value_mismatch", `${r}: rollout value differs from the declared tenant set`));
+  }
+  for (const t of M1_SPINE_TENANTS.enabled) {
+    if (o.resolved?.[t.organizationId] !== "canary") {
+      out.push(violation("rollout:enabled_tenant_not_canary", `${r}: tenant ${t.key} resolves to ${String(o.resolved?.[t.organizationId])}`));
+    }
+  }
+  const control = o.resolved?.[M1_SPINE_TENANTS.control.organizationId];
+  if (control !== "off") {
+    out.push(violation("rollout:control_not_off", `${r}: control tenant resolves to ${String(control)}`));
+  }
+  if (o.crewEnabled === null) {
+    out.push(violation("crew:switch_unparseable", `${r}: AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED=${JSON.stringify(o.crewRaw)} is not a boolean`));
+  } else if (o.crewEnabled !== false) {
+    out.push(violation("crew:switch_on", `${r}: AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED is on`));
+  }
+  return out;
+}
+
+// ── an enabled tenant ────────────────────────────────────────────────────────
+
+/**
+ * @param {{ tenant: object, observation: object }} input
+ * observation: { acceptedThroughSeq, jobEventTypes, attemptStatus,
+ *   costRows: [{companyId, costCents, sourceIdempotencyKey}]  — every cost_events row whose key
+ *             names ANY event of this attempt, across ALL Companies (so a misattributed row is seen),
+ *   costReceipts: [{status, organizationId, companyId}]        — authoritative_cost, this job,
+ *   activity: [{action, companyId}]                            — job.attempt_* rows for this job,
+ *   auditReceipts: [{status, organizationId, companyId}] }     — activity_audit, this job
+ */
+export function evaluateEnabledTenantSpine({ tenant: t, observation: o }) {
+  const out = [];
+  const k = `tenant ${t.key}`;
+  if (o.attemptStatus !== "succeeded") {
+    out.push(violation("journey:attempt_not_succeeded", `${k}: attempt status ${String(o.attemptStatus)}`));
+  }
+
+  // Audit (JOB-017, E3-D-AUDIT-SET): exactly one of each named action, this tenant's Company.
+  for (const action of ["job.attempt_started", "job.attempt_terminal"]) {
+    const rows = (o.activity ?? []).filter((a) => a.action === action);
+    const suffix = action.replace("job.", "");
+    if (rows.length === 0) out.push(violation(`audit:missing_${suffix}`, `${k}: no ${action} activity row`));
+    if (rows.length > 1) out.push(violation(`audit:duplicate_${suffix}`, `${k}: ${rows.length} ${action} rows`));
+  }
+  if ((o.activity ?? []).some((a) => a.companyId !== t.companyId)) {
+    out.push(violation("audit:wrong_company", `${k}: an audit row is attributed to another Company`));
+  }
+  const auditReceipts = o.auditReceipts ?? [];
+  if (auditReceipts.length !== 2 || auditReceipts.some((r) => r.status !== "applied")) {
+    out.push(violation("audit:receipts", `${k}: expected 2 applied activity_audit receipts, saw ${JSON.stringify(auditReceipts.map((r) => r.status))}`));
+  }
+  if (auditReceipts.some((r) => r.organizationId !== t.organizationId || r.companyId !== t.companyId)) {
+    out.push(violation("audit:receipt_wrong_tenant", `${k}: an activity_audit receipt names another tenant`));
+  }
+
+  // Cost (JOB-016): exactly one row, cost > 0, this tenant's Company; one applied receipt.
+  const costRows = o.costRows ?? [];
+  if (costRows.length === 0) {
+    out.push(violation("cost:no_cost_row", `${k}: the handed-off attempt wrote NO cost_events row`));
+  } else if (costRows.length > 1) {
+    out.push(violation("cost:not_exactly_one", `${k}: ${costRows.length} cost_events rows for one attempt`));
+  }
+  if (costRows.some((row) => !(Number(row.costCents) > 0))) {
+    out.push(violation("cost:zero_cost", `${k}: a cost_events row has cost_cents ${JSON.stringify(costRows.map((r) => r.costCents))}`));
+  }
+  if (costRows.some((row) => row.companyId !== t.companyId)) {
+    out.push(violation("cost:wrong_company", `${k}: a cost_events row is attributed to another Company`));
+  }
+  const receipts = o.costReceipts ?? [];
+  if (receipts.length === 0) {
+    out.push(violation("cost:receipt_missing", `${k}: no authoritative_cost receipt`));
+  } else if (receipts.length > 1) {
+    out.push(violation("cost:receipt_not_exactly_one", `${k}: ${receipts.length} authoritative_cost receipts`));
+  }
+  if (receipts.some((r) => r.status !== "applied")) {
+    out.push(violation("cost:receipt_not_applied", `${k}: authoritative_cost receipt status ${JSON.stringify(receipts.map((r) => r.status))}`));
+  }
+  if (receipts.some((r) => r.organizationId !== t.organizationId || r.companyId !== t.companyId)) {
+    out.push(violation("cost:receipt_wrong_tenant", `${k}: an authoritative_cost receipt names another tenant`));
+  }
+  return out;
+}
+
+// ── the control tenant ───────────────────────────────────────────────────────
+
+/**
+ * @param {{ tenant: object, observation: object }} input
+ * observation: { placements: [{replica, disposition, leaseEligible, reasonCode}] — the REAL
+ *   placement service's decision for a control-tenant attempt, one per replica;
+ *   positiveControlPlacement: {disposition, mode, reasonCode} | {error} — the SAME service on an
+ *     ENABLED tenant;
+ *   pollOutcome; jobEvents; costRowsForCompany; receipts }
+ */
+export function evaluateControlTenant({ tenant: t, observation: o }) {
+  const out = [];
+  const k = `control tenant ${t.key}`;
+  const placements = o.placements ?? [];
+  const replicas = new Set(placements.map((p) => p.replica));
+  for (const replica of CONTROL_PLANE_REPLICAS) {
+    if (!replicas.has(replica)) out.push(violation("control:not_every_replica", `${k}: no placement observed on ${replica}`));
+  }
+  for (const p of placements) {
+    if (p.disposition !== "legacy" || p.leaseEligible !== false) {
+      out.push(violation("control:placed_distributed", `${k}: ${p.replica} placed it ${p.disposition} (leaseEligible=${p.leaseEligible})`));
+    } else if (p.reasonCode !== "organization_disabled") {
+      out.push(violation("control:wrong_reason", `${k}: ${p.replica} refused it for ${p.reasonCode}, not organization_disabled`));
+    }
+  }
+  // The positive control: the SAME placement service, on an ENABLED tenant, must reach a real
+  // non-legacy decision. Without it, "the control was refused" could equally mean "placement
+  // refuses everything" (a broken pool, a missing flag), which proves nothing about the rollout.
+  const pc = o.positiveControlPlacement;
+  if (!pc || pc.error || !pc.disposition || pc.disposition === "legacy" || pc.mode === "legacy" ||
+      pc.reasonCode === "organization_disabled") {
+    out.push(violation(
+      "control:positive_control_also_legacy",
+      `${k}: the same placement service on an ENABLED tenant was ${JSON.stringify(pc ?? null)}, so the refusal is not shown to be the rollout's`,
+    ));
+  }
+  if (o.pollOutcome !== "no_work") out.push(violation("control:offered_work", `${k}: poll outcome ${String(o.pollOutcome)}`));
+  if (o.jobEvents !== 0) out.push(violation("control:has_job_events", `${k}: ${o.jobEvents} job_events`));
+  if (o.costRowsForCompany !== 0) out.push(violation("control:has_cost_rows", `${k}: ${o.costRowsForCompany} cost_events rows`));
+  if (o.receipts !== 0) out.push(violation("control:has_receipts", `${k}: ${o.receipts} projection receipts`));
+  return out;
+}
+
+export function formatViolations(violations) {
+  return violations.map((v) => `  - ${v.code}: ${v.message}`).join("\n");
+}

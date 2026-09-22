@@ -93,6 +93,12 @@ on:
       - "scripts/collect-d1-evidence.mjs"
       - "scripts/check-ci-lanes.mjs"
       - "scripts/lib/d1-compose-invariants.mjs"
+      # DEP-016 — the m1-spine profile's verdict functions and the reference provider's
+      # canned-usage code. Both decide what the `m1-spine` job below asserts, and neither is
+      # matched by an entry above (`docker/**` covers the override and the provider entry, but
+      # not `packages/sandbox-fake-provider/src`, and the `scripts/lib` entries are per file).
+      - "scripts/lib/m1-spine-assertions.mjs"
+      - "packages/sandbox-fake-provider/**"
       - "scripts/lib/d1-evidence-bundle.mjs"
       - "scripts/lib/image-admission.mjs"
       # DEP-014: the lane now RUNS the admission verifier on every image it builds.
@@ -330,3 +336,130 @@ jobs:
       - name: Tear down the D1 stack
         if: always()
         run: docker compose -f "$COMPOSE_FILE_PATH" down -v --remove-orphans || true
+
+  # ---------------------------------------------------------------------------
+  # DEP-016 — the `m1-spine` campaign profile. A SECOND job in this workflow, not a
+  # scope of the one above, because the two differ in TOPOLOGY: the merge train runs
+  # the two-worker stack (`bounded`/`foundation` via docker/d1/campaign.env) and this
+  # profile runs the ONE-worker override. A scope selector is single-valued, so making
+  # `m1-spine` a third value of AOA_D1_CAMPAIGN would DISPLACE the foundation campaign
+  # on every run that selected it — and a profile that runs only when someone edits a
+  # committed file is the class of check that quietly stops running (the WRK-017 note
+  # in the campaign scope block above records the same lesson).
+  #
+  # It differs from the train in the other direction too: the evidence bundle is
+  # retained ON PASS (`if: always()`), because the M1-D1-SPINE gate record is made FROM
+  # a passing run, and a passing run whose evidence was discarded cannot be a record.
+  # ---------------------------------------------------------------------------
+  m1-spine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      COMPOSE_FILE_PATH: docker-compose.d1.yml
+      SPINE_OVERRIDE_PATH: docker/d1/m1-spine.override.yml
+      EVIDENCE_DIR: ${{ github.workspace }}/m1-spine-evidence
+      AOA_D1_FAKE_PROVIDER_IMAGE: aoa-d1-fake-provider:m1-spine
+      AOA_D1_CAMPAIGN: m1-spine
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Static preflight (the profile's own verdict self-test + the compose invariants)
+        run: |
+          node scripts/check-d1-compose.mjs
+          node --test scripts/lib/__tests__/m1-spine-assertions.test.mjs
+
+      - name: Enable Docker containerd image store (attestation + --load)
+        run: |
+          sudo mkdir -p /etc/docker
+          printf '%s\n' '{ "features": { "containerd-snapshotter": true } }' | sudo tee /etc/docker/daemon.json
+          sudo systemctl restart docker
+          for _ in $(seq 1 30); do docker info >/dev/null 2>&1 && break; sleep 1; done
+
+      - name: Build the split D1 images + the reference provider
+        run: |
+          set -euo pipefail
+          bash docker/images/build.sh
+          docker build -f docker/d1/fake-provider.Dockerfile -t "$AOA_D1_FAKE_PROVIDER_IMAGE" .
+          CP_TAG="$(grep -E '^CONTROL-PLANE_IMAGE=' docker/images/digests.env | cut -d= -f2-)"
+          WK_TAG="$(grep -E '^WORKER_IMAGE=' docker/images/digests.env | cut -d= -f2-)"
+          test -n "$CP_TAG" && test -n "$WK_TAG"
+          {
+            echo "AOA_D1_CONTROL_PLANE_IMAGE=${CP_TAG}"
+            echo "AOA_D1_WORKER_IMAGE=${WK_TAG}"
+          } >> "$GITHUB_ENV"
+          mkdir -p docker/d1
+          {
+            echo "AOA_D1_FAKE_PROVIDER_IMAGE=${AOA_D1_FAKE_PROVIDER_IMAGE}"
+            echo "AOA_D1_CONTROL_PLANE_IMAGE=${CP_TAG}"
+            echo "AOA_D1_WORKER_IMAGE=${WK_TAG}"
+          } > docker/d1/.env
+
+      - name: Bring up the ONE-worker m1-spine topology
+        run: |
+          set -euo pipefail
+          docker compose -f "$COMPOSE_FILE_PATH" -f "$SPINE_OVERRIDE_PATH" up -d --wait --wait-timeout 300
+          # The topology is part of the claim, so assert it rather than assuming the override
+          # merged: exactly ONE worker service is running in this project.
+          workers="$(docker compose -f "$COMPOSE_FILE_PATH" -f "$SPINE_OVERRIDE_PATH" ps --services --status running | grep -c '^worker-' || true)"
+          echo "running worker services: ${workers}"
+          test "${workers}" = "1" || { echo "::error::m1-spine expects exactly one worker service, saw ${workers}"; exit 1; }
+
+      - name: Run the m1-spine profile (live)
+        env:
+          AOA_D1_LIVE: "1"
+          AOA_M1_SPINE_EVIDENCE_DIR: ${{ github.workspace }}/m1-spine-evidence/profile
+        run: node --test --test-concurrency=1 tests/d1/m1-spine.test.mjs
+
+      - name: POSITIVE CONTROL — with usage suppressed, the profile MUST go red
+        env:
+          AOA_D1_LIVE: "1"
+          AOA_M1_SPINE_USAGE_MODE: suppressed
+          AOA_M1_SPINE_EVIDENCE_DIR: ${{ github.workspace }}/m1-spine-evidence/positive-control
+        run: |
+          set -uo pipefail
+          # The SAME profile, against a reference provider scripted to report NO usage. If it
+          # passes, the cost assertion is measuring nothing and the lane fails here — a profile
+          # that cannot go red is not a profile. `grep` on the marker additionally proves it
+          # went red for the COST reason and not, say, a bring-up failure.
+          out="${RUNNER_TEMP}/m1-spine-positive-control.txt"
+          if node --test --test-concurrency=1 tests/d1/m1-spine.test.mjs > "$out" 2>&1; then
+            cat "$out"
+            echo "::error::m1-spine PASSED with usage suppressed — the cost assertion evaluates nothing"
+            exit 1
+          fi
+          grep -F '[m1-spine:cost]' "$out" || {
+            cat "$out"
+            echo "::error::m1-spine went red with usage suppressed, but NOT on the cost assertion"
+            exit 1
+          }
+          echo "positive control: the profile went red on the cost assertion, as required"
+          tail -n 40 "$out"
+
+      - name: Collect the distributed evidence bundle (ON PASS as well as on failure)
+        if: always()
+        run: >-
+          node scripts/collect-d1-evidence.mjs
+          --compose "$COMPOSE_FILE_PATH"
+          --out "$EVIDENCE_DIR"
+          --run-id "${{ github.run_id }}"
+          --reason "m1-spine profile on ${{ github.sha }} (${{ job.status }})"
+
+      - name: Upload the retained m1-spine evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: m1-spine-evidence-${{ github.run_id }}
+          path: ${{ env.EVIDENCE_DIR }}/
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Tear down the m1-spine stack
+        if: always()
+        run: docker compose -f "$COMPOSE_FILE_PATH" -f "$SPINE_OVERRIDE_PATH" down -v --remove-orphans || true
