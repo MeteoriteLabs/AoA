@@ -95,11 +95,14 @@ function grant(labels: ResourceLabels, overrides: Partial<ArtifactUploadGrantV1>
   } as ArtifactUploadGrantV1;
 }
 
-/** Counts every sandbox read, so "NOT dispatched" means the provider never touched the bytes. */
+/** Counts every sandbox read, so "NOT dispatched" means the provider never touched the bytes.
+ * With `stallReads` set it never resolves — a hung sandbox read (Codex P1 on f34b65a). */
 class RecordingMockTransport extends MockE2bTransport {
   readFileCalls = 0;
+  stallReads = false;
   override async readFile(...args: Parameters<MockE2bTransport["readFile"]>): ReturnType<MockE2bTransport["readFile"]> {
     this.readFileCalls += 1;
+    if (this.stallReads) return new Promise<Uint8Array>(() => undefined);
     return super.readFile(...args);
   }
 }
@@ -109,6 +112,7 @@ let uploads: { objectKey: string; bytes: Uint8Array }[];
 /** When set, the injected uploader STALLS until its signal aborts (a hung object store). */
 let stallUploads = false;
 let exportCtxDeadlines: number[];
+let digestCtxDeadlines: number[];
 let server: ReturnType<typeof createProviderServer>;
 let baseUrl: string;
 
@@ -119,6 +123,7 @@ async function startServer(
   transport = new RecordingMockTransport();
   uploads = [];
   exportCtxDeadlines = [];
+  digestCtxDeadlines = [];
   const performUploadGrant = async (g: ArtifactUploadGrantV1, bytes: Uint8Array, signal?: AbortSignal): Promise<void> => {
     if (stallUploads) {
       await new Promise<void>((_resolve, reject) => {
@@ -137,6 +142,12 @@ async function startServer(
   // Records the ctx.deadlineMs the ROUTE hands the provider's exportArtifact.
   const provider = new Proxy(base, {
     get(target, prop) {
+      if (prop === "digestArtifact") {
+        return (sandboxId: string, path: string, c: ProviderOpContext) => {
+          digestCtxDeadlines.push(c.deadlineMs);
+          return target.digestArtifact(sandboxId, path, c);
+        };
+      }
       if (prop === "exportArtifact") {
         return (sandboxId: string, path: string, g: ArtifactUploadGrantV1, c: ProviderOpContext) => {
           exportCtxDeadlines.push(c.deadlineMs);
@@ -381,6 +392,7 @@ describe("DAT-009-3e — digest/export over the networked wire (gated owned ops)
     const reads = transport.readFileCalls;
     const driver = new NetworkedProviderDriver({ baseUrl, capability: mint(ORG_A, NOW + EXPORT_TEARDOWN_RESERVE_MS) });
     await expect(driver.exportArtifact(sandboxId, OUT_PATH, grant(ORG_A), ctx("e-reserve"))).rejects.toBeInstanceOf(WireProtocolError);
+    // The ROUTE refused: the provider was never called (not merely called with a dead budget).
     expect(exportCtxDeadlines).toHaveLength(0);
     expect(transport.readFileCalls).toBe(reads);
     expect(uploads).toHaveLength(0);
@@ -401,6 +413,37 @@ describe("DAT-009-3e — digest/export over the networked wire (gated owned ops)
     ]);
     expect(result).not.toBe("stranded");
     expect(uploads).toHaveLength(0);
+  });
+
+  it("★ a STALLED sandbox READ also releases the lock at its budget, so destroy is not stranded", async () => {
+    const sandboxId = await sandboxWithOutput(ORG_A);
+    transport.stallReads = true;
+    const cap = mint(ORG_A, NOW + EXPORT_TEARDOWN_RESERVE_MS + 200);
+    const driver = new NetworkedProviderDriver({ baseUrl, capability: cap });
+    const exporting = driver.exportArtifact(sandboxId, OUT_PATH, grant(ORG_A), { deadlineMs: 600_000, idempotencyKey: "e-read-stall" });
+    const destroyed = driver.destroy(sandboxId, ctx("destroy-after-read-stall"));
+    await expect(exporting).rejects.toBeInstanceOf(WireProtocolError);
+    const result = await Promise.race([
+      destroyed,
+      new Promise<"stranded">((resolve) => setTimeout(() => resolve("stranded"), 5_000)),
+    ]);
+    expect(result).not.toBe("stranded");
+    expect(uploads).toHaveLength(0);
+  });
+
+  it("★ digest carries the CLAMPED budget to the provider, and is refused inside the reserve", async () => {
+    const sandboxId = await sandboxWithOutput(ORG_A);
+    // A generous caller budget is clamped to the capability's life minus the reserve...
+    const wide = new NetworkedProviderDriver({ baseUrl, capability: mint(ORG_A, NOW + 60_000) });
+    await wide.digestArtifact(sandboxId, OUT_PATH, { deadlineMs: 600_000, idempotencyKey: "d-clamp" });
+    expect(digestCtxDeadlines).toEqual([60_000 - EXPORT_TEARDOWN_RESERVE_MS]);
+
+    // ...and inside the reserve the ROUTE refuses: the provider is never called at all.
+    const reads = transport.readFileCalls;
+    const tight = new NetworkedProviderDriver({ baseUrl, capability: mint(ORG_A, NOW + EXPORT_TEARDOWN_RESERVE_MS) });
+    await expect(tight.digestArtifact(sandboxId, OUT_PATH, ctx("d-reserve"))).rejects.toBeInstanceOf(WireProtocolError);
+    expect(digestCtxDeadlines).toHaveLength(1);
+    expect(transport.readFileCalls).toBe(reads);
   });
 
   it("a FAR provider that declares artifactExportMode='none' declines honestly, as its own class", async () => {

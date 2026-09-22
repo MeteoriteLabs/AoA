@@ -201,13 +201,14 @@ export async function putGrantBytes(grant: ArtifactUploadGrantV1, bytes: Uint8Ar
   }
 }
 
-/** Settle with `work`, or reject when `signal` aborts first. The abandoned `work` is left to settle
- * on its own; its rejection is handled so it is never unhandled. */
-function boundedBySignal<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+/** Settle with `work`, or reject with `timeoutMessage` when `signal` aborts first. The abandoned
+ * `work` is left to settle on its own; its rejection is handled so it is never unhandled. The
+ * message is a FIXED string: it never carries the path, the grant or the url. */
+function boundedBySignal<T>(work: Promise<T>, signal: AbortSignal, timeoutMessage: string): Promise<T> {
   work.catch(() => undefined);
-  if (signal.aborted) return Promise.reject(new Error("artifact export upload timed out before a response"));
+  if (signal.aborted) return Promise.reject(new Error(timeoutMessage));
   return new Promise<T>((resolve, reject) => {
-    const onAbort = (): void => reject(new Error("artifact export upload timed out before a response"));
+    const onAbort = (): void => reject(new Error(timeoutMessage));
     signal.addEventListener("abort", onAbort, { once: true });
     work.then(
       (value) => {
@@ -701,7 +702,7 @@ export class E2bSandboxProvider implements SandboxProvider {
    * only the provider can see inside the sandbox. That is the whole reason this is a separate
    * operation from the export rather than one call.
    */
-  async digestArtifact(sandboxId: string, path: string, _ctx: ProviderOpContext): Promise<ArtifactDigestResult> {
+  async digestArtifact(sandboxId: string, path: string, ctx: ProviderOpContext): Promise<ArtifactDigestResult> {
     // ★ HONEST LABEL: this guard is UNREACHABLE BY CONSTRUCTION here, because the mode above is a
     // hard-coded literal. It is kept for exact symmetry with `stageFiles`'s identical shipped
     // guard, and because the port's contract is "the methods are present on every implementer and
@@ -709,7 +710,14 @@ export class E2bSandboxProvider implements SandboxProvider {
     // takes it. It is a contract stub, NOT a live check, and no mutation can kill it; saying so is
     // the difference between a documented stub and a false claim of enforcement.
     if (this.artifactExportMode === "none") throw new UnsupportedProviderOperation("digest_artifact");
-    const bytes = await this.#readArtifactBytes(sandboxId, path);
+    // DAT-009-3e (Codex P1, PR #557) — the READ is bounded too. A stalled sandbox read would
+    // otherwise hold the adapter-manager's per-sandbox lock for as long as the transport hangs.
+    if (!(ctx.deadlineMs > 0)) throw new Error("artifact digest budget exhausted before the read");
+    const bytes = await boundedBySignal(
+      this.#readArtifactBytes(sandboxId, path),
+      AbortSignal.timeout(ctx.deadlineMs),
+      "artifact digest read timed out",
+    );
     return { sha256: createHash("sha256").update(bytes).digest("hex"), sizeBytes: bytes.byteLength };
   }
 
@@ -743,7 +751,14 @@ export class E2bSandboxProvider implements SandboxProvider {
     // settles then even if an injected uploader ignores the signal.
     if (!(ctx.deadlineMs > 0)) throw new Error("artifact export budget exhausted before the upload");
     const signal = AbortSignal.timeout(ctx.deadlineMs);
-    const bytes = await this.#readArtifactBytes(sandboxId, path);
+    // The READ is inside the budget too (Codex P1, PR #557): the adapter-manager holds its
+    // per-sandbox lock across this whole call, so a hung read would strand the run's destroy
+    // exactly as a hung upload would.
+    const bytes = await boundedBySignal(
+      this.#readArtifactBytes(sandboxId, path),
+      signal,
+      "artifact export read timed out",
+    );
     if (bytes.byteLength > grant.maxBytes) {
       throw new Error(`artifact at ${path} is ${bytes.byteLength} bytes, over the granted ${grant.maxBytes}`);
     }
@@ -752,7 +767,11 @@ export class E2bSandboxProvider implements SandboxProvider {
       // The digests, never the url.
       throw new Error(`artifact at ${path} hashed ${digest}, expected ${grant.expectedSha256}`);
     }
-    await boundedBySignal(this.#performUploadGrant(grant, bytes, signal), signal);
+    await boundedBySignal(
+      this.#performUploadGrant(grant, bytes, signal),
+      signal,
+      "artifact export upload timed out before a response",
+    );
     return { objectKey: grant.objectKey };
   }
 

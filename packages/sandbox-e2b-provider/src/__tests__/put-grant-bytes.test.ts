@@ -209,6 +209,63 @@ describe("DAT-009-3e — exportArtifact bounds the upload by ctx.deadlineMs (Cod
     expect(Date.now() - started).toBeLessThan(5_000);
   });
 
+  /** A transport whose `readFile` never resolves — a stalled sandbox read. */
+  class StallingReadTransport extends MockE2bTransport {
+    override async readFile(...args: Parameters<MockE2bTransport["readFile"]>): ReturnType<MockE2bTransport["readFile"]> {
+      void args;
+      return new Promise<Uint8Array>(() => undefined);
+    }
+  }
+
+  it("★ a stalled sandbox READ is bounded by the same budget (Codex P1, PR #557): export", async () => {
+    const transport = new StallingReadTransport();
+    const p = new E2bSandboxProvider({ transport, performUploadGrant: async () => undefined });
+    const created = await p.create({ resourceLabels: LABELS, command: "c", args: [], env: {}, workloadType: "batch" }, {
+      deadlineMs: 60_000,
+      idempotencyKey: "c-read-stall",
+    });
+    const started = Date.now();
+    await expect(p.exportArtifact(created.sandboxId, PATH, grant(), { deadlineMs: 50, idempotencyKey: "e-read" })).rejects.toThrow();
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it("★ a stalled sandbox READ is bounded by the same budget: digest", async () => {
+    const transport = new StallingReadTransport();
+    const p = new E2bSandboxProvider({ transport });
+    const created = await p.create({ resourceLabels: LABELS, command: "c", args: [], env: {}, workloadType: "batch" }, {
+      deadlineMs: 60_000,
+      idempotencyKey: "c-read-stall-d",
+    });
+    const started = Date.now();
+    await expect(p.digestArtifact(created.sandboxId, PATH, { deadlineMs: 50, idempotencyKey: "d-read" })).rejects.toThrow();
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it("★ digest with an exhausted budget reads nothing", async () => {
+    const transport = new MockE2bTransport();
+    let reads = 0;
+    const counting = new Proxy(transport, {
+      get(target, prop) {
+        if (prop === "readFile") {
+          return (...args: Parameters<MockE2bTransport["readFile"]>) => {
+            reads += 1;
+            return target.readFile(...args);
+          };
+        }
+        const value = Reflect.get(target, prop, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const p = new E2bSandboxProvider({ transport: counting });
+    const created = await p.create({ resourceLabels: LABELS, command: "c", args: [], env: {}, workloadType: "batch" }, {
+      deadlineMs: 60_000,
+      idempotencyKey: "c-d0",
+    });
+    await transport.writeFiles(created.sandboxId, [{ path: PATH, bytes: GRANTED }]);
+    await expect(p.digestArtifact(created.sandboxId, PATH, { deadlineMs: 0, idempotencyKey: "d-0" })).rejects.toThrow();
+    expect(reads).toBe(0);
+  });
+
   it("★ an exhausted budget (deadlineMs <= 0) uploads nothing", async () => {
     const upload = vi.fn(async () => undefined);
     const { p, sandboxId } = await providerWith(upload);

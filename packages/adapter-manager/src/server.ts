@@ -236,7 +236,14 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
         // DAT-009-3e — metadata only (sha256 + byte size), never content. Owned-checked first: a
         // digest of another tenant's file is itself a disclosure (it confirms content by hash).
         const { sandboxId, path } = args as { sandboxId: string; path: string };
-        return gateOwnedOp(deps, sandboxId, ctx, capability, () => provider.digestArtifact(sandboxId, path, ctx));
+        return gateOwnedOp(deps, sandboxId, ctx, capability, () => {
+          // Bounded for the same reason the export is: this runs under the per-sandbox lock.
+          const budget = artifactOpBudgetMs(ctx, capability, now());
+          if (!(budget > 0)) {
+            return Promise.reject(new WireProtocolError("digest_artifact refused: no budget left before the teardown reserve"));
+          }
+          return provider.digestArtifact(sandboxId, path, { ...ctx, deadlineMs: budget });
+        });
       }
       case "export_artifact": {
         // DAT-009-3e — the far provider re-reads, re-verifies size + sha256 against the grant AT
@@ -260,7 +267,7 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
           // same clamp the supervisor applies to its export window, so destroy always keeps its
           // reserve. The provider aborts the upload at this budget. `capability` is defined here:
           // the gate verified it before dispatch.
-          const budget = Math.min(ctx.deadlineMs, capability!.expiresAt - now() - EXPORT_TEARDOWN_RESERVE_MS);
+          const budget = artifactOpBudgetMs(ctx, capability, now());
           if (!(budget > 0)) {
             return Promise.reject(new WireProtocolError("export_artifact refused: no budget left before the teardown reserve"));
           }
@@ -370,6 +377,16 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
       })();
     });
   });
+}
+
+/**
+ * DAT-009-3e — the budget an artifact op may hold the per-sandbox lock for: the caller's own budget,
+ * clamped to the capability's remaining life minus `EXPORT_TEARDOWN_RESERVE_MS`. That is the clamp
+ * the supervisor applies to its own export window, so the run's destroy always keeps its reserve
+ * (Codex P1, PR #557). `capability` is defined at every call site: the gate verified it first.
+ */
+function artifactOpBudgetMs(ctx: ProviderOpContext, capability: OwnedLabelsCapability | undefined, nowMs: number): number {
+  return Math.min(ctx.deadlineMs, (capability?.expiresAt ?? 0) - nowMs - EXPORT_TEARDOWN_RESERVE_MS);
 }
 
 /**
