@@ -539,7 +539,23 @@ async function claudeArm(arm: ModelArm, out: Verdict[]): Promise<void> {
 const COMMIT_SHA = process.env.GITHUB_SHA && process.env.GITHUB_SHA.length > 0 ? process.env.GITHUB_SHA : "unknown";
 const RUN_URL = process.env.CLI011_RUN_URL && process.env.CLI011_RUN_URL.length > 0 ? process.env.CLI011_RUN_URL : "unknown";
 
-/** Log + `$GITHUB_STEP_SUMMARY` + the JSON record at `CLI011_RECORD_PATH`, each best-effort. */
+/**
+ * Whether the durable JSON record actually reached disk.
+ *
+ * ★★★ IT IS ASSERTED, NOT LOGGED. Codex review (PR #551): a failed `writeFileSync` used to be
+ * caught and logged, so a run that MEASURED everything could finish green while the only artefact
+ * it published was the workflow's `inconclusive` fallback — E7-F025's "fired and unrecorded",
+ * reached from the other side. `skipped` is the local, no-`CLI011_RECORD_PATH` case; a keyed run
+ * asserts `written`.
+ */
+export const RECORD_STATUS: { written: boolean; skipped: boolean; detail: string } = {
+  written: false,
+  skipped: true,
+  detail: "not attempted",
+};
+
+/** Log + `$GITHUB_STEP_SUMMARY` + the JSON record at `CLI011_RECORD_PATH`. The JSON record is
+ *  REQUIRED (see {@link RECORD_STATUS}); the other two channels are best-effort. */
 export async function emitDurableRecord(verdicts: Verdict[]): Promise<void> {
   const controls = evaluateControls(verdicts);
   const decisionTable = evaluateDecisionTable(verdicts, ARMS_MODE.mode);
@@ -559,15 +575,25 @@ export async function emitDurableRecord(verdicts: Verdict[]): Promise<void> {
     }
   }
   const recordPath = process.env.CLI011_RECORD_PATH;
-  if (!recordPath) return;
+  if (!recordPath) {
+    RECORD_STATUS.skipped = true;
+    RECORD_STATUS.written = false;
+    RECORD_STATUS.detail = "CLI011_RECORD_PATH is unset (a local run): no durable record was owed";
+    return;
+  }
+  RECORD_STATUS.skipped = false;
   try {
     const { dirname } = await import("node:path");
     const record = buildProbeRecord({ ...base, generatedAt: new Date().toISOString(), workflowRunUrl: RUN_URL, armEvidence: ARM_EVIDENCE, sandboxes: SANDBOXES });
     mkdirSync(dirname(recordPath), { recursive: true });
     writeFileSync(recordPath, `${redactSecrets(JSON.stringify(record, null, 2), SECRETS)}\n`, "utf8");
+    RECORD_STATUS.written = true;
+    RECORD_STATUS.detail = recordPath;
   } catch (err) {
+    RECORD_STATUS.written = false;
+    RECORD_STATUS.detail = safe(`${String((err as Error)?.name)}: ${String((err as Error)?.message ?? err)}`, 300);
     // eslint-disable-next-line no-console
-    console.error(`[cli-011] could not write the durable record: ${safe(String(err), 300)}`);
+    console.error(`[cli-011] could not write the durable record: ${RECORD_STATUS.detail}`);
   }
 }
 
@@ -591,6 +617,13 @@ describeKeyed("CLI-011 P-011 — the output probe, against REAL E2B", () => {
       const d = packDisposition(verdicts, evaluateControls(verdicts), ARMS_MODE.mode);
       // Every sandbox this run made was terminated.
       expect(SANDBOXES.filter((s) => !s.terminated), "a sandbox was not terminated").toEqual([]);
+      // ★ The verdict must be PUBLISHED, not merely computed. Without this, a measured run whose
+      // record could not be written finishes green while the workflow uploads its `inconclusive`
+      // fallback, so the run reads as "no measurement" and nobody notices (Codex review, PR #551).
+      expect(
+        RECORD_STATUS.skipped || RECORD_STATUS.written,
+        `the durable record was not written: ${RECORD_STATUS.detail}`,
+      ).toBe(true);
       expect(d.disposition, d.detail).toBe("measured");
     },
     40 * 60 * 1000,
@@ -671,6 +704,31 @@ describe("CLI-011 P-011 — wiring proven without a key", () => {
     else expect(TEMPLATE).toBe(raw.trim());
   });
 
+  it("POSITIVE CONTROL: a record that cannot be written is REPORTED, not swallowed", async () => {
+    const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dir = mkdtempSync(join(tmpdir(), "cli011-unwritable-"));
+    const blocker = join(dir, "blocker");
+    writeFileSync(blocker, "not a directory", "utf8");
+    const prev = { r: process.env.CLI011_RECORD_PATH, s: process.env.GITHUB_STEP_SUMMARY };
+    // The parent of the record path is a FILE, so `mkdirSync` cannot create it.
+    process.env.CLI011_RECORD_PATH = join(blocker, "record.json");
+    process.env.GITHUB_STEP_SUMMARY = join(dir, "summary.md");
+    try {
+      await emitDurableRecord([{ arm: "S-P0", state: "observed", reason: "root-absent", findings: { present: false, presentPaths: [] } }]);
+      expect(RECORD_STATUS.written).toBe(false);
+      expect(RECORD_STATUS.skipped).toBe(false);
+      expect(RECORD_STATUS.detail).not.toBe("not attempted");
+    } finally {
+      if (prev.r === undefined) delete process.env.CLI011_RECORD_PATH;
+      else process.env.CLI011_RECORD_PATH = prev.r;
+      if (prev.s === undefined) delete process.env.GITHUB_STEP_SUMMARY;
+      else process.env.GITHUB_STEP_SUMMARY = prev.s;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("emitDurableRecord writes a redacted record with the decision table, and the summary block", async () => {
     const { mkdtempSync, readFileSync, rmSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
@@ -692,6 +750,7 @@ describe("CLI-011 P-011 — wiring proven without a key", () => {
       expect(raw.includes(CANARY)).toBe(false);
       expect(raw).toContain("«redacted»");
       expect(readFileSync(process.env.GITHUB_STEP_SUMMARY, "utf8")).toContain("§10.5 decision table");
+      expect(RECORD_STATUS).toMatchObject({ written: true, skipped: false });
     } finally {
       ARM_EVIDENCE.length = evBefore;
       if (prev.r === undefined) delete process.env.CLI011_RECORD_PATH;

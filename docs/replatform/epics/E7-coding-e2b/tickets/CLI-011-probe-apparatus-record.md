@@ -133,6 +133,13 @@ imports buildSandboxInvocation…"*).
   `json.dumps` first. `evaluateWorkflowShape` fails a raw `": "${…}"` interpolation with the code
   `fallback-unescaped-input`, and there is a positive control for each input. I ran the step
   locally with the template ``bad"name<newline>x``, and it wrote valid JSON.
+- **P2 (sixth review): a record that cannot be written FAILS the run.** A failed `writeFileSync`
+  used to be caught and logged, so a run that measured everything could finish green while the only
+  artefact published was the workflow's `inconclusive` fallback — E7-F025 from the other side.
+  `RECORD_STATUS` now carries `written`/`skipped`/`detail`, the keyed assertion requires
+  `skipped || written`, and a positive control points the record path at a child of a FILE so the
+  write must fail. RED: the control fails on the old emitter (no status at all), and making the
+  catch set `written = true` reds it too. GREEN: 10 tests in the file (9 + 1 keyed skip).
 - **P1 (fifth review): S-P4 needs a returned exit code.** When the transport threw, S-P4 used to
   read `null !== 0` as "failed closed". It is now inconclusive unless the command `returned` with a
   numeric exit code. The other shell arms (and C-census) already required a returned command, or a
