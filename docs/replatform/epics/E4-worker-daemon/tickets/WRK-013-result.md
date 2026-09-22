@@ -291,6 +291,37 @@ Earlier runs, kept for the record:
 - `35593652746` on `9b3838c43` passed. At that head the composed test had 12 cases and
   `dispatch-runtime` had 29.
 
+## 8. Addendum — the 2026-09-23 merge of the program tip
+
+The branch was **merged** (not rebased) with `origin/docs/replatform-program` at `81c5a940c` so the
+reviewed commits stay ancestors. Merge commit: `80af143b1a76ba668c252b0a96cac540cf46566a`.
+
+- **The reviewed revision is intact.** Codex reviewed `312db08461` and found no major issues, and
+  that commit **is an ancestor** of the merge. Its four findings are fixed, answered and resolved
+  (§4 items 5–8).
+- **SHAs.** §0's `01fd612a8` / `1627681bd` were written before a later rebase and are **no longer
+  ancestors**; they are left as written rather than rewritten. On this branch the same work is
+  `cb63c51ea` (the feature), `74aec15c9` and `d133cefb6` (§4 items 4 and 5), `8203284a1` (item 6)
+  and `312db0846` (items 7 and 8).
+- **What the merge brought:** `JOB-017`, `DAT-009-3d`, `DEP-015` and its follow-ups, and review
+  commits. Two of them compose into the same factory this ticket touches:
+  `dispatch-runtime.ts` now also builds `createUsageObserver` (`observeRun`, WRK-018) and
+  `createArtifactExportSequencer` (`exportArtifacts`, DAT-009-3d). **Both sides are kept**: the
+  supervisor composition carries them, and `start()` still runs the startup reconcile to completion
+  before `drain.start()` and `pollLoop.run()`.
+- **One conflict, in `docs/architecture/distributed-execution-threat-controls.json`.** The program
+  tip had re-pointed other citations inside the same DE-05 and DE-10 values. Resolved by taking the
+  tip's text and re-applying this ticket's edits on top: the seven `startup-reconcile.ts` /
+  `worker-daemon.ts` citations re-pointed **by symbol** against the merged tree, and the two dated
+  WRK-013 amendments. `check-register-citation-integrity` passes (397 enforced citations).
+- **Re-verified on the merged tree** (`80af143b1a76ba668c252b0a96cac540cf46566a`): focused command **73 tests**; the whole
+  `@armyofagents/worker-daemon` suite **164 files, 1146 passed, 1 skipped**, with no `Errors` line;
+  `tsc --noEmit` and `build` clean; `check-test-inventory` OK at the combined pin (the pin needed no
+  change — it was already re-derived as base + 2 during the last rebase); the full `pr.yml` guard
+  set minus the six excluded by the rules, plus `check-evidence-immutability --base
+  origin/docs/replatform-program`: **failures: 0**.
+- CI on the merged head is recorded in §7 once it completes.
+
 ## Independent review
 
 **Reviewer:** _pending_
