@@ -247,3 +247,36 @@ Both gained the DAT-009 slice-3c export hook (`79961c97c`, `f5e2aff1f`). That is
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
 | 1 | M1 review-batch-2A independent reviewer (Claude Opus 5) | `ad4cdfdf28ddb8bb66b730a4b9f66f7de2e7785f` | `approved` | §0 true at source (argv both sides; real fixture's final result line). Run `35593307741` per job: `verify (2)` 15+11, `verify (3)` 28+5+7+11+5 — all match. Four Codex threads resolved, clean on the final heads. Focused rerun 65 + 7 + 5 + 5, boundary PASS. M2 (2 failed) and M1 (9 failed) reproduced. F10 real. **Acceptance 1 (keyed F8 run) OPEN**; not claimed met. |
+
+## Keyed acceptance 1 — MET (added 2026-09-23 by the M1 planning session)
+
+Acceptance 1 (*"one real keyed run emits exactly one `usage` equal to the result line"*) was recorded
+as **PENDING** above, because the keyed dispatch is the planning session's under founder ruling F8.
+It has now run.
+
+**Evidence:** the `m1-shipped-boot` keyed journey, run **`35619555883`**, on candidate
+`dd839129bf82347867180133029f242a0b4c9ed5`; `journey.json` `"passed": true`. Both enabled tenants
+executed on a real E2B sandbox (ids `iofom0nu25ztf3kc5tte1` and `isqx7nvhgf40txm5vc4b6`, each in its
+own tenant's worker log on that tenant's own lease), and each run's `usage_json` carries **real token
+counts parsed from the shipped `claude_local` stream**:
+
+| Tenant | inputTokens | outputTokens | durationMs |
+|---|---:|---:|---:|
+| a | 8 | 734 | 19563 |
+| b | 8 | 730 | 19589 |
+
+That is this ticket's producer working end to end on the real lane: the stdout/usage channel, the
+per-run canary scrub, the daemon-side parser and the composed `observeRun`, with the usage reaching
+the control plane and being stored.
+
+★ **Scope, stated narrowly.** This proves the PRODUCER. It does **not** prove pricing:
+`usage_json.costUsd` is `null` on both tenants, so no `cost_events` row is evidenced here. The
+priced-row half belongs to `DEP-016`'s end-to-end assertion, and `E3-F037` (owned by `DEP-016`)
+stays open until that lands. `E3-15-budget` stays `unwired`.
+
+★ **Exactness caveat.** The lane's evidence shows the stored per-run usage, not a count of `usage`
+events on the wire. "Exactly one `usage` event" is pinned by this ticket's keyless tests on all three
+lanes; the keyed run corroborates that the one stored usage carries the result line's real numbers.
+
+**Status:** `gate_review`. The distinct reviewer approved the code at attempt 1 and held the flip for
+exactly this item; a short re-review (attempt 2) may now set `complete`.
