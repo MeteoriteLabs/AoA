@@ -6,7 +6,7 @@
 **Plan task:** `E5 implementation-plan DAT-009-3e — the networked-lane export route, and E5-F002 at the cause (M, M1b)`
 **Implementer:** `DAT-009-3e build session (Claude Opus 5)`
 **Start SHA:** `cec1b48a796f177c6184884dc3c5043f5aa57ea8` (`docs/replatform-program` tip, the `3c` merge)
-**Reviewed revision (the code commits):** `b853ff0ffae57966241a7d123df9675eea84dade` (the wire route) + `8849a12066188c79393aa509fbada49d2e6d1328` (the `E5-F002` fix) + `d5e6a3612cd73cca3f6874baefa357a40a1d2e3d` (the Codex P1 grant-binding fix, §1 commit 3) + `ddfa0e61e57214aebda1d8d70b1337b0a7112799` (the second-round Codex P1/P2 fix, §1 commit 4) + `ffd0c65d44e38de2e0367d448378d301982bf6cf` (the third-round Codex P1 fix, §1 commit 5) + `3fd71f2072b6ae358c4f0d7c4f066daf8e669c6c` (the fourth-round Codex P1 fix, §1 commit 6). The tree under review is `3fd71f207`.
+**Reviewed revision (the code commits):** `b853ff0ffae57966241a7d123df9675eea84dade` (the wire route) + `8849a12066188c79393aa509fbada49d2e6d1328` (the `E5-F002` fix) + `d5e6a3612cd73cca3f6874baefa357a40a1d2e3d` (the Codex P1 grant-binding fix, §1 commit 3) + `ddfa0e61e57214aebda1d8d70b1337b0a7112799` (the second-round Codex P1/P2 fix, §1 commit 4) + `ffd0c65d44e38de2e0367d448378d301982bf6cf` (the third-round Codex P1 fix, §1 commit 5) + `3fd71f2072b6ae358c4f0d7c4f066daf8e669c6c` (the fourth-round Codex P1 fix, §1 commit 6) + `6dbb7ff371b9d60997b5b1427295571f77362b8b` (the fifth-round Codex P1+P2 fix, §1 commit 7). The tree under review is `6dbb7ff37`.
 
 The implementer leaves `Status` at `gate_review`. Only a distinct reviewer may change it to
 `complete`.
@@ -152,6 +152,27 @@ signature over the grant's integrity fields, which is a change to the **frozen**
 package — named as a STOP in this ticket's own plan text and not taken here. It is carried to the
 planning session in §8.
 
+### Commit 7: `fix(adapter-manager): bound the gated section, and replay a lost export response` (Codex P1 + P2 on `16195c55`)
+
+- **P1 — the ownership INSPECTION was the last unbounded step.** It runs inside `gateOwnedOp`'s
+  per-sandbox mutex, and `E2bSandboxProvider.inspect` honours no deadline, so a hung `getInfo` held
+  the lock for as long as the transport hung: the same strand as the read and the upload, one step
+  earlier. **Verified by RED:** the export hung and `destroy` had not settled after 25 s.
+  - `gateOwnedOp` gains an **optional** `opBudgetMs` that bounds the locked section (inspect +
+    dispatch). When it fires the exclusive section returns — which releases the lock — and the
+    caller gets a fixed `WireProtocolError`; the abandoned work is detached and its rejection
+    handled.
+  - **Omitted ⇒ byte-identical to before**, so `execute`, the four teardown ops, `inspect` and
+    `stage_files` are untouched. ★ Positive control for that clause: a mutant that forces the bound
+    on **every** op reds 4 unrelated cases in the package.
+  - `digest_artifact` and `export_artifact` pass the budget they already compute, so one number
+    bounds the inspection, the read and the upload.
+- **P2 — a lost response must not become a missing output.** `ProviderOpContext`'s contract is
+  "a repeated key returns the recorded result and does not double-apply", and commit 6's one-time
+  redemption refused the replay. The ledger now records `{idempotencyKey, result}` per object key:
+  the **same** key replays the recorded result and uploads nothing, any **other** key is still
+  refused as a re-PUT. Both arms are asserted in one case.
+
 ### The two merges of `origin/docs/replatform-program`
 
 - `f34b65a` merged JOB-016/JOB-017, DAT-009-3d and DEP-015. Conflicts in `driver.ts`, `server.ts`,
@@ -174,6 +195,7 @@ an assertion failure, not a missing import.
 | `adapter-manager` `server-artifact-export.test.ts` | **7 failed / 2 passed (9)** | ungated-404 was true by construction; the far-`"none"` case passed vacuously through the driver's unconditional throw | **9 passed** |
 | `adapter-manager` grant-binding cases (commit 3) | **5 failed / 9 passed (14)**: the forged-origin case got an `ok` and the bytes were uploaded | the 9 were the commit-1 cases | **14 passed** (full package 169) |
 | commit 4 (`put-grant-bytes` + `server-artifact-export`) | **4 failed / 8 passed (12)** and **3 failed / 14 passed (17)**; the stall case timed out, which is the strand itself | — | **12 passed** and **17 passed** (full packages: e2b 151 passed / 31 skipped; adapter-manager 172) |
+| commit 7 (inspect bound + replay) | **3 failed / 21 passed (24)**: both stalled-inspection cases timed out, and the replay was refused | — | **24 passed** (full package 193) |
 | commit 6 (replay) | **1 failed / 20 passed (21)**: the tampered re-PUT succeeded and was stored | — | **21 passed** (full package 190) |
 | commit 5 (read phase) | **3 failed / 12 passed (15)** and **2 failed / 17 passed (19)**; both stall cases timed out | — | **15 passed** and **19 passed** (full packages: e2b 157 passed / 31 skipped; adapter-manager 188) |
 | `sandbox-e2b-provider` `put-grant-bytes.test.ts` | **4 failed / 4 passed (8)** | failed: both header names (`expected undefined to be 'SHA256'`), the digest source, one home, severed PUT (the raw transport message escaped). Passed: base64 encoding, header precedence, body and non-2xx were already correct | **8 passed** |
@@ -232,8 +254,15 @@ an assertion failure, not a missing import.
 | M33 | the shared clamp drops the teardown reserve | 5 red |
 | M34 | no one-time-redemption check | 1 red |
 | M35 | the key is recorded before the export, so a failure also burns it | 1 red |
+| M36 | `export_artifact` passes no gate budget | 1 red |
+| M37 | `digest_artifact` passes no gate budget | 1 red |
+| M38 | the gate ignores the budget it is given | 2 red |
+| M39 | the replay ignores the idempotency key (any retry replays) | 2 red |
+| M40 | no replay record is consulted | 2 red |
 
-**35 of 35 killed.**
+**40 of 40 killed.** ★ And one deliberate ANTI-mutant: forcing the gate bound onto every op (not
+just the two that pass one) reds 4 unrelated cases, which is the positive control for
+"omitted ⇒ unchanged".
 
 ★ **M31 and M32 first SURVIVED, and the test was the problem.** The digest case asserted only that
 the call rejected, which an *unclamped* route still produces via the provider's own budget check —
@@ -361,7 +390,20 @@ This section was added in a docs-only commit after that run, so the final head d
   here as observed-and-not-diagnosed rather than asserted to be a flake; the next run is the
   evidence.
 
-*(The run on the commit-5 head is recorded below once it completes.)*
+**The `168a540c` and `16195c55` runs FAILED for an INFRASTRUCTURE reason, not a code one.** On runs
+`35796527264` and `35797318829` the failing jobs (`changes`, `policy`, both
+`worker-protocol-contract-bytes` and `ci-required`) each report **zero steps** and a ~3-second
+lifetime, i.e. no runner was ever assigned; every open PR shows the same shape at the same time.
+No test or guard verdict exists in those runs. The planning session re-runs CI once runners return.
+
+**Local evidence on the final tree (`6dbb7ff37`), in place of that run:**
+- the task's focused command: wire build OK, `driver-artifact-export` 14, `server-artifact-export`
+  24, `put-grant-bytes` 15, both boundary checkers PASS, wire typecheck + build OK;
+- full packages: `provider-wire` 82 passed / 1 skipped, `adapter-manager` 193 passed,
+  `sandbox-e2b-provider` 157 passed / 31 skipped, `worker-networked-host` 6 passed; all four
+  typecheck and build clean;
+- the full `pr.yml` guard set plus `check-evidence-immutability --base origin/docs/replatform-program`:
+  **0 failures**.
 
 ## 10. Reviewer section
 
