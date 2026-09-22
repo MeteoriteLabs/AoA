@@ -440,7 +440,15 @@ export function verdictNonZeroExit(obs) {
   return observed("S-P3", "exited", { viaRunCommand: leg(o.viaRunCommand), viaProviderExecute: leg(o.viaProviderExecute) });
 }
 
-/** S-P4. obs: {channel, exitCode, stdout, stderr, marker} */
+/**
+ * S-P4. obs: {channel, exitCode, stdout, stderr, marker, dirBefore, target:{outcome, content}}
+ *
+ * ★★★ AN EMPTY STDOUT IS NOT EVIDENCE — the command's stdout is REDIRECTED, so it is empty in
+ * both worlds (Codex review, PR #551). The arm is read from three things instead: the redirect
+ * target directory must have been ABSENT beforehand (otherwise the whole setup is wrong and the
+ * arm says so), the redirect target file must not hold the marker afterwards, and the exit must
+ * be non-zero. A zero exit with no marker anywhere is INCONCLUSIVE, not a pass.
+ */
 export function verdictUnwritableRedirect(obs) {
   const o = obs ?? {};
   // Only a RETURNED command with a numeric exit code is evidence the shell reached the redirect.
@@ -449,12 +457,37 @@ export function verdictUnwritableRedirect(obs) {
   // returns a non-zero exit rather than throwing (E7-F014), so a throw here is a fault.
   if (o.channel !== "returned") return inconclusive("S-P4", `channel-${String(o.channel)}`, {});
   if (typeof o.exitCode !== "number") return inconclusive("S-P4", `no-exit-code(${String(o.exitCode)})`, {});
-  const ran = String(o.stdout ?? "").includes(o.marker);
-  return observed("S-P4", ran ? "command-ran-despite-redirect" : "redirect-failed-before-command", {
+  // The premise: the redirect target's directory does not exist. If it does, this arm is not
+  // measuring an unwritable redirect at all — pick another path and re-run.
+  if (o.dirBefore !== undefined && o.dirBefore !== "not-found") {
+    return inconclusive("S-P4", `redirect-target-directory-is-${String(o.dirBefore)}`, {});
+  }
+  if (o.target?.outcome === "faulted") return inconclusive("S-P4", "target-read-faulted", {});
+  const marker = String(o.marker ?? "");
+  const inStdout = String(o.stdout ?? "").includes(marker);
+  const inTarget = o.target?.outcome === "ok" && String(o.target.content ?? "").includes(marker);
+  const ran = inStdout || inTarget;
+  if (ran) {
+    return observed("S-P4", "command-ran-despite-redirect", {
+      channel: o.channel,
+      exitCode: o.exitCode,
+      commandRan: true,
+      markerSeenIn: inTarget ? "redirect-target" : "stdout",
+      failedClosed: false,
+      stderr: String(o.stderr ?? "").slice(0, 400),
+    });
+  }
+  if (o.exitCode === 0) {
+    // Exit 0, no marker on stdout and none in the target: the command reported success and left
+    // nothing this probe can see. That is not "the redirect failed first".
+    return inconclusive("S-P4", "exit-0-with-no-marker-anywhere", { exitCode: 0, targetOutcome: o.target?.outcome ?? null });
+  }
+  return observed("S-P4", "redirect-failed-before-command", {
     channel: o.channel,
     exitCode: o.exitCode,
-    commandRan: ran,
-    failedClosed: !ran && o.exitCode !== 0,
+    commandRan: false,
+    failedClosed: true,
+    targetOutcome: o.target?.outcome ?? null,
     stderr: String(o.stderr ?? "").slice(0, 400),
   });
 }
@@ -587,7 +620,15 @@ export function verdictCompliance(arm, obs) {
   // The compliance arms' positive signal is the deliverable itself: if `R/hello.txt` holds the
   // arm's nonce, the placement question is answered whatever the exit code did afterwards.
   const wroteAtRoot = obs?.helloAtRoot?.outcome === "ok" && String(obs.helloAtRoot.content ?? "").includes(obs.nonce);
-  const gate = modelArmGate(arm, obs, wroteAtRoot);
+  // ★ A-decl ASKS FOR MORE THAN A FILE, so the file alone is not its positive signal. Codex
+  // review (PR #551): a run that wrote the file and then died before producing a valid final
+  // declaration would otherwise be `observed` with the declaration recorded as absent, and R11
+  // would report option 1b infeasible on a run that never got to try. A-decl's signal is the
+  // file AND a final-frame declaration that resolves to it; anything less, on a failed run, is
+  // inconclusive.
+  const declaration = arm === "A-decl" ? readDeclaration(obs?.stream?.finalResultText, obs?.delta?.filesUnderRoot ?? []) : null;
+  const positiveSignal = arm === "A-decl" ? wroteAtRoot && declaration.present && declaration.matchesWritten : wroteAtRoot;
+  const gate = modelArmGate(arm, obs, positiveSignal);
   if (gate) return gate;
   if (obs.helloAtRoot?.outcome === "faulted") return inconclusive(arm, "read-faulted");
   const d = obs.delta;
@@ -605,7 +646,7 @@ export function verdictCompliance(arm, obs) {
     finalIsError: obs.stream.finalIsError,
   };
   if (arm === "A-decl") {
-    findings.declaration = readDeclaration(obs.stream.finalResultText, d.filesUnderRoot);
+    findings.declaration = declaration;
     findings.finalResultSeen = obs.stream.finalResultSeen;
   }
   return observed(arm, wroteAtRoot ? "wrote-hello-under-root" : "did-not-write-hello-under-root", findings);

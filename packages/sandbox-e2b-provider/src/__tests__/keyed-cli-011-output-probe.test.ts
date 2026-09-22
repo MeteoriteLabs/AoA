@@ -389,8 +389,21 @@ async function p011a(): Promise<Verdict[]> {
       // S-P4 — an unwritable redirect.
       out.push(
         await guarded("S-P4", async () => {
+          // The premise is checked, not assumed: the target directory must be absent first.
+          const dirBefore = (await sdkList(id, "/nonexistent-dir")).outcome;
           const r = await sh(t, id, "exec printf SHOULD_NOT_RUN > /nonexistent-dir/x");
-          const obs = { channel: r.channel, exitCode: r.exitCode, stdout: safe(r.stdout, 400), stderr: safe(r.stderr, 400), marker: "SHOULD_NOT_RUN" };
+          // ★ The command's stdout is REDIRECTED, so an empty stdout is empty either way. The
+          // decisive readback is the redirect TARGET (Codex review, PR #551).
+          const target = await readBack(t, id, "/nonexistent-dir/x");
+          const obs = {
+            channel: r.channel,
+            exitCode: r.exitCode,
+            stdout: safe(r.stdout, 400),
+            stderr: safe(r.stderr, 400),
+            marker: "SHOULD_NOT_RUN",
+            dirBefore,
+            target: { outcome: target.outcome, content: target.bytes ? DEC.decode(target.bytes) : null },
+          };
           evidence("S-P4", obs);
           return verdictUnwritableRedirect(obs) as Verdict;
         }),

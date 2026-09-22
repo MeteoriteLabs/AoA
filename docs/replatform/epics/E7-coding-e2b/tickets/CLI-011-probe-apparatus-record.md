@@ -133,6 +133,16 @@ imports buildSandboxInvocation…"*).
   `json.dumps` first. `evaluateWorkflowShape` fails a raw `": "${…}"` interpolation with the code
   `fallback-unescaped-input`, and there is a positive control for each input. I ran the step
   locally with the template ``bad"name<newline>x``, and it wrote valid JSON.
+- **P1 (eighth review): A-decl's positive signal is the DECLARATION.** A failed A-decl run that
+  wrote the file but never produced a valid final declaration used to pass the gate on the file
+  alone, and R11 would then report option 1b infeasible from a run that never got to try. A-decl's
+  signal is now the file **and** a final-frame declaration that resolves to it.
+- **P2 (eighth review): S-P4 no longer reads an empty stdout as evidence.** The command's stdout is
+  redirected, so it is empty in both worlds. The arm now checks that the target directory was
+  absent beforehand (otherwise inconclusive: the premise is wrong), reads the redirect TARGET back
+  and treats the marker there as "the command ran", and reports `exit 0` with no marker anywhere as
+  inconclusive rather than as "the redirect failed first". RED: 2 of 38 fail on the previous core
+  (this row and the one below). GREEN: 38/38.
 - **P1 (seventh review): a failed model run is not a negative result.** The CLI can reach a model
   and then fail during a tool call or at finalisation. An arm with a non-zero exit, or an
   `is_error` final `result` frame, is now **inconclusive** — unless it already holds its positive

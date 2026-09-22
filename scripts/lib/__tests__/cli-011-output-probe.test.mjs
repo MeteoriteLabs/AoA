@@ -269,8 +269,19 @@ test("S-P7 is inconclusive when its command did not return", () => {
 });
 
 test("S-P4 distinguishes a redirect that failed first from one that let the command run", () => {
-  assert.equal(verdictUnwritableRedirect({ channel: "returned", exitCode: 2, stdout: "", marker: "M" }).findings.failedClosed, true);
-  assert.equal(verdictUnwritableRedirect({ channel: "returned", exitCode: 0, stdout: "M", marker: "M" }).reason, "command-ran-despite-redirect");
+  const nf = { dirBefore: "not-found", target: { outcome: "not-found", content: null } };
+  assert.equal(verdictUnwritableRedirect({ channel: "returned", exitCode: 2, stdout: "", marker: "M", ...nf }).findings.failedClosed, true);
+  assert.equal(verdictUnwritableRedirect({ channel: "returned", exitCode: 0, stdout: "M", marker: "M", ...nf }).reason, "command-ran-despite-redirect");
+  // Codex review (PR #551): the command's stdout is REDIRECTED, so it is empty either way. The
+  // marker in the redirect TARGET is what shows the command ran.
+  const inTarget = verdictUnwritableRedirect({ channel: "returned", exitCode: 0, stdout: "", marker: "M", dirBefore: "not-found", target: { outcome: "ok", content: "M" } });
+  assert.equal(inTarget.reason, "command-ran-despite-redirect");
+  assert.equal(inTarget.findings.markerSeenIn, "redirect-target");
+  // Exit 0 with no marker anywhere decides nothing.
+  assert.equal(verdictUnwritableRedirect({ channel: "returned", exitCode: 0, stdout: "", marker: "M", ...nf }).state, "inconclusive");
+  // If the target directory already existed, the arm is not measuring an unwritable redirect.
+  assert.equal(verdictUnwritableRedirect({ channel: "returned", exitCode: 2, stdout: "", marker: "M", dirBefore: "ok", target: { outcome: "not-found" } }).reason, "redirect-target-directory-is-ok");
+  assert.equal(verdictUnwritableRedirect({ channel: "returned", exitCode: 2, stdout: "", marker: "M", dirBefore: "not-found", target: { outcome: "faulted" } }).state, "inconclusive");
   // Codex review (PR #551): a transport throw shows nothing about the redirect.
   assert.equal(verdictUnwritableRedirect({ channel: "threw", exitCode: null, stdout: "", marker: "M" }).state, "inconclusive");
   assert.equal(verdictUnwritableRedirect({ channel: "timedOut", exitCode: null, stdout: "", marker: "M" }).state, "inconclusive");
@@ -319,6 +330,14 @@ test("a model arm that FAILED after reaching the model is inconclusive unless it
   assert.equal(wroteThenFailed.state, "observed");
   assert.equal(wroteThenFailed.findings.wroteHelloAtRoot, true);
   assert.equal(wroteThenFailed.findings.exitCode, 1);
+  // A-decl's positive signal is the DECLARATION, not the file: a failed run that wrote the file
+  // but produced no valid declaration must not record "no declaration" as a result (Codex review).
+  const declObs = (final) => ({ ...modelObs("A-decl", { delta: helloDelta, hello: { outcome: "ok", content: "N-1" }, final }), exec: { channel: "returned", exitCode: 1 } });
+  assert.equal(verdictCompliance("A-decl", declObs("Done.")).state, "inconclusive");
+  assert.equal(verdictCompliance("A-decl", declObs("Done.\nAOA-OUTPUT: other.txt")).state, "inconclusive");
+  const declOk = verdictCompliance("A-decl", declObs("Done.\nAOA-OUTPUT: hello.txt"));
+  assert.equal(declOk.state, "observed");
+  assert.equal(declOk.findings.declaration.matchesWritten, true);
   // An is_error final frame counts as failure even on exit 0.
   const errFrame = { ...modelObs("A-dir", { delta: noDelta }), stream: failedStream };
   assert.equal(verdictCompliance("A-dir", errFrame).state, "inconclusive");
