@@ -626,8 +626,15 @@ export function verdictCompliance(arm, obs) {
   // would report option 1b infeasible on a run that never got to try. A-decl's signal is the
   // file AND a final-frame declaration that resolves to it; anything less, on a failed run, is
   // inconclusive.
+  // ★ AND IT MUST DECLARE THE REQUESTED FILE. Codex review (PR #551), second pass: an agent that
+  // wrote `hello.txt` plus a scratch file and declared the SCRATCH one satisfied
+  // "declaration.matchesWritten" (any written path), so option 1b would be certified on a
+  // declaration that does not name the deliverable. `matchesRequested` compares the resolved
+  // declaration with `R/hello.txt` itself.
   const declaration = arm === "A-decl" ? readDeclaration(obs?.stream?.finalResultText, obs?.delta?.filesUnderRoot ?? []) : null;
-  const positiveSignal = arm === "A-decl" ? wroteAtRoot && declaration.present && declaration.matchesWritten : wroteAtRoot;
+  if (declaration) declaration.matchesRequested = declaration.resolved === `${OUTPUT_ROOT}/${HELLO_FILE}`;
+  const positiveSignal =
+    arm === "A-decl" ? wroteAtRoot && declaration.present && declaration.matchesWritten && declaration.matchesRequested : wroteAtRoot;
   const gate = modelArmGate(arm, obs, positiveSignal);
   if (gate) return gate;
   if (obs.helloAtRoot?.outcome === "faulted") return inconclusive(arm, "read-faulted");
@@ -723,7 +730,11 @@ export function evaluateDecisionTable(verdicts, mode = "all") {
 
   m = need("A-decl");
   rows.push(row("R11", "A-decl carries a correct line", "option 1b is feasible; recorded for a post-M1b refinement",
-    m ? UNDECIDABLE : f("A-decl").declaration?.present === true && f("A-decl").declaration?.matchesWritten === true,
+    m
+      ? UNDECIDABLE
+      : f("A-decl").declaration?.present === true &&
+        f("A-decl").declaration?.matchesWritten === true &&
+        f("A-decl").declaration?.matchesRequested === true,
     m ?? `declaration=${JSON.stringify(f("A-decl").declaration)}`));
 
   // R12 is the pack's own disposition: an inconclusive arm, a missing arm, or a control that did

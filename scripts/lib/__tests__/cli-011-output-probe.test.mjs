@@ -338,6 +338,18 @@ test("a model arm that FAILED after reaching the model is inconclusive unless it
   const declOk = verdictCompliance("A-decl", declObs("Done.\nAOA-OUTPUT: hello.txt"));
   assert.equal(declOk.state, "observed");
   assert.equal(declOk.findings.declaration.matchesWritten, true);
+  assert.equal(declOk.findings.declaration.matchesRequested, true);
+  // Codex review (PR #551, second pass): declaring a DIFFERENT file it also wrote is not the
+  // deliverable, so it is neither a positive signal nor a reason for R11 to fire.
+  const scratchDelta = censusDelta(diffSnapshots([], [file(`${OUTPUT_ROOT}/hello.txt`), file(`${OUTPUT_ROOT}/scratch.txt`)]), { staged: STAGED });
+  const scratchObs = { ...modelObs("A-decl", { delta: scratchDelta, hello: { outcome: "ok", content: "N-1" }, final: "Done.\nAOA-OUTPUT: scratch.txt" }), exec: { channel: "returned", exitCode: 1 } };
+  assert.equal(verdictCompliance("A-decl", scratchObs).state, "inconclusive");
+  const scratchOk = verdictCompliance("A-decl", { ...scratchObs, exec: { channel: "returned", exitCode: 0 } });
+  assert.equal(scratchOk.findings.declaration.matchesWritten, true);
+  assert.equal(scratchOk.findings.declaration.matchesRequested, false);
+  const vDecl = baseline();
+  vDecl[15] = scratchOk;
+  assert.equal(rowOf(evaluateDecisionTable(vDecl), "R11").fired, false, "declaring a scratch file never certifies option 1b");
   // An is_error final frame counts as failure even on exit 0.
   const errFrame = { ...modelObs("A-dir", { delta: noDelta }), stream: failedStream };
   assert.equal(verdictCompliance("A-dir", errFrame).state, "inconclusive");

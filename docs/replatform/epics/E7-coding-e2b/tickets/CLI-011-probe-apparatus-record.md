@@ -133,6 +133,9 @@ imports buildSandboxInvocation…"*).
   `json.dumps` first. `evaluateWorkflowShape` fails a raw `": "${…}"` interpolation with the code
   `fallback-unescaped-input`, and there is a positive control for each input. I ran the step
   locally with the template ``bad"name<newline>x``, and it wrote valid JSON.
+- **P2 (ninth review): the declaration must name the REQUESTED file.** Declaring a scratch file it
+  also wrote satisfied "matches something written". `matchesRequested` compares the resolved
+  declaration with `R/hello.txt` itself; R11 requires it, and so does A-decl's positive signal.
 - **P1 (eighth review): A-decl's positive signal is the DECLARATION.** A failed A-decl run that
   wrote the file but never produced a valid final declaration used to pass the gate on the file
   alone, and R11 would then report option 1b infeasible from a run that never got to try. A-decl's
