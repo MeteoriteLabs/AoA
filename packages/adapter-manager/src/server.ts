@@ -199,8 +199,13 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
    * `idempotencyKey` returns the recorded result rather than being refused — `ProviderOpContext`'s
    * own contract is "a repeated key returns the recorded result and does not double-apply", and a
    * lost response must not turn a stored object into a missing output (Codex P2, PR #557).
+   *
+   * ★ BOUNDED IN TIME, not unbounded growth (Codex P2, fifth round). A record is useful only while
+   * the grant that produced it can still be redeemed, so each carries that grant's own `expiresAt`
+   * and every export first drops the records that have passed it. A grant past its expiry is
+   * refused outright (`assertUploadGrantBound`), so an evicted record can never be replayed.
    */
-  const redeemedUploads = new Map<string, { idempotencyKey: string; result: unknown }>();
+  const redeemedUploads = new Map<string, { idempotencyKey: string; result: unknown; expiresAtMs: number }>();
 
   const gateDeps: OwnedOpGateDeps | null = gated
     ? { provider, controlPlanePublicKey: controlPlanePublicKey!, now, sandboxLock: new KeyedMutex() }
@@ -305,11 +310,15 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
           ctx,
           capability,
           (detail) => {
-            assertUploadGrantBound(grant, detail.resourceLabels, artifactUploadOrigins);
+            assertUploadGrantBound(grant, detail.resourceLabels, artifactUploadOrigins, now());
             if (!(exportBudget > 0)) {
               return Promise.reject(new WireProtocolError("export_artifact refused: no budget left before the teardown reserve"));
             }
             const objectKey = (grant as { objectKey: string }).objectKey;
+            const nowMs = now();
+            for (const [key, record] of redeemedUploads) {
+              if (record.expiresAtMs <= nowMs) redeemedUploads.delete(key);
+            }
             const redeemed = redeemedUploads.get(objectKey);
             if (redeemed !== undefined) {
               // Lost-response REPLAY under the same key: hand back the recorded result, upload
@@ -319,7 +328,11 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
             }
             return provider.exportArtifact(sandboxId, path, grant, { ...ctx, deadlineMs: exportBudget }).then((result) => {
               // Recorded only on SUCCESS: a failed export must stay retryable.
-              redeemedUploads.set(objectKey, { idempotencyKey: ctx.idempotencyKey, result });
+              redeemedUploads.set(objectKey, {
+                idempotencyKey: ctx.idempotencyKey,
+                result,
+                expiresAtMs: Date.parse((grant as { expiresAt: string }).expiresAt),
+              });
               return result;
             });
           },
@@ -453,13 +466,21 @@ function artifactOpBudgetMs(ctx: ProviderOpContext, capability: OwnedLabelsCapab
  *    `expectedAttemptObjectPrefix` (restated here because this package may not declare
  *    worker-protocol; `check-adapter-manager-boundary`). The labels are the owned-checked ones.
  * 4. The url TARGETS that key: its decoded path ends with `/<objectKey>` (path- or host-style).
+ * 5. The grant has not EXPIRED (`expiresAt`, on the server's own clock). A dead grant cannot be
+ *    redeemed at the store anyway, and refusing it here is what makes the redemption ledger's
+ *    expiry-based eviction safe: an evicted record can never be replayed.
  *
  * This does not authenticate the grant — nothing can, since a presigned url carries no
  * control-plane signature the adapter-manager could check. It confines where a grant can send
  * bytes to the configured store, under the caller's own attempt, which is the most a forged grant
  * could then do and is what the caller's own lease may already write.
  */
-function assertUploadGrantBound(grant: unknown, owned: ResourceLabels, allowedOrigins: ReadonlySet<string>): void {
+function assertUploadGrantBound(
+  grant: unknown,
+  owned: ResourceLabels,
+  allowedOrigins: ReadonlySet<string>,
+  nowMs: number,
+): void {
   const refuse = (): never => {
     throw new WireProtocolError("export_artifact refused: the upload grant is not bound to this attempt and a configured artifact store");
   };
@@ -483,6 +504,8 @@ function assertUploadGrantBound(grant: unknown, owned: ResourceLabels, allowedOr
     return refuse();
   }
   if (!path.endsWith(`/${objectKey}`)) refuse();
+  const expiresAtMs = typeof g.expiresAt === "string" ? Date.parse(g.expiresAt) : Number.NaN;
+  if (!Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs) refuse();
 }
 
 /**

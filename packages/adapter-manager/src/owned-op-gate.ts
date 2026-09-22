@@ -151,6 +151,12 @@ export async function gateOwnedOp<R>(
   //    dispatcher that re-entered this lock on the same key would self-deadlock — keep
   //    dispatchers non-re-entrant, or key any inner gate on a different id.
   return sandboxLock.runExclusive(sandboxId, async () => {
+    // ★ The budget LATCH (Codex P2, PR #557). When the bound fires, the locked section is
+    // detached but still running: without this, an inspection that resolves afterwards would go
+    // on to dispatch, so an export could start reading and PUTting after the caller was told it
+    // timed out and teardown had taken the lock. Checked after the awaited inspection, exactly as
+    // the supervisor's export window re-checks its own latch after every await.
+    let budgetFired = false;
     const locked = (async (): Promise<R> => {
       // Resolve the target AM-local. MIRROR #requireOwned: SandboxNotFoundError -> the
       // uniform error; RETHROW any OTHER (transient) inspect fault as its own class.
@@ -168,10 +174,16 @@ export async function gateOwnedOp<R>(
         throw new ResourceNotAvailableError();
       }
 
+      if (budgetFired) throw new WireProtocolError("gated operation abandoned: its budget fired before dispatch");
+
       // Allow — dispatch OUTSIDE the inspect-collapse try. A dispatch fault is ITS OWN class.
       return dispatch(detail);
     })();
-    return opBudgetMs === undefined ? locked : boundLockedSection(locked, opBudgetMs);
+    return opBudgetMs === undefined
+      ? locked
+      : boundLockedSection(locked, opBudgetMs, () => {
+          budgetFired = true;
+        });
   });
 }
 
@@ -181,11 +193,17 @@ export async function gateOwnedOp<R>(
  * abandoned work keeps running detached; its eventual rejection is swallowed, never unhandled. The
  * message names no sandbox, path, grant or url.
  */
-function boundLockedSection<R>(work: Promise<R>, budgetMs: number): Promise<R> {
+function boundLockedSection<R>(work: Promise<R>, budgetMs: number, onExpiry: () => void): Promise<R> {
   work.catch(() => undefined);
-  if (!(budgetMs > 0)) return Promise.reject(new WireProtocolError("gated operation refused: no budget left"));
+  if (!(budgetMs > 0)) {
+    onExpiry();
+    return Promise.reject(new WireProtocolError("gated operation refused: no budget left"));
+  }
   return new Promise<R>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new WireProtocolError("gated operation timed out before it completed")), budgetMs);
+    const timer = setTimeout(() => {
+      onExpiry();
+      reject(new WireProtocolError("gated operation timed out before it completed"));
+    }, budgetMs);
     work.then(
       (value) => {
         clearTimeout(timer);

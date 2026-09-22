@@ -104,10 +104,15 @@ class RecordingMockTransport extends MockE2bTransport {
    * per-sandbox lock (Codex P1, fourth round). A counter, not a flag, so a later op can succeed and
    * prove the lock was actually released. */
   stallInfoCalls = 0;
+  /** ms to DELAY the stalled `getInfo` by instead of hanging forever: it resolves AFTER the budget
+   * fired, which is the case where a detached section could still dispatch (Codex P2, PR #557). */
+  stallInfoResolveAfterMs: number | null = null;
   override async getInfo(...args: Parameters<MockE2bTransport["getInfo"]>): ReturnType<MockE2bTransport["getInfo"]> {
     if (this.stallInfoCalls > 0) {
       this.stallInfoCalls -= 1;
-      return new Promise(() => undefined) as ReturnType<MockE2bTransport["getInfo"]>;
+      const delay = this.stallInfoResolveAfterMs;
+      if (delay === null) return new Promise(() => undefined) as ReturnType<MockE2bTransport["getInfo"]>;
+      await new Promise((resolve) => setTimeout(resolve, delay));
     }
     return super.getInfo(...args);
   }
@@ -126,6 +131,8 @@ let exportCtxDeadlines: number[];
 let digestCtxDeadlines: number[];
 let server: ReturnType<typeof createProviderServer>;
 let baseUrl: string;
+
+let clockNow = NOW;
 
 async function startServer(
   opts: { gated?: boolean; exportMode?: "grant_upload" | "none"; uploadOrigins?: readonly string[] | null } = {},
@@ -173,7 +180,7 @@ async function startServer(
   server = createProviderServer({
     provider,
     controlPlanePublicKey: gated ? controlPlane.publicKey : undefined,
-    now: () => NOW,
+    now: () => clockNow,
     artifactUploadOrigins,
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -183,7 +190,10 @@ async function stopServer(): Promise<void> {
   await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
 }
 
-beforeEach(() => startServer());
+beforeEach(() => {
+  clockNow = NOW;
+  return startServer();
+});
 afterEach(async () => {
   stallUploads = false;
   await stopServer();
@@ -560,6 +570,44 @@ describe("DAT-009-3e — digest/export over the networked wire (gated owned ops)
       WireProtocolError,
     );
     expect(uploads).toHaveLength(1);
+  });
+
+  // ★ Codex P2 (fifth round): when the budget fires, the LOCKED section is detached. If its
+  // inspection later resolves, it must NOT go on to dispatch — a late export would start reading
+  // and PUTting after teardown already took the lock, which is the reserve defeated from behind.
+  it("★ a detached locked section does NOT dispatch after its budget fired", async () => {
+    const sandboxId = await sandboxWithOutput(ORG_A);
+    transport.stallInfoCalls = 1;
+    transport.stallInfoResolveAfterMs = 400; // resolves well after the 200 ms budget
+    const driver = new NetworkedProviderDriver({ baseUrl, capability: mint(ORG_A, NOW + EXPORT_TEARDOWN_RESERVE_MS + 200) });
+    await expect(
+      driver.exportArtifact(sandboxId, OUT_PATH, grant(ORG_A), { deadlineMs: 600_000, idempotencyKey: "e-detached" }),
+    ).rejects.toBeInstanceOf(WireProtocolError);
+    const readsAtTimeout = transport.readFileCalls;
+    // Give the abandoned inspection time to resolve and (wrongly) continue.
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    expect(transport.readFileCalls).toBe(readsAtTimeout);
+    expect(uploads).toHaveLength(0);
+  });
+
+  it("★ an EXPIRED upload grant is refused, and its redemption record is evicted rather than kept forever", async () => {
+    const sandboxId = await sandboxWithOutput(ORG_A);
+    // A long-lived capability, so the GRANT's expiry is the only thing that lapses here.
+    const driver = new NetworkedProviderDriver({ baseUrl, capability: mint(ORG_A, NOW + 600_000) });
+    const short = grant(ORG_A, { expiresAt: new Date(NOW + 60_000).toISOString() });
+    await driver.exportArtifact(sandboxId, OUT_PATH, short, ctx("e-ttl-1"));
+    expect(uploads).toHaveLength(1);
+
+    // Past the grant's expiry: a replay of the SAME grant is refused because the grant is dead...
+    clockNow = NOW + 120_000;
+    await expect(driver.exportArtifact(sandboxId, OUT_PATH, short, ctx("e-ttl-1"))).rejects.toBeInstanceOf(WireProtocolError);
+    expect(uploads).toHaveLength(1);
+
+    // ...and the expired record no longer occupies the ledger: a FRESH grant for the same key is
+    // dispatched again rather than refused as a re-PUT of the evicted record.
+    const fresh = grant(ORG_A, { expiresAt: new Date(clockNow + 60_000).toISOString() });
+    await driver.exportArtifact(sandboxId, OUT_PATH, fresh, ctx("e-ttl-2"));
+    expect(uploads).toHaveLength(2);
   });
 
   it("a FAR provider that declares artifactExportMode='none' declines honestly, as its own class", async () => {
