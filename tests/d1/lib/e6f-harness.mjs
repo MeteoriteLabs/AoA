@@ -2461,7 +2461,7 @@ process.exit(0);
 /** Owner-DB probe of everything the spine asserts for ONE attempt. Cost rows are matched on
  * their idempotency key's EVENT half (`cost:<company>:<eventId>`) across ALL Companies, so a row
  * written under the wrong Company is SEEN and judged, not silently missed. Runs in control-plane.
- * Returns { ok, attemptStatus, events, costRows, receipts, activity }. */
+ * Returns { ok, attemptStatus, events, usageEvents, costRows, receipts, activity }. */
 export function querySpineAttempt({ organizationId, jobId }) {
   const params = { organizationId, jobId };
   const script = `
@@ -2475,6 +2475,11 @@ try {
   const events = await sql\`SELECT event_id AS "eventId", event_type AS "eventType", sequence,
       organization_id AS "organizationId", company_id AS "companyId"
     FROM job_events WHERE job_id = \${P.jobId} ORDER BY sequence\`;
+  // The ACCEPTED usage events of this attempt, with the units as STORED (event->'payload'), so the
+  // cardinality claim is counted from the durable ledger rather than from what the test sent.
+  const usageEvents = await sql\`SELECT event_id AS "eventId", sequence,
+      organization_id AS "organizationId", company_id AS "companyId", event->'payload' AS payload
+    FROM job_events WHERE job_id = \${P.jobId} AND event_type = 'usage' ORDER BY sequence\`;
   const costRows = await sql\`SELECT c.id, c.company_id AS "companyId", c.agent_id AS "agentId",
       c.provider, c.model, c.input_tokens AS "inputTokens", c.output_tokens AS "outputTokens",
       c.cached_input_tokens AS "cachedInputTokens", c.cost_cents AS "costCents",
@@ -2492,7 +2497,7 @@ try {
     FROM activity_log WHERE entity_type = 'job' AND entity_id = \${P.jobId}
       AND action IN ('job.attempt_started', 'job.attempt_terminal')
     ORDER BY action\`;
-  report({ ok: true, attemptStatus: attempts[0]?.status ?? null, attempts: attempts.length, events, costRows, receipts, activity });
+  report({ ok: true, attemptStatus: attempts[0]?.status ?? null, attempts: attempts.length, events, usageEvents, costRows, receipts, activity });
 } catch (error) {
   report({ ok: false, error: String(error && error.message ? error.message : error) });
 } finally {

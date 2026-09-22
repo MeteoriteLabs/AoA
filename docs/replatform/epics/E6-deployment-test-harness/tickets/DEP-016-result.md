@@ -17,7 +17,7 @@
 | Canned usage on the reference provider | `packages/sandbox-fake-provider/src/fake-driver.ts` (`FAKE_PROVIDER_CANNED_USAGE_V1`, `FAKE_PROVIDER_USAGE_MODES`) | `execute` now reports fixed units (120 000 in / 30 000 out / 0 cached / 4 200 ms) that satisfy the frozen `usagePayloadV1Schema`. A provider id scripted `usageMode: "suppressed"` reports `usage: null`. An unknown mode is refused. `reset()` restores the default. Threaded through both control servers (`control-server.ts`, `docker/d1/fake-provider-entry.mjs`). |
 | The one-worker topology | `docker/d1/m1-spine.override.yml` | A compose OVERRIDE, never an edit of the train: `worker-a` moves into a profile nothing enables, `test-runner`'s `depends_on` is `!override`-replaced, and the F10 rollout policy is set on BOTH control-plane replicas, identically. The crew switch is not set. |
 | The tenant set + the verdicts | `scripts/lib/m1-spine-assertions.mjs` | `M1_SPINE_TENANTS` (two enabled Organizations, one control), `M1_SPINE_ROLLOUT_ENV_VALUE`, and four pure verdict functions: `evaluateSpineOverrideText`, `evaluateReplicaRollout`, `evaluateEnabledTenantSpine`, `evaluateControlTenant`. |
-| The verdicts' self-test | `scripts/lib/__tests__/m1-spine-assertions.test.mjs` (26 tests) | Each verdict has a zero-violation anchor and defect fixtures. Wired into `pr.yml` `policy` → *m1-spine profile verdict self-test (DEP-016)*, declared in `scripts/test-execution-census.json`. |
+| The verdicts' self-test | `scripts/lib/__tests__/m1-spine-assertions.test.mjs` (31 tests) | Each verdict has a zero-violation anchor and defect fixtures. Wired into `pr.yml` `policy` → *m1-spine profile verdict self-test (DEP-016)*, declared in `scripts/test-execution-census.json`. |
 | The live profile | `tests/d1/m1-spine.test.mjs` (4 tests) + helpers in `tests/d1/lib/e6f-harness.mjs` (`seedSpineOrganization`, `seedSpineTarget`, `seedSpineJob`, `probeReplicaRollout`, `placeSpineAttemptOnReplica`, `querySpineAttempt`, `querySpineControl` — all additive) | The profile itself. |
 | The lane | `.github/workflows/d1-merge-train.yml` job **`m1-spine`** | Builds the split images, brings up the override, asserts exactly ONE worker service is running, runs the profile, runs the usage-suppressed POSITIVE CONTROL and fails the lane if it passes, collects the evidence bundle **`if: always()`** (on pass as well as on failure) and uploads it. New path triggers: `scripts/lib/m1-spine-assertions.mjs`, `packages/sandbox-fake-provider/**`. |
 
@@ -37,7 +37,8 @@ value, so it can never be run against the two-worker train by accident. The exis
 |---|---|---|
 | 1 | A passing profile run retains its evidence bundle | The `m1-spine` job's collect + upload steps are `if: always()`, and the profile writes `m1-spine-evidence.json` (per-replica rollout digests; per tenant the ids, event types, cost rows, receipts and audit rows) into the uploaded directory |
 | 2 | Per priced attempt: exactly one `cost_events` row with cost > 0 and one `authoritative_cost` receipt; the named audit rows present | `evaluateEnabledTenantSpine`, live: §3 GREEN |
-| 3 | **Positive control:** the same profile with usage suppressed **reds** | §4 row PC, and the lane step *POSITIVE CONTROL — with usage suppressed, the profile MUST go red* |
+| 2a | **Usage cardinality** (added 2026-09-23 — the `WRK-018` acceptance-1 collection point, see §7): per attempt, EXACTLY ONE accepted `usage` event in `job_events`, of this tenant, whose stored units are the ones the provider reported, and to which the single cost row is keyed | `evaluateEnabledTenantSpine` (`usage:*` codes), live: §3 |
+| 3 | **Positive control:** the same profile with usage suppressed **reds**, and a DUPLICATE usage event **reds** | §4 row PC, and the lane step *POSITIVE CONTROL — with usage suppressed, the profile MUST go red* |
 | 4 | **F10:** three Organizations — two enabled, one control; journey, audit and cost attribution asserted PER enabled tenant; the control tenant refused and left legacy. The rollout is set on BOTH replicas, identically, and the bundle records its digest | `evaluateReplicaRollout` + `evaluateControlTenant`, live: §3 |
 | 5 | **Crew switch off** on both replicas, recorded in the bundle | `evaluateReplicaRollout` (`crew:switch_on` / `crew:switch_unparseable`); live: `crewRaw: null`, `crewEnabled: false` on both replicas |
 
@@ -60,6 +61,12 @@ What the server actually wrote, from `m1-spine-evidence.json`:
 | A (`0d016a00…`) | **1** | **81** | `claude-sonnet-4-6` / `claude_local`, `rate_version` 1 | `cost:0d016a01…:a5eade20…` (the accepted `usage` event) | `authoritative_cost:applied`, 2 × `activity_audit:applied` (+ JOB-005's `attempt_started`/`attempt_terminal`) | `job.attempt_started`, `job.attempt_terminal`, actor `worker:602fc713…` |
 | B (`0d016b00…`) | **1** | **81** | same | `cost:0d016b01…:8035233d…` | same | same, actor `worker:81451e6d…` |
 
+- **Usage cardinality.** Each attempt has **exactly one** accepted `usage` event in `job_events`
+  (A: `a7fe176a…` seq 2; B: `f7b5d7c2…` seq 2), each carrying its own tenant's
+  `organization_id`/`company_id` and the stored units `{in 120000, out 30000, cached 0, ms 4200}` —
+  byte-equal to the units the reference provider reported — and each tenant's single cost row is
+  keyed to its own event (`cost:<that tenant's company>:<that event id>`), with the row's token
+  columns equal to the stored units.
 - Each row's `company_id` and `agent_id` are that tenant's own (`0d016a01…`/`0d016a02…` and
   `0d016b01…`/`0d016b02…`). The cost query matches on the key's EVENT half across **all** Companies,
   so a row written under the wrong Company would be seen and judged, not missed.
@@ -83,8 +90,9 @@ receipts still pass), and each was reverted afterwards.
 | Row | The one thing changed | Result |
 |---|---|---|
 | **RED-1** | The reference provider image built **before** this ticket (no usage code at all) | `pass 2 / fail 2` — `cost:no_cost_row` + `cost:receipt_missing` for A and B; evidence shows `usage: null`, events `attempt_started,terminal` |
-| **PC** (acceptance 3) | The shipped provider, scripted `usageMode: "suppressed"` | identical: `pass 2 / fail 2`, same two codes, `usage: null` |
+| **PC-1** (acceptance 3) | The shipped provider, scripted `usageMode: "suppressed"` | identical: `pass 2 / fail 2`, the same two cost codes plus `usage:no_usage_event` (0 accepted usage events), `usage: null` |
 | **RED-2** | A control-plane image built with **`JOB-016`'s `createAcceptedUsagePricingProjector` registration removed** from `server/src/services/job-events.ts` | `pass 2 / fail 2` — and here the `usage` event **is** accepted (events `attempt_started,usage,terminal`) and the `activity_audit` receipts **are** written, yet there is still **no cost row and no `authoritative_cost` receipt**. This is what shows the assertion measures the pricing registration specifically, not merely the presence of a usage event |
+| **PC-2** (acceptance 3, cardinality) | The worker sends a SECOND `usage` event for the same attempt with a DISTINCT event id (`AOA_M1_SPINE_USAGE_MODE=duplicate`) | `pass 2 / fail 2` — `usage:not_exactly_one` (2 accepted usage events) **and** `cost:not_exactly_one` (2 cost rows) + `cost:receipt_not_exactly_one` for both tenants. Two things this measured, both worth the reviewer's attention: the ingest's replay guard keys on the EVENT ID, so a distinct-id duplicate is accepted and priced again — which is exactly why a stored usage row cannot establish a cardinality claim; and the "exactly one" arms are shown to fail in the `> 1` direction, not only the `0` direction |
 | **F1–F4** | Four single-behaviour mutations of the canned-usage code (suppression ignored; no canned default; `reset()` keeps modes; unknown mode accepted) | each reds its named test in `packages/sandbox-fake-provider/src/__tests__/canned-usage.test.ts` (2, 2, 1, 1 failures) |
 
 The verdict functions' own non-vacuity is `scripts/lib/__tests__/m1-spine-assertions.test.mjs`: 26
@@ -141,6 +149,20 @@ the deployed worker — and `WRK-018`'s own record states that run as PENDING (F
 planning session dispatches it). The spine's units are CANNED by construction, which is what keeps
 this lane keyless and deterministic and is exactly why it cannot discharge the real-parser clause.
 
+**This profile is also where `WRK-018` acceptance 1 is collected** (added 2026-09-23, from a Codex
+P1 on PR #564 that the planning session accepted). That acceptance reads *"one real keyed run emits
+**exactly one** `usage` equal to the result line"* — a CARDINALITY claim, and the keyed run's stored
+`usage_json` row cannot establish it: a stored row cannot be told apart from a duplicate or a replay
+of itself. A cardinality claim needs a counted population. This profile has one — the accepted
+`usage` events of a single attempt, counted in `job_events` — and now asserts, per enabled tenant
+under the F10 topology: exactly one such event (never `>= 1`), belonging to that tenant, whose
+stored units equal the ones the provider reported, with the single cost row keyed to that event.
+The **PC-2** run in §4 is its positive control, and it measured something the reviewer should carry
+forward: a duplicate with a DISTINCT event id is accepted and priced again, because the ingest's
+replay guard keys on the event id. So the chain is: this assertion establishes the cardinality half
+on a keyless lane with canned units; `WRK-018` acceptance 1 still needs its one keyed run for the
+REAL `claude_local` parser, and it stays PENDING.
+
 `scripts/finding-ownership.json` therefore moves `E3-F037` from `owned` (`DEP-016`) to **`unowned`**,
 with the full reason: this ticket has now filed a result record, so the guard would otherwise report
 an open finding owned by shipped work, and the guard's `successor` field has no eligible ticket to
@@ -159,7 +181,7 @@ carries the keyed acceptance, or to record that run and close the finding. `E3-1
   through the exact line map, anchor by anchor.
 - `packages/sandbox-fake-provider`: `vitest run` **20/20**, `tsc --noEmit` clean;
   `packages/sandbox-provider-contract`: **22/22** (the fake is its reference driver).
-- `scripts/lib/__tests__/m1-spine-assertions.test.mjs`: **26/26**.
+- `scripts/lib/__tests__/m1-spine-assertions.test.mjs`: **31/31**.
 - `scripts/test-inventory.json`: three pinned counts bumped (`packages/sandbox-fake-provider` 4 → 5,
   `scripts` 68 → 69, `tests` 107 → 108). `--write` also wanted to raise unrelated FLOOR counts; those
   were reverted, since they are other tickets' growth.

@@ -442,6 +442,33 @@ jobs:
           echo "positive control: the profile went red on the cost assertion, as required"
           tail -n 40 "$out"
 
+      - name: POSITIVE CONTROL — a DUPLICATE usage event MUST turn the assertion red
+        env:
+          AOA_D1_LIVE: "1"
+          AOA_M1_SPINE_USAGE_MODE: duplicate
+          AOA_M1_SPINE_EVIDENCE_DIR: ${{ github.workspace }}/m1-spine-evidence/duplicate-usage-control
+        run: |
+          set -uo pipefail
+          # WRK-018 acceptance 1 is "EXACTLY ONE usage equal to the result line" — a CARDINALITY
+          # claim, which a stored usage row cannot establish (it cannot be told apart from a
+          # duplicate or a replay). The profile counts the ACCEPTED usage events of the attempt
+          # instead, and this run sends a SECOND one with a DISTINCT event id — the case the
+          # ingest's own replay guard does not catch, since it keys on the event id. If the
+          # profile still passes, the "exactly one" arms are `>= 1` in disguise.
+          out="${RUNNER_TEMP}/m1-spine-duplicate-usage.txt"
+          if node --test --test-concurrency=1 tests/d1/m1-spine.test.mjs > "$out" 2>&1; then
+            cat "$out"
+            echo "::error::m1-spine PASSED with a duplicate usage event — the cardinality assertion is >= 1, not == 1"
+            exit 1
+          fi
+          grep -F '[m1-spine:usage]' "$out" || {
+            cat "$out"
+            echo "::error::m1-spine went red on the duplicate run, but NOT on the usage-cardinality assertion"
+            exit 1
+          }
+          echo "positive control: a duplicate usage event reds the cardinality assertion, as required"
+          tail -n 40 "$out"
+
       - name: Collect the distributed evidence bundle (ON PASS as well as on failure)
         if: always()
         run: >-

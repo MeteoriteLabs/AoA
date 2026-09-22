@@ -25,6 +25,21 @@
  * control can prove it went red for the RIGHT reason (and not, say, a bring-up failure). */
 export const M1_SPINE_COST_MARKER = "[m1-spine:cost]";
 
+/**
+ * Every USAGE-CARDINALITY violation's message carries this, for the duplicate-usage positive
+ * control. Separate from the cost marker because the two controls prove different things: the
+ * suppressed run proves the cost assertion can fail, and the duplicate run proves the "exactly one"
+ * arms can fail in the OTHER direction.
+ *
+ * ★ WHY THIS EXISTS AT ALL (added 2026-09-23). `WRK-018` acceptance 1 is *"one real keyed run emits
+ * EXACTLY ONE `usage` equal to the result line"*, and a Codex P1 on PR #564 established that the
+ * keyed run's stored `usage_json` row cannot establish it: a stored row cannot be distinguished from
+ * a duplicate or a replay of itself. A CARDINALITY claim needs a counted population, which is what
+ * this profile has — the accepted `usage` events of one attempt, counted in `job_events` — so the
+ * assertion is collected here, per tenant, with a duplicate that must red.
+ */
+export const M1_SPINE_USAGE_MARKER = "[m1-spine:usage]";
+
 function tenant(key, n) {
   // Fixed ids: the rollout policy is static env on the replicas, so the Organizations it names
   // must be known before the stack boots. Version-4-shaped so every uuid validator accepts them.
@@ -67,7 +82,9 @@ const CONTROL_PLANE_REPLICAS = Object.freeze(["control-plane", "control-plane-b"
 export { CONTROL_PLANE_REPLICAS as M1_SPINE_CONTROL_PLANE_REPLICAS };
 
 function violation(code, message) {
-  return { code, message: code.startsWith("cost:") ? `${M1_SPINE_COST_MARKER} ${message}` : message };
+  if (code.startsWith("cost:")) return { code, message: `${M1_SPINE_COST_MARKER} ${message}` };
+  if (code.startsWith("usage:")) return { code, message: `${M1_SPINE_USAGE_MARKER} ${message}` };
+  return { code, message };
 }
 
 // ── the committed override (static; runs in pr.yml) ───────────────────────────
@@ -145,6 +162,8 @@ export function evaluateReplicaRollout(o) {
 /**
  * @param {{ tenant: object, observation: object }} input
  * observation: { acceptedThroughSeq, jobEventTypes, attemptStatus,
+ *   usageEvents: [{eventId, organizationId, companyId, payload:{inputTokens,outputTokens,cachedInputTokens,runtimeMillis}}]
+ *              — the ACCEPTED `usage` events of THIS attempt, from `job_events`,
  *   costRows: [{companyId, costCents, sourceIdempotencyKey}]  — every cost_events row whose key
  *             names ANY event of this attempt, across ALL Companies (so a misattributed row is seen),
  *   costReceipts: [{status, organizationId, companyId}]        — authoritative_cost, this job,
@@ -176,6 +195,34 @@ export function evaluateEnabledTenantSpine({ tenant: t, observation: o }) {
     out.push(violation("audit:receipt_wrong_tenant", `${k}: an activity_audit receipt names another tenant`));
   }
 
+  // Usage cardinality (the WRK-018 acceptance-1 collection point). EXACTLY ONE accepted `usage`
+  // event for this attempt — never `>= 1`, because a duplicate is precisely what a stored row
+  // cannot rule out — and its units are the ones the charge was computed from.
+  const usageEvents = o.usageEvents ?? [];
+  if (usageEvents.length !== 1) {
+    out.push(violation(
+      usageEvents.length === 0 ? "usage:no_usage_event" : "usage:not_exactly_one",
+      `${k}: the attempt has ${usageEvents.length} accepted usage event(s) in job_events, expected exactly 1`,
+    ));
+  }
+  if (usageEvents.some((e) => e.organizationId !== t.organizationId || e.companyId !== t.companyId)) {
+    // F10: an event of another Organization must never be counted toward this tenant's one.
+    out.push(violation("usage:wrong_tenant", `${k}: an accepted usage event names another tenant`));
+  }
+  if (o.expectedUnits) {
+    for (const event of usageEvents) {
+      const stored = event.payload ?? {};
+      const differs = ["inputTokens", "outputTokens", "cachedInputTokens", "runtimeMillis"]
+        .some((field) => Number(stored[field]) !== Number(o.expectedUnits[field]));
+      if (differs) {
+        out.push(violation(
+          "usage:units_differ",
+          `${k}: the stored usage ${JSON.stringify(stored)} is not the units the provider reported ${JSON.stringify(o.expectedUnits)}`,
+        ));
+      }
+    }
+  }
+
   // Cost (JOB-016): exactly one row, cost > 0, this tenant's Company; one applied receipt.
   const costRows = o.costRows ?? [];
   if (costRows.length === 0) {
@@ -200,6 +247,21 @@ export function evaluateEnabledTenantSpine({ tenant: t, observation: o }) {
   }
   if (receipts.some((r) => r.organizationId !== t.organizationId || r.companyId !== t.companyId)) {
     out.push(violation("cost:receipt_wrong_tenant", `${k}: an authoritative_cost receipt names another tenant`));
+  }
+  // The row must carry the SAME numbers as the accepted usage event, and be keyed to it: a charge
+  // computed from anything else is not a charge for this attempt's reported usage.
+  if (usageEvents.length === 1 && costRows.length === 1) {
+    const units = usageEvents[0].payload ?? {};
+    const row = costRows[0];
+    const sameNumbers = Number(row.inputTokens) === Number(units.inputTokens) &&
+      Number(row.outputTokens) === Number(units.outputTokens) &&
+      Number(row.cachedInputTokens) === Number(units.cachedInputTokens);
+    if (!sameNumbers) {
+      out.push(violation("usage:row_units_differ", `${k}: the cost row's tokens are not the accepted usage event's`));
+    }
+    if (row.sourceIdempotencyKey !== `cost:${t.companyId}:${usageEvents[0].eventId}`) {
+      out.push(violation("usage:row_not_keyed_to_event", `${k}: the cost row is not keyed to this attempt's usage event`));
+    }
   }
   return out;
 }

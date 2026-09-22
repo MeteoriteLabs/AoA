@@ -2192,6 +2192,14 @@ promoted by this ticket").
 > `scripts/finding-ownership.json`, because `DEP-016` has now filed a result record and the guard's
 > successor field has no eligible ticket to name (`WRK-018` has filed its own result; `DEP-018` has a
 > program-design node but no ticket file). Severity (HIGH) and Status (open) are unchanged.
+>
+> The same profile is now also where **`WRK-018` acceptance 1's cardinality half** is collected (a
+> Codex P1 on PR #564, accepted by the planning session): per attempt, EXACTLY ONE accepted `usage`
+> event in `job_events`, of that tenant, whose stored units are the ones the provider reported, with
+> the single cost row keyed to it — and a duplicate-usage positive control that must red. That
+> control measured that a duplicate carrying a DISTINCT event id is accepted and priced again (the
+> ingest's replay guard keys on the event id), which is why a stored `usage_json` row cannot
+> establish the claim on its own. `WRK-018`'s keyed run is still outstanding for the REAL parser.
 
 ## E3-F038 — The wiring register's census is not closed, and three symbols the guard's own header names have no clause at all
 

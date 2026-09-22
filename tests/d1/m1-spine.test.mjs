@@ -84,6 +84,9 @@ import {
 
 const CAMPAIGN = process.env.AOA_D1_CAMPAIGN ?? "";
 const USAGE_MODE = process.env.AOA_M1_SPINE_USAGE_MODE ?? "canned";
+/** The provider reports no usage only in `suppressed`; `duplicate` keeps the canned units and makes
+ * the WORKER send a SECOND, distinct usage event for the same attempt. */
+const PROVIDER_USAGE_MODE = USAGE_MODE === "suppressed" ? "suppressed" : "canned";
 const EVIDENCE_DIR = process.env.AOA_M1_SPINE_EVIDENCE_DIR ?? "";
 const FIXTURE_ID = "batch-success";
 
@@ -93,8 +96,8 @@ if (LIVE && CAMPAIGN !== "m1-spine") {
       `(docker/d1/m1-spine.override.yml); got AOA_D1_CAMPAIGN=${JSON.stringify(CAMPAIGN)}`,
   );
 }
-if (!["canned", "suppressed"].includes(USAGE_MODE)) {
-  throw new Error(`AOA_M1_SPINE_USAGE_MODE must be canned or suppressed, got ${JSON.stringify(USAGE_MODE)}`);
+if (!["canned", "suppressed", "duplicate"].includes(USAGE_MODE)) {
+  throw new Error(`AOA_M1_SPINE_USAGE_MODE must be canned, suppressed or duplicate, got ${JSON.stringify(USAGE_MODE)}`);
 }
 
 const evidence = {
@@ -239,7 +242,7 @@ for (const tenant of M1_SPINE_TENANTS.enabled) {
     const providerId = `m1s-${tenant.key.toLowerCase()}-${ids.slug}`;
     const scripted = step(containerFetch("test-runner", {
       url: `${FAKE_PROVIDER_CTL_URL}/script`, method: "POST",
-      body: { providerId, fixtureId: FIXTURE_ID, usageMode: USAGE_MODE },
+      body: { providerId, fixtureId: FIXTURE_ID, usageMode: PROVIDER_USAGE_MODE },
     }), `${tenant.key} fake script`);
     assert.equal(scripted.status, 200, `${tenant.key} fake /script: ${truncate(scripted.body)}`);
     const created = step(containerFetch("test-runner", {
@@ -256,6 +259,12 @@ for (const tenant of M1_SPINE_TENANTS.enabled) {
 
     const events = [makeEvent(ids, tenant, offer, { eventType: "attempt_started", seq: 1, payload: { sandboxId: resourceId } })];
     if (usage !== null) events.push(makeEvent(ids, tenant, offer, { eventType: "usage", seq: 2, payload: usage }));
+    if (usage !== null && USAGE_MODE === "duplicate") {
+      // POSITIVE CONTROL for the cardinality arm (WRK-018 acceptance 1). A DISTINCT event id
+      // carrying the same units — the case a stored `usage_json` row cannot be told apart from,
+      // and the one the ingest's own replay guard does NOT catch (that guard keys on the event id).
+      events.push(makeEvent(ids, tenant, offer, { eventType: "usage", seq: 3, payload: usage }));
+    }
     events.push(makeEvent(ids, tenant, offer, {
       eventType: "terminal", seq: events.length + 1,
       payload: { status: "succeeded", exitCode: 0, errorCode: null, errorMessage: null },
@@ -287,6 +296,7 @@ for (const tenant of M1_SPINE_TENANTS.enabled) {
     Object.assign(record, {
       attemptStatus: rows.attemptStatus,
       events: rows.events,
+      usageEvents: rows.usageEvents,
       costRows: rows.costRows,
       receipts: rows.receipts,
       activity: rows.activity,
@@ -296,6 +306,8 @@ for (const tenant of M1_SPINE_TENANTS.enabled) {
       observation: {
         attemptStatus: rows.attemptStatus,
         jobEventTypes: rows.events.map((e) => e.eventType),
+        usageEvents: rows.usageEvents,
+        expectedUnits: usage,
         costRows: rows.costRows,
         costReceipts: rows.receipts.filter((r) => r.projectionKind === "authoritative_cost"),
         activity: rows.activity,

@@ -18,6 +18,7 @@ import {
   M1_SPINE_TENANTS,
   M1_SPINE_ROLLOUT_ENV_VALUE,
   M1_SPINE_COST_MARKER,
+  M1_SPINE_USAGE_MARKER,
   evaluateSpineOverrideText,
   evaluateReplicaRollout,
   evaluateEnabledTenantSpine,
@@ -129,9 +130,19 @@ function goodEnabled(tenant = A, overrides = {}) {
       acceptedThroughSeq: 3,
       jobEventTypes: ["attempt_started", "usage", "terminal"],
       attemptStatus: "succeeded",
+      expectedUnits: { inputTokens: 120000, outputTokens: 30000, cachedInputTokens: 0, runtimeMillis: 4200 },
+      usageEvents: [{
+        eventId: usageEventId,
+        organizationId: tenant.organizationId,
+        companyId: tenant.companyId,
+        payload: { inputTokens: 120000, outputTokens: 30000, cachedInputTokens: 0, runtimeMillis: 4200 },
+      }],
       costRows: [{
         companyId: tenant.companyId,
         costCents: 81,
+        inputTokens: 120000,
+        outputTokens: 30000,
+        cachedInputTokens: 0,
         sourceIdempotencyKey: `cost:${tenant.companyId}:${usageEventId}`,
       }],
       costReceipts: [{ status: "applied", organizationId: tenant.organizationId, companyId: tenant.companyId }],
@@ -195,6 +206,48 @@ test("a missing, duplicated or foreign audit row is refused (JOB-017 named set)"
   assert.ok(codes(evaluateEnabledTenantSpine(goodEnabled(A, {
     activity: [obs.activity[0], { ...obs.activity[1], companyId: B.companyId }],
   }))).includes("audit:wrong_company"));
+});
+
+// ── usage cardinality: the WRK-018 acceptance-1 collection point ────────────
+
+test("a DUPLICATE accepted usage event is refused — exactly one, never >= 1", () => {
+  const obs = goodEnabled(A).observation;
+  const duplicate = { ...obs.usageEvents[0], eventId: "22222222-2222-4222-8222-222222222222" };
+  const v = evaluateEnabledTenantSpine(goodEnabled(A, { usageEvents: [obs.usageEvents[0], duplicate] }));
+  assert.ok(codes(v).includes("usage:not_exactly_one"));
+  for (const violation of v.filter((x) => x.code.startsWith("usage:"))) {
+    assert.ok(violation.message.includes(M1_SPINE_USAGE_MARKER), "every usage violation carries the grep marker");
+  }
+});
+
+test("ZERO accepted usage events is refused, and distinctly from a duplicate", () => {
+  const v = evaluateEnabledTenantSpine(goodEnabled(A, { usageEvents: [], costRows: [], costReceipts: [] }));
+  assert.ok(codes(v).includes("usage:no_usage_event"));
+  assert.ok(!codes(v).includes("usage:not_exactly_one"));
+});
+
+test("a usage event of ANOTHER Organization never counts toward this tenant's one (F10)", () => {
+  const obs = goodEnabled(A).observation;
+  const foreign = { ...obs.usageEvents[0], organizationId: B.organizationId, companyId: B.companyId };
+  const v = evaluateEnabledTenantSpine(goodEnabled(A, { usageEvents: [foreign] }));
+  assert.ok(codes(v).includes("usage:wrong_tenant"));
+});
+
+test("stored usage units that differ from the ones the provider reported are refused", () => {
+  const obs = goodEnabled(A).observation;
+  const tampered = { ...obs.usageEvents[0], payload: { ...obs.usageEvents[0].payload, outputTokens: 1 } };
+  const v = evaluateEnabledTenantSpine(goodEnabled(A, { usageEvents: [tampered] }));
+  assert.ok(codes(v).includes("usage:units_differ"));
+});
+
+test("a cost row whose tokens or key are not the accepted usage event's is refused", () => {
+  const obs = goodEnabled(A).observation;
+  const wrongTokens = evaluateEnabledTenantSpine(goodEnabled(A, { costRows: [{ ...obs.costRows[0], outputTokens: 7 }] }));
+  assert.ok(codes(wrongTokens).includes("usage:row_units_differ"));
+  const wrongKey = evaluateEnabledTenantSpine(goodEnabled(A, {
+    costRows: [{ ...obs.costRows[0], sourceIdempotencyKey: `cost:${A.companyId}:99999999-9999-4999-8999-999999999999` }],
+  }));
+  assert.ok(codes(wrongKey).includes("usage:row_not_keyed_to_event"));
 });
 
 test("a journey the ingest did not fully accept is refused before cost is judged", () => {
