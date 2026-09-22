@@ -168,3 +168,19 @@ carries the keyed acceptance, or to record that run and close the finding. `E3-1
 
 To be recorded, by job with its executed count, in an addendum once the PR's run on the reviewed
 revision completes. This section is not rewritten.
+
+## 10. CI evidence — addendum (2026-09-23): the run was REFUSED, not red
+
+PR #566, head `9e49de33923a46c2836f8b4b379dca993de63977`.
+
+- **`pr.yml` run `35796722874` concluded `failure` with ZERO steps executed in every job.** The
+  check annotation states the cause: *"The job was not started because recent account payments have
+  failed or your spending limit needs to be increased."* It is account-wide, not this branch's —
+  every `pr.yml` run started in the same window failed identically (`claude/m1-wrk-013`
+  `35796939537`, `claude/m1-cli-011-probe` `35796564516`, `claude/m1-dat-009-3e` `35796527264`,
+  `claude/m1-dep-017-probe` `35796310711`, `claude/m1-keyed-evidence` `35796158394`). **No job of
+  this PR has produced a verdict**, and a `failure` with no steps is not evidence about the code.
+  `ci-required` must be re-run and seen green before this PR is merged.
+- **Codex** (`chatgpt-codex-connector`) reviewed `9e49de3392`: *"Didn't find any major issues."*
+- The local evidence in §3, §4 and §8 stands on its own: the live D1 runs and the whole pure guard
+  set were executed on this tree, on a real stack, and the runs are named there.
