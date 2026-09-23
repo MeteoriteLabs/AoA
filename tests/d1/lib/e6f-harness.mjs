@@ -2619,3 +2619,33 @@ try {
 `;
   return dexecModule("control-plane", script);
 }
+
+/** MIG-009 — every NON-TERMINAL attempt of the named Organizations, with the facts the rehearsal
+ * has to judge afterwards: its tenant, whether it is LEASED (a leased attempt's cancel goes through
+ * a command; an unleased one does not), and its placement disposition. Taken BEFORE the drain, so
+ * the rehearsal judges everything the drain will touch and not only what the test seeded. */
+export function queryDrainCandidates({ organizationIds }) {
+  const params = { organizationIds };
+  const script = `
+import postgres from "postgres";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  const rows = await sql\`SELECT a.job_id AS "jobId", a.id AS "attemptId", a.organization_id AS "organizationId",
+      a.company_id AS "companyId", a.status, a.placement_disposition AS "disposition",
+      (SELECT count(*)::int FROM leases l WHERE l.organization_id = a.organization_id AND l.job_id = a.job_id
+         AND l.status NOT IN ('released', 'expired', 'revoked')) AS "activeLeases"
+    FROM job_attempts a
+    WHERE a.organization_id = ANY(\${P.organizationIds}::uuid[])
+      AND a.status NOT IN ('succeeded', 'failed', 'cancelled', 'expired')
+    ORDER BY a.created_at, a.id\`;
+  report({ ok: true, candidates: rows });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script);
+}

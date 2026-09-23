@@ -32,6 +32,7 @@ import {
   evaluateEnvProbeObservability,
   evaluateRollbackRehearsal,
   DRAIN_AUDIT_ACTION,
+  DRAIN_REASON,
   ENV_PROBE_LOG_PREFIX,
 } from "../m1-spine-assertions.mjs";
 
@@ -580,7 +581,7 @@ function goodRehearsal(overrides = {}) {
     exitCode: 0,
     expectedActorId: "operator-cli:m1-spine-1234abcd",
     drainableJobs,
-    auditRows: drainableJobs.map((job) => ({
+    auditRows: [...drainableJobs, { jobId: "d0000000-0000-4000-8000-00000000000d", organizationId: A.organizationId, companyId: A.companyId }].map((job) => ({
       action: DRAIN_AUDIT_ACTION,
       entityId: job.jobId,
       organizationId: null,
@@ -590,10 +591,16 @@ function goodRehearsal(overrides = {}) {
       actorId: "operator-cli:m1-spine-1234abcd",
     })),
     terminalJobIds: ["c0000000-0000-4000-8000-00000000000c"],
+    preDrainCandidates: [
+      ...drainableJobs.map((job) => ({ ...job, activeLeases: 0, disposition: "selected" })),
+      { jobId: "d0000000-0000-4000-8000-00000000000d", organizationId: A.organizationId, companyId: A.companyId, activeLeases: 1, disposition: "selected" },
+    ],
     attempts: [
       ...drainableJobs.map((job) => ({ jobId: job.jobId, status: "cancelled" })),
+      { jobId: "d0000000-0000-4000-8000-00000000000d", status: "cancel_requested" },
       { jobId: "c0000000-0000-4000-8000-00000000000c", status: "succeeded" },
     ],
+    commands: [{ jobId: "d0000000-0000-4000-8000-00000000000d", commandKind: "cancel", reason: DRAIN_REASON }],
     ...overrides,
   };
 }
@@ -635,6 +642,38 @@ test("a drain that moved an already-terminal attempt is refused", () => {
   const rehearsal = goodRehearsal();
   rehearsal.attempts = rehearsal.attempts.map((a) => (a.status === "succeeded" ? { ...a, status: "cancelled" } : a));
   assert.ok(evaluateRollbackRehearsal(rehearsal).map((x) => x.code).includes("rollback:terminal_attempt_moved"));
+});
+
+test("the two branches differ, and each is pinned: unleased -> cancelled, leased -> cancel_requested + a cancel command", () => {
+  const leasedAsCancelled = goodRehearsal();
+  leasedAsCancelled.attempts = leasedAsCancelled.attempts.map((a) => (a.jobId === "d0000000-0000-4000-8000-00000000000d" ? { ...a, status: "cancelled" } : a));
+  assert.ok(evaluateRollbackRehearsal(leasedAsCancelled).map((x) => x.code).includes("rollback:candidate_not_cancelled"),
+    "a leased attempt jumping straight to cancelled skips its lease holder");
+  const noCommand = goodRehearsal({ commands: [] });
+  assert.ok(evaluateRollbackRehearsal(noCommand).map((x) => x.code).includes("rollback:leased_candidate_no_command"));
+  const wrongReason = goodRehearsal({ commands: [{ jobId: "d0000000-0000-4000-8000-00000000000d", commandKind: "cancel", reason: "something_else" }] });
+  assert.ok(evaluateRollbackRehearsal(wrongReason).map((x) => x.code).includes("rollback:command_wrong_reason"));
+  const strayCommand = goodRehearsal();
+  strayCommand.commands = [...strayCommand.commands, { jobId: strayCommand.drainableJobs[0].jobId, commandKind: "cancel", reason: DRAIN_REASON }];
+  assert.ok(evaluateRollbackRehearsal(strayCommand).map((x) => x.code).includes("rollback:unleased_candidate_has_command"));
+});
+
+test("a LEASED attempt the drain left running is refused, even when the seeded pair moved (Codex P1)", () => {
+  const rehearsal = goodRehearsal();
+  rehearsal.attempts = rehearsal.attempts.map((a) => (a.jobId === "d0000000-0000-4000-8000-00000000000d" ? { ...a, status: "running" } : a));
+  const v = evaluateRollbackRehearsal(rehearsal).map((x) => x.code);
+  assert.ok(v.includes("rollback:candidate_not_cancelled"));
+  assert.ok(!v.includes("rollback:attempt_not_cancelled"), "the seeded pair DID move — that is the point");
+});
+
+test("a census attempt with no drain audit row, or one naming another tenant, is refused", () => {
+  const missing = goodRehearsal();
+  missing.auditRows = missing.auditRows.filter((r) => r.entityId !== "d0000000-0000-4000-8000-00000000000d");
+  assert.ok(evaluateRollbackRehearsal(missing).map((x) => x.code).includes("rollback:candidate_no_audit_row"));
+  const foreign = goodRehearsal();
+  foreign.auditRows = foreign.auditRows.map((r) => (r.entityId === "d0000000-0000-4000-8000-00000000000d"
+    ? { ...r, companyId: B.companyId, detailsOrganizationId: B.organizationId } : r));
+  assert.ok(evaluateRollbackRehearsal(foreign).map((x) => x.code).includes("rollback:candidate_audit_wrong_tenant"));
 });
 
 test("a drain that also cancelled an already-terminal attempt is refused (it must be selective)", () => {

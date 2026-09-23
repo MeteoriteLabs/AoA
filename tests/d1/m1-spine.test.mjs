@@ -73,6 +73,7 @@ import {
   querySpineControl,
   runDistributedDrainCli,
   queryDrainAudit,
+  queryDrainCandidates,
 } from "./lib/e6f-harness.mjs";
 import {
   M1_SPINE_TENANTS,
@@ -533,11 +534,24 @@ test("m1-spine: the MIG-009 drain CLI rolls back live distributed work, per tena
     drainable.push({ tenantKey: tenant.key, organizationId: tenant.organizationId, companyId: tenant.companyId, jobId: ids.jobId });
   }
 
+  // The census of everything the drain will touch, taken BEFORE it runs: the two jobs seeded above,
+  // the isolation case's LEASED attempt, the enabled-placement probe, and the control tenant's
+  // legacy attempt. Judging only the seeded pair would let a drain that skipped a branch pass.
+  const organizationIds = [...M1_SPINE_TENANTS.enabled.map((t) => t.organizationId), M1_SPINE_TENANTS.control.organizationId];
+  const census = step(queryDrainCandidates({ organizationIds }), "drain candidates");
+  assert.equal(census.ok, true, `drain candidate census: ${truncate(census)}`);
+  assert.ok(census.candidates.length >= drainable.length, `the census must see at least the seeded jobs: ${truncate(census.candidates)}`);
+
   const drain = runDistributedDrainCli({ operator });
   const terminalJobIds = M1_SPINE_TENANTS.enabled
     .map((t) => evidence.enabled[t.key]?.jobId)
     .filter((jobId) => typeof jobId === "string");
-  const audit = step(queryDrainAudit({ jobIds: [...drainable.map((d) => d.jobId), ...terminalJobIds] }), "drain audit");
+  const auditJobIds = [...new Set([
+    ...drainable.map((d) => d.jobId),
+    ...census.candidates.map((c) => c.jobId),
+    ...terminalJobIds,
+  ])];
+  const audit = step(queryDrainAudit({ jobIds: auditJobIds }), "drain audit");
   assert.equal(audit.ok, true, `drain audit probe: ${truncate(audit)}`);
 
   evidence.rollbackRehearsal = {
@@ -546,6 +560,7 @@ test("m1-spine: the MIG-009 drain CLI rolls back live distributed work, per tena
     reportLines: drain.lines,
     stderr: drain.stderr.slice(0, 2000),
     drainable,
+    preDrainCandidates: census.candidates,
     terminalJobIds,
     audit: audit.audit,
     attempts: audit.attempts,
@@ -559,6 +574,8 @@ test("m1-spine: the MIG-009 drain CLI rolls back live distributed work, per tena
     auditRows: audit.audit,
     terminalJobIds,
     attempts: audit.attempts,
+    preDrainCandidates: census.candidates,
+    commands: audit.commands,
   });
   evidence.verdicts.rollbackRehearsal = violations;
   assert.deepEqual(violations, [], `rollback rehearsal violations:\n${formatViolations(violations)}\n--- CLI stdout ---\n${truncate(drain.stdout, 4000)}\n--- CLI stderr ---\n${truncate(drain.stderr, 2000)}`);

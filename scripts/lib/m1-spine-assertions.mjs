@@ -680,6 +680,10 @@ export function evaluateCrossTenantIsolation(o) {
 /** The audit action MIG-009's drain writes in the same transaction as each cancel. */
 export const DRAIN_AUDIT_ACTION = "job.drain.requested";
 
+/** The reason every cancel command and audit row of an operator drain carries
+ * (`OPERATOR_DRAIN_REASON`, `server/src/services/distributed-execution-drain-trigger.ts`). */
+export const DRAIN_REASON = "distributed_execution_rollback";
+
 /**
  * The rollback rehearsal this profile's Outcome requires ("including the rollback rehearsal through
  * the `MIG-009` CLI", E6 implementation plan) and that criterion 6 consumes. Judged on what the
@@ -698,15 +702,95 @@ export const DRAIN_AUDIT_ACTION = "job.drain.requested";
  * @param {Array<{action:string, entityId:string, organizationId:string, companyId:string, actorType:string, actorId:string}>} o.auditRows
  * @param {string[]} o.terminalJobIds  jobs that were already terminal when the drain ran
  * @param {Array<{jobId:string, status:string}>} o.attempts  every probed attempt's state AFTER the drain
+ * @param {Array<{jobId:string, organizationId:string, companyId:string, activeLeases:number, disposition:string|null}>} o.preDrainCandidates
+ *        every NON-TERMINAL attempt of the profile's Organizations, taken BEFORE the drain ran
+ * @param {Array<{jobId:string, commandKind:string, reason:string|null}>} o.commands  the control
+ *        commands those jobs carry after the drain
  */
 export function evaluateRollbackRehearsal(o) {
   const out = [];
   if (o.exitCode !== 0) {
     out.push(violation("rollback:cli_failed", `the MIG-009 drain CLI exited ${JSON.stringify(o.exitCode)}, not 0`));
   }
-  const rows = (o.auditRows ?? []).filter((r) => r.action === DRAIN_AUDIT_ACTION);
+  // Scoped to THIS drain by its operator nonce. An attempt still non-terminal when a later drain
+  // runs (a LEASED one stays `cancel_requested` until its lease holder completes it, and nothing
+  // on this lane does) legitimately accumulates one audit row PER drain — measured on the second
+  // live run. Counting them all would make the rehearsal fail on its own history.
+  const rows = (o.auditRows ?? []).filter((r) => r.action === DRAIN_AUDIT_ACTION && r.actorId === o.expectedActorId);
+  const rowsAnyDrain = (o.auditRows ?? []).filter((r) => r.action === DRAIN_AUDIT_ACTION);
+
+  // ★ EVERY attempt the drain could touch, not only the ones this profile seeded (Codex P1,
+  // PR #566). The census is taken BEFORE the drain and includes the isolation case's LEASED
+  // attempt, the enabled-placement probe and the control tenant's legacy attempt — so a drain that
+  // skipped the leased branch, or that left a tenant's attempt running, cannot pass because two
+  // freshly seeded unleased attempts happened to move.
+  const statusAfter = new Map((o.attempts ?? []).map((a) => [a.jobId, a.status]));
+  const commandsByJob = new Map();
+  for (const command of o.commands ?? []) {
+    commandsByJob.set(command.jobId, [...(commandsByJob.get(command.jobId) ?? []), command]);
+  }
+  for (const candidate of o.preDrainCandidates ?? []) {
+    const leased = Number(candidate.activeLeases) > 0;
+    // ★ The two branches differ, and the difference is the point (measured live): an UNLEASED
+    // attempt is cancelled outright, while a LEASED one is put into `cancel_requested` with a
+    // `cancel` command carrying the rollback reason — the lease holder completes it. Asserting
+    // "cancelled" for both would have been wrong, and asserting only one branch would let the
+    // other regress unseen.
+    const expected = leased ? "cancel_requested" : "cancelled";
+    const status = statusAfter.get(candidate.jobId);
+    if (status !== expected) {
+      out.push(violation(
+        "rollback:candidate_not_cancelled",
+        `a non-terminal attempt the drain should have rolled back (job ${candidate.jobId}, org ${candidate.organizationId}, ` +
+          `${leased ? "LEASED" : "unleased"}, placement ${candidate.disposition}) is ${JSON.stringify(status ?? null)}, expected ${expected}`,
+      ));
+    }
+    const cancels = (commandsByJob.get(candidate.jobId) ?? []).filter((c) => c.commandKind === "cancel");
+    if (leased && cancels.length === 0) {
+      out.push(violation(
+        "rollback:leased_candidate_no_command",
+        `the LEASED attempt of job ${candidate.jobId} has no cancel command — nothing tells its lease holder to stop`,
+      ));
+    }
+    if (leased && cancels.length > 0 && cancels.every((c) => c.reason !== DRAIN_REASON)) {
+      out.push(violation(
+        "rollback:command_wrong_reason",
+        `the cancel command for job ${candidate.jobId} carries ${JSON.stringify(cancels.map((c) => c.reason))}, not ${DRAIN_REASON}`,
+      ));
+    }
+    if (!leased && cancels.length > 0) {
+      out.push(violation(
+        "rollback:unleased_candidate_has_command",
+        `the UNLEASED attempt of job ${candidate.jobId} produced a cancel command; it is cancelled directly`,
+      ));
+    }
+    const own = rows.filter((r) => r.entityId === candidate.jobId);
+    if (own.length !== 1) {
+      out.push(violation(
+        "rollback:candidate_no_audit_row",
+        `job ${candidate.jobId} has ${own.length} ${DRAIN_AUDIT_ACTION} rows, expected exactly 1`,
+      ));
+    } else if ((own[0].detailsOrganizationId ?? own[0].organizationId ?? null) !== candidate.organizationId ||
+               own[0].companyId !== candidate.companyId) {
+      out.push(violation(
+        "rollback:candidate_audit_wrong_tenant",
+        `the drain audit row for job ${candidate.jobId} names another tenant`,
+      ));
+    }
+  }
+
   for (const job of o.drainableJobs ?? []) {
     const own = rows.filter((r) => r.entityId === job.jobId);
+    const anyDrain = rowsAnyDrain.filter((r) => r.entityId === job.jobId);
+    if (own.length === 0 && anyDrain.length > 0) {
+      // A row exists for this job, but not from THIS drain's operator: the rehearsal is
+      // unattributed, which is a different defect from "the drain did not audit at all".
+      out.push(violation(
+        "rollback:audit_wrong_actor",
+        `tenant ${job.tenantKey}: the drain audit row names ${JSON.stringify(anyDrain.map((r) => `${r.actorType}/${r.actorId}`))}, not system/${o.expectedActorId} — the rehearsal is unattributed`,
+      ));
+      continue;
+    }
     if (own.length !== 1) {
       out.push(violation(
         "rollback:no_audit_row",
@@ -752,7 +836,7 @@ export function evaluateRollbackRehearsal(o) {
         `the drain moved an already-terminal attempt (${jobId}) to ${JSON.stringify(status)} — it is not selective`,
       ));
     }
-    if (rows.some((r) => r.entityId === jobId)) {
+    if (rowsAnyDrain.some((r) => r.entityId === jobId)) {
       out.push(violation(
         "rollback:drained_a_terminal_attempt",
         `the drain cancelled an already-terminal attempt (${jobId}) — it is not selective`,
