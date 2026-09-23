@@ -1,6 +1,6 @@
 # DEP-018 — The campaign fault matrix and injection harness — result
 
-**Status:** `gate_review`. Only a DISTINCT reviewer sets `complete`.
+**Status:** `complete` (set 2026-09-23 by the M1 review-batch-4 independent reviewer; see *Independent review*).
 **Epic:** E6 · **Plan task:** `E6 implementation-plan §4c DEP-018` (as amended at M1 Step 0, S0-8) · **Milestone:** `M1a`
 **Date (UTC):** `2026-09-23`
 **Implementer:** Claude Opus 5 (M1 build agent)
@@ -612,3 +612,128 @@ this lane is one where that distinction matters, because `E6-F023` recorded a ru
 So §10 and §12's standing caveat — *"still not run: the `m1-fault-matrix` job itself"* — is now
 **discharged**, on a real runner, before the merge rather than by it. Those sections are kept as
 written; this is the section that answers them.
+
+---
+
+## Independent review
+
+**Reviewer:** M1 review-batch-4 independent reviewer (Claude Opus 5) — distinct from the DEP-018 build agent and from the M1 planning session. I authored none of this ticket.
+**Reviewed revision:** `99bff824d1c4fd641cea3b05ab7fe588f8255b96` (`origin/docs/replatform-program`, the merge of PR #572). The record's own code revision `460dca4eb78d84cbda99bcd84ea4d2cde085d97e`, the `E6-D003` commit `1337ee0b1`, and the PR merge `47ad31ac1` are all ancestors of it.
+**Disposition:** `approved`
+**Attempt:** 1 (see *Independent review — attempt 1* and the attempt history)
+
+### Independent review — attempt 1
+
+**Disposition: `approved`.** Every load-bearing claim below was re-verified at source at the reviewed
+revision, and two of the record's controls were reproduced by me.
+
+- **The declaration, as committed.** `node scripts/check-campaign-fault-matrix.mjs` at the reviewed
+  revision prints **3 gate profiles and 74 cases (25 required, 49 pending)**, and its self-test
+  `scripts/check-campaign-fault-matrix.test.mjs` runs **25 tests, 25 pass, 0 fail** locally.
+- **The nine cross-tenant surfaces, each with a control — verified in the declaration, not only in
+  prose.** All three profiles carry `cross_tenant_denial` cases for exactly
+  `lease, read, cancel, events, secrets, staged_inputs, outputs, cost_rows, tool_calls`, every one
+  with `positiveControl: true`, plus one `control_tenant_refused` case each.
+  `REQUIRED_TENANT_SURFACES` in `scripts/lib/campaign-fault-matrix.mjs` enumerates the nine rather
+  than counting them.
+- **The four no-RLS legacy tables, positive AND anti-vacuity.** All three profiles declare
+  `legacy_table_isolation` cases for `cost_events, activity_log, task_outputs, provider_credentials`,
+  each with `positiveControl: true`, `antiVacuityControl: true` and a named `productionPath`.
+  `evaluateFaultMatrixDeclaration` reds on a missing positive control
+  (`declaration:legacy_without_positive_control`), a missing anti-vacuity control
+  (`declaration:legacy_without_anti_vacuity`) and a missing production path; the evidence half reds
+  on `evidence:anti_vacuity_missing` when the predicate-removed read did not return the foreign row.
+  `probeLegacyTableIsolation` (`tests/d1/lib/e6f-harness.mjs`) runs all three reads on the same
+  non-owner `aoa_app` pool through `costService`, `activityService` and `taskOutputService`.
+- **Mutation, reproduced by me and reverted.** Deleting the `d1.tenant.cross.tool_calls` case from
+  `M1-D1-SPINE` reds the checker with
+  *"declaration:tenant_matrix_surface_missing: profile M1-D1-SPINE declares no cross-tenant denial
+  for `tool_calls`"*, exit 1. Reverted; the tree was clean afterwards.
+- **The suppression control, at source in the job log.** Probe-branch run
+  [`35848228046`](https://github.com/MeteoriteLabs/AoA/actions/runs/35848228046), branch
+  `claude/m1-dep-018-lane-probe`, head `8da5c2e08de63daea77b2b12ba64606a38e0a94e`, conclusion
+  `success`; job **`m1-fault-matrix` `107139436790` success**, alongside `m1-spine`
+  `107139436556` and `d1-merge-train` `107139436996`. Reading that job's own log rather than its
+  conclusion:
+  - *Static preflight* — `ℹ tests 25 / pass 25 / fail 0`.
+  - *Run the M1-D1-SPINE fault matrix (live)* — `ℹ tests 20 / pass 20 / fail 0`.
+  - *The matrix's own verdict over the retained bundle* — *"profile M1-D1-SPINE: **25/25 required
+    case(s) fired and classified as declared, 3 pending**. Profile INCOMPLETE"*.
+  - *POSITIVE CONTROL* — the suppressed run carries **exactly nine distinct**
+    `evidence:injection_did_not_fire` cases, which I extracted from the log and de-duplicated:
+    `d1.cancel.leased_attempt`, `d1.cancel.unleased_attempt`, `d1.cleanup.orphan_object_swept`,
+    `d1.fault.link_cut.control_plane_to_postgres`, `d1.fault.link_cut.worker_to_control_plane`,
+    `d1.fault.object_store.truncated_upload`, `d1.provider.execute_deadline_exceeded`,
+    `d1.reconcile.expired_lease_reaped`, `d1.restart.control_plane_process`. §13b's nine are exactly
+    these nine.
+- **The probe branch measured the FINAL declaration, not an earlier one.** `git diff 8da5c2e08
+  460dca4eb` is four files: the one trigger line, `decisions.md` (−80), this record (−23) and
+  `tests/d1/fault-matrix.json` (−18) — i.e. the probe head is `460dca4eb` **plus** the `E6-D003`
+  commit plus the trigger line. And `git diff 8da5c2e08 47ad31ac1` over `tests/`, `scripts/`,
+  `.github/` and `docker/` is **one deleted line** of `d1-merge-train.yml`. So the lane proof stands
+  for the merged code. `grep -c 'm1-dep-018-lane-probe' .github/workflows/d1-merge-train.yml` is
+  **0** at the reviewed revision.
+- **Multi-tenant (F10), real.** Each profile declares `per_tenant_journey` cases for two DISTINCT
+  tenants (`A`, `B`) plus a `control_tenant_refused` case;
+  `evaluateFaultMatrixDeclaration` tracks distinct tenants and reds
+  `declaration:duplicate_journey_tenant` + `declaration:tenant_matrix_journeys` on a repeat, which
+  is §11's sixth finding and has its own red fixture. The live surfaces carry the attacker's worker
+  id with the victim's Organization/Company/job/lease/fence, so a refusal is not the
+  session-vs-batch check.
+- **`E6-D003`, read in full.** It is `locked`, decided under F2, states plainly that it **allocates**
+  acceptance 5's fourth-table clause between two partial gates and does not weaken it, and is
+  matched by the declaration: `M1-D1-SPINE` keeps
+  `d1.credential.production_reader_company_predicate` as `pending`/`structural` naming the mechanism
+  case and `E6-D003` as its owner, and `M1a-D2-MECHANISM` carries
+  `d2m.credential.production_reader_company_predicate` as `pending`/`keyed` owned by the planning
+  session under F8. The spine's `d1.tenant.legacy.provider_credentials` case's `productionPath`
+  string says in its own words that it is the two predicates **REPLICATED** and *"NOT
+  resolveExecutionSecret itself"* — the record and the declaration do not disagree.
+- **Acceptance (E6 plan §4c `DEP-018`), clause by clause.**
+  1. Every declared case has a run showing its injection fired — **evidenced**, twice locally and
+     once in CI, 25/25 with the verdict computed by `evaluateFaultMatrixEvidence`.
+  2. Every cross-tenant denial denied, not merely empty, with a same-tenant positive control —
+     **evidenced**, with the two bounded claims (`secrets` on the durable row, `tool_calls` on the
+     same run id under two Companies) stated in the record rather than glossed.
+  3. Control tenant refused and left legacy — **evidenced** through the real placement service with
+     an enabled-tenant control.
+  4. The checker reds on an undeclared case, a case with no injection evidence, or a profile missing
+     the tenant matrix — **evidenced** by 25 self-tests, and I reproduced one of the enumeration
+     loops.
+  5. The four legacy tables through the production query path, with positive AND anti-vacuity
+     controls — **evidenced for this gate's share of the clause.** Three tables go through their
+     production readers; the fourth's production-reader half is **allocated to `DEP-015` by locked
+     `E6-D003`** and is declared `pending`/`keyed` there, while the spine keeps the predicate + grant
+     with both controls and says only that. I am approving on that allocation. ★ **If `E6-D003` is
+     ever revisited or its fallback taken, this disposition must be revisited with it** — the
+     production-reader obligation is not discharged anywhere today, only owned.
+- **Guards.** The full `pr.yml` pure-node guard set is **0 failures** at the reviewed revision, plus
+  `check-evidence-immutability --base origin/docs/replatform-program`.
+- **CI.** §12's run `35844176268` on head `460dca4eb…` is cited with `ci-required` PASS. §10's and
+  §12's counts are deliberately frozen records of past runs and I did not treat their numbers as
+  claims about the current tree.
+- **★ One finding, not blocking — §1's counts are stale by one case.** §1 says *"**3 gate profiles,
+  73 cases** (25 required, 48 pending)"*. The committed `tests/d1/fault-matrix.json` at the PR's own
+  merged head reports **74 (25 required, 49 pending)**, because §13a's `E6-D003` commit `1337ee0b1`
+  added `d2m.credential.production_reader_company_predicate` after §11e had refreshed §1. This is
+  exactly the P2 §11e itself caught one round earlier, recurring at the last edit; §12's and §13b's
+  figures are correct for the runs they record. It does not change any verdict — the checker, not
+  the prose, is what the lane reads — so it is recorded here rather than held against the flip, and
+  the next editor of this file should correct §1 to 74/25/49.
+- **Not blocking, noted.** §8 and §10 both carry the heading *"CI evidence"*; §12 is the one that
+  stands. The probe head `8da5c2e08` is not an ancestor of HEAD because the throwaway branch was
+  deleted by design; it is CI evidence, not a reviewed revision, and I fetched the commit by sha to
+  diff it.
+
+**What remains open after this approval:** the three `M1-D1-SPINE` pending cases
+(`d1.reconcile.worker_startup_lease_probe`, `d1.provider.worker_terminal_mapping`,
+`d1.credential.production_reader_company_predicate`) and the 46 keyed D2 cases. The profile's own
+verdict is `INCOMPLETE` and must stay so until those run; a gate record built from this bundle must
+carry all three.
+
+## Review attempt history
+
+| Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
+|---:|---|---|---|---|
+| 1 | M1 review-batch-4 independent reviewer (Claude Opus 5) | `99bff824d1c4fd641cea3b05ab7fe588f8255b96` | `approved` | Checker at HEAD: 74 cases (25 required, 49 pending); self-test 25/25. Nine surfaces + four legacy tables with positive and anti-vacuity controls verified in the declaration and in `evaluateFaultMatrixDeclaration`. Mutation reproduced: dropping `d1.tenant.cross.tool_calls` reds `declaration:tenant_matrix_surface_missing`. Probe run `35848228046`, job `m1-fault-matrix` `107139436790`: preflight 25/25, live 20/20, verdict 25/25 required + 3 pending, suppression control exactly **9 distinct** `evidence:injection_did_not_fire`. Probe head = merged code + one trigger line (verified by diff). `E6-D003` locked and matched by the declaration on both gates. **Finding (non-blocking): §1's "73 cases (25 required, 48 pending)" is stale — the tree says 74/25/49 after `1337ee0b1`.** |
+<!-- Later reviewers append attempt 2 below without replacing this row. -->
