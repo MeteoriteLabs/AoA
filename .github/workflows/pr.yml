@@ -204,6 +204,16 @@ jobs:
           node scripts/check-distributed-execution-foundation.mjs
           node --test scripts/check-distributed-execution-foundation.test.mjs
 
+      # CLI-017-A, SD-4 (E7-D11 §1) — the server-side and worker-side definitions of the
+      # conventional output root `R` must be equal and must be the ruled value. They cannot share
+      # a constant (E7-D07 freezes the only package both depend on), so this is the check that
+      # makes "one R" provable. Its own positive controls run beside it: an equality check with
+      # no proof that it reds is a check that nothing runs.
+      - name: Sandbox output root is ONE value (SD-4)
+        run: |
+          node scripts/check-sandbox-output-root.mjs
+          node --test scripts/lib/__tests__/sandbox-output-root-check.test.mjs
+
       - name: Evidence-ledger immutability (QA/handoff records are write-once)
         # E0-F014 item 3. `checkEvidenceImmutability` shipped with FND-005, was fully unit
         # tested, and had ZERO PRODUCTION CALLERS: nothing ever handed it a real base and

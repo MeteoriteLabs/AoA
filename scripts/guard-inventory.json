@@ -138,6 +138,10 @@
       "status": "ci",
       "reason": "invoked by a workflow"
     },
+    "scripts/check-sandbox-output-root.mjs": {
+      "status": "ci",
+      "reason": "policy job — SD-4: the server-side and worker-side definitions of the conventional output root R are equal and are E7-D11 §1's ruled value (CLI-017-A)"
+    },
     "scripts/check-schema-migration-drift.mjs": {
       "status": "ci",
       "reason": "invoked by a workflow — the migrations job's E8-F005 schema↔migration drift gate"

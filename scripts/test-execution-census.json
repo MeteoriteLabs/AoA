@@ -477,6 +477,11 @@
       "status": "runs",
       "workflow": "d1-merge-train.yml",
       "step": "Run the E6F campaign (live)"
+    },
+    "scripts/lib/__tests__/sandbox-output-root-check.test.mjs": {
+      "status": "runs",
+      "workflow": "pr.yml",
+      "step": "Sandbox output root is ONE value (SD-4)"
     }
   }
 }
