@@ -274,9 +274,55 @@ Per the ruling, this profile KEEPS its record of the other enabled tenant as **u
 ★ **For a future gate owner:** do not read this ticket's "criterion 5 observed" as per-tenant on the
 spine lane. The record names which tenant it observed and why the others cannot be observed there.
 
-## 11. CI evidence
+## 11. CI evidence — the `m1-spine` lane, RUN
 
-To be recorded, by job with its executed count, in an addendum. This section is not rewritten.
+`d1-merge-train` fires only on push to `main` / `docs/replatform-program`, so the `m1-spine` job
+cannot run on a pull request. Following the `DEP-014` pattern, the PR tree plus **one** trigger line
+was pushed to a throwaway branch, `claude/m1-dep-019-d1-probe`, which has no PR and is never merged.
+`git diff claude/m1-dep-019 claude/m1-dep-019-d1-probe` = **1 line** of `d1-merge-train.yml`.
+
+**Run `35839618733`, head `8e86e9797` (= PR head `6190419ac` + the trigger line): `success`.**
+
+| Job | Result |
+|---|---|
+| `m1-spine` (`107111777063`) | **success** |
+| `d1-merge-train` (`107111776808`) | **success** — the existing two-worker `bounded`/`foundation` campaign is undisturbed by this ticket |
+
+From the `m1-spine` job's own log:
+
+```
+running worker services: 1
+worker-b-1  | "workerId":"62f58aa6-2a19-4686-9537-75a2adae8fd2",
+              "targetId":"33333333-3333-4333-8333-333333333333",
+              "msg":"worker-daemon dispatch COMPOSED; heartbeat seeded; startup reconcile complete;
+                     leasing through the poll loop"
+fake-provider-1 | fake-provider GATED provider wire on 0.0.0.0:8082
+                  (1 pinned probe-script digest; ownership gate ON)
+
+the profile:                     tests 10 · pass 10 · fail 0
+usage-suppressed control:        "the profile went red on the cost assertion, as required"
+duplicate-usage control:         "a duplicate usage event reds the cardinality assertion, as required"
+not-the-executor control:        "the worker-driven claim is withdrawn and the verdict's red arm
+                                  still runs"   (# pass 9 · # fail 0 · # skipped 1)
+```
+
+So, in CI and not only locally: exactly one worker service ran, it **composed dispatch**, the
+reference provider served a **gated** wire with the probe script **pinned**, the whole profile passed
+including the worker-driven journey and its always-on not-the-executor control, and all three
+negative controls went red for their own named reason.
+
+★ **An earlier probe run, `35837953729` (head `d7e8a167c` = PR head `ec0a2d132` + the trigger line),
+also concluded `success` with `m1-spine: success`.** It is cited because it is the run that first
+showed the lane green; the run above supersedes it and is the one on the reviewed code.
+
+★ The merge with the program tip (`499ec4d1c`) that sits between those heads touched **no** input of
+this lane: `git diff ec0a2d132 13ed9c7f7 -- server/src packages/db/src packages/shared/src
+packages/worker-protocol/src packages/sandbox-fake-provider docker docker-compose.d1.yml tests/d1
+scripts/lib/m1-spine-assertions.mjs scripts/lib/m1-shipped-boot.mjs
+.github/workflows/d1-merge-train.yml` is **empty**.
+
+**`pr.yml` / `ci-required`** on the final head is recorded in §11a once its run completes. This
+section is not rewritten.
 
 ---
 
