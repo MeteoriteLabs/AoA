@@ -24,7 +24,7 @@
           "injection": {
             "mechanism": "toxiproxy.proxy_disabled",
             "target": "control-plane-to-postgres",
-            "observedBy": "a SELECT issued through the toxiproxy listen port (toxiproxy:15432) fails while cut and succeeds after restore"
+            "observedBy": "a raw TCP connect to the toxiproxy listen port (toxiproxy:15432) is REFUSED while cut and connects after restore. Measured rather than an HTTP probe: this link carries the PostgreSQL wire protocol, which probeProxyReachable cannot speak, and the test-runner image has no postgres client."
           },
           "expectedClassification": "database_link_severed_and_restored",
           "evidence": "required"
@@ -46,7 +46,7 @@
           "injection": {
             "mechanism": "docker.compose.restart",
             "target": "control-plane",
-            "observedBy": "the container's State.StartedAt advances across the restart and /health answers again"
+            "observedBy": "the container's State.StartedAt advances across the restart and its docker health returns to healthy"
           },
           "expectedClassification": "durable_lease_state_survives_restart",
           "evidence": "required"
@@ -82,7 +82,7 @@
           "injection": {
             "mechanism": "production.requestCancellation",
             "target": "a LEASED attempt of an enabled tenant",
-            "observedBy": "the service returns an outcome for this job AND a job_control_commands row of kind 'cancel' bound to the attempt's ACTIVE lease appears"
+            "observedBy": "the attempt's status moves, or a job_control_commands row of kind cancel appears; the classification then requires that command to be bound to the attempt's ACTIVE lease"
           },
           "expectedClassification": "cancel_requested_with_fenced_command",
           "evidence": "required"
@@ -115,7 +115,7 @@
           "injection": {
             "mechanism": "fence.revoked_mid_flight",
             "target": "an artifact grant whose lease is expired before the commit",
-            "observedBy": "the fenced commit is refused with a non-disclosing denial after the object was demonstrably present"
+            "observedBy": "the fenced commit is DENIED at the auth layer with code stale_fence and no outcome field, after the object was demonstrably present. Named exactly: a malformed is a PROTOCOL refusal that never reaches the fence check, so asserting merely not-committed would accept a case that proved nothing."
           },
           "expectedClassification": "uncommitted_object_deleted",
           "evidence": "required"
