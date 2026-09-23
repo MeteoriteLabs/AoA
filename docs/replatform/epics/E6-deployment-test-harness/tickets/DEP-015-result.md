@@ -1,6 +1,13 @@
 # DEP-015 Result — the shipped CI boot lane
 
-**Status:** `complete` (set by the distinct reviewer of attempt 2; the author left it at `gate_review`). *Original line, kept as first written:* "`gate_review`. The **keyed acceptance is PENDING**: it needs one dispatched keyed run from the F8 named list, which is the planning session's to dispatch."
+**Status:** `gate_review`. ★ **The `complete` of attempt 2 is WITHDRAWN 2026-09-23 by the M1
+planning session** — not because that disposition was wrong when made, but because item 27 has since
+changed this ticket's own PRODUCT code (`leakScan` in `scripts/m1-shipped-boot/journey.mjs`: the
+absent-log refusal is now DEFERRED rather than short-circuiting, so a planted-canary finding is no
+longer swallowed by it). A disposition certifies a reviewed revision; the revision it certified no
+longer describes the code. A distinct reviewer restores `complete` after reviewing item 27.
+*Superseded line, kept as written:* "`complete` (set by the distinct reviewer of attempt 2; the
+author left it at `gate_review`)." *Original line, kept as first written:* "`gate_review`. The **keyed acceptance is PENDING**: it needs one dispatched keyed run from the F8 named list, which is the planning session's to dispatch."
 **Date (UTC):** `2026-09-21`
 **Epic:** `E6-deployment-test-harness`
 **Plan task:** `E6 implementation-plan §4c DEP-015 — The shipped CI boot lane (M, ≤3 agent-days, M1a)`
