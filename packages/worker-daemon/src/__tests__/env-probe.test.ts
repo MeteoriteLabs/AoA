@@ -248,6 +248,28 @@ describe("DEP-017 — the in-sandbox probe script (real node execution)", () => 
     expect(report!.unreportedPresentCount).toBe(0);
   });
 
+  it("POSITIVE CONTROL: a CROSS-TENANT value under an arbitrary name is reported by class + count, not by name (Codex P2, 8th round)", () => {
+    // The cross-tenant arm fires on a VALUE, so it can land on any name the sandbox chose - the
+    // name must go through the same known-token gate as every other arm.
+    // A name that is NOT credential-shaped, so ONLY the cross-tenant arm fires on it.
+    const { stdout, report } = runProbe({ BUILD_sk_live_ABC123: marked(ORG_B, "model_provider") }, ORG_A);
+    expect(report!.present).toEqual([ENV_PROBE_VALUE_CLASSES.crossTenant]);
+    expect(report!.presentNames).toEqual([]);
+    expect(report!.unreportedPresentCount).toBe(1);
+    expect(stdout).not.toContain("sk_live_ABC123");
+    // A credential-shaped one fires both arms, and is still never named.
+    const both = runProbe({ SECRET_sk_live_ABC123: marked(ORG_B, "model_provider") }, ORG_A);
+    expect(both.report!.present.sort()).toEqual([ENV_PROBE_VALUE_CLASSES.crossTenant, ENV_PROBE_UNCLASSIFIED]);
+    expect(both.report!.presentNames).toEqual([]);
+    // ONE variable, hit by BOTH arms, counted ONCE - the count is a diagnostic, not a tally of
+    // classifications (Codex P2, 9th round).
+    expect(both.report!.unreportedPresentCount).toBe(1);
+    expect(both.stdout).not.toContain("sk_live_ABC123");
+    // ...while the same value under a KNOWN name is still named, so the arm keeps its diagnostics.
+    const known = runProbe({ ANTHROPIC_API_KEY: marked(ORG_B, "model_provider") }, ORG_A);
+    expect(known.report!.presentNames).toEqual(["ANTHROPIC_API_KEY"]);
+  });
+
   it("a name that merely CONTAINS a keyword is not credential-shaped (TOKENIZERS_PARALLELISM)", () => {
     expect(runProbe({ TOKENIZERS_PARALLELISM: "false", E2B_SANDBOX_ID: "abc" }).report!.present).toEqual([]);
   });
