@@ -364,7 +364,18 @@ export interface E2bTransport {
    * adapter-manager process. Omitting `opts` keeps the pre-CLI-012 unbounded behaviour, which
    * only the local staging/assertion callers use.
    */
-  readFile(sandboxId: string, path: string, opts?: { readonly maxBytes?: number }): Promise<Uint8Array>;
+  readFile(
+    sandboxId: string,
+    path: string,
+    /**
+     * ★ CLI-012 (Codex P2, round 4) — `signal` BOUNDS THE OPERATION, not just the caller.
+     * The caller's `boundedBySignal` returns at the deadline and leaves the abandoned work to
+     * settle, so without this the SDK request runs on — holding a pooled connection and still
+     * streaming a tenant's bytes into a shared process after the op that asked for them gave up.
+     * `e2b@2.30.5`'s `FilesystemRequestOpts` already carries `signal`; this threads it.
+     */
+    opts?: { readonly maxBytes?: number; readonly signal?: AbortSignal },
+  ): Promise<Uint8Array>;
   /**
    * CLI-012 (`E7-F039`) — describe ONE path WITHOUT following it: the `lstat` half.
    *

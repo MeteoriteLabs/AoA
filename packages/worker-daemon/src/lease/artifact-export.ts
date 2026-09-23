@@ -429,11 +429,6 @@ export function createArtifactExportSequencer(deps: CreateArtifactExportSequence
         if (attemptBytes + described.sizeBytes > maxAttemptBytes) {
           fail("digest", `attempt export ceiling of ${maxAttemptBytes} bytes exceeded`, "output_limit_exceeded");
         }
-        // ★ CHARGED AT ADMISSION, NOT AT SUCCESS. The bound is on BYTES THAT LEAVE THE SANDBOX,
-        // and a file whose grant is minted and whose `export` completes has already moved them —
-        // a later `commit` failure does not bring them back. Counting only fully-committed files
-        // would let a run that fails at commit repeatedly export without limit.
-        attemptBytes += described.sizeBytes;
 
         // --- 2. MINT the upload grant --------------------------------------------------------
         const grantResponse = await postOp("grant", () => deps.client.artifactTransferGrant(
@@ -498,6 +493,28 @@ export function createArtifactExportSequencer(deps: CreateArtifactExportSequence
           fail("export", error instanceof Error ? error.name : "export failed", "export_failed");
         }
         if (reference.objectKey !== objectKey) fail("export", "exported a different object key", "object_key_mismatch");
+
+        // ★★★ THE CHARGE, AND ITS PLACEMENT IS AN INVARIANT RATHER THAN A PREFERENCE.
+        //
+        //     THE TENANT IS CHARGED IF AND ONLY IF BYTES LEFT THE SANDBOX.
+        //
+        // Test that against the three stages and this point falls out as the ONLY one that
+        // satisfies it:
+        //   * ADMISSION (before the mint) is TOO EARLY — a grant-stage failure would charge for
+        //     bytes that never moved, which on a multi-tenant billing path is a tenant-visible
+        //     over-charge (Codex round 3, correct);
+        //   * THE END OF THE FLOW (after the commit) is TOO LATE — a commit-stage failure after
+        //     the bytes moved would not charge, and a run failing at commit could export without
+        //     limit (Codex round 2, also correct);
+        //   * IMMEDIATELY AFTER `exporter.export` RETURNS — the only hop that moves bytes — is
+        //     the one placement that satisfies both.
+        //
+        // ★ So the two rounds that pushed opposite ways on this line are not an oscillation
+        // between reviewers' preferences: each observed one half of the invariant, and this is
+        // where the halves meet. Pinned per stage in `artifact-export-sequencer.test.ts`,
+        // including a charged-EXACTLY-ONCE arm, because moving a charge point is a natural place
+        // to introduce a double charge, and an F10 cross-tenant arm with its same-tenant control.
+        attemptBytes += described.sizeBytes;
 
         // --- 4. COMMIT the reference ---------------------------------------------------------
         const commitResponse = await postOp("commit", () => deps.client.artifactCommit(

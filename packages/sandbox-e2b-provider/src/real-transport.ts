@@ -533,15 +533,24 @@ export class RealE2bTransport implements E2bTransport {
    * and grow it before the read, after which a pre-read check passes. The pre-read check is the
    * cheap arm that avoids the read entirely in the common case; THIS is the arm that closes it.
    */
-  async readFile(sandboxId: string, path: string, opts?: { readonly maxBytes?: number }): Promise<Uint8Array> {
+  async readFile(
+    sandboxId: string,
+    path: string,
+    opts?: { readonly maxBytes?: number; readonly signal?: AbortSignal },
+  ): Promise<Uint8Array> {
     const maxBytes = opts?.maxBytes;
+    // ★ CLI-012 (Codex P2, round 4) — the caller's deadline reaches the SDK REQUEST. Passed on
+    // BOTH read shapes, because the abandoned-work problem is the same either way, and pinned by
+    // a test that asserts the handed signal FIRED rather than that the caller returned on time
+    // (the latter passes against the defect verbatim).
+    const signal = opts?.signal;
     try {
       const sandbox = await this.#sdk.connect(sandboxId, { apiKey: this.#apiKey });
       if (typeof maxBytes === "number") {
-        const stream = (await sandbox.files.read(path, { format: "stream" })) as ReadableStream<Uint8Array>;
+        const stream = (await sandbox.files.read(path, { format: "stream", ...(signal ? { signal } : {}) })) as ReadableStream<Uint8Array>;
         return await readStreamBounded(stream, path, maxBytes);
       }
-      const data = await sandbox.files.read(path, { format: "bytes" });
+      const data = await sandbox.files.read(path, { format: "bytes", ...(signal ? { signal } : {}) });
       if (data instanceof Uint8Array) return data;
       if (typeof data === "string") return new TextEncoder().encode(data);
       return new Uint8Array(data as ArrayBufferLike);

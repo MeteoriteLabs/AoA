@@ -603,3 +603,87 @@ Reverted; a `MUTANT` grep over the touched sources returns `0`. Typecheck `Done`
 `worker-daemon`, `sandbox-e2b-provider`, `provider-wire`, `adapter-manager`; adjacent suites
 `worker-daemon 1256 passed, 1 skipped`, `adapter-manager 204 passed`,
 `provider-wire 87 passed, 1 skipped`.
+
+### 11.11 Codex round 4, both P2s — RULED FIX BOTH, and one of them is stated as an INVARIANT
+
+*Ruled 2026-09-23 by the planning session under founder delegation F2.*
+
+#### (a) The charge point — **the invariant, not a position**
+
+> **★★★ INVARIANT: THE TENANT IS CHARGED IF AND ONLY IF BYTES LEFT THE SANDBOX.**
+
+Rounds 2 and 3 pushed opposite ways on this one line, and stating the fix as a preference would
+let a fourth round reopen it. Tested against all three stages, the unique charge point falls out:
+
+| Stage | Verdict |
+|---|---|
+| **Admission** (before the mint) | **Too early.** A grant-stage failure charges for bytes that never moved — on a multi-tenant billing path that is a tenant-visible **over-charge**. (Codex round 3, correct.) |
+| **End of the flow** (after the commit) | **Too late.** A commit-stage failure *after* the bytes moved would not charge, so a run failing at commit could export without limit. (Codex round 2, also correct.) |
+| **Immediately after `exporter.export` returns** — the only hop that moves bytes | **The one placement that satisfies both.** |
+
+★ So this is **not an oscillation between two reviewers' preferences**: each round observed one
+half of the invariant, and this is where the halves meet. The charge now sits directly after the
+export step's object-key check, with the invariant written into the code at that line so the next
+reader sees the reasoning rather than the conclusion.
+
+★ **F10 raises the bar here rather than lowering it.** This is a billing path, so it is proven
+per tenant: a cross-tenant arm runs a second Organization's identical attempt and shows it keeps
+its own budget, with the same-tenant positive control asserted **first** (tenant A really did
+spend its whole budget, so the cross-tenant claim is not vacuous).
+
+**The three stage arms, and the double-charge arm the ruling required:**
+
+| Arm | Result |
+|---|---|
+| **grant fails → NO charge** — two 80-unit files, ceiling 100, A's grant rejects; B must still export | GREEN (A charged nothing, B exported) |
+| **byte-move succeeds then commit fails → CHARGED** — two 60-unit files, ceiling 100, A's commit rejects; B must be refused | GREEN (`output_limit_exceeded` on B) |
+| **full success → charged EXACTLY ONCE** — two 40-unit files, ceiling 100; both must fit | GREEN (a double charge refuses B at 80 + 80 > 100) |
+| **F10 cross-tenant** — tenant A spends its whole 100; tenant B's identical attempt still spends its own | GREEN, same-tenant control asserted first |
+
+| # | Mutation | Result |
+|---|----------|--------|
+| M25 | Charge at **admission** (round 3's defect restored) | **RED** — the grant-failure arm |
+| M26 | Charge **after the commit** (round 2's defect restored) | **RED** — the commit-failure arm |
+| M27 | Charge **twice** (the hazard a moved charge point invites) | **RED** — the exactly-once arm *and* the five-file ceiling arm |
+
+Each stage's arm reds under exactly the mutation that breaks its half of the invariant, which is
+what makes the placement provably unique rather than merely current.
+
+#### (b) The unsignalled bounded read — a bound on the CALLER is not a bound on the OPERATION
+
+`boundedBySignal` returns at `ctx.deadlineMs` and deliberately leaves the abandoned work to settle
+on its own, while `readFile` handed the SDK no signal. So a read that was slow but still
+delivering chunks was **abandoned, not aborted**: the request ran on, holding a pooled connection
+and still streaming a tenant's bytes into the shared adapter-manager process after the op that
+asked for them had given up. That is **family 3** of the build rules' self-audit, and the earlier
+self-audit pass missed it.
+
+★ The seam already existed — `e2b@2.30.5`'s `FilesystemRequestOpts` carries `signal` and every
+`FilesystemReadOpts` extends it — so the fix threads it rather than inventing one:
+`E2bTransport.readFile` takes `signal`, `RealE2bTransport` passes it to the SDK on **both** read
+shapes (the abandoned-work problem is the same either way), and `#readArtifactBytes` receives the
+op's own signal from **both** call sites (`digestArtifact` and `exportArtifact`).
+
+★★★ **THE PROOF IS THE ABORT, NOT THE CALLER'S TIMING.** A test asserting only *"the call
+rejected on time"* would pass against the defect verbatim, because `boundedBySignal` already
+guarantees that — it would re-certify the defect. The arm therefore asserts that the SDK
+**received** an `AbortSignal` (non-vacuity: not `undefined`, which is what the defect handed it)
+and that the signal **fired**, observed through an `abort` listener.
+
+| Arm | Result |
+|---|---|
+| **Abort proof** — a stream that keeps delivering and never ends, deadline 25 ms | GREEN: rejects `/timed out/`, the handed value is an `AbortSignal`, `aborted === true`, and a listener observed it |
+| **Anti-vacuity** — a read that fits inside the deadline | GREEN: digests normally, signal handed, `aborted === false` (so the bound is not "everything fails") |
+
+| # | Mutation | Result |
+|---|----------|--------|
+| M28 | Drop the signal at the **digest call site** | **RED** (2 failed: no signal reached the SDK) |
+| M29 | Accept the signal but drop it at the **SDK boundary** | **RED** (2 failed: same) |
+
+#### Suites after both fixes
+
+`sandbox-e2b-provider 195 passed, 32 skipped (227)` · `worker-daemon 1259 passed, 1 skipped (1260)`
+· `adapter-manager 204 passed` · `provider-wire 87 passed, 1 skipped` ·
+`sandbox-fake-provider 91 passed`. Typecheck `Done` across all four affected packages, **after**
+`pnpm --filter sandbox-e2b-provider build` — the stale-`dist` lesson from §11.10 applied rather
+than re-learned. Every mutation reverted; a `MUTANT` grep over the touched sources returns `0`.

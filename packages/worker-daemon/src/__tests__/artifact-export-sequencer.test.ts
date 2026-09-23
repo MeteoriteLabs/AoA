@@ -737,6 +737,84 @@ describe("CLI-012 -- a control-plane call that REJECTS is a per-file failure, no
     expect(serialized).not.toContain("https://");
   });
 
+  it("*** a GRANT that failed charges NOTHING -- no grant, no upload, so no bytes moved", async () => {
+    // The third arm of the invariant below: admission-time charging fails HERE, because a
+    // grant-stage failure happens strictly before the only hop that moves bytes.
+    const A3 = "/home/user/aoa-output/a3.md";
+    const B3 = "/home/user/aoa-output/b3.md";
+    const committed: string[] = [];
+    const run = createArtifactExportSequencer({
+      maxAttemptBytes: 100,
+      client: grantingClient({
+        committed,
+        rejectGrantFor: exportArtifactId({ jobId: POLL_FIXTURE_IDS.job, attempt: 1, path: A3 }),
+      }) as never,
+      key: generateDeviceKey(),
+      session: async () => SESSION,
+    });
+    const outcome = await run({
+      handoff: makeHandoff(),
+      exporter: sizedExporter(new Map([[A3, 80], [B3, 80]])),
+      requests: [req(A3), req(B3)],
+    });
+    // A charged 80 at admission would leave only 20 and refuse B. Nothing of A moved, so B fits.
+    expect(outcome.failures).toEqual([{ stage: "grant", reason: "transport_failed" }]);
+    expect(outcome.exported.map((r) => r.path)).toEqual([B3]);
+    expect(committed).toHaveLength(1);
+  });
+
+  it("*** the charge happens EXACTLY ONCE on a fully successful file", async () => {
+    // A move of the charge point is a natural place to introduce a DOUBLE charge, so this is
+    // pinned rather than assumed: with a ceiling of 100 and two 40-unit files, both must fit.
+    // Charged twice each, the second file would be refused at 80 + 80 > 100.
+    const A4 = "/home/user/aoa-output/a4.md";
+    const B4 = "/home/user/aoa-output/b4.md";
+    const run = createArtifactExportSequencer({
+      maxAttemptBytes: 100,
+      client: grantingClient({}) as never,
+      key: generateDeviceKey(),
+      session: async () => SESSION,
+    });
+    const outcome = await run({
+      handoff: makeHandoff(),
+      exporter: sizedExporter(new Map([[A4, 40], [B4, 40]])),
+      requests: [req(A4), req(B4)],
+    });
+    expect(outcome.failures).toEqual([]);
+    expect(outcome.exported.map((r) => r.path)).toEqual([A4, B4]);
+  });
+
+  it("*** F10 MULTI-TENANT: one tenant's spend never consumes another's budget", async () => {
+    // The ceiling is per ATTEMPT, and an attempt belongs to exactly one tenant. Tenant A spends
+    // its whole budget; tenant B's identical run must still be able to spend its own.
+    const P = "/home/user/aoa-output/whole-budget.bin";
+    const mk = (handoff: ReturnType<typeof makeHandoff>) =>
+      createArtifactExportSequencer({
+        maxAttemptBytes: 100,
+        client: grantingClient({}) as never,
+        key: generateDeviceKey(),
+        session: async () => SESSION,
+      })({ handoff, exporter: sizedExporter(new Map([[P, 100]])), requests: [req(P)] });
+
+    const tenantA = makeHandoff();
+    // A SECOND Organization on the same worker, same path, same size.
+    const offerB = JSON.parse(JSON.stringify(tenantA.offer)) as Record<string, unknown>;
+    (offerB.job as Record<string, unknown>).organizationId = "00000000-0000-4000-8000-0000000000b2";
+    const tenantB = { ...tenantA, offer: offerB as typeof tenantA.offer };
+
+    const a = await mk(tenantA);
+    const b = await mk(tenantB);
+    // SAME-TENANT POSITIVE CONTROL first: tenant A really did spend its whole budget.
+    expect(a.exported.map((r) => r.path)).toEqual([P]);
+    expect(a.failures).toEqual([]);
+    // CROSS-TENANT: B is unaffected by it.
+    expect(b.exported.map((r) => r.path)).toEqual([P]);
+    expect(b.failures).toEqual([]);
+    // And the two tenants' artifact ids differ, so neither is billed against the other's object.
+    expect(a.exported[0]!.artifactId).not.toBe("");
+    expect(b.exported[0]!.artifactId).not.toBe("");
+  });
+
   it("*** a file whose COMMIT failed STILL CHARGED the attempt ceiling -- the bytes already left", async () => {
     // A is 60 of a 100 ceiling and its commit rejects; B is another 60. The bytes of A were
     // granted and exported before the commit failed, so they left the sandbox and the ceiling

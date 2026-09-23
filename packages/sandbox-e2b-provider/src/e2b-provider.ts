@@ -724,7 +724,7 @@ export class E2bSandboxProvider implements SandboxProvider {
    * must stay a THROW. A fabricated digest would mint a grant for bytes that do not exist and
    * push the refusal all the way out to the fenced commit, far from its cause.
    */
-  async #readArtifactBytes(sandboxId: string, path: string): Promise<Uint8Array> {
+  async #readArtifactBytes(sandboxId: string, path: string, signal?: AbortSignal): Promise<Uint8Array> {
     // ★★★ CLI-012 (`E7-F039`) — THE NO-FOLLOW RECHECK, AT THE READ BOUNDARY.
     //
     // The enumeration-time link marker is a SNAPSHOT: a background process the agent left
@@ -760,7 +760,12 @@ export class E2bSandboxProvider implements SandboxProvider {
       // once the wire route put the provider in the adapter-manager. The pre-digest admission
       // check in the producer is only the cheap arm that avoids the read entirely; a file that
       // GREW between enumeration and digest is refused here.
-      return await this.#transport.readFile(sandboxId, path, { maxBytes: E2B_MAX_ARTIFACT_BYTES });
+      // ★ CLI-012 (Codex P2, round 4) — the op's deadline rides into the SDK request itself, so a
+      // slow-but-progressing stream is ABORTED at the deadline rather than abandoned mid-flight.
+      return await this.#transport.readFile(sandboxId, path, {
+        maxBytes: E2B_MAX_ARTIFACT_BYTES,
+        ...(signal ? { signal } : {}),
+      });
     } catch (err) {
       if (err instanceof E2bTransportNotFoundError) throw new SandboxNotFoundError();
       throw err;
@@ -830,9 +835,10 @@ export class E2bSandboxProvider implements SandboxProvider {
     // DAT-009-3e (Codex P1, PR #557) — the READ is bounded too. A stalled sandbox read would
     // otherwise hold the adapter-manager's per-sandbox lock for as long as the transport hangs.
     if (!(ctx.deadlineMs > 0)) throw new Error("artifact digest budget exhausted before the read");
+    const digestSignal = AbortSignal.timeout(ctx.deadlineMs);
     const bytes = await boundedBySignal(
-      this.#readArtifactBytes(sandboxId, path),
-      AbortSignal.timeout(ctx.deadlineMs),
+      this.#readArtifactBytes(sandboxId, path, digestSignal),
+      digestSignal,
       "artifact digest read timed out",
     );
     return { sha256: createHash("sha256").update(bytes).digest("hex"), sizeBytes: bytes.byteLength };
@@ -879,7 +885,7 @@ export class E2bSandboxProvider implements SandboxProvider {
     // per-sandbox lock across this whole call, so a hung read would strand the run's destroy
     // exactly as a hung upload would.
     const bytes = await boundedBySignal(
-      this.#readArtifactBytes(sandboxId, path),
+      this.#readArtifactBytes(sandboxId, path, signal),
       signal,
       "artifact export read timed out",
     );

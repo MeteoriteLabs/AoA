@@ -527,6 +527,88 @@ describe("CLI-012 / SD-5 — an ABSENT export scanner REFUSES; no bytes leave th
   });
 });
 
+// ---------------------------------------------------------------------------------------
+// CLI-012, Codex round 4 (P2) — THE DEADLINE BOUNDS THE OPERATION, NOT JUST THE CALLER.
+//
+// `boundedBySignal` returns at `ctx.deadlineMs` and deliberately leaves the abandoned work to
+// settle on its own. So a read that keeps delivering chunks slowly was ABANDONED at the deadline
+// while the SDK request ran on — holding a pooled connection, and still streaming a tenant's
+// bytes into a shared adapter-manager process after the op that asked for them gave up. That is
+// family 3 of the build rules' self-audit: a bound that bounds the caller is not a bound on the
+// operation.
+//
+// ★ THE SEAM EXISTS: `e2b@2.30.5`'s `FilesystemRequestOpts` carries `signal`, and every
+// `FilesystemReadOpts` extends it. So the fix is to thread it, not to invent one.
+//
+// ★★★ AND THE PROOF IS THE ABORT ITSELF, NOT THE CALLER'S TIMING. A test that only checked
+// "the call rejected on time" would pass against the defect verbatim — `boundedBySignal` already
+// guarantees that. What is asserted here is that the SDK RECEIVED an AbortSignal and that the
+// signal FIRED.
+// ---------------------------------------------------------------------------------------
+describe("CLI-012 — a bounded read ABORTS the underlying SDK request, not merely the caller", () => {
+  it("★★★ the SDK is handed a signal, and that signal is ABORTED when the deadline passes", async () => {
+    let handed: AbortSignal | undefined;
+    let aborted = false;
+    const sdk = {
+      connect: async () => ({
+        files: {
+          getInfo: async () => ({ size: 2, type: "file" }),
+          read: async (_path: string, opts?: { format?: string; signal?: AbortSignal }) => {
+            handed = opts?.signal;
+            handed?.addEventListener("abort", () => {
+              aborted = true;
+            });
+            // A stream that keeps delivering slowly and never ends: the shape the finding names.
+            return new ReadableStream<Uint8Array>({
+              async pull(controller) {
+                await new Promise((r) => setTimeout(r, 5));
+                controller.enqueue(new TextEncoder().encode("x"));
+              },
+            });
+          },
+        },
+      }),
+    };
+    const provider = new E2bSandboxProvider({ transport: new RealE2bTransport({ apiKey: "test-key-not-a-credential", sdk }) as never });
+    await expect(
+      provider.digestArtifact("s", `${ROOT}/slow.bin`, { deadlineMs: 25 } as never),
+    ).rejects.toThrow(/timed out/);
+
+    // NON-VACUITY: the read really was reached and really was given a signal — not `undefined`,
+    // which is what the defect handed it.
+    expect(handed, "the SDK read received no AbortSignal at all").toBeInstanceOf(AbortSignal);
+    // ★★★ THE CLAIM THAT MATTERS: the request was ABORTED, not abandoned.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(handed!.aborted, "the signal handed to the SDK never fired").toBe(true);
+    expect(aborted, "nothing observed the abort").toBe(true);
+  });
+
+  it("★ a read that FITS inside the deadline is not aborted — the bound is not just 'everything fails'", async () => {
+    let handed: AbortSignal | undefined;
+    const sdk = {
+      connect: async () => ({
+        files: {
+          getInfo: async () => ({ size: 2, type: "file" }),
+          read: async (_path: string, opts?: { signal?: AbortSignal }) => {
+            handed = opts?.signal;
+            return new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode("hi"));
+                controller.close();
+              },
+            });
+          },
+        },
+      }),
+    };
+    const provider = new E2bSandboxProvider({ transport: new RealE2bTransport({ apiKey: "test-key-not-a-credential", sdk }) as never });
+    const digest = await provider.digestArtifact("s", `${ROOT}/quick.bin`, { deadlineMs: 5_000 } as never);
+    expect(digest.sizeBytes).toBe(2);
+    expect(handed).toBeInstanceOf(AbortSignal);
+    expect(handed!.aborted).toBe(false);
+  });
+});
+
 describe("CLI-012 — a MISSING output root lists empty; a missing SANDBOX still throws", () => {
   class FileNotFoundError extends Error {
     constructor() {
