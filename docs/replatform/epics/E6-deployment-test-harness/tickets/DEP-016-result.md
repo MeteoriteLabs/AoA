@@ -1,6 +1,6 @@
 # DEP-016 — The `m1-spine` campaign profile on the D1 compose — result
 
-**Status:** `gate_review`. Only a DISTINCT reviewer sets `complete`.
+**Status:** `complete` (set by the distinct reviewer of attempt 1; the author left it at `gate_review`).
 **Epic:** E6 · **Plan task:** `E6 implementation-plan §4c DEP-016` (as amended at M1 Step 0, S0-8) · **Milestone:** `M1a`
 **Date (UTC):** `2026-09-23`
 **Implementer:** Claude Opus 5 (M1 build agent)
