@@ -271,13 +271,29 @@ planning session's): a switch that allows distributed spend with pricing off rec
 through configuration; the rollback lever is the rollout dial itself. The planning session's rule is
 "pricing is always on for an Organization whose rollout mode is `active` or `canary`".
 
-*How the build implements it (the author's reading, flagged for review):* the pricing projector is
+*How the build implements it (the author's reading, ★ **ACCEPTED 2026-09-21 — see the dated note
+below; this parenthesis originally read "flagged for review"**):* the pricing projector is
 registered by `createJobEventIngestService` itself, on **every** ingest, without consulting the
 rollout dial. The ingest exists only when distributed execution is composed, and a `usage` event can
 only be accepted under a live lease, so every accepted `usage` event is distributed spend. Reading
 the dial as well would leave an in-flight attempt unpriced after its Organization is dialled back to
 `shadow` mid-run — the same gap by another route. This is strictly stronger than the rule and
 satisfies its test (a `canary` Organization is always priced).
+
+★ **Corrected 2026-09-23 (record custodian): the "flagged for review" label was stale — the reading
+was ACCEPTED on 2026-09-21 and the acceptance was only ever recorded in the ticket's result record.**
+`JOB-016-result.md` § *Accepted deviations (planning session, F2)* item 1 reads: *"**Pricing is
+registered on every ingest.** This is broader than the rule 'always on for an `active`/`canary`
+Organization'. Reading the rollout dial would leave in-flight spend unpriced after an Organization is
+dialled back mid-run."* The distinct reviewer then recorded the same gap and concurred: *"`decisions.md`
+E3-D-ACC Amendment 1 still labels the build's reading 'the author's reading, flagged for review'. The
+planning session's acceptance is recorded only in this result record. … registering on every ingest is
+strictly stronger than 'on for `active`/`canary`' … I accept it."* Verified at source at HEAD:
+`createJobEventIngestService` (`server/src/services/job-events.ts`) builds its
+`acceptedEventProjectors` list with `createAcceptedUsagePricingProjector`
+(`server/src/services/job-accepted-usage-pricing.ts`) unconditionally — no flag, no dial read.
+**Nothing about Amendment 1's rule changes**; this note moves the acceptance into the decision record
+where it belongs, and the original parenthesis is quoted above rather than erased.
 
 **Amendment 2 — after a hard-stop breach, nothing more in that scope is leased.** *Supersedes stated
 limit (2) under "Next-dispatch refusal".* Measured at source, the legacy path on a hard stop does:

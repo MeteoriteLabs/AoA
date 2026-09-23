@@ -1185,9 +1185,39 @@ is unchanged from the original filing — only its consequence shrank.
 
 ## E7-F016 — Clause 6's operator-facing text misdescribes its own subject: four blamed links (three of which flip neither counter), and a verdict named for more than it proves
 
-**Status:** open · **Owner:** CLI-008 (Unit F — part (a) repairable, part (b) recorded)
+**Status:** open · **Owner:** CLI-015 (link 6, the judge — part (a) repairable, part (b) recorded)
 **Severity:** LOW · **Filed:** 2026-09-03, by CLI-008 Unit F's terrain pass — which was sent to size
 Unit F against this text and found the text wrong about its own subject.
+
+★ **Corrected 2026-09-23 (record custodian).** The Owner line above said **`CLI-008` (Unit F)** and
+disagreed with the register. **`scripts/finding-ownership.json` is authoritative** — it is the file
+`check-finding-ownership` reads, and its `E7-F016` entry records the re-point *"REPOINTED from
+CLI-008 to CLI-015 on 2026-09-21 (M0 unit 4, founder decisions D1 + D5)"*, on the subject ground that
+clause 6 **is** `countProducedOutputs` (`e7-distributed-run-verifier-store.ts`, link 6). The E7
+implementation plan already carried `CLI-015` in its ownership table and in its *"`CLI-015` owns only
+`E7-F016`"* sentence; only this prose line was left behind. Superseded text: `**Owner:** CLI-008
+(Unit F — part (a) repairable, part (b) recorded)`.
+
+★ **Corrected 2026-09-23 (record custodian) — one of the four links below is no longer true.**
+*"`observeRun` is uncomposed"* was true when this finding was filed and is **false at HEAD**:
+`WRK-018` (PR #546) composes it — `composeDispatchRuntime` sets
+`observeRun: createUsageObserver({ metrics: deps.metrics })`
+(`packages/worker-daemon/src/lifecycle/dispatch-runtime.ts`, `createUsageObserver` in
+`packages/worker-daemon/src/supervisor/usage-observer.ts`). **The finding is unaffected**: its subject
+is that the reason string names links which cannot flip either counter, and a *composed* `observeRun`
+flips neither counter either — it emits `usage`, not a `job_artifacts` or `task_outputs` row. The
+table below is kept as written, because it records what was measured at `d0b75be19`.
+**Part (a)'s repair is now strictly larger than it was**: the reason string at
+`e7-distributed-run-verifier.ts` (`capabilityFailures`, clause 6) still asserts *"observeRun is
+uncomposed"* to the operator, which is now a false statement and not merely a misattributed one.
+That string is production code owned by `CLI-015`; the custodian does not edit it. The same stale
+sentence survives in two other server sites, also left to `CLI-015`:
+`server/src/cli/verify-e7-1-distributed-run.ts` (a header comment) and
+`server/src/services/canary-terminal-projection.ts` (*"`observeRun` is default-off (E4-D12)"*, whose
+**conclusion still holds** — the observer emits `usage` only when the provider yields a parseable
+result line, so a real canary attempt may still emit none — while its stated reason is stale).
+`WRK-018-result.md` §6 disclosed all three and declined to edit them; this note records the same
+three at HEAD rather than closing them.
 
 **What.** The reason string at `server/src/services/e7-distributed-run-verifier.ts:509-515` is
 printed to the operator beside every verdict and is the programme's standing answer to "what does

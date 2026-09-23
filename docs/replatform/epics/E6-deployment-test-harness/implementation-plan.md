@@ -974,6 +974,43 @@ images belongs to the **M5 release lane** at the integration checkpoint.
 3. Image-content assertions: no `E2B_API_KEY` baked in, no server/UI/database tooling, non-root; the
    provider SDK is present only in the adapter-manager image (matching
    `checkProviderControlBoundary` in `scripts/lib/staging-manifest-invariants.mjs`).
+
+   ★ **Corrected 2026-09-23 (record custodian), verified at source — the second half of this
+   acceptance item was FALSE and is WITHDRAWN.** Superseded text: *"the provider SDK is present only
+   in the adapter-manager image (matching `checkProviderControlBoundary` in
+   `scripts/lib/staging-manifest-invariants.mjs`)"*. Two independent errors:
+   - **The worker image carries the provider SDK, and says so in its own header.**
+     `docker/worker/Dockerfile` states its runtime closure as seven workspace packages including
+     `sandbox-e2b-provider`, with the reason — *"`sandbox-e2b-provider` (and therefore the `e2b` SDK)
+     is in that closure because `provider-wire` VALUE-imports its error classes"* — and its
+     `--filter-prod "@armyofagents/worker-daemon..."` install materialises it. The **control-plane**
+     image carries it too: `server/package.json` declares `"e2b"` as a direct production dependency,
+     and `docker/control-plane/Dockerfile` installs the server's closure. So all three images hold
+     the SDK.
+   - **`checkProviderControlBoundary` does not check the SDK at all**, so "matching" it was never
+     available as evidence. Read at source, it asserts (a) that `provider-ctl-net` membership is
+     exactly `{adapter-manager}` and (b) that the provider-control **credential**
+     (`PROVIDER_CONTROL_CRED_ENV`) is absent from every non-adapter surface across `environment`,
+     `env_file`, `secrets`, `configs`, `volumes`, `command` and `entrypoint`. Credential and network
+     reachability, not package presence.
+
+   **This discharges an explicitly owed correction, it does not open a new one.** `DEP-014-result.md`
+   §5.2 measured both errors at build time (the control-plane's `sandbox-provider-runtime.ts` import
+   and the worker's `provider-wire` value-import of `sandbox-e2b-provider/errors.js`, *"measured red
+   on run 35583366997"*), its acceptance table records item 3 as *"met, with one delta … is **not**
+   asserted"*, and its independent reviewer wrote: *"**Owed by the planning session:** a dated
+   correction to acceptance item 3 in the E6 plan's `### DEP-014`, with the superseded text quoted.
+   That plan text is not this record's to edit."* This note is that correction.
+
+   **What the item should have asserted, and what the boundary actually rests on:** the worker holds
+   **no E2B key and never constructs an E2B transport** — the real one lives in the adapter-manager
+   (`docker/worker/Dockerfile`, same header) — and `scripts/check-worker-daemon-boundary.mjs` keeps
+   `worker-daemon` importing no provider. The invariant is *no credential and no constructed
+   transport off the adapter-management surface*, which the guard does enforce; *no SDK bytes in the
+   image* was never true and is not what anything checks. **`DEP-014` shipped and was reviewed
+   against this text, so this is a correction of the acceptance wording, not a re-opening of the
+   ticket**: no image-content assertion that was actually written is invalidated, because none of
+   them tested for the SDK.
 4. `d1-merge-train.yml` builds the image on every run it runs.
 
 **Ticket non-goals:** pushing or publishing any image (M5 release lane; F2 ruling above); booting the adapter-manager (that is `DEP-015`); the control-plane keypair;

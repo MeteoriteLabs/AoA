@@ -3,6 +3,26 @@
 **Status:** `complete`
 **Reviewed revision (code):** `3da94a421d192f1af26cf56f4b608aff266dc683` (branch `claude/m1-job-016`, PR #547). This is the last code commit, rebased onto the program tip; the pre-rebase equivalent was `a3d1db48395f8b4bf8954df0736c5223e13a2a5a`.
 **Date (UTC):** `2026-09-21`
+
+> ★ **Corrected 2026-09-23 (record custodian) — the revisions this header names are NOT on the branch.**
+> The header's `3da94a421d192f1af26cf56f4b608aff266dc683` and its "pre-rebase equivalent"
+> `a3d1db48395f8b4bf8954df0736c5223e13a2a5a`, and the first addendum's
+> `9f26bb9cb988197afa0b356474685228397c7f03`, are all **non-ancestors** of `docs/replatform-program`.
+> A rebase orphaned them. Verified by the custodian with `git merge-base --is-ancestor <sha> HEAD`,
+> which exits non-zero for all three and **zero for `9e80493e59fcd949cdaa9a09b206c4cb9c85f58d`**.
+> **`9e80493e5` is the only valid reviewed revision**, as the second-round addendum and the
+> independent review both state; the independent review asked for exactly this note (*"The planning
+> session may want a dated one-line note under the header pointing at `9e80493e5`. I did not edit the
+> author's text."*). **The header's text is kept as written** — it is the record of what the author
+> wrote, and the objects still exist locally even though they are off the branch.
+>
+> ★ **Also corrected 2026-09-23: the mutation table is not the whole mutation set.** The *TDD
+> deviation* section says **11** single-behaviour mutations and the table below lists **M1–M13**;
+> **M14 and M15** exist and appear only in the second addendum's prose (*"Mutations **M14** and
+> **M15** turn them red"*, the Codex P1/P2 round). The true count at the final head is **15**. The
+> "11" is the first-written figure, the addenda raise it to 13 and then 15, and all three are left as
+> written so the sequence stays legible. Nothing here changes the ticket's status, its acceptance or
+> its disposition.
 **Decision:** `E3-D-ACC` in [`../decisions.md`](../decisions.md), accepted with three amendments (planning session, founder delegation F2).
 **E3-F037:** **NOT closed.** Its owner is re-pointed to **`DEP-016`** (planning-session ruling, F2). Closing it needs this ticket's seam and pricing, `WRK-018`'s producer, `WRK-018`'s keyed E2B acceptance for the real claude parser, and `DEP-016`'s end-to-end cost assertion. `E3-15-budget` in `scripts/gate-clause-wiring.json` stays `unwired`; its reason now carries a dated note that says so.
 

@@ -702,3 +702,33 @@ unchanged after the merge. Two consequences worth pinning so no later reader has
   review names.
 
 Nothing is pending, so I set `Status` to `complete` in a separate commit.
+
+## Registration addendum (record custodian, 2026-09-23) — the §8 promise, kept
+
+★ **Append-only. Nothing above is altered.** §8 says the registration run *"is to be cited here after
+the merge"* and leaves the citation to the planning session; the independent review records the same
+gap (*"The §8 promise is not kept yet … No addendum exists"*). This is that citation, measured with
+`gh` at the time of writing.
+
+| Fact | Value |
+|---|---|
+| Run | `35598343418` — workflow *"M1 shipped CI boot (DEP-015)"* |
+| Event / branch | `push` on `docs/replatform-program` |
+| Head sha | `947b684d8a5bf1fcdacb20c5ff077668db54c517` (the merge of PR #554) |
+| Run conclusion | `skipped` |
+| Job | `shipped-boot`, id `106328314759`, conclusion `skipped`, **0 steps** |
+
+**What this shows, and what it deliberately does not.** The `E6-D001` registration push **executes
+nothing**: the single job is `skipped` with a step count of zero, which is the whole point of gating
+every job on `if: github.event_name == 'workflow_dispatch'`. A zero-step skipped job is the honest
+shape here — it is *not* a check that passed, and the verdict manifest already declares
+`m1-shipped-boot.yml@*` `not-watched` for exactly that reason (a verdict on a skipped job would be a
+check that nothing runs).
+
+**The lane is now dispatchable.** `gh api repos/MeteoriteLabs/AoA/actions/workflows/m1-shipped-boot.yml`
+returns the workflow with `id: 363339172`, `state: active` — where §8 measured a **404** before the
+merge. The registration blocker §8 names is therefore discharged, and the §8 dispatch command is live.
+
+**Still pending, unchanged by this addendum:** acceptance item 1 — the keyed run on a named candidate,
+inside the F8 envelope, which is the planning session's to dispatch. No keyed or keyless dispatch of
+`m1-shipped-boot.yml` has occurred; run `35598343418` is a registration push, not a journey.

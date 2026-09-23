@@ -647,6 +647,32 @@ cancelled}` — plus a final summary `{organizationsScanned, cancelled, skippedC
 only: no Company name, no actor, no job content, no key, no secret. The operator invocation itself
 is an auditable action; the CLI prints the exact `reason` string it passed to `drainAll`.
 
+★ **Corrected 2026-09-23 (record custodian) — "no actor" is superseded by this plan's own ★★★
+paragraph below, and the SHIPPED CLI correctly prints the actor. The PLAN is corrected; the code is
+NOT changed.** Measured at source at HEAD: `runDrainCli`
+(`server/src/services/distributed-execution-drain-trigger.ts`) prints
+`draining distributed execution: reason=<reason> actor=<actorId>` before the drain, and
+`formatDrainReport` puts `actorId` in the final summary object. That is a deliberate divergence, and
+the right one:
+
+- **The ★★★ paragraph immediately below this bullet is what changed the ticket's shape.** It ruled
+  that the CLI *"owes an actor identity and an explicit audit write"* — *"a fleet-wide rollback with
+  no answer to **who ran it**"*. An actor-attributed rollback whose operator console line cannot say
+  who ran it defeats the correction that created the requirement. The two clauses were written in
+  different rounds and were never reconciled; **the ★★★ paragraph governs.**
+- **The value leaks nothing this bullet was protecting.** `parseDrainOperator` builds
+  `{ actorType: "system", actorId: "operator-cli:" + <the --operator argument> }` — an
+  operator-supplied label, not a resolved user, not a Company name, not job content, and not a
+  credential. The same string is already written durably to `activity_log` as the actor of every
+  `job.drain.requested` row, so the console reveals nothing the audit trail does not.
+- **The rest of the bullet stands unamended:** no Company name, no job content, no key, no secret,
+  and opaque ids everywhere else. Superseded fragment: *"no actor"*.
+
+**Chosen disposition: note, not align.** Aligning would mean deleting `actor=` from a shipped
+operator CLI to satisfy a clause its own ticket superseded — a record-driven code change with a
+negative safety effect. Nothing in `MIG-009`'s acceptance, its result records or its review turns on
+this clause.
+
 ★★★ **THERE IS NO `activity_log` ROW ON THIS PATH TODAY, and an earlier revision of this line
 implied the console merely “agrees” with one.** *Corrected 2026-09-20 (fifth round), verified at
 source.* `job-distributed-drain.ts` imports no audit module, and the job audit helpers
