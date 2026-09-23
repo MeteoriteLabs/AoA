@@ -4465,7 +4465,9 @@ grep -rn "events\.\(attemptStarted\|log\|progress\|usage\|terminal\|networkDenie
   --include=*.ts packages/worker-daemon/src --exclude-dir=__tests__
 ```
 
-**31 sites checked across 3 files; 1 found (this one, covering 3 emits under 1 catch); 0 fixed.**
+**30 emit call sites checked across 3 files** (29 pre-existing plus `CLI-013`'s own; the raw grep
+also matches one prose line in `artifact-export.ts`, which is not a call site). **1 found** — this
+one, covering 3 emits under 1 catch. **0 fixed.**
 Not in the class, with reasons:
 
 - Every `events.terminal` inside a `catch` (`supervisor.ts`, the create/execute/env-probe/cancel
