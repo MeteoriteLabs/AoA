@@ -545,3 +545,70 @@ ZERO jobs concluded anything other than `success`.**
 
 **Reviewed revision (code): `460dca4eb78d84cbda99bcd84ea4d2cde085d97e`.** Everything in §3, §9b,
 §11 and §11h was measured on this code against a live D1 stack.
+
+## 13. The two planning-session rulings (2026-09-23)
+
+### 13a. `E6-D003` — the `provider_credentials` production-reader case is ROUTED, not unowned
+
+§11b left it `unowned` and flagged. The planning session ruled it under **F2**, following
+**`E6-D002`**'s shape, and it is recorded in
+`docs/replatform/epics/E6-deployment-test-harness/decisions.md` as **`E6-D003`**.
+
+★ **Id verified before minting.** `E6-D002` is **taken** — by the unmerged branch
+`claude/m1-dep-019`, which is the very ruling whose shape this one follows — so this is `D003`.
+`check-register-id-uniqueness` is green (27 da-decision, 125 decision, 25 epic-decision, 209
+finding across 26 registers). A grep of the merged tree alone would have shown `E6-D001` as the max
+and produced a collision.
+
+| | |
+|---|---|
+| **Where the case now lives** | `M1a-D2-MECHANISM`, as `d2m.credential.production_reader_company_predicate`, `pendingKind: keyed`, owned by the planning session under **F8** on the DEP-015 lane. It carries its injection (a `device_local` handle naming a **foreign company's** credential) and its expected classification |
+| **Why there** | That gate redeems a **real** provider credential, so `authorizeSecretResolve` can ADMIT — and `resolveExecutionSecret` increments the handle's `resolve_count` **only on admit**, which is the one observable that tells an admitted read from a denied one |
+| **Why not on D1** | `device-local-broker.ts` holds `failClosedDeviceLocalBroker` and **no other implementation in the tree**, and the fenced route collapses every outcome to `denied/malformed` by design. A case built there could not tell its two arms apart |
+| **What the spine keeps** | `d1.credential.production_reader_company_predicate`, `pendingKind: structural`, naming `E6-D003` and the mechanism case as its owner — so its absence there **cannot be read as an oversight**. The checker refuses to report a pending case as a pass and refuses a bundle that reports evidence for one |
+
+★ **The ruling's fallback was NOT taken, and the decision records why.** The instruction was: if it is
+not drivable on the keyed lane either, file it `unowned` and say plainly that `M1a`'s isolation
+matrix does not cover that table. It **is** drivable there. So `M1a` **does** cover
+`provider_credentials` — the predicate and grant on the spine, the production reader on the
+mechanism gate — and both halves are named. If a keyed run later shows otherwise, that fallback
+stands.
+
+§11b's flag is kept as first written, with a pointer here.
+
+### 13b. The lane PROVEN in CI, on a throwaway probe branch
+
+*"A lane whose first real execution is the merge itself is a lane nobody has seen work."* Following
+the `DEP-014` / `DEP-019` pattern: branch `claude/m1-dep-018-lane-probe` carried this PR's code plus
+**one** trigger line, the merge train ran, and the branch was deleted. **The PR lands without that
+line** — verified: `grep -c 'claude/m1-dep-018-lane-probe' .github/workflows/d1-merge-train.yml` is
+**0** on the PR branch.
+
+**Run `35848228046` — `completed` / `success`, all three jobs:**
+
+| Job | Id | Conclusion |
+|---|---|---|
+| **`m1-fault-matrix`** (this ticket's) | **`107139436790`** | **success** |
+| `m1-spine` (DEP-016's — also its first CI execution) | `107139436556` | success |
+| `d1-merge-train` (the E6F campaign) | `107139436996` | success |
+
+★ **A green conclusion is not evidence its assertions ran, so here is what the job LOG says** — and
+this lane is one where that distinction matters, because `E6-F023` recorded a run concluding
+`success` with 8 of 12 jobs failing:
+
+- step *Static preflight*: `scripts/check-campaign-fault-matrix.test.mjs` — **25 tests, 25 pass, 0 fail**.
+- step *Run the M1-D1-SPINE fault matrix (live)* — **20 tests, 20 pass, 0 fail**.
+- step *The matrix's own verdict over the retained bundle* — *"profile M1-D1-SPINE: **25/25 required
+  case(s) fired and classified as declared, 3 pending**"*, matching the local runs exactly.
+- step *POSITIVE CONTROL — with every injection suppressed, the matrix MUST go red* — the step
+  printed **"positive control: a suppressed injection reds the matrix, as required"**, which it can
+  only reach by the suppressed run FAILING and the evidence marker being found. The control reported
+  **9 distinct unfired cases**, the same nine as locally: `cancel.leased_attempt`,
+  `cancel.unleased_attempt`, `cleanup.orphan_object_swept`, `fault.link_cut.control_plane_to_postgres`,
+  `fault.link_cut.worker_to_control_plane`, `fault.object_store.truncated_upload`,
+  `provider.execute_deadline_exceeded`, `reconcile.expired_lease_reaped`, `restart.control_plane_process`.
+- the evidence bundle `m1-fault-matrix-evidence-35848228046` was uploaded.
+
+So §10 and §12's standing caveat — *"still not run: the `m1-fault-matrix` job itself"* — is now
+**discharged**, on a real runner, before the merge rather than by it. Those sections are kept as
+written; this is the section that answers them.
