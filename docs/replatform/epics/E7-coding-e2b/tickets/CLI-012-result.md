@@ -806,3 +806,25 @@ failure did not name a suite this change touches. It is recorded here rather tha
 
 **This is the last push on `#576`.** Anything found after it becomes a filed finding with an owner,
 not a fix.
+
+### 11.13 Codex round 6 — FILED, not fixed, per the standing ruling
+
+Codex raised one further P2 on `b48ad8b43` and it is real, verified at source: §11.12(c)'s
+aggregation is reachable only through the **accepted**-file cap, and refusals do not advance that
+counter — the `output_symlink_refused`, `output_too_large` and `output_path_escaped` branches each
+`refuse(...)` and `continue` without touching `requests`. So a listing made up **entirely** of
+refused entries never reaches the cap and still emits one record per entry. The amplification is
+closed for the valid-file shape and open for the refused-entry shape, which is the cheaper one for
+a tenant to produce.
+
+★ **Filed as `E7-F041` (LOW, `unowned` on the record), not fixed** — the planning session's
+standing ruling is that after the round-5 push anything further on `#576` becomes a named finding
+with an owner rather than another fix. `unowned` is the honest classification: `CLI-012` owns this
+surface and is shipped, and `CLI-017` owns the SD-1b directive and SD-5, neither of which touches
+the refusal channel — naming it there would be an invented owner.
+
+★ Also filed this round: **`E7-F040`** (LOW, owner `CLI-017`), the one site the §11.12(b) family
+sweep deliberately left alone.
+
+**This section and the two register entries are the only changes after `b48ad8b43`; no code moved.**
+`ci-required` was **PASS** on `b48ad8b43` with Codex's review completed on that head.
