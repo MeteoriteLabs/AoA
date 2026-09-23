@@ -134,12 +134,38 @@ async function realTransport(): Promise<E2bTransport> {
  */
 export async function withSandbox<T>(
   lane: string,
-  create: (t: E2bTransport) => Promise<string>,
+  create: (t: E2bTransport, report: (id: string) => void) => Promise<string>,
   fn: (t: E2bTransport, sandboxId: string) => Promise<T>,
   deps: { transport?: () => Promise<E2bTransport> } = {},
 ): Promise<T> {
   const t = await (deps.transport ?? realTransport)();
-  const sandboxId = await create(t);
+  // ★★★ A SANDBOX THAT EXISTS BUT WAS NEVER RETURNED MUST STILL BE TORN DOWN. Codex review
+  // (PR #551): `E2bSandboxProvider.create` calls `transport.create` and THEN `setTimeout`, so a
+  // throw in the second step leaves a live E2B sandbox whose id never reached this function —
+  // it would run to its TTL while the probe recorded only an inconclusive arm. The `report`
+  // callback hands the id over the moment it exists, and a create that throws afterwards is
+  // terminated here.
+  let reported: string | null = null;
+  const report = (id: string) => {
+    if (typeof id === "string" && id.length > 0 && reported === null) reported = id;
+  };
+  let sandboxId: string;
+  try {
+    sandboxId = await create(t, report);
+  } catch (err) {
+    if (reported !== null) {
+      const partial = { lane: `${lane}(partial-create)`, sandboxId: reported, terminated: false, detail: "" };
+      SANDBOXES.push(partial);
+      try {
+        await t.terminate(reported);
+        partial.terminated = true;
+        partial.detail = "terminated after the create step threw";
+      } catch (teardown) {
+        partial.detail = safe((teardown as Error)?.message ?? teardown, 200);
+      }
+    }
+    throw err;
+  }
   const rec = { lane, sandboxId, terminated: false, detail: "" };
   SANDBOXES.push(rec);
   // eslint-disable-next-line no-console
@@ -156,8 +182,11 @@ export async function withSandbox<T>(
   }
 }
 
-const plainCreate = (lane: string, ttlMs: number) => async (t: E2bTransport) =>
-  (await t.create({ templateId: TEMPLATE, timeoutMs: ttlMs, metadata: { aoa_lane: `cli-011-${lane}` }, envVars: {} })).sandboxId;
+const plainCreate = (lane: string, ttlMs: number) => async (t: E2bTransport, report: (id: string) => void) => {
+  const { sandboxId } = await t.create({ templateId: TEMPLATE, timeoutMs: ttlMs, metadata: { aoa_lane: `cli-011-${lane}` }, envVars: {} });
+  report(sandboxId);
+  return sandboxId;
+};
 
 type Exec = { channel: "returned" | "timedOut" | "threw"; exitCode: number | null; stdout: string; stderr: string; detail: string };
 
@@ -287,8 +316,22 @@ async function p011a(): Promise<Verdict[]> {
   let provider: InstanceType<typeof E2bSandboxProvider> | null = null;
   await withSandbox(
     "p011a",
-    async (t) => {
-      provider = new E2bSandboxProvider({ transport: t, templateId: TEMPLATE });
+    async (t, report) => {
+      // The provider runs the PRODUCTION create path (`spec.env` -> transport `envVars`), and the
+      // transport is wrapped so the sandbox id reaches `withSandbox` the instant it exists —
+      // `provider.create` calls `setTimeout` after `transport.create`, and a throw there would
+      // otherwise leak a live sandbox (Codex review, PR #551).
+      const reporting: E2bTransport = new Proxy(t, {
+        get(target, prop, receiver) {
+          if (prop !== "create") return Reflect.get(target, prop, receiver);
+          return async (req: Parameters<E2bTransport["create"]>[0]) => {
+            const created = await target.create(req);
+            report(created.sandboxId);
+            return created;
+          };
+        },
+      });
+      provider = new E2bSandboxProvider({ transport: reporting, templateId: TEMPLATE });
       // S-P7's canary rides the PRODUCTION env channel: `provider.create`'s spec.env ->
       // transport `envVars` (the [Cred-1] path), not a per-command env.
       const created = await provider.create(
@@ -445,7 +488,7 @@ async function p011a(): Promise<Verdict[]> {
         await guarded("S-P7", async () => {
           const w = await sh(t, id, `if [ -n "$AOA_PROBE_CANARY" ]; then echo ENV_SET; fi; printf "%s" "$AOA_PROBE_CANARY" > ${OUTPUT_ROOT}/env.txt`);
           const r = await readBack(t, id, `${OUTPUT_ROOT}/env.txt`);
-          const obs = { channel: w.channel, envSeenByShell: w.stdout.includes("ENV_SET"), read: { outcome: r.outcome, content: r.bytes ? DEC.decode(r.bytes) : null }, nonce: CANARY };
+          const obs = { channel: w.channel, exitCode: w.exitCode, envSeenByShell: w.stdout.includes("ENV_SET"), read: { outcome: r.outcome, content: r.bytes ? DEC.decode(r.bytes) : null }, nonce: CANARY };
           evidence("S-P7", { envSeenByShell: obs.envSeenByShell, readOutcome: r.outcome, noncePresent: obs.read.content?.includes(CANARY) ?? false });
           return verdictEnvSecret(obs) as Verdict;
         }),
@@ -658,11 +701,35 @@ describe("CLI-011 P-011 — wiring proven without a key", () => {
     return { t, terminated };
   };
 
+  it("POSITIVE CONTROL: a sandbox allocated before the create step threw is still terminated", async () => {
+    // `provider.create` = transport.create THEN setTimeout; a throw in the second step used to
+    // leak the live sandbox (Codex review, PR #551).
+    const { t, terminated } = stubTransport({});
+    const before = SANDBOXES.length;
+    await expect(
+      withSandbox(
+        "stub",
+        async (x, report) => {
+          const { sandboxId } = await x.create({} as never);
+          report(sandboxId);
+          throw new Error("setTimeout failed");
+        },
+        async () => 1,
+        { transport: async () => t },
+      ),
+    ).rejects.toThrow("setTimeout failed");
+    expect(terminated).toEqual(["sbx-stub"]);
+    expect(SANDBOXES.slice(before)).toEqual([
+      { lane: "stub(partial-create)", sandboxId: "sbx-stub", terminated: true, detail: "terminated after the create step threw" },
+    ]);
+    SANDBOXES.length = before;
+  });
+
   it("withSandbox terminates the sandbox when the arm THROWS, and records it", async () => {
     const { t, terminated } = stubTransport({});
     const before = SANDBOXES.length;
     await expect(
-      withSandbox("stub", async (x) => (await x.create({} as never)).sandboxId, async () => { throw new Error("arm blew up"); }, { transport: async () => t }),
+      withSandbox("stub", async (x, report) => { const { sandboxId } = await x.create({} as never); report(sandboxId); return sandboxId; }, async () => { throw new Error("arm blew up"); }, { transport: async () => t }),
     ).rejects.toThrow("arm blew up");
     expect(terminated).toEqual(["sbx-stub"]);
     expect(SANDBOXES.slice(before)).toEqual([{ lane: "stub", sandboxId: "sbx-stub", terminated: true, detail: "" }]);

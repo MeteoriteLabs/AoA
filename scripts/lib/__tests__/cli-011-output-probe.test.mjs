@@ -263,9 +263,38 @@ test("S-P3: only a RETURNED non-zero exit counts; timed out, threw or exit 0 is 
   assert.equal(verdictNonZeroExit({ viaRunCommand: leg("returned", null), viaProviderExecute: leg("returned", 3) }).state, "inconclusive");
 });
 
-test("S-P7 is inconclusive when its command did not return", () => {
+test("S-P7 is inconclusive when its command did not return, or failed with no nonce", () => {
   assert.equal(verdictEnvSecret({ channel: "timedOut", envSeenByShell: true, read: { outcome: "ok", content: "C" }, nonce: "C" }).state, "inconclusive");
-  assert.equal(verdictEnvSecret({ channel: "returned", envSeenByShell: true, read: { outcome: "ok", content: "C" }, nonce: "C" }).state, "observed");
+  assert.equal(verdictEnvSecret({ channel: "returned", exitCode: 0, envSeenByShell: true, read: { outcome: "ok", content: "C" }, nonce: "C" }).state, "observed");
+  // Codex review (PR #551): a write that failed after creating the file leaves a readable empty
+  // file; "absent" read off that would let R4 say SD-5 is not required.
+  const failedWrite = verdictEnvSecret({ channel: "returned", exitCode: 1, envSeenByShell: true, read: { outcome: "ok", content: "" }, nonce: "C" });
+  assert.equal(failedWrite.state, "inconclusive");
+  assert.match(failedWrite.reason, /write-exited-1-with-no-nonce/);
+  // A PRESENT nonce is evidence whatever happened afterwards.
+  assert.equal(verdictEnvSecret({ channel: "returned", exitCode: 1, envSeenByShell: true, read: { outcome: "ok", content: "C" }, nonce: "C" }).state, "observed");
+  assert.equal(verdictEnvSecret({ channel: "returned", exitCode: 0, envSeenByShell: true, read: { outcome: "ok", content: "" }, nonce: "C" }).findings.noncePresent, false);
+});
+
+test("A-decl without a readable final result frame is inconclusive, never 'no declaration'", () => {
+  // Codex review (PR #551): claude can exit 0 with an assistant frame and no parseable `result`.
+  const noResult = readClaudeStream(
+    [
+      JSON.stringify({ type: "system", subtype: "init", cwd: HOME_DIR, permissionMode: "bypassPermissions" }),
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "done" }] } }),
+    ].join("\n"),
+  );
+  const helloDelta = censusDelta(diffSnapshots([], [file(`${OUTPUT_ROOT}/hello.txt`)]), { staged: STAGED });
+  const obs = { ...modelObs("A-decl", { delta: helloDelta, hello: { outcome: "ok", content: "N-1" } }), stream: noResult };
+  const v = verdictCompliance("A-decl", obs);
+  assert.equal(v.state, "inconclusive");
+  assert.match(v.reason, /no-readable-final-result-frame/);
+  // The other arms do not need a `result` frame to answer their own question.
+  assert.equal(verdictCompliance("A-dir", { ...modelObs("A-dir", { delta: helloDelta, hello: { outcome: "ok", content: "N-1" } }), stream: noResult }).state, "observed");
+  // And R11 becomes undecidable rather than false.
+  const vs = baseline();
+  vs[15] = v;
+  assert.equal(rowOf(evaluateDecisionTable(vs), "R11").fired, "undecidable");
 });
 
 test("S-P4 distinguishes a redirect that failed first from one that let the command run", () => {
@@ -574,6 +603,11 @@ test("POSITIVE CONTROL: each workflow mutation reds with its own code", () => {
   assert.ok(codes(mutate("retention-days: 90", "retention-days: 1")).includes("record-retention"));
   assert.ok(codes(mutate('"resolved": ${TEMPLATE_JSON}', '"resolved": "${RESOLVED_TEMPLATE}"')).includes("fallback-unescaped-input"));
   assert.ok(codes(mutate('"armsMode": ${ARMS_JSON}', '"armsMode": "${ARMS_INPUT:-all}"')).includes("fallback-unescaped-input"));
+  // Codex review (PR #551): the fallback must resolve the template the way the probe does.
+  assert.ok(codes(mutate(
+    `RESOLVED_TEMPLATE="$(RAW="\${E2B_TEMPLATE_INPUT:-}" python3 -c 'import os;print(os.environ["RAW"].strip())')"`,
+    'RESOLVED_TEMPLATE="${E2B_TEMPLATE_INPUT:-}"',
+  )).includes("fallback-template-untrimmed"));
   assert.ok(codes(good.replace(/name: cli-011-output-probe-record/, "name: something-else")).includes("record-upload-missing"));
   assert.ok(codes(mutate("timeout-minutes: 45", "timeout-minutes: 90")).includes("job-timeout"));
   assert.ok(codes(good.replace(/CLI011_DEFAULT_TEMPLATE: aoa-base/, "CLI011_DEFAULT_TEMPLATE: base")).includes("default-template-mismatch"));

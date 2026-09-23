@@ -138,7 +138,10 @@ jobs:
           set -u
           mkdir -p "$(dirname "$CLI011_RECORD_PATH")"
           if [ ! -s "$CLI011_RECORD_PATH" ]; then
-            RESOLVED_TEMPLATE="${E2B_TEMPLATE_INPUT:-}"
+            # Resolve exactly as `resolveTemplate` does: TRIM first, and an empty value means the
+            # CLI-bearing default. A whitespace-only input must not be recorded as an explicit
+            # template the probe never used (Codex review, PR #551).
+            RESOLVED_TEMPLATE="$(RAW="${E2B_TEMPLATE_INPUT:-}" python3 -c 'import os;print(os.environ["RAW"].strip())')"
             RESOLVED_SOURCE="explicit"
             if [ -z "$RESOLVED_TEMPLATE" ]; then
               RESOLVED_TEMPLATE="$CLI011_DEFAULT_TEMPLATE"

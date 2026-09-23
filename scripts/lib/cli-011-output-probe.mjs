@@ -527,14 +527,21 @@ export function verdictSizeMetadata(obs) {
   });
 }
 
-/** S-P7. obs: {channel, envSeenByShell: boolean, read:{outcome, content}, nonce} */
+/** S-P7. obs: {channel, exitCode, envSeenByShell: boolean, read:{outcome, content}, nonce} */
 export function verdictEnvSecret(obs) {
   const o = obs ?? {};
   if (o.channel !== undefined && o.channel !== "returned") return inconclusive("S-P7", `channel-${String(o.channel)}`, {});
   if (o.envSeenByShell !== true) return inconclusive("S-P7", "canary-env-did-not-reach-the-sandbox", {});
   if (o.read?.outcome !== "ok") return inconclusive("S-P7", "read-faulted-or-missing", { readOutcome: o.read?.outcome ?? null });
   const present = String(o.read.content ?? "").includes(o.nonce);
-  return observed("S-P7", present ? "nonce-exported-in-file-bytes" : "nonce-absent", { noncePresent: present });
+  // ★ AN ABSENCE IS ONLY A RESULT IF THE WRITE SUCCEEDED. Codex review (PR #551): a shell that saw
+  // the canary and then failed mid-write leaves a readable but empty/partial file, and reading
+  // "the nonce is absent" off that would let R4 say SD-5 is not required on a write that never
+  // finished. A PRESENT nonce is positive evidence whatever the exit code did afterwards.
+  if (!present && o.exitCode !== undefined && o.exitCode !== 0) {
+    return inconclusive("S-P7", `write-exited-${String(o.exitCode)}-with-no-nonce`, { exitCode: o.exitCode });
+  }
+  return observed("S-P7", present ? "nonce-exported-in-file-bytes" : "nonce-absent", { noncePresent: present, exitCode: o.exitCode ?? null });
 }
 
 /**
@@ -631,6 +638,16 @@ export function verdictCompliance(arm, obs) {
   // "declaration.matchesWritten" (any written path), so option 1b would be certified on a
   // declaration that does not name the deliverable. `matchesRequested` compares the resolved
   // declaration with `R/hello.txt` itself.
+  // ★ A-decl IS DECIDED FROM THE FINAL `result` FRAME, so no frame means no answer. Codex review
+  // (PR #551): claude can exit 0 having emitted an assistant frame and no parseable `result`, and
+  // recording "no declaration" from that would let R11 call option 1b infeasible on missing
+  // protocol evidence rather than on the model's behaviour.
+  if (arm === "A-decl" && modelArmGate(arm, obs, false) === null) {
+    const finalText = obs?.stream?.finalResultText;
+    if (obs?.stream?.finalResultSeen !== true || typeof finalText !== "string" || finalText.trim().length === 0) {
+      return inconclusive(arm, `no-readable-final-result-frame(seen=${String(obs?.stream?.finalResultSeen)})`);
+    }
+  }
   const declaration = arm === "A-decl" ? readDeclaration(obs?.stream?.finalResultText, obs?.delta?.filesUnderRoot ?? []) : null;
   if (declaration) declaration.matchesRequested = declaration.resolved === `${OUTPUT_ROOT}/${HELLO_FILE}`;
   const positiveSignal =
@@ -1011,6 +1028,12 @@ export function evaluateWorkflowShape(workflowText) {
   if (!/^permissions:\s*\n\s+contents:\s*read\s*$/m.test(text)) v("permissions", "top-level permissions are not `contents: read`");
   if (!text.includes(PROBE_TEST_PATH)) v("test-not-run", `the workflow does not run ${PROBE_TEST_PATH}`);
 
+  // The fallback must resolve the template the way `resolveTemplate` does — trimmed, with an
+  // empty value falling back to the CLI-bearing default. Otherwise a run that dies early records
+  // a different image from the one the probe would have used (Codex review, PR #551).
+  if (!/RESOLVED_TEMPLATE[^\n]*strip\(\)/.test(text)) {
+    v("fallback-template-untrimmed", "the fallback record does not trim the `e2b_template` input before resolving it, so a whitespace-only input would be recorded as an explicit template while the probe would have used the default");
+  }
   const def = /CLI011_DEFAULT_TEMPLATE:\s*"?([A-Za-z0-9._-]+)"?/.exec(text);
   if (!def) v("default-template-undeclared", "CLI011_DEFAULT_TEMPLATE is not declared");
   else if (def[1] !== CLI_BEARING_TEMPLATE_ALIAS) v("default-template-mismatch", `CLI011_DEFAULT_TEMPLATE=${def[1]} but the core resolves an omitted input to ${CLI_BEARING_TEMPLATE_ALIAS}`);

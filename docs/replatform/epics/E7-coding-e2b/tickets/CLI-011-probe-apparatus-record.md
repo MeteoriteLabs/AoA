@@ -133,6 +133,25 @@ imports buildSandboxInvocation…"*).
   `json.dumps` first. `evaluateWorkflowShape` fails a raw `": "${…}"` interpolation with the code
   `fallback-unescaped-input`, and there is a positive control for each input. I ran the step
   locally with the template ``bad"name<newline>x``, and it wrote valid JSON.
+- **Tenth review — four more, all fixed.**
+  - **P1: A-decl needs a readable final `result` frame.** claude can exit 0 with an assistant frame
+    and no parseable `result`; recording "no declaration" from that let R11 call option 1b
+    infeasible on missing protocol evidence. A-decl is now inconclusive without one, and R11 reads
+    `undecidable`. The other arms do not need a `result` frame to answer their own question.
+  - **P2: a sandbox allocated before the create step threw is now terminated.**
+    `E2bSandboxProvider.create` calls `transport.create` and then `setTimeout`, so a throw in the
+    second step left a live sandbox whose id never reached `withSandbox`. The create callback now
+    gets a `report(id)` handle (P-011a passes the provider a transport proxy that reports on
+    `create`), and a create that throws afterwards is terminated and recorded as
+    `<lane>(partial-create)`. Positive control included.
+  - **P2: S-P7 needs a successful write before an absence counts.** A shell that saw the canary and
+    then failed mid-write leaves a readable empty file; "absent" read off that would let R4 say
+    SD-5 is not required. A non-zero exit with no nonce is inconclusive; a present nonce stays
+    positive evidence.
+  - **P2: the fallback record resolves the template exactly like the probe.** It now trims before
+    defaulting, so a whitespace-only input records `aoa-base`/`default-cli-bearing` rather than an
+    explicit template the probe never used. Checked by a shape rule with a positive control, and
+    exercised locally with a whitespace-only input.
 - **P2 (ninth review): the declaration must name the REQUESTED file.** Declaring a scratch file it
   also wrote satisfied "matches something written". `matchesRequested` compares the resolved
   declaration with `R/hello.txt` itself; R11 requires it, and so does A-decl's positive signal.
