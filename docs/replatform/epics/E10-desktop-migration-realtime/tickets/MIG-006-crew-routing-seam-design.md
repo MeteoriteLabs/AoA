@@ -229,7 +229,12 @@ for the runtime command spec) and the issue checkout (`:314`). Mirror the task_r
 2. **Unit F (results) — the crew result does NOT flow back.** W3a's loopback
    (`relayCrewResult` / `postCrewRunSuccess`) rides `jobOutputBridge`, which is **producer-blocked**
    (E10-F001 crew bullet; E3-F037 producer-gap finding — the deployed worker emits no artifact/result
-   evidence, `observeRun` uncomposed). So on `owner:"distributed"` the loopback must be **deferred**
+   evidence, ~~`observeRun` uncomposed~~ ★ *corrected 2026-09-23 (record custodian): `observeRun` IS
+   composed at HEAD — `WRK-018` (PR #546), `composeDispatchRuntime` sets
+   `observeRun: createUsageObserver({ metrics })`. **The conclusion is unchanged:** the observer emits
+   `usage` only and never re-emits stdout or the transcript, so it produces no ARTIFACT or RESULT
+   evidence for `jobOutputBridge` to consume, and the loopback stays producer-blocked on Unit F*). So
+   on `owner:"distributed"` the loopback must be **deferred**
    (recorded as pending, reconciled when Unit F lands), NOT silently dropped — a dropped crew result
    is the crew analogue of extraction's "zero extracted items" data-loss bug (E10-F001 extraction
    bullet). Step 5 of the seam owns this deferral.

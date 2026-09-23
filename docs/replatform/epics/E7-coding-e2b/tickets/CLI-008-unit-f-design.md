@@ -291,7 +291,7 @@ The reason string printed to the operator on every verify run
 |---|---|
 | "the E2B driver passes no stream handlers" | TRUE at `e2b-provider.ts:261-297`, but **the transport already implements them**: `RealE2bTransport.runCommand(req, handlers?)` binds `onStdout`/`onStderr` to the E2B SDK (`real-transport.ts:107-120`). And wiring them **flips neither counter**: `log` events are not `job_artifacts` and not `task_outputs` |
 | "`stdoutRef`/`stderrRef` are fabricated literals" | TRUE (`e2b-provider.ts:276,293`). Making them real *means* exporting bytes to object storage — i.e. it is not a separate link, it is the same work as the artifact path, named twice |
-| "`observeRun` is uncomposed" | TRUE (`lifecycle/dispatch-runtime.ts:178-181`, with the absence stated in the comment). `RunObservation` is `{logs?, progress?, usage?}` (`supervisor/supervisor.ts:73-77`) — **flips neither counter** |
+| "`observeRun` is uncomposed" | ~~TRUE (`lifecycle/dispatch-runtime.ts:178-181`, with the absence stated in the comment).~~ ★ **FALSE at HEAD — corrected 2026-09-23 (record custodian): `WRK-018` (PR #546) COMPOSES it.** `composeDispatchRuntime` sets `observeRun: createUsageObserver({ metrics })` (`packages/worker-daemon/src/lifecycle/dispatch-runtime.ts`; `createUsageObserver` in `packages/worker-daemon/src/supervisor/usage-observer.ts`). The measurement is kept as the record of what was true when this table was written. **The table's VERDICT is unchanged and is the point:** `RunObservation` is `{logs?, progress?, usage?}` (`supervisor/supervisor.ts:73-77`), so a composed `observeRun` still **flips neither counter** — it emits `usage`, not a `job_artifacts` or `task_outputs` row. `E7-F016` is therefore UNAFFECTED, for the same reason the `"grant_upload"` note below gives |
 | "`buildWorkspacePatch`/`createResultCommitter` have zero production callers" | TRUE, and the only one of the four that touches a counter — but it is blocked behind Unit E **and** behind the missing in-sandbox capture of §1.2, neither of which the text names |
 
 And it omits the links that are actually decisive: `artifactExportMode: "none"` on **both** shipped
@@ -1157,9 +1157,32 @@ nobody had taken* to *a diff nobody has approved* — which is a different kind 
 licenses different next steps.
 
 - **NOT abandoned.** The question is still the epic's last open one (§9.1) and Unit F still owns it.
-- **NOT unowned by accident.** CLI-008 remains the owner of every finding in this family
+- **NOT unowned by accident.** ~~CLI-008 remains the owner of every finding in this family
   (E7-F003, E7-F011, E7-F015, E7-F016, E7-F017, E7-F020, E7-F021, E7-F023, E7-F024, E7-F026, and now
-  **E7-F027**).
+  **E7-F027**).~~
+
+  ★ **SUPERSEDED 2026-09-23 (record custodian), re-measured against
+  `scripts/finding-ownership.json`, which is authoritative.** The list above was true when written
+  and is stale in three ways; it is kept as the record of what it said. A planner consulting this
+  design could otherwise route re-pointed work back to `CLI-008`.
+  - **Still `CLI-008`, unchanged — EIGHT, enumerated from the register itself, not from the list
+    above:** `E7-F003`, `E7-F015`, `E7-F017`, `E7-F023`, `E7-F024`, `E7-F027`, **`E7-F032`** and
+    **`E7-F033`**. ★ *The last two were added on an accepted Codex P2: they post-date the original
+    list, so a correction derived from that list — as my first pass was — inherits its omission.
+    The authoritative enumeration is every entry in `scripts/finding-ownership.json` whose `ticket`
+    is `CLI-008`.*
+  - **RE-POINTED away, and no longer `CLI-008`'s:** **`E7-F016` → `CLI-015`** (2026-09-21, M0 unit 4,
+    founder decisions D1 + D5 — clause 6 IS `countProducedOutputs`, i.e. link 6), and
+    **`E7-F026` → `CLI-017`**.
+  - **RESOLVED, so they have no owner at all** (a resolved finding carries no ownership entry):
+    `E7-F011` (`resolved`), `E7-F020` (`resolved` by W21 + the PR #422 review, 2026-09-11) and
+    `E7-F021` (`resolved` by the F021/F027 posture PR, 2026-09-11). Their `Owner: CLI-008` lines in
+    `findings.md` are historical by design and are not live claims.
+
+  **The bullet's point survives, and is STRONGER than the stale list suggested:** `CLI-008` is not
+  unowned by accident, and it still owns **eight** live findings — not six, and not the eleven the
+  original list implied. A planner must not read the re-points and resolutions above as bringing the
+  parent closer to a result record.
 - ~~**NOT "blocked on a decision."** Nobody owes an opinion. What is owed is a **measurement**, and
   §12.2 names three, all cheap, all standalone, none requiring a design.~~
   **★ REPLACED: all three measurements are taken (§12.0), and what is owed now IS a decision — a
