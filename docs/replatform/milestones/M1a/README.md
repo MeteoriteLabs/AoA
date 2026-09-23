@@ -8,7 +8,7 @@ immutable records, once they exist, in `qa/` and `handoffs/`. Those two subfolde
 | Path | What | Entry bullet it serves (`../../epic-regrooming/scope-triage.md` → *Entry criteria*) |
 |---|---|---|
 | [`2026-09-21-e0-e2-delta-review-b71f0dd539fe.md`](./2026-09-21-e0-e2-delta-review-b71f0dd539fe.md) | E0–E2 current dependency/delta review, measured at the program tip `b71f0dd539fe` | *"E0–E2 historical completion evidence has passed a current dependency/delta review, including superseding records for any immutable-record breach"* |
-| [`reachability/`](./reachability/) | One candidate-specific reachability ledger per epic, E3–E6. ★ **FILLED 2026-09-24 at the `M1a` candidate `7be35ae6b7719877e61f54ab552de84de8491e7d`** by the QA owner (a distinct review session, F2). *(Superseded text, kept as first written: "**Skeletons**: filled at candidate freeze.")* | *"E3–E6 have candidate-specific ledgers showing which mechanisms are production-reachable rather than merely present and which clauses are certified only by `M1-D1-SPINE`"* |
+| [`reachability/`](./reachability/) | One candidate-specific reachability ledger per epic, E3–E6. ★ **FILLED 2026-09-23 UTC at the `M1a` candidate `7be35ae6b7719877e61f54ab552de84de8491e7d`** by the QA owner (a distinct review session, F2). *(Superseded text, kept as first written: "**Skeletons**: filled at candidate freeze.")* | *"E3–E6 have candidate-specific ledgers showing which mechanisms are production-reachable rather than merely present and which clauses are certified only by `M1-D1-SPINE`"* |
 
 ## Why these are not under `qa/` or `handoffs/`
 

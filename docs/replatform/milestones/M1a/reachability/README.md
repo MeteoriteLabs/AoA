@@ -3,7 +3,7 @@
 One ledger per epic: [E3](./E3-job-control.md) · [E4](./E4-worker-daemon.md) ·
 [E5](./E5-workspaces-secrets.md) · [E6](./E6-deployment-test-harness.md).
 
-**Status: FILLED AT THE `M1a` CANDIDATE `7be35ae6b7719877e61f54ab552de84de8491e7d`**, 2026-09-24,
+**Status: FILLED AT THE `M1a` CANDIDATE `7be35ae6b7719877e61f54ab552de84de8491e7d`**, 2026-09-23 UTC,
 by the `M1a` QA owner — a review session distinct from the planning session that took the decisions
 and dispatched the runs (founder ruling F2). Every caller count in the `At candidate` column was
 re-measured at the candidate with `countProductionCallers`; no tip value was copied forward. At the
@@ -19,12 +19,27 @@ over to the candidate.")*
 ★★★ **The `@tip` columns are preserved verbatim** and are not rewritten. A `TO MEASURE AT CANDIDATE
 FREEZE` still visible inside a `@tip` cell is answered in that row's `At candidate` cell.
 
-★★★ **The `Certified only by M1-D1-SPINE` judgement is now determinate, and the answer is
-lopsided.** The `M1a-D2-MECHANISM` profile of `tests/d1/fault-matrix.json` declares **23** cases at
-the candidate and **all 23 carry `evidence: "pending"`**; `.github/workflows/m1-shipped-boot.yml`
-has no fault-matrix step, so the keyed run `35920425288` fired none of them. Every cross-tenant
-denial, every cancellation case, every provider-failure case and every cleanup case in these
-ledgers is therefore certified by `M1-D1-SPINE` **only**.
+★★★ **The `Certified only by M1-D1-SPINE` judgement is now determinate — and it has THREE
+values, not two.** The `M1a-D2-MECHANISM` profile of `tests/d1/fault-matrix.json` declares **23**
+cases at the candidate and **all 23 carry `evidence: "pending"`**; `.github/workflows/m1-shipped-boot.yml`
+has no fault-matrix step, so the keyed run `35920425288` fired none of them. Read every row against
+this three-way split, and **never collapse the third bucket into the first**:
+
+| Bucket | Meaning | Examples |
+|---|---|---|
+| **Certified by `M1-D1-SPINE` only** | the case **ran**, on the spine lane, with its control — and the mechanism lane did not repeat it | the nine `d1.tenant.cross.*` denials, the four `d1.tenant.legacy.*` predicates, both cancellation cases, `d1.provider.execute_deadline_exceeded`, the object-store and orphan-sweep cases, both link cuts, `d1.reconcile.expired_lease_reaped`, `d1.restart.control_plane_process` |
+| **Observed on the mechanism lane** | measured on real E2B, but not as a declared fault case | real-sandbox create/execute, secret redemption, usage cardinality, the `DEP-017` env probe |
+| ★★★ **Certified by NO campaign** | declared and **never run anywhere** — missing evidence, not coverage | `d2m.provider_failure.e2b_create_refused`; all three `d2m.cleanup.sandbox_destroyed_on_*`; `d2m.cancellation.leased_attempt`; `d2m.reconcile.daemon_restart_with_live_lease`; every `d2m.tenant.*`; `d1.reconcile.worker_startup_lease_probe`; `d1.provider.worker_terminal_mapping`; `d1.credential.production_reader_company_predicate` |
+
+★ **The spine lane ran the REFERENCE provider.** It therefore proves nothing about E2B create,
+execute, teardown or a real charge, and no spine case may be cited for a provider-specific claim.
+
+★★★ **The spine's own `pending` reason for two of its three cases is STALE.**
+`docker/d1/m1-spine.override.yml:137` sets `AOA_WORKER_DISPATCH_ENABLED: "1"` on `worker-b`, both
+`m1-spine` and `m1-fault-matrix` boot that override (`d1-merge-train.yml` :419, :678), and `m1-spine`
+asserts `dispatch COMPOSED` in worker-b's log (:483). `d1-dispatch-declared.mjs` parses the BASE
+compose only. So `d1.reconcile.worker_startup_lease_probe` and `d1.provider.worker_terminal_mapping`
+were never structurally unavailable on the certified lane — they can be run there, keylessly.
 
 ## Where the rows come from
 
