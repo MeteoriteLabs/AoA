@@ -33,6 +33,8 @@ on:
     branches:
       - main
       - docs/replatform-program
+      - claude/dep-019-worker-marker-d1-probe
+      - claude/dep-019-worker-marker-d1-mutation
     paths:
       - ".github/workflows/d1-merge-train.yml"
       - "docker-compose.d1.yml"
