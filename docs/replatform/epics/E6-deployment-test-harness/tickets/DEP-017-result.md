@@ -128,8 +128,8 @@ invocation → in-sandbox read → stdout channel → per-run scrub → strict p
 
 | Suite | Result |
 |---|---|
-| `pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/env-probe.test.ts` | **60 passed** |
-| `pnpm --filter @armyofagents/worker-daemon exec vitest run` (whole package) | **1219 passed, 1 skipped, 165 files** (on the tree merged with program tip `1bd5c8bbc`) |
+| `pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/env-probe.test.ts` | **61 passed** |
+| `pnpm --filter @armyofagents/worker-daemon exec vitest run` (whole package) | **1220 passed, 1 skipped, 165 files** (on the tree merged with program tip `1bd5c8bbc`) |
 | `pnpm --filter @armyofagents/worker-daemon exec tsc --noEmit` | clean |
 | `node --test scripts/check-staging-manifest.test.mjs scripts/lib/__tests__/m1-shipped-boot.test.mjs scripts/check-m1-shipped-boot-shape.test.mjs` | **140 passed, 0 failed** |
 | the M1 guard loop (all pure `pr.yml` guards) + `check-evidence-immutability --base origin/docs/replatform-program` | **0 failures** |
@@ -193,6 +193,8 @@ produced by removing the implementation from the tree and running the suite agai
 | M17 | the matching key not canonicalised for CASE | **killed** — 1 failed |
 | M18 | repeated/edge separators not collapsed in the key | **killed** — 1 failed |
 | M19 | the probe serializes the sandbox’s own env NAMES | **killed** — 7 failed |
+| M20 | the CROSS-TENANT arm names the raw variable, bypassing the gate | **killed** — 1 failed |
+| M21 | the unreported-name count increments per CALL, not per variable | **killed** — 1 failed |
 
 ### 4a. Two defects this review caught before the PR, worth recording
 
@@ -432,6 +434,23 @@ controls: `SECRET_sk_live_ABC123` and `SOME_VENDOR_PASSWORD` are counted, not ec
 value nor the name appears in the output; the per-class table derives its expectation from the table
 itself rather than a hand-list. Mutation **M19** (serialize the raw name) reds 7 cases.
 
+## 8h. The Codex review on `5aa787b2a`
+
+One finding, real and fixed: the known-token gate covered the taxonomy arm but **not the
+cross-tenant arm**, which fires on a VALUE and can therefore land on any name the sandbox chose —
+`SECRET_sk_live_ABC123=aoa-dep017-canary.<foreign-org>…` would have persisted the name verbatim.
+There is now ONE name policy for every arm: a single `report()` closure that emits the known
+canonical token or increments the count, used by the cross-tenant arm and the taxonomy arm alike.
+Positive controls: a foreign-marked value under a neutral name (`BUILD_sk_live_…`) is class + count
+with no name; under a credential-shaped name both arms fire and it is still never named; under a
+KNOWN name (`ANTHROPIC_API_KEY`) it is still named, so the arm keeps its diagnostics. Mutation
+**M20**.
+
+A second finding on the follow-up PR #568, also fixed: a variable hit by BOTH arms incremented
+`unreportedPresentCount` twice, corrupting a persisted diagnostic. The unreported names now live in
+a SET whose SIZE is serialized — the set itself never leaves the probe, which is the point of not
+naming them — so one variable counts once however many arms fire on it. Mutation **M21**.
+
 ## 9. CI evidence
 
 **BLOCKED, not skipped.** Every job of PR #565's `pr.yml` runs (`35796310711`, `35797160035`) failed
@@ -443,3 +462,129 @@ of the failed jobs reproduced it exactly.
 
 This result therefore records LOCAL evidence only (§3), and `ci-required` must be re-run and cited
 here once Actions billing is restored. No claim of CI green is made.
+
+---
+
+## Independent review
+
+**Reviewer:** M1 review-batch-3A independent reviewer (Claude Opus 5). I did not author DEP-017, and I am not the planning session.
+**Reviewed revision:** 5aa787b2a6c7c98e8cec321dea371a2cc9f551fa (the final PR #565 head, merged as `60aafb32ec6f8316f92079789cf8814f981f3ed3`, which is the program tip).
+**Disposition:** `approved` for the CODE. **`Status` stays `gate_review`:** acceptance 1 — the one dispatched keyed `m1-shipped-boot.yml` run (§7) — is **OPEN by design**, and I do not set `complete` while any acceptance item is pending.
+**Attempt:** 1 (see *Independent review — attempt 1* and the attempt history)
+
+### Independent review — attempt 1
+
+**Disposition: `approved` (code); `Status` unchanged.** The probe, its fail-closed wiring, the
+switch, the overlay arming and the lane's read-back all hold up at source, and the keyless evidence
+reproduces. What is NOT done is the thing the record says is not done: no keyed run has observed the
+probe inside a real E2B sandbox. §7 states exactly what that run must show, and until it exists and
+is recorded here, this ticket cannot be `complete`.
+
+**What is still open, precisely.** One dispatched keyed run of `m1-shipped-boot.yml` on a named
+candidate containing this change, whose retained bundle carries `env-probe-<tenant>.json` per
+ENABLED tenant with `observed.verdict = "absent"`, an empty `observed.present`, `observed.checked`
+naming every class including `cross_tenant_credential`, `observed.plantedControl.red = true`,
+`observed.allowedPresent ⊆ observed.redeemedNames`, `observed.de08MetadataResidual` recorded either
+way, and `journey.json` passing for every tenant. §7's two legitimate first-run reds (a template that
+bakes a credential-shaped var; a template with no `node` on `PATH`, reported as
+`DEP017_PROBE_NO_NODE` / exit 78) are correctly framed as findings, not as things to paper over. **I
+dispatched nothing.**
+
+**Fail-closed inside the real sandbox — verified at source, and it is the load-bearing claim.**
+
+- The probe executes through `run.effect.execute` with `env: spec.env`, i.e. the same channel and
+  the same environment the tenant command gets. `EffectAuthority.execute`
+  (`supervisor/effect-authority.ts`) is the only path into a live sandbox, and the redeemed
+  credentials reach it through `materializeRunSecrets` → `synthesiseRunSecrets` → `createSpecFor`'s
+  `env` → E2B `envVars`. §2's reasoning for choosing a supervisor step over a separate keyed step is
+  therefore correct, not merely plausible: a harness-submitted job carries no `secretHandles`, so a
+  separate step would measure a sandbox the product never builds.
+- The step sits after `stage_files`/`attempt_started` and **before** the tenant command
+  (`supervisor.ts`). On any verdict other than `absent` it emits a durable `terminal` with
+  `ENV_PROBE_ERROR_CODES[verdict]`, escalates cleanup and **returns** — the tenant command never
+  runs. That is fail-closed, not merely reported.
+- `evaluateEnvProbe` requires the reported `checked` set to **equal** `envProbeCheckedClasses()`;
+  any difference is `not_run`, i.e. a failure, never `absent`. A short set cannot pass.
+
+**Mutation reproduced by me.** M12 — relaxing that equality to "non-empty"
+(`reported.size === 0`) — gives **1 failed / 59 passed** in `env-probe.test.ts`, and the failing case
+is *not_run: no clean report, or a report that checked nothing*. Exactly the one case, as the record
+says. Reverted; the tree was clean.
+
+**Keyless evidence reproduced.** On the reviewed tree:
+`vitest run src/__tests__/env-probe.test.ts` → **60 passed**, matching §3 exactly; and
+`node --test scripts/check-staging-manifest.test.mjs scripts/lib/__tests__/m1-shipped-boot.test.mjs scripts/check-m1-shipped-boot-shape.test.mjs`
+→ **140 tests, 140 pass, 0 fail**, matching §3's 140. The probe tests spawn a real `node` (and the
+real `sh` wrapper), so the chain the record claims — invocation → in-sandbox read → stdout → per-run
+scrub → strict parse → verdict → `log` event → terminal — is exercised on real bytes rather than
+mocked.
+
+**The plan amendment is RATIFIED, and the ratification is in the plan, not only here.** §6 item 3
+claims the E6 plan was amended by a build agent and ratified. At source, the E6
+`implementation-plan.md` carries the ratification note **twice** — in the §3 `DEP-017` row and in the
+`DEP-017` Files line — each reading *"Amended 2026-09-23 by DEP-017's build, after the Codex review
+of PR #565, and RATIFIED by the M1 planning session under founder delegation F2 on 2026-09-23. NOT a
+narrowing of criterion 5"*. So no reader takes a build agent's plan edit for its own authority, which
+is what the record promises. The carried-in obligation landed: `DEP-016`'s task section gained
+acceptance 6, and `DEP-016` took the second fork with a two-directional tripwire — I reviewed that
+separately and it holds.
+
+**`E6-F025` is filed, not built, and the record is honest about what that costs.** The finding exists
+in `scripts/finding-ownership.json` as `unowned`/MEDIUM and in E6 `findings.md` §`E6-F025`, with both
+closure routes named (a company-scoped value fingerprint on the resolve reply, or tenant-distinct
+exercised credentials in the keyed lane) and with the explicit statement that `M1a`'s isolation claim
+built on criterion 5 **excludes** control-plane mis-resolution of a tenant's provider key. §8a
+records the Codex P1 as REAL and NOT FIXED rather than disputing it away, and the limit is stated at
+source on `ENV_PROBE_VALUE_MISMATCH`. Filing rather than building is the right call for this ticket —
+both routes are a server change or an ops provisioning action — and the ruling under F2 is recorded.
+`E8-F012` stays `unowned` with its reason amended only, as S0-8 requires.
+
+**One disputed Codex finding, and I agree with the dispute.** §8c rejects *"read probe messages from
+the stored payload root"*. At source, `toAcceptInputs` (`server/src/services/job-events.ts`) sets
+`payload: event as unknown as Record<string, unknown>` — the whole `WorkerEventV1` — and the tenant
+repository stores `event: event.payload`, so the column holds the envelope and
+`event->'payload'->>'message'` is right. Hardening it to
+`COALESCE(event->'payload'->>'message', event->>'message')` anyway is the correct response when
+being wrong would burn a paid run. Disputing with evidence and hardening anyway is better practice
+than either capitulating or ignoring.
+
+**Two record defects, recorded (non-blocking).**
+
+1. **§9 is out of date: CI is no longer blocked.** §9 says every `pr.yml` job failed on a GitHub
+   billing annotation with zero steps, and that `ci-required` must be cited here once billing is
+   restored. It has been. Run **`35823594587`** (`pull_request`, headSha
+   `5aa787b2a6c7c98e8cec321dea371a2cc9f551fa`, conclusion `success`) has `ci-required`
+   **`107064489142`** `success`, `policy` `107060470770`, and `verify (1..4)`
+   `107060513163` / `107060513059` / `107060513151` / `107060513137` all `success`;
+   `env-probe.test.ts` is loaded and run in `verify (4)`. The intermediate head `9360bc26e6` is also
+   green (`35821870119`). §9's "No claim of CI green is made" was true when written; a green claim is
+   now available and is made here.
+2. **A duplicate object key in the probe's own tests.** `env-probe.test.ts` repeats
+   `unreportedPresentCount: 0,` inside three object literals (at lines 417, 463–464 and 754–755),
+   which vite warns about five times per CI shard run. Both copies are `0`, so no assertion changes
+   and nothing is vacuous — but it is a defect in a file whose whole job is to be exact, and the
+   warning noise will outlive the memory of why it is harmless. Worth one cleanup commit; it is not a
+   reason to withhold approval of the code.
+
+**Acceptance status (E6 plan `### DEP-017`, and the F9 specification).**
+
+| Item | Status |
+|---|---|
+| The probe, built and running inside the run's own sandbox on the real stage-in path | **Evidenced** (§2's channel argument verified at source; 60 real-bytes tests). |
+| Fail-closed: any non-`absent` verdict terminalizes the run before the tenant command | **Evidenced** at source and by mutations M4, M7, M12. |
+| Planted-canary positive control, including the cross-tenant arm | **Evidenced**; each control is a test and each one fires, and M13/M15 stop the two plants standing in for each other. |
+| Multi-tenant (F10) | **Evidenced keyless**: tenant A's marked key inside B's run reds B and not A, and B's evidence never names A's Organization or value. |
+| DE-08 residual OBSERVED, not enforced; no egress-enforcement claim | **Evidenced**: recorded and judged nothing, pinned by a test in which IMDS answers `200` and the tenant still passes. |
+| **Criterion 5 observed in the keyed lane** | **OPEN — PENDING by design** (§7, F8 envelope). |
+
+Because that last item is open, I approve the code and **do not** make the `Status`-flip commit.
+`Status` stays `gate_review` until the keyed run is dispatched, its outcome recorded here per §7, and
+a distinct reviewer re-reviews (attempt 2).
+
+## Review attempt history
+
+The implementation author leaves the table body empty. The first independent reviewer appends attempt 1, and later reviewers append rows with increasing attempt numbers without replacing earlier ones. Do not include a `Review commit` column: a row cannot embed the SHA of the commit that first contains it.
+
+| Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
+|---:|---|---|---|---|
+| 1 | M1 review-batch-3A independent reviewer (Claude Opus 5) | `5aa787b2a6c7c98e8cec321dea371a2cc9f551fa` | `approved` (code); `Status` stays `gate_review` | Fail-closed verified at source: the step runs through `EffectAuthority.execute` with `spec.env` before the tenant command, and any non-`absent` verdict emits a durable terminal with `ENV_PROBE_ERROR_CODES[verdict]`, escalates cleanup and returns; `evaluateEnvProbe` requires set EQUALITY of `checked`, so a short set is `not_run`. Reruns match §3 exactly: `env-probe.test.ts` **60 passed**; the three pure-node suites **140/140**. Mutation M12 reproduced: 1 failed, *not_run: … a report that checked nothing*. The plan amendment's RATIFIED note is in the E6 plan itself (two places), not only in this record. `E6-F025` is filed `unowned`/MEDIUM with both closure routes and the explicit exclusion from `M1a`'s criterion-5 isolation claim; `E8-F012` reason-amended only. §8c's dispute is correct at source (`toAcceptInputs` stores the whole envelope). Defects recorded: §9's CI-blocked statement is superseded — run `35823594587` is `success` with `ci-required` `107064489142`; and `env-probe.test.ts` has a duplicate `unreportedPresentCount` key in three literals (harmless, 5 vite warnings per shard). **OPEN: acceptance 1, the keyed `m1-shipped-boot.yml` run of §7. Nothing was dispatched.** |

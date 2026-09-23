@@ -165,7 +165,11 @@ export const ENV_PROBE_SCRIPT = [
   "const crypto=require(\"node:crypto\");",
   "const digest=(v)=>crypto.createHash(\"sha256\").update(salt+v).digest(\"hex\");",
   "const present=new Set(),names=new Set(),allowedPresent=new Set(),allowedMismatch=new Set();",
-  "let envCount=0,unnamed=0,unreported=0;",
+  "let envCount=0,unnamed=0;",
+  // The unreported names live in a SET so a variable hit by BOTH the cross-tenant arm and the
+  // taxonomy arm counts ONCE (Codex P2, 9th round). The set never leaves the probe: only its
+  // SIZE is serialized, which is the whole point of not naming them.
+  "const unreportedNames=new Set();",
   "const compiled=CLASSES.map((c)=>({cls:c.class,names:new Set(c.names),res:c.patterns.map((p)=>new RegExp(p))}));",
   // ★ THE ONLY NAMES THAT MAY BE SERIALIZED (Codex P2, 7th round). An env NAME is
   // sandbox-controlled data: `SECRET_sk_live_ABC123` is a legal POSIX name, matches the
@@ -187,24 +191,26 @@ export const ENV_PROBE_SCRIPT = [
   " const posix=/^[A-Za-z_][A-Za-z0-9_]*$/.test(name);",
   " if(!posix)unnamed++;",
   " const v=String(value==null?\"\":value);",
+  " const key=canonical(name);",
+  // ONE name policy for EVERY arm (Codex P2, 8th round): the cross-tenant arm fires on a VALUE and
+  // so can land on any name the sandbox chose. It reports through the same known-token gate as the
+  // taxonomy arm below - a known canonical token, or a count.
+  " const report=()=>{if(KNOWN.has(key))names.add(key);else unreportedNames.add(name);};",
   " const at=v.indexOf(MARK);",
   " if(at>=0){const org=v.slice(at+MARK.length).split(\".\")[0];",
-  "  if(org!==own){present.add(\"cross_tenant_credential\");if(posix)names.add(name);}}",
+  "  if(org!==own){present.add(\"cross_tenant_credential\");report();}}",
   " if(posix&&allowed.has(name)){allowedPresent.add(name);",
   "  if(Object.prototype.hasOwnProperty.call(expected,name)&&expected[name]!==digest(v))allowedMismatch.add(name);",
   "  continue;}",
-  " const key=canonical(name);",
   " const hit=compiled.find((c)=>c.names.has(key)||c.res.some((r)=>r.test(key)));",
   " const cls=hit?hit.cls:(UNCLASSIFIED.test(key)?\"unclassified_credential_shaped\":null);",
   " if(cls===null)continue;",
   " present.add(cls);",
-  // A non-POSIX name is COUNTED, never printed: `parseEnvProbeReport` admits only POSIX names, so
-  // a value masquerading as a name can never ride the report out.
-  " if(KNOWN.has(key))names.add(key);else unreported++;",
+  " report();",
   "}",
   "const out=(metadata)=>{console.log(" + JSON.stringify(ENV_PROBE_REPORT_PREFIX) + "+JSON.stringify({probe:" +
     JSON.stringify(ENV_PROBE_VERSION) +
-    ",checked:CHECKED,present:[...present].sort(),presentNames:[...names].sort(),allowedPresent:[...allowedPresent].sort(),allowedMismatch:[...allowedMismatch].sort(),envCount,unnamedEnvCount:unnamed,unreportedPresentCount:unreported,metadata}));};",
+    ",checked:CHECKED,present:[...present].sort(),presentNames:[...names].sort(),allowedPresent:[...allowedPresent].sort(),allowedMismatch:[...allowedMismatch].sort(),envCount,unnamedEnvCount:unnamed,unreportedPresentCount:unreportedNames.size,metadata}));};",
   "if(!metaUrl){out({attempted:false});}else{",
   " let host=\"invalid\";try{host=new URL(metaUrl).host;}catch{}",
   " const ac=new AbortController();const t=setTimeout(()=>ac.abort(),3000);",
