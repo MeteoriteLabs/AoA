@@ -319,6 +319,20 @@ reference provider served a **gated** wire with the probe script **pinned**, the
 including the worker-driven journey and its always-on not-the-executor control, and all three
 negative controls went red for their own named reason.
 
+**Run `35849990593`, head `edc64517f` (= the RULED-ROUND head `5bad47509` + the trigger line):
+`success`** — `m1-spine` job `107145129491`, `d1-merge-train` job `107145129430`, both `success`.
+This is the run that covers the four ruled fixes. Its log carries the argv pin:
+
+```
+fake-provider-1 | fake-provider GATED provider wire on 0.0.0.0:8082
+                  (1 pinned probe-script digest + a pinned probe argv shape; ownership gate ON)
+running worker services: 1
+the profile:              tests 10 · pass 10
+usage-suppressed control: "the profile went red on the cost assertion, as required"
+duplicate-usage control:  "a duplicate usage event reds the cardinality assertion, as required"
+not-the-executor control: "the worker-driven claim is withdrawn and the verdict's red arm still runs"
+```
+
 ★ **An earlier probe run, `35837953729` (head `d7e8a167c` = PR head `ec0a2d132` + the trigger line),
 also concluded `success` with `m1-spine: success`.** It is cited because it is the run that first
 showed the lane green; the run above supersedes it and is the one on the reviewed code.
