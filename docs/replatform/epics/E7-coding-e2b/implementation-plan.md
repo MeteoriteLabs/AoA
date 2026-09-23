@@ -1853,7 +1853,7 @@ content, secret, or session byte.
 | H-08 supply chain | No new runtime dependency; the daemon boundary checker stays green. |
 | H-10 evidence integrity | Append-only ticket results; the unit-F design is amended by appended note, never by deletion. |
 | Exit criterion 3 (**`M1a-D2-MECHANISM`**) | `E7-1-JOURNEY-ARM`, with `capabilityProven=false` explicitly acceptable. ★ *Corrected 2026-09-20 (third round): this row said “`M1-D2-CODING`, mechanism verdict”. There is no mechanism half of `M1-D2-CODING` — a QA record has ONE normative `Result`, which is why the companion change made the mechanism verdict its own gate. Recording this ticket under `M1-D2-CODING` would either falsely pass the capability gate or leave `M1a` unpassable.* |
-| **Exit criterion 4 (useful capability — `M1b` only)** | **`CLI-011` + `CLI-012` + `CLI-013` + `CLI-014` + `CLI-015`, plus E5's `DAT-009-3c/3d`.** This is the only criterion the split moves, and `CLI-011` is the one link with no design. |
+| **Exit criterion 4 (useful capability — `M1b` only)** | **`CLI-011` + `CLI-017` (both slices) + `CLI-012` + `CLI-013` + `CLI-014` + `CLI-015`, plus E5's `DAT-009-3c/3d`** — **and the `S-P0` template-empty evidence for the template the campaign actually runs on** (`E7-D11`, *Conditions on the ruling*; `E7-F022`, HIGH). This is the only criterion the split moves. ★ *Updated 2026-09-23 (ruling F7, `E7-D11`; Codex P2+P1, PR #575). **Superseded text:** "**`CLI-011` + `CLI-012` + `CLI-013` + `CLI-014` + `CLI-015`, plus E5's `DAT-009-3c/3d`.** This is the only criterion the split moves, and `CLI-011` is the one link with no design."* `CLI-011` now has its ruling, and the emit build it files is `CLI-017`; without it a run writes nothing under `R`, so every other row can pass with zero produced output. **The template row is an OPERATOR evidence edge, not a ticket** — nothing in the ticket set can discharge it, and a campaign that skips it can count template-owned files as agent output. |
 | Exit criterion 6 (rollback rehearsal) | `CLI-016`'s config-only disablement is part of the rehearsal. |
 
 **What no ticket here satisfies:** the E7 **epic** exit gate. `M1-D1-SPINE`, `M1a-D2-MECHANISM` and
@@ -1875,7 +1875,17 @@ M1b:   CLI-010 ──▶ CLI-012 ──▶ CLI-013 ──▶ CLI-014 ──▶ C
                       ▲                                   ▲
        DAT-009-3c ─▶ 3d                                   │
                                                           │
-       CLI-011 ──(founder ruling)──▶ emit build [TO FILE] ─┘
+       CLI-011 ──(ruling F7 = E7-D11)──▶ CLI-017-A ─┐
+                                    └──▶ CLI-017-B ─┴──────────┘
+
+       ★ CLI-017 was "emit build [TO FILE]" until 2026-09-23; ruling F7 filed it (Codex P2, PR #575).
+         CLI-017-A (directive + R + SD-4 check) and CLI-017-B (SD-5 handoff + refusal) are
+         INDEPENDENT of each other and both required. CLI-012's REAL-RUN acceptance additionally
+         waits on CLI-017-A, since a run produces a file under R only once the directive ships.
+
+       ★ PRECONDITION, not a ticket: the S-P0 template-empty evidence for the template the campaign
+         runs on (E7-D11 "Conditions on the ruling"; E7-F022, HIGH). Re-run on every template
+         change or rebuild. No ticket can discharge it.
 
        ★ CLI-010 (enumeration seam) and CLI-011 (mechanism review) are INDEPENDENT — neither
          precedes the other. The emit build has no id until CLI-011 rules. CLI-012's REAL-RUN
