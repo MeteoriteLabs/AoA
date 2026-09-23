@@ -166,7 +166,7 @@ export function evaluateReplicaRollout(o) {
  *              — the ACCEPTED `usage` events of THIS attempt, from `job_events`,
  *   costRows: [{companyId, costCents, sourceIdempotencyKey}]  — every cost_events row whose key
  *             names ANY event of this attempt, across ALL Companies (so a misattributed row is seen),
- *   costReceipts: [{status, organizationId, companyId}]        — authoritative_cost, this job,
+ *   costReceipts: [{status, organizationId, companyId, sourceIdentity, aggregateKind}] — authoritative_cost, this job,
  *   activity: [{action, companyId, actorType, actorId}]        — job.attempt_* rows for this job,
  *   expectedActorId — `worker:<the leased worker id>`, the actor JOB-017 must have recorded,
  *   auditReceipts: [{status, organizationId, companyId}] }     — activity_audit, this job
@@ -270,6 +270,26 @@ export function evaluateEnabledTenantSpine({ tenant: t, observation: o }) {
   if (receipts.some((r) => r.organizationId !== t.organizationId || r.companyId !== t.companyId)) {
     out.push(violation("cost:receipt_wrong_tenant", `${k}: an authoritative_cost receipt names another tenant`));
   }
+  // Codex P2 (PR #566): the RECEIPT is the replay/re-drive guard, so it must be bound to the event it
+  // guards. One applied receipt of the right tenant whose `source_identity` names a DIFFERENT event
+  // means idempotency is attached to the wrong thing — a second delivery of THIS event would charge
+  // again, and a re-drive would drive the wrong one.
+  if (usageEvents.length === 1 && receipts.length === 1) {
+    const expected = `cost:${t.companyId}:${usageEvents[0].eventId}`;
+    if (receipts[0].sourceIdentity !== expected) {
+      out.push(violation(
+        "cost:receipt_not_keyed_to_event",
+        `${k}: the authoritative_cost receipt names ${JSON.stringify(receipts[0].sourceIdentity)}, not ${expected}`,
+      ));
+    }
+    if (receipts[0].aggregateKind !== "cost_events") {
+      out.push(violation(
+        "cost:receipt_wrong_aggregate",
+        `${k}: the authoritative_cost receipt's aggregate kind is ${JSON.stringify(receipts[0].aggregateKind)}, not cost_events`,
+      ));
+    }
+  }
+
   // The row must carry the SAME numbers as the accepted usage event, and be keyed to it: a charge
   // computed from anything else is not a charge for this attempt's reported usage.
   if (usageEvents.length === 1 && costRows.length === 1) {

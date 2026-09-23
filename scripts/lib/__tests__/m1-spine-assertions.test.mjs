@@ -148,7 +148,13 @@ function goodEnabled(tenant = A, overrides = {}) {
         cachedInputTokens: 0,
         sourceIdempotencyKey: `cost:${tenant.companyId}:${usageEventId}`,
       }],
-      costReceipts: [{ status: "applied", organizationId: tenant.organizationId, companyId: tenant.companyId }],
+      costReceipts: [{
+        status: "applied",
+        organizationId: tenant.organizationId,
+        companyId: tenant.companyId,
+        sourceIdentity: `cost:${tenant.companyId}:${usageEventId}`,
+        aggregateKind: "cost_events",
+      }],
       activity: [
         { action: "job.attempt_started", companyId: tenant.companyId, actorType: "system", actorId: "worker:33333333-3333-4333-8333-333333333333" },
         { action: "job.attempt_terminal", companyId: tenant.companyId, actorType: "system", actorId: "worker:33333333-3333-4333-8333-333333333333" },
@@ -199,6 +205,16 @@ test("a pending, duplicated or foreign authoritative_cost receipt is refused", (
   assert.ok(codes(evaluateEnabledTenantSpine(goodEnabled(A, { costReceipts: [{ ...ok, status: "pending" }] }))).includes("cost:receipt_not_applied"));
   assert.ok(codes(evaluateEnabledTenantSpine(goodEnabled(A, { costReceipts: [ok, ok] }))).includes("cost:receipt_not_exactly_one"));
   assert.ok(codes(evaluateEnabledTenantSpine(goodEnabled(A, { costReceipts: [{ ...ok, organizationId: B.organizationId }] }))).includes("cost:receipt_wrong_tenant"));
+});
+
+test("an authoritative_cost receipt bound to a DIFFERENT event, or the wrong aggregate, is refused (Codex P2)", () => {
+  const ok = goodEnabled(A).observation.costReceipts[0];
+  const otherEvent = evaluateEnabledTenantSpine(goodEnabled(A, {
+    costReceipts: [{ ...ok, sourceIdentity: `cost:${A.companyId}:99999999-9999-4999-8999-999999999999` }],
+  }));
+  assert.ok(codes(otherEvent).includes("cost:receipt_not_keyed_to_event"));
+  const wrongAggregate = evaluateEnabledTenantSpine(goodEnabled(A, { costReceipts: [{ ...ok, aggregateKind: "activity_log" }] }));
+  assert.ok(codes(wrongAggregate).includes("cost:receipt_wrong_aggregate"));
 });
 
 test("a missing, duplicated or foreign audit row is refused (JOB-017 named set)", () => {
