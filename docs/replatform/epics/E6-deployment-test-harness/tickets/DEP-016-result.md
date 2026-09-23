@@ -370,3 +370,23 @@ a rebase, so the reviewed revisions stay ancestors.
 - The full pure guard set is green on the merged tree, including
   `check-evidence-immutability --base origin/docs/replatform-program` (33 base records intact across
   29 walked commits).
+
+## 13. CI evidence — the first real verdict (2026-09-23)
+
+The GitHub Actions billing block cleared, and `pr.yml` ran for the first time on this branch.
+
+- **Run `35821004859`** on head `9495d6b8c2bc826020565be1daa53f4bf80f5bec` (pre-merge):
+  **`ci-required` pass**, all 16 checks pass — `changes`, `policy`, `lint`, `migrations`,
+  `distributed-contract`, `browser`, `brand-check`, both `worker-protocol-contract-bytes` lanes,
+  `e2e`, `e2e-pgvector` and `verify (1..4)`.
+- **Run `35822540893`** on head `e8b25bf6fb62d76e94706d1c60b4dffb8f3cce0f` — the tree AFTER the
+  merge with the program tip: **`ci-required` pass**, all 16 checks pass again.
+  - `policy` job `107057284375`, step *m1-spine profile verdict self-test (DEP-016)*:
+    `scripts/lib/__tests__/m1-spine-assertions.test.mjs` **69 tests, 69 pass, 0 fail**, and
+    `tests/d1/evidence-retention.test.mjs` **4 tests, 3 pass, 0 fail, 1 skipped** (its live case,
+    which skips without `AOA_D1_LIVE=1`) — the file that ran nowhere before this ticket.
+- **Codex** completed on both heads with no findings and zero unresolved threads.
+- **Still not run: the `m1-spine` job itself.** It lives in `d1-merge-train.yml`, which fires on
+  push to `main` / `docs/replatform-program` and on the merge queue — not on pull requests. Its
+  first execution will be the merge of this PR, and §9's requirement stands: the live half is
+  evidenced here by local runs against a real D1 stack, and the lane's own verdict is owed.
