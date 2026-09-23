@@ -449,6 +449,23 @@ describe("WRK-018 1(b) — the worker logs the counts it parsed", () => {
     expect(scrubLogFields({ parsedInputTokens: 111 }, ["111"])).toEqual({ parsedInputTokens: 111 });
   });
 
+  it("a REFUSED payload logs NO line - never a zeroed stand-in the lane would compare against", async () => {
+    // An observer that hands back something that is not the frozen payload (a non-integer count).
+    // The line must be absent: a fabricated zero here would read on the lane as a parse that
+    // happened, and would then disagree with the accepted event for the wrong reason.
+    const logger = recordingLogger();
+    const supervisor = createSupervisor({
+      provider: createFakeSandboxProvider(),
+      identity: SUPERVISOR_IDENTITY,
+      eventSink: collectingSink(),
+      redactionCanaries: [],
+      observeRun: () => ({ usage: { inputTokens: 1.5, outputTokens: 2, cachedInputTokens: 3, runtimeMillis: 4 } as never }),
+      logger,
+    });
+    await supervisor.accept(makeHandoff());
+    expect(logger.lines.filter((l) => l.includes(PARSED_USAGE_LOG_MESSAGE))).toEqual([]);
+  });
+
   it("a run with no parseable usage logs NO parsed-counts line", async () => {
     const logger = recordingLogger();
     await runWith({ canaries: [CANARY_A], stdout: "no result line here\n", logger });
