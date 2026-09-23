@@ -182,6 +182,34 @@ export async function withSandbox<T>(
   }
 }
 
+/**
+ * A transport that hands the sandbox id to `report` the moment `create` resolves, and passes
+ * everything else straight through.
+ *
+ * ★★★ EVERY PASS-THROUGH IS BOUND TO THE TARGET, AND THAT IS NOT STYLE. Codex review (PR #551):
+ * `Reflect.get(target, prop, receiver)` returns a class method UNBOUND, so calling it through the
+ * proxy runs it with `this` = the proxy — and `RealE2bTransport`'s `#sdk`/`#apiKey` private fields
+ * then fail the brand check with a `TypeError`. `E2bSandboxProvider.create` calls `setTimeout`
+ * right after `transport.create`, so on the real keyed lane EVERY P-011a creation would have
+ * thrown, taken the partial-create path, and left the pack with one inconclusive arm — the
+ * authorised dispatch could never have produced a measured result.
+ */
+export function reportingTransport(target: E2bTransport, report: (id: string) => void): E2bTransport {
+  return new Proxy(target, {
+    get(t, prop) {
+      if (prop === "create") {
+        return async (req: Parameters<E2bTransport["create"]>[0]) => {
+          const created = await t.create(req);
+          report(created.sandboxId);
+          return created;
+        };
+      }
+      const value = Reflect.get(t, prop, t) as unknown;
+      return typeof value === "function" ? (value as (...a: unknown[]) => unknown).bind(t) : value;
+    },
+  });
+}
+
 const plainCreate = (lane: string, ttlMs: number) => async (t: E2bTransport, report: (id: string) => void) => {
   const { sandboxId } = await t.create({ templateId: TEMPLATE, timeoutMs: ttlMs, metadata: { aoa_lane: `cli-011-${lane}` }, envVars: {} });
   report(sandboxId);
@@ -321,17 +349,7 @@ async function p011a(): Promise<Verdict[]> {
       // transport is wrapped so the sandbox id reaches `withSandbox` the instant it exists —
       // `provider.create` calls `setTimeout` after `transport.create`, and a throw there would
       // otherwise leak a live sandbox (Codex review, PR #551).
-      const reporting: E2bTransport = new Proxy(t, {
-        get(target, prop, receiver) {
-          if (prop !== "create") return Reflect.get(target, prop, receiver);
-          return async (req: Parameters<E2bTransport["create"]>[0]) => {
-            const created = await target.create(req);
-            report(created.sandboxId);
-            return created;
-          };
-        },
-      });
-      provider = new E2bSandboxProvider({ transport: reporting, templateId: TEMPLATE });
+      provider = new E2bSandboxProvider({ transport: reportingTransport(t, report), templateId: TEMPLATE });
       // S-P7's canary rides the PRODUCTION env channel: `provider.create`'s spec.env ->
       // transport `envVars` (the [Cred-1] path), not a per-command env.
       const created = await provider.create(
@@ -700,6 +718,35 @@ describe("CLI-011 P-011 — wiring proven without a key", () => {
     } as unknown as E2bTransport;
     return { t, terminated };
   };
+
+  it("the reporting proxy reports the id AND keeps private-field methods callable", async () => {
+    // ★ The real transport keeps `#sdk`/`#apiKey` as PRIVATE fields, and `provider.create` calls
+    // `setTimeout` through this proxy right after `create`. An unbound pass-through would run that
+    // method with `this` = the proxy and throw a brand-check TypeError (Codex review, PR #551), so
+    // the double below has a private field for exactly that reason.
+    class PrivateFieldTransport {
+      #calls: string[] = [];
+      async create() {
+        this.#calls.push("create");
+        return { sandboxId: "sbx-proxy" };
+      }
+      async setTimeout(_id: string, _ms: number) {
+        this.#calls.push("setTimeout");
+      }
+      calls() {
+        return [...this.#calls];
+      }
+    }
+    const real = new PrivateFieldTransport();
+    const reported: string[] = [];
+    const proxied = reportingTransport(real as unknown as E2bTransport, (id) => reported.push(id));
+    const created = await proxied.create({} as never);
+    expect(created.sandboxId).toBe("sbx-proxy");
+    expect(reported).toEqual(["sbx-proxy"]);
+    // The pass-through call is the one that used to throw.
+    await proxied.setTimeout("sbx-proxy", 1000);
+    expect(real.calls()).toEqual(["create", "setTimeout"]);
+  });
 
   it("POSITIVE CONTROL: a sandbox allocated before the create step threw is still terminated", async () => {
     // `provider.create` = transport.create THEN setTimeout; a throw in the second step used to

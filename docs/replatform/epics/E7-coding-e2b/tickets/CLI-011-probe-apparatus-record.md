@@ -133,6 +133,15 @@ imports buildSandboxInvocation…"*).
   `json.dumps` first. `evaluateWorkflowShape` fails a raw `": "${…}"` interpolation with the code
   `fallback-unescaped-input`, and there is a positive control for each input. I ran the step
   locally with the template ``bad"name<newline>x``, and it wrote valid JSON.
+- **P1 (eleventh review): the reporting proxy must BIND its pass-throughs.** The proxy added for
+  the partial-create teardown used `Reflect.get(target, prop, receiver)`, which returns a class
+  method unbound; called through the proxy, `RealE2bTransport`'s `#sdk`/`#apiKey` private fields
+  fail their brand check. `E2bSandboxProvider.create` calls `setTimeout` immediately after
+  `transport.create`, so on the real keyed lane EVERY P-011a creation would have thrown into the
+  partial-create path and the pack could never have been `measured`. Pass-throughs are now bound to
+  the target, and a no-key test drives the proxy with a double that has a private field. RED: the
+  unbound version throws `TypeError: Cannot read private member #calls…`, exactly as the review
+  predicted.
 - **Tenth review — four more, all fixed.**
   - **P1: A-decl needs a readable final `result` frame.** claude can exit 0 with an assistant frame
     and no parseable `result`; recording "no declaration" from that let R11 call option 1b
@@ -198,24 +207,16 @@ imports buildSandboxInvocation…"*).
 | M7 | the record is written unredacted | vitest, no-key: the record test (the canary appears) |
 | M8 | CLI home state is counted as cwd | policy: the classification and census tests |
 
-**CI.** The run on the PR's final head is on PR #551. The evidence below is from run `35596503559`, on
-head `8eb3a8e52`: the same apparatus content, before the last rebase, which touched only the
-`test-inventory` pin and the register re-point. That apparatus code was then commit `7dcc22d3f`, and is
-now `8ee8e1de3`; the later commits are this record, a scratch-file removal, and the Codex fix above. The fix touches only the pure core and its `policy` test, so it runs in `policy` on the final head.
-- Job **`policy`** (`106327652760`), success. Step *"CLI-011 P-011 output-probe decision logic
-  (proven WITHOUT the key)"*: `tests 34 / pass 34 / fail 0`.
-- Job **`verify (1)`** (`106327652902`, attempt 2), success. `keyed-cli-011-output-probe.test.ts (9
-  tests | 1 skipped)`: the 8 no-key wiring tests ran, and the keyed block was skipped because CI has
-  no key. Shard total: `656 passed | 3 skipped` files and `6409 passed | 13 skipped` tests.
-  - ★ **Attempt 1 of `verify (1)` (`106322491391`) failed on one unrelated test.** The failure was
-    `distributed-execution-db-startup.integration.test.ts` › *"promptly settles
-    operator-negative-pending after the exact startup controller is externally aborted"*, a timing
-    assertion (`{kind:'watchdog'}` where `{kind:'settled'}` was expected). This PR touches no
-    server code. In the same attempt, this file's `(9 tests | 1 skipped)` passed. A rerun of only
-    the failed jobs went green.
-- **`ci-required`** (`106333603479`): success.
-- Earlier heads, before the rebases, produced the same `policy` and file counts: runs `35590097325`
-  and `35592633983`.
+**CI.** Run `35827689850` on head `11add718f`, after merging the DEP-016/DEP-017 tip: **all jobs
+green, `ci-required` success**.
+- Job **`policy`** (`107072950145`): step *"CLI-011 P-011 output-probe decision logic (proven
+  WITHOUT the key)"* — `tests 39 / pass 39 / fail 0`.
+- Job **`verify`** (`107073003862`): `keyed-cli-011-output-probe.test.ts (11 tests | 1 skipped)` —
+  the no-key wiring tests ran, the keyed block skipped for want of a key. Shard total:
+  `6436 passed | 13 skipped`.
+- The final head adds only the proxy-binding fix above (the pure core is untouched), and its own
+  run is the newest on PR #551.
+- Earlier green run on the pre-merge branch: `35825564850` (16/16 jobs).
 
 ## 6. Registration: the E6-D001 shape (ruled)
 
