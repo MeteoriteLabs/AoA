@@ -708,7 +708,7 @@ test("the driver emits directives through the shared helper, never ad hoc", () =
 
 // === Codex P1/P2 (second round, PR #574): publish redacted, capture raw ======================
 
-import { redactKeyMaterialLine } from "../m1-shipped-boot.mjs";
+import { redactKeyMaterialLine, createLineRedactor } from "../m1-shipped-boot.mjs";
 
 test("POSITIVE CONTROL: an UNREGISTERED key is redacted on its way to the published log", () => {
   // Masking covers only registered values. This is the re-run / operator-key case: nothing knows
@@ -737,7 +737,9 @@ test("the log filter CAPTURES raw and PUBLISHES redacted (end to end)", () => {
   assert.equal(res.status, 0, res.stderr);
   // Published: no key material, but the run is still readable and the directive survives.
   assert.ok(!res.stdout.includes("MC4CAQAwBQYDK2VwBCIEI"), res.stdout);
-  assert.match(res.stdout, /\[REDACTED: key material \(pem_private\)/);
+  // A PEM is redacted as a BLOCK now (armour AND body), not line-by-line: see the re-wrapped-PEM
+  // control below.
+  assert.match(res.stdout, /\[REDACTED: key material \(pem_block\)/);
   assert.match(res.stdout, /starting/);
   assert.ok(res.stdout.includes(maskDirectivesFor(CANARY)[0]));
   // Captured: the RAW bytes, so the leak scan can still judge them.
@@ -785,4 +787,54 @@ test("POSITIVE CONTROL: a PER-LINE capture failure also fails closed (not only t
   rmSync(dir, { recursive: true, force: true });
   assert.notEqual(res.status, 0, `${res.stdout}${res.stderr}`);
   assert.match(`${res.stdout}${res.stderr}`, /log-filter: the job-log capture failed/);
+});
+
+test("POSITIVE CONTROL: a RE-WRAPPED PEM is redacted as a BLOCK, body and all (Codex P1)", () => {
+  // Node accepts a PEM wrapped at any width. Re-wrapped, the DER prefix is split, so no
+  // continuation line matches a marker: per-line redaction would publish the key body while
+  // redacting only its BEGIN armour.
+  const rewrapped = [
+    "-----BEGIN PRIVATE KEY-----",
+    "MC4CAQAwBQYD",
+    "K2VwBCIEIGHhTESTTESTTESTTESTTESTTEST",
+    "-----END PRIVATE KEY-----",
+  ];
+  const redact = createLineRedactor();
+  const published = ["before", ...rewrapped, "after"].map(redact);
+  assert.deepEqual([published[0], published.at(-1)], ["before", "after"], "ordinary lines are untouched");
+  for (const line of published.slice(1, -1)) {
+    assert.match(line, /^\[REDACTED: key material \(pem_block\)/);
+  }
+  // Per-line redaction alone would have forwarded the two body fragments.
+  assert.equal(redactKeyMaterialLine(rewrapped[1]), rewrapped[1]);
+  assert.equal(redactKeyMaterialLine(rewrapped[2]), rewrapped[2]);
+});
+
+test("the block redactor closes on END, survives a single-line PEM, and fails closed on an unterminated one", () => {
+  const redact = createLineRedactor();
+  redact("-----BEGIN PUBLIC KEY-----");
+  redact("MCowBQYDK2VwAyEA…");
+  assert.match(redact("-----END PUBLIC KEY-----"), /pem_block/);
+  assert.equal(redact("back to ordinary output"), "back to ordinary output");
+  const single = createLineRedactor();
+  assert.match(single("-----BEGIN PUBLIC KEY-----MCowBQYD-----END PUBLIC KEY-----"), /pem_block/);
+  assert.equal(single("still ordinary"), "still ordinary", "a single-line PEM must not latch the block open");
+  const truncated = createLineRedactor();
+  truncated("-----BEGIN PRIVATE KEY-----");
+  assert.match(truncated("MC4CAQAwBQYD"), /pem_block/);
+  assert.match(truncated("anything after an unterminated block"), /pem_block/, "a truncated key is still a key");
+});
+
+test("the log filter publishes NO part of a re-wrapped PEM, and still captures it raw", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "m1-filter-block-"));
+  const capture = path.join(dir, "job-log.txt");
+  const filter = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "m1-shipped-boot", "log-filter.mjs");
+  const body = "K2VwBCIEIGHhTESTTESTTESTTESTTESTTEST";
+  const input = `starting\n-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYD\n${body}\n-----END PRIVATE KEY-----\ndone\n`;
+  const res = spawnSync(process.execPath, [filter, capture], { input, encoding: "utf8" });
+  const captured = readFileSync(capture, "utf8");
+  rmSync(dir, { recursive: true, force: true });
+  assert.equal(res.status, 0, res.stderr);
+  assert.ok(!res.stdout.includes(body) && !res.stdout.includes("MC4CAQAwBQYD"), res.stdout);
+  assert.ok(captured.includes(body), "the capture keeps the raw block for the leak scan");
 });

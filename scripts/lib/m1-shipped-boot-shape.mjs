@@ -43,7 +43,9 @@ export const CANDIDATE_CONTROL_MARKERS = [
   // The EXECUTABLE the workflow pipes every phase through: a candidate carrying the symbols but
   // not the file passes the greps above and then dies at the first phase on the missing module
   // (Codex P2, PR #574). The grep proves the file EXISTS and that it is the redacting filter.
-  ["scripts/m1-shipped-boot/log-filter.mjs", "redactKeyMaterialLine"],
+  ["scripts/m1-shipped-boot/log-filter.mjs", "createLineRedactor"],
+  // The BLOCK redactor itself: a per-line-only redactor forwards a re-wrapped PEM's body.
+  ["scripts/lib/m1-shipped-boot.mjs", "createLineRedactor"],
   // …and the FAIL-CLOSED arm of it: a candidate whose filter swallows a capture failure would
   // report a truncated job log as clean (Codex P1, PR #574).
   ["scripts/m1-shipped-boot/log-filter.mjs", "the job-log capture failed"],

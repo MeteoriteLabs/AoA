@@ -401,6 +401,41 @@ export function redactKeyMaterialLine(line) {
   return text;
 }
 
+/** The end of a PEM block. */
+const PEM_END = /-----END [A-Z0-9 ]*(PRIVATE|PUBLIC) KEY-----/;
+const PEM_BEGIN = /-----BEGIN [A-Z0-9 ]*(PRIVATE|PUBLIC) KEY-----/;
+
+/**
+ * A STATEFUL line redactor for the published Actions log: the whole PEM BLOCK, not only the lines
+ * that match a marker.
+ *
+ * ★ Why per-line matching is not enough (Codex P1, PR #574). A PEM re-wrapped at a different width
+ * splits the DER prefix across lines, so no continuation line matches a marker and the key body
+ * would be forwarded while only its `BEGIN` armour was redacted. Node accepts such a PEM, so this
+ * is a real encoding, not a hypothetical one. Once a `BEGIN … KEY` line is seen, every line is
+ * redacted until the matching `END`, inclusive.
+ *
+ * An UNTERMINATED block redacts to the end of the stream: a truncated key is still a key, and the
+ * failure mode of over-redacting a published log is a loss of readability, not of a secret.
+ */
+export function createLineRedactor() {
+  let insidePemBlock = false;
+  return (line) => {
+    const text = String(line ?? "");
+    if (text.startsWith(MASK_DIRECTIVE_PREFIX)) return text;
+    if (insidePemBlock) {
+      if (PEM_END.test(text)) insidePemBlock = false;
+      return "[REDACTED: key material (pem_block) — see the leak scan]";
+    }
+    if (PEM_BEGIN.test(text)) {
+      // A single-line PEM (armour and body on one line) opens and closes in the same line.
+      insidePemBlock = !PEM_END.test(text);
+      return "[REDACTED: key material (pem_block) — see the leak scan]";
+    }
+    return redactKeyMaterialLine(text);
+  };
+}
+
 /**
  * The `::add-mask::` directives for one value.
  *

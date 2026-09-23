@@ -9,9 +9,10 @@
 // leak scan runs after the phases, by which time a published Actions log cannot be retracted.
 //
 // So each line is written to the capture file VERBATIM, which is what the leak scan judges, and
-// written to stdout — the surface GitHub publishes — through `redactKeyMaterialLine`, which
-// replaces a line carrying key material with a marker naming its shape. A `::add-mask::` line
-// passes through unchanged: it is the masking mechanism.
+// written to stdout — the surface GitHub publishes — through `createLineRedactor`, which replaces
+// a line carrying key material, and every line of a PEM BLOCK (a re-wrapped PEM splits the DER
+// prefix across lines, so per-line matching alone would forward the body), with a marker naming
+// its shape. A `::add-mask::` line passes through unchanged: it is the masking mechanism.
 //
 // It is a pure consumer: it never fails the pipeline. The producer's exit status is preserved by
 // `pipefail` (the job declares `shell: bash`), which the workflow-shape guard enforces.
@@ -21,7 +22,7 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline";
 
-import { redactKeyMaterialLine } from "../lib/m1-shipped-boot.mjs";
+import { createLineRedactor } from "../lib/m1-shipped-boot.mjs";
 
 const capturePath = process.argv[2];
 if (!capturePath) {
@@ -40,6 +41,9 @@ try {
   process.exit(1);
 }
 
+// STATEFUL: a PEM block is redacted whole, because a re-wrapped PEM splits the DER prefix across
+// lines and per-line matching alone would forward the body (Codex P1, PR #574).
+const redact = createLineRedactor();
 const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
 rl.on("line", (line) => {
   // RAW to the capture file (what the leak scan reads) …
@@ -56,5 +60,5 @@ rl.on("line", (line) => {
     process.exit(1);
   }
   // … REDACTED to the published Actions log.
-  process.stdout.write(`${redactKeyMaterialLine(line)}\n`);
+  process.stdout.write(`${redact(line)}\n`);
 });

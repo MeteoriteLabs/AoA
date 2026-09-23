@@ -271,12 +271,13 @@ test("the candidate-controls gate covers the whole control set, the log FILTER i
     CANDIDATE_CONTROL_MARKERS.map(([file, marker]) => `${file}:${marker}`).sort(),
     [
       "scripts/lib/m1-shipped-boot.mjs:KEY_MATERIAL_MARKERS",
+      "scripts/lib/m1-shipped-boot.mjs:createLineRedactor",
       "scripts/m1-shipped-boot/journey.mjs:CONTROL_PLANE_PUBLIC_KEY_PEM",
       "scripts/m1-shipped-boot/journey.mjs:maskDirectivesFor",
       "scripts/m1-shipped-boot/journey.mjs:stripMaskDirectives",
-      "scripts/m1-shipped-boot/log-filter.mjs:redactKeyMaterialLine",
+      "scripts/m1-shipped-boot/log-filter.mjs:createLineRedactor",
       "scripts/m1-shipped-boot/log-filter.mjs:the job-log capture failed",
-    ],
+    ].sort(),
   );
 });
 

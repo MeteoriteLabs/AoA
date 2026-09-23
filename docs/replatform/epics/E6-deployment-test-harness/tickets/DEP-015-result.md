@@ -812,5 +812,14 @@ They are recorded because each would have made the control worse than none:
     carries `redactKeyMaterialLine` but swallows a capture failure would restore exactly the
     failure mode item 8 fixed. The gate greps the fail-closed arm's own message.
 
+12. **A RE-WRAPPED PEM defeated per-line redaction.** Node accepts a PEM wrapped at any width,
+    and re-wrapping splits the ed25519 DER prefix across lines, so no continuation line matched a
+    marker: the filter would have redacted only the `BEGIN` armour and published the key body. The
+    filter now uses `createLineRedactor()`, which is STATEFUL: once a `BEGIN ... KEY` line is seen
+    it redacts every line as `pem_block` until the matching `END`, and an unterminated block stays
+    closed. Controls: a re-wrapped PEM through the filter publishes no fragment while the capture
+    keeps it raw, and a mutation back to a per-line redactor reds four tests. The candidate gate and
+    its pinned marker set name `createLineRedactor` in both files.
+
 **Status unchanged.** This is a control added after the fact to a run that was already clean; it
 neither re-opens nor re-decides §12's keyed acceptance.
