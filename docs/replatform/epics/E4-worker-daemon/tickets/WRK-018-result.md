@@ -356,6 +356,13 @@ no call-site edit can smuggle the stdout tail into this line without changing th
 `scrubLogFields` (`run-output.ts`) scrubs every string value with the run's canaries and returns
 `null` — dropping the WHOLE line — if a value cannot be scrubbed.
 
+★★★ **A DIAGNOSTIC MUST NOT SUPPRESS EVIDENCE (Codex P1 on PR #571, third finding, and it was
+right).** The log call first sat inside the producer block's single try/catch with
+`events.usage`, so a logger whose destination threw would jump past the event: the attempt would
+terminalize `succeeded` with NO usage, silently removing the input to accepted-usage pricing and to
+the budget hard-stops — a logging outage bypassing budget accounting. The line now fails alone, in
+its own try/catch, and the event always follows.
+
 ★★★ **A NUMBER CAN CARRY A SECRET (Codex P1 on PR #571, second finding, and it was right).** The
 first revision let numbers through untouched, reasoning that a count cannot carry text, and a test
 asserted exactly that. But a redeemed secret may be ANY non-empty string, so a digits-only canary
@@ -367,7 +374,7 @@ direction.
 
 RED first: `expected [] to have a length of 1` (no line existed) and `(0 , parsedUsageLogFields) is
 not a function`; for the production-logger case, `expected undefined to be 111`. GREEN:
-`usage-observer.test.ts` 14 tests, `usage-stream-redaction.test.ts` 21 tests; worker-daemon suite 1228
+`usage-observer.test.ts` 14 tests, `usage-stream-redaction.test.ts` 22 tests; worker-daemon suite 1229
 passed / 1 skipped.
 
 | Mutation | Reds |
@@ -379,6 +386,7 @@ passed / 1 skipped.
 | MU5 log a zeroed stand-in when the payload is refused | the "a REFUSED payload logs NO line" case |
 | MU6 rename a count key back to `parsedInputTokens` | the production-logger case (the value arrives `"[redacted]"`) |
 | MU7 let numbers bypass the canary check | the digits-only-canary case |
+| MU8 put the log call back inside the producer block's shared try | the throwing-logger case (the `usage` event disappears) |
 
 Leak controls: the canary rides the very stdout the counts came from (asserted present in the
 stream), and no canary appears in any log line; the payload's keys are pinned exactly, so any text

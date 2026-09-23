@@ -1033,18 +1033,28 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
           // witness a producer that parsed wrongly - Codex P1, PR #567). Numbers + this run's own
           // identifiers only; scrubbed by the run's canaries and dropped WHOLE if a value cannot be
           // scrubbed. Never the result line (see `parsedUsageLogFields`).
-          const counts = parsedUsageLogFields(obs.usage);
-          if (counts !== null) {
-            const bindings = scrubLogFields(
-              {
-                ...counts,
-                leaseId: run.leaseId,
-                jobId: String(handoff.offer.job.jobId),
-                attempt: handoff.offer.job.attempt,
-              },
-              runCanaries,
-            );
-            if (bindings !== null) deps.logger?.info(bindings, PARSED_USAGE_LOG_MESSAGE);
+          //
+          // ★★★ INDEPENDENTLY best-effort (Codex P1, PR #571). This line and the usage EVENT shared
+          // the producer block's one try/catch, so a logger whose destination threw would jump past
+          // `events.usage` and the attempt would terminalize successfully with NO usage — silently
+          // removing the input to accepted-usage pricing and to the budget hard-stops. A diagnostic
+          // must never be able to suppress evidence, so it fails alone, here.
+          try {
+            const counts = parsedUsageLogFields(obs.usage);
+            if (counts !== null) {
+              const bindings = scrubLogFields(
+                {
+                  ...counts,
+                  leaseId: run.leaseId,
+                  jobId: String(handoff.offer.job.jobId),
+                  attempt: handoff.offer.job.attempt,
+                },
+                runCanaries,
+              );
+              if (bindings !== null) deps.logger?.info(bindings, PARSED_USAGE_LOG_MESSAGE);
+            }
+          } catch {
+            // The usage event is what matters; a failed diagnostic is not a reason to lose it.
           }
           await events.usage(obs.usage);
         }

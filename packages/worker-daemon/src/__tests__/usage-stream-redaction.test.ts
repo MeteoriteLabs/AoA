@@ -478,6 +478,37 @@ describe("WRK-018 1(b) — the worker logs the counts it parsed", () => {
     expect(logger.lines.filter((l) => l.includes(PARSED_USAGE_LOG_MESSAGE))).toEqual([]);
   });
 
+  it("★ a THROWING logger never suppresses the usage EVENT (Codex P1, PR #571)", async () => {
+    // The diagnostic line and the evidence event shared one try/catch, so a logger whose
+    // destination failed would jump past `events.usage` and the attempt would terminalize
+    // successfully with NO usage - silently removing the input to pricing and budget hard-stops.
+    // The line is instrumentation; the event is evidence. The line fails alone.
+    const sink = collectingSink();
+    const throwing = {
+      info: () => {
+        throw new Error("log destination is gone");
+      },
+      warn: () => {},
+      error: () => {},
+      flush: async () => {},
+    } as unknown as Logger;
+    const supervisor = createSupervisor({
+      provider: createFakeSandboxProvider({ stdoutChunks: [`${resultLine({ i: 5, o: 6, c: 7 })}
+`] }),
+      identity: SUPERVISOR_IDENTITY,
+      eventSink: sink,
+      redactionCanaries: [],
+      observeRun: createUsageObserver(),
+      logger: throwing,
+    });
+    await supervisor.accept(makeHandoff());
+    const usages = sink.events.filter((e) => e.eventType === "usage");
+    expect(usages).toHaveLength(1);
+    const usage = usages[0];
+    if (usage?.eventType === "usage") expect(usage.payload).toMatchObject({ inputTokens: 5, outputTokens: 6, cachedInputTokens: 7 });
+    expect(sink.events.map((e) => e.eventType)).toEqual(["attempt_started", "usage", "terminal"]);
+  });
+
   it("a run with no parseable usage logs NO parsed-counts line", async () => {
     const logger = recordingLogger();
     await runWith({ canaries: [CANARY_A], stdout: "no result line here\n", logger });
