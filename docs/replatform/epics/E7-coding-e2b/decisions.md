@@ -507,7 +507,47 @@ while `S-P0` still passed**. Two separate remedies, because they close different
   agent-day** (§10.5's contingency). **Both outcomes are authorized in advance, so `CLI-012` is
   assignable.** It stops and reports **only if BOTH** the primitive is absent **and** a per-entry
   `lstat` proves unavailable. What is never authorized is a check-then-read pair presented as
-  atomic. The refusal itself stays required (`A-O2-4`): unrefused, `R/l1 → .aoa-run-prompt.md` exports
+  atomic.
+
+  ★★★ **AND THE `lstat` FALLBACK IS ITSELF A CHECK-THEN-READ PAIR. THE RACE IS A NAMED, BOUNDED
+  RESIDUAL; `CLI-012` PROCEEDS.** *Ruled 2026-09-23 by the planning session under F2, after Codex
+  raised it on PR #575 and the build session stopped rather than build it.*
+
+  - **The residual, stated plainly.** A per-entry `lstat` cannot be made atomic through the SDK's
+    **path** API: `lstat` inspects a path, the later read **re-resolves** that path, and a background
+    process that swaps the file between the two wins. Because the swapped-in target is **stable**,
+    the sequencer's existing re-hash refusal **passes**. So `lstat` closes the enumeration-time
+    symlink and narrows — not closes — the racing one. It is recorded here rather than papered over,
+    the way `A-O2-8` is below.
+  - ★ **Why it is BOUNDED — this is the load-bearing part, and the bound is SD-5, not luck.** The
+    sandbox is **per-run and single-tenant**: every supervisor op mints a fresh `randomUUID`
+    idempotency key, so `E2bSandboxProvider.create` never reuses a sandbox across attempts (the
+    review's `A-O2-12`). A successful swap therefore reads a file in the **tenant's own** sandbox —
+    its own staged prompt, its own environment — never another tenant's, so `F10`'s cross-tenant line
+    is not crossed. The one materially damaging outcome left is **a redeemed secret reaching durable
+    storage**, and that is exactly what **`SD-5` refuses** (§3 above): `exportArtifact` refuses bytes
+    carrying any secret-classified value of the run's own `env`, and **SD-5 is already ruled IN and
+    REQUIRED before `M1b`'s campaign**. The bound is that clause, cited deliberately: **if SD-5 were
+    descoped or weakened, this residual would stop being bounded and the in-sandbox atomic read below
+    would become REQUIRED.**
+  - **What `CLI-012` must therefore carry.** Its real-run acceptance includes a **deliberate
+    symlink-swap attempt**. Exactly two outcomes are acceptable: **(i)** the `lstat` check refuses it,
+    or **(ii)** it exports and **SD-5's scan refuses** the bytes. ★ **A swap that produces a STORED
+    artifact containing a planted canary is a FAIL, not a residual** — that is the line between this
+    being bounded and being a hole.
+  - **The closure route, recorded but not required now.** An **in-sandbox atomic read**: open the path
+    with `O_RDONLY|O_NOFOLLOW` and stream from the **file descriptor**, through the provider's
+    `runCommand`, so the inode inspected is the inode read. ★ **Measurement gap, stated honestly: this
+    is UNVERIFIED.** It was proposed from the template's contents (`e2b/e2b.Dockerfile` installs
+    `python3`) and `E2bTransport.runCommand`'s existence, **not** from a measurement — no
+    `node_modules/e2b` was available to the session that proposed it and no keyed run was authorized.
+    Its cost is real and unpriced: executing an interpreter **inside the tenant's sandbox during
+    export**, plus encoding and bounding a byte path that today is a direct provider PUT. ★ On the
+    data-plane question: `E7-D06`'s operative rule is *"No payload crosses the **dependency-pinned
+    daemon**"*, and `digest_artifact` / `export_artifact` already materialise bytes in the
+    **adapter-manager** (`packages/adapter-manager/src/server.ts`; that materialisation is `E5-F009`'s
+    whole subject) — so this route is **not obviously** a breach of `E7-D06`. **That is a question to
+    MEASURE when the route is taken, not to assert in either direction.** The refusal itself stays required (`A-O2-4`): unrefused, `R/l1 → .aoa-run-prompt.md` exports
   the run's own input and re-creates §4.3, and `R/l1 → /proc/self/environ` exports the secrets.
 - **SD-2, SD-3, SD-4, SD-7 and SD-8 stand as the review states them** and are not re-argued here.
 - ★★★ **SD-6 stands EXCEPT for its grant clause, which is SUPERSEDED BY SHIPPED BEHAVIOUR.**

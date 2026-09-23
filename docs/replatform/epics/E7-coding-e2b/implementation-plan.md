@@ -836,6 +836,36 @@ installed SDK**:
 - **STOP and report only if BOTH** the primitive is absent **and** a per-entry `lstat` proves
   unavailable too. That is the one state neither branch covers.
 - **Either way, record which branch was taken and the measurement behind it** in the ticket's result.
+
+★★★ **THE `lstat` BRANCH LEAVES A RACE, AND IT IS A NAMED, BOUNDED RESIDUAL — NOT A REASON TO STOP.**
+*Ruled 2026-09-23 by the planning session under F2 (`E7-D11`), after Codex raised it on PR #575.*
+A per-entry `lstat` is the **check** half of the check-then-read pair forbidden above: it inspects a
+path, the later read **re-resolves** it, a swap between them wins, and the stable target makes the
+re-hash refusal pass. **This ticket proceeds anyway, on a stated bound:**
+
+- the sandbox is **per-run and single-tenant** (a fresh `randomUUID` idempotency key per supervisor
+  op, so `E2bSandboxProvider.create` never reuses one across attempts — review `A-O2-12`), so a
+  successful swap reads a file in the **tenant's own** sandbox, never another tenant's;
+- the one materially damaging outcome — **a redeemed secret reaching durable storage** — is what
+  **`SD-5` refuses**, and SD-5 is ruled **IN and REQUIRED** before `M1b`'s campaign (`E7-D11` §3).
+  **The bound IS that clause:** if SD-5 is ever descoped or weakened, this residual is no longer
+  bounded and the in-sandbox atomic read becomes **required**.
+
+★ **So this ticket's real-run acceptance carries a DELIBERATE SYMLINK-SWAP ATTEMPT**, with exactly
+two acceptable outcomes: **(i)** the `lstat` check refuses it, or **(ii)** it exports and **SD-5's
+scan refuses the bytes**. ★★★ **A swap that produces a STORED artifact containing the planted canary
+is a FAIL of this ticket, not a residual.** That case is the whole difference between a bound and a
+hole, so it must be run and recorded, not reasoned about.
+
+★ **The closure route, recorded and NOT required now:** an in-sandbox `O_RDONLY|O_NOFOLLOW`
+open-and-read-from-the-file-descriptor through `runCommand`, so the inode inspected is the inode read.
+**It is UNVERIFIED** — proposed from the template's `python3` and `runCommand`'s existence, not
+measured — and its cost is real: running an interpreter inside the tenant's sandbox during export,
+plus encoding and bounding a byte path that is a direct provider PUT today. Whether it breaches
+`E7-D06` is **open**: that decision's operative rule is *"No payload crosses the dependency-pinned
+daemon"*, and `digest_artifact`/`export_artifact` already materialise bytes in the **adapter-manager**
+(`packages/adapter-manager/src/server.ts` — that is `E5-F009`'s subject), so it is **not obviously** a
+breach. **Measure it if the route is taken; do not assert it either way.**
   ★ *This replaces an earlier revision of this bullet which said any second means is "a design
   change, not a wording fix: STOP and report it" — that would have made `CLI-012` unassignable on an
   unmeasured SDK detail, which the planning session ruled against: the branch is authorized in
