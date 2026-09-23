@@ -915,5 +915,14 @@ They are recorded because each would have made the control worse than none:
     Actions-log coverage was never had. In CI the scan now fails closed on an absent log and
     deletes the bundle. Outside CI (a phase run by hand) nothing tees, so an absent log is simply
     nothing to scan; both halves have a control, and a mutation tolerating the absence reds.
+23. **Standing rule, learned the hard way: a new control needs a new GATE MARKER in the same
+    commit.** Three separate rounds of this review ended the same way — the fix landed, and the
+    candidate gate still admitted the ancestor that lacked it, because the gate named SYMBOLS that
+    the ancestor already had. The lane is candidate-bound, so an admitted ancestor runs its own
+    driver and the hole comes back under a green gate. Every behavioural control on this surface
+    therefore carries a grep that is false on the revision before it, verified by `git show` on
+    that exact ancestor rather than assumed. Eight behavioural markers now: the accumulating carry
+    (both surfaces), the floorless latch, `stripLogPrefix`, `LOG_TIMESTAMP`, `base64Payload`, the
+    fail-closed filter and its durable marker, and the absent-log refusal.
 **Status unchanged.** This is a control added after the fact to a run that was already clean; it
 neither re-opens nor re-decides §12's keyed acceptance.

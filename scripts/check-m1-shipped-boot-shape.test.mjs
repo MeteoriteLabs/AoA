@@ -298,6 +298,7 @@ test("the candidate-controls gate covers the whole control set, the log FILTER i
       "scripts/lib/m1-shipped-boot.mjs:stripLogPrefix",
       "scripts/lib/m1-shipped-boot.mjs:LOG_TIMESTAMP",
       "scripts/lib/m1-shipped-boot.mjs:base64Payload",
+      "scripts/m1-shipped-boot/journey.mjs:job log is ABSENT",
     ].sort(),
   );
 });

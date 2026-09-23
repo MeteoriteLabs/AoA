@@ -62,6 +62,7 @@ export const CANDIDATE_CONTROL_MARKERS = [
   ["scripts/lib/m1-shipped-boot.mjs", "stripLogPrefix"],
   ["scripts/lib/m1-shipped-boot.mjs", "LOG_TIMESTAMP"],
   ["scripts/lib/m1-shipped-boot.mjs", "base64Payload"],
+  ["scripts/m1-shipped-boot/journey.mjs", "job log is ABSENT"],
 ];
 
 export const EVIDENCE_UPLOAD_PATH = "${{ env.M1_OUT }}/evidence/";
