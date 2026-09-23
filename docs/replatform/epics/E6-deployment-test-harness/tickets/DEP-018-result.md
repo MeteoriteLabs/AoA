@@ -418,3 +418,45 @@ blocker cited at source and an owner named. `scripts/check-campaign-fault-matrix
 except one" to **`INCOMPLETE`, three pending** as a direct result of the review, and that is the
 right direction: two of those three were previously being claimed by cases that could not prove
 them. A gate record made from this bundle must carry the three, and `d1.credential.production_reader_company_predicate` has **no owner on disk** and needs a planning-session decision.
+
+## 11d. Codex round four — one P1, and a correction worth recording
+
+Head `a0a24e74c`. One finding, on the database-cut probe, and it is the most instructive of the
+eleven because **its predicted consequence was wrong while its premise was right, and the premise
+is what mattered.**
+
+Codex read `server/src/routes/worker-control.ts` and pointed out that `verifyWorkerOperationProof`
+runs BEFORE `pollRateLimiter.admit` and `leasing.poll`, so the probe's `session: "not-a-session"`
+never reaches a database-backed operation — and predicted that `pollDuringCut.status >= 500` could
+therefore never hold and the live lane would fail at the `failedClosed` assertion.
+
+**The prediction was falsified by two live runs** (`401` before the cut, `500` during it, both
+times). **The premise was correct**, and it exposed a defect in my own record: the difference I
+measured came from the DENIAL path — with PostgreSQL unreachable the refusal's audit write fails and
+the 401 becomes a 500 — not from the authority path, while the code comment claimed *"a poll needs
+the database for every step of the authority check"*. The assertion was passing for a reason the
+record misstated, which is this programme's records-disagree-with-code class in miniature.
+
+So the fix is Codex's, taken in full: the probe is now an **ENROLLED worker with a VALID session**,
+which does reach the shared admission rate limiter and the leasing service. Re-measured:
+
+| | Observed |
+|---|---|
+| poll before the cut | **`200`** (asserted: a 2xx, else "5xx while cut" proves nothing) |
+| poll during the cut | **`500`** — fail closed, never a fabricated offer |
+| after the restore | the control plane serves real queries again, 1 poll |
+
+| Run | Result |
+|---|---|
+| The matrix | `tests 20, pass 20, fail 0`; **25/25 required cases fired**, 3 pending |
+| Suppressed-injection control | `pass 10 / fail 10`, **9 × `evidence:injection_did_not_fire`** |
+| The matrix again | `tests 20, pass 20, fail 0` |
+
+**Eleven findings over four rounds — 5 P1 and 6 P2 — every one verified at source before being
+fixed, and none of them cosmetic.** Nine changed what a case actually proves; the other two changed
+what the record is allowed to claim. The recurring shape, worth carrying forward: *an assertion
+whose control cannot detect the guard being removed*. It appeared in the link cut (a fault nothing
+traversed), the provider terminal (a hard-coded status), the tool surface (a control on a different
+arm), the secrets route (owner and attacker indistinguishable), four denials that accepted any
+non-success, the database cut (an outage response recorded but never asserted), the restart (a lease
+checked for existence only), and the checker itself (journey labels counted instead of tenants).

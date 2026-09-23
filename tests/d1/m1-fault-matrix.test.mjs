@@ -1364,16 +1364,31 @@ test("fault-matrix: cutting control-plane-to-postgres severs the stack's own dat
     const healthyBefore = step(tcpProbeFromTestRunner({ host: "toxiproxy", port: 15432 }), "db probe before");
     assert.equal(healthyBefore.connected, true, `the database link must be up before the cut: ${truncate(healthyBefore)}`);
 
-    // ★ A PRE-CUT CONTROL on the very request the during-cut arm judges (Codex P2, PR #573).
-    // The same unauthenticated poll must reach the control plane and be REFUSED at the auth layer
-    // (4xx) while the database is up — so "500 while cut" is demonstrably the outage and not this
-    // request's normal answer.
+    // ★ A PRE-CUT CONTROL on the very request the during-cut arm judges, driven by an ENROLLED
+    // worker with a VALID session (Codex P1, PR #573 — the third correction to this one case).
+    //
+    // The earlier version sent `session: "not-a-session"`. Codex read the route and was right about
+    // the order: `verifyWorkerOperationProof` runs BEFORE `pollRateLimiter.admit` and
+    // `leasing.poll` (`server/src/routes/worker-control.ts`), so an invalid session never reaches
+    // the DB-backed authority path at all. It still measured 401 → 500 live, but that difference
+    // came from the DENIAL path rather than the authority path, and the comment claiming "a poll
+    // needs the database for every step of the authority check" was therefore describing something
+    // the request never executed. A real request is both simpler and honest.
+    //
+    // With a valid session the poll reaches the shared admission rate limiter and the leasing
+    // service, both of which need PostgreSQL — so the pre-cut answer is a clean 2xx and the
+    // during-cut answer must be a 5xx.
     const probeIds = newScenarioIds();
-    const probeKey = generateDeviceKey();
+    const probeWorker = enrollWorker(A, probeIds);
     const probePoll = () => poll({
-      session: "not-a-session", workerId: probeIds.workerId, targetId: probeIds.targetId, deviceKey: probeKey,
+      session: probeWorker.session, workerId: probeIds.workerId, targetId: probeIds.targetId,
+      deviceKey: probeWorker.deviceKey,
     }).result ?? { status: 0, body: null };
     pollBeforeCut = probePoll();
+    assert.equal(
+      pollBeforeCut.status, 200,
+      `the enrolled worker's poll must SUCCEED while the database is up, else "5xx while cut" proves nothing: ${truncate(pollBeforeCut)}`,
+    );
 
     if (!SUPPRESS_INJECTION) {
       const disabled = step(setProxyEnabled({ proxy: "control-plane-to-postgres", enabled: false }), "cut db link");
@@ -1411,7 +1426,7 @@ test("fault-matrix: cutting control-plane-to-postgres severs the stack's own dat
     // and never the 4xx it correctly gives the same request when the database is up.
     const failedClosed = SUPPRESS_INJECTION
       ? false
-      : pollBeforeCut?.status >= 400 && pollBeforeCut?.status < 500 && pollDuringCut?.status >= 500;
+      : pollBeforeCut?.status === 200 && pollDuringCut?.status >= 500;
     record("d1.fault.link_cut.control_plane_to_postgres", {
       injectionFired,
       observedClassification: recovered.ok && (SUPPRESS_INJECTION || failedClosed)
@@ -1427,7 +1442,7 @@ test("fault-matrix: cutting control-plane-to-postgres severs the stack's own dat
     if (!SUPPRESS_INJECTION) {
       assert.equal(
         failedClosed, true,
-        "with the database link up the same poll must be refused 4xx, and with it severed the control plane must fail CLOSED with a 5xx: " +
+        "with the database link up the enrolled worker's poll must succeed 200, and with it severed the control plane must fail CLOSED with a 5xx: " +
           `before=${truncate(pollBeforeCut?.status)} during=${truncate(pollDuringCut?.status)}`,
       );
     }
