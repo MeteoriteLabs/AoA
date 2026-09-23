@@ -20,6 +20,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   canonicalEventDigestInputV1,
   workerEventV1Schema,
+  type ArtifactPreparedPayloadV1,
   type LogPayloadV1,
   type NetworkDeniedPayloadV1,
   type ProgressPayloadV1,
@@ -205,6 +206,27 @@ export class EventSequencer {
       cachedInputTokens: input.cachedInputTokens,
       runtimeMillis: input.runtimeMillis,
     });
+  }
+
+  /**
+   * `artifact_prepared` — CLI-013. ONE committed artifact has become durable in the control
+   * plane, announced by REFERENCE: an `artifactId` and the `kind` its export request declared
+   * (E7-D08 — `other` in production). Never a path, never bytes, never the grant. Because it
+   * carries a reference and not a transcript, it does NOT inherit the frozen `log` payload's
+   * silent 65,536-character truncation (`E7-F024`).
+   *
+   * ★★★ NOT best-effort, and a caller may NOT swallow the rejection (E7-D12, FATAL).
+   * `#emit` allocates `#seq` BEFORE awaiting the sink, so a failed emit has already consumed its
+   * sequence number. Swallowing it leaves a HOLE, and the control plane's ingest
+   * (`createJobEventIngestService`) accepts nothing past a gap — the terminal included. Letting
+   * the rejection propagate costs the attempt; the committed artifact is never retracted.
+   *
+   * ★ It flips NO counter. `countProducedOutputs` reads `job_artifacts` directly and joins no
+   * events, so an artifact counts whether or not this fired. What this buys is visibility in the
+   * evidence stream, which is what the projection consumes.
+   */
+  artifactPrepared(input: ArtifactPreparedPayloadV1): Promise<WorkerEventV1> {
+    return this.#emit("artifact_prepared", { artifactId: input.artifactId, kind: input.kind });
   }
 
 

@@ -2500,6 +2500,12 @@ remedies with different security postures, and choosing is the ticket work.
 an over-long frame, the emitter truncates it first.
 **Cross-links:** E7-F023 (the same events are a hard-fail scan surface), E7-F016 (a transcript is
 non-empty even when the model never spoke).
+**Disposition by `CLI-013` (2026-09-24), a DISPOSITION and not a payload change.** The finding is
+about the `log` route and stays open against it. The artifact route added by `CLI-013`
+(`EventSequencer.artifactPrepared`) **does not inherit this defect**: the frozen
+`artifactPreparedPayloadV1Schema` carries an `artifactId` and a `kind` — a REFERENCE — so there is
+no transcript to truncate and no 480-event cap in play. `CLI-013` neither widens the `log` payload
+nor edits the frozen package, and it does not close this finding.
 
 **What the brief said, and what is actually there.** The brief stated that
 `logPayloadV1Schema` being `.strict()` with `message: z.string().max(65_536)`
@@ -4429,3 +4435,57 @@ deadline the race uses, with the `CLI-012` proof shape: assert the dep RECEIVED 
 timing-only test passes against the defect verbatim.
 
 **Filed:** 2026-09-24 by the class sweep, verified at source on `c4faf2587e`.
+
+---
+
+## E7-F043 — the `observeRun` instrumentation block SWALLOWS a sink rejection while a terminal still follows it, so a failed `log`/`progress`/`usage` emit leaves a hole the terminal cannot get past
+
+**Status:** open · **Owner:** `unowned` (honest reason below) · **Severity:** MEDIUM
+**Filed:** 2026-09-24 by `CLI-013`'s class sweep, verified at source on `7be35ae6b7`.
+**Cross-links:** `E7-D12` (the same question, answered FATAL for `artifact_prepared`).
+
+**The class, in one sentence:** *a supervisor-path event emit whose rejection is swallowed while a
+later event — in particular the terminal — is still emitted onto the same attempt's stream.*
+
+`EventSequencer.#emit` allocates `#seq` **before** awaiting the sink, so a swallowed rejection has
+already consumed a sequence number. `createJobEventIngestService` (`server/src/services/job-events.ts`)
+returns `"gap"` with an `acceptedThroughSeq` and accepts nothing past the hole. A caller that
+swallows therefore does not "continue to a truthful terminal" — it continues to a terminal that
+**cannot land**. That is exactly the reasoning `E7-D12` rests on.
+
+**The site.** The `deps.observeRun` block in `runLifecycle`
+(`packages/worker-daemon/src/supervisor/supervisor.ts`) wraps `events.log`, `events.progress` and
+`events.usage` in ONE `try` whose catch logs `supervisor: run observation failed (best-effort)` and
+continues; the normal terminal is emitted below it.
+
+**The sweep that found it (quotable).** Every emit site in the daemon's non-test source:
+
+```
+grep -rn "events\.\(attemptStarted\|log\|progress\|usage\|terminal\|networkDenied\|browserObservation\|artifactPrepared\|service[A-Za-z]*\)(" \
+  --include=*.ts packages/worker-daemon/src --exclude-dir=__tests__
+```
+
+**31 sites checked across 3 files; 1 found (this one, covering 3 emits under 1 catch); 0 fixed.**
+Not in the class, with reasons:
+
+- Every `events.terminal` inside a `catch` (`supervisor.ts`, the create/execute/env-probe/cancel
+  exits) — the terminal is the LAST event, so a swallow after it cannot strand a later one.
+- `service-lifecycle.ts`'s six emitters — the enclosing block is `try { … } finally { settleFinished(); }`,
+  a `finally` and not a swallowing `catch`, so the rejection propagates.
+- `FenceCloseProxy.openEgress`'s `networkDenied` — not swallowed; the emit precedes a `throw`.
+- `CLI-013`'s own announcement loop — the subject of `E7-D12`, deliberately outside the window's catch.
+
+**Why `unowned` rather than a named ticket.** The swallow is a DECLARED contract, not an oversight:
+the comment above it states *"Instrumentation must NEVER fail the run — a throw is logged and
+swallowed"*, which is `CLI-003`/D3+D5's ruling, restated by `WRK-018` 1(b). Reversing it needs a
+decision at the same level as `E7-D12`, and the blast radius is materially larger — three emit kinds
+on EVERY run, versus one emit on runs that exported. `CLI-003` is shipped, `CLI-017` owns the SD-1b
+directive and SD-5, and `CLI-014`/`CLI-015` are the projector and the judge. Naming any of them
+would be the invented ownership this manifest exists to prevent. **`CLI-013` deliberately did not
+fix it**, and says so here rather than leaving a fixed neighbour to imply the family is handled.
+
+**What would close it.** A recorded decision choosing, for the instrumentation block, between the
+`E7-D12` options — fatal, allocate-on-success (which would close the class at the sequencer and
+supersede `E7-D12`'s site too), or retry-before-terminal — plus a test of the `CLI-013` shape:
+a sink that throws on `usage`, asserting the emit was ATTEMPTED (non-vacuity) and that no terminal
+follows the hole. A test that only asserts the run "did not crash" passes against the defect.

@@ -23,7 +23,8 @@
 
 import { randomUUID } from "node:crypto";
 
-import type { LogPayloadV1, ProgressPayloadV1, UsagePayloadV1 } from "@armyofagents/worker-protocol";
+import { artifactPreparedPayloadV1Schema } from "@armyofagents/worker-protocol";
+import type { ArtifactPreparedPayloadV1, LogPayloadV1, ProgressPayloadV1, UsagePayloadV1 } from "@armyofagents/worker-protocol";
 
 import type { LeaseHandoff, SupervisorSeam } from "../poll/poll-loop.js";
 import type { Logger } from "../logging/logger.js";
@@ -63,6 +64,7 @@ import {
   exportReasonCode,
   type ArtifactExportRequest,
   type ArtifactExportSequencer,
+  type ExportedArtifactRef,
   type SandboxArtifactExporter,
 } from "../lease/artifact-export.js";
 import type { OwnedLabelsCapabilityLike } from "../lease/owned-labels-capability.js";
@@ -1055,7 +1057,17 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     // Only this (the normal) terminal exports (Ruling B). Best-effort: the terminal below is the
     // command's verdict whatever the window's outcome.
     if (deps.resolveExportArtifacts && deps.exportArtifacts) {
-      await runExportWindow(handoff, run, created.sandboxId, exec, deps.resolveExportArtifacts, deps.exportArtifacts);
+      const prepared = await runExportWindow(handoff, run, created.sandboxId, exec, deps.resolveExportArtifacts, deps.exportArtifacts);
+      // 3d. CLI-013 — ANNOUNCE each committed artifact, BEFORE the terminal.
+      //
+      // ★★★ DELIBERATELY OUTSIDE `runExportWindow`'s catch (E7-D12, FATAL). The window is
+      // best-effort about EXPORTING; this loop is not best-effort about EMITTING. `#emit`
+      // allocates `seq` before awaiting the sink, so a swallowed sink failure leaves a hole and
+      // `createJobEventIngestService` then accepts nothing past it — the terminal below included.
+      // "Log and continue to a truthful terminal" is the one outcome the ingest contract forbids,
+      // so the rejection propagates and fails the attempt instead. The committed artifact is
+      // durable either way; the commit is never retracted.
+      for (const announcement of prepared) await events.artifactPrepared(announcement);
     }
 
     // 4. terminal event — ENRICHED with exec.signal/timedOut (CLI-003/D3). The frozen
@@ -1096,7 +1108,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     exec: ExecuteResult,
     resolveExportArtifacts: NonNullable<SupervisorDeps["resolveExportArtifacts"]>,
     exportArtifacts: ArtifactExportSequencer,
-  ): Promise<void> {
+  ): Promise<readonly ArtifactPreparedPayloadV1[]> {
     const report = (outcome: "success" | "failed" | "timed_out", stage: string, reason: string, exported = 0): void => {
       emitOp("export_artifact", outcome);
       const fields = {
@@ -1122,11 +1134,11 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     }
     if (!(budget > 0)) {
       report("failed", "window", "export_window_exhausted");
-      return;
+      return [];
     }
     if (!run.effect.isActive()) {
       report("failed", "window", "authority_withdrawn");
-      return;
+      return [];
     }
 
     // The window LATCH: once the window ends (deadline or settle), an abandoned sequencer can no
@@ -1172,8 +1184,12 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     };
 
     let phase: "produce" | "sequence" = "produce";
+    // CLI-013 — hoisted out of the IIFE so the COMMITTED references can be joined back to the
+    // request that named them: `ExportedArtifactRef` carries no `kind`, and the announcement's
+    // `kind` must be the one the request DECLARED (E7-D08), never one invented here.
+    let requests: readonly ArtifactExportRequest[] = [];
     const work = (async () => {
-      const requests = await resolveExportArtifacts({ handoff, exec, enumerate });
+      requests = await resolveExportArtifacts({ handoff, exec, enumerate });
       phase = "sequence";
       return exportArtifacts({ handoff, exporter, requests, isOpen: () => open });
     })();
@@ -1185,7 +1201,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       open = false;
       if (raced === TIMEOUT) {
         report("timed_out", phase, "deadline");
-        return;
+        return [];
       }
       // ★ TRUTHFUL, NOT OPTIMISTIC (CLI-012, `E5-D07` ruling 7). The window now gets a partial
       // outcome rather than all-or-throw, so `success` means "every named file committed". A
@@ -1193,12 +1209,19 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       // stage and reason and the count that DID commit — reporting `success` because something
       // got through would make a per-file refusal invisible to the operator, which is the whole
       // reason the classification exists.
+      // ★★★ CLI-013 — THE ANNOUNCEMENTS ARE BUILT BEFORE THE PARTIAL-FAILURE EXIT, NOT AFTER IT.
+      // A window that committed some files and refused others still made those commits durable;
+      // returning the committed set only on the all-success path would silently drop the
+      // announcement for every artifact in a partial window. `report` classifies the WINDOW; the
+      // announcement is per COMMITTED artifact, and the two are not the same question.
+      const prepared = announcementsFor(raced.exported, requests);
       const firstFailure = raced.failures[0];
       if (firstFailure) {
         report("failed", firstFailure.stage, firstFailure.reason, raced.exported.length);
-        return;
+        return prepared;
       }
       report("success", phase, "exported", raced.exported.length);
+      return prepared;
     } catch (err) {
       open = false;
       if (err instanceof ArtifactExportFailedError) {
@@ -1206,7 +1229,33 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       } else {
         report("failed", phase, phase === "produce" ? "producer_failed" : "sequencer_failed");
       }
+      return [];
     }
+  }
+
+  /**
+   * CLI-013 — join each COMMITTED reference back to the request that named it, so the
+   * announcement carries the `kind` the request DECLARED (E7-D08) rather than one invented here.
+   *
+   * ★ FAIL-CLOSED on a committed path with no request. It is unreachable by construction — the
+   * sequencer only exports what it was handed — so if it ever happens the join, not the artifact,
+   * is wrong, and announcing a guessed `kind` would put a fabricated classification into the
+   * evidence stream. Under E7-D12 a throw here fails the attempt, which is the same posture a
+   * sink failure gets and for the same reason.
+   */
+  function announcementsFor(
+    exported: readonly ExportedArtifactRef[],
+    requests: readonly ArtifactExportRequest[],
+  ): readonly ArtifactPreparedPayloadV1[] {
+    const kindByPath = new Map(requests.map((r) => [r.path, r.kind]));
+    return exported.map((ref) => {
+      const kind = kindByPath.get(ref.path);
+      if (kind === undefined) throw new Error("supervisor: committed artifact has no export request");
+      // PARSED, never cast. `artifactId` is branded and `ExportedArtifactRef.artifactId` is a
+      // plain string, so an `as` here would assert a shape nobody checked; the frozen schema
+      // refuses a malformed id at the join instead of carrying it into the digest.
+      return artifactPreparedPayloadV1Schema.parse({ artifactId: ref.artifactId, kind });
+    });
   }
 
   /**
