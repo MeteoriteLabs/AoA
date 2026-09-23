@@ -40,6 +40,12 @@ durable outbox. The harness only seeded the job and read the rows.
 **And the controls red.** The usage control (§4), the not-the-executor control (§5) and the
 probe's own arms (§6) each go red for their own named reason.
 
+★ **READ THE COST LINE ABOVE AS AN OBSERVATION, NOT AS AN ASSERTION.** The `cost_events` row and
+the `usage` event are what I MEASURED on the live run; the profile does not yet assert them ON THE
+WORKER-DRIVEN ATTEMPT — its shared cost and usage-cardinality verdicts run against the harness-driven
+attempts. Codex found that (P1) after this ticket passed the two-round cap, so it is verified and
+HANDED OVER in §13.1 rather than fixed here.
+
 ---
 
 ## 1. Why the ticket exists, measured
@@ -218,7 +224,7 @@ creates twice with `""` and asserts two distinct sandboxes with their own labels
 | Constraint | How |
 |---|---|
 | Scope every security-surface change to the spine override only; the base topology unchanged and the global invariants still red on it, **proved by a positive control** | `docker-compose.d1.yml` and `scripts/d1-dispatch-expectation.json` are untouched. Positive control, run: adding `AOA_WORKER_DISPATCH_ENABLED: "1"` to the BASE `worker-b` reds `check-d1-dispatch-declared` (*"declared ABSENT but the compose file sets it to \"1\""*); reverted, it is OK again. Because that guard parses only the base file, the override's posture is held by eleven new `evaluateSpineOverrideText` clauses, each with a red fixture |
-| Keys generated IN the job, never committed, never printed, covered by the leak scan | `docker/d1/runtime-keys/` is git-ignored; the lane generates the ed25519 pair and the master key, `::add-mask::`s the master key before it reaches `GITHUB_ENV`, and prints neither. Two override clauses red on committed PEM material and on a literal master key |
+| Keys generated IN the job, never committed, never printed, covered by the leak scan | **PARTLY DISCHARGED — see §13.** Generated and never committed: yes (`docker/d1/runtime-keys/` is git-ignored, and two override clauses red on committed PEM material and on a literal master key). Never printed: yes (the master key is `::add-mask::`ed before it reaches `GITHUB_ENV`; neither PEM is echoed). **Covered by a leak scan: NO.** Measured at source after Codex raised it: the `m1-spine` job goes from `collect-d1-evidence` straight to `upload-artifact` with no scanner. **And the private key does cross into the reference provider**, because the mount is the whole directory on both services. Both were claimed here and in the override comment; both claims are now corrected, and both fixes are handed over |
 | Dispatch armed on the one deployed worker, provably off everywhere else | the `override:dispatch_armed_beyond_the_deployed_worker` clause walks every other service block; the base guard is the second half |
 | Keep `DEP-017`'s fail-closed behaviour — a fake `execute` returning canned output must RED | Not worked around: a recognised probe reaching a provider with no runner THROWS, and a canned answer leaves the verdict `not_run`, which reds. Pinned by test **N3** |
 | Keyless | no provider key, no E2B, no keyed workflow dispatched |
@@ -342,6 +348,93 @@ The `ci-required` verdict on the final head is recorded below once its run compl
 is not rewritten.
 
 ---
+
+---
+
+## 13. HANDED TO THE PLANNING SESSION — five Codex findings past the two-round cap
+
+**Speed rule C** (`M1-BUILD-RULES.md`): *"After two rounds on a PR, STOP and report — do not attempt
+a third fix."* Rounds 1 and 2 are fixed (§8, §10a). Rounds 3 and 4 produced the five below. **None of
+them is fixed here.** Each is verified at source, with a proposed fix, for the planning session to
+rule: fix it, file it as a finding, or descope.
+
+★ **Two exceptions were made, and only two, and they are not fixes.** Findings 3 and 5 are FALSE
+CLAIMS IN THIS TICKET'S OWN RECORDS — the override comment said the provider gets only the public
+half and that a leak scan covers the bundle, and neither is true of the code. Those sentences are
+CORRECTED (removed and replaced with what the code does) rather than left standing while the session
+rules, because a false claim of enforcement is worse than a missing check. The CODE is untouched.
+
+### 13.1 — P1: the worker-driven attempt's cost and usage are not asserted
+
+*Codex, `tests/d1/m1-spine.test.mjs:447`.* **Verified at source, and it is the most important of the
+five.** `evaluateWorkerDrivenJourney` deliberately does not require a `usage` event (§6 explains
+why), `querySpineWorkerDriven` returns no usage/cost/receipt/audit rows at all, and the shared
+`evaluateEnabledTenantSpine` / `evaluateUsageCardinality` verdicts run ONLY against the earlier
+HARNESS-created attempts. So if the deployed worker stopped parsing stdout usage, or the pricing
+stopped firing for its attempt, this profile would stay green, and the usage-suppressed control
+would still red — on harness activity.
+
+**The consequence for this record:** §0's cost line and §3's `cost_events 1 row, 81 cents` are a
+LIVE OBSERVATION I made, not something the profile asserts. A reviewer must read them that way.
+
+**Proposed fix:** extend `querySpineWorkerDriven` to return the deployed attempt's usage events,
+cost rows, receipts and audit rows, and apply the shared `evaluateEnabledTenantSpine` +
+`evaluateUsageCardinality` to it — the same verdicts, on the worker-driven attempt. The
+usage-suppressed control then reds on the WORKER's parser, which is what the ticket claims.
+
+### 13.2 — P1: the reference provider is mounted the PRIVATE capability key
+
+*Codex, `docker/d1/m1-spine.override.yml:110`.* **Verified: true.** Both `control-plane` and
+`fake-provider` mount `./docker/d1/runtime-keys:/keys:ro` — the whole directory, so the provider
+receives `control-plane-signing-key.pem` as well as the public half. It matters more than usual
+because that container also hosts the child-process probe execution path.
+
+**Proposed fix:** bind the two PEMs as individual files — the public half only into `fake-provider`,
+the private half only into `control-plane` — and add an override clause that reds on a directory
+mount of `runtime-keys` into the provider, so the boundary is held by a check and not by a comment.
+
+### 13.3 — P2: the probe's ARGUMENTS are not pinned, only its script
+
+*Codex, `packages/sandbox-fake-provider/src/node-eval.ts:141`.* **Verified: true, and it is the
+same class as the round-1 finding one level down.** The digest pin authenticates the script BYTES.
+`ENV_PROBE_SCRIPT` reads `argv[2]` as `metaUrl` and `fetch`es it, and a job's `workload.command` /
+`workload.args` reach `execute` verbatim — so a job could set `command: "sh"` with the public
+wrapper, the pinned script, and an arbitrary `metaUrl`, and use the provider host to probe
+reachability of any address on the D1 networks.
+
+**Proposed fix:** validate the whole supervisor-generated argv shape, not only the script: the
+metadata URL must equal `ENV_PROBE_METADATA_URL` or be empty, the allowed-names CSV must be a CSV of
+POSIX names, and the expected-digests argument must parse as a JSON object.
+
+### 13.4 — P2: the lane's `push.paths` do not name the new runtime dependencies
+
+*Codex, `.github/workflows/d1-merge-train.yml`.* **Verified: true.** The worker-driven path executes
+`worker-networked-host` and traverses `provider-wire`, `worker-daemon`, `adapter-manager` and
+`provider-capability`; none of those trees is in the lane's `push.paths`, so a push changing only one
+of them skips this profile although it can break the exact boot root and wire this ticket adds.
+
+**Proposed fix:** add `packages/worker-daemon/src/**`, `packages/worker-networked-host/src/**`,
+`packages/provider-wire/src/**`, `packages/adapter-manager/src/**` and
+`packages/provider-capability/src/**`. (`DEP-016` already recorded that this enumeration cannot be
+complete and that the alternative is removing the filter for this gate; that is the session's call.)
+
+### 13.5 — P2: the retained evidence is uploaded with no secret scan
+
+*Codex, `.github/workflows/d1-merge-train.yml:457`.* **Verified: true.** The `m1-spine` job runs
+`collect-d1-evidence` and then `upload-artifact` with nothing in between, while this ticket
+introduced an unmasked private PEM and a per-run master key into the stack. The collector gathers
+container LOGS, job events and a SCHEMA-ONLY `pg_dump` — so neither value is captured today — but
+that is a property of what the services happen to log, not a control.
+
+**Proposed fix:** a hard scan of both evidence directories for the two generated values before the
+upload, failing the job on a match.
+
+### What a reviewer should take from this section
+
+Findings 13.2 and 13.5 are the `records-disagreeing-with-code` class, and they were in MY records.
+13.1 is a check that does not evaluate the thing its ticket is named for. All three are the failure
+classes this programme names first, and all three were found by review rather than by me — which is
+the argument for the self-audit in `M1-BUILD-RULES.md` §A being run before the first push, not after.
 
 ## 12. The superseded record (kept verbatim)
 
