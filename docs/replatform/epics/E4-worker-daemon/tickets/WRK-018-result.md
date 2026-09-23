@@ -414,5 +414,16 @@ Codex: **five P1 findings**, each verified at source — four fixed (`9b576152f`
 fixed but filed as **E4-F019** and answered by dropping the line. The review on `e207e922d`
 completed with no findings.
 
+### Downstream records this ruling touches
+
+`E3-F037` (E3 `findings.md` + its `finding-ownership.json` entry) made closure depend on a keyed run
+*"proving the real `claude_local` parser"*. That is no longer achievable live, so both carry a dated
+amendment: the keyed run supplies CARDINALITY; parser fidelity rests on the fixture. Neither closes
+or re-opens anything (Codex P2, PR #571).
+
+**Left to its owner, deliberately:** `docs/replatform/epics/E6-deployment-test-harness/tickets/DEP-016-result.md`
+("What remains") states the same expectation. It is another ticket's result record; editing it here
+would be a build agent rewriting someone else's evidence, so it is flagged rather than changed.
+
 **Status:** unchanged — `gate_review`. A distinct reviewer alone may set `complete`.
 

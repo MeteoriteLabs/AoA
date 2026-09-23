@@ -2200,6 +2200,21 @@ promoted by this ticket").
 > control measured that a duplicate carrying a DISTINCT event id is accepted and priced again (the
 > ingest's replay guard keys on the event id), which is why a stored `usage_json` row cannot
 > establish the claim on its own. `WRK-018`'s keyed run is still outstanding for the REAL parser.
+>
+> ★ **AMENDED 2026-09-23 (WRK-018 1(b) ruling, F2; Codex P2 on PR #571).** The sentence above — and
+> this finding's fourth closure condition — expect the keyed run to prove the REAL parser. It can no
+> longer do that, and what changed is the evidence, not the bar. `WRK-018` acceptance 1 is now three
+> parts: **1(a)** cardinality — the assertion exists in the keyed lane and closes on the next keyed
+> run that passes it; **1(b)** parsed = accepted = stored — **not live-provable**; **1(c)** parser
+> fidelity to a real result line — **fixture-only**. Proving 1(b)/1(c) live requires a second data
+> path out of the worker (the parsed counts, or the result line itself); every such path is wholly
+> subject to per-run canary redaction, and that redaction has no enforceable caller-side boundary —
+> the logger's sink adds `msg`/`time`/`level` below every scrubber a caller can run (filed as
+> **E4-F019**, pre-existing, `unowned`). So read the fourth condition as: the keyed run supplies
+> CARDINALITY; parser fidelity rests on the captured-transcript fixture, deliberately and on the
+> record. Severity (HIGH), Status (open) and ownership (`unowned`) are unchanged — this amendment
+> closes nothing. `DEP-016-result.md` carries the same stale expectation in its "What remains"
+> section; it is another ticket's result record and is left to its owner.
 
 ## E3-F038 — The wiring register's census is not closed, and three symbols the guard's own header names have no clause at all
 
