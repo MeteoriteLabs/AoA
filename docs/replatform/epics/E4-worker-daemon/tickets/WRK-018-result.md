@@ -353,8 +353,17 @@ a NUMBER, so the redactor is exercised rather than bypassed.
 `parsedUsageLogFields` (`usage-observer.ts`) takes only the frozen `UsagePayloadV1`, refuses a
 payload that is not exactly four non-negative integers, and refuses one carrying any extra key — so
 no call-site edit can smuggle the stdout tail into this line without changing that signature.
-`scrubLogFields` (`run-output.ts`) scrubs every string value with the run's canaries and returns
-`null` — dropping the WHOLE line — if a value cannot be scrubbed.
+`scrubLogRecord` (`run-output.ts`) checks the whole record — message, keys and values — against the
+run's canaries and returns `null`, dropping the WHOLE line, if any of them carries one or a value
+cannot be scrubbed.
+
+★★★ **VALUES ARE NOT THE ONLY SURFACE (Codex P1 on PR #571, fourth finding, and it was right).**
+The helper scrubbed VALUES only. A redeemed secret may be any non-empty string, so it can equal a
+substring of the fixed MESSAGE (`"worker"`, `"parsed agent"`) or of a KEY (`"leaseId"`), and
+`createWorkerLogger` canary-scrubs neither — it redacts by key NAME. `scrubLogRecord` now checks the
+WHOLE record and REFUSES it in those two cases (scrubbing the message would destroy the grep token
+the lane keys on; scrubbing a key would produce a field nothing can read), so such a run simply
+contributes no parsed-counts line.
 
 ★★★ **A DIAGNOSTIC MUST NOT SUPPRESS EVIDENCE (Codex P1 on PR #571, third finding, and it was
 right).** The log call first sat inside the producer block's single try/catch with
@@ -374,7 +383,7 @@ direction.
 
 RED first: `expected [] to have a length of 1` (no line existed) and `(0 , parsedUsageLogFields) is
 not a function`; for the production-logger case, `expected undefined to be 111`. GREEN:
-`usage-observer.test.ts` 14 tests, `usage-stream-redaction.test.ts` 22 tests; worker-daemon suite 1229
+`usage-observer.test.ts` 14 tests, `usage-stream-redaction.test.ts` 24 tests; worker-daemon suite 1231
 passed / 1 skipped.
 
 | Mutation | Reds |
@@ -387,6 +396,7 @@ passed / 1 skipped.
 | MU6 rename a count key back to `parsedInputTokens` | the production-logger case (the value arrives `"[redacted]"`) |
 | MU7 let numbers bypass the canary check | the digits-only-canary case |
 | MU8 put the log call back inside the producer block's shared try | the throwing-logger case (the `usage` event disappears) |
+| MU9 check values only (drop the message/key arms) | the canary-in-the-message and canary-in-a-key cases |
 
 Leak controls: the canary rides the very stdout the counts came from (asserted present in the
 stream), and no canary appears in any log line; the payload's keys are pinned exactly, so any text

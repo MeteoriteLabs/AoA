@@ -11,6 +11,7 @@ import {
   RUN_OUTPUT_DROPPED_METRIC,
   createRunOutputCapture,
   scrubLogFields,
+  scrubLogRecord,
 } from "../supervisor/run-output.js";
 import { createSupervisor, type RunObservation, type SupervisorDeps } from "../supervisor/supervisor.js";
 import { PARSED_USAGE_LOG_MESSAGE, createUsageObserver } from "../supervisor/usage-observer.js";
@@ -475,6 +476,29 @@ describe("WRK-018 1(b) — the worker logs the counts it parsed", () => {
       logger,
     });
     await supervisor.accept(makeHandoff());
+    expect(logger.lines.filter((l) => l.includes(PARSED_USAGE_LOG_MESSAGE))).toEqual([]);
+  });
+
+  it("★ a canary inside the MESSAGE or a KEY drops the whole record (Codex P1, PR #571)", () => {
+    // `scrubLogFields` looked at VALUES only. A redeemed secret is any non-empty string, so a
+    // canary like "worker" or "parsed" is a substring of the fixed message - and one like
+    // "leaseId" of a key - and `createWorkerLogger` canary-scrubs neither. The record is dropped
+    // whole: a scrubbed MESSAGE would also destroy the grep token the lane keys on.
+    expect(scrubLogRecord(PARSED_USAGE_LOG_MESSAGE, { parsedInputCount: 1 }, ["worker"])).toBeNull();
+    expect(scrubLogRecord(PARSED_USAGE_LOG_MESSAGE, { parsedInputCount: 1 }, ["parsed agent"])).toBeNull();
+    expect(scrubLogRecord(PARSED_USAGE_LOG_MESSAGE, { leaseId: "x" }, ["leaseId"])).toBeNull();
+    // An unrelated canary leaves the record intact, values scrubbed as before.
+    expect(scrubLogRecord(PARSED_USAGE_LOG_MESSAGE, { leaseId: `l-${CANARY_A}`, parsedInputCount: 1 }, [CANARY_A])).toEqual({
+      message: PARSED_USAGE_LOG_MESSAGE,
+      fields: { leaseId: `l-${REDACTION_MARKER}`, parsedInputCount: 1 },
+    });
+  });
+
+  it("★ a canary inside the message means the supervisor logs NO parsed-counts line at all", async () => {
+    const logger = recordingLogger();
+    // "worker" is a substring of the message; a secret may legitimately be that string.
+    await runWith({ canaries: ["worker"], stdout: `${resultLine({ i: 1, o: 2, c: 3 })}
+`, logger });
     expect(logger.lines.filter((l) => l.includes(PARSED_USAGE_LOG_MESSAGE))).toEqual([]);
   });
 

@@ -47,7 +47,7 @@ import {
   type StagedFileRequest,
 } from "./provider.js";
 import type { RunCanaryCoordinator } from "./run-canaries.js";
-import { RUN_OUTPUT_DROPPED_METRIC, createRunOutputCapture, scrubLogFields } from "./run-output.js";
+import { RUN_OUTPUT_DROPPED_METRIC, createRunOutputCapture, scrubLogRecord } from "./run-output.js";
 import { PARSED_USAGE_LOG_MESSAGE, parsedUsageLogFields } from "./usage-observer.js";
 import { ENV_PROBE_DEFAULT_DEADLINE_MS, ENV_PROBE_ERROR_CODES, envProbeLogMessage, runEnvProbe } from "./env-probe.js";
 import { PROVIDER_AUTH_ENV_TARGETS } from "../lease/secret-redemption.js";
@@ -1042,7 +1042,10 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
           try {
             const counts = parsedUsageLogFields(obs.usage);
             if (counts !== null) {
-              const bindings = scrubLogFields(
+              // The WHOLE record - message, keys and values - is checked against the run's
+              // canaries (a secret may be any string, including a substring of the message).
+              const record = scrubLogRecord(
+                PARSED_USAGE_LOG_MESSAGE,
                 {
                   ...counts,
                   leaseId: run.leaseId,
@@ -1051,7 +1054,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
                 },
                 runCanaries,
               );
-              if (bindings !== null) deps.logger?.info(bindings, PARSED_USAGE_LOG_MESSAGE);
+              if (record !== null) deps.logger?.info(record.fields, record.message);
             }
           } catch {
             // The usage event is what matters; a failed diagnostic is not a reason to lose it.

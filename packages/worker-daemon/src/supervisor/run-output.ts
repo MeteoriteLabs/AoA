@@ -144,6 +144,30 @@ export function scrubLogFields<T extends Record<string, string | number>>(
   return out as T;
 }
 
+/**
+ * Scrub a WHOLE log record - message, keys and values - with the run's canaries, or refuse it.
+ *
+ * ★★★ VALUES ARE NOT THE ONLY SURFACE (Codex P1, PR #571). A redeemed secret may be ANY non-empty
+ * string, so it can equal a substring of the fixed MESSAGE (`"worker"`, `"parsed agent"`) or of a
+ * KEY (`"leaseId"`), and `createWorkerLogger` canary-scrubs neither - it redacts by key NAME only.
+ * A value-only scrub therefore left a real path for a known canary to reach the log verbatim.
+ *
+ * The record is REFUSED rather than rewritten in those two cases: scrubbing the message would
+ * destroy the grep token a consumer keys on, and scrubbing a key would produce a field nothing can
+ * read. Values keep the existing behaviour ({@link scrubLogFields}).
+ */
+export function scrubLogRecord<T extends Record<string, string | number>>(
+  message: string,
+  fields: T,
+  canaries: readonly string[],
+): { message: string; fields: T } | null {
+  const needles = redactionNeedles(canaries);
+  if (needles.some((needle) => message.includes(needle))) return null;
+  if (Object.keys(fields).some((key) => needles.some((needle) => key.includes(needle)))) return null;
+  const scrubbed = scrubLogFields(fields, canaries);
+  return scrubbed === null ? null : { message, fields: scrubbed };
+}
+
 export function createRunOutputCapture(options: RunOutputCaptureOptions): RunOutputCapture {
   const maxChars = options.maxChars ?? RUN_OUTPUT_TAIL_MAX_CHARS;
   const report = (reason: RunOutputDropReason): void => {
