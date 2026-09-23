@@ -473,7 +473,17 @@ export function createLineRedactor() {
   const redacted = (marker) => `[REDACTED: key material (${marker}) — see the leak scan]`;
   return (line) => {
     const text = String(line ?? "");
-    if (text.startsWith(MASK_DIRECTIVE_PREFIX)) return text;
+    if (text.startsWith(MASK_DIRECTIVE_PREFIX)) {
+      // ★ The directive is published verbatim (GitHub renders its value as `***`), but its PAYLOAD
+      // must still move the block state (Codex P1, PR #574): a phase masking an unregistered
+      // multi-line PEM prints `::add-mask::-----BEGIN PRIVATE KEY-----` and then the BODY as
+      // ordinary lines. Returning early left the redactor outside the block, so those short body
+      // lines published while the only generic marker — the armour — sat on a line the scan strips.
+      const payload = text.slice(MASK_DIRECTIVE_PREFIX.length);
+      if (insidePemBlock) insidePemBlock = !PEM_END.test(payload);
+      else if (PEM_BEGIN.test(payload)) insidePemBlock = !PEM_END.test(payload);
+      return text;
+    }
     // The service prefix `svc | ` is not part of the payload, and leaving it in the window breaks
     // every join (Codex P1, PR #574).
     const body = stripLogPrefix(text);

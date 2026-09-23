@@ -65,6 +65,9 @@ export const CANDIDATE_CONTROL_MARKERS = [
   ["scripts/m1-shipped-boot/journey.mjs", "job log is ABSENT"],
   ["scripts/m1-shipped-boot/log-filter.mjs", "log-filter] opened"],
   ["scripts/m1-shipped-boot/journey.mjs", "is TRUNCATED"],
+  ["scripts/lib/m1-shipped-boot.mjs", "insidePemBlock = !PEM_END.test(payload)"],
+  ["scripts/m1-shipped-boot/log-filter.mjs", "randomUUID"],
+  ["scripts/m1-shipped-boot/journey.mjs", "never closed"],
 ];
 
 export const EVIDENCE_UPLOAD_PATH = "${{ env.M1_OUT }}/evidence/";

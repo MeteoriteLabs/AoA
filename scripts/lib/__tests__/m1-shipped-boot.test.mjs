@@ -1048,16 +1048,15 @@ test("POSITIVE CONTROL: an ABSENT job log fails the scan IN CI, and is merely no
 });
 
 test("POSITIVE CONTROL: a filter KILLED mid-stream leaves an unmatched OPEN, and the scan refuses (Codex P1)", () => {
-  // A filter that dies without reaching captureFailed (OOM/SIGKILL) writes no marker, and the NEXT
-  // phase appends after the hole — so neither the step outcomes nor the log content show it.
   const out = mkdtempSync(path.join(tmpdir(), 'm1-truncated-'));
   mkdirSync(path.join(out, 'evidence'), { recursive: true });
   writeFileSync(path.join(out, 'evidence', 'verifier-a.txt'), 'clean\n');
+  const id = (n) => `0000000${n}-0000-4000-8000-000000000000`;
   writeFileSync(
     path.join(out, 'job-log.txt'),
-    ['[log-filter] opened', 'prepare ok', '[log-filter] closed',
-     '[log-filter] opened', 'boot-core …',                      // killed here: no closed
-     '[log-filter] opened', 'seed ok', '[log-filter] closed'].join('\n') + '\n',
+    [`[log-filter] opened ${id(1)}`, 'prepare ok', `[log-filter] closed ${id(1)}`,
+     `[log-filter] opened ${id(2)}`, 'boot-core …',   // killed here: this id never closes
+     `[log-filter] opened ${id(3)}`, 'seed ok', `[log-filter] closed ${id(3)}`].join('\n') + '\n',
   );
   writeFileSync(path.join(out, 'state.json'), JSON.stringify({ out, redact: [], secrets: {} }));
   const res = spawnSync(process.execPath, [journey, 'leak-scan', '--out', out], {
@@ -1066,11 +1065,33 @@ test("POSITIVE CONTROL: a filter KILLED mid-stream leaves an unmatched OPEN, and
   const gone = !existsSync(path.join(out, 'evidence'));
   rmSync(out, { recursive: true, force: true });
   assert.equal(res.status, 1, res.stdout + res.stderr);
-  assert.match(`${res.stdout}${res.stderr}`, /TRUNCATED — 3 capture\(s\) opened but 2 closed/);
+  assert.match(`${res.stdout}${res.stderr}`, /TRUNCATED/);
+  assert.match(`${res.stdout}${res.stderr}`, /1 never closed/);
   assert.ok(gone, 'a bundle whose log has a hole must not survive to upload');
 });
 
-test("POSITIVE CONTROL: a BALANCED log passes, and the filter brackets itself end to end", () => {
+test("POSITIVE CONTROL: a producer FORGING a close line cannot balance a killed filter (Codex P2)", () => {
+  // The sentinels share the capture with producer output, so a bare marker would be forgeable.
+  const out = mkdtempSync(path.join(tmpdir(), 'm1-forged-'));
+  mkdirSync(path.join(out, 'evidence'), { recursive: true });
+  writeFileSync(path.join(out, 'evidence', 'verifier-a.txt'), 'clean\n');
+  const real = '11111111-2222-4333-8444-555555555555';
+  const forged = '99999999-9999-4999-8999-999999999999';  // a producer cannot guess the real id
+  writeFileSync(
+    path.join(out, 'job-log.txt'),
+    [`[log-filter] opened ${real}`, 'boot-core …',
+     `[log-filter] closed ${forged}`].join('\n') + '\n',
+  );
+  writeFileSync(path.join(out, 'state.json'), JSON.stringify({ out, redact: [], secrets: {} }));
+  const res = spawnSync(process.execPath, [journey, 'leak-scan', '--out', out], {
+    encoding: 'utf8', env: { ...process.env, GITHUB_ACTIONS: 'true' },
+  });
+  rmSync(out, { recursive: true, force: true });
+  assert.equal(res.status, 1, res.stdout + res.stderr);  // the COUNTS balance; the IDS do not
+  assert.match(`${res.stdout}${res.stderr}`, /1 never closed/);
+});
+
+test("POSITIVE CONTROL: a BALANCED log passes, the ids are unique per invocation, and none publish", () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'm1-sentinel-'));
   const capture = path.join(dir, 'job-log.txt');
   const filter = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'm1-shipped-boot', 'log-filter.mjs');
@@ -1080,8 +1101,11 @@ test("POSITIVE CONTROL: a BALANCED log passes, and the filter brackets itself en
     assert.ok(!r.stdout.includes('[log-filter]'), 'the sentinels are CAPTURE-only; they never publish');
   }
   const text = readFileSync(capture, 'utf8');
-  assert.equal((text.match(/^\[log-filter] opened$/gm) ?? []).length, 2);
-  assert.equal((text.match(/^\[log-filter] closed$/gm) ?? []).length, 2);
+  const opened = [...text.matchAll(/^\[log-filter\] opened ([0-9a-f-]{36})$/gm)].map((m) => m[1]);
+  const closed = [...text.matchAll(/^\[log-filter\] closed ([0-9a-f-]{36})$/gm)].map((m) => m[1]);
+  assert.equal(opened.length, 2);
+  assert.deepEqual(closed, opened, 'each invocation closes its OWN id');
+  assert.equal(new Set(opened).size, 2, 'the ids are per-invocation, so one cannot cover another');
 
   const out = mkdtempSync(path.join(tmpdir(), 'm1-balanced-'));
   mkdirSync(path.join(out, 'evidence'), { recursive: true });
@@ -1094,4 +1118,17 @@ test("POSITIVE CONTROL: a BALANCED log passes, and the filter brackets itself en
   rmSync(out, { recursive: true, force: true });
   rmSync(dir, { recursive: true, force: true });
   assert.equal(res.status, 0, res.stdout + res.stderr);  // not an always-deny
+});
+
+test("POSITIVE CONTROL: a PEM masked through ::add-mask:: still opens the block (Codex P1)", () => {
+  // A phase masking an unregistered multi-line key prints the armour as a directive and the BODY
+  // as ordinary lines; returning early left the redactor outside the block and they published.
+  const redact = createLineRedactor();
+  const directive = `${MASK_DIRECTIVE_PREFIX}-----BEGIN PRIVATE KEY-----`;
+  assert.equal(redact(directive), directive, 'the directive itself still passes through');
+  for (const body of ['MC4CAQAw', 'BQYDK2Vw', 'BCIEIGHh']) {
+    assert.match(redact(body), /\[REDACTED: key material \(pem_block\)/, body);
+  }
+  assert.match(redact('-----END PRIVATE KEY-----'), /pem_block/);
+  assert.equal(redact('reconcile: 3 Organizations'), 'reconcile: 3 Organizations');
 });

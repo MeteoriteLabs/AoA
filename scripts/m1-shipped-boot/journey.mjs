@@ -981,15 +981,21 @@ function leakScan(state) {
   // an unmatched OPEN is a phase whose capture ended abruptly. This is a property of the LOG, so it
   // holds for every piped phase without the gate having to enumerate them.
   if (process.env.GITHUB_ACTIONS === "true" && rawLog !== null) {
-    const opened = (rawLog.match(/^\[log-filter\] opened$/gm) ?? []).length;
-    const closed = (rawLog.match(/^\[log-filter\] closed$/gm) ?? []).length;
-    if (opened !== closed) {
+    const ids = (marker) =>
+      (rawLog.match(new RegExp(`^\\[log-filter\\] ${marker} ([0-9a-f-]{36})$`, "gm")) ?? []).map((l) => l.slice(-36));
+    const opened = ids("opened");
+    const closed = new Set(ids("closed"));
+    // ★ Paired BY ID, not counted (Codex P2). The sentinels share this file with producer output,
+    //   so a phase that printed a bare `closed` line could balance a killed filter's missing one.
+    //   Each invocation mints an id the filter never writes to stdout, so no producer can guess it.
+    const unmatched = opened.filter((id) => !closed.has(id));
+    if (unmatched.length > 0 || closed.size !== opened.length) {
       rmSync(dir, { recursive: true, force: true });
       rmSync(jobLogPath(state), { force: true });
       fail(
-        `leak scan: the job log is TRUNCATED — ${opened} capture(s) opened but ${closed} closed, so at ` +
-          "least one phase's filter died mid-stream and that stretch of the Actions log was never " +
-          "captured; the evidence and the partial log were deleted",
+        `leak scan: the job log is TRUNCATED — ${opened.length} capture(s) opened and ${closed.size} closed, ` +
+          `${unmatched.length} never closed, so at least one phase's filter died mid-stream and that ` +
+          "stretch of the Actions log was never captured; the evidence and the partial log were deleted",
       );
     }
   }

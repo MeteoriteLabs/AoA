@@ -941,5 +941,21 @@ They are recorded because each would have made the control worse than none:
     Residual, stated rather than implied: a filter killed BEFORE its open sentinel lands leaves the
     counts balanced and that phase absent entirely. Its step still fails through `pipefail`, so the
     run is red and the lane is not claiming a pass; the bundle it retains is the failure evidence.
+25. **A PEM masked THROUGH the directive escaped the block, and the sentinels were forgeable.**
+
+    - The directive exception returned early, so a phase masking an unregistered multi-line key —
+      `::add-mask::-----BEGIN PRIVATE KEY-----` and then the body as ordinary lines — left the
+      redactor outside the PEM block: GitHub masked the armour, the short body lines published,
+      and the scan then stripped the only generic marker. The directive is still published
+      verbatim, but its PAYLOAD now moves the block state.
+    - The intactness sentinels shared the capture with producer output, so a phase that printed a
+      bare `[log-filter] closed` could balance a killed filter. Each invocation now mints an
+      unpredictable id — never written to stdout, so no producer can guess it — and the scan pairs
+      open to close BY ID rather than counting.
+
+    Controls: a directive-masked PEM redacts its body and the block still ends at `END`; a forged
+    close with the wrong id reds although the COUNTS balance; the ids are unique per invocation and
+    never publish. Three mutations (the early return, a fixed seal, counting instead of pairing)
+    each red, and all three markers join the gate, verified absent from `4fcf4e4ce`.
 **Status unchanged.** This is a control added after the fact to a run that was already clean; it
 neither re-opens nor re-decides §12's keyed acceptance.

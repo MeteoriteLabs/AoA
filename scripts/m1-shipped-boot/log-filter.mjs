@@ -18,6 +18,7 @@
 // `pipefail` (the job declares `shell: bash`), which the workflow-shape guard enforces.
 // -----------------------------------------------------------------------------
 
+import { randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline";
@@ -63,8 +64,13 @@ try {
 // the next phase's filter then appends happily, and the scan reads a log missing a stretch it can
 // neither see nor suspect. So every invocation writes OPENED on start and CLOSED on a clean end of
 // input, and the scan requires the two counts to match — which a killed filter breaks.
-const OPENED = "[log-filter] opened";
-const CLOSED = "[log-filter] closed";
+// ★ The sentinels share the capture with PRODUCER output, so a bare marker is forgeable: a phase
+// that printed `[log-filter] closed` could balance a killed filter's missing close (Codex P2, PR
+// #574). Each invocation therefore mints an UNPREDICTABLE id, which no producer can guess because
+// the filter never writes it to stdout, and the scan pairs open to close BY ID.
+const SEAL = randomUUID();
+const OPENED = `[log-filter] opened ${SEAL}`;
+const CLOSED = `[log-filter] closed ${SEAL}`;
 try {
   appendFileSync(capturePath, `${OPENED}\n`);
 } catch (err) {
