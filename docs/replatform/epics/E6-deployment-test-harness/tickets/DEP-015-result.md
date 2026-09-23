@@ -1,6 +1,6 @@
 # DEP-015 Result — the shipped CI boot lane
 
-**Status:** `gate_review`. The **keyed acceptance is PENDING**: it needs one dispatched keyed run from the F8 named list, which is the planning session's to dispatch.
+**Status:** `complete` (set by the distinct reviewer of attempt 2; the author left it at `gate_review`). *Original line, kept as first written:* "`gate_review`. The **keyed acceptance is PENDING**: it needs one dispatched keyed run from the F8 named list, which is the planning session's to dispatch."
 **Date (UTC):** `2026-09-21`
 **Epic:** `E6-deployment-test-harness`
 **Plan task:** `E6 implementation-plan §4c DEP-015 — The shipped CI boot lane (M, ≤3 agent-days, M1a)`
