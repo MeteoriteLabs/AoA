@@ -337,8 +337,18 @@ correctly (1(c)).
 `supervisor.ts` logs, immediately before emitting the `usage` event and after the parser produced it:
 
 - message: `PARSED_USAGE_LOG_MESSAGE` = `"worker: parsed agent usage"` (a stable grep token);
-- payload: `parsedInputTokens`, `parsedOutputTokens`, `parsedCachedInputTokens`,
+- payload: `parsedInputCount`, `parsedOutputCount`, `parsedCachedInputCount`,
   `parsedRuntimeMillis` (numbers), plus `leaseId`, `jobId`, `attempt` (the run's own identifiers).
+
+★★★ **The key names are load-bearing (Codex P1 on PR #571, and it was right).** They were
+`parsedInputTokens` / `parsedOutputTokens` / `parsedCachedInputTokens` in the first revision.
+`createWorkerLogger` redacts any binding whose key CONTAINS `token` (`logging/logger.ts`,
+`SENSITIVE_SUBSTRINGS`), so in the LIVE worker those three would have logged as `"[redacted]"` -
+the DEP-015 extractor would find no numbers and 1(b) would be impossible to close - while every
+test stayed green, because each one used a hand-rolled recording logger and never ran the
+production redactor. That is this programme's own "a check that evaluates nothing" class. The keys
+are renamed, and a case now drives the REAL `createWorkerLogger` and asserts each count arrives as
+a NUMBER, so the redactor is exercised rather than bypassed.
 
 `parsedUsageLogFields` (`usage-observer.ts`) takes only the frozen `UsagePayloadV1`, refuses a
 payload that is not exactly four non-negative integers, and refuses one carrying any extra key — so
@@ -347,8 +357,8 @@ no call-site edit can smuggle the stdout tail into this line without changing th
 `null` — dropping the WHOLE line — if a value cannot be scrubbed.
 
 RED first: `expected [] to have a length of 1` (no line existed) and `(0 , parsedUsageLogFields) is
-not a function`. GREEN: `usage-observer.test.ts` 14 tests, `usage-stream-redaction.test.ts` 19 tests;
-worker-daemon suite 1226 passed / 1 skipped.
+not a function`; for the production-logger case, `expected undefined to be 111`. GREEN:
+`usage-observer.test.ts` 14 tests, `usage-stream-redaction.test.ts` 20 tests.
 
 | Mutation | Reds |
 |---|---|
@@ -357,6 +367,7 @@ worker-daemon suite 1226 passed / 1 skipped.
 | MU3 stop scrubbing string values | the `scrubLogFields` case |
 | MU4 accept a non-integer count | the refused-payload case |
 | MU5 log a zeroed stand-in when the payload is refused | the "a REFUSED payload logs NO line" case |
+| MU6 rename a count key back to `parsedInputTokens` | the production-logger case (the value arrives `"[redacted]"`) |
 
 Leak controls: the canary rides the very stdout the counts came from (asserted present in the
 stream), and no canary appears in any log line; the payload's keys are pinned exactly, so any text
@@ -373,8 +384,9 @@ lease. Two files, a new extractor, and its own tests, in `DEP-015`'s ticket rath
 What DEP-015 needs from the worker is exactly:
 
 - grep the worker log for the message `worker: parsed agent usage`;
-- read `parsedInputTokens` / `parsedOutputTokens` / `parsedCachedInputTokens` /
-  `parsedRuntimeMillis`, keyed by `leaseId` (also `jobId` + `attempt`);
+- read `parsedInputCount` / `parsedOutputCount` / `parsedCachedInputCount` /
+  `parsedRuntimeMillis`, keyed by `leaseId` (also `jobId` + `attempt`) - note the names deliberately
+  avoid the substring `token`, which the worker's logger redacts;
 - compare them field-for-field with the single accepted `usage` event's payload, and red on any
   difference.
 

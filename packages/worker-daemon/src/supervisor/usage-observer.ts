@@ -102,6 +102,22 @@ export function parseClaudeStreamJsonUsage(stdout: string): ParsedAgentUsage | n
 export const PARSED_USAGE_LOG_MESSAGE = "worker: parsed agent usage";
 
 /**
+ * The frozen payload field -> log KEY map for {@link PARSED_USAGE_LOG_MESSAGE}.
+ *
+ * ★★★ NOT `parsedInputTokens` (Codex P1, PR #571). `createWorkerLogger` redacts any binding whose
+ * key CONTAINS "token" (`logging/logger.ts`, SENSITIVE_SUBSTRINGS), so a key with "Tokens" in it
+ * logs as "[redacted]" in the LIVE worker while every test using a hand-rolled logger stays green
+ * - the counts would never reach the lane and 1(b) would be impossible to close. These names carry
+ * the same meaning and pass the redactor, and a case driving the REAL `createWorkerLogger` pins it.
+ */
+export const PARSED_USAGE_LOG_KEYS = [
+  ["inputTokens", "parsedInputCount"],
+  ["outputTokens", "parsedOutputCount"],
+  ["cachedInputTokens", "parsedCachedInputCount"],
+  ["runtimeMillis", "parsedRuntimeMillis"],
+] as const;
+
+/**
  * The log payload for {@link PARSED_USAGE_LOG_MESSAGE}: EXACTLY the four counts, as numbers, or
  * `null` when the payload is not four non-negative integers (then nothing is logged - a guess in
  * this line would be indistinguishable on the lane from a real parse).
@@ -118,16 +134,15 @@ export const PARSED_USAGE_LOG_MESSAGE = "worker: parsed agent usage";
  * edit at the call site can put tenant text in this line without changing THIS signature.
  */
 export function parsedUsageLogFields(usage: UsagePayloadV1): Record<string, number> | null {
-  const fields = ["inputTokens", "outputTokens", "cachedInputTokens", "runtimeMillis"] as const;
   const source = usage as unknown as Record<string, unknown>;
   // An EXTRA key means the caller handed something that is not the frozen payload; refuse it
   // rather than project four fields out of an object of unknown provenance.
-  if (Object.keys(source).length !== fields.length) return null;
+  if (Object.keys(source).length !== PARSED_USAGE_LOG_KEYS.length) return null;
   const out: Record<string, number> = {};
-  for (const field of fields) {
+  for (const [field, key] of PARSED_USAGE_LOG_KEYS) {
     const value = source[field];
     if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) return null;
-    out[`parsed${field.charAt(0).toUpperCase()}${field.slice(1)}`] = value;
+    out[key] = value;
   }
   return out;
 }

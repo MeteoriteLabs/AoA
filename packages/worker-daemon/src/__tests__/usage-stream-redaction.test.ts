@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { leaseOfferV1Schema, type WorkerEventV1 } from "@armyofagents/worker-protocol";
 
 import { createMetrics } from "../metrics/metrics.js";
-import type { Logger } from "../logging/logger.js";
+import { createWorkerLogger, type Logger } from "../logging/logger.js";
 import type { LeaseHandoff } from "../poll/poll-loop.js";
 import { REDACTION_MARKER } from "../supervisor/redaction.js";
 import { createRunCanaryCoordinator } from "../supervisor/run-canaries.js";
@@ -388,9 +388,9 @@ describe("WRK-018 1(b) — the worker logs the counts it parsed", () => {
     "attempt",
     "jobId",
     "leaseId",
-    "parsedCachedInputTokens",
-    "parsedInputTokens",
-    "parsedOutputTokens",
+    "parsedCachedInputCount",
+    "parsedInputCount",
+    "parsedOutputCount",
     "parsedRuntimeMillis",
   ];
 
@@ -420,9 +420,9 @@ describe("WRK-018 1(b) — the worker logs the counts it parsed", () => {
     expect(lines).toHaveLength(1);
     const [bindings] = JSON.parse(lines[0]!) as [Record<string, unknown>, string];
     expect(Object.keys(bindings).sort()).toEqual(ALLOWED_KEYS);
-    expect(bindings.parsedInputTokens).toBe(111);
-    expect(bindings.parsedOutputTokens).toBe(222);
-    expect(bindings.parsedCachedInputTokens).toBe(333);
+    expect(bindings.parsedInputCount).toBe(111);
+    expect(bindings.parsedOutputCount).toBe(222);
+    expect(bindings.parsedCachedInputCount).toBe(333);
     expect(typeof bindings.parsedRuntimeMillis).toBe("number");
     // Zero tolerance: the canary rode the very stdout these numbers came from.
     expect(stdout).toContain(CANARY_A);
@@ -440,13 +440,13 @@ describe("WRK-018 1(b) — the worker logs the counts it parsed", () => {
   // usage. That is pre-existing behaviour, not this line's. What this line owes is that IF such a
   // value reaches it, it is scrubbed, or the line is dropped whole.
   it("★ scrubLogFields scrubs string values and refuses a set it cannot scrub (fail closed)", () => {
-    expect(scrubLogFields({ parsedInputTokens: 7, leaseId: `lease-${CANARY_A}` }, [CANARY_A])).toEqual({
-      parsedInputTokens: 7,
+    expect(scrubLogFields({ parsedInputCount: 7, leaseId: `lease-${CANARY_A}` }, [CANARY_A])).toEqual({
+      parsedInputCount: 7,
       leaseId: `lease-${REDACTION_MARKER}`,
     });
     expect(scrubLogFields({ leaseId: "wxyzq" }, ["xyzq", `w${REDACTION_MARKER}`])).toBeNull();
     // Numbers pass through untouched, so a numeric canary can never mangle a count.
-    expect(scrubLogFields({ parsedInputTokens: 111 }, ["111"])).toEqual({ parsedInputTokens: 111 });
+    expect(scrubLogFields({ parsedInputCount: 111 }, ["111"])).toEqual({ parsedInputCount: 111 });
   });
 
   it("a REFUSED payload logs NO line - never a zeroed stand-in the lane would compare against", async () => {
@@ -470,5 +470,50 @@ describe("WRK-018 1(b) — the worker logs the counts it parsed", () => {
     const logger = recordingLogger();
     await runWith({ canaries: [CANARY_A], stdout: "no result line here\n", logger });
     expect(logger.lines.filter((l) => l.includes(PARSED_USAGE_LOG_MESSAGE))).toEqual([]);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// WRK-018 1(b) — THROUGH THE PRODUCTION LOGGER.
+//
+// ★★★ Codex P1 on PR #571, and it was right: every case above used a hand-rolled recording
+// logger, so `createWorkerLogger`'s redactor never ran. That redactor replaces any binding whose
+// key CONTAINS "token" (`logger.ts`, SENSITIVE_SUBSTRINGS), so keys named `parsedInputTokens` /
+// `parsedOutputTokens` / `parsedCachedInputTokens` logged as "[redacted]" in the live worker and
+// the DEP-015 extractor would have found no numbers at all — 1(b) impossible, with green tests.
+// A test that bypasses the production redactor is a check that evaluates nothing, so this case
+// drives the REAL logger and asserts the numbers SURVIVE it.
+// -----------------------------------------------------------------------------
+
+describe("WRK-018 1(b) — the parsed-counts line survives the PRODUCTION logger's redactor", () => {
+  it("★ every count reaches the log as a NUMBER (no key is caught by the redactor)", async () => {
+    const lines: string[] = [];
+    const logger = createWorkerLogger({ destination: { write: (chunk: string) => void lines.push(chunk) } });
+    const supervisor = createSupervisor({
+      provider: createFakeSandboxProvider({ stdoutChunks: [`${resultLine({ i: 111, o: 222, c: 333 })}\n`] }),
+      identity: SUPERVISOR_IDENTITY,
+      eventSink: collectingSink(),
+      redactionCanaries: [],
+      observeRun: createUsageObserver(),
+      logger,
+    });
+    await supervisor.accept(makeHandoff());
+
+    const records = lines.map((l) => JSON.parse(l) as Record<string, unknown>);
+    const parsed = records.filter((r) => r.msg === PARSED_USAGE_LOG_MESSAGE);
+    expect(parsed).toHaveLength(1);
+    const record = parsed[0]!;
+    for (const [key, value] of Object.entries({
+      parsedInputCount: 111,
+      parsedOutputCount: 222,
+      parsedCachedInputCount: 333,
+    })) {
+      expect(record[key]).toBe(value);
+      expect(record[key]).not.toBe("[redacted]");
+    }
+    expect(typeof record.parsedRuntimeMillis).toBe("number");
+    // The identifiers survive too — the lane keys the comparison on them.
+    expect(typeof record.leaseId).toBe("string");
+    expect(record.leaseId).not.toBe("[redacted]");
   });
 });

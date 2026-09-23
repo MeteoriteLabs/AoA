@@ -147,7 +147,7 @@ describe("WRK-018 — createUsageObserver (the composed observeRun)", () => {
 describe("WRK-018 1(b) — parsedUsageLogFields (the log payload)", () => {
   it("is EXACTLY the four counts, as numbers", () => {
     const fields = parsedUsageLogFields({ inputTokens: 1, outputTokens: 2, cachedInputTokens: 3, runtimeMillis: 4 });
-    expect(fields).toEqual({ parsedInputTokens: 1, parsedOutputTokens: 2, parsedCachedInputTokens: 3, parsedRuntimeMillis: 4 });
+    expect(fields).toEqual({ parsedInputCount: 1, parsedOutputCount: 2, parsedCachedInputCount: 3, parsedRuntimeMillis: 4 });
     expect(Object.values(fields ?? {}).every((v) => typeof v === "number")).toBe(true);
   });
 

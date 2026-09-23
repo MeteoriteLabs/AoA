@@ -1183,6 +1183,8 @@ component tests; then the one keyed acceptance run.
      therefore logs the counts it parsed — numbers and the run's own identifiers only, scrubbed by
      the run's canaries — under `PARSED_USAGE_LOG_MESSAGE`
      (`packages/worker-daemon/src/supervisor/usage-observer.ts`), and the lane compares the three.
+     The count keys (`PARSED_USAGE_LOG_KEYS`) deliberately avoid the substring `token`, which
+     `createWorkerLogger` redacts; a case driving the REAL logger pins that.
    - **1(c) parser fidelity to a REAL result line.** Proven by unit tests against the captured
      `claude_local` transcript (`server/src/__tests__/fixtures/claude-stream-json-tool-call.jsonl`),
      **not live** — and that limit is deliberate: proving it live would require emitting the
