@@ -27,6 +27,7 @@ import {
   evaluateSpineOverrideText,
   evaluateReplicaRollout,
   evaluateEnabledTenantSpine,
+  evaluateUsageCardinality,
   evaluateControlTenant,
   evaluateCrossTenantIsolation,
   evaluateEnvProbeObservability,
@@ -769,4 +770,108 @@ test("a drain that also cancelled an already-terminal attempt is refused (it mus
     actorType: "system", actorId: indiscriminate.expectedActorId,
   }];
   assert.ok(evaluateRollbackRehearsal(indiscriminate).map((x) => x.code).includes("rollback:drained_a_terminal_attempt"));
+});
+
+// ── the KEYED lane's half of WRK-018 acceptance 1 (DEP-015) ──────────────────
+//
+// The same `evaluateUsageCardinality` the spine calls above is what the keyed shipped-boot
+// driver calls (scripts/m1-shipped-boot/journey.mjs). The spine hands it `expectedUnits` (the
+// reference provider's canned units); the keyed lane hands it `storedUsage`, the run's
+// `heartbeat_runs.usage_json`, which `createCanaryRunProjector` derives from the same event.
+// These cases pin that second shape, including the positive control the ticket names: a
+// duplicate or replayed usage event for the attempt turns the assertion RED.
+
+const KEYED_EVENT_ID = "77777777-7777-4777-8777-777777777777";
+
+function keyedObservation(tenant = A, overrides = {}) {
+  return {
+    tenant,
+    observation: {
+      usageEvents: [{
+        eventId: KEYED_EVENT_ID,
+        organizationId: tenant.organizationId,
+        companyId: tenant.companyId,
+        payload: { inputTokens: 4211, outputTokens: 188, cachedInputTokens: 0, runtimeMillis: 61234 },
+      }],
+      storedUsage: { inputTokens: 4211, outputTokens: 188, costUsd: null, durationMs: 61234 },
+      ...overrides,
+    },
+  };
+}
+
+test("keyed shape: exactly one accepted usage event whose numbers are the run's stored usage passes", () => {
+  assert.deepEqual(evaluateUsageCardinality(keyedObservation()), []);
+});
+
+test("POSITIVE CONTROL (keyed): a DUPLICATE or replayed usage event for the attempt is refused", () => {
+  const base = keyedObservation().observation.usageEvents[0];
+  // A replay: the SAME event id delivered twice, and a duplicate: a second event id. Both are
+  // two accepted rows for one attempt, and a stored `usage_json` alone cannot tell either from one.
+  for (const second of [{ ...base }, { ...base, eventId: "88888888-8888-4888-8888-888888888888" }]) {
+    const v = evaluateUsageCardinality(keyedObservation(A, { usageEvents: [base, second] }));
+    assert.ok(codes(v).includes("usage:not_exactly_one"), JSON.stringify(v));
+    assert.ok(v.every((x) => x.message.includes(M1_SPINE_USAGE_MARKER)));
+  }
+});
+
+test("keyed shape: ZERO accepted usage events is refused, distinctly from a duplicate", () => {
+  const v = evaluateUsageCardinality(keyedObservation(A, { usageEvents: [] }));
+  assert.ok(codes(v).includes("usage:no_usage_event"));
+  assert.ok(!codes(v).includes("usage:not_exactly_one"));
+});
+
+test("keyed shape (F10): a SECOND Organization's usage never counts toward the first tenant's one", () => {
+  const foreign = {
+    eventId: KEYED_EVENT_ID,
+    organizationId: B.organizationId,
+    companyId: B.companyId,
+    payload: { inputTokens: 4211, outputTokens: 188, cachedInputTokens: 0, runtimeMillis: 61234 },
+  };
+  // Tenant B's event alone, judged for tenant A: it is not A's, and A therefore has none of its own.
+  const v = evaluateUsageCardinality(keyedObservation(A, { usageEvents: [foreign] }));
+  assert.ok(codes(v).includes("usage:wrong_tenant"), JSON.stringify(v));
+  // And it cannot be used to satisfy A's cardinality either: A's own event plus B's is two.
+  const both = evaluateUsageCardinality(keyedObservation(A, { usageEvents: [keyedObservation().observation.usageEvents[0], foreign] }));
+  assert.ok(codes(both).includes("usage:not_exactly_one"));
+  assert.ok(codes(both).includes("usage:wrong_tenant"));
+});
+
+test("keyed shape: stored usage that is not the accepted event's numbers is refused", () => {
+  for (const stored of [
+    { inputTokens: 4210, outputTokens: 188, durationMs: 61234 },
+    { inputTokens: 4211, outputTokens: 189, durationMs: 61234 },
+    { inputTokens: 4211, outputTokens: 188, durationMs: 999 },
+  ]) {
+    const v = evaluateUsageCardinality(keyedObservation(A, { storedUsage: stored }));
+    assert.ok(codes(v).includes("usage:stored_differs_from_event"), JSON.stringify(stored));
+  }
+});
+
+test("keyed shape: an event with NO runtimeMillis leaves the wall-clock duration alone (the projector's fallback)", () => {
+  // `canary-terminal-projection.ts` falls back to the run's wall clock when the event reports no
+  // runtime, so requiring equality there would red a correct projection.
+  const v = evaluateUsageCardinality(keyedObservation(A, {
+    usageEvents: [{
+      eventId: KEYED_EVENT_ID,
+      organizationId: A.organizationId,
+      companyId: A.companyId,
+      payload: { inputTokens: 4211, outputTokens: 188, cachedInputTokens: 0, runtimeMillis: null },
+    }],
+    storedUsage: { inputTokens: 4211, outputTokens: 188, durationMs: 61234 },
+  }));
+  assert.deepEqual(v, []);
+});
+
+test("keyed shape: an accepted usage event with NO stored usage_json is refused", () => {
+  const v = evaluateUsageCardinality(keyedObservation(A, { storedUsage: null }));
+  assert.ok(codes(v).includes("usage:no_stored_usage"), JSON.stringify(v));
+});
+
+test("the spine and the keyed lane share ONE implementation — neither re-implements the rule", () => {
+  const journey = readFileSync(path.join(repoRoot, "scripts", "m1-shipped-boot", "journey.mjs"), "utf8");
+  assert.match(journey, /evaluateUsageCardinality\(\{/, "the keyed driver must CALL the shared verdict");
+  assert.match(journey, /from "\.\.\/lib\/m1-spine-assertions\.mjs"/);
+  for (const code of ["usage:not_exactly_one", "usage:no_usage_event", "usage:wrong_tenant"]) {
+    assert.ok(!journey.includes(code), `the keyed driver must not re-implement ${code}`);
+  }
 });
