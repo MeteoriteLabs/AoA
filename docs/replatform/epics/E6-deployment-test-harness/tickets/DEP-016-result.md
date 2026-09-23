@@ -325,3 +325,21 @@ PR #566, head `9e49de33923a46c2836f8b4b379dca993de63977`.
 - **Codex** (`chatgpt-codex-connector`) reviewed `9e49de3392`: *"Didn't find any major issues."*
 - The local evidence in §3, §4 and §8 stands on its own: the live D1 runs and the whole pure guard
   set were executed on this tree, on a real stack, and the runs are named there.
+
+## 11. Final head — Codex clean, CI still refused (2026-09-23)
+
+- **Reviewed revision: `b34fc34c2321256491446454fa48337fb5392d75`** (PR #566). Everything in §3, §3a,
+  §3b, §3c, §4 and §4a was measured on this code against a live D1 stack.
+- **Codex** (`chatgpt-codex-connector`) completed its review of `b34fc34c2` with **no findings and
+  zero unresolved threads**. Across the review it raised **27 findings** over thirteen rounds —
+  4 P1 and 23 P2 — every one verified at source before being fixed; §4a lists them. Three changed
+  what the profile actually proves rather than only how it asserts it: the hostile cross-tenant
+  case, the `MIG-009` rollback rehearsal, and the enabled-path placement control.
+- **`ci-required` has still produced no verdict.** Run `35819013113` on this head concluded
+  `failure` with **zero steps executed** in every job; the annotation is unchanged: *"The job was
+  not started because recent account payments have failed or your spending limit needs to be
+  increased."* This is account-wide (see §10). **The PR must not be merged until `ci-required` runs
+  and is green** — a `failure` with no steps is not evidence about the code, in either direction.
+- The `d1-merge-train` `m1-spine` job has therefore never executed either. Its live half is
+  evidenced here by local runs on a real stack (§3); the lane itself remains unobserved, which is
+  exactly what §9 and this section say.
