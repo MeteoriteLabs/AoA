@@ -1814,3 +1814,91 @@ whether the control plane resolved the right credential in the first place.
 probe as broader than it is. Resolve = build route 1 or provision route 2, prove it with a
 cross-tenant mis-resolution case, then flip this Status and delete the `E6-F025` key in
 `scripts/finding-ownership.json` in the SAME commit.
+
+---
+
+## E6-F026 - `embeddings-circuit.test.ts` asserts `nextRetryAt > Date.now()` against a clock read AFTER the product's, so a 1 ms backoff draw reds the required Linux `verify` gate on an unrelated PR
+
+**Status:** `open` - Owner: `unowned`
+**Severity:** LOW (one assertion, no product claim rests on it - but it is on a REQUIRED gate)
+**Filed:** 2026-09-23 by the record custodian, from an observation on PR #576. Verified at source
+before filing; the reporter's mechanism was checked and is corrected below.
+
+**Observed.** `verify (3)` on PR #576 - a **records-only** commit, so nothing in the diff could have
+caused it - failed with:
+
+```
+embeddings-circuit.test.ts
+expected 1790182801260 to be greater than 1790182801260
+```
+
+Identical numbers: a strict `>` between two millisecond readings that landed on the same value. It
+passed on re-run.
+
+**The assertion.** `server/src/__tests__/embeddings-circuit.test.ts`, in
+*"retries a transient error: status=pending, attempts bumped, next\_retry\_at set"*:
+
+```ts
+expect((retryUpdate.set.nextRetryAt as Date).getTime()).toBeGreaterThan(Date.now());
+```
+
+That `Date.now()` is evaluated **after** `svc.processQueue(...)` has already returned, so it is a
+LATER reading than the one the product used to compute the value.
+
+**★★★ THIS IS A TEST DEFECT, NOT A PRODUCT DEFECT, and the distinction is the point - the two have
+different owners.** The product's invariant is real, deliberate and sound; the test asserts a
+different, stronger one.
+
+- **What the product guarantees.** `computeBackoffMs`
+  (`server/src/services/embeddings.ts`) is **full jitter with a floor**:
+  `Math.max(1, Math.floor(rng() * raw))`, where `raw = Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS *
+  2^(attempt-1))` and `BACKOFF_BASE_MS = 2000`. The floor carries its own reason in a comment -
+  *"P2-2: clamp to >= 1ms so `rng()===0` never produces an immediately-eligible row (which would make
+  the retry indistinguishable from a fresh attempt and could pin-ball a bad row in a tight loop)"*.
+  So the product promises `nextRetryAt >= T + 1ms`, where **`T` is the instant the product itself read
+  the clock**. It is strict monotonicity **against its own reading**, and it is correct.
+- **What the test asserts.** `nextRetryAt > T'`, where `T' >= T` is a *later* reading. The product
+  never promised that and does not need to. On the first attempt the draw is
+  `max(1, floor(rand * 2000))`, which is **exactly 1 ms** on roughly one draw in two thousand; if at
+  least 1 ms of wall clock also elapsed between `T` and `T'`, the assertion fails. Nothing is wrong
+  with the code under test when it does.
+- **Therefore: no product finding is owed.** Nothing in the product relies on strict millisecond
+  monotonicity across two *separate* clock reads. If it did, that would be a real finding and would
+  be filed as one - this was checked, and it does not.
+
+**★ THE REPORTED MECHANISM IS CORRECTED: it does NOT get more likely on faster runners.** The
+observation that reached this register said the failure "gets *more* likely on faster runners, not
+less". Worked through, the opposite holds for **this** assertion. The failure needs
+`T + backoff <= T'`, i.e. it needs wall clock to have **elapsed**. A faster runner drives `T' - T`
+toward zero, and with `backoff >= 1` the comparison then always passes. It is a **slow**-machine
+failure, gated by a small jitter draw. The repository's own precedent points the same way and is the
+closest analogue: *"a probe asserting strict `<` on same-millisecond timestamps passed on Windows and
+failed on Linux"*, recorded with the rule *"an assertion that holds only on slow hardware is a flake,
+not a check."* This is the mirror case - an assertion that holds only on **fast** hardware - and the
+rule is the same in both directions.
+
+**Blocks gate:** not a gate clause, but it can **red the required Linux `verify` gate on an unrelated
+PR**, which is how it surfaced. That is why it is filed rather than left as a re-run note, and it is
+the same reason `E5-F005`'s advisory scoping had to be widened in the same pass.
+
+### The fix, named but deliberately NOT applied here
+
+Assert the product's own predicate, against the instant captured **before** the call:
+
+```ts
+const before = Date.now();
+const result = await svc.processQueue({ maxAttempts: 6 });
+// ...
+expect((retryUpdate.set.nextRetryAt as Date).getTime()).toBeGreaterThanOrEqual(before + 1);
+```
+
+This is deterministic on every platform, and it is **stronger** than what is there now: it pins the
+`>= 1ms` floor the `P2-2` comment exists to protect, which the current `> Date.now()` does not test
+at all. Injecting the clock into `computeBackoffMs`'s caller would also work and is a larger change.
+
+**Why the custodian did not apply it.** It is outside this pass's corrections queue, it is a code
+change in a required-gate suite, and it is only provable with a positive control - reverting to
+`> Date.now()` and forcing `rng() -> 0` plus an elapsed tick must red it. A custodian pass that
+cannot run that control should not land the change. Whoever picks this up should apply the two-line
+edit with that control, then flip this Status and delete the `E6-F026` key in
+`scripts/finding-ownership.json` in the SAME commit.
