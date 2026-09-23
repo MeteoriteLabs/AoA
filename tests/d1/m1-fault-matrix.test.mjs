@@ -102,6 +102,8 @@ import {
   M1_SPINE_AGENT_ADAPTER_TYPE,
   M1_SPINE_CANARY_TARGET_SLUG,
   M1_SPINE_CONTROL_PLANE_REPLICAS,
+  EXPECTED_FOREIGN_ACK_STATUS,
+  EXPECTED_FOREIGN_ACK_CODE,
   evaluateEnabledTenantSpine,
   evaluateControlTenant,
   evaluateCrossTenantIsolation,
@@ -491,18 +493,22 @@ test("fault-matrix: cross-tenant lease renew — denied, with a same-tenant posi
     deviceKey: attacker.deviceKey,
   }), "hostile renew");
 
-  const positiveControlPassed = own.status === 200;
-  // A DENIAL, not merely a non-success: a 5xx or a transport-shaped failure proves no
-  // enforcement at all (the DEP-016 lesson, applied to this surface).
-  const denied = hostile.status >= 400 && hostile.status < 500 && typeof hostile.body?.code === "string";
+  const positiveControlPassed = own.status === 200 && own.body?.outcome === "renewed";
+  // ★ The EXACT refusal, not merely a non-success. Measured live: the worker-control surface
+  // answers a foreign worker presenting another tenant's lease with `409 stale_fence`
+  // (`resolveWorkerFenceContext` looks the lease up BY the presented identity and finds no row of
+  // this worker's). Accepting "anything that is not 200" would also accept a `malformed` — a
+  // PROTOCOL refusal that never reaches the tenant boundary at all — or a 500, which proves no
+  // enforcement whatever. That is the same trap this file's orphan case fell into on its first run.
+  const denied = hostile.status === EXPECTED_FOREIGN_ACK_STATUS && hostile.body?.code === EXPECTED_FOREIGN_ACK_CODE;
   record("d1.tenant.cross.lease", {
     injectionFired: typeof hostile.status === "number" && hostile.status !== 0,
     observedClassification: denied ? "denied_with_same_tenant_positive_control" : "not_denied",
     positiveControlPassed,
     detail: { hostile: { status: hostile.status, body: hostile.body }, own: { status: own.status, outcome: own.body?.outcome ?? null } },
   });
-  assert.equal(positiveControlPassed, true, `the owner's own renew must succeed, else the denial proves nothing: ${truncate(own.body)}`);
-  assert.equal(denied, true, `a foreign worker's renew of another tenant's lease must be DENIED 4xx with a code: ${truncate(hostile.body)}`);
+  assert.equal(positiveControlPassed, true, `the owner's own renew must be RENEWED, else the denial proves nothing: ${truncate(own.body)}`);
+  assert.equal(denied, true, `a foreign worker's renew must be denied ${EXPECTED_FOREIGN_ACK_STATUS} ${EXPECTED_FOREIGN_ACK_CODE}: ${truncate(hostile.body)}`);
 });
 
 test("fault-matrix: cross-tenant cancel — denied, with a same-tenant positive control", { skip: SKIP }, () => {
@@ -530,10 +536,14 @@ test("fault-matrix: cross-tenant cancel — denied, with a same-tenant positive 
   const ownAttempts = state.attempts.filter((a) => a.jobId === sacrifice.ids.jobId);
   const victimUntouched = victimAttempts.every((a) => a.status !== "cancelled" && a.status !== "cancel_requested");
   const ownCancelled = ownAttempts.some((a) => a.status === "cancelled" || a.status === "cancel_requested");
+  // And the service SAID so: measured live, the foreign call returns `not_found` while the owner's
+  // returns `queued` with a real command. Requiring the outcome as well as the row state means a
+  // future refusal that silently became a no-op success could not pass.
+  const hostileRefused = hostile.ok === true && hostile.outcome?.status === "not_found";
 
   record("d1.tenant.cross.cancel", {
     injectionFired: hostile.ok === true || typeof hostile.error === "string",
-    observedClassification: victimUntouched ? "denied_with_same_tenant_positive_control" : "not_denied",
+    observedClassification: victimUntouched && hostileRefused ? "denied_with_same_tenant_positive_control" : "not_denied",
     positiveControlPassed: own.ok === true && ownCancelled,
     detail: {
       hostileOutcome: hostile.ok ? hostile.outcome : { error: hostile.error, code: hostile.code },
@@ -543,6 +553,7 @@ test("fault-matrix: cross-tenant cancel — denied, with a same-tenant positive 
   });
   assert.equal(ownCancelled, true, `the owner's own cancel must take effect: ${truncate(own)}`);
   assert.equal(victimUntouched, true, `a foreign tenant's cancel must not touch the victim's attempt: ${truncate(victimAttempts)}`);
+  assert.equal(hostileRefused, true, `the production service must REFUSE the foreign cancel with not_found: ${truncate(hostile)}`);
 });
 
 test("fault-matrix: cross-tenant secrets — denied at the fence and invisible under RLS, with controls", { skip: SKIP }, () => {
@@ -644,7 +655,8 @@ test("fault-matrix: cross-tenant staged inputs + outputs — denied, with same-t
     deviceKey: victim.deviceKey,
   }), "own grant");
 
-  const grantDenied = hostileGrant.body?.outcome !== "upload_granted";
+  // Pinned, for the same reason as the lease surface above.
+  const grantDenied = hostileGrant.status === EXPECTED_FOREIGN_ACK_STATUS && hostileGrant.body?.code === EXPECTED_FOREIGN_ACK_CODE;
   const grantControl = ownGrant.body?.outcome === "upload_granted";
   record("d1.tenant.cross.staged_inputs", {
     injectionFired: typeof hostileGrant.status === "number" && hostileGrant.status !== 0,
@@ -653,7 +665,7 @@ test("fault-matrix: cross-tenant staged inputs + outputs — denied, with same-t
     detail: { hostile: { status: hostileGrant.status, body: hostileGrant.body }, own: { status: ownGrant.status, outcome: ownGrant.body?.outcome ?? null } },
   });
   assert.equal(grantControl, true, `the owner's own grant must succeed: ${truncate(ownGrant.body)}`);
-  assert.equal(grantDenied, true, `a foreign worker must not be granted a transfer on another tenant's attempt: ${truncate(hostileGrant.body)}`);
+  assert.equal(grantDenied, true, `a foreign worker's transfer grant must be denied ${EXPECTED_FOREIGN_ACK_STATUS} ${EXPECTED_FOREIGN_ACK_CODE}: ${truncate(hostileGrant.body)}`);
 
   // ── outputs: the artifact-commit surface ──
   const put = step(putPresignedBytes({ url: ownGrant.body.grant.url, bodyBase64: bodyBytes.toString("base64") }), "put bytes");
@@ -675,7 +687,7 @@ test("fault-matrix: cross-tenant staged inputs + outputs — denied, with same-t
     session: victim.session, ...victimFence, manifest, deviceKey: victim.deviceKey,
   }), "own commit");
 
-  const commitDenied = hostileCommit.body?.outcome !== "committed";
+  const commitDenied = hostileCommit.status === EXPECTED_FOREIGN_ACK_STATUS && hostileCommit.body?.code === EXPECTED_FOREIGN_ACK_CODE;
   const commitControl = ownCommit.body?.outcome === "committed";
   record("d1.tenant.cross.outputs", {
     injectionFired: typeof hostileCommit.status === "number" && hostileCommit.status !== 0,
@@ -684,7 +696,7 @@ test("fault-matrix: cross-tenant staged inputs + outputs — denied, with same-t
     detail: { hostile: { status: hostileCommit.status, body: hostileCommit.body }, own: { status: ownCommit.status, outcome: ownCommit.body?.outcome ?? null } },
   });
   assert.equal(commitControl, true, `the owner's own commit must succeed: ${truncate(ownCommit.body)}`);
-  assert.equal(commitDenied, true, `a foreign worker must not commit onto another tenant's attempt: ${truncate(hostileCommit.body)}`);
+  assert.equal(commitDenied, true, `a foreign worker's commit must be denied ${EXPECTED_FOREIGN_ACK_STATUS} ${EXPECTED_FOREIGN_ACK_CODE}: ${truncate(hostileCommit.body)}`);
 });
 
 // ═══ 3. acceptance 5 — the four legacy tables (granted, NO RLS) ══════════════
