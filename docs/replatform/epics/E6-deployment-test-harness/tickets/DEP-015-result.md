@@ -863,5 +863,11 @@ They are recorded because each would have made the control worse than none:
     Three more mutations (either carry, the restored floor) each red a test, and the controls are
     the two wraps themselves: 8 characters across three lines, and a real 64-character export's
     4-character tail.
+17. **A SYMBOL is not a BEHAVIOUR.** Every candidate-control grep above named a symbol, and an
+    ancestor of this branch (`aa884b517`) carries all of them while still holding the one-line
+    joined window and the latch's length floor. Dispatching that candidate would have restored
+    both holes under a green gate. Three of the greps are now BEHAVIOURAL — the accumulating
+    carry in the redactor and in the scan, and the floorless latch — and each was verified to be
+    absent from `aa884b517` and `d6460dc24` and present at this head. Measured, not assumed.
 **Status unchanged.** This is a control added after the fact to a run that was already clean; it
 neither re-opens nor re-decides §12's keyed acceptance.

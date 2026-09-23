@@ -53,6 +53,12 @@ export const CANDIDATE_CONTROL_MARKERS = [
   // broke during the best-effort collect step is judged clean (Codex P1, PR #574).
   ["scripts/m1-shipped-boot/log-filter.mjs", "capture-failed"],
   ["scripts/m1-shipped-boot/journey.mjs", "capture-failed"],
+  // ★ BEHAVIOURAL markers, not merely symbols (Codex P1, PR #574): an ancestor carrying every
+  // symbol above still had the one-line joined window and the latch's length floor, so greps for
+  // names alone would admit a candidate that republishes a wrapped key.
+  ["scripts/lib/m1-shipped-boot.mjs", "carry = joined.slice("],
+  ["scripts/lib/m1-shipped-boot.mjs", "ACCUMULATES: a prefix may span"],
+  ["scripts/lib/m1-shipped-boot.mjs", "LENGTH floor"],
 ];
 
 export const EVIDENCE_UPLOAD_PATH = "${{ env.M1_OUT }}/evidence/";

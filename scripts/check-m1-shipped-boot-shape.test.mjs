@@ -255,13 +255,17 @@ test("REJECT: no explicit `shell: bash`, so a teed pipeline would run without pi
   assert.ok(anyMatch(violationsOf(text), /must declare .*shell: bash.* pipefail/), violationsOf(text).join("\n"));
 });
 
+/** A marker may carry regex metacharacters, so it is escaped before it becomes a pattern. */
+const escapeRe = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, (m) => "\\" + m);
+
 test("REJECT: the candidate-controls gate removed — an older candidate would run its own pre-control driver (Codex P1)", () => {
   for (const [file, marker] of CANDIDATE_CONTROL_MARKERS) {
     const line = real().split(/\r?\n/).find((l) => l.includes(`grep -q "${marker}" ${file}`));
     assert.ok(line, `the workflow must gate on ${marker}`);
     const text = mutate(real(), `${line}\n`, "");
     assert.ok(
-      anyMatch(violationsOf(text), new RegExp(`lacks '${marker}'`)),
+      // A marker may carry regex metacharacters (`carry = joined.slice(`), so it is escaped.
+      anyMatch(violationsOf(text), new RegExp(`lacks '${escapeRe(marker)}'`)),
       `${marker}:\n${violationsOf(text).join("\n")}`,
     );
   }
@@ -288,6 +292,9 @@ test("the candidate-controls gate covers the whole control set, the log FILTER i
       "scripts/m1-shipped-boot/log-filter.mjs:the job-log capture failed",
       "scripts/m1-shipped-boot/log-filter.mjs:capture-failed",
       "scripts/m1-shipped-boot/journey.mjs:capture-failed",
+      "scripts/lib/m1-shipped-boot.mjs:carry = joined.slice(",
+      "scripts/lib/m1-shipped-boot.mjs:ACCUMULATES: a prefix may span",
+      "scripts/lib/m1-shipped-boot.mjs:LENGTH floor",
     ].sort(),
   );
 });
