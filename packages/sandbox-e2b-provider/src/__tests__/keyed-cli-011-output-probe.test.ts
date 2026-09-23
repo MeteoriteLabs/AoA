@@ -290,15 +290,35 @@ export async function sdkList(
   }
 }
 
+/**
+ * ★★★ CLI-012 CHANGED THE INSTRUMENT, AND THE CHANGE IS RECORDED RATHER THAN HIDDEN.
+ *
+ * `t.listDir` returned `readonly string[]` when this probe ran (run `35833717162`) and now returns
+ * per-entry `{path, sizeBytes, symlink}` (ruling F7, `E7-D11`). `paths` keeps its old MEANING — the
+ * paths the transport returned — so `includesL1` still reads what it always read and the committed
+ * record's `S-P5` reading stays comparable. `markedLinks` is ADDED, not substituted: on a re-run it
+ * records the fact CLI-012 created, namely that the link is no longer indistinguishable from a
+ * file. **The committed record (`tickets/CLI-011-probe-record.json`) is a measurement of the OLD
+ * transport and is not rewritten.**
+ */
 async function transportListDir(t: E2bTransport, id: string, path: string) {
   try {
-    const paths = await Promise.race([
+    const entries = await Promise.race([
       t.listDir(id, path),
       new Promise<never>((_, rej) => setTimeout(() => rej(new Error(`listDir exceeded ${LIST_DIR_TIMEOUT_MS} ms`)), LIST_DIR_TIMEOUT_MS)),
     ]);
-    return { outcome: "ok", paths: [...paths] };
+    return {
+      outcome: "ok",
+      paths: entries.map((entry) => entry.path),
+      markedLinks: entries.filter((entry) => entry.symlink).map((entry) => entry.path),
+    };
   } catch (err) {
-    return { outcome: "threw", paths: [], error: safe(`${String((err as Error)?.name)}: ${String((err as Error)?.message ?? err)}`, 300) };
+    return {
+      outcome: "threw",
+      paths: [] as string[],
+      markedLinks: [] as string[],
+      error: safe(`${String((err as Error)?.name)}: ${String((err as Error)?.message ?? err)}`, 300),
+    };
   }
 }
 
@@ -481,7 +501,7 @@ async function p011a(): Promise<Verdict[]> {
           const readL1 = { outcome: r.outcome, equalsPrompt: r.bytes !== null && DEC.decode(r.bytes) === S_P1_PROMPT, detail: r.detail };
           const tl = await transportListDir(t, id, OUTPUT_ROOT);
           evidence("S-P5", { list: { outcome: list.outcome, detail: list.detail, ...listingForRecord(list.entries) }, readL1, transportListDir: { ...tl, paths: tl.paths.slice(0, LISTING_RECORD_LIMIT), count: tl.paths.length } });
-          return verdictSymlinks({ list, readL1, transportListDir: { outcome: tl.outcome, count: tl.paths.length, includesL1: tl.paths.includes(`${OUTPUT_ROOT}/l1`), error: (tl as { error?: string }).error ?? null } }) as Verdict;
+          return verdictSymlinks({ list, readL1, transportListDir: { outcome: tl.outcome, count: tl.paths.length, includesL1: tl.paths.includes(`${OUTPUT_ROOT}/l1`), markedAsLink: tl.markedLinks.includes(`${OUTPUT_ROOT}/l1`), error: (tl as { error?: string }).error ?? null } }) as Verdict;
         }),
       );
 

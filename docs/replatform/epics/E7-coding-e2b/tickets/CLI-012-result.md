@@ -136,6 +136,29 @@ means a closed window no longer stops the loop by throwing out of it — the seq
 and mint a grant for every remaining file against a dead fence. Hence the optional `isOpen` latch,
 supplied by `runExportWindow`.
 
+### 2.6 Three consumers the widened `listDir` reached, found by sweeping for them
+
+`listDir` is a shared seam, so widening it reaches past this ticket's file list. All three were swept
+for and fixed; none changes a contract.
+
+- **`server/src/services/sandbox-coding-staging.ts`** — `FileStagingTransport.listDir` is declared
+  with a doc comment claiming `E2bTransport` is **structurally assignable** to it. Widened to
+  `readonly { readonly path: string }[]` so that claim stays TRUE: the seam names only `path`, stays
+  provider-neutral, and `E2bDirEntry` carries its extra fields besides. (The method has no caller in
+  that service; the test stub was updated with it.)
+- **`server/src/__tests__/cli-008-unit-b-staging-channel.integration.test.ts`** — iterates a listing
+  to snapshot files. ★ **Caught by the Linux `verify` shard, not locally**: that suite is
+  `describe.skipIf(win32)` and executes ZERO tests on Windows, so its evidence has to come from CI,
+  and it did — `verify (3)` on `8b487893f`, `1 failed | 6037 passed`. Fixed at source.
+- **`packages/sandbox-e2b-provider/src/__tests__/keyed-cli-011-output-probe.test.ts`** — the P-011
+  probe. ★★★ **This is a MEASUREMENT INSTRUMENT, so it was changed conservatively and the change is
+  recorded.** `paths` keeps its old meaning (the paths the transport returned), so the `S-P5`
+  reading `includesL1` still reads what it always read and stays comparable with the committed
+  record; `markedLinks` / `markedAsLink` is **added, not substituted**, so a re-run records the new
+  fact — the link is no longer indistinguishable from a file — instead of losing it. **The committed
+  record `tickets/CLI-011-probe-record.json` is a measurement of the OLD transport and is NOT
+  rewritten.**
+
 ---
 
 ## 3. `E7-D08` — the `kind` decision, and it does NOT move a counter
