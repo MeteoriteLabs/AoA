@@ -35,6 +35,20 @@ import { MockE2bTransport } from "@armyofagents/sandbox-e2b-provider/mock-transp
 
 import { UPLOAD_REDEMPTION_RETENTION_MS, createProviderServer } from "../server.js";
 
+/**
+ * CLI-012 (SD-5, planning-session ruling on the result doc's §11.9) — a PRESENT, CLEAN export
+ * scanner.
+ *
+ * ★ `E2bSandboxProvider.exportArtifact` now REFUSES fail-closed while no scanner is configured,
+ * keyed on its PRESENCE rather than on a flag, so that the SD-5 refusal ships before
+ * `CLI-017-B`'s scanner does. This suite asserts the NETWORKED WIRE's gating, ownership and
+ * idempotency — a different property — so it supplies a clean one. The refusal itself is proved,
+ * with its positive control and its anti-vacuity arm, in the provider package's
+ * `enumerate-and-bounded-read.test.ts`.
+ */
+const CLEAN_SCAN = (): void => undefined;
+
+
 const NOW = 1_700_000_000_000;
 const UNIFORM_ERR_BODY = JSON.stringify({ err: { name: "ResourceNotAvailableError", message: "resource not available" } });
 
@@ -163,8 +177,8 @@ async function startServer(
     opts.exportMode === "none"
       ? new (class extends E2bSandboxProvider {
           override readonly artifactExportMode = "none" as const;
-        })({ transport, performUploadGrant })
-      : new E2bSandboxProvider({ transport, performUploadGrant });
+        })({ transport, performUploadGrant, scanExportBytes: CLEAN_SCAN })
+      : new E2bSandboxProvider({ transport, performUploadGrant, scanExportBytes: CLEAN_SCAN });
   // Records the ctx.deadlineMs the ROUTE hands the provider's exportArtifact.
   const provider = new Proxy(base, {
     get(target, prop) {

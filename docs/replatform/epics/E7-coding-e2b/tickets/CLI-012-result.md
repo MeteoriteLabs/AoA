@@ -575,6 +575,16 @@ control being real. Those suites assert other properties of the export path and 
 scanner (`artifact-export.test.ts`, `put-grant-bytes.test.ts`, and the `E7-F039` arms in
 `enumerate-and-bounded-read.test.ts`); the refusal itself is proved with its own controls.
 
+★★★ **AND THE BLAST RADIUS CROSSED A PACKAGE, which a local run MISSED and CI caught.**
+`verify (3)` on `d03168c86` failed `packages/adapter-manager/src/__tests__/server-artifact-export.test.ts`
+(8 arms). The local adapter-manager run had passed because it resolved
+`@armyofagents/sandbox-e2b-provider` through its **stale `dist`**, while CI builds from source —
+so a cross-package control change is not proven by a local suite until the dependency is rebuilt.
+That suite now supplies a clean scanner too, and the packages were re-run after
+`pnpm --filter sandbox-e2b-provider build`: `adapter-manager 204 passed`,
+`worker-daemon 1256 passed, 1 skipped`, `provider-wire 87 passed, 1 skipped`,
+`sandbox-fake-provider 91 passed`, `sandbox-e2b-provider 193 passed, 32 skipped`.
+
 #### The RED the ruling named, and the GREEN
 
 | Arm | Evidence |
