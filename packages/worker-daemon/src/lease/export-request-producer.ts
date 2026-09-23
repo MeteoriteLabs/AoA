@@ -76,6 +76,28 @@ export const MAX_OUTPUT_FILES = 64;
 export const MAX_OUTPUT_DEPTH = 8;
 
 /**
+ * ★★★ THE REFUSAL CHANNEL'S OWN BOUND — `E7-F041`, closed by the 2026-09-24 class sweep.
+ *
+ * THE CLASS: *an unbounded per-item emission past a cap.* Round 5 of PR #576 bounded this channel
+ * at the **accepted**-file cap (`MAX_OUTPUT_FILES`), and that bound is reachable only through
+ * ACCEPTANCE: the `output_symlink_refused`, `output_too_large` and `output_path_escaped` branches
+ * each refuse and `continue` without touching `requests`, so a listing made up ENTIRELY of refused
+ * entries never advances the counter and emitted one record per entry — up to
+ * `E2B_LIST_DIR_MAX_ENTRIES` (100,000) of them, from a listing a tenant authors for free.
+ *
+ * So the channel is bounded HERE, on itself, rather than on acceptance: the first
+ * {@link MAX_REFUSALS_PER_REASON} refusals of each reason are emitted individually, and everything
+ * after that is folded into ONE aggregated record per reason carrying its count. A refusal is
+ * therefore never lost — only summarised — and the number of emissions per invocation is at most
+ * `2 × MAX_REFUSALS_PER_REASON × |OutputRefusalReason|`, independent of the listing's length.
+ *
+ * ★ PER REASON, not per invocation, deliberately: a run that hits 100,000 symlinks and one
+ * oversized file must still SEE the oversized file, which a single global budget spent by the
+ * symlinks would hide.
+ */
+export const MAX_REFUSALS_PER_REASON = 4;
+
+/**
  * Why one enumerated entry was NOT turned into an export request.
  *
  * ★ PATH-FREE BY CONSTRUCTION. Every value is a fixed snake_case token: the paths are
@@ -97,9 +119,11 @@ export type OutputRefusalReason =
 export interface OutputRefusal {
   readonly reason: OutputRefusalReason;
   /**
-   * ★ HOW MANY ENTRIES THIS ONE REFUSAL STANDS FOR — present only on the aggregated refusal the
-   * file-count cap emits. *Added 2026-09-23 (Codex round 5, PR #576).* A number, so it stays
-   * path-free and safe in a log line or a metric label, exactly like `reason`.
+   * ★ HOW MANY ENTRIES THIS ONE REFUSAL STANDS FOR — present only on an AGGREGATED refusal.
+   * *Added 2026-09-23 (Codex round 5, PR #576)* for the file-count cap; also carried, since the
+   * 2026-09-24 class sweep, by the per-reason tail record {@link MAX_REFUSALS_PER_REASON} emits.
+   * A number, so it stays path-free and safe in a log line or a metric label, exactly like
+   * `reason`. Its ABSENCE means "exactly one entry", never "an unknown number".
    */
   readonly count?: number;
 }
@@ -187,7 +211,7 @@ function depthUnder(root: string, path: string): number {
 export function createExportRequestProducer(deps: CreateExportRequestProducerDeps) {
   const outputRoot = (deps.outputRoot ?? DEFAULT_OUTPUT_ROOT).replace(/\/+$/, "");
   const contentTypeFor = deps.contentTypeFor ?? contentTypeForPath;
-  const refuse = (reason: OutputRefusalReason, count?: number): void => {
+  const emit = (reason: OutputRefusalReason, count?: number): void => {
     try {
       deps.onRefused?.(count === undefined ? { reason } : { reason, count });
     } catch {
@@ -200,6 +224,33 @@ export function createExportRequestProducer(deps: CreateExportRequestProducerDep
   > => {
     const enumerate = input.enumerate ?? deps.enumerate;
     const entries = await enumerate(outputRoot);
+
+    // ★ PER INVOCATION, not per producer (`E7-F041`). ONE producer is built at the composition
+    // root and serves every run, so a budget living in the factory closure would be spent by the
+    // first noisy run and would silence every later one — a cross-run coupling, and with the
+    // daemon multi-tenant that would be one Organization's listing muting another's refusals.
+    const emitted = new Map<OutputRefusalReason, number>();
+    const suppressed = new Map<OutputRefusalReason, number>();
+    const refuse = (reason: OutputRefusalReason, count?: number): void => {
+      // An ALREADY-aggregated refusal (the terminal file-count cap) is one record standing for
+      // many and is never itself suppressed — it IS the bound at that site.
+      if (count !== undefined) {
+        emit(reason, count);
+        return;
+      }
+      const seen = emitted.get(reason) ?? 0;
+      if (seen < MAX_REFUSALS_PER_REASON) {
+        emitted.set(reason, seen + 1);
+        emit(reason);
+        return;
+      }
+      suppressed.set(reason, (suppressed.get(reason) ?? 0) + 1);
+    };
+    /** Fold each reason's suppressed tail into ONE record. Always called, on every exit path. */
+    const flushSuppressed = (): void => {
+      for (const [reason, count] of suppressed) if (count > 0) emit(reason, count);
+      suppressed.clear();
+    };
 
     const requests: ArtifactExportRequest[] = [];
     let totalBytes = 0;
@@ -253,6 +304,7 @@ export function createExportRequestProducer(deps: CreateExportRequestProducerDep
         retention: deps.retention,
       });
     }
+    flushSuppressed();
     return requests;
   };
 }

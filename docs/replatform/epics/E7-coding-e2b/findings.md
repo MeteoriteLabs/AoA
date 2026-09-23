@@ -4215,7 +4215,25 @@ of the sweep's result, not an omission from it.
 
 ## E7-F041 — the producer's refusal channel is bounded only by the ACCEPTED-file cap, so a listing of entries that are all refused still emits one record per entry
 
-**Status:** open · **Owner:** `unowned` · **Severity:** LOW
+**Status:** resolved (2026-09-24, the class sweep) · **Owner:** `unowned` at filing · **Severity:** LOW
+
+**Resolved by** `createExportRequestProducer`'s own refusal budget
+(`packages/worker-daemon/src/lease/export-request-producer.ts`, `MAX_REFUSALS_PER_REASON` and the
+`refuse`/`flushSuppressed` pair inside the returned producer). The channel is now bounded ON ITSELF
+rather than on acceptance: the first `MAX_REFUSALS_PER_REASON` refusals of each reason are emitted
+individually and the remainder is folded into ONE aggregated record per reason carrying its count,
+so emissions per invocation are at most `2 × MAX_REFUSALS_PER_REASON × |OutputRefusalReason|`
+whatever the listing's length. The budget is PER INVOCATION, not per producer — one producer is
+built at the composition root and serves every run, so a factory-closure budget would have let one
+Organization's listing silence the next one's refusals (founder ruling F10). Proven by the
+`E7-F041` describe block in `packages/worker-daemon/src/__tests__/export-request-producer.test.ts`:
+three 100,000-entry all-refused listings (symlink, oversized, escaped), each asserting the bound
+AND the non-vacuity arm that every entry is accounted for in the emitted counts; a per-reason arm;
+an under-budget arm proving nothing is aggregated below the cap; and the cross-invocation arm.
+Mutations M3 (unbound the budget), M4 (drop the flush) and M5 (hoist the budget into the factory)
+each red it. The finding text below is preserved verbatim as filed.
+
+**Status at filing:** open · **Owner:** `unowned` · **Severity:** LOW
 
 **What it is.** `createExportRequestProducer` calls `onRefused` per rejected entry, and production
 wires that to a `logger.warn`. `CLI-012` (PR #576, round 5) bounded that channel by aggregating at
@@ -4254,3 +4272,48 @@ prevent. Recorded as unowned **on the record** so the next ticket touching
 **Filed:** 2026-09-23. Raised by Codex on PR #576 (round 6) against `CLI-012`'s own round-5 fix,
 verified at source, and **filed rather than fixed** by the planning session's standing ruling that
 after the round-5 push anything further on `#576` becomes a named finding rather than another fix.
+
+## E7-F042 — the supervisor's `withDeadline` bounds the SUPERVISOR, and two of its dependency seams take no signal at all, so a raced-out redemption or staged-input resolve keeps running
+
+**Status:** open · **Owner:** `unowned` · **Severity:** LOW
+
+**The class.** *A bounded operation that returns at its deadline without aborting the underlying
+work.* `CLI-012` swept it inside `E2bSandboxProvider` (5 `boundedBySignal` sites; three fixed, one
+recorded as `E7-F040`). The 2026-09-24 sweep widened the scope to every timeout/deadline wrapper in
+the repo, and this entry records what it found OUTSIDE that provider.
+
+**What was checked** (the search is quotable, not remembered):
+`grep -rn "Promise.race\|AbortSignal.timeout\|withTimeout\|boundedBySignal" --include=*.ts
+--include=*.mjs server packages scripts ui | grep -v node_modules` — 46 non-test sites. Every
+`AbortSignal.timeout(…)` passed as a `fetch`/SDK `signal:` option (the majority) is NOT in the
+class: the signal reaches the operation. The `Promise.race` wrappers were read individually.
+
+**In the class, and recorded here:**
+
+- `Supervisor.withDeadline` (`packages/worker-daemon/src/supervisor/supervisor.ts`) applied to
+  `deps.materializeRunSecrets(handoff)` and `deps.resolveStagedFiles({ handoff })`. Both dependency
+  signatures take NO `AbortSignal` and no `ProviderOpContext`, so a raced-out redemption or store
+  resolve is abandoned, not cancelled. Both timeout arms DO emit a durable terminal and call
+  `escalateCleanup`, so the run does not hang — the residue is an in-flight redemption/fetch nobody
+  consumes, which is why this is LOW and not higher.
+- `Supervisor.withDeadline` applied to `run.effect.stageFiles(…)`. Already recorded IN CODE at that
+  call site (`transport.writeFiles`/`fetch` accept no abort signal); recorded here so the register,
+  not only a comment, carries it.
+
+**Explicitly NOT in the class:** the `withDeadline` races around `run.effect.create` and
+`run.effect.execute` — both hand the operation `run.makeCtx()`, whose `deadlineMs` is what the E2B
+provider turns into its own `AbortSignal.timeout`, so the inner work IS bounded and the race is a
+declared supervisor-side backstop for a provider that ignores it.
+
+**Why `unowned` rather than a named ticket.** Closing it widens `SupervisorDeps` — a cross-package
+interface change with its own callers and conformance suites — and no chartered ticket owns those
+two seams: `CLI-012` is shipped (`CLI-012-result.md`, `Status: gate_review`), `CLI-017` owns the
+SD-1b directive and SD-5, and `DAT-008` (which built `materializeRunSecrets`) is shipped. Naming any
+of them would be the invented ownership this manifest exists to prevent.
+
+**What would close it.** An optional `AbortSignal` on both dep signatures, threaded from the same
+deadline the race uses, with the `CLI-012` proof shape: assert the dep RECEIVED a signal (non-vacuity
+— not `undefined`) and that it FIRED, plus an in-deadline arm whose signal stays unaborted. A
+timing-only test passes against the defect verbatim.
+
+**Filed:** 2026-09-24 by the class sweep, verified at source on `c4faf2587e`.

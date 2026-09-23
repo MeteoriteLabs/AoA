@@ -1857,3 +1857,38 @@ its log-surface control as broader than it is. Resolve = a producer-side rule (a
 emits key material) or a framing-aware join with a measured threshold that provably leaves the
 sandbox-evidence line intact, proven by a control that reds without it; then flip this Status and
 delete the `E6-F026` key in `scripts/finding-ownership.json` in the SAME commit.
+
+## E6-F027 — `leakScan` emits one `::error::` annotation per finding, with no aggregation, over a surface whose line count the run does not bound
+
+**Status:** open · **Owner:** `unowned` · **Severity:** LOW
+
+**The class.** *An unbounded per-item emission past a cap.* Swept 2026-09-24 alongside the
+`export-request-producer` fix (`E7-F041`), which is the same shape in the worker.
+
+**The site.** `leakScan` (`scripts/m1-shipped-boot/journey.mjs`) prints one
+`console.error("::error::DEP-015 …")` per element of `findings` and per element of `keyMaterial`.
+`scanForKeyMaterial` produces one finding per matching LINE of `job-log.txt`, and the captured job
+log's length is a function of what the phases printed — not a bound this driver sets. A log with a
+long run of key-material-shaped lines therefore mints one annotation per line.
+
+**Verified at source before filing**, on `c4faf2587e` plus this sweep's own change: the two
+emission loops in `leakScan` iterate the finding arrays directly and neither is capped nor grouped.
+
+**Why it is LOW, and why it was NOT fixed in the same PR that fixed the worker's instance.** The
+emission happens only on the failure path, which deletes the bundle and fails the job, so it cannot
+affect what is PUBLISHED and cannot be reached by a passing run. GitHub renders at most ten
+annotations per step regardless, so the operator-visible surface is already bounded by the consumer.
+And the counts are load-bearing evidence in this lane's own committed positive controls
+(`scripts/lib/__tests__/m1-shipped-boot.test.mjs`), so changing the emission shape without a DEP
+owner's ruling would rewrite what those controls assert about a security scan — the wrong trade for
+a bound nothing currently needs.
+
+**Why `unowned`.** `DEP-015` owns this driver and is shipped (`DEP-015-result.md`); no open DEP
+ticket owns the leak scan's output shape. Naming one would be an invented owner.
+
+**What would close it.** Group the emissions by `(surface, secret|marker)` and emit one annotation
+per group carrying a count — the same remedy `E7-F041` took — with a non-vacuity arm showing every
+finding is still accounted for in the counts, and the existing positive controls updated in the same
+commit by the owner.
+
+**Filed:** 2026-09-24 by the class sweep.
