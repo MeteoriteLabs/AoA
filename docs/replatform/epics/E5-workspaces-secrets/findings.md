@@ -466,15 +466,14 @@ arbitrary constant - would trade a real ceiling for a decorative one.
 `E2bTransport`, refuses above `grant.maxBytes` BEFORE materializing bytes, gives `digestArtifact` the
 same ceiling, and proves both with a case that never allocates the oversized buffer.
 
-★★★ **CLOSING TICKET NAMED 2026-09-23: `CLI-012` (E7). The declaration stays `unowned` until
-`CLI-012` has a ticket file.** *Updated with ruling F7
+★★★ **OWNER 2026-09-23: `CLI-012` (E7)** — `epics/E7-coding-e2b/tickets/CLI-012-design.md`. *Updated with ruling F7
 (`epics/E7-coding-e2b/decisions.md`, `E7-D11`); raised by Codex on PR #575. The manifest
 (`scripts/finding-ownership.json`, key `E5-F009`) is updated in the same commit.*
-★ **Why it is not declared `owned`:** `check-finding-ownership` tests `tickets.has(entry.ticket)` and
-`findTicketIds` derives ids from files under `epics/*/tickets/`; `CLI-012` has a graph node and a plan
-task but **no ticket file**, so naming it today would trip `owner_ticket_missing`. This flips to
-`owned: CLI-012` in the commit that gives `CLI-012` its first ticket file, and not before — a false
-claim of ownership is worse than a declared `unowned`. `CLI-012` is the
+★ *The flip happened in the commit it was promised for.* This entry previously read: *"Why it is not
+declared `owned`: `check-finding-ownership` tests `tickets.has(entry.ticket)` … `CLI-012` has a graph
+node and a plan task but **no ticket file** … This flips to `owned: CLI-012` in the commit that gives
+`CLI-012` its first ticket file, and not before — a false claim of ownership is worse than a declared
+`unowned`."* That file now exists, created so `E7-F039` could clear the same guard bar. `CLI-012` is the
 ticket this entry was already describing — it owns the enumeration port and is the first production
 producer of `ArtifactExportRequest[]`. **And a separate `stat` op turns out not to be needed:** the
 `CLI-011` P-011 probe measured on a live sandbox (run

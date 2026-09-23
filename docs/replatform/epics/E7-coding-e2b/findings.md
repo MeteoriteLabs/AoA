@@ -4091,3 +4091,74 @@ boundary design has its RED already written, and a build that quietly flips them
 ruling has improvised a boundary — which the row says in terms.
 
 **Blocks gate:** no. It does not block `M1b`; it must not be read as closed by `CLI-017-B` shipping.
+
+---
+
+## E7-F039 — the symlink refusal is a check-then-read pair: a swap between `lstat` and the read is exported through the link's target, and the re-hash refusal passes
+
+**Status:** open · **Owner:** `CLI-012` (`epics/E7-coding-e2b/tickets/CLI-012-design.md`, no result doc) · **Severity:** MEDIUM
+**Filed:** 2026-09-23, with ruling **F7** (`../decisions.md`, `E7-D11`). Raised by Codex on PR #575,
+verified by reading the code before filing, and **ruled a bounded residual rather than a blocker** by
+the planning session under F2.
+
+**What.** `A-O2-4` requires a symlink under the output root to be refused: unrefused,
+`R/l1 → /home/user/.aoa-run-prompt.md` exports the run's **own staged input** as its output, and
+`R/l1 → /proc/self/environ` exports its **environment**. The refusal `CLI-012` is authorized to build
+when the SDK exposes no no-follow primitive is a **per-entry `lstat`** — and that is the *check* half
+of a check-then-read pair. `lstat` inspects a **path**; the later read **re-resolves** that path. A
+background process the agent left running (the `A-O2-9` class, and `W7`) can swap the file between the
+two, and the read follows the link.
+
+**Why the existing TOCTOU control does not catch it.** `exportArtifact` re-hashes and refuses a
+mismatch, which is what makes `A-O2-9` (a file still being written) safe. It does **not** help here:
+the swapped-in **target is stable**, so digest and export read the same bytes and the re-hash
+**passes**. The probe measured the enabling fact — `readFollowsLink=true`, arm `S-P5`, run
+`35833717162`.
+
+**Why it is BOUNDED — and the bound is `SD-5`, a ruled clause, not a coincidence.**
+
+1. **It is not cross-tenant.** The sandbox is **per-run and single-tenant**: every supervisor op mints
+   a fresh `randomUUID` idempotency key, so `E2bSandboxProvider.create` never reuses a sandbox across
+   attempts (`CLI-011-review.md` `A-O2-12`). A successful swap therefore reads a file in the
+   **tenant's own** sandbox — its own staged prompt, its own environment — never another tenant's.
+   Founder ruling **F10**'s line is not crossed.
+2. **The one materially damaging outcome is refused by `SD-5`.** What makes an exported symlink target
+   harmful is a **redeemed secret reaching durable storage**, and `SD-5` (`E7-D11` §3) has
+   `E2bSandboxProvider.exportArtifact` refuse bytes carrying any secret-classified value of the run's
+   own `env`. **`SD-5` is ruled IN and REQUIRED before `M1b`'s campaign**, so the bound ships with the
+   mechanism rather than after it.
+
+★★★ **IF `SD-5` IS EVER DESCOPED OR WEAKENED, THIS RESIDUAL IS NO LONGER BOUNDED AND THE IN-SANDBOX
+ATOMIC READ BECOMES REQUIRED.** That is the dependency this entry exists to make discoverable from the
+register side: a bound recorded only inside a decision document is invisible to anyone auditing what
+depends on `SD-5`.
+
+**What `CLI-012` owes, and where the line is.** Its real-run acceptance carries a **deliberate
+symlink-swap attempt**. Exactly two outcomes are acceptable: **(i)** the `lstat` check refuses it, or
+**(ii)** it exports and **`SD-5`'s scan refuses the bytes**.
+★★★ **A swap that produces a STORED artifact containing the planted canary is a FAIL of `CLI-012`, not
+a residual.** That case is the entire difference between a bound and a hole, so it is **run and
+recorded**, never reasoned about.
+
+**Severity — MEDIUM, argued both ways.** *For lower:* it is tenant-scoped, needs an adversarial or
+injected agent plus a race, changes no shipped behaviour (nothing produces output today), and its
+damaging outcome is refused by a control ruled in alongside it. *For higher:* it can export the run's
+**own input or environment** as its "output", which is the `§4.3` class the whole output mechanism was
+designed to exclude, and `E7-D01`'s discipline applies — a refusal that loses a race is not a proof of
+containment. It is **not LOW**, because the thing standing between it and a stored credential is a
+single other clause.
+
+**The closure route, recorded and NOT required now.** An **in-sandbox atomic read**: open with
+`O_RDONLY|O_NOFOLLOW` and stream from the **file descriptor** through `runCommand`, so the inode
+inspected is the inode read. ★ **UNVERIFIED** — proposed from the template's contents
+(`e2b/e2b.Dockerfile` installs `python3`) and `E2bTransport.runCommand`'s existence, **not measured**;
+no `node_modules/e2b` was available to the session that proposed it and no keyed run was authorized.
+Its cost is real and unpriced: running an interpreter **inside the tenant's sandbox during export**,
+plus encoding and bounding a byte path that is a direct provider PUT today. On the data-plane
+question: `E7-D06`'s operative rule is *"No payload crosses the **dependency-pinned daemon**"*, and
+`digest_artifact`/`export_artifact` already materialise bytes in the **adapter-manager**
+(`packages/adapter-manager/src/server.ts` — that materialisation is `E5-F009`'s subject), so this
+route is **not obviously** a breach. **Measure it if the route is taken; do not assert it either way.**
+
+**Blocks gate:** no. It does not block `M1b`, and it is **not closed by `CLI-012` shipping a
+`lstat`** — only by the swap-attempt acceptance passing, and ultimately by the atomic read.
