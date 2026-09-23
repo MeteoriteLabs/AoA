@@ -59,6 +59,7 @@ export const CANDIDATE_CONTROL_MARKERS = [
   ["scripts/lib/m1-shipped-boot.mjs", "carry = joined.slice("],
   ["scripts/lib/m1-shipped-boot.mjs", "ACCUMULATES: a prefix may span"],
   ["scripts/lib/m1-shipped-boot.mjs", "LENGTH floor"],
+  ["scripts/lib/m1-shipped-boot.mjs", "stripLogPrefix"],
 ];
 
 export const EVIDENCE_UPLOAD_PATH = "${{ env.M1_OUT }}/evidence/";

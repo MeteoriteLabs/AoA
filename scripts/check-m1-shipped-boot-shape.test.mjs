@@ -295,6 +295,7 @@ test("the candidate-controls gate covers the whole control set, the log FILTER i
       "scripts/lib/m1-shipped-boot.mjs:carry = joined.slice(",
       "scripts/lib/m1-shipped-boot.mjs:ACCUMULATES: a prefix may span",
       "scripts/lib/m1-shipped-boot.mjs:LENGTH floor",
+      "scripts/lib/m1-shipped-boot.mjs:stripLogPrefix",
     ].sort(),
   );
 });

@@ -416,6 +416,20 @@ const BASE64_RUN = /[A-Za-z0-9+/_-]{40,}={0,2}/;
 const BASE64_CONTINUATION = /^[A-Za-z0-9+/_-]+={0,2}$/;
 
 /**
+ * A per-line LOG PREFIX, removed before a line is judged.
+ *
+ * ★ Why (Codex P1, PR #574): this lane's own collector runs `docker compose logs`, which prefixes
+ * every line with its service — `m1-worker-a  | …`, optionally after a timestamp. Removing only
+ * whitespace leaves those repeated tokens INSIDE the joined window, so a wrapped DER prefix never
+ * matches and, at a narrow wrap, nothing else fires either. The prefix comes off first, on both
+ * surfaces, so the fragments join as they were written.
+ */
+const LOG_PREFIX = /^\s*(?:\d{4}-\d\d-\d\dT[\d:.]+Z?\s+)?[\w.-]+\s*\|\s?/;
+export function stripLogPrefix(line) {
+  return String(line ?? "").replace(LOG_PREFIX, "");
+}
+
+/**
  * A STATEFUL line redactor for the published Actions log: the whole PEM BLOCK, not only the lines
  * that match a marker.
  *
@@ -436,7 +450,10 @@ export function createLineRedactor() {
   return (line) => {
     const text = String(line ?? "");
     if (text.startsWith(MASK_DIRECTIVE_PREFIX)) return text;
-    const stripped = text.replace(/\s+/g, "");
+    // The service prefix `svc | ` is not part of the payload, and leaving it in the window breaks
+    // every join (Codex P1, PR #574).
+    const body = stripLogPrefix(text);
+    const stripped = body.replace(/\s+/g, "");
     const joined = carry + stripped;
     // ★ The tail of JOINED, not of this line (Codex P1, PR #574): at an 8-character wrap the
     // 21-character prefix spans three lines, and a window of one line never sees it whole.
@@ -457,7 +474,7 @@ export function createLineRedactor() {
     // but base64 — is redacted too. The first line that is not pure base64 ends the block and is
     // published normally: ordinary output resumes at the first ordinary line.
     if (insideDerBlock) {
-      const trimmed = text.trim();
+      const trimmed = body.trim();
       // The WHOLE line, not its stripped form: a line with spaces in it is prose, not a wrap. No
       // LENGTH floor (Codex P2, PR #574): a 64-character body wrapped at 12 ends in a 4-character
       // line, and that line is key bytes like any other.
@@ -547,7 +564,7 @@ export function scanForKeyMaterial(files, { skipMaskDirectives = true } = {}) {
           continue;
         }
       }
-      const stripped = line.replace(/\s+/g, "");
+      const stripped = stripLogPrefix(line).replace(/\s+/g, "");  // `svc | ` is not payload.
       const joined = carry + stripped;
       carry = joined.slice(-JOIN_CARRY_CHARS);  // ACCUMULATES: a prefix may span any number of lines.
       for (const { marker, pattern } of KEY_MATERIAL_MARKERS) {

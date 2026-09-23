@@ -869,5 +869,16 @@ They are recorded because each would have made the control worse than none:
     both holes under a green gate. Three of the greps are now BEHAVIOURAL — the accumulating
     carry in the redactor and in the scan, and the floorless latch — and each was verified to be
     absent from `aa884b517` and `d6460dc24` and present at this head. Measured, not assumed.
+18. **A per-line LOG PREFIX broke every join.** This lane collects with `docker compose logs`, so
+    a worker line arrives as `m1-worker-a  | …`. Stripping only whitespace left those repeated
+    tokens inside the joined window, so a wrapped DER prefix never matched on either surface — and
+    at a narrow wrap nothing else fired either. `stripLogPrefix` now removes a service prefix (and
+    an optional leading timestamp) before a line is judged, in the redactor and in the scan.
+
+    A pipe in ORDINARY prose is over-stripped by that rule, which is safe by construction: the
+    stripped form is only what a line is JUDGED by, and what the filter publishes is the line
+    itself — a control asserts both halves. Two mutations (the strip removed, the scan keeping the
+    prefix) each red a test, and the gate grows a seventh behavioural marker, verified absent from
+    `aa884b517` and `3889924c6`.
 **Status unchanged.** This is a control added after the fact to a run that was already clean; it
 neither re-opens nor re-decides §12's keyed acceptance.

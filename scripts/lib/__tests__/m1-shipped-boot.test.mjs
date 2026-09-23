@@ -708,7 +708,7 @@ test("the driver emits directives through the shared helper, never ad hoc", () =
 
 // === Codex P1/P2 (second round, PR #574): publish redacted, capture raw ======================
 
-import { redactKeyMaterialLine, createLineRedactor } from "../m1-shipped-boot.mjs";
+import { redactKeyMaterialLine, createLineRedactor, stripLogPrefix } from "../m1-shipped-boot.mjs";
 
 test("POSITIVE CONTROL: an UNREGISTERED key is redacted on its way to the published log", () => {
   // Masking covers only registered values. This is the re-run / operator-key case: nothing knows
@@ -958,4 +958,32 @@ test("POSITIVE CONTROL: the FINAL short continuation of a wrap is redacted too (
   assert.equal(wrapped.at(-1).length, 4, 'the tail must be shorter than any length floor');
   const published = wrapped.map(createLineRedactor());
   assert.match(published.at(-1), /\[REDACTED: key material \(der_block\)/);
+});
+
+test("POSITIVE CONTROL: a COMPOSE-PREFIXED wrap still joins — `svc | ` is not payload (Codex P1)", () => {
+  // This lane's own collector runs `docker compose logs`, so every worker line arrives prefixed.
+  const key = 'MC4CAQAwBQYDK2VwBCIEIG' + 'HhSeedBytes'.repeat(4);
+  for (const prefix of ['m1-worker-a  | ', '2026-09-23T09:26:17.468Z m1-worker-a | ']) {
+    const wrapped = key.match(/.{1,8}/g).map((frag) => prefix + frag);
+    const redact = createLineRedactor();
+    const published = wrapped.map(redact);
+    for (let i = 2; i < wrapped.length; i += 1) {
+      assert.match(published[i], /\[REDACTED: key material /, `${prefix}line ${i + 1}: ${published[i]}`);
+    }
+    const { findings } = scanForKeyMaterial([{ name: 'logs-m1-worker-a.txt', text: wrapped.join('\n') }], { skipMaskDirectives: false });
+    assert.ok(findings.length >= 1, `${prefix}: the scan must see through the log prefix`);
+    assert.equal(findings[0].marker, 'ed25519_pkcs8_der');
+  }
+});
+
+test("stripLogPrefix removes a service prefix and NOTHING else (it must not eat ordinary output)", () => {
+  assert.equal(stripLogPrefix('m1-worker-a  | hello'), 'hello');
+  assert.equal(stripLogPrefix('2026-09-23T09:26:17.468Z cp-a | hello'), 'hello');
+  for (const keep of ['reconcile: 3 Organizations', 'MC4CAQAwBQYD', '']) {
+    assert.equal(stripLogPrefix(keep), keep, keep);
+  }
+  // A pipe in PROSE is over-stripped, and that is safe by construction: the stripped form is only
+  // what the line is JUDGED by. What gets published is the line itself.
+  assert.equal(stripLogPrefix('a | b | c is prose'), 'b | c is prose');
+  assert.equal(createLineRedactor()('a | b | c is prose'), 'a | b | c is prose');
 });
