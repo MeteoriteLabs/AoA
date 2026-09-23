@@ -352,6 +352,20 @@ but its cost is higher than the review's *"about 0.5–1 agent-day, a provider-o
 build that met PC-11 only against synthetic state absent from production would be a check that
 nothing runs.
 
+★★★ **SD-5 IS A LITERAL-VALUE REFUSAL, AND IT DOES NOT CLOSE EXFILTRATION — a named OPEN residual.**
+*Added 2026-09-23 (Codex P1, PR #575).* An agent with shell access can `base64`- or `hex`-encode
+`$ANTHROPIC_API_KEY`, reverse it, or split it across several files; the per-file policy (`E5-D07`)
+then finds no exported file containing the literal value and **every PUT proceeds**. So SD-5 closes
+the case the probe actually measured (`S-P7`, a **verbatim** env value written out) and **not**
+Decision #104's artifact invariant in general. It is the accident and naive-agent control, not a
+secure boundary against a hostile agent. `E7-D01`'s discipline applies: a refusal is not a proof of
+containment. **The residual is recorded as OPEN, not accepted** — unlike `A-O2-8` below, which is
+accepted because it under-claims, this one over-permits. Closing it needs a different boundary (an
+egress/DLP design over the artifact path, or removing the credential from the sandbox environment
+altogether), which is **out of `M1b` and needs its own ruling**; `CLI-017` carries the encoded and
+split cases as **characterisation tests that assert the current pass-through**, so the gap lives in
+the suite rather than in nobody's head.
+
 **Acceptance (this is `CLI-017`'s, and it is the review's PC-11 verbatim in substance):** a planted
 canary env value written into `R/x` makes the export **REFUSE with a classification**, and **a
 provider without the check exports it** — the positive control. A check without that mutation row is
@@ -427,8 +441,12 @@ only, recursive, absolute.
 ### Consequences
 
 - **`CLI-017` is filed by this ruling** — the emit build: the SD-1b directive plus `PC-12`; the `R`
-  constant plus SD-4's single-source check; and SD-5's refusal plus `PC-11`. Its graph node is in
-  `program-design.md` (E7 section) and its task section is in this epic's `implementation-plan.md`.
+  constant plus SD-4's single-source check; and SD-5's handoff and refusal plus `PC-11`. Its graph
+  node is in `program-design.md` (E7 section) and its task section is in this epic's
+  `implementation-plan.md`. ★ It is split into **two slices** (`CLI-017-A`, the directive and `R`;
+  `CLI-017-B`, SD-5), because the Definition of Ready caps a ticket at three agent-days and
+  `CLI-017` is not on its closed exemption list (Codex P2, PR #575). **Both are required** — SD-5 is
+  not the optional half.
 - **`scope-triage.md`'s `M1b` required result set** now names `CLI-017` where it named *"the emit
   build"* with no id.
 - **`CLI-012`'s real-run acceptance pairs with `CLI-017`**: a real run produces a file under `R` only

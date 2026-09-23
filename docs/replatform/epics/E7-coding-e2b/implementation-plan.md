@@ -1395,7 +1395,26 @@ tool surface for the named internal Organization`".*
 
 ---
 
-### `CLI-017` — the EMIT build: the output-root directive (SD-1b), one source of truth for `R`, and the export secret refusal (SD-5) (S–M, ≤2 agent-days +1–1.5 for SD-5, M1b)
+### `CLI-017` — the EMIT build: the output-root directive (SD-1b), one source of truth for `R`, and the export secret refusal (SD-5) (M, **two slices, each inside the three-day cap**, M1b)
+
+★★★ **SIZING — TWO SLICES, AND THE WHOLE IS NEVER ASSIGNED AS ONE.** *Corrected 2026-09-23 (Codex P2,
+PR #575), verified at source.* This section first read *"S–M, ≤2 agent-days +1–1.5 for SD-5"*, which
+permits **3.5** agent-days, and `program-design.md`'s **Definition of Ready** caps every implementation
+ticket at *"no more than three agent-days; otherwise split it"* — with a **closed** exemption list
+(MIG-002/004/005/008, JOB-010…JOB-014, REL-001…REL-005) that does not include `CLI-017`, and which is
+explicitly **not transitive**. So the ticket is split, on the same WRK-008 / DAT-009 pattern the
+programme already uses:
+
+| slice | scope | size |
+|---|---|---|
+| **`CLI-017-A`** | SD-1b's directive + **PC-12**; `R`'s two constants + SD-4's `policy` equality check; acceptance rows 1, 3, 4 and the directive half of row 5 | **≤2 agent-days** |
+| **`CLI-017-B`** | SD-5's sandbox-scoped secret handoff + lifecycle + the export refusal; acceptance rows 2, 6, 7 and the export half of row 5 | **≤1.5 agent-days** |
+
+`CLI-017-B` depends on nothing in `CLI-017-A` and may run in parallel. **Both slices are required
+before `M1b`'s campaign** — SD-5 is ruled REQUIRED (`E7-D11` §3), so a green `CLI-017-A` alone does not
+satisfy this ticket. Each slice writes its own result (`tickets/CLI-017-A-result.md`,
+`tickets/CLI-017-B-result.md`), and the graph keeps one `CLI-017` node, exactly as `WRK-008` and
+`DAT-009` do.
 
 **Depends on:** **ruling F7**, recorded as `E7-D11` in this epic's `decisions.md` — already satisfied.
 Its graph edge is `CLI-011` (`program-design.md`, `#### CLI-017`). **Blocks:** `CLI-012`'s real-run
@@ -1475,6 +1494,29 @@ chosen."* The mechanism ruled is **option 2, a conventional output root**; the p
      operations. If the build finds it cannot be done without a port or wire change, that is a
      **STOP and report**, not an improvisation — `E7-D07` freezes the protocol.
 
+   ★★★ **WHAT SD-5 DOES NOT DO, STATED SO NOBODY READS IT AS CLOSING EXFILTRATION.** *Added
+   2026-09-23 (Codex P1, PR #575).* SD-5 is a **literal-value** refusal. An agent with shell access
+   can `base64`- or `hex`-encode `$ANTHROPIC_API_KEY`, reverse it, or split it across several files —
+   and the per-file policy (`E5-D07`, each file refused or exported on its own) means no single
+   exported file then contains the literal value, so **every PUT proceeds**. PC-11 measures a verbatim
+   canary in one file and **nothing more**, and this ticket must not claim more.
+   - **What SD-5 genuinely buys:** it closes the case the probe actually measured — `S-P7`, a
+     **verbatim** env value written to a file and read back out (`noncePresent=true`). That is the
+     accident and the naive-agent case, and today nothing at all stops it.
+   - **What it does not buy:** it is **not** a secure boundary against a hostile agent, and it does
+     **not** by itself enforce Decision #104's artifact invariant. `E7-D01` already holds that
+     provenance is not productivity; the same discipline applies here — a refusal is not a proof of
+     containment.
+   - **Acceptance row 8 (adversarial, required):** the encoded and split cases are **written as tests
+     that assert the CURRENT behaviour — they pass through**. They are characterisation tests, not
+     aspirational ones: they exist so the gap is in the suite rather than in nobody's head, and so a
+     later boundary design has its RED already written.
+   - **The residual is named and owned, not accepted silently.** *"An agent can exfiltrate a run
+     credential through an artifact in any encoded or split form"* is recorded as **open** against
+     `E7-D11`, and closing it needs a different boundary (an egress/DLP design over the artifact path,
+     or removing the credential from the sandbox's environment altogether). **That is out of `M1b` and
+     needs its own ruling** — this ticket must not improvise one.
+
 **Acceptance (each row names the mutant that must red it):**
 
 | # | acceptance | positive control / mutant |
@@ -1486,6 +1528,7 @@ chosen."* The mechanism ruled is **option 2, a conventional output root**; the p
 | 5 | **Cross-tenant (F10).** Two Organizations dispatching concurrently each get the directive in their own run's prompt, and neither run's directive, root or refusal reads the other's state. **The secret handoff is keyed by `sandboxId`**, so Organization A's secret set is never consulted for Organization B's export | swap the Organization on the second run's context → the assertion on the first run's prompt must not move; feed sandbox B's export against sandbox A's registered set → it must not match, and must not refuse on A's secrets; `R` is a per-sandbox path (review `A-O2-12`) |
 | 6 | **The handoff is fail-closed.** An export for a `sandboxId` with **no registered secret set** (the adapter-manager-restart state) is **refused with a classification** | **make the absent case fall through to an unchecked export → red.** Without this row the whole of SD-5 is bypassable by restarting a process, and `create`'s own state is not durable |
 | 7 | **The secret set is not durable and does not leak.** It is in process memory only — absent from E2B metadata, from `inspect`/`list`, from every log line and from every thrown message | assert against the transport's recorded `metadata` and the op's emitted labels; a mutant that writes it into `metadata` reds, and re-proves `[Cred-1]` (DEP-012 slices 4+5) and Decision #104 |
+| 8 | **The encoded and split cases are characterised, not claimed closed.** A base64/hex/reversed canary, and a canary split across two files, are asserted to **export** — the current behaviour | it is a characterisation row: the mutant is a future boundary design, which must **flip** these two rows to refusals. A build that quietly makes them pass as refusals without a ruling has improvised a boundary |
 
 **Ticket non-goals:** the enumeration port, the producer, the `kind` decision (`E7-D08`) and the
 per-file failure policy — **all `CLI-012`'s**; the announcement (`CLI-013`); the projection

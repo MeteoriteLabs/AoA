@@ -17,8 +17,14 @@ that lives only in a job log is lost."* The workflow uploads the record as a Git
 with `retention-days: 90` (`.github/workflows/keyed-e2b-cli-011-output-probe.yml`), so without a
 committed copy the only detailed evidence behind a **locked** decision expires. The full record is
 committed verbatim beside this file as
-[`CLI-011-probe-record.json`](./CLI-011-probe-record.json) (69,853 bytes, byte-identical to the
-downloaded artifact).
+[`CLI-011-probe-record.json`](./CLI-011-probe-record.json) — **69,853 bytes**, sha256
+`db61e3b071c2557f62c976639c38ca1432d022da78a2a51aa0acf9d7fe7eb5c9`, **byte-identical** to the
+downloaded artifact.
+
+★ *Corrected 2026-09-23 (Codex P2, PR #575), re-measured: the first copy of this file carried an
+extra blank line at EOF, so it was **69,854** bytes and the "byte-identical" claim above was false.
+The blob is now the artifact's own bytes, and the hash is recorded so the claim is checkable rather
+than asserted — `sha256sum` on the file must print the digest above.*
 
 ★ *The review named the file `CLI-011-probe-result.md`. That name is unsafe for the reason in the
 status line above, so the copy is made under `-probe-record`, matching this epic's existing

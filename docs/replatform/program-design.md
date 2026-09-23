@@ -1236,7 +1236,7 @@ evidence.
   `mintRunJwtHandleForPlacement` takes no lease or clock input, so an arming ticket cannot add a
   mint-time check; the observable is denial at use.
 
-#### CLI-017 — Unit F link 2, the EMIT build: tell the agent where to write, and refuse secrets on the way out (S–M)
+#### CLI-017 — Unit F link 2, the EMIT build: tell the agent where to write, and refuse secrets on the way out (M — two slices)
 
 - **Depends on:** CLI-011.
 - **Filed 2026-09-23 by ruling F7 (`epics/E7-coding-e2b/decisions.md`, `E7-D11`), which is the ticket
@@ -1266,6 +1266,15 @@ evidence.
   (`CLI-013`); the projection (`CLI-014`); the counter (`CLI-015`); option 1b's stdout declaration,
   which `E7-D11` records as a post-`M1b` refinement and does not build; any `codex_local` change
   (`E7-D04`).
+- ★ **Two slices, each inside the Definition of Ready's three-day cap** (`CLI-017` is not on its
+  closed exemption list): **`CLI-017-A`** — the directive, `R`'s two constants and the SD-4 equality
+  check (≤2 agent-days); **`CLI-017-B`** — SD-5's sandbox-scoped secret handoff, lifecycle and export
+  refusal (≤1.5 agent-days). They are independent and may run in parallel; **both are required**.
+  ★ *Added 2026-09-23 (Codex P2, PR #575), which measured the undivided estimate at up to 3.5 days.*
+- ★ **SD-5 is a LITERAL-VALUE refusal and does not close exfiltration.** Encoded, reversed or
+  split-across-files credentials still export. That residual is recorded **open** against `E7-D11`
+  and needs its own boundary ruling, out of `M1b`; the slice carries the encoded and split cases as
+  characterisation tests asserting the current pass-through.
 - ★ **It must not redirect or pipe the claude process's stdout** — that would silently remove
   `WRK-018`'s usage parse (review §7.1, and the `E7-D06` amendment above it).
 
