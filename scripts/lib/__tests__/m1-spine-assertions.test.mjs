@@ -27,6 +27,8 @@ import {
   evaluateEnabledTenantSpine,
   evaluateControlTenant,
   evaluateCrossTenantIsolation,
+  evaluateEnvProbeObservability,
+  ENV_PROBE_LOG_PREFIX,
 } from "../m1-spine-assertions.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
@@ -418,6 +420,25 @@ test("hostile traffic that changed the victim's cost rows or usage events is ref
     .includes("isolation:cost_moved"));
   assert.ok(evaluateCrossTenantIsolation(goodIsolation({ usageEventsAfterHostile: 2 })).map((x) => x.code)
     .includes("isolation:usage_moved"));
+});
+
+// ── criterion 5: the DEP-017 env probe is NOT observed on this lane ─────────
+
+test("recording criterion 5 as unobserved, with no probe summary on the attempt, has zero violations (anchor)", () => {
+  assert.deepEqual(evaluateEnvProbeObservability({ declaredObserved: false, logMessages: ["hello", "world"] }), []);
+});
+
+test("a probe summary on the attempt while the record says unobserved is refused (the tripwire)", () => {
+  const v = evaluateEnvProbeObservability({
+    declaredObserved: false,
+    logMessages: [`${ENV_PROBE_LOG_PREFIX}{"verdict":"absent"}`],
+  });
+  assert.ok(v.map((x) => x.code).includes("criterion5:probe_emitted_but_recorded_unobserved"));
+});
+
+test("CLAIMING criterion 5 without a summary is refused", () => {
+  const v = evaluateEnvProbeObservability({ declaredObserved: true, logMessages: [] });
+  assert.ok(v.map((x) => x.code).includes("criterion5:claimed_without_summary"));
 });
 
 // ── the control tenant ──────────────────────────────────────────────────────

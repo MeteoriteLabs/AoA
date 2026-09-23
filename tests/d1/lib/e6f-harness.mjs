@@ -2492,6 +2492,12 @@ try {
     FROM job_events WHERE job_id = \${P.jobId} ORDER BY sequence\`;
   // The ACCEPTED usage events of this attempt, with the units as STORED (event->'payload'), so the
   // cardinality claim is counted from the durable ledger rather than from what the test sent.
+  // DEP-016 acceptance 6 / criterion 5: the messages of this attempt's log events, which is where
+  // the DEP-017 env probe would emit its summary if it ran on this lane. Read so the profile can
+  // assert it did NOT, rather than leaving the absence unexamined. (No backticks in this comment:
+  // it lives inside the template literal that carries the script.)
+  const logMessages = await sql\`SELECT event->'payload'->>'message' AS message
+    FROM job_events WHERE job_id = \${P.jobId} AND event_type = 'log' ORDER BY sequence\`;
   const usageEvents = await sql\`SELECT event_id AS "eventId", sequence,
       organization_id AS "organizationId", company_id AS "companyId", event->'payload' AS payload
     FROM job_events WHERE job_id = \${P.jobId} AND event_type = 'usage' ORDER BY sequence\`;
@@ -2512,7 +2518,8 @@ try {
     FROM activity_log WHERE entity_type = 'job' AND entity_id = \${P.jobId}
       AND action IN ('job.attempt_started', 'job.attempt_terminal')
     ORDER BY action\`;
-  report({ ok: true, attemptStatus: attempts[0]?.status ?? null, attempts: attempts.length, events, usageEvents, costRows, receipts, activity });
+  report({ ok: true, attemptStatus: attempts[0]?.status ?? null, attempts: attempts.length, events, usageEvents, costRows, receipts, activity,
+    logMessages: logMessages.map((r) => r.message).filter((m) => m !== null) });
 } catch (error) {
   report({ ok: false, error: String(error && error.message ? error.message : error) });
 } finally {

@@ -17,7 +17,7 @@
 | Canned usage on the reference provider | `packages/sandbox-fake-provider/src/fake-driver.ts` (`FAKE_PROVIDER_CANNED_USAGE_V1`, `FAKE_PROVIDER_USAGE_MODES`) | `execute` now reports fixed units (120 000 in / 30 000 out / 0 cached / 4 200 ms) that satisfy the frozen `usagePayloadV1Schema`. A provider id scripted `usageMode: "suppressed"` reports `usage: null`. An unknown mode is refused. `reset()` restores the default. Threaded through both control servers (`control-server.ts`, `docker/d1/fake-provider-entry.mjs`). |
 | The one-worker topology | `docker/d1/m1-spine.override.yml` | A compose OVERRIDE, never an edit of the train: `worker-a` moves into a profile nothing enables, `test-runner`'s `depends_on` is `!override`-replaced, and the F10 rollout policy is set on BOTH control-plane replicas, identically. The crew switch is not set. |
 | The tenant set + the verdicts | `scripts/lib/m1-spine-assertions.mjs` | `M1_SPINE_TENANTS` (two enabled Organizations, one control), `M1_SPINE_ROLLOUT_ENV_VALUE`, and four pure verdict functions: `evaluateSpineOverrideText`, `evaluateReplicaRollout`, `evaluateEnabledTenantSpine`, `evaluateControlTenant`. |
-| The verdicts' self-test | `scripts/lib/__tests__/m1-spine-assertions.test.mjs` (45 tests) | Each verdict has a zero-violation anchor and defect fixtures. Wired into `pr.yml` `policy` → *m1-spine profile verdict self-test (DEP-016)*, declared in `scripts/test-execution-census.json`. |
+| The verdicts' self-test | `scripts/lib/__tests__/m1-spine-assertions.test.mjs` (48 tests) | Each verdict has a zero-violation anchor and defect fixtures. Wired into `pr.yml` `policy` → *m1-spine profile verdict self-test (DEP-016)*, declared in `scripts/test-execution-census.json`. |
 | The live profile | `tests/d1/m1-spine.test.mjs` (5 tests) + helpers in `tests/d1/lib/e6f-harness.mjs` (`seedSpineOrganization`, `seedSpineTarget`, `seedSpineJob`, `probeReplicaRollout`, `placeSpineAttemptOnReplica`, `querySpineAttempt`, `querySpineControl` — all additive) | The profile itself. |
 | The lane | `.github/workflows/d1-merge-train.yml` job **`m1-spine`** | Builds the split images, brings up the override, asserts exactly ONE worker service is running, runs the profile, runs the usage-suppressed POSITIVE CONTROL and fails the lane if it passes, collects the evidence bundle **`if: always()`** (on pass as well as on failure) and uploads it. New path triggers: `scripts/lib/m1-spine-assertions.mjs`, `packages/sandbox-fake-provider/**`. |
 
@@ -35,12 +35,13 @@ value, so it can never be run against the two-worker train by accident. The exis
 
 | # | Acceptance (E6 plan §4c) | Where it is proven |
 |---|---|---|
-| 1 | A passing profile run retains its evidence bundle | The `m1-spine` job's collect + upload steps are `if: always()`, and the profile writes `m1-spine-evidence.json` (per-replica rollout digests; per tenant the ids, event types, cost rows, receipts and audit rows) into the uploaded directory |
+| 1 | A passing profile run retains its evidence bundle | The job collects the bundle into `…/passing/` IMMEDIATELY after the passing profile and BEFORE either negative control (Codex: the controls share the live database, and the duplicate-usage control appends a second usage event and cost row per tenant, so a later bundle would describe the mutated state); a second collection under `…/post-controls/` runs `if: always()`, and the upload is `if: always()`. The profile writes `m1-spine-evidence.json` (per-replica rollout, crew and tool-surface posture; per tenant the ids, events, usage events, cost rows, receipts, audit rows and the criterion-5 record) into the uploaded directory |
 | 2 | Per priced attempt: exactly one `cost_events` row with cost > 0 and one `authoritative_cost` receipt; the named audit rows present | `evaluateEnabledTenantSpine`, live: §3 GREEN |
 | 2a | **Usage cardinality** (added 2026-09-23 — the `WRK-018` acceptance-1 collection point, see §7): per attempt, EXACTLY ONE accepted `usage` event in `job_events`, of this tenant, whose stored units are the ones the provider reported, and to which the single cost row is keyed | `evaluateEnabledTenantSpine` (`usage:*` codes), live: §3 |
 | 3 | **Positive control:** the same profile with usage suppressed **reds**, and a DUPLICATE usage event **reds** | §4 row PC, and the lane step *POSITIVE CONTROL — with usage suppressed, the profile MUST go red* |
 | 4a | **F10 isolation** (added 2026-09-23, Codex P1 — the plan's F10 requires *hostile cross-tenant cases in EVERY gate profile*, `docs/replatform/qa/2026-09-21-m1-execution-plan.md` §2 F10) | `evaluateCrossTenantIsolation`, live: §3a |
 | 4 | **F10:** three Organizations — two enabled, one control; journey, audit and cost attribution asserted PER enabled tenant; the control tenant refused and left legacy. The rollout is set on BOTH replicas, identically, and the bundle records its digest | `evaluateReplicaRollout` + `evaluateControlTenant`, live: §3 |
+| 6 | **The DEP-017 env probe, carried in** (added 2026-09-23) | **Second fork taken, with a tripwire** — §4b |
 | 5a | **Tool surface off** on both replicas — the deployment flag AND every tenant's per-Organization `tools` opt-in (added 2026-09-23, Codex; M1 plan §6 freeze checklist) | `evaluateReplicaRollout` (`tools:*`); live: `toolSurfaceRaw: null`, `toolSurfaceArmed: false`, all three Organizations `false` on both replicas |
 | 5 | **Crew switch off** on both replicas, recorded in the bundle | `evaluateReplicaRollout` (`crew:switch_on` / `crew:switch_unparseable`); live: `crewRaw: null`, `crewEnabled: false` on both replicas |
 
@@ -141,6 +142,37 @@ live assertion can fail.
 | **P2** (third round) — the audit receipts were only counted, statused and tenant-checked, so two receipts keyed to unrelated events of the same job would pass while a named mutation had no replay guard | True; the same unchecked fields as the cost receipt | `audit:receipt_not_keyed_to_events` requires exactly `activity:<company>:<the accepted attempt_started event>` and `…:<the terminal event>`; `audit:receipt_wrong_aggregate` requires `activity_log` |
 | **P2** — the audit verdict never inspected `actorType`/`actorId` | True; both were already returned | `audit:wrong_actor` requires `system` / `worker:<the leased worker>` |
 
+## 4b. Acceptance 6 — the DEP-017 env probe, and criterion 5
+
+Acceptance 6 was added to this ticket on 2026-09-23 (from `DEP-017`'s build, ratified by the planning
+session under F2) and offers two forks: make the reference provider execute the probe command
+faithfully, or **record that criterion 5 is observed only in the `DEP-015` lane**. Measured at source,
+the second fork is the only honest one here, and the ticket's own wording anticipates it:
+
+- The probe does not exist in this tree at all. `AOA_WORKER_ENV_PROBE`,
+  `packages/worker-daemon/src/supervisor/env-probe.ts` and `evaluateEnvProbeEvidence`
+  (`scripts/lib/m1-shipped-boot.mjs`) are on `DEP-017`'s unmerged branch; `grep` over this branch
+  finds no occurrence of any of them. "The profile arms `AOA_WORKER_ENV_PROBE=1`" is not expressible
+  here.
+- Even with it, nothing would probe: the D1 workers do not dispatch
+  (`AOA_WORKER_DISPATCH_ENABLED` is declared **ABSENT** for them — `scripts/lib/d1-dispatch-declared.mjs`,
+  enforced by `check-d1-dispatch-declared`), this profile plays the worker over the real HTTP
+  endpoints as every E6F suite does, and the reference provider's `execute`
+  (`packages/sandbox-fake-provider/src/fake-driver.ts`) runs **no command** — it returns a terminal
+  state, and now canned usage. A probe measures a process environment; there is no process.
+- Making the fake "execute the probe command faithfully" would mean the fake reporting on the
+  test-runner's own environment, which is not a distributed sandbox's. That is a fabricated pass of
+  exactly the kind the acceptance forbids.
+
+**So this profile records criterion 5 as NOT observed here, and makes that record self-policing.**
+Per enabled tenant it reads the attempt's `log`-event messages and asserts none carries the DEP-017
+summary prefix (`evaluateEnvProbeObservability`), writing
+`criterion5EnvProbe: { observed: false, reason, logMessages: 0 }` into the retained bundle. The
+verdict reds in **both** directions: a bundle that records the probe unobserved while a summary IS
+present (someone armed it, or the lane gained a real executor) and a bundle that CLAIMS observation
+with no summary. So the absence cannot silently become a stale pass, and criterion 5 for M1a rests
+on the `DEP-015` shipped-boot lane, where `DEP-017` built it.
+
 ## 5. Deviations from the task section, measured
 
 1. **The profile is a JOB, not a campaign scope** (§1, with the reason). The `m1-spine` scope value
@@ -211,7 +243,7 @@ carries the keyed acceptance, or to record that run and close the finding. `E3-1
   through the exact line map, anchor by anchor.
 - `packages/sandbox-fake-provider`: `vitest run` **20/20**, `tsc --noEmit` clean;
   `packages/sandbox-provider-contract`: **22/22** (the fake is its reference driver).
-- `scripts/lib/__tests__/m1-spine-assertions.test.mjs`: **45/45**.
+- `scripts/lib/__tests__/m1-spine-assertions.test.mjs`: **48/48**.
 - `scripts/test-inventory.json`: three pinned counts bumped (`packages/sandbox-fake-provider` 4 → 5,
   `scripts` 68 → 69, `tests` 107 → 108). `--write` also wanted to raise unrelated FLOOR counts; those
   were reverted, since they are other tickets' growth.

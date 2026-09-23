@@ -82,6 +82,7 @@ import {
   evaluateEnabledTenantSpine,
   evaluateControlTenant,
   evaluateCrossTenantIsolation,
+  evaluateEnvProbeObservability,
   formatViolations,
 } from "../../scripts/lib/m1-spine-assertions.mjs";
 
@@ -316,6 +317,20 @@ for (const tenant of M1_SPINE_TENANTS.enabled) {
       activity: rows.activity,
     });
     leased.set(tenant.key, { ids, offer, session: worker.session, deviceKey: worker.deviceKey, target: worker.target });
+
+    // Acceptance 6 (DEP-017 carried in), second fork: this lane CANNOT observe the env probe — its
+    // workers do not dispatch and the reference provider runs no command — so the profile records
+    // that, and asserts the attempt carries no probe summary. If that ever stops being true, this
+    // reds and the record must be rewritten rather than quietly inheriting a pass.
+    record.criterion5EnvProbe = {
+      observed: false,
+      reason: "the m1-spine lane runs the reference provider, which executes no command, and its workers do not dispatch; criterion 5 is observed in the DEP-015 shipped-boot lane only",
+      logMessages: rows.logMessages.length,
+    };
+    const probeViolations = evaluateEnvProbeObservability({ declaredObserved: false, logMessages: rows.logMessages });
+    evidence.verdicts[`${tenant.key}:criterion5`] = probeViolations;
+    assert.deepEqual(probeViolations, [], `tenant ${tenant.key} criterion-5 violations:
+${formatViolations(probeViolations)}`);
 
     const violations = evaluateEnabledTenantSpine({
       tenant,

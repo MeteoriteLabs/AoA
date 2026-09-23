@@ -444,6 +444,47 @@ export function evaluateControlTenant({ tenant: t, observation: o }) {
   return out;
 }
 
+// ── criterion 5 / the DEP-017 env probe (acceptance 6) ──────────────────────
+
+/**
+ * The message prefix the DEP-017 probe's summary carries (`ENV_PROBE_LOG_PREFIX` in
+ * `scripts/lib/m1-shipped-boot.mjs` on that ticket's branch). MIRRORED rather than imported,
+ * deliberately: that module does not exist in this tree yet, and this profile's job is to prove the
+ * probe is NOT observed here — a check that imported the thing it says is absent could not run.
+ */
+export const ENV_PROBE_LOG_PREFIX = "dep017.env_probe ";
+
+/**
+ * DEP-016 acceptance 6, second fork. The `m1-spine` lane cannot observe the DEP-017 env probe: its
+ * workers do not dispatch (`AOA_WORKER_DISPATCH_ENABLED` is declared ABSENT for them —
+ * `scripts/lib/d1-dispatch-declared.mjs`), the harness plays the worker over the real HTTP
+ * endpoints, and the reference provider's `execute` runs no command, so nothing in the sandbox
+ * could probe anything. The ticket's instruction for that case is to RECORD it, and an unobserved
+ * probe must never be reported as a pass.
+ *
+ * This verdict is the tripwire that keeps the record honest in BOTH directions: a bundle that
+ * declares the probe unobserved while the attempt's events DO carry a summary is refused (the
+ * record has gone stale and must be rewritten), and a bundle that CLAIMS observation without a
+ * summary is refused too.
+ */
+export function evaluateEnvProbeObservability({ declaredObserved, logMessages }) {
+  const out = [];
+  const summaries = (logMessages ?? []).filter((m) => String(m ?? "").startsWith(ENV_PROBE_LOG_PREFIX));
+  if (declaredObserved === false && summaries.length > 0) {
+    out.push(violation(
+      "criterion5:probe_emitted_but_recorded_unobserved",
+      `the attempt carries ${summaries.length} DEP-017 env-probe summary event(s), but this profile records criterion 5 as NOT observed — the record is stale`,
+    ));
+  }
+  if (declaredObserved === true && summaries.length === 0) {
+    out.push(violation(
+      "criterion5:claimed_without_summary",
+      "criterion 5 is claimed observed, but the attempt carries no DEP-017 env-probe summary",
+    ));
+  }
+  return out;
+}
+
 // ── hostile cross-tenant cases (F10: "denied, not merely empty") ─────────────
 
 /**
