@@ -465,47 +465,7 @@ test("m1-spine: the DEPLOYED worker performs tenant A's journey — lease, execu
   // one narrowing is `measuredRuntimeMillis`, because on this path the worker produces the event
   // and takes `runtimeMillis` from the SUPERVISOR'S clock; the three token counts are still pinned
   // exactly, and the charge is still the derived 81 cents.
-  if (EXECUTOR === "worker") {
-    const rows = step(querySpineAttempt({ organizationId: tenant.organizationId, jobId: ids.jobId }), "worker-driven cost rows");
-    assert.equal(rows.ok, true, `worker-driven cost probe: ${truncate(rows)}`);
-    Object.assign(record, {
-      usageEvents: rows.usageEvents,
-      costRows: rows.costRows,
-      receipts: rows.receipts,
-      activity: rows.activity,
-    });
-    // The units the charge is pinned to are the CANNED ones the transcript carries; the worker
-    // parsed them out of the run's own stdout, which is the thing under test.
-    const expectedUnits = { ...M1_SPINE_CANNED_UNITS, runtimeMillis: rows.usageEvents?.[0]?.payload?.runtimeMillis ?? 0 };
-    const costViolations = evaluateEnabledTenantSpine({
-      tenant,
-      observation: {
-        // ★ THE ONE WORKER-DRIVEN DECLARATION IN THIS FILE (DEP-019 follow-up, Codex on PR #579).
-        // It makes every violation of THIS verdict carry `M1_SPINE_WORKER_COST_MARKER`, which the
-        // lane's usage-suppressed control greps in ADDITION to `[m1-spine:cost]`. Before it, the
-        // control was satisfied by the harness attempts' identical cost text, so deleting this
-        // whole block left the control green — a control about *a* cost assertion, not about who
-        // executed. The self-test pins that this file carries exactly one such declaration and
-        // that it sits inside the `EXECUTOR === "worker"` block, so the harness path cannot mint
-        // the marker.
-        workerDriven: true,
-        attemptStatus: rows.attemptStatus,
-        events: rows.events,
-        usageEvents: rows.usageEvents,
-        expectedUnits,
-        measuredRuntimeMillis: true,
-        costRows: rows.costRows,
-        costReceipts: rows.receipts.filter((r) => r.projectionKind === "authoritative_cost"),
-        activity: rows.activity,
-        expectedActorId: `worker:${deployed.workerId}`,
-        auditReceipts: rows.receipts.filter((r) => r.projectionKind === "activity_audit"),
-      },
-    });
-    evidence.verdicts.workerDrivenCost = costViolations;
-    assert.deepEqual(costViolations, [], `worker-driven cost/audit violations:
-${formatViolations(costViolations)}`);
-  }
-
+  // ★ MUTATION (probe branch only): the WORKER-ONLY cost/audit verdict block is DELETED.
   // DEP-016 acceptance item 6, closed POSITIVELY: the probe RAN inside the reference sandbox and
   // reported `absent`, judged by the SHARED read side. Only on the worker-driven path — the
   // control's harness worker executes nothing, so there is no probe to observe and asserting one

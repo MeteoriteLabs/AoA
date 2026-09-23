@@ -1315,20 +1315,8 @@ test("worker marker: a MALFORMED declaration fails closed — it reds, and witho
   }
 });
 
-test("worker marker: the PROFILE declares it exactly once, inside the EXECUTOR === \"worker\" block", () => {
-  const profile = readFileSync(path.join(repoRoot, "tests", "d1", "m1-spine.test.mjs"), "utf8");
-  const declarations = [...profile.matchAll(/workerDriven:\s*true/g)];
-  assert.equal(declarations.length, 1, `the profile carries ${declarations.length} \`workerDriven: true\` declarations, expected exactly 1`);
-  const at = declarations[0].index;
-  const guard = profile.lastIndexOf('if (EXECUTOR === "worker") {', at);
-  assert.ok(guard !== -1, "the declaration is not preceded by an `EXECUTOR === \"worker\"` guard");
-  // …and no `}` at that guard's own indentation closes it before the declaration, i.e. the
-  // declaration really is INSIDE the block rather than after it.
-  assert.ok(!profile.slice(guard, at).includes("\n  }\n"), "the EXECUTOR block closes before the declaration");
-  // The harness path's own call site must come BEFORE that guard, so it is a different call.
-  assert.ok(profile.indexOf("evaluateEnabledTenantSpine({") < guard, "the harness call site is not distinct from the worker-driven one");
-});
-
+// ★ MUTATION (probe branch only): the source-shape pin is removed too, so the job reaches the
+// LIVE usage-suppressed control instead of failing in the pure preflight.
 test("worker marker: the d1 lane's usage-suppressed control greps BOTH literals", () => {
   const workflow = readFileSync(path.join(repoRoot, ".github", "workflows", "d1-merge-train.yml"), "utf8");
   const start = workflow.indexOf("POSITIVE CONTROL — with usage suppressed, the profile MUST go red");
