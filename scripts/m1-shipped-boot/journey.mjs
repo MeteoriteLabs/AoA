@@ -65,8 +65,9 @@ import {
   extractSandboxEvidence,
   scanEvidenceForSecrets,
   scanForKeyMaterial,
+  maskDirectivesFor,
+  stripMaskDirectives,
   KEY_MATERIAL_MARKERS,
-  MASK_DIRECTIVE_PREFIX,
   extractRolloutResolution,
   CANARY_EXECUTION_TARGET_SLUG,
   // DEP-017 — the live env-absence probe's read side.
@@ -157,12 +158,10 @@ function trackSecret(state, name, value) {
   state.secrets[name] = value;
   if (!state.redact.includes(value)) state.redact.push(value);
   if (!alreadyRegistered && process.env.GITHUB_ACTIONS === "true") {
-    // One directive per line: a multi-line secret (a PEM) would otherwise be masked only where
-    // it appears whole, so each of its lines is registered in its own right too.
-    const parts = [value, ...value.split(/\r?\n/)];
-    for (const part of new Set(parts)) {
-      if (part.trim().length >= 8) console.log(`${MASK_DIRECTIVE_PREFIX}${part}`);
-    }
+    // A multi-line secret is masked ONLY per line: a workflow command ends at the first
+    // newline, so one directive carrying a whole PEM would print its body and footer
+    // (Codex P1, PR #574). `maskDirectivesFor` owns that rule and is unit-tested.
+    for (const directive of maskDirectivesFor(value)) console.log(directive);
   }
 }
 
@@ -945,9 +944,13 @@ function leakScan(state) {
   // published with the run and outlives it, and had no scanner at all. The bundle scan is unchanged;
   // the job log is scanned for the same named secrets AND for key material BY SHAPE, which also
   // catches a key whose bytes this scanner was never told (a re-run's, an operator's).
-  const logSurface = existsSync(jobLogPath(state))
-    ? [{ name: "job-log.txt", text: readFileSync(jobLogPath(state), "latin1") }]
-    : [];
+  // ★ The captured log contains this driver's OWN `::add-mask::` directives, which carry the
+  // values by construction and which GitHub renders as `***`. They are stripped before either
+  // scan — otherwise every run would fail its own leak scan (Codex P1, PR #574) — and the
+  // number stripped is reported, so the exception is bounded and visible.
+  const rawLog = existsSync(jobLogPath(state)) ? readFileSync(jobLogPath(state), "latin1") : null;
+  const stripped = rawLog === null ? { text: "", removed: 0 } : stripMaskDirectives(rawLog);
+  const logSurface = rawLog === null ? [] : [{ name: "job-log.txt", text: stripped.text }];
   const secrets = state.secrets ?? {};
   const logScan = scanForKeyMaterial(logSurface);
   const findings = [
@@ -971,7 +974,7 @@ function leakScan(state) {
   console.log(
     `leak-scan: ${files.length} evidence file(s) + ${logSurface.length} job-log file(s) scanned for ` +
       `${Object.keys(secrets).length} named job secret(s) (raw/base64/base64url) and ${KEY_MATERIAL_MARKERS.length} key-material shapes: clean ` +
-      `(${logScan.maskDirectiveLines} ::add-mask:: directive line(s) skipped — GitHub renders those as ***)`,
+      `(${stripped.removed} ::add-mask:: directive line(s) stripped — GitHub renders those as ***)`,
   );
 }
 

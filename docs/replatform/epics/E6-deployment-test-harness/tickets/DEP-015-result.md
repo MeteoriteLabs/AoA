@@ -755,5 +755,22 @@ A clean measurement of one run is not a control. Ruled in under F2:
   the log surface not scanned (4), key-material shapes not scanned (4), the tee invariant not
   checked (1).
 
+**Four defects in the first cut of this control, found by Codex on PR #574 and fixed before merge.**
+They are recorded because each would have made the control worse than none:
+1. **The mask could PUBLISH the key.** A workflow command ends at the first newline, so one
+   `::add-mask::` carrying a whole PEM would register the header and PRINT the body and footer.
+   `maskDirectivesFor` now emits a multi-line value ONLY per line, never whole, and a test asserts
+   no directive contains a newline.
+2. **The scan would have failed every run.** `tee` writes this driver's own directives into the
+   captured log verbatim, and the named-secret scan did not skip them — a guaranteed match on every
+   registered single-line secret. `stripMaskDirectives` removes whole directive lines before either
+   scan, counts them, and a test proves the same secret on an ORDINARY line in the same log still reds.
+3. **The first tee would have failed ENOENT.** `M1_OUT` is written to `$GITHUB_ENV`, which creates no
+   directory, and `prepare` mkdirs only after node starts. The validate step now creates it, and the
+   shape guard requires that to happen before the first teed step.
+4. **A failed phase could have passed.** The unspecified default shell is `bash -e`, WITHOUT
+   pipefail, so a phase failing into a successful `tee` would report success. The job now declares
+   `defaults: run: shell: bash`, and the shape guard requires it.
+
 **Status unchanged.** This is a control added after the fact to a run that was already clean; it
 neither re-opens nor re-decides §12's keyed acceptance.

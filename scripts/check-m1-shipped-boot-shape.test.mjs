@@ -230,3 +230,13 @@ test("REJECT: a phase dropped from the lane entirely", () => {
   );
   assert.ok(anyMatch(violationsOf(text), /must run the 'collect' phase/), violationsOf(text).join("\n"));
 });
+
+test("REJECT: the job-log directory not created before the first tee (Codex P1)", () => {
+  const text = mutate(real(), '          mkdir -p "${RUNNER_TEMP}/m1-shipped-boot"\n', "");
+  assert.ok(anyMatch(violationsOf(text), /job-log directory must be created before the first teed step/), violationsOf(text).join("\n"));
+});
+
+test("REJECT: no explicit `shell: bash`, so a teed pipeline would run without pipefail (Codex P1)", () => {
+  const text = mutate(real(), "    defaults:\n", "    x-defaults:\n");
+  assert.ok(anyMatch(violationsOf(text), /must declare .*shell: bash.* pipefail/), violationsOf(text).join("\n"));
+});

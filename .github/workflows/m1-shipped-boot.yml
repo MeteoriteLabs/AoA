@@ -90,6 +90,12 @@ jobs:
     # E6-D001: a push-created (registration) run skips this job — zero steps, zero secrets.
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        # EXPLICIT `bash` = `bash --noprofile --norc -eo pipefail`. The UNSPECIFIED default is
+        # `bash -e`, WITHOUT pipefail, so a phase that failed into a successful `tee` would be
+        # reported as a pass and the lane would carry invalid acceptance evidence (Codex P1).
+        shell: bash
     timeout-minutes: 150
     steps:
       - name: Validate the named candidate
@@ -100,6 +106,10 @@ jobs:
           set -euo pipefail
           [[ "$CANDIDATE" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::candidate must be 40 lowercase hex characters"; exit 1; }
           [[ "$MODE" == "keyless" || "$MODE" == "keyed" ]] || { echo "::error::mode must be keyless or keyed"; exit 1; }
+          # The directory must EXIST before the first `tee` opens the job log in it: writing
+          # M1_OUT to $GITHUB_ENV creates nothing, and `prepare` only mkdirs after node starts,
+          # by which time the concurrently-launched tee has already failed ENOENT (Codex P1).
+          mkdir -p "${RUNNER_TEMP}/m1-shipped-boot"
           echo "M1_OUT=${RUNNER_TEMP}/m1-shipped-boot" >> "$GITHUB_ENV"
           echo "candidate ${CANDIDATE} (${MODE})"
 

@@ -228,6 +228,18 @@ export function evaluateShippedBootWorkflowShape(text) {
       v.push(`phase '${phase}' does not tee its output into the job-log surface the leak scan reads`);
     }
   }
+  // The directory the job log lives in must be created BEFORE the first teed step, and it must
+  // be created by a step that runs earlier than the one whose pipeline opens the file.
+  const mkdirAt = src.indexOf('mkdir -p "${RUNNER_TEMP}/m1-shipped-boot"');
+  const firstTeeAt = src.indexOf(JOB_LOG_TEE);
+  if (mkdirAt === -1 || (firstTeeAt !== -1 && mkdirAt > firstTeeAt)) {
+    v.push("the job-log directory must be created before the first teed step (a tee into a missing directory fails ENOENT)");
+  }
+  // `shell: bash` (explicit) is `bash -eo pipefail`; the UNSPECIFIED default is `bash -e`, so a
+  // failed phase piped into a successful `tee` would report as a pass.
+  if (!/\n\s+defaults:\s*\n\s+run:\s*\n(?:\s*#.*\n)*\s+shell: bash/.test(src)) {
+    v.push("the job must declare `defaults: run: shell: bash` so every teed pipeline runs under pipefail");
+  }
   if (/pnpm verify:cp-am-keypair(?!.*tee -a)/.test(src)) {
     v.push("the keypair check must tee its output into the job-log surface too — it is the step that handles the key");
   }

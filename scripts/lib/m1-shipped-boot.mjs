@@ -384,6 +384,42 @@ export const KEY_MATERIAL_MARKERS = Object.freeze([
 export const MASK_DIRECTIVE_PREFIX = "::add-mask::";
 
 /**
+ * The `::add-mask::` directives for one value.
+ *
+ * ★ A workflow command ENDS AT THE FIRST NEWLINE, so a multi-line value (a PEM) in one
+ * directive would register only its first line and PRINT the rest as ordinary log output —
+ * publishing the key the mask was meant to hide (Codex P1, PR #574). A multi-line value is
+ * therefore emitted ONLY per line, never whole. A single-line value is emitted as itself.
+ * Parts shorter than 8 characters are dropped: masking `-----END PRIVATE KEY-----`-sized
+ * boilerplate is pointless, and a short token would mask unrelated text.
+ */
+export function maskDirectivesFor(value) {
+  const text = String(value ?? "");
+  const parts = /\r|\n/.test(text) ? text.split(/\r?\n/) : [text];
+  const out = [];
+  for (const part of parts) {
+    if (part.trim().length < 8 || out.includes(part)) continue;
+    out.push(part);
+  }
+  return out.map((part) => `${MASK_DIRECTIVE_PREFIX}${part}`);
+}
+
+/**
+ * A captured job log with every `::add-mask::` line REMOVED, plus how many were removed.
+ *
+ * ★ Those lines carry the value by construction — that is the masking mechanism, and GitHub
+ * renders them as `***` — and `tee` writes them into the captured file unchanged. Scanning
+ * them would make EVERY run fail its own leak scan (Codex P1, PR #574). Stripping them is the
+ * one exception, and it is COUNTED and reported, so it can never hide an unbounded number of
+ * raw values: anything a phase printed outside a directive is still scanned, on every line.
+ */
+export function stripMaskDirectives(text) {
+  const lines = String(text ?? "").split(/\r?\n/);
+  const kept = lines.filter((line) => !line.startsWith(MASK_DIRECTIVE_PREFIX));
+  return { text: kept.join("\n"), removed: lines.length - kept.length };
+}
+
+/**
  * Key material in any of `files` (`[{ name, text }]`). Returns `[{ file, marker, line }]` — the
  * marker NAME and the 1-based line number, never the matched text. `skipMaskDirectives` (default
  * true) skips `::add-mask::` lines and returns how many were skipped.

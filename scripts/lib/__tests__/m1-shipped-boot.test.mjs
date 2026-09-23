@@ -641,7 +641,7 @@ test("leak scan (phase): with no job log at all, the evidence scan still runs (n
 // call that is not made, or a half that is not registered, is exactly the gap PR #569 measured.
 test("the driver MASKS every registered secret and registers BOTH halves of BOTH keys", () => {
   const driver = readFileSync(journey, "utf8");
-  assert.match(driver, /console\.log\(`\$\{MASK_DIRECTIVE_PREFIX\}/, "trackSecret must emit ::add-mask:: for every registered secret");
+  assert.match(driver, /for \(const directive of maskDirectivesFor\(value\)\) console\.log\(directive\);/, "trackSecret must emit ::add-mask:: for every registered secret");
   assert.match(driver, /process\.env\.GITHUB_ACTIONS === "true"/, "the directive is emitted only inside Actions");
   for (const name of [
     "CONTROL_PLANE_SIGNING_KEY_PEM",
@@ -653,4 +653,55 @@ test("the driver MASKS every registered secret and registers BOTH halves of BOTH
   }
   // And the log surface must be read by the scan, not only the evidence directory.
   assert.match(driver, /jobLogPath\(state\)/);
+});
+
+// === Codex P1s on PR #574: the mask must not PUBLISH what it masks, and must not red the scan ===
+
+import { maskDirectivesFor, stripMaskDirectives } from "../m1-shipped-boot.mjs";
+
+test("POSITIVE CONTROL: a multi-line PEM is NEVER emitted in one directive (a command ends at the newline)", () => {
+  const directives = maskDirectivesFor(PRIVATE_PEM);
+  assert.equal(directives.length, 3, JSON.stringify(directives));
+  for (const directive of directives) {
+    assert.ok(directive.startsWith(MASK_DIRECTIVE_PREFIX));
+    assert.ok(!directive.includes("\n"), "a directive carrying a newline would PRINT everything after it");
+  }
+  // Every line of the key is registered — including the body, which is the material itself.
+  assert.ok(directives.some((d) => d.includes("MC4CAQAwBQYDK2VwBCIEI")));
+});
+
+test("maskDirectivesFor: a single-line value is one directive; short or repeated parts are dropped", () => {
+  assert.deepEqual(maskDirectivesFor("a-long-enough-secret"), [`${MASK_DIRECTIVE_PREFIX}a-long-enough-secret`]);
+  assert.deepEqual(maskDirectivesFor("short"), []);
+  assert.deepEqual(maskDirectivesFor("dupe-value\ndupe-value"), [`${MASK_DIRECTIVE_PREFIX}dupe-value`]);
+  assert.deepEqual(maskDirectivesFor(""), []);
+});
+
+test("POSITIVE CONTROL: the driver's OWN mask directives in the captured log do NOT red the scan", () => {
+  // Every registered secret is printed as a directive and teed verbatim. Before the strip, each was
+  // a guaranteed raw match, so every keyed run would have failed its own leak scan (Codex P1).
+  const directives = [...maskDirectivesFor(CANARY), ...maskDirectivesFor(PRIVATE_PEM)].join("\n");
+  const { res } = runLeakScanOverLog(`starting\n${directives}\ndone\n`);
+  assert.equal(res.status, 0, res.stdout + res.stderr);
+  assert.match(res.stdout, /4 ::add-mask:: directive line\(s\) stripped/);
+});
+
+test("the strip is EXACT: the same secret on an ordinary line still reds, in the same log", () => {
+  const { res } = runLeakScanOverLog(`${maskDirectivesFor(CANARY)[0]}\nleaked ${CANARY}\n`);
+  assert.equal(res.status, 1, res.stdout + res.stderr);
+  assert.match(`${res.stdout}${res.stderr}`, /contains job secret 'AOA_M1_TRUTH_SHARED_SECRET'/);
+});
+
+test("stripMaskDirectives removes only whole directive lines, and counts them", () => {
+  const { text, removed } = stripMaskDirectives("keep\n::add-mask::secretvalue\nkeep2\n");
+  assert.equal(removed, 1);
+  assert.equal(text, "keep\nkeep2\n");
+  // A line that merely MENTIONS the prefix mid-line is not a directive and is kept.
+  assert.equal(stripMaskDirectives("we emit ::add-mask::x here").removed, 0);
+});
+
+test("the driver emits directives through the shared helper, never ad hoc", () => {
+  const driver = readFileSync(journey, "utf8");
+  assert.match(driver, /for \(const directive of maskDirectivesFor\(value\)\) console\.log\(directive\);/);
+  assert.match(driver, /stripMaskDirectives\(rawLog\)/);
 });
