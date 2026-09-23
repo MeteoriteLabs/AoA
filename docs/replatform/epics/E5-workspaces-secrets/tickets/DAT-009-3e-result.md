@@ -8,8 +8,8 @@
 **Start SHA:** `cec1b48a796f177c6184884dc3c5043f5aa57ea8` (`docs/replatform-program` tip, the `3c` merge)
 **Reviewed revision (the code commits):** `b853ff0ffae57966241a7d123df9675eea84dade` (the wire route) + `8849a12066188c79393aa509fbada49d2e6d1328` (the `E5-F002` fix) + `d5e6a3612cd73cca3f6874baefa357a40a1d2e3d` (the Codex P1 grant-binding fix, §1 commit 3) + `ddfa0e61e57214aebda1d8d70b1337b0a7112799` (the second-round Codex P1/P2 fix, §1 commit 4) + `ffd0c65d44e38de2e0367d448378d301982bf6cf` (the third-round Codex P1 fix, §1 commit 5) + `3fd71f2072b6ae358c4f0d7c4f066daf8e669c6c` (the fourth-round Codex P1 fix, §1 commit 6) + `6dbb7ff371b9d60997b5b1427295571f77362b8b` (the fifth-round Codex P1+P2 fix, §1 commit 7) + `3884979efbc59be77279c995ecf51f02f30ec1ca` (the sixth-round Codex P2 fixes, §1 commit 8) + `ed6ba07e1e91d87de8ec490e5a91f5824dbdfc39` (the seventh-round Codex P1 fixes, §1 commit 9) + the eighth-round commit recorded in §1 commit 10.
 
-The implementer leaves `Status` at `gate_review`. Only a distinct reviewer may change it to
-`complete`.
+The implementer left `Status` at `gate_review`; only a distinct reviewer may change it to
+`complete`, and one has (§10, review attempt 1).
 
 ## 1. What was built
 

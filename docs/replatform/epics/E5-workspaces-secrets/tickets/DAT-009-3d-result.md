@@ -9,8 +9,8 @@
 **Start SHA:** `cec1b48a7` (`docs/replatform-program` tip, the #549 merge)
 **Reviewed revision (the code commit):** `c69a8b44f7d153f9a3ec2310754acae1216543e9`
 
-The implementer leaves `Status` at `gate_review`. Only a distinct reviewer may change it to
-`complete`.
+The implementer left `Status` at `gate_review`; only a distinct reviewer may change it to
+`complete`, and one has (review attempt 2, below).
 
 ## 1. What was built
 

@@ -84,8 +84,8 @@ are green on the commit that carries this record.
 
 ## 7. Reviewer section
 
-**Pending.** A **distinct reviewer** must check this record against source and the cited run, and is
-the only one who may set `Status: complete`.
+**Completed at attempt 1 (below).** A **distinct reviewer** had to check this record against source
+and the cited run, and is the only one who may set `Status: complete`.
 
 **Reviewer:** M1 review-batch-3B independent reviewer (Claude Opus 5) — distinct from the M1 planning session that authored this record and dispatched the run
 **Reviewed revision:** `60aafb32ec6f8316f92079789cf8814f981f3ed3`

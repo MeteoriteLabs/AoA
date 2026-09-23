@@ -9,8 +9,8 @@
 **Start SHA:** `28a2dd259` (`docs/replatform-program` tip)
 **Reviewed revision (the code commits):** `79961c97c46dda930c7f7ceda6c6ee6175fead6a` (the hook) + `f5e2aff1f466cd6ecebc9eaa74313e8251ef93fc` (the Codex latch fix); the tree under review is `f5e2aff1f`
 
-The implementer leaves `Status` at `gate_review`. Only a distinct reviewer may change it to
-`complete`.
+The implementer left `Status` at `gate_review`; only a distinct reviewer may change it to
+`complete`, and one has (review attempt 2, below).
 
 ## 1. What was built
 
