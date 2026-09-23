@@ -282,31 +282,6 @@ replay guard keys on the event id. So the chain is: this assertion establishes t
 on a keyless lane with canned units; `WRK-018` acceptance 1 still needs its one keyed run for the
 REAL `claude_local` parser, and it stays PENDING.
 
-★ **Corrected 2026-09-23 (record custodian) — the keyed run can no longer prove the PARSER, and this
-section's two "for the REAL parser" sentences are superseded.** `WRK-018` amended acceptance 1 into
-1(a)/1(b)/1(c) and ruled that live parser proof is unreachable:
-- **1(a) cardinality** — exactly one accepted `usage` event per attempt, per tenant. Asserted by
-  `evaluateUsageCardinality` (`scripts/lib/m1-spine-assertions.mjs`) — **this profile's assertion**,
-  merged in PR #567. **This is what the keyed run supplies**, and no keyed run has carried it yet.
-- **1(b) parsed-equals-accepted-and-stored** — **not live-provable.** Proving it needs a second data
-  path out of the worker carrying the parsed counts or the result line, every such path is wholly
-  subject to per-run canary redaction, and that redaction has no enforceable caller-side boundary
-  (the sink adds `msg`/`time`/`level` below every scrubber — filed as `E4-F019`).
-- **1(c) parser fidelity to a real `claude_local` result line** — **met, and NOT live: fixture-only**,
-  against the captured transcript `server/src/__tests__/fixtures/claude-stream-json-tool-call.jsonl`
-  (`usage-observer.test.ts`).
-
-**So the chain is: the keyed run supplies CARDINALITY; parser fidelity rests on the fixture.**
-Superseded phrases in this section: *"the one keyed E2B run proving the real `claude_local`
-stream-json usage parser on the deployed worker"* and *"`WRK-018` acceptance 1 still needs its one
-keyed run for the REAL `claude_local` parser"*. **Nothing else here changes** — `E3-F037` stays
-`open` and `unowned`, this ticket's own clause stays delivered and proven, the keyed run is still
-outstanding (it just establishes less than this text claimed), and the residual is the same one.
-`WRK-018-result.md` flagged this exact sentence and deliberately declined to edit it: *"It is another
-ticket's result record, so editing it here would be a build agent rewriting someone else's evidence,
-so it is flagged rather than changed."* The custodian makes the correction it flagged. `E3-F037`'s
-`finding-ownership.json` reason already carries the same amendment and already points here.
-
 `scripts/finding-ownership.json` therefore moves `E3-F037` from `owned` (`DEP-016`) to **`unowned`**,
 with the full reason: this ticket has now filed a result record, so the guard would otherwise report
 an open finding owned by shipped work, and the guard's `successor` field has no eligible ticket to
