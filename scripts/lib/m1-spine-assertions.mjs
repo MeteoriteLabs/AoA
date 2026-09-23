@@ -237,13 +237,25 @@ export function evaluateEnabledTenantSpine({ tenant: t, observation: o }) {
     // Codex P2 (PR #566), fifth round: the receipt's TARGET is the row it says it wrote. A receipt
     // whose `target_aggregate_id` points at an unrelated row makes the replay/re-drive evidence
     // claim a link that does not exist.
-    const activityIds = (o.activity ?? []).map((a) => a.id).filter(Boolean).sort();
-    const auditTargets = auditReceipts.map((r) => r.targetAggregateId).sort();
-    if (activityIds.length === 2 && JSON.stringify(activityIds) !== JSON.stringify(auditTargets)) {
-      out.push(violation(
-        "audit:receipt_target_mismatch",
-        `${k}: the activity_audit receipts target ${JSON.stringify(auditTargets)}, not this attempt's two activity rows ${JSON.stringify(activityIds)}`,
-      ));
+    // ★ PER RECEIPT, not per set (Codex, sixth round): comparing the two sorted sets passes even when
+    // the two receipts are SWAPPED — the `attempt_started` receipt targeting the terminal row and
+    // vice versa — in which case every replay guard points at the wrong mutation. Each receipt is
+    // therefore resolved through its OWN source event to the action its target row must carry.
+    const actionForEventType = { attempt_started: "job.attempt_started", terminal: "job.attempt_terminal" };
+    const activityById = new Map((o.activity ?? []).filter((a) => a.id).map((a) => [a.id, a]));
+    const eventTypeById = new Map(auditedEvents.map((e) => [e.eventId, e.eventType]));
+    for (const receipt of auditReceipts) {
+      const eventId = String(receipt.sourceIdentity ?? "").split(":").pop();
+      const expectedAction = actionForEventType[eventTypeById.get(eventId)];
+      if (!expectedAction) continue; // the identity itself is already judged above
+      const target = activityById.get(receipt.targetAggregateId);
+      if (!target || target.action !== expectedAction) {
+        out.push(violation(
+          "audit:receipt_target_mismatch",
+          `${k}: the receipt for the ${eventTypeById.get(eventId)} event targets ${JSON.stringify(receipt.targetAggregateId)} ` +
+            `(${target ? target.action : "not one of this attempt's activity rows"}), not its own ${expectedAction} row`,
+        ));
+      }
     }
     if (auditReceipts.some((r) => r.aggregateKind !== "activity_log")) {
       out.push(violation(

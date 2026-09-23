@@ -339,6 +339,21 @@ test("a receipt whose TARGET is an unrelated row is refused (Codex P2)", () => {
   assert.ok(codes(auditTarget).includes("audit:receipt_target_mismatch"));
 });
 
+test("SWAPPED audit receipt targets are refused — set equality would have passed them (Codex)", () => {
+  const obs = goodEnabled(A).observation;
+  const swapped = [
+    { ...obs.auditReceipts[0], targetAggregateId: obs.auditReceipts[1].targetAggregateId },
+    { ...obs.auditReceipts[1], targetAggregateId: obs.auditReceipts[0].targetAggregateId },
+  ];
+  // The two sets are identical — only the pairing moved.
+  assert.deepEqual(
+    swapped.map((r) => r.targetAggregateId).sort(),
+    obs.auditReceipts.map((r) => r.targetAggregateId).sort(),
+  );
+  const v = evaluateEnabledTenantSpine(goodEnabled(A, { auditReceipts: swapped }));
+  assert.ok(codes(v).includes("audit:receipt_target_mismatch"));
+});
+
 test("a journey the ingest did not fully accept is refused before cost is judged", () => {
   const v = evaluateEnabledTenantSpine(goodEnabled(A, { attemptStatus: "running" }));
   assert.ok(codes(v).includes("journey:attempt_not_succeeded"));
