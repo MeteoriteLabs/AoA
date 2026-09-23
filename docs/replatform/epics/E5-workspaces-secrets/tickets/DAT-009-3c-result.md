@@ -289,6 +289,40 @@ and got **3 files, 52 passed**: 21, 16 and 15 respectively. The corrected number
   `check-evidence-immutability --base origin/docs/replatform-program`, is **0 failures** at the
   reviewed tip.
 
+**★ `E5-F008` is open against this ticket's own file, and it does NOT block `complete`.** Raised as a
+Codex P2 on the review PR and checked at source. The property is real: `runExportWindow` races the
+whole sequence against `exportArtifactsDeadlineMs`, but each provider call is made with
+`run.makeCtx()`, whose budget (from `workload.maxRuntimeSeconds`, minimum 60 s) can exceed the window
+racing it. `DAT-009-3e` filed it on 2026-09-23 and named `supervisor.ts` — this ticket's file — as
+the fix site. Four reasons it is not an unmet acceptance item of `DAT-009-3c`:
+
+1. **The mechanism `E5-D07` ruling 4 specifies is the one that shipped.** Ruling 4 says the producer
+   and every file's digest→grant→export→commit *"share one budget … raced with the existing
+   `withDeadline`, which is the `stageInputDeadlineMs` shape"*. That race, the networked clamp to
+   `capExpiresAt − now − EXPORT_TEARDOWN_RESERVE_MS`, and the `export_window_exhausted` refusal are
+   all present. Propagating the window's remaining budget into each RPC's `ctx` is a
+   **strengthening** of that mechanism, not the mechanism ruling 4 named.
+2. **Ruling 5 already declares the residual this describes, and narrows it.** It names an in-flight
+   call as a known residual, and the Codex-driven latch re-check after every await narrowed it to a
+   commit already in flight. The record does not claim the residual is absent.
+3. **The finding's own record says `Blocks gate: no`**, and states that no byte is mis-committed:
+   the window latch and the fenced commit both still refuse a late result. What remains is an
+   adapter-manager mutex held slightly past the supervisor's window — and `DAT-009-3e` bounds that
+   from the other side, with an absolute `opDeadlineAtMs` clamped to
+   `capability.expiresAt − EXPORT_TEARDOWN_RESERVE_MS`, a `budgetFired` latch and a re-measured
+   dispatch budget.
+4. **It is unreachable today.** `resolveExportArtifacts` has no production producer — that is
+   `CLI-012` — so `runExportWindow` never opens on a real run. The harm is contingent on code that
+   is not built.
+
+Withholding `complete` here would also be the wrong instrument: the finding is `unowned`, no ticket
+owns it, and `DAT-009-3c` could not discharge it by being re-reviewed. **What closes it** is the
+change `E5-F008` itself prescribes — derive each exporter call's `ctx` from the window's remaining
+budget, with a case asserting the `ctx` a provider receives never exceeds the window racing it —
+and that belongs to whoever takes `E5-F008`, most naturally alongside `CLI-012`, which is what makes
+the path reachable. Recording it here so that a reader of a `complete` record is not left unaware of
+an open finding against its own file.
+
 **Acceptance.** Attempt 1 verified the eight `E5-D07` rulings, the placement, clamp, latch and
 path-free logging at source, the `ReturnType` positive control, ruling 6's `timed_out`, the full
 suite, typecheck, build, boundary and frozen-protocol checks, and CI run `35590700974` by job. I
@@ -307,4 +341,4 @@ Later reviewers append rows with increasing attempt numbers without replacing ea
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
 | 1 | M1 review-batch-2B independent reviewer (Claude Opus 5) | `fc2eb7dde6325803c77950ac4adb1d190db0bd9a` | `changes_requested` | BLOCKING: §2's GREEN focused count "3 files, 50 passed" is false. A rerun at `f5e2aff1f` on a clean checkout gives **52** (21 + 16 + 15); 50 is the pre-Codex figure. Fix: state 52 and keep the old figure as superseded text. Verified with no change needed: hook placement, clamp, latch and path-free logging at source; all eight E5-D07 rulings evidenced; the ReturnType positive control reproduced (guard red, `E5-2` has 1 reference); the F10 two-Organization case is real; full suite 159 / 1070 / 1 skipped; typecheck and build exit 0; boundary PASS; frozen-protocol OK; M13 and M14 reproduced (1 failed each); run `35590700974` `verify (2)` executed 21 + 16, shard 6231 / 33; Codex clean on `a040e3a39d` and `17a85bf8c8`. |
-| 2 | M1 review-batch-3B independent reviewer (Claude Opus 5) | `60aafb32ec` (program tip, the #565 merge) | `approved` | The one requested change is made and independently confirmed: §2 now states **3 files, 52 passed** (21 + 16 + 15) and keeps `Superseded text: "3 files, 50 passed"` with the correction attributed to the planning session. `git diff f5e2aff1f HEAD` over the three test files, `supervisor.ts` and `artifact-export.ts` is empty, and rerunning the task verify command at the tip gives **52**. Re-checked the hook at source (per-run `sandboxId` passed as a parameter). **M7 reproduced** — 1 failed, the F10 case, with B's sandbox id twice and A's missing — which shows the F10 case is load-bearing. M12's recorded first survival is the right disclosure. Guard set 0 failures. Attempt 1's substantive verifications re-derived or spot-checked with no contradiction; every acceptance item met. `Status` moves to `complete`. |
+| 2 | M1 review-batch-3B independent reviewer (Claude Opus 5) | `60aafb32ec` (program tip, the #565 merge) | `approved` | The one requested change is made and independently confirmed: §2 now states **3 files, 52 passed** (21 + 16 + 15) and keeps `Superseded text: "3 files, 50 passed"` with the correction attributed to the planning session. `git diff f5e2aff1f HEAD` over the three test files, `supervisor.ts` and `artifact-export.ts` is empty, and rerunning the task verify command at the tip gives **52**. Re-checked the hook at source (per-run `sandboxId` passed as a parameter). **M7 reproduced** — 1 failed, the F10 case, with B's sandbox id twice and A's missing — which shows the F10 case is load-bearing. M12's recorded first survival is the right disclosure. Guard set 0 failures. Attempt 1's substantive verifications re-derived or spot-checked with no contradiction; every acceptance item met. `E5-F008`, filed later by `DAT-009-3e` against this ticket's own file, is recorded in the review and judged non-blocking: `E5-D07` ruling 4's specified mechanism (the `withDeadline` race plus the clamp) shipped, ruling 5 already declares the in-flight residual, the finding's own record says `Blocks gate: no` and no byte is mis-committed, and the path is unreachable until `CLI-012` supplies a producer. `Status` moves to `complete`. |
