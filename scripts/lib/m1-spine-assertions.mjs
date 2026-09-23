@@ -371,45 +371,11 @@ export function evaluateEnabledTenantSpine({ tenant: t, observation: o }) {
     }
   }
 
-  // Usage cardinality (the WRK-018 acceptance-1 collection point). EXACTLY ONE accepted `usage`
-  // event for this attempt — never `>= 1`, because a duplicate is precisely what a stored row
-  // cannot rule out — and its units are the ones the charge was computed from.
-  const usageEvents = o.usageEvents ?? [];
-  if (usageEvents.length !== 1) {
-    out.push(violation(
-      usageEvents.length === 0 ? "usage:no_usage_event" : "usage:not_exactly_one",
-      `${k}: the attempt has ${usageEvents.length} accepted usage event(s) in job_events, expected exactly 1`,
-    ));
-  }
-  if (usageEvents.some((e) => e.organizationId !== t.organizationId || e.companyId !== t.companyId)) {
-    // F10: an event of another Organization must never be counted toward this tenant's one.
-    out.push(violation("usage:wrong_tenant", `${k}: an accepted usage event names another tenant`));
-  }
-  // The units the amount expectation is derived from must be the ones the provider reported, or the
-  // exact-charge check above would be pinned to something this run did not use.
-  if (o.expectedUnits) {
-    const drifted = Object.keys(M1_SPINE_CANNED_UNITS)
-      .filter((field) => Number(o.expectedUnits[field]) !== Number(M1_SPINE_CANNED_UNITS[field]));
-    if (drifted.length > 0) {
-      out.push(violation(
-        "usage:units_not_canned",
-        `${k}: the provider reported ${JSON.stringify(o.expectedUnits)}, which differs from the canned units this profile prices against in ${JSON.stringify(drifted)}`,
-      ));
-    }
-  }
-  if (o.expectedUnits) {
-    for (const event of usageEvents) {
-      const stored = event.payload ?? {};
-      const differs = ["inputTokens", "outputTokens", "cachedInputTokens", "runtimeMillis"]
-        .some((field) => Number(stored[field]) !== Number(o.expectedUnits[field]));
-      if (differs) {
-        out.push(violation(
-          "usage:units_differ",
-          `${k}: the stored usage ${JSON.stringify(stored)} is not the units the provider reported ${JSON.stringify(o.expectedUnits)}`,
-        ));
-      }
-    }
-  }
+  // Usage cardinality (the WRK-018 acceptance-1 collection point) — ONE implementation, shared
+  // with the KEYED shipped-boot lane (DEP-015). See `evaluateUsageCardinality` below.
+  out.push(...evaluateUsageCardinality({ tenant: t, observation: o }));
+  const usageEvents = o.usageEvents ?? []; // the cost checks below read the same one event
+
 
   // Cost (JOB-016): exactly one row, cost > 0, this tenant's Company; one applied receipt.
   const costRows = o.costRows ?? [];
@@ -516,6 +482,95 @@ export function evaluateEnabledTenantSpine({ tenant: t, observation: o }) {
 }
 
 // ── the control tenant ───────────────────────────────────────────────────────
+
+/**
+ * WRK-018 acceptance 1, as ONE implementation for BOTH lanes: exactly one accepted `usage` event
+ * per attempt, that event belonging to this tenant, and the numbers derived from it equal to it.
+ *
+ * `evaluateEnabledTenantSpine` (the D1 spine, fake provider, DEP-016) calls it with
+ * `expectedUnits` — the units the reference provider reported, which the exact-charge expectation
+ * is pinned to. The KEYED shipped-boot lane (DEP-015, `scripts/m1-shipped-boot/journey.mjs`)
+ * calls it with `storedUsage` — `heartbeat_runs.usage_json`, which `createCanaryRunProjector`
+ * derives from the same event. Neither lane may grow a second implementation of the cardinality
+ * rule; one of them would drift, and both claim to prove the same acceptance.
+ *
+ * `observation`:
+ *   - `usageEvents`   accepted `usage` rows of THIS attempt: `{ organizationId, companyId, payload }`.
+ *   - `expectedUnits` optional; the units the provider reported (spine).
+ *   - `storedUsage`   optional; `heartbeat_runs.usage_json` (keyed).
+ *
+ * `storedUsage` is compared field by field against the single event:
+ *   `inputTokens` / `outputTokens` directly, and `durationMs` against the event's `runtimeMillis`.
+ *   `canary-terminal-projection.ts` falls back to the run's WALL CLOCK when the event carries no
+ *   `runtimeMillis`, so the duration is compared only when the event actually reports one —
+ *   otherwise this would red on a correct projection. `costUsd` is always null by construction
+ *   (`usagePayloadV1Schema` is `.strict()` and carries no pricing field), so it is not compared.
+ */
+export function evaluateUsageCardinality({ tenant: t, observation: o }) {
+  const out = [];
+  const k = `tenant ${t.key}`;
+  const usageEvents = o.usageEvents ?? [];
+  if (usageEvents.length !== 1) {
+    out.push(violation(
+      usageEvents.length === 0 ? "usage:no_usage_event" : "usage:not_exactly_one",
+      `${k}: the attempt has ${usageEvents.length} accepted usage event(s) in job_events, expected exactly 1`,
+    ));
+  }
+  if (usageEvents.some((e) => e.organizationId !== t.organizationId || e.companyId !== t.companyId)) {
+    // F10: an event of another Organization must never be counted toward this tenant's one.
+    out.push(violation("usage:wrong_tenant", `${k}: an accepted usage event names another tenant`));
+  }
+  // The units the amount expectation is derived from must be the ones the provider reported, or the
+  // exact-charge check above would be pinned to something this run did not use.
+  if (o.expectedUnits) {
+    const drifted = Object.keys(M1_SPINE_CANNED_UNITS)
+      .filter((field) => Number(o.expectedUnits[field]) !== Number(M1_SPINE_CANNED_UNITS[field]));
+    if (drifted.length > 0) {
+      out.push(violation(
+        "usage:units_not_canned",
+        `${k}: the provider reported ${JSON.stringify(o.expectedUnits)}, which differs from the canned units this profile prices against in ${JSON.stringify(drifted)}`,
+      ));
+    }
+    for (const event of usageEvents) {
+      const stored = event.payload ?? {};
+      const differs = ["inputTokens", "outputTokens", "cachedInputTokens", "runtimeMillis"]
+        .some((field) => Number(stored[field]) !== Number(o.expectedUnits[field]));
+      if (differs) {
+        out.push(violation(
+          "usage:units_differ",
+          `${k}: the stored usage ${JSON.stringify(stored)} is not the units the provider reported ${JSON.stringify(o.expectedUnits)}`,
+        ));
+      }
+    }
+  }
+  // The keyed lane's half: the run's stored usage IS the accepted event's numbers.
+  if (o.storedUsage !== undefined && o.storedUsage !== null && usageEvents.length === 1) {
+    const payload = usageEvents[0].payload ?? {};
+    const mismatched = [];
+    for (const [storedField, eventField] of [["inputTokens", "inputTokens"], ["outputTokens", "outputTokens"]]) {
+      if (Number(o.storedUsage[storedField] ?? NaN) !== Number(payload[eventField] ?? NaN)) {
+        mismatched.push(`${storedField}=${JSON.stringify(o.storedUsage[storedField] ?? null)} vs event ${eventField}=${JSON.stringify(payload[eventField] ?? null)}`);
+      }
+    }
+    if (payload.runtimeMillis !== undefined && payload.runtimeMillis !== null) {
+      if (Number(o.storedUsage.durationMs ?? NaN) !== Number(payload.runtimeMillis)) {
+        mismatched.push(`durationMs=${JSON.stringify(o.storedUsage.durationMs ?? null)} vs event runtimeMillis=${JSON.stringify(payload.runtimeMillis)}`);
+      }
+    }
+    if (mismatched.length > 0) {
+      out.push(violation(
+        "usage:stored_differs_from_event",
+        `${k}: the run's stored usage is not the accepted event's numbers (${mismatched.join("; ")})`,
+      ));
+    }
+  } else if (o.storedUsage === null && usageEvents.length === 1) {
+    out.push(violation(
+      "usage:no_stored_usage",
+      `${k}: the attempt has an accepted usage event but the run stored no usage_json to compare it with`,
+    ));
+  }
+  return out;
+}
 
 /**
  * @param {{ tenant: object, observation: object }} input
