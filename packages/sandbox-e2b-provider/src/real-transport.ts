@@ -27,6 +27,7 @@ import {
   E2bListDirMalformedEntryError,
   E2bReadBoundExceededError,
   E2bTransportNotFoundError,
+  E2bTransportPathNotFoundError,
   E2bTransportTransientError,
   type E2bCommandResult,
   type E2bDirEntry,
@@ -47,7 +48,7 @@ import {
   type E2bStreamHandlers,
   type E2bTransport,
 } from "./transport.js";
-import { isE2bNotFound, shellJoin } from "./real-transport-helpers.js";
+import { isE2bFileNotFound, isE2bNotFound, shellJoin } from "./real-transport-helpers.js";
 import { filesOnlyFromListing, type ListingEntry } from "./list-dir-contract.js";
 
 /** Loose facade over the version-sensitive `e2b` SDK surface (keyed lane only). */
@@ -594,6 +595,11 @@ export class RealE2bTransport implements E2bTransport {
       const sandbox = await this.#sdk.connect(sandboxId, { apiKey: this.#apiKey });
       entries = await sandbox.files.list(path, { depth: E2B_LIST_DIR_MAX_DEPTH + 1 });
     } catch (err) {
+      // ★ CLI-012 (Codex P2, PR #576) — A MISSING DIRECTORY IS NOT A MISSING SANDBOX. A run that
+      // wrote no output never creates the output root, and the SDK answers `files.list` on it
+      // with `FileNotFoundError`. Collapsing that into the sandbox error made every normal
+      // no-output run a `producer_failed`. Narrow first, then the fail-closed general case.
+      if (isE2bFileNotFound(err)) throw new E2bTransportPathNotFoundError(sandboxId, path);
       if (this.#isNotFound(err)) throw new E2bTransportNotFoundError(`${sandboxId}:${path}`);
       throw err;
     }

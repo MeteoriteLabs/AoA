@@ -175,6 +175,32 @@ export class E2bTransportNotFoundError extends Error {
   }
 }
 
+/**
+ * CLI-012 (Codex P2, PR #576) — the PATH was not found, though the sandbox was.
+ *
+ * ★★★ A SUBCLASS DELIBERATELY, SO NOTHING ELSE CHANGES. Every existing
+ * `instanceof E2bTransportNotFoundError` handler keeps catching this, which means introducing it
+ * cannot quietly alter any other op's behaviour; only a caller that asks for the narrower class
+ * sees the difference.
+ *
+ * ★ WHY IT IS NEEDED. `listDir` collapsed "no such sandbox" and "no such directory" into one
+ * error, and `E2bSandboxProvider.enumerateOutputs` re-mapped that to `SandboxNotFoundError`. So a
+ * successful run that simply wrote nothing — and therefore never created the output root — was
+ * reported as a failed producer rather than as the empty listing the task section's Failure
+ * behavior specifies (*"an empty output root produces `[]`"*).
+ *
+ * ★ FAIL-CLOSED. Only an error POSITIVELY identified as a file-not-found becomes this; anything
+ * unrecognised stays the sandbox error, so an unclassifiable failure is never read as "the run
+ * produced no output".
+ */
+export class E2bTransportPathNotFoundError extends E2bTransportNotFoundError {
+  constructor(sandboxId: string, path: string) {
+    super(`${sandboxId}:${path}`);
+    this.message = `e2b transport: path not found: ${sandboxId}:${path}`;
+    this.name = "E2bTransportPathNotFoundError";
+  }
+}
+
 /** A transient teardown failure (the E2B control API rejected a terminate). The
  * provider maps this to a REPORTED `CleanupResult{cleanupStatus:"failed"}` — never
  * a throw — so the monotonic cleanup convergence can retry it idempotently. */

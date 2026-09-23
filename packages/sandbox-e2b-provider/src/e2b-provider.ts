@@ -83,6 +83,7 @@ import {
   E2bProcessLaunchNotAcknowledgedError,
   E2bTransportEgressBlockedError,
   E2bTransportNotFoundError,
+  E2bTransportPathNotFoundError,
   E2bTransportTransientError,
   E2bSymlinkRefusedError,
   type E2bProcessObservation,
@@ -761,6 +762,12 @@ export class E2bSandboxProvider implements SandboxProvider {
         "output enumeration timed out",
       );
     } catch (err) {
+      // ★ CLI-012 (Codex P2, PR #576) — A MISSING ROOT IS "NO OUTPUT", NOT A MISSING SANDBOX.
+      // The task section's Failure behavior says an empty output root produces `[]`; a run that
+      // wrote nothing never creates the root at all, and reporting that as a dead sandbox turned
+      // every normal no-output window into `producer_failed`. Checked FIRST, because the path
+      // error is a SUBCLASS of the sandbox one.
+      if (err instanceof E2bTransportPathNotFoundError) return { entries: [] };
       if (err instanceof E2bTransportNotFoundError) throw new SandboxNotFoundError();
       throw err;
     }

@@ -22,9 +22,16 @@
 import { describe, expect, it } from "vitest";
 
 import { E2bSandboxProvider, E2B_MAX_ARTIFACT_BYTES } from "../e2b-provider.js";
+import { SandboxNotFoundError } from "../errors.js";
 import { MockE2bTransport } from "../mock-transport.js";
 import { RealE2bTransport, readStreamBounded, entryFromInfo } from "../real-transport.js";
-import { E2bReadBoundExceededError, E2bSymlinkRefusedError, E2bListDirMalformedEntryError } from "../transport.js";
+import {
+  E2bReadBoundExceededError,
+  E2bSymlinkRefusedError,
+  E2bListDirMalformedEntryError,
+  E2bTransportNotFoundError,
+  E2bTransportPathNotFoundError,
+} from "../transport.js";
 import { METADATA_KEYS } from "../directives.js";
 
 const CTX = { deadlineMs: 5_000 } as never;
@@ -337,5 +344,92 @@ describe("CLI-012 — the real binding's stat mapping is fail-closed", () => {
     // file and measure it afterwards — `E5-F009` exactly — while every size assertion still passed.
     expect(formats).toEqual(["stream", "bytes"]);
     expect(await transport.statEntry("s", "/p")).toEqual({ path: "/p", sizeBytes: 2, symlink: false });
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// CLI-012, second round (Codex P2, PR #576) — A MISSING OUTPUT ROOT IS "NO OUTPUT", NOT A
+// MISSING SANDBOX.
+//
+// The task section's Failure behavior says in terms that *"an empty output root produces `[]`"*.
+// A successful run that simply wrote nothing never creates `/home/user/aoa-output` at all, and
+// the installed SDK rejects `files.list` on it with `FileNotFoundError`. `listDir` collapsed
+// that into `E2bTransportNotFoundError` and `enumerateOutputs` then re-mapped it to
+// `SandboxNotFoundError`, so every normal no-output run reported `producer_failed`.
+//
+// ★ THE DISCRIMINATION IS MEASURED, NOT GUESSED. `e2b@2.30.5`'s `dist/index.d.ts` declares
+// `FileNotFoundError extends NotFoundError` and `SandboxNotFoundError extends NotFoundError`
+// as two distinct classes, so the two cases really are distinguishable at source.
+//
+// ★ AND IT IS FAIL-CLOSED. Only an error POSITIVELY identified as a file-not-found becomes the
+// path variant; anything else stays the sandbox error, so an unrecognisable failure is never
+// reported as "the run produced nothing".
+// ---------------------------------------------------------------------------------------
+describe("CLI-012 — a MISSING output root lists empty; a missing SANDBOX still throws", () => {
+  class FileNotFoundError extends Error {
+    constructor() {
+      super("file not found");
+      this.name = "FileNotFoundError";
+    }
+  }
+  class SandboxGoneError extends Error {
+    constructor() {
+      super("sandbox not found");
+      this.name = "SandboxNotFoundError";
+    }
+  }
+
+  function transportRejecting(error: Error): RealE2bTransport {
+    return new RealE2bTransport({
+      apiKey: "test-key-not-a-credential",
+      sdk: {
+        connect: async () => ({
+          files: {
+            list: async () => {
+              throw error;
+            },
+          },
+        }),
+      } as never,
+    });
+  }
+
+  it("★★★ the transport tells the two apart, and the provider lists EMPTY for a missing root", async () => {
+    const missingRoot = transportRejecting(new FileNotFoundError());
+    await expect(missingRoot.listDir("s", ROOT)).rejects.toBeInstanceOf(E2bTransportPathNotFoundError);
+    // Still a not-found for every existing handler — the new class is a SUBCLASS, so nothing
+    // that already caught the old one changes behaviour.
+    await expect(missingRoot.listDir("s", ROOT)).rejects.toBeInstanceOf(E2bTransportNotFoundError);
+
+    const provider = new E2bSandboxProvider({ transport: missingRoot as never });
+    expect(await provider.enumerateOutputs("s", ROOT, CTX)).toEqual({ entries: [] });
+  });
+
+  it("★ a MISSING SANDBOX is still a SandboxNotFoundError — the distinction is not collapsed the other way", async () => {
+    const goneSandbox = transportRejecting(new SandboxGoneError());
+    await expect(goneSandbox.listDir("s", ROOT)).rejects.toBeInstanceOf(E2bTransportNotFoundError);
+    await expect(goneSandbox.listDir("s", ROOT)).rejects.not.toBeInstanceOf(E2bTransportPathNotFoundError);
+
+    const provider = new E2bSandboxProvider({ transport: goneSandbox as never });
+    await expect(provider.enumerateOutputs("s", ROOT, CTX)).rejects.toBeInstanceOf(SandboxNotFoundError);
+  });
+
+  it("★ an UNRECOGNISABLE failure is NOT reported as 'no output' — fail-closed", async () => {
+    const weird = transportRejecting(new Error("the control API melted"));
+    await expect(weird.listDir("s", ROOT)).rejects.not.toBeInstanceOf(E2bTransportNotFoundError);
+    const provider = new E2bSandboxProvider({ transport: weird as never });
+    await expect(provider.enumerateOutputs("s", ROOT, CTX)).rejects.toThrow();
+  });
+
+  it("★ NON-VACUITY — the same seam DOES return entries when the root exists", async () => {
+    const listing = new RealE2bTransport({
+      apiKey: "test-key-not-a-credential",
+      sdk: {
+        connect: async () => ({
+          files: { list: async () => [{ path: `${ROOT}/a.md`, type: "file", size: 3 }] },
+        }),
+      } as never,
+    });
+    expect(await listing.listDir("s", ROOT)).toEqual([{ path: `${ROOT}/a.md`, sizeBytes: 3, symlink: false }]);
   });
 });

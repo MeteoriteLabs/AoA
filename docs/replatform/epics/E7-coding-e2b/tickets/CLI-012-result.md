@@ -461,3 +461,62 @@ Every mutation was reverted; a `MUTANT` grep over the touched sources returns `0
    rather than rewriting §§1-10.
 8. **Fail-closed on missing input** — `maxAttemptBytes` is a test-only override and a `0` refuses
    everything rather than disabling the bound.
+
+### 11.8 Codex round 2, P2 — a MISSING output root was reported as a missing SANDBOX
+
+Real, and verified at source. `RealE2bTransport.listDir` collapsed both cases into
+`E2bTransportNotFoundError`, and `E2bSandboxProvider.enumerateOutputs` re-mapped that to
+`SandboxNotFoundError`. A successful run that wrote nothing never creates
+`/home/user/aoa-output`, so **every normal no-output window would have been reported as
+`producer_failed`** — directly against this ticket's own stated Failure behavior, *"an empty
+output root produces `[]`"*.
+
+★ The discrimination is **measured, not guessed**: the installed `e2b@2.30.5`'s `dist/index.d.ts`
+declares `FileNotFoundError` and `SandboxNotFoundError` as two distinct subclasses of the
+deprecated `NotFoundError`, so the two cases are distinguishable at source.
+
+- `transport.ts` gains `E2bTransportPathNotFoundError`, a **subclass** of the sandbox error, so
+  every existing `instanceof E2bTransportNotFoundError` handler keeps its behaviour and only a
+  caller asking for the narrower class sees any difference.
+- `real-transport-helpers.ts` gains `isE2bFileNotFound`, which answers TRUE **only** for a
+  positively named `FileNotFoundError`. The ambiguous shapes `isE2bNotFound` also accepts (a bare
+  `NotFoundError`, a `SandboxError` carrying a 4xx, any name merely containing "notfound") answer
+  FALSE, so an unclassifiable failure stays an error and is **never** laundered into "the run
+  produced no output".
+- `enumerateOutputs` returns `{entries: []}` for the path variant and still throws
+  `SandboxNotFoundError` for the sandbox one.
+
+| # | Mutation | Suite | Result |
+|---|----------|-------|--------|
+| M22 | Transport: collapse the two not-founds again | `enumerate-and-bounded-read` | **RED** (1 failed) |
+| M23 | Provider: drop the empty-listing arm | `enumerate-and-bounded-read` | **RED** (1 failed) |
+
+Suite after: `sandbox-e2b-provider exec vitest run` → `Tests 188 passed, 32 skipped (220)`;
+typecheck `Done` for `worker-daemon`, `sandbox-e2b-provider`, `provider-wire`, `adapter-manager`.
+
+### 11.9 Codex round 2, P1 — ESCALATED, not silently descoped
+
+Codex asks that the production composition of the producer be **deferred until `CLI-017` supplies
+SD-5**, on the ground that a run writing a redeemed secret under the output root would now be
+digested and uploaded with no secret scan in place.
+
+**The premise is true and it is already recorded** — §8 of this record and `E7-D11` both state
+that SD-5 is `CLI-017-B`'s build and is REQUIRED before `M1b`'s campaign. What is verified at
+source and bounds the exposure: `composeDispatchRuntime` runs **only inside the `compose: true`
+branch of the boot**, i.e. behind the default-OFF distributed flag, which is exactly the
+Migration/compatibility posture the task section states (*"additive, worker-only, behind the
+default-OFF distributed flag"*).
+
+**The remedy is refused at this level, and the question is handed up**, because acting on it would
+contradict two locked instruments rather than fix a defect in this diff:
+
+- the task section's **Files** list requires this ticket to pass the real producer into the
+  composition point (*"removing this edit, as suggested, would leave the producer unconnected, so
+  the edit stays"*), and
+- **`E5-D07` ruling 4** makes this the commit that promotes `E5-2-fenced-object-commit-worker-half`
+  to `wired`. An uncomposed producer would have to un-promote it.
+
+E7-D11 gates the **campaign** on SD-5, not this ticket's composition. Whether the campaign's gate
+should additionally be a composition-time gate is a planning-session ruling, not a build decision,
+so it is reported rather than taken. This is also the **second Codex round** on this PR, which the
+M1 build rules cap.
