@@ -566,20 +566,22 @@ jobs:
         run: |
           set -uo pipefail
           out="${RUNNER_TEMP}/m1-spine-not-the-executor.txt"
-          node --test --test-concurrency=1 tests/d1/m1-spine.test.mjs > "$out" 2>&1 || true
-          # The worker-driven case must NOT have run, and the in-test control must still have run
-          # and passed — that pairing is what distinguishes "the claim was withdrawn" from "the
-          # whole profile fell over".
-          grep -F 'the DEPLOYED worker performs' "$out" | grep -qF '# SKIP' || {
+          # The TAP reporter, deliberately: `# SKIP` is a stable TAP token, while the default spec
+          # reporter's skip glyph is a unicode character whose shape is not a contract.
+          node --test --test-concurrency=1 --test-reporter=tap tests/d1/m1-spine.test.mjs > "$out" 2>&1 || true
+          # The worker-driven case must be WITHDRAWN, and the in-test control must have really RUN
+          # and passed. That pairing is what distinguishes "the claim was withdrawn" from "the whole
+          # profile fell over", and it is why the control is checked for the ABSENCE of `# SKIP`.
+          grep -E '^ok [0-9]+ - .*DEPLOYED worker performs.*# SKIP' "$out" >/dev/null || {
             cat "$out"
             echo "::error::the worker-driven case was not withdrawn under AOA_M1_SPINE_EXECUTOR=harness"
             exit 1
           }
-          grep -qF 'the worker-driven verdict REDS' "$out" || {
-            cat "$out"
-            echo "::error::the in-test not-the-executor control did not run"
-            exit 1
-          }
+          control="$(grep -E '^(ok|not ok) [0-9]+ - .*worker-driven verdict REDS' "$out" || true)"
+          case "$control" in
+            ok*"# SKIP"*|"") cat "$out"; echo "::error::the in-test not-the-executor control did not RUN"; exit 1 ;;
+            "not ok"*) cat "$out"; echo "::error::the in-test not-the-executor control FAILED"; exit 1 ;;
+          esac
           echo "not-the-executor control: the worker-driven claim is withdrawn and the verdict's red arm still runs"
           tail -n 30 "$out"
           tail -n 40 "$out"
