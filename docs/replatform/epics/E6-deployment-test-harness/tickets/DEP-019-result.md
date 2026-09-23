@@ -337,6 +337,25 @@ not-the-executor control: "the worker-driven claim is withdrawn and the verdict'
 also concluded `success` with `m1-spine: success`.** It is cited because it is the run that first
 showed the lane green; the run above supersedes it and is the one on the reviewed code.
 
+### 11b. The one probe run that did NOT pass — and what failed in it
+
+Run `35851111524`, head `20b9eadcf` (= `a60fcdc62` + the trigger line), concluded `failure`.
+**`m1-spine` PASSED in it (job `107149290449`); the failure is the SIBLING `d1-merge-train` job**
+(`107149290663`), in step *"Run the E6F campaign (live)"*:
+
+```
+✖ E6F-01 lease races: 100 submit->placement->lease->ACK races across >=2 profiles, one winner each
+  ack expected 200, got 503: {"code":"internal_unavailable", "retryAfterMs":1000, …}
+```
+
+That is the PRE-EXISTING two-worker foundation campaign, not this ticket's lane, and the evidence
+that it is transient rather than caused by this change is threefold: the SAME job passed on
+`edc64517f`, whose only delta from this head is a DOCS commit (§13.6/13.7); the failure is a
+`retryable` 503 inside a 100-way race; and `m1-spine` passed in the same run, on the same stack.
+
+Stated rather than re-run, because the planning session's instruction for this cycle was to stop.
+A reviewer who wants the sibling job green on this exact head should re-fire the probe branch.
+
 ★ The merge with the program tip (`499ec4d1c`) that sits between those heads touched **no** input of
 this lane: `git diff ec0a2d132 13ed9c7f7 -- server/src packages/db/src packages/shared/src
 packages/worker-protocol/src packages/sandbox-fake-provider docker docker-compose.d1.yml tests/d1
@@ -360,7 +379,9 @@ name is irrelevant to "the child cannot see the host's environment at all".
 
 Guard 9 now reports nothing missing, and guards 1–8 find nothing in any surface this ticket adds.
 
-**`ci-required`: PASS** on the final head `75eb25f9b`, run `35844283361` (job `107132960224`), all
+**`ci-required`: PASS.** Most recently on `a60fcdc62`, run `35851079291`, job `ci-required` =
+`success` — the head carrying all four ruled fixes plus the §13.6/13.7 handover. Earlier, and
+recorded as written: PASS on `75eb25f9b`, run `35844283361` (job `107132960224`), all
 sixteen checks green — `changes`, `policy`, `lint`, `migrations`, `distributed-contract`, `browser`,
 `brand-check`, both `worker-protocol-contract-bytes` lanes, `e2e`, `e2e-pgvector` and
 `verify (1..4)`. This section is not rewritten.
