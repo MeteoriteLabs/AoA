@@ -702,3 +702,58 @@ unchanged after the merge. Two consequences worth pinning so no later reader has
   review names.
 
 Nothing is pending, so I set `Status` to `complete` in a separate commit.
+
+---
+
+## 14. Addendum, 2026-09-23: the ACTIONS LOG gets a scanner and a mask (review batch 3A, PR #569)
+
+**What review batch 3A measured, and it is the reason this is a control gap and not an incident.**
+Across the complete job log of keyed run `35619555883` (job `106398898162`, 2347 lines) and the
+whole evidence artifact (`10649025333`, 20 files), the reviewer found **zero** hits for
+`BEGIN PUBLIC KEY`, the ed25519 SPKI prefix `MCowBQYDK2VwAyEA`, the PKCS#8 prefix
+`MC4CAQAwBQYDK2VwBCIEI`, and no 40–48-character base64 runs; no artifact file contains
+`PRIVATE KEY`. **Acceptance 2 held for the whole keypair on both surfaces for that run. Nothing
+leaked.**
+
+**What was missing was the standing control,** verified at source by that reviewer:
+- `leakScan` walked only `$M1_OUT/evidence`, so the **Actions log surface had no scanner at all**;
+- there was no `::add-mask::` anywhere in `journey.mjs`, so the in-job PEM was **unmasked** in the log;
+- `prepare` registered only `privatePem` and its body — **never `publicPem`**.
+
+A clean measurement of one run is not a control. Ruled in under F2:
+
+1. **`trackSecret` masks.** Every registered secret is emitted as `::add-mask::` — once per value
+   and, for a multi-line secret such as a PEM, once per line, so a value that appears only
+   line-wrapped is masked too. The directive is emitted **only inside Actions**
+   (`GITHUB_ACTIONS === "true"`), because the directive itself carries the value; that is GitHub's
+   mechanism, and the rendered log shows `***`.
+2. **Both halves of the keypair are registered:** `CONTROL_PLANE_PUBLIC_KEY_PEM` and
+   `…_BODY` join the private pair. The public half is not a credential, but acceptance 2 is a claim
+   about the **keypair**, and a log carrying the public half says which key the job minted.
+3. **The leak scan now covers TWO surfaces.** The evidence-directory scan is unchanged. The job log
+   — what every phase prints, teed to `$M1_OUT/job-log.txt` by the workflow — is scanned for the
+   same named secrets **and for key material by SHAPE** (`KEY_MATERIAL_MARKERS`: PEM private, PEM
+   public, and the two ed25519 DER prefixes the reviewer measured). Shape-matching also catches a
+   key whose exact bytes the scanner was never told — a re-run's, or an operator's. A match fails
+   the run and deletes **both** surfaces, so the gated upload has nothing to publish. Findings name
+   the surface, the file, and the secret NAME or the marker — never a value.
+   - The one exception is counted, not hidden: `::add-mask::` lines are skipped, and the pass line
+     reports how many were skipped.
+4. **The shape guard keeps the surface collected.** Every phase, and the keypair check, must tee
+   into the job log, or `policy` reds. A phase the scan cannot see is a phase outside the control.
+
+**Positive controls** (`scripts/lib/__tests__/m1-shipped-boot.test.mjs`, `check-m1-shipped-boot-shape.test.mjs`):
+- a PEM planted in the **job log** reds the phase end to end (exit 1), names the marker and line,
+  prints no material, and deletes both surfaces;
+- a **registered secret** planted in the job log reds it, by name;
+- the **public half** planted in the job log reds it;
+- a clean job log passes and both surfaces survive; with no job log at all, the evidence scan still
+  runs and says so (no silent skip);
+- the DER prefixes are found with no PEM armour, and an `::add-mask::` line is skipped **and**
+  counted — with the exception off, the same line is found, so the skip is an excuse, not blindness;
+- **mutations, all killed:** the mask directive not emitted (1), the public half not registered (1),
+  the log surface not scanned (4), key-material shapes not scanned (4), the tee invariant not
+  checked (1).
+
+**Status unchanged.** This is a control added after the fact to a run that was already clean; it
+neither re-opens nor re-decides §12's keyed acceptance.

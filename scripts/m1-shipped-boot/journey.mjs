@@ -36,7 +36,8 @@
 //                      env-absence probe summary (read from its `job_events`), with a red
 //                      planted control; keyless observes no probe (no sandbox exists).
 //   collect            redacted service logs + `compose ps` into the evidence dir
-//   leak-scan          HARD check before upload: no job secret (raw/base64/base64url) in the evidence
+//   leak-scan          HARD check before upload, on BOTH surfaces: no job secret (raw/base64/
+//                      base64url) and no key material, in the evidence bundle OR the job log
 //   teardown           `compose down -v`, and the keypair + secrets deleted
 //
 // SECRETS. Every value `prepare` generates, plus E2B_API_KEY / ANTHROPIC_API_KEY, is listed in
@@ -63,6 +64,9 @@ import {
   redactSecrets,
   extractSandboxEvidence,
   scanEvidenceForSecrets,
+  scanForKeyMaterial,
+  KEY_MATERIAL_MARKERS,
+  MASK_DIRECTIVE_PREFIX,
   extractRolloutResolution,
   CANARY_EXECUTION_TARGET_SLUG,
   // DEP-017 — the live env-absence probe's read side.
@@ -136,14 +140,30 @@ function saveState(state) {
   writeSecretFile(statePath(state.out), JSON.stringify(state, null, 2));
 }
 
-/** Record a job secret under a NAME: redacted from every retained log, and scanned for (by name)
- * before any evidence is uploaded. Values shorter than 8 characters are not secrets this lane
- * mints, and would match by accident. */
+/** Record a job secret under a NAME: MASKED in the Actions log, redacted from every retained log,
+ * and scanned for (by name) on BOTH surfaces before any evidence is uploaded. Values shorter than
+ * 8 characters are not secrets this lane mints, and would match by accident.
+ *
+ * ★ The mask is what makes the LOG surface safe. Review batch 3A (PR #569) measured that run
+ * 35619555883's job log and evidence carried no key material at all — so the gap was in the
+ * CONTROL, not in an observed leak: `leakScan` walked only the evidence directory, and nothing
+ * emitted `::add-mask::`. The directive itself carries the value — that IS GitHub's mechanism,
+ * and the rendered log shows `***` — so it is emitted only inside Actions, and the log scan skips
+ * (and counts) those lines. */
 function trackSecret(state, name, value) {
   if (typeof value !== "string" || value.length < 8) return;
   state.secrets ??= {};
+  const alreadyRegistered = state.secrets[name] === value;
   state.secrets[name] = value;
   if (!state.redact.includes(value)) state.redact.push(value);
+  if (!alreadyRegistered && process.env.GITHUB_ACTIONS === "true") {
+    // One directive per line: a multi-line secret (a PEM) would otherwise be masked only where
+    // it appears whole, so each of its lines is registered in its own right too.
+    const parts = [value, ...value.split(/\r?\n/)];
+    for (const part of new Set(parts)) {
+      if (part.trim().length >= 8) console.log(`${MASK_DIRECTIVE_PREFIX}${part}`);
+    }
+  }
 }
 
 function evidenceDir(state) {
@@ -327,6 +347,11 @@ function prepare(args) {
   trackSecret(state, "CONTROL_PLANE_SIGNING_KEY_PEM", privatePem.trim());
   // The PEM body without its armour lines too: a log that printed the key would rarely keep them.
   trackSecret(state, "CONTROL_PLANE_SIGNING_KEY_BODY", privatePem.replace(/-----[A-Z ]+-----/g, "").replace(/\s+/g, ""));
+  // The PUBLIC half too, whole and body-only (review batch 3A, PR #569). It is not a credential,
+  // but it is the pair's other half: a log or bundle carrying it says which key this job minted,
+  // and acceptance 2 is a claim about the KEYPAIR, not about the private half alone.
+  trackSecret(state, "CONTROL_PLANE_PUBLIC_KEY_PEM", publicPem.trim());
+  trackSecret(state, "CONTROL_PLANE_PUBLIC_KEY_BODY", publicPem.replace(/-----[A-Z ]+-----/g, "").replace(/\s+/g, ""));
   trackSecret(state, "E2B_API_KEY", process.env.E2B_API_KEY ?? "");
   trackSecret(state, "ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY ?? "");
   writeEnvFile(state);
@@ -899,6 +924,11 @@ async function dispatch(state) {
  * so the upload step (gated on this step's success) has nothing to publish. The output names the
  * file and the secret NAME, never the value.
  */
+/** The JOB-LOG surface: what every phase printed, teed there by the workflow. */
+function jobLogPath(state) {
+  return path.join(state.out, "job-log.txt");
+}
+
 function leakScan(state) {
   const dir = path.join(state.out, "evidence");
   const files = [];
@@ -911,13 +941,38 @@ function leakScan(state) {
     }
   };
   walk(dir);
-  const findings = scanEvidenceForSecrets(files, state.secrets ?? {});
-  if (findings.length > 0) {
-    for (const f of findings) console.error(`::error::DEP-015 leak scan: evidence file '${f.file}' contains job secret '${f.secret}' (${f.form} form)`);
+  // ★ TWO SURFACES (review batch 3A, PR #569). The evidence bundle is uploaded; the ACTIONS LOG is
+  // published with the run and outlives it, and had no scanner at all. The bundle scan is unchanged;
+  // the job log is scanned for the same named secrets AND for key material BY SHAPE, which also
+  // catches a key whose bytes this scanner was never told (a re-run's, an operator's).
+  const logSurface = existsSync(jobLogPath(state))
+    ? [{ name: "job-log.txt", text: readFileSync(jobLogPath(state), "latin1") }]
+    : [];
+  const secrets = state.secrets ?? {};
+  const logScan = scanForKeyMaterial(logSurface);
+  const findings = [
+    ...scanEvidenceForSecrets(files, secrets).map((f) => ({ ...f, surface: "evidence" })),
+    ...scanEvidenceForSecrets(logSurface, secrets).map((f) => ({ ...f, surface: "job log" })),
+  ];
+  const keyMaterial = [
+    ...scanForKeyMaterial(files).findings.map((f) => ({ ...f, surface: "evidence" })),
+    ...logScan.findings.map((f) => ({ ...f, surface: "job log" })),
+  ];
+  if (findings.length > 0 || keyMaterial.length > 0) {
+    for (const f of findings) console.error(`::error::DEP-015 leak scan: ${f.surface} file '${f.file}' contains job secret '${f.secret}' (${f.form} form)`);
+    for (const f of keyMaterial) console.error(`::error::DEP-015 leak scan: ${f.surface} file '${f.file}' line ${f.line} carries key material (${f.marker})`);
     rmSync(dir, { recursive: true, force: true });
-    fail(`leak scan: ${findings.length} secret occurrence(s) in the evidence; the bundle was deleted and will not be uploaded`);
+    rmSync(jobLogPath(state), { force: true });
+    fail(
+      `leak scan: ${findings.length} secret occurrence(s) + ${keyMaterial.length} key-material occurrence(s) across the evidence and the job log; ` +
+        `both were deleted and nothing will be uploaded`,
+    );
   }
-  console.log(`leak-scan: ${files.length} evidence file(s) scanned for ${Object.keys(state.secrets ?? {}).length} named job secret(s) in raw/base64/base64url form: clean`);
+  console.log(
+    `leak-scan: ${files.length} evidence file(s) + ${logSurface.length} job-log file(s) scanned for ` +
+      `${Object.keys(secrets).length} named job secret(s) (raw/base64/base64url) and ${KEY_MATERIAL_MARKERS.length} key-material shapes: clean ` +
+      `(${logScan.maskDirectiveLines} ::add-mask:: directive line(s) skipped — GitHub renders those as ***)`,
+  );
 }
 
 function collect(state) {

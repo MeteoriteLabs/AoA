@@ -259,7 +259,7 @@ test("redactSecrets removes every occurrence of every secret and ignores short/e
 
 import { scanEvidenceForSecrets } from "../m1-shipped-boot.mjs";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -521,4 +521,136 @@ test("DEP-017 POSITIVE CONTROL: an UNEXPECTED checked class FAILS too (set equal
   const r = evaluateEnvProbeEvidence(s);
   assert.equal(r.pass, false);
   assert.ok(r.reasons.some((x) => x.includes("some_class_the_lane_does_not_know")), r.reasons.join("; "));
+});
+
+// === the LOG surface (review batch 3A, PR #569) =============================================
+//
+// PR #569 MEASURED run 35619555883: across the complete job log (2347 lines) and all 20 evidence
+// files there were zero hits for `BEGIN PUBLIC KEY`, the ed25519 SPKI prefix `MCowBQYDK2VwAyEA`,
+// the PKCS#8 prefix `MC4CAQAwBQYDK2VwBCIEI`, and no `PRIVATE KEY`. Acceptance 2 held on both
+// surfaces for that run. What was missing was the CONTROL: the scan walked only the evidence
+// directory, nothing emitted `::add-mask::`, and only the PRIVATE half was registered.
+
+import {
+  scanForKeyMaterial,
+  KEY_MATERIAL_MARKERS,
+  MASK_DIRECTIVE_PREFIX,
+} from "../m1-shipped-boot.mjs";
+
+const PRIVATE_PEM = [
+  "-----BEGIN PRIVATE KEY-----",
+  "MC4CAQAwBQYDK2VwBCIEIGHhTESTTESTTESTTESTTESTTESTTESTTESTTESTTEST",
+  "-----END PRIVATE KEY-----",
+].join("\n");
+const PUBLIC_PEM = [
+  "-----BEGIN PUBLIC KEY-----",
+  "MCowBQYDK2VwAyEATESTTESTTESTTESTTESTTESTTESTTESTTESTTESTTEST",
+  "-----END PUBLIC KEY-----",
+].join("\n");
+
+test("key material is found by SHAPE, on either surface, and reported by marker + line only", () => {
+  const { findings } = scanForKeyMaterial([
+    { name: "job-log.txt", text: `boot ok\n${PRIVATE_PEM}\nnext line` },
+    { name: "logs-control-plane.txt", text: `x\n${PUBLIC_PEM}` },
+  ]);
+  const markers = findings.map((f) => f.marker).sort();
+  assert.deepEqual(markers, ["ed25519_pkcs8_der", "ed25519_spki_der", "pem_private", "pem_public"].sort());
+  assert.ok(findings.every((f) => typeof f.line === "number" && f.line > 0));
+  // The finding must not carry the material itself.
+  const serialized = JSON.stringify(findings);
+  assert.ok(!serialized.includes("MCowBQYDK2VwAyEA") && !serialized.includes("MC4CAQAwBQYDK2VwBCIEI"));
+});
+
+test("a clean log is clean, and the DER prefixes alone (no PEM armour) are still found", () => {
+  assert.deepEqual(scanForKeyMaterial([{ name: "job-log.txt", text: "all [REDACTED]\nfine\n" }]).findings, []);
+  const bare = scanForKeyMaterial([{ name: "job-log.txt", text: "key=MCowBQYDK2VwAyEAabc" }]).findings;
+  assert.deepEqual(bare.map((f) => f.marker), ["ed25519_spki_der"]);
+  assert.equal(KEY_MATERIAL_MARKERS.length, 4);
+});
+
+test("the ::add-mask:: directive line is skipped and COUNTED — the exception cannot hide an unbounded number", () => {
+  const text = `${MASK_DIRECTIVE_PREFIX}${PRIVATE_PEM.split("\n")[1]}\nsafe line\n`;
+  const skipped = scanForKeyMaterial([{ name: "job-log.txt", text }]);
+  assert.deepEqual(skipped.findings, []);
+  assert.equal(skipped.maskDirectiveLines, 1);
+  // And with the exception off, the same line IS key material — so the skip is what excuses it,
+  // not an inability to see it.
+  const strict = scanForKeyMaterial([{ name: "job-log.txt", text }], { skipMaskDirectives: false });
+  assert.deepEqual(strict.findings.map((f) => f.marker), ["ed25519_pkcs8_der"]);
+});
+
+// The PHASE, end to end, over a planted JOB LOG.
+function runLeakScanOverLog(logText, extraSecrets = {}) {
+  const out = mkdtempSync(path.join(tmpdir(), "m1-logscan-"));
+  mkdirSync(path.join(out, "evidence"), { recursive: true });
+  writeFileSync(path.join(out, "evidence", "journey.json"), '{"passed":true}\n');
+  writeFileSync(path.join(out, "job-log.txt"), logText);
+  const secrets = { ...SECRETS, ...extraSecrets };
+  writeFileSync(path.join(out, "state.json"), JSON.stringify({ out, redact: Object.values(secrets), secrets }));
+  const res = spawnSync(process.execPath, [journey, "leak-scan", "--out", out], { encoding: "utf8" });
+  const survived = { evidence: existsSync(path.join(out, "evidence")), log: existsSync(path.join(out, "job-log.txt")) };
+  rmSync(out, { recursive: true, force: true });
+  return { res, survived };
+}
+
+test("POSITIVE CONTROL (phase): a PEM planted in the JOB LOG reds the scan and deletes both surfaces", () => {
+  const { res, survived } = runLeakScanOverLog(`starting\n${PRIVATE_PEM}\ndone\n`);
+  assert.equal(res.status, 1, res.stdout + res.stderr);
+  const output = `${res.stdout}${res.stderr}`;
+  assert.match(output, /job log file 'job-log\.txt' line \d+ carries key material \(pem_private\)/);
+  assert.ok(!output.includes("MC4CAQAwBQYDK2VwBCIEI"), "the scan's output must never carry the material");
+  assert.deepEqual(survived, { evidence: false, log: false });
+});
+
+test("POSITIVE CONTROL (phase): a REGISTERED secret planted in the job log reds it, by NAME", () => {
+  const { res } = runLeakScanOverLog(`boot ok token=${CANARY}\n`);
+  assert.equal(res.status, 1);
+  assert.match(`${res.stdout}${res.stderr}`, /job log file 'job-log\.txt' contains job secret 'AOA_M1_TRUTH_SHARED_SECRET'/);
+  assert.ok(!`${res.stdout}${res.stderr}`.includes(CANARY));
+});
+
+test("POSITIVE CONTROL (phase): the PUBLIC half, registered, is caught on the log surface too", () => {
+  const publicBody = PUBLIC_PEM.split("\n")[1];
+  const { res } = runLeakScanOverLog(`cp pubkey ${publicBody}\n`, { CONTROL_PLANE_PUBLIC_KEY_BODY: publicBody });
+  assert.equal(res.status, 1);
+  const output = `${res.stdout}${res.stderr}`;
+  assert.match(output, /contains job secret 'CONTROL_PLANE_PUBLIC_KEY_BODY'|carries key material \(ed25519_spki_der\)/);
+  assert.ok(!output.includes(publicBody));
+});
+
+test("leak scan (phase): a clean job log passes, is counted, and both surfaces survive", () => {
+  const { res, survived } = runLeakScanOverLog("boot ok\nall [REDACTED]\n");
+  assert.equal(res.status, 0, res.stdout + res.stderr);
+  assert.match(res.stdout, /1 job-log file\(s\) scanned/);
+  assert.match(res.stdout, /key-material shapes: clean/);
+  assert.deepEqual(survived, { evidence: true, log: true });
+});
+
+test("leak scan (phase): with no job log at all, the evidence scan still runs (no silent skip)", () => {
+  const out = mkdtempSync(path.join(tmpdir(), "m1-logscan-none-"));
+  mkdirSync(path.join(out, "evidence"), { recursive: true });
+  writeFileSync(path.join(out, "evidence", "logs.txt"), "clean\n");
+  writeFileSync(path.join(out, "state.json"), JSON.stringify({ out, redact: Object.values(SECRETS), secrets: SECRETS }));
+  const res = spawnSync(process.execPath, [journey, "leak-scan", "--out", out], { encoding: "utf8" });
+  rmSync(out, { recursive: true, force: true });
+  assert.equal(res.status, 0, res.stdout + res.stderr);
+  assert.match(res.stdout, /0 job-log file\(s\) scanned/);
+});
+
+// The two registrations the control depends on, asserted against the driver's source: a masking
+// call that is not made, or a half that is not registered, is exactly the gap PR #569 measured.
+test("the driver MASKS every registered secret and registers BOTH halves of BOTH keys", () => {
+  const driver = readFileSync(journey, "utf8");
+  assert.match(driver, /console\.log\(`\$\{MASK_DIRECTIVE_PREFIX\}/, "trackSecret must emit ::add-mask:: for every registered secret");
+  assert.match(driver, /process\.env\.GITHUB_ACTIONS === "true"/, "the directive is emitted only inside Actions");
+  for (const name of [
+    "CONTROL_PLANE_SIGNING_KEY_PEM",
+    "CONTROL_PLANE_SIGNING_KEY_BODY",
+    "CONTROL_PLANE_PUBLIC_KEY_PEM",
+    "CONTROL_PLANE_PUBLIC_KEY_BODY",
+  ]) {
+    assert.ok(driver.includes(`trackSecret(state, "${name}"`), `the driver must register ${name}`);
+  }
+  // And the log surface must be read by the scan, not only the evidence directory.
+  assert.match(driver, /jobLogPath\(state\)/);
 });

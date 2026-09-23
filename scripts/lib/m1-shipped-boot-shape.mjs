@@ -21,6 +21,16 @@ export const SHIPPED_BOOT_WORKFLOW = ".github/workflows/m1-shipped-boot.yml";
 /** The only secrets the lane may read, and only through the keyed gate below. */
 export const GATED_SECRETS = ["E2B_API_KEY", "ANTHROPIC_API_KEY"];
 const GATED_SECRET_RE = /\$\{\{\s*inputs\.mode\s*==\s*'keyed'\s*&&\s*secrets\.([A-Z0-9_]+)\s*\|\|\s*''\s*\}\}/;
+/** Review batch 3A (PR #569): the ACTIONS LOG is a published surface and had no scanner. Every
+ * phase therefore tees its output into the one file the leak scan reads as the log surface. */
+export const JOB_LOG_TEE = ' 2>&1 | tee -a "$M1_OUT/job-log.txt"';
+/** The phases whose output must be teed. `leak-scan` reads the file and `teardown` deletes the
+ * state, so neither writes to it; everything that could print a secret does. */
+export const TEED_PHASES = [
+  "prepare", "boot-core", "seed", "apply-rollout", "assert-tenants", "provision-targets",
+  "boot-workers", "await-workers", "reconcile", "probe-presign", "dispatch", "collect",
+];
+
 export const EVIDENCE_UPLOAD_PATH = "${{ env.M1_OUT }}/evidence/";
 /** E6-D001: the one branch the registration-only push may name. */
 export const REGISTRATION_BRANCH = "docs/replatform-program";
@@ -200,6 +210,27 @@ export function evaluateShippedBootWorkflowShape(text) {
     v.push(`the evidence upload must be gated \`if: always() && steps.${scanId}.outcome == 'success'\` — a bundle that fails the leak scan must never be uploaded`);
   }
   if (scanIdx !== -1 && !/if:\s*always\(\)/.test(scanStep)) v.push("the leak-scan step must run `if: always()` (a failed journey's evidence is scanned too)");
+
+  // (8c) The LOG surface is collected (review batch 3A, PR #569). A phase whose output is not
+  //      teed into the job log is a phase the leak scan cannot see, and the keypair check's
+  //      output is on the same surface.
+  for (const phase of TEED_PHASES) {
+    // An invocation may be folded across lines (`run: >-`), so the window is the STEP: from the
+    // invocation to the next step's `- name:`.
+    const at = src.indexOf(`journey.mjs ${phase} --out`);
+    if (at === -1) {
+      v.push(`the lane must run the '${phase}' phase`);
+      continue;
+    }
+    const nextStep = src.indexOf("- name:", at);
+    const step = src.slice(at, nextStep === -1 ? src.length : nextStep);
+    if (!step.includes(JOB_LOG_TEE)) {
+      v.push(`phase '${phase}' does not tee its output into the job-log surface the leak scan reads`);
+    }
+  }
+  if (/pnpm verify:cp-am-keypair(?!.*tee -a)/.test(src)) {
+    v.push("the keypair check must tee its output into the job-log surface too — it is the step that handles the key");
+  }
 
   // (9) Bounded.
   if (!/timeout-minutes:\s*\d+/.test(src)) v.push("the job must carry a `timeout-minutes` cap");

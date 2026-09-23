@@ -359,6 +359,54 @@ export function scanEvidenceForSecrets(files, secrets) {
   return findings;
 }
 
+// --- key material, on any surface ------------------------------------------------------------
+
+/**
+ * Markers for the CONTROL-PLANE KEYPAIR in every encoding it can appear in. These are SHAPES, not
+ * values: they catch a key this job did not generate (a re-run's, an operator's) and a key whose
+ * exact bytes the scanner was never told, which `scanEvidenceForSecrets` by construction cannot.
+ *
+ * The DER prefixes are the fixed ed25519 algorithm headers, and they are what review batch 3A
+ * (PR #569) measured both surfaces of run `35619555883` against:
+ *   - SPKI (public):  `MCowBQYDK2VwAyEA`
+ *   - PKCS#8 (private): `MC4CAQAwBQYDK2VwBCIEI`
+ */
+export const KEY_MATERIAL_MARKERS = Object.freeze([
+  { marker: "pem_private", pattern: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/ },
+  { marker: "pem_public", pattern: /-----BEGIN [A-Z0-9 ]*PUBLIC KEY-----/ },
+  { marker: "ed25519_spki_der", pattern: /MCowBQYDK2VwAyEA/ },
+  { marker: "ed25519_pkcs8_der", pattern: /MC4CAQAwBQYDK2VwBCIEI/ },
+]);
+
+/** The one line class a scan of the JOB LOG must skip: the masking directive itself carries the
+ * value, and GitHub renders it as `***`. Skipped lines are COUNTED and reported, so the exception
+ * can never hide an unbounded number of raw values. */
+export const MASK_DIRECTIVE_PREFIX = "::add-mask::";
+
+/**
+ * Key material in any of `files` (`[{ name, text }]`). Returns `[{ file, marker, line }]` — the
+ * marker NAME and the 1-based line number, never the matched text. `skipMaskDirectives` (default
+ * true) skips `::add-mask::` lines and returns how many were skipped.
+ */
+export function scanForKeyMaterial(files, { skipMaskDirectives = true } = {}) {
+  const findings = [];
+  let maskDirectiveLines = 0;
+  for (const file of files ?? []) {
+    const lines = String(file.text ?? "").split(/\r?\n/);
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i];
+      if (line.startsWith(MASK_DIRECTIVE_PREFIX)) {
+        maskDirectiveLines += 1;
+        if (skipMaskDirectives) continue;
+      }
+      for (const { marker, pattern } of KEY_MATERIAL_MARKERS) {
+        if (pattern.test(line)) findings.push({ file: file.name, marker, line: i + 1 });
+      }
+    }
+  }
+  return { findings, maskDirectiveLines };
+}
+
 // --- redaction ---------------------------------------------------------------------------
 
 /** Replace every occurrence of every secret value (length >= 8) with a fixed marker. Applied to
