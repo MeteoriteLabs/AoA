@@ -2204,9 +2204,11 @@ promoted by this ticket").
 > ★ **AMENDED 2026-09-23 (WRK-018 1(b) ruling, F2; Codex P2 on PR #571).** The sentence above — and
 > this finding's fourth closure condition — expect the keyed run to prove the REAL parser. It can no
 > longer do that, and what changed is the evidence, not the bar. `WRK-018` acceptance 1 is now three
-> parts: **1(a)** cardinality — the assertion exists in the keyed lane and closes on the next keyed
-> run that passes it; **1(b)** parsed = accepted = stored — **not live-provable**; **1(c)** parser
-> fidelity to a real result line — **fixture-only**. Proving 1(b)/1(c) live requires a second data
+> parts, in the planning session's own words: **1(a) cardinality — assertion MERGED (PR #567),
+> closure PENDING one keyed shipped-boot run that carries it** (no keyed run has executed
+> `evaluateUsageCardinality` yet; the closing run is named when it exists, and 1(a) is not called
+> closed before then); **1(b) parsed = accepted = stored — NOT live-provable**; **1(c) parser
+> fidelity to a real result line — fixture-only**. Proving 1(b)/1(c) live requires a second data
 > path out of the worker (the parsed counts, or the result line itself); every such path is wholly
 > subject to per-run canary redaction, and that redaction has no enforceable caller-side boundary —
 > the logger's sink adds `msg`/`time`/`level` below every scrubber a caller can run (filed as

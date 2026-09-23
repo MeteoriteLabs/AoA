@@ -317,7 +317,7 @@ original sentence is kept above, unedited, as the record of what it said.
 
 | Part | Claim | Closed by | State |
 |---|---|---|---|
-| **1(a)** | exactly one accepted `usage` event per attempt, belonging to that tenant | the keyed lane's `evaluateUsageCardinality` (`scripts/lib/m1-spine-assertions.mjs`), counting the attempt's accepted `usage` rows in `job_events` | closes on the next keyed run; not this ticket's to dispatch |
+| **1(a)** | exactly one accepted `usage` event per attempt, belonging to that tenant | `evaluateUsageCardinality` (`scripts/lib/m1-spine-assertions.mjs`), counting the attempt's accepted `usage` rows in `job_events` | **assertion MERGED (PR #567), closure PENDING one keyed shipped-boot run that carries it** — no keyed run has executed it yet; the planning session dispatches it (F8) |
 | **1(b)** | the numbers the worker PARSED equal the numbers accepted and stored | the keyless supervisor suites only (the observer's payload IS the event's payload) | **NOT live-provable — ruled 2026-09-23 (F2); see the section below and E4-F019** |
 | **1(c)** | the parser's fidelity to a REAL `claude_local` result line | unit tests against the captured transcript fixture `server/src/__tests__/fixtures/claude-stream-json-tool-call.jsonl` (`usage-observer.test.ts`, the first case) | **met, and NOT live — stated plainly** |
 
@@ -365,10 +365,13 @@ sink, i.e. the same collision one layer down. The M1 planning session therefore 
 as **NOT LIVE-PROVABLE**, for the same reason as 1(c). Nothing was weakened to keep the line: at
 every step the refusal (drop the record) was chosen over emitting.
 
-★ **1(a)'s state, stated precisely:** its assertion EXISTS in the keyed lane and 1(a) closes on the
-next keyed run that passes it; `DEP-015-result.md` records that no keyed run has carried the
-assertion yet. So acceptance 1 today is: **(a) pending one keyed run**, **(b) and (c) keyless /
-fixture only, each with its reason**.
+★ **Acceptance 1 today, in the planning session's own words (2026-09-23):**
+- **1(a) cardinality — assertion MERGED (PR #567), closure PENDING one keyed shipped-boot run that carries it.** PR #567 merged
+  `evaluateUsageCardinality` into the keyed lane; no keyed run has executed it. The closing run is
+  named here when it exists, and 1(a) is not called closed before then.
+- **1(b) parsed = accepted = stored — NOT live-provable**, per the enacted bound, the same reason
+  class as 1(c). The log channel is dropped; the hardening stays.
+- **1(c) parser fidelity — fixture-only**, against the captured `claude_local` transcript.
 
 **Filed, because the property is pre-existing and not this ticket's:** **E4-F019** (E4 `findings.md`,
 `unowned` in `scripts/finding-ownership.json`) — canary redaction has no defence when a redeemed
