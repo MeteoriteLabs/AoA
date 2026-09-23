@@ -518,6 +518,42 @@ of the tip.
 | 6 | **Evidenced as the second fork**, with the tripwire; the surviving reason re-checked at source. |
 | O | **Evidenced**: the `MIG-009` rollback rehearsal runs the real CLI in the control-plane container, with a pre-drain census and a selectivity control. |
 
+**★★★ What this ticket's `complete` does NOT establish (added after the Codex review of this PR;
+both findings verified at source and ACCEPTED as real).** Codex raised two P1s against my approval,
+and both are true. Neither is an unmet item of the plan's `### DEP-016` acceptance list, which is
+what `complete` is measured against — so the disposition stands — but each is a live constraint on
+what the `M1-D1-SPINE` gate record may claim from this ticket, and leaving them out of a `complete`
+review would be the overclaiming this programme exists to catch. They are therefore named here, in
+the section a later gate author reads.
+
+1. **The journey is harness-driven, and the gate definition says "separately deployed worker".**
+   Verified at source: `docs/replatform/epic-regrooming/scope-triage.md` §`M1-D1-SPINE` requires
+   *"the included lifecycle on one control-plane instance, one separately deployed worker …"*, and
+   this plan's own **Outcome** says *"It is the harness the `M1-D1-SPINE` gate record is made from"*.
+   §5.3 states the gap plainly and I confirm it: the profile plays the worker over the real
+   `/worker-control/*` endpoints, `AOA_WORKER_DISPATCH_ENABLED` is declared **ABSENT** for the D1
+   workers (`scripts/lib/d1-dispatch-declared.mjs`, enforced by `check-d1-dispatch-declared`), and
+   **a broken worker daemon or a broken usage-forwarding path in the daemon would not red this
+   profile.** One worker container is present and enrolled; it does not execute the journey. What is
+   proven here is the CONTROL-PLANE half of the spine. **Consequence for the gate owner:** `M1-D1-SPINE`
+   cannot be recorded as passed from this profile alone on the strength of its worker clause. Either
+   a D1 topology ticket makes the journey worker-driven, or the planning session formally amends the
+   gate's wording — the record flags exactly this, and it is above this ticket.
+2. **Criterion 5 is observed NOWHERE today, not merely "elsewhere".** Acceptance 6's second fork
+   requires this ticket to *"record … that criterion 5 is observed ONLY in the `DEP-015` lane — an
+   unobserved probe must not be reported as a pass."* §4b discharges that obligation: it records the
+   probe as not observed here, writes `criterion5EnvProbe {observed: false, …}` into the retained
+   bundle, and reds in both directions. So the acceptance item is met **as an obligation to record**.
+   But the lane it points to has not observed it either: `DEP-017`'s keyed `m1-shipped-boot.yml` run
+   is PENDING (F8), which is why I left `DEP-017` at `gate_review` in the same batch. **Consequence
+   for the gate owner:** no `M1a` record may cite criterion 5 as satisfied until that keyed run
+   exists and `DEP-017`'s §7 checklist is recorded against it. `DEP-016` being `complete` says
+   nothing about criterion 5 except that this profile honestly declines to claim it.
+
+Read together with the acceptance table above: every item the plan asks of DEP-016 is met, **and**
+two of the things a reader might expect a completed spine ticket to have settled are not settled by
+it. Both are named in the record's own §4b and §5.3; I am confirming them, not discovering them.
+
 Nothing is pending, so I set `Status` to `complete` in a separate commit. The two deviations the
 record flags for the planning session — the worker is the harness rather than the daemon (§5.3), and
 the broad `server/src/**` + `packages/db/src/**` lane trigger (§4a) — are correctly flagged as
@@ -529,4 +565,4 @@ The implementation author leaves the table body empty. The first independent rev
 
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
-| 1 | M1 review-batch-3A independent reviewer (Claude Opus 5) | `58b70fa5ea87b751f033007e9f9402c9bf370c43` | `approved` | The `m1-spine` lane ran for the first time on the merge and PASSED: run `35825332876`, job `107065690182`, profile **6/6**, `running worker services: 1`, self-test **69/69**, and BOTH positive controls red on their named codes (`usage:not_exactly_one` + `cost:not_exactly_one` + `cost:receipt_not_exactly_one` for A and B). Its own artifact `10735300784` shows, per enabled tenant, **1** accepted `usage` event and **1** `cost_events` row at **81** cents, `claude_local`/`claude-sonnet-4-6`/rateVersion 1, keyed to that event, own Company and agent; rollout A+B `canary`, C `off`, crew and tool surface off. 81 derived, and the mirrored rate matches `cost-model.ts` (300/1500) and `AUTHORITATIVE_RATE_VERSION = 1`. `E3-F037` `unowned` is what `check-finding-ownership` permits (`successor_already_complete` for WRK-018, `successor_not_on_disk` for DEP-018) and its residual is exactly WRK-018 acceptance 1. Mutation reproduced: relaxing `cost:unexpected_amount` to `> 0` reds exactly one fixture. Defects recorded: §4 says the self-test has 26 tests (it has 69); §13 cites `35822540893` on the penultimate head — the covering run is `35823960714` (`ci-required` `107065333616`). |
+| 1 | M1 review-batch-3A independent reviewer (Claude Opus 5) | `58b70fa5ea87b751f033007e9f9402c9bf370c43` | `approved` | The `m1-spine` lane ran for the first time on the merge and PASSED: run `35825332876`, job `107065690182`, profile **6/6**, `running worker services: 1`, self-test **69/69**, and BOTH positive controls red on their named codes (`usage:not_exactly_one` + `cost:not_exactly_one` + `cost:receipt_not_exactly_one` for A and B). Its own artifact `10735300784` shows, per enabled tenant, **1** accepted `usage` event and **1** `cost_events` row at **81** cents, `claude_local`/`claude-sonnet-4-6`/rateVersion 1, keyed to that event, own Company and agent; rollout A+B `canary`, C `off`, crew and tool surface off. 81 derived, and the mirrored rate matches `cost-model.ts` (300/1500) and `AUTHORITATIVE_RATE_VERSION = 1`. `E3-F037` `unowned` is what `check-finding-ownership` permits (`successor_already_complete` for WRK-018, `successor_not_on_disk` for DEP-018) and its residual is exactly WRK-018 acceptance 1. Mutation reproduced: relaxing `cost:unexpected_amount` to `> 0` reds exactly one fixture. Defects recorded: §4 says the self-test has 26 tests (it has 69); §13 cites `35822540893` on the penultimate head — the covering run is `35823960714` (`ci-required` `107065333616`). **Codex on this review PR raised two P1s; both verified at source and ACCEPTED as real, and both are now named in the review section: (1) the journey is harness-driven while `M1-D1-SPINE` requires a separately deployed worker, so the gate's worker clause is NOT satisfiable from this profile alone; (2) criterion 5 is observed NOWHERE today, because `DEP-017`'s keyed run is pending — acceptance 6 is met only as an obligation to RECORD. Neither is an unmet plan acceptance item, so the disposition stands.** |
