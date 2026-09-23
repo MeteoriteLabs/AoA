@@ -412,3 +412,113 @@ test("REJECT: a real-shaped sandbox on ANOTHER run's lease (tenant/run scoping b
   // With no lease known for the run, a lease-bearing line cannot be attributed to it.
   assert.equal(extractSandboxEvidence(RUN_35613849443.a, { leaseIds: [] }).count, 0);
 });
+// -----------------------------------------------------------------------------
+// DEP-017 — the live env-absence probe's evidence, as the journey judges it per enabled tenant.
+// The probe itself (the in-sandbox bytes, the planted control, the fail-closed supervisor step) is
+// tested in packages/worker-daemon/src/__tests__/env-probe.test.ts; this pins the READ side.
+// -----------------------------------------------------------------------------
+
+import { readFileSync as readFileSyncDep017 } from "node:fs";
+import {
+  ENV_PROBE_LOG_PREFIX,
+  ENV_PROBE_CANARY_MARKER,
+  ENV_PROBE_EXPECTED_CLASSES,
+  plantedTenantCanary,
+  extractEnvProbeSummary,
+  evaluateEnvProbeEvidence,
+} from "../m1-shipped-boot.mjs";
+
+const DEP017_ORG = "00000000-0000-4000-8000-00000000d0a1";
+const cleanSummary = () => ({
+  probe: "dep017-env-absence/v1",
+  verdict: "absent",
+  clean: {
+    checked: [...ENV_PROBE_EXPECTED_CLASSES],
+    present: [],
+    presentNames: [],
+    allowedPresent: ["ANTHROPIC_API_KEY"],
+    allowedMismatch: [],
+    redeemedNames: ["ANTHROPIC_API_KEY"],
+    metadata: { attempted: true, target: "169.254.169.254", reachable: true, httpStatus: 200 },
+  },
+  plantedControl: { planted: [{ name: "DATABASE_URL", expectClass: "datastore_credential", satisfied: true }], detected: ["cross_tenant_credential", "datastore_credential"], red: true },
+});
+
+test("DEP-017: the lane's constants MIRROR the worker's (the probe's log prefix and canary marker)", () => {
+  const src = readFileSyncDep017(new URL("../../../packages/worker-daemon/src/supervisor/env-probe.ts", import.meta.url), "utf8");
+  assert.ok(src.includes(`export const ENV_PROBE_LOG_PREFIX = ${JSON.stringify(ENV_PROBE_LOG_PREFIX)};`), "log prefix drifted");
+  assert.ok(src.includes(`export const ENV_PROBE_CANARY_MARKER = ${JSON.stringify(ENV_PROBE_CANARY_MARKER)};`), "canary marker drifted");
+  // The class mirror, extracted from the daemon's own table + its four derived-class constants.
+  const table = src.slice(src.indexOf("export const ENV_PROBE_CREDENTIAL_CLASSES"), src.indexOf("/** Classes the probe derives from a VALUE"));
+  const fromSource = [...table.matchAll(/class: "([a-z_]+)"/g)].map((m) => m[1]);
+  for (const constant of ["ENV_PROBE_UNCLASSIFIED", "crossTenant:", "ENV_PROBE_VALUE_MISMATCH", "ENV_PROBE_UNREDEEMED"]) {
+    const m = new RegExp(`${constant}\\s*=?\\s*"([a-z_]+)"`).exec(src);
+    assert.ok(m, `could not read ${constant} from the daemon source`);
+    fromSource.push(m[1]);
+  }
+  assert.deepEqual([...fromSource].sort(), [...ENV_PROBE_EXPECTED_CLASSES].sort(), "the lane's expected class list drifted from the daemon's");
+});
+
+test("DEP-017: a clean probe summary passes, and the metadata residual is RECORDED, not judged", () => {
+  const r = evaluateEnvProbeEvidence(cleanSummary());
+  assert.equal(r.pass, true, r.reasons.join("; "));
+  // IMDS answered — and the tenant still passes: an observation, never an egress claim.
+  assert.equal(r.observed.de08MetadataResidual.reachable, true);
+  assert.equal(r.observed.de08MetadataResidual.httpStatus, 200);
+  assert.match(r.observed.de08MetadataResidual.note, /not enforced/);
+});
+
+test("DEP-017 POSITIVE CONTROL: no probe summary on an enabled tenant's attempt FAILS (a probe that did not run)", () => {
+  const r = evaluateEnvProbeEvidence(extractEnvProbeSummary(["some other log line"]));
+  assert.equal(r.pass, false);
+  assert.match(r.reasons[0], /did not run/);
+});
+
+test("DEP-017 POSITIVE CONTROL: a present credential class FAILS and is named (names only)", () => {
+  const s = cleanSummary();
+  s.verdict = "present";
+  s.clean.present = ["cross_tenant_credential"];
+  s.clean.presentNames = ["ANTHROPIC_API_KEY"];
+  const r = evaluateEnvProbeEvidence(s);
+  assert.equal(r.pass, false);
+  assert.ok(r.reasons.some((x) => /PRESENT.*cross_tenant_credential.*ANTHROPIC_API_KEY/.test(x)), r.reasons.join("; "));
+});
+
+test("DEP-017 POSITIVE CONTROL: a blind probe (planted control not red) FAILS", () => {
+  const s = cleanSummary();
+  s.plantedControl.red = false;
+  assert.equal(evaluateEnvProbeEvidence(s).pass, false);
+});
+
+test("DEP-017 POSITIVE CONTROL: a report missing ANY expected class FAILS (a partial taxonomy is not the taxonomy)", () => {
+  for (const dropped of ["cross_tenant_credential", "secrets_master_key", "provider_credential_value_mismatch"]) {
+    const s = cleanSummary();
+    s.clean.checked = ENV_PROBE_EXPECTED_CLASSES.filter((c) => c !== dropped);
+    const r = evaluateEnvProbeEvidence(s);
+    assert.equal(r.pass, false, dropped);
+    assert.ok(r.reasons.some((x) => x.includes(dropped)), r.reasons.join("; "));
+  }
+});
+
+test("DEP-017: extractEnvProbeSummary reads the LAST summary; an unreadable one fails", () => {
+  const a = { ...cleanSummary(), verdict: "present" };
+  const b = cleanSummary();
+  assert.equal(extractEnvProbeSummary([`${ENV_PROBE_LOG_PREFIX}${JSON.stringify(a)}`, "x", `${ENV_PROBE_LOG_PREFIX}${JSON.stringify(b)}`]).verdict, "absent");
+  const bad = extractEnvProbeSummary([`${ENV_PROBE_LOG_PREFIX}{not json`]);
+  assert.equal(evaluateEnvProbeEvidence(bad).pass, false);
+});
+
+test("DEP-017: plantedTenantCanary carries the marker + Organization, and refuses a weak tail", () => {
+  const c = plantedTenantCanary(DEP017_ORG, "model_provider", "AbCdEfGhIjKlMnOpQrSt");
+  assert.equal(c, `${ENV_PROBE_CANARY_MARKER}${DEP017_ORG}.model_provider.AbCdEfGhIjKlMnOpQrSt`);
+  assert.throws(() => plantedTenantCanary(DEP017_ORG, "model_provider", "short"));
+  assert.throws(() => plantedTenantCanary("not-an-org", "model_provider", "AbCdEfGhIjKlMnOpQrSt"));
+});
+
+test("DEP-017 POSITIVE CONTROL: an UNEXPECTED checked class FAILS too (set equality, both directions)", () => {
+  const s = cleanSummary();
+  s.clean.checked = [...ENV_PROBE_EXPECTED_CLASSES, "some_class_the_lane_does_not_know"];
+  const r = evaluateEnvProbeEvidence(s);
+  assert.equal(r.pass, false);
+  assert.ok(r.reasons.some((x) => x.includes("some_class_the_lane_does_not_know")), r.reasons.join("; "));
+});

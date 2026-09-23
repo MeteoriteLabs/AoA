@@ -119,6 +119,13 @@ export const CLOSED_LABEL_VALUES: Readonly<Record<string, ReadonlySet<string>>> 
     // last-resort catch, which emits nothing at all.
     "digest_artifact",
     "export_artifact",
+    // ★ DEP-017 — `env_probe` is not a provider op either: it is the supervisor's own live
+    // env-absence step (`supervisor/env-probe.ts`), and it emits on BOTH the clean and the
+    // failing path. Registered with the step that emits it, for the reason written above: an
+    // unregistered value throws on this allow-list, and that throw escapes into `accept()`'s
+    // last-resort catch, which emits NO TERMINAL — a probed run would be stranded by the very
+    // check that exists to fail it closed. Pinned by a test that emits this exact pair.
+    "env_probe",
   ]),
   outcome: new Set([
     // poll outcomes

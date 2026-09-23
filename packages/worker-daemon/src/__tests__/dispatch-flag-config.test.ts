@@ -53,6 +53,26 @@ describe("WRK-008 slice 2 — dispatch flag", () => {
   });
 });
 
+describe("DEP-017 — AOA_WORKER_ENV_PROBE (same strict grammar as the dispatch switch)", () => {
+  it("defaults to OFF", () => {
+    expect(load().envProbe).toBe(false);
+  });
+  it('enables on exactly "1"', () => {
+    expect(load({ [ENV.envProbe]: "1" }).envProbe).toBe(true);
+  });
+  it('"0", empty and whitespace are off', () => {
+    for (const value of ["0", " 0 ", "", "   "]) expect(load({ [ENV.envProbe]: value }).envProbe).toBe(false);
+  });
+  it("★ REFUSES a truthy-looking value rather than silently leaving the probe off", () => {
+    for (const value of ["true", "yes", "on", "2"]) {
+      expect(() => load({ [ENV.envProbe]: value })).toThrow(/AOA_WORKER_ENV_PROBE/);
+    }
+  });
+  it("is in the ENV name map", () => {
+    expect(ENV.envProbe).toBe("AOA_WORKER_ENV_PROBE");
+  });
+});
+
 describe("WRK-008 slice 2b — AOA_WORKER_EVENT_OUTBOX_PATH", () => {
   it("is NULL when absent — NOT defaulted to a path", () => {
     // A default path the container cannot write turns every existing deployment's inert

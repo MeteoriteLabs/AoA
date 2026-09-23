@@ -132,6 +132,9 @@ export interface ComposeDispatchRuntimeDeps {
   readonly workDir: string;
   readonly logger?: Logger;
   readonly metrics?: Metrics;
+  /** DEP-017 — `AOA_WORKER_ENV_PROBE=1`: compose the live env-absence probe into the supervisor.
+   * Default off; only the DEP-015 shipped-boot overlay sets it. */
+  readonly envProbe?: boolean;
   // --- test seams: default to the real factories -------------------------------------------
   /** The host capacity probes; defaults to the real node:os/node:fs readers over `workDir`. */
   readonly probes?: CapacityProbes;
@@ -298,6 +301,9 @@ export async function composeDispatchRuntime(deps: ComposeDispatchRuntimeDeps): 
     // capability window (which is never re-minted on renewal): running past it would leave a
     // BILLABLE sandbox the worker can no longer tear down, recorded `orphaned`.
     opDeadlineMs: resolveRunOpDeadlineMs,
+    // DEP-017 — the live env-absence probe, composed ONLY when the worker was booted with it.
+    // Absent, the supervisor is byte-identical (no probe execute, no extra event).
+    ...(deps.envProbe ? { envProbe: {} } : {}),
     logger: deps.logger,
     metrics: deps.metrics,
   });

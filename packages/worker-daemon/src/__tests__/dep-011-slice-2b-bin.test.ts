@@ -139,6 +139,15 @@ describe("dep-011-slice-2b-bin — the container makeRunProvider factory threade
     expect(arg.makeRunProvider).toBe(factory);
   });
 
+  // DEP-017 — the bin forwards `AOA_WORKER_ENV_PROBE` to the composition (the ONLY route by which
+  // the shipped-boot overlay's flag reaches the supervisor). Off by default; "1" forwards true.
+  it("★ DEP-017: the bin forwards envProbe=false by default and true when AOA_WORKER_ENV_PROBE=1", async () => {
+    const off = await boot();
+    expect((off.composeDispatch.mock.calls[0]![0] as { envProbe?: unknown }).envProbe).toBe(false);
+    const on = await boot({}, { AOA_WORKER_ENV_PROBE: "1" });
+    expect((on.composeDispatch.mock.calls[0]![0] as { envProbe?: unknown }).envProbe).toBe(true);
+  });
+
   it("★ makeRunProvider-only satisfies the provider gate: mounted_secret (no stores) refuses no_worker_identity, NOT no_provider", async () => {
     // The shipped container shape: mounted_secret with NO custody stores (injecting stores in
     // mounted_secret is a pre-socket resolveCustody refusal, not what a real container does). The

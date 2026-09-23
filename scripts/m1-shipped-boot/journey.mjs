@@ -30,6 +30,9 @@
 //   dispatch           keyed: one assigned task per tenant; the enabled ones must run distributed
 //                      and pass `verify-e7-1-distributed-run`; the control must stay legacy with
 //                      zero jobs. keyless: the CONTROL tenant only (it never reaches a provider).
+//                      DEP-017: each enabled tenant's attempt must also carry a clean live
+//                      env-absence probe summary (read from its `job_events`), with a red
+//                      planted control; keyless observes no probe (no sandbox exists).
 //   collect            redacted service logs + `compose ps` into the evidence dir
 //   leak-scan          HARD check before upload: no job secret (raw/base64/base64url) in the evidence
 //   teardown           `compose down -v`, and the keypair + secrets deleted
@@ -60,6 +63,10 @@ import {
   scanEvidenceForSecrets,
   extractRolloutResolution,
   CANARY_EXECUTION_TARGET_SLUG,
+  // DEP-017 — the live env-absence probe's read side.
+  plantedTenantCanary,
+  extractEnvProbeSummary,
+  evaluateEnvProbeEvidence,
 } from "../lib/m1-shipped-boot.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -429,6 +436,14 @@ finally { client.destroy(); }
     trackSecret(state, `TENANT_${t.key.toUpperCase()}_ANTHROPIC_KEY`, anthropic);
     trackSecret(state, `TENANT_${t.key.toUpperCase()}_E2B_KEY`, e2b);
     await api(state, "POST", `/companies/${company.id}/providers/anthropic/key`, { value: anthropic });
+    // DEP-017 (F10) — a PLANTED cross-tenant canary: a marked credential saved as this tenant's own
+    // OpenAI key, a real secret in THIS tenant's store. Every OTHER tenant's sandbox must not see
+    // it; the in-sandbox probe reports a marked value from a foreign Organization as
+    // `cross_tenant_credential`. (claude_local never redeems an OpenAI key, so it is not expected
+    // in this tenant's own sandbox either; if it ever were, it is its OWN credential and allowed.)
+    const plantedCanary = plantedTenantCanary(org.id, "model_provider", secret(24));
+    trackSecret(state, `TENANT_${t.key.toUpperCase()}_DEP017_PLANTED_CANARY`, plantedCanary);
+    await api(state, "POST", `/companies/${company.id}/providers/openai/key`, { value: plantedCanary });
     await api(state, "POST", `/companies/${company.id}/runtime-provider-keys/with-secret`, {
       provider: "e2b",
       displayName: "M1 shipped boot E2B",
@@ -787,6 +802,30 @@ async function dispatch(state) {
       outcome.pass = false;
       outcome.reasons.push("no worker log line names a provider sandbox for this tenant (runbook §11: the verifier cannot tell a real provider from a fake)");
     }
+    // DEP-017 — the live env-absence probe, read back from THIS attempt's own `job_events` (the
+    // worker emitted it through the run's canary scrub, before the terminal). Every enabled tenant
+    // whose run went distributed must carry a clean summary with a red planted control; a missing
+    // summary FAILS (a probe that did not run is not a pass). Names and classes only.
+    let envProbe = null;
+    if (t.role === "enabled" && run?.distributed_attempt_id) {
+      // ★ `job_events.event` holds the WHOLE wire envelope, so the message is at
+      // `event->'payload'->>'message'`: `toAcceptInputs` (server/src/services/job-events.ts) passes
+      // `payload: event` — the entire `WorkerEventV1` — into the repository, which stores it as
+      // `event: event.payload`. Corroborated end to end by `e6f-10-telemetry`, which uploads through
+      // the real /worker-control/events path and asserts a payload field read exactly this way
+      // (`event->'payload'->>'sandboxId'`, tests/d1/lib/e6f-harness.mjs). The COALESCE is belt and
+      // braces for a future ingestion that stored the payload alone: a lane that silently read NULL
+      // would report "the probe did not run" on a PAID run, which is the worst way to learn this.
+      const messages = ownerSql(state, `
+        SELECT COALESCE(event->'payload'->>'message', event->>'message') AS message FROM job_events
+         WHERE attempt_id = $1 AND event_type = 'log' ORDER BY sequence`, [run.distributed_attempt_id]).map((r) => r.message);
+      envProbe = evaluateEnvProbeEvidence(extractEnvProbeSummary(messages));
+      writeEvidence(state, `env-probe-${key}.json`, { tenant: key, organizationId: t.organizationId, attemptId: run.distributed_attempt_id, ...envProbe });
+      if (!envProbe.pass) {
+        outcome.pass = false;
+        outcome.reasons.push(...envProbe.reasons.map((r) => `DEP-017 env probe: ${r}`));
+      }
+    }
     outcomes[key] = {
       role: t.role,
       organizationId: t.organizationId,
@@ -798,6 +837,7 @@ async function dispatch(state) {
       rolloutResolution,
       providerEvidence,
       signals,
+      envProbe,
       outcome,
     };
     if (verifierOutput) writeEvidence(state, `verifier-${key}.txt`, verifierOutput);
@@ -808,7 +848,7 @@ async function dispatch(state) {
     mode: state.mode,
     dispatched: keys,
     keylessNote: state.mode === "keyless"
-      ? "keyless: only the CONTROL tenant was dispatched (it never reaches a provider). The enabled tenants' journey is the KEYED acceptance."
+      ? "keyless: only the CONTROL tenant was dispatched (it never reaches a provider). The enabled tenants' journey — and the DEP-017 in-sandbox env probe — is the KEYED acceptance."
       : undefined,
     passed,
     outcomes,

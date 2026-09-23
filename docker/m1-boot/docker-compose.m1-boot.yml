@@ -57,6 +57,13 @@
 # self-signed cert under docker/d1/certs — artifact grant URLs are https-only). Every
 # password, key and bearer is `${VAR}` generated inside the job and discarded with it.
 #
+# ★ DEP-017 — THE LIVE ENV-ABSENCE PROBE. Every shipped-boot worker sets AOA_WORKER_ENV_PROBE=1,
+# so after stage-in each distributed run executes the probe INSIDE its own sandbox with the run's
+# own env, plus a planted-canary positive control, and fails closed on any present credential
+# class (packages/worker-daemon/src/supervisor/env-probe.ts). The journey reads the probe's
+# summary back from `job_events` per enabled tenant. `evaluateShippedBootOverlayInvariants`
+# reds an overlay worker that drops the flag, so the probe cannot be silently removed.
+#
 # ★ yaml-lite subset: no anchors, no block scalars, no sequences of mappings — the
 # always-on static check parses this file with scripts/lib/yaml-lite.mjs.
 # =============================================================================
@@ -226,6 +233,7 @@ services:
       AOA_WORKER_CONTROL_PLANE_URL: "http://control-plane:3100"
       AOA_WORKER_PROVIDER_URL: "http://adapter-manager:8090"
       AOA_WORKER_DISPATCH_ENABLED: "1"
+      AOA_WORKER_ENV_PROBE: "1"
       AOA_WORKER_KEY_STORE_MODE: "file_record"
       AOA_WORKER_STATE_DIR: "/worker"
       AOA_WORKER_EVENT_OUTBOX_PATH: "/worker/event-outbox.db"
@@ -267,6 +275,7 @@ services:
       AOA_WORKER_CONTROL_PLANE_URL: "http://control-plane-b:3100"
       AOA_WORKER_PROVIDER_URL: "http://adapter-manager:8090"
       AOA_WORKER_DISPATCH_ENABLED: "1"
+      AOA_WORKER_ENV_PROBE: "1"
       AOA_WORKER_KEY_STORE_MODE: "file_record"
       AOA_WORKER_STATE_DIR: "/worker"
       AOA_WORKER_EVENT_OUTBOX_PATH: "/worker/event-outbox.db"
@@ -308,6 +317,7 @@ services:
       AOA_WORKER_CONTROL_PLANE_URL: "http://control-plane:3100"
       AOA_WORKER_PROVIDER_URL: "http://adapter-manager:8090"
       AOA_WORKER_DISPATCH_ENABLED: "1"
+      AOA_WORKER_ENV_PROBE: "1"
       AOA_WORKER_KEY_STORE_MODE: "file_record"
       AOA_WORKER_STATE_DIR: "/worker"
       AOA_WORKER_EVENT_OUTBOX_PATH: "/worker/event-outbox.db"
