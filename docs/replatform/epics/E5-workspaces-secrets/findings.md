@@ -400,3 +400,71 @@ adapter-manager bin the way the control-plane public key is threaded, with a boo
 unset origin still refuses.
 
 **Blocks gate:** no. No shipped CI boot starts this bin today (`E7-1-coding-journey` records that).
+---
+
+## E5-F008 - the supervisor hands each export RPC the RUN's budget, not its own export-window budget
+
+**Status:** open
+**Severity:** MEDIUM (a lifecycle-window mismatch: the window can close while an RPC it started is
+still admissible on its own budget; no byte is mis-committed, because the window latch and the
+fenced commit both still refuse)
+**Filed:** 2026-09-23 (`DAT-009-3e`), verified at source.
+
+**What.** `runExportWindow` (`packages/worker-daemon/src/supervisor/supervisor.ts`) races the WHOLE
+export sequence against `exportArtifactsDeadlineMs` (default 30 s, clamped on the networked lane to
+`capExpiresAt - now - EXPORT_TEARDOWN_RESERVE_MS`). But each provider call inside it is made with
+`run.makeCtx()`, which carries the RUN's per-op budget (resolved from `workload.maxRuntimeSeconds`,
+minimum 60 s). So the ctx budget an RPC carries can be LARGER than the window that is racing it.
+
+Downstream of that, `DAT-009-3e`'s adapter-manager clamps an artifact op to
+`min(now + ctx.deadlineMs, capability.expiresAt - EXPORT_TEARDOWN_RESERVE_MS)`. It cannot clamp to
+the supervisor's window, because nothing on the wire tells it what that window is: the capability's
+expiry and the ctx budget are all it has.
+
+**What is NOT at risk.** A late result is not committed: `runExportWindow`'s latch is re-checked
+after every await, and the fenced commit re-verifies at the control plane. What can happen is that
+an adapter-manager operation remains admissible on its own clamp for longer than the supervisor's
+window, holding that sandbox's adapter-manager mutex while the supervisor has already moved on to
+teardown - which is the reserve being consumed by a caller/callee disagreement rather than by a hang.
+
+**Why `DAT-009-3e` did not fix it.** The fix belongs on the CALLER: the export window should pass a
+ctx whose `deadlineMs` is its own remaining budget, which is `supervisor.ts` - `DAT-009-3c`'s file
+and outside this ticket's Files list. Compensating for it at the adapter-manager would mean guessing
+another process's window from a number it was never sent.
+
+**What would close it.** An E5/E7 change in `runExportWindow` that derives each exporter call's ctx
+from the window's remaining budget (the same `withDeadline` figure it already computes), with a case
+asserting the ctx a provider receives never exceeds the window that is racing it.
+
+**Blocks gate:** no.
+
+---
+
+## E5-F009 - an artifact is read whole into the adapter-manager's memory before any size check
+
+**Status:** open
+**Severity:** MEDIUM (a shared-process resource exposure on a path with no production producer yet;
+it is not a data-integrity or cross-tenant defect)
+**Filed:** 2026-09-23 (`DAT-009-3e`), verified at source.
+
+**What.** `E2bSandboxProvider.#readArtifactBytes` (`packages/sandbox-e2b-provider/src/e2b-provider.ts`)
+returns the whole file as a `Uint8Array` via `transport.readFile`. `exportArtifact` checks
+`grant.maxBytes` only AFTER that read, and `digestArtifact` has no size guard at all. The control
+plane permits artifacts up to the ceiling in `server/src/services/artifact-size-ceiling.ts`, so one
+large artifact - or several concurrent ones across sandboxes - materializes fully in whichever
+process runs the provider. Before `DAT-009-3e` that process was the desktop/self-hosted worker's own;
+the wire route makes it the SHARED adapter-manager as well, which is why this is filed now.
+
+**Why it was not fixed here.** A pre-read refusal needs a size the provider can learn WITHOUT
+reading: a `stat`-shaped or streaming call on `E2bTransport`
+(`packages/sandbox-e2b-provider/src/transport.ts`), which both driver implementations would have to
+grow. That is a port change outside this ticket's Files list (the wire route, the adapter-manager
+route, and the uploader's header derivation), and inventing a partial guard - say, refusing above an
+arbitrary constant - would trade a real ceiling for a decorative one.
+
+**What would close it.** An E7/CLI ticket that adds a size/stat op (or a streaming read) to
+`E2bTransport`, refuses above `grant.maxBytes` BEFORE materializing bytes, gives `digestArtifact` the
+same ceiling, and proves both with a case that never allocates the oversized buffer.
+
+**Blocks gate:** no. Nothing produces `ArtifactExportRequest[]` in production; `E5-2` stays
+`unwired`.

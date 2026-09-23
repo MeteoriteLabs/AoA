@@ -669,6 +669,22 @@ describe("DAT-009-3e — digest/export over the networked wire (gated owned ops)
     expect(uploads).toHaveLength(0);
   });
 
+  // ★ Codex P1 (seventh round): the budget handed to the PROVIDER must be what is left after the
+  // ownership inspection, not what was left before it. Otherwise a slow inspect leaves the provider
+  // a fresh window that outlives the gate's own bound, and its detached PUT can run on after
+  // teardown takes the lock.
+  it("★ the provider's budget is recomputed AFTER the ownership inspection", async () => {
+    const sandboxId = await sandboxWithOutput(ORG_A);
+    transport.stallInfoCalls = 1;
+    transport.stallInfoResolveAfterMs = 250; // the inspection eats most of the window
+    const driver = new NetworkedProviderDriver({ baseUrl, capability: mint(ORG_A, NOW + EXPORT_TEARDOWN_RESERVE_MS + 800) });
+    await driver.exportArtifact(sandboxId, OUT_PATH, grant(ORG_A), { deadlineMs: 600_000, idempotencyKey: "e-recompute" });
+    expect(exportCtxDeadlines).toHaveLength(1);
+    // Under 800 ms minus the ~250 ms the inspection took, not the full 800.
+    expect(exportCtxDeadlines[0]!).toBeLessThan(800 - 200);
+    expect(exportCtxDeadlines[0]!).toBeGreaterThan(0);
+  });
+
   it("a FAR provider that declares artifactExportMode='none' declines honestly, as its own class", async () => {
     await stopServer();
     await startServer({ exportMode: "none" });

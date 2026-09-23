@@ -163,7 +163,8 @@ export async function gateOwnedOp<R>(
     // timed out and teardown had taken the lock. Checked after the awaited inspection, exactly as
     // the supervisor's export window re-checks its own latch after every await.
     let budgetFired = false;
-    // Measured AFTER the queue, so time spent waiting for the lock is spent budget.
+    // Measured AFTER the queue, so time spent waiting for the lock is spent budget. This bounds
+    // the whole locked section; the DISPATCH's own budget is re-measured after the inspection.
     const remainingMs = opDeadlineAtMs === undefined ? undefined : opDeadlineAtMs - now();
     const locked = (async (): Promise<R> => {
       // Resolve the target AM-local. MIRROR #requireOwned: SandboxNotFoundError -> the
@@ -185,7 +186,10 @@ export async function gateOwnedOp<R>(
       if (budgetFired) throw new WireProtocolError("gated operation abandoned: its budget fired before dispatch");
 
       // Allow — dispatch OUTSIDE the inspect-collapse try. A dispatch fault is ITS OWN class.
-      return dispatch(detail, remainingMs);
+      // ★ The dispatch's budget is RE-MEASURED here (Codex P1, seventh round): the inspection above
+      // has already spent part of the window, and handing the provider the pre-inspection figure
+      // would give it a timer that outlives this section's own bound.
+      return dispatch(detail, opDeadlineAtMs === undefined ? undefined : opDeadlineAtMs - now());
     })();
     return remainingMs === undefined
       ? locked

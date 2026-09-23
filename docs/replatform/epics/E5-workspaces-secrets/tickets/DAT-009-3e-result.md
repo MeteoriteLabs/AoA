@@ -6,7 +6,7 @@
 **Plan task:** `E5 implementation-plan DAT-009-3e — the networked-lane export route, and E5-F002 at the cause (M, M1b)`
 **Implementer:** `DAT-009-3e build session (Claude Opus 5)`
 **Start SHA:** `cec1b48a796f177c6184884dc3c5043f5aa57ea8` (`docs/replatform-program` tip, the `3c` merge)
-**Reviewed revision (the code commits):** `b853ff0ffae57966241a7d123df9675eea84dade` (the wire route) + `8849a12066188c79393aa509fbada49d2e6d1328` (the `E5-F002` fix) + `d5e6a3612cd73cca3f6874baefa357a40a1d2e3d` (the Codex P1 grant-binding fix, §1 commit 3) + `ddfa0e61e57214aebda1d8d70b1337b0a7112799` (the second-round Codex P1/P2 fix, §1 commit 4) + `ffd0c65d44e38de2e0367d448378d301982bf6cf` (the third-round Codex P1 fix, §1 commit 5) + `3fd71f2072b6ae358c4f0d7c4f066daf8e669c6c` (the fourth-round Codex P1 fix, §1 commit 6) + `6dbb7ff371b9d60997b5b1427295571f77362b8b` (the fifth-round Codex P1+P2 fix, §1 commit 7) + `3884979efbc59be77279c995ecf51f02f30ec1ca` (the sixth-round Codex P2 fixes, §1 commit 8) + `ed6ba07e1e91d87de8ec490e5a91f5824dbdfc39` (the seventh-round Codex P1 fixes, §1 commit 9). The tree under review is `ed6ba07e1`.
+**Reviewed revision (the code commits):** `b853ff0ffae57966241a7d123df9675eea84dade` (the wire route) + `8849a12066188c79393aa509fbada49d2e6d1328` (the `E5-F002` fix) + `d5e6a3612cd73cca3f6874baefa357a40a1d2e3d` (the Codex P1 grant-binding fix, §1 commit 3) + `ddfa0e61e57214aebda1d8d70b1337b0a7112799` (the second-round Codex P1/P2 fix, §1 commit 4) + `ffd0c65d44e38de2e0367d448378d301982bf6cf` (the third-round Codex P1 fix, §1 commit 5) + `3fd71f2072b6ae358c4f0d7c4f066daf8e669c6c` (the fourth-round Codex P1 fix, §1 commit 6) + `6dbb7ff371b9d60997b5b1427295571f77362b8b` (the fifth-round Codex P1+P2 fix, §1 commit 7) + `3884979efbc59be77279c995ecf51f02f30ec1ca` (the sixth-round Codex P2 fixes, §1 commit 8) + `ed6ba07e1e91d87de8ec490e5a91f5824dbdfc39` (the seventh-round Codex P1 fixes, §1 commit 9) + the eighth-round commit recorded in §1 commit 10.
 
 The implementer leaves `Status` at `gate_review`. Only a distinct reviewer may change it to
 `complete`.
@@ -217,6 +217,15 @@ hoists the measurement outside `runExclusive`, and that goes red.
   DE-17 citation re-point (`server.ts:122-131`, anchor `ReadonlySet`) that the first merge left
   uncommitted.** That omission is what reddened `policy` on `f34b65a` (§9).
 
+### Commit 10: the dispatch budget is re-measured after the inspection (Codex P1 on `41db573d`)
+
+`remainingMs` was captured before the ownership inspection and passed unchanged to the provider, so
+a slow inspect left the provider a timer LONGER than the gate's own remaining bound — its detached
+PUT could outlive the section that was supposed to contain it. **Verified by RED:** with an
+inspection that took ~250 ms of an 800 ms window, the provider received 793 ms. The dispatch's
+budget is now re-measured from the absolute deadline at the moment of dispatch. Mutant M48 (hand the
+pre-inspection figure back) goes red.
+
 ### Scope boundary (planning session, founder delegation F2)
 
 Codex raised eight distinct findings on this PR and all were real. The line the planning session
@@ -238,6 +247,13 @@ lost-response replay).
   own plan text names as a STOP.
 - **`E5-F007`** — the shipped adapter-manager bin configures no store origin, so a deployed export
   fails closed until a deploy ticket supplies one.
+- **`E5-F008`** — the supervisor hands each export RPC the RUN's budget rather than its own
+  export-window budget, so an RPC's ctx can outlast the window racing it. The fix belongs in
+  `runExportWindow` (`supervisor.ts`, `DAT-009-3c`'s file), and the adapter-manager cannot clamp to a
+  window nothing on the wire carries.
+- **`E5-F009`** — an artifact is read whole into memory before any size check, which the wire route
+  makes the SHARED adapter-manager's memory as well as the worker's. A pre-read refusal needs a
+  stat-shaped or streaming op on `E2bTransport`, a port outside this ticket's files.
 
 **Why this is the right line.** The relay is what the ticket owes, and a guard that refuses honestly
 plus a filed residual is truthful; a redemption subsystem with its own durability and eviction
@@ -257,6 +273,7 @@ an assertion failure, not a missing import.
 | `adapter-manager` `server-artifact-export.test.ts` | **7 failed / 2 passed (9)** | ungated-404 was true by construction; the far-`"none"` case passed vacuously through the driver's unconditional throw | **9 passed** |
 | `adapter-manager` grant-binding cases (commit 3) | **5 failed / 9 passed (14)**: the forged-origin case got an `ok` and the bytes were uploaded | the 9 were the commit-1 cases | **14 passed** (full package 169) |
 | commit 4 (`put-grant-bytes` + `server-artifact-export`) | **4 failed / 8 passed (12)** and **3 failed / 14 passed (17)**; the stall case timed out, which is the strand itself | — | **12 passed** and **17 passed** (full packages: e2b 151 passed / 31 skipped; adapter-manager 172) |
+| commit 10 (re-measured dispatch budget) | **1 failed / 28 passed (29)**: the provider received 793 ms of an 800 ms window after a ~250 ms inspection | — | **29 passed** (full package 198) |
 | commit 9 (deadline + server retention) | **3 failed / 25 passed (28)**: the queued export uploaded on a stale window, the shortened-expiry replay was allowed, and the retention constant did not exist | — | **28 passed** (full package 197) |
 | commit 8 (latch + ledger TTL) | **2 failed / 24 passed (26)**: an upload landed after the timeout, and an expired grant was accepted | — | **26 passed** (full package 195) |
 | commit 7 (inspect bound + replay) | **3 failed / 21 passed (24)**: both stalled-inspection cases timed out, and the replay was refused | — | **24 passed** (full package 193) |
@@ -330,8 +347,9 @@ an assertion failure, not a missing import.
 | M45 | the dispatch gets the caller's original budget, not the remaining one | 1 red |
 | M46 | retention driven by the grant's own `expiresAt` | 2 red |
 | M47 | no retention eviction at all | 1 red |
+| M48 | the dispatch gets the pre-inspection budget | 1 red |
 
-**47 of 47 killed.** ★ And one deliberate ANTI-mutant: forcing the gate bound onto every op (not
+**48 of 48 killed.** ★ And one deliberate ANTI-mutant: forcing the gate bound onto every op (not
 just the two that pass one) reds 4 unrelated cases, which is the positive control for
 "omitted ⇒ unchanged".
 
@@ -473,8 +491,8 @@ No test or guard verdict exists in those runs. The planning session re-runs CI o
 
 **Local evidence on the final tree (`6dbb7ff37`), in place of that run:**
 - the task's focused command: wire build OK, `driver-artifact-export` 14, `server-artifact-export`
-  28, `put-grant-bytes` 15, both boundary checkers PASS, wire typecheck + build OK;
-- full packages: `provider-wire` 82 passed / 1 skipped, `adapter-manager` 197 passed,
+  29, `put-grant-bytes` 15, both boundary checkers PASS, wire typecheck + build OK;
+- full packages: `provider-wire` 82 passed / 1 skipped, `adapter-manager` 198 passed,
   `sandbox-e2b-provider` 157 passed / 31 skipped, `worker-networked-host` 6 passed,
   `worker-daemon` 1107 passed / 1 skipped; all five typecheck and build clean;
 - the full `pr.yml` guard set plus `check-evidence-immutability --base origin/docs/replatform-program`:
