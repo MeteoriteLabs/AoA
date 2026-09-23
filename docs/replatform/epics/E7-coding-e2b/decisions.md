@@ -669,3 +669,66 @@ while `S-P0` still passed**. Two separate remedies, because they close different
   (SD-3), which keeps its change a text/attribution fix (`E7-F016`) rather than a predicate change.
 - **The review's §13 record corrections are not enacted by this ruling.** They remain the planning
   session's, and this entry neither adopts nor closes them.
+
+---
+
+## E7-D12 — the `artifact_prepared` contiguity question is answered **FATAL**: a sink failure aborts the attempt, and the announcement is never best-effort
+
+**Date (UTC):** 2026-09-24
+**Status:** `locked` — decided by `CLI-013`, whose task section says it "owes a DECISION before it
+is assignable as build" and names the three admissible options.
+**Owner role:** `CLI-013` (build) · **Affected:** `CLI-014` (the projector), `CLI-015` (the judge)
+**Decided on:** source, read at tip `7be35ae6b7` — `EventSequencer` (`supervisor/events.ts`),
+`createSupervisor` (`supervisor/supervisor.ts`), `createJobEventIngestService`
+(`server/src/services/job-events.ts`).
+
+### Decision
+
+**Option 1, FATAL.** A rejection from the sink on `artifact_prepared` propagates out of the
+announcement loop in `runLifecycle`; it is NOT caught, and the run reaches no terminal.
+
+### Reason
+
+`EventSequencer.#emit` increments `#seq` **before** awaiting the sink, so a failed emit has already
+consumed its sequence number. Swallowing it leaves a **hole**, and `createJobEventIngestService`
+classifies exactly that as a gap and accepts nothing past it — the terminal included. So the
+superseded "log and continue to a truthful terminal" wording promised the one outcome the ingest
+contract forbids.
+
+Of the three options the task admits:
+
+- **Option 2 (allocate-on-success)** changes the SHARED sequencer every sibling emitter uses. The
+  task itself rules that out of this ticket, and nothing here smuggles it in.
+- **Option 3 (durable retry before the terminal)** assumes a transient failure. Measured at source,
+  the sink is `DurableWorkerEventSink` over a LOCAL encrypted outbox store, not a network call: its
+  failure modes are disk and KEK, which a retry loop does not clear. It would add an unbounded loop
+  (or a new bound, and a new policy to review) to an `S` ticket for no measured recovery.
+- **Option 1** needs no new machinery and no change to anything shared.
+
+### ★★★ What "fails the attempt" actually means here, verified at source
+
+It is **NOT a rejection out of `accept()`**, and an earlier draft of this ticket's test asserted one.
+`createSupervisor().accept` catches everything out of `runLifecycle` by design — *"never reject out
+of `accept` (the loop treats settle as the in-flight lifetime)"* — logs `run lifecycle error` and
+calls `escalateCleanup(run, "lifecycle_error")`. So the observable consequence is:
+
+1. the lifecycle **aborts at the emit**;
+2. **no terminal is written after the hole** — which is the whole point, because a terminal past a
+   gap would never land anyway;
+3. the attempt is left **non-terminal** for the `JOB-006` reaper, and cleanup is escalated.
+
+The committed artifact is unaffected: the commit is never retracted, and `countProducedOutputs`
+reads `job_artifacts` directly and joins no events, so the artifact counts whether or not the
+announcement landed. **The cost of this option is an attempt, never a deliverable.**
+
+### Consequences
+
+- The announcement loop sits in `runLifecycle` **outside** `runExportWindow`'s catch. The export
+  window stays best-effort about EXPORTING (`E5-D07`); this loop is not best-effort about EMITTING,
+  and the two must not be conflated.
+- **The contiguity assertion is unconditional** and stays so under any successor option: no option
+  is permitted to leave a hole in the stream.
+- A committed reference with no matching export request throws rather than announcing a guessed
+  `kind` — the same fail-closed posture, for the same reason.
+- **This decision does NOT reopen** the `CLI-012` charge invariant ("the tenant is charged unless it
+  is PROVEN that no bytes left the sandbox"), which converged separately and is untouched here.
