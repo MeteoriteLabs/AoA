@@ -951,11 +951,14 @@ restores `complete`, and only after this lands.
 This section discharges the three requirements the withdrawal names. Nothing above it is retracted
 or rewritten.
 
-**Revisions.** The code this section reports was reviewed at `1e8e852bfa0b8e70ee2a2a64ff24dad0f5f61b30`
-on `claude/dep-019-worker-marker`; the probe branch head `824ec906a220595120643996ad93db64e2db2118`
-is that commit plus the two-line trigger edit of §14.6, and the mutation branch head
-`0e3ca1e09cb7af8273cc64fb8fe91521e24b3529` is the probe branch plus the deletion. The doc commit
-carrying this section is the only later change on the PR.
+**Revisions.** The live probe runs of §14.6 were taken at
+`1e8e852bfa0b8e70ee2a2a64ff24dad0f5f61b30` on `claude/dep-019-worker-marker`: the probe branch head
+`824ec906a220595120643996ad93db64e2db2118` is that commit plus the two-line trigger edit, and the
+mutation branch head `0e3ca1e09cb7af8273cc64fb8fe91521e24b3529` is the probe branch plus the
+deletion. One later code change followed them — the Codex P2 narrowing in §14.2 item 2, which only
+**removes** codes from the marker and so cannot make either probe's verdict weaker: the RED run's
+worker arm produced no violation of any kind, and the GREEN run's worker arm reds on `cost:` /
+`usage:` codes, which still carry it. The self-test's M7 row covers the narrowing itself.
 
 **Placement.** The section the withdrawal names lives on PR #579, which was still open when this was
 written, so this lands at the end of the file rather than immediately under it. If #579 merges
@@ -979,9 +982,14 @@ The diagnosis holds exactly as written. It is **upheld, not narrowed**.
 1. **`M1_SPINE_WORKER_COST_MARKER = "[m1-spine:worker-cost]"`**, defined beside
    `M1_SPINE_COST_MARKER` and `M1_SPINE_USAGE_MARKER` — one source of truth, no hand-written
    literal anywhere else.
-2. `evaluateEnabledTenantSpine` attaches it to **every** violation it returns (cost, usage and
-   audit alike) when the caller declares `observation.workerDriven === true`. The pre-existing
-   markers are not displaced; the lane requires both reasons.
+2. `evaluateEnabledTenantSpine` attaches it to the worker arm's **`cost:` and `usage:`**
+   violations when the caller declares `observation.workerDriven === true`. The pre-existing
+   markers are not displaced; the lane requires both reasons. ★ It is scoped to those two code
+   families **because the lane's two greps are independent** (Codex P2 on this PR, verified at
+   source and fixed): the harness attempts always supply `[m1-spine:cost]`, so a marker riding
+   every worker-arm violation would let a run whose worker attempt priced correctly but failed on,
+   say, `audit:wrong_actor` satisfy both greps — and the step would announce that the worker's cost
+   assertion went red when it had not.
 3. **Fail-closed on a malformed declaration.** A truthy non-boolean is not read as "worker": it
    raises `journey:worker_driven_flag_invalid` and mints **no** marker, so a typo reds the control
    rather than silently restoring the vacuity.
@@ -1016,9 +1024,9 @@ arguments to the **constants**, not to copies of them.
 | | tests | pass | fail |
 |---|---:|---:|---:|
 | before this change (`99bff824d1`) | 118 | 118 | 0 |
-| after | **124** | **124** | **0** |
+| after | **125** | **125** | **0** |
 
-The six new cases are listed in §14.5; each one's RED is the mutation opposite it.
+The seven new cases are listed in §14.5; each one's RED is the mutation opposite it.
 
 ### 14.5 Mutation table — every new assertion shown going red
 
@@ -1032,9 +1040,11 @@ Each mutation applied alone to the reviewed tree, then reverted.
 | M4 | delete the profile's `workerDriven` declaration | RED — `the PROFILE declares it exactly once …` (123 / 1) |
 | M5 | move that declaration to the HARNESS call site of §2 | RED — `the PROFILE declares it exactly once …` (123 / 1) |
 | M6 | delete the workflow's second `grep -F` | RED — `the d1 lane's usage-suppressed control greps BOTH literals` (123 / 1) |
+| M7 | attach the marker to **every** worker-arm code, not only `cost:`/`usage:` — i.e. revert the Codex P2 fix | RED — `★ an AUDIT-only worker failure does NOT mint it` (124 / 1) |
 
 M2, M3 and M5 are the three shapes of "item 1 renames the defect under a new name"; all three are
-caught.
+caught. M7 is the fourth shape, found by Codex on this PR: a marker that is worker-specific but not
+**reason**-specific lets an unrelated worker-arm failure stand in for the cost one.
 
 ### 14.6 ★ THE MUTATION THAT MATTERS, ON THE LIVE LANE
 

@@ -662,8 +662,16 @@ export function evaluateEnabledTenantSpine({ tenant: t, observation: o }) {
     ));
     return out;
   }
+  // ★ ONLY on `cost:` / `usage:` codes (Codex P2, PR #580 — verified at source and fixed). The
+  // lane's two greps are INDEPENDENT: the harness attempts already supply `[m1-spine:cost]`. If the
+  // worker marker rode every worker-arm violation, a run whose worker attempt priced correctly but
+  // failed on, say, `audit:wrong_actor` would satisfy both greps — and the step would announce that
+  // the worker's COST assertion went red when it had not. The marker's meaning is exactly
+  // "the worker arm's cost/usage verdict failed", so it is attached to exactly those codes.
   if (o.workerDriven === true) {
-    return out.map((v) => ({ ...v, message: `${M1_SPINE_WORKER_COST_MARKER} ${v.message}` }));
+    return out.map((v) => (v.code.startsWith("cost:") || v.code.startsWith("usage:")
+      ? { ...v, message: `${M1_SPINE_WORKER_COST_MARKER} ${v.message}` }
+      : v));
   }
   return out;
 }

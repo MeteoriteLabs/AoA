@@ -1264,18 +1264,36 @@ test("worker marker: it is DISTINCT from the cost and usage markers, in both dir
   }
 });
 
-test("worker marker: a worker-driven observation carries it on EVERY violation", () => {
+test("worker marker: a worker-driven observation carries it on every COST and USAGE violation", () => {
   // The usage-suppressed state, declared worker-driven: what the lane's control must see.
   const v = evaluateEnabledTenantSpine(goodEnabled(A, { workerDriven: true, costRows: [], costReceipts: [], usageEvents: [] }));
   assert.ok(v.length > 0, "non-vacuity: the fixture really does violate something");
   assert.ok(codes(v).includes("cost:no_cost_row"), JSON.stringify(codes(v)));
   assert.ok(codes(v).includes("usage:no_usage_event"), JSON.stringify(codes(v)));
-  for (const x of v) {
+  for (const x of v.filter((y) => y.code.startsWith("cost:") || y.code.startsWith("usage:"))) {
     assert.ok(x.message.includes(M1_SPINE_WORKER_COST_MARKER), `${x.code} lacks the worker marker`);
   }
   // The pre-existing markers are NOT displaced — the lane requires BOTH reasons.
   assert.ok(v.some((x) => x.message.includes(M1_SPINE_COST_MARKER)));
   assert.ok(v.some((x) => x.message.includes(M1_SPINE_USAGE_MARKER)));
+});
+
+test("worker marker: ★ an AUDIT-only worker failure does NOT mint it (Codex P2, PR #580)", () => {
+  // The lane's two greps are independent, and the harness attempts always supply `[m1-spine:cost]`.
+  // So a worker attempt that priced correctly and failed only on audit must NOT satisfy the worker
+  // grep — otherwise the step would announce that the worker's COST assertion went red when it had
+  // not. Non-vacuity first: this fixture really does violate something, and it is audit-only.
+  const obs = goodEnabled(A).observation;
+  const v = evaluateEnabledTenantSpine(goodEnabled(A, {
+    workerDriven: true,
+    activity: obs.activity.map((a) => ({ ...a, actorId: "worker:someone-else" })),
+  }));
+  assert.ok(codes(v).includes("audit:wrong_actor"), JSON.stringify(codes(v)));
+  assert.ok(!codes(v).some((c) => c.startsWith("cost:") || c.startsWith("usage:")),
+    `the fixture must fail on audit ONLY: ${JSON.stringify(codes(v))}`);
+  for (const x of v) {
+    assert.ok(!x.message.includes(M1_SPINE_WORKER_COST_MARKER), `${x.code} minted the cost/usage marker`);
+  }
 });
 
 test("worker marker: ★ the HARNESS path CANNOT produce it, however broken the attempt is", () => {
