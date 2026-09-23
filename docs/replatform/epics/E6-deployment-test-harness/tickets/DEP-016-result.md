@@ -328,11 +328,14 @@ PR #566, head `9e49de33923a46c2836f8b4b379dca993de63977`.
 
 ## 11. Final head — Codex clean, CI still refused (2026-09-23)
 
-- **Reviewed revision: `b34fc34c2321256491446454fa48337fb5392d75`** (PR #566). Everything in §3, §3a,
-  §3b, §3c, §4 and §4a was measured on this code against a live D1 stack.
-- **Codex** (`chatgpt-codex-connector`) completed its review of `b34fc34c2` with **no findings and
-  zero unresolved threads**. Across the review it raised **27 findings** over thirteen rounds —
-  4 P1 and 23 P2 — every one verified at source before being fixed; §4a lists them. Three changed
+- **Reviewed revision (code): `b34fc34c2321256491446454fa48337fb5392d75`.** Everything in §3, §3a,
+  §3b, §3c, §4 and §4a was measured on this code against a live D1 stack. The commits after it are
+  this record's §11 addendum and one trigger addition (`packages/shared/src/**`) — no test, verdict
+  or profile behaviour changes — so the live evidence above stands for the final head.
+- **Codex** (`chatgpt-codex-connector`) completed its review of `b34fc34c2` and again of the final
+  head `504fe5515f6532f1dfdce64d8a29fe93d1324907`, both with **no findings and zero unresolved
+  threads**. Across the review it raised **28 findings** over fourteen rounds — 4 P1 and 24 P2 —
+  every one verified at source before being fixed; §4a lists them. Three changed
   what the profile actually proves rather than only how it asserts it: the hostile cross-tenant
   case, the `MIG-009` rollback rehearsal, and the enabled-path placement control.
 - **`ci-required` has still produced no verdict.** Run `35819013113` on this head concluded
