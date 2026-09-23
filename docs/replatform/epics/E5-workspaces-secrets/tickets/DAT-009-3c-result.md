@@ -1,6 +1,6 @@
 # DAT-009-3c Result — the supervisor export-artifacts hook
 
-**Status:** `gate_review`
+**Status:** `complete` (set 2026-09-23 by the M1 review-batch-3B independent reviewer at attempt 2, revision `60aafb32ec6f8316f92079789cf8814f981f3ed3`)
 **Date (UTC):** `2026-09-21`
 **Epic:** `E5-workspaces-secrets`
 **Plan task:** `E5 implementation-plan DAT-009-3c — the supervisor export hook (M, M1b)`
