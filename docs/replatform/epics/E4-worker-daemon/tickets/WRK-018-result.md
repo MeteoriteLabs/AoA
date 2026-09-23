@@ -127,7 +127,7 @@ sequencer's event scrub also applied to random event ids (~1 run in 10 failed); 
 
 | # | Clause | Evidence |
 |---|---|---|
-| 1 | one real keyed run emits exactly one `usage` equal to the result line | **PENDING** - key-less equivalents on all three lanes: `usage-stream-redaction.test.ts` (fake), `streaming.test.ts` "E2B lane end to end", `server-usage-stream.test.ts` "networked LANE end to end" |
+| 1 | one real keyed run emits exactly one `usage` equal to the result line — **AMENDED 2026-09-23 into 1(a)/1(b)/1(c); see the final section** | key-less equivalents on all three lanes: `usage-stream-redaction.test.ts` (fake), `streaming.test.ts` "E2B lane end to end", `server-usage-stream.test.ts` "networked LANE end to end" |
 | 2 | a planted canary appears in no event, log or evidence, per lane | fake: observer input + events + logger; E2B mock: same; networked: raw HTTP body + observer input + events |
 | 3 | no parseable usage -> no `usage` event, run does not fail | "no parseable usage" case: `attempt_started -> terminal(succeeded)`, `run_usage_missing_total 1` |
 | 4 | a provider without the channel is byte-identical | "does NOT implement the channel" case (event streams equal minus ids/timestamps/digests); E2B one-arg call; driver body == pre-channel `encodeOpRequest` |
@@ -300,3 +300,133 @@ it. Until a keyed run carries that assertion, acceptance 1 is **NOT met**.
 **Status:** `gate_review`, and it must stay there. The distinct reviewer approved the CODE at attempt
 1 and held the flip for exactly this item. A `complete` flip is not available until the cardinality
 evidence exists.
+
+---
+
+## Acceptance 1, amended into three parts (2026-09-23, M1 planning session under founder delegation F2)
+
+The section above leaves acceptance 1 `PENDING` on a single sentence — *"one real keyed run emits
+exactly one `usage` equal to the result line"* — which names two different claims. `DEP-015`'s keyed
+lane then landed (PR #567, `a08de9213`): per enabled tenant it asserts EXACTLY ONE accepted `usage`
+event for the attempt, scoped to that tenant, and that `heartbeat_runs.usage_json` matches it. Codex
+showed, correctly, that the second half of that assertion proves **projection** fidelity and not
+**parser** correctness, because the row is projected from the same event.
+
+So the acceptance is split, with the reason recorded so this is not read as moving goalposts. The
+original sentence is kept above, unedited, as the record of what it said.
+
+| Part | Claim | Closed by | State |
+|---|---|---|---|
+| **1(a)** | exactly one accepted `usage` event per attempt, belonging to that tenant | `evaluateUsageCardinality` (`scripts/lib/m1-spine-assertions.mjs`), counting the attempt's accepted `usage` rows in `job_events` | **assertion MERGED (PR #567), closure PENDING one keyed shipped-boot run that carries it** — no keyed run has executed it yet; the planning session dispatches it (F8) |
+| **1(b)** | the numbers the worker PARSED equal the numbers accepted and stored | the keyless supervisor suites only (the observer's payload IS the event's payload) | **NOT live-provable — ruled 2026-09-23 (F2); see the section below and E4-F019** |
+| **1(c)** | the parser's fidelity to a REAL `claude_local` result line | unit tests against the captured transcript fixture `server/src/__tests__/fixtures/claude-stream-json-tool-call.jsonl` (`usage-observer.test.ts`, the first case) | **met, and NOT live — stated plainly** |
+
+### Why 1(c) is not proven live, and why that is the right trade
+
+Proving 1(c) live would mean emitting the scrubbed result line out of the daemon so the lane could
+parse it independently. That pushes tenant **model output** across the daemon boundary, which
+conflicts with data minimisation and would pre-empt the still-open **F7** output-mechanism decision.
+The M1 planning session first ruled (F2 delegation, 2026-09-23) to log the COUNTS and not the line,
+and then — after five Codex P1s on that line — to drop the line too (see the 1(b) section below).
+
+The limit that leaves is stated rather than hidden: **no live run demonstrates that the parser read
+a real result line correctly**, and — since the diagnostic was dropped — **no live run observes what
+the parser produced at all**, so the live lane cannot show parser→ingest fidelity either. What
+remains is: the fixture shows the parser reads a real captured line correctly (1(c)), and the
+keyless supervisor suites show the observer's payload IS the emitted event's payload (1(b)).
+*(This paragraph claimed the live lane could show "whatever the parser produced is what was accepted
+and stored"; that was written before the line was dropped and is false without it — Codex P2,
+PR #571.)*
+
+### 1(b): what was attempted, what was measured, why it stops (ruled 2026-09-23, F2)
+
+**Attempted.** A worker log line carrying the four counts the parser produced — numbers and the
+run's own identifiers only, scrubbed by the run's canaries — so the keyed lane could compare what
+the worker PARSED with what the control plane ACCEPTED and STORED (those two being derived from one
+another).
+
+**Measured.** Five distinct Codex P1s on that single line, every one real, every one a different
+surface on which a per-run canary reaches it:
+
+| # | Surface | Disposition |
+|---|---|---|
+| 1 | the count KEY NAMES — `createWorkerLogger` redacts any key containing `token`, so `parsedInputTokens` logged as `"[redacted]"` in the live worker while tests using a hand-rolled logger stayed green | fixed (renamed; a case now drives the REAL logger) |
+| 2 | a digits-only canary equal to, or inside, a count's decimal text — "numbers cannot carry text" was false | fixed (the set is refused) |
+| 3 | the diagnostic shared the producer block's try/catch with `events.usage`, so a throwing logger suppressed the usage EVENT | fixed (its own catch; the event always follows) |
+| 4 | the fixed MESSAGE and the KEY names needed the same scrub as the values | fixed in its GENERAL form (`scrubLogRecord`: message + keys + values, refused whole) |
+| 5 | the SINK adds `msg` / `time` / `level` AFTER any caller-side scrub, and a redeemed secret may be any non-empty string | **not fixable caller-side** |
+
+**Why it stops.** Proving 1(b) requires a second data path out of the worker. Every such path is
+wholly subject to canary redaction, and redaction has no enforceable boundary on the caller side:
+each fix moved the surface rather than removing it, and finding 5 is below every scrubber a caller
+can run. Checking it would mean serializing the record the way the sink will — re-implementing the
+sink, i.e. the same collision one layer down. The M1 planning session therefore DROPPED the line
+(F2, 2026-09-23) on the standing rule that **redaction wins over diagnostics**, and 1(b) is recorded
+as **NOT LIVE-PROVABLE**, for the same reason as 1(c). Nothing was weakened to keep the line: at
+every step the refusal (drop the record) was chosen over emitting.
+
+★ **Acceptance 1 today, in the planning session's own words (2026-09-23):**
+- **1(a) cardinality — assertion MERGED (PR #567), closure PENDING one keyed shipped-boot run that carries it.** PR #567 merged
+  `evaluateUsageCardinality` into the keyed lane; no keyed run has executed it. The closing run is
+  named here when it exists, and 1(a) is not called closed before then.
+- **1(b) parsed = accepted = stored — NOT live-provable**, per the enacted bound, the same reason
+  class as 1(c). The log channel is dropped; the hardening stays.
+- **1(c) parser fidelity — fixture-only**, against the captured `claude_local` transcript.
+
+**Filed, because the property is pre-existing and not this ticket's:** **E4-F019** (E4 `findings.md`,
+`unowned` in `scripts/finding-ownership.json`) — canary redaction has no defence when a redeemed
+secret collides with a structural token, with the production-logger evidence line and the two
+closure routes (constrain what may be redeemed; or serialize-and-scrub at the transport boundary).
+Marked NOT introduced by WRK-018 and NOT blocking `M1a`.
+
+**What 1(b) rests on instead:** the keyless supervisor suites, on every lane — the observer's
+returned payload IS the emitted event's payload, so parser→event equality is pinned there; what no
+test can pin without a live capture is that the SAME numbers survived to the control plane on a real
+run. That gap is stated, not closed.
+
+### The hardening that OUTLIVES the dropped line
+
+The line is gone; four of the five findings' fixes are general and stay:
+
+- `scrubLogRecord` (`run-output.ts`) — the whole-record scrub (message, keys, values), refusing a
+  record rather than rewriting a message or key. Retained with **no production caller today**, said
+  so in its own doc comment; it is the caller-side half of E4-F019's closure route 2.
+- the digits-only-canary rule inside `scrubLogFields` — a number is never rewritten (that would
+  mangle a count), but a number whose decimal text carries a canary refuses the set.
+- the logger-key hazard, kept as a standing regression test: a binding key containing `token` is
+  redacted by the production logger, a `…Count` key survives. Any future numeric log field inherits
+  that lesson instead of rediscovering it.
+- the sink-adds-keys property, kept as a measured test rather than an argument (E4-F019's evidence).
+
+Two of the five fixes could NOT survive the removal, and that is stated rather than implied: the
+count-key renames and the diagnostic's own try/catch existed only for the dropped line, so their
+CODE is gone with it. Their lessons are the regression test above and E4-F019.
+
+### CI for this amendment (PR #571)
+
+Run `35842432353` on head `e207e922dcee9420551dd07fe1ceef3fa40332df` — the head that ENACTS the
+ruling (diagnostic dropped, hardening kept, E4-F019 filed): **`ci-required` success** (job
+`107126222047`), all four `verify` shards green — `usage-observer.test.ts` **11 executed** (job
+`107120617550`, shard total 6021 passed / 29 skipped) and `usage-stream-redaction.test.ts`
+**20 executed** (job `107120617541`, shard total 6287 passed / 33 skipped). Those counts are LOWER
+than the pre-ruling ones because the cases asserting the dropped line went with it.
+
+Codex: **five P1 findings**, each verified at source — four fixed (`9b576152f` redacted count keys,
+`3262a86e8` digits-only canary in a number, `b8354be3e` the diagnostic suppressing the usage event,
+`daf4396ba` message and keys unscrubbed), and the fifth (`daf4396ba`, the sink's own keys) NOT
+fixed but filed as **E4-F019** and answered by dropping the line. The review on `e207e922d`
+completed with no findings.
+
+### Downstream records this ruling touches
+
+`E3-F037` (E3 `findings.md` + its `finding-ownership.json` entry) made closure depend on a keyed run
+*"proving the real `claude_local` parser"*. That is no longer achievable live, so both carry a dated
+amendment: the keyed run supplies CARDINALITY; parser fidelity rests on the fixture. Neither closes
+or re-opens anything (Codex P2, PR #571).
+
+**Left to its owner, deliberately:** `docs/replatform/epics/E6-deployment-test-harness/tickets/DEP-016-result.md`
+("What remains") states the same expectation. It is another ticket's result record; editing it here
+would be a build agent rewriting someone else's evidence, so it is flagged rather than changed.
+
+**Status:** unchanged — `gate_review`. A distinct reviewer alone may set `complete`.
+
