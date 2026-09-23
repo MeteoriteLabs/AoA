@@ -68,6 +68,16 @@ test("an override that sets the rollout on only ONE replica is refused", () => {
   assert.ok(codes(evaluateSpineOverrideText(oneReplica)).includes("override:rollout_not_on_every_replica"));
 });
 
+test("BOTH assignments under ONE replica is refused — the count is per block (Codex P2)", () => {
+  const text = readFileSync(path.join(repoRoot, "docker", "d1", "m1-spine.override.yml"), "utf8");
+  const assignment = `      AOA_DISTRIBUTED_EXECUTION_ROLLOUT: '${M1_SPINE_ROLLOUT_ENV_VALUE}'`;
+  // Move control-plane-b's assignment into control-plane's block: the file still contains two
+  // matching assignments and both service headers, which a file-wide count would accept.
+  const moved = text.replace(`${assignment}\n`, `${assignment}\n${assignment}\n`).replace(new RegExp(`\n${assignment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\s\\S]*${assignment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`), "");
+  assert.equal((moved.match(/AOA_DISTRIBUTED_EXECUTION_ROLLOUT:/g) ?? []).length, 2, "the fixture keeps two assignments");
+  assert.ok(codes(evaluateSpineOverrideText(moved)).includes("override:rollout_not_on_every_replica"));
+});
+
 test("an override that arms the crew switch is refused", () => {
   const text = readFileSync(path.join(repoRoot, "docker", "d1", "m1-spine.override.yml"), "utf8");
   const armed = text.replace("  control-plane:\n    environment:\n", "  control-plane:\n    environment:\n      AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED: \"true\"\n");
@@ -580,6 +590,10 @@ function goodRehearsal(overrides = {}) {
       actorId: "operator-cli:m1-spine-1234abcd",
     })),
     terminalJobIds: ["c0000000-0000-4000-8000-00000000000c"],
+    attempts: [
+      ...drainableJobs.map((job) => ({ jobId: job.jobId, status: "cancelled" })),
+      { jobId: "c0000000-0000-4000-8000-00000000000c", status: "succeeded" },
+    ],
     ...overrides,
   };
 }
@@ -607,6 +621,20 @@ test("a drain audit row naming another tenant, or a different operator, is refus
   const impostor = goodRehearsal();
   impostor.auditRows[0] = { ...impostor.auditRows[0], actorId: "operator-cli:someone-else" };
   assert.ok(evaluateRollbackRehearsal(impostor).map((x) => x.code).includes("rollback:audit_wrong_actor"));
+});
+
+test("a drain whose audit row exists but whose attempt did NOT move is refused (Codex P1)", () => {
+  const rehearsal = goodRehearsal();
+  rehearsal.attempts = [{ ...rehearsal.attempts[0], status: "pending" }, ...rehearsal.attempts.slice(1)];
+  const v = evaluateRollbackRehearsal(rehearsal).map((x) => x.code);
+  assert.ok(v.includes("rollback:attempt_not_cancelled"));
+  assert.ok(!v.includes("rollback:no_audit_row"), "the audit row is there — it is the EFFECT that is missing");
+});
+
+test("a drain that moved an already-terminal attempt is refused", () => {
+  const rehearsal = goodRehearsal();
+  rehearsal.attempts = rehearsal.attempts.map((a) => (a.status === "succeeded" ? { ...a, status: "cancelled" } : a));
+  assert.ok(evaluateRollbackRehearsal(rehearsal).map((x) => x.code).includes("rollback:terminal_attempt_moved"));
 });
 
 test("a drain that also cancelled an already-terminal attempt is refused (it must be selective)", () => {

@@ -558,6 +558,7 @@ test("m1-spine: the MIG-009 drain CLI rolls back live distributed work, per tena
     drainableJobs: drainable,
     auditRows: audit.audit,
     terminalJobIds,
+    attempts: audit.attempts,
   });
   evidence.verdicts.rollbackRehearsal = violations;
   assert.deepEqual(violations, [], `rollback rehearsal violations:\n${formatViolations(violations)}\n--- CLI stdout ---\n${truncate(drain.stdout, 4000)}\n--- CLI stderr ---\n${truncate(drain.stderr, 2000)}`);

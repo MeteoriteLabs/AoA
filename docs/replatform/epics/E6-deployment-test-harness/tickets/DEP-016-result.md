@@ -17,7 +17,7 @@
 | Canned usage on the reference provider | `packages/sandbox-fake-provider/src/fake-driver.ts` (`FAKE_PROVIDER_CANNED_USAGE_V1`, `FAKE_PROVIDER_USAGE_MODES`) | `execute` now reports fixed units (120 000 in / 30 000 out / 0 cached / 4 200 ms) that satisfy the frozen `usagePayloadV1Schema`. A provider id scripted `usageMode: "suppressed"` reports `usage: null`. An unknown mode is refused. `reset()` restores the default. Threaded through both control servers (`control-server.ts`, `docker/d1/fake-provider-entry.mjs`). |
 | The one-worker topology | `docker/d1/m1-spine.override.yml` | A compose OVERRIDE, never an edit of the train: `worker-a` moves into a profile nothing enables, `test-runner`'s `depends_on` is `!override`-replaced, and the F10 rollout policy is set on BOTH control-plane replicas, identically. The crew switch is not set. |
 | The tenant set + the verdicts | `scripts/lib/m1-spine-assertions.mjs` | `M1_SPINE_TENANTS` (two enabled Organizations, one control), `M1_SPINE_ROLLOUT_ENV_VALUE`, and four pure verdict functions: `evaluateSpineOverrideText`, `evaluateReplicaRollout`, `evaluateEnabledTenantSpine`, `evaluateControlTenant`. |
-| The verdicts' self-test | `scripts/lib/__tests__/m1-spine-assertions.test.mjs` (57 tests) | Each verdict has a zero-violation anchor and defect fixtures. Wired into `pr.yml` `policy` → *m1-spine profile verdict self-test (DEP-016)*, declared in `scripts/test-execution-census.json`. |
+| The verdicts' self-test | `scripts/lib/__tests__/m1-spine-assertions.test.mjs` (60 tests) | Each verdict has a zero-violation anchor and defect fixtures. Wired into `pr.yml` `policy` → *m1-spine profile verdict self-test (DEP-016)*, declared in `scripts/test-execution-census.json`. |
 | The live profile | `tests/d1/m1-spine.test.mjs` (6 tests) + helpers in `tests/d1/lib/e6f-harness.mjs` (`seedSpineOrganization`, `seedSpineTarget`, `seedSpineJob`, `probeReplicaRollout`, `placeSpineAttemptOnReplica`, `querySpineAttempt`, `querySpineControl` — all additive) | The profile itself. |
 | The lane | `.github/workflows/d1-merge-train.yml` job **`m1-spine`** | Builds the split images, brings up the override, asserts exactly ONE worker service is running, runs the profile, runs the usage-suppressed POSITIVE CONTROL and fails the lane if it passes, collects the evidence bundle **`if: always()`** (on pass as well as on failure) and uploads it. New path triggers: `scripts/lib/m1-spine-assertions.mjs`, `packages/sandbox-fake-provider/**`. |
 
@@ -48,42 +48,47 @@ value, so it can never be run against the two-worker train by accident. The exis
 
 ## 3. GREEN — the live run (local, real D1 stack)
 
-Run on the reviewed code, against `docker-compose.d1.yml` + `docker/d1/m1-spine.override.yml`
-brought up with images built from this branch's tree (the server tree of the branch base
-`dd839129b` is byte-identical to `d15b35c02`, the revision the control-plane image was built from:
-`git diff d15b35c02 dd839129b -- server packages` is empty).
+★ **Re-run and rewritten 2026-09-23 after the placement and topology fixes (Codex P1).** The
+superseded text described the run BEFORE them: it reported the enabled-path control as
+`disposition: failed` / `invalid_placement_input` and two control-plane replicas, neither of which
+the code in this commit would accept. Nothing below is carried over from it; every number here is
+from the run of the CURRENT code.
+
+Run against `docker-compose.d1.yml` + `docker/d1/m1-spine.override.yml` (the one-worker,
+one-control-plane topology), with images built from this branch's tree (the server tree of the
+branch base `dd839129b` is byte-identical to `d15b35c02`, the revision the control-plane image was
+built from: `git diff d15b35c02 dd839129b -- server packages` is empty).
 
 ```
 AOA_D1_LIVE=1 AOA_D1_CAMPAIGN=m1-spine node --test --test-concurrency=1 tests/d1/m1-spine.test.mjs
 → pass 6, fail 0
 ```
 
-What the server actually wrote, from `m1-spine-evidence.json`:
+What the server wrote, from `m1-spine-evidence.json`:
 
-| Tenant | `cost_events` | `cost_cents` | model / provider | idempotency key | receipts | audit rows |
+| Tenant | accepted `usage` events | `cost_events` | `cost_cents` | idempotency key | receipts | audit rows |
 |---|---|---|---|---|---|---|
-| A (`0d016a00…`) | **1** | **81** | `claude-sonnet-4-6` / `claude_local`, `rate_version` 1 | `cost:0d016a01…:a5eade20…` (the accepted `usage` event) | `authoritative_cost:applied`, 2 × `activity_audit:applied` (+ JOB-005's `attempt_started`/`attempt_terminal`) | `job.attempt_started`, `job.attempt_terminal`, actor `worker:602fc713…` |
-| B (`0d016b00…`) | **1** | **81** | same | `cost:0d016b01…:8035233d…` | same | same, actor `worker:81451e6d…` |
+| A (`0d016a00…`) | **1** | **1** | **81** | `cost:0d016a01…:42bd7a7e…` — that event | `authoritative_cost:applied` (targeting the cost row, keyed to that event), 2 × `activity_audit:applied` (each targeting its own activity row) | `job.attempt_started`, `job.attempt_terminal`, actor `system` / `worker:94771649…` |
+| B (`0d016b00…`) | **1** | **1** | **81** | `cost:0d016b01…:d903393e…` — that event | same shape, under B's own tenant | same, actor `worker:12d6c16d…` |
 
-- **Usage cardinality.** Each attempt has **exactly one** accepted `usage` event in `job_events`
-  (A: `a7fe176a…` seq 2; B: `f7b5d7c2…` seq 2), each carrying its own tenant's
-  `organization_id`/`company_id` and the stored units `{in 120000, out 30000, cached 0, ms 4200}` —
-  byte-equal to the units the reference provider reported — and each tenant's single cost row is
-  keyed to its own event (`cost:<that tenant's company>:<that event id>`), with the row's token
-  columns equal to the stored units.
-- Each row's `company_id` and `agent_id` are that tenant's own (`0d016a01…`/`0d016a02…` and
-  `0d016b01…`/`0d016b02…`). The cost query matches on the key's EVENT half across **all** Companies,
-  so a row written under the wrong Company would be seen and judged, not missed.
-- Both replicas: rollout sha256 `02cebb95542abbd4…` (identical), `deploymentEnabled: true`,
-  A and B resolve `canary`, C resolves `off`, `crewRaw: null` / `crewEnabled: false`.
-- Control tenant C: the REAL placement service — composed on each replica exactly as
-  `server/src/index.ts` composes it (that replica's rollout source, its deployment flag and mode, and
-  the production `resolveCanaryCredentialBinding`, over the non-owner `aoa_app` + operator pools) —
-  decided `legacy` / `organization_disabled` / `leaseEligible false` on **both** replicas; its worker's
-  poll returned `no_work`; it has 0 `job_events`, 0 `cost_events`, 0 receipts, 0 leases. The positive
-  control — the SAME service on tenant A's unplaced attempt — reached `disposition: failed`,
-  `mode: active`, `reasonCode: invalid_placement_input`, i.e. a real non-legacy decision, so the
-  refusal is the rollout's and not "placement refuses everything".
+- **81 cents is the derived expectation**, not an observation: 120 000/1e6 × 300 + 30 000/1e6 × 1500
+  at `claude_local` / `claude-sonnet-4-6` / rate version 1, all four of which the verdict pins.
+- Each row's `company_id` and `agent_id` are that tenant's own. The cost query matches on the key's
+  EVENT half across **all** Companies, so a row written under the wrong Company is seen and judged.
+- **The single control plane:** rollout sha256 `02cebb95542a…`, `deploymentEnabled: true`, A and B
+  `canary`, C `off`, `crewRaw: null`, tool surface `armed: false` with no Organization opted in.
+  `control-plane-b` is configured identically in the override (held byte-for-byte, per block, by the
+  static check) and is not started.
+- **Control tenant C:** the REAL placement service — composed on the running control plane exactly as
+  `server/src/index.ts` composes it (its rollout source, deployment flag and mode, the production
+  `resolveCanaryCredentialBinding`, over the non-owner `aoa_app` + operator pools) — decided
+  `legacy` / `organization_disabled` / `leaseEligible false`; its worker's poll returned `no_work`;
+  it has 0 `job_events`, 0 `cost_events`, 0 receipts, 0 leases.
+- **The positive control for that refusal:** the SAME service, on an unplaced attempt of tenant A,
+  returned **`disposition: "selected"`, `mode: "active"`, `leaseEligible: true`,
+  `reasonCode: "target_selected"`** — a working enabled placement onto A's own
+  `organization_dedicated` target. So the control tenant's refusal is the rollout's, and not
+  "placement refuses everything".
 
 ### 3a. Hostile cross-tenant cases, live (F10 isolation — denied, not merely empty)
 
@@ -95,6 +100,7 @@ Against a FRESH, LIVE-fenced attempt of tenant A, with tenant B's real worker se
 | B's worker uploads a `usage` event naming A's Organization, Company, job, lease and fence (distinct seq, so a denial cannot be a sequence clash) | **`401 unauthorized`** — `"Worker control request denied"` |
 | B's worker acknowledges A's lease | **`409 stale_fence`** |
 | A's `job_events` read under **B's** tenant scope through the non-owner `aoa_app` pool with RLS | **0 rows**, while the same read under A's own scope returns **1** (the control that makes the 0 isolation, not a broken grant) |
+| A's accepted `usage` events, before → after the hostile traffic | **1 → 1** — a foreign worker moved neither money nor usage |
 | A's cost rows and accepted usage events, before → after the hostile traffic | **1 → 1** and **1 → 1**: the foreign worker moved neither money nor usage |
 
 ### 3c. The rollback rehearsal, live (MIG-009 — criterion 6)
@@ -107,8 +113,8 @@ bounded `aoa_app`/`aoa_operator` pools and distributed flag:
 | | Observed |
 |---|---|
 | CLI exit | **0** — its own contract: no Organization skipped, every cancel committed |
-| Summary line | `organizationsScanned: 3`, `cancelled: 9`, `skippedCount: 0`, `failedCancellations: []`, `reason: distributed_execution_rollback`, `actorId: operator-cli:m1-spine-<nonce>` |
-| Per tenant | each tenant's drainable attempt is now `cancelled`, with exactly one `job.drain.requested` activity row for its own job, carrying that tenant's own Company and (in `details.organizationId`) its own Organization, attributed to the operator the CLI was given |
+| Summary line | `organizationsScanned: 3`, `cancelled: 5`, `skippedCount: 0`, `failedCancellations: []`, `reason: distributed_execution_rollback`, `actorId: operator-cli:m1-spine-<nonce>` (the cancelled count is whatever was non-terminal at that moment; the assertions are per named job, never on that number) |
+| Per tenant | each tenant's drainable attempt is **`cancelled`** in `job_attempts` after the drain — the EFFECT, asserted alongside the audit (Codex P1) — with exactly one `job.drain.requested` activity row for its own job, carrying that tenant's own Company and (in `details.organizationId`) its own Organization, attributed to the operator the CLI was given |
 | Selectivity control | the two journey attempts, already `succeeded`, are **not** drained and carry no drain audit row — so a drain that cancelled everything indiscriminately could not pass as a rehearsal |
 
 Measured while writing it: `activity_log.organization_id` is **null** on these rows — `MIG-009`
@@ -278,7 +284,7 @@ carries the keyed acceptance, or to record that run and close the finding. `E3-1
   through the exact line map, anchor by anchor.
 - `packages/sandbox-fake-provider`: `vitest run` **20/20**, `tsc --noEmit` clean;
   `packages/sandbox-provider-contract`: **22/22** (the fake is its reference driver).
-- `scripts/lib/__tests__/m1-spine-assertions.test.mjs`: **57/57**.
+- `scripts/lib/__tests__/m1-spine-assertions.test.mjs`: **60/60**.
 - `scripts/test-inventory.json`: three pinned counts bumped (`packages/sandbox-fake-provider` 4 → 5,
   `scripts` 68 → 69, `tests` 107 → 108). `--write` also wanted to raise unrelated FLOOR counts; those
   were reverted, since they are other tickets' growth.

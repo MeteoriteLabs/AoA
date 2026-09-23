@@ -153,19 +153,44 @@ function violation(code, message) {
 export function evaluateSpineOverrideText(text) {
   const out = [];
   const src = String(text);
-  const rolloutLines = src.match(/^\s*AOA_DISTRIBUTED_EXECUTION_ROLLOUT:\s*'([^'\n]*)'\s*$/gm) ?? [];
-  const values = rolloutLines.map((line) => line.replace(/^\s*AOA_DISTRIBUTED_EXECUTION_ROLLOUT:\s*'/, "").replace(/'\s*$/, ""));
-  const exact = values.filter((v) => v === M1_SPINE_ROLLOUT_ENV_VALUE).length;
-  if (exact !== CONFIGURED_REPLICAS.length || values.length !== CONFIGURED_REPLICAS.length) {
-    out.push(violation(
-      "override:rollout_not_on_every_replica",
-      `expected the declared rollout value on exactly ${CONFIGURED_REPLICAS.length} replicas, found ${exact} exact of ${values.length}`,
-    ));
+  // ★ PER SERVICE BLOCK, not per file (Codex P2, PR #566). Counting two matching assignments
+  // anywhere would pass a file that put BOTH under `control-plane` and left `control-plane-b`
+  // without one — and since the profile deliberately does not START the second replica, no live
+  // probe would ever catch that drift.
+  const blocks = new Map();
+  let current = null;
+  for (const line of src.split("\n")) {
+    const header = /^  ([A-Za-z0-9_-]+):\s*$/.exec(line);
+    if (header) {
+      current = header[1];
+      blocks.set(current, []);
+      continue;
+    }
+    if (current && /^\S/.test(line)) current = null; // left the `services:` mapping
+    if (current) blocks.get(current).push(line);
   }
   for (const replica of CONFIGURED_REPLICAS) {
-    if (!new RegExp(`^  ${replica}:\\s*$`, "m").test(src)) {
+    const block = blocks.get(replica);
+    if (!block) {
       out.push(violation("override:rollout_not_on_every_replica", `replica ${replica} has no service block`));
+      continue;
     }
+    const values = block
+      .map((line) => /^\s*AOA_DISTRIBUTED_EXECUTION_ROLLOUT:\s*'([^'\n]*)'\s*$/.exec(line))
+      .filter(Boolean)
+      .map((m) => m[1]);
+    if (values.length !== 1 || values[0] !== M1_SPINE_ROLLOUT_ENV_VALUE) {
+      out.push(violation(
+        "override:rollout_not_on_every_replica",
+        `replica ${replica} carries ${values.length} rollout assignment(s)${values.length === 1 ? " and it differs from the declared tenant set" : ""}; expected exactly one, byte-equal`,
+      ));
+    }
+  }
+  if (/AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED/.test(src.replace(/^\s*#.*$/gm, ""))) {
+    out.push(violation("override:crew_switch_present", "the profile must not set the deployment-wide crew switch"));
+  }
+  if (!/^  worker-a:\n    profiles: \[[^\]]+\]/m.test(src)) {
+    out.push(violation("override:worker_a_not_excluded", "worker-a must be moved out of the default profile (one-worker topology)"));
   }
   if (!/^  control-plane-b:\n    profiles: \[[^\]]+\]/m.test(src)) {
     out.push(violation(
@@ -178,12 +203,6 @@ export function evaluateSpineOverrideText(text) {
       "override:second_replica_not_excluded",
       "test-runner still depends on control-plane-b, which the active profile does not start",
     ));
-  }
-  if (/AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED/.test(src.replace(/^\s*#.*$/gm, ""))) {
-    out.push(violation("override:crew_switch_present", "the profile must not set the deployment-wide crew switch"));
-  }
-  if (!/^  worker-a:\n    profiles: \[[^\]]+\]\s*$/m.test(src)) {
-    out.push(violation("override:worker_a_not_excluded", "worker-a must be moved out of the default profile (one-worker topology)"));
   }
   return out;
 }
@@ -678,6 +697,7 @@ export const DRAIN_AUDIT_ACTION = "job.drain.requested";
  * @param {Array<{tenantKey:string, organizationId:string, companyId:string, jobId:string}>} o.drainableJobs
  * @param {Array<{action:string, entityId:string, organizationId:string, companyId:string, actorType:string, actorId:string}>} o.auditRows
  * @param {string[]} o.terminalJobIds  jobs that were already terminal when the drain ran
+ * @param {Array<{jobId:string, status:string}>} o.attempts  every probed attempt's state AFTER the drain
  */
 export function evaluateRollbackRehearsal(o) {
   const out = [];
@@ -712,7 +732,26 @@ export function evaluateRollbackRehearsal(o) {
       ));
     }
   }
+  // ★ The drain's EFFECT, not only its audit (Codex P1, PR #566): an audit row written while the
+  // attempt stayed non-terminal would be a rehearsal that rolled nothing back.
+  const statusByJob = new Map((o.attempts ?? []).map((a) => [a.jobId, a.status]));
+  for (const job of o.drainableJobs ?? []) {
+    const status = statusByJob.get(job.jobId);
+    if (status !== "cancelled") {
+      out.push(violation(
+        "rollback:attempt_not_cancelled",
+        `tenant ${job.tenantKey}: its drained attempt is ${JSON.stringify(status ?? null)} after the drain, not "cancelled"`,
+      ));
+    }
+  }
   for (const jobId of o.terminalJobIds ?? []) {
+    const status = statusByJob.get(jobId);
+    if (status !== undefined && status !== "succeeded") {
+      out.push(violation(
+        "rollback:terminal_attempt_moved",
+        `the drain moved an already-terminal attempt (${jobId}) to ${JSON.stringify(status)} — it is not selective`,
+      ));
+    }
     if (rows.some((r) => r.entityId === jobId)) {
       out.push(violation(
         "rollback:drained_a_terminal_attempt",
