@@ -97,7 +97,7 @@ Against a FRESH, LIVE-fenced attempt of tenant A, with tenant B's real worker se
 | Case | Result |
 |---|---|
 | **Same-tenant control, first:** A's own worker uploads a `usage` event onto its own lease | `200`, ack `accepted` — so everything below is demonstrably possible on this exact attempt and batch shape |
-| B's worker uploads a `usage` event naming A's Organization, Company, job, lease and fence (distinct seq, so a denial cannot be a sequence clash) | **`401 unauthorized`** — `"Worker control request denied"` |
+| B's worker uploads a `usage` event naming A's Organization, Company, job, lease and fence — with **B's own worker id** in the batch and its events, so the refusal cannot be an identity mismatch between session and batch (Codex P1); distinct seq, so it cannot be a sequence clash either | **`401 unauthorized`** — `"Worker control request denied"` |
 | B's worker acknowledges A's lease | **`409 stale_fence`** |
 | A's `job_events` read under **B's** tenant scope through the non-owner `aoa_app` pool with RLS | **0 rows**, while the same read under A's own scope returns **1** (the control that makes the 0 isolation, not a broken grant) |
 | A's accepted `usage` events, before → after the hostile traffic | **1 → 1** — a foreign worker moved neither money nor usage |

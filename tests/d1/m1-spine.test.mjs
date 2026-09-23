@@ -407,12 +407,17 @@ test("m1-spine: tenant B cannot write to, acknowledge or read tenant A's attempt
   // (2) HOSTILE WRITE. Tenant B's real worker session and device key, naming A's Organization,
   //     Company, job, lease and fence — a `usage` event, the very thing this profile prices. A
   //     distinct seq, so a denial can never be a sequence clash with the control above.
-  const hostileEvents = [makeEvent(ids, A, offer, {
+  // ★ The batch carries the ATTACKER's worker id with the VICTIM's Organization, Company, job,
+  // lease and fence (Codex P1, PR #566). Using A's worker id would have been refused for an
+  // identity mismatch between the session and the batch — a real check, but not the TENANT
+  // boundary — so removing the cross-tenant check would have left this case green.
+  const hostileIds = { ...ids, workerId: attacker.ids.workerId };
+  const hostileEvents = [makeEvent(hostileIds, A, offer, {
     eventType: "usage", seq: 2,
     payload: { inputTokens: 999_999, outputTokens: 999_999, cachedInputTokens: 0, runtimeMillis: 1 },
   })];
   const hostileDigested = step(computeEventDigests({ events: hostileEvents }), "isolation hostile digests");
-  const hostileBatch = { ...batchIdentity(ids, A, offer), events: hostileDigested.events };
+  const hostileBatch = { ...batchIdentity(hostileIds, A, offer), events: hostileDigested.events };
   const hostileUpload = step(uploadEvents({ session: attacker.session, deviceKey: attacker.deviceKey, batch: hostileBatch }), "isolation hostile upload");
 
   // (3) HOSTILE ACK of A's lease by B's worker.
