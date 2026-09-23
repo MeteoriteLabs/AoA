@@ -1,6 +1,6 @@
 # DEP-019 — The `m1-spine` journey, driven by the DEPLOYED worker — result
 
-**Status:** `gate_review`. Only a DISTINCT reviewer sets `complete`.
+**Status:** `complete` (set 2026-09-23 by the M1 review-batch-4 independent reviewer; see *Independent review*).
 **Epic:** E6 · **Plan task:** `E6 implementation-plan §4c DEP-019` (filed by this PR) · **Milestone:** `M1a`
 **Date (UTC):** `2026-09-23`
 **Implementer:** Claude Opus 5 (M1 build agent)
