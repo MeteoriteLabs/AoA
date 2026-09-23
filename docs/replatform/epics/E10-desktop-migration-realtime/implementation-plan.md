@@ -691,6 +691,25 @@ was invisible.
 best-effort audit that is skipped on failure is permanently lost, and this repo has that failure
 class on record already.
 
+★★★ **SUPERSEDED 2026-09-23 (record custodian, accepted Codex P2) — THE THREE PARAGRAPHS ABOVE, from
+*"THERE IS NO `activity_log` ROW ON THIS PATH TODAY"* to *"…on record already"*, DESCRIBE THE TREE
+BEFORE `MIG-009` SHIPPED. They are kept verbatim as the record of the gap that shaped the ticket, and
+they must NOT be read as present state or as outstanding work.** Without this marker the plan
+simultaneously described a shipped requirement as complete (in the `actorId` correction above) and as
+outstanding (here), which is exactly the defect class this custodian pass exists to close.
+
+Measured at source at HEAD, all three are discharged:
+- **The `activity_log` row exists.** `createAuditedDrainCancellation`
+  (`server/src/services/distributed-execution-drain-trigger.ts`) wraps each per-attempt cancel and
+  writes `JOB_DRAIN_ACTION` (`"job.drain.requested"`, `server/src/services/job-control-audit.ts`).
+- **The actor identity exists.** `parseDrainOperator` requires `--operator <who>` and builds
+  `{ actorType: "system", actorId: "operator-cli:" + <who> }`; the CLI refuses to run without it.
+- **It is ATOMIC, as this paragraph demanded.** The audit write happens in the **same tenant
+  transaction** as the cancel it records, so a commit yields both and a rollback yields neither —
+  recorded as `E10-D002` in the epic's `decisions.md`.
+- **The dependency the plan said was missing is present**: `server/src/cli/drain-distributed-execution.ts`
+  reaches `runDistributedExecutionDrainTrigger`, not `drainAll` directly.
+
 **Rollback of this ticket.** Purely additive: one new CLI file, one root script, one register
 status flip, tests, and docs. No migration, no schema, no service change. Rolling back means
 deleting the CLI and reverting `E10-1-drain` to `unwired` — the register enforces the pair, because
