@@ -388,5 +388,20 @@ Two of the five fixes could NOT survive the removal, and that is stated rather t
 count-key renames and the diagnostic's own try/catch existed only for the dropped line, so their
 CODE is gone with it. Their lessons are the regression test above and E4-F019.
 
+### CI for this amendment (PR #571)
+
+Run `35842432353` on head `e207e922dcee9420551dd07fe1ceef3fa40332df` — the head that ENACTS the
+ruling (diagnostic dropped, hardening kept, E4-F019 filed): **`ci-required` success** (job
+`107126222047`), all four `verify` shards green — `usage-observer.test.ts` **11 executed** (job
+`107120617550`, shard total 6021 passed / 29 skipped) and `usage-stream-redaction.test.ts`
+**20 executed** (job `107120617541`, shard total 6287 passed / 33 skipped). Those counts are LOWER
+than the pre-ruling ones because the cases asserting the dropped line went with it.
+
+Codex: **five P1 findings**, each verified at source — four fixed (`9b576152f` redacted count keys,
+`3262a86e8` digits-only canary in a number, `b8354be3e` the diagnostic suppressing the usage event,
+`daf4396ba` message and keys unscrubbed), and the fifth (`daf4396ba`, the sink's own keys) NOT
+fixed but filed as **E4-F019** and answered by dropping the line. The review on `e207e922d`
+completed with no findings.
+
 **Status:** unchanged — `gate_review`. A distinct reviewer alone may set `complete`.
 
