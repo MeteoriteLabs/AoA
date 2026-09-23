@@ -1157,9 +1157,25 @@ nobody had taken* to *a diff nobody has approved* — which is a different kind 
 licenses different next steps.
 
 - **NOT abandoned.** The question is still the epic's last open one (§9.1) and Unit F still owns it.
-- **NOT unowned by accident.** CLI-008 remains the owner of every finding in this family
+- **NOT unowned by accident.** ~~CLI-008 remains the owner of every finding in this family
   (E7-F003, E7-F011, E7-F015, E7-F016, E7-F017, E7-F020, E7-F021, E7-F023, E7-F024, E7-F026, and now
-  **E7-F027**).
+  **E7-F027**).~~
+
+  ★ **SUPERSEDED 2026-09-23 (record custodian), re-measured against
+  `scripts/finding-ownership.json`, which is authoritative.** The list above was true when written
+  and is stale in three ways; it is kept as the record of what it said. A planner consulting this
+  design could otherwise route re-pointed work back to `CLI-008`.
+  - **Still `CLI-008`, unchanged:** `E7-F003`, `E7-F015`, `E7-F017`, `E7-F023`, `E7-F024`, `E7-F027`.
+  - **RE-POINTED away, and no longer `CLI-008`'s:** **`E7-F016` → `CLI-015`** (2026-09-21, M0 unit 4,
+    founder decisions D1 + D5 — clause 6 IS `countProducedOutputs`, i.e. link 6), and
+    **`E7-F026` → `CLI-017`**.
+  - **RESOLVED, so they have no owner at all** (a resolved finding carries no ownership entry):
+    `E7-F011` (`resolved`), `E7-F020` (`resolved` by W21 + the PR #422 review, 2026-09-11) and
+    `E7-F021` (`resolved` by the F021/F027 posture PR, 2026-09-11). Their `Owner: CLI-008` lines in
+    `findings.md` are historical by design and are not live claims.
+
+  **The bullet's point survives:** `CLI-008` is not unowned by accident, and it still owns the
+  six live findings named above.
 - ~~**NOT "blocked on a decision."** Nobody owes an opinion. What is owed is a **measurement**, and
   §12.2 names three, all cheap, all standalone, none requiring a design.~~
   **★ REPLACED: all three measurements are taken (§12.0), and what is owed now IS a decision — a
