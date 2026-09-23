@@ -15,8 +15,22 @@
  *
  * It is best-effort + convergent (re-run without double-kill), observable, and
  * worker-daemon-only. The server `reapExpiredLeases` reaper is the authoritative
- * orphan-safety net (JOB-006) — this is the fast-path cleanliness pass. INERT until
- * wired (E4-D12): nothing here starts a loop or is invoked at boot by default.
+ * orphan-safety net (JOB-006) — this is the fast-path cleanliness pass. Nothing here
+ * starts a loop. WRK-013 composes it at boot (`composeDispatchRuntime`'s `start()`),
+ * BEFORE the poll loop, over the durable lease-candidate store.
+ *
+ * ★ WRK-013 / founder ruling F5 — a lease the probe finds LIVE is FENCED. The frozen
+ * protocol has no lease-state query, so the probe IS one `lease_renew`; that renewal is
+ * the LAST this daemon ever issues for the lease. Nothing here re-registers it with a
+ * renewal loop and nothing re-attaches its sandbox (D2): the control plane's reaper ends
+ * the attempt and JOB-006 mints a fresh one. The result names the fenced leases.
+ *
+ * ★ WRK-013 / founder ruling F4 — the sandbox pass is CONDITIONAL. It needs a
+ * process-level provider and an Organization-scoped ownership selector. The container
+ * path has neither (its provider is built per run from a capability that has lapsed by
+ * restart) and a platform-scoped target has no Organization to select by; there the pass
+ * is SKIPPED BY NAME and orphan reclamation rests on the adapter-manager reaper — a named
+ * narrowing of journey item 8's cleanup/recovery clause, owned by WRK-013.
  *
  * Runtime imports: relative modules + the frozen protocol (`LeaseOfferV1` type) +
  * `node:crypto` — the E4-D01 boundary.
@@ -85,6 +99,15 @@ export interface ProbeLeaseAuthorityDeps {
   /** Full lease offers reconstructed from durable local state (test-injected in
    * CORE — the durable persisted-offer index is the deferred enumeration gap, D5). */
   readonly candidates: readonly LeaseOfferV1[];
+  /**
+   * WRK-013 — called IMMEDIATELY BEFORE this candidate's own `lease_renew`, never earlier and
+   * never in a batch. It is where the composition durably CLAIMS the candidate, so a crash while
+   * probing one lease leaves every later one unclaimed and probeable on the next boot (Codex P1,
+   * PR #553). Returning `false` (a claim that did not become durable) SKIPS that candidate: it is
+   * not probed and gets no map entry, because a lease the daemon cannot account for must not be
+   * renewed. Absent ⇒ every candidate is probed, which is the unit-test shape.
+   */
+  readonly beforeProbe?: (offer: LeaseOfferV1) => boolean;
   readonly now?: () => number;
   readonly randomness?: OperationRandomness;
   readonly logger?: Logger;
@@ -125,6 +148,11 @@ export async function probeLeaseAuthority(deps: ProbeLeaseAuthorityDeps): Promis
 
   for (const offer of candidates) {
     const leaseId = String(offer.leaseId);
+    // Claim THIS lease, now, immediately before its own request.
+    if (deps.beforeProbe !== undefined && !deps.beforeProbe(offer)) {
+      deps.logger?.warn({ leaseId }, "startup-reconcile: candidate not claimed; NOT probed");
+      continue;
+    }
     let entry: LeaseAuthorityEntry;
     try {
       const attempt = await renewLeaseOnce({
@@ -186,6 +214,18 @@ export function buildControlPlaneIsOrphan(map: LeaseAuthorityMap): (summary: Res
 // The startup reconciler — three-way sandbox classification + teardown.
 // -----------------------------------------------------------------------------
 
+/** WRK-013 — why the sandbox pass did not run. Bounded tokens, logged as `reason`. */
+export const SANDBOX_PASS_SKIP_REASONS = {
+  /** F4: the container path has no process-level provider to enumerate with (its per-run
+   * provider rides a capability that lapsed with the previous process). Orphan reclamation
+   * rests on the adapter-manager reaper — a NAMED NARROWING owned by WRK-013. */
+  containerPathNoEnumeration: "sandbox_pass_skipped_container_path_f4",
+  /** A platform-scoped target has no Organization to build an ownership selector from. */
+  platformScopedTarget: "sandbox_pass_skipped_platform_scoped_target",
+  /** No provider/selector was supplied and the caller named no reason. Still never silent. */
+  noProvider: "sandbox_pass_skipped_no_provider",
+} as const;
+
 const ALIVE_STATES: ReadonlySet<SandboxState> = new Set<SandboxState>(["creating", "running", "cancelling"]);
 const DEFAULT_PAGE_SIZE = 50;
 
@@ -226,6 +266,11 @@ export interface StartupReconcileResult {
   readonly artifactsQuarantined: number;
   readonly artifactsDropped: number;
   readonly leaseProbes: LeaseAuthorityMap;
+  /** WRK-013 / F5 — leases the probe found LIVE and therefore FENCED: the probe's renewal was
+   * the last; nothing renews or re-attaches them; the control-plane reaper ends the attempt. */
+  readonly fencedLeaseIds: readonly string[];
+  /** WRK-013 / F4 — the named reason the sandbox pass was skipped, or `null` when it ran. */
+  readonly sandboxPassSkipped: string | null;
   readonly sandboxOutcomes: readonly SandboxOutcomeRecord[];
   readonly streamOutcomes: readonly StreamOutcomeRecord[];
   readonly quarantineOutcomes: readonly QuarantineOutcomeRecord[];
@@ -244,10 +289,30 @@ export interface QuarantineOutcomeRecord {
 }
 
 export interface StartupReconcilerDeps {
-  readonly provider: SandboxProvider;
-  readonly ownershipSelector: OwnershipSelector;
+  /**
+   * The process-level provider + the Organization-scoped selector the SANDBOX pass lists by.
+   * OPTIONAL since WRK-013: the pass runs only when BOTH are present (and `makeCtx`); otherwise
+   * it is skipped under {@link StartupReconcilerDeps.sandboxPassSkipReason} (F4 container path /
+   * platform target) and the lease + outbox passes still run.
+   */
+  readonly provider?: SandboxProvider;
+  readonly ownershipSelector?: OwnershipSelector;
   /** Mints a fresh op context (deadline + STABLE-per-attempt idempotency key). */
-  readonly makeCtx: () => ProviderOpContext;
+  readonly makeCtx?: () => ProviderOpContext;
+  /** WRK-013 — the named reason logged when the sandbox pass cannot run. */
+  readonly sandboxPassSkipReason?: string;
+  /**
+   * WRK-013 / F5 — treat a LIVE-probed lease's sandbox as STALE and tear it down.
+   *
+   * ★ Off by default, which keeps WRK-007 CORE's `keep` disposition exactly as it shipped. The
+   * COMPOSED daemon turns it on, because under founder ruling F5 a live-probed lease is FENCED:
+   * the probe's renewal was its last, nothing re-attaches (D2), and no later pass will see the
+   * sandbox again — so leaving it alive abandons a running tenant command to the provider's TTL
+   * while the control plane mints a fresh attempt. That is what WRK-007's own D2 prescribes:
+   * "regardless of `renewed`, do NOT re-attach … kill it via the cleanup authority, and let
+   * JOB-006 mint a fresh fenced attempt". (Codex P1, PR #553.)
+   */
+  readonly fencedLeasesAreStale?: boolean;
   // --- control-plane lease-authority probe ---
   readonly client: ControlPlaneClient;
   readonly session: SessionProvider;
@@ -255,6 +320,9 @@ export interface StartupReconcilerDeps {
   readonly identity: RenewalIdentity;
   /** Full lease offers reconstructed from durable local state (test-injected). */
   readonly leaseCandidates: readonly LeaseOfferV1[];
+  /** WRK-013 — see {@link ProbeLeaseAuthorityDeps.beforeProbe}: claim one candidate, immediately
+   * before its own probe. A `false` return skips that candidate. */
+  readonly beforeProbe?: (offer: LeaseOfferV1) => boolean;
   // --- optional outbox + quarantine (Slices 3–4) ---
   readonly outbox?: StartupOutboxDeps;
   readonly quarantineCandidates?: readonly StartupQuarantineCandidate[];
@@ -337,6 +405,9 @@ export function createStartupReconciler(deps: StartupReconcilerDeps): StartupRec
 
   async function reconcileSandboxes(
     probes: LeaseAuthorityMap,
+    provider: SandboxProvider,
+    ownershipSelector: OwnershipSelector,
+    makeCtx: () => ProviderOpContext,
   ): Promise<{ outcomes: SandboxOutcomeRecord[]; scanned: number }> {
     // Phase 1 — collect the FULL inventory read-only. Teardown MUST NOT interleave with
     // pagination: `list` excludes destroyed rows and the provider's page cursor is a
@@ -346,10 +417,7 @@ export function createStartupReconciler(deps: StartupReconcilerDeps): StartupRec
     let pageToken: string | null = null;
     try {
       do {
-        const page = await deps.provider.list(
-          { ownershipSelector: deps.ownershipSelector, pageSize, pageToken },
-          deps.makeCtx(),
-        );
+        const page = await provider.list({ ownershipSelector, pageSize, pageToken }, makeCtx());
         summaries.push(...page.resources);
         pageToken = page.nextPageToken;
       } while (pageToken !== null);
@@ -363,7 +431,7 @@ export function createStartupReconciler(deps: StartupReconcilerDeps): StartupRec
     const outcomes: SandboxOutcomeRecord[] = [];
     for (const summary of summaries) {
       try {
-        outcomes.push(await classifyAndTeardown(summary, probes));
+        outcomes.push(await classifyAndTeardown(summary, probes, provider, makeCtx));
       } catch (err) {
         const resourceLabelsHash = hashResourceLabels(summary.resourceLabels);
         deps.logger?.error({ sandboxId: summary.sandboxId, resourceLabelsHash, err }, "startup-reconcile: sandbox teardown threw");
@@ -376,6 +444,8 @@ export function createStartupReconciler(deps: StartupReconcilerDeps): StartupRec
   async function classifyAndTeardown(
     summary: ResourceSummary,
     probes: LeaseAuthorityMap,
+    provider: SandboxProvider,
+    makeCtx: () => ProviderOpContext,
   ): Promise<SandboxOutcomeRecord> {
     const labelsHash = hashResourceLabels(summary.resourceLabels);
     const base = { sandboxId: summary.sandboxId, resourceLabelsHash: labelsHash } as const;
@@ -393,20 +463,36 @@ export function createStartupReconciler(deps: StartupReconcilerDeps): StartupRec
       return { ...base, disposition: "indeterminate" };
     }
     // Probe renewed AND matching device generation AND a local live lease → keep.
-    // NEVER re-attached (D2) — just left for JOB-006 to mint a fresh attempt.
+    // NEVER re-attached (D2) — just left for JOB-006 to mint a fresh attempt. ★ F5: `keep`
+    // leaves the SANDBOX in place; it does NOT keep the LEASE alive. The probe's renewal was
+    // the lease's last (it is in `fencedLeaseIds`), so the control-plane reaper ends it.
     const generationMatches = summary.resourceLabels.deviceGeneration === deps.identity.deviceGeneration;
     if (probe.state === "live" && generationMatches && summary.hasLiveLease) {
-      deps.logger?.info({ ...base, disposition: "keep" }, "startup-reconcile: keeping live-owned sandbox (never re-attached)");
-      return { ...base, disposition: "keep" };
+      if (deps.fencedLeasesAreStale !== true) {
+        deps.logger?.info(
+          { ...base, disposition: "keep" },
+          "startup-reconcile: keeping live-owned sandbox (never re-attached; its lease is fenced, not renewed)",
+        );
+        return { ...base, disposition: "keep" };
+      }
+      // F5 — the lease is fenced, so this sandbox has no supervisor and no future pass of its own.
+      // Tear it down through the cleanup authority rather than abandon it to the provider TTL.
+      deps.logger?.info(
+        { ...base, disposition: "fenced_stale" },
+        "startup-reconcile: tearing down a FENCED lease's sandbox (never re-attached; no supervisor remains)",
+      );
+      return teardownStale(summary, base, provider, makeCtx);
     }
 
     // Otherwise stale → teardown.
-    return teardownStale(summary, base);
+    return teardownStale(summary, base, provider, makeCtx);
   }
 
   async function teardownStale(
     summary: ResourceSummary,
     base: { sandboxId: string; resourceLabelsHash: string },
+    provider: SandboxProvider,
+    makeCtx: () => ProviderOpContext,
   ): Promise<SandboxOutcomeRecord> {
     const liveTree = ALIVE_STATES.has(summary.state);
     let status: CleanupStatus;
@@ -416,7 +502,7 @@ export function createStartupReconciler(deps: StartupReconcilerDeps): StartupRec
       // A still-live process tree routes through the distinct monotonic authority so
       // an ignored cancel/kill escalates to a forced destroy (survives lease loss).
       const authority = new CleanupAuthority({
-        provider: deps.provider,
+        provider,
         resourceLabels: summary.resourceLabels,
         targetGeneration: summary.generation,
         fence: fenceFromLabels(summary.resourceLabels),
@@ -425,7 +511,7 @@ export function createStartupReconciler(deps: StartupReconcilerDeps): StartupRec
         now,
       });
       try {
-        status = await authority.converge([summary.sandboxId], deps.makeCtx);
+        status = await authority.converge([summary.sandboxId], makeCtx);
       } catch (err) {
         if (err instanceof ResourceNotAvailableError) {
           status = "success"; // vanished mid-converge — already gone
@@ -437,7 +523,7 @@ export function createStartupReconciler(deps: StartupReconcilerDeps): StartupRec
       escalationStage = authority.escalationStage();
     } else {
       // Empty-tree / terminal sandbox → the direct idempotent reconcile cleanup.
-      const result = await deps.provider.reconcileCleanup(summary.sandboxId, deps.makeCtx());
+      const result = await provider.reconcileCleanup(summary.sandboxId, makeCtx());
       status = result.cleanupStatus;
     }
 
@@ -510,6 +596,7 @@ export function createStartupReconciler(deps: StartupReconcilerDeps): StartupRec
         session: deps.session,
         key: deps.key,
         candidates: deps.leaseCandidates,
+        beforeProbe: deps.beforeProbe,
         now: deps.now,
         randomness: deps.randomness,
         logger: deps.logger,
@@ -519,8 +606,28 @@ export function createStartupReconciler(deps: StartupReconcilerDeps): StartupRec
       //    land before their sandbox is destroyed.
       const streamOutcomes = await reconcileOutboxStreams(leaseProbes);
 
-      // 3. Sandboxes — three-way classification + teardown.
-      const { outcomes: sandboxOutcomes, scanned } = await reconcileSandboxes(leaseProbes);
+      // F5 — every LIVE lease is fenced: the probe above was its last renewal.
+      const fencedLeaseIds = [...leaseProbes.values()].filter((p) => p.state === "live").map((p) => p.leaseId);
+
+      // 3. Sandboxes — three-way classification + teardown. CONDITIONAL (F4): without a
+      //    process-level provider AND an Organization-scoped selector the pass is skipped BY NAME.
+      let sandboxOutcomes: SandboxOutcomeRecord[] = [];
+      let scanned = 0;
+      let sandboxPassSkipped: string | null = null;
+      if (deps.provider !== undefined && deps.ownershipSelector !== undefined && deps.makeCtx !== undefined) {
+        ({ outcomes: sandboxOutcomes, scanned } = await reconcileSandboxes(
+          leaseProbes,
+          deps.provider,
+          deps.ownershipSelector,
+          deps.makeCtx,
+        ));
+      } else {
+        sandboxPassSkipped = deps.sandboxPassSkipReason ?? SANDBOX_PASS_SKIP_REASONS.noProvider;
+        deps.logger?.info(
+          { reason: sandboxPassSkipped },
+          "startup-reconcile: sandbox pass skipped; orphan reclamation rests on the provider-side reaper",
+        );
+      }
 
       // 4. Quarantine sweep — staged output under dead fences.
       const quarantineOutcomes = await sweepUnknownArtifacts(leaseProbes);
@@ -543,6 +650,8 @@ export function createStartupReconciler(deps: StartupReconcilerDeps): StartupRec
         artifactsQuarantined: quarantineOutcomes.filter((q) => q.status === "quarantined").length,
         artifactsDropped: quarantineOutcomes.filter((q) => q.status === "dropped").length,
         leaseProbes,
+        fencedLeaseIds,
+        sandboxPassSkipped,
         sandboxOutcomes,
         streamOutcomes,
         quarantineOutcomes,

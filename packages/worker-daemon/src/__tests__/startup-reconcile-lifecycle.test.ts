@@ -22,6 +22,8 @@ import {
 import type { Env } from "../config/env.js";
 import type { Logger } from "../logging/logger.js";
 import type { HealthServerHandle } from "../health/health-server.js";
+import { createStartupReconciler, SANDBOX_PASS_SKIP_REASONS } from "../supervisor/startup-reconcile.js";
+import { generateDeviceKey } from "../identity/device-key.js";
 
 function baseEnv(overrides: Env = {}): Env {
   return {
@@ -158,5 +160,65 @@ describe("bootstrapWorkerDaemon — startup reconciliation seam (WRK-007)", () =
     expect(result.ok).toBe(true);
     expect(order).toEqual(["health", "register:SIGINT", "register:SIGTERM"]);
     expect(order).not.toContain("reconcile");
+  });
+});
+
+// -----------------------------------------------------------------------------
+// WRK-013 / founder ruling F4 — the sandbox pass is CONDITIONAL, and a skip is NAMED.
+//
+// The pass needs a process-level provider AND an Organization-scoped ownership selector. On the
+// container path neither exists (the per-run provider is built from a lapsed capability), and a
+// platform-scoped target has no Organization to select by. Either way the reconciler still runs its
+// lease and outbox passes, skips ONLY the sandbox enumeration, and logs WHY by name — never a
+// silent `scanned: 0`.
+// -----------------------------------------------------------------------------
+
+describe("createStartupReconciler — a sandbox pass it cannot run is skipped BY NAME (F4)", () => {
+  function reconcilerWithout(reason: string, logger: Logger) {
+    return createStartupReconciler({
+      client: {} as never,
+      session: { get: async () => { throw new Error("no session in this unit"); }, recover: async () => { throw new Error("no"); } },
+      key: generateDeviceKey(),
+      identity: { targetId: "target-1", deviceGeneration: 1 },
+      leaseCandidates: [],
+      sandboxPassSkipReason: reason,
+      logger,
+    });
+  }
+
+  for (const reason of [SANDBOX_PASS_SKIP_REASONS.containerPathNoEnumeration, SANDBOX_PASS_SKIP_REASONS.platformScopedTarget]) {
+    it(`no provider (${reason}) ⇒ scanned 0, never throws, and the reason is logged`, async () => {
+      const logged: Array<Record<string, unknown>> = [];
+      const logger: Logger = {
+        info: (b: unknown) => void logged.push(b as Record<string, unknown>),
+        warn: (b: unknown) => void logged.push(b as Record<string, unknown>),
+        error: () => {},
+        flush: async () => {},
+      } as never;
+      const result = await reconcilerWithout(reason, logger).run();
+      expect(result.sandboxesScanned).toBe(0);
+      expect(result.sandboxPassSkipped).toBe(reason);
+      expect(logged.some((b) => b.reason === reason)).toBe(true);
+    });
+  }
+
+  it("a reconciler with NO provider and NO reason still names the skip (never silent)", async () => {
+    const logged: Array<Record<string, unknown>> = [];
+    const logger: Logger = {
+      info: (b: unknown) => void logged.push(b as Record<string, unknown>),
+      warn: (b: unknown) => void logged.push(b as Record<string, unknown>),
+      error: () => {},
+      flush: async () => {},
+    } as never;
+    const result = await createStartupReconciler({
+      client: {} as never,
+      session: { get: async () => { throw new Error("x"); }, recover: async () => { throw new Error("x"); } },
+      key: generateDeviceKey(),
+      identity: { targetId: "target-1", deviceGeneration: 1 },
+      leaseCandidates: [],
+      logger,
+    }).run();
+    expect(result.sandboxPassSkipped).toBe(SANDBOX_PASS_SKIP_REASONS.noProvider);
+    expect(logged.some((b) => b.reason === SANDBOX_PASS_SKIP_REASONS.noProvider)).toBe(true);
   });
 });

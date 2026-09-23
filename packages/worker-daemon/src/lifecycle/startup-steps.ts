@@ -11,6 +11,10 @@
  *
  * The precedent shape is `EventOutboxDrain.recover()` — a one-shot boot pass, not a
  * loop. This module starts no loop and dispatches no work.
+ *
+ * ★ WRK-013 — `composeDispatchRuntime`'s `start()` now runs the real reconciler through
+ * these same two functions (so it inherits the await + swallow-and-log contract) and only
+ * then starts the poll loop. The bootstrap's injected `reconciler?` seam is unchanged.
  */
 
 /** The minimal startup lifecycle the bootstrap drives. The concrete WRK-007

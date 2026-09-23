@@ -97,3 +97,26 @@ describe("loadWorkerConfig — never reads a database URL", () => {
     expect(() => loadWorkerConfig(baseEnv())).not.toThrow();
   });
 });
+
+describe("loadWorkerConfig — WRK-013 lease-candidate store path", () => {
+  it("defaults BESIDE the event outbox (same writable volume, no new deployment setting)", () => {
+    const config = loadWorkerConfig(baseEnv({ AOA_WORKER_EVENT_OUTBOX_PATH: "/worker/event-outbox.db" }));
+    expect(config.leaseCandidatePath).toBe("/worker/event-outbox.lease-candidates.db");
+  });
+
+  it("an explicit AOA_WORKER_LEASE_CANDIDATE_PATH wins; whitespace is absence", () => {
+    expect(
+      loadWorkerConfig(
+        baseEnv({ AOA_WORKER_EVENT_OUTBOX_PATH: "/worker/o.db", AOA_WORKER_LEASE_CANDIDATE_PATH: " /data/lc.db " }),
+      ).leaseCandidatePath,
+    ).toBe("/data/lc.db");
+    expect(
+      loadWorkerConfig(baseEnv({ AOA_WORKER_EVENT_OUTBOX_PATH: "/worker/o", AOA_WORKER_LEASE_CANDIDATE_PATH: "   " }))
+        .leaseCandidatePath,
+    ).toBe("/worker/o.lease-candidates.db");
+  });
+
+  it("is null only when there is no outbox path either (dispatch is refused then anyway)", () => {
+    expect(loadWorkerConfig(baseEnv()).leaseCandidatePath).toBeNull();
+  });
+});
