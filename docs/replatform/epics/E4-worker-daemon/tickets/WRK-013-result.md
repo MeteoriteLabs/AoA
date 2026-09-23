@@ -1,6 +1,6 @@
 # WRK-013 Result - a durable lease-candidate store, and the startup reconciler composed before the first poll
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Date (UTC):** `2026-09-21`
 **Epic:** `E4-worker-daemon`
 **Plan task:** `E4 implementation-plan ### WRK-013 - A durable lease-candidate source for the startup reconciler (M1a)` (§4c)
