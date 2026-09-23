@@ -466,5 +466,26 @@ arbitrary constant - would trade a real ceiling for a decorative one.
 `E2bTransport`, refuses above `grant.maxBytes` BEFORE materializing bytes, gives `digestArtifact` the
 same ceiling, and proves both with a case that never allocates the oversized buffer.
 
+★★★ **CLOSING TICKET NAMED 2026-09-23: `CLI-012` (E7). The declaration stays `unowned` until
+`CLI-012` has a ticket file.** *Updated with ruling F7
+(`epics/E7-coding-e2b/decisions.md`, `E7-D11`); raised by Codex on PR #575. The manifest
+(`scripts/finding-ownership.json`, key `E5-F009`) is updated in the same commit.*
+★ **Why it is not declared `owned`:** `check-finding-ownership` tests `tickets.has(entry.ticket)` and
+`findTicketIds` derives ids from files under `epics/*/tickets/`; `CLI-012` has a graph node and a plan
+task but **no ticket file**, so naming it today would trip `owner_ticket_missing`. This flips to
+`owned: CLI-012` in the commit that gives `CLI-012` its first ticket file, and not before — a false
+claim of ownership is worse than a declared `unowned`. `CLI-012` is the
+ticket this entry was already describing — it owns the enumeration port and is the first production
+producer of `ArtifactExportRequest[]`. **And a separate `stat` op turns out not to be needed:** the
+`CLI-011` P-011 probe measured on a live sandbox (run
+[`35833717162`](https://github.com/MeteoriteLabs/AoA/actions/runs/35833717162), arm `S-P6`) that
+`files.list` already reports a **correct byte size** — `listSize` 3,145,728, `listSizeMatches: true`
+against the real file — so the size rides the enumeration entry the port is being widened for anyway,
+and the pre-read refusal costs no new transport operation. `CLI-012`'s task now requires `size` in
+every entry and the `SD-6` bounds enforced from that metadata **before** `digestArtifact`, with the
+review's **PC-6** as its control (drop the pre-digest check → the provider reads the whole file).
+The *"Why it was not fixed here"* paragraph above stands as written: it is `DAT-009-3e`'s record of
+why the fix was not its.
+
 **Blocks gate:** no. Nothing produces `ArtifactExportRequest[]` in production; `E5-2` stays
 `unwired`.

@@ -761,6 +761,37 @@ link marker) through the transport and the port, and a test in which a symlink u
 **refused, never digested** (review PC-5). ★ *This does not reopen `E7-D09`: files-only, recursive,
 absolute and bounded all stand; what is added is the per-entry marker the refusal needs.*
 
+★★★ **AND `size` RIDES THE SAME ENTRY, SO THE SD-6 BOUNDS ARE ENFORCED BEFORE ANY READ — THIS
+TICKET OWNS `E5-F009`.** *Added 2026-09-23 (ruling F7, `E7-D11`; Codex P1, PR #575).*
+`E2bSandboxProvider.#readArtifactBytes` materialises the **whole** tenant-controlled file in the
+shared adapter-manager process; `exportArtifact` checks `grant.maxBytes` only **after** that read and
+`digestArtifact` has no size guard at all, while the server ceiling
+(`DEFAULT_MAX_ARTIFACT_BYTES`, `server/src/services/artifact-size-ceiling.ts`) is in gigabytes. That
+is `E5-F009`, filed by `DAT-009-3e`, whose own *"what would close it"* names an E7/CLI ticket — this
+one. **`E5-F009`'s stated blocker is measured gone:** it assumed a pre-read refusal needed a new
+`stat`-shaped or streaming op on `E2bTransport`, but the P-011 probe's `S-P6` arm measured
+`files.list` already reporting a correct size on a live sandbox (`listSize` 3,145,728,
+`listSizeMatches: true`). So the size rides the entry the port is already being widened for, and no
+new transport operation is needed. This ticket must therefore enforce the review's **SD-6** bounds —
+**per file ≤ 25 MiB, per attempt ≤ 100 MiB, ≤ 64 files, depth ≤ 8** — **from the listing metadata,
+before `digestArtifact`**, with the grant's `maxBytes` equal to the per-file cap, each refusal
+classified (`output_too_large` / `output_limit_exceeded` / `output_symlink_refused`) and per-file
+(`E5-D07`: one refusal never drops the others). Control **PC-6**: drop the pre-digest check and the
+provider reads the whole file → red. ★ Flipping `E5-F009` to `resolved` happens in the same commit
+as the code that earns it, and its manifest entry flips to `owned: CLI-012` as soon as this ticket
+has a ticket file (see that entry).
+
+★★★ **THE LINK MARKER IS A SNAPSHOT — RECHECK AT THE READ BOUNDARY.** *Added 2026-09-23 (Codex P2,
+PR #575).* Enumeration metadata is taken at one instant, and `W7`/`A-O2-9` already establish that a
+background process the agent started can keep writing after it. So a regular file can be **replaced
+by a symlink between enumeration and digest**, and because the probe measured `readFollowsLink=true`,
+`digestArtifact` would then hash the **target** and `exportArtifact` read the same stable target — so
+the existing re-hash TOCTOU check **passes** and the staged prompt is exported as output. An
+enumeration-time marker alone does not close `A-O2-4`. This ticket owes a **provider-side no-follow
+check (or an equivalent atomic file-handle design) applied at digest and at export**, and a test with
+the mutation **between enumeration and digest**, not only the easier case of a symlink already
+present at enumeration.
+
 ★ **This ticket owes a test that FAILS if the crossing returns** — a composition assertion that the
 producer's dependency surface contains no byte-returning read. No existing guard catches it:
 `check-worker-daemon-boundary` passes a violation because it enforces a *dependency* boundary while
@@ -788,9 +819,11 @@ this ticket. It never did; but removing this edit, as suggested, would leave the
 unconnected, so the edit stays and its scope is now stated exactly; create `packages/worker-daemon/src/__tests__/export-request-producer.test.ts`; append to
 `decisions.md`. ★ **And the enumeration port** — modify
 `packages/worker-daemon/src/supervisor/provider.ts` (the `SandboxProvider` port gains a fenced,
-**metadata-only** enumeration operation: **no bytes**, and **per-entry at minimum an absolute path
-plus a link marker** — ★ *corrected 2026-09-23, Codex P1, PR #575; superseded text: "paths only, no
-bytes", which would have made the required symlink refusal unimplementable*); modify
+**metadata-only** enumeration operation: **no bytes**, and **per-entry an absolute path, a link
+marker and a byte SIZE** — ★ *corrected 2026-09-23, Codex P1 ×2, PR #575; superseded text: "paths
+only, no bytes", which would have made the required symlink refusal unimplementable, and then
+"…plus a link marker", which still left the size to `digestArtifact` and so to a whole-file read*);
+modify
 `packages/sandbox-e2b-provider/src/e2b-provider.ts` (implement it over the private
 `#transport.listDir`); modify `packages/provider-wire/src/driver.ts` (the networked-lane binding,
 which has no enumeration today — **its shape carries the per-entry marker too, not a bare

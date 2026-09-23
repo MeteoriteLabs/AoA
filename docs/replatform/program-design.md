@@ -1135,7 +1135,12 @@ evidence.
 - **Test:** The keyed export lane extended to the full sequence, with a TOCTOU refusal case.
 - ★ **It enumerates METADATA ONLY — never bytes — and must NOT call `captureSandboxEntries`** (see
   `CLI-010`); the provider's `digestArtifact` supplies digest and size, `exportArtifact` does the
-  upload. **Per-entry it must carry at minimum an absolute path plus a LINK MARKER.**
+  upload. **Per-entry it must carry an absolute path, a LINK MARKER and a byte SIZE** — the size so
+  the `SD-6` bounds are enforced before `digestArtifact` materialises a whole tenant-controlled file
+  in the shared adapter-manager process, which is **`E5-F009`**, and which this ticket closes. The
+  marker is an enumeration-time **snapshot**, so a **no-follow recheck at digest/export** is required
+  too: a file swapped for a symlink after enumeration would otherwise be hashed and exported through
+  its target, and the existing re-hash TOCTOU check would pass.
   ★ *Corrected 2026-09-23 (ruling F7, `epics/E7-coding-e2b/decisions.md` `E7-D11`; Codex P1, PR #575).
   **Superseded text:** "It enumerates PATHS only and must NOT call `captureSandboxEntries`".*
   "Paths only" is the wrong axis: the rule is **no bytes**. `RealE2bTransport.listDir` returns
