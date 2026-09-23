@@ -638,6 +638,15 @@ a redirected `sh -c` through `RealE2bTransport.runCommand` and reads it back byt
    `WRK-018` channel priced as an input).
 2. **The probe:** the `files.read` probe the review designs (its §10), dispatched only inside the F8
    envelope on a named candidate.
+   ★ **DONE and PRESERVED IN THE REPOSITORY:** run
+   [`35833717162`](https://github.com/MeteoriteLabs/AoA/actions/runs/35833717162), job `probe`,
+   `success`, head `499ec4d1c3c3aab7324dcf0ca98ea34872fe18a0`, `disposition: measured`. The durable
+   record is committed as `tickets/CLI-011-probe-record.json` with a reading in
+   `tickets/CLI-011-probe-record.md`. *The review's §10.3 named that file `CLI-011-probe-result.md`;
+   that name would make `findCompletedTicketIds` read `CLI-011` as shipped, so the copy uses
+   `-probe-record`. The review's wording is quoted, not edited.* Committing it is the point: the
+   workflow's artifact carries `retention-days: 90`, so a record living only in a job log expires
+   under the decision it justifies (`E7-F025`'s lesson; Codex P1, PR #575).
 3. **The ruling — DONE:** founder ruling **F7**, recorded as **`E7-D11`** in `decisions.md` (this
    epic) on 2026-09-23, under founder delegation F2. It rules **option 2, a conventional output root**
    `/home/user/aoa-output`, placement **SD-1b**, **SD-5 required**, option 1b deferred, `A-O2-8`
@@ -1386,7 +1395,7 @@ tool surface for the named internal Organization`".*
 
 ---
 
-### `CLI-017` — the EMIT build: the output-root directive (SD-1b), one source of truth for `R`, and the export secret refusal (SD-5) (S–M, ≤2 agent-days +0.5–1 for SD-5, M1b)
+### `CLI-017` — the EMIT build: the output-root directive (SD-1b), one source of truth for `R`, and the export secret refusal (SD-5) (S–M, ≤2 agent-days +1–1.5 for SD-5, M1b)
 
 **Depends on:** **ruling F7**, recorded as `E7-D11` in this epic's `decisions.md` — already satisfied.
 Its graph edge is `CLI-011` (`program-design.md`, `#### CLI-017`). **Blocks:** `CLI-012`'s real-run
@@ -1441,9 +1450,30 @@ chosen."* The mechanism ruled is **option 2, a conventional output root**; the p
    (`scripts/lib/cli-011-output-probe.mjs`). A new `scripts/check-*.mjs` must be declared in
    `scripts/guard-inventory.json` (`check-guard-inventory.mjs`) and wired into `pr.yml`'s `policy`
    job, or it is a check that nothing runs.
-3. **SD-5 — the export secret refusal.** `E2bSandboxProvider.exportArtifact` refuses bytes carrying
-   any **secret-classified** value of the run's own `env`, with a classified refusal, **before** the
-   PUT. Ruled **REQUIRED before `M1b`'s campaign** by `E7-D11` §3 on the probe's R4.
+3. **SD-5 — the export secret refusal, WITH the sandbox-scoped secret handoff it needs.**
+   `E2bSandboxProvider.exportArtifact` refuses bytes carrying any **secret-classified** value of the
+   run's own `env`, with a classified refusal, **before** the PUT. Ruled **REQUIRED before `M1b`'s
+   campaign** by `E7-D11` §3 on the probe's R4.
+
+   ★★★ **A content check on `exportArtifact` alone CANNOT deliver this, and a test that pretends
+   otherwise is a check that nothing runs.** *Added 2026-09-23 (Codex, PR #575), verified at source.*
+   `E2bSandboxProvider.create` forwards `spec.env` to the transport as `envVars` and retains only
+   `{sandboxId, resourceLabels}` in its idempotency map — deliberately, per the `[Cred-1]` comment
+   (DEP-012 slices 4+5): the tenant env must not reach durable E2B metadata. And
+   `exportArtifact(sandboxId, path, grant, ctx)` takes **no env**. So this ticket owes a
+   **sandbox-scoped, in-memory secret handoff with a stated lifecycle**, and the design is part of the
+   deliverable, not an implementation detail:
+   - **populated** at `create` from `spec.env`, keyed by `sandboxId`, in process memory only —
+     **never** in E2B metadata, never in a log, never in durable storage (`[Cred-1]`, Decision #104);
+   - **purged** on `destroy`/teardown and on the same paths that drop the sandbox, so a terminated
+     run leaves no secret set behind;
+   - **fail-closed when absent.** An export for a `sandboxId` with **no registered secret set** is
+     **refused**, never allowed through unchecked. This is the arm that makes an adapter-manager
+     restart safe: after a restart the map is empty, and the honest behaviour is refusal, not a
+     silent unscanned export. **It is a required acceptance row (row 6), with its own mutant.**
+   - **no port or wire change.** The handoff lives inside the E2B provider, between two of its own
+     operations. If the build finds it cannot be done without a port or wire change, that is a
+     **STOP and report**, not an improvisation — `E7-D07` freezes the protocol.
 
 **Acceptance (each row names the mutant that must red it):**
 
@@ -1453,7 +1483,9 @@ chosen."* The mechanism ruled is **option 2, a conventional output root**; the p
 | 2 | **PC-11 — a secret does not reach the store.** A planted canary env value written into `R/x` makes `exportArtifact` **REFUSE with a classification** | **a provider without the check exports it** — run the same case against the pre-change path and see the bytes exported |
 | 3 | **`R` cannot drift.** The server-side and worker-side constants are equal, checked in `policy` | **change one constant → the check reds** (and it is declared in `guard-inventory.json`, so it demonstrably runs) |
 | 4 | **`codex_local` is untouched** and a `codex` run's `R` stays absent | **the codex shape pins (census rows 4 and 7) stay green unedited**; a mutant that appends the directive for codex reds them |
-| 5 | **Cross-tenant (F10).** Two Organizations dispatching concurrently each get the directive in their own run's prompt, and neither run's directive, root or refusal reads the other's state | swap the Organization on the second run's context → the assertion on the first run's prompt must not move; `R` is a per-sandbox path (review `A-O2-12`) |
+| 5 | **Cross-tenant (F10).** Two Organizations dispatching concurrently each get the directive in their own run's prompt, and neither run's directive, root or refusal reads the other's state. **The secret handoff is keyed by `sandboxId`**, so Organization A's secret set is never consulted for Organization B's export | swap the Organization on the second run's context → the assertion on the first run's prompt must not move; feed sandbox B's export against sandbox A's registered set → it must not match, and must not refuse on A's secrets; `R` is a per-sandbox path (review `A-O2-12`) |
+| 6 | **The handoff is fail-closed.** An export for a `sandboxId` with **no registered secret set** (the adapter-manager-restart state) is **refused with a classification** | **make the absent case fall through to an unchecked export → red.** Without this row the whole of SD-5 is bypassable by restarting a process, and `create`'s own state is not durable |
+| 7 | **The secret set is not durable and does not leak.** It is in process memory only — absent from E2B metadata, from `inspect`/`list`, from every log line and from every thrown message | assert against the transport's recorded `metadata` and the op's emitted labels; a mutant that writes it into `metadata` reds, and re-proves `[Cred-1]` (DEP-012 slices 4+5) and Decision #104 |
 
 **Ticket non-goals:** the enumeration port, the producer, the `kind` decision (`E7-D08`) and the
 per-file failure policy — **all `CLI-012`'s**; the announcement (`CLI-013`); the projection
@@ -1475,7 +1507,7 @@ already the home of the sandbox path vocabulary — **note that editing this fil
 `keyed-e2b-unit-d.yml` on merge to `docs/replatform-program`, review §3.7; if that spend is not
 wanted, put the constant in a new server module instead and say so in the result**); create the
 server-side pin test for PC-12; modify
-`packages/sandbox-e2b-provider/src/e2b-provider.ts` (`exportArtifact`'s refusal) and its unit test;
+`packages/sandbox-e2b-provider/src/e2b-provider.ts` (the sandbox-scoped secret handoff at `create`/teardown **and** `exportArtifact`'s refusal) and its unit tests;
 create the worker-side `R` constant where `CLI-012` composes `outputRoot`; create
 `scripts/check-<name>.mjs` for the SD-4 equality check plus its `scripts/lib/__tests__` positive
 control; modify `scripts/guard-inventory.json` and `.github/workflows/pr.yml` (`policy` job); append

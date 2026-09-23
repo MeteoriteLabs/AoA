@@ -248,7 +248,11 @@ reviewer approves the tickets this ruling produces, not the session that decided
 **P-011 probe run** — workflow `Keyed E2B — CLI-011 P-011 output probe`, run
 [`35833717162`](https://github.com/MeteoriteLabs/AoA/actions/runs/35833717162), job `probe`,
 conclusion `success`, head `499ec4d1c3c3aab7324dcf0ca98ea34872fe18a0`, durable record artifact
-`cli-011-output-probe-record` (`cli-011-output-probe-record.json`, schema
+`cli-011-output-probe-record` — **committed to the repository** as
+`tickets/CLI-011-probe-record.json`, byte-identical, with a reading in
+`tickets/CLI-011-probe-record.md`, because the workflow's artifact carries `retention-days: 90` and a
+record living only in a job log expires under the decision it justifies (`E7-F025`; Codex P1, PR
+#575). (`cli-011-output-probe-record.json`, schema
 `aoa.cli-011.output-probe-record/1`, template `aoa-base` resolved `explicit`, `armsMode: all`,
 `outputRoot: /home/user/aoa-output`). The record's `disposition` is **`measured`** — *"every arm
 observed and every control held"* — and its three controls all report `held: true`: **PC-1** (a
@@ -330,8 +334,23 @@ nonce present → SD-5 moves from 'recommended' to 'required before `M1b`'s camp
 fired on `noncePresent=true`; the `S-P7` arm's own verdict reads `nonce-exported-in-file-bytes`. So an
 environment value **can** land in a file under `R` and be read back out of the sandbox, and without a
 provider-side refusal a tenant secret written into `R` reaches a durable store — which is what
-Decision #104's *"must not hit a durable store"* forbids. The provider is the only component holding
-both the bytes and the env values (review §3.5).
+Decision #104's *"must not hit a durable store"* forbids.
+
+★★★ **The provider is the only component REACHABLE by both — it does not hold both today, and SD-5's
+scope includes making it do so.** *Corrected 2026-09-23 (Codex, PR #575), verified at source.* The
+review's §3.5 says the provider *"is the only component that holds both the bytes and the env
+values"*, and this entry first repeated it. At source that is true of `create` and **false of
+export**: `E2bSandboxProvider.create` forwards `spec.env` to the transport as `envVars` and retains
+only `{sandboxId, resourceLabels}` in its idempotency map, while
+`exportArtifact(sandboxId, path, grant, ctx)` receives no env at all. **So SD-5 cannot be delivered by
+adding a content check to `exportArtifact` alone.** It requires a **sandbox-scoped secret handoff with
+a stated lifecycle** — populated at `create` from `spec.env`, purged on teardown, and **fail-closed**
+when the entry is absent (an export for a sandbox with no registered secret set is refused, never
+allowed), which is also what makes an adapter-manager restart safe. That is `CLI-017`'s design
+obligation and is written into its task section. **The ruling is unchanged — SD-5 stays REQUIRED** —
+but its cost is higher than the review's *"about 0.5–1 agent-day, a provider-only change"*, and a
+build that met PC-11 only against synthetic state absent from production would be a check that
+nothing runs.
 
 **Acceptance (this is `CLI-017`'s, and it is the review's PC-11 verbatim in substance):** a planted
 canary env value written into `R/x` makes the export **REFUSE with a classification**, and **a
