@@ -75,6 +75,34 @@ export const M1_SPINE_AGENT_ADAPTER_TYPE = "claude_local";
  * expectation is updated with it. */
 export const M1_SPINE_RATE_VERSION = 1;
 
+/**
+ * The units the reference provider reports (`FAKE_PROVIDER_CANNED_USAGE_V1`,
+ * `packages/sandbox-fake-provider/src/fake-driver.ts`). MIRRORED here — a `scripts/lib` module
+ * cannot import the TypeScript package — and the live profile compares this mirror with what the
+ * provider actually reported, so the two cannot drift apart silently.
+ */
+export const M1_SPINE_CANNED_UNITS = Object.freeze({
+  inputTokens: 120_000,
+  outputTokens: 30_000,
+  cachedInputTokens: 0,
+  runtimeMillis: 4_200,
+});
+
+/** `claude-sonnet-4-6` at rate version 1, in cents per million tokens (the `RATES` row in
+ * `server/src/services/internal-agent/cost-model.ts`). Mirrored for the same reason. */
+export const M1_SPINE_RATE_CENTS_PER_M = Object.freeze({ input: 300, output: 1500 });
+
+/**
+ * The EXACT charge those units and that rate produce: 120 000/1e6 × 300 + 30 000/1e6 × 1500
+ * = 36 + 45 = **81** cents, rounded half-up as `computeCostCents` does. Derived, not typed in, so
+ * the arithmetic is stated rather than asserted. Codex (eighth round): "cost > 0" would pass a
+ * charge of 1 or 810 cents with every other assertion satisfied.
+ */
+export const M1_SPINE_EXPECTED_COST_CENTS = Math.round(
+  (M1_SPINE_CANNED_UNITS.inputTokens / 1_000_000) * M1_SPINE_RATE_CENTS_PER_M.input +
+    (M1_SPINE_CANNED_UNITS.outputTokens / 1_000_000) * M1_SPINE_RATE_CENTS_PER_M.output,
+);
+
 /** The workload the profile runs and the rollout enables. */
 export const M1_SPINE_WORKLOAD = "batch";
 
@@ -292,6 +320,18 @@ export function evaluateEnabledTenantSpine({ tenant: t, observation: o }) {
     // F10: an event of another Organization must never be counted toward this tenant's one.
     out.push(violation("usage:wrong_tenant", `${k}: an accepted usage event names another tenant`));
   }
+  // The units the amount expectation is derived from must be the ones the provider reported, or the
+  // exact-charge check above would be pinned to something this run did not use.
+  if (o.expectedUnits) {
+    const drifted = Object.keys(M1_SPINE_CANNED_UNITS)
+      .filter((field) => Number(o.expectedUnits[field]) !== Number(M1_SPINE_CANNED_UNITS[field]));
+    if (drifted.length > 0) {
+      out.push(violation(
+        "usage:units_not_canned",
+        `${k}: the provider reported ${JSON.stringify(o.expectedUnits)}, which differs from the canned units this profile prices against in ${JSON.stringify(drifted)}`,
+      ));
+    }
+  }
   if (o.expectedUnits) {
     for (const event of usageEvents) {
       const stored = event.payload ?? {};
@@ -312,6 +352,15 @@ export function evaluateEnabledTenantSpine({ tenant: t, observation: o }) {
     out.push(violation("cost:no_cost_row", `${k}: the handed-off attempt wrote NO cost_events row`));
   } else if (costRows.length > 1) {
     out.push(violation("cost:not_exactly_one", `${k}: ${costRows.length} cost_events rows for one attempt`));
+  }
+  // The EXACT charge, not merely a positive one. Everything it depends on is pinned above.
+  for (const row of costRows) {
+    if (Number(row.costCents) !== M1_SPINE_EXPECTED_COST_CENTS) {
+      out.push(violation(
+        "cost:unexpected_amount",
+        `${k}: the charge is ${JSON.stringify(row.costCents)} cents, not the ${M1_SPINE_EXPECTED_COST_CENTS} the canned units and rate version ${M1_SPINE_RATE_VERSION} produce`,
+      ));
+    }
   }
   if (costRows.some((row) => !(Number(row.costCents) > 0))) {
     out.push(violation("cost:zero_cost", `${k}: a cost_events row has cost_cents ${JSON.stringify(costRows.map((r) => r.costCents))}`));

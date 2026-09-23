@@ -21,6 +21,8 @@ import {
   M1_SPINE_AGENT_MODEL,
   M1_SPINE_AGENT_ADAPTER_TYPE,
   M1_SPINE_RATE_VERSION,
+  M1_SPINE_CANNED_UNITS,
+  M1_SPINE_EXPECTED_COST_CENTS,
   M1_SPINE_USAGE_MARKER,
   evaluateSpineOverrideText,
   evaluateReplicaRollout,
@@ -211,6 +213,27 @@ test("NO cost row (the usage-suppressed positive control's state) is a cost viol
   for (const violation of v.filter((x) => x.code.startsWith("cost:"))) {
     assert.ok(violation.message.includes(M1_SPINE_COST_MARKER), "every cost violation carries the grep marker");
   }
+});
+
+test("the expected charge is DERIVED, and equals 81 cents for the canned units at rate version 1", () => {
+  assert.equal(M1_SPINE_EXPECTED_COST_CENTS, 81);
+  assert.deepEqual(M1_SPINE_CANNED_UNITS, { inputTokens: 120000, outputTokens: 30000, cachedInputTokens: 0, runtimeMillis: 4200 });
+});
+
+test("a POSITIVE charge of the wrong AMOUNT is refused (Codex)", () => {
+  const obs = goodEnabled(A).observation;
+  for (const cents of [1, 80, 82, 810]) {
+    const v = evaluateEnabledTenantSpine(goodEnabled(A, { costRows: [{ ...obs.costRows[0], costCents: cents }] }));
+    assert.ok(codes(v).includes("cost:unexpected_amount"), `${cents} cents must red`);
+    assert.ok(!codes(v).includes("cost:zero_cost"), "it is still positive — that is the point");
+  }
+});
+
+test("units that are not the canned ones are refused, so the amount expectation cannot detach", () => {
+  const v = evaluateEnabledTenantSpine(goodEnabled(A, {
+    expectedUnits: { inputTokens: 1, outputTokens: 1, cachedInputTokens: 0, runtimeMillis: 1 },
+  }));
+  assert.ok(codes(v).includes("usage:units_not_canned"));
 });
 
 test("a ZERO-cost row is refused", () => {
