@@ -24,6 +24,17 @@ import { MockE2bTransport } from "../mock-transport.js";
 import { SandboxNotFoundError } from "../errors.js";
 import type { ArtifactUploadGrantV1 } from "@armyofagents/worker-protocol";
 
+/**
+ * CLI-012 (SD-5, planning-session ruling on §11.9) — a PRESENT, CLEAN export scanner.
+ *
+ * ★ EVERY export now refuses while no scanner is configured, fail-closed on its PRESENCE. These
+ * suites assert other properties of the export path, so they supply a clean one; the refusal
+ * itself is proved, with its positive control and its anti-vacuity arm, in
+ * `enumerate-and-bounded-read.test.ts`.
+ */
+const CLEAN_SCAN = (): void => undefined;
+
+
 const CTX = { deadlineMs: 30_000, idempotencyKey: "idem-export" };
 const enc = (s: string) => new TextEncoder().encode(s);
 const dec = (b: Uint8Array) => new TextDecoder().decode(b);
@@ -81,7 +92,7 @@ function makeStore() {
 async function provider(files: Record<string, string> = { [OUT_PATH]: BODY }) {
   const transport = new MockE2bTransport();
   const store = makeStore();
-  const p = new E2bSandboxProvider({ transport, performUploadGrant: store.upload });
+  const p = new E2bSandboxProvider({ scanExportBytes: CLEAN_SCAN, transport, performUploadGrant: store.upload });
   const created = await p.create(
     { resourceLabels: LABELS, command: "claude", args: ["--print", "hi"], env: {}, workloadType: "batch" },
     CTX,
@@ -211,7 +222,7 @@ describe("DAT-009 — E2bSandboxProvider artifact export (mock transport, no key
     vi.stubGlobal("fetch", fakeFetch);
     try {
       const transport = new MockE2bTransport();
-      const p = new E2bSandboxProvider({ transport });
+      const p = new E2bSandboxProvider({ scanExportBytes: CLEAN_SCAN, transport });
       const created = await p.create(
         { resourceLabels: LABELS, command: "claude", args: [], env: {}, workloadType: "batch" },
         CTX,
@@ -246,7 +257,7 @@ describe("DAT-009 — E2bSandboxProvider artifact export (mock transport, no key
     vi.stubGlobal("fetch", fakeFetch);
     try {
       const transport = new MockE2bTransport();
-      const p = new E2bSandboxProvider({ transport });
+      const p = new E2bSandboxProvider({ scanExportBytes: CLEAN_SCAN, transport });
       const created = await p.create(
         { resourceLabels: LABELS, command: "claude", args: [], env: {}, workloadType: "batch" },
         CTX,
@@ -271,7 +282,7 @@ describe("DAT-009 — E2bSandboxProvider artifact export (mock transport, no key
     vi.stubGlobal("fetch", fakeFetch);
     try {
       const transport = new MockE2bTransport();
-      const p = new E2bSandboxProvider({ transport });
+      const p = new E2bSandboxProvider({ scanExportBytes: CLEAN_SCAN, transport });
       const created = await p.create(
         { resourceLabels: LABELS, command: "claude", args: [], env: {}, workloadType: "batch" },
         CTX,

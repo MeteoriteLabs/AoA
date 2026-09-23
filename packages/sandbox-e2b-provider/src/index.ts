@@ -58,6 +58,8 @@ export {
   // SVC-008a — an unacknowledged launch, and an unclassifiable sandbox record.
   ProcessLaunchNotAcknowledged,
   SandboxRecordIndeterminateError,
+  SandboxExportScannerUnavailableError,
+  SandboxExportScannerRefusedError,
 } from "./errors.js";
 
 // The reserved fault/canary directive key names. Exported so a cross-package conformance

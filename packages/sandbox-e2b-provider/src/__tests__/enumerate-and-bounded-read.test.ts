@@ -22,7 +22,11 @@
 import { describe, expect, it } from "vitest";
 
 import { E2bSandboxProvider, E2B_MAX_ARTIFACT_BYTES } from "../e2b-provider.js";
-import { SandboxNotFoundError } from "../errors.js";
+import {
+  SandboxNotFoundError,
+  SandboxExportScannerUnavailableError,
+  SandboxExportScannerRefusedError,
+} from "../errors.js";
 import { MockE2bTransport } from "../mock-transport.js";
 import { RealE2bTransport, readStreamBounded, entryFromInfo } from "../real-transport.js";
 import {
@@ -45,7 +49,13 @@ async function providerOver(): Promise<{ provider: E2bSandboxProvider; transport
     metadata: { [METADATA_KEYS.env]: "{}" },
     envVars: {},
   });
-  return { provider: new E2bSandboxProvider({ transport }), transport, sandboxId };
+  // CLI-012 (SD-5) — a PRESENT, CLEAN scanner: every export refuses without one, fail-closed on
+  // its presence. The refusal has its own describe block below, with both controls.
+  return {
+    provider: new E2bSandboxProvider({ transport, scanExportBytes: () => undefined }),
+    transport,
+    sandboxId,
+  };
 }
 
 describe("CLI-012 — enumerateOutputs is metadata-only and carries the marker and the size", () => {
@@ -365,6 +375,158 @@ describe("CLI-012 — the real binding's stat mapping is fail-closed", () => {
 // path variant; anything else stays the sandbox error, so an unrecognisable failure is never
 // reported as "the run produced nothing".
 // ---------------------------------------------------------------------------------------
+// ---------------------------------------------------------------------------------------
+// CLI-012, planning-session ruling on §11.9 (2026-09-23) — THE SD-5 REFUSAL SHIPS BEFORE THE
+// SCANNER, AND IT IS FAIL-CLOSED ON THE SCANNER'S PRESENCE.
+//
+// The ruling refused Codex's remedy (defer the composition) and upheld its premise. Deferral
+// protects only the path someone remembered to defer, and the gate is NOT the distributed
+// rollout flag: `composeDispatchRuntime` is called from the deployed worker's own boot
+// (`worker-daemon.ts`, the `composeRuntime` call), whose surrounding branch fails closed on
+// PROVIDERS. A deployed worker on an enabled tenant that leases a job takes this path.
+//
+// ★★★ SO THE CONTROL IS AT THE EXPORT BOUNDARY, KEYED ON THE SCANNER'S PRESENCE — never on a
+// flag someone can set. Absent, malformed or throwing scanner ⇒ REFUSE; no bytes leave. The
+// ship order inverts correctly: the refusal ships first and `CLI-017-B`'s scanner flips it on
+// against an interface that already refuses without it.
+// ---------------------------------------------------------------------------------------
+describe("CLI-012 / SD-5 — an ABSENT export scanner REFUSES; no bytes leave the sandbox", () => {
+  const SECRET = "SD5-CANARY-redeemed-secret";
+
+  function recordingFetch(): { puts: string[]; restore: () => void } {
+    const puts: string[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (_url: string, init?: { body?: unknown }) => {
+      const body = init?.body;
+      puts.push(typeof body === "string" ? body : new TextDecoder().decode(body as Uint8Array));
+      return new Response(null, { status: 200 });
+    }) as typeof globalThis.fetch;
+    return { puts, restore: () => { globalThis.fetch = original; } };
+  }
+
+  async function sandboxWith(
+    scanExportBytes?: unknown,
+  ): Promise<{ provider: E2bSandboxProvider; sandboxId: string; grant: never }> {
+    const transport = new MockE2bTransport();
+    const { sandboxId } = await transport.create({
+      templateId: "base",
+      timeoutMs: 60_000,
+      metadata: { [METADATA_KEYS.env]: "{}" },
+      envVars: {},
+    });
+    transport.plantFile(sandboxId, `${ROOT}/answer.md`, new TextEncoder().encode(SECRET));
+    const provider = new E2bSandboxProvider({
+      transport,
+      ...(scanExportBytes === undefined ? {} : { scanExportBytes: scanExportBytes as never }),
+    });
+    const described = await provider.digestArtifact(sandboxId, `${ROOT}/answer.md`, CTX);
+    const grant = {
+      protocolVersion: 1,
+      operation: "upload",
+      artifactId: "a",
+      method: "PUT",
+      url: "https://store.example/put",
+      headers: {},
+      issuedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 300_000).toISOString(),
+      maxBytes: described.sizeBytes,
+      expectedSha256: described.sha256,
+      objectKey: "k",
+      redaction: "secret",
+    } as never;
+    return { provider, sandboxId, grant };
+  }
+
+  it("★★★ NO SCANNER CONFIGURED — the export refuses and the STORE receives nothing", async () => {
+    const { provider, sandboxId, grant } = await sandboxWith(undefined);
+    const store = recordingFetch();
+    let outcome: unknown;
+    try {
+      outcome = await provider.exportArtifact(sandboxId, `${ROOT}/answer.md`, grant, CTX).catch((e) => e);
+    } finally {
+      store.restore();
+    }
+    // ★ THE STORE ASSERTION FIRST, the same shape `E7-F039` uses: what must red on a regression
+    // is the claim about bytes at rest, not the claim about the return value.
+    expect(store.puts).toEqual([]);
+    expect(store.puts.join("")).not.toContain(SECRET);
+    expect(outcome).toBeInstanceOf(SandboxExportScannerUnavailableError);
+    // ★ THE POSITIVE CONTROL THE RULING NAMES: delete the presence check in `exportArtifact` and
+    // this same call SUCCEEDS with the secret bytes in `store.puts` — proving this arm is what
+    // stops it, not some other guard.
+  });
+
+  it("★★★ A MALFORMED scanner is a REFUSAL, not a bypass", async () => {
+    for (const malformed of [null, 42, "scan", {}]) {
+      const { provider, sandboxId, grant } = await sandboxWith(malformed);
+      const store = recordingFetch();
+      let outcome: unknown;
+      try {
+        outcome = await provider.exportArtifact(sandboxId, `${ROOT}/answer.md`, grant, CTX).catch((e) => e);
+      } finally {
+        store.restore();
+      }
+      expect(store.puts, `malformed scanner ${JSON.stringify(malformed)} must not export`).toEqual([]);
+      expect(outcome).toBeInstanceOf(SandboxExportScannerUnavailableError);
+    }
+  });
+
+  it("★★★ A THROWING scanner is a REFUSAL, not a bypass — and its message never rides the error", async () => {
+    const { provider, sandboxId, grant } = await sandboxWith(() => {
+      throw new Error(`scanner blew up on https://store.example/put?sig=${SECRET}`);
+    });
+    const store = recordingFetch();
+    let outcome: unknown;
+    try {
+      outcome = await provider.exportArtifact(sandboxId, `${ROOT}/answer.md`, grant, CTX).catch((e) => e);
+    } finally {
+      store.restore();
+    }
+    expect(store.puts).toEqual([]);
+    expect(outcome).toBeInstanceOf(SandboxExportScannerRefusedError);
+    // The scanner saw the bytes and may name the grant url in its own message; neither may ride out.
+    expect(String((outcome as Error).message)).not.toContain(SECRET);
+    expect(String((outcome as Error).message)).not.toContain("https://");
+  });
+
+  it("★★★ A scanner that REJECTS (a secret found) refuses, and nothing is stored", async () => {
+    const seen: number[] = [];
+    const { provider, sandboxId, grant } = await sandboxWith(async (bytes: Uint8Array) => {
+      seen.push(bytes.byteLength);
+      throw new Error("redeemed secret found in exported bytes");
+    });
+    const store = recordingFetch();
+    let outcome: unknown;
+    try {
+      outcome = await provider.exportArtifact(sandboxId, `${ROOT}/answer.md`, grant, CTX).catch((e) => e);
+    } finally {
+      store.restore();
+    }
+    expect(store.puts).toEqual([]);
+    expect(outcome).toBeInstanceOf(SandboxExportScannerRefusedError);
+    // NON-VACUITY: the scanner really was handed the file's bytes, not an empty buffer.
+    expect(seen).toEqual([SECRET.length]);
+  });
+
+  it("★★★ ANTI-VACUITY — a scanner that is PRESENT and CLEAN exports normally", async () => {
+    const scanned: number[] = [];
+    const { provider, sandboxId, grant } = await sandboxWith(async (bytes: Uint8Array) => {
+      scanned.push(bytes.byteLength);
+    });
+    const store = recordingFetch();
+    let result: unknown;
+    try {
+      result = await provider.exportArtifact(sandboxId, `${ROOT}/answer.md`, grant, CTX);
+    } finally {
+      store.restore();
+    }
+    // Without this arm the refusal above would be indistinguishable from "export never works".
+    expect(result).toEqual({ objectKey: "k" });
+    expect(store.puts).toEqual([SECRET]);
+    expect(scanned).toEqual([SECRET.length]);
+  });
+});
+
 describe("CLI-012 — a MISSING output root lists empty; a missing SANDBOX still throws", () => {
   class FileNotFoundError extends Error {
     constructor() {

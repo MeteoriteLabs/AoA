@@ -75,6 +75,8 @@ import { METADATA_KEYS } from "./directives.js";
 import {
   ProcessLaunchNotAcknowledged,
   SandboxEgressDeniedError,
+  SandboxExportScannerRefusedError,
+  SandboxExportScannerUnavailableError,
   SandboxNotFoundError,
   SandboxRecordIndeterminateError,
   UnsupportedProviderOperation,
@@ -140,6 +142,22 @@ export interface E2bSandboxProviderOptions {
    * capability that writes an attempt-scoped object key until it expires.
    */
   readonly performUploadGrant?: (grant: ArtifactUploadGrantV1, bytes: Uint8Array, signal?: AbortSignal) => Promise<void>;
+  /**
+   * CLI-012, planning-session ruling on §11.9 — **SD-5's scanner seam, and its ABSENCE is a
+   * REFUSAL.**
+   *
+   * `exportArtifact` refuses while this is not a callable function: no read, no upload, nothing
+   * at rest. A scanner that throws or rejects is also a refusal — a check that failed to complete
+   * witnessed nothing. Resolving cleanly is the ONLY path that exports.
+   *
+   * ★ IT IS KEYED ON PRESENCE, NOT ON A FLAG. A boolean someone can set would be a bypass with a
+   * name; this cannot be satisfied except by supplying the thing itself. `CLI-017-B` supplies the
+   * real implementation (the sandbox-scoped secret handoff plus the literal-value scan); until
+   * then every export refuses, which is the intended state.
+   *
+   * ★ IT IS HANDED THE BYTES, NOT THE PATH. It is the last party to see them before they leave.
+   */
+  readonly scanExportBytes?: (bytes: Uint8Array, sandboxId: string) => void | Promise<void>;
 }
 
 /** The default redemption: a plain GET against the presigned url with the grant's headers. */
@@ -329,6 +347,12 @@ export class E2bSandboxProvider implements SandboxProvider {
   readonly #defaultTtlMs: number;
   readonly #redeemDownloadGrant: (grant: ArtifactDownloadGrantV1) => Promise<Uint8Array>;
   readonly #performUploadGrant: (grant: ArtifactUploadGrantV1, bytes: Uint8Array, signal?: AbortSignal) => Promise<void>;
+  /**
+   * CLI-012 (SD-5) — the export secret scanner, or `undefined`. NOT defaulted to a no-op: a
+   * default that cleared everything would be the bypass this whole control exists to refuse.
+   * `exportArtifact` refuses while it is not a function.
+   */
+  readonly #scanExportBytes: ((bytes: Uint8Array, sandboxId: string) => void | Promise<void>) | undefined;
   readonly advertisedOperations: ReadonlySet<ProviderOperation>;
   readonly checkpointMode: CheckpointMode;
   readonly healthMode: HealthMode;
@@ -419,6 +443,7 @@ export class E2bSandboxProvider implements SandboxProvider {
     this.#defaultTtlMs = options.defaultTtlMs ?? DEFAULT_TTL_MS;
     this.#redeemDownloadGrant = options.redeemDownloadGrant ?? fetchGrantBytes;
     this.#performUploadGrant = options.performUploadGrant ?? putGrantBytes;
+    this.#scanExportBytes = options.scanExportBytes;
 
     const requested = new Set<string>((options.advertisedOptionalOps ?? DEFAULT_ADVERTISED_OPTIONAL_OPS).map(String));
     const advertised = new Set<ProviderOperation>(CORE_PROVIDER_OPERATIONS);
@@ -838,6 +863,13 @@ export class E2bSandboxProvider implements SandboxProvider {
   ): Promise<ArtifactExportResult> {
     // Unreachable by construction, exactly as in `digestArtifact` above — see the note there.
     if (this.artifactExportMode === "none") throw new UnsupportedProviderOperation("export_artifact");
+    // ★★★ SD-5, FAIL-CLOSED ON THE SCANNER'S PRESENCE — the FIRST thing this method does, so an
+    // unscannable export does not even read the file. Planning-session ruling on §11.9
+    // (2026-09-23): the refusal ships BEFORE the scanner, because until `CLI-017-B` lands the
+    // only thing closing this window was `E7-D11`'s prose precondition, and a prose precondition
+    // is not a control. A missing OR non-callable scanner is a refusal, never a bypass.
+    const scan = this.#scanExportBytes;
+    if (typeof scan !== "function") throw new SandboxExportScannerUnavailableError();
     // DAT-009-3e (Codex P1, PR #557) — the upload is BOUNDED by the op's budget. An exhausted
     // budget uploads nothing; otherwise the PUT is aborted at `ctx.deadlineMs`, and the call
     // settles then even if an injected uploader ignores the signal.
@@ -858,6 +890,23 @@ export class E2bSandboxProvider implements SandboxProvider {
     if (digest !== grant.expectedSha256) {
       // The digests, never the url.
       throw new Error(`artifact at ${path} hashed ${digest}, expected ${grant.expectedSha256}`);
+    }
+    // ★★★ THE SCAN, AND IT IS THE LAST GATE BEFORE THE BYTES LEAVE. It runs after the digest
+    // check so the bytes scanned are provably the bytes the grant names, and BEFORE the upload so
+    // a refusal means nothing at rest. A throw or a rejection is a REFUSAL: a check that did not
+    // complete witnessed nothing, and "the scanner errored" must never read as "the scan passed".
+    // ★ The scanner's own error is NOT chained or interpolated — it has seen the file's bytes.
+    try {
+      await boundedBySignal(
+        Promise.resolve(scan(bytes, sandboxId)),
+        signal,
+        "artifact export secret scan timed out",
+      );
+    } catch (err) {
+      // A timeout is the op's own budget, not a scanner verdict — but it is still a refusal, and
+      // it is reported as one rather than as a clean scan.
+      if (err instanceof Error && err.message === "artifact export secret scan timed out") throw err;
+      throw new SandboxExportScannerRefusedError();
     }
     await boundedBySignal(
       this.#performUploadGrant(grant, bytes, signal),

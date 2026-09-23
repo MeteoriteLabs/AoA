@@ -500,6 +500,12 @@ Codex asks that the production composition of the producer be **deferred until `
 SD-5**, on the ground that a run writing a redeemed secret under the output root would now be
 digested and uploaded with no secret scan in place.
 
+> ★★★ **CORRECTED by the ruling — see §11.10 point 2.** The "behind the default-OFF
+> distributed flag" sentence below UNDERSTATES the reach: the boot branch fails closed on
+> PROVIDERS, not on the rollout flag, so a deployed worker on an enabled tenant does take this
+> path. The paragraph is kept as written because it is what was escalated; the correction
+> governs.
+
 **The premise is true and it is already recorded** — §8 of this record and `E7-D11` both state
 that SD-5 is `CLI-017-B`'s build and is REQUIRED before `M1b`'s campaign. What is verified at
 source and bounds the exposure: `composeDispatchRuntime` runs **only inside the `compose: true`
@@ -520,3 +526,70 @@ E7-D11 gates the **campaign** on SD-5, not this ticket's composition. Whether th
 should additionally be a composition-time gate is a planning-session ruling, not a build decision,
 so it is reported rather than taken. This is also the **second Codex round** on this PR, which the
 M1 build rules cap.
+
+### 11.10 DISPOSITION of §11.9 — the planning session RULED, and the fix is the opposite shape
+
+*Ruled 2026-09-23 by the planning session under founder delegation F2. §11.9 above records the
+escalation as it was made; this section is its disposition and does not rewrite it.*
+
+**The composition STANDS. Codex's remedy is refused — and its PREMISE is upheld.**
+
+1. Deferring the composition would contradict the task section's Files list and would un-promote
+   `E5-2-fenced-object-commit-worker-half` under `E5-D07` ruling 4. It asks to undo a locked
+   instrument to work around a missing one.
+2. ★★★ **AND §11.9's OWN GATE SENTENCE WAS TOO WEAK — corrected here, verified at source.**
+   §11.9 said the exposure is bounded because the composition runs *"only inside the boot's
+   `compose: true` branch, behind the default-OFF distributed flag"*. Measured at source in
+   `bin/worker-daemon.ts`, at the `composeRuntime` call: that branch **fails closed on PROVIDERS**
+   (*"the boot gate above refused if neither"* — a desktop `provider` or a container
+   `makeRunProvider`), **not on the distributed rollout flag**. A deployed worker on an enabled
+   tenant that leases a job **will** take this path. The `compose: true` framing understates the
+   reach and is not to be repeated.
+3. So the genuine exposure window is *any run before SD-5 ships*, and the only thing closing it was
+   `E7-D11`'s **prose** precondition plus keyed-dispatch discipline. In this programme a prose
+   precondition is not a control — it is the *"a check that nothing runs is not a check"* class.
+
+**Built in this PR, as ordered: a FAIL-CLOSED REFUSAL AT THE EXPORT BOUNDARY, keyed on the
+scanner's PRESENCE.**
+
+- `E2bSandboxProviderOptions.scanExportBytes` is SD-5's seam. `exportArtifact`'s **first** act is
+  `typeof scan !== "function"` → `SandboxExportScannerUnavailableError`, so an unscannable export
+  does not even read the file, let alone upload it.
+- It is keyed on **presence, not on a flag**. A boolean would be a bypass with a name; this cannot
+  be satisfied except by supplying the thing itself. It is **not** defaulted to a no-op — a default
+  that cleared everything would be exactly the bypass the control exists to refuse.
+- A **malformed** scanner (`null`, a number, a string, a plain object) is a refusal.
+- A **throwing or rejecting** scanner is a refusal (`SandboxExportScannerRefusedError`): a check
+  that did not complete witnessed nothing, and "the scanner errored" must never read as "the scan
+  passed". Its own message is **not** chained or interpolated — it has seen the file's bytes and
+  may have been handed the grant, so the error is a fixed string.
+- The scan runs **after** the digest comparison (so the bytes scanned are provably the bytes the
+  grant names) and **before** the upload (so a refusal means nothing at rest).
+
+**The ship order inverts correctly:** the refusal ships first; `CLI-017-B` supplies the scanner
+against an interface that **already refuses without it**. This protects every caller, including
+callers nobody remembered to defer.
+
+**Blast radius, stated plainly:** every existing export suite went RED on this change, which is the
+control being real. Those suites assert other properties of the export path and now supply a clean
+scanner (`artifact-export.test.ts`, `put-grant-bytes.test.ts`, and the `E7-F039` arms in
+`enumerate-and-bounded-read.test.ts`); the refusal itself is proved with its own controls.
+
+#### The RED the ruling named, and the GREEN
+
+| Arm | Evidence |
+|---|---|
+| **RED — the positive control** (M24: the presence check AND the scan call both removed) | *"NO SCANNER CONFIGURED"* fails with `expected [ 'SD5-CANARY-redeemed-secret' ] to deeply equal []` — **the export SUCCEEDS and the secret is in the store**. That is the arm proving this control is what stops it, not some other guard. |
+| **GREEN** | `sandbox-e2b-provider exec vitest run` → `Tests 193 passed, 32 skipped (225)` (was 188 passed). |
+| **Anti-vacuity** | *"a scanner that is PRESENT and CLEAN exports normally"* — `{objectKey: "k"}` returned, `store.puts` equals the file's bytes, and the scanner was handed `SECRET.length` bytes. Without it the refusal would be indistinguishable from "export never works". |
+| **Store-first assertions** | Every refusal arm asserts `store.puts` **before** any error-kind assertion, the same shape §11.4 uses, so a regression reds on bytes at rest. |
+| **Non-vacuity of the scan** | The rejecting-scanner arm records the byte length the scanner actually received, so it cannot pass against a scanner handed an empty buffer. |
+
+| # | Mutation | Suite | Result |
+|---|----------|-------|--------|
+| M24 | Remove the SD-5 control entirely (presence check + scan call) | `enumerate-and-bounded-read` | **RED** (5 failed; the absent-scanner arm exports the secret) |
+
+Reverted; a `MUTANT` grep over the touched sources returns `0`. Typecheck `Done` for
+`worker-daemon`, `sandbox-e2b-provider`, `provider-wire`, `adapter-manager`; adjacent suites
+`worker-daemon 1256 passed, 1 skipped`, `adapter-manager 204 passed`,
+`provider-wire 87 passed, 1 skipped`.
