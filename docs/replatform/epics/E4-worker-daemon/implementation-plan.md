@@ -1177,14 +1177,20 @@ component tests; then the one keyed acceptance run.
      Closed by the keyed lane's assertion (`evaluateUsageCardinality`,
      `scripts/lib/m1-spine-assertions.mjs`), which counts the attempt's accepted `usage` rows in
      `job_events` per enabled tenant.
-   - **1(b) producer→ingest fidelity.** The counts the worker PARSED equal the counts accepted and
-     stored. `heartbeat_runs.usage_json` is PROJECTED from the same accepted event, so that pair
-     alone proves projection fidelity, not parser correctness (Codex P1, PR #567). The worker
-     therefore logs the counts it parsed — numbers and the run's own identifiers only, scrubbed by
-     the run's canaries — under `PARSED_USAGE_LOG_MESSAGE`
-     (`packages/worker-daemon/src/supervisor/usage-observer.ts`), and the lane compares the three.
-     The count keys (`PARSED_USAGE_LOG_KEYS`) deliberately avoid the substring `token`, which
-     `createWorkerLogger` redacts; a case driving the REAL logger pins that.
+   - **1(b) producer→ingest fidelity — NOT LIVE-PROVABLE (ruled 2026-09-23, F2).** The claim is
+     that the counts the worker PARSED equal the counts accepted and stored.
+     `heartbeat_runs.usage_json` is PROJECTED from the same accepted event, so that pair alone
+     proves projection fidelity, not parser correctness (Codex P1, PR #567). What was ATTEMPTED: a
+     worker log line carrying the parsed counts — numbers and the run's own identifiers only — for
+     the keyed lane to compare. What was MEASURED: five distinct Codex P1s on that one line, each
+     a way a per-run canary reaches it, ending in one that cannot be fixed caller-side — the sink
+     adds `msg`/`time`/`level` to every record BELOW any scrubber a caller can run, and a redeemed
+     secret may be any non-empty string (filed as **E4-F019**, pre-existing, `unowned`). Why it
+     STOPS: proving 1(b) needs a second data path out of the worker, every such path is wholly
+     subject to canary redaction, and that redaction has no enforceable caller-side boundary. The
+     diagnostic was DROPPED; redaction wins over diagnostics. 1(b) is therefore proven by the
+     keyless supervisor suites only (the observer's output is the event's payload, on every lane),
+     and NOT live.
    - **1(c) parser fidelity to a REAL result line.** Proven by unit tests against the captured
      `claude_local` transcript (`server/src/__tests__/fixtures/claude-stream-json-tool-call.jsonl`),
      **not live** — and that limit is deliberate: proving it live would require emitting the

@@ -318,7 +318,7 @@ original sentence is kept above, unedited, as the record of what it said.
 | Part | Claim | Closed by | State |
 |---|---|---|---|
 | **1(a)** | exactly one accepted `usage` event per attempt, belonging to that tenant | the keyed lane's `evaluateUsageCardinality` (`scripts/lib/m1-spine-assertions.mjs`), counting the attempt's accepted `usage` rows in `job_events` | closes on the next keyed run; not this ticket's to dispatch |
-| **1(b)** | the numbers the worker PARSED equal the numbers accepted and stored | this ticket's parsed-counts log line (below) **plus** a lane comparison that DEP-015 must add | worker side DONE here; lane side OWED by DEP-015 (§ below) |
+| **1(b)** | the numbers the worker PARSED equal the numbers accepted and stored | the keyless supervisor suites only (the observer's payload IS the event's payload) | **NOT live-provable — ruled 2026-09-23 (F2); see the section below and E4-F019** |
 | **1(c)** | the parser's fidelity to a REAL `claude_local` result line | unit tests against the captured transcript fixture `server/src/__tests__/fixtures/claude-stream-json-tool-call.jsonl` (`usage-observer.test.ts`, the first case) | **met, and NOT live — stated plainly** |
 
 ### Why 1(c) is not proven live, and why that is the right trade
@@ -332,150 +332,61 @@ real result line correctly**; what the live lane can show is that whatever the p
 what was accepted and stored (1(b)), and the fixture shows the parser reads a real captured line
 correctly (1(c)).
 
-### The worker side of 1(b), as built
+### 1(b): what was attempted, what was measured, why it stops (ruled 2026-09-23, F2)
 
-`supervisor.ts` logs, immediately before emitting the `usage` event and after the parser produced it:
+**Attempted.** A worker log line carrying the four counts the parser produced — numbers and the
+run's own identifiers only, scrubbed by the run's canaries — so the keyed lane could compare what
+the worker PARSED with what the control plane ACCEPTED and STORED (those two being derived from one
+another).
 
-- message: `PARSED_USAGE_LOG_MESSAGE` = `"worker: parsed agent usage"` (a stable grep token);
-- payload: `parsedInputCount`, `parsedOutputCount`, `parsedCachedInputCount`,
-  `parsedRuntimeMillis` (numbers), plus `leaseId`, `jobId`, `attempt` (the run's own identifiers).
+**Measured.** Five distinct Codex P1s on that single line, every one real, every one a different
+surface on which a per-run canary reaches it:
 
-★★★ **The key names are load-bearing (Codex P1 on PR #571, and it was right).** They were
-`parsedInputTokens` / `parsedOutputTokens` / `parsedCachedInputTokens` in the first revision.
-`createWorkerLogger` redacts any binding whose key CONTAINS `token` (`logging/logger.ts`,
-`SENSITIVE_SUBSTRINGS`), so in the LIVE worker those three would have logged as `"[redacted]"` -
-the DEP-015 extractor would find no numbers and 1(b) would be impossible to close - while every
-test stayed green, because each one used a hand-rolled recording logger and never ran the
-production redactor. That is this programme's own "a check that evaluates nothing" class. The keys
-are renamed, and a case now drives the REAL `createWorkerLogger` and asserts each count arrives as
-a NUMBER, so the redactor is exercised rather than bypassed.
+| # | Surface | Disposition |
+|---|---|---|
+| 1 | the count KEY NAMES — `createWorkerLogger` redacts any key containing `token`, so `parsedInputTokens` logged as `"[redacted]"` in the live worker while tests using a hand-rolled logger stayed green | fixed (renamed; a case now drives the REAL logger) |
+| 2 | a digits-only canary equal to, or inside, a count's decimal text — "numbers cannot carry text" was false | fixed (the set is refused) |
+| 3 | the diagnostic shared the producer block's try/catch with `events.usage`, so a throwing logger suppressed the usage EVENT | fixed (its own catch; the event always follows) |
+| 4 | the fixed MESSAGE and the KEY names needed the same scrub as the values | fixed in its GENERAL form (`scrubLogRecord`: message + keys + values, refused whole) |
+| 5 | the SINK adds `msg` / `time` / `level` AFTER any caller-side scrub, and a redeemed secret may be any non-empty string | **not fixable caller-side** |
 
-`parsedUsageLogFields` (`usage-observer.ts`) takes only the frozen `UsagePayloadV1`, refuses a
-payload that is not exactly four non-negative integers, and refuses one carrying any extra key — so
-no call-site edit can smuggle the stdout tail into this line without changing that signature.
-`scrubLogRecord` (`run-output.ts`) checks the whole record — message, keys and values — against the
-run's canaries and returns `null`, dropping the WHOLE line, if any of them carries one or a value
-cannot be scrubbed.
+**Why it stops.** Proving 1(b) requires a second data path out of the worker. Every such path is
+wholly subject to canary redaction, and redaction has no enforceable boundary on the caller side:
+each fix moved the surface rather than removing it, and finding 5 is below every scrubber a caller
+can run. Checking it would mean serializing the record the way the sink will — re-implementing the
+sink, i.e. the same collision one layer down. The M1 planning session therefore DROPPED the line
+(F2, 2026-09-23) on the standing rule that **redaction wins over diagnostics**, and 1(b) is recorded
+as **NOT LIVE-PROVABLE**, for the same reason as 1(c). Nothing was weakened to keep the line: at
+every step the refusal (drop the record) was chosen over emitting.
 
-★★★ **ONE FAMILY, AND THIS IS ITS GENERAL FORM.** The four Codex P1s on this change are not four
-defects; they are one: *a line that must carry NUMBERS while living inside canary redaction, whose
-every surface a secret can occupy.* Field names a secret can equal (the redactor ate `…Tokens`),
-numeric canaries that equal a count, a diagnostic failure suppressing the evidence event, and the
-fixed message and keys needing the same scrub as the values. So the last fix is deliberately the
-GENERAL one rather than a fourth point patch: `scrubLogRecord` takes the COMPLETE record — message,
-keys, values — and refuses it whole unless every surface is clean. The M1 planning session (F2,
-2026-09-23) set the bound that follows from this: **redaction wins over logging**, and if another
-distinct P1 of this family appears, the log channel is dropped and 1(b) is recorded as not
-live-provable for the same reason as 1(c) — proving it needs a second data path out of the worker,
-and every such path collides with redaction. 1(a) is closed by the keyed lane either way.
+**Filed, because the property is pre-existing and not this ticket's:** **E4-F019** (E4 `findings.md`,
+`unowned` in `scripts/finding-ownership.json`) — canary redaction has no defence when a redeemed
+secret collides with a structural token, with the production-logger evidence line and the two
+closure routes (constrain what may be redeemed; or serialize-and-scrub at the transport boundary).
+Marked NOT introduced by WRK-018 and NOT blocking `M1a`.
 
-★★★ **VALUES ARE NOT THE ONLY SURFACE (Codex P1 on PR #571, fourth finding, and it was right).**
-The helper scrubbed VALUES only. A redeemed secret may be any non-empty string, so it can equal a
-substring of the fixed MESSAGE (`"worker"`, `"parsed agent"`) or of a KEY (`"leaseId"`), and
-`createWorkerLogger` canary-scrubs neither — it redacts by key NAME. `scrubLogRecord` now checks the
-WHOLE record and REFUSES it in those two cases (scrubbing the message would destroy the grep token
-the lane keys on; scrubbing a key would produce a field nothing can read), so such a run simply
-contributes no parsed-counts line.
+**What 1(b) rests on instead:** the keyless supervisor suites, on every lane — the observer's
+returned payload IS the emitted event's payload, so parser→event equality is pinned there; what no
+test can pin without a live capture is that the SAME numbers survived to the control plane on a real
+run. That gap is stated, not closed.
 
-★★★ **A DIAGNOSTIC MUST NOT SUPPRESS EVIDENCE (Codex P1 on PR #571, third finding, and it was
-right).** The log call first sat inside the producer block's single try/catch with
-`events.usage`, so a logger whose destination threw would jump past the event: the attempt would
-terminalize `succeeded` with NO usage, silently removing the input to accepted-usage pricing and to
-the budget hard-stops — a logging outage bypassing budget accounting. The line now fails alone, in
-its own try/catch, and the event always follows.
+### The hardening that OUTLIVES the dropped line
 
-★★★ **A NUMBER CAN CARRY A SECRET (Codex P1 on PR #571, second finding, and it was right).** The
-first revision let numbers through untouched, reasoning that a count cannot carry text, and a test
-asserted exactly that. But a redeemed secret may be ANY non-empty string, so a digits-only canary
-equal to (or inside) a count's decimal rendering would print the secret bytes verbatim into the
-production JSON log — a silent H-04 breach with a test blessing it. A number is still never
-REWRITTEN (that would mangle the count the lane compares); instead the WHOLE set is refused, so
-such a run simply contributes no parsed-counts line. Over-conservative by construction, in the safe
-direction.
+The line is gone; four of the five findings' fixes are general and stay:
 
-RED first: `expected [] to have a length of 1` (no line existed) and `(0 , parsedUsageLogFields) is
-not a function`; for the production-logger case, `expected undefined to be 111`. GREEN:
-`usage-observer.test.ts` 14 tests, `usage-stream-redaction.test.ts` 24 tests; worker-daemon suite 1231
-passed / 1 skipped.
+- `scrubLogRecord` (`run-output.ts`) — the whole-record scrub (message, keys, values), refusing a
+  record rather than rewriting a message or key. Retained with **no production caller today**, said
+  so in its own doc comment; it is the caller-side half of E4-F019's closure route 2.
+- the digits-only-canary rule inside `scrubLogFields` — a number is never rewritten (that would
+  mangle a count), but a number whose decimal text carries a canary refuses the set.
+- the logger-key hazard, kept as a standing regression test: a binding key containing `token` is
+  redacted by the production logger, a `…Count` key survives. Any future numeric log field inherits
+  that lesson instead of rediscovering it.
+- the sink-adds-keys property, kept as a measured test rather than an argument (E4-F019's evidence).
 
-| Mutation | Reds |
-|---|---|
-| MU1 delete the log call | the "exactly the four counts" case |
-| MU2 allow an extra key in the payload | the refused-payload case (a `stdoutTail` key then passes) |
-| MU3 stop scrubbing string values | the `scrubLogFields` case |
-| MU4 accept a non-integer count | the refused-payload case |
-| MU5 log a zeroed stand-in when the payload is refused | the "a REFUSED payload logs NO line" case |
-| MU6 rename a count key back to `parsedInputTokens` | the production-logger case (the value arrives `"[redacted]"`) |
-| MU7 let numbers bypass the canary check | the digits-only-canary case |
-| MU8 put the log call back inside the producer block's shared try | the throwing-logger case (the `usage` event disappears) |
-| MU9 check values only (drop the message/key arms) | the canary-in-the-message and canary-in-a-key cases |
-
-Leak controls: the canary rides the very stdout the counts came from (asserted present in the
-stream), and no canary appears in any log line; the payload's keys are pinned exactly, so any text
-field added to this line reds.
-
-### What DEP-015 still owes for 1(b), and why it is not done here
-
-The ruling allowed extending the lane comparison here only if it were a one-line addition to the
-shared verdict. It is not. `evaluateUsageCardinality` would need a new `parsedUsage` arm (compare
-all four fields against the single accepted event), and — the larger half —
-`scripts/m1-shipped-boot/journey.mjs` would need to EXTRACT the counts from the worker container
-logs it already collects (`compose logs <worker>`, beside `extractSandboxEvidence`) and key them by
-lease. Two files, a new extractor, and its own tests, in `DEP-015`'s ticket rather than this one.
-What DEP-015 needs from the worker is exactly:
-
-- grep the worker log for the message `worker: parsed agent usage`;
-- read `parsedInputCount` / `parsedOutputCount` / `parsedCachedInputCount` /
-  `parsedRuntimeMillis`, keyed by `leaseId` (also `jobId` + `attempt`) - note the names deliberately
-  avoid the substring `token`, which the worker's logger redacts;
-- compare them field-for-field with the single accepted `usage` event's payload, and red on any
-  difference.
-
-Until that lands, 1(b) is proven on the worker side only.
-
-### CI for this amendment (PR #571)
-
-Run `35836233193` on head `75cd0d9e85dc727f95fa5785c540a2e43a1d79bd`: **`ci-required` success**
-(job `107106094171`), all four `verify` shards green — `usage-observer.test.ts` **14 executed**
-(job `107100309357`, shard total 6024 passed / 29 skipped) and `usage-stream-redaction.test.ts`
-**22 executed** (job `107100309201`, shard total 6289 passed / 33 skipped). *(An earlier record of
-run `35830452057` on `681699b28` predates the last two Codex fixes and is superseded by this run.)*
-
-Codex: **three P1 findings**, each verified at source, fixed, replied to and resolved — the
-redacted count keys on `9b576152f`, the digits-only canary in a number on `3262a86e8`, and the
-diagnostic suppressing the usage event on `b8354be3e`. The review on `75cd0d9e8` completed with no
-findings.
-
-### STOPPED at the bound — a fifth P1 of the same family (2026-09-23)
-
-The M1 planning session's bound (F2) was: fix the fourth finding in its GENERAL form, and if the
-next Codex round raises another distinct P1 in this family, STOP and report rather than patch.
-
-It did. On `daf4396ba` Codex raised: `scrubLogRecord` checks the message and bindings the CALLER
-supplies, but `createWorkerLogger` hands the record to pino, which ADDS its own keys afterwards.
-**Verified at source** by driving the production logger:
-
-```
-{"level":30,"time":1790154392922,"parsedInputCount":5,"leaseId":"lease-1","msg":"worker: parsed agent usage"}
-keys: level,time,parsedInputCount,leaseId,msg
-```
-
-A redeemed secret may be any non-empty string, so a canary of `"msg"`, `"time"` or `"level"` — or a
-digit string occurring inside the epoch `time` — lands in the emitted line on a surface no
-caller-side helper can see. Checking it would mean serializing the record the way pino will, i.e.
-re-implementing the sink, which is the same collision one layer further down.
-
-**So this is the family's real shape, stated plainly:** a second data path out of the worker that
-must carry data while every byte of it is subject to canary redaction has no clean caller-side
-boundary — each fix moves the surface, it does not remove it. Six rounds, six real findings, one
-cause.
-
-**No further patch was made.** The code on this branch carries the general fix (message + keys +
-values) and is green; the open question is whether the channel should exist at all, which is the
-planning session's to rule under its own bound: drop the log channel and record **1(b)** as NOT
-live-provable for the same reason as **1(c)** — proving it requires a second data path out of the
-worker, and every such path collides with redaction. **1(a)** (cardinality) is closed by the keyed
-lane regardless, and nothing here weakens redaction to make logging work: at every step the refusal
-(drop the line) was chosen over emitting.
+Two of the five fixes could NOT survive the removal, and that is stated rather than implied: the
+count-key renames and the diagnostic's own try/catch existed only for the dropped line, so their
+CODE is gone with it. Their lessons are the regression test above and E4-F019.
 
 **Status:** unchanged — `gate_review`. A distinct reviewer alone may set `complete`.
+

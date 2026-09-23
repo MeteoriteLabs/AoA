@@ -376,211 +376,70 @@ describe("WRK-018 — multi-tenant (F10): two Organizations' concurrent runs on 
 });
 
 // -----------------------------------------------------------------------------
-// WRK-018 acceptance 1(b) — the parsed-counts log line, at the supervisor.
+// WRK-018 1(b) — what SURVIVES the dropped parsed-counts line.
 //
-// It exists so the keyed lane can compare what the worker PARSED with what the control plane
-// ACCEPTED and STORED (those two being derived from one another). It carries the four counts and
-// the run's own identifiers - never the result line, never any tenant text - and it is scrubbed by
-// the run's canaries like the event stream, fail closed.
+// A diagnostic carrying the parsed counts was built here and then DROPPED by the M1 planning
+// session (F2, 2026-09-23) after five Codex P1s of one family. The hardening it forced is general
+// and stays: the whole-record scrubber below, and the logger-key hazard the first finding exposed.
+// The line itself is gone, so the cases that asserted it are gone with it — an assertion about a
+// line nothing emits would be exactly the vacuous check this programme keeps finding.
 // -----------------------------------------------------------------------------
 
-describe("WRK-018 1(b) — the worker logs the counts it parsed", () => {
-  const ALLOWED_KEYS = [
-    "attempt",
-    "jobId",
-    "leaseId",
-    "parsedCachedInputCount",
-    "parsedInputCount",
-    "parsedOutputCount",
-    "parsedRuntimeMillis",
-  ];
-
-  function runWith(opts: { canaries: readonly string[]; stdout: string; logger: Logger }): Promise<void> {
-    const supervisor = createSupervisor({
-      provider: createFakeSandboxProvider({ stdoutChunks: [opts.stdout] }),
-      identity: SUPERVISOR_IDENTITY,
-      eventSink: collectingSink(),
-      redactionCanaries: [],
-      canaryCoordinator: createRunCanaryCoordinator(),
-      materializeRunSecrets: async () => ({
-        env: { ANTHROPIC_API_KEY: opts.canaries[0] ?? "" },
-        canaries: opts.canaries,
-      }),
-      observeRun: createUsageObserver(),
-      logger: opts.logger,
-    });
-    return supervisor.accept(makeHandoff());
-  }
-
-  it("★ logs EXACTLY the four counts plus the run's own ids - no stdout, no text, nothing else", async () => {
-    const logger = recordingLogger();
-    const stdout = `${resultLine({ i: 111, o: 222, c: 333 }, `prose mentioning ${CANARY_A}`)}\n`;
-    await runWith({ canaries: [CANARY_A], stdout, logger });
-
-    const lines = logger.lines.filter((l) => l.includes(PARSED_USAGE_LOG_MESSAGE));
-    expect(lines).toHaveLength(1);
-    const [bindings] = JSON.parse(lines[0]!) as [Record<string, unknown>, string];
-    expect(Object.keys(bindings).sort()).toEqual(ALLOWED_KEYS);
-    expect(bindings.parsedInputCount).toBe(111);
-    expect(bindings.parsedOutputCount).toBe(222);
-    expect(bindings.parsedCachedInputCount).toBe(333);
-    expect(typeof bindings.parsedRuntimeMillis).toBe("number");
-    // Zero tolerance: the canary rode the very stdout these numbers came from.
-    expect(stdout).toContain(CANARY_A);
-    expect(logger.lines.join("\n")).not.toContain(CANARY_A);
-    // No free text in the payload: every value is a number except the two identifiers.
-    for (const [key, value] of Object.entries(bindings)) {
-      if (key === "leaseId" || key === "jobId") expect(typeof value).toBe("string");
-      else expect(typeof value).toBe("number");
-    }
-  });
-
-  // ★ Why the canary-inside-an-identifier case is a UNIT test and not a supervisor one: such a
-  // canary ALREADY fails the run upstream - the event sequencer scrubs the same canaries out of
-  // every event, so `leaseId` stops satisfying the frozen schema and the attempt dies before any
-  // usage. That is pre-existing behaviour, not this line's. What this line owes is that IF such a
-  // value reaches it, it is scrubbed, or the line is dropped whole.
-  it("★ scrubLogFields scrubs string values and refuses a set it cannot scrub (fail closed)", () => {
+describe("WRK-018 — the whole-record log scrubber (kept; no production caller today)", () => {
+  it("scrubs string values and refuses a set it cannot scrub (fail closed)", () => {
     expect(scrubLogFields({ parsedInputCount: 7, leaseId: `lease-${CANARY_A}` }, [CANARY_A])).toEqual({
       parsedInputCount: 7,
       leaseId: `lease-${REDACTION_MARKER}`,
     });
     expect(scrubLogFields({ leaseId: "wxyzq" }, ["xyzq", `w${REDACTION_MARKER}`])).toBeNull();
-    // An unrelated canary leaves numbers exactly as they are - counts are never mangled.
+    // An unrelated canary leaves numbers exactly as they are.
     expect(scrubLogFields({ parsedInputCount: 111 }, [CANARY_A])).toEqual({ parsedInputCount: 111 });
   });
 
-  it("★ a DIGITS-ONLY canary that appears in a count's decimal text drops the line (Codex P1, PR #571)", () => {
-    // Superseded expectation: this case asserted `scrubLogFields({ parsedInputCount: 111 },
-    // ["111"])` KEPT the value, on the reasoning that numbers cannot carry text. Under H-04 zero
-    // tolerance that is a leak: a redeemed secret may be any non-empty string, so a digits-only
-    // one equal to (or inside) a count's decimal rendering would print the secret bytes verbatim
-    // in the production JSON log. The whole set is refused instead - the run then contributes no
-    // 1(b) evidence, which is the safe direction.
+  it("a DIGITS-ONLY canary that appears in a number's decimal text refuses the set", () => {
+    // A redeemed secret may be any non-empty string, so "numbers cannot carry text" is false:
+    // a digits-only canary equal to (or inside) a number's rendering would print it verbatim.
     expect(scrubLogFields({ parsedInputCount: 111 }, ["111"])).toBeNull();
-    expect(scrubLogFields({ parsedInputCount: 1110 }, ["111"])).toBeNull(); // a substring counts
+    expect(scrubLogFields({ parsedInputCount: 1110 }, ["111"])).toBeNull();
     expect(scrubLogFields({ attempt: 7, leaseId: "lease-1" }, ["7"])).toBeNull();
   });
 
-  it("a REFUSED payload logs NO line - never a zeroed stand-in the lane would compare against", async () => {
-    // An observer that hands back something that is not the frozen payload (a non-integer count).
-    // The line must be absent: a fabricated zero here would read on the lane as a parse that
-    // happened, and would then disagree with the accepted event for the wrong reason.
-    const logger = recordingLogger();
-    const supervisor = createSupervisor({
-      provider: createFakeSandboxProvider(),
-      identity: SUPERVISOR_IDENTITY,
-      eventSink: collectingSink(),
-      redactionCanaries: [],
-      observeRun: () => ({ usage: { inputTokens: 1.5, outputTokens: 2, cachedInputTokens: 3, runtimeMillis: 4 } as never }),
-      logger,
-    });
-    await supervisor.accept(makeHandoff());
-    expect(logger.lines.filter((l) => l.includes(PARSED_USAGE_LOG_MESSAGE))).toEqual([]);
-  });
-
-  it("★ a canary inside the MESSAGE or a KEY drops the whole record (Codex P1, PR #571)", () => {
-    // `scrubLogFields` looked at VALUES only. A redeemed secret is any non-empty string, so a
-    // canary like "worker" or "parsed" is a substring of the fixed message - and one like
-    // "leaseId" of a key - and `createWorkerLogger` canary-scrubs neither. The record is dropped
-    // whole: a scrubbed MESSAGE would also destroy the grep token the lane keys on.
-    expect(scrubLogRecord(PARSED_USAGE_LOG_MESSAGE, { parsedInputCount: 1 }, ["worker"])).toBeNull();
-    expect(scrubLogRecord(PARSED_USAGE_LOG_MESSAGE, { parsedInputCount: 1 }, ["parsed agent"])).toBeNull();
-    expect(scrubLogRecord(PARSED_USAGE_LOG_MESSAGE, { leaseId: "x" }, ["leaseId"])).toBeNull();
-    // An unrelated canary leaves the record intact, values scrubbed as before.
-    expect(scrubLogRecord(PARSED_USAGE_LOG_MESSAGE, { leaseId: `l-${CANARY_A}`, parsedInputCount: 1 }, [CANARY_A])).toEqual({
-      message: PARSED_USAGE_LOG_MESSAGE,
+  it("a canary inside the MESSAGE or a KEY refuses the whole record", () => {
+    // Values are not the only surface: a secret can equal a substring of the fixed message or of
+    // a key, and `createWorkerLogger` canary-scrubs neither.
+    expect(scrubLogRecord("worker: parsed agent usage", { parsedInputCount: 1 }, ["worker"])).toBeNull();
+    expect(scrubLogRecord("worker: parsed agent usage", { leaseId: "x" }, ["leaseId"])).toBeNull();
+    expect(scrubLogRecord("worker: parsed agent usage", { leaseId: `l-${CANARY_A}`, parsedInputCount: 1 }, [CANARY_A])).toEqual({
+      message: "worker: parsed agent usage",
       fields: { leaseId: `l-${REDACTION_MARKER}`, parsedInputCount: 1 },
     });
   });
-
-  it("★ a canary inside the message means the supervisor logs NO parsed-counts line at all", async () => {
-    const logger = recordingLogger();
-    // "worker" is a substring of the message; a secret may legitimately be that string.
-    await runWith({ canaries: ["worker"], stdout: `${resultLine({ i: 1, o: 2, c: 3 })}
-`, logger });
-    expect(logger.lines.filter((l) => l.includes(PARSED_USAGE_LOG_MESSAGE))).toEqual([]);
-  });
-
-  it("★ a THROWING logger never suppresses the usage EVENT (Codex P1, PR #571)", async () => {
-    // The diagnostic line and the evidence event shared one try/catch, so a logger whose
-    // destination failed would jump past `events.usage` and the attempt would terminalize
-    // successfully with NO usage - silently removing the input to pricing and budget hard-stops.
-    // The line is instrumentation; the event is evidence. The line fails alone.
-    const sink = collectingSink();
-    const throwing = {
-      info: () => {
-        throw new Error("log destination is gone");
-      },
-      warn: () => {},
-      error: () => {},
-      flush: async () => {},
-    } as unknown as Logger;
-    const supervisor = createSupervisor({
-      provider: createFakeSandboxProvider({ stdoutChunks: [`${resultLine({ i: 5, o: 6, c: 7 })}
-`] }),
-      identity: SUPERVISOR_IDENTITY,
-      eventSink: sink,
-      redactionCanaries: [],
-      observeRun: createUsageObserver(),
-      logger: throwing,
-    });
-    await supervisor.accept(makeHandoff());
-    const usages = sink.events.filter((e) => e.eventType === "usage");
-    expect(usages).toHaveLength(1);
-    const usage = usages[0];
-    if (usage?.eventType === "usage") expect(usage.payload).toMatchObject({ inputTokens: 5, outputTokens: 6, cachedInputTokens: 7 });
-    expect(sink.events.map((e) => e.eventType)).toEqual(["attempt_started", "usage", "terminal"]);
-  });
-
-  it("a run with no parseable usage logs NO parsed-counts line", async () => {
-    const logger = recordingLogger();
-    await runWith({ canaries: [CANARY_A], stdout: "no result line here\n", logger });
-    expect(logger.lines.filter((l) => l.includes(PARSED_USAGE_LOG_MESSAGE))).toEqual([]);
-  });
 });
 
-// -----------------------------------------------------------------------------
-// WRK-018 1(b) — THROUGH THE PRODUCTION LOGGER.
-//
-// ★★★ Codex P1 on PR #571, and it was right: every case above used a hand-rolled recording
-// logger, so `createWorkerLogger`'s redactor never ran. That redactor replaces any binding whose
-// key CONTAINS "token" (`logger.ts`, SENSITIVE_SUBSTRINGS), so keys named `parsedInputTokens` /
-// `parsedOutputTokens` / `parsedCachedInputTokens` logged as "[redacted]" in the live worker and
-// the DEP-015 extractor would have found no numbers at all — 1(b) impossible, with green tests.
-// A test that bypasses the production redactor is a check that evaluates nothing, so this case
-// drives the REAL logger and asserts the numbers SURVIVE it.
-// -----------------------------------------------------------------------------
-
-describe("WRK-018 1(b) — the parsed-counts line survives the PRODUCTION logger's redactor", () => {
-  it("★ every count reaches the log as a NUMBER (no key is caught by the redactor)", async () => {
+describe("WRK-018 — the logger-key hazard the dropped line exposed (E4-F019, part 1)", () => {
+  it("★ a binding key containing `token` is REDACTED by the production logger; a `…Count` key survives", () => {
+    // This is why the dropped line's keys were never `parsedInputTokens`: `createWorkerLogger`
+    // redacts by key NAME, so the natural name for a token count silently destroys the number,
+    // and a test using a hand-rolled logger would never see it. Kept as a standing regression for
+    // any future numeric log field.
     const lines: string[] = [];
     const logger = createWorkerLogger({ destination: { write: (chunk: string) => void lines.push(chunk) } });
-    const supervisor = createSupervisor({
-      provider: createFakeSandboxProvider({ stdoutChunks: [`${resultLine({ i: 111, o: 222, c: 333 })}\n`] }),
-      identity: SUPERVISOR_IDENTITY,
-      eventSink: collectingSink(),
-      redactionCanaries: [],
-      observeRun: createUsageObserver(),
-      logger,
-    });
-    await supervisor.accept(makeHandoff());
+    logger.info({ inputTokens: 5, inputCount: 5 }, "probe");
+    const record = JSON.parse(lines[0]!) as Record<string, unknown>;
+    expect(record.inputTokens).toBe("[redacted]");
+    expect(record.inputCount).toBe(5);
+  });
 
-    const records = lines.map((l) => JSON.parse(l) as Record<string, unknown>);
-    const parsed = records.filter((r) => r.msg === PARSED_USAGE_LOG_MESSAGE);
-    expect(parsed).toHaveLength(1);
-    const record = parsed[0]!;
-    for (const [key, value] of Object.entries({
-      parsedInputCount: 111,
-      parsedOutputCount: 222,
-      parsedCachedInputCount: 333,
-    })) {
-      expect(record[key]).toBe(value);
-      expect(record[key]).not.toBe("[redacted]");
-    }
-    expect(typeof record.parsedRuntimeMillis).toBe("number");
-    // The identifiers survive too — the lane keys the comparison on them.
-    expect(typeof record.leaseId).toBe("string");
-    expect(record.leaseId).not.toBe("[redacted]");
+  it("★ the logger ADDS keys of its own below any caller-side scrub (the reason the line was dropped)", () => {
+    // E4-F019: `msg`/`time`/`level` are added by the sink AFTER `scrubLogRecord` has run, so a
+    // canary equal to one of them - or a digit string inside the epoch `time` - reaches the line
+    // on a surface no caller can reach. This case exists so that property is measured, not argued.
+    const lines: string[] = [];
+    const logger = createWorkerLogger({ destination: { write: (chunk: string) => void lines.push(chunk) } });
+    logger.info({ leaseId: "lease-1" }, "probe");
+    const keys = Object.keys(JSON.parse(lines[0]!) as Record<string, unknown>);
+    expect(keys).toContain("msg");
+    expect(keys).toContain("time");
+    expect(keys).toContain("level");
   });
 });

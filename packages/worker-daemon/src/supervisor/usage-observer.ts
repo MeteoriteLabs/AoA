@@ -96,56 +96,18 @@ export function parseClaudeStreamJsonUsage(stdout: string): ParsedAgentUsage | n
 }
 
 /**
- * WRK-018 acceptance 1(b) — the message the worker logs its PARSED counts under. A stable token
- * so the keyed lane can find the line without matching prose.
- */
-export const PARSED_USAGE_LOG_MESSAGE = "worker: parsed agent usage";
-
-/**
- * The frozen payload field -> log KEY map for {@link PARSED_USAGE_LOG_MESSAGE}.
+ * WRK-018 1(b) — there is NO parsed-counts log helper here any more, and that absence is the
+ * decision, not an omission.
  *
- * ★★★ NOT `parsedInputTokens` (Codex P1, PR #571). `createWorkerLogger` redacts any binding whose
- * key CONTAINS "token" (`logging/logger.ts`, SENSITIVE_SUBSTRINGS), so a key with "Tokens" in it
- * logs as "[redacted]" in the LIVE worker while every test using a hand-rolled logger stays green
- * - the counts would never reach the lane and 1(b) would be impossible to close. These names carry
- * the same meaning and pass the redactor, and a case driving the REAL `createWorkerLogger` pins it.
+ * A `PARSED_USAGE_LOG_MESSAGE` + `parsedUsageLogFields` pair was built so the keyed lane could
+ * compare what the worker PARSED with what the control plane accepted and stored (the stored row
+ * being projected from the accepted event, that pair alone proves projection fidelity, not parser
+ * correctness). It was DROPPED by the M1 planning session (F2, 2026-09-23) after five Codex P1s
+ * that were all one family — field names the redactor ate, a digits-only canary equal to a count,
+ * a throwing logger suppressing the usage event, the message and keys needing the same scrub as
+ * the values, and finally the logger's OWN added keys (`msg`/`time`/`level`) sitting below every
+ * caller-side scrubber (filed as E4-F019). Redaction wins over diagnostics.
  */
-export const PARSED_USAGE_LOG_KEYS = [
-  ["inputTokens", "parsedInputCount"],
-  ["outputTokens", "parsedOutputCount"],
-  ["cachedInputTokens", "parsedCachedInputCount"],
-  ["runtimeMillis", "parsedRuntimeMillis"],
-] as const;
-
-/**
- * The log payload for {@link PARSED_USAGE_LOG_MESSAGE}: EXACTLY the four counts, as numbers, or
- * `null` when the payload is not four non-negative integers (then nothing is logged - a guess in
- * this line would be indistinguishable on the lane from a real parse).
- *
- * ★ COUNTS, NEVER THE LINE. The alternative - logging the scrubbed result line so the lane could
- * parse it independently - was ruled against (M1 planning session under founder delegation F2,
- * 2026-09-23): it pushes tenant MODEL OUTPUT across the daemon boundary, which conflicts with data
- * minimisation and pre-empts the still-open F7 output-mechanism decision. The consequence is
- * stated rather than hidden: acceptance 1(c) - the parser's fidelity to a REAL result line - is
- * proven by unit tests against the captured transcript fixture and NOT live, because live proof
- * would require emitting that output.
- *
- * The builder takes only the frozen `UsagePayloadV1`, so it has no access to the stdout tail: no
- * edit at the call site can put tenant text in this line without changing THIS signature.
- */
-export function parsedUsageLogFields(usage: UsagePayloadV1): Record<string, number> | null {
-  const source = usage as unknown as Record<string, unknown>;
-  // An EXTRA key means the caller handed something that is not the frozen payload; refuse it
-  // rather than project four fields out of an object of unknown provenance.
-  if (Object.keys(source).length !== PARSED_USAGE_LOG_KEYS.length) return null;
-  const out: Record<string, number> = {};
-  for (const [field, key] of PARSED_USAGE_LOG_KEYS) {
-    const value = source[field];
-    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) return null;
-    out[key] = value;
-  }
-  return out;
-}
 
 export interface UsageObserverDeps {
   readonly metrics?: Metrics;

@@ -47,8 +47,7 @@ import {
   type StagedFileRequest,
 } from "./provider.js";
 import type { RunCanaryCoordinator } from "./run-canaries.js";
-import { RUN_OUTPUT_DROPPED_METRIC, createRunOutputCapture, scrubLogRecord } from "./run-output.js";
-import { PARSED_USAGE_LOG_MESSAGE, parsedUsageLogFields } from "./usage-observer.js";
+import { RUN_OUTPUT_DROPPED_METRIC, createRunOutputCapture } from "./run-output.js";
 import { ENV_PROBE_DEFAULT_DEADLINE_MS, ENV_PROBE_ERROR_CODES, envProbeLogMessage, runEnvProbe } from "./env-probe.js";
 import { PROVIDER_AUTH_ENV_TARGETS } from "../lease/secret-redemption.js";
 import {
@@ -1026,41 +1025,13 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         for (const tick of obs.progress ?? []) {
           await events.progress({ message: tick.message, percent: tick.percent });
         }
-        if (obs.usage) {
-          // WRK-018 acceptance 1(b): log what the parser produced, BEFORE the event is emitted, so
-          // the keyed lane has a capture independent of the accepted event and of
-          // `heartbeat_runs.usage_json` (which is projected from that same event and so cannot
-          // witness a producer that parsed wrongly - Codex P1, PR #567). Numbers + this run's own
-          // identifiers only; scrubbed by the run's canaries and dropped WHOLE if a value cannot be
-          // scrubbed. Never the result line (see `parsedUsageLogFields`).
-          //
-          // ★★★ INDEPENDENTLY best-effort (Codex P1, PR #571). This line and the usage EVENT shared
-          // the producer block's one try/catch, so a logger whose destination threw would jump past
-          // `events.usage` and the attempt would terminalize successfully with NO usage — silently
-          // removing the input to accepted-usage pricing and to the budget hard-stops. A diagnostic
-          // must never be able to suppress evidence, so it fails alone, here.
-          try {
-            const counts = parsedUsageLogFields(obs.usage);
-            if (counts !== null) {
-              // The WHOLE record - message, keys and values - is checked against the run's
-              // canaries (a secret may be any string, including a substring of the message).
-              const record = scrubLogRecord(
-                PARSED_USAGE_LOG_MESSAGE,
-                {
-                  ...counts,
-                  leaseId: run.leaseId,
-                  jobId: String(handoff.offer.job.jobId),
-                  attempt: handoff.offer.job.attempt,
-                },
-                runCanaries,
-              );
-              if (record !== null) deps.logger?.info(record.fields, record.message);
-            }
-          } catch {
-            // The usage event is what matters; a failed diagnostic is not a reason to lose it.
-          }
-          await events.usage(obs.usage);
-        }
+        // WRK-018 1(b) — there is deliberately NO diagnostic log of the parsed counts here.
+        // One was built and then DROPPED by the M1 planning session (F2, 2026-09-23) after five
+        // Codex P1s of one family: a line that must carry data while every surface of it is
+        // subject to canary redaction has no caller-side boundary — the last finding showed the
+        // LOGGER ITSELF adds `msg`/`time`/`level` below any scrubber a caller can run (E4-F019).
+        // Consequence, recorded rather than hidden: acceptance 1(b) is not live-provable.
+        if (obs.usage) await events.usage(obs.usage);
       } catch (err) {
         deps.logger?.warn({ leaseId: run.leaseId, err }, "supervisor: run observation failed (best-effort)");
       }

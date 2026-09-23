@@ -147,6 +147,13 @@ export function scrubLogFields<T extends Record<string, string | number>>(
 /**
  * Scrub a WHOLE log record - message, keys and values - with the run's canaries, or refuse it.
  *
+ * ★ NO PRODUCTION CALLER TODAY, and that is stated rather than left to be discovered. Its caller
+ * was WRK-018's parsed-counts diagnostic, which the M1 planning session DROPPED (F2, 2026-09-23);
+ * the session kept this helper because the hardening is general and outlives that line. It is the
+ * caller-side half of one of the two closure routes named in E4-F019 (serialize-and-scrub at the
+ * transport boundary); on its own it CANNOT close that finding, because the logger adds `msg` /
+ * `time` / `level` after any caller-side scrub runs.
+ *
  * ★★★ VALUES ARE NOT THE ONLY SURFACE (Codex P1, PR #571). A redeemed secret may be ANY non-empty
  * string, so it can equal a substring of the fixed MESSAGE (`"worker"`, `"parsed agent"`) or of a
  * KEY (`"leaseId"`), and `createWorkerLogger` canary-scrubs neither - it redacts by key NAME only.
