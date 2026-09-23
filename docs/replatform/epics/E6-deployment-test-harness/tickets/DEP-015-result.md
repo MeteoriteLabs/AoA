@@ -887,5 +887,26 @@ They are recorded because each would have made the control worse than none:
     `stripLogPrefix` now removes a leading timestamp, then the service prefix, then a timestamp
     that followed it, so both producers reduce to the payload. The wrap control gains the real
     collected shape as a third prefix, and two mutations (either timestamp strip) each red a test.
+20. **JSON FRAMING is not payload either — and one case stays open, on the record.** The worker
+    logs pino JSON, so a key can arrive framed. `base64Payload` now reduces a line to its base64
+    characters for the JOINED window only — escaped whitespace first, since the `n` of a `
+`
+    would otherwise be kept and injected between fragments — so a key wrapped inside ONE record is
+    caught on both surfaces. What a clean line PUBLISHES is still the line itself, and a control
+    pins that on a real worker log line carrying a sandbox id.
+
+    A key split ONE FRAGMENT PER RECORD is **not** caught: each record contributes its own field
+    names between the fragments, so the prefix is never contiguous. Filed as **`E6-F026`**
+    (`unowned`, with the reason) and pinned by a KNOWN LIMIT test that asserts today's behaviour
+    exactly — the fragments publish and the scan finds nothing — so it cannot be read as coverage.
+    Both obvious closures were rejected with a measurement, not a preference: a per-line JSON parse
+    that fails open is the same gap with more code, and a run-length rule inside the DER latch
+    would have to fire below 21 characters, which is the length of the E2B sandbox id on the very
+    line the lane's own sandbox-evidence assertion reads (run 35613849443's captured logs).
+
+21. **The gate keeps pace with each of those.** `LOG_TIMESTAMP` and `base64Payload` join the
+    behavioural markers, both verified absent from `22b500fb2` and the second absent from
+    `274f055a8` — so every earlier candidate on this branch is now refused rather than silently
+    run with a weaker control. Seven behavioural markers in all.
 **Status unchanged.** This is a control added after the fact to a run that was already clean; it
 neither re-opens nor re-decides §12's keyed acceptance.

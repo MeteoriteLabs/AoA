@@ -424,6 +424,23 @@ const BASE64_CONTINUATION = /^[A-Za-z0-9+/_-]+={0,2}$/;
  * matches and, at a narrow wrap, nothing else fires either. The prefix comes off first, on both
  * surfaces, so the fragments join as they were written.
  */
+/**
+ * The base64 PAYLOAD of a line, with every framing character removed, for the JOINED window only.
+ *
+ * ★ Why (Codex P1, PR #574): the worker logs pino JSON, so a key can arrive framed —
+ * `{"k":"MC4CAQAw\nBQYDK2Vw…"}` in one record, or a fragment per record. Joining the lines
+ * verbatim leaves quotes, braces, colons and `\n` escapes between the fragments, and the fixed
+ * prefix never appears. Escaped whitespace comes off first (its `n` would otherwise be kept as a
+ * base64 character), then everything that is not base64.
+ *
+ * This feeds the marker match ONLY. What a clean line PUBLISHES is always the line itself.
+ */
+export function base64Payload(text) {
+  return String(text ?? "")
+    .replace(/\\[nrtbf]/g, "")
+    .replace(/[^A-Za-z0-9+/_=-]/g, "");
+}
+
 const LOG_TIMESTAMP = /^\s*\d{4}-\d\d-\d\dT[\d:.]+Z?\s*/;
 const LOG_PREFIX = /^\s*[\w.-]+\s*\|\s?/;
 export function stripLogPrefix(line) {
@@ -460,7 +477,7 @@ export function createLineRedactor() {
     // The service prefix `svc | ` is not part of the payload, and leaving it in the window breaks
     // every join (Codex P1, PR #574).
     const body = stripLogPrefix(text);
-    const stripped = body.replace(/\s+/g, "");
+    const stripped = base64Payload(body);  // JSON framing is not payload either (Codex P1).
     const joined = carry + stripped;
     // ★ The tail of JOINED, not of this line (Codex P1, PR #574): at an 8-character wrap the
     // 21-character prefix spans three lines, and a window of one line never sees it whole.
@@ -571,7 +588,7 @@ export function scanForKeyMaterial(files, { skipMaskDirectives = true } = {}) {
           continue;
         }
       }
-      const stripped = stripLogPrefix(line).replace(/\s+/g, "");  // `svc | ` is not payload.
+      const stripped = base64Payload(stripLogPrefix(line));  // `svc | ` and JSON framing are not payload.
       const joined = carry + stripped;
       carry = joined.slice(-JOIN_CARRY_CHARS);  // ACCUMULATES: a prefix may span any number of lines.
       for (const { marker, pattern } of KEY_MATERIAL_MARKERS) {

@@ -708,7 +708,7 @@ test("the driver emits directives through the shared helper, never ad hoc", () =
 
 // === Codex P1/P2 (second round, PR #574): publish redacted, capture raw ======================
 
-import { redactKeyMaterialLine, createLineRedactor, stripLogPrefix } from "../m1-shipped-boot.mjs";
+import { redactKeyMaterialLine, createLineRedactor, stripLogPrefix, base64Payload } from "../m1-shipped-boot.mjs";
 
 test("POSITIVE CONTROL: an UNREGISTERED key is redacted on its way to the published log", () => {
   // Masking covers only registered values. This is the re-run / operator-key case: nothing knows
@@ -989,4 +989,34 @@ test("stripLogPrefix removes a service prefix and NOTHING else (it must not eat 
   // what the line is JUDGED by. What gets published is the line itself.
   assert.equal(stripLogPrefix('a | b | c is prose'), 'b | c is prose');
   assert.equal(createLineRedactor()('a | b | c is prose'), 'a | b | c is prose');
+});
+
+test("POSITIVE CONTROL: a key framed in ONE JSON record joins — quotes, braces and escapes are not payload (Codex P1)", () => {
+  const key = 'MC4CAQAwBQYDK2VwBCIEIG' + 'HhSeedBytes'.repeat(4);
+  const escaped = key.match(/.{1,8}/g).join('\\n');
+  const one = `m1-worker-a-1  | 2026-09-21T14:50:20.038698833Z {"level":30,"pem":"${escaped}"}`;
+  assert.match(createLineRedactor()(one), /\[REDACTED: key material /, 'a framed record must not publish');
+  const { findings } = scanForKeyMaterial([{ name: 'logs-m1-worker-a.txt', text: one }], { skipMaskDirectives: false });
+  assert.equal(findings.length >= 1, true);
+  assert.equal(findings[0].marker, 'ed25519_pkcs8_der');
+});
+
+test("KNOWN LIMIT: one fragment PER JSON record does not join — the other keys sit between them (E6-F026)", () => {
+  // Each record contributes its own field names between the fragments, so no normalisation short
+  // of parsing every record can make the prefix contiguous. Pinned so the limit is VISIBLE and
+  // cannot be mistaken for coverage; filed as E6-F026.
+  const key = 'MC4CAQAwBQYDK2VwBCIEIG' + 'HhSeedBytes'.repeat(4);
+  const records = key.match(/.{1,8}/g).map((frag, i) =>
+    `m1-worker-a-1  | 2026-09-21T14:50:2${i}.000000000Z {"level":30,"frag":"${frag}"}`);
+  const published = records.map(createLineRedactor());
+  assert.deepEqual(published, records, 'today these publish — that is the finding, not a pass');
+  const { findings } = scanForKeyMaterial([{ name: 'logs.txt', text: records.join('\n') }], { skipMaskDirectives: false });
+  assert.deepEqual(findings, [], 'and the scan does not see it either');
+});
+
+test("base64Payload keeps only base64, and the framing it drops never changes what is PUBLISHED", () => {
+  assert.equal(base64Payload('{"k":"MC4CAQAw\\nBQYDK2Vw"}'), 'kMC4CAQAwBQYDK2Vw');
+  assert.equal(base64Payload(''), '');
+  const ordinary = 'm1-worker-a-1  | 2026-09-21T14:50:56.557961137Z {"sandboxId":"ir2yj6bc4zh81x258k47b","msg":"supervisor: run complete"}';
+  assert.equal(createLineRedactor()(ordinary), ordinary, 'the lane reads its own sandbox evidence from these lines');
 });
