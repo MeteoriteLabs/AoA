@@ -84,6 +84,62 @@ export const E2B_LIST_DIR_MAX_ENTRIES = 100_000;
  * throws {@link E2bListDirBoundExceededError}; the list is never truncated. */
 export const E2B_LIST_DIR_MAX_DEPTH = 64;
 
+/**
+ * CLI-012 (ruling F7, `E7-D11`) — ONE enumerated entry. **METADATA ONLY; no bytes.**
+ *
+ * ★ WHY THIS REPLACED `readonly string[]`. Until CLI-012 this call returned bare paths, and
+ * `filesOnlyFromListing` used the SDK's `type` only to drop directories while DISCARDING
+ * `symlinkTarget` and `size`. The CLI-011 P-011 probe (run `35833717162`, arm `S-P5`) measured
+ * the consequence on a live sandbox: a planted symlink arrives as an ordinary file path while
+ * `files.read` FOLLOWS it — so a paths-only seam makes the `A-O2-4` symlink refusal
+ * unimplementable, and `R/l1 → .aoa-run-prompt.md` would be exported as the run's "output".
+ * `size` rides the same entry (arm `S-P6`: `files.list` already reports a correct byte size), so
+ * the `SD-6` admission bounds are enforced BEFORE any read — that is `E5-F009`'s cheap arm.
+ *
+ * ★ `E7-D09` is NOT reopened: files-only, recursive, absolute and bounded all stand unchanged.
+ */
+export interface E2bDirEntry {
+  /** ABSOLUTE, strictly under the listed root. */
+  readonly path: string;
+  /** Byte size as the listing reported it. A SNAPSHOT — see {@link E2bTransport.readFile}. */
+  readonly sizeBytes: number;
+  /**
+   * ★ THE LINK MARKER. `true` when the listing reported a symlink target for this path.
+   * A SNAPSHOT taken at one instant: a regular file can be replaced by a symlink afterwards,
+   * which is `E7-F039` — the read boundary rechecks with {@link E2bTransport.statEntry}.
+   */
+  readonly symlink: boolean;
+}
+
+/**
+ * CLI-012 — a read refused because it would exceed its caller-supplied byte bound.
+ *
+ * ★ REFUSED, NOT MEASURED AFTERWARDS. `E5-F009` is discharged by stopping the read at the cap;
+ * a whole-file read followed by a length check materialises the tenant-controlled file in the
+ * shared adapter-manager process first, which is the defect itself.
+ */
+export class E2bReadBoundExceededError extends Error {
+  readonly limit: number;
+  constructor(path: string, limit: number) {
+    super(`e2b transport: read of ${path} exceeded the ${limit}-byte bound`);
+    this.name = "E2bReadBoundExceededError";
+    this.limit = limit;
+  }
+}
+
+/**
+ * CLI-012 (`E7-F039`) — a path whose own entry says it is a symlink.
+ *
+ * Raised by the read boundary's no-follow recheck, never by enumeration (which classifies and
+ * skips per-file, `E5-D07`).
+ */
+export class E2bSymlinkRefusedError extends Error {
+  constructor(path: string) {
+    super(`e2b transport: refused to read ${path}: it is a symbolic link`);
+    this.name = "E2bSymlinkRefusedError";
+  }
+}
+
 // --- Transport-level errors (never authority) --------------------------------
 
 /** CLI-010 (E7-D09) — a `listDir` breached {@link E2B_LIST_DIR_MAX_ENTRIES} or
@@ -269,9 +325,32 @@ export interface E2bTransport {
    * {@link E2bTransportNotFoundError}. It carries NO tenant field (CAV-002).
    */
   writeFiles(sandboxId: string, files: readonly E2bStagedFile[]): Promise<void>;
-  /** CLI-002/D1 — read a staged/mutated file's bytes back (assertions + result
-   * collection). Missing sandbox OR path throws {@link E2bTransportNotFoundError}. */
-  readFile(sandboxId: string, path: string): Promise<Uint8Array>;
+  /**
+   * CLI-002/D1 — read a staged/mutated file's bytes back (assertions + result
+   * collection). Missing sandbox OR path throws {@link E2bTransportNotFoundError}.
+   *
+   * ★ CLI-012 (`E5-F009`) — `opts.maxBytes` BOUNDS THE READ ITSELF. The implementation must
+   * stop and throw {@link E2bReadBoundExceededError} once more than `maxBytes` has arrived,
+   * and must NEVER materialise the whole file first and measure it afterwards. The listing
+   * size is a snapshot: a background writer the agent left running can leave a file inside the
+   * cap at enumeration and grow it to gigabytes before the read, after which a pre-read check
+   * passes and an unbounded read still materialises the enlarged file in the shared
+   * adapter-manager process. Omitting `opts` keeps the pre-CLI-012 unbounded behaviour, which
+   * only the local staging/assertion callers use.
+   */
+  readFile(sandboxId: string, path: string, opts?: { readonly maxBytes?: number }): Promise<Uint8Array>;
+  /**
+   * CLI-012 (`E7-F039`) — describe ONE path WITHOUT following it: the `lstat` half.
+   *
+   * ★ THE BRANCH THIS IS, recorded. The installed `e2b@2.30.5` exposes NO no-follow or
+   * handle-bound read (`FilesystemReadOpts` carries only `gzip` and `streamIdleTimeoutMs`), so
+   * the atomic open-and-read is unreachable through the SDK and `E7-D11` pre-authorizes the
+   * second means: a per-entry no-follow stat before the read. It is the CHECK half of a
+   * check-then-read pair and the race is `E7-F039`, a named residual bounded by `SD-5`.
+   *
+   * Missing sandbox OR path throws {@link E2bTransportNotFoundError}.
+   */
+  statEntry(sandboxId: string, path: string): Promise<E2bDirEntry>;
   /**
    * CLI-002/D1, contract fixed by CLI-010 (E7-D09) — enumerate the files under `path`:
    * FILES ONLY (never a directory), RECURSIVELY, as ABSOLUTE paths strictly under `path`
@@ -282,8 +361,11 @@ export interface E2bTransport {
    * {@link E2bListDirBoundExceededError}. An entry that cannot be classified file-vs-directory
    * or does not sit under `path` throws {@link E2bListDirMalformedEntryError}. It NEVER
    * returns a silently shortened list. Missing sandbox throws {@link E2bTransportNotFoundError}.
+   *
+   * ★ CLI-012 (ruling F7) — each entry now carries its absolute path, a LINK MARKER and a byte
+   * SIZE ({@link E2bDirEntry}). It used to return `readonly string[]`; see that type for why.
    */
-  listDir(sandboxId: string, path: string): Promise<readonly string[]>;
+  listDir(sandboxId: string, path: string): Promise<readonly E2bDirEntry[]>;
   /** Deliver a graceful-cancel or forced-kill signal to a live sandbox. */
   signal(sandboxId: string, kind: "cancel" | "kill"): Promise<E2bSignalResult>;
   /** Terminate + reclaim a sandbox. May throw {@link E2bTransportTransientError}. */

@@ -3,15 +3,22 @@
 // `composeDispatchRuntime` owns the control-plane client, the device key and the live session.
 // The sequencer needs exactly those three, so it is built here and handed to the supervisor as
 // `exportArtifacts`, the same way `createStagedInputResolver` is handed over as
-// `resolveStagedFiles`. The PRODUCER (`resolveExportArtifacts`) is NOT composed here: it is
-// CLI-012's, and until it lands the supervisor opens no export window on any run (E5-D07 (a) 1).
+// `resolveStagedFiles`.
+//
+// ★★★ CLI-012 COMPOSES THE PRODUCER, and that is what these cases now pin.
+// (Superseded text: "The PRODUCER (`resolveExportArtifacts`) is NOT composed here: it is
+// CLI-012's, and until it lands the supervisor opens no export window on any run (E5-D07 (a) 1).")
+// `createExportRequestProducer` is handed over as `resolveExportArtifacts`, so the supervisor
+// opens an export window on every normal terminal and `E5-2-fenced-object-commit-worker-half`
+// is promoted to `wired` in the same commit (E5-D07 ruling 4).
 //
 // ★ What these cases pin:
-//   1. both lanes — desktop `provider` and container `makeRunProvider` — receive the sequencer,
-//      and neither receives a producer (E5-D07 ruling 4: "built at boot, run by nothing" is not
-//      promoted, and a `[]` stub producer is forbidden by E5-D03);
+//   1. both lanes — desktop `provider` and container `makeRunProvider` — receive BOTH the
+//      sequencer and the producer;
 //   2. the composed sequencer is bound to THIS runtime's client, device key and live session;
-//   3. composed with no producer, the sequencer is called ZERO times on a real run (both lanes);
+//   3. a real run drives the WHOLE sequence through the composed pair — enumerate → digest →
+//      mint → export → commit — on both lanes, with a provider that enumerates NOTHING as the
+//      anti-vacuity control (a run that wrote no output mints no grant and leaves no row);
 //   4. F10 — two concurrent runs from two Organizations, through the COMPOSED sequencer: each
 //      exports only under its own attempt prefix and its own sandbox (both lanes).
 //
@@ -222,6 +229,10 @@ function sandboxRecorder(inner: SandboxProvider) {
   const digests: string[] = [];
   const exports: string[] = [];
   const created: string[] = [];
+  // CLI-012 — the PATH too, not only the sandbox id: which file the producer named is the
+  // whole point once a producer exists.
+  const digestedPaths: string[] = [];
+  const exportedPaths: string[] = [];
   const provider = new Proxy(inner, {
     get(target, prop, receiver) {
       if (prop === "create") {
@@ -234,19 +245,21 @@ function sandboxRecorder(inner: SandboxProvider) {
       if (prop === "digestArtifact") {
         return (sandboxId: string, ...rest: unknown[]) => {
           digests.push(sandboxId);
+          digestedPaths.push(String(rest[0]));
           return (target.digestArtifact as (...a: unknown[]) => unknown)(sandboxId, ...rest);
         };
       }
       if (prop === "exportArtifact") {
         return (sandboxId: string, ...rest: unknown[]) => {
           exports.push(sandboxId);
+          exportedPaths.push(String(rest[0]));
           return (target.exportArtifact as (...a: unknown[]) => unknown)(sandboxId, ...rest);
         };
       }
       return Reflect.get(target, prop, receiver);
     },
   });
-  return { provider, digests, exports, created };
+  return { provider, digests, exports, created, digestedPaths, exportedPaths };
 }
 
 function spyMetrics(): { metrics: Metrics; incs: Array<{ name: string; labels: Record<string, string> }> } {
@@ -353,13 +366,23 @@ async function composeLane(input: {
 }
 
 function exportingProvider(): SandboxProvider {
-  return createFakeSandboxProvider({ artifactExportMode: "grant_upload", artifactFiles: { [PATH]: BODY } });
+  // ★ CLI-012 — it must also ENUMERATE, or the composed producer has nothing to look at.
+  return createFakeSandboxProvider({
+    artifactExportMode: "grant_upload",
+    sandboxEnumerationMode: "metadata",
+    artifactFiles: { [PATH]: BODY },
+  });
 }
 
-// --- 1. both lanes receive the sequencer, and neither receives a producer ------------------------
+/** CLI-012 anti-vacuity control: enumerates, and finds NOTHING under the output root. */
+function emptyOutputProvider(): SandboxProvider {
+  return createFakeSandboxProvider({ artifactExportMode: "grant_upload", sandboxEnumerationMode: "metadata" });
+}
 
-describe("DAT-009-3d — composeDispatchRuntime passes the SEQUENCER to the supervisor", () => {
-  it.each<Lane>(["desktop", "container"])("★ %s lane: exportArtifacts is composed; resolveExportArtifacts is NOT", async (lane) => {
+// --- 1. both lanes receive the sequencer AND the producer ---------------------------------------
+
+describe("DAT-009-3d/CLI-012 — composeDispatchRuntime passes BOTH halves to the supervisor", () => {
+  it.each<Lane>(["desktop", "container"])("★ %s lane: exportArtifacts AND resolveExportArtifacts are composed", async (lane) => {
     const provider = exportingProvider();
     const { composed } = await composeLane({
       lane,
@@ -369,8 +392,11 @@ describe("DAT-009-3d — composeDispatchRuntime passes the SEQUENCER to the supe
       sink: collectingSink(),
     });
     expect(typeof composed.exportArtifacts).toBe("function");
-    // The producer is CLI-012's. Composing one here — even a `[]` stub — is what E5-D03 forbids.
-    expect(composed.resolveExportArtifacts).toBeUndefined();
+    // ★ CLI-012 — the producer is composed. (Superseded assertion:
+    // `expect(composed.resolveExportArtifacts).toBeUndefined();`, with the comment "The producer
+    // is CLI-012's. Composing one here — even a `[]` stub — is what E5-D03 forbids." The E5-D03
+    // prohibition was on a `[]` STUB, and this is the real producer.)
+    expect(typeof composed.resolveExportArtifacts).toBe("function");
     // The lane's own provider path is passed through, and only that one.
     if (lane === "desktop") {
       expect(composed.provider).toBe(provider);
@@ -390,9 +416,10 @@ describe("DAT-009-3d — composeDispatchRuntime passes the SEQUENCER to the supe
       digest: async () => ({ sha256: createHash("sha256").update(BODY).digest("hex"), sizeBytes: Buffer.byteLength(BODY) }),
       export: async (_path, grant) => ({ objectKey: grant.objectKey }),
     };
-    const refs = await composed.exportArtifacts!({ handoff: handoffFor(TENANT_A, "desktop"), exporter, requests: [REQUEST] });
+    const outcome = await composed.exportArtifacts!({ handoff: handoffFor(TENANT_A, "desktop"), exporter, requests: [REQUEST] });
 
-    expect(refs).toHaveLength(1);
+    expect(outcome.failures).toEqual([]);
+    expect(outcome.exported).toHaveLength(1);
     expect(c.grants).toHaveLength(1);
     expect(c.commits).toHaveLength(1);
     // The live session, read at call time through the runtime's session provider.
@@ -417,7 +444,9 @@ describe("DAT-009-3d — composeDispatchRuntime passes the SEQUENCER to the supe
         throw new Error("must not export");
       },
     };
-    await expect(composed.exportArtifacts!({ handoff: handoffFor(TENANT_A, "desktop"), exporter, requests: [] })).resolves.toEqual([]);
+    await expect(
+      composed.exportArtifacts!({ handoff: handoffFor(TENANT_A, "desktop"), exporter, requests: [] }),
+    ).resolves.toEqual({ exported: [], failures: [] });
     expect(s.fetches()).toBe(fetchesAtComposition);
     expect(c.grants).toHaveLength(0);
     expect(c.commits).toHaveLength(0);
@@ -426,9 +455,9 @@ describe("DAT-009-3d — composeDispatchRuntime passes the SEQUENCER to the supe
 
 // --- 2. composed with no producer, no run calls the sequencer --------------------------------
 
-describe("DAT-009-3d — built at boot, run by nothing (why E5-2 stays unwired)", () => {
+describe("CLI-012 — the composed pair drives the WHOLE sequence on a real run (why E5-2 is wired)", () => {
   it.each<Lane>(["desktop", "container"])(
-    "★ %s lane: a real run calls the composed sequencer ZERO times; no route, no digest, no export metric",
+    "★★★ %s lane: a real run enumerates the output root and COMMITS what it finds",
     async (lane) => {
       const c = recordingClient();
       const rec = sandboxRecorder(exportingProvider());
@@ -442,8 +471,12 @@ describe("DAT-009-3d — built at boot, run by nothing (why E5-2 stays unwired)"
         sink,
         metrics,
       });
-      // Non-vacuity: the sequencer IS composed. Zero calls below is inertness, not absence.
+      // ★ Both halves really are composed — this is the wiring `E5-2` records, and everything
+      // below is a consequence of it rather than of a test overlay.
+      // (Superseded describe + body: "DAT-009-3d — built at boot, run by nothing (why E5-2 stays
+      // unwired)", which asserted `sequencerCalls()` was 0 and no grant/commit was made.)
       expect(typeof composed.exportArtifacts).toBe("function");
+      expect(typeof composed.resolveExportArtifacts).toBe("function");
 
       const handoff = handoffFor(TENANT_A, lane);
       await supervisor.accept(handoff);
@@ -452,14 +485,62 @@ describe("DAT-009-3d — built at boot, run by nothing (why E5-2 stays unwired)"
       expect(rec.created).toHaveLength(1);
       expect(terminalOf(sink.events, handoff.leaseId)).toMatchObject({ status: "succeeded", exitCode: 0 });
       if (lane === "container") expect(c.resolves).toHaveLength(1); // the composed redemption ran
-      // ...and no export window opened.
-      expect(sequencerCalls()).toBe(0);
+      // ...and the export window ran the whole four-step sequence for the one planted file.
+      expect(sequencerCalls()).toBe(1);
+      expect(rec.digests).toHaveLength(1);
+      expect(rec.exports).toHaveLength(1);
+      expect(rec.digestedPaths).toEqual([PATH]);
+      expect(rec.exportedPaths).toEqual([PATH]);
+      expect(c.grants).toHaveLength(1);
+      expect(c.commits).toHaveLength(1);
+      expect(opOutcomes(incs, "export_artifact")).toEqual(["success"]);
+      expect(opOutcomes(incs, "digest_artifact")).toEqual(["success"]);
+
+      // The committed object key is THIS attempt's, derived from the handoff (F10).
+      const manifest = (c.commits[0]!.body as Record<string, unknown>).manifest as Record<string, unknown>;
+      expect(String(manifest.objectKey)).toContain(
+        expectedAttemptObjectPrefix({
+          organizationId: TENANT_A.org,
+          jobId: TENANT_A.job,
+          attempt: 1,
+        }),
+      );
+      // ★ E7-D08 — the kind the production composition declares, asserted at the COMMIT, so a
+      // silent change of it reds here and not only at the producer's unit.
+      expect(manifest.kind).toBe("other");
+    },
+  );
+
+  it.each<Lane>(["desktop", "container"])(
+    "★ ANTI-VACUITY %s lane: an empty output root mints NOTHING — no grant, no commit, no row",
+    async (lane) => {
+      const c = recordingClient();
+      const rec = sandboxRecorder(emptyOutputProvider());
+      const sink = collectingSink();
+      const { metrics, incs } = spyMetrics();
+      const { supervisor, sequencerCalls } = await composeLane({
+        lane,
+        provider: rec.provider,
+        client: c.client,
+        store: sessionStore().store,
+        sink,
+        metrics,
+      });
+      const handoff = handoffFor(TENANT_A, lane);
+      await supervisor.accept(handoff);
+
+      // NON-VACUITY: the run really ran and the window really opened — the sequencer was called.
+      expect(rec.created).toHaveLength(1);
+      expect(terminalOf(sink.events, handoff.leaseId)).toMatchObject({ status: "succeeded", exitCode: 0 });
+      expect(sequencerCalls()).toBe(1);
+      // And it did nothing durable: since DAT-009 slice 2 a mint writes a `granted` row, so a
+      // speculative one on every no-output run would be litter on every run in the fleet.
       expect(c.grants).toHaveLength(0);
       expect(c.commits).toHaveLength(0);
       expect(rec.digests).toHaveLength(0);
       expect(rec.exports).toHaveLength(0);
-      expect(opOutcomes(incs, "export_artifact")).toEqual([]);
       expect(opOutcomes(incs, "digest_artifact")).toEqual([]);
+      expect(opOutcomes(incs, "export_artifact")).toEqual(["success"]);
     },
   );
 });

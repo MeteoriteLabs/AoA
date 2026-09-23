@@ -27,6 +27,7 @@ import type {
   CheckpointResult,
   CleanupResult,
   CreateResult,
+  EnumerateOutputsResult,
   CreateSandboxSpec,
   ExecuteInput,
   ExecuteResult,
@@ -152,6 +153,20 @@ export class EffectAuthority {
   ): Promise<ArtifactExportResult> {
     this.#guard();
     return this.#provider.exportArtifact(sandboxId, path, grant, ctx);
+  }
+
+  /**
+   * CLI-012 — enumerate the run's output root, METADATA ONLY.
+   *
+   * ★ GATED HERE FOR THE SAME REASON `digestArtifact` IS. Enumeration is a read INTO the
+   * tenant's live sandbox, so a run whose lease was replaced must not still be listing the
+   * sandbox its successor is about to use. An ungated enumeration would be a second, quieter
+   * door onto the same sandbox — the failure shape DAT-009 slice 2 §4 names — and it is the
+   * door the whole export sequence now starts at.
+   */
+  enumerateOutputs(sandboxId: string, root: string, ctx: ProviderOpContext): Promise<EnumerateOutputsResult> {
+    this.#guard();
+    return this.#provider.enumerateOutputs(sandboxId, root, ctx);
   }
 
   // --- SVC-008a process supervision -------------------------------------------------

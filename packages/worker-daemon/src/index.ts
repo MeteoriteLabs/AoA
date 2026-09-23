@@ -185,9 +185,27 @@ export type {
   // DAT-009-3c — the type of `SupervisorDeps.exportArtifacts` (E5-D07).
   ArtifactExportSequencer,
   ArtifactExportStage,
+  // CLI-012 (E5-D07 ruling 7) — the PER-FILE outcome the sequencer now returns.
+  ArtifactExportOutcome,
   ExportedArtifactRef,
   SandboxArtifactExporter,
 } from "./lease/artifact-export.js";
+
+// CLI-012 — Unit F link 3: the producer that turns the ruled output root into export requests.
+export {
+  createExportRequestProducer,
+  contentTypeForPath,
+  DEFAULT_OUTPUT_ROOT,
+  MAX_OUTPUT_DEPTH,
+  MAX_OUTPUT_FILES,
+  MAX_OUTPUT_FILE_BYTES,
+  MAX_OUTPUT_TOTAL_BYTES,
+} from "./lease/export-request-producer.js";
+export type {
+  CreateExportRequestProducerDeps,
+  OutputRefusal,
+  OutputRefusalReason,
+} from "./lease/export-request-producer.js";
 
 export { createEnroller, EnrollmentError, mapErrorStatus, DEFAULT_SESSION_TTL_MS } from "./enrollment/enroll.js";
 export type {
@@ -459,6 +477,10 @@ export type {
   FileStagingMode,
   StagedFileRequest,
   StageFilesResult,
+  // CLI-012 (ruling F7) — the provider-side METADATA-ONLY output-enumeration capability.
+  SandboxEnumerationMode,
+  SandboxOutputEntry,
+  EnumerateOutputsResult,
   // SVC-008a — the provider-side process-supervision capability.
   ProcessSupervisionMode,
   ProcessHandle,

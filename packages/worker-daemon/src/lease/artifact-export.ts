@@ -263,7 +263,37 @@ export type ArtifactExportSequencer = (input: {
   handoff: LeaseHandoff;
   exporter: SandboxArtifactExporter;
   requests: readonly ArtifactExportRequest[];
-}) => Promise<readonly ExportedArtifactRef[]>;
+  /**
+   * CLI-012 — the caller's WINDOW LATCH, consulted before each request.
+   *
+   * ★ WHY THE PER-FILE LOOP NEEDS IT. Once failures are absorbed per file (`E5-D07` ruling 7),
+   * a closed window or a withdrawn authority no longer stops the loop by throwing out of it:
+   * the exporter's refusal is classified like any other and the sequencer walks on, MINTING A
+   * GRANT for every remaining file against a fence that is already dead. Each one is refused
+   * server-side, so nothing durable is wrong — but they are real HTTP calls made after the
+   * window the supervisor already reported on. Absent, the latch is open (byte-identical to
+   * DAT-009-3c for every existing caller).
+   */
+  isOpen?: () => boolean;
+}) => Promise<ArtifactExportOutcome>;
+
+/**
+ * CLI-012 (`E5-D07` ruling 7) — what a whole export window produced: the committed references
+ * AND the per-file refusals.
+ *
+ * ★★★ THIS REPLACED `readonly ExportedArtifactRef[]`, AND THE CHANGE IS THE POINT.
+ * As shipped by DAT-009-3c the sequencer was ALL-OR-THROW: every `fail(...)` threw
+ * `ArtifactExportFailedError` out of the loop, so ONE refused file dropped every valid output
+ * after it — and an agent can make a secret-bearing or oversized file sort first, since the
+ * enumeration is sorted by path. `CLI-011`'s review expects every file to succeed or fail on its
+ * own with each refusal classified, and changing that changes this module's return contract,
+ * which is why that change belongs to the ticket that consumes it.
+ */
+export interface ArtifactExportOutcome {
+  readonly exported: readonly ExportedArtifactRef[];
+  /** PATH-FREE. `stage` + a snake_case `reason`; never the path, never the grant. */
+  readonly failures: readonly { readonly stage: ArtifactExportStage; readonly reason: string }[];
+}
 
 /** Read `{outcome, reason?}` off a 200 body, or say why it could not be read. */
 function readOutcome(body: unknown): { outcome: string; reason: string | null } | null {
@@ -287,14 +317,19 @@ function readOutcome(body: unknown): { outcome: string; reason: string | null } 
  * non-deterministic in production. Recorded here as well as in the design because this module
  * is where someone will look.
  *
- * Fails per-file and does NOT continue: a caller cannot tell which of a partial set is missing,
- * which is the same reasoning that makes staging all-or-nothing.
+ * ★ PER-FILE, AND IT CONTINUES (`E5-D07` ruling 7, enacted by CLI-012). Each request is
+ * attempted independently; a failure is CLASSIFIED into the outcome's `failures` and the loop
+ * moves on. The partial-set objection that once justified all-or-throw is answered by the
+ * outcome shape itself: the caller is told exactly what committed and exactly what did not, so
+ * nothing is silently missing. Staging stays all-or-nothing for the opposite reason — a
+ * half-staged sandbox gives the AGENT a wrong world, while a half-exported attempt only gives
+ * the OPERATOR a smaller, fully-described one.
  */
 export function createArtifactExportSequencer(deps: CreateArtifactExportSequencerDeps): ArtifactExportSequencer {
-  return async ({ handoff, exporter, requests }) => {
+  return async ({ handoff, exporter, requests, isOpen }) => {
     // ★ Nothing to export ⇒ NO session fetch, NO mint, NO row. §3.3 of the design: since slice 2
     // a mint is a durable record, so a speculative one is litter with a five-minute life.
-    if (requests.length === 0) return [];
+    if (requests.length === 0) return { exported: [], failures: [] };
 
     const job = handoff.offer.job;
     const organizationId = String(job.organizationId);
@@ -313,151 +348,171 @@ export function createArtifactExportSequencer(deps: CreateArtifactExportSequence
     const now = deps.now ?? (() => Date.now());
 
     const exported: ExportedArtifactRef[] = [];
+    const failures: { stage: ArtifactExportStage; reason: string }[] = [];
     for (const request of requests) {
-      const artifactId = exportArtifactId({ jobId, attempt, path: request.path });
-      // The control plane's own convention for an attempt-scoped object
-      // (`job-input-staging.ts:350` builds `${prefix}${artifactId}`), matched deliberately.
-      const objectKey = `${prefix}${artifactId}`;
-      // Explicitly typed so TypeScript treats it as a NEVER-RETURNING call and narrows after
-      // it. Without the annotation on the VARIABLE the narrowing does not apply and every
-      // branch below would need a non-null assertion — assertions that would then survive a
-      // later edit that made one of these paths fall through.
-      const fail: (stage: ArtifactExportStage, detail: string, reason: string) => never = (stage, detail, reason) => {
-        throw new ArtifactExportFailedError(stage, request.path, artifactId, detail, reason);
-      };
-
-      // --- 1. DIGEST (metadata only; no bytes cross this call) -----------------------------
-      let described: { sha256: string; sizeBytes: number };
+      // ★ THE LATCH, BEFORE ANY WORK ON THIS FILE. A closed window stops the loop rather than
+      // minting grants nobody is waiting for; the files not attempted are simply absent from
+      // both lists, which is the honest report of "the window ended first".
+      if (isOpen && !isOpen()) break;
+      // ★ PER-FILE (`E5-D07` ruling 7). `fail(...)` still THROWS — the never-returning shape is
+      // what lets TypeScript narrow after it, and rewriting every branch to return would put a
+      // non-null assertion on each one. The throw is caught HERE instead, one request wide, so a
+      // refusal classifies and the loop continues to the next file.
       try {
-        described = await exporter.digest(request.path);
-      } catch (error) {
-        // An absent path, or a provider whose `artifactExportMode` is "none", lands here — and
-        // lands here BEFORE anything durable was minted. A fabricated digest would be the
-        // WRK-009 defect: byte-identical to a real one on every downstream gate, and it would
-        // mint a grant against bytes that never existed.
-        fail("digest", error instanceof Error ? error.message : "digest failed", "digest_failed");
-      }
+        const artifactId = exportArtifactId({ jobId, attempt, path: request.path });
+        // The control plane's own convention for an attempt-scoped object
+        // (`job-input-staging.ts:350` builds `${prefix}${artifactId}`), matched deliberately.
+        const objectKey = `${prefix}${artifactId}`;
+        // Explicitly typed so TypeScript treats it as a NEVER-RETURNING call and narrows after
+        // it. Without the annotation on the VARIABLE the narrowing does not apply and every
+        // branch below would need a non-null assertion — assertions that would then survive a
+        // later edit that made one of these paths fall through.
+        const fail: (stage: ArtifactExportStage, detail: string, reason: string) => never = (stage, detail, reason) => {
+          throw new ArtifactExportFailedError(stage, request.path, artifactId, detail, reason);
+        };
 
-      // --- 2. MINT the upload grant --------------------------------------------------------
-      const grantResponse = await deps.client.artifactTransferGrant(
-        signed(deps, session, deps.client.artifactTransferGrantPath, (correlationId, issuedAt) => ({
-          protocolVersion: 1 as const,
-          correlationId,
-          issuedAt,
-          nonce: randomUUID(),
-          audience: "worker_run" as const,
-          idempotencyKey: deterministicUuid(`artifact-export-grant:${fence.leaseId}:${artifactId}`),
-          body: {
+        // --- 1. DIGEST (metadata only; no bytes cross this call) -----------------------------
+        let described: { sha256: string; sizeBytes: number };
+        try {
+          described = await exporter.digest(request.path);
+        } catch (error) {
+          // An absent path, or a provider whose `artifactExportMode` is "none", lands here — and
+          // lands here BEFORE anything durable was minted. A fabricated digest would be the
+          // WRK-009 defect: byte-identical to a real one on every downstream gate, and it would
+          // mint a grant against bytes that never existed.
+          fail("digest", error instanceof Error ? error.message : "digest failed", "digest_failed");
+        }
+
+        // --- 2. MINT the upload grant --------------------------------------------------------
+        const grantResponse = await deps.client.artifactTransferGrant(
+          signed(deps, session, deps.client.artifactTransferGrantPath, (correlationId, issuedAt) => ({
             protocolVersion: 1 as const,
-            operation: "upload" as const,
-            workerId: fence.workerId,
-            jobId: fence.jobId,
-            attempt: fence.attempt,
-            leaseId: fence.leaseId,
-            fenceToken: fence.fenceToken,
-            artifactId,
-            expectedObjectKey: objectKey,
-            expectedSha256: described.sha256,
-            // ★ `maxBytes` is the EXACT size, not a ceiling. Step 1 always knows it, and the
-            // server refuses a declared size over its own ceiling before a byte moves
-            // (`artifact-transfer-grant.ts:124`) — so declaring more than the file is only a
-            // wider orphan bound with nothing to gain.
-            maxBytes: described.sizeBytes,
-          },
-        })),
-      );
-      if (grantResponse.status !== 200) fail("grant", `status ${grantResponse.status}`, `http_${grantResponse.status}`);
-      const grantOutcome = readOutcome(grantResponse.body);
-      if (!grantOutcome) fail("grant", "unreadable response", "unreadable_response");
-      // ★ THE REFUSAL REASON SURVIVES. `rejected` is checked FIRST and by name, so
-      // `attempt_terminal` / `stale_fence` / `target_revoked` reach the operator as themselves.
-      // The download mirror does not do this (E7-F017) and reports every refusal as a malformed
-      // grant, which sends someone hunting a protocol bug when the real answer is "this ran
-      // outside the lifecycle window".
-      if (grantOutcome.outcome === "rejected") {
-        fail("grant", `rejected: ${grantOutcome.reason ?? "unknown"}`, grantOutcome.reason ?? "unknown");
-      }
-      if (grantOutcome.outcome !== "upload_granted") {
-        // A cross-paired `download_granted` lands here rather than being parsed as an upload.
-        fail("grant", `outcome ${grantOutcome.outcome}`, "unexpected_outcome");
-      }
-      const parsedGrant = artifactUploadGrantV1Schema.safeParse(
-        (grantResponse.body as Record<string, unknown>).grant,
-      );
-      if (!parsedGrant.success) fail("grant", "malformed grant", "malformed_grant");
-      const grant = parsedGrant.data;
-      // The server echoes the key it authorised. A mismatch means the two sides disagree about
-      // what is being written, and the safe reading is "do not upload".
-      if (grant.objectKey !== objectKey) fail("grant", "granted a different object key", "object_key_mismatch");
-
-      // --- 3. EXPORT — the only hop that moves bytes, and it is provider → S3 --------------
-      let reference: { objectKey: string };
-      try {
-        reference = await exporter.export(request.path, grant);
-      } catch (error) {
-        // Deliberately NOT interpolating the error into anything that could carry the grant:
-        // the message is the implementation's, and an implementation that put the signed url in
-        // its own error would leak it here. Only the stage and the path are reported.
-        fail("export", error instanceof Error ? error.name : "export failed", "export_failed");
-      }
-      if (reference.objectKey !== objectKey) fail("export", "exported a different object key", "object_key_mismatch");
-
-      // --- 4. COMMIT the reference ---------------------------------------------------------
-      const commitResponse = await deps.client.artifactCommit(
-        signed(deps, session, deps.client.artifactCommitPath, (correlationId, issuedAt) => ({
-          protocolVersion: 1 as const,
-          correlationId,
-          issuedAt,
-          nonce: randomUUID(),
-          audience: "worker_run" as const,
-          idempotencyKey: deterministicUuid(`artifact-export-commit:${fence.leaseId}:${artifactId}`),
-          body: {
-            protocolVersion: 1 as const,
-            workerId: fence.workerId,
-            jobId: fence.jobId,
-            attempt: fence.attempt,
-            leaseId: fence.leaseId,
-            fenceToken: fence.fenceToken,
-            manifest: {
+            correlationId,
+            issuedAt,
+            nonce: randomUUID(),
+            audience: "worker_run" as const,
+            idempotencyKey: deterministicUuid(`artifact-export-grant:${fence.leaseId}:${artifactId}`),
+            body: {
               protocolVersion: 1 as const,
-              organizationId,
-              companyId,
+              operation: "upload" as const,
+              workerId: fence.workerId,
               jobId: fence.jobId,
               attempt: fence.attempt,
+              leaseId: fence.leaseId,
+              fenceToken: fence.fenceToken,
               artifactId,
-              kind: request.kind,
-              sensitivity: "restricted" as const,
-              retention: request.retention,
-              objectKey,
-              sizeBytes: described.sizeBytes,
-              sha256: described.sha256,
-              contentType: request.contentType,
-              createdAt: new Date(now()).toISOString(),
+              expectedObjectKey: objectKey,
+              expectedSha256: described.sha256,
+              // ★ `maxBytes` is the EXACT size, not a ceiling. Step 1 always knows it, and the
+              // server refuses a declared size over its own ceiling before a byte moves
+              // (`artifact-transfer-grant.ts:124`) — so declaring more than the file is only a
+              // wider orphan bound with nothing to gain.
+              maxBytes: described.sizeBytes,
             },
-          },
-        })),
-      );
-      if (commitResponse.status !== 200) fail("commit", `status ${commitResponse.status}`, `http_${commitResponse.status}`);
-      const commitOutcome = readOutcome(commitResponse.body);
-      if (!commitOutcome) fail("commit", "unreadable response", "unreadable_response");
-      if (commitOutcome.outcome === "rejected") {
-        // `event_hash_mismatch` here means the store's OBSERVED digest disagreed with the one
-        // step 1 described — the TOCTOU the two-step shape is designed to fail closed on.
-        fail("commit", `rejected: ${commitOutcome.reason ?? "unknown"}`, commitOutcome.reason ?? "unknown");
-      }
-      if (commitOutcome.outcome !== "committed") fail("commit", `outcome ${commitOutcome.outcome}`, "unexpected_outcome");
-      const body = commitResponse.body as Record<string, unknown>;
-      if (typeof body.versionNumber !== "number") fail("commit", "committed without a version", "missing_version");
+          })),
+        );
+        if (grantResponse.status !== 200) fail("grant", `status ${grantResponse.status}`, `http_${grantResponse.status}`);
+        const grantOutcome = readOutcome(grantResponse.body);
+        if (!grantOutcome) fail("grant", "unreadable response", "unreadable_response");
+        // ★ THE REFUSAL REASON SURVIVES. `rejected` is checked FIRST and by name, so
+        // `attempt_terminal` / `stale_fence` / `target_revoked` reach the operator as themselves.
+        // The download mirror does not do this (E7-F017) and reports every refusal as a malformed
+        // grant, which sends someone hunting a protocol bug when the real answer is "this ran
+        // outside the lifecycle window".
+        if (grantOutcome.outcome === "rejected") {
+          fail("grant", `rejected: ${grantOutcome.reason ?? "unknown"}`, grantOutcome.reason ?? "unknown");
+        }
+        if (grantOutcome.outcome !== "upload_granted") {
+          // A cross-paired `download_granted` lands here rather than being parsed as an upload.
+          fail("grant", `outcome ${grantOutcome.outcome}`, "unexpected_outcome");
+        }
+        const parsedGrant = artifactUploadGrantV1Schema.safeParse(
+          (grantResponse.body as Record<string, unknown>).grant,
+        );
+        if (!parsedGrant.success) fail("grant", "malformed grant", "malformed_grant");
+        const grant = parsedGrant.data;
+        // The server echoes the key it authorised. A mismatch means the two sides disagree about
+        // what is being written, and the safe reading is "do not upload".
+        if (grant.objectKey !== objectKey) fail("grant", "granted a different object key", "object_key_mismatch");
 
-      exported.push({
-        path: request.path,
-        artifactId,
-        objectKey,
-        sha256: described.sha256,
-        sizeBytes: described.sizeBytes,
-        versionNumber: body.versionNumber,
-      });
+        // --- 3. EXPORT — the only hop that moves bytes, and it is provider → S3 --------------
+        let reference: { objectKey: string };
+        try {
+          reference = await exporter.export(request.path, grant);
+        } catch (error) {
+          // Deliberately NOT interpolating the error into anything that could carry the grant:
+          // the message is the implementation's, and an implementation that put the signed url in
+          // its own error would leak it here. Only the stage and the path are reported.
+          fail("export", error instanceof Error ? error.name : "export failed", "export_failed");
+        }
+        if (reference.objectKey !== objectKey) fail("export", "exported a different object key", "object_key_mismatch");
+
+        // --- 4. COMMIT the reference ---------------------------------------------------------
+        const commitResponse = await deps.client.artifactCommit(
+          signed(deps, session, deps.client.artifactCommitPath, (correlationId, issuedAt) => ({
+            protocolVersion: 1 as const,
+            correlationId,
+            issuedAt,
+            nonce: randomUUID(),
+            audience: "worker_run" as const,
+            idempotencyKey: deterministicUuid(`artifact-export-commit:${fence.leaseId}:${artifactId}`),
+            body: {
+              protocolVersion: 1 as const,
+              workerId: fence.workerId,
+              jobId: fence.jobId,
+              attempt: fence.attempt,
+              leaseId: fence.leaseId,
+              fenceToken: fence.fenceToken,
+              manifest: {
+                protocolVersion: 1 as const,
+                organizationId,
+                companyId,
+                jobId: fence.jobId,
+                attempt: fence.attempt,
+                artifactId,
+                kind: request.kind,
+                sensitivity: "restricted" as const,
+                retention: request.retention,
+                objectKey,
+                sizeBytes: described.sizeBytes,
+                sha256: described.sha256,
+                contentType: request.contentType,
+                createdAt: new Date(now()).toISOString(),
+              },
+            },
+          })),
+        );
+        if (commitResponse.status !== 200) fail("commit", `status ${commitResponse.status}`, `http_${commitResponse.status}`);
+        const commitOutcome = readOutcome(commitResponse.body);
+        if (!commitOutcome) fail("commit", "unreadable response", "unreadable_response");
+        if (commitOutcome.outcome === "rejected") {
+          // `event_hash_mismatch` here means the store's OBSERVED digest disagreed with the one
+          // step 1 described — the TOCTOU the two-step shape is designed to fail closed on.
+          fail("commit", `rejected: ${commitOutcome.reason ?? "unknown"}`, commitOutcome.reason ?? "unknown");
+        }
+        if (commitOutcome.outcome !== "committed") fail("commit", `outcome ${commitOutcome.outcome}`, "unexpected_outcome");
+        const body = commitResponse.body as Record<string, unknown>;
+        if (typeof body.versionNumber !== "number") fail("commit", "committed without a version", "missing_version");
+
+        exported.push({
+          path: request.path,
+          artifactId,
+          objectKey,
+          sha256: described.sha256,
+          sizeBytes: described.sizeBytes,
+          versionNumber: body.versionNumber,
+        });
+      } catch (error) {
+        // ★ ONLY this module's own classified failure is absorbed. Anything else — the export
+        // window's closed latch, an authority withdrawal, a programming error — propagates, so a
+        // window that can no longer legally reach the sandbox stops rather than grinding through
+        // the remaining files against a dead fence.
+        if (!(error instanceof ArtifactExportFailedError)) throw error;
+        // PATH-FREE: `ArtifactExportFailedError.message` embeds the tenant-authored path, and
+        // only `stage` + the already-normalised `reason` cross into the outcome.
+        failures.push({ stage: error.stage, reason: error.reason });
+      }
     }
-    return exported;
+    return { exported, failures };
   };
 }

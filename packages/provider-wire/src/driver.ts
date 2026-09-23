@@ -27,6 +27,9 @@ import type {
   ArtifactExportMode,
   FileStagingMode,
   StageFilesResult,
+  EnumerateOutputsResult,
+  SandboxEnumerationMode,
+  SandboxOutputEntry,
   StagedFileRequest,
   ArtifactExportResult,
   CheckpointMode,
@@ -275,6 +278,45 @@ export class NetworkedProviderDriver implements SandboxProvider {
     }
     return { objectKey: grant.objectKey };
   }
+  /**
+   * CLI-012 — the networked lane's METADATA-ONLY enumeration route, which did not exist here.
+   *
+   * ★ GATE-REQUIRED, exactly like `stage_files` (E7-F011) and the artifact pair: enumeration is
+   * a read INTO a live OWNED sandbox, so it attaches the owned-labels capability. An ungated
+   * server 404s it.
+   *
+   * ★ THE RESPONSE IS VALIDATED, NOT TRUSTED. A far side that returned bare strings, an entry
+   * without a size, or an entry without a link marker would silently defeat both the `A-O2-4`
+   * symlink refusal and the `SD-6` admission bounds on this lane — the producer would see
+   * `undefined` where it expects a boolean and a number. A malformed listing is REFUSED here,
+   * because a refused export window is recoverable and an exported staged prompt is not.
+   */
+  async enumerateOutputs(sandboxId: string, root: string, ctx: ProviderOpContext): Promise<EnumerateOutputsResult> {
+    if (this.sandboxEnumerationMode === "none") throw new UnsupportedProviderOperation("enumerate_outputs");
+    const result = await this.#post<unknown>("enumerate_outputs", { sandboxId, root }, ctx, this.#capability);
+    if (!isRecord(result) || !Array.isArray(result.entries)) {
+      throw new WireProtocolError("enumerate_outputs returned a malformed listing");
+    }
+    const entries: SandboxOutputEntry[] = [];
+    for (const raw of result.entries) {
+      if (
+        !isRecord(raw) ||
+        typeof raw.path !== "string" ||
+        typeof raw.sizeBytes !== "number" ||
+        !Number.isFinite(raw.sizeBytes) ||
+        raw.sizeBytes < 0 ||
+        typeof raw.symlink !== "boolean"
+      ) {
+        throw new WireProtocolError("enumerate_outputs returned a malformed entry");
+      }
+      entries.push({ path: raw.path, sizeBytes: raw.sizeBytes, symlink: raw.symlink });
+    }
+    return { entries };
+  }
+
+  /** CLI-012 — this driver relays the metadata-only enumeration above. */
+  readonly sandboxEnumerationMode: SandboxEnumerationMode = "metadata";
+
   async stageFiles(
     sandboxId: string,
     files: readonly StagedFileRequest[],
@@ -319,7 +361,7 @@ export class NetworkedProviderDriver implements SandboxProvider {
     // non-frozen `stage_files` route (the vocabulary itself is untouched — E4-D02). Additive:
     // every existing caller still passes a `ProviderOperation`. DAT-009-3e widens it the same
     // way, and only locally, for the artifact pair.
-    op: ProviderOperation | "stage_files" | "digest_artifact" | "export_artifact",
+    op: ProviderOperation | "stage_files" | "digest_artifact" | "export_artifact" | "enumerate_outputs",
     args: unknown,
     ctx: ProviderOpContext,
     capability?: OwnedLabelsCapability,

@@ -84,6 +84,54 @@ export interface ArtifactExportResult {
   readonly objectKey: string;
 }
 
+// --- CLI-012 (ruling F7, E7-D11) — METADATA-ONLY OUTPUT ENUMERATION -------------------
+//
+// ★ WHY THE PORT GREW. Until CLI-012 the port exposed NO enumeration at all: `listDir` lived
+// on the E2B transport behind the provider's PRIVATE `#transport` field, so the worker had no
+// way to learn what a run produced. The producer (`lease/export-request-producer.ts`) is the
+// first and only caller.
+//
+// ★ METADATA ONLY, NEVER BYTES. This keeps the `GRANTS OUT, NEVER BYTES` contract intact: the
+// daemon learns paths, sizes and link markers; `digestArtifact` supplies the digest and
+// `exportArtifact` moves the bytes provider → object storage. A byte-returning enumeration
+// would reopen the E4-D01 data-plane boundary, which is why the shape below has no content
+// field and why `captureSandboxEntries` (readFile + sha256 in-daemon) must NOT be composed here.
+
+/**
+ * ONE enumerated output file. **Metadata only.**
+ *
+ * ★ `symlink` AND `sizeBytes` ARE LOAD-BEARING, not conveniences. The CLI-011 P-011 probe
+ * (run `35833717162`) measured on a live sandbox that a symlink arrives typed as a file
+ * (arm `S-P5`, `readFollowsLink=true`) and that the listing already reports a correct byte
+ * size (arm `S-P6`). Without the marker the `A-O2-4` symlink refusal is unimplementable and
+ * the run's own staged prompt exports as its "output"; without the size the `SD-6` admission
+ * bounds could only be applied AFTER a whole-file read, which is `E5-F009`.
+ *
+ * ★ BOTH FIELDS ARE SNAPSHOTS taken at enumeration. A file can be replaced by a symlink or
+ * grown afterwards — `E7-F039` and `E5-F009`'s second half — so the read boundary rechecks.
+ */
+export interface SandboxOutputEntry {
+  /** ABSOLUTE, strictly under the enumerated root. */
+  readonly path: string;
+  readonly sizeBytes: number;
+  /** `true` when the listing reported this path as a symbolic link. */
+  readonly symlink: boolean;
+}
+
+/** What an enumeration found. A LIST OF DESCRIPTIONS — never content. */
+export interface EnumerateOutputsResult {
+  readonly entries: readonly SandboxOutputEntry[];
+}
+
+/**
+ * Whether this provider can enumerate an in-sandbox directory, metadata-only.
+ *
+ * ★ DEFINED LOCALLY, exactly like {@link ArtifactExportMode} and {@link FileStagingMode}:
+ * entering the frozen `PROVIDER_OPERATIONS` vocabulary would be an E4-D02 STOP, and this
+ * answers the purely LOCAL question "can THIS provider enumerate?".
+ */
+export type SandboxEnumerationMode = "none" | "metadata";
+
 /**
  * CLI-008 Unit B — whether this provider can stage control-plane-authored files INTO a
  * sandbox by redeeming a worker-minted download grant.
@@ -474,6 +522,8 @@ export type DeclinableOperation =
   | "digest_artifact"
   | "export_artifact"
   | "stage_files"
+  // CLI-012 — the metadata-only enumeration. Not a frozen operation, same as the three above.
+  | "enumerate_outputs"
   // SVC-008a — the process-supervision trio. Not frozen operations, same as the three above.
   | "start_process"
   | "process_status"
@@ -639,6 +689,22 @@ export interface SandboxProvider {
 
   /** Whether this provider supports the two operations above. */
   readonly artifactExportMode: ArtifactExportMode;
+
+  // --- optional output enumeration (gated on `sandboxEnumerationMode`) -------------------
+  //
+  // NOT in `advertisedOperations`, for the same reason the export pair is not. The METHOD is
+  // present on every implementer and only SUPPORT is optional.
+
+  /**
+   * CLI-012 — enumerate the regular files under `root`: FILES ONLY, RECURSIVE, ABSOLUTE paths
+   * strictly under `root`, sorted, and BOUNDED. **METADATA ONLY — no bytes cross this port.**
+   *
+   * Throws {@link UnsupportedProviderOperation} when `sandboxEnumerationMode` is `"none"`.
+   */
+  enumerateOutputs(sandboxId: string, root: string, ctx: ProviderOpContext): Promise<EnumerateOutputsResult>;
+
+  /** Whether this provider supports the operation above. */
+  readonly sandboxEnumerationMode: SandboxEnumerationMode;
 
   // --- optional file staging (gated on `fileStagingMode`) -------------------------------
   //

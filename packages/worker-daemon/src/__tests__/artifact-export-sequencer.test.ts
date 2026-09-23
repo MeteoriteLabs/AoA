@@ -163,7 +163,9 @@ describe("DAT-009 slice 3 — artifact export sequencer (digest → grant → ex
   it("★ runs the four steps IN ORDER and returns a reference to the committed object", async () => {
     const { run, calls, grantRequests, commitRequests } = sequencerOver();
     const ex = exporter();
-    const refs = await run({ handoff: makeHandoff(), exporter: ex, requests: [REQUEST] });
+    const outcome = await run({ handoff: makeHandoff(), exporter: ex, requests: [REQUEST] });
+    const refs = outcome.exported;
+    expect(outcome.failures).toEqual([]);
 
     // The interleaving is the property: digest BEFORE grant, grant BEFORE export, export
     // BEFORE commit. A sequencer that minted first would still pass a per-call assertion.
@@ -215,8 +217,8 @@ describe("DAT-009 slice 3 — artifact export sequencer (digest → grant → ex
   it("★★★ mints NOTHING when there is nothing to export — an empty run leaves no durable row", async () => {
     const { run, calls, sessionCalls } = sequencerOver();
     const ex = exporter();
-    const refs = await run({ handoff: makeHandoff(), exporter: ex, requests: [] });
-    expect(refs).toEqual([]);
+    const outcome = await run({ handoff: makeHandoff(), exporter: ex, requests: [] });
+    expect(outcome).toEqual({ exported: [], failures: [] });
     // Anti-vacuity: the CALL COUNTS are asserted, so a sequencer that silently did nothing on
     // a NON-empty list could not pass the happy-path case above either.
     expect(calls).toEqual([]);
@@ -236,9 +238,12 @@ describe("DAT-009 slice 3 — artifact export sequencer (digest → grant → ex
         throw new Error("no such file");
       },
     });
-    await expect(run({ handoff: makeHandoff(), exporter: ex, requests: [REQUEST] })).rejects.toThrow(
-      ArtifactExportFailedError,
-    );
+    // ★ CLI-012 (E5-D07 ruling 7) — PER-FILE, so the refusal is CLASSIFIED into the outcome
+    // rather than thrown out of the loop. (Superseded assertion: `.rejects.toThrow(
+    // ArtifactExportFailedError)`.) Nothing about the orphan property changed.
+    const outcome = await run({ handoff: makeHandoff(), exporter: ex, requests: [REQUEST] });
+    expect(outcome.exported).toEqual([]);
+    expect(outcome.failures).toEqual([{ stage: "digest", reason: "digest_failed" }]);
     // Since DAT-009 slice 2 a mint writes a durable `granted` row inside the mint transaction.
     // A sequencer that minted before digesting would leave one behind for every absent file.
     expect(calls).toEqual([]);
@@ -257,15 +262,13 @@ describe("DAT-009 slice 3 — artifact export sequencer (digest → grant → ex
         },
       }),
     });
-    const error = await run({ handoff: makeHandoff(), exporter: exporter(), requests: [REQUEST] }).catch(
-      (e: unknown) => e,
-    );
-    expect(error).toBeInstanceOf(ArtifactExportFailedError);
+    const outcome = await run({ handoff: makeHandoff(), exporter: exporter(), requests: [REQUEST] });
     // `attempt_terminal` is the lifecycle-window mistake this module can make, and the whole
-    // value of the message is that it names it. The download mirror reports every refusal as
-    // "malformed grant" (E7-F017) and sends the reader hunting a protocol bug.
-    expect((error as Error).message).toContain("attempt_terminal");
-    expect((error as ArtifactExportFailedError).stage).toBe("grant");
+    // value of the classification is that it names it. The download mirror reports every refusal
+    // as "malformed grant" (E7-F017) and sends the reader hunting a protocol bug.
+    // ★ CLI-012: it now rides the PATH-FREE `reason` rather than the (path-bearing) message.
+    expect(outcome.failures).toEqual([{ stage: "grant", reason: "attempt_terminal" }]);
+    expect(outcome.exported).toEqual([]);
   });
 
   it("refuses a CROSS-PAIRED download grant rather than parsing it as an upload", async () => {
@@ -282,9 +285,8 @@ describe("DAT-009 slice 3 — artifact export sequencer (digest → grant → ex
       }),
     });
     const ex = exporter();
-    await expect(run({ handoff: makeHandoff(), exporter: ex, requests: [REQUEST] })).rejects.toThrow(
-      /outcome download_granted/,
-    );
+    const outcome = await run({ handoff: makeHandoff(), exporter: ex, requests: [REQUEST] });
+    expect(outcome.failures).toEqual([{ stage: "grant", reason: "unexpected_outcome" }]);
     // And nothing was uploaded under it.
     expect(ex.calls).toEqual(["digest"]);
     expect(calls).toEqual(["grant"]);
@@ -303,12 +305,9 @@ describe("DAT-009 slice 3 — artifact export sequencer (digest → grant → ex
         },
       }),
     });
-    const error = await run({ handoff: makeHandoff(), exporter: exporter(), requests: [REQUEST] }).catch(
-      (e: unknown) => e,
-    );
-    expect(error).toBeInstanceOf(ArtifactExportFailedError);
-    expect((error as ArtifactExportFailedError).stage).toBe("commit");
-    expect((error as Error).message).toContain("event_hash_mismatch");
+    const outcome = await run({ handoff: makeHandoff(), exporter: exporter(), requests: [REQUEST] });
+    expect(outcome.failures).toEqual([{ stage: "commit", reason: "event_hash_mismatch" }]);
+    expect(outcome.exported).toEqual([]);
   });
 
   it("★ refuses a `committed` response that carries no version number", async () => {
@@ -329,12 +328,9 @@ describe("DAT-009 slice 3 — artifact export sequencer (digest → grant → ex
         },
       }),
     });
-    const error = await run({ handoff: makeHandoff(), exporter: exporter(), requests: [REQUEST] }).catch(
-      (e: unknown) => e,
-    );
-    expect(error).toBeInstanceOf(ArtifactExportFailedError);
-    expect((error as ArtifactExportFailedError).stage).toBe("commit");
-    expect((error as Error).message).toContain("without a version");
+    const outcome = await run({ handoff: makeHandoff(), exporter: exporter(), requests: [REQUEST] });
+    expect(outcome.failures).toEqual([{ stage: "commit", reason: "missing_version" }]);
+    expect(outcome.exported).toEqual([]);
   });
 
   it("refuses a grant for a DIFFERENT object key than the one it asked to write", async () => {
@@ -352,9 +348,8 @@ describe("DAT-009 slice 3 — artifact export sequencer (digest → grant → ex
         },
       }),
     });
-    await expect(run({ handoff: makeHandoff(), exporter: exporter(), requests: [REQUEST] })).rejects.toThrow(
-      /granted a different object key/,
-    );
+    const outcome = await run({ handoff: makeHandoff(), exporter: exporter(), requests: [REQUEST] });
+    expect(outcome.failures).toEqual([{ stage: "grant", reason: "object_key_mismatch" }]);
   });
 
   it("★ never lets the grant's signed URL reach an error message or a return value", async () => {
@@ -362,13 +357,15 @@ describe("DAT-009 slice 3 — artifact export sequencer (digest → grant → ex
     // The failure is raised by the PROVIDER, whose own error text carries the url — the most
     // likely real leak, since an implementation that logs what it was doing includes it.
     const leaky = exporter({ exportThrows: new Error("PUT https://store.example/put?X-Amz-Signature=SECRETSIGNATURE failed") });
-    const error = await run({ handoff: makeHandoff(), exporter: leaky, requests: [REQUEST] }).catch(
-      (e: unknown) => e,
-    );
-    expect(error).toBeInstanceOf(ArtifactExportFailedError);
-    expect((error as Error).message).not.toContain("SECRETSIGNATURE");
-    expect((error as Error).message).not.toContain("https://");
-    expect(JSON.stringify(error, Object.getOwnPropertyNames(error as object))).not.toContain("SECRETSIGNATURE");
+    const outcome = await run({ handoff: makeHandoff(), exporter: leaky, requests: [REQUEST] });
+    // ★ CLI-012 — the failure no longer escapes as a thrown error at all: the classification is
+    // the ONLY thing the caller receives, and nothing the provider wrote into its own message
+    // reaches it. NON-VACUITY FIRST: the leaky exporter really did run and really did fail.
+    expect(outcome.failures).toEqual([{ stage: "export", reason: "export_failed" }]);
+    const serialized = JSON.stringify(outcome);
+    expect(serialized).not.toContain("SECRETSIGNATURE");
+    expect(serialized).not.toContain("https://");
+    expect(serialized).not.toContain(PATH);
   });
 
   it("presents the SAME artifact id and idempotency keys on a retry of the same file", async () => {
@@ -446,5 +443,148 @@ describe("DAT-009 slice 3 — the two operation labels are registered (E7-F010)"
     // The positive control: an unregistered neighbour still throws, so the assertion above is
     // measuring the allow-list rather than a metrics object that accepts anything.
     expect(() => metrics.inc(SANDBOX_OP_METRIC, { operation: "upload_artifact", outcome: "success" })).toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// CLI-012 (E5-D07 ruling 7) — the PER-FILE failure policy.
+//
+// ★★★ WHY THIS EXISTS. As DAT-009-3c shipped it, every `fail(...)` threw out of the loop, so
+// ONE refused file dropped every valid output AFTER it — and the producer enumerates SORTED, so
+// an agent that names a secret-bearing or oversized file `a-…` costs the run everything else it
+// wrote. The doubles below are PATH-AWARE (the shipped ones answer one fixed object key), which
+// a multi-file arm needs.
+// ---------------------------------------------------------------------------------------
+
+function keyFor(path: string): string {
+  const id = exportArtifactId({ jobId: POLL_FIXTURE_IDS.job, attempt: 1, path });
+  return `organizations/${POLL_FIXTURE_IDS.org}/jobs/${POLL_FIXTURE_IDS.job}/attempts/1/${id}`;
+}
+
+function multiFileSequencer(refuseDigestFor: ReadonlySet<string>) {
+  const digested: string[] = [];
+  const uploaded: string[] = [];
+  const committed: string[] = [];
+  const exporterDouble: SandboxArtifactExporter = {
+    async digest(path) {
+      digested.push(path);
+      if (refuseDigestFor.has(path)) throw new Error("no such file");
+      return { sha256: SHA, sizeBytes: SIZE };
+    },
+    async export(path, grant) {
+      uploaded.push(path);
+      return { objectKey: grant.objectKey };
+    },
+  };
+  const run = createArtifactExportSequencer({
+    client: {
+      artifactTransferGrantPath: "/api/worker-control/artifact-transfer-grants",
+      artifactCommitPath: "/api/worker-control/artifact-commits",
+      async artifactTransferGrant(request: { bytes: Buffer }) {
+        const parsed = JSON.parse(request.bytes.toString("utf8")) as Record<string, unknown>;
+        const body = parsed.body as Record<string, unknown>;
+        return {
+          status: 200,
+          body: {
+            protocolVersion: 1,
+            correlationId: parsed.correlationId,
+            serverTime: "2026-09-04T12:00:00.000Z",
+            outcome: "upload_granted",
+            grant: uploadGrant({
+              artifactId: body.artifactId,
+              objectKey: body.expectedObjectKey,
+            }),
+          },
+        };
+      },
+      async artifactCommit(request: { bytes: Buffer }) {
+        const parsed = JSON.parse(request.bytes.toString("utf8")) as Record<string, unknown>;
+        const manifest = (parsed.body as Record<string, unknown>).manifest as Record<string, unknown>;
+        committed.push(String(manifest.objectKey));
+        return {
+          status: 200,
+          body: {
+            protocolVersion: 1,
+            correlationId: parsed.correlationId,
+            serverTime: "2026-09-04T12:00:00.000Z",
+            outcome: "committed",
+            artifactId: manifest.artifactId,
+            versionNumber: 1,
+            committedAt: "2026-09-04T12:00:00.000Z",
+          },
+        };
+      },
+    } as never,
+    key: generateDeviceKey(),
+    session: async () => SESSION,
+  });
+  return { run, exporter: exporterDouble, digested, uploaded, committed };
+}
+
+describe("CLI-012 — per-file: a refused FIRST file never drops the valid ones after it", () => {
+  const A = "/home/user/aoa-output/a-refused.md";
+  const B = "/home/user/aoa-output/b-good.md";
+  const C = "/home/user/aoa-output/c-good.md";
+  const requests: ArtifactExportRequest[] = [A, B, C].map((path) => ({
+    path,
+    kind: "other",
+    contentType: "text/markdown",
+    retention: "run",
+  }));
+
+  it("★★★ classifies the refusal and STILL commits the remaining two", async () => {
+    const h = multiFileSequencer(new Set([A]));
+    const outcome = await h.run({ handoff: makeHandoff(), exporter: h.exporter, requests });
+
+    // NON-VACUITY FIRST: all three were really attempted, so "two committed" is not "the loop
+    // stopped early and two were never tried".
+    expect(h.digested).toEqual([A, B, C]);
+    expect(outcome.exported.map((ref) => ref.path)).toEqual([B, C]);
+    expect(h.committed).toEqual([keyFor(B), keyFor(C)]);
+    expect(outcome.failures).toEqual([{ stage: "digest", reason: "digest_failed" }]);
+    // ★ THE MUTANT THIS REDS: restore the all-or-throw loop (delete the per-request try/catch
+    // in `createArtifactExportSequencer`) and `run` rejects at A — `h.digested` is `[A]`,
+    // `outcome` never exists, and this arm fails at the first expect.
+  });
+
+  it("all-refused is still an outcome, not a throw, and commits nothing", async () => {
+    const h = multiFileSequencer(new Set([A, B, C]));
+    const outcome = await h.run({ handoff: makeHandoff(), exporter: h.exporter, requests });
+    expect(outcome.exported).toEqual([]);
+    expect(outcome.failures).toHaveLength(3);
+    expect(h.committed).toEqual([]);
+  });
+
+  it("★★★ a CLOSED WINDOW stops the loop — no grant is minted for the files after it", async () => {
+    // ★ THE DEFECT THIS ARM EXISTS FOR, and it is one the per-file policy CREATED. Absorbing
+    // failures per file means a closed window (or a withdrawn authority) no longer stops the
+    // loop by throwing out of it: without the latch the sequencer walks on and mints a grant
+    // for every remaining file against a fence that is already dead.
+    const h = multiFileSequencer(new Set());
+    let open = true;
+    const attempted: string[] = [];
+    const latched: SandboxArtifactExporter = {
+      digest: async (path) => {
+        attempted.push(path);
+        if (path === B) open = false;
+        if (!open) throw new Error("export window closed");
+        return h.exporter.digest(path);
+      },
+      export: (path, grant) => h.exporter.export(path, grant),
+    };
+    const outcome = await h.run({
+      handoff: makeHandoff(),
+      exporter: latched,
+      requests,
+      isOpen: () => open,
+    });
+    // NON-VACUITY: A really committed, so this is not "nothing ran".
+    expect(h.committed).toEqual([keyFor(A)]);
+    expect(outcome.exported.map((ref) => ref.path)).toEqual([A]);
+    // B was attempted and refused; C was never reached at all.
+    expect(attempted).toEqual([A, B]);
+    expect(outcome.failures).toEqual([{ stage: "digest", reason: "digest_failed" }]);
+    // ★ THE MUTANT THIS REDS: delete `if (isOpen && !isOpen()) break;` and C is digested too,
+    // so `h.digested` becomes `[A, B, C]` and `failures` grows a second entry.
   });
 });

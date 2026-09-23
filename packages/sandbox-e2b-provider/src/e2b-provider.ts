@@ -43,6 +43,7 @@ import type {
   CleanupResult,
   CreateResult,
   CreateSandboxSpec,
+  EnumerateOutputsResult,
   ExecuteInput,
   ExecuteResult,
   HealthMode,
@@ -60,6 +61,7 @@ import type {
   ResourceLabels,
   ResourceSummary,
   RestoreResult,
+  SandboxEnumerationMode,
   SandboxProvider,
   SandboxState,
   StopOutcome,
@@ -82,6 +84,7 @@ import {
   E2bTransportEgressBlockedError,
   E2bTransportNotFoundError,
   E2bTransportTransientError,
+  E2bSymlinkRefusedError,
   type E2bProcessObservation,
   type E2bRecordState,
   type E2bSandboxRecord,
@@ -90,6 +93,16 @@ import {
 } from "./transport.js";
 
 const DEFAULT_TTL_MS = 60_000;
+
+/**
+ * CLI-012 (`E7-D11`, review `SD-6`) — the PER-FILE byte ceiling on an exported artifact.
+ *
+ * ★ IT IS AN ADMISSION CHECK, NOT THE GRANT. The grant carries the EXACT digested size
+ * (`artifact-export.ts` sets `maxBytes: described.sizeBytes` and says why); this is the
+ * independent limit applied from listing metadata BEFORE the read, and enforced again AS the
+ * read happens so a file that grew after enumeration cannot be materialised. 25 MiB.
+ */
+export const E2B_MAX_ARTIFACT_BYTES = 25 * 1024 * 1024;
 
 /** Which optional ops this provider exposes by default: `health` (an E2B running
  * probe) is supported; `checkpoint`/`restore` are recorded unsupported-with-
@@ -686,13 +699,85 @@ export class E2bSandboxProvider implements SandboxProvider {
    * push the refusal all the way out to the fenced commit, far from its cause.
    */
   async #readArtifactBytes(sandboxId: string, path: string): Promise<Uint8Array> {
+    // ★★★ CLI-012 (`E7-F039`) — THE NO-FOLLOW RECHECK, AT THE READ BOUNDARY.
+    //
+    // The enumeration-time link marker is a SNAPSHOT: a background process the agent left
+    // running (the `A-O2-9`/`W7` class) can replace a regular file with a symlink afterwards,
+    // and because `files.read` FOLLOWS links (P-011 probe, arm `S-P5`, `readFollowsLink=true`)
+    // the digest and the export would then both read the STABLE target — so the sequencer's
+    // existing re-hash refusal PASSES and the run's own staged prompt exports as its output.
+    //
+    // ★ WHICH BRANCH THIS IS, AND THE MEASUREMENT BEHIND IT. `E7-D11` authorized two: an
+    // atomic no-follow/handle-bound read if the installed SDK has one, otherwise a per-entry
+    // `lstat`. MEASURED against the installed `e2b@2.30.5`: `FilesystemReadOpts` is
+    // `{gzip?, streamIdleTimeoutMs?}` over `{requestTimeoutMs?, signal?}` and the package's
+    // whole `dist/index.d.ts` contains NO no-follow, follow-symlink or file-descriptor read
+    // surface — so the atomic operation is unreachable and this is the `lstat` branch, taken
+    // over `Filesystem.getInfo(path) => EntryInfo{symlinkTarget?}`.
+    //
+    // ★★★ AND IT IS HONESTLY A CHECK-THEN-READ PAIR. A swap between this stat and the read
+    // below wins; the residual is FILED as `E7-F039` and BOUNDED by `SD-5` (the sandbox is
+    // per-run and single-tenant, so a successful swap reads the TENANT'S OWN file, and the one
+    // materially damaging outcome — a redeemed secret reaching durable storage — is what SD-5
+    // refuses). It is NOT presented as atomic.
+    let entry;
     try {
-      return await this.#transport.readFile(sandboxId, path);
+      entry = await this.#transport.statEntry(sandboxId, path);
+    } catch (err) {
+      if (err instanceof E2bTransportNotFoundError) throw new SandboxNotFoundError();
+      throw err;
+    }
+    if (entry.symlink) throw new E2bSymlinkRefusedError(path);
+    try {
+      // ★ `E5-F009` — BOUNDED. The read stops and refuses at the cap rather than materialising
+      // the file and measuring it afterwards, which is what made this a shared-process exposure
+      // once the wire route put the provider in the adapter-manager. The pre-digest admission
+      // check in the producer is only the cheap arm that avoids the read entirely; a file that
+      // GREW between enumeration and digest is refused here.
+      return await this.#transport.readFile(sandboxId, path, { maxBytes: E2B_MAX_ARTIFACT_BYTES });
     } catch (err) {
       if (err instanceof E2bTransportNotFoundError) throw new SandboxNotFoundError();
       throw err;
     }
   }
+
+  /**
+   * CLI-012 (ruling F7) — enumerate `root`, METADATA ONLY.
+   *
+   * ★ NO BYTES. This forwards the transport's own files-only/recursive/absolute/bounded
+   * listing (`E7-D09`, `filesOnlyFromListing`) and adds nothing to it but the port's shape.
+   * It must never grow a content field and must never be composed with `captureSandboxEntries`
+   * (readFile + sha256 in the daemon), which would route every file's bytes through a process
+   * dependency-pinned (E4-D01) precisely so it does not handle them.
+   */
+  async enumerateOutputs(sandboxId: string, root: string, ctx: ProviderOpContext): Promise<EnumerateOutputsResult> {
+    if (this.sandboxEnumerationMode === "none") throw new UnsupportedProviderOperation("enumerate_outputs");
+    if (!(ctx.deadlineMs > 0)) throw new Error("output enumeration budget exhausted before the listing");
+    let entries;
+    try {
+      entries = await boundedBySignal(
+        this.#transport.listDir(sandboxId, root),
+        AbortSignal.timeout(ctx.deadlineMs),
+        "output enumeration timed out",
+      );
+    } catch (err) {
+      if (err instanceof E2bTransportNotFoundError) throw new SandboxNotFoundError();
+      throw err;
+    }
+    return {
+      entries: entries.map((entry) => ({
+        path: entry.path,
+        sizeBytes: entry.sizeBytes,
+        symlink: entry.symlink,
+      })),
+    };
+  }
+
+  /**
+   * CLI-012 — declared `"metadata"`, and it is real: the method above reaches the sandbox
+   * through the transport's bounded `listDir` and returns descriptions only.
+   */
+  readonly sandboxEnumerationMode: SandboxEnumerationMode = "metadata";
 
   /**
    * DAT-009 — describe an in-sandbox file. METADATA ONLY; never content.
