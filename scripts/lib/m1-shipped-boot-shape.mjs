@@ -44,6 +44,9 @@ export const CANDIDATE_CONTROL_MARKERS = [
   // not the file passes the greps above and then dies at the first phase on the missing module
   // (Codex P2, PR #574). The grep proves the file EXISTS and that it is the redacting filter.
   ["scripts/m1-shipped-boot/log-filter.mjs", "redactKeyMaterialLine"],
+  // …and the FAIL-CLOSED arm of it: a candidate whose filter swallows a capture failure would
+  // report a truncated job log as clean (Codex P1, PR #574).
+  ["scripts/m1-shipped-boot/log-filter.mjs", "the job-log capture failed"],
 ];
 
 export const EVIDENCE_UPLOAD_PATH = "${{ env.M1_OUT }}/evidence/";
@@ -249,6 +252,14 @@ export function evaluateShippedBootWorkflowShape(text) {
     if (!src.includes(`grep -q "${marker}" ${file}`)) {
       v.push(`the lane must refuse a candidate whose ${file} lacks '${marker}' — it would run its own pre-control driver and report clean`);
     }
+  }
+
+  // The collect step is best-effort for COLLECTION, but must not swallow the filter's status.
+  if (/journey\.mjs collect[^\n]*\|\|\s*true/.test(src)) {
+    v.push("the collect step must not swallow the log filter's exit status with `|| true` — a failed capture would be judged clean");
+  }
+  if (!/statuses\[1\]/.test(src)) {
+    v.push("the collect step must propagate the log filter's own status (PIPESTATUS), so a failed capture fails the run");
   }
 
   // The directory the job log lives in must be created BEFORE the first teed step, and it must

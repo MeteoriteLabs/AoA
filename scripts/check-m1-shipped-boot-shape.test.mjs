@@ -230,7 +230,7 @@ test("REJECT: the keypair check untee'd — it is the step that handles the key"
 test("REJECT: a phase dropped from the lane entirely", () => {
   const text = mutate(
     real(),
-    '            node scripts/m1-shipped-boot/journey.mjs collect --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt" || true\n',
+    '            node scripts/m1-shipped-boot/journey.mjs collect --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"\n',
     "            true\n",
   );
   assert.ok(anyMatch(violationsOf(text), /must run the 'collect' phase/), violationsOf(text).join("\n"));
@@ -275,6 +275,18 @@ test("the candidate-controls gate covers the whole control set, the log FILTER i
       "scripts/m1-shipped-boot/journey.mjs:maskDirectivesFor",
       "scripts/m1-shipped-boot/journey.mjs:stripMaskDirectives",
       "scripts/m1-shipped-boot/log-filter.mjs:redactKeyMaterialLine",
+      "scripts/m1-shipped-boot/log-filter.mjs:the job-log capture failed",
     ],
   );
+});
+
+test("REJECT: `|| true` on the collect pipeline, or the filter's status not propagated (Codex P1)", () => {
+  const swallowed = mutate(
+    real(),
+    '            node scripts/m1-shipped-boot/journey.mjs collect --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"\n',
+    '            node scripts/m1-shipped-boot/journey.mjs collect --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt" || true\n',
+  );
+  assert.ok(anyMatch(violationsOf(swallowed), /must not swallow the log filter's exit status/), violationsOf(swallowed).join("\n"));
+  const unpropagated = mutate(real(), '            [ "${statuses[1]}" -eq 0 ]', '            [ 0 -eq 0 ]');
+  assert.ok(anyMatch(violationsOf(unpropagated), /must propagate the log filter's own status/), violationsOf(unpropagated).join("\n"));
 });

@@ -804,5 +804,13 @@ They are recorded because each would have made the control worse than none:
    on the missing module. The gate greps that file as well, and a test pins the whole marker SET —
    iterating the list cannot notice a list that lost an entry, which a surviving mutation showed.
 
+10. **`|| true` on the collect step swallowed the filter's fail-closed exit.** Collection itself
+    stays best-effort — a failed journey must still upload what it has — but the FILTER's status is
+    now read from `PIPESTATUS` and fails the run, so a capture that broke during `collect` can no
+    longer leave the scan judging a truncated log and calling it clean.
+11. **The candidate gate now names the FAIL-CLOSED filter,** not merely a filter: an ancestor that
+    carries `redactKeyMaterialLine` but swallows a capture failure would restore exactly the
+    failure mode item 8 fixed. The gate greps the fail-closed arm's own message.
+
 **Status unchanged.** This is a control added after the fact to a run that was already clean; it
 neither re-opens nor re-decides §12's keyed acceptance.

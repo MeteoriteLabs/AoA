@@ -145,6 +145,7 @@ jobs:
           grep -q "stripMaskDirectives" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its leak scan does not read the job-log surface (missing stripMaskDirectives in scripts/m1-shipped-boot/journey.mjs)"; exit 1; }
           grep -q "KEY_MATERIAL_MARKERS" scripts/lib/m1-shipped-boot.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: it cannot scan for key material by shape (missing KEY_MATERIAL_MARKERS in scripts/lib/m1-shipped-boot.mjs)"; exit 1; }
           grep -q "redactKeyMaterialLine" scripts/m1-shipped-boot/log-filter.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: it has no redacting log filter, and every phase pipeline would die on the missing module (missing redactKeyMaterialLine in scripts/m1-shipped-boot/log-filter.mjs)"; exit 1; }
+          grep -q "the job-log capture failed" scripts/m1-shipped-boot/log-filter.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its log filter SWALLOWS a capture failure, so a truncated job log would be reported clean (missing the fail-closed arm in scripts/m1-shipped-boot/log-filter.mjs)"; exit 1; }
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -253,8 +254,15 @@ jobs:
       - name: Collect the evidence (redacted)
         if: always()
         run: |
+          # Collection stays best-effort — a failed journey must still upload what it has — but the
+          # FILTER's status is not swallowed with it (Codex P1): a capture that failed here would
+          # leave the leak scan judging a truncated job log and calling it clean.
           if [ -f "$M1_OUT/state.json" ]; then
-            node scripts/m1-shipped-boot/journey.mjs collect --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt" || true
+            set +e
+            node scripts/m1-shipped-boot/journey.mjs collect --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
+            statuses=("${PIPESTATUS[@]}")
+            set -e
+            [ "${statuses[1]}" -eq 0 ] || { echo "::error::DEP-015 the job-log capture failed during collect; the log surface is incomplete"; exit 1; }
           fi
 
       # HARD pre-upload check (ruled in under F2 after the distinct review of DEP-015): every job
