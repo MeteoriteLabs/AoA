@@ -194,6 +194,7 @@ produced by removing the implementation from the tree and running the suite agai
 | M18 | repeated/edge separators not collapsed in the key | **killed** — 1 failed |
 | M19 | the probe serializes the sandbox’s own env NAMES | **killed** — 7 failed |
 | M20 | the CROSS-TENANT arm names the raw variable, bypassing the gate | **killed** — 1 failed |
+| M21 | the unreported-name count increments per CALL, not per variable | **killed** — 1 failed |
 
 ### 4a. Two defects this review caught before the PR, worth recording
 
@@ -444,6 +445,11 @@ Positive controls: a foreign-marked value under a neutral name (`BUILD_sk_live_�
 with no name; under a credential-shaped name both arms fire and it is still never named; under a
 KNOWN name (`ANTHROPIC_API_KEY`) it is still named, so the arm keeps its diagnostics. Mutation
 **M20**.
+
+A second finding on the follow-up PR #568, also fixed: a variable hit by BOTH arms incremented
+`unreportedPresentCount` twice, corrupting a persisted diagnostic. The unreported names now live in
+a SET whose SIZE is serialized — the set itself never leaves the probe, which is the point of not
+naming them — so one variable counts once however many arms fire on it. Mutation **M21**.
 
 ## 9. CI evidence
 

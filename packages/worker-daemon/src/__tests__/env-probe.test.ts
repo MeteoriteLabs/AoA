@@ -261,6 +261,9 @@ describe("DEP-017 — the in-sandbox probe script (real node execution)", () => 
     const both = runProbe({ SECRET_sk_live_ABC123: marked(ORG_B, "model_provider") }, ORG_A);
     expect(both.report!.present.sort()).toEqual([ENV_PROBE_VALUE_CLASSES.crossTenant, ENV_PROBE_UNCLASSIFIED]);
     expect(both.report!.presentNames).toEqual([]);
+    // ONE variable, hit by BOTH arms, counted ONCE - the count is a diagnostic, not a tally of
+    // classifications (Codex P2, 9th round).
+    expect(both.report!.unreportedPresentCount).toBe(1);
     expect(both.stdout).not.toContain("sk_live_ABC123");
     // ...while the same value under a KNOWN name is still named, so the arm keeps its diagnostics.
     const known = runProbe({ ANTHROPIC_API_KEY: marked(ORG_B, "model_provider") }, ORG_A);
