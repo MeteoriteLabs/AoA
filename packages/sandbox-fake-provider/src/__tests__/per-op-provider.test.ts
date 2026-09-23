@@ -15,7 +15,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { UnsupportedProviderOperation, createFakeSandboxProviderPort } from "../index.js";
+import { SandboxNotFoundError, UnsupportedProviderOperation, createFakeSandboxProviderPort } from "../index.js";
 
 const LABELS_A = {
   organizationId: "0d016a00-0000-4000-8000-00000000000a",
@@ -158,5 +158,56 @@ describe("per-op reference provider — an EMPTY idempotency key is not a key (D
     const p = createFakeSandboxProviderPort();
     const first = await p.create(spec(LABELS_A), ctx("k"));
     expect((await p.create(spec(LABELS_A), ctx("k"))).sandboxId).toBe(first.sandboxId);
+  });
+});
+
+describe("per-op reference provider — the not-found class must be the CANONICAL one (DEP-019, Codex P2)", () => {
+  // ★ THE GATE'S CONVERSION IS AN IDENTITY TEST. `gateOwnedOp` does
+  // `if (err instanceof SandboxNotFoundError) throw new ResourceNotAvailableError()` with the class
+  // imported from `@armyofagents/worker-daemon`. A same-named LOCAL class fails that `instanceof`,
+  // so the error skips the uniform conversion and escapes the modelled-error fence as a generic
+  // wire failure instead of "already gone" — which is the idempotent cleanup/reconcile path.
+  //
+  // This package cannot import worker-daemon, so the canonical class is stood in for here. What is
+  // asserted is the MECHANISM the gate depends on: with the injection the thrown error IS an
+  // instance of the host's class, and WITHOUT it — the positive control — it is not.
+  class CanonicalSandboxNotFoundError extends Error {
+    constructor() {
+      super("sandbox not found");
+      this.name = "SandboxNotFoundError";
+    }
+  }
+  const gateWouldConvert = (err: unknown) => err instanceof CanonicalSandboxNotFoundError;
+
+  it("★ injected: the thrown error passes the gate's instanceof conversion", async () => {
+    const p = createFakeSandboxProviderPort({ notFound: () => new CanonicalSandboxNotFoundError() });
+    const err = await p.inspect("gone").then(() => null, (e: unknown) => e);
+    expect(gateWouldConvert(err)).toBe(true);
+  });
+
+  it("★★★ POSITIVE CONTROL — the DEFAULT local class does NOT pass it, though its name is identical", () => {
+    const local = new SandboxNotFoundError();
+    expect(local.name).toBe("SandboxNotFoundError");
+    // Same name, different identity: exactly the case that slipped past the gate.
+    expect(gateWouldConvert(local)).toBe(false);
+  });
+
+  it("the injection reaches EVERY op that can name a vanished sandbox", async () => {
+    const p = createFakeSandboxProviderPort({ notFound: () => new CanonicalSandboxNotFoundError() });
+    for (const call of [
+      () => p.inspect("gone"),
+      () => p.cancel("gone"),
+      () => p.kill("gone"),
+      () => p.execute({ sandboxId: "gone", command: "claude", args: [], env: {} }, ctx("k")),
+    ]) {
+      const err = await call().then(() => null, (e: unknown) => e);
+      expect(gateWouldConvert(err)).toBe(true);
+    }
+  });
+
+  it("destroy and reconcile_cleanup still do NOT throw — they are idempotent by contract", async () => {
+    const p = createFakeSandboxProviderPort({ notFound: () => new CanonicalSandboxNotFoundError() });
+    expect((await p.destroy("gone")).cleanupStatus).toBe("success");
+    expect((await p.reconcileCleanup("gone")).cleanupStatus).toBe("success");
   });
 });

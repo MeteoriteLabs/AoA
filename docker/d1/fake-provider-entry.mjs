@@ -217,11 +217,23 @@ async function startWireServer() {
     throw new Error("the worker-daemon build exports no ENV_PROBE_METADATA_URL; refusing to run the probe unpinned");
   }
 
+  // ★ THE CANONICAL not-found CLASS (Codex P2, PR #572). `gateOwnedOp` converts a vanished sandbox
+  // with `err instanceof SandboxNotFoundError` imported from worker-daemon; `instanceof` is an
+  // IDENTITY test, so a same-named local class escapes the conversion and the modelled-error fence.
+  // Taken from the wire tree's OWN worker-daemon build, like the probe pins above.
+  const { SandboxNotFoundError } = await import(
+    `${wireAppDir}/node_modules/@armyofagents/worker-daemon/dist/index.js`
+  );
+  if (typeof SandboxNotFoundError !== "function") {
+    throw new Error("the worker-daemon build exports no SandboxNotFoundError; refusing to serve a wire whose not-found errors cannot be converted");
+  }
+
   const { createProviderServer } = await import(`${wireAppDir}/dist/server.js`);
   const wireProvider = createFakeSandboxProviderPort({
     runNodeEval: createNodeEvalRunner(),
     allowedProbeScriptDigests,
     allowedProbeMetadataUrl: ENV_PROBE_METADATA_URL,
+    notFound: () => new SandboxNotFoundError(),
   });
   const server = createProviderServer({ provider: wireProvider, controlPlanePublicKey });
   server.listen(wirePort, "0.0.0.0", () =>

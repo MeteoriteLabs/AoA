@@ -563,12 +563,26 @@ jobs:
             echo "::error::m1-spine PASSED with a duplicate usage event — the cardinality assertion is >= 1, not == 1"
             exit 1
           fi
-          grep -F '[m1-spine:usage]' "$out" || {
+          # ★ NARROWED (Codex P2, PR #572, ruled FIX — `DEP-019-result.md` §13.7). This used to accept
+          # ANY `[m1-spine:usage]` failure, which `usage:no_usage_event` also carries — so the step
+          # could pass on the ZERO direction while claiming to prove the `> 1` one. It now requires
+          # the cardinality code itself.
+          grep -F 'usage:not_exactly_one' "$out" || {
             cat "$out"
-            echo "::error::m1-spine went red on the duplicate run, but NOT on the usage-cardinality assertion"
+            echo "::error::m1-spine went red on the duplicate run, but NOT on the usage-cardinality (> 1) assertion"
             exit 1
           }
-          echo "positive control: a duplicate usage event reds the cardinality assertion, as required"
+          # ★★★ WHAT THIS CONTROL DOES AND DOES NOT COVER, stated so nobody has to re-derive it.
+          # It exercises the HARNESS-driven attempts ONLY. It cannot reach the worker-driven one, and
+          # that is a property of the product rather than of this lane: `createUsageObserver` derives
+          # the event from the FINAL stream-json result line, so the worker emits AT MOST ONE usage
+          # event and the reference provider cannot make it emit two. The only harness route to a
+          # second event on that attempt is a foreign-worker upload, which the fenced ingest denies
+          # (the profile proves that denial in its own cross-tenant case).
+          # The worker-driven attempt's cardinality is therefore covered from the OTHER side: the
+          # usage-suppressed control above reds it at ZERO (`usage:no_usage_event` on the
+          # worker-driven verdict), and the passing profile asserts EXACTLY ONE.
+          echo "positive control: a duplicate usage event reds the cardinality assertion on the HARNESS attempts, as required"
 
       # DEP-019 — THE NOT-THE-EXECUTOR CONTROL, at the lane level.
       #

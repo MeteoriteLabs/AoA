@@ -356,6 +356,19 @@ that it is transient rather than caused by this change is threefold: the SAME jo
 Stated rather than re-run, because the planning session's instruction for this cycle was to stop.
 A reviewer who wants the sibling job green on this exact head should re-fire the probe branch.
 
+### 11c. ★ THE CITED RUNS PREDATE THE `DEP-018` MERGE — stated before anyone has to find it
+
+`DEP-018` landed on the program tip (`4ef301547`) and was merged into this branch at `db24644a2`.
+Unlike the earlier program-tip merge (see below), **this one DID change the `m1-spine` lane's own
+inputs**: `tests/d1/lib/e6f-harness.mjs` (the shared harness, +720 lines) and
+`.github/workflows/d1-merge-train.yml` (+148 lines, the fault-matrix job). Measured, not assumed:
+`git diff 8efd0fce1 db24644a2 -- tests/d1 .github/workflows/d1-merge-train.yml`.
+
+So runs `35849990593` and `35839618733` are evidence for the code as it stood BEFORE that merge, and
+**not** for this head. A fresh probe was fired on the merged tree for exactly that reason; its
+verdict is recorded in §11d. Nothing above is rewritten — those runs happened and are cited for the
+trees they ran on.
+
 ★ The merge with the program tip (`499ec4d1c`) that sits between those heads touched **no** input of
 this lane: `git diff ec0a2d132 13ed9c7f7 -- server/src packages/db/src packages/shared/src
 packages/worker-protocol/src packages/sandbox-fake-provider docker docker-compose.d1.yml tests/d1
@@ -541,6 +554,19 @@ already used for the probe-script digest and the metadata URL —
 taking `SandboxNotFoundError` from the wire tree's own `@armyofagents/worker-daemon`. The package
 keeps its local class for in-process callers and never imports worker-daemon.
 
+**SHIPPED (ruled FIX, within the bound — no new secret, network path or mount).** Exactly that:
+`FakeSandboxProviderPortOptions.notFound`, defaulting to the local class for in-process callers, and
+the D1 host passes the canonical one from the wire tree's own worker-daemon build, refusing to serve
+the wire if that export is missing.
+
+**The positive control the ruling asked for:** `per-op-provider.test.ts` stands in for the canonical
+class (this package may not import worker-daemon) and asserts the MECHANISM the gate depends on —
+with the injection the thrown error passes `instanceof`, and **WITHOUT it the default local class
+does NOT, although its `name` is identical**. That is the exact shape that slipped past the gate.
+Three more cases: the injection reaches every op that can name a vanished sandbox
+(`inspect`/`cancel`/`kill`/`execute`), and `destroy`/`reconcile_cleanup` still do not throw at all,
+because they are idempotent by contract.
+
 ### 13.7 — P2: `duplicate` mode does not reach the worker-driven attempt
 
 *Codex, `tests/d1/m1-spine.test.mjs:431`.* **Verified: true, and it is the same family as 13.1 —
@@ -562,6 +588,21 @@ correctly denies (§3a proves that denial). So the options are:
 (c) give the worker a way to emit a duplicate, which is a daemon change and out of this ticket.
 **My recommendation is (b)** — it is the only one that does not make the control assert something
 other than what its name says.
+
+**SHIPPED (ruled FIX, taking recommendation (b); within the bound).** Two changes, both in the lane
+step:
+
+1. **It was also too loose in a second way.** The step required any `[m1-spine:usage]` failure — and
+   `usage:no_usage_event` carries that marker too, so the duplicate control could pass on the ZERO
+   direction while claiming to prove the `> 1` one. It now requires `usage:not_exactly_one`.
+2. **What it covers is written into the step**, so nobody re-derives it: this control exercises the
+   HARNESS-driven attempts only; the worker-driven attempt's cardinality is covered from the other
+   side — the usage-suppressed control reds it at ZERO (`usage:no_usage_event` on the WORKER-DRIVEN
+   verdict, §13.1) and the passing profile asserts EXACTLY ONE.
+
+The `> 1` direction on the worker path stays unreachable, and that is a property of the product, not
+of this lane: `createUsageObserver` derives the event from the FINAL stream-json result line, so the
+worker emits at most one and no provider can make it emit two.
 
 ### What a reviewer should take from this section
 

@@ -132,8 +132,22 @@ export const PER_OP_CORE_OPERATIONS = Object.freeze([
   "reconcile_cleanup",
 ] as const);
 
-/** Raised when an op names a sandbox this provider does not hold. Duck-typed on `name` so the
- * adapter-manager's classification can see it without this package importing its class. */
+/**
+ * Raised when an op names a sandbox this provider does not hold.
+ *
+ * ★★★ DUCK-TYPING IS NOT ENOUGH AT THE GATE (Codex P2, PR #572, verified at source). The
+ * adapter-manager converts a vanished sandbox with
+ * `if (err instanceof SandboxNotFoundError) throw new ResourceNotAvailableError()`
+ * (`packages/adapter-manager/src/owned-op-gate.ts`), and that class is imported from
+ * `@armyofagents/worker-daemon`. `instanceof` is an IDENTITY test, so this same-named local class
+ * fails it: the error would skip the uniform conversion and escape the modelled-error fence as a
+ * generic wire failure instead of "already gone", which is the idempotent cleanup/reconcile path.
+ *
+ * So the constructor is INJECTABLE (`FakeSandboxProviderPortOptions.notFound`). A host that serves
+ * this provider over the gated wire passes the CANONICAL class from its own worker-daemon build —
+ * the same no-second-copy pattern as the probe-script digest and the metadata URL — and this local
+ * class remains the default for in-process callers, which have no gate to satisfy.
+ */
 export class SandboxNotFoundError extends Error {
   constructor() {
     super("sandbox not found");
@@ -162,6 +176,12 @@ export interface FakeSandboxProviderPortOptions {
   readonly allowedProbeMetadataUrl?: string;
   /** Overrides the canned units the scripted transcript reports. The D1 lane never does. */
   readonly usage?: FakeProviderUsageV1;
+  /**
+   * DEP-019 (Codex P2) — the not-found error this provider throws. A host serving the GATED wire
+   * MUST pass the canonical `SandboxNotFoundError` from `@armyofagents/worker-daemon`, because the
+   * adapter-manager's conversion is an `instanceof` IDENTITY test. Default: the local class.
+   */
+  readonly notFound?: () => Error;
   /** Injectable id source, so a test can pin every id. Default: `randomUUID`. */
   readonly newId?: () => string;
 }
@@ -189,9 +209,10 @@ export function createFakeSandboxProviderPort(options: FakeSandboxProviderPortOp
   let opCounter = 0;
   const opId = (op: string) => `fake-${op}-${++opCounter}`;
 
+  const notFound = options.notFound ?? (() => new SandboxNotFoundError());
   const mustGet = (sandboxId: string): SandboxRecord => {
     const record = sandboxes.get(sandboxId);
-    if (record === undefined) throw new SandboxNotFoundError();
+    if (record === undefined) throw notFound();
     return record;
   };
 
