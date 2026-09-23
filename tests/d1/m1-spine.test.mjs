@@ -71,6 +71,8 @@ import {
   placeSpineAttemptOnReplica,
   querySpineAttempt,
   querySpineControl,
+  runDistributedDrainCli,
+  queryDrainAudit,
 } from "./lib/e6f-harness.mjs";
 import {
   M1_SPINE_TENANTS,
@@ -78,11 +80,13 @@ import {
   M1_SPINE_AGENT_ADAPTER_TYPE,
   M1_SPINE_WORKLOAD,
   M1_SPINE_CONTROL_PLANE_REPLICAS,
+  M1_SPINE_CANARY_TARGET_SLUG,
   evaluateReplicaRollout,
   evaluateEnabledTenantSpine,
   evaluateControlTenant,
   evaluateCrossTenantIsolation,
   evaluateEnvProbeObservability,
+  evaluateRollbackRehearsal,
   formatViolations,
 } from "../../scripts/lib/m1-spine-assertions.mjs";
 
@@ -179,10 +183,17 @@ function batchIdentity(ids, tenant, offer) {
 }
 
 /** Enroll a fresh worker for `tenant` against its per-run target and stamp liveness. */
-function enrollWorker(tenant, ids) {
+function enrollWorker(tenant, ids, { canarySlug = false } = {}) {
   const deviceKey = generateDeviceKey();
   const code = newEnrollmentCode();
-  const target = step(seedSpineTarget({ tenant, slug: ids.slug, targetId: ids.targetId, code }), `${tenant.key} target`);
+  // Only the tenant's JOURNEY target carries the canary slug: `execution_targets` is unique on
+  // (organization_id, slug), and that slug is what the production credential binding routes to, so
+  // exactly one target per tenant per run may hold it. Every other target in the run (the isolation
+  // case's, the control tenant's) keeps its ordinary per-run slug.
+  const target = step(seedSpineTarget({
+    tenant, slug: ids.slug, targetId: ids.targetId, code,
+    ...(canarySlug ? { targetSlug: M1_SPINE_CANARY_TARGET_SLUG } : {}),
+  }), `${tenant.key} target`);
   assert.equal(target.ok, true, `${tenant.key} target seed: ${truncate(target)}`);
   const enrolled = step(
     enroll({ code: code.code, hello: buildWorkerHello({ workerId: ids.workerId, targetId: ids.targetId }), deviceKey }),
@@ -238,7 +249,7 @@ for (const tenant of M1_SPINE_TENANTS.enabled) {
     assert.equal(org.ok, true, `${tenant.key} org seed: ${truncate(org)}`);
     assert.equal(org.agentModel, M1_SPINE_AGENT_MODEL, `${tenant.key} agent model`);
     assert.equal(org.agentAdapterType, M1_SPINE_AGENT_ADAPTER_TYPE, `${tenant.key} agent adapter type`);
-    const worker = enrollWorker(tenant, ids);
+    const worker = enrollWorker(tenant, ids, { canarySlug: true });
     const job = step(seedSpineJob({
       tenant,
       issueId: ids.issueId,
@@ -415,9 +426,9 @@ test("m1-spine: tenant B cannot write to, acknowledge or read tenant A's attempt
 
   const after = step(querySpineAttempt({ organizationId: A.organizationId, jobId: ids.jobId }), "isolation rows after");
   const observation = {
-    hostileEventUpload: { status: hostileUpload.status, ackStatus: hostileUpload.body?.ack?.status ?? null },
-    ownEventUpload: { status: ownUpload.status, ackStatus: ownUpload.body?.ack?.status ?? null },
-    hostileAck: { status: hostileAck.status, outcome: hostileAck.body?.outcome ?? null },
+    hostileEventUpload: { status: hostileUpload.status, ackStatus: hostileUpload.body?.ack?.status ?? null, code: hostileUpload.body?.code ?? null },
+    ownEventUpload: { status: ownUpload.status, ackStatus: ownUpload.body?.ack?.status ?? null, code: ownUpload.body?.code ?? null },
+    hostileAck: { status: hostileAck.status, outcome: hostileAck.body?.outcome ?? null, code: hostileAck.body?.code ?? null },
     foreignScopeEventCount: foreignRead.total,
     ownScopeEventCount: ownRead.total,
     costRowsBeforeHostile: before.costRows.length,
@@ -499,4 +510,55 @@ test("m1-spine: the control tenant is refused distributed execution on every rep
   if (counts.leases !== 0) violations.push({ code: "control:has_leases", message: `control tenant has ${counts.leases} leases` });
   evidence.verdicts.control = violations;
   assert.deepEqual(violations, [], `control tenant violations:\n${formatViolations(violations)}`);
+});
+
+// ── 4. the rollback rehearsal (MIG-009), criterion 6 ─────────────────────────
+//
+// LAST in the file on purpose: the drain cancels every NON-TERMINAL distributed attempt across
+// every admitted Organization, so anything it ran before would be cancelled out from under the
+// case that owns it. The journey attempts above are already terminal, which is what makes them the
+// selectivity control here.
+
+test("m1-spine: the MIG-009 drain CLI rolls back live distributed work, per tenant and attributed", { skip: SKIP }, () => {
+  const operator = `m1-spine-${randomUUID().slice(0, 8)}`;
+  const drainable = [];
+  for (const tenant of M1_SPINE_TENANTS.enabled) {
+    const ids = { ...newScenarioIds(), issueId: randomUUID(), runId: randomUUID() };
+    const worker = enrollWorker(tenant, ids);
+    const job = step(seedSpineJob({
+      tenant, issueId: ids.issueId, runId: ids.runId, jobId: ids.jobId, attemptId: ids.attemptId,
+      placement: { targetId: ids.targetId, registeredProfileHash: worker.target.registeredProfileHash, providerDigest: worker.target.providerDigest },
+    }), `${tenant.key} drainable job`);
+    assert.equal(job.ok, true, `${tenant.key} drainable job seed: ${truncate(job)}`);
+    drainable.push({ tenantKey: tenant.key, organizationId: tenant.organizationId, companyId: tenant.companyId, jobId: ids.jobId });
+  }
+
+  const drain = runDistributedDrainCli({ operator });
+  const terminalJobIds = M1_SPINE_TENANTS.enabled
+    .map((t) => evidence.enabled[t.key]?.jobId)
+    .filter((jobId) => typeof jobId === "string");
+  const audit = step(queryDrainAudit({ jobIds: [...drainable.map((d) => d.jobId), ...terminalJobIds] }), "drain audit");
+  assert.equal(audit.ok, true, `drain audit probe: ${truncate(audit)}`);
+
+  evidence.rollbackRehearsal = {
+    operator,
+    exitCode: drain.status,
+    reportLines: drain.lines,
+    stderr: drain.stderr.slice(0, 2000),
+    drainable,
+    terminalJobIds,
+    audit: audit.audit,
+    attempts: audit.attempts,
+    commands: audit.commands,
+  };
+
+  const violations = evaluateRollbackRehearsal({
+    exitCode: drain.status,
+    expectedActorId: `operator-cli:${operator}`,
+    drainableJobs: drainable,
+    auditRows: audit.audit,
+    terminalJobIds,
+  });
+  evidence.verdicts.rollbackRehearsal = violations;
+  assert.deepEqual(violations, [], `rollback rehearsal violations:\n${formatViolations(violations)}\n--- CLI stdout ---\n${truncate(drain.stdout, 4000)}\n--- CLI stderr ---\n${truncate(drain.stderr, 2000)}`);
 });

@@ -2241,11 +2241,18 @@ try {
 /** One spine tenant's per-run organization-scoped target + single-use enrolment code, with the
  * same provider profile and registered-profile digests as seedTenancyOrg. Returns
  * { ok, registeredProfileHash, providerDigest }. */
-export function seedSpineTarget({ tenant, slug, targetId, code, policyHash = POLICY_HASH, capabilityCeiling = WORKER_CAPABILITIES }) {
+export function seedSpineTarget({ tenant, slug, targetId, code, targetSlug, policyHash = POLICY_HASH, capabilityCeiling = WORKER_CAPABILITIES }) {
   const params = {
     organizationId: tenant.organizationId,
     slug,
     targetId,
+    // The slug the PRODUCTION canary credential binding routes to
+    // (`CANARY_EXECUTION_TARGET_SLUG`, server/src/services/canary-credential-binding.ts). Naming the
+    // tenant's target with it is what lets the REAL placement service select this target, so the
+    // profile's enabled-path control is a working placement and not merely a non-legacy one
+    // (Codex P1, PR #566). `execution_targets` is unique on (organization_id, slug), so every
+    // tenant may carry the same slug.
+    targetSlug: targetSlug ?? ("m1s-target-" + slug),
     locatorHash: code.locatorHash,
     secretHash: code.secretHash,
     policyHash,
@@ -2293,10 +2300,17 @@ try {
   };
   const registeredProfileHash = sha256(canonicalizeJsonV1(registeredProfile));
   const targetCapabilities = { providerConstraints: { profileId: provider.profileId, version: provider.version, digest: provider.digest } };
+  // The canary slug is a SINGLE per-Organization slot (execution_targets is unique on
+  // (organization_id, slug)) and these Organizations are FIXED, so a previous run of this profile
+  // already holds it. Retire the previous holder by renaming it rather than deleting it: the row is
+  // referenced by that run's workers and leases, and its history is part of the evidence.
+  await sql\`UPDATE execution_targets
+    SET slug = slug || '-superseded-' || left(id::text, 8), status = 'disabled', updated_at = now()
+    WHERE organization_id = \${P.organizationId} AND slug = \${P.targetSlug}\`;
   await sql\`INSERT INTO execution_targets
     (id, organization_id, scope, target_authority_key, device_generation, slug, kind, trust_class,
      status, capabilities, registered_profile, registered_profile_hash, provider_constraint_profile, last_seen_at)
-    VALUES (\${P.targetId}, \${P.organizationId}, 'organization', \${authorityKey}, 1, \${"m1s-target-" + P.slug},
+    VALUES (\${P.targetId}, \${P.organizationId}, 'organization', \${authorityKey}, 1, \${P.targetSlug},
       'dedicated_worker', 'dedicated_tenant', 'active', \${sql.json(targetCapabilities)}, \${sql.json(registeredProfile)},
       \${registeredProfileHash}, \${sql.json(provider)}, now())\`;
   await sql\`INSERT INTO worker_enrollment_code_routes (locator_hash, candidate_organization_id, expires_at)
@@ -2547,6 +2561,56 @@ try {
       placement_lease_eligible AS "leaseEligible", placement_reason_code AS "reasonCode", placement_mode AS mode
     FROM job_attempts WHERE organization_id = \${P.organizationId} AND job_id = ANY(\${P.jobIds}::uuid[])\`;
   report({ ok: true, jobEvents, costRows, receipts, leases, attempts });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script);
+}
+
+/** MIG-009 — run the OPERATOR drain CLI inside the control-plane container, with that container's
+ * own env (owner DSN + the bounded app/operator pools + the distributed flag), exactly as an
+ * operator would during a rollback rehearsal. Returns { status, stdout, stderr, lines } where
+ * `lines` are the parsed JSON report lines the CLI prints. */
+export function runDistributedDrainCli({ operator, timeout = 180_000 }) {
+  const res = spawnSync(
+    "docker",
+    ["compose", "-f", COMPOSE_FILE, "exec", "-T", "control-plane",
+      "node", `${CP_DIST}/cli/drain-distributed-execution.js`, "--operator", operator],
+    { encoding: "utf8", timeout, maxBuffer: 16 * 1024 * 1024 },
+  );
+  const stdout = res.stdout ?? "";
+  const lines = [];
+  for (const line of stdout.split(/\r?\n/)) {
+    const text = line.trim();
+    if (!text.startsWith("{")) continue;
+    try { lines.push(JSON.parse(text)); } catch { /* not a report line */ }
+  }
+  return { status: res.status, error: res.error, stdout, stderr: res.stderr ?? "", lines };
+}
+
+/** The drain's audit trail for a set of jobs: the `job.drain.requested` activity rows MIG-009
+ * writes in the same transaction as each cancel, plus each attempt's current status. Runs in
+ * control-plane under the owner DSN. */
+export function queryDrainAudit({ jobIds }) {
+  const params = { jobIds };
+  const script = `
+import postgres from "postgres";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  const audit = await sql\`SELECT action, entity_id AS "entityId", company_id AS "companyId",
+      organization_id AS "organizationId", details->>'organizationId' AS "detailsOrganizationId",
+      actor_type AS "actorType", actor_id AS "actorId"
+    FROM activity_log WHERE action = 'job.drain.requested' AND entity_id = ANY(\${P.jobIds})\`;
+  const attempts = await sql\`SELECT job_id AS "jobId", status FROM job_attempts
+    WHERE job_id = ANY(\${P.jobIds}::uuid[])\`;
+  const commands = await sql\`SELECT job_id AS "jobId", command_kind AS "commandKind", reason FROM job_control_commands
+    WHERE job_id = ANY(\${P.jobIds}::uuid[])\`;
+  report({ ok: true, audit, attempts, commands });
 } catch (error) {
   report({ ok: false, error: String(error && error.message ? error.message : error) });
 } finally {

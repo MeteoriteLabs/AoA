@@ -6,10 +6,17 @@
 # It changes the base D1 stack in exactly three ways and touches nothing else, so the existing
 # two-worker merge train (`bounded` / `foundation`, which never passes this file) is unchanged:
 #
-#   1. ONE worker. `worker-a` is moved into a profile that nothing enables, so only `worker-b`
-#      (the WRK-017 container that ENROLS at boot) runs. `test-runner`'s dependency list is
-#      replaced (`!override`) because a dependency on a service outside the active profiles is a
-#      compose error.
+#   1. ONE worker AND ONE control plane. `worker-a` and `control-plane-b` are moved into a profile
+#      that nothing enables, so only `worker-b` (the WRK-017 container that ENROLS at boot) and the
+#      single `control-plane` run — the topology `M1-D1-SPINE` names: "one control-plane instance,
+#      one separately deployed worker" (`docs/replatform/epic-regrooming/scope-triage.md`, Codex P1
+#      on PR #566). A second replica would let HA behaviour affect evidence presented as
+#      single-control-plane. `test-runner`'s dependency list is replaced (`!override`) because a
+#      dependency on a service outside the active profiles is a compose error.
+#      ★ The S0-8 amendment — the rollout policy identical on BOTH replica blocks — is a CONFIG
+#      claim and is unchanged: this file still carries it for `control-plane-b`, and the static
+#      check still holds both blocks to the same byte-for-byte value, so the two agree the moment a
+#      second replica is brought up.
 #   2. The F10 TENANT SET, on EVERY control-plane replica, identically. Two Organizations are
 #      `canary` (CLI-006: placement presents canary as `active`, so their attempts are
 #      lease-eligible); the CONTROL Organization is absent, which the rollout source reads as
@@ -30,6 +37,7 @@ services:
       AOA_DISTRIBUTED_EXECUTION_ROLLOUT: '{"organizations":{"0d016a00-0000-4000-8000-00000000000a":{"mode":"canary","workloads":["batch"]},"0d016b00-0000-4000-8000-00000000000b":{"mode":"canary","workloads":["batch"]}}}'
 
   control-plane-b:
+    profiles: ["m1-spine-excluded"]
     environment:
       AOA_DISTRIBUTED_EXECUTION_ROLLOUT: '{"organizations":{"0d016a00-0000-4000-8000-00000000000a":{"mode":"canary","workloads":["batch"]},"0d016b00-0000-4000-8000-00000000000b":{"mode":"canary","workloads":["batch"]}}}'
 
@@ -39,8 +47,6 @@ services:
   test-runner:
     depends_on: !override
       control-plane:
-        condition: service_healthy
-      control-plane-b:
         condition: service_healthy
       worker-b:
         condition: service_healthy

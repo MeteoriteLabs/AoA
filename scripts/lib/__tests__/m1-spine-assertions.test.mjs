@@ -30,6 +30,8 @@ import {
   evaluateControlTenant,
   evaluateCrossTenantIsolation,
   evaluateEnvProbeObservability,
+  evaluateRollbackRehearsal,
+  DRAIN_AUDIT_ACTION,
   ENV_PROBE_LOG_PREFIX,
 } from "../m1-spine-assertions.mjs";
 
@@ -399,9 +401,9 @@ test("a journey the ingest did not fully accept is refused before cost is judged
 
 function goodIsolation(overrides = {}) {
   return {
-    hostileEventUpload: { status: 403, ackStatus: null },
+    hostileEventUpload: { status: 401, ackStatus: null, code: "unauthorized" },
     ownEventUpload: { status: 200, ackStatus: "accepted" },
-    hostileAck: { status: 403, outcome: null },
+    hostileAck: { status: 409, outcome: null, code: "stale_fence" },
     foreignScopeEventCount: 0,
     ownScopeEventCount: 3,
     costRowsBeforeHostile: 1,
@@ -424,6 +426,24 @@ test("a foreign worker whose event upload is ACCEPTED is refused", () => {
 test("a denial whose SAME-TENANT control also failed proves nothing and is refused", () => {
   const v = evaluateCrossTenantIsolation(goodIsolation({ ownEventUpload: { status: 409, ackStatus: null } }));
   assert.ok(v.map((x) => x.code).includes("isolation:own_event_denied"));
+});
+
+test("a hostile request that merely FAILED is not a denial (Codex P2)", () => {
+  for (const upload of [
+    { status: 500, ackStatus: null, code: "internal_unavailable" },
+    { status: 0, ackStatus: null, code: null },
+    { status: 401, ackStatus: null, code: "malformed" },
+  ]) {
+    assert.ok(
+      evaluateCrossTenantIsolation(goodIsolation({ hostileEventUpload: upload })).map((x) => x.code)
+        .includes("isolation:foreign_event_not_denied"),
+      JSON.stringify(upload),
+    );
+  }
+  assert.ok(
+    evaluateCrossTenantIsolation(goodIsolation({ hostileAck: { status: 500, outcome: null, code: null } }))
+      .map((x) => x.code).includes("isolation:foreign_ack_not_denied"),
+  );
 });
 
 test("a foreign worker acknowledging another tenant's lease is refused", () => {
@@ -473,8 +493,8 @@ function goodControl(overrides = {}) {
       placements: [
         { replica: "control-plane", disposition: "legacy", leaseEligible: false, reasonCode: "organization_disabled" },
         { replica: "control-plane-b", disposition: "legacy", leaseEligible: false, reasonCode: "organization_disabled" },
-      ],
-      positiveControlPlacement: { replica: "control-plane", tenant: "A", disposition: "failed", mode: "active", reasonCode: "invalid_placement_input" },
+      ], // a superset is allowed; the RUNNING control plane's placement is what is required
+      positiveControlPlacement: { replica: "control-plane", tenant: "A", disposition: "selected", mode: "active", leaseEligible: true, reasonCode: "target_selected" },
       pollOutcome: "no_work",
       jobEvents: 0,
       costRowsForCompany: 0,
@@ -508,16 +528,21 @@ test("a control tenant refused for the WRONG reason is refused (it must be the r
   assert.ok(codes(v).includes("control:wrong_reason"));
 });
 
-test("a positive-control placement that is ALSO legacy voids the refusal (it proves nothing)", () => {
-  const v = evaluateControlTenant(goodControl({
-    positiveControlPlacement: { replica: "control-plane", tenant: "A", disposition: "legacy", reasonCode: "organization_disabled" },
-  }));
-  assert.ok(codes(v).includes("control:positive_control_also_legacy"));
+test("a positive control that is legacy, queued, failed or not lease-eligible is refused (Codex P1)", () => {
+  for (const pc of [
+    { disposition: "legacy", mode: "legacy", leaseEligible: false, reasonCode: "organization_disabled" },
+    { disposition: "queued", mode: "active", leaseEligible: false, reasonCode: "no_eligible_target" },
+    { disposition: "failed", mode: "active", leaseEligible: false, reasonCode: "invalid_placement_input" },
+    { disposition: "selected", mode: "active", leaseEligible: false, reasonCode: "target_selected" },
+  ]) {
+    const v = evaluateControlTenant(goodControl({ positiveControlPlacement: { replica: "control-plane", tenant: "A", ...pc } }));
+    assert.ok(codes(v).includes("control:positive_control_not_selected"), JSON.stringify(pc));
+  }
 });
 
 test("a positive-control placement that ERRORED is not a decision, and voids the refusal", () => {
   const v = evaluateControlTenant(goodControl({ positiveControlPlacement: { replica: "control-plane", tenant: "A", error: "connection refused" } }));
-  assert.ok(codes(v).includes("control:positive_control_also_legacy"));
+  assert.ok(codes(v).includes("control:positive_control_not_selected"));
 });
 
 test("a control tenant that was offered work, or that has events, cost or receipts, is refused", () => {
@@ -527,7 +552,69 @@ test("a control tenant that was offered work, or that has events, cost or receip
   assert.ok(codes(evaluateControlTenant(goodControl({ receipts: 1 }))).includes("control:has_receipts"));
 });
 
-test("a control observation with fewer than two replica placements is refused (every replica)", () => {
-  const v = evaluateControlTenant(goodControl({ placements: [goodControl().observation.placements[0]] }));
+test("a control observation missing the RUNNING control plane's placement is refused", () => {
+  // The spine runs ONE control plane (Codex P1, PR #566), so the requirement is "the running one",
+  // not "two". A placement observed only on a replica the profile does not start proves nothing.
+  const v = evaluateControlTenant(goodControl({ placements: [goodControl().observation.placements[1]] }));
   assert.ok(codes(v).includes("control:not_every_replica"));
+});
+
+// ── the rollback rehearsal (MIG-009) ────────────────────────────────────────
+
+function goodRehearsal(overrides = {}) {
+  const drainableJobs = [
+    { tenantKey: "A", organizationId: A.organizationId, companyId: A.companyId, jobId: "a0000000-0000-4000-8000-00000000000a" },
+    { tenantKey: "B", organizationId: B.organizationId, companyId: B.companyId, jobId: "b0000000-0000-4000-8000-00000000000b" },
+  ];
+  return {
+    exitCode: 0,
+    expectedActorId: "operator-cli:m1-spine-1234abcd",
+    drainableJobs,
+    auditRows: drainableJobs.map((job) => ({
+      action: DRAIN_AUDIT_ACTION,
+      entityId: job.jobId,
+      organizationId: null,
+      detailsOrganizationId: job.organizationId,
+      companyId: job.companyId,
+      actorType: "system",
+      actorId: "operator-cli:m1-spine-1234abcd",
+    })),
+    terminalJobIds: ["c0000000-0000-4000-8000-00000000000c"],
+    ...overrides,
+  };
+}
+
+test("a clean, attributed, selective drain has zero violations (anchor)", () => {
+  assert.deepEqual(evaluateRollbackRehearsal(goodRehearsal()), []);
+});
+
+test("a drain CLI that did not exit 0 is refused", () => {
+  assert.ok(evaluateRollbackRehearsal(goodRehearsal({ exitCode: 1 })).map((x) => x.code).includes("rollback:cli_failed"));
+});
+
+test("a drained job with no audit row, or two, is refused (the audit is the rehearsal's evidence)", () => {
+  const none = goodRehearsal({ auditRows: [goodRehearsal().auditRows[0]] });
+  assert.ok(evaluateRollbackRehearsal(none).map((x) => x.code).includes("rollback:no_audit_row"));
+  const twice = goodRehearsal();
+  twice.auditRows = [...twice.auditRows, twice.auditRows[0]];
+  assert.ok(evaluateRollbackRehearsal(twice).map((x) => x.code).includes("rollback:no_audit_row"));
+});
+
+test("a drain audit row naming another tenant, or a different operator, is refused", () => {
+  const foreign = goodRehearsal();
+  foreign.auditRows[1] = { ...foreign.auditRows[1], companyId: A.companyId, detailsOrganizationId: A.organizationId };
+  assert.ok(evaluateRollbackRehearsal(foreign).map((x) => x.code).includes("rollback:audit_wrong_tenant"));
+  const impostor = goodRehearsal();
+  impostor.auditRows[0] = { ...impostor.auditRows[0], actorId: "operator-cli:someone-else" };
+  assert.ok(evaluateRollbackRehearsal(impostor).map((x) => x.code).includes("rollback:audit_wrong_actor"));
+});
+
+test("a drain that also cancelled an already-terminal attempt is refused (it must be selective)", () => {
+  const indiscriminate = goodRehearsal();
+  indiscriminate.auditRows = [...indiscriminate.auditRows, {
+    action: DRAIN_AUDIT_ACTION, entityId: indiscriminate.terminalJobIds[0],
+    organizationId: A.organizationId, companyId: A.companyId,
+    actorType: "system", actorId: indiscriminate.expectedActorId,
+  }];
+  assert.ok(evaluateRollbackRehearsal(indiscriminate).map((x) => x.code).includes("rollback:drained_a_terminal_attempt"));
 });

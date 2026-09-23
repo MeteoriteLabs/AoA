@@ -103,6 +103,15 @@ export const M1_SPINE_EXPECTED_COST_CENTS = Math.round(
     (M1_SPINE_CANNED_UNITS.outputTokens / 1_000_000) * M1_SPINE_RATE_CENTS_PER_M.output,
 );
 
+/**
+ * The execution-target slug the PRODUCTION canary credential binding routes to
+ * (`CANARY_EXECUTION_TARGET_SLUG`, `server/src/services/canary-credential-binding.ts`). Each
+ * tenant's target carries it, so the REAL placement service can SELECT that target — which is what
+ * makes the enabled-path control a working placement (Codex P1, PR #566). Mirrored, not imported:
+ * a `scripts/lib` module cannot import the server's TypeScript.
+ */
+export const M1_SPINE_CANARY_TARGET_SLUG = "aoa-canary-e2b";
+
 /** The workload the profile runs and the rollout enables. */
 export const M1_SPINE_WORKLOAD = "batch";
 
@@ -118,8 +127,15 @@ export const M1_SPINE_ROLLOUT_ENV_VALUE = JSON.stringify({
   ),
 });
 
-const CONTROL_PLANE_REPLICAS = Object.freeze(["control-plane", "control-plane-b"]);
-export { CONTROL_PLANE_REPLICAS as M1_SPINE_CONTROL_PLANE_REPLICAS };
+/** The replica service blocks the override must configure IDENTICALLY (the S0-8 amendment: the
+ * rollout policy on BOTH control-plane replicas). A CONFIG claim about the file. */
+const CONFIGURED_REPLICAS = Object.freeze(["control-plane", "control-plane-b"]);
+/** The control planes the profile actually RUNS. `M1-D1-SPINE` is "one control-plane instance, one
+ * separately deployed worker" (`docs/replatform/epic-regrooming/scope-triage.md`), so
+ * `control-plane-b` sits in the excluded profile and no replica/HA behaviour can affect evidence
+ * presented as single-control-plane (Codex P1, PR #566). */
+const RUNNING_REPLICAS = Object.freeze(["control-plane"]);
+export { CONFIGURED_REPLICAS as M1_SPINE_CONFIGURED_REPLICAS, RUNNING_REPLICAS as M1_SPINE_CONTROL_PLANE_REPLICAS };
 
 function violation(code, message) {
   if (code.startsWith("cost:")) return { code, message: `${M1_SPINE_COST_MARKER} ${message}` };
@@ -140,16 +156,28 @@ export function evaluateSpineOverrideText(text) {
   const rolloutLines = src.match(/^\s*AOA_DISTRIBUTED_EXECUTION_ROLLOUT:\s*'([^'\n]*)'\s*$/gm) ?? [];
   const values = rolloutLines.map((line) => line.replace(/^\s*AOA_DISTRIBUTED_EXECUTION_ROLLOUT:\s*'/, "").replace(/'\s*$/, ""));
   const exact = values.filter((v) => v === M1_SPINE_ROLLOUT_ENV_VALUE).length;
-  if (exact !== CONTROL_PLANE_REPLICAS.length || values.length !== CONTROL_PLANE_REPLICAS.length) {
+  if (exact !== CONFIGURED_REPLICAS.length || values.length !== CONFIGURED_REPLICAS.length) {
     out.push(violation(
       "override:rollout_not_on_every_replica",
-      `expected the declared rollout value on exactly ${CONTROL_PLANE_REPLICAS.length} replicas, found ${exact} exact of ${values.length}`,
+      `expected the declared rollout value on exactly ${CONFIGURED_REPLICAS.length} replicas, found ${exact} exact of ${values.length}`,
     ));
   }
-  for (const replica of CONTROL_PLANE_REPLICAS) {
+  for (const replica of CONFIGURED_REPLICAS) {
     if (!new RegExp(`^  ${replica}:\\s*$`, "m").test(src)) {
       out.push(violation("override:rollout_not_on_every_replica", `replica ${replica} has no service block`));
     }
+  }
+  if (!/^  control-plane-b:\n    profiles: \[[^\]]+\]/m.test(src)) {
+    out.push(violation(
+      "override:second_replica_not_excluded",
+      "control-plane-b must be moved out of the default profile — M1-D1-SPINE is ONE control plane",
+    ));
+  }
+  if (/^      control-plane-b:\n        condition:/m.test(src)) {
+    out.push(violation(
+      "override:second_replica_not_excluded",
+      "test-runner still depends on control-plane-b, which the active profile does not start",
+    ));
   }
   if (/AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED/.test(src.replace(/^\s*#.*$/gm, ""))) {
     out.push(violation("override:crew_switch_present", "the profile must not set the deployment-wide crew switch"));
@@ -465,7 +493,7 @@ export function evaluateControlTenant({ tenant: t, observation: o }) {
   const k = `control tenant ${t.key}`;
   const placements = o.placements ?? [];
   const replicas = new Set(placements.map((p) => p.replica));
-  for (const replica of CONTROL_PLANE_REPLICAS) {
+  for (const replica of RUNNING_REPLICAS) {
     if (!replicas.has(replica)) out.push(violation("control:not_every_replica", `${k}: no placement observed on ${replica}`));
   }
   for (const p of placements) {
@@ -478,12 +506,14 @@ export function evaluateControlTenant({ tenant: t, observation: o }) {
   // The positive control: the SAME placement service, on an ENABLED tenant, must reach a real
   // non-legacy decision. Without it, "the control was refused" could equally mean "placement
   // refuses everything" (a broken pool, a missing flag), which proves nothing about the rollout.
+  // The control must be a WORKING enabled placement, not merely a non-legacy one (Codex P1,
+  // PR #566): `queued` and `failed` are also non-legacy, so a regression in which the real service
+  // can select NO target would leave the campaign green.
   const pc = o.positiveControlPlacement;
-  if (!pc || pc.error || !pc.disposition || pc.disposition === "legacy" || pc.mode === "legacy" ||
-      pc.reasonCode === "organization_disabled") {
+  if (!pc || pc.error || pc.disposition !== "selected" || pc.mode !== "active" || pc.leaseEligible !== true) {
     out.push(violation(
-      "control:positive_control_also_legacy",
-      `${k}: the same placement service on an ENABLED tenant was ${JSON.stringify(pc ?? null)}, so the refusal is not shown to be the rollout's`,
+      "control:positive_control_not_selected",
+      `${k}: the same placement service on an ENABLED tenant returned ${JSON.stringify(pc ?? null)} — it must SELECT a lease-eligible target (disposition "selected", mode "active", leaseEligible true), or the refusal is not shown to be the rollout's`,
     ));
   }
   if (o.pollOutcome !== "no_work") out.push(violation("control:offered_work", `${k}: poll outcome ${String(o.pollOutcome)}`));
@@ -537,6 +567,18 @@ export function evaluateEnvProbeObservability({ declaredObserved, logMessages })
 // ── hostile cross-tenant cases (F10: "denied, not merely empty") ─────────────
 
 /**
+ * The refusal shapes the worker-control surface gives a foreign tenant, measured live on the D1
+ * stack: the session's worker does not own the lease, so the fenced events route answers
+ * `401 unauthorized`, and the ack route cannot find the lease under the presented fence, so it
+ * answers `409 stale_fence`. Pinned rather than "anything that is not an acceptance", so a 500 or a
+ * transport-shaped failure can never masquerade as enforcement (Codex P2, PR #566).
+ */
+export const EXPECTED_FOREIGN_UPLOAD_STATUS = 401;
+export const EXPECTED_FOREIGN_UPLOAD_CODE = "unauthorized";
+export const EXPECTED_FOREIGN_ACK_STATUS = 409;
+export const EXPECTED_FOREIGN_ACK_CODE = "stale_fence";
+
+/**
  * The isolation half of F10, which the per-tenant verdicts above cannot see: they only ever look at
  * matching identities. Each case pairs a HOSTILE attempt by tenant B against tenant A's attempt with
  * the SAME-TENANT positive control, so "denied" is never confused with "nothing works".
@@ -562,6 +604,15 @@ export function evaluateCrossTenantIsolation(o) {
       "isolation:foreign_event_accepted",
       `a foreign tenant's worker uploaded an event onto another tenant's lease and it was ACCEPTED (status ${o.hostileEventUpload.status})`,
     ));
+  } else if (o.hostileEventUpload?.status !== EXPECTED_FOREIGN_UPLOAD_STATUS ||
+             o.hostileEventUpload?.code !== EXPECTED_FOREIGN_UPLOAD_CODE) {
+    // A DENIAL, not merely a non-acceptance (Codex P2, PR #566): a 500, a transport-shaped failure
+    // or a malformed 200 are all "not accepted" while proving no enforcement at all.
+    out.push(violation(
+      "isolation:foreign_event_not_denied",
+      `the foreign upload returned ${JSON.stringify({ status: o.hostileEventUpload?.status ?? null, code: o.hostileEventUpload?.code ?? null })}, ` +
+        `not the expected refusal ${EXPECTED_FOREIGN_UPLOAD_STATUS} ${EXPECTED_FOREIGN_UPLOAD_CODE}`,
+    ));
   }
   if (!accepted(o.ownEventUpload)) {
     out.push(violation(
@@ -571,6 +622,12 @@ export function evaluateCrossTenantIsolation(o) {
   }
   if (o.hostileAck && o.hostileAck.status === 200 && o.hostileAck.outcome === "acknowledged") {
     out.push(violation("isolation:foreign_ack_accepted", "a foreign tenant's worker acknowledged another tenant's lease"));
+  } else if (o.hostileAck?.status !== EXPECTED_FOREIGN_ACK_STATUS || o.hostileAck?.code !== EXPECTED_FOREIGN_ACK_CODE) {
+    out.push(violation(
+      "isolation:foreign_ack_not_denied",
+      `the foreign ack returned ${JSON.stringify({ status: o.hostileAck?.status ?? null, code: o.hostileAck?.code ?? null })}, ` +
+        `not the expected refusal ${EXPECTED_FOREIGN_ACK_STATUS} ${EXPECTED_FOREIGN_ACK_CODE}`,
+    ));
   }
   if (o.foreignScopeEventCount !== 0) {
     out.push(violation(
@@ -595,6 +652,73 @@ export function evaluateCrossTenantIsolation(o) {
       "isolation:cost_moved",
       `the hostile traffic changed the victim's cost rows from ${o.costRowsBeforeHostile} to ${o.costRowsAfterHostile}`,
     ));
+  }
+  return out;
+}
+
+// ── the rollback rehearsal (MIG-009), criterion 6 ───────────────────────────
+
+/** The audit action MIG-009's drain writes in the same transaction as each cancel. */
+export const DRAIN_AUDIT_ACTION = "job.drain.requested";
+
+/**
+ * The rollback rehearsal this profile's Outcome requires ("including the rollback rehearsal through
+ * the `MIG-009` CLI", E6 implementation plan) and that criterion 6 consumes. Judged on what the
+ * drain actually did, per tenant:
+ *
+ *  - the CLI exited 0 (its own contract: no Organization skipped and every cancel committed);
+ *  - each enabled tenant's DRAINABLE job carries its own `job.drain.requested` row, attributed to
+ *    the operator the CLI was given and to that tenant's own Organization and Company (F10);
+ *  - the drain was SELECTIVE: the already-terminal journey attempts were not drained. Without this
+ *    a drain that cancelled everything indiscriminately would look like a passing rehearsal.
+ *
+ * @param {object} o
+ * @param {number|null} o.exitCode
+ * @param {string} o.expectedActorId  `operator-cli:<who>`
+ * @param {Array<{tenantKey:string, organizationId:string, companyId:string, jobId:string}>} o.drainableJobs
+ * @param {Array<{action:string, entityId:string, organizationId:string, companyId:string, actorType:string, actorId:string}>} o.auditRows
+ * @param {string[]} o.terminalJobIds  jobs that were already terminal when the drain ran
+ */
+export function evaluateRollbackRehearsal(o) {
+  const out = [];
+  if (o.exitCode !== 0) {
+    out.push(violation("rollback:cli_failed", `the MIG-009 drain CLI exited ${JSON.stringify(o.exitCode)}, not 0`));
+  }
+  const rows = (o.auditRows ?? []).filter((r) => r.action === DRAIN_AUDIT_ACTION);
+  for (const job of o.drainableJobs ?? []) {
+    const own = rows.filter((r) => r.entityId === job.jobId);
+    if (own.length !== 1) {
+      out.push(violation(
+        "rollback:no_audit_row",
+        `tenant ${job.tenantKey}: ${own.length} ${DRAIN_AUDIT_ACTION} rows for its drained job, expected exactly 1`,
+      ));
+      continue;
+    }
+    const row = own[0];
+    // MIG-009 records the Organization in the row's `details` (the `activity_log.organization_id`
+    // COLUMN is nullable and this writer leaves it null — measured on the live drain), so the
+    // tenant check reads whichever the row carries and requires it to be this tenant's.
+    const auditedOrganizationId = row.detailsOrganizationId ?? row.organizationId ?? null;
+    if (auditedOrganizationId !== job.organizationId || row.companyId !== job.companyId) {
+      out.push(violation(
+        "rollback:audit_wrong_tenant",
+        `tenant ${job.tenantKey}: its drain audit row names another tenant`,
+      ));
+    }
+    if (row.actorType !== "system" || row.actorId !== o.expectedActorId) {
+      out.push(violation(
+        "rollback:audit_wrong_actor",
+        `tenant ${job.tenantKey}: the drain audit row names ${row.actorType}/${row.actorId}, not system/${o.expectedActorId} — the rehearsal is unattributed`,
+      ));
+    }
+  }
+  for (const jobId of o.terminalJobIds ?? []) {
+    if (rows.some((r) => r.entityId === jobId)) {
+      out.push(violation(
+        "rollback:drained_a_terminal_attempt",
+        `the drain cancelled an already-terminal attempt (${jobId}) — it is not selective`,
+      ));
+    }
   }
   return out;
 }
