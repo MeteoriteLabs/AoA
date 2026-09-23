@@ -291,3 +291,52 @@ The proposal above is kept as written. Where a ruling changes or settles it, **t
 
 Leave `resolveExportArtifacts` unset at composition. The hook then never runs, and the lifecycle is
 byte-identical. Removing `exportArtifacts` too returns the sequencer to zero production callers.
+
+---
+
+## E5-D08 - audit rule R2 is satisfied by ATTESTATION plus a blob pin, not by presence in the candidate's tree
+
+**Status:** `accepted` - **Decided:** 2026-09-24 by the M1 planning session as decision owner, under
+founder ruling **F2** (the founder owns every role and delegates every M1 decision to the planning
+session, with the QA owner staying a distinct session).
+
+**Raised by** the `a2` QA owner in `qa/2026-09-24-d0-e5-exit-gate-audit-7be35ae6b771-a2.md` SS5.1,
+which recorded R2 `FAILED` and handed the question up rather than reinterpreting a frozen rule to
+reach a pass. That was the correct handling and this decision exists because of it.
+
+### The defect
+
+R2 as frozen (`audit-matrix/2026-09-21-e5-seven-clause-matrix.md`, *"R2: exact candidate"*) reads:
+*"Every grade rests on a committed record or a CI job **on the attested candidate**, cited by path or
+by job."* The `a2` owner read *"on the attested candidate"* as requiring
+`git show <candidate>:<record path>` to resolve - the record must exist **inside the candidate's
+tree**. Under that reading R2 is **unsatisfiable by construction**: a campaign record is written
+*after* its candidate is frozen, so no attempt, ever, could cite one. A rule no attempt can satisfy
+is not a bar; it is a permanent fail that teaches nothing.
+
+### The ruling
+
+R2 is **clarified, not weakened**. It is satisfied when either:
+
+- **a CI job ran ON the attested candidate**, cited by run and job id; or
+- **a committed record ATTESTS the attested candidate** - it names that candidate as its subject -
+  and is cited by **path AND blob SHA** (`git hash-object`), so the exact bytes relied upon are
+  pinned.
+
+The blob pin is what *"in the candidate's tree"* was reaching for, and it is **stricter**: a tree
+path fixes only which file, while a blob SHA fixes the bytes. It is also the mechanism the milestone
+folder already uses - `milestones/M1a/README.md`: *"The candidate-freeze record pins their blob
+SHAs, so the version that was relied on is fixed by the record that relies on it."*
+
+R2's actual intent is unchanged and still binding: **no grade may rest on evidence from another
+candidate or be carried forward from `a1`.**
+
+### This ruling does NOT change the `a2` verdict, and that is the point
+
+`a2` is immutable and stays `Result: fail`. It failed **R2, R4 and R5**, and the clarification
+touches only R2 - clauses 4 and 5 still miss their `M1a` floor and all nine `d2m.tenant.cross.*`
+cases are still `pending`. **`M1a` exit criterion 7 remains unmet on candidate `7be35ae6b771`.**
+
+That is stated plainly because the decision owner here is also the session whose campaign the audit
+judged, and a clarification issued in that position is worth only as much as its independence from
+the outcome. This one changes no verdict. It applies from `a3` onward.
