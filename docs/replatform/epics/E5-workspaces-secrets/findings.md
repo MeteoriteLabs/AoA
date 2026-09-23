@@ -166,6 +166,27 @@ a production caller. Not done here: `putGrantBytes` is on the export path DAT-00
 changing which digest a signed PUT carries is a correctness decision with live-store consequences
 that must be re-proven on the keyed lane, not asserted from a filing unit.
 
+**Progress, 2026-09-21 (`DAT-009-3e`): decided and built, NOT live-proven. Status stays `open`.**
+
+- **Built.** `putGrantBytes` (`packages/sandbox-e2b-provider/src/e2b-provider.ts`) now takes its
+  header set from `grantPutHeaders` and re-derives nothing. That gives the designated home its
+  first production caller, and the uploader now sends `x-amz-sdk-checksum-algorithm`. Its only own
+  addition is a `content-type` default placed before the grant's headers.
+- **Decided: the digest source is the GRANT's `expectedSha256`.** The reason: the signer binds the
+  algorithm and not the value, so the store checks the body against whatever this header says.
+  With the grant's value, the store refuses bytes the grant was not minted for at the PUT, instead
+  of the commit refusing `hash_mismatch` later. On `exportArtifact`'s own path the two values are
+  equal, because it re-hashes and refuses a mismatch before calling the uploader.
+  `put-grant-bytes.test.ts` pins this, and a bytes-digest mutant goes red.
+- **Why this is not closed.** The `DAT-009-3e` task says the finding stays open until the keyed lane
+  re-proves the choice. Measured at source, the named lane cannot do that:
+  `keyed-dat-009-artifact-export.test.ts` injects its uploader, so no real PUT happens. Its own
+  header says the store half is not exercised there, and the workflow header says the same. A re-run
+  of `keyed-e2b-dat-009-export.yml` would re-prove the sandbox half and would not execute
+  `putGrantBytes` at all. Closing this needs a live PUT through the default uploader against a real
+  store. That choice belongs to the planning session, and the `DAT-009-3e` result records it as a
+  stop.
+
 ---
 
 ## E5-F003 - the approved-workspace-root check compares paths lexically while git resolves symlinks, so cleanup refuses on any symlinked root
@@ -309,3 +330,141 @@ fixes neither, because the two cases want opposite timings.
 
 **Blocks gate:** no. These are two advisory tests, and the batch-rejection behaviour they exercise
 is observed on all three platforms - only the error TYPE, or which arm is reached, differs.
+---
+
+## E5-F006 - the relayed upload grant is unauthenticated at the adapter-manager, and the redemption guard that narrows the replay is per-instance and in-memory
+
+**Status:** open
+**Severity:** MEDIUM (nothing produces `ArtifactExportRequest[]` in production yet, so no byte moves
+on this path today; when it does move, the guard is real but partial)
+**Filed:** 2026-09-23 (`DAT-009-3e`), verified at source on the ticket's own head.
+
+**What.** `ArtifactUploadGrantV1` (`packages/worker-protocol/src/artifacts.ts`) carries no
+control-plane signature over its integrity fields, and the presigned url binds the checksum
+ALGORITHM, not the value (`grantPutHeaders`' own docstring says so). The adapter-manager therefore
+cannot verify that the `expectedSha256`, `maxBytes`, `objectKey` and `url` a worker hands it are the
+ones the control plane minted. `DAT-009-3e` confines what a forged or replayed grant can do
+(`assertUploadGrantBound` in `packages/adapter-manager/src/server.ts`: an upload/PUT grant, an https
+url on a configured store origin, an object key under the caller's own attempt prefix, a url that
+targets that key, and an unexpired grant), and makes a successful redemption one-time per object key
+with a lost-response replay allowed under the same `idempotencyKey`. **It does not authenticate the
+grant.**
+
+**The residual, stated precisely.** The redemption ledger is a `Map` inside one server process:
+- it does not survive a restart, and it does not reach a second replica, so a re-PUT that lands on a
+  different instance than the first redemption is not seen by this guard;
+- two concurrent FIRST exports of one object key can both pass the check;
+- retention is a fixed server-side window (`UPLOAD_REDEMPTION_RETENTION_MS`, 24 h, measured from the
+  redemption on the server's own clock - deliberately not the worker's `expiresAt`, which a worker
+  could shorten to buy its own eviction). Memory is bounded by one window's exports, and the window
+  is a constant rather than a configured policy.
+
+**Why this is not a defect the ticket left behind.** The complete fix is a control-plane signature
+over the grant's integrity fields - i.e. a change to the FROZEN `worker-protocol` package. The E5
+implementation plan names exactly that move as a STOP for this ticket (`DAT-009-3e`,
+migration/compatibility: a frozen-package change for a non-frozen concern "is a STOP"), so the
+ticket narrowed the replay and filed the rest rather than improvising a protocol change.
+
+**What would close it.** One of: (a) a control-plane-signed grant covering `objectKey`,
+`expectedSha256`, `maxBytes` and the url, verified at the adapter-manager - a protocol decision, not
+an engineering one; or (b) a durable, shared redemption record (the control plane already refuses to
+MINT a second grant for a committed artifact in
+`server/src/services/artifact-transfer-grant.ts`, so the same authority could refuse a second
+REDEMPTION), which would also remove the per-instance and restart limits.
+
+**Blocks gate:** no. `E5-2` stays `unwired`; nothing produces export requests in production.
+
+---
+
+## E5-F007 - the shipped adapter-manager bin configures no artifact store origin, so a deployed networked export fails closed
+
+**Status:** open
+**Severity:** LOW (fail-closed and deploy-owed: an export is refused, never mis-sent)
+**Filed:** 2026-09-23 (`DAT-009-3e`), verified at source on the ticket's own head.
+
+**What.** `createProviderServer` accepts `artifactUploadOrigins`, the allow-list of object-store
+origins a relayed upload grant may target, and refuses every export when it is empty - the
+fail-closed default that stops a forged grant sending sandbox bytes to an arbitrary endpoint. The
+composition root `packages/adapter-manager/src/bin/adapter-manager.ts` does not read any environment
+variable for it (it reads the provider, template, control-plane public key, ledger dir and reaper
+envs, each via `env[CONST]`). So a deployed adapter-manager refuses `export_artifact` until a deploy
+ticket supplies the store origin.
+
+**Why it was not done here.** Adding a boot env is deploy-surface work (the staging compose and the
+D1/E6 harness own how the store origin reaches the container), and `DAT-009-3e`'s files are the wire
+route, the adapter-manager route and the provider's header derivation. Refusing loudly and honestly
+was preferred to defaulting to "any origin", which would have made the binding decorative.
+
+**What would close it.** A DEP/E6 deploy ticket that threads the configured store origin into the
+adapter-manager bin the way the control-plane public key is threaded, with a boot case proving an
+unset origin still refuses.
+
+**Blocks gate:** no. No shipped CI boot starts this bin today (`E7-1-coding-journey` records that).
+---
+
+## E5-F008 - the supervisor hands each export RPC the RUN's budget, not its own export-window budget
+
+**Status:** open
+**Severity:** MEDIUM (a lifecycle-window mismatch: the window can close while an RPC it started is
+still admissible on its own budget; no byte is mis-committed, because the window latch and the
+fenced commit both still refuse)
+**Filed:** 2026-09-23 (`DAT-009-3e`), verified at source.
+
+**What.** `runExportWindow` (`packages/worker-daemon/src/supervisor/supervisor.ts`) races the WHOLE
+export sequence against `exportArtifactsDeadlineMs` (default 30 s, clamped on the networked lane to
+`capExpiresAt - now - EXPORT_TEARDOWN_RESERVE_MS`). But each provider call inside it is made with
+`run.makeCtx()`, which carries the RUN's per-op budget (resolved from `workload.maxRuntimeSeconds`,
+minimum 60 s). So the ctx budget an RPC carries can be LARGER than the window that is racing it.
+
+Downstream of that, `DAT-009-3e`'s adapter-manager clamps an artifact op to
+`min(now + ctx.deadlineMs, capability.expiresAt - EXPORT_TEARDOWN_RESERVE_MS)`. It cannot clamp to
+the supervisor's window, because nothing on the wire tells it what that window is: the capability's
+expiry and the ctx budget are all it has.
+
+**What is NOT at risk.** A late result is not committed: `runExportWindow`'s latch is re-checked
+after every await, and the fenced commit re-verifies at the control plane. What can happen is that
+an adapter-manager operation remains admissible on its own clamp for longer than the supervisor's
+window, holding that sandbox's adapter-manager mutex while the supervisor has already moved on to
+teardown - which is the reserve being consumed by a caller/callee disagreement rather than by a hang.
+
+**Why `DAT-009-3e` did not fix it.** The fix belongs on the CALLER: the export window should pass a
+ctx whose `deadlineMs` is its own remaining budget, which is `supervisor.ts` - `DAT-009-3c`'s file
+and outside this ticket's Files list. Compensating for it at the adapter-manager would mean guessing
+another process's window from a number it was never sent.
+
+**What would close it.** An E5/E7 change in `runExportWindow` that derives each exporter call's ctx
+from the window's remaining budget (the same `withDeadline` figure it already computes), with a case
+asserting the ctx a provider receives never exceeds the window that is racing it.
+
+**Blocks gate:** no.
+
+---
+
+## E5-F009 - an artifact is read whole into the adapter-manager's memory before any size check
+
+**Status:** open
+**Severity:** MEDIUM (a shared-process resource exposure on a path with no production producer yet;
+it is not a data-integrity or cross-tenant defect)
+**Filed:** 2026-09-23 (`DAT-009-3e`), verified at source.
+
+**What.** `E2bSandboxProvider.#readArtifactBytes` (`packages/sandbox-e2b-provider/src/e2b-provider.ts`)
+returns the whole file as a `Uint8Array` via `transport.readFile`. `exportArtifact` checks
+`grant.maxBytes` only AFTER that read, and `digestArtifact` has no size guard at all. The control
+plane permits artifacts up to the ceiling in `server/src/services/artifact-size-ceiling.ts`, so one
+large artifact - or several concurrent ones across sandboxes - materializes fully in whichever
+process runs the provider. Before `DAT-009-3e` that process was the desktop/self-hosted worker's own;
+the wire route makes it the SHARED adapter-manager as well, which is why this is filed now.
+
+**Why it was not fixed here.** A pre-read refusal needs a size the provider can learn WITHOUT
+reading: a `stat`-shaped or streaming call on `E2bTransport`
+(`packages/sandbox-e2b-provider/src/transport.ts`), which both driver implementations would have to
+grow. That is a port change outside this ticket's Files list (the wire route, the adapter-manager
+route, and the uploader's header derivation), and inventing a partial guard - say, refusing above an
+arbitrary constant - would trade a real ceiling for a decorative one.
+
+**What would close it.** An E7/CLI ticket that adds a size/stat op (or a streaming read) to
+`E2bTransport`, refuses above `grant.maxBytes` BEFORE materializing bytes, gives `digestArtifact` the
+same ceiling, and proves both with a case that never allocates the oversized buffer.
+
+**Blocks gate:** no. Nothing produces `ArtifactExportRequest[]` in production; `E5-2` stays
+`unwired`.

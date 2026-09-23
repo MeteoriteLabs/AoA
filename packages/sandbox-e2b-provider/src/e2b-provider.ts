@@ -65,6 +65,9 @@ import type {
   StopOutcome,
   StopResult,
 } from "@armyofagents/worker-daemon";
+// DAT-009-3e (E5-F002) — the ONE home of the signed-PUT header contract. A VALUE import from
+// worker-daemon, which is one of this package's declared runtime dependencies.
+import { grantPutHeaders } from "@armyofagents/worker-daemon";
 
 import { METADATA_KEYS } from "./directives.js";
 import {
@@ -122,7 +125,7 @@ export interface E2bSandboxProviderOptions {
    * ★ The implementation MUST NOT log or re-throw the url or headers: the grant is a bearer
    * capability that writes an attempt-scoped object key until it expires.
    */
-  readonly performUploadGrant?: (grant: ArtifactUploadGrantV1, bytes: Uint8Array) => Promise<void>;
+  readonly performUploadGrant?: (grant: ArtifactUploadGrantV1, bytes: Uint8Array, signal?: AbortSignal) => Promise<void>;
 }
 
 /** The default redemption: a plain GET against the presigned url with the grant's headers. */
@@ -136,42 +139,88 @@ async function fetchGrantBytes(grant: ArtifactDownloadGrantV1): Promise<Uint8Arr
 }
 
 /**
- * The default upload: a plain PUT of the bytes against the presigned url with the grant's
- * headers, plus the checksum header the fenced commit's re-verification needs.
+ * The default upload: a plain PUT of the bytes against the presigned url, with the signed-PUT
+ * headers derived from `grantPutHeaders` — their ONE home (DAT-009-3e, `E5-F002`).
  *
- * ★★ `x-amz-checksum-sha256` IS NOT OPTIONAL, and this is the one non-obvious line in the
- * export path. DAT-002's live MinIO run measured that the control plane binds
- * `ChecksumAlgorithm: SHA256` when it signs but returns `headers: {}`, so the PUT itself must
- * carry the checksum; `artifact-commit.ts` then fails CLOSED when the store cannot supply one
- * to its `headObject` re-verification. An exporter that omits this header uploads
- * successfully and is rejected at commit, far away from the cause.
+ * ★★ THE CHECKSUM HEADERS ARE NOT OPTIONAL, and this is the one non-obvious line in the export
+ * path. DAT-002's live MinIO run measured that the control plane binds `ChecksumAlgorithm: SHA256`
+ * when it signs but returns `headers: {}`, so the PUT itself must carry the checksum;
+ * `artifact-commit.ts` then fails CLOSED when the store cannot supply one to its `headObject`
+ * re-verification. The value is BASE64 of the raw digest while the grant's `expectedSha256` is
+ * hex — `grantPutHeaders` owns that encoding change too.
  *
- * The value is the BASE64 of the raw digest (S3's encoding), while the grant's
- * `expectedSha256` is hex (`sha256DigestSchema`) — two encodings of the same bytes, and
- * mixing them up produces a store-side rejection that looks like a checksum mismatch.
+ * ★★ E5-F002, RESOLVED AT THE CAUSE. This function used to re-derive the header set itself, and
+ * got it wrong on two axes: it OMITTED `x-amz-sdk-checksum-algorithm`, which every other
+ * derivation (and the signed query) carries, and it hashed the BYTES IT WAS HANDED instead of the
+ * grant's expectation. The header set now comes from `grantPutHeaders` and nowhere else.
+ *
+ * ★ THE DIGEST-SOURCE DECISION: the checksum is the GRANT's `expectedSha256`. The signer binds the
+ * algorithm, never the value, so the store verifies the body against this header — and with the
+ * grant's value in it, the store refuses bytes the grant was not minted for at the PUT, instead of
+ * storing them and leaving the fenced commit to refuse `hash_mismatch` later, in another process.
+ * On `exportArtifact`'s own path the two values are equal (it re-hashes and refuses a mismatch
+ * before calling this), so the decision only shows when the two disagree, which is exactly when
+ * it matters. `put-grant-bytes.test.ts` pins it and its opposite.
+ *
+ * Header order: the `content-type` default FIRST, then `grantPutHeaders`, which spreads the grant's
+ * own headers LAST — so a server that signs a content-type or supplies its own checksum still
+ * wins, which is the only ordering that survives `presign` signing more in future.
+ *
+ * ★ H-04: neither the url nor the headers ever reach a thrown message. A non-2xx reports its
+ * STATUS; a transport failure (a severed connection) is re-thrown as a fixed, distinguishable
+ * message with NO `cause`, because a transport error can name the host and query it was reaching.
+ *
+ * ★ NO REDIRECTS (`redirect: "error"`, Codex P2 on PR #557). A redirect would forward the body to
+ * a destination the adapter-manager's origin binding never saw. And the PUT is ABORTABLE: the
+ * caller's `signal` ends a stalled upload (reported as a timeout), so a hung store cannot hold the
+ * per-sandbox lock and strand the run's destroy (Codex P1).
  */
-async function putGrantBytes(grant: ArtifactUploadGrantV1, bytes: Uint8Array): Promise<void> {
-  const response = await fetch(grant.url, {
-    method: "PUT",
-    headers: {
-      // Defaults FIRST so `grant.headers` wins. The grant is the authority on what the
-      // signature covers, and today it is empty (`s3-provider.ts` `presign` returns
-      // `headers: {}`) — but `presign` signs `ContentType` whenever its caller supplies one,
-      // and a signed content-type that disagreed with a hard-coded default here would fail
-      // the signature at the store. Letting the grant override is the only ordering that
-      // survives that change.
-      "content-type": "application/octet-stream",
-      "x-amz-checksum-sha256": createHash("sha256").update(bytes).digest("base64"),
-      ...grant.headers,
-    },
-    // A Uint8Array is a valid BodyInit at runtime; the cast is only for the lib's
-    // ArrayBufferLike variance.
-    body: bytes as unknown as BodyInit,
-  });
+export async function putGrantBytes(grant: ArtifactUploadGrantV1, bytes: Uint8Array, signal?: AbortSignal): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(grant.url, {
+      method: "PUT",
+      redirect: "error",
+      ...(signal === undefined ? {} : { signal }),
+      headers: {
+        "content-type": "application/octet-stream",
+        ...grantPutHeaders(grant),
+      },
+      // A Uint8Array is a valid BodyInit at runtime; the cast is only for the lib's
+      // ArrayBufferLike variance.
+      body: bytes as unknown as BodyInit,
+    });
+  } catch {
+    // Deliberately not chained: the transport's own error may carry the url.
+    if (signal?.aborted) throw new Error("artifact export upload timed out before a response");
+    throw new Error("artifact export upload did not complete: the connection was severed before a response");
+  }
   if (!response.ok) {
     // The status, never the url — the url IS the capability.
     throw new Error(`artifact export upload failed with status ${response.status}`);
   }
+}
+
+/** Settle with `work`, or reject with `timeoutMessage` when `signal` aborts first. The abandoned
+ * `work` is left to settle on its own; its rejection is handled so it is never unhandled. The
+ * message is a FIXED string: it never carries the path, the grant or the url. */
+function boundedBySignal<T>(work: Promise<T>, signal: AbortSignal, timeoutMessage: string): Promise<T> {
+  work.catch(() => undefined);
+  if (signal.aborted) return Promise.reject(new Error(timeoutMessage));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(new Error(timeoutMessage));
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (err: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(err);
+      },
+    );
+  });
 }
 
 /**
@@ -265,7 +314,7 @@ export class E2bSandboxProvider implements SandboxProvider {
   readonly #templateId: string;
   readonly #defaultTtlMs: number;
   readonly #redeemDownloadGrant: (grant: ArtifactDownloadGrantV1) => Promise<Uint8Array>;
-  readonly #performUploadGrant: (grant: ArtifactUploadGrantV1, bytes: Uint8Array) => Promise<void>;
+  readonly #performUploadGrant: (grant: ArtifactUploadGrantV1, bytes: Uint8Array, signal?: AbortSignal) => Promise<void>;
   readonly advertisedOperations: ReadonlySet<ProviderOperation>;
   readonly checkpointMode: CheckpointMode;
   readonly healthMode: HealthMode;
@@ -287,6 +336,9 @@ export class E2bSandboxProvider implements SandboxProvider {
    * own type, and tests, the only reads are the two decline guards in this file. No supervisor,
    * placement or hello builder branches on it. So flipping it from `"none"` changes NO runtime
    * behaviour anywhere today; it becomes consultable when link 3 exists to consult it.
+   * ★ *Amended 2026-09-21 (DAT-009-3e):* the provider-wire driver now declares `"grant_upload"`
+   * as well, and its own two methods read ITS field before any RPC. That is a read of the
+   * driver's declaration, not of this one; the paragraph above is otherwise unchanged.
    *
    * ★ WHAT THIS DOES NOT DO. Declaring the mode does not put an artifact on any run.
    * Nothing in production calls `exportArtifact` — the worker-side sequencer
@@ -650,7 +702,7 @@ export class E2bSandboxProvider implements SandboxProvider {
    * only the provider can see inside the sandbox. That is the whole reason this is a separate
    * operation from the export rather than one call.
    */
-  async digestArtifact(sandboxId: string, path: string, _ctx: ProviderOpContext): Promise<ArtifactDigestResult> {
+  async digestArtifact(sandboxId: string, path: string, ctx: ProviderOpContext): Promise<ArtifactDigestResult> {
     // ★ HONEST LABEL: this guard is UNREACHABLE BY CONSTRUCTION here, because the mode above is a
     // hard-coded literal. It is kept for exact symmetry with `stageFiles`'s identical shipped
     // guard, and because the port's contract is "the methods are present on every implementer and
@@ -658,7 +710,14 @@ export class E2bSandboxProvider implements SandboxProvider {
     // takes it. It is a contract stub, NOT a live check, and no mutation can kill it; saying so is
     // the difference between a documented stub and a false claim of enforcement.
     if (this.artifactExportMode === "none") throw new UnsupportedProviderOperation("digest_artifact");
-    const bytes = await this.#readArtifactBytes(sandboxId, path);
+    // DAT-009-3e (Codex P1, PR #557) — the READ is bounded too. A stalled sandbox read would
+    // otherwise hold the adapter-manager's per-sandbox lock for as long as the transport hangs.
+    if (!(ctx.deadlineMs > 0)) throw new Error("artifact digest budget exhausted before the read");
+    const bytes = await boundedBySignal(
+      this.#readArtifactBytes(sandboxId, path),
+      AbortSignal.timeout(ctx.deadlineMs),
+      "artifact digest read timed out",
+    );
     return { sha256: createHash("sha256").update(bytes).digest("hex"), sizeBytes: bytes.byteLength };
   }
 
@@ -683,11 +742,23 @@ export class E2bSandboxProvider implements SandboxProvider {
     sandboxId: string,
     path: string,
     grant: ArtifactUploadGrantV1,
-    _ctx: ProviderOpContext,
+    ctx: ProviderOpContext,
   ): Promise<ArtifactExportResult> {
     // Unreachable by construction, exactly as in `digestArtifact` above — see the note there.
     if (this.artifactExportMode === "none") throw new UnsupportedProviderOperation("export_artifact");
-    const bytes = await this.#readArtifactBytes(sandboxId, path);
+    // DAT-009-3e (Codex P1, PR #557) — the upload is BOUNDED by the op's budget. An exhausted
+    // budget uploads nothing; otherwise the PUT is aborted at `ctx.deadlineMs`, and the call
+    // settles then even if an injected uploader ignores the signal.
+    if (!(ctx.deadlineMs > 0)) throw new Error("artifact export budget exhausted before the upload");
+    const signal = AbortSignal.timeout(ctx.deadlineMs);
+    // The READ is inside the budget too (Codex P1, PR #557): the adapter-manager holds its
+    // per-sandbox lock across this whole call, so a hung read would strand the run's destroy
+    // exactly as a hung upload would.
+    const bytes = await boundedBySignal(
+      this.#readArtifactBytes(sandboxId, path),
+      signal,
+      "artifact export read timed out",
+    );
     if (bytes.byteLength > grant.maxBytes) {
       throw new Error(`artifact at ${path} is ${bytes.byteLength} bytes, over the granted ${grant.maxBytes}`);
     }
@@ -696,7 +767,11 @@ export class E2bSandboxProvider implements SandboxProvider {
       // The digests, never the url.
       throw new Error(`artifact at ${path} hashed ${digest}, expected ${grant.expectedSha256}`);
     }
-    await this.#performUploadGrant(grant, bytes);
+    await boundedBySignal(
+      this.#performUploadGrant(grant, bytes, signal),
+      signal,
+      "artifact export upload timed out before a response",
+    );
     return { objectKey: grant.objectKey };
   }
 

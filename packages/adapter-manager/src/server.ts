@@ -31,6 +31,7 @@ import type {
   ExecuteInput,
   ListInput,
   ProviderOpContext,
+  ResourceLabels,
   SandboxProvider,
   StagedFileRequest,
 } from "@armyofagents/worker-daemon";
@@ -45,6 +46,7 @@ import {
   isModelledWireError,
 } from "@armyofagents/provider-wire/codec";
 import type { OwnedLabelsCapability } from "@armyofagents/provider-wire";
+import { EXPORT_TEARDOWN_RESERVE_MS } from "@armyofagents/worker-daemon";
 
 import { gateList, gateOwnedOp, redactProjection, type OwnedOpGateDeps } from "./owned-op-gate.js";
 import { gateCreate, type CreateGateDeps } from "./create-gate.js";
@@ -84,6 +86,15 @@ export interface CreateProviderServerOptions {
    */
   readonly reaperMetrics?: ReaperMetricsCounter;
   /**
+   * DAT-009-3e — the object-store ORIGINS (`https://host[:port]`) an `export_artifact` upload grant
+   * may target. The grant is WORKER-SUPPLIED, so without this a worker holding a valid capability
+   * for its own sandbox could hand in a forged grant and have the far provider PUT the sandbox's
+   * bytes to any HTTPS endpoint (Codex P1, PR #557). FAIL-CLOSED: absent or empty ⇒ every export
+   * is refused. The shipped bin does not set it yet, so a deployed adapter-manager refuses exports
+   * until the store origin is configured.
+   */
+  readonly artifactUploadOrigins?: readonly string[];
+  /**
    * E6-F024 — receives the REDACTED classification of every provider-op failure that the leak
    * fence below maps to the generic `WireProtocolError`. Every field is from a closed
    * vocabulary (`op-failure-classification.ts`): never a URL, header, grant, key or message.
@@ -121,6 +132,12 @@ const GATE_REQUIRED_OPS: ReadonlySet<string> = new Set([
   // GATED-ONLY (no keyless raw handler below), routed through `gateOwnedOp`. An ungated
   // server 404s it, matching the B2 teardown ops, because it carries a bearer grant.
   "stage_files",
+  // DAT-009-3e — the artifact pair, on the `stage_files` precedent: each reads out of (digest) or
+  // uploads from (export, carrying a bearer UPLOAD grant) ONE live owned sandbox, so each is a
+  // single-sandbox owned op, GATED-ONLY, routed through `gateOwnedOp`. Neither is a member of the
+  // frozen `ProviderOperation` vocabulary, and neither becomes one.
+  "digest_artifact",
+  "export_artifact",
 ]);
 
 export function createProviderServer(options: CreateProviderServerOptions): Server {
@@ -158,6 +175,39 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
         createLock: new KeyedMutex(),
       }
     : null;
+
+  const artifactUploadOrigins: ReadonlySet<string> = new Set(options.artifactUploadOrigins ?? []);
+  /**
+   * DAT-009-3e (Codex P1, third round on PR #557) — object keys whose export has already SUCCEEDED
+   * on this instance. A redemption is ONE-TIME.
+   *
+   * ★ WHY. The grant's integrity fields (`expectedSha256`, `maxBytes`) are WORKER-SUPPLIED and no
+   * control-plane signature covers them — the presigned url binds the checksum ALGORITHM, never the
+   * value. A worker that keeps a url it already redeemed could therefore hand in the same
+   * url/objectKey with a different `expectedSha256` and re-PUT different bytes under the key the
+   * fenced commit already verified. The control plane refuses to MINT a second grant for a
+   * committed artifact (`artifact-transfer-grant.ts`); replaying the first grant went around that,
+   * so the adapter-manager refuses the second redemption itself.
+   *
+   * ★ WHAT THIS IS NOT. It is per-INSTANCE and in-memory: it does not survive a restart and does
+   * not reach a second replica, and two concurrent first-exports of one key can both pass. It
+   * narrows the replay; it does not authenticate the grant. Only a control-plane-signed grant
+   * covering the integrity fields would, and that is a frozen-`worker-protocol` change this ticket
+   * may not make (see the result doc's stop).
+   *
+   * A FAILED export records nothing, so an honest retry still works, and a REPLAY under the same
+   * `idempotencyKey` returns the recorded result rather than being refused — `ProviderOpContext`'s
+   * own contract is "a repeated key returns the recorded result and does not double-apply", and a
+   * lost response must not turn a stored object into a missing output (Codex P2, PR #557).
+   *
+   * ★ BOUNDED IN TIME, on the SERVER's own clock (Codex P2 then P1, fifth and sixth rounds). The
+   * first attempt retained each record for the grant's own `expiresAt` — which is WORKER-SUPPLIED
+   * and unauthenticated, so a worker could shorten it, wait for its own record to be evicted, and
+   * then replay the still-live url with different bytes. Retention is therefore a fixed
+   * server-side window (`UPLOAD_REDEMPTION_RETENTION_MS`) measured from the redemption, which no
+   * worker field can shorten, and the map stays bounded by the exports in one window.
+   */
+  const redeemedUploads = new Map<string, { idempotencyKey: string; result: unknown; recordedAtMs: number }>();
 
   const gateDeps: OwnedOpGateDeps | null = gated
     ? { provider, controlPlanePublicKey: controlPlanePublicKey!, now, sandboxLock: new KeyedMutex() }
@@ -212,6 +262,79 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
         // verifies sha256/maxBytes, and writes; only the result paths cross back.
         const { sandboxId, files } = args as { sandboxId: string; files: readonly StagedFileRequest[] };
         return gateOwnedOp(deps, sandboxId, ctx, capability, () => provider.stageFiles(sandboxId, files, ctx));
+      }
+      case "digest_artifact": {
+        // DAT-009-3e — metadata only (sha256 + byte size), never content. Owned-checked first: a
+        // digest of another tenant's file is itself a disclosure (it confirms content by hash).
+        const { sandboxId, path } = args as { sandboxId: string; path: string };
+        return gateOwnedOp(
+          deps,
+          sandboxId,
+          ctx,
+          capability,
+          (_detail, remainingMs) => {
+            // Bounded for the same reason the export is: this runs under the per-sandbox lock. The
+            // budget is what is LEFT after the mutex queue, which the gate measures.
+            if (remainingMs === undefined || !(remainingMs > 0)) {
+              return Promise.reject(new WireProtocolError("digest_artifact refused: no budget left before the teardown reserve"));
+            }
+            return provider.digestArtifact(sandboxId, path, { ...ctx, deadlineMs: remainingMs });
+          },
+          // The deadline covers the ownership inspection too — the provider's `inspect` honours no
+          // deadline of its own, and it runs inside the lock.
+          artifactOpDeadlineAtMs(ctx, capability, now()),
+        );
+      }
+      case "export_artifact": {
+        // DAT-009-3e — the far provider re-reads, re-verifies size + sha256 against the grant AT
+        // THE CAUSE, and PUTs to the store; only `{objectKey}` crosses back, never bytes. The grant
+        // is a bearer capability: it is never logged here, and an unmodelled failure's message
+        // (which names the path and digests) is replaced by the leak fence below.
+        // The grant type is taken from the PORT (not imported from worker-protocol), keeping this
+        // package's manifest at its three declared dependencies.
+        const { sandboxId, path, grant } = args as {
+          sandboxId: string;
+          path: string;
+          grant: Parameters<SandboxProvider["exportArtifact"]>[2];
+        };
+        // ★ The grant is bound BEFORE the provider runs (after the owned-check, so `detail` carries
+        // the caller's own verified labels): a refused grant reads nothing and uploads nothing.
+        // ★ BOUNDED (Codex P1, PR #557). `gateOwnedOp` holds the per-sandbox lock across the
+        // ownership inspection AND this dispatch, so anything unbounded in either would queue the
+        // run's own destroy behind it. The budget is the capability's remaining life minus
+        // EXPORT_TEARDOWN_RESERVE_MS, the same clamp the supervisor applies to its export window,
+        // so destroy always keeps its reserve. It is passed BOTH to the provider (which aborts the
+        // read and the upload on it) and to the gate (which releases the lock on it).
+        return gateOwnedOp(
+          deps,
+          sandboxId,
+          ctx,
+          capability,
+          (detail, remainingMs) => {
+            assertUploadGrantBound(grant, detail.resourceLabels, artifactUploadOrigins, now());
+            if (remainingMs === undefined || !(remainingMs > 0)) {
+              return Promise.reject(new WireProtocolError("export_artifact refused: no budget left before the teardown reserve"));
+            }
+            const objectKey = (grant as { objectKey: string }).objectKey;
+            const nowMs = now();
+            for (const [key, record] of redeemedUploads) {
+              if (nowMs - record.recordedAtMs > UPLOAD_REDEMPTION_RETENTION_MS) redeemedUploads.delete(key);
+            }
+            const redeemed = redeemedUploads.get(objectKey);
+            if (redeemed !== undefined) {
+              // Lost-response REPLAY under the same key: hand back the recorded result, upload
+              // nothing. Any OTHER key is a re-PUT of an already-stored object and is refused.
+              if (redeemed.idempotencyKey === ctx.idempotencyKey) return Promise.resolve(redeemed.result);
+              return Promise.reject(new WireProtocolError("export_artifact refused: this object key has already been uploaded"));
+            }
+            return provider.exportArtifact(sandboxId, path, grant, { ...ctx, deadlineMs: remainingMs }).then((result) => {
+              // Recorded only on SUCCESS: a failed export must stay retryable.
+              redeemedUploads.set(objectKey, { idempotencyKey: ctx.idempotencyKey, result, recordedAtMs: now() });
+              return result;
+            });
+          },
+          artifactOpDeadlineAtMs(ctx, capability, now()),
+        );
       }
       default:
         // GATE_REQUIRED_OPS is the exhaustive set; this is unreachable.
@@ -316,6 +439,84 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
       })();
     });
   });
+}
+
+/**
+ * DAT-009-3e — how long a record of a successful export is kept, measured from the redemption on
+ * the SERVER's clock. Long enough to cover any honest retry or lost-response replay of a grant
+ * (grants are minted with short lives), short enough that the map is bounded by one window's
+ * exports. Deliberately NOT the grant's own `expiresAt`, which is worker-supplied (Codex P1).
+ */
+export const UPLOAD_REDEMPTION_RETENTION_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * DAT-009-3e — the ABSOLUTE instant by which an artifact op must be done: the caller's own budget,
+ * clamped to the capability's life minus `EXPORT_TEARDOWN_RESERVE_MS`. That is the clamp the
+ * supervisor applies to its own export window, so the run's destroy always keeps its reserve
+ * (Codex P1, PR #557). An INSTANT rather than a duration, because the gate's mutex queues: time
+ * spent waiting for the lock must be spent budget, not a fresh window.
+ * `capability` is defined at every call site: the gate verified it first.
+ */
+function artifactOpDeadlineAtMs(
+  ctx: ProviderOpContext,
+  capability: OwnedLabelsCapability | undefined,
+  nowMs: number,
+): number {
+  return Math.min(nowMs + ctx.deadlineMs, (capability?.expiresAt ?? 0) - EXPORT_TEARDOWN_RESERVE_MS);
+}
+
+/**
+ * DAT-009-3e — bind a WORKER-SUPPLIED upload grant to the verified caller and a configured store,
+ * or throw a FIXED `WireProtocolError` (never the url, the key or the labels).
+ *
+ * 1. Shape: an `upload` / `PUT` grant with string `url` and `objectKey`.
+ * 2. Destination: `https:`, and the url's ORIGIN is one the deployment configured
+ *    (`artifactUploadOrigins`). None configured ⇒ refused.
+ * 3. Tenancy: `objectKey` sits under the caller's OWN attempt prefix,
+ *    `organizations/<org>/jobs/<job>/attempts/<attempt>/` — the format of worker-protocol's
+ *    `expectedAttemptObjectPrefix` (restated here because this package may not declare
+ *    worker-protocol; `check-adapter-manager-boundary`). The labels are the owned-checked ones.
+ * 4. The url TARGETS that key: its decoded path ends with `/<objectKey>` (path- or host-style).
+ * 5. The grant has not EXPIRED (`expiresAt`, on the server's own clock). A dead grant cannot be
+ *    redeemed at the store anyway, and refusing it here is what makes the redemption ledger's
+ *    expiry-based eviction safe: an evicted record can never be replayed.
+ *
+ * This does not authenticate the grant — nothing can, since a presigned url carries no
+ * control-plane signature the adapter-manager could check. It confines where a grant can send
+ * bytes to the configured store, under the caller's own attempt, which is the most a forged grant
+ * could then do and is what the caller's own lease may already write.
+ */
+function assertUploadGrantBound(
+  grant: unknown,
+  owned: ResourceLabels,
+  allowedOrigins: ReadonlySet<string>,
+  nowMs: number,
+): void {
+  const refuse = (): never => {
+    throw new WireProtocolError("export_artifact refused: the upload grant is not bound to this attempt and a configured artifact store");
+  };
+  if (typeof grant !== "object" || grant === null) refuse();
+  const g = grant as Record<string, unknown>;
+  if (g.operation !== "upload" || g.method !== "PUT" || typeof g.url !== "string" || typeof g.objectKey !== "string") refuse();
+  const objectKey = g.objectKey as string;
+  let url: URL;
+  try {
+    url = new URL(g.url as string);
+  } catch {
+    return refuse();
+  }
+  if (url.protocol !== "https:" || !allowedOrigins.has(url.origin)) refuse();
+  const prefix = `organizations/${owned.organizationId}/jobs/${owned.jobId}/attempts/${owned.attempt}/`;
+  if (!objectKey.startsWith(prefix) || objectKey.length === prefix.length) refuse();
+  let path: string;
+  try {
+    path = decodeURIComponent(url.pathname);
+  } catch {
+    return refuse();
+  }
+  if (!path.endsWith(`/${objectKey}`)) refuse();
+  const expiresAtMs = typeof g.expiresAt === "string" ? Date.parse(g.expiresAt) : Number.NaN;
+  if (!Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs) refuse();
 }
 
 /**
