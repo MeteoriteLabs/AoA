@@ -156,7 +156,18 @@ let clockRealStart = Date.now();
 const serverNow = (): number => clockNow + (Date.now() - clockRealStart);
 
 async function startServer(
-  opts: { gated?: boolean; exportMode?: "grant_upload" | "none"; uploadOrigins?: readonly string[] | null } = {},
+  opts: {
+    gated?: boolean;
+    exportMode?: "grant_upload" | "none";
+    uploadOrigins?: readonly string[] | null;
+    // CLI-017-B (Codex P2, PR #592) — drive the SD-5 refusal over the REAL transport path.
+    scanExportBytes?: (input: {
+      bytes: Uint8Array;
+      sandboxId: string;
+      secrets: readonly string[];
+      signal: AbortSignal;
+    }) => void;
+  } = {},
 ): Promise<void> {
   const gated = opts.gated ?? true;
   transport = new RecordingMockTransport();
@@ -173,12 +184,16 @@ async function startServer(
     }
     uploads.push({ objectKey: g.objectKey, bytes: Uint8Array.from(bytes) });
   };
+  // CLI-017-B (Codex P2, PR #592) — the scanner is injectable so the SD-5 refusal can be driven
+  // over the REAL transport path, not just against the provider directly. Defaults to clean, so
+  // every pre-existing case in this file is unchanged.
+  const scanExportBytes = opts.scanExportBytes ?? CLEAN_SCAN;
   const base =
     opts.exportMode === "none"
       ? new (class extends E2bSandboxProvider {
           override readonly artifactExportMode = "none" as const;
-        })({ transport, performUploadGrant, scanExportBytes: CLEAN_SCAN })
-      : new E2bSandboxProvider({ transport, performUploadGrant, scanExportBytes: CLEAN_SCAN });
+        })({ transport, performUploadGrant, scanExportBytes })
+      : new E2bSandboxProvider({ transport, performUploadGrant, scanExportBytes });
   // Records the ctx.deadlineMs the ROUTE hands the provider's exportArtifact.
   const provider = new Proxy(base, {
     get(target, prop) {
@@ -711,5 +726,44 @@ describe("DAT-009-3e — digest/export over the networked wire (gated owned ops)
       operation: "export_artifact",
     });
     expect(uploads).toHaveLength(0);
+  });
+});
+
+
+// ---------------------------------------------------------------------------------------
+// CLI-017-B, round 1 (Codex P2, PR #592) — THE SD-5 REFUSAL, DRIVEN OVER THE REAL TRANSPORT.
+//
+// The codec round-trip is proven in provider-wire's own suite. This is the other half Codex asked
+// for: the refusal raised inside `E2bSandboxProvider.exportArtifact`, carried through the
+// adapter-manager's HTTP error boundary, and read back by `NetworkedProviderDriver` — the exact
+// path production takes. Unmodelled, that boundary substituted a generic `WireProtocolError` and
+// the worker could not tell a file that carried a credential from a store it could not reach.
+// ---------------------------------------------------------------------------------------
+describe("CLI-017-B — an SD-5 refusal keeps its class across the adapter-manager hop", () => {
+  it("a scanner that REFUSES surfaces as SandboxExportScannerRefusedError, and nothing is uploaded", async () => {
+    await startServer({
+      scanExportBytes: () => {
+        throw new Error("export secret scan: refused");
+      },
+    });
+    const sandboxId = await sandboxWithOutput(ORG_A);
+    const outcome = await driverFor(ORG_A)
+      .exportArtifact(sandboxId, OUT_PATH, grant(ORG_A), ctx("e-refused"))
+      .catch((e: unknown) => e);
+
+    // THE STORE FIRST, as everywhere in this ticket: the bytes are what matter.
+    expect(uploads).toEqual([]);
+    // ...and the classification survived the hop. NOT the degraded generic.
+    expect((outcome as Error).name).toBe("SandboxExportScannerRefusedError");
+    expect(outcome).not.toBeInstanceOf(WireProtocolError);
+  });
+
+  it("POSITIVE CONTROL - with a CLEAN scanner the same export succeeds over the same hop", async () => {
+    // Without this the arm above would pass for a transport that failed every export.
+    await startServer({});
+    const sandboxId = await sandboxWithOutput(ORG_A);
+    const exported = await driverFor(ORG_A).exportArtifact(sandboxId, OUT_PATH, grant(ORG_A), ctx("e-clean"));
+    expect(exported).toEqual({ objectKey: grant(ORG_A).objectKey });
+    expect(uploads.map((u) => u.objectKey)).toEqual([grant(ORG_A).objectKey]);
   });
 });

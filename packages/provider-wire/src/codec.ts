@@ -21,6 +21,9 @@ import type { ProviderOpContext } from "@armyofagents/worker-daemon";
 import {
   ResourceNotAvailableError,
   SandboxEgressDeniedError,
+  SandboxExportScannerRefusedError,
+  SandboxExportScannerUnavailableError,
+  SandboxExportSecretSetUnavailableError,
   SandboxNotFoundError,
   UnsupportedProviderOperation,
 } from "@armyofagents/sandbox-e2b-provider/errors.js";
@@ -170,6 +173,26 @@ export function serializeError(err: unknown): SerializedError {
   if (err instanceof ResourceNotAvailableError) {
     return { name: err.name, message: err.message };
   }
+  // CLI-017-B — THE THREE EXPORT REFUSALS. Modelled for the same reason
+  // `ResourceNotAvailableError` is: each carries NO discriminant and its message is fixed by the
+  // class, so nothing tenant-derived crosses. They are explicit here (not via the generic `Error`
+  // fallthrough) so they stay SYMMETRIC with `reconstructError` and mutation-visible.
+  //
+  // ★★★ WITHOUT THIS THE CLASSIFICATION IS ERASED EXACTLY WHERE IT MATTERS. `E7-D11` section 3
+  // requires the SD-5 refusal to be classified, and `E5-D07` makes it per-file and best-effort
+  // outward — which only works if the worker can tell "this file carried a secret" from "the
+  // adapter-manager could not reach the store". In production the export runs through the
+  // adapter-manager, whose error boundary passes through only `isModelledWireError` and otherwise
+  // substitutes a generic `WireProtocolError`. Unmodelled, every secret refusal arrived
+  // indistinguishable from a generic infrastructure failure. Raised by Codex on PR #592 (P2),
+  // verified at source before fixing.
+  if (
+    err instanceof SandboxExportScannerUnavailableError ||
+    err instanceof SandboxExportScannerRefusedError ||
+    err instanceof SandboxExportSecretSetUnavailableError
+  ) {
+    return { name: err.name, message: err.message };
+  }
   // Anything else is not a modelled domain error — carry only its name/message; the
   // decoder maps an unrecognised name to a generic WireProtocolError.
   if (err instanceof Error) {
@@ -196,7 +219,12 @@ export function isModelledWireError(err: unknown): boolean {
     err instanceof ResourceNotAvailableError ||
     err instanceof SandboxNotFoundError ||
     err instanceof SandboxEgressDeniedError ||
-    err instanceof UnsupportedProviderOperation
+    err instanceof UnsupportedProviderOperation ||
+    // CLI-017-B — the three export refusals. Fixed-vocabulary messages, no discriminant, no
+    // tenant data; see the note in `serializeError`.
+    err instanceof SandboxExportScannerUnavailableError ||
+    err instanceof SandboxExportScannerRefusedError ||
+    err instanceof SandboxExportSecretSetUnavailableError
   );
 }
 
@@ -216,6 +244,14 @@ export function reconstructError(raw: unknown): Error {
     }
     case "SandboxNotFoundError":
       return new SandboxNotFoundError();
+    // CLI-017-B — SYMMETRIC with `serializeError` above. Missing any of these three would let the
+    // refusal degrade to `WireProtocolError` on decode, which is the erasure this closes.
+    case "SandboxExportScannerUnavailableError":
+      return new SandboxExportScannerUnavailableError();
+    case "SandboxExportScannerRefusedError":
+      return new SandboxExportScannerRefusedError();
+    case "SandboxExportSecretSetUnavailableError":
+      return new SandboxExportSecretSetUnavailableError();
     case "ResourceNotAvailableError":
       // SYMMETRIC with serializeError: miss this and the uniform gate denial silently
       // degrades to WireProtocolError on decode, breaking the oracle collapse.

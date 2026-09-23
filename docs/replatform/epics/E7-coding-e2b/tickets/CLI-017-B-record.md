@@ -117,8 +117,8 @@ most valuable failure here:
 
 ```
  packages/sandbox-e2b-provider   Test Files 20 passed | 3 skipped (23)   Tests 225 passed | 32 skipped (257)
- packages/adapter-manager        Test Files 21 passed (21)               Tests 205 passed (205)
- packages/provider-wire          Test Files  7 passed (7)                Tests  87 passed | 1 skipped (88)
+ packages/adapter-manager        Test Files 21 passed (21)               Tests 214 passed (214)
+ packages/provider-wire          Test Files  8 passed (8)                Tests  98 passed | 1 skipped (99)
  packages/worker-daemon          Test Files 166 passed (166)             Tests 1268 passed | 1 skipped (1269)
 ```
 
@@ -272,6 +272,58 @@ build which quietly makes it pass as a refusal without a ruling has improvised a
   property and measures it on a fixture; **it does not claim the real-run attempt**.
 - **The `A-neg` + `S-P0` template precondition** — an operator precondition, not code.
 
+## 11a. Codex round 1 (PR #592, P2) — the refusal's CLASSIFICATION was erased on the wire
+
+**The finding, verified at source before fixing.** `E7-D11` §3 requires the SD-5 refusal to be
+**classified**, and `E5-D07` makes it per-file and best-effort outward — which is only actionable if
+the worker can tell *"this file carried a secret"* from *"the adapter-manager could not reach the
+store"*. In production the export runs through the adapter-manager, whose error boundary passes
+through only errors `isModelledWireError` (`packages/provider-wire/src/codec.ts`) recognises and
+otherwise substitutes a fixed generic `WireProtocolError`. **None of the three export refusals were
+in that vocabulary**, and `classifyOpFailure`
+(`packages/adapter-manager/src/op-failure-classification.ts`) knew neither `export_artifact` nor any
+of the refusal classes — so every secret refusal arrived as `op=other class=other
+cause=unclassified`. **A classification that is erased before anyone reads it is not a
+classification**, and this record would otherwise have claimed one that production never sees.
+
+**The class:** *a fixed-vocabulary domain refusal modelled in the provider but not in the wire
+codec, so it degrades to `WireProtocolError` on the hop.* **Swept, not spot-fixed:** Codex named
+`SandboxExportSecretSetUnavailableError` and noted the same erasure for
+`SandboxExportScannerRefusedError`; `SandboxExportScannerUnavailableError` is the third member and
+was equally erased, so **all three** are modelled, in **both** directions (`serializeError` **and**
+`reconstructError` — missing either half re-opens the erasure on one side only). On the classifier
+side, `digest_artifact` was equally unknown and reads the sandbox through the same
+`#readArtifactBytes`, so **both** artifact ops were added rather than only the one named.
+
+All three messages are fixed by their class and carry no discriminant, so nothing tenant-derived
+crosses; the causes are derived from the **class name**, never from message text, because these
+messages are vocabulary the wire is free to change.
+
+| id | mutant | observed |
+|---|---|---|
+| **M-B10** | Drop the three from `isModelledWireError` | **RED** — `3 failed | 95 passed` |
+| **M-B11** | Drop the three `reconstructError` cases | **RED** — `3 failed | 95 passed` |
+| **M-B12** | Drop the classifier's refusal-cause derivation | **RED** — `4 failed | 210 passed` |
+
+Covered in **three** places, because the codec alone would be the "tested the provider directly"
+gap Codex named: `provider-wire`'s `cli-017-b-export-refusal-wire.test.ts` (both directions, plus a
+positive control that an **unmodelled** error still degrades, so the predicate is not "always
+true"); `op-failure-classification.test.ts` (each cause, the refusal winning over an incidental
+code beneath it, a genuine `fetch_failed` on the **same** op still distinguishable, and an unknown
+op still `other`); and **`server-artifact-export.test.ts`, which drives the refusal over the real
+`NetworkedProviderDriver` → HTTP → adapter-manager → provider path** and asserts the class survives
+the hop with nothing uploaded, beside a clean-scanner positive control.
+
+**One further pin moved, caught by CI rather than by review.**
+`server/src/__tests__/cli-006-seam-suppression.test.ts` asserts the canary seam's source window
+contains `context.currentTaskMarkdown`; SD-1b nests that inside
+`applySandboxOutputRootDirective`, pushing it past the pin's 8-line slice. The window is widened to
+40 lines; **the pin's claim is unchanged** and the directive itself is pinned exactly and separately
+by PC-12. The `heartbeat.ts` source-pin class was then swept:
+`grep -rln "readFileSync.*heartbeat\|HEARTBEAT_SRC" server/src/__tests__/` → 4 files, of which one
+(`cli-006-seam-suppression`) was affected and is fixed; the other three do not window the
+`buildTaskRunBatchWorkload` call and are green unedited.
+
 ## 12. Files
 
 | file | change |
@@ -285,13 +337,19 @@ build which quietly makes it pass as a refusal without a ruling has improvised a
 | `packages/sandbox-e2b-provider/src/__tests__/keyed-dat-009-artifact-export.test.ts` | the keyed lane now wires the real scanner |
 | `packages/adapter-manager/src/bin/adapter-manager.ts` | wires the scanner; **refuses** the boot when the module does not export it |
 | `packages/adapter-manager/src/__tests__/bin-adapter-manager.test.ts` | the stubs, plus a new arm proving the boot refusal |
-| `scripts/test-inventory.json` | pins bumped for the two new test files |
+| `packages/provider-wire/src/codec.ts` | the three refusals modelled in `isModelledWireError`, `serializeError`, `reconstructError` (round 1) |
+| `packages/provider-wire/src/__tests__/cli-017-b-export-refusal-wire.test.ts` | **new** — the wire round-trip, both directions |
+| `packages/adapter-manager/src/op-failure-classification.ts` | `export_artifact` + `digest_artifact` as known ops; the three refusal classes; three new causes derived from the class name |
+| `packages/adapter-manager/src/__tests__/op-failure-classification.test.ts` | the classifier arms |
+| `packages/adapter-manager/src/__tests__/server-artifact-export.test.ts` | an injectable scanner + the refusal driven over the real transport path |
+| `server/src/__tests__/cli-006-seam-suppression.test.ts` | the moved source-pin window widened 8 -> 40 lines; its claim unchanged |
+| `scripts/test-inventory.json` | pins bumped for the new test files |
 | `docs/architecture/distributed-execution-threat-controls.json` | `e2b-provider.ts` citation re-pointed by symbol; census stays **397** |
 
 ## 13. CI
 
 Recorded by the reviewer against the PR head. Local, at the reviewed revision: the four package
-suites in §4 (**1785 executed, 0 failed**), and the full pure-node guard set plus
+suites in §4 (**1805 executed, 0 failed**), and the full pure-node guard set plus
 `check-evidence-immutability --base origin/docs/replatform-program` at **0 failures**.
 
 ---

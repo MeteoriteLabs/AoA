@@ -226,3 +226,65 @@ describe("E6-F024 — classifyOpFailure copies nothing out of an error", () => {
     expect(classifyOpFailure("execute", a).cause).toBe("fetch_failed");
   });
 });
+
+// ---------------------------------------------------------------------------------------
+// CLI-017-B, round 1 (Codex P2, PR #592) — THE SD-5 EXPORT REFUSALS ARE THEIR OWN CAUSES.
+//
+// Before this, `export_artifact` was not a KNOWN_OP and none of the refusal classes were known,
+// so a secret refusal reported `op=other class=other cause=unclassified` — identical to a generic
+// infrastructure failure. `E5-D07` makes the refusal per-file and best-effort outward, which is
+// only actionable if an operator can tell the two apart at the one place it is observed.
+//
+// The causes are derived from the error CLASS NAME, never from message text: these classes'
+// messages are fixed vocabulary, and pattern-matching them would couple the classifier to wording
+// the wire is free to change. Nothing tenant-derived can reach the output by construction.
+// ---------------------------------------------------------------------------------------
+describe("CLI-017-B — SD-5 export refusals classify as themselves", () => {
+  class Refusal extends Error {
+    constructor(name: string, message: string) {
+      super(message);
+      this.name = name;
+    }
+  }
+
+  const cases = [
+    ["SandboxExportScannerRefusedError", "export_secret_refused"],
+    ["SandboxExportSecretSetUnavailableError", "export_secret_set_unavailable"],
+    ["SandboxExportScannerUnavailableError", "export_scanner_unavailable"],
+  ] as const;
+
+  for (const [name, cause] of cases) {
+    it(`${name} -> cause=${cause}, with the real op and the real class`, () => {
+      const c = classifyOpFailure("export_artifact", new Refusal(name, "artifact export refused: fixed text"));
+      expect(c.op).toBe("export_artifact");
+      expect(c.errorClass).toBe(name);
+      expect(c.cause).toBe(cause);
+      // Nothing from the message, the path or a grant can appear in the rendered line.
+      expect(formatOpFailure(c)).toBe(`op=export_artifact class=${name} cause=${cause}`);
+    });
+  }
+
+  it("★ the refusal wins over an incidental code further down the cause chain", () => {
+    // A verdict about the bytes must not be overwritten by transport noise attached beneath it.
+    const refusal = new Refusal("SandboxExportScannerRefusedError", "refused");
+    (refusal as unknown as { cause: unknown }).cause = Object.assign(new Error("boom"), { code: "ETIMEDOUT" });
+    expect(classifyOpFailure("export_artifact", refusal).cause).toBe("export_secret_refused");
+  });
+
+  it("★ digest_artifact is a KNOWN op too — swept as a pair, not fixed as the one instance", () => {
+    // It reads the sandbox through the same `#readArtifactBytes` and was equally unknown.
+    expect(classifyOpFailure("digest_artifact", new Error("x")).op).toBe("digest_artifact");
+  });
+
+  it("★ POSITIVE CONTROL — a genuine infrastructure failure on the SAME op is still distinguishable", () => {
+    // Without this arm the rows above could pass for a classifier that called everything a
+    // refusal, which would be exactly as useless as calling everything unclassified.
+    const c = classifyOpFailure("export_artifact", Object.assign(new Error("fetch failed"), { name: "TypeError" }));
+    expect(c.cause).toBe("fetch_failed");
+    expect(c.cause).not.toBe("export_secret_refused");
+  });
+
+  it("★ an UNKNOWN op is still reported as `other` — the vocabulary stays closed", () => {
+    expect(classifyOpFailure("teleport_artifact", new Error("x")).op).toBe("other");
+  });
+});
