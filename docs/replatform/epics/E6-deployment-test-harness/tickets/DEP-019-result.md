@@ -1,8 +1,10 @@
 # DEP-019 — The `m1-spine` journey, driven by the DEPLOYED worker — result
 
-**Status:** `gate_review`. ★ **The `complete` flip of 2026-09-23 is WITHDRAWN by the M1 planning
-session the same day**, on a Codex P1 raised against PR #579 and verified at source. Only a distinct
-reviewer may restore it, and not before the fix below lands.
+**Status:** `complete` (restored 2026-09-23 by the distinct reviewer of attempt 2, after §14 landed
+as `c25e78f11` and all three withdrawal requirements were verified at source). *Original line, kept
+as first written:* "`gate_review`. ★ **The `complete` flip of 2026-09-23 is WITHDRAWN by the M1
+planning session the same day**, on a Codex P1 raised against PR #579 and verified at source. Only a
+distinct reviewer may restore it, and not before the fix below lands."
 **Epic:** E6 · **Plan task:** `E6 implementation-plan §4c DEP-019` (filed by this PR) · **Milestone:** `M1a`
 **Date (UTC):** `2026-09-23`
 **Implementer:** Claude Opus 5 (M1 build agent)
