@@ -1020,3 +1020,29 @@ test("base64Payload keeps only base64, and the framing it drops never changes wh
   const ordinary = 'm1-worker-a-1  | 2026-09-21T14:50:56.557961137Z {"sandboxId":"ir2yj6bc4zh81x258k47b","msg":"supervisor: run complete"}';
   assert.equal(createLineRedactor()(ordinary), ordinary, 'the lane reads its own sandbox evidence from these lines');
 });
+
+test("POSITIVE CONTROL: an ABSENT job log fails the scan IN CI, and is merely nothing to scan outside it (Codex P2)", () => {
+  const make = () => {
+    const out = mkdtempSync(path.join(tmpdir(), 'm1-nolog-'));
+    mkdirSync(path.join(out, 'evidence'), { recursive: true });
+    writeFileSync(path.join(out, 'evidence', 'verifier-a.txt'), 'clean\n');
+    writeFileSync(path.join(out, 'state.json'), JSON.stringify({ out, redact: [], secrets: {} }));
+    return out;  // …and NO job-log.txt: the capture never happened, or was removed.
+  };
+  const inCi = make();
+  const ci = spawnSync(process.execPath, [journey, 'leak-scan', '--out', inCi], {
+    encoding: 'utf8', env: { ...process.env, GITHUB_ACTIONS: 'true' },
+  });
+  const bundleGone = !existsSync(path.join(inCi, 'evidence'));
+  rmSync(inCi, { recursive: true, force: true });
+  assert.equal(ci.status, 1, ci.stdout + ci.stderr);
+  assert.match(`${ci.stdout}${ci.stderr}`, /job log is ABSENT/);
+  assert.ok(bundleGone, 'a bundle whose log surface was never captured must not survive to upload');
+
+  const local = make();
+  const env = { ...process.env };
+  delete env.GITHUB_ACTIONS;
+  const off = spawnSync(process.execPath, [journey, 'leak-scan', '--out', local], { encoding: 'utf8', env });
+  rmSync(local, { recursive: true, force: true });
+  assert.equal(off.status, 0, off.stdout + off.stderr);  // a by-hand phase run tees nothing
+});

@@ -961,6 +961,18 @@ function leakScan(state) {
   // values by construction and which GitHub renders as `***`. They are stripped before either
   // scan — otherwise every run would fail its own leak scan (Codex P1, PR #574) — and the
   // number stripped is reported, so the exception is bounded and visible.
+  // ★ An ABSENT job log is not an empty surface (Codex P2, PR #574). Reaching here means `prepare`
+  // wrote state.json, so at least that phase was teed; a missing capture means the file was removed
+  // after the last filter ran, or the filter died before it could leave its marker. Either way the
+  // Actions-log coverage this scan claims was never had, so IN CI it fails closed. Outside CI (a
+  // by-hand phase run) there is no tee, and an absent log is simply nothing to scan.
+  if (process.env.GITHUB_ACTIONS === "true" && !existsSync(jobLogPath(state))) {
+    rmSync(dir, { recursive: true, force: true });
+    fail(
+      "leak scan: the job log is ABSENT although the run got past prepare; the Actions-log surface " +
+        "was never captured and cannot be judged clean, so the evidence was deleted",
+    );
+  }
   const rawLog = existsSync(jobLogPath(state)) ? readFileSync(jobLogPath(state), "latin1") : null;
   const stripped = rawLog === null ? { text: "", removed: 0 } : stripMaskDirectives(rawLog);
   const logSurface = rawLog === null ? [] : [{ name: "job-log.txt", text: stripped.text }];

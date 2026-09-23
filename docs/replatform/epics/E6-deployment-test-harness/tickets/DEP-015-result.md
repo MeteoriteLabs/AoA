@@ -908,5 +908,12 @@ They are recorded because each would have made the control worse than none:
     behavioural markers, both verified absent from `22b500fb2` and the second absent from
     `274f055a8` — so every earlier candidate on this branch is now refused rather than silently
     run with a weaker control. Seven behavioural markers in all.
+22. **An ABSENT job log was read as an empty surface.** Reaching the scan means `prepare` wrote
+    `state.json`, so at least that phase was teed; a missing capture means the file was removed
+    after the last filter ran, or the filter died before it could leave its marker — and the scan
+    then reported zero log files and PASSED, so the upload gate published a bundle whose
+    Actions-log coverage was never had. In CI the scan now fails closed on an absent log and
+    deletes the bundle. Outside CI (a phase run by hand) nothing tees, so an absent log is simply
+    nothing to scan; both halves have a control, and a mutation tolerating the absence reds.
 **Status unchanged.** This is a control added after the fact to a run that was already clean; it
 neither re-opens nor re-decides §12's keyed acceptance.
