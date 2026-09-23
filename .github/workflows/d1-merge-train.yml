@@ -121,6 +121,10 @@ on:
       # The FROZEN wire protocol the ingest validates against and the profile's events are built
       # with (digests, the usage payload schema, the canonicalizers). Codex, PR #566.
       - "packages/worker-protocol/src/**"
+      # The shared contracts the server and the profile both read (submit-source schemas, job-control
+      # validators, constants). Same reasoning as the two trees above: this lane asserts end-to-end
+      # behaviour, so a contract change can decide its verdict. Codex, PR #566.
+      - "packages/shared/src/**"
       - "scripts/lib/d1-evidence-bundle.mjs"
       - "scripts/lib/image-admission.mjs"
       # DEP-014: the lane now RUNS the admission verifier on every image it builds.
