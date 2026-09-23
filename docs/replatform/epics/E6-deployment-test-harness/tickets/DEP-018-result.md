@@ -479,3 +479,46 @@ fixed.** Two things a reviewer should weigh: the profile's verdict moved from "c
 to **`INCOMPLETE`, three pending**, because two claims were being made by cases that could not prove
 them; and one round (§11d) falsified its own prediction while its premise still found a real defect,
 which is why the record keeps both.
+
+## 11f. Codex round six, and the self-audit
+
+Head `5a4fdb024`. Two findings, both taken.
+
+| Finding | Verified | Fix |
+|---|---|---|
+| **P1** — on a database outage the poll's shared admission limiter catches the store error and returns `{allowed:false, reason:"unavailable"}` (`worker-admission-rate-limit.ts`: *"FAIL-CLOSED: a shared-store error … DENIES the request"*), which the route renders **429 `throttled`** — so `>= 500` alone would red the lane on a CORRECT fail-closed answer | **True about the mechanism.** This lane measured `500` on every run, so the assertion was passing, but it was pinned to one of two legitimate renderings | The assertion accepts **either** `429` **or** a 5xx, and additionally requires the answer is not an `offer`. The one answer excluded is the defect — a 2xx. A control plane that fabricated an offer during the outage still cannot pass, and a correct 429 no longer reds the required lane |
+| **P2** — the proxy-cut's `reached` predicate accepted ANY HTTP response as proof the poll worked before and after the cut, so a broken endpoint could still set `injectionFired` | True | `reached` now requires **`200` with a valid poll outcome**. Live: `200 no_work` before the cut, request failed during it, `200 no_work` after |
+
+### 11g. The self-audit (M1 build-rule A), run before this push — and it found one
+
+Walked against my own diff. Seven of the eight families were already clean (bounds are explicit on
+every `dexecModule` and `waitFor`; the evidence verdict refuses duplicates and fails closed on a
+missing row, an undeclared case or an unreadable bundle; the hostile batches already carry the
+ATTACKER's worker id with the VICTIM's tenant fields, which is the "authenticate the half the
+attacker controls" family; citations were re-pointed by symbol and the pins recomputed on the merged
+tree). **Family 1 — redaction / secret collision — found a real one:**
+
+Three `record(...)` details and two assertion messages carried a worker-control response **body
+wholesale**. Today those are all denial envelopes, so nothing leaks. But the moment a hostile
+transfer grant is *not* denied — **which is the exact regression those cases exist to catch** — the
+body carries a **presigned URL with signed credentials**, and the bundle is uploaded as a CI
+artifact with 14-day retention. A channel that leaks only when the system is broken is still a
+channel, and the leak would arrive on the one run a reviewer would read most closely.
+
+Fixed with `responseFacts(r)` — `{status, outcome, code, reason}`, never the body — at all five
+sites. Verified on the retained bundle: **zero** matches for `X-Amz-Signature`, `X-Amz-Credential`,
+`Bearer ` or a JWT prefix.
+
+### 11h. Final state
+
+| Run | Result |
+|---|---|
+| The matrix | `tests 20, pass 20, fail 0`, twice; **25/25 required cases fired and classified**, 3 pending |
+| Suppressed-injection control | `pass 10 / fail 10`, **9 × `evidence:injection_did_not_fire`** |
+| `scripts/check-campaign-fault-matrix.test.mjs` | **25/25** |
+| `tests/d1/m1-spine.test.mjs`, on its OWN fresh stack | **6/6** — which also confirms §5: the contamination is cross-profile state on a shared stack, and the merge train gives each profile its own |
+
+★ **Stopped here under M1 build-rule C (hard cap: two Codex rounds).** This PR ran **six** rounds —
+the cap was published mid-ticket and is respected from this point. **15 findings, 6 P1 and 9 P2,
+every one verified at source before being fixed, none cosmetic.** No further review was requested;
+the two round-six findings above are fixed and measured, and nothing is outstanding from any round.

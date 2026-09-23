@@ -205,6 +205,22 @@ function waitFor(probe, predicate, { attempts = 30, everyMs = 1000 } = {}) {
   return { ok: false, last, polls: attempts };
 }
 
+/** A worker-control response, narrowed for the retained evidence bundle.
+ *
+ * ★ NEVER the whole body (self-audit family 1, found on my own diff before the final push). These
+ * are HOSTILE responses, so today they are denial envelopes — but the moment one of them is NOT,
+ * which is the exact regression these cases exist to catch, a granted transfer body carries a
+ * PRESIGNED URL with signed credentials, and the bundle is uploaded as a CI artifact with 14-day
+ * retention. A channel that leaks only when the system is broken is still a channel. */
+function responseFacts(r) {
+  return {
+    status: r?.status ?? null,
+    outcome: r?.body?.outcome ?? null,
+    code: r?.body?.code ?? null,
+    reason: r?.body?.reason ?? null,
+  };
+}
+
 function makeEvent(ids, tenant, offer, { eventType, seq, payload }) {
   return {
     protocolVersion: 1,
@@ -505,7 +521,7 @@ test("fault-matrix: cross-tenant lease renew — denied, with a same-tenant posi
     injectionFired: typeof hostile.status === "number" && hostile.status !== 0,
     observedClassification: denied ? "denied_with_same_tenant_positive_control" : "not_denied",
     positiveControlPassed,
-    detail: { hostile: { status: hostile.status, body: hostile.body }, own: { status: own.status, outcome: own.body?.outcome ?? null } },
+    detail: { hostile: responseFacts(hostile), own: responseFacts(own) },
   });
   assert.equal(positiveControlPassed, true, `the owner's own renew must be RENEWED, else the denial proves nothing: ${truncate(own.body)}`);
   assert.equal(denied, true, `a foreign worker's renew must be denied ${EXPECTED_FOREIGN_ACK_STATUS} ${EXPECTED_FOREIGN_ACK_CODE}: ${truncate(hostile.body)}`);
@@ -680,10 +696,10 @@ test("fault-matrix: cross-tenant staged inputs + outputs — denied, with same-t
     injectionFired: typeof hostileGrant.status === "number" && hostileGrant.status !== 0,
     observedClassification: grantDenied ? "denied_with_same_tenant_positive_control" : "not_denied",
     positiveControlPassed: grantControl,
-    detail: { hostile: { status: hostileGrant.status, body: hostileGrant.body }, own: { status: ownGrant.status, outcome: ownGrant.body?.outcome ?? null } },
+    detail: { hostile: responseFacts(hostileGrant), own: responseFacts(ownGrant) },
   });
-  assert.equal(grantControl, true, `the owner's own grant must succeed: ${truncate(ownGrant.body)}`);
-  assert.equal(grantDenied, true, `a foreign worker's transfer grant must be denied ${EXPECTED_FOREIGN_ACK_STATUS} ${EXPECTED_FOREIGN_ACK_CODE}: ${truncate(hostileGrant.body)}`);
+  assert.equal(grantControl, true, `the owner's own grant must succeed: ${truncate(responseFacts(ownGrant))}`);
+  assert.equal(grantDenied, true, `a foreign worker's transfer grant must be denied ${EXPECTED_FOREIGN_ACK_STATUS} ${EXPECTED_FOREIGN_ACK_CODE}: ${truncate(responseFacts(hostileGrant))}`);
 
   // ── outputs: the artifact-commit surface ──
   const put = step(putPresignedBytes({ url: ownGrant.body.grant.url, bodyBase64: bodyBytes.toString("base64") }), "put bytes");
@@ -711,7 +727,7 @@ test("fault-matrix: cross-tenant staged inputs + outputs — denied, with same-t
     injectionFired: typeof hostileCommit.status === "number" && hostileCommit.status !== 0,
     observedClassification: commitDenied ? "denied_with_same_tenant_positive_control" : "not_denied",
     positiveControlPassed: commitControl,
-    detail: { hostile: { status: hostileCommit.status, body: hostileCommit.body }, own: { status: ownCommit.status, outcome: ownCommit.body?.outcome ?? null } },
+    detail: { hostile: responseFacts(hostileCommit), own: responseFacts(ownCommit) },
   });
   assert.equal(commitControl, true, `the owner's own commit must succeed: ${truncate(ownCommit.body)}`);
   assert.equal(commitDenied, true, `a foreign worker's commit must be denied ${EXPECTED_FOREIGN_ACK_STATUS} ${EXPECTED_FOREIGN_ACK_CODE}: ${truncate(hostileCommit.body)}`);
@@ -1076,7 +1092,7 @@ test("fault-matrix: a truncating toxic on worker-to-minio makes the fenced commi
   record("d1.fault.object_store.truncated_upload", {
     injectionFired: putBlocked,
     observedClassification: refused ? "fenced_commit_refuses_unverifiable_object" : "committed",
-    detail: { toxicName, put: { threw: put.threw ?? false, status: put.status ?? null }, commit: { status: commit.status, body: commit.body } },
+    detail: { toxicName, put: { threw: put.threw ?? false, status: put.status ?? null }, commit: responseFacts(commit) },
   });
   assert.equal(putBlocked, true, `the truncating toxic must block the PUT — the injection: ${truncate(put)}`);
   assert.equal(
@@ -1239,9 +1255,14 @@ test("fault-matrix: cutting worker-to-control-plane severs real worker traffic, 
     const lateAckRefused = lateAck.status === EXPECTED_FOREIGN_ACK_STATUS &&
       NON_DISCLOSING_DENIALS.has(lateAck.body?.code);
 
-    // The injection FIRED iff a REAL worker request was interrupted: it worked before the cut,
+    // The injection FIRED iff a REAL worker request was interrupted: it WORKED before the cut,
     // failed during it, and worked again after the restore.
-    const reached = (r) => Boolean(r) && typeof r.status === "number" && r.status > 0;
+    // ★ "Worked" means a 200 with a valid poll outcome (Codex P2, PR #573). The first version
+    // accepted ANY HTTP response — a 401, a 429 or a 500 included — so a broken poll endpoint
+    // could still have set `injectionFired` while the unrelated direct reaper and late-ack checks
+    // supplied the classification.
+    const POLL_OUTCOMES = new Set(["offer", "no_work", "backoff"]);
+    const reached = (r) => Boolean(r) && r.status === 200 && POLL_OUTCOMES.has(r.body?.outcome);
     const injectionFired = SUPPRESS_INJECTION
       ? false
       : reached(pollBeforeCut) && !reached(pollDuringCut) && reached(pollAfterRestore);
@@ -1436,9 +1457,19 @@ test("fault-matrix: cutting control-plane-to-postgres severs the stack's own dat
     // rest only on post-restore recovery, so a control plane that answered a fabricated offer while
     // its database was severed would still have passed. It must FAIL CLOSED: a 5xx, never a 2xx,
     // and never the 4xx it correctly gives the same request when the database is up.
+    // ★ BOTH documented fail-closed renderings (Codex P1, PR #573, and it is right about the
+    // mechanism). With the database unreachable the poll's shared admission limiter catches the
+    // store error and returns `{allowed:false, reason:"unavailable"}`
+    // (`server/src/services/worker-admission-rate-limit.ts` — "FAIL-CLOSED: a shared-store error …
+    // DENIES the request"), which the route renders as **429 `throttled`**; a failure anywhere the
+    // limiter does not own surfaces as a **5xx**. This lane measured 500 on every run, but pinning
+    // `>= 500` alone would red the required lane on a correct 429, so the assertion accepts either
+    // — and still excludes the only answer that would be a defect: a 2xx, i.e. a fabricated offer.
+    const FAIL_CLOSED_STATUS = (r) => r?.status === 429 || (r?.status >= 500 && r?.status < 600);
     const failedClosed = SUPPRESS_INJECTION
       ? false
-      : pollBeforeCut?.status === 200 && pollDuringCut?.status >= 500;
+      : pollBeforeCut?.status === 200 && FAIL_CLOSED_STATUS(pollDuringCut) &&
+        pollDuringCut?.body?.outcome !== "offer";
     record("d1.fault.link_cut.control_plane_to_postgres", {
       injectionFired,
       observedClassification: recovered.ok && (SUPPRESS_INJECTION || failedClosed)
@@ -1447,15 +1478,16 @@ test("fault-matrix: cutting control-plane-to-postgres severs the stack's own dat
       detail: {
         cutProbe, restoreProbe,
         pollBeforeCut: pollBeforeCut ? { status: pollBeforeCut.status } : null,
-        pollDuringCut: pollDuringCut ? { status: pollDuringCut.status } : null,
+        pollDuringCut: pollDuringCut ? { status: pollDuringCut.status, code: pollDuringCut.body?.code ?? null } : null,
         recoveryPolls: recovered.polls,
       },
     });
     if (!SUPPRESS_INJECTION) {
       assert.equal(
         failedClosed, true,
-        "with the database link up the enrolled worker's poll must succeed 200, and with it severed the control plane must fail CLOSED with a 5xx: " +
-          `before=${truncate(pollBeforeCut?.status)} during=${truncate(pollDuringCut?.status)}`,
+        "with the database link up the enrolled worker's poll must succeed 200, and with it severed the control plane must fail CLOSED " +
+          "(429 throttled from the admission limiter, or a 5xx) and never answer an offer: " +
+          `before=${truncate(pollBeforeCut?.status)} during=${truncate(pollDuringCut)}`,
       );
     }
     assert.equal(injectionFired, true, `the database link must be OBSERVED severed and restored: cut=${truncate(cutProbe)} restore=${truncate(restoreProbe)}`);
