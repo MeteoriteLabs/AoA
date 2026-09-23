@@ -108,6 +108,73 @@ export function scrubOutputText(text: string, canaries: readonly string[]): stri
   return scrubbed;
 }
 
+/**
+ * Scrub the STRING values of a bounded set of log bindings with the run's canaries, fail closed: a
+ * value that cannot be scrubbed refuses the WHOLE set (`null`), so the caller drops the line rather
+ * than printing a partially-scrubbed one. A NUMBER is never rewritten - that would mangle the count
+ * a consumer compares - but a number whose decimal text carries a canary refuses the set too
+ * (Codex P1, PR #571). Any other value type is refused, because this helper serves lines whose
+ * payload is bounded and known (WRK-018's parsed-counts line), not arbitrary structures.
+ */
+export function scrubLogFields<T extends Record<string, string | number>>(
+  fields: T,
+  canaries: readonly string[],
+): T | null {
+  const numericNeedles = redactionNeedles(canaries);
+  const out: Record<string, string | number> = {};
+  for (const [key, value] of Object.entries(fields)) {
+    if (typeof value === "number") {
+      // ★★★ A NUMBER CAN CARRY A SECRET (Codex P1, PR #571). A redeemed secret may be ANY
+      // non-empty string, so a digits-only canary equal to - or inside - a count's decimal
+      // rendering would print the secret bytes verbatim, and "numbers are safe" would be a
+      // silent H-04 breach. A number is never REWRITTEN (that would mangle the count the lane
+      // compares); the WHOLE set is refused instead, so the run simply contributes no
+      // parsed-counts line. Over-conservative by construction: a short all-digit needle can
+      // refuse a line that leaks nothing, which is the safe direction.
+      const text = String(value);
+      if (numericNeedles.some((needle) => text.includes(needle))) return null;
+      out[key] = value;
+      continue;
+    }
+    if (typeof value !== "string") return null;
+    const scrubbed = scrubOutputText(value, canaries);
+    if (scrubbed === null) return null;
+    out[key] = scrubbed;
+  }
+  return out as T;
+}
+
+/**
+ * Scrub a WHOLE log record - message, keys and values - with the run's canaries, or refuse it.
+ *
+ * ★ NO PRODUCTION CALLER TODAY, and that is stated rather than left to be discovered. Its caller
+ * was WRK-018's parsed-counts diagnostic, which the M1 planning session DROPPED (F2, 2026-09-23);
+ * the session kept this helper because the hardening is general and outlives that line. It is the
+ * caller-side half of one of the two closure routes named in E4-F019 (serialize-and-scrub at the
+ * transport boundary); on its own it CANNOT close that finding, because the logger adds `msg` /
+ * `time` / `level` after any caller-side scrub runs.
+ *
+ * ★★★ VALUES ARE NOT THE ONLY SURFACE (Codex P1, PR #571). A redeemed secret may be ANY non-empty
+ * string, so it can equal a substring of the fixed MESSAGE (`"worker"`, `"parsed agent"`) or of a
+ * KEY (`"leaseId"`), and `createWorkerLogger` canary-scrubs neither - it redacts by key NAME only.
+ * A value-only scrub therefore left a real path for a known canary to reach the log verbatim.
+ *
+ * The record is REFUSED rather than rewritten in those two cases: scrubbing the message would
+ * destroy the grep token a consumer keys on, and scrubbing a key would produce a field nothing can
+ * read. Values keep the existing behaviour ({@link scrubLogFields}).
+ */
+export function scrubLogRecord<T extends Record<string, string | number>>(
+  message: string,
+  fields: T,
+  canaries: readonly string[],
+): { message: string; fields: T } | null {
+  const needles = redactionNeedles(canaries);
+  if (needles.some((needle) => message.includes(needle))) return null;
+  if (Object.keys(fields).some((key) => needles.some((needle) => key.includes(needle)))) return null;
+  const scrubbed = scrubLogFields(fields, canaries);
+  return scrubbed === null ? null : { message, fields: scrubbed };
+}
+
 export function createRunOutputCapture(options: RunOutputCaptureOptions): RunOutputCapture {
   const maxChars = options.maxChars ?? RUN_OUTPUT_TAIL_MAX_CHARS;
   const report = (reason: RunOutputDropReason): void => {

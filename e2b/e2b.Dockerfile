@@ -29,7 +29,31 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # (server/src/adapters/registry.ts → SANDBOX_INSTALL_COMMAND):
 #   claude_local: npm install -g @anthropic-ai/claude-code   (command: claude)
 #   codex_local:  npm install -g @openai/codex               (command: codex)
-RUN npm install -g @anthropic-ai/claude-code @openai/codex
+# ★★★ THE CLAUDE CLI IS PINNED, AND THE PIN IS EVIDENCE, NOT HYGIENE.
+# Ruling F7 (`docs/replatform/epics/E7-coding-e2b/decisions.md`, `E7-D11`) chose a LOCATION-BASED
+# output mechanism — a conventional output root — and it rests on ONE measurement: the P-011 probe's
+# `A-neg` arm, run `35833717162`, which observed that a no-op `claude --print` writes NOTHING under
+# that root (decision row R6). The probe recorded the binary it measured:
+# `claude 2.1.251 (Claude Code)` at `/usr/local/bin/claude`, identical on all four model arms.
+#
+# Unpinned, this line was `npm install -g @anthropic-ai/claude-code @openai/codex`, so a template
+# REBUILD could pick up a release whose session/state handling writes into the run's working
+# directory — silently falsifying R6 while every other check, including the `S-P0` template-empty
+# arm, still passed. The measurement the ruling rests on would stop being true with nothing red.
+#
+# So the version is pinned to the one the ruling was measured against. CHANGING IT RE-OPENS THAT
+# MEASUREMENT: bump it only together with an `A-neg` re-run on the rebuilt template, and record the
+# new version and run id in `E7-D11`. Codex stays unpinned deliberately — `E7-D04` excludes
+# `codex_local` from the output mechanism, so no ruling depends on its behaviour.
+#
+# ★ SCOPE OF THE PIN, STATED SO IT IS NOT OVER-READ. This pins the IMAGE. The spawn-time path is
+# `SANDBOX_INSTALL_COMMAND` (`packages/adapters/claude-local/src/index.ts`), still unpinned, delivered
+# by `buildNpmGlobalInstallIfMissingCommand` (`packages/adapter-utils/src/sandbox-install.ts`) as
+# `if ! command -v claude …; then npm install -g …; fi` — INSTALL-IF-MISSING. On this image `claude`
+# is present, so that branch does not fire and the pinned version is what runs. On a BARE template it
+# does fire and installs latest, unpinned. That is why `E7-D11`'s precondition is per-TEMPLATE: the
+# pin removes accidental drift on this image, and the `A-neg` re-run covers every other case.
+RUN npm install -g @anthropic-ai/claude-code@2.1.251 @openai/codex
 
 # BRW-003b — Playwright + Chromium for browser-session workloads.
 #

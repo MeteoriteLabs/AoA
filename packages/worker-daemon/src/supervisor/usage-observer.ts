@@ -95,6 +95,20 @@ export function parseClaudeStreamJsonUsage(stdout: string): ParsedAgentUsage | n
   return { inputTokens, outputTokens, cachedInputTokens };
 }
 
+/**
+ * WRK-018 1(b) — there is NO parsed-counts log helper here any more, and that absence is the
+ * decision, not an omission.
+ *
+ * A `PARSED_USAGE_LOG_MESSAGE` + `parsedUsageLogFields` pair was built so the keyed lane could
+ * compare what the worker PARSED with what the control plane accepted and stored (the stored row
+ * being projected from the accepted event, that pair alone proves projection fidelity, not parser
+ * correctness). It was DROPPED by the M1 planning session (F2, 2026-09-23) after five Codex P1s
+ * that were all one family — field names the redactor ate, a digits-only canary equal to a count,
+ * a throwing logger suppressing the usage event, the message and keys needing the same scrub as
+ * the values, and finally the logger's OWN added keys (`msg`/`time`/`level`) sitting below every
+ * caller-side scrubber (filed as E4-F019). Redaction wins over diagnostics.
+ */
+
 export interface UsageObserverDeps {
   readonly metrics?: Metrics;
 }

@@ -123,3 +123,14 @@ docker/images/trust-root.key
 docker/images/trust-root.pub.pem
 docker/images/sbom/
 docker/images/provenance.*.json
+
+# DEP-019 per-run key material + local build logs (never committed)
+docker/d1/runtime-keys/
+build.log
+fp-build.log
+
+# DEP-018 local evidence + build logs (never committed)
+.rebuild.log
+.fm-evidence/
+.fm2/
+.fm2c/

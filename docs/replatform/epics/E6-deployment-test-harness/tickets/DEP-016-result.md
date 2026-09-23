@@ -573,3 +573,30 @@ The implementation author leaves the table body empty. The first independent rev
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
 | 1 | M1 review-batch-3A independent reviewer (Claude Opus 5) | `58b70fa5ea87b751f033007e9f9402c9bf370c43` | `approved` | The `m1-spine` lane ran for the first time on the merge and PASSED: run `35825332876`, job `107065690182`, profile **6/6**, `running worker services: 1`, self-test **69/69**, and BOTH positive controls red on their named codes (`usage:not_exactly_one` + `cost:not_exactly_one` + `cost:receipt_not_exactly_one` for A and B). Its own artifact `10735300784` shows, per enabled tenant, **1** accepted `usage` event and **1** `cost_events` row at **81** cents, `claude_local`/`claude-sonnet-4-6`/rateVersion 1, keyed to that event, own Company and agent; rollout A+B `canary`, C `off`, crew and tool surface off. 81 derived, and the mirrored rate matches `cost-model.ts` (300/1500) and `AUTHORITATIVE_RATE_VERSION = 1`. `E3-F037` `unowned` is what `check-finding-ownership` permits (`successor_already_complete` for WRK-018, `successor_not_on_disk` for DEP-018) and its residual is exactly WRK-018 acceptance 1. Mutation reproduced: relaxing `cost:unexpected_amount` to `> 0` reds exactly one fixture. Defects recorded: §4 says the self-test has 26 tests (it has 69); §13 cites `35822540893` on the penultimate head — the covering run is `35823960714` (`ci-required` `107065333616`). **Codex on this review PR raised two P1s; both verified at source and ACCEPTED as real, and both are now named in the review section: (1) the journey is harness-driven while `M1-D1-SPINE` requires a separately deployed worker, so the gate's worker clause is NOT satisfiable from this profile alone; (2) criterion 5 is observed NOWHERE today, because `DEP-017`'s keyed run is pending — acceptance 6 is met only as an obligation to RECORD. Neither is an unmet plan acceptance item, so the disposition stands.** |
+
+---
+
+## Attempt history addendum — 2026-09-23: `DEP-019` closes the worker-clause gap this review named
+
+**An APPEND, not a rewrite.** Nothing above is altered; this ticket's `Status` and its measured
+evidence stand as written.
+
+The distinct reviewer of this ticket found that `M1-D1-SPINE` requires the included lifecycle on
+*"one control-plane instance, one separately deployed worker"* while this profile satisfies the
+worker half as a TOPOLOGY and not as a JOURNEY: the profile plays the worker itself over
+`/worker-control/*`, the D1 workers do not dispatch, and the reference provider runs no command.
+§5.3 records exactly that, states the limitation plainly, and flags it for a D1 topology ticket.
+The M1 planning session accepted the finding under founder delegation F2 and filed **`DEP-019` —
+The `m1-spine` journey, driven by the DEPLOYED worker** (E6 implementation plan §4c; graph node in
+`docs/replatform/program-design.md`). It closes that gap and nothing more: this profile's tenant
+set, cost expectation, audit assertions, hostile cross-tenant cases and rollback rehearsal are
+unchanged and are re-proven by it.
+
+`DEP-019` also carries **acceptance item 6** (the `DEP-017` env probe) forward. §4b took this
+ticket's second fork — *"criterion 5 is observed only in the `DEP-015` lane"* — and the reason it
+gave was correct when written: *"the reference provider's `execute` runs no command"*. `DEP-019`
+Unit A removes that reason, so the item is closed by a POSITIVE assertion instead: the profile arms
+`AOA_WORKER_ENV_PROBE=1` and asserts per enabled tenant that the probe RAN and reported `absent`,
+through the shared `evaluateEnvProbeEvidence` read side. §4b's tripwire
+(`evaluateEnvProbeObservability`, which reds if a summary ever appears here) is REPLACED by that
+assertion rather than deleted — recorded in `DEP-019-result.md`, which points back to this section.

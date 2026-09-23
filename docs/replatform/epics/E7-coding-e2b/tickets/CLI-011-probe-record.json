@@ -1,0 +1,1481 @@
+{
+  "schema": "aoa.cli-011.output-probe-record/1",
+  "generatedAt": "2026-09-23T07:50:40.065Z",
+  "commitSha": "499ec4d1c3c3aab7324dcf0ca98ea34872fe18a0",
+  "workflowRunUrl": "https://github.com/MeteoriteLabs/AoA/actions/runs/35833717162",
+  "runNonce": "P011-MUDSYRXO-9MVVGCLB",
+  "template": {
+    "resolved": "aoa-base",
+    "source": "explicit"
+  },
+  "armsMode": "all",
+  "outputRoot": "/home/user/aoa-output",
+  "classification": {
+    "cliHomeStatePrefixes": [
+      "/home/user/.claude/",
+      "/home/user/.claude.json",
+      "/home/user/.config/",
+      "/home/user/.cache/",
+      "/home/user/.npm/",
+      "/home/user/.local/"
+    ],
+    "censusDepth": 8
+  },
+  "disposition": {
+    "disposition": "measured",
+    "detail": "every arm observed and every control held"
+  },
+  "controls": [
+    {
+      "id": "PC-1",
+      "arm": "S-PC1",
+      "expectation": "a planted file in R is reported present",
+      "held": true
+    },
+    {
+      "id": "PC-2",
+      "arm": "S-PC2",
+      "expectation": "with R = /home/user the staged paths are found under R",
+      "held": true
+    },
+    {
+      "id": "C-census",
+      "arm": "C-census",
+      "expectation": "the census sees a planted write under R and in cwd",
+      "held": true
+    }
+  ],
+  "decisionTable": [
+    {
+      "id": "R1",
+      "result": "S-P0 non-empty for R",
+      "reading": "choose another R and re-run S-P0; do not rule until a template-empty R exists",
+      "fired": false,
+      "because": "present=false paths=[]"
+    },
+    {
+      "id": "R2",
+      "result": "S-P2 shows directory entries at default depth",
+      "reading": "confirms §3.3; CLI-010 must implement files-only recursion",
+      "fired": true,
+      "because": "defaultDepthDirs=[\"/home/user/aoa-output/sub\"]"
+    },
+    {
+      "id": "R3",
+      "result": "S-P5: list does not expose symlinkTarget/type, and read follows links",
+      "reading": "CLI-012 must refuse by a second means (per-entry lstat); +1 day on the emit build",
+      "fired": false,
+      "because": "listExposesLink=true readFollowsLink=true"
+    },
+    {
+      "id": "R4",
+      "result": "S-P7 nonce present",
+      "reading": "SD-5 moves to required before M1b's campaign; otherwise A-O2-5 is a residual with an owner",
+      "fired": true,
+      "because": "noncePresent=true"
+    },
+    {
+      "id": "R5",
+      "result": "A-neg finds files under R",
+      "reading": "SD-1a is refuted; if files also appear under a directive-only R, option 2 is refuted -> outcome (iii)",
+      "fired": false,
+      "because": "filesUnderRoot=[] removedUnderRoot=[]; directive-only R extra files=[]"
+    },
+    {
+      "id": "R6",
+      "result": "A-neg: nothing under R or cwd",
+      "reading": "6.7 holds for option 2",
+      "fired": true,
+      "because": "filesUnderRoot=0 removedUnderRoot=0 filesCwdOther=[] cwdMutations=[] (cli-home-state, reported not counted: 5)"
+    },
+    {
+      "id": "R7",
+      "result": "A-dir writes R/hello.txt; A-cwd writes R/hello.txt",
+      "reading": "both placements viable; choose by pin cost: SD-1b recommended",
+      "fired": true,
+      "because": "A-dir=true A-cwd=true"
+    },
+    {
+      "id": "R8",
+      "result": "only A-cwd writes",
+      "reading": "SD-1a (pins 1+2 move; the keyed unit-d lane auto-fires, §3.7)",
+      "fired": false,
+      "because": "A-dir=true A-cwd=true"
+    },
+    {
+      "id": "R9",
+      "result": "only A-dir writes",
+      "reading": "SD-1b",
+      "fired": false,
+      "because": "A-dir=true A-cwd=true"
+    },
+    {
+      "id": "R10",
+      "result": "neither writes the file into R",
+      "reading": "option 2 has no compliant placement on the evidence -> outcome (iii)",
+      "fired": false,
+      "because": "A-dir=true A-cwd=true; A-cwd hello elsewhere=[]"
+    },
+    {
+      "id": "R11",
+      "result": "A-decl carries a correct line",
+      "reading": "option 1b is feasible; recorded for a post-M1b refinement",
+      "fired": true,
+      "because": "declaration={\"present\":true,\"declared\":\"hello.txt\",\"resolved\":\"/home/user/aoa-output/hello.txt\",\"relative\":true,\"matchesWritten\":true,\"matchesRequested\":true}"
+    },
+    {
+      "id": "R12",
+      "result": "any arm inconclusive (no key, template without the CLIs, a timeout), or a control did not hold",
+      "reading": "not a measurement; re-dispatch; never rule on it",
+      "fired": false,
+      "because": "every arm observed and every control held"
+    }
+  ],
+  "verdicts": [
+    {
+      "arm": "S-P0",
+      "state": "observed",
+      "reason": "root-absent",
+      "findings": {
+        "present": false,
+        "rootListOutcome": "not-found",
+        "rootReadOutcome": "not-found",
+        "presentPaths": []
+      }
+    },
+    {
+      "arm": "S-PC1",
+      "state": "observed",
+      "reason": "root-present",
+      "findings": {
+        "present": true,
+        "rootListOutcome": "ok",
+        "rootReadOutcome": "not-found",
+        "presentPaths": [
+          "/home/user/aoa-output",
+          "/home/user/aoa-output/.pc1-planted"
+        ]
+      }
+    },
+    {
+      "arm": "S-P1",
+      "state": "observed",
+      "reason": "no-staged-path-under-root",
+      "findings": {
+        "root": "/home/user/aoa-output",
+        "stagedUnderRoot": []
+      }
+    },
+    {
+      "arm": "S-PC2",
+      "state": "observed",
+      "reason": "staged-paths-under-root",
+      "findings": {
+        "root": "/home/user",
+        "stagedUnderRoot": [
+          "/home/user/.aoa-run-prompt.md",
+          "/home/user/.aoa-run-instructions.md",
+          "/home/user/.aoa-run-mcp.json"
+        ]
+      }
+    },
+    {
+      "arm": "S-P2",
+      "state": "observed",
+      "reason": "listed",
+      "findings": {
+        "defaultDepthIncludesDirs": true,
+        "defaultDepthDirs": [
+          "/home/user/aoa-output/sub"
+        ],
+        "defaultDepthReachesNested": false,
+        "deepReachesNested": true,
+        "readsMatch": true,
+        "transportListDir": {
+          "outcome": "ok",
+          "paths": [
+            "/home/user/aoa-output/a.txt",
+            "/home/user/aoa-output/sub/b.txt"
+          ]
+        }
+      }
+    },
+    {
+      "arm": "S-P3",
+      "state": "observed",
+      "reason": "exited",
+      "findings": {
+        "viaRunCommand": {
+          "returnedNotThrew": true,
+          "exitCode": 3,
+          "fileSurvived": true
+        },
+        "viaProviderExecute": {
+          "returnedNotThrew": true,
+          "exitCode": 3,
+          "fileSurvived": true
+        }
+      }
+    },
+    {
+      "arm": "S-P4",
+      "state": "observed",
+      "reason": "redirect-failed-before-command",
+      "findings": {
+        "channel": "returned",
+        "exitCode": 2,
+        "commandRan": false,
+        "failedClosed": true,
+        "targetOutcome": "not-found",
+        "stderr": "sh: 1: cannot create /nonexistent-dir/x: Directory nonexistent\n"
+      }
+    },
+    {
+      "arm": "S-P5",
+      "state": "observed",
+      "reason": "listed",
+      "findings": {
+        "l1": {
+          "path": "/home/user/aoa-output/l1",
+          "type": "file",
+          "size": 29,
+          "mtime": "2026-09-23T07:49:58.300Z",
+          "symlinkTarget": "/home/user/.aoa-run-prompt.md"
+        },
+        "l2": {
+          "path": "/home/user/aoa-output/l2",
+          "type": "dir",
+          "size": 10,
+          "mtime": "2026-09-23T07:49:58.304Z",
+          "symlinkTarget": "/home/user"
+        },
+        "listExposesLink": true,
+        "readFollowsLink": true,
+        "readL1Outcome": "ok",
+        "deepListingCount": 7,
+        "transportListDir": {
+          "outcome": "ok",
+          "count": 5,
+          "includesL1": true,
+          "error": null
+        }
+      }
+    },
+    {
+      "arm": "S-P6",
+      "state": "observed",
+      "reason": "measured",
+      "findings": {
+        "listSize": 3145728,
+        "expectedBytes": 3145728,
+        "listSizeMatches": true,
+        "readBytes": 3145728,
+        "readMs": 344,
+        "shaMatches": true
+      }
+    },
+    {
+      "arm": "S-P7",
+      "state": "observed",
+      "reason": "nonce-exported-in-file-bytes",
+      "findings": {
+        "noncePresent": true,
+        "exitCode": 0
+      }
+    },
+    {
+      "arm": "C-census",
+      "state": "observed",
+      "reason": "census-sees-planted-writes",
+      "findings": {
+        "sawRoot": true,
+        "sawCwd": true
+      }
+    },
+    {
+      "arm": "A-neg",
+      "state": "observed",
+      "reason": "nothing-under-root-or-cwd",
+      "findings": {
+        "filesUnderRoot": [],
+        "removedUnderRoot": [],
+        "filesCwdOther": [],
+        "cwdMutations": [],
+        "filesCliHomeState": [
+          "/home/user/.claude.json",
+          "/home/user/.claude/backups/.claude.json.backup.1790149804251",
+          "/home/user/.claude/policy-limits.json",
+          "/home/user/.claude/projects/-home-user/49fad268-111f-403a-8f08-47fb02fde97a.jsonl",
+          "/home/user/.claude/remote-settings.json"
+        ],
+        "permissionMode": "bypassPermissions",
+        "initCwd": "/home/user",
+        "exitCode": 0,
+        "finalIsError": false
+      }
+    },
+    {
+      "arm": "A-dir",
+      "state": "observed",
+      "reason": "wrote-hello-under-root",
+      "findings": {
+        "wroteHelloAtRoot": true,
+        "helloElsewhere": [],
+        "rootCreatedDuringArm": true,
+        "otherFilesUnderRoot": [],
+        "filesCwdOther": [],
+        "filesCliHomeState": [
+          "/home/user/.claude.json",
+          "/home/user/.claude/.last-cleanup",
+          "/home/user/.claude/backups/.claude.json.backup.1790149812539",
+          "/home/user/.claude/policy-limits.json",
+          "/home/user/.claude/projects/-home-user/44b846f7-c9a7-4895-8560-e0b40b75e9fe.jsonl",
+          "/home/user/.claude/remote-settings.json"
+        ],
+        "permissionMode": "bypassPermissions",
+        "initCwd": "/home/user",
+        "exitCode": 0,
+        "finalIsError": false
+      }
+    },
+    {
+      "arm": "A-cwd",
+      "state": "observed",
+      "reason": "wrote-hello-under-root",
+      "findings": {
+        "wroteHelloAtRoot": true,
+        "helloElsewhere": [],
+        "rootCreatedDuringArm": true,
+        "otherFilesUnderRoot": [],
+        "filesCwdOther": [],
+        "filesCliHomeState": [
+          "/home/user/.claude.json",
+          "/home/user/.claude/.last-cleanup",
+          "/home/user/.claude/backups/.claude.json.backup.1790149823027",
+          "/home/user/.claude/policy-limits.json",
+          "/home/user/.claude/projects/-home-user-aoa-output/51ac1ab3-9479-4c08-a087-8778b8fb7602.jsonl",
+          "/home/user/.claude/remote-settings.json"
+        ],
+        "permissionMode": "bypassPermissions",
+        "initCwd": "/home/user/aoa-output",
+        "exitCode": 0,
+        "finalIsError": false
+      }
+    },
+    {
+      "arm": "A-decl",
+      "state": "observed",
+      "reason": "wrote-hello-under-root",
+      "findings": {
+        "wroteHelloAtRoot": true,
+        "helloElsewhere": [],
+        "rootCreatedDuringArm": true,
+        "otherFilesUnderRoot": [],
+        "filesCwdOther": [],
+        "filesCliHomeState": [
+          "/home/user/.claude.json",
+          "/home/user/.claude/.last-cleanup",
+          "/home/user/.claude/backups/.claude.json.backup.1790149833165",
+          "/home/user/.claude/policy-limits.json",
+          "/home/user/.claude/projects/-home-user/0dfe0c12-c370-4523-83a9-13a0f87846c0.jsonl",
+          "/home/user/.claude/remote-settings.json"
+        ],
+        "permissionMode": "bypassPermissions",
+        "initCwd": "/home/user",
+        "exitCode": 0,
+        "finalIsError": false,
+        "declaration": {
+          "present": true,
+          "declared": "hello.txt",
+          "resolved": "/home/user/aoa-output/hello.txt",
+          "relative": true,
+          "matchesWritten": true,
+          "matchesRequested": true
+        },
+        "finalResultSeen": true
+      }
+    }
+  ],
+  "armEvidence": [
+    {
+      "arm": "S-P0",
+      "rootList": {
+        "outcome": "not-found",
+        "detail": "FileNotFoundError: [not_found] path not found: lstat /home/user/aoa-output: no such file or directory",
+        "entries": []
+      },
+      "rootRead": {
+        "outcome": "not-found",
+        "detail": "E2bTransportNotFoundError: e2b transport: sandbox not found: iodn9v5rsv58jxz9lbvmz:/home/user/aoa-output"
+      },
+      "home": {
+        "outcome": "ok",
+        "detail": "",
+        "count": 3,
+        "truncated": false,
+        "entries": [
+          {
+            "path": "/home/user/.bash_logout",
+            "type": "file",
+            "size": 220,
+            "mtime": "2026-05-07T20:33:02.000Z",
+            "symlinkTarget": null
+          },
+          {
+            "path": "/home/user/.bashrc",
+            "type": "file",
+            "size": 3526,
+            "mtime": "2026-05-07T20:33:02.000Z",
+            "symlinkTarget": null
+          },
+          {
+            "path": "/home/user/.profile",
+            "type": "file",
+            "size": 807,
+            "mtime": "2026-05-07T20:33:02.000Z",
+            "symlinkTarget": null
+          }
+        ]
+      }
+    },
+    {
+      "arm": "S-PC1",
+      "rootList": {
+        "outcome": "ok",
+        "detail": "",
+        "entries": [
+          {
+            "path": "/home/user/aoa-output/.pc1-planted",
+            "type": "file",
+            "size": 3,
+            "mtime": "2026-09-23T07:49:55.276Z",
+            "symlinkTarget": null
+          }
+        ]
+      },
+      "rootRead": {
+        "outcome": "not-found",
+        "detail": "E2bTransportNotFoundError: e2b transport: sandbox not found: iodn9v5rsv58jxz9lbvmz:/home/user/aoa-output"
+      },
+      "home": {
+        "outcome": "ok",
+        "detail": "",
+        "count": 5,
+        "truncated": false,
+        "entries": [
+          {
+            "path": "/home/user/.bash_logout",
+            "type": "file",
+            "size": 220,
+            "mtime": "2026-05-07T20:33:02.000Z",
+            "symlinkTarget": null
+          },
+          {
+            "path": "/home/user/.bashrc",
+            "type": "file",
+            "size": 3526,
+            "mtime": "2026-05-07T20:33:02.000Z",
+            "symlinkTarget": null
+          },
+          {
+            "path": "/home/user/.profile",
+            "type": "file",
+            "size": 807,
+            "mtime": "2026-05-07T20:33:02.000Z",
+            "symlinkTarget": null
+          },
+          {
+            "path": "/home/user/aoa-output",
+            "type": "dir",
+            "size": 60,
+            "mtime": "2026-09-23T07:49:55.276Z",
+            "symlinkTarget": null
+          },
+          {
+            "path": "/home/user/aoa-output/.pc1-planted",
+            "type": "file",
+            "size": 3,
+            "mtime": "2026-09-23T07:49:55.276Z",
+            "symlinkTarget": null
+          }
+        ]
+      }
+    },
+    {
+      "arm": "S-PC1-cleanup",
+      "rmExit": 0,
+      "rootAfterCleanup": "not-found"
+    },
+    {
+      "arm": "S-P1",
+      "staged": [
+        "/home/user/.aoa-run-prompt.md",
+        "/home/user/.aoa-run-instructions.md",
+        "/home/user/.aoa-run-mcp.json"
+      ],
+      "b0": {
+        "outcome": "ok",
+        "detail": "",
+        "count": 6,
+        "truncated": false,
+        "entries": [
+          {
+            "path": "/home/user/.aoa-run-instructions.md",
+            "type": "file",
+            "size": 26,
+            "mtime": "2026-09-23T07:49:56.056Z",
+            "symlinkTarget": null
+          },
+          {
+            "path": "/home/user/.aoa-run-mcp.json",
+            "type": "file",
+            "size": 71,
+            "mtime": "2026-09-23T07:49:56.104Z",
+            "symlinkTarget": null
+          },
+          {
+            "path": "/home/user/.aoa-run-prompt.md",
+            "type": "file",
+            "size": 43,
+            "mtime": "2026-09-23T07:49:56.012Z",
+            "symlinkTarget": null
+          },
+          {
+            "path": "/home/user/.bash_logout",
+            "type": "file",
+            "size": 220,
+            "mtime": "2026-05-07T20:33:02.000Z",
+            "symlinkTarget": null
+          },
+          {
+            "path": "/home/user/.bashrc",
+            "type": "file",
+            "size": 3526,
+            "mtime": "2026-05-07T20:33:02.000Z",
+            "symlinkTarget": null
+          },
+          {
+            "path": "/home/user/.profile",
+            "type": "file",
+            "size": 807,
+            "mtime": "2026-05-07T20:33:02.000Z",
+            "symlinkTarget": null
+          }
+        ]
+      }
+    },
+    {
+      "arm": "S-P2",
+      "defaultList": {
+        "outcome": "ok",
+        "entries": [
+          {
+            "path": "/home/user/aoa-output/a.txt",
+            "type": "file",
+            "size": 2,
+            "mtime": "2026-09-23T07:49:56.308Z",
+            "symlinkTarget": null
+          },
+          {
+            "path": "/home/user/aoa-output/sub",
+            "type": "dir",
+            "size": 60,
+            "mtime": "2026-09-23T07:49:56.308Z",
+            "symlinkTarget": null
+          }
+        ],
+        "detail": ""
+      },
+      "deepList": {
+        "outcome": "ok",
+        "entries": [
+          {
+            "path": "/home/user/aoa-output/a.txt",
+            "type": "file",
+            "size": 2,
+            "mtime": "2026-09-23T07:49:56.308Z",
+            "symlinkTarget": null
+          },
+          {
+            "path": "/home/user/aoa-output/sub",
+            "type": "dir",
+            "size": 60,
+            "mtime": "2026-09-23T07:49:56.308Z",
+            "symlinkTarget": null
+          },
+          {
+            "path": "/home/user/aoa-output/sub/b.txt",
+            "type": "file",
+            "size": 2,
+            "mtime": "2026-09-23T07:49:56.308Z",
+            "symlinkTarget": null
+          }
+        ],
+        "detail": ""
+      },
+      "reads": [
+        {
+          "path": "/home/user/aoa-output/a.txt",
+          "outcome": "ok",
+          "bytes": "N1",
+          "expected": "N1"
+        },
+        {
+          "path": "/home/user/aoa-output/sub/b.txt",
+          "outcome": "ok",
+          "bytes": "N2",
+          "expected": "N2"
+        }
+      ],
+      "transportListDir": {
+        "outcome": "ok",
+        "paths": [
+          "/home/user/aoa-output/a.txt",
+          "/home/user/aoa-output/sub/b.txt"
+        ]
+      }
+    },
+    {
+      "arm": "S-P3",
+      "viaRunCommand": {
+        "channel": "returned",
+        "exitCode": 3,
+        "expected": "N3",
+        "read": {
+          "outcome": "ok",
+          "content": "N3"
+        }
+      },
+      "viaProviderExecute": {
+        "channel": "returned",
+        "exitCode": 3,
+        "expected": "N3b",
+        "detail": "",
+        "read": {
+          "outcome": "ok",
+          "content": "N3b"
+        }
+      }
+    },
+    {
+      "arm": "S-P4",
+      "channel": "returned",
+      "exitCode": 2,
+      "stdout": "",
+      "stderr": "sh: 1: cannot create /nonexistent-dir/x: Directory nonexistent\n",
+      "marker": "SHOULD_NOT_RUN",
+      "dirBefore": "not-found",
+      "target": {
+        "outcome": "not-found",
+        "content": null
+      }
+    },
+    {
+      "arm": "S-P5",
+      "list": {
+        "outcome": "ok",
+        "detail": "",
+        "count": 7,
+        "truncated": false,
+        "entries": [
+          {
+            "path": "/home/user/aoa-output/a.txt",
+            "type": "file",
+            "size": 2,
+            "mtime": "2026-09-23T07:49:56.308Z",
+            "symlinkTarget": null
+          },
+          {
+            "path": "/home/user/aoa-output/c.txt",
+            "type": "file",
+            "size": 2,
+            "mtime": "2026-09-23T07:49:57.572Z",
+            "symlinkTarget": null
+          },
+          {
+            "path": "/home/user/aoa-output/c2.txt",
+            "type": "file",
+            "size": 3,
+            "mtime": "2026-09-23T07:49:57.776Z",
+            "symlinkTarget": null
+          },
+          {
+            "path": "/home/user/aoa-output/l1",
+            "type": "file",
+            "size": 29,
+            "mtime": "2026-09-23T07:49:58.300Z",
+            "symlinkTarget": "/home/user/.aoa-run-prompt.md"
+          },
+          {
+            "path": "/home/user/aoa-output/l2",
+            "type": "dir",
+            "size": 10,
+            "mtime": "2026-09-23T07:49:58.304Z",
+            "symlinkTarget": "/home/user"
+          },
+          {
+            "path": "/home/user/aoa-output/sub",
+            "type": "dir",
+            "size": 60,
+            "mtime": "2026-09-23T07:49:56.308Z",
+            "symlinkTarget": null
+          },
+          {
+            "path": "/home/user/aoa-output/sub/b.txt",
+            "type": "file",
+            "size": 2,
+            "mtime": "2026-09-23T07:49:56.308Z",
+            "symlinkTarget": null
+          }
+        ]
+      },
+      "readL1": {
+        "outcome": "ok",
+        "equalsPrompt": true,
+        "detail": ""
+      },
+      "transportListDir": {
+        "outcome": "ok",
+        "paths": [
+          "/home/user/aoa-output/a.txt",
+          "/home/user/aoa-output/c.txt",
+          "/home/user/aoa-output/c2.txt",
+          "/home/user/aoa-output/l1",
+          "/home/user/aoa-output/sub/b.txt"
+        ],
+        "count": 5
+      }
+    },
+    {
+      "arm": "S-P6",
+      "listSize": 3145728,
+      "read": {
+        "outcome": "ok",
+        "bytes": 3145728,
+        "ms": 344
+      },
+      "shaMatches": true
+    },
+    {
+      "arm": "S-P7",
+      "envSeenByShell": true,
+      "readOutcome": "ok",
+      "noncePresent": true
+    },
+    {
+      "arm": "C-census",
+      "changed": [
+        {
+          "path": "/home/user/aoa-output",
+          "type": "dir",
+          "size": 60,
+          "mtime": "2026-09-23T07:50:01.662Z",
+          "symlinkTarget": null,
+          "change": "added",
+          "class": "under-root"
+        },
+        {
+          "path": "/home/user/aoa-output/.census-pc",
+          "type": "file",
+          "size": 1,
+          "mtime": "2026-09-23T07:50:01.662Z",
+          "symlinkTarget": null,
+          "change": "added",
+          "class": "under-root"
+        },
+        {
+          "path": "/home/user/census-pc.txt",
+          "type": "file",
+          "size": 1,
+          "mtime": "2026-09-23T07:50:01.662Z",
+          "symlinkTarget": null,
+          "change": "added",
+          "class": "cwd-other"
+        }
+      ]
+    },
+    {
+      "arm": "A-neg",
+      "cli": {
+        "present": true,
+        "binary": "/usr/local/bin/claude",
+        "version": "2.1.251 (Claude Code)"
+      },
+      "script": "for f in \"$1\"; do [ -r \"$f\" ] || { echo \"[cli-008] staged input missing: $f\" >&2; exit 78; }; done; exec \"$0\" --print - --dangerously-skip-permissions --output-format stream-json --verbose < \"$1\"",
+      "exec": {
+        "channel": "returned",
+        "exitCode": 0,
+        "detail": "crashed=false"
+      },
+      "stdoutTruncated": false,
+      "stdout": "{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"/home/user\",\"session_id\":\"49fad268-111f-403a-8f08-47fb02fde97a\",\"tools\":[\"Task\",\"Bash\",\"CronCreate\",\"CronDelete\",\"CronList\",\"DesignSync\",\"Edit\",\"EnterWorktree\",\"ExitWorktree\",\"ListAgents\",\"Monitor\",\"NotebookEdit\",\"PushNotification\",\"Read\",\"ReportFindings\",\"ScheduleWakeup\",\"SendMessage\",\"Skill\",\"TaskOutput\",\"TaskStop\",\"ToolSearch\",\"WebFetch\",\"WebSearch\",\"Workflow\",\"Write\"],\"mcp_servers\":[],\"model\":\"claude-opus-5[1m]\",\"permissionMode\":\"bypassPermissions\",\"slash_commands\":[\"deep-research\",\"design-sync\",\"dataviz\",\"update-config\",\"verify\",\"debug\",\"code-review\",\"simplify\",\"batch\",\"fewer-permission-prompts\",\"doctor\",\"loop\",\"claude-api\",\"workflow-authoring\",\"run\",\"run-skill-generator\",\"agents\",\"auto-mode-setup\",\"autocompact\",\"clear\",\"color\",\"compact\",\"config\",\"context\",\"effort\",\"fast\",\"heapdump\",\"init\",\"mcp\",\"import\",\"model\",\"__remote-workflow\",\"workflow-launch-exec\",\"reload-skills\",\"rename\",\"security-review\",\"usage\",\"insights\",\"recap\",\"goal\",\"design\",\"design-consent\",\"design-revoke\",\"list-agents\",\"team-onboarding\"],\"terminal_slash_commands\":[\"doctor\",\"color\"],\"apiKeySource\":\"ANTHROPIC_API_KEY\",\"claude_code_version\":\"2.1.251\",\"output_style\":\"default\",\"agents\":[\"claude\",\"Explore\",\"general-purpose\",\"Plan\",\"statusline-setup\"],\"skills\":[\"deep-research\",\"design-sync\",\"dataviz\",\"update-config\",\"verify\",\"debug\",\"code-review\",\"simplify\",\"batch\",\"fewer-permission-prompts\",\"doctor\",\"loop\",\"claude-api\",\"workflow-authoring\",\"run\",\"run-skill-generator\"],\"plugins\":[],\"capabilities\":[\"interrupt_receipt_v1\",\"interrupt_cancel_queued_v1\",\"msg_lifecycle_v1\"],\"analytics_disabled\":false,\"product_feedback_disabled\":false,\"uuid\":\"44fddb86-9a17-4c5c-b3e5-26a375ea34e0\",\"memory_paths\":{\"auto\":\"/home/user/.claude/projects/-home-user/memory/\"},\"messaging_socket_path\":\"/tmp/cc-socks/1564.sock\",\"fast_mode_state\":\"off\",\"fast_mode_disabled_reason\":\"sdk_opt_in_required\"}\n{\"type\":\"assistant\",\"message\":{\"model\":\"claude-opus-5\",\"id\":\"msg_011CfL1FyyqzC2ruh8RT5Vop\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"OK\"}],\"container\":null,\"stop_reason\":null,\"stop_sequence\":null,\"stop_details\":null,\"usage\":{\"input_tokens\":2,\"cache_creation_input_tokens\":5448,\"cache_read_input_tokens\":10135,\"cache_creation\":{\"ephemeral_5m_input_tokens\":5448,\"ephemeral_1h_input_tokens\":0},\"output_tokens\":1,\"service_tier\":\"standard\",\"inference_geo\":\"global\"},\"diagnostics\":null,\"context_management\":null},\"parent_tool_use_id\":null,\"session_id\":\"49fad268-111f-403a-8f08-47fb02fde97a\",\"uuid\":\"b29d7da3-439d-4e7c-ad33-6d923407f708\",\"timestamp\":\"2026-09-23T07:50:07.566Z\",\"request_id\":\"req_011CfL1FyV5XYDymfCvNJ16W\"}\n{\"duration_api_ms\":1868,\"stop_reason\":\"end_turn\",\"session_id\":\"49fad268-111f-403a-8f08-47fb02fde97a\",\"total_cost_usd\":0.0392275,\"usage\":{\"input_tokens\":2,\"cache_creation_input_tokens\":5448,\"cache_read_input_tokens\":10135,\"output_tokens\":4,\"output_tokens_details\":{\"thinking_tokens\":0},\"server_tool_use\":{\"web_search_requests\":0,\"web_fetch_requests\":0},\"service_tier\":\"standard\",\"cache_creation\":{\"ephemeral_1h_input_tokens\":0,\"ephemeral_5m_input_tokens\":5448},\"inference_geo\":\"global\",\"iterations\":[{\"input_tokens\":2,\"output_tokens\":4,\"cache_read_input_tokens\":10135,\"cache_creation_input_tokens\":5448,\"cache_creation\":{\"ephemeral_5m_input_tokens\":5448,\"ephemeral_1h_input_tokens\":0},\"type\":\"message\"}],\"speed\":\"standard\"},\"modelUsage\":{\"claude-opus-5[1m]\":{\"inputTokens\":2,\"outputTokens\":4,\"cacheReadInputTokens\":10135,\"cacheCreationInputTokens\":5448,\"webSearchRequests\":0,\"costUSD\":0.0392275,\"contextWindow\":1000000,\"maxOutputTokens\":64000,\"canonicalModel\":\"claude-opus-5\",\"provider\":\"firstParty\",\"costBasis\":\"list\"}},\"permission_denials\":[],\"terminal_reason\":\"completed\",\"fast_mode_state\":\"off\",\"fast_mode_disabled_reason\":\"sdk_opt_in_required\",\"subagent_stats\":{\"spawned\":0,\"requested\":{\"background\":0,\"foreground\":0,\"unset\":0},\"started_in_background\":0,\"max_depth\":0,\"spawned_by_subagents\":0,\"completed\":0,\"failed\":0,\"killed\":{\"parent\":0,\"user\":0,\"system\":0},\"refused\":{\"depth_limit\":0,\"concurrency_limit\":0,\"budget\":0},\"by_type\":{}},\"is_error\":false,\"num_turns\":1,\"subtype\":\"success\",\"api_error_status\":null,\"result\":\"OK\",\"ttft_ms\":2021,\"type\":\"result\",\"duration_ms\":2037,\"uuid\":\"594b7d26-04d5-4c53-a1ef-79ac112c9565\",\"ttft_stream_ms\":1287,\"time_to_request_ms\":167,\"queued_turn_count\":0}\n",
+      "stderr": "",
+      "census": {
+        "beforeCount": 4,
+        "afterCount": 15,
+        "beforeDetail": "",
+        "afterDetail": "",
+        "changed": [
+          {
+            "path": "/home/user/.claude",
+            "type": "dir",
+            "size": 128,
+            "mtime": "2026-09-23T07:50:05.554Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude.json",
+            "type": "file",
+            "size": 41230,
+            "mtime": "2026-09-23T07:50:07.734Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/backups",
+            "type": "dir",
+            "size": 60,
+            "mtime": "2026-09-23T07:50:04.246Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/backups/.claude.json.backup.1790149804251",
+            "type": "file",
+            "size": 84,
+            "mtime": "2026-09-23T07:50:04.246Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/policy-limits.json",
+            "type": "file",
+            "size": 448,
+            "mtime": "2026-09-23T07:50:04.982Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/projects",
+            "type": "dir",
+            "size": 60,
+            "mtime": "2026-09-23T07:50:05.554Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/projects/-home-user",
+            "type": "dir",
+            "size": 128,
+            "mtime": "2026-09-23T07:50:05.790Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/projects/-home-user/49fad268-111f-403a-8f08-47fb02fde97a.jsonl",
+            "type": "file",
+            "size": 13941,
+            "mtime": "2026-09-23T07:50:07.942Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/projects/-home-user/memory",
+            "type": "dir",
+            "size": 60,
+            "mtime": "2026-09-23T07:50:05.554Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/remote-settings.json",
+            "type": "file",
+            "size": 2,
+            "mtime": "2026-09-23T07:50:04.906Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/sessions",
+            "type": "dir",
+            "size": 4096,
+            "mtime": "2026-09-23T07:50:07.586Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          }
+        ],
+        "changedCount": 11
+      },
+      "helloAtRoot": {
+        "outcome": "not-found",
+        "containsNonce": false
+      }
+    },
+    {
+      "arm": "A-dir",
+      "cli": {
+        "present": true,
+        "binary": "/usr/local/bin/claude",
+        "version": "2.1.251 (Claude Code)"
+      },
+      "script": "for f in \"$1\"; do [ -r \"$f\" ] || { echo \"[cli-008] staged input missing: $f\" >&2; exit 78; }; done; exec \"$0\" --print - --dangerously-skip-permissions --output-format stream-json --verbose < \"$1\"",
+      "exec": {
+        "channel": "returned",
+        "exitCode": 0,
+        "detail": "crashed=false"
+      },
+      "stdoutTruncated": false,
+      "stdout": "{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"/home/user\",\"session_id\":\"44b846f7-c9a7-4895-8560-e0b40b75e9fe\",\"tools\":[\"Task\",\"Bash\",\"CronCreate\",\"CronDelete\",\"CronList\",\"DesignSync\",\"Edit\",\"EnterWorktree\",\"ExitWorktree\",\"ListAgents\",\"Monitor\",\"NotebookEdit\",\"PushNotification\",\"Read\",\"ReportFindings\",\"ScheduleWakeup\",\"SendMessage\",\"Skill\",\"TaskOutput\",\"TaskStop\",\"ToolSearch\",\"WebFetch\",\"WebSearch\",\"Workflow\",\"Write\"],\"mcp_servers\":[],\"model\":\"claude-opus-5[1m]\",\"permissionMode\":\"bypassPermissions\",\"slash_commands\":[\"deep-research\",\"design-sync\",\"dataviz\",\"update-config\",\"verify\",\"debug\",\"code-review\",\"simplify\",\"batch\",\"fewer-permission-prompts\",\"doctor\",\"loop\",\"claude-api\",\"workflow-authoring\",\"run\",\"run-skill-generator\",\"agents\",\"auto-mode-setup\",\"autocompact\",\"clear\",\"color\",\"compact\",\"config\",\"context\",\"effort\",\"fast\",\"heapdump\",\"init\",\"mcp\",\"import\",\"model\",\"__remote-workflow\",\"workflow-launch-exec\",\"reload-skills\",\"rename\",\"security-review\",\"usage\",\"insights\",\"recap\",\"goal\",\"design\",\"design-consent\",\"design-revoke\",\"list-agents\",\"team-onboarding\"],\"terminal_slash_commands\":[\"doctor\",\"color\"],\"apiKeySource\":\"ANTHROPIC_API_KEY\",\"claude_code_version\":\"2.1.251\",\"output_style\":\"default\",\"agents\":[\"claude\",\"Explore\",\"general-purpose\",\"Plan\",\"statusline-setup\"],\"skills\":[\"deep-research\",\"design-sync\",\"dataviz\",\"update-config\",\"verify\",\"debug\",\"code-review\",\"simplify\",\"batch\",\"fewer-permission-prompts\",\"doctor\",\"loop\",\"claude-api\",\"workflow-authoring\",\"run\",\"run-skill-generator\"],\"plugins\":[],\"capabilities\":[\"interrupt_receipt_v1\",\"interrupt_cancel_queued_v1\",\"msg_lifecycle_v1\"],\"analytics_disabled\":false,\"product_feedback_disabled\":false,\"uuid\":\"37962c2c-bcbe-425b-8feb-ed6153b2ac2f\",\"memory_paths\":{\"auto\":\"/home/user/.claude/projects/-home-user/memory/\"},\"messaging_socket_path\":\"/tmp/cc-socks/1557.sock\",\"fast_mode_state\":\"off\",\"fast_mode_disabled_reason\":\"sdk_opt_in_required\"}\n{\"type\":\"assistant\",\"message\":{\"model\":\"claude-opus-5\",\"id\":\"msg_011CfL1Ga8B85DTyR7AqJYKT\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_0161TiJmfTkWGDqXdBZ81DYS\",\"name\":\"Bash\",\"input\":{\"command\":\"mkdir -p /home/user/aoa-output && printf '%s\\\\n' 'P011-MUDSYRXO-9MVVGCLB-A-dir' > /home/user/aoa-output/hello.txt && cat /home/user/aoa-output/hello.txt\",\"description\":\"Create hello.txt with content\"},\"caller\":{\"type\":\"direct\"}}],\"container\":null,\"stop_reason\":null,\"stop_sequence\":null,\"stop_details\":null,\"usage\":{\"input_tokens\":2,\"cache_creation_input_tokens\":3095,\"cache_read_input_tokens\":12532,\"cache_creation\":{\"ephemeral_5m_input_tokens\":3095,\"ephemeral_1h_input_tokens\":0},\"output_tokens\":20,\"service_tier\":\"standard\",\"inference_geo\":\"global\"},\"diagnostics\":null,\"context_management\":null},\"parent_tool_use_id\":null,\"session_id\":\"44b846f7-c9a7-4895-8560-e0b40b75e9fe\",\"uuid\":\"afda483f-e9b6-4782-aebd-393156cd8f5b\",\"timestamp\":\"2026-09-23T07:50:16.792Z\",\"request_id\":\"req_011CfL1GZeeJ2cnF5QE5L8vA\"}\n{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"toolu_0161TiJmfTkWGDqXdBZ81DYS\",\"type\":\"tool_result\",\"content\":\"P011-MUDSYRXO-9MVVGCLB-A-dir\",\"is_error\":false}]},\"parent_tool_use_id\":null,\"session_id\":\"44b846f7-c9a7-4895-8560-e0b40b75e9fe\",\"uuid\":\"27075d6f-7fd6-4354-9a36-9e434a8ffc02\",\"timestamp\":\"2026-09-23T07:50:16.955Z\",\"tool_use_result\":{\"stdout\":\"P011-MUDSYRXO-9MVVGCLB-A-dir\",\"stderr\":\"\",\"interrupted\":false,\"isImage\":false,\"noOutputExpected\":false}}\n{\"type\":\"assistant\",\"message\":{\"model\":\"claude-opus-5\",\"id\":\"msg_011CfL1Gomhwdj8A5AhvBUXN\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Created `/home/user/aoa-output/hello.txt` containing `P011-MUDSYRXO-9MVVGCLB-A-dir`.\"}],\"container\":null,\"stop_reason\":null,\"stop_sequence\":null,\"stop_details\":null,\"usage\":{\"input_tokens\":2,\"cache_creation_input_tokens\":218,\"cache_read_input_tokens\":15627,\"cache_creation\":{\"ephemeral_5m_input_tokens\":218,\"ephemeral_1h_input_tokens\":0},\"output_tokens\":9,\"service_tier\":\"standard\",\"inference_geo\":\"global\"},\"diagnostics\":null,\"context_management\":null},\"parent_tool_use_id\":null,\"session_id\":\"44b846f7-c9a7-4895-8560-e0b40b75e9fe\",\"uuid\":\"ffa064ee-cfbb-4b58-88c6-035ed72193a2\",\"timestamp\":\"2026-09-23T07:50:18.387Z\",\"request_id\":\"req_011CfL1GoQ8WibXJ4hFDbUwd\"}\n{\"duration_api_ms\":6055,\"stop_reason\":\"end_turn\",\"session_id\":\"44b846f7-c9a7-4895-8560-e0b40b75e9fe\",\"total_cost_usd\":0.04121775,\"usage\":{\"input_tokens\":4,\"cache_creation_input_tokens\":3313,\"cache_read_input_tokens\":28159,\"output_tokens\":216,\"output_tokens_details\":{\"thinking_tokens\":0},\"server_tool_use\":{\"web_search_requests\":0,\"web_fetch_requests\":0},\"service_tier\":\"standard\",\"cache_creation\":{\"ephemeral_1h_input_tokens\":0,\"ephemeral_5m_input_tokens\":3313},\"inference_geo\":\"global\",\"iterations\":[{\"input_tokens\":2,\"output_tokens\":52,\"cache_read_input_tokens\":15627,\"cache_creation_input_tokens\":218,\"cache_creation\":{\"ephemeral_5m_input_tokens\":218,\"ephemeral_1h_input_tokens\":0},\"type\":\"message\"}],\"speed\":\"standard\"},\"modelUsage\":{\"claude-haiku-4-5-20251001\":{\"inputTokens\":947,\"outputTokens\":13,\"cacheReadInputTokens\":0,\"cacheCreationInputTokens\":0,\"webSearchRequests\":0,\"costUSD\":0.001012,\"contextWindow\":200000,\"maxOutputTokens\":32000,\"canonicalModel\":\"claude-haiku-4-5\",\"provider\":\"firstParty\",\"costBasis\":\"list\"},\"claude-opus-5[1m]\":{\"inputTokens\":4,\"outputTokens\":216,\"cacheReadInputTokens\":28159,\"cacheCreationInputTokens\":3313,\"webSearchRequests\":0,\"costUSD\":0.04020575,\"contextWindow\":1000000,\"maxOutputTokens\":64000,\"canonicalModel\":\"claude-opus-5\",\"provider\":\"firstParty\",\"costBasis\":\"list\"}},\"permission_denials\":[],\"terminal_reason\":\"completed\",\"fast_mode_state\":\"off\",\"fast_mode_disabled_reason\":\"sdk_opt_in_required\",\"subagent_stats\":{\"spawned\":0,\"requested\":{\"background\":0,\"foreground\":0,\"unset\":0},\"started_in_background\":0,\"max_depth\":0,\"spawned_by_subagents\":0,\"completed\":0,\"failed\":0,\"killed\":{\"parent\":0,\"user\":0,\"system\":0},\"refused\":{\"depth_limit\":0,\"concurrency_limit\":0,\"budget\":0},\"by_type\":{}},\"is_error\":false,\"num_turns\":2,\"subtype\":\"success\",\"api_error_status\":null,\"result\":\"Created `/home/user/aoa-output/hello.txt` containing `P011-MUDSYRXO-9MVVGCLB-A-dir`.\",\"ttft_ms\":3234,\"type\":\"result\",\"duration_ms\":4870,\"uuid\":\"362acc3e-429e-4e0c-a0a8-c9a3c62c2cc7\",\"ttft_stream_ms\":1440,\"time_to_request_ms\":186,\"queued_turn_count\":0}\n",
+      "stderr": "",
+      "census": {
+        "beforeCount": 4,
+        "afterCount": 20,
+        "beforeDetail": "",
+        "afterDetail": "",
+        "changed": [
+          {
+            "path": "/home/user/.claude",
+            "type": "dir",
+            "size": 4096,
+            "mtime": "2026-09-23T07:50:18.518Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude.json",
+            "type": "file",
+            "size": 41230,
+            "mtime": "2026-09-23T07:50:18.598Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/.last-cleanup",
+            "type": "file",
+            "size": 24,
+            "mtime": "2026-09-23T07:50:18.518Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/backups",
+            "type": "dir",
+            "size": 60,
+            "mtime": "2026-09-23T07:50:12.538Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/backups/.claude.json.backup.1790149812539",
+            "type": "file",
+            "size": 84,
+            "mtime": "2026-09-23T07:50:12.538Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/policy-limits.json",
+            "type": "file",
+            "size": 448,
+            "mtime": "2026-09-23T07:50:13.102Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/projects",
+            "type": "dir",
+            "size": 60,
+            "mtime": "2026-09-23T07:50:13.574Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/projects/-home-user",
+            "type": "dir",
+            "size": 128,
+            "mtime": "2026-09-23T07:50:13.818Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/projects/-home-user/44b846f7-c9a7-4895-8560-e0b40b75e9fe.jsonl",
+            "type": "file",
+            "size": 17016,
+            "mtime": "2026-09-23T07:50:18.442Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/projects/-home-user/memory",
+            "type": "dir",
+            "size": 60,
+            "mtime": "2026-09-23T07:50:13.574Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/remote-settings.json",
+            "type": "file",
+            "size": 2,
+            "mtime": "2026-09-23T07:50:13.086Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/session-env",
+            "type": "dir",
+            "size": 60,
+            "mtime": "2026-09-23T07:50:16.866Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/session-env/44b846f7-c9a7-4895-8560-e0b40b75e9fe",
+            "type": "dir",
+            "size": 60,
+            "mtime": "2026-09-23T07:50:16.866Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/sessions",
+            "type": "dir",
+            "size": 4096,
+            "mtime": "2026-09-23T07:50:18.442Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/aoa-output",
+            "type": "dir",
+            "size": 60,
+            "mtime": "2026-09-23T07:50:16.938Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "under-root"
+          },
+          {
+            "path": "/home/user/aoa-output/hello.txt",
+            "type": "file",
+            "size": 29,
+            "mtime": "2026-09-23T07:50:16.938Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "under-root"
+          }
+        ],
+        "changedCount": 16
+      },
+      "helloAtRoot": {
+        "outcome": "ok",
+        "containsNonce": true
+      }
+    },
+    {
+      "arm": "A-cwd",
+      "cli": {
+        "present": true,
+        "binary": "/usr/local/bin/claude",
+        "version": "2.1.251 (Claude Code)"
+      },
+      "script": "for f in \"$1\"; do [ -r \"$f\" ] || { echo \"[cli-008] staged input missing: $f\" >&2; exit 78; }; done; mkdir -p /home/user/aoa-output && cd /home/user/aoa-output && exec \"$0\" --print - --dangerously-skip-permissions --output-format stream-json --verbose < \"$1\"",
+      "exec": {
+        "channel": "returned",
+        "exitCode": 0,
+        "detail": "crashed=false"
+      },
+      "stdoutTruncated": false,
+      "stdout": "{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"/home/user/aoa-output\",\"session_id\":\"51ac1ab3-9479-4c08-a087-8778b8fb7602\",\"tools\":[\"Task\",\"Bash\",\"CronCreate\",\"CronDelete\",\"CronList\",\"DesignSync\",\"Edit\",\"EnterWorktree\",\"ExitWorktree\",\"ListAgents\",\"Monitor\",\"NotebookEdit\",\"PushNotification\",\"Read\",\"ReportFindings\",\"ScheduleWakeup\",\"SendMessage\",\"Skill\",\"TaskOutput\",\"TaskStop\",\"ToolSearch\",\"WebFetch\",\"WebSearch\",\"Workflow\",\"Write\"],\"mcp_servers\":[],\"model\":\"claude-opus-5[1m]\",\"permissionMode\":\"bypassPermissions\",\"slash_commands\":[\"deep-research\",\"design-sync\",\"dataviz\",\"update-config\",\"verify\",\"debug\",\"code-review\",\"simplify\",\"batch\",\"fewer-permission-prompts\",\"doctor\",\"loop\",\"claude-api\",\"workflow-authoring\",\"run\",\"run-skill-generator\",\"agents\",\"auto-mode-setup\",\"autocompact\",\"clear\",\"color\",\"compact\",\"config\",\"context\",\"effort\",\"fast\",\"heapdump\",\"init\",\"mcp\",\"import\",\"model\",\"__remote-workflow\",\"workflow-launch-exec\",\"reload-skills\",\"rename\",\"security-review\",\"usage\",\"insights\",\"recap\",\"goal\",\"design\",\"design-consent\",\"design-revoke\",\"list-agents\",\"team-onboarding\"],\"terminal_slash_commands\":[\"doctor\",\"color\"],\"apiKeySource\":\"ANTHROPIC_API_KEY\",\"claude_code_version\":\"2.1.251\",\"output_style\":\"default\",\"agents\":[\"claude\",\"Explore\",\"general-purpose\",\"Plan\",\"statusline-setup\"],\"skills\":[\"deep-research\",\"design-sync\",\"dataviz\",\"update-config\",\"verify\",\"debug\",\"code-review\",\"simplify\",\"batch\",\"fewer-permission-prompts\",\"doctor\",\"loop\",\"claude-api\",\"workflow-authoring\",\"run\",\"run-skill-generator\"],\"plugins\":[],\"capabilities\":[\"interrupt_receipt_v1\",\"interrupt_cancel_queued_v1\",\"msg_lifecycle_v1\"],\"analytics_disabled\":false,\"product_feedback_disabled\":false,\"uuid\":\"9f87dd65-5c5c-4e1d-8937-d5667b840676\",\"memory_paths\":{\"auto\":\"/home/user/.claude/projects/-home-user-aoa-output/memory/\"},\"messaging_socket_path\":\"/tmp/cc-socks/1558.sock\",\"fast_mode_state\":\"off\",\"fast_mode_disabled_reason\":\"sdk_opt_in_required\"}\n{\"type\":\"assistant\",\"message\":{\"model\":\"claude-opus-5\",\"id\":\"msg_011CfL1HMShgp4beGAsaRFmK\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_01VhK91Mdx1QmxXfszgv2Urf\",\"name\":\"Bash\",\"input\":{\"command\":\"cat > /home/user/aoa-output/hello.txt << 'EOF'\\nP011-MUDSYRXO-9MVVGCLB-A-cwd\\nEOF\\ncat /home/user/aoa-output/hello.txt\",\"description\":\"Create hello.txt with given content\"},\"caller\":{\"type\":\"direct\"}}],\"container\":null,\"stop_reason\":null,\"stop_sequence\":null,\"stop_details\":null,\"usage\":{\"input_tokens\":2,\"cache_creation_input_tokens\":5476,\"cache_read_input_tokens\":10135,\"cache_creation\":{\"ephemeral_5m_input_tokens\":5476,\"ephemeral_1h_input_tokens\":0},\"output_tokens\":20,\"service_tier\":\"standard\",\"inference_geo\":\"global\"},\"diagnostics\":null,\"context_management\":null},\"parent_tool_use_id\":null,\"session_id\":\"51ac1ab3-9479-4c08-a087-8778b8fb7602\",\"uuid\":\"b787ec13-f4e7-4d0a-a6b9-a90e2f4d790b\",\"timestamp\":\"2026-09-23T07:50:27.235Z\",\"request_id\":\"req_011CfL1HLxw3Y7JRsT59G4Vz\"}\n{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"toolu_01VhK91Mdx1QmxXfszgv2Urf\",\"type\":\"tool_result\",\"content\":\"P011-MUDSYRXO-9MVVGCLB-A-cwd\",\"is_error\":false}]},\"parent_tool_use_id\":null,\"session_id\":\"51ac1ab3-9479-4c08-a087-8778b8fb7602\",\"uuid\":\"ca71be35-85eb-4b9d-9e3a-ad8f187a25a0\",\"timestamp\":\"2026-09-23T07:50:27.361Z\",\"tool_use_result\":{\"stdout\":\"P011-MUDSYRXO-9MVVGCLB-A-cwd\",\"stderr\":\"\",\"interrupted\":false,\"isImage\":false,\"noOutputExpected\":false}}\n{\"type\":\"assistant\",\"message\":{\"model\":\"claude-opus-5\",\"id\":\"msg_011CfL1HaJd8KNP3h3qMd5E3\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Created `/home/user/aoa-output/hello.txt` containing `P011-MUDSYRXO-9MVVGCLB-A-cwd`.\"}],\"container\":null,\"stop_reason\":null,\"stop_sequence\":null,\"stop_details\":null,\"usage\":{\"input_tokens\":2,\"cache_creation_input_tokens\":207,\"cache_read_input_tokens\":15611,\"cache_creation\":{\"ephemeral_5m_input_tokens\":207,\"ephemeral_1h_input_tokens\":0},\"output_tokens\":9,\"service_tier\":\"standard\",\"inference_geo\":\"global\"},\"diagnostics\":null,\"context_management\":null},\"parent_tool_use_id\":null,\"session_id\":\"51ac1ab3-9479-4c08-a087-8778b8fb7602\",\"uuid\":\"93020023-893f-4cdd-851d-800400082eda\",\"timestamp\":\"2026-09-23T07:50:28.820Z\",\"request_id\":\"req_011CfL1HZymbLnwDZ34S9sNK\"}\n{\"duration_api_ms\":5370,\"stop_reason\":\"end_turn\",\"session_id\":\"51ac1ab3-9479-4c08-a087-8778b8fb7602\",\"total_cost_usd\":0.05452675,\"usage\":{\"input_tokens\":4,\"cache_creation_input_tokens\":5683,\"cache_read_input_tokens\":25746,\"output_tokens\":205,\"output_tokens_details\":{\"thinking_tokens\":0},\"server_tool_use\":{\"web_search_requests\":0,\"web_fetch_requests\":0},\"service_tier\":\"standard\",\"cache_creation\":{\"ephemeral_1h_input_tokens\":0,\"ephemeral_5m_input_tokens\":5683},\"inference_geo\":\"global\",\"iterations\":[{\"input_tokens\":2,\"output_tokens\":53,\"cache_read_input_tokens\":15611,\"cache_creation_input_tokens\":207,\"cache_creation\":{\"ephemeral_5m_input_tokens\":207,\"ephemeral_1h_input_tokens\":0},\"type\":\"message\"}],\"speed\":\"standard\"},\"modelUsage\":{\"claude-haiku-4-5-20251001\":{\"inputTokens\":925,\"outputTokens\":13,\"cacheReadInputTokens\":0,\"cacheCreationInputTokens\":0,\"webSearchRequests\":0,\"costUSD\":0.00099,\"contextWindow\":200000,\"maxOutputTokens\":32000,\"canonicalModel\":\"claude-haiku-4-5\",\"provider\":\"firstParty\",\"costBasis\":\"list\"},\"claude-opus-5[1m]\":{\"inputTokens\":4,\"outputTokens\":205,\"cacheReadInputTokens\":25746,\"cacheCreationInputTokens\":5683,\"webSearchRequests\":0,\"costUSD\":0.05353675,\"contextWindow\":1000000,\"maxOutputTokens\":64000,\"canonicalModel\":\"claude-opus-5\",\"provider\":\"firstParty\",\"costBasis\":\"list\"}},\"permission_denials\":[],\"terminal_reason\":\"completed\",\"fast_mode_state\":\"off\",\"fast_mode_disabled_reason\":\"sdk_opt_in_required\",\"subagent_stats\":{\"spawned\":0,\"requested\":{\"background\":0,\"foreground\":0,\"unset\":0},\"started_in_background\":0,\"max_depth\":0,\"spawned_by_subagents\":0,\"completed\":0,\"failed\":0,\"killed\":{\"parent\":0,\"user\":0,\"system\":0},\"refused\":{\"depth_limit\":0,\"concurrency_limit\":0,\"budget\":0},\"by_type\":{}},\"is_error\":false,\"num_turns\":2,\"subtype\":\"success\",\"api_error_status\":null,\"result\":\"Created `/home/user/aoa-output/hello.txt` containing `P011-MUDSYRXO-9MVVGCLB-A-cwd`.\",\"ttft_ms\":3147,\"type\":\"result\",\"duration_ms\":4781,\"uuid\":\"95c186ac-9014-49d0-a9fd-5c4b31163bbf\",\"ttft_stream_ms\":1425,\"time_to_request_ms\":219,\"queued_turn_count\":0}\n",
+      "stderr": "",
+      "census": {
+        "beforeCount": 4,
+        "afterCount": 20,
+        "beforeDetail": "",
+        "afterDetail": "",
+        "changed": [
+          {
+            "path": "/home/user/.claude",
+            "type": "dir",
+            "size": 4096,
+            "mtime": "2026-09-23T07:50:29.062Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude.json",
+            "type": "file",
+            "size": 41233,
+            "mtime": "2026-09-23T07:50:29.046Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/.last-cleanup",
+            "type": "file",
+            "size": 24,
+            "mtime": "2026-09-23T07:50:29.062Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/backups",
+            "type": "dir",
+            "size": 60,
+            "mtime": "2026-09-23T07:50:23.022Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/backups/.claude.json.backup.1790149823027",
+            "type": "file",
+            "size": 84,
+            "mtime": "2026-09-23T07:50:23.022Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/policy-limits.json",
+            "type": "file",
+            "size": 448,
+            "mtime": "2026-09-23T07:50:23.642Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/projects",
+            "type": "dir",
+            "size": 60,
+            "mtime": "2026-09-23T07:50:24.102Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/projects/-home-user-aoa-output",
+            "type": "dir",
+            "size": 128,
+            "mtime": "2026-09-23T07:50:24.374Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/projects/-home-user-aoa-output/51ac1ab3-9479-4c08-a087-8778b8fb7602.jsonl",
+            "type": "file",
+            "size": 16897,
+            "mtime": "2026-09-23T07:50:28.874Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/projects/-home-user-aoa-output/memory",
+            "type": "dir",
+            "size": 60,
+            "mtime": "2026-09-23T07:50:24.102Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/remote-settings.json",
+            "type": "file",
+            "size": 2,
+            "mtime": "2026-09-23T07:50:23.618Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/session-env",
+            "type": "dir",
+            "size": 60,
+            "mtime": "2026-09-23T07:50:27.290Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/session-env/51ac1ab3-9479-4c08-a087-8778b8fb7602",
+            "type": "dir",
+            "size": 60,
+            "mtime": "2026-09-23T07:50:27.290Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/sessions",
+            "type": "dir",
+            "size": 4096,
+            "mtime": "2026-09-23T07:50:28.878Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/aoa-output",
+            "type": "dir",
+            "size": 60,
+            "mtime": "2026-09-23T07:50:27.346Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "under-root"
+          },
+          {
+            "path": "/home/user/aoa-output/hello.txt",
+            "type": "file",
+            "size": 29,
+            "mtime": "2026-09-23T07:50:27.346Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "under-root"
+          }
+        ],
+        "changedCount": 16
+      },
+      "helloAtRoot": {
+        "outcome": "ok",
+        "containsNonce": true
+      }
+    },
+    {
+      "arm": "A-decl",
+      "cli": {
+        "present": true,
+        "binary": "/usr/local/bin/claude",
+        "version": "2.1.251 (Claude Code)"
+      },
+      "script": "for f in \"$1\"; do [ -r \"$f\" ] || { echo \"[cli-008] staged input missing: $f\" >&2; exit 78; }; done; exec \"$0\" --print - --dangerously-skip-permissions --output-format stream-json --verbose < \"$1\"",
+      "exec": {
+        "channel": "returned",
+        "exitCode": 0,
+        "detail": "crashed=false"
+      },
+      "stdoutTruncated": false,
+      "stdout": "{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"/home/user\",\"session_id\":\"0dfe0c12-c370-4523-83a9-13a0f87846c0\",\"tools\":[\"Task\",\"Bash\",\"CronCreate\",\"CronDelete\",\"CronList\",\"DesignSync\",\"Edit\",\"EnterWorktree\",\"ExitWorktree\",\"ListAgents\",\"Monitor\",\"NotebookEdit\",\"PushNotification\",\"Read\",\"ReportFindings\",\"ScheduleWakeup\",\"SendMessage\",\"Skill\",\"TaskOutput\",\"TaskStop\",\"ToolSearch\",\"WebFetch\",\"WebSearch\",\"Workflow\",\"Write\"],\"mcp_servers\":[],\"model\":\"claude-opus-5[1m]\",\"permissionMode\":\"bypassPermissions\",\"slash_commands\":[\"deep-research\",\"design-sync\",\"dataviz\",\"update-config\",\"verify\",\"debug\",\"code-review\",\"simplify\",\"batch\",\"fewer-permission-prompts\",\"doctor\",\"loop\",\"claude-api\",\"workflow-authoring\",\"run\",\"run-skill-generator\",\"agents\",\"auto-mode-setup\",\"autocompact\",\"clear\",\"color\",\"compact\",\"config\",\"context\",\"effort\",\"fast\",\"heapdump\",\"init\",\"mcp\",\"import\",\"model\",\"__remote-workflow\",\"workflow-launch-exec\",\"reload-skills\",\"rename\",\"security-review\",\"usage\",\"insights\",\"recap\",\"goal\",\"design\",\"design-consent\",\"design-revoke\",\"list-agents\",\"team-onboarding\"],\"terminal_slash_commands\":[\"doctor\",\"color\"],\"apiKeySource\":\"ANTHROPIC_API_KEY\",\"claude_code_version\":\"2.1.251\",\"output_style\":\"default\",\"agents\":[\"claude\",\"Explore\",\"general-purpose\",\"Plan\",\"statusline-setup\"],\"skills\":[\"deep-research\",\"design-sync\",\"dataviz\",\"update-config\",\"verify\",\"debug\",\"code-review\",\"simplify\",\"batch\",\"fewer-permission-prompts\",\"doctor\",\"loop\",\"claude-api\",\"workflow-authoring\",\"run\",\"run-skill-generator\"],\"plugins\":[],\"capabilities\":[\"interrupt_receipt_v1\",\"interrupt_cancel_queued_v1\",\"msg_lifecycle_v1\"],\"analytics_disabled\":false,\"product_feedback_disabled\":false,\"uuid\":\"5bbae407-cc27-4d73-9691-d600600d0058\",\"memory_paths\":{\"auto\":\"/home/user/.claude/projects/-home-user/memory/\"},\"messaging_socket_path\":\"/tmp/cc-socks/1559.sock\",\"fast_mode_state\":\"off\",\"fast_mode_disabled_reason\":\"sdk_opt_in_required\"}\n{\"type\":\"assistant\",\"message\":{\"model\":\"claude-opus-5\",\"id\":\"msg_011CfL1J6ejgL1Ux2n9tWpbS\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_01JpeA9nGfB6rj7boRPdjMf8\",\"name\":\"Bash\",\"input\":{\"command\":\"mkdir -p /home/user/aoa-output && printf 'P011-MUDSYRXO-9MVVGCLB-A-decl\\\\n' > /home/user/aoa-output/hello.txt && cat /home/user/aoa-output/hello.txt\",\"description\":\"Create hello.txt with given content\"},\"caller\":{\"type\":\"direct\"}}],\"container\":null,\"stop_reason\":null,\"stop_sequence\":null,\"stop_details\":null,\"usage\":{\"input_tokens\":2,\"cache_creation_input_tokens\":3122,\"cache_read_input_tokens\":12532,\"cache_creation\":{\"ephemeral_5m_input_tokens\":3122,\"ephemeral_1h_input_tokens\":0},\"output_tokens\":17,\"service_tier\":\"standard\",\"inference_geo\":\"global\"},\"diagnostics\":null,\"context_management\":null},\"parent_tool_use_id\":null,\"session_id\":\"0dfe0c12-c370-4523-83a9-13a0f87846c0\",\"uuid\":\"9e9e82d9-578c-4ab9-bc80-d09b2c309bfb\",\"timestamp\":\"2026-09-23T07:50:37.523Z\",\"request_id\":\"req_011CfL1J5fDMYmky1BT6S86k\"}\n{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"toolu_01JpeA9nGfB6rj7boRPdjMf8\",\"type\":\"tool_result\",\"content\":\"P011-MUDSYRXO-9MVVGCLB-A-decl\",\"is_error\":false}]},\"parent_tool_use_id\":null,\"session_id\":\"0dfe0c12-c370-4523-83a9-13a0f87846c0\",\"uuid\":\"16cd8001-89d3-4cbd-9fb8-587c11c8c942\",\"timestamp\":\"2026-09-23T07:50:37.643Z\",\"tool_use_result\":{\"stdout\":\"P011-MUDSYRXO-9MVVGCLB-A-decl\",\"stderr\":\"\",\"interrupted\":false,\"isImage\":false,\"noOutputExpected\":false}}\n{\"type\":\"assistant\",\"message\":{\"model\":\"claude-opus-5\",\"id\":\"msg_011CfL1JLTTkAciDPbPBX5Vy\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Created `/home/user/aoa-output/hello.txt` containing `P011-MUDSYRXO-9MVVGCLB-A-decl`.\\n\\nAOA-OUTPUT: hello.txt\"}],\"container\":null,\"stop_reason\":null,\"stop_sequence\":null,\"stop_details\":null,\"usage\":{\"input_tokens\":2,\"cache_creation_input_tokens\":215,\"cache_read_input_tokens\":15654,\"cache_creation\":{\"ephemeral_5m_input_tokens\":215,\"ephemeral_1h_input_tokens\":0},\"output_tokens\":9,\"service_tier\":\"standard\",\"inference_geo\":\"global\"},\"diagnostics\":null,\"context_management\":null},\"parent_tool_use_id\":null,\"session_id\":\"0dfe0c12-c370-4523-83a9-13a0f87846c0\",\"uuid\":\"38249bda-b172-46aa-a3ff-c8c4917671e8\",\"timestamp\":\"2026-09-23T07:50:39.089Z\",\"request_id\":\"req_011CfL1JL1AbQMoEntGainmK\"}\n{\"duration_api_ms\":5947,\"stop_reason\":\"end_turn\",\"session_id\":\"0dfe0c12-c370-4523-83a9-13a0f87846c0\",\"total_cost_usd\":0.04174625,\"usage\":{\"input_tokens\":4,\"cache_creation_input_tokens\":3337,\"cache_read_input_tokens\":28186,\"output_tokens\":230,\"output_tokens_details\":{\"thinking_tokens\":0},\"server_tool_use\":{\"web_search_requests\":0,\"web_fetch_requests\":0},\"service_tier\":\"standard\",\"cache_creation\":{\"ephemeral_1h_input_tokens\":0,\"ephemeral_5m_input_tokens\":3337},\"inference_geo\":\"global\",\"iterations\":[{\"input_tokens\":2,\"output_tokens\":69,\"cache_read_input_tokens\":15654,\"cache_creation_input_tokens\":215,\"cache_creation\":{\"ephemeral_5m_input_tokens\":215,\"ephemeral_1h_input_tokens\":0},\"type\":\"message\"}],\"speed\":\"standard\"},\"modelUsage\":{\"claude-haiku-4-5-20251001\":{\"inputTokens\":967,\"outputTokens\":12,\"cacheReadInputTokens\":0,\"cacheCreationInputTokens\":0,\"webSearchRequests\":0,\"costUSD\":0.001027,\"contextWindow\":200000,\"maxOutputTokens\":32000,\"canonicalModel\":\"claude-haiku-4-5\",\"provider\":\"firstParty\",\"costBasis\":\"list\"},\"claude-opus-5[1m]\":{\"inputTokens\":4,\"outputTokens\":230,\"cacheReadInputTokens\":28186,\"cacheCreationInputTokens\":3337,\"webSearchRequests\":0,\"costUSD\":0.04071925,\"contextWindow\":1000000,\"maxOutputTokens\":64000,\"canonicalModel\":\"claude-opus-5\",\"provider\":\"firstParty\",\"costBasis\":\"list\"}},\"permission_denials\":[],\"terminal_reason\":\"completed\",\"fast_mode_state\":\"off\",\"fast_mode_disabled_reason\":\"sdk_opt_in_required\",\"subagent_stats\":{\"spawned\":0,\"requested\":{\"background\":0,\"foreground\":0,\"unset\":0},\"started_in_background\":0,\"max_depth\":0,\"spawned_by_subagents\":0,\"completed\":0,\"failed\":0,\"killed\":{\"parent\":0,\"user\":0,\"system\":0},\"refused\":{\"depth_limit\":0,\"concurrency_limit\":0,\"budget\":0},\"by_type\":{}},\"is_error\":false,\"num_turns\":2,\"subtype\":\"success\",\"api_error_status\":null,\"result\":\"Created `/home/user/aoa-output/hello.txt` containing `P011-MUDSYRXO-9MVVGCLB-A-decl`.\\n\\nAOA-OUTPUT: hello.txt\",\"ttft_ms\":3362,\"type\":\"result\",\"duration_ms\":4943,\"uuid\":\"946e9cd6-2d95-4b46-a188-2de70e833ebc\",\"ttft_stream_ms\":1513,\"time_to_request_ms\":146,\"queued_turn_count\":0}\n",
+      "stderr": "",
+      "census": {
+        "beforeCount": 4,
+        "afterCount": 20,
+        "beforeDetail": "",
+        "afterDetail": "",
+        "changed": [
+          {
+            "path": "/home/user/.claude",
+            "type": "dir",
+            "size": 4096,
+            "mtime": "2026-09-23T07:50:39.125Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude.json",
+            "type": "file",
+            "size": 41233,
+            "mtime": "2026-09-23T07:50:39.373Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/.last-cleanup",
+            "type": "file",
+            "size": 24,
+            "mtime": "2026-09-23T07:50:39.125Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/backups",
+            "type": "dir",
+            "size": 60,
+            "mtime": "2026-09-23T07:50:33.161Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/backups/.claude.json.backup.1790149833165",
+            "type": "file",
+            "size": 84,
+            "mtime": "2026-09-23T07:50:33.161Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/policy-limits.json",
+            "type": "file",
+            "size": 448,
+            "mtime": "2026-09-23T07:50:33.701Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/projects",
+            "type": "dir",
+            "size": 60,
+            "mtime": "2026-09-23T07:50:34.165Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/projects/-home-user",
+            "type": "dir",
+            "size": 128,
+            "mtime": "2026-09-23T07:50:34.381Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/projects/-home-user/0dfe0c12-c370-4523-83a9-13a0f87846c0.jsonl",
+            "type": "file",
+            "size": 17231,
+            "mtime": "2026-09-23T07:50:39.109Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/projects/-home-user/memory",
+            "type": "dir",
+            "size": 60,
+            "mtime": "2026-09-23T07:50:34.165Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/remote-settings.json",
+            "type": "file",
+            "size": 2,
+            "mtime": "2026-09-23T07:50:33.589Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/session-env",
+            "type": "dir",
+            "size": 60,
+            "mtime": "2026-09-23T07:50:37.573Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/session-env/0dfe0c12-c370-4523-83a9-13a0f87846c0",
+            "type": "dir",
+            "size": 60,
+            "mtime": "2026-09-23T07:50:37.573Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/.claude/sessions",
+            "type": "dir",
+            "size": 4096,
+            "mtime": "2026-09-23T07:50:39.109Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "cli-home-state"
+          },
+          {
+            "path": "/home/user/aoa-output",
+            "type": "dir",
+            "size": 60,
+            "mtime": "2026-09-23T07:50:37.633Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "under-root"
+          },
+          {
+            "path": "/home/user/aoa-output/hello.txt",
+            "type": "file",
+            "size": 30,
+            "mtime": "2026-09-23T07:50:37.633Z",
+            "symlinkTarget": null,
+            "change": "added",
+            "class": "under-root"
+          }
+        ],
+        "changedCount": 16
+      },
+      "helloAtRoot": {
+        "outcome": "ok",
+        "containsNonce": true
+      }
+    }
+  ],
+  "sandboxes": [
+    {
+      "lane": "p011a",
+      "sandboxId": "iodn9v5rsv58jxz9lbvmz",
+      "terminated": true,
+      "detail": ""
+    },
+    {
+      "lane": "A-neg",
+      "sandboxId": "iwet8wl1rod6hmpptu6wa",
+      "terminated": true,
+      "detail": ""
+    },
+    {
+      "lane": "A-dir",
+      "sandboxId": "ihizj4qfpfgtg8r30lgb8",
+      "terminated": true,
+      "detail": ""
+    },
+    {
+      "lane": "A-cwd",
+      "sandboxId": "i4m8joplk4tt3hcqqlqcs",
+      "terminated": true,
+      "detail": ""
+    },
+    {
+      "lane": "A-decl",
+      "sandboxId": "ieg4irv8f1zwhar5wd2tu",
+      "terminated": true,
+      "detail": ""
+    }
+  ]
+}

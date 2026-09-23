@@ -1,0 +1,1238 @@
+{
+  "$schema": "DEP-018 — the campaign fault matrix. Its invariants are scripts/lib/campaign-fault-matrix.mjs; its checker is scripts/check-campaign-fault-matrix.mjs, whose reds are scripts/check-campaign-fault-matrix.test.mjs. The M1-D1-SPINE cases are injected by tests/d1/m1-fault-matrix.test.mjs on the D1 stack with the DEP-016 one-worker override; the D2 profiles' cases are keyed and their runs are the planning session's to dispatch (founder ruling F8).",
+  "$fields": "case = the id, unique across profiles. family ∈ fault_control|restart_reconciliation|cancellation|provider_failure|cleanup|credential|tenant. injection.mechanism = WHAT is injected; injection.observedBy = the probe whose result decides whether it FIRED (acceptance 1: a case whose injection did not fire is a failure, not a pass). expectedClassification = the outcome the campaign requires. tenantCase = the F10 matrix entry. evidence = required|pending; a pending case carries pendingKind (keyed|structural), pendingReason and pendingOwner, is never a pass, and reds if a bundle reports evidence for it.",
+  "schemaVersion": 1,
+  "profiles": [
+    {
+      "profile": "M1-D1-SPINE",
+      "$topology": "docker-compose.d1.yml + docker/d1/m1-spine.override.yml — ONE control plane, ONE worker container, the DEP-016 F10 tenant set (two enabled Organizations A and B, one control C). Keyless: the reference provider (packages/sandbox-fake-provider) and Toxiproxy are the only fault substrates, and no E2B key is ever needed.",
+      "cases": [
+        {
+          "case": "d1.fault.link_cut.worker_to_control_plane",
+          "family": "fault_control",
+          "injection": {
+            "mechanism": "toxiproxy.proxy_disabled",
+            "target": "worker-to-control-plane",
+            "observedBy": "a REAL worker request through the Toxiproxy LISTEN address a worker uses (toxiproxy:13100) succeeds before the cut, FAILS during it, and succeeds after the restore -- the fault is load-bearing on the path under test, not merely visible on a side probe. The reap still reaches the control plane directly, deliberately: it is the operator's path, and routing it through the cut would prevent the reclaim this case observes. The reconnected worker's late ack must then be denied 409 with a non-disclosing fence code (measured: attempt_terminal), not merely be non-200 -- the route also emits 503 internal_unavailable, which would otherwise pass as a reclaim."
+          },
+          "expectedClassification": "lease_reclaimed_and_late_ack_refused",
+          "evidence": "required"
+        },
+        {
+          "case": "d1.fault.link_cut.control_plane_to_postgres",
+          "family": "fault_control",
+          "injection": {
+            "mechanism": "toxiproxy.proxy_disabled",
+            "target": "control-plane-to-postgres",
+            "observedBy": "a raw TCP connect to the toxiproxy listen port (toxiproxy:15432) is REFUSED while cut and connects after restore (measured rather than an HTTP probe: this link carries the PostgreSQL wire protocol, which probeProxyReachable cannot speak, and the test-runner image has no postgres client). The classification ALSO requires the outage response, measured with an ENROLLED worker and a VALID session so the request reaches the DB-backed admission limiter and leasing service (an invalid session is refused by verifyWorkerOperationProof before either): the SAME poll succeeds 200 while the database is up and FAILS CLOSED while it is severed -- either 429 throttled, which is the admission limiter's own documented shared-store-error contract, or a 5xx -- and never answers an offer. Both renderings are accepted so a correct 429 cannot red the lane; the one answer excluded is the defect, a 2xx."
+          },
+          "expectedClassification": "database_link_severed_and_restored",
+          "evidence": "required"
+        },
+        {
+          "case": "d1.fault.object_store.truncated_upload",
+          "family": "fault_control",
+          "injection": {
+            "mechanism": "toxiproxy.toxic.limit_data",
+            "target": "worker-to-minio",
+            "observedBy": "the presigned PUT through the throttled link either throws or returns non-2xx (putPresignedBytesAllowError). The classification then requires the EXACT protocol rejection -- 200 with {outcome: rejected, reason: malformed|event_hash_mismatch} -- so a 500 or a crashed commit route cannot be read as a successful refusal."
+          },
+          "expectedClassification": "fenced_commit_refuses_unverifiable_object",
+          "evidence": "required"
+        },
+        {
+          "case": "d1.restart.control_plane_process",
+          "family": "restart_reconciliation",
+          "injection": {
+            "mechanism": "docker.compose.restart",
+            "target": "control-plane",
+            "observedBy": "the container's State.StartedAt advances across the restart and its docker health returns to healthy. The classification compares the attempt AND lease rows byte-for-byte across the restart, not merely the lease's existence, so a lease whose status moved would red."
+          },
+          "expectedClassification": "durable_lease_state_survives_restart",
+          "evidence": "required"
+        },
+        {
+          "case": "d1.reconcile.expired_lease_reaped",
+          "family": "restart_reconciliation",
+          "injection": {
+            "mechanism": "sql.back_date_lease_deadline",
+            "target": "leases.expires_at",
+            "observedBy": "expireLeaseDeadlines reports updated === 1 — the deadline row was actually moved"
+          },
+          "expectedClassification": "single_winner_retry_minted",
+          "evidence": "required"
+        },
+        {
+          "case": "d1.reconcile.worker_startup_lease_probe",
+          "family": "restart_reconciliation",
+          "injection": {
+            "mechanism": "worker.daemon.restart_with_live_lease",
+            "target": "worker-b",
+            "observedBy": "one lease_renew carrying the pre-restart lease identity, before the daemon's first poll"
+          },
+          "expectedClassification": "startup_reconciler_fences_its_own_prior_lease",
+          "evidence": "pending",
+          "pendingKind": "structural",
+          "pendingReason": "No worker on the D1 lane ever holds a lease to reconcile: AOA_WORKER_DISPATCH_ENABLED is declared ABSENT for both D1 workers (scripts/lib/d1-dispatch-declared.mjs, enforced by check-d1-dispatch-declared), and every E6F suite — this one included — plays the worker over the real /worker-control HTTP endpoints rather than running the daemon's poll loop. Restarting worker-b would therefore reconcile an EMPTY candidate store, which is a check that evaluates nothing. WRK-013's composed reconciler is proven behaviourally in packages/worker-daemon/src/__tests__/startup-reconcile-composed.component.test.ts (two real lifetimes over one candidate store, 25 mutations all red); its DEPLOYED-boot case is the shipped-boot lane's, where a real daemon holds a real lease.",
+          "pendingOwner": "DEP-015 shipped-boot lane (keyed), dispatched by the planning session under F8"
+        },
+        {
+          "case": "d1.cancel.leased_attempt",
+          "family": "cancellation",
+          "injection": {
+            "mechanism": "production.requestCancellation",
+            "target": "a LEASED attempt of an enabled tenant",
+            "observedBy": "the attempt's status moves, or a job_control_commands row of kind cancel appears; the classification then requires that command to be bound to the attempt's ACTIVE lease"
+          },
+          "expectedClassification": "cancel_requested_with_fenced_command",
+          "evidence": "required"
+        },
+        {
+          "case": "d1.cancel.unleased_attempt",
+          "family": "cancellation",
+          "injection": {
+            "mechanism": "production.requestCancellation",
+            "target": "an UNLEASED attempt of an enabled tenant",
+            "observedBy": "the attempt's status moves from a non-terminal state to 'cancelled' in job_attempts"
+          },
+          "expectedClassification": "cancelled_directly_without_command",
+          "evidence": "required"
+        },
+        {
+          "case": "d1.provider.execute_deadline_exceeded",
+          "family": "provider_failure",
+          "injection": {
+            "mechanism": "reference_provider.execute_with_zero_deadline",
+            "target": "the sandbox provider's execute op",
+            "observedBy": "the provider's execute response carries timedOut === true and terminalState 'expired'. ★ What the case then CLASSIFIES is the INGEST's handling of a terminal DERIVED from that report, with a success arm through the same derivation as its control -- NOT the deployed worker's own mapping, which no D1 worker performs. That half is d1.provider.worker_terminal_mapping, pending (Codex, PR #573)."
+          },
+          "expectedClassification": "ingest_classifies_provider_derived_terminal",
+          "evidence": "required"
+        },
+        {
+          "case": "d1.provider.worker_terminal_mapping",
+          "family": "provider_failure",
+          "injection": {
+            "mechanism": "provider.timeout_under_the_deployed_worker",
+            "target": "the worker daemon's own provider-result-to-terminal mapping",
+            "observedBy": "the terminal event the DEPLOYED worker emits for a provider that reported a deadline overrun"
+          },
+          "expectedClassification": "worker_maps_provider_timeout_to_failed_terminal",
+          "evidence": "pending",
+          "pendingKind": "structural",
+          "pendingReason": "No worker on the D1 lane maps anything: AOA_WORKER_DISPATCH_ENABLED is declared ABSENT for both D1 workers (scripts/lib/d1-dispatch-declared.mjs, enforced by check-d1-dispatch-declared), and every E6F suite plays the worker over the real /worker-control HTTP endpoints. Its sibling d1.provider.execute_deadline_exceeded proves the INGEST's classification of a provider-derived terminal; this case owns the deployed worker's mapping, is filed separately so the two claims can never be confused, and is never a pass.",
+          "pendingOwner": "DEP-015 shipped-boot lane (keyed), dispatched by the planning session under F8; see also d2m.provider_failure.e2b_create_refused"
+        },
+        {
+          "case": "d1.cleanup.orphan_object_swept",
+          "family": "cleanup",
+          "injection": {
+            "mechanism": "fence.revoked_mid_flight",
+            "target": "an artifact grant whose lease is expired before the commit",
+            "observedBy": "the fenced commit is DENIED at the auth layer with code stale_fence and no outcome field, after the object was demonstrably present. Named exactly: a malformed is a PROTOCOL refusal that never reaches the fence check, so asserting merely not-committed would accept a case that proved nothing."
+          },
+          "expectedClassification": "uncommitted_object_deleted",
+          "evidence": "required"
+        },
+        {
+          "case": "d1.credential.production_reader_company_predicate",
+          "family": "credential",
+          "injection": {
+            "mechanism": "device_local_handle.naming_a_foreign_company_credential",
+            "target": "packages/db/src/repositories/tenant/job-control.ts resolveExecutionSecret, the device_local arm",
+            "observedBy": "the handle's resolve_count audit column increments for an own-company credential and does not for a foreign one"
+          },
+          "expectedClassification": "production_reader_denies_a_foreign_company_credential",
+          "evidence": "pending",
+          "pendingKind": "structural",
+          "pendingReason": "STRUCTURALLY UNAVAILABLE ON THIS LANE, and ROUTED by E6-D003 (planning session, F2) to the M1a-D2-MECHANISM profile -- it is NOT an oversight and NOT unowned. Measured at source: reaching this reader's decision needs authorizeSecretResolve to ADMIT, which needs a resolvable device_local credential; server/src/services/device-local-broker.ts holds failClosedDeviceLocalBroker and no other implementation in the tree, and the fenced route collapses every outcome to denied/malformed by design (it must not be an oracle). So on D1 an admitted read and a denied one are indistinguishable at every observable surface, and a case built here could not tell its two arms apart. Its sibling d1.tenant.legacy.provider_credentials proves the PREDICATE and the grant on the same non-owner pool, with both controls; this case is the reader's own invocation of it and is never a pass here.",
+          "pendingOwner": "M1a-D2-MECHANISM, case d2m.credential.production_reader_company_predicate, per E6-D003"
+        },
+        {
+          "case": "d1.tenant.journey.A",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "journey.handed_off_attempt",
+            "target": "tenant A",
+            "observedBy": "the fenced /worker-control/events ingest accepts the attempt's batch through its last seq"
+          },
+          "expectedClassification": "journey_priced_once_and_audited",
+          "evidence": "required",
+          "tenantCase": {
+            "kind": "per_tenant_journey",
+            "tenant": "A"
+          }
+        },
+        {
+          "case": "d1.tenant.journey.B",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "journey.handed_off_attempt",
+            "target": "tenant B",
+            "observedBy": "the fenced /worker-control/events ingest accepts the attempt's batch through its last seq"
+          },
+          "expectedClassification": "journey_priced_once_and_audited",
+          "evidence": "required",
+          "tenantCase": {
+            "kind": "per_tenant_journey",
+            "tenant": "B"
+          }
+        },
+        {
+          "case": "d1.tenant.cross.lease",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "hostile.lease_renew",
+            "target": "B's worker renews A's live lease",
+            "observedBy": "the renew request reached the real /worker-control/leases/:id/renew and returned an HTTP status"
+          },
+          "expectedClassification": "denied_with_same_tenant_positive_control",
+          "evidence": "required",
+          "tenantCase": {
+            "kind": "cross_tenant_denial",
+            "surface": "lease",
+            "positiveControl": true
+          }
+        },
+        {
+          "case": "d1.tenant.cross.read",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "hostile.scoped_read",
+            "target": "A's job_events read under B's tenant scope through the non-owner aoa_app pool with RLS",
+            "observedBy": "the same read under A's own scope returns rows, so the pool and the query are demonstrably working"
+          },
+          "expectedClassification": "denied_with_same_tenant_positive_control",
+          "evidence": "required",
+          "tenantCase": {
+            "kind": "cross_tenant_denial",
+            "surface": "read",
+            "positiveControl": true
+          }
+        },
+        {
+          "case": "d1.tenant.cross.cancel",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "hostile.request_cancellation",
+            "target": "B's tenant scope cancels A's job through the production reconciliation service",
+            "observedBy": "the same call under A's own scope cancels A's job, so the service is demonstrably able to act"
+          },
+          "expectedClassification": "denied_with_same_tenant_positive_control",
+          "evidence": "required",
+          "tenantCase": {
+            "kind": "cross_tenant_denial",
+            "surface": "cancel",
+            "positiveControl": true
+          }
+        },
+        {
+          "case": "d1.tenant.cross.events",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "hostile.event_upload",
+            "target": "B's worker uploads a usage event onto A's live lease and fence",
+            "observedBy": "A's own worker's identical upload onto the same lease is accepted"
+          },
+          "expectedClassification": "denied_with_same_tenant_positive_control",
+          "evidence": "required",
+          "tenantCase": {
+            "kind": "cross_tenant_denial",
+            "surface": "events",
+            "positiveControl": true
+          }
+        },
+        {
+          "case": "d1.tenant.cross.secrets",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "hostile.execution_secret_resolve",
+            "target": "B's worker resolves A's secret handle through the real fenced /worker-control/execution-secrets/resolve, AND B's tenant scope reads A's job_secret_handles row through the non-owner aoa_app pool with RLS",
+            "observedBy": "A's own tenant scope reads the SAME handle row, on the SAME aoa_app pool, and sees it -- so the foreign 0 is the RLS policy's work. ★ The CLASSIFIED denial is that row read, NOT the fenced route: owner and attacker both get denied/malformed there (the route collapses every refusal by design, and this lane's fixture handle is unresolvable because the D1 compose configures no broker that could return a value), so the route arm carries no control and is recorded as an observation only. A resolvable owner handle is the keyed gate's case, d2m.tenant.cross.secrets."
+          },
+          "expectedClassification": "denied_with_same_tenant_positive_control",
+          "evidence": "required",
+          "tenantCase": {
+            "kind": "cross_tenant_denial",
+            "surface": "secrets",
+            "positiveControl": true
+          }
+        },
+        {
+          "case": "d1.tenant.cross.staged_inputs",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "hostile.artifact_transfer_grant",
+            "target": "B's worker requests a transfer grant on A's attempt object key",
+            "observedBy": "A's own worker's identical grant request on the same key succeeds"
+          },
+          "expectedClassification": "denied_with_same_tenant_positive_control",
+          "evidence": "required",
+          "tenantCase": {
+            "kind": "cross_tenant_denial",
+            "surface": "staged_inputs",
+            "positiveControl": true
+          }
+        },
+        {
+          "case": "d1.tenant.cross.outputs",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "hostile.artifact_commit",
+            "target": "B's worker commits an artifact onto A's attempt",
+            "observedBy": "A's own worker's commit on the same attempt succeeds"
+          },
+          "expectedClassification": "denied_with_same_tenant_positive_control",
+          "evidence": "required",
+          "tenantCase": {
+            "kind": "cross_tenant_denial",
+            "surface": "outputs",
+            "positiveControl": true
+          }
+        },
+        {
+          "case": "d1.tenant.cross.cost_rows",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "hostile.cost_read",
+            "target": "B's companyId reads A's cost rows through the production costService",
+            "observedBy": "A's own companyId reads a non-zero charge through the same reader"
+          },
+          "expectedClassification": "denied_with_same_tenant_positive_control",
+          "evidence": "required",
+          "tenantCase": {
+            "kind": "cross_tenant_denial",
+            "surface": "cost_rows",
+            "positiveControl": true
+          }
+        },
+        {
+          "case": "d1.tenant.cross.tool_calls",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "hostile.tool_surface_at_use",
+            "target": "B's companyId presents A's run id to the production per-Organization tool-surface resolver",
+            "observedBy": "the SAME resolver, over the SAME run id, under A's OWN companyId, ADMITS. The hostile and control calls differ ONLY in the companyId, so they traverse the same arms of classifyToolSurfaceAtUse up to the company-mismatch check: delete that guard and the hostile call falls through to not-distributed -> admit, and the case reds. The distributed-run arms are recorded as the M1a freeze posture and are NOT the control -- the freeze denies them for every tenant, so they could not detect the guard's removal."
+          },
+          "expectedClassification": "denied_with_same_tenant_positive_control",
+          "evidence": "required",
+          "tenantCase": {
+            "kind": "cross_tenant_denial",
+            "surface": "tool_calls",
+            "positiveControl": true
+          }
+        },
+        {
+          "case": "d1.tenant.control_refused",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "placement.real_service_on_disabled_organization",
+            "target": "the control tenant C",
+            "observedBy": "the same production placement service SELECTS a lease-eligible target for an enabled tenant"
+          },
+          "expectedClassification": "legacy_for_organization_disabled",
+          "evidence": "required",
+          "tenantCase": {
+            "kind": "control_tenant_refused"
+          }
+        },
+        {
+          "case": "d1.tenant.legacy.cost_events",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "legacy_table.foreign_read",
+            "target": "cost_events, granted SELECT/INSERT to aoa_app with NO RLS (E2-D03, locked)",
+            "observedBy": "the SAME reader with the tenant predicate removed DOES return the foreign tenant's charge"
+          },
+          "expectedClassification": "filtered_by_query_predicate_not_rls",
+          "evidence": "required",
+          "tenantCase": {
+            "kind": "legacy_table_isolation",
+            "table": "cost_events",
+            "positiveControl": true,
+            "antiVacuityControl": true,
+            "productionPath": "server/src/services/costs.ts costService(db).byAgent / .summary — companyId-predicated, on the non-owner aoa_app pool"
+          }
+        },
+        {
+          "case": "d1.tenant.legacy.activity_log",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "legacy_table.foreign_read",
+            "target": "activity_log, granted SELECT/INSERT to aoa_app with NO RLS (E2-D03, locked)",
+            "observedBy": "the SAME reader with the tenant predicate removed DOES return the foreign tenant's audit row"
+          },
+          "expectedClassification": "filtered_by_query_predicate_not_rls",
+          "evidence": "required",
+          "tenantCase": {
+            "kind": "legacy_table_isolation",
+            "table": "activity_log",
+            "positiveControl": true,
+            "antiVacuityControl": true,
+            "productionPath": "server/src/services/activity.ts activityService(db).list({companyId}) — the reader over the rows job-accepted-activity-audit.ts writes (job.attempt_started / job.attempt_terminal)"
+          }
+        },
+        {
+          "case": "d1.tenant.legacy.task_outputs",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "legacy_table.foreign_read",
+            "target": "task_outputs, granted SELECT/INSERT/UPDATE to aoa_app with NO RLS (E2-D03, locked)",
+            "observedBy": "the SAME reader with the tenant predicate removed DOES return the foreign tenant's output row"
+          },
+          "expectedClassification": "filtered_by_query_predicate_not_rls",
+          "evidence": "required",
+          "tenantCase": {
+            "kind": "legacy_table_isolation",
+            "table": "task_outputs",
+            "positiveControl": true,
+            "antiVacuityControl": true,
+            "productionPath": "server/src/services/task-outputs.ts taskOutputService(db).listForIssue(companyId, issueId) — the reader over the rows job-accepted-output-projection.ts projects"
+          }
+        },
+        {
+          "case": "d1.tenant.legacy.provider_credentials",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "legacy_table.foreign_read",
+            "target": "provider_credentials, granted SELECT to aoa_app with NO RLS (E2-D03, locked; the grant's traced consumer is the fenced device_local secret-resolve arm)",
+            "observedBy": "the SAME reader with the tenant predicate removed DOES return the foreign tenant's credential row"
+          },
+          "expectedClassification": "filtered_by_query_predicate_not_rls",
+          "evidence": "required",
+          "tenantCase": {
+            "kind": "legacy_table_isolation",
+            "table": "provider_credentials",
+            "positiveControl": true,
+            "antiVacuityControl": true,
+            "productionPath": "the device_local arm's two predicates from packages/db/src/repositories/tenant/job-control.ts resolveExecutionSecret (`id = refId AND company_id = <the locked lease's companyId>`), REPLICATED as the same two-predicate read on the same non-owner aoa_app pool. ★ NOT resolveExecutionSecret itself: that entry point admits a device_local handle only through a broker the D1 compose wires fail-closed, so no resolvable fixture exists on this lane. This case proves the PREDICATE and the grant, not the production reader's own invocation of it; the reader half is d1.credential.production_reader_company_predicate, pending (Codex, PR #573)."
+          }
+        }
+      ]
+    },
+    {
+      "profile": "M1a-D2-MECHANISM",
+      "$topology": "The DEP-015 shipped CI boot lane (.github/workflows/m1-shipped-boot.yml) in KEYED mode: real E2B, a real worker daemon, the same F10 tenant set. Every case below therefore needs a keyed run, which founder ruling F8 reserves to the planning session — no build agent may dispatch one.",
+      "cases": [
+        {
+          "case": "d2m.cancellation.leased_attempt",
+          "family": "cancellation",
+          "injection": {
+            "mechanism": "production.requestCancellation",
+            "target": "a leased real-E2B attempt",
+            "observedBy": "the cancel command is delivered to the daemon and the sandbox is torn down"
+          },
+          "expectedClassification": "cancel_delivered_sandbox_torn_down",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "Needs a keyed E2B run on the DEP-015 shipped-boot lane; F8 reserves keyed dispatch to the planning session.",
+          "pendingOwner": "planning session (F8), on the DEP-015 lane"
+        },
+        {
+          "case": "d2m.provider_failure.e2b_create_refused",
+          "family": "provider_failure",
+          "injection": {
+            "mechanism": "e2b.provider_error",
+            "target": "the E2B create op",
+            "observedBy": "the worker logs a provider error for the attempt's lease"
+          },
+          "expectedClassification": "attempt_terminal_failed_with_provider_error_code",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "Needs a keyed E2B run; the reference provider cannot stand in for a real provider failure class.",
+          "pendingOwner": "planning session (F8), on the DEP-015 lane"
+        },
+        {
+          "case": "d2m.reconcile.daemon_restart_with_live_lease",
+          "family": "restart_reconciliation",
+          "injection": {
+            "mechanism": "worker.daemon.restart_with_live_lease",
+            "target": "the deployed worker",
+            "observedBy": "one lease_renew carrying the pre-restart lease identity, before the daemon's first poll"
+          },
+          "expectedClassification": "startup_reconciler_fences_its_own_prior_lease",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "WRK-013's reconciler needs a daemon that actually held a lease, which only the shipped boot has; the D1 lane's workers do not dispatch.",
+          "pendingOwner": "planning session (F8), on the DEP-015 lane"
+        },
+        {
+          "case": "d2m.cleanup.sandbox_destroyed_on_terminal",
+          "family": "cleanup",
+          "injection": {
+            "mechanism": "journey.terminal",
+            "target": "a real E2B sandbox",
+            "observedBy": "the sandbox id observed at create is absent from the provider's list after the terminal"
+          },
+          "expectedClassification": "sandbox_destroyed",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "Every cleanup path is a real-provider claim; a fake provider's teardown proves nothing about E2B.",
+          "pendingOwner": "planning session (F8), on the DEP-015 lane"
+        },
+        {
+          "case": "d2m.cleanup.sandbox_destroyed_on_cancel",
+          "family": "cleanup",
+          "injection": {
+            "mechanism": "cancel.during_execution",
+            "target": "a real E2B sandbox mid-execute",
+            "observedBy": "the sandbox id observed at create is absent from the provider's list after the cancel"
+          },
+          "expectedClassification": "sandbox_destroyed",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "As above; the cancel-during-execution cleanup path is a real-provider claim.",
+          "pendingOwner": "planning session (F8), on the DEP-015 lane"
+        },
+        {
+          "case": "d2m.cleanup.sandbox_destroyed_on_lease_loss",
+          "family": "cleanup",
+          "injection": {
+            "mechanism": "lease.expired_under_the_daemon",
+            "target": "a real E2B sandbox held by a fenced-out worker",
+            "observedBy": "the sandbox id observed at create is absent from the provider's list after the fence loss"
+          },
+          "expectedClassification": "sandbox_destroyed",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "The third cleanup path — teardown when the worker loses the fence rather than finishing — also needs a real sandbox.",
+          "pendingOwner": "planning session (F8), on the DEP-015 lane"
+        },
+        {
+          "case": "d2m.tenant.journey.A",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "journey.real_e2b_task_run",
+            "target": "tenant A",
+            "observedBy": "the verifier's verdict-json for A's run"
+          },
+          "expectedClassification": "distributed_run_corroborated",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "The per-tenant journey on this gate IS a keyed E2B run.",
+          "pendingOwner": "planning session (F8), on the DEP-015 lane",
+          "tenantCase": {
+            "kind": "per_tenant_journey",
+            "tenant": "A"
+          }
+        },
+        {
+          "case": "d2m.tenant.journey.B",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "journey.real_e2b_task_run",
+            "target": "tenant B",
+            "observedBy": "the verifier's verdict-json for B's run"
+          },
+          "expectedClassification": "distributed_run_corroborated",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "The per-tenant journey on this gate IS a keyed E2B run.",
+          "pendingOwner": "planning session (F8), on the DEP-015 lane",
+          "tenantCase": {
+            "kind": "per_tenant_journey",
+            "tenant": "B"
+          }
+        },
+        {
+          "case": "d2m.tenant.cross.lease",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "hostile.lease_renew",
+            "target": "B's deployed worker renews A's live lease",
+            "observedBy": "A's own worker's renew on the same lease succeeds"
+          },
+          "expectedClassification": "denied_with_same_tenant_positive_control",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "The hostile case must run against the SHIPPED boot's own control plane and two real daemons; the D1 profile proves the same surface keylessly, and this gate's record needs its own run.",
+          "pendingOwner": "planning session (F8), on the DEP-015 lane",
+          "tenantCase": {
+            "kind": "cross_tenant_denial",
+            "surface": "lease",
+            "positiveControl": true
+          }
+        },
+        {
+          "case": "d2m.tenant.cross.read",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "hostile.scoped_read",
+            "target": "A's job_events under B's scope on the shipped boot's aoa_app pool",
+            "observedBy": "the same read under A's own scope returns rows"
+          },
+          "expectedClassification": "denied_with_same_tenant_positive_control",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "Same as the lease surface: this gate's record needs its own shipped-boot run.",
+          "pendingOwner": "planning session (F8), on the DEP-015 lane",
+          "tenantCase": {
+            "kind": "cross_tenant_denial",
+            "surface": "read",
+            "positiveControl": true
+          }
+        },
+        {
+          "case": "d2m.tenant.cross.cancel",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "hostile.request_cancellation",
+            "target": "B's scope cancels A's job",
+            "observedBy": "the same call under A's own scope cancels A's job"
+          },
+          "expectedClassification": "denied_with_same_tenant_positive_control",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "Same as the lease surface.",
+          "pendingOwner": "planning session (F8), on the DEP-015 lane",
+          "tenantCase": {
+            "kind": "cross_tenant_denial",
+            "surface": "cancel",
+            "positiveControl": true
+          }
+        },
+        {
+          "case": "d2m.tenant.cross.events",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "hostile.event_upload",
+            "target": "B's worker uploads onto A's fence",
+            "observedBy": "A's own worker's identical upload is accepted"
+          },
+          "expectedClassification": "denied_with_same_tenant_positive_control",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "Same as the lease surface.",
+          "pendingOwner": "planning session (F8), on the DEP-015 lane",
+          "tenantCase": {
+            "kind": "cross_tenant_denial",
+            "surface": "events",
+            "positiveControl": true
+          }
+        },
+        {
+          "case": "d2m.tenant.cross.secrets",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "hostile.execution_secret_resolve",
+            "target": "B's worker redeems A's REAL provider-key handle",
+            "observedBy": "A's own worker's redemption of the same handle succeeds"
+          },
+          "expectedClassification": "denied_with_same_tenant_positive_control",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "On this gate the handle carries a real provider key, so the case is only meaningful on a keyed run.",
+          "pendingOwner": "planning session (F8), on the DEP-015 lane",
+          "tenantCase": {
+            "kind": "cross_tenant_denial",
+            "surface": "secrets",
+            "positiveControl": true
+          }
+        },
+        {
+          "case": "d2m.tenant.cross.staged_inputs",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "hostile.artifact_transfer_grant",
+            "target": "B's worker requests a grant on A's staged input",
+            "observedBy": "A's own worker's identical request succeeds"
+          },
+          "expectedClassification": "denied_with_same_tenant_positive_control",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "Same as the lease surface.",
+          "pendingOwner": "planning session (F8), on the DEP-015 lane",
+          "tenantCase": {
+            "kind": "cross_tenant_denial",
+            "surface": "staged_inputs",
+            "positiveControl": true
+          }
+        },
+        {
+          "case": "d2m.tenant.cross.outputs",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "hostile.artifact_commit",
+            "target": "B's worker commits onto A's attempt",
+            "observedBy": "A's own worker's commit on the same attempt succeeds"
+          },
+          "expectedClassification": "denied_with_same_tenant_positive_control",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "Same as the lease surface.",
+          "pendingOwner": "planning session (F8), on the DEP-015 lane",
+          "tenantCase": {
+            "kind": "cross_tenant_denial",
+            "surface": "outputs",
+            "positiveControl": true
+          }
+        },
+        {
+          "case": "d2m.tenant.cross.cost_rows",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "hostile.cost_read",
+            "target": "B's companyId reads A's charges from the real keyed run",
+            "observedBy": "A's own companyId reads a non-zero charge through the same reader"
+          },
+          "expectedClassification": "denied_with_same_tenant_positive_control",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "The charges this gate asserts are the REAL provider's, which only a keyed run produces.",
+          "pendingOwner": "planning session (F8), on the DEP-015 lane",
+          "tenantCase": {
+            "kind": "cross_tenant_denial",
+            "surface": "cost_rows",
+            "positiveControl": true
+          }
+        },
+        {
+          "case": "d2m.tenant.cross.tool_calls",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "hostile.tool_surface_at_use",
+            "target": "B presents A's run id at /mcp",
+            "observedBy": "the same resolver admits A's own run under A's own companyId"
+          },
+          "expectedClassification": "denied_with_same_tenant_positive_control",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "The tool surface is disarmed for M1a (the freeze checklist), so an ARMED cross-tenant case cannot run on this gate at all; it is recorded here so the surface is never silently dropped from the matrix, and it is M1b/CLI-016 work.",
+          "pendingOwner": "CLI-016 (M1b); the M1a posture — the surface OFF on every replica — is asserted by the DEP-016 m1-spine profile",
+          "tenantCase": {
+            "kind": "cross_tenant_denial",
+            "surface": "tool_calls",
+            "positiveControl": true
+          }
+        },
+        {
+          "case": "d2m.tenant.control_refused",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "rollout.control_organization_absent",
+            "target": "the control tenant C on the shipped boot",
+            "observedBy": "the control plane logs rolloutState 'off' for the control run"
+          },
+          "expectedClassification": "legacy_for_organization_disabled",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "The shipped-boot lane's own control-tenant arm (classifyTenantOutcome, role 'control') runs only on a dispatched boot.",
+          "pendingOwner": "planning session (F8), on the DEP-015 lane",
+          "tenantCase": {
+            "kind": "control_tenant_refused"
+          }
+        },
+        {
+          "case": "d2m.tenant.legacy.cost_events",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "legacy_table.foreign_read",
+            "target": "cost_events on the shipped boot",
+            "observedBy": "the predicate-removed read returns the foreign charge"
+          },
+          "expectedClassification": "filtered_by_query_predicate_not_rls",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "The charge under test is the real provider's; the keyless proof of the same predicate is the M1-D1-SPINE case.",
+          "pendingOwner": "planning session (F8), on the DEP-015 lane",
+          "tenantCase": {
+            "kind": "legacy_table_isolation",
+            "table": "cost_events",
+            "positiveControl": true,
+            "antiVacuityControl": true,
+            "productionPath": "server/src/services/costs.ts costService(db).byAgent / .summary"
+          }
+        },
+        {
+          "case": "d2m.tenant.legacy.activity_log",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "legacy_table.foreign_read",
+            "target": "activity_log on the shipped boot",
+            "observedBy": "the predicate-removed read returns the foreign audit row"
+          },
+          "expectedClassification": "filtered_by_query_predicate_not_rls",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "Same as above; the keyless proof is the M1-D1-SPINE case.",
+          "pendingOwner": "planning session (F8), on the DEP-015 lane",
+          "tenantCase": {
+            "kind": "legacy_table_isolation",
+            "table": "activity_log",
+            "positiveControl": true,
+            "antiVacuityControl": true,
+            "productionPath": "server/src/services/activity.ts activityService(db).list({companyId})"
+          }
+        },
+        {
+          "case": "d2m.tenant.legacy.task_outputs",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "legacy_table.foreign_read",
+            "target": "task_outputs on the shipped boot",
+            "observedBy": "the predicate-removed read returns the foreign output row"
+          },
+          "expectedClassification": "filtered_by_query_predicate_not_rls",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "Same as above; the keyless proof is the M1-D1-SPINE case.",
+          "pendingOwner": "planning session (F8), on the DEP-015 lane",
+          "tenantCase": {
+            "kind": "legacy_table_isolation",
+            "table": "task_outputs",
+            "positiveControl": true,
+            "antiVacuityControl": true,
+            "productionPath": "server/src/services/task-outputs.ts taskOutputService(db).listForIssue(companyId, issueId)"
+          }
+        },
+        {
+          "case": "d2m.tenant.legacy.provider_credentials",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "legacy_table.foreign_read",
+            "target": "provider_credentials on the shipped boot",
+            "observedBy": "the predicate-removed read returns the foreign credential row"
+          },
+          "expectedClassification": "filtered_by_query_predicate_not_rls",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "Same as above; the keyless proof is the M1-D1-SPINE case.",
+          "pendingOwner": "planning session (F8), on the DEP-015 lane",
+          "tenantCase": {
+            "kind": "legacy_table_isolation",
+            "table": "provider_credentials",
+            "positiveControl": true,
+            "antiVacuityControl": true,
+            "productionPath": "packages/db/src/repositories/tenant/job-control.ts resolveExecutionSecret (the device_local arm)"
+          }
+        },
+        {
+          "case": "d2m.credential.production_reader_company_predicate",
+          "family": "credential",
+          "injection": {
+            "mechanism": "device_local_handle.naming_a_foreign_company_credential",
+            "target": "packages/db/src/repositories/tenant/job-control.ts resolveExecutionSecret, the device_local arm, on the shipped boot where a REAL provider credential is redeemed",
+            "observedBy": "the handle's resolve_count audit column, which resolveExecutionSecret increments ONLY on admit -- the one surface that distinguishes an admitted read from a denied one, and the reason this case can exist here and not on D1"
+          },
+          "expectedClassification": "production_reader_denies_a_foreign_company_credential",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "Routed here from M1-D1-SPINE by E6-D003 (planning session, F2): this is the gate whose topology redeems a real provider credential, so authorizeSecretResolve can ADMIT and the two arms become distinguishable. A handle on tenant A's job whose refId names tenant B's credential must find NOTHING (the company predicate) and deny; the same handle naming A's own credential is the positive control. Needs a keyed E2B run, which founder ruling F8 reserves to the planning session.",
+          "pendingOwner": "planning session (F8), on the DEP-015 shipped-boot lane"
+        }
+      ]
+    },
+    {
+      "profile": "M1-D2-CODING",
+      "$topology": "The same shipped CI boot in keyed mode, on the M1b candidate, with the tool surface and attributable output ARMED. Serves M1b only — M1a does not consume this gate. Every case is keyed, plus the credential cases this gate adds.",
+      "cases": [
+        {
+          "case": "d2c.cancellation.leased_attempt",
+          "family": "cancellation",
+          "injection": {
+            "mechanism": "production.requestCancellation",
+            "target": "a leased coding attempt mid-execute",
+            "observedBy": "the cancel command is delivered and the sandbox torn down"
+          },
+          "expectedClassification": "cancel_delivered_sandbox_torn_down",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "M1b, keyed. F8 reserves keyed dispatch to the planning session.",
+          "pendingOwner": "planning session (F8), M1b"
+        },
+        {
+          "case": "d2c.provider_failure.e2b_execute_error",
+          "family": "provider_failure",
+          "injection": {
+            "mechanism": "e2b.provider_error",
+            "target": "the E2B execute op of a coding run",
+            "observedBy": "the worker logs a provider error for the attempt's lease"
+          },
+          "expectedClassification": "attempt_terminal_failed_with_provider_error_code",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "M1b, keyed.",
+          "pendingOwner": "planning session (F8), M1b"
+        },
+        {
+          "case": "d2c.reconcile.daemon_restart_with_live_lease",
+          "family": "restart_reconciliation",
+          "injection": {
+            "mechanism": "worker.daemon.restart_with_live_lease",
+            "target": "the deployed worker mid-coding-run",
+            "observedBy": "one lease_renew carrying the pre-restart lease identity, before the first poll"
+          },
+          "expectedClassification": "startup_reconciler_fences_its_own_prior_lease",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "M1b, keyed.",
+          "pendingOwner": "planning session (F8), M1b"
+        },
+        {
+          "case": "d2c.cleanup.workspace_and_sandbox_torn_down",
+          "family": "cleanup",
+          "injection": {
+            "mechanism": "journey.terminal",
+            "target": "the coding run's workspace and sandbox",
+            "observedBy": "neither the sandbox id nor the workspace path survives the terminal"
+          },
+          "expectedClassification": "sandbox_destroyed",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "M1b, keyed.",
+          "pendingOwner": "planning session (F8), M1b"
+        },
+        {
+          "case": "d2c.credential.handle_redeemed_once",
+          "family": "credential",
+          "injection": {
+            "mechanism": "secret_handle.second_redemption",
+            "target": "a single-use execution-secret handle",
+            "observedBy": "the FIRST redemption of the same handle succeeds"
+          },
+          "expectedClassification": "second_redemption_denied",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "The handle carries a real provider key on this gate; a keyless redemption proves nothing about the credential class M1-D2-CODING names.",
+          "pendingOwner": "planning session (F8), M1b"
+        },
+        {
+          "case": "d2c.credential.handle_denied_after_fence_loss",
+          "family": "credential",
+          "injection": {
+            "mechanism": "fence.revoked_before_redemption",
+            "target": "a handle whose lease was fenced out",
+            "observedBy": "the same handle redeemed under the LIVE fence succeeds"
+          },
+          "expectedClassification": "redemption_denied_stale_fence",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "M1b, keyed.",
+          "pendingOwner": "planning session (F8), M1b"
+        },
+        {
+          "case": "d2c.credential.no_plaintext_in_evidence",
+          "family": "credential",
+          "injection": {
+            "mechanism": "evidence.secret_scan",
+            "target": "the retained evidence bundle of a keyed coding run",
+            "observedBy": "the scanner is shown to find a PLANTED canary in a control fixture"
+          },
+          "expectedClassification": "no_provider_secret_in_retained_evidence",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "The scan (scanEvidenceForSecrets, scripts/lib/m1-shipped-boot.mjs) is only meaningful over a bundle a keyed run produced.",
+          "pendingOwner": "planning session (F8), M1b"
+        },
+        {
+          "case": "d2c.tenant.journey.A",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "journey.real_e2b_coding_run",
+            "target": "tenant A",
+            "observedBy": "the verifier's verdict-json for A's run, with capabilityProven"
+          },
+          "expectedClassification": "attributable_output_reached_the_founder",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "M1b, keyed.",
+          "pendingOwner": "planning session (F8), M1b",
+          "tenantCase": {
+            "kind": "per_tenant_journey",
+            "tenant": "A"
+          }
+        },
+        {
+          "case": "d2c.tenant.journey.B",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "journey.real_e2b_coding_run",
+            "target": "tenant B",
+            "observedBy": "the verifier's verdict-json for B's run, with capabilityProven"
+          },
+          "expectedClassification": "attributable_output_reached_the_founder",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "M1b, keyed.",
+          "pendingOwner": "planning session (F8), M1b",
+          "tenantCase": {
+            "kind": "per_tenant_journey",
+            "tenant": "B"
+          }
+        },
+        {
+          "case": "d2c.tenant.cross.lease",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "hostile.lease_renew",
+            "target": "B renews A's live lease",
+            "observedBy": "A's own renew on the same lease succeeds"
+          },
+          "expectedClassification": "denied_with_same_tenant_positive_control",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "M1b, keyed.",
+          "pendingOwner": "planning session (F8), M1b",
+          "tenantCase": {
+            "kind": "cross_tenant_denial",
+            "surface": "lease",
+            "positiveControl": true
+          }
+        },
+        {
+          "case": "d2c.tenant.cross.read",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "hostile.scoped_read",
+            "target": "A's job_events under B's scope",
+            "observedBy": "A's own scope returns rows"
+          },
+          "expectedClassification": "denied_with_same_tenant_positive_control",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "M1b, keyed.",
+          "pendingOwner": "planning session (F8), M1b",
+          "tenantCase": {
+            "kind": "cross_tenant_denial",
+            "surface": "read",
+            "positiveControl": true
+          }
+        },
+        {
+          "case": "d2c.tenant.cross.cancel",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "hostile.request_cancellation",
+            "target": "B cancels A's job",
+            "observedBy": "A's own cancel of the same job succeeds"
+          },
+          "expectedClassification": "denied_with_same_tenant_positive_control",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "M1b, keyed.",
+          "pendingOwner": "planning session (F8), M1b",
+          "tenantCase": {
+            "kind": "cross_tenant_denial",
+            "surface": "cancel",
+            "positiveControl": true
+          }
+        },
+        {
+          "case": "d2c.tenant.cross.events",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "hostile.event_upload",
+            "target": "B uploads onto A's fence",
+            "observedBy": "A's own identical upload is accepted"
+          },
+          "expectedClassification": "denied_with_same_tenant_positive_control",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "M1b, keyed.",
+          "pendingOwner": "planning session (F8), M1b",
+          "tenantCase": {
+            "kind": "cross_tenant_denial",
+            "surface": "events",
+            "positiveControl": true
+          }
+        },
+        {
+          "case": "d2c.tenant.cross.secrets",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "hostile.execution_secret_resolve",
+            "target": "B redeems A's real provider-key handle",
+            "observedBy": "A's own redemption of the same handle succeeds"
+          },
+          "expectedClassification": "denied_with_same_tenant_positive_control",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "M1b, keyed — and the credential class this gate adds.",
+          "pendingOwner": "planning session (F8), M1b",
+          "tenantCase": {
+            "kind": "cross_tenant_denial",
+            "surface": "secrets",
+            "positiveControl": true
+          }
+        },
+        {
+          "case": "d2c.tenant.cross.staged_inputs",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "hostile.artifact_transfer_grant",
+            "target": "B requests a grant on A's workspace input",
+            "observedBy": "A's own identical request succeeds"
+          },
+          "expectedClassification": "denied_with_same_tenant_positive_control",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "M1b, keyed.",
+          "pendingOwner": "planning session (F8), M1b",
+          "tenantCase": {
+            "kind": "cross_tenant_denial",
+            "surface": "staged_inputs",
+            "positiveControl": true
+          }
+        },
+        {
+          "case": "d2c.tenant.cross.outputs",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "hostile.artifact_commit",
+            "target": "B commits an output onto A's attempt",
+            "observedBy": "A's own commit on the same attempt succeeds"
+          },
+          "expectedClassification": "denied_with_same_tenant_positive_control",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "M1b, keyed — and this gate is the one that requires attributable output, so the output surface matters most here.",
+          "pendingOwner": "planning session (F8), M1b",
+          "tenantCase": {
+            "kind": "cross_tenant_denial",
+            "surface": "outputs",
+            "positiveControl": true
+          }
+        },
+        {
+          "case": "d2c.tenant.cross.cost_rows",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "hostile.cost_read",
+            "target": "B reads A's charges",
+            "observedBy": "A's own companyId reads a non-zero charge through the same reader"
+          },
+          "expectedClassification": "denied_with_same_tenant_positive_control",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "M1b, keyed.",
+          "pendingOwner": "planning session (F8), M1b",
+          "tenantCase": {
+            "kind": "cross_tenant_denial",
+            "surface": "cost_rows",
+            "positiveControl": true
+          }
+        },
+        {
+          "case": "d2c.tenant.cross.tool_calls",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "hostile.tool_surface_at_use",
+            "target": "B presents A's run id at /mcp with the surface ARMED for both tenants",
+            "observedBy": "A's own run under A's own companyId is ADMITTED — the only gate where an armed admit is observable"
+          },
+          "expectedClassification": "denied_with_same_tenant_positive_control",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "This is the ONLY gate whose tool surface is armed, so it is the only place the armed cross-tenant case can be measured (CLI-016).",
+          "pendingOwner": "CLI-016 / planning session (F8), M1b",
+          "tenantCase": {
+            "kind": "cross_tenant_denial",
+            "surface": "tool_calls",
+            "positiveControl": true
+          }
+        },
+        {
+          "case": "d2c.tenant.control_refused",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "rollout.control_organization_absent",
+            "target": "the control tenant C on the M1b candidate",
+            "observedBy": "the control plane logs rolloutState 'off' for the control run"
+          },
+          "expectedClassification": "legacy_for_organization_disabled",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "M1b, keyed.",
+          "pendingOwner": "planning session (F8), M1b",
+          "tenantCase": {
+            "kind": "control_tenant_refused"
+          }
+        },
+        {
+          "case": "d2c.tenant.legacy.cost_events",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "legacy_table.foreign_read",
+            "target": "cost_events on the M1b candidate",
+            "observedBy": "the predicate-removed read returns the foreign charge"
+          },
+          "expectedClassification": "filtered_by_query_predicate_not_rls",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "M1b, keyed.",
+          "pendingOwner": "planning session (F8), M1b",
+          "tenantCase": {
+            "kind": "legacy_table_isolation",
+            "table": "cost_events",
+            "positiveControl": true,
+            "antiVacuityControl": true,
+            "productionPath": "server/src/services/costs.ts costService(db).byAgent / .summary"
+          }
+        },
+        {
+          "case": "d2c.tenant.legacy.activity_log",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "legacy_table.foreign_read",
+            "target": "activity_log on the M1b candidate",
+            "observedBy": "the predicate-removed read returns the foreign audit row"
+          },
+          "expectedClassification": "filtered_by_query_predicate_not_rls",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "M1b, keyed.",
+          "pendingOwner": "planning session (F8), M1b",
+          "tenantCase": {
+            "kind": "legacy_table_isolation",
+            "table": "activity_log",
+            "positiveControl": true,
+            "antiVacuityControl": true,
+            "productionPath": "server/src/services/activity.ts activityService(db).list({companyId})"
+          }
+        },
+        {
+          "case": "d2c.tenant.legacy.task_outputs",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "legacy_table.foreign_read",
+            "target": "task_outputs on the M1b candidate — the table this gate's attributable output lands in",
+            "observedBy": "the predicate-removed read returns the foreign output row"
+          },
+          "expectedClassification": "filtered_by_query_predicate_not_rls",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "M1b, keyed — and load-bearing here: this gate's verdict IS an output reaching the founder, so the output table's tenant filter is the gate's own isolation claim.",
+          "pendingOwner": "planning session (F8), M1b",
+          "tenantCase": {
+            "kind": "legacy_table_isolation",
+            "table": "task_outputs",
+            "positiveControl": true,
+            "antiVacuityControl": true,
+            "productionPath": "server/src/services/task-outputs.ts taskOutputService(db).listForIssue(companyId, issueId)"
+          }
+        },
+        {
+          "case": "d2c.tenant.legacy.provider_credentials",
+          "family": "tenant",
+          "injection": {
+            "mechanism": "legacy_table.foreign_read",
+            "target": "provider_credentials on the M1b candidate",
+            "observedBy": "the predicate-removed read returns the foreign credential row"
+          },
+          "expectedClassification": "filtered_by_query_predicate_not_rls",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "M1b, keyed.",
+          "pendingOwner": "planning session (F8), M1b",
+          "tenantCase": {
+            "kind": "legacy_table_isolation",
+            "table": "provider_credentials",
+            "positiveControl": true,
+            "antiVacuityControl": true,
+            "productionPath": "packages/db/src/repositories/tenant/job-control.ts resolveExecutionSecret (the device_local arm)"
+          }
+        }
+      ]
+    }
+  ]
+}

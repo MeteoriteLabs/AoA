@@ -180,6 +180,13 @@
       "reason": "Same as verdict-reconcile.yml@main: the consumer may not be its own consumer. Declared per-branch because the workflow declares `push` on both branches and the completeness check requires an entry for each.",
       "wouldTakeToWatch": "Nothing here — see verdict-reconcile.yml@main."
     },
+    "keyed-e2b-cli-011-output-probe.yml@docs/replatform-program": {
+      "workflow": "keyed-e2b-cli-011-output-probe.yml",
+      "branch": "docs/replatform-program",
+      "watch": "not-watched",
+      "reason": "CLI-011's P-011 output probe RUNS only on `workflow_dispatch`: it spends E2B time and Anthropic tokens, authorised run-by-run under ruling F8, and CLI-011-review.md section 3.7 measured that a path-filtered push on a code path spends E2B on merge. Its `push` trigger is REGISTRATION-ONLY (E6-D001's shape, applied by the planning session): paths = the workflow file itself and every job is gated `if: github.event_name == 'workflow_dispatch'`, so a push-created run executes zero steps and concludes with every job `skipped`. Watching that stream would read a green that tested nothing; no commit owes the lane a real run and there is no cadence it is late for. Its verdict is consumed by hand: the planning session copies the durable `cli-011-output-probe-record` into the CLI-011 probe record (review section 10.3).",
+      "wouldTakeToWatch": "A declared re-run cadence for P-011 (for example, re-probe on every aoa-base template rebuild, which section 10.5 row 1 and A-O2-2 would justify), as a `cadence` entry with its own F8 authorisation. Never widen the registration push's paths to make it watchable: `evaluateWorkflowShape` reds that, because a coverage verdict on a skipped job is a check that nothing runs."
+    },
     "keyed-e2b-dat-009-export.yml@docs/replatform-program": {
       "workflow": "keyed-e2b-dat-009-export.yml",
       "branch": "docs/replatform-program",
