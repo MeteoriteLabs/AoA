@@ -216,7 +216,12 @@ on the `DEP-015` shipped-boot lane, where `DEP-017` built it.
 
 1. **The profile is a JOB, not a campaign scope** (§1, with the reason). The `m1-spine` scope value
    still exists as `AOA_D1_CAMPAIGN=m1-spine`, set by the job and REQUIRED by the test.
-2. **`tests/d1/m1-spine.test.mjs` is not declared in `scripts/test-execution-census.json`.** The
+2. ~~**`tests/d1/m1-spine.test.mjs` is not declared in `scripts/test-execution-census.json`.**~~
+   ★ **No longer true, corrected 2026-09-23 (Codex).** The deviation below described the tree before
+   `tests` became a census root. It is now declared, along with every other `tests/d1/*.test.mjs`,
+   and the D1 lane enumerates the E6F files so those declarations are verifiable. The superseded
+   text is kept as the record of what was true when it was written:
+   **`tests/d1/m1-spine.test.mjs` is not declared in `scripts/test-execution-census.json`.** The
    census only walks `scripts/` and `docker/` (`SEARCH_ROOTS` in `check-execution-census.mjs`), and
    no `tests/d1/*.test.mjs` file is declared there today. Adding an entry for a file the checker
    cannot discover would be a declaration nothing verifies. What IS declared is the pure self-test,

@@ -117,6 +117,11 @@ on:
       - "server/src/services/canary-credential-binding.ts"
       - "server/src/services/distributed-execution-drain-trigger.ts"
       - "server/src/services/distributed-execution-drain-trigger-store.ts"
+      # The drain the trigger DELEGATES to, and its store + audit writer: the trigger is process
+      # wiring, so a regression in the cancel/audit implementation lives in these (Codex, PR #566).
+      - "server/src/services/job-distributed-drain.ts"
+      - "server/src/services/job-distributed-drain-store.ts"
+      - "server/src/services/job-control-audit.ts"
       - "server/src/cli/drain-distributed-execution.ts"
       - "server/src/config/distributed-execution.ts"
       - "server/src/config/distributed-execution-rollout-source.ts"
