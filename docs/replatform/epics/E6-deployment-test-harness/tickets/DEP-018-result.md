@@ -1,6 +1,6 @@
 # DEP-018 — The campaign fault matrix and injection harness — result
 
-**Status:** `gate_review`. Only a DISTINCT reviewer sets `complete`.
+**Status:** `complete` (set 2026-09-23 by the M1 review-batch-4 independent reviewer; see *Independent review*).
 **Epic:** E6 · **Plan task:** `E6 implementation-plan §4c DEP-018` (as amended at M1 Step 0, S0-8) · **Milestone:** `M1a`
 **Date (UTC):** `2026-09-23`
 **Implementer:** Claude Opus 5 (M1 build agent)
