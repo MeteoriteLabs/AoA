@@ -2954,3 +2954,52 @@ renaming an immutable record is itself a breach.
 **Blocks gate:** no. Not an M0 or M1 exit item. Until resolved, **a milestone record's shape is
 checked by its reviewer, not by CI**, and a reviewer approving a milestone record must check its
 filename and fields against `milestones/README.md` by hand.
+
+## E0-F021 — parallel branches mint finding ids from the same high-water mark, and nothing asks the question until they merge
+
+**Status:** open · **Owner:** `unowned` · **Severity:** LOW
+
+**The class.** Every builder mints the next finding id by taking the max across the repo at its own
+branch point. Two branches cut from the same tip therefore mint the SAME id, independently and
+correctly by the rule each followed. It has now happened **twice in one day** (2026-09-24): PR #581
+and PR #584 both minted `E6-F027`, for entirely unrelated findings, and an earlier pair collided the
+same way. The sweep's entry was renumbered to `E6-F028` on a first-pushed tie-break.
+
+★★★ **MEASURED, NOT ASSUMED — and the measurement CORRECTS the brief that asked for this entry.**
+The request to file it described the guard as blind: *"`scripts/finding-ownership.json` auto-merged
+both entries under the same key without conflicting, and `check-finding-ownership` said nothing,
+because it validates each entry rather than id uniqueness."* **That is false at source.** Verified
+here by positive control on `231888e7d`: inserting a second `"E6-F028"` object into the manifest and
+running `node scripts/check-finding-ownership.mjs` fails with
+`manifest_duplicate_key: findings.E6-F028 (repeated 2 times)` — the manifest is scanned as RAW TEXT
+by `findDuplicateJsonKeys` (`scripts/lib/finding-ownership.mjs`) precisely because `JSON.parse`
+accepts duplicates and keeps the last copy silently. `check-register-id-uniqueness.mjs` covers the
+other half, duplicate `## <ID>` headings within a register. Both guards exist and both fire.
+
+**So what is ACTUALLY uncovered**, which is narrower and worth stating exactly:
+
+1. **Before the merge, nothing can see it.** Both branches are internally consistent; the collision
+   exists only in the union, which no guard on either branch can compute. This is inherent to
+   branch-local minting, not a gap in a check.
+2. **At the merge, the guards fire only if BOTH copies survive textually.** A resolution that keeps
+   one object under the id — an `ours`/`theirs` pick, or a human resolving the `findings.md`
+   conflict and taking one side of the JSON too — leaves ONE well-formed key, and every guard is
+   satisfied while the id now names the wrong finding and the other is lost with no trace. That
+   silent-loss window is the real residue.
+
+**Severity LOW**, and the direction of failure matters: the noisy case is caught loudly, and the
+quiet case costs a record, not a control.
+
+**Proposed fix, not built here.** (a) Mint ids from a reserved RANGE per branch or per session
+rather than from a shared high-water mark, so two builders cannot collide by construction — the
+registers already carry a `FINDING_ID_RANGE_HEADING` concept the uniqueness lib knows about. (b)
+Failing that, a merge-time check that the id set in `findings.md` and the key set in
+`finding-ownership.json` are EQUAL and that neither shrank relative to either parent — which is the
+only shape that catches a resolution that dropped a side. Both need a measured positive control
+showing the check reds on a one-sided resolution, since that is the case the existing guards miss.
+
+**Why `unowned`.** No chartered ticket owns the register tooling; the two guards involved were
+built by finding-driven hardening rather than by a ticket, and naming any shipped ticket would be
+the invented ownership the manifest exists to prevent.
+
+**Filed:** 2026-09-24 by the class sweep (PR #584), after the second collision of the day.

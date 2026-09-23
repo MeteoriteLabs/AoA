@@ -16,6 +16,7 @@ import {
   createExportRequestProducer,
   DEFAULT_OUTPUT_ROOT,
   MAX_OUTPUT_FILES,
+  MAX_REFUSALS_PER_REASON,
   MAX_OUTPUT_FILE_BYTES,
   MAX_OUTPUT_TOTAL_BYTES,
   type OutputRefusal,
@@ -317,5 +318,75 @@ describe("CLI-012 — the producer's dependency surface has NO byte-returning re
     expect(MAX_OUTPUT_TOTAL_BYTES).toBe(MAX_ATTEMPT_EXPORT_BYTES);
     // Non-vacuity: both are real, positive byte counts, not two undefineds comparing equal.
     expect(MAX_OUTPUT_TOTAL_BYTES).toBe(100 * 1024 * 1024);
+  });
+});
+
+describe("E7-F041 — the refusal CHANNEL is bounded on itself, not on acceptance", () => {
+  // THE CLASS: *an unbounded per-item emission past a cap.* Round 5 of PR #576 bounded this
+  // channel at the ACCEPTED-file cap, and refusals never advance that counter -- so a listing
+  // that is ENTIRELY refused reached no cap at all and emitted one record per entry.
+  const LISTING = 100_000;  // `E2B_LIST_DIR_MAX_ENTRIES`: what a tenant can actually author.
+
+  const allRefused = (make: (i: number) => SandboxOutputEntry) =>
+    Array.from({ length: LISTING }, (_, i) => make(i));
+
+  for (const [label, make, reason] of [
+    ["symlinks", (i: number) => ({ path: `${R}/l${i}`, sizeBytes: 1, symlink: true }), "output_symlink_refused"],
+    ["oversized files", (i: number) => file(`${R}/big${i}`, MAX_OUTPUT_FILE_BYTES + 1), "output_too_large"],
+    ["escaped paths", (i: number) => file(`/etc/passwd${i}`, 1), "output_path_escaped"],
+  ] as const) {
+    it(`★★★ ${LISTING} ${label} emit a BOUNDED number of records, and the tail is aggregated with its count`, async () => {
+      const refusals: OutputRefusal[] = [];
+      const { produce } = producerOver(allRefused(make), refusals);
+      // Nothing is admitted, so the ACCEPTED-file cap -- the only bound before this fix -- is
+      // never reached. That is the whole defect.
+      expect(await produce({})).toEqual([]);
+      expect(refusals.length).toBeLessThanOrEqual(MAX_REFUSALS_PER_REASON + 1);
+      // NON-VACUITY: the entries really were there and really were refused. Every one of them is
+      // accounted for -- individually emitted, or folded into the single aggregate's count --
+      // and every record carries the RIGHT reason, so this is not a bound achieved by dropping.
+      expect(refusals.every((r) => r.reason === reason)).toBe(true);
+      const accounted = refusals.reduce((n, r) => n + (r.count ?? 1), 0);
+      expect(accounted).toBe(LISTING);
+      expect(refusals.filter((r) => r.count !== undefined)).toEqual([
+        { reason, count: LISTING - MAX_REFUSALS_PER_REASON },
+      ]);
+    });
+  }
+
+  it("the budget is PER REASON: a rare refusal is still seen behind a flood of another kind", async () => {
+    const entries = [
+      ...Array.from({ length: LISTING }, (_, i) => ({ path: `${R}/l${i}`, sizeBytes: 1, symlink: true })),
+      file(`${R}/big`, MAX_OUTPUT_FILE_BYTES + 1),
+    ];
+    const refusals: OutputRefusal[] = [];
+    const { produce } = producerOver(entries, refusals);
+    expect(await produce({})).toEqual([]);
+    expect(refusals).toContainEqual({ reason: "output_too_large" });
+  });
+
+  it("under the budget nothing is aggregated: N refusals are still N individual records", async () => {
+    const refusals: OutputRefusal[] = [];
+    const { produce } = producerOver(
+      Array.from({ length: MAX_REFUSALS_PER_REASON }, (_, i) => ({ path: `${R}/l${i}`, sizeBytes: 1, symlink: true })),
+      refusals,
+    );
+    expect(await produce({})).toEqual([]);
+    expect(refusals).toEqual(Array.from({ length: MAX_REFUSALS_PER_REASON }, () => ({ reason: "output_symlink_refused" })));
+  });
+
+  it("★ the budget is PER INVOCATION: a second run is not silenced by the first (multi-tenant)", async () => {
+    // One producer is built at the composition root and serves every run. A budget in the factory
+    // closure would let ONE Organization's noisy listing mute the NEXT Organization's refusals.
+    const refusals: OutputRefusal[] = [];
+    const { produce } = producerOver(allRefused((i) => ({ path: `${R}/l${i}`, sizeBytes: 1, symlink: true })), refusals);
+    await produce({});
+    const afterFirst = refusals.length;
+    // Cross-"tenant" arm: the SAME producer, a second run, a listing it must still report on.
+    const second = await produce({
+      enumerate: async () => [{ path: `${R}/other-tenant-link`, sizeBytes: 1, symlink: true }],
+    });
+    expect(second).toEqual([]);
+    expect(refusals.slice(afterFirst)).toEqual([{ reason: "output_symlink_refused" }]);
   });
 });

@@ -1212,3 +1212,82 @@ test("a directive carrying the WHOLE prefix latches immediately, and an ordinary
   assert.equal(plain(canary), canary);
   assert.equal(plain('boot-core: 2 replicas up'), 'boot-core: 2 replicas up', 'an ordinary secret opens no block');
 });
+
+// === CLASS SWEEP (2026-09-24): every refusal in `leakScan` is DEFERRED, not just the absent-log one
+//
+// THE CLASS: *a refusal that short-circuits a scan that already has a finding.* PR #574 deferred
+// the ABSENT-log arm and left its two siblings — the capture-failed MARKER and the TRUNCATED
+// sentinel check — returning before `scanEvidenceForSecrets` ever ran. Both outcomes delete the
+// bundle, so ordering cannot change what is PUBLISHED; it changes only what the operator is TOLD,
+// and only a NAMED finding says ROTATE THIS NOW. These two cases pin the remaining arms, and each
+// carries its own non-vacuity control below (the same planted canary reds with the refusal absent).
+
+function precedenceCase(out, plant) {
+  mkdirSync(path.join(out, 'evidence', 'nested'), { recursive: true });
+  writeFileSync(path.join(out, 'evidence', 'nested', 'logs-worker.txt'), `leaked ${SECRETS.AOA_M1_TRUTH_SHARED_SECRET}\n`);
+  writeFileSync(path.join(out, 'state.json'), JSON.stringify({ out, redact: Object.values(SECRETS), secrets: SECRETS }));
+  plant(out);
+  const res = leakScanIn(out, { ci: true });
+  const gone = !existsSync(path.join(out, 'evidence'));
+  rmSync(out, { recursive: true, force: true });
+  return { res, gone, all: `${res.stdout}${res.stderr}` };
+}
+
+test('PRECEDENCE: a planted canary is still NAMED when the job-log capture FAILED, and both verdicts are reported', () => {
+  const { res, gone, all } = precedenceCase(mkdtempSync(path.join(tmpdir(), 'm1-prec-marker-')), (out) => {
+    writeFileSync(path.join(out, 'job-log.txt'), 'a truncated but clean-looking log\n');
+    writeFileSync(path.join(out, 'job-log.txt.capture-failed'), 'append: ENOSPC\n');
+  });
+  assert.equal(res.status, 1, all);
+  assert.match(all, /evidence file 'nested\/logs-worker\.txt' contains job secret 'AOA_M1_TRUTH_SHARED_SECRET'/);
+  assert.match(all, /capture FAILED during this run/);
+  assert.ok(!all.includes(SECRETS.AOA_M1_TRUTH_SHARED_SECRET), 'the value itself is never printed');
+  assert.ok(gone, 'the bundle is deleted either way');
+});
+
+test('PRECEDENCE: a planted canary is still NAMED when the job log is TRUNCATED, and both verdicts are reported', () => {
+  const { res, gone, all } = precedenceCase(mkdtempSync(path.join(tmpdir(), 'm1-prec-trunc-')), (out) => {
+    const id = (n) => `0000000${n}-0000-4000-8000-000000000000`;
+    writeFileSync(
+      path.join(out, 'job-log.txt'),
+      [`[log-filter] opened ${id(1)}`, 'prepare ok', `[log-filter] closed ${id(1)}`,
+       `[log-filter] opened ${id(2)}`, 'boot-core …'].join('\n') + '\n',  // killed here: never closed
+    );
+  });
+  assert.equal(res.status, 1, all);
+  assert.match(all, /evidence file 'nested\/logs-worker\.txt' contains job secret 'AOA_M1_TRUTH_SHARED_SECRET'/);
+  assert.match(all, /TRUNCATED/);
+  assert.match(all, /1 never closed/);
+  assert.ok(!all.includes(SECRETS.AOA_M1_TRUTH_SHARED_SECRET));
+  assert.ok(gone);
+});
+
+test('NON-VACUITY: with NO refusal in play, the same planted canary still reds and no refusal line appears', () => {
+  const { res, gone, all } = precedenceCase(mkdtempSync(path.join(tmpdir(), 'm1-prec-clean-')), (out) => {
+    const id = '00000000-0000-4000-8000-000000000009';
+    writeFileSync(path.join(out, 'job-log.txt'), `[log-filter] opened ${id}\nclean\n[log-filter] closed ${id}\n`);
+  });
+  assert.equal(res.status, 1, all);
+  assert.match(all, /contains job secret 'AOA_M1_TRUTH_SHARED_SECRET'/);
+  for (const r of [/capture FAILED/, /TRUNCATED/, /job log is ABSENT/]) assert.ok(!r.test(all), `${r} must not fire`);
+  assert.ok(gone);
+});
+
+test('the refusals themselves still fail the run with NO finding present (not merely a finding decorator)', () => {
+  for (const [label, plant, expected] of [
+    ['marker', (out) => { writeFileSync(path.join(out, 'job-log.txt'), 'clean\n'); writeFileSync(path.join(out, 'job-log.txt.capture-failed'), 'ENOSPC\n'); }, /capture FAILED/],
+    ['truncated', (out) => writeFileSync(path.join(out, 'job-log.txt'), '[log-filter] opened 00000000-0000-4000-8000-000000000001\nboot …\n'), /TRUNCATED/],
+  ]) {
+    const out = mkdtempSync(path.join(tmpdir(), `m1-refusal-only-${label}-`));
+    mkdirSync(path.join(out, 'evidence'), { recursive: true });
+    writeFileSync(path.join(out, 'evidence', 'verifier-a.txt'), 'clean\n');
+    writeFileSync(path.join(out, 'state.json'), JSON.stringify({ out, redact: [], secrets: {} }));
+    plant(out);
+    const res = leakScanIn(out, { ci: true });
+    const gone = !existsSync(path.join(out, 'evidence'));
+    rmSync(out, { recursive: true, force: true });
+    assert.equal(res.status, 1, `${label}: ${res.stdout}${res.stderr}`);
+    assert.match(`${res.stdout}${res.stderr}`, expected, label);
+    assert.ok(gone, `${label}: a bundle the scan could not judge must not survive`);
+  }
+});
