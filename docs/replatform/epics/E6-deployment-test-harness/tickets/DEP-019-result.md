@@ -1056,6 +1056,7 @@ record says, and `E4-F019` (filed by WRK-018) is the open register entry behind 
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
 | 1 | M1 review-batch-4 independent reviewer (Claude Opus 5) | `99bff824d1c4fd641cea3b05ab7fe588f8255b96` | `approved` | Worker-driven attempt judged by the SHARED `querySpineAttempt` + `evaluateEnabledTenantSpine` (which itself calls `evaluateUsageCardinality`); the only narrowing is `measuredRuntimeMillis`, with `usage:runtime_not_measured` as its floor. Suppressed control reds as `worker-driven cost/audit violations` in the probe log. Not-the-executor control asserts non-vacuity then BOTH arms, always-on. Private PEM bound as an individual file into `control-plane` only; three override clauses hold it. `assertProbeArgvShape` called before any spawn, fail-closed with no pinned URL. Probe run `35856129644`: `m1-spine` `107165160976`, `d1-merge-train` `107165160905`, `m1-fault-matrix` `107165161005`, all success; self-test 118/118, profile 10/10. Broken run `35853547516` and the shared `generate-d1-spine-keys.mjs` fix both verified. F10 real (2 enabled Organizations + 1 control). **Finding (non-blocking): the usage-suppressed control step greps only `[m1-spine:cost]`, which the harness attempts also emit — the §13.7 narrowing was not applied to this sibling.** |
+| 2 | M1 independent reviewer (Claude Opus 5) | `c25e78f118eb99304ee114df2eb6221d5cec15b2` | `approved` | The withdrawal's three requirements, all met and re-measured at source — see *Independent review — attempt 2* below. |
 <!-- Later reviewers append attempt 2 below without replacing this row. -->
 
 ## Withdrawal of the `complete` flip — the worker-driven cost control is not worker-specific
@@ -1296,3 +1297,73 @@ path still calls `evaluateEnabledTenantSpine`, with one added declaration.
 - It does not make the duplicate-usage control reach the worker-driven attempt; §13.7's recorded
   limit is unchanged.
 - It does not set `Status: complete`. That is the distinct reviewer's, after this lands.
+
+## Independent review — attempt 2 (2026-09-23): the withdrawal, dispositioned
+
+**Reviewer:** M1 independent reviewer (Claude Opus 5), distinct from the implementer of §0–§13 and
+from the author of §14. **Reviewed revision:** `c25e78f118eb99304ee114df2eb6221d5cec15b2` (PR #580,
+an ancestor of this branch's HEAD). **Scope:** the three requirements the *"Withdrawal of the
+`complete` flip"* section names. Nothing else in the record is re-opened.
+
+**Currency.** `git diff c25e78f118eb99304ee114df2eb6221d5cec15b2..HEAD` touches none of this
+ticket's product files (`scripts/lib/m1-spine-assertions.mjs`, `tests/d1/m1-spine.test.mjs`,
+`.github/workflows/d1-merge-train.yml`, `scripts/lib/__tests__/m1-spine-assertions.test.mjs`), so
+this disposition certifies code that is still live, not a stale revision.
+
+**Requirement 1 — a worker-specific marker, minted only by the worker arm, and the control greps
+it.** Met, at source. `M1_SPINE_WORKER_COST_MARKER` is declared beside the other two markers in
+`m1-spine-assertions.mjs`; `evaluateEnabledTenantSpine` attaches it only under
+`o.workerDriven === true`, and only to `cost:`/`usage:` codes. A non-boolean declaration raises
+`journey:worker_driven_flag_invalid` and returns BEFORE the minting branch, so a typo cannot mint
+it. `tests/d1/m1-spine.test.mjs` carries exactly one `workerDriven: true`, inside the
+`EXECUTOR === "worker"` block. `d1-merge-train.yml`'s *"POSITIVE CONTROL — with usage suppressed"*
+step greps both literals, the second with a message naming what was not shown.
+
+**Requirement 3 — the harness path CANNOT mint it.** Met, and by a check rather than an argument.
+The behavioural case `worker marker: ★ the HARNESS path CANNOT produce it…` violates every arm at
+once with `workerDriven` absent and explicitly `false`, asserts non-vacuity first (the fixture
+really violates, and still carries `[m1-spine:cost]`), then requires the worker marker absent from
+every message. The structural case pins one declaration inside an unclosed `EXECUTOR === "worker"`
+guard with the harness call site strictly earlier.
+
+**Constants pinned equal by a test, not hand-copied.** Met. `worker marker: the d1 lane's
+usage-suppressed control greps BOTH literals` reads `d1-merge-train.yml`, slices the named step,
+and asserts `grep -F '<constant>'` for both imported constants — so the workflow and the minting
+code cannot drift.
+
+**Reproduced on this revision.** `node --test scripts/lib/__tests__/m1-spine-assertions.test.mjs` →
+tests 125 · pass 125 · fail 0. Three mutations applied alone and reverted, each red as the table
+claims (counts differ by one from §14.5 only because that table was taken on the pre-M7, 124-test
+tree):
+
+| Mutation | Observed |
+|---|---|
+| mint unconditionally (`if (true)`) | RED — `★ the HARNESS path CANNOT produce it` (124 / 1) |
+| `M1_SPINE_WORKER_COST_MARKER` = `M1_SPINE_COST_MARKER` | RED — `it is DISTINCT …` **and** `★ the HARNESS path CANNOT produce it` (123 / 2) |
+
+**Requirement 2 — the mutation on the LIVE lane.** Met, and verified against the API rather than the
+record's prose. Every cited job matches:
+
+| Job | Name | Conclusion | `head_sha` |
+|---|---|---|---|
+| `107221163030` | `m1-spine` | `success` | `824ec906a220595120643996ad93db64e2db2118` |
+| `107221292863` | `m1-spine` | **`failure`** | `0e3ca1e09cb7af8273cc64fb8fe91521e24b3529` |
+| `107221162804` | `d1-merge-train` | `success` | `824ec906a2…` |
+| `107221163187` | `m1-fault-matrix` | `success` | `824ec906a2…` |
+
+And the mutation is precise, not merely red: job `107221292863`'s ONLY failed step is number 11,
+`POSITIVE CONTROL — with usage suppressed, the profile MUST go red` — the step under test. So the
+worker-driven case passing while the harness attempts red is exactly what the new grep refuses,
+which is the claim the old `[m1-spine:cost]` grep could not make.
+
+**Reconciled, not a defect.** §14.4 records 125 after the change while §14.7 recomputes "118 → 124".
+The 124 is the self-audit's own timestamped figure, taken before the Codex P2 / M7 case was added;
+the live figure at this revision is 125, matching §14.4. Left as written, per the no-rewriting rule.
+
+**Not verified at source:** the live probe runs' step LOGS have expired from my reach, so the quoted
+profile output in §14.6 is corroborated by job conclusion, head sha and failed-step identity rather
+than by re-reading the text. The quoted text is consistent with the code I did read.
+
+**Disposition: `approved`.** All three withdrawal requirements are met, the rest of the acceptance
+was approved at attempt 1 and is unaffected, and `Status` is restored to `complete` in a separate
+commit.
