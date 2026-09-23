@@ -508,9 +508,33 @@ correct projection.
 - **Mutations:** disabling the cardinality check, the tenant scope or the stored-vs-event
   comparison kills 5, 2 and 1 cases respectively.
 
+**What this closes, and what it does NOT** (Codex P1 on PR #567, and it is right). The
+cardinality half of acceptance 1 — *exactly one* accepted `usage` event per attempt, owned by this
+tenant — is closed by this assertion. The second half, *"equal to the result line"*, is **not**:
+`createCanaryRunProjector` derives `usage_json` from the same accepted event, so the stored-vs-event
+comparison proves the run's PROJECTION carries the ingested event faithfully (a real defect class —
+a projection that dropped or swapped a field would make every run summary lie) but cannot detect a
+producer that parsed the CLI result line wrongly.
+
+**Why no independent capture exists on this lane, measured at source.** The result line is parsed
+inside the worker (`parseClaudeStreamJsonUsage`, `packages/worker-daemon/src/supervisor/usage-observer.ts`)
+from the sandbox's scrubbed stdout tail. `createUsageObserver` returns usage ONLY; `observeRun`
+deliberately never re-emits stdout as log events, and the worker logs neither the line nor the parsed
+counts. So no line, and no second copy of the counts, reaches the control plane or the worker's log
+for the lane to read. Closing that half needs one of two things, both **E4 / WRK-018's** to decide:
+- the worker logging its parsed counts — same parser, so it would catch a projection or transport
+  fault but not a parse fault; or
+- the worker emitting the scrubbed result line itself, which the lane could re-parse with the
+  daemon's own exported pure function. That is a data-minimisation decision about tenant model
+  output, not a decision this ticket may take.
+
+`cachedInputTokens` is likewise not compared on this lane: the projector does not store it
+(`canary-run-projector.ts` writes `inputTokens` / `outputTokens` / `costUsd` / `durationMs`). The
+spine's `expectedUnits` arm does compare it.
+
 **What closes when.** §12 records that DEP-015's own keyed acceptance is MET, on run
 `35619555883` — and states, correctly, that the run establishes **no usage cardinality**: its
 bundle carries the stored per-run usage, not a count of accepted events. That is exactly the gap
-this addendum closes for the NEXT run. WRK-018 acceptance 1 therefore **closes on the next keyed
+this addendum closes for the NEXT run. WRK-018 acceptance 1's CARDINALITY half therefore **closes on the next keyed
 run that passes this assertion**, and is not closed by this record: no keyed run has yet carried
 it. Nothing here re-opens §12.

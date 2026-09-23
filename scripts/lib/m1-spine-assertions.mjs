@@ -544,6 +544,21 @@ export function evaluateUsageCardinality({ tenant: t, observation: o }) {
     }
   }
   // The keyed lane's half: the run's stored usage IS the accepted event's numbers.
+  //
+  // ★ WHAT THIS DOES AND DOES NOT ESTABLISH (Codex P1, PR #567 — and it is right).
+  // `createCanaryRunProjector` derives `usage_json` FROM this same accepted event
+  // (`foldAttemptEvidence`), so the two sides are not independent: this proves the run's
+  // PROJECTION carries the ingested event faithfully — a real defect class, since a projection
+  // that dropped or swapped a field would make every run summary lie — but it cannot detect a
+  // producer that parsed the CLI result line wrongly. WRK-018 acceptance 1's second half,
+  // "equal to the result line", needs an INDEPENDENT capture of the result-line counts. Nothing
+  // on the keyed lane has one today: the stdout tail stays in the worker (`observeRun` never
+  // re-emits stdout as log events, deliberately), so the control plane never sees the line. That
+  // half is named in DEP-015-result.md §13 and is E4/WRK-018's to provide.
+  //
+  // `cachedInputTokens` is NOT compared here, because the projector does not store it
+  // (`canary-run-projector.ts` writes inputTokens / outputTokens / costUsd / durationMs only).
+  // The spine's `expectedUnits` arm above does compare it.
   if (o.storedUsage !== undefined && o.storedUsage !== null && usageEvents.length === 1) {
     const payload = usageEvents[0].payload ?? {};
     const mismatched = [];

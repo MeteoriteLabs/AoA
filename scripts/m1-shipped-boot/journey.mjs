@@ -804,6 +804,9 @@ async function dispatch(state) {
     }
     // WRK-018 acceptance 1 on the keyed lane — EXACTLY ONE accepted `usage` event for this
     // attempt, belonging to this tenant, and the run's stored `usage_json` equal to its numbers.
+    // The cardinality half of acceptance 1 closes here; the "equal to the result line" half does
+    // NOT — usage_json is projected from this same event, so the two sides are not independent
+    // (Codex P1, PR #567). DEP-015-result.md §13 names what an independent capture would need.
     // The verdict is DEP-016's own `evaluateUsageCardinality` (scripts/lib/m1-spine-assertions.mjs);
     // the spine proves the same acceptance against the reference provider, this lane against a
     // real one, and a second implementation would let the two drift.
