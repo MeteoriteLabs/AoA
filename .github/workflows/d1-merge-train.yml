@@ -127,6 +127,17 @@ on:
       # The FROZEN wire protocol the ingest validates against and the profile's events are built
       # with (digests, the usage payload schema, the canonicalizers). Codex, PR #566.
       - "packages/worker-protocol/src/**"
+      # DEP-019 (Codex P2, PR #572) — the runtime trees the WORKER-DRIVEN path executes and
+      # traverses. Without them a push changing only one of these skips this live profile, although
+      # it can break the exact boot root and wire the m1-spine topology introduced. A lane that
+      # cannot see a change to the code it exercises is not a gate; the extra queue cost is the
+      # correct trade, and it is stated rather than hidden — a change to any of these now fires the
+      # ~45-minute lane, as a `server/src` edit already does.
+      - "packages/worker-daemon/src/**"
+      - "packages/worker-networked-host/src/**"
+      - "packages/provider-wire/src/**"
+      - "packages/adapter-manager/src/**"
+      - "packages/provider-capability/src/**"
       # The shared contracts the server and the profile both read (submit-source schemas, job-control
       # validators, constants). Same reasoning as the two trees above: this lane asserts end-to-end
       # behaviour, so a contract change can decide its verdict. Codex, PR #566.
@@ -450,10 +461,28 @@ jobs:
             echo "AOA_D1_WORKER_IMAGE=${WK_TAG}"
           } > docker/d1/.env
 
+      # DEP-019 — the two per-run secrets, GENERATED HERE and never committed:
+      #   * the control-plane ed25519 SIGNING key, whose PUBLIC half gates the reference
+      #     provider's wire. Without it the mint is inert and every distributed run terminates
+      #     `no_run_capability` before it creates a sandbox.
+      #   * the secrets MASTER key, under which the profile's one Company secret is written and
+      #     read. The override takes it as a REQUIRED `${…:?}` variable, so a missing value fails
+      #     the compose render instead of silently minting a fresh key inside the container.
+      # Neither is echoed, and `docker/d1/runtime-keys/` is git-ignored. `GITHUB_ENV` is masked in
+      # logs but is still an environment file, so the master key is registered with `::add-mask::`
+      # first — a value that reaches a log is a value that reaches the evidence bundle.
+      - name: Generate the per-run control-plane keypair and secrets master key
+        run: node scripts/generate-d1-spine-keys.mjs
       - name: Bring up the ONE-worker m1-spine topology
         run: |
           set -euo pipefail
           docker compose -f "$COMPOSE_FILE_PATH" -f "$SPINE_OVERRIDE_PATH" up -d --wait --wait-timeout 300
+          # DEP-019 — the DEPLOYED worker must be DISPATCHING, and it is the journey. A worker that
+          # booted but composed no dispatch would leave every worker-driven assertion to fail much
+          # later with a symptom several layers from its cause.
+          docker compose -f "$COMPOSE_FILE_PATH" -f "$SPINE_OVERRIDE_PATH" logs worker-b             | grep -F 'dispatch COMPOSED'             || { echo "::error::the deployed worker did not compose dispatch"; exit 1; }
+          # And the reference provider must be serving a GATED wire — never an ungated one.
+          docker compose -f "$COMPOSE_FILE_PATH" -f "$SPINE_OVERRIDE_PATH" logs fake-provider             | grep -F 'GATED provider wire'             || { echo "::error::the reference provider is not serving the gated wire"; exit 1; }
           # The topology is part of the claim, so assert it rather than assuming the override
           # merged: exactly ONE worker service is running in this project.
           workers="$(docker compose -f "$COMPOSE_FILE_PATH" -f "$SPINE_OVERRIDE_PATH" ps --services --status running | grep -c '^worker-' || true)"
@@ -518,12 +547,68 @@ jobs:
             echo "::error::m1-spine PASSED with a duplicate usage event — the cardinality assertion is >= 1, not == 1"
             exit 1
           fi
-          grep -F '[m1-spine:usage]' "$out" || {
+          # ★ NARROWED (Codex P2, PR #572, ruled FIX — `DEP-019-result.md` §13.7). This used to accept
+          # ANY `[m1-spine:usage]` failure, which `usage:no_usage_event` also carries — so the step
+          # could pass on the ZERO direction while claiming to prove the `> 1` one. It now requires
+          # the cardinality code itself.
+          grep -F 'usage:not_exactly_one' "$out" || {
             cat "$out"
-            echo "::error::m1-spine went red on the duplicate run, but NOT on the usage-cardinality assertion"
+            echo "::error::m1-spine went red on the duplicate run, but NOT on the usage-cardinality (> 1) assertion"
             exit 1
           }
-          echo "positive control: a duplicate usage event reds the cardinality assertion, as required"
+          # ★★★ WHAT THIS CONTROL DOES AND DOES NOT COVER, stated so nobody has to re-derive it.
+          # It exercises the HARNESS-driven attempts ONLY. It cannot reach the worker-driven one, and
+          # that is a property of the product rather than of this lane: `createUsageObserver` derives
+          # the event from the FINAL stream-json result line, so the worker emits AT MOST ONE usage
+          # event and the reference provider cannot make it emit two. The only harness route to a
+          # second event on that attempt is a foreign-worker upload, which the fenced ingest denies
+          # (the profile proves that denial in its own cross-tenant case).
+          # The worker-driven attempt's cardinality is therefore covered from the OTHER side: the
+          # usage-suppressed control above reds it at ZERO (`usage:no_usage_event` on the
+          # worker-driven verdict), and the passing profile asserts EXACTLY ONE.
+          echo "positive control: a duplicate usage event reds the cardinality assertion on the HARNESS attempts, as required"
+
+      # DEP-019 — THE NOT-THE-EXECUTOR CONTROL, at the lane level.
+      #
+      # The profile already carries an always-on in-test control (§2b-control): it judges tenant
+      # A's HARNESS-driven attempt with the SAME verdict and requires it to red on both arms. This
+      # step is the second half — it runs the whole profile with the worker-driven case DISABLED
+      # and proves the lane notices, so "worker-driven" cannot quietly become "not run".
+      - name: POSITIVE CONTROL — with the deployed worker NOT the executor, the claim MUST NOT stand
+        env:
+          AOA_D1_LIVE: "1"
+          AOA_M1_SPINE_EXECUTOR: harness
+        run: |
+          set -uo pipefail
+          out="${RUNNER_TEMP}/m1-spine-not-the-executor.txt"
+          # The TAP reporter, deliberately: `# SKIP` is a stable TAP token, while the default spec
+          # reporter's skip glyph is a unicode character whose shape is not a contract.
+          # ★ THE EXIT STATUS IS KEPT (Codex P1, PR #572). `|| true` discarded it, so a profile in
+          # which some OTHER case failed would still reach the greps below and be announced as a
+          # passing control. The suite must exit 0 here: under `harness` the worker-driven case is
+          # withdrawn and everything else — including the in-test control — must still pass.
+          status=0
+          node --test --test-concurrency=1 --test-reporter=tap tests/d1/m1-spine.test.mjs > "$out" 2>&1 || status=$?
+          if [ "$status" != "0" ]; then
+            cat "$out"
+            echo "::error::the profile FAILED under AOA_M1_SPINE_EXECUTOR=harness (exit ${status}); the control proves nothing"
+            exit 1
+          fi
+          # The worker-driven case must be WITHDRAWN, and the in-test control must have really RUN
+          # and passed. That pairing is what distinguishes "the claim was withdrawn" from "the whole
+          # profile fell over", and it is why the control is checked for the ABSENCE of `# SKIP`.
+          grep -E '^ok [0-9]+ - .*DEPLOYED worker performs.*# SKIP' "$out" >/dev/null || {
+            cat "$out"
+            echo "::error::the worker-driven case was not withdrawn under AOA_M1_SPINE_EXECUTOR=harness"
+            exit 1
+          }
+          control="$(grep -E '^(ok|not ok) [0-9]+ - .*worker-driven verdict REDS' "$out" || true)"
+          case "$control" in
+            ok*"# SKIP"*|"") cat "$out"; echo "::error::the in-test not-the-executor control did not RUN"; exit 1 ;;
+            "not ok"*) cat "$out"; echo "::error::the in-test not-the-executor control FAILED"; exit 1 ;;
+          esac
+          echo "not-the-executor control: the worker-driven claim is withdrawn and the verdict's red arm still runs"
+          tail -n 30 "$out"
           tail -n 40 "$out"
 
       # ★ The bundle the M1-D1-SPINE record is made from is the one collected ABOVE, immediately
@@ -621,6 +706,13 @@ jobs:
             echo "AOA_D1_CONTROL_PLANE_IMAGE=${CP_TAG}"
             echo "AOA_D1_WORKER_IMAGE=${WK_TAG}"
           } > docker/d1/.env
+
+      # DEP-019 — this job reuses `docker/d1/m1-spine.override.yml`, which requires the per-run
+      # control-plane keypair and the `${…:?}` secrets master key. Measured on probe run
+      # 35853547516: without this step the bring-up fails the compose RENDER. ONE script, called by
+      # both jobs, so the two cannot drift the next time the topology gains a requirement.
+      - name: Generate the per-run control-plane keypair and secrets master key
+        run: node scripts/generate-d1-spine-keys.mjs
 
       - name: Bring up the ONE-worker topology
         run: |

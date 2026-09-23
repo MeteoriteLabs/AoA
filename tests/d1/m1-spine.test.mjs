@@ -74,6 +74,13 @@ import {
   runDistributedDrainCli,
   queryDrainAudit,
   queryDrainCandidates,
+  // DEP-019 — the worker-driven half: the harness DISPATCHES and ASSERTS; the deployed worker runs it.
+  SPINE_DEPLOYED_TARGET_ID,
+  queryDeployedWorker,
+  seedSpineWorkerDrivenJob,
+  querySpineWorkerDriven,
+  awaitSpineWorkerDrivenTerminal,
+  queryForeignPlacementOnDeployedTarget,
 } from "./lib/e6f-harness.mjs";
 import {
   M1_SPINE_TENANTS,
@@ -88,6 +95,12 @@ import {
   evaluateCrossTenantIsolation,
   evaluateEnvProbeObservability,
   evaluateRollbackRehearsal,
+  // DEP-019
+  M1_SPINE_WORKER_DRIVEN_TENANT_KEY,
+  M1_SPINE_EXECUTOR_MODES,
+  evaluateWorkerDrivenJourney,
+  evaluateSpineEnvProbe,
+  M1_SPINE_CANNED_UNITS,
   formatViolations,
 } from "../../scripts/lib/m1-spine-assertions.mjs";
 
@@ -105,6 +118,11 @@ if (LIVE && CAMPAIGN !== "m1-spine") {
       `(docker/d1/m1-spine.override.yml); got AOA_D1_CAMPAIGN=${JSON.stringify(CAMPAIGN)}`,
   );
 }
+/** DEP-019 — `worker` (the claim) or `harness` (the NOT-THE-EXECUTOR control, which must RED). */
+const EXECUTOR = process.env.AOA_M1_SPINE_EXECUTOR ?? "worker";
+if (!M1_SPINE_EXECUTOR_MODES.includes(EXECUTOR)) {
+  throw new Error(`AOA_M1_SPINE_EXECUTOR must be ${M1_SPINE_EXECUTOR_MODES.join(" or ")}, got ${JSON.stringify(EXECUTOR)}`);
+}
 if (!["canned", "suppressed", "duplicate"].includes(USAGE_MODE)) {
   throw new Error(`AOA_M1_SPINE_USAGE_MODE must be canned, suppressed or duplicate, got ${JSON.stringify(USAGE_MODE)}`);
 }
@@ -119,8 +137,11 @@ const evidence = {
     enabled: M1_SPINE_TENANTS.enabled.map((t) => ({ key: t.key, organizationId: t.organizationId, companyId: t.companyId })),
     control: { key: M1_SPINE_TENANTS.control.key, organizationId: M1_SPINE_TENANTS.control.organizationId, companyId: M1_SPINE_TENANTS.control.companyId },
   },
+  executor: EXECUTOR,
   replicas: {},
   enabled: {},
+  workerDriven: null,
+  workerDrivenIsolation: null,
   control: null,
   verdicts: {},
 };
@@ -362,6 +383,261 @@ ${formatViolations(probeViolations)}`);
     assert.deepEqual(violations, [], `tenant ${tenant.key} spine violations:\n${formatViolations(violations)}`);
   });
 }
+
+// ── 2b. DEP-019: the journey performed by the DEPLOYED worker ────────────────
+//
+// `M1-D1-SPINE` requires the included lifecycle on "one control-plane instance, ONE SEPARATELY
+// DEPLOYED WORKER". Everything above satisfies that as a TOPOLOGY: a deployed worker exists while
+// this harness performs the journey. This case is the JOURNEY claim — the harness only DISPATCHES
+// (seeds a job placed on the deployed worker's own target, with the one secret handle the run
+// capability rides) and then ASSERTS what that worker wrote.
+//
+// ONE deployed worker means ONE worker-driven tenant, and it is the first enabled Organization.
+// Tenant B's journey above stays harness-driven with every F10 property still asserted, and the
+// deployed worker being offered NO work for B or for the control tenant is itself a cross-tenant
+// case (§2c) with A's own offer as its positive control.
+//
+// AOA_M1_SPINE_EXECUTOR:
+//   `worker`  (default) — the claim: the deployed worker drives it.
+//   `harness` — THE NOT-THE-EXECUTOR CONTROL. The same seeded job is driven by a harness-minted
+//               worker instead, and `evaluateWorkerDrivenJourney` MUST go red. The lane runs it
+//               and fails if it passes; without that, "worker-driven" is claimable vacuously.
+
+test("m1-spine: the DEPLOYED worker performs tenant A's journey — lease, execute, events, terminal", { skip: SKIP || EXECUTOR !== "worker" }, () => {
+  const tenant = M1_SPINE_TENANTS.enabled.find((t) => t.key === M1_SPINE_WORKER_DRIVEN_TENANT_KEY);
+  assert.ok(tenant, `the worker-driven tenant ${M1_SPINE_WORKER_DRIVEN_TENANT_KEY} is not in the enabled set`);
+
+  const org = step(seedSpineOrganization({ tenant, model: M1_SPINE_AGENT_MODEL, adapterType: M1_SPINE_AGENT_ADAPTER_TYPE }), "worker-driven org");
+  assert.equal(org.ok, true, `worker-driven org seed: ${truncate(org)}`);
+
+  const deployed = step(queryDeployedWorker({}), "deployed worker");
+  assert.equal(deployed.ok, true, `deployed worker probe: ${truncate(deployed)}`);
+  // The deployed worker's own enrolled identity is what every assertion below compares against.
+  // Its ABSENCE is a violation in the verdict, never a skip — a vacuous pass here would be the
+  // whole ticket failing silently.
+  const record = {
+    executor: EXECUTOR,
+    deployedWorkerId: deployed.workerId,
+    deployedTargetId: SPINE_DEPLOYED_TARGET_ID,
+    deployedWorkerCount: deployed.workerCount,
+  };
+  evidence.workerDriven = record;
+
+  const ids = { jobId: randomUUID(), attemptId: randomUUID(), issueId: randomUUID(), runId: randomUUID(), handleId: randomUUID() };
+  Object.assign(record, { jobId: ids.jobId, attemptId: ids.attemptId });
+  // The script rides the TENANT COMMAND's args: a worker-driven journey mints the provider id
+  // inside the worker, so there is no id for the harness to `/script`.
+  const workloadArgs = USAGE_MODE === "suppressed" ? ["--aoa-fake-usage=suppressed"] : [];
+  const seeded = step(seedSpineWorkerDrivenJob({ tenant, ...ids, workloadArgs, target: deployed.target }), "worker-driven seed");
+  assert.equal(seeded.ok, true, `worker-driven job seed: ${truncate(seeded)}`);
+
+  const observation = step(awaitSpineWorkerDrivenTerminal({ jobId: ids.jobId }), "worker-driven rows");
+  assert.equal(observation.ok, true, `worker-driven row probe: ${truncate(observation)}`);
+  Object.assign(record, {
+    attemptStatus: observation.attemptStatus,
+    events: observation.events,
+    leaseWorkerIds: observation.leaseWorkerIds,
+    terminal: observation.terminal,
+    logMessages: observation.logMessages.length,
+  });
+
+  const violations = evaluateWorkerDrivenJourney({
+    declaredExecutor: EXECUTOR,
+    deployedWorkerId: deployed.workerId,
+    deployedTargetId: SPINE_DEPLOYED_TARGET_ID,
+    observation,
+  });
+  evidence.verdicts.workerDriven = violations;
+  assert.deepEqual(violations, [], `worker-driven violations:\n${formatViolations(violations)}`);
+
+  // ★★★ THE SHARED COST + USAGE VERDICTS, ON THIS ATTEMPT (Codex P1, PR #572, ruled FIX).
+  //
+  // Without this the ticket's core claim was unasserted: `evaluateWorkerDrivenJourney` deliberately
+  // does not require a `usage` event (the suppressed control needs it not to), and the shared
+  // `evaluateEnabledTenantSpine` / `evaluateUsageCardinality` ran ONLY against the earlier
+  // HARNESS-created attempts. So the profile would have stayed green if the deployed worker stopped
+  // parsing stdout usage or pricing stopped firing for its attempt — and the usage-suppressed
+  // control would have red on HARNESS activity, which is a control proving something other than
+  // what it appears to.
+  //
+  // It is the SAME probe and the SAME verdicts the harness path uses — `querySpineAttempt`,
+  // `evaluateEnabledTenantSpine`, `evaluateUsageCardinality` — never a second implementation. The
+  // one narrowing is `measuredRuntimeMillis`, because on this path the worker produces the event
+  // and takes `runtimeMillis` from the SUPERVISOR'S clock; the three token counts are still pinned
+  // exactly, and the charge is still the derived 81 cents.
+  if (EXECUTOR === "worker") {
+    const rows = step(querySpineAttempt({ organizationId: tenant.organizationId, jobId: ids.jobId }), "worker-driven cost rows");
+    assert.equal(rows.ok, true, `worker-driven cost probe: ${truncate(rows)}`);
+    Object.assign(record, {
+      usageEvents: rows.usageEvents,
+      costRows: rows.costRows,
+      receipts: rows.receipts,
+      activity: rows.activity,
+    });
+    // The units the charge is pinned to are the CANNED ones the transcript carries; the worker
+    // parsed them out of the run's own stdout, which is the thing under test.
+    const expectedUnits = { ...M1_SPINE_CANNED_UNITS, runtimeMillis: rows.usageEvents?.[0]?.payload?.runtimeMillis ?? 0 };
+    const costViolations = evaluateEnabledTenantSpine({
+      tenant,
+      observation: {
+        attemptStatus: rows.attemptStatus,
+        events: rows.events,
+        usageEvents: rows.usageEvents,
+        expectedUnits,
+        measuredRuntimeMillis: true,
+        costRows: rows.costRows,
+        costReceipts: rows.receipts.filter((r) => r.projectionKind === "authoritative_cost"),
+        activity: rows.activity,
+        expectedActorId: `worker:${deployed.workerId}`,
+        auditReceipts: rows.receipts.filter((r) => r.projectionKind === "activity_audit"),
+      },
+    });
+    evidence.verdicts.workerDrivenCost = costViolations;
+    assert.deepEqual(costViolations, [], `worker-driven cost/audit violations:
+${formatViolations(costViolations)}`);
+  }
+
+  // DEP-016 acceptance item 6, closed POSITIVELY: the probe RAN inside the reference sandbox and
+  // reported `absent`, judged by the SHARED read side. Only on the worker-driven path — the
+  // control's harness worker executes nothing, so there is no probe to observe and asserting one
+  // would make the control red for the wrong reason.
+  if (EXECUTOR === "worker") {
+    const probeViolations = evaluateSpineEnvProbe({ logMessages: observation.logMessages });
+    record.criterion5EnvProbe = {
+      observed: probeViolations.length === 0,
+      // ★ WHAT THIS LANE CANNOT SEE, recorded with the evidence rather than only in prose: a
+      // reference sandbox has no baked image env and no provider-host env, so the probe observes
+      // the STAGE-IN env only. The template-baked and provider-host classes stay the DEP-015
+      // keyed lane's to observe.
+      scope: "stage_in_env_only",
+      logMessages: observation.logMessages.length,
+    };
+    evidence.verdicts.criterion5 = probeViolations;
+    assert.deepEqual(probeViolations, [], `criterion-5 env-probe violations:\n${formatViolations(probeViolations)}`);
+  }
+});
+
+// ── 2b-control. DEP-019: the SAME verdict, on a HARNESS-driven attempt, must RED ──
+//
+// ★★★ THE ACCEPTANCE-2 CONTROL, and it runs on EVERY execution of this profile rather than only
+// under a special mode. Without it "worker-driven" is claimable vacuously: a verdict that has
+// never been shown to fail on a not-the-executor attempt is not evidence about who executed.
+//
+// It judges tenant A's OWN harness-driven attempt from §2 — the journey `DEP-016` performs, with
+// this harness playing the worker over the real endpoints — with the SAME function, the SAME
+// deployed-worker identity, and `declaredExecutor: "worker"`. It must come back RED on both arms.
+//
+// ★ An earlier shape of this control PASSED, and it was vacuous: it seeded its own job, drove
+// nothing, and read empty rows — "no events at all" is not "somebody else's events". The control
+// now reads an attempt that a DIFFERENT worker really did drive to terminal.
+
+test("m1-spine: ★ the worker-driven verdict REDS on tenant A's HARNESS-driven attempt (the control)", { skip: SKIP }, () => {
+  const [A] = M1_SPINE_TENANTS.enabled;
+  const harnessDriven = leased.get(A.key);
+  assert.ok(harnessDriven, "the per-tenant case did not record tenant A's harness-driven attempt");
+
+  const deployed = step(queryDeployedWorker({}), "deployed worker");
+  assert.equal(deployed.ok, true, `deployed worker probe: ${truncate(deployed)}`);
+  assert.ok(deployed.workerId, "the deployed worker has not enrolled; the control would be vacuous");
+
+  const observation = step(querySpineWorkerDriven({ jobId: harnessDriven.ids.jobId }), "control rows");
+  assert.equal(observation.ok, true, `control row probe: ${truncate(observation)}`);
+  // Non-vacuity, asserted rather than assumed: the attempt this control judges really was driven
+  // to terminal, by a worker that is NOT the deployed one.
+  assert.ok(observation.events.length > 0, "the control attempt carries no events — it would red for the wrong reason");
+  assert.notEqual(harnessDriven.ids.workerId, deployed.workerId, "the control's worker must not BE the deployed worker");
+
+  const violations = evaluateWorkerDrivenJourney({
+    declaredExecutor: "worker",
+    deployedWorkerId: deployed.workerId,
+    deployedTargetId: SPINE_DEPLOYED_TARGET_ID,
+    observation,
+  });
+  evidence.verdicts.workerDrivenControl = violations;
+  const codes = violations.map((v) => v.code).sort();
+  assert.ok(codes.includes("worker_driven:events_not_deployed_worker"),
+    `the control did not red on the events arm: ${formatViolations(violations)}`);
+  assert.ok(codes.includes("worker_driven:lease_not_deployed_worker"),
+    `the control did not red on the lease arm: ${formatViolations(violations)}`);
+});
+
+// ── 2b-tenants. DEP-019: criterion 5 per enabled tenant, and the LIMIT one worker imposes ──
+//
+// ★★★ CODEX P1, PR #572, VERIFIED AT SOURCE AND ANSWERED HONESTLY RATHER THAN BY WIDENING A CLAIM.
+// The finding: the worker-driven case covers tenant A only, so a tenant-B-specific stage-in
+// credential leak would not red this lane, although the acceptance says "per enabled tenant".
+//
+// It is right, and the cause is a collision between two LOCKED requirements, not an oversight:
+//   * the `DEP-017` probe runs INSIDE a sandbox, and only a DISPATCHING worker creates one;
+//   * `M1-D1-SPINE` is "one control-plane instance, ONE SEPARATELY DEPLOYED WORKER".
+// One worker can drive one tenant's sandbox. A second worker would satisfy the probe clause and
+// break the topology clause — which is the gate's own definition, not this profile's choice.
+//
+// So this profile does the honest thing in BOTH directions. For the worker-driven tenant the probe
+// is asserted RAN and `absent` (§2b). For every OTHER enabled tenant it is RECORDED UNOBSERVED, and
+// `evaluateEnvProbeObservability` — the DEP-016 tripwire, kept for exactly this — makes that record
+// self-policing: it reds if a summary EVER appears on such an attempt (the record has gone stale
+// and must be rewritten), and it reds if observation is CLAIMED with no summary.
+//
+// ★★★ RULED — `E6-D002` (E6 `decisions.md`, 2026-09-23, under F2). Criterion 5's PER-TENANT
+// observation is satisfied by the `M1a-D2-MECHANISM` campaign, not by `M1-D1-SPINE`: the `DEP-015`
+// shipped-boot lane boots ONE WORKER PER TENANT and observes it for every enabled tenant, and its
+// keyed run is already an `M1a` exit requirement. Nothing is dropped and no worker is added to
+// either gate. This profile therefore KEEPS the record below as a RECORD and does not convert it
+// into a claim — which is the ruling's own instruction.
+
+test("m1-spine: criterion 5 is observed for the worker-driven tenant and RECORDED unobserved for the others", { skip: SKIP }, () => {
+  const others = M1_SPINE_TENANTS.enabled.filter((t) => t.key !== M1_SPINE_WORKER_DRIVEN_TENANT_KEY);
+  assert.ok(others.length > 0, "the F10 set must carry more than one enabled tenant");
+  const violations = [];
+  for (const tenant of others) {
+    const attempt = leased.get(tenant.key);
+    assert.ok(attempt, `the per-tenant case did not record tenant ${tenant.key}'s attempt`);
+    const rows = step(querySpineWorkerDriven({ jobId: attempt.ids.jobId }), `${tenant.key} probe rows`);
+    assert.equal(rows.ok, true, `${tenant.key} probe row probe: ${truncate(rows)}`);
+    // Non-vacuity: this attempt really exists and really was driven, so "no probe summary" is a
+    // fact about the probe and not about an empty table.
+    assert.ok(rows.events.length > 0, `tenant ${tenant.key}'s attempt carries no events at all`);
+    evidence.enabled[tenant.key] = {
+      ...(evidence.enabled[tenant.key] ?? {}),
+      criterion5EnvProbe: {
+        observed: false,
+        reason: "harness-driven: the DEP-017 probe runs inside a sandbox, and M1-D1-SPINE has ONE deployed worker, which drives the first enabled tenant",
+        logMessages: rows.logMessages.length,
+      },
+    };
+    violations.push(...evaluateEnvProbeObservability({ declaredObserved: false, logMessages: rows.logMessages }));
+  }
+  evidence.verdicts.criterion5Others = violations;
+  assert.deepEqual(violations, [], `criterion-5 record violations:
+${formatViolations(violations)}`);
+});
+
+// ── 2c. DEP-019: the deployed worker is offered NOTHING of another tenant's ──
+
+test("m1-spine: the deployed worker is offered no work for tenant B or the control tenant", { skip: SKIP }, () => {
+  const deployed = step(queryDeployedWorker({}), "deployed worker");
+  assert.equal(deployed.ok, true, `deployed worker probe: ${truncate(deployed)}`);
+  const [A, B] = M1_SPINE_TENANTS.enabled;
+  const C = M1_SPINE_TENANTS.control;
+  // Its target belongs to A's Organization, so B's and C's attempts can never be placed on it.
+  // Asserted as a ROW fact rather than a poll: the deployed worker polls continuously, and a
+  // "we saw no offer" observation cannot tell refusal from timing.
+  const foreign = step(queryForeignPlacementOnDeployedTarget({
+    targetId: SPINE_DEPLOYED_TARGET_ID,
+    ownOrganizationId: A.organizationId,
+    otherOrganizationIds: [B.organizationId, C.organizationId],
+  }), "foreign placement probe");
+  assert.equal(foreign.ok, true, `foreign placement probe: ${truncate(foreign)}`);
+  evidence.workerDrivenIsolation = foreign;
+  assert.equal(foreign.foreignAttemptsOnDeployedTarget, 0,
+    `${foreign.foreignAttemptsOnDeployedTarget} attempt(s) of another tenant are placed on the deployed worker's target`);
+  assert.equal(foreign.targetOrganizationId, A.organizationId, "the deployed worker's target belongs to tenant A");
+  // The positive control: A's OWN attempts ARE placed there, so the zero above is isolation and
+  // not an empty table.
+  assert.ok(foreign.ownAttemptsOnDeployedTarget > 0,
+    "no attempt of the owning tenant is placed on the deployed target either — the zero above proves nothing");
+});
 
 // ── 2a. hostile cross-tenant cases (F10: denied, not merely empty) ───────────
 

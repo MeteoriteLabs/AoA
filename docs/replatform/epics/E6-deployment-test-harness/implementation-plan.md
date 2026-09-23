@@ -373,6 +373,7 @@ code, test count, duration, platform, and exact revision.
 | DEP-016 | **Local (static):** `Invoke-NativeGate 'DEP-016 compose' { node scripts/check-d1-compose.mjs; node --test scripts/lib/__tests__/d1-compose-invariants.test.mjs }`. **Linux/CI only (docker):** `AOA_D1_LIVE=1 node --test tests/d1/m1-spine.test.mjs` inside the `d1-merge-train` job with `AOA_D1_CAMPAIGN=m1-spine`, plus the usage-suppressed positive-control run; the evidence is the retained on-pass bundle. |
 | DEP-017 | **Local (pure):** the probe's unit test (created by the ticket). **Linux/CI:** the probe observed inside the `DEP-015` lane, plus the planted-canary positive-control run (which runs inside every probed sandbox). ★ *Amended 2026-09-23 by DEP-017's build, after the Codex review of PR #565, and RATIFIED by the M1 planning session under founder delegation F2 on 2026-09-23. NOT a narrowing of criterion 5:* the probe cannot be observed inside the `DEP-016` profile from `DEP-017`, because `tests/d1/m1-spine.test.mjs` does not exist yet (`DEP-016` is unbuilt) and because the D1 lane runs the FAKE provider, whose `execute` returns a canned `executed` result and runs no command (`packages/sandbox-fake-provider/src/fake-driver.ts`, the `case "execute"` arm) — arming the probe there today would fail every D1 distributed run `env_probe_not_run` while observing nothing. The obligation is therefore CARRIED INTO `DEP-016` (see its task section), which owns the profile and must arm `AOA_WORKER_ENV_PROBE` and assert the probe summary per enabled tenant on whatever provider that profile runs. `DEP-017` delivers the probe and its observation in the `DEP-015` lane. |
 | DEP-018 | **Local (pure):** `Invoke-NativeGate 'DEP-018 matrix' { node scripts/check-campaign-fault-matrix.mjs; node --test scripts/check-campaign-fault-matrix.test.mjs }` (created by the ticket). **Linux/CI only (docker):** `AOA_D1_LIVE=1 node --test tests/d1/m1-fault-matrix.test.mjs` per profile; the evidence is one injection-fired line per declared case. |
+| DEP-019 | **Local (pure):** `Invoke-NativeGate 'DEP-019 provider' { npx vitest run --root packages/sandbox-fake-provider; node --test scripts/lib/__tests__/m1-spine-assertions.test.mjs }`. **Linux/CI only (docker):** `AOA_D1_LIVE=1 AOA_D1_CAMPAIGN=m1-spine node --test tests/d1/m1-spine.test.mjs` in the `m1-spine` job with the worker-driven override, plus the NOT-THE-EXECUTOR control run, the usage-suppressed control run and the probe-disarmed control run; the evidence is the retained on-pass bundle, which names the deployed worker's identity and the env-probe summary per enabled tenant. |
 
 ---
 
@@ -916,6 +917,13 @@ campaign that no ticket owned. `DEP-014` + `DEP-015` are the deploy half; `DEP-0
 `DEP-018` are the campaign's harness. **The daemon consumer is not among them because it is built:**
 `packages/worker-networked-host/src/bin/networked-host.ts` (DEP-011 Slice 2b-ii) ships inert.
 
+★ **`DEP-019` was filed LATER, on 2026-09-23, and is not one of the S0-3 four.** It was filed by
+the M1 planning session under founder delegation F2 after the distinct reviewer of `DEP-016` found
+that `M1-D1-SPINE`'s worker clause is not satisfiable from that profile alone: its deployed worker
+is present but its journey is harness-driven. `DEP-019` closes exactly that gap and nothing more,
+and it carries `DEP-016` acceptance item 6 with it — the item that was discharged by the
+“the reference provider runs no command” fork, which `DEP-019` removes.
+
 ★★★ **M1 IS MULTI-TENANT (founder ruling F10).** Every campaign runs **at least three
 Organizations**: two enabled through the existing per-Organization rollout policy
 (`AOA_DISTRIBUTED_EXECUTION_ROLLOUT`, parsed by `parseDistributedExecutionRolloutMap` in
@@ -1101,6 +1109,13 @@ code**, so canned usage must be a scripted `usage` event in a fixture (the proto
 emitting **canned usage**, and assertions that each priced attempt produced exactly one `cost_events`
 row with cost > 0 and the named audit rows. It is the harness the `M1-D1-SPINE` gate record is made
 from, including the rollback rehearsal through the `MIG-009` CLI.
+
+★ *Amended 2026-09-23 (F2), NOT a change to this ticket's own scope:* this profile is the harness
+the gate record is made from **once `DEP-019` has made its journey worker-driven**. As `DEP-016`
+delivered it the journey is harness-driven, so the gate's *"one separately deployed worker"* clause
+is satisfied as a topology and not as a journey — see `DEP-016-result.md` §5.3, which states the
+limitation, and `DEP-019` below, which closes it. `DEP-016`'s acceptance is unchanged; acceptance
+item 6 is carried into `DEP-019`, whose Unit B replaces the tripwire with the positive assertion.
 
 **Acceptance:**
 1. A passing profile run retains its evidence bundle.
@@ -1302,6 +1317,191 @@ profile.
 
 **Evidence / commit:** `tickets/DEP-018-result.md` citing the jobs; commits
 `test(d1): a declared campaign fault matrix with injection evidence` and the checker commit.
+
+---
+
+### DEP-019 — The `m1-spine` journey, driven by the DEPLOYED worker (M, ≤3 agent-days, M1a)
+
+**Depends on:** `DEP-016` merged; `DEP-011` Slice 2b-ii (the container networked boot root),
+`WRK-017` (the enrolling worker container), `WRK-018` (the usage producer), `JOB-016` (the
+accepted-usage pricing), `DEP-017` (the env-absence probe) — all shipped.
+
+**Current state, measured 2026-09-23 at `b3c5aa417`.** `DEP-016`'s `m1-spine` profile has a
+deployed worker service, and its journey is nevertheless HARNESS-driven:
+
+- `tests/d1/m1-spine.test.mjs` plays the worker itself — `enroll` / `poll` / `ack` / `uploadEvents`
+  are ordinary authenticated HTTP calls the harness makes, and the provider is reached through the
+  fake's `/invoke` control API from `test-runner`. `tests/d1/lib/e6f-harness.mjs` says so in its own
+  header: *"There is NO live worker-daemon loop."*
+- The D1 workers do not dispatch: `AOA_WORKER_DISPATCH_ENABLED` is declared **ABSENT** for both
+  (`scripts/d1-dispatch-expectation.json`, enforced by `check-d1-dispatch-declared`), and
+  `decideDispatchComposition` (`packages/worker-daemon/src/lifecycle/compose-dispatch.ts`) refuses
+  without it.
+- The reference provider runs no command: `FakeSandboxProvider`'s `case "execute"`
+  (`packages/sandbox-fake-provider/src/fake-driver.ts`) returns a terminal state and, since
+  `DEP-016`, canned usage on the CONTRACT driver's result — a shape only a harness reads. The
+  authoritative per-op `ExecuteResult` (`packages/worker-daemon/src/supervisor/provider.ts`) has no
+  usage field at all; a deployed worker derives usage from the run's stdout through `observeRun`
+  (composed at `dispatch-runtime.ts`) and `parseClaudeStreamJsonUsage`.
+
+So `M1-D1-SPINE`'s *"one control-plane instance, one separately deployed worker"* is satisfied as a
+TOPOLOGY and not as a JOURNEY. `DEP-016-result.md` §5.3 records exactly this, names the two
+blockers, and flags it for a D1 topology ticket. This is that ticket.
+
+**Outcome:** the `m1-spine` journey is performed by the DEPLOYED worker — lease → execute → events
+→ terminal — on the reference provider, keylessly, with the harness reduced to DISPATCHING (seeding
+the job) and ASSERTING. Three units.
+
+★ *All three units are BUILT and the journey was proven on a live D1 stack (`DEP-019-result.md` §3:
+9/9, the deployed worker's own workerId on every event and lease, one 81-cent cost row, the DEP-017
+probe reporting `absent`). The unit split is kept because it is how the work is reviewed, not
+because any part of it is outstanding.*
+
+---
+
+#### Unit A — the reference provider EXECUTES
+
+`packages/sandbox-fake-provider` gains deterministic command execution:
+
+- `scripted-command.ts` — `executeScriptedCommand` writes a `claude --output-format stream-json`
+  transcript to the stdout channel (`ExecuteInput.onStdout`, WRK-018), ending in the `type:"result"`
+  line that carries `FAKE_PROVIDER_CANNED_USAGE_V1`'s counts under claude's own field names, and
+  returns a real `ExecuteResult`. The script rides the TENANT COMMAND's own `args`
+  (`--aoa-fake-usage|exit|timeout`), **not** the fake's `/script` control endpoint: a worker-driven
+  journey mints the provider id inside the worker, so the harness has no id to script. An
+  unrecognised, malformed or repeated scripting flag is a refusal — a script that degraded to the
+  default would make every positive control vacuous.
+- `node-eval.ts` — the `DEP-017` probe is EXECUTED, not scripted: `node -e <script> <argv…>` in a
+  child process whose environment is EXACTLY the `env` the provider was handed, with nothing of the
+  provider host's inherited. Only the committed `sh -c` wrapper is recognised; a recognised probe
+  reaching a provider with no runner THROWS rather than answering with the transcript.
+
+**Unit A non-goals:** the per-op `SandboxProvider` façade and the provider-wire host (Unit C).
+
+#### Unit B — the verdicts, extended in place
+
+`scripts/lib/m1-spine-assertions.mjs` gains a worker-driven arm; it is **extended, never forked**,
+and the harness-driven and worker-driven lanes are held to one verdict set by a drift test.
+
+- `evaluateWorkerDrivenJourney` — the attempt's rows name the DEPLOYED worker's enrolled identity
+  (the worker id the WRK-017-style boot enrolment minted, read from `execution_targets` /
+  `workers`), the accepted `usage` event of that attempt was produced by that worker, and no event
+  of the attempt carries a harness-minted worker id.
+- The env-probe read side is **REUSED, not re-implemented**: `extractEnvProbeSummary` and
+  `evaluateEnvProbeEvidence` (`scripts/lib/m1-shipped-boot.mjs`) are profile-agnostic — they judge
+  any attempt's `job_events` log rows — and the spine calls them, exactly as it reuses
+  `DEP-016`'s verdicts.
+- `evaluateEnvProbeObservability` (the `DEP-016` tripwire that reds if a probe summary EVER appears
+  in this profile) is **REPLACED by the positive assertion, not deleted silently**: the profile
+  asserts, per enabled tenant, that the probe RAN and reported `absent`. The replacement is recorded
+  in this ticket's result with pointers to `DEP-016` acceptance item 6 and `DEP-016-result.md` §4b.
+
+#### Unit C — the topology
+
+1. **The reference provider hosts the gated per-op wire.** `docker/d1/fake-provider-entry.mjs`
+   serves `createProviderServer` (`packages/adapter-manager`) over a per-op `SandboxProvider`
+   façade of the fake, on a third port, pinned with the control plane's PUBLIC key so the ownership
+   gate is REAL (an ungated server is Unit A's not-deploy-safe posture and must not be what the
+   gate record rests on). The shipped `bin/adapter-manager.ts` composition root is **untouched** —
+   it stays `e2b`-only; a `fake` arm there would let a deployed provider host boot with no isolation.
+2. **The control plane mints the run's capability.** `AOA_CONTROL_PLANE_SIGNING_KEY_FILE` on the
+   spine control plane, over a committed throwaway ed25519 keypair of the same class as
+   `docker/d1/certs`. Without it `loadControlPlaneSigningKey` returns `undefined`, no
+   `ownedLabelsCapability` rides the secret-resolve reply, and every networked run dies
+   `no_run_capability` before create (`supervisor.ts`). The seeded job must therefore carry one
+   `env` / `sandbox_local_only` secret handle on an allow-listed target
+   (`PROVIDER_AUTH_ENV_TARGETS`, `lease/secret-redemption.ts`) — the cap only arrives attached to a
+   resolved handle.
+3. **The one deployed worker dispatches.** In the OVERRIDE only: the networked container boot root
+   (`/worker-net-app/dist/bin/networked-host.js`), `AOA_WORKER_DISPATCH_ENABLED=1`,
+   `AOA_WORKER_EVENT_OUTBOX_PATH`, `AOA_WORKER_ENV_PROBE=1`, and `AOA_WORKER_PROVIDER_URL` pointed
+   at the wire port. The base `docker-compose.d1.yml` and `scripts/d1-dispatch-expectation.json` are
+   UNCHANGED, so `check-d1-dispatch-declared` still holds both base workers to ABSENT — and because
+   that guard reads only the base file, `evaluateSpineOverrideText` is extended to hold the
+   OVERRIDE's dispatch and probe posture explicitly. A guard that silently stops covering the
+   topology under test is the failure class this programme names first.
+4. **Exactly one worker still runs**, and the lane's `ps --services --status running | grep -c
+   '^worker-'` assertion is unchanged.
+
+**Ticket non-goals:** the fault matrix (`DEP-018`); real E2B or any keyed spend; the
+`foundation`/`bounded` scopes; arming dispatch anywhere outside this override; changing
+`DEP-016`'s tenant set, cost expectation or rollback rehearsal.
+
+**Files:** `packages/sandbox-fake-provider/src/{scripted-command,node-eval,per-op-provider}.ts` +
+their suites; `docker/d1/fake-provider-entry.mjs`; `docker/d1/fake-provider.Dockerfile`;
+`docker/d1/m1-spine.override.yml`; the spine worker's committed profile + enrolment ticket and the
+committed throwaway control-plane keypair under `docker/d1/`; `scripts/lib/m1-spine-assertions.mjs`
++ `scripts/lib/__tests__/m1-spine-assertions.test.mjs`; `tests/d1/m1-spine.test.mjs` +
+`tests/d1/lib/e6f-harness.mjs`; `.github/workflows/d1-merge-train.yml` (the not-the-executor
+control); `scripts/test-inventory.json`, `scripts/test-execution-census.json`.
+
+**Interfaces:** the `--aoa-fake-*` scripted-command flags; the provider-wire port on the reference
+provider; the spine worker's target profile and enrolment ticket.
+
+**Failure behavior:** a journey whose events do not name the deployed worker fails the profile; a
+probe that did not run, could not be read, or reported any present class fails it; a suppressed-usage
+run that still prices fails it.
+
+**Acceptance:**
+1. **Worker-driven, provably.** The attempt's lease, execute, events and terminal are the DEPLOYED
+   worker's, asserted against that worker's own enrolled identity.
+2. **The not-the-executor control REDS.** A control run in which the worker is not the executor —
+   the same profile driven by the harness worker, and a reference provider that returns canned
+   output instead of executing — turns the worker-driven assertion red. Without it "worker-driven"
+   is claimable vacuously, and a fake `execute` that answers with canned output instead of running
+   is exactly that case.
+3. **The usage positive control still reds**, now at the worker's real parser rather than the
+   harness's forwarding: `--aoa-fake-usage=suppressed` removes the stream-json result line, the
+   worker emits no `usage` event, and the cost assertion goes red.
+4. **`DEP-016` acceptance item 6, CLOSED properly.** The profile arms `AOA_WORKER_ENV_PROBE=1` and
+   asserts that the probe RAN and reported `absent`, read from the attempt's `job_events` through
+   `evaluateEnvProbeEvidence`.
+   ★★★ *Amended 2026-09-23 by `DEP-019`'s build, from a Codex P1 on PR #572 verified at source.
+   Superseded text: “asserts, **per enabled tenant**, that the probe RAN”. It is not achievable on this
+   lane, and the cause is a collision between two LOCKED requirements rather than an oversight: the
+   probe runs INSIDE a sandbox, only a DISPATCHING worker creates one, and `M1-D1-SPINE` is “one
+   control-plane instance, **one separately deployed worker**”. One worker drives one tenant's
+   sandbox; a second worker would satisfy this clause and break the gate's own topology clause. So
+   the profile asserts the probe RAN and reported `absent` for the WORKER-DRIVEN tenant, and
+   **RECORDS it unobserved for every other enabled tenant with the `DEP-016` tripwire
+   (`evaluateEnvProbeObservability`) still holding that record in both directions** — it reds if a
+   summary ever appears on such an attempt, and if observation is claimed without one.
+   ★★★ **RULED 2026-09-23 — `E6-D002`** (`decisions.md`), under F2: criterion 5's **per-tenant**
+   observation is satisfied by the **`M1a-D2-MECHANISM`** campaign, not by `M1-D1-SPINE`. The probe
+   runs inside a sandbox, only a dispatching worker creates one, and this gate's topology clause is
+   ONE separately deployed worker — so per-tenant observation is structurally unavailable here. The
+   `DEP-015` lane boots one worker PER tenant and observes it for every enabled tenant, and its
+   keyed run is already an `M1a` exit requirement. Nothing is dropped and no topology changes.* A missing or blind summary fails the profile,
+   exactly as the keyed lane does; the `DEP-016` tripwire is replaced by this positive assertion and
+   the replacement is recorded. **Control:** a worker without the probe env reds the new assertion.
+   ★ The evidence must state the narrowing: a reference sandbox has no baked image env and no
+   provider-host env, so this lane observes the STAGE-IN env only; the template-baked and
+   provider-host classes stay the `DEP-015` lane's to observe.
+5. **Multi-tenant (F10), unchanged and re-proven.** Every per-tenant `DEP-016` property still holds
+   — per-tenant journey, audit and `cost_events` attribution, the hostile cross-tenant cases denied
+   with their same-tenant positive controls, and the control tenant refused and left legacy. The
+   deployed worker is offered no work for the other enabled tenant or for the control tenant, each
+   with the owning tenant's offer as the positive control.
+6. **Keyless.** The whole profile runs on the D1 lane with no provider key and no E2B spend.
+
+**Migration/compatibility / rollback:** CI, the D1 override and the reference provider only. The
+base `docker-compose.d1.yml`, the `foundation`/`bounded` campaigns, the dispatch declaration and the
+shipped adapter-manager composition root are untouched; reverting the override restores the
+`DEP-016` harness-driven profile exactly.
+
+**Observability:** the retained bundle gains, per enabled tenant, the deployed worker's identity,
+the env-probe summary, and which lane (harness- or worker-driven) produced the attempt.
+
+**Focused verify command:** see the `DEP-019` row in §3.
+
+**RED → GREEN:** RED — the not-the-executor control; RED — the usage-suppressed control; RED — a
+worker without `AOA_WORKER_ENV_PROBE`; RED — a reference provider that returns canned output instead
+of executing the probe (`env_probe_not_run`, which is fail-closed working, never a verdict to
+loosen); GREEN — the profile passes worker-driven on the candidate and retains its evidence.
+
+**Evidence / commit:** `tickets/DEP-019-result.md`; commits
+`feat(d1): the reference provider executes a scripted command deterministically`,
+`feat(d1): the reference provider RUNS the DEP-017 env-absence probe`, and the topology commit.
 
 ---
 

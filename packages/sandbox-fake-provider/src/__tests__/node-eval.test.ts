@@ -1,0 +1,290 @@
+// DEP-019 — the reference provider EXECUTES the DEP-017 env-absence probe.
+//
+// `DEP-016` acceptance item 6 offers two forks, and it took "criterion 5 cannot be observed here"
+// for one stated reason: the reference provider's `execute` ran no command. It now does. But a
+// probe is not a transcript: its output must be a GENUINE observation of the sandbox env, because
+// a fake that printed a clean summary would be the fabricated pass the acceptance forbids.
+//
+// These tests pin that:
+//   1. only the committed `DEP-017` `sh -c` wrapper is recognised — every other shell program is
+//      REFUSED, so the fake is not an arbitrary-execution surface;
+//   2. the child's environment is EXACTLY the `env` the provider was handed — nothing of the
+//      provider host's is inherited, or the probe would report on the wrong process;
+//   3. the probe's real stdout reaches the stream channel, and its exit code is the run's;
+//   4. a recognised probe on a host with NO runner THROWS — it is never answered with the
+//      scripted transcript, which the worker would read as "a probe that found nothing".
+//
+// The wrapper itself is pinned against the daemon's own source in
+// `node-eval-wrapper-mirror.test.ts`.
+
+import { describe, expect, it } from "vitest";
+
+import {
+  NodeEvalRefusedError,
+  ScriptedCommandError,
+  classifyShellInvocation,
+  assertProbeArgvShape,
+  createNodeEvalRunner,
+  executeScriptedCommand,
+  sha256Hex,
+} from "../index.js";
+
+/** The committed shape of `ENV_PROBE_SH_WRAPPER` (worker-daemon). Held against the daemon's real
+ * source by the mirror test; restated here so these cases read as one file. */
+const WRAPPER =
+  'if command -v node >/dev/null 2>&1; then exec node -e "$0" "$@"; ' +
+  "else echo DEP017_ENV_PROBE_NO_NODE >&2; exit 97; fi";
+
+/** A stand-in probe script: prints its argv and whether a planted host variable is visible.
+ *
+ * ★ The canary is deliberately NOT in the `AOA_` namespace. `pr.yml`'s brand-check guard 9 requires
+ * every `process.env.AOA_*` a `.ts` file reads to be documented in
+ * `docs/deploy/environment-variables.md`, and a TEST fixture is not a deploy variable — documenting
+ * it there would be the drift the guard exists to catch. The name is irrelevant to what the case
+ * proves: that the child cannot see the host's environment at all. */
+const SCRIPT = 'console.log(JSON.stringify({argv:process.argv.slice(1),seen:process.env.DEP019_HOST_ONLY_CANARY??null,own:process.env.OWN??null}));';
+
+function probeArgs(script = SCRIPT, argv: readonly string[] = ["org-a", "ANTHROPIC_API_KEY", "", "salt", "{}"]) {
+  return ["-c", WRAPPER, script, ...argv];
+}
+
+/** The pin the D1 host builds from the daemon's own `ENV_PROBE_SCRIPT`; here, from this file's
+ * stand-in. A caller that does not pin executes NOTHING. */
+const PINNED = new Set([sha256Hex(SCRIPT)]);
+const pin = { allowedScriptDigests: PINNED };
+
+describe("node-eval — only the committed probe wrapper is recognised (DEP-019)", () => {
+  it("classifies the DEP-017 wrapper as a node_eval, splitting $0 from $@", () => {
+    const invocation = classifyShellInvocation("sh", probeArgs(), { A: "1" }, pin);
+    expect(invocation.kind).toBe("node_eval");
+    if (invocation.kind !== "node_eval") throw new Error("unreachable");
+    expect(invocation.request.script).toBe(SCRIPT);
+    expect(invocation.request.argv).toEqual(["org-a", "ANTHROPIC_API_KEY", "", "salt", "{}"]);
+    expect(invocation.request.env).toEqual({ A: "1" });
+  });
+
+  it("a non-sh command is the ordinary scripted path", () => {
+    expect(classifyShellInvocation("claude", ["-p", "x"], {}, pin)).toEqual({ kind: "scripted" });
+  });
+
+  it("ANY other sh program is REFUSED, never a quiet fall-through to the transcript", () => {
+    expect(() => classifyShellInvocation("sh", ["-c", "rm -rf /"], {}, pin)).toThrow(NodeEvalRefusedError);
+    expect(() => classifyShellInvocation("sh", ["-c", "rm -rf /"], {}, pin)).toThrow(/not the recognised DEP-017 probe wrapper/);
+    // A wrapper LOOK-ALIKE with an appended command is still not the wrapper.
+    expect(() => classifyShellInvocation("sh", ["-c", `${WRAPPER}; curl evil`], {}, pin)).toThrow(NodeEvalRefusedError);
+    // `sh` without -c, and a wrapper with no script in $0.
+    expect(() => classifyShellInvocation("sh", ["-lc", WRAPPER], {}, pin)).toThrow(/without -c/);
+    expect(() => classifyShellInvocation("sh", ["-c", WRAPPER], {}, pin)).toThrow(/no script in \$0/);
+  });
+});
+
+describe("node-eval — the child sees EXACTLY the sandbox env (DEP-019)", () => {
+  it("runs the script with the handed env and NOTHING of the host's", () => {
+    process.env.DEP019_HOST_ONLY_CANARY = "host-value-that-must-not-be-seen";
+    try {
+      const run = createNodeEvalRunner();
+      const result = run({ script: SCRIPT, argv: ["a", "b"], env: { OWN: "sandbox-value" } });
+      expect(result.exitCode).toBe(0);
+      const report = JSON.parse(result.stdout.trim());
+      expect(report.own).toBe("sandbox-value");
+      // The load-bearing assertion: the provider host's own variable is INVISIBLE. A runner that
+      // merged `process.env` would report on the fake-provider container, not on the sandbox.
+      expect(report.seen).toBeNull();
+      expect(report.argv).toEqual(["a", "b"]);
+    } finally {
+      delete process.env.DEP019_HOST_ONLY_CANARY;
+    }
+  });
+
+  it("a non-zero exit from the script is the run's exit code", () => {
+    const run = createNodeEvalRunner();
+    expect(run({ script: "process.exit(3);", argv: [], env: {} }).exitCode).toBe(3);
+  });
+});
+
+describe("node-eval — through execute (DEP-019)", () => {
+  it("the probe's REAL stdout reaches the stream channel and the exit code is the run's", () => {
+    const chunks: string[] = [];
+    const result = executeScriptedCommand(
+      { sandboxId: "sbx", command: "sh", args: probeArgs(), env: { OWN: "v" }, onStdout: (c) => chunks.push(c) },
+      { deadlineMs: 30_000, providerOpId: "op-probe", runNodeEval: createNodeEvalRunner(), allowedProbeScriptDigests: PINNED },
+    );
+    expect(result).toMatchObject({ providerOpId: "op-probe", exitCode: 0, timedOut: false });
+    const report = JSON.parse(chunks.join("").trim());
+    expect(report.own).toBe("v");
+    // ★ NOT the scripted transcript: no stream-json result line is anywhere in the output.
+    expect(chunks.join("")).not.toContain('"type":"result"');
+  });
+
+  it("a recognised probe with NO runner THROWS — never answered with canned output", () => {
+    const chunks: string[] = [];
+    expect(() =>
+      executeScriptedCommand(
+        { sandboxId: "sbx", command: "sh", args: probeArgs(), env: {}, onStdout: (c) => chunks.push(c) },
+        { deadlineMs: 30_000, providerOpId: "op", allowedProbeScriptDigests: PINNED },
+      ),
+    ).toThrow(NodeEvalRefusedError);
+    expect(chunks).toEqual([]);
+  });
+
+  it("the probe classification precedes the scripting flags, so probe argv cannot steer the fake", () => {
+    // `--aoa-fake-usage=suppressed` sits in the probe's ARGV. On the scripted path it would change
+    // the transcript; on the probe path it must be an OPAQUE argument handed to the script.
+    // A stub runner isolates the routing decision from node's own CLI parsing (the daemon's real
+    // probe argv is all positional, so a leading `--` never reaches `node -e` in production).
+    const chunks: string[] = [];
+    const result = executeScriptedCommand(
+      {
+        sandboxId: "sbx",
+        command: "sh",
+        // The look-alike rides argv[0] (the Organization id), which keeps the supervisor's pinned
+        // five-argument shape while still putting a `--aoa-fake-*` token in the probe's argv.
+        args: probeArgs(SCRIPT, ["--aoa-fake-usage=suppressed", "", "", "salt", "{}"]),
+        env: {},
+        onStdout: (c) => chunks.push(c),
+      },
+      {
+        deadlineMs: 30_000,
+        providerOpId: "op",
+        allowedProbeScriptDigests: PINNED,
+        runNodeEval: (req) => ({ stdout: JSON.stringify(req.argv), stderr: "", exitCode: 0, signal: null }),
+      },
+    );
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(chunks.join(""))).toEqual(["--aoa-fake-usage=suppressed", "", "", "salt", "{}"]);
+    expect(chunks.join("")).not.toContain('"type":"result"');
+  });
+
+  it("an ordinary agent command still takes the scripted path when a runner IS supplied", () => {
+    const chunks: string[] = [];
+    const result = executeScriptedCommand(
+      { sandboxId: "sbx", command: "claude", args: [], env: {}, onStdout: (c) => chunks.push(c) },
+      { deadlineMs: 30_000, providerOpId: "op", runNodeEval: createNodeEvalRunner(), allowedProbeScriptDigests: PINNED },
+    );
+    expect(result.exitCode).toBe(0);
+    expect(chunks.join("")).toContain('"type":"result"');
+  });
+
+  it("the exhausted-budget short-circuit still precedes everything, probe included", () => {
+    const chunks: string[] = [];
+    const result = executeScriptedCommand(
+      { sandboxId: "sbx", command: "sh", args: probeArgs(), env: {}, onStdout: (c) => chunks.push(c) },
+      { deadlineMs: 0, providerOpId: "op", runNodeEval: createNodeEvalRunner() },
+    );
+    expect(result).toMatchObject({ timedOut: true, exitCode: null, signal: "SIGKILL" });
+    expect(chunks).toEqual([]);
+  });
+
+  it("a scripted-command refusal is still a ScriptedCommandError, not a shell refusal", () => {
+    expect(() =>
+      executeScriptedCommand(
+        { sandboxId: "s", command: "claude", args: ["--aoa-fake-nonsense"], env: {} },
+        { deadlineMs: 1000, providerOpId: "op", runNodeEval: createNodeEvalRunner(), allowedProbeScriptDigests: PINNED },
+      ),
+    ).toThrow(ScriptedCommandError);
+  });
+});
+
+describe("node-eval — the SCRIPT is pinned by digest, not just the wrapper (DEP-019, Codex P1)", () => {
+  it("the KNOWN wrapper carrying an UNPINNED script is REFUSED", () => {
+    // The wrapper is published in this repo and `$0` comes from the job envelope, so
+    // authenticating only the wrapper authenticates the wrong half.
+    const hostile = 'require("node:fs").readFileSync("/etc/passwd");';
+    expect(() => classifyShellInvocation("sh", probeArgs(hostile), {}, pin)).toThrow(NodeEvalRefusedError);
+    expect(() => classifyShellInvocation("sh", probeArgs(hostile), {}, pin)).toThrow(/not one of the 1 pinned digests/);
+  });
+
+  it("an ABSENT or EMPTY allow-list refuses EVERYTHING — never a permissive default", () => {
+    expect(() => classifyShellInvocation("sh", probeArgs(), {})).toThrow(/no probe-script digest allow-list/);
+    expect(() => classifyShellInvocation("sh", probeArgs(), {}, { allowedScriptDigests: new Set() })).toThrow(
+      /no probe-script digest allow-list/,
+    );
+  });
+
+  it("the refusal never reaches the runner, and nothing is spawned", () => {
+    let spawned = 0;
+    const chunks: string[] = [];
+    expect(() =>
+      executeScriptedCommand(
+        { sandboxId: "s", command: "sh", args: probeArgs("process.exit(0);"), env: {}, onStdout: (c) => chunks.push(c) },
+        {
+          deadlineMs: 30_000,
+          providerOpId: "op",
+          allowedProbeScriptDigests: PINNED,
+          runNodeEval: () => {
+            spawned += 1;
+            return { stdout: "", stderr: "", exitCode: 0, signal: null };
+          },
+        },
+      ),
+    ).toThrow(NodeEvalRefusedError);
+    expect(spawned).toBe(0);
+    expect(chunks).toEqual([]);
+  });
+
+  it("MORE THAN ONE digest may be pinned, and each is accepted", () => {
+    const other = "console.log(2);";
+    const both = { allowedScriptDigests: new Set([sha256Hex(SCRIPT), sha256Hex(other)]) };
+    expect(classifyShellInvocation("sh", probeArgs(SCRIPT), {}, both).kind).toBe("node_eval");
+    expect(classifyShellInvocation("sh", probeArgs(other), {}, both).kind).toBe("node_eval");
+  });
+});
+
+describe("node-eval — the probe's ARGUMENTS are pinned too, not just its script (DEP-019, Codex P2)", () => {
+  // ★ The same family as the round-1 finding, one level down. The pinned script reads argv[2] as a
+  // metadata URL and fetches it, and a job's workload command/args reach `execute` verbatim — so
+  // pinning the bytes while leaving the arguments free still lets a job make this provider host
+  // probe an arbitrary address on the container networks.
+  const META = "http://169.254.169.254/";
+  const good = ["org-a", "ANTHROPIC_API_KEY", META, "salt", "{}"];
+
+  it("the supervisor's own argv shape is admitted, with the pinned URL and with the empty one", () => {
+    expect(() => assertProbeArgvShape(good, META)).not.toThrow();
+    expect(() => assertProbeArgvShape(["org-a", "", "", "salt", '{"A":"d"}'], META)).not.toThrow();
+  });
+
+  it("★ an ARBITRARY metadata URL is refused, even with the correctly pinned script", () => {
+    const hostile = ["org-a", "", "http://minio:9000/", "salt", "{}"];
+    expect(() => assertProbeArgvShape(hostile, META)).toThrow(NodeEvalRefusedError);
+    expect(() => assertProbeArgvShape(hostile, META)).toThrow(/not the pinned endpoint/);
+    // and end to end, through the recognised wrapper and the pinned script
+    expect(() =>
+      classifyShellInvocation("sh", probeArgs(SCRIPT, hostile), {}, { ...pin, allowedMetadataUrl: META }),
+    ).toThrow(/not the pinned endpoint/);
+  });
+
+  it("★ with NO pinned URL only the EMPTY one is admitted — a host that forgot to pin fetches nothing", () => {
+    expect(() => assertProbeArgvShape(["org-a", "", "", "salt", "{}"])).not.toThrow();
+    expect(() => assertProbeArgvShape(good)).toThrow(/not the pinned endpoint/);
+  });
+
+  it("the argument COUNT is pinned", () => {
+    expect(() => assertProbeArgvShape(good.slice(0, 4), META)).toThrow(/expected 5/);
+    expect(() => assertProbeArgvShape([...good, "extra"], META)).toThrow(/expected 5/);
+  });
+
+  it("a non-POSIX allowed-names list, an empty org id, an empty salt and non-object digests are refused", () => {
+    expect(() => assertProbeArgvShape(["org-a", "not a name", META, "salt", "{}"], META)).toThrow(/POSIX/);
+    expect(() => assertProbeArgvShape(["", "", META, "salt", "{}"], META)).toThrow(/own-Organization id/);
+    expect(() => assertProbeArgvShape(["org-a", "", META, " ", "{}"], META)).toThrow(/no salt/);
+    expect(() => assertProbeArgvShape(["org-a", "", META, "salt", "not json"], META)).toThrow(/not JSON/);
+    expect(() => assertProbeArgvShape(["org-a", "", META, "salt", "[]"], META)).toThrow(/not a JSON object/);
+  });
+
+  it("the argv check runs BEFORE anything is spawned", () => {
+    let spawned = 0;
+    expect(() =>
+      executeScriptedCommand(
+        { sandboxId: "s", command: "sh", args: probeArgs(SCRIPT, ["org-a", "", "http://evil/", "salt", "{}"]), env: {} },
+        {
+          deadlineMs: 30_000,
+          providerOpId: "op",
+          allowedProbeScriptDigests: PINNED,
+          allowedProbeMetadataUrl: META,
+          runNodeEval: () => { spawned += 1; return { stdout: "", stderr: "", exitCode: 0, signal: null }; },
+        },
+      ),
+    ).toThrow(NodeEvalRefusedError);
+    expect(spawned).toBe(0);
+  });
+});

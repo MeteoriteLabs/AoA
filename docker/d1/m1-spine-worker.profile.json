@@ -1,0 +1,26 @@
+{
+  "protocolVersion": 1,
+  "targetId": "33333333-3333-4333-8333-333333333333",
+  "targetClass": "organization_dedicated",
+  "scope": "organization",
+  "organizationId": "0d016a00-0000-4000-8000-00000000000a",
+  "ownerPrincipalId": null,
+  "trustCeiling": "organization_isolated",
+  "credentialCeiling": "organization_brokered",
+  "dataLocalityCeiling": "organization_target_only",
+  "providerConstraints": {
+    "profileId": "d1-fake-m1-spine",
+    "version": 1,
+    "digest": "3333333333333333333333333333333333333333333333333333333333333333"
+  },
+  "capabilityCeiling": [
+    "workload.batch",
+    "workload.service",
+    "provider.lifecycle_v1",
+    "provider.cleanup_v1",
+    "provider.health_v1"
+  ],
+  "deviceGeneration": 1,
+  "revokedAt": null,
+  "policyHash": "cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333"
+}
