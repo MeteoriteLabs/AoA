@@ -338,9 +338,12 @@ origin/docs/replatform-program` ran locally with `failures: 0`.
 
 *(To be completed by a DISTINCT reviewer. Only the reviewer may set `Status: complete`.)*
 
-- Reviewed revision (40-hex):
-- Decision:
-- Notes:
+- Reviewed revision (40-hex): `c4faf2587ef284744e2d77c9ca6326b35a44bb80` (the merge of `#576`), re-checked
+  at program tip `7be35ae6b7719877e61f54ab552de84de8491e7d`. See §12 for the drift between them.
+- Decision: `approved` for the code and the record — **`Status` stays `gate_review`**, because the
+  real-run half named at `implementation-plan.md` (the `CLI-017` section, *Real-run acceptance*, and
+  the M1b graph note *"CLI-012's REAL-RUN acceptance additionally waits on CLI-017-A"*) is not run.
+- Notes: §12.
 
 ---
 
@@ -828,3 +831,114 @@ sweep deliberately left alone.
 
 **This section and the two register entries are the only changes after `b48ad8b43`; no code moved.**
 `ci-required` was **PASS** on `b48ad8b43` with Codex's review completed on that head.
+
+---
+
+## 12. Independent review — attempt 1
+
+**Reviewer:** M1b independent reviewer (Claude Opus 5), distinct from the implementer.
+**Revision reviewed:** `c4faf2587ef284744e2d77c9ca6326b35a44bb80`, re-checked at program tip
+`7be35ae6b7719877e61f54ab552de84de8491e7d`.
+**Disposition:** `approved` (code and record) — **`Status` stays `gate_review`.**
+
+### 12.1 ★★★ THE PRODUCT FILES MOVED AFTER THIS RECORD'S LAST REVISION — said rather than certified away
+
+§11.13 states *"This section and the two register entries are the only changes after `b48ad8b43`; no
+code moved."* That was true when written. It is **no longer true of the tip**:
+`8c01f4e94f8e25d7abaf524e8b266b809c67b8cb` (the 2026-09-24 class sweep, `#584`) edits
+`packages/worker-daemon/src/lease/export-request-producer.ts` — a file this ticket owns — and
+**closes `E7-F041`**, which §11.13 files as open. So the record's §11.12(c)/§11.13 description of the
+refusal channel (*bounded on the accepted-file cap*) describes the **pre-sweep** code; at the tip the
+channel is bounded **on itself**, per reason and per invocation (`MAX_REFUSALS_PER_REASON`, the
+`refuse`/`flushSuppressed` pair). Both halves are recorded here rather than patched into
+§§11.12-11.13, which stay as written. **This review is of the TIP**, and the sweep's change is a
+strict strengthening of a property this ticket already owned, so it does not reopen anything. The
+register (`findings.md`, `E7-F041`, `Status: resolved`) is consistent with the tip.
+
+### 12.2 The four items I was sent to verify, checked at source
+
+**(a) The fail-closed export refusal — HOLDS.** `E2bSandboxProvider.exportArtifact`
+(`packages/sandbox-e2b-provider/src/e2b-provider.ts`): the first act is
+`const scan = this.#scanExportBytes;` then `if (typeof scan !== "function") throw new
+SandboxExportScannerUnavailableError();`, and `#readArtifactBytes` is not reached until after it —
+so the refusal is genuinely **before the file is read**, not merely before the upload. It is keyed on
+the callback's **presence**, never on a flag, and the constructor assigns
+`this.#scanExportBytes = options.scanExportBytes` with **no default** — there is no no-op fallback to
+bypass. A malformed value (`null`, `42`, `"scan"`, `{}`) fails the same predicate; a throwing or
+rejecting scanner raises `SandboxExportScannerRefusedError` with a fixed, uninterpolated message. The
+scan sits after the digest comparison and before `#performUploadGrant`.
+
+**The positive control exists and is the right shape**: the arm *"NO SCANNER CONFIGURED — the export
+refuses and the STORE receives nothing"* plants `SD5-CANARY-redeemed-secret` in the file, records
+every PUT body through a `fetch` stub, and asserts `store.puts` is empty **before** asserting the
+error kind. Remove the presence check and that arm reds on *bytes at rest*, not on a return value —
+M24 in §11.10 records exactly that. The anti-vacuity twin (a present, clean scanner exports normally
+and is handed `SECRET.length` bytes) is present, so the arm cannot pass against a provider that never
+uploads. ★ I could not re-execute the mutation — this worktree has no installed dependencies — so the
+control's **existence and shape** are verified at source and its RED is taken from the implementer's
+recorded run.
+
+**(b) The charge invariant — all five arms exist, and each reds under its own mutation.**
+`createArtifactExportSequencer` (`packages/worker-daemon/src/lease/artifact-export.ts`) charges
+`attemptBytes += described.sizeBytes` **immediately before** `exporter.export(...)`, the only hop
+that moves bytes, with the invariant and its four cases written at that line. The arms, in
+`packages/worker-daemon/src/__tests__/artifact-export-sequencer.test.ts`:
+
+| Arm | Present at source |
+|---|---|
+| grant fails → NO charge | *"a GRANT that failed charges NOTHING -- no grant, no upload, so no bytes moved"* |
+| byte-move then commit fails → CHARGED | *"a file whose COMMIT failed STILL CHARGED the attempt ceiling"* + *"a COMMIT that rejects does the same"* |
+| full success → charged exactly once | *"the charge happens EXACTLY ONCE on a fully successful file"* |
+| body transmitted, response timed out (**unknowable**) → CHARGED | *"THE UNKNOWABLE CASE: a transmit whose RESPONSE timed out is CHARGED -- not proven that no bytes left"* |
+| F10 cross-tenant | *"F10 MULTI-TENANT on the UNKNOWABLE case"* and *"F10 MULTI-TENANT: one tenant's spend never consumes another's budget"* |
+
+**Double-charge is excluded structurally, not by assertion**: `attemptBytes` is incremented at
+exactly one lexical site in the module, and the exactly-once arm is a ceiling arm (two 40s against a
+100 ceiling), so a second increment would refuse the second file — which is M27's recorded RED. The
+"no charge" arm is proven rather than arranged: the reservation line is downstream of the grant
+`await`, so a rejecting grant cannot reach it. I record that the earlier §11.11 wording (*"if and
+only if"*) and the governing §11.12(a) wording (*"unless it is PROVEN that no bytes left"*) are
+**both** kept, in the record and in the code comment; that is what stops a later round reading the
+grant arm and the timeout arm as contradicting each other, and I endorse keeping both.
+
+**(c) The abort proofs — NOT timing-only; both properties asserted.** In
+`packages/sandbox-e2b-provider/src/__tests__/enumerate-and-bounded-read.test.ts` each bounded-read arm
+asserts the SDK **received** a signal — `expect(handed, "the SDK read received no AbortSignal at
+all").toBeInstanceOf(AbortSignal)`, which is the non-vacuity the defect (`undefined`) fails — **and**
+that it **fired** — `expect(handed!.aborted).toBe(true)` plus an `abort` listener
+(`expect(aborted, "nothing observed the abort").toBe(true)`). The same pair is asserted for
+`files.list` and for `files.getInfo`. The in-deadline arm asserts `handed!.aborted === false`, so the
+bound is not "everything fails". A timing-only assertion would pass against the defect verbatim, and
+none of these arms is timing-only.
+
+**(d) The family sweep — correctly scoped; nothing silently unfixed.** `readFile`, `listDir` and
+`statEntry` all thread the op's signal to the SDK at the tip (`#readArtifactBytes` passes it at both
+call sites; `enumerateOutputs` passes its signal to `listDir`). The filed pair is correctly scoped:
+`E7-F040` (owner `CLI-017-B`) is the SD-5 scan seam, whose signature belongs to the ticket that
+supplies the implementation and which holds no connection as built. ★ **A correction to my brief:**
+the second entry *this* ticket filed is `E7-F041`, not `E7-F042`. `E7-F042` was filed a day later by
+the `#584` class sweep, against `Supervisor.withDeadline` — outside `E2bSandboxProvider` — and is
+`unowned` with a stated reason. All three are real register entries carrying a *what would close it*
+clause; none is unfixed work wearing a finding's name.
+
+### 12.3 Why `Status` stays `gate_review`
+
+Nothing above is a defect. The bar is that **every** acceptance item is met, and one is not:
+`implementation-plan.md`'s `CLI-017` section (*Real-run acceptance — it PAIRS WITH `CLI-012`*) and the
+M1b graph note (*"CLI-012's REAL-RUN acceptance additionally waits on CLI-017-A"*) both make a keyed
+real-E2B run part of this ticket's acceptance, and `E7-F039` states that the deliberate symlink-swap
+attempt *"is run and recorded, never reasoned about"*. `CLI-017` is filed and unbuilt, no keyed lane
+has run, and §8 of this record says so plainly — which is exactly what the plan requires of it
+(*"both results must say so"*). This is the same posture `CLI-016`'s attempt 1 took. A reviewer may
+approve the code and the record while a named item is pending; the flip is not mine to make until the
+joint `CLI-012`/`CLI-017` keyed case is recorded.
+
+**Not closed by this approval:** the joint keyed real-run case; `E7-F039` (open, successor
+`CLI-017`); `E7-F040`; `E7-F042`; the `S-P0` + `A-neg` operator precondition; and `E7-D08`'s
+`kind: "other"`, which by design leaves `countProducedOutputs` arm 1 unmoved.
+
+### 12.4 Review attempt history
+
+| # | Reviewer | Revision reviewed | Disposition | Status after |
+|---|---|---|---|---|
+| 1 | M1b independent reviewer (Claude Opus 5) | `c4faf2587ef284744e2d77c9ca6326b35a44bb80`, re-checked at tip `7be35ae6b7719877e61f54ab552de84de8491e7d` | `approved` (code and record) | `gate_review` — the joint keyed real-run half is unrun |

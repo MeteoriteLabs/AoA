@@ -285,6 +285,44 @@ review above does not need to be repeated.
 - **Not blocking, noted.** §5 says "All 45 … guards … (minus the six)". The count is not load-bearing,
   and I did not re-derive it for `0254c5c67`.
 
+### Independent review — attempt 2
+
+**Reviewer:** M1b independent reviewer (Claude Opus 5) — distinct from the build agent, from the
+planning session, and from attempt 1's reviewer.
+**Reviewed revision:** `7be35ae6b7719877e61f54ab552de84de8491e7d` (program tip).
+**Disposition: `approved`** (code and record) — **`Status` stays `gate_review`.**
+
+**Why a second attempt, and what it adds.** Attempt 1 approved the code at
+`fc2eb7dde6325803c77950ac4adb1d190db0bd9a` and left `Status` at `gate_review` for the keyed
+real-E2B +/- controls. This attempt re-checks two things a disposition is only worth if they hold:
+that the certified code has not moved, and that the pending item is still pending.
+
+1. **The code has not moved.** `git log fc2eb7dde..7be35ae6b` over
+   `server/src/mcp/distributed-tool-surface-use-resolver.ts`,
+   `server/src/config/distributed-execution-rollout-source.ts`, `server/src/services/heartbeat.ts`
+   and `server/src/__tests__/distributed-tool-surface-arming.integration.test.ts` is **empty**, and
+   `fc2eb7dde` is an ancestor of the tip. Attempt 1's code findings therefore still describe the tip,
+   and I am not re-certifying stale code — unlike `CLI-012`, whose product files did move (see that
+   record's §12.1).
+
+2. **Spot-checked at source rather than inherited.** `DISTRIBUTED_TOOL_SURFACE_PER_ORGANIZATION =
+   "per-organization"` is the only arming value and the legacy truthy spellings `throw`
+   (`server/src/config/distributed-execution.ts`, `E7-D10`); the `/mcp` use resolver is the
+   conjunction *deployment kill switch AND the run's own Organization's `tools: true`*, reads the
+   rollout map per call rather than at boot, and fails closed on a throw
+   (`createDistributedToolSurfaceUseResolver`). Absent `tools` means off.
+
+3. **The keyed real-E2B +/- controls are STILL PENDING**, and that is why `Status` does not move.
+   The plan's `### CLI-016` RED list names them explicitly (*"keyed real-E2B +/- controls (inside the
+   F8 envelope, on a named candidate)"*) and its GREEN is *"all of the above"*. No keyed record
+   exists for this ticket anywhere under `docs/replatform/epics/E7-coding-e2b/`, and §6 of this record
+   still lists the case under *Not proven here*. Under the same F2 ruling attempt 1 cites, `complete`
+   requires **every** acceptance item; a reviewer may approve the code while one is pending, but the
+   flip waits. **I did not dispatch a keyed lane, and the M1 rules forbid a reviewer doing so.**
+
+**Not closed by this approval**, unchanged from attempt 1: the keyed +/- controls; the fact that no
+deployment arms any Organization; and `E7-F003`'s tools row, which is narrowed rather than closed.
+
 ## Review attempt history
 
 Later reviewers append rows with increasing attempt numbers without replacing earlier ones. Do not include a `Review commit` column: a row cannot embed the SHA of the commit that first contains it.
@@ -292,3 +330,4 @@ Later reviewers append rows with increasing attempt numbers without replacing ea
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
 | 1 | M1 review-batch-2B independent reviewer (Claude Opus 5) | `fc2eb7dde6325803c77950ac4adb1d190db0bd9a` | `approved` | Code verified at source: flag arms only on `per-organization`, legacy truthy values throw, the conjunction, and the `/mcp` use gate keyed on the signed run id and the run's own Organization. The two-Organization real-PG seeding is real. Focused rerun on Windows: 151 passed, integration 7 executed on real PG. Server typecheck 0. M1 reproduced exactly (4 failed). Run `35591990274` per job: `verify (3)` 7 (not skipped) + 30, `verify (1)` 95 + 11 + 8, all matching. Redemption refusal covered by `composed-loop-secret-resolve` (3 executed, `verify (3)`). Codex clean on `04c73866c3`. OPEN, not closed by this approval: keyed real-E2B +/- controls (F8, planning session); no Organization armed in any deployment; `E7-F003` tools row narrowed only. The plan's GREEN includes the keyed controls (Codex P1, PR #558), so `Status` stays `gate_review` under the planning session's F2 ruling for this batch; the flip commit was reverted. Flip after the F8 keyed run is recorded. |
+| 2 | M1b independent reviewer (Claude Opus 5) | `7be35ae6b7719877e61f54ab552de84de8491e7d` | `approved` | Re-checked that the certified code has not moved: `git log fc2eb7dde..7be35ae6b` over the four CLI-016 source/test files is empty and `fc2eb7dde` is an ancestor of the tip. Spot-checked at source: `per-organization` is the only arming value and legacy truthy spellings throw (`E7-D10`); the `/mcp` use resolver is the deployment-AND-Organization conjunction, reads the rollout map per call, and fails closed on a throw; absent `tools` means off. The keyed real-E2B +/- controls remain PENDING -- no keyed record exists under the epic, and none was dispatched by this review. `Status` stays `gate_review`. |
