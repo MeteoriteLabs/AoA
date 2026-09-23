@@ -1,6 +1,6 @@
 // -----------------------------------------------------------------------------
-// E6-D1-FOUNDATION — reusable harness for the LIVE E6F worker-control suites
-// (Linux/CI ONLY — requires Docker + a running docker-compose.d1.yml stack).
+// E6-D1-FOUNDATION â€” reusable harness for the LIVE E6F worker-control suites
+// (Linux/CI ONLY â€” requires Docker + a running docker-compose.d1.yml stack).
 //
 // This module is the shared substrate for the E6F Tier-2 suites (E6F-03 today;
 // e6f-01-lease-races and e6f-04-tenancy later). It drives the control-plane's
@@ -13,10 +13,10 @@
 //   2. the enroll / poll / ack HTTP clients
 //   3. the exec-seed helper       (seedScenario + stampWorkerLiveness)
 //
-// ── Transport ────────────────────────────────────────────────────────────────
+// â”€â”€ Transport â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Every node invocation runs INSIDE a compose service via
 // `docker compose exec -T <svc> node --input-type=module`, with the ESM source
-// piped on STDIN (never argv — the seed + step scripts are multi-line and use
+// piped on STDIN (never argv â€” the seed + step scripts are multi-line and use
 // crypto/fetch/postgres; argv quoting is unusable). The CI HOST orchestrates the
 // exec calls; it never talks to postgres or the control-plane directly. The step
 // scripts run in `test-runner` (a control-net peer that can reach
@@ -24,25 +24,25 @@
 // the OWNER `DATABASE_URL` + the deployed server dist, incl.
 // `@armyofagents/worker-protocol` and the `postgres` driver under WORKDIR /cp-app).
 //
-// ── Why seed inside the container (not test-support) ─────────────────────────
+// â”€â”€ Why seed inside the container (not test-support) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Board routes need `actor.type==='board'`. The clean test-support session-mint
 // seam is BLOCKED here: `assertTestSupportFlagSafe`
 // (server/src/services/test-support-safety.ts) demands a loopback-only bind, but
 // the D1 control-plane binds 0.0.0.0 (network-reachable by design), and the stack
 // is `AOA_DEPLOYMENT_MODE=authenticated` (unauth'd MCP/board is rejected). So we
 // seed by running a script inside the control-plane container whose DATABASE_URL
-// is the OWNER role `aoa` — a SUPERUSER in the pgvector image (POSTGRES_USER=aoa),
+// is the OWNER role `aoa` â€” a SUPERUSER in the pgvector image (POSTGRES_USER=aoa),
 // which BYPASSES RLS for writes exactly like the in-process integration tests'
 // superuser `admin`. The server then READS those rows under aoa_app/aoa_operator
 // with per-tenant GUCs via the ordinary deployed RLS policies (unchanged).
 //
-// ── Placement: direct SQL, not createJobPlacementService.place() ──────────────
+// â”€â”€ Placement: direct SQL, not createJobPlacementService.place() â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // We seed the immutable `job_attempts` placement columns by direct SQL rather than
 // composing the trusted placement service in the seed script. Reasons:
 //   * `place()` wires resolveOrganizationPolicy/resolveWorkloadPolicy/
 //     resolveCredentialBinding closures + a deploymentMode; reproducing that
 //     faithfully inside a piped stdin script is far more fragile than SQL.
-//   * job_attempts carries NO static-context/eligibility-version column — the poll
+//   * job_attempts carries NO static-context/eligibility-version column â€” the poll
 //     candidate SELECT (packages/db/.../tenant/job-control.ts lockEligibleLease-
 //     Candidates) filters ONLY on the concrete placement columns
 //     (status='pending', placement_disposition='selected', placement_mode='active',
@@ -58,17 +58,17 @@
 //     there is zero canonicalizer drift. ackPlacementCurrent + the candidate SELECT
 //     both compare against exactly these.
 //
-// ── Worker liveness ──────────────────────────────────────────────────────────
+// â”€â”€ Worker liveness â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // The enroll service inserts the worker row WITHOUT last_seen_at
 // (server/src/services/worker-enrollment.ts insertWorker sets enrolledAt only). The
 // poll authority (server/src/services/job-leasing.ts authorityCurrent) requires a
 // fresh worker.last_seen_at AND target.last_seen_at within maxHeartbeatAgeMs. A real
 // daemon establishes that via its session heartbeat before polling; we simulate the
 // same liveness with a post-enroll `UPDATE workers/execution_targets SET
-// last_seen_at = now()` (stampWorkerLiveness). This weakens NO security check — it
+// last_seen_at = now()` (stampWorkerLiveness). This weakens NO security check â€” it
 // stamps a timestamp a live worker would stamp itself.
 //
-// ── Device proof (byte-exact; confirmed against source + vectors) ────────────
+// â”€â”€ Device proof (byte-exact; confirmed against source + vectors) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Verifier: server/src/services/worker-device-proof.ts; signer reference:
 // packages/worker-daemon/src/identity/device-proof.ts; vectors:
 // tests/fixtures/device-proof/v1/vectors.json. The canonical string is the 7 lines
@@ -78,8 +78,8 @@
 //   3 new URL(originalUrl,"https://aoa.invalid").pathname  (INCLUDES the /api prefix)
 //   4 sha256hex(exact raw request body bytes)
 //   5 correlationId  (== the JSON body's correlationId)
-//   6 issuedAt       (ISO millis, round-trips new Date(s).toISOString()===s; ±5min)
-//   7 proofId        (^[A-Za-z0-9_-]{8,128}$, unique per request — single-use)
+//   6 issuedAt       (ISO millis, round-trips new Date(s).toISOString()===s; Â±5min)
+//   7 proofId        (^[A-Za-z0-9_-]{8,128}$, unique per request â€” single-use)
 // publicKey header = SPKI DER base64url; deviceThumbprint = sha256hex(DER bytes);
 // signature = crypto.sign(null, canonicalBytes, ed25519PrivateKey).base64url. The
 // same keypair is reused across enroll+poll+ack (poll/ack bind the session JWT's
@@ -106,10 +106,10 @@ export const CONTROL_PLANE_URL = "http://control-plane:3100";
 export const FAKE_PROVIDER_API_URL = "http://fake-provider:8080";
 export const FAKE_PROVIDER_CTL_URL = "http://fake-provider:8081";
 
-// DEP-009 — the second interchangeable control-plane replica's in-stack base URL. The
+// DEP-009 â€” the second interchangeable control-plane replica's in-stack base URL. The
 // device proof is host-agnostic (it signs `new URL(url).pathname` only) and both replicas
 // share AOA_WORKER_SESSION_SIGNING_KEY, so a session minted at one replica verifies at the
-// other — enroll@A / poll@B is a single portable session (replica-agnostic acceptance).
+// other â€” enroll@A / poll@B is a single portable session (replica-agnostic acceptance).
 export const CONTROL_PLANE_B_URL = "http://control-plane-b:3100";
 
 /** The worker-control endpoint set for a given control-plane base URL. Parameterizes what
@@ -127,18 +127,18 @@ export function workerControlFor(base) {
 }
 
 export const WORKER_CONTROL = workerControlFor(CONTROL_PLANE_URL);
-// DEP-009 — the replica-B endpoint set (same shape, control-plane-b base).
+// DEP-009 â€” the replica-B endpoint set (same shape, control-plane-b base).
 export const WORKER_CONTROL_B = workerControlFor(CONTROL_PLANE_B_URL);
 
 // Single source of truth for the seeded target/worker capability + policy facts.
 // The seed embeds POLICY_HASH + WORKER_CAPABILITIES into the registered target
 // profile (capabilityCeiling) and the buildWorkerHello() output reuses them for
 // reportedCapabilities/policyHash, so the poll-time matcher (workerSatisfies-
-// Requirements: effective = ceiling ∩ reported, policyHash equality) is satisfied.
+// Requirements: effective = ceiling âˆ© reported, policyHash equality) is satisfied.
 export const POLICY_HASH = "a".repeat(64);
 export const WORKER_CAPABILITIES = ["workload.batch", "sandbox.process_isolated"];
-// Free capacity: ≥ the bounded provider demand (cpu 1000 / mem 1024 / disk 1024)
-// and ≤ the provider ceiling (cpu 2000 / mem 4096 / disk 8192), batchSlots ≥ 1.
+// Free capacity: â‰¥ the bounded provider demand (cpu 1000 / mem 1024 / disk 1024)
+// and â‰¤ the provider ceiling (cpu 2000 / mem 4096 / disk 8192), batchSlots â‰¥ 1.
 export const WORKER_CAPACITY = Object.freeze({
   batchSlots: 2,
   browserSessionSlots: 0,
@@ -176,7 +176,7 @@ export function newScenarioIds() {
 
 /** Host-side Ed25519 device key. The PEM is threaded into each in-container step
  * script (each `docker exec` is a fresh process) so enroll/poll/ack all sign with
- * the SAME key — poll/ack assert proof.deviceThumbprint == the session's. */
+ * the SAME key â€” poll/ack assert proof.deviceThumbprint == the session's. */
 export function generateDeviceKey() {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   const der = publicKey.export({ format: "der", type: "spki" });
@@ -192,8 +192,8 @@ export function generateDeviceKey() {
  * The hashes are what the seed inserts into worker_enrollment_code(_routes); the raw
  * code is presented on the `aoa-enrollment-code` header at enroll. */
 export function newEnrollmentCode() {
-  const locator = randomBytes(18).toString("base64url"); // 24 chars ∈ [16,64]
-  const secret = randomBytes(32).toString("base64url"); //  43 chars ∈ [32,128]
+  const locator = randomBytes(18).toString("base64url"); // 24 chars âˆˆ [16,64]
+  const secret = randomBytes(32).toString("base64url"); //  43 chars âˆˆ [32,128]
   const sha = (v) => createHash("sha256").update(v).digest("hex");
   return {
     code: `aoa_enr_${locator}.${secret}`,
@@ -220,7 +220,7 @@ export function buildWorkerHello({ workerId, targetId, deviceGeneration = 1 }) {
   };
 }
 
-// ── Low-level in-container node runner ────────────────────────────────────────
+// â”€â”€ Low-level in-container node runner â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /** Run an ESM script inside a compose service (source piped on STDIN). Returns the
  * exit status, raw stdout/stderr, and the parsed `__E6F_RESULT__` line if present. */
@@ -254,7 +254,7 @@ function embedParams(params) {
 }
 
 // The in-container device-proof signer. `String.fromCharCode(10)` is the canonical
-// LF join — this avoids ALL newline-escaping ambiguity in the emitted source.
+// LF join â€” this avoids ALL newline-escaping ambiguity in the emitted source.
 const DEVICE_PROOF_SNIPPET = `
 import { createHash, createPrivateKey, sign as edSign, randomUUID, randomBytes } from "node:crypto";
 const sha256hex = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -287,7 +287,7 @@ function report(value) { console.log("${RESULT_MARKER}" + JSON.stringify(value))
 function safeJson(text) { try { return JSON.parse(text); } catch { return text; } }
 `;
 
-// ── Seed + liveness (control-plane container; owner/superuser DB) ─────────────
+// â”€â”€ Seed + liveness (control-plane container; owner/superuser DB) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /** Seed one hermetic org/company/organization-scoped execution target + enrollment
  * code + route + a queued batch job whose attempt is placed lease-eligible to that
@@ -316,7 +316,7 @@ const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value)
 const sha256 = (v) => createHash("sha256").update(v).digest("hex");
 const sql = postgres(process.env.DATABASE_URL, { max: 1 });
 try {
-  // Provider-constraint profile — digest is its OWN verified digest (server recomputes
+  // Provider-constraint profile â€” digest is its OWN verified digest (server recomputes
   // the same way via verifyAndBrandProviderConstraintProfileV1 at normalization).
   const providerUnsigned = {
     profileId: "e6f-org-dedicated",
@@ -354,7 +354,7 @@ try {
   const registeredProfileHash = sha256(canonicalizeJsonV1(registeredProfile));
 
   // companies.issue_prefix is GLOBALLY UNIQUE (companies_issue_prefix_idx), so it
-  // must be derived per-scenario, not hardcoded — otherwise two seedScenario callers
+  // must be derived per-scenario, not hardcoded â€” otherwise two seedScenario callers
   // in the SAME campaign (e.g. E6F-03 + E6F-05, one shared DB) collide on the second
   // insert. Mirror the seedRaceOrg pattern: a slug-derived, length-bounded prefix.
   const issuePrefix = ("E6F" + P.slug).slice(0, 12).toUpperCase();
@@ -439,7 +439,7 @@ try {
   return dexecModule("control-plane", script);
 }
 
-// ── Worker-control HTTP clients (test-runner container) ──────────────────────
+// â”€â”€ Worker-control HTTP clients (test-runner container) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /** Enroll a fresh worker. Presents the raw code + a real device proof over the
  * exact body bytes; returns { status, session, body }. session = the
@@ -565,16 +565,16 @@ report({ status: res.status, body: parsed });
   return dexecModule(service, script);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// E6F-01 lease-race additions (ADDITIVE ONLY — nothing above is modified).
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// E6F-01 lease-race additions (ADDITIVE ONLY â€” nothing above is modified).
 //
 // Everything above is the frozen, LIVE-GREEN E6F-03 substrate. The helpers below
 // only ADD what the 100-race lease suite needs on top of it; they never change the
 // behaviour or signature of any existing export (E6F-03 keeps passing).
 //
-// ── Why a distinct "race" capacity/provider profile ──────────────────────────
+// â”€â”€ Why a distinct "race" capacity/provider profile â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // A single dedicated worker's concurrent in-flight leases are bounded at poll time
-// by min(provider.maxConcurrentOperations, hello.capacity.batchSlots) — see
+// by min(provider.maxConcurrentOperations, hello.capacity.batchSlots) â€” see
 // server/src/services/job-leasing.ts deriveAdmissibleWorkloadTypes +
 // snapshotLiveLeaseCapacity (leases in status offered|active both count). Enrollment
 // binds EXACTLY ONE worker per execution_target (worker-enrollment.ts
@@ -583,15 +583,15 @@ report({ status: res.status, body: parsed });
 // per-target pool of leases at once (submit->placement->lease->ACK, with no job
 // COMPLETION step in this gate to free a slot), the race target's server-owned
 // provider profile advertises a high maxConcurrentOperations and the worker's hello
-// a matching batchSlots — both still schema-valid (maxConcurrentOperations<=10_000;
+// a matching batchSlots â€” both still schema-valid (maxConcurrentOperations<=10_000;
 // batchSlots is a non-negative int) and both fully seed-controlled. E6F-03's
 // WORKER_CAPACITY / buildWorkerHello / seedScenario are left exactly as they were.
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /** The race worker's free-capacity report. Identical to WORKER_CAPACITY except
  * `batchSlots` is raised to `batchSlots` so ONE dedicated worker may hold an entire
  * per-target pool of concurrent leases. freeCpu/mem/disk stay AT the provider ceiling
- * (never above — workerSatisfiesRequirements §7 rejects free > ceiling). */
+ * (never above â€” workerSatisfiesRequirements Â§7 rejects free > ceiling). */
 export function raceCapacity(batchSlots) {
   return {
     batchSlots,
@@ -606,7 +606,7 @@ export function raceCapacity(batchSlots) {
 /** A workerHelloV1 for a race worker: byte-shape-identical to buildWorkerHello()
  * except the capacity carries the raised `batchSlots`. reportedCapabilities +
  * policyHash stay POLICY_HASH/WORKER_CAPABILITIES so the poll-time capability matcher
- * (effective = ceiling ∩ reported, policyHash equality) is satisfied exactly as in
+ * (effective = ceiling âˆ© reported, policyHash equality) is satisfied exactly as in
  * E6F-03. */
 export function buildRaceWorkerHello({ workerId, targetId, deviceGeneration = 1, batchSlots }) {
   return {
@@ -719,7 +719,7 @@ try {
   // Per-target registered profile (distinct targetId -> distinct registered_profile_hash;
   // jobs are isolated per target by placement_target_id + placement_profile_hash). All
   // organization-scoped targets in one org SHARE authority key 'organization:<org>'
-  // (execution_targets_authority_scope_check), which is correct — routing is by target id.
+  // (execution_targets_authority_scope_check), which is correct â€” routing is by target id.
   const targetFacts = [];
   for (let i = 0; i < P.targets.length; i += 1) {
     const t = P.targets[i];
@@ -822,11 +822,11 @@ try {
   return dexecModule("control-plane", script, { timeout: 60_000 });
 }
 
-// ── Concurrent lease-race runner (ALL concurrency lives INSIDE one test-runner
-//    exec; the CI host never fans out ~100 `docker exec` calls) ────────────────
+// â”€â”€ Concurrent lease-race runner (ALL concurrency lives INSIDE one test-runner
+//    exec; the CI host never fans out ~100 `docker exec` calls) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
 // Every poll and every ack signs a FRESH single-use device proof (fresh proofId +
-// correlationId) with its worker's OWN keypair — the DEVICE_PROOF_SNIPPET's
+// correlationId) with its worker's OWN keypair â€” the DEVICE_PROOF_SNIPPET's
 // randomBytes-per-call is concurrency-safe, so overlapping in-process requests never
 // reuse a proofId (the server records them single-use in worker_proof_replays).
 //
@@ -859,7 +859,7 @@ ${embedParams(params)}
 
 async function pollOnce(w) {
   // Honor the E1 retry contract: a RETRYABLE backpressure response
-  // (internal_unavailable / throttled, carrying retryAfterMs) is NOT an anomaly —
+  // (internal_unavailable / throttled, carrying retryAfterMs) is NOT an anomaly â€”
   // it is the control-plane shedding load under the 100-race burst, and a real
   // worker waits retryAfterMs and re-polls. Surfacing it as an anomaly is stricter
   // than the protocol guarantees (a runner-load flake). Retry a bounded number of
@@ -1016,13 +1016,13 @@ report({
   return dexecModule("test-runner", script, { timeout });
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// DEP-009 two-replica concurrency runner (ADDITIVE ONLY — nothing above is modified).
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// DEP-009 two-replica concurrency runner (ADDITIVE ONLY â€” nothing above is modified).
 //
 // runReplicaRace is a clone of runLeaseRace whose poll/ack requests each carry their OWN
 // control-plane base (replica A `http://control-plane:3100` or B `http://control-plane-b:3100`),
 // so a single test-runner exec can race concurrent traffic across BOTH replicas over the one
-// shared PostgreSQL. ALL concurrency lives INSIDE this one `dexecModule("test-runner")` exec —
+// shared PostgreSQL. ALL concurrency lives INSIDE this one `dexecModule("test-runner")` exec â€”
 // the campaign is `--test-concurrency=1` serial, so a test must not fan out its own
 // `docker exec` calls. Every poll and every ack signs a FRESH single-use device proof
 // (randomBytes-per-call is concurrency-safe), so overlapping in-process requests never reuse
@@ -1042,7 +1042,7 @@ ${embedParams(params)}
 
 async function pollOnce(spec) {
   // Same retryable-backpressure handling as runLeaseRace: a 5xx internal_unavailable/throttled
-  // carrying retryAfterMs is the control-plane shedding load, not an anomaly — retry with a
+  // carrying retryAfterMs is the control-plane shedding load, not an anomaly â€” retry with a
   // fresh nonce + device proof (both single-use). The compare-and-set offerLease keeps the
   // exactly-one-winner invariant across the retry.
   const RETRYABLE = new Set(["internal_unavailable", "throttled"]);
@@ -1151,37 +1151,37 @@ report({ results });
   return dexecModule("test-runner", script, { timeout });
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// E6F-04 available-path tenancy additions (ADDITIVE ONLY — nothing above is
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// E6F-04 available-path tenancy additions (ADDITIVE ONLY â€” nothing above is
 // modified). Everything above is the frozen LIVE-GREEN E6F-03/E6F-01 substrate;
 // this helper only ADDS the per-org seed the tenancy matrix needs and never
 // changes the behaviour or signature of any existing export.
 //
-// ── Why a NEW org-seed instead of reusing seedScenario ───────────────────────
-// seedScenario hardcodes companies.issue_prefix = 'E6F' — a globally UNIQUE column
+// â”€â”€ Why a NEW org-seed instead of reusing seedScenario â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// seedScenario hardcodes companies.issue_prefix = 'E6F' â€” a globally UNIQUE column
 // (companies_issue_prefix_idx). E6F-04 seeds TWO independent orgs AND runs on the
 // same live stack as E6F-03 (which already took 'E6F'), so it cannot call
 // seedScenario even once without a unique-violation. seedTenancyOrg is a
 // byte-faithful copy of the seedScenario org/target/code/job/attempt SQL with two
 // additions the matrix requires:
-//   1. a per-run UNIQUE `issuePrefix` (the caller mints e.g. 'E64…' per org), and
+//   1. a per-run UNIQUE `issuePrefix` (the caller mints e.g. 'E64â€¦' per org), and
 //   2. zero-or-more EXTRA valid enrollment codes for the SAME org-scoped target
 //      (route -> this org + code -> this target). These are the A2 enroll-attack
 //      codes: a genuinely VALID Org-A code presented with a foreign/nonexistent
 //      hello.targetId. Because the code pins stored.executionTargetId = this
 //      target, worker-enrollment.ts findTargetByAuthority looks up THIS target
 //      under THIS org and then rejects on `request.hello.targetId !== target.id`
-//      with plain "unauthorized" — identical for a foreign vs a missing targetId
+//      with plain "unauthorized" â€” identical for a foreign vs a missing targetId
 //      (E4-D11: no target_revoked-vs-not_found distinction).
 // The provider/registered-profile/target/job/attempt SQL is identical to
 // seedScenario, so the two load-bearing digests (registered_profile_hash =
 // sha256(canonicalizeJsonV1(profile)); placement_provider_constraint_hash = the
 // provider profile's own verified digest) are re-derived with the SAME
-// worker-protocol primitives the poll re-derives — zero canonicalizer drift.
+// worker-protocol primitives the poll re-derives â€” zero canonicalizer drift.
 //
 // Seeds under the OWNER/superuser DATABASE_URL (bypasses RLS for WRITES) exactly
 // like seedScenario; the SERVER then READS these rows under aoa_app with the
-// per-tenant GUC via the deployed RLS policies — that read path is precisely what
+// per-tenant GUC via the deployed RLS policies â€” that read path is precisely what
 // E6F-04 proves. The seed deliberately does NOT set the GUC.
 //
 // Returns { ok, registeredProfileHash, providerDigest, authorityKey }.
@@ -1218,7 +1218,7 @@ const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value)
 const sha256 = (v) => createHash("sha256").update(v).digest("hex");
 const sql = postgres(process.env.DATABASE_URL, { max: 1 });
 try {
-  // Provider-constraint profile — digest is its OWN verified digest (identical to
+  // Provider-constraint profile â€” digest is its OWN verified digest (identical to
   // seedScenario; the server recomputes the same way at normalization).
   const providerUnsigned = {
     profileId: "e6f-org-dedicated",
@@ -1273,7 +1273,7 @@ try {
     VALUES (\${P.orgId}, 'organization', \${P.targetId}, \${authorityKey}, \${P.locatorHash}, \${P.secretHash},
       now() + interval '30 minutes', 'user', 'e6f-seed')\`;
   // Extra VALID codes for the SAME org-scoped target (the A2 enroll-attack codes).
-  // Each is a real, routable Org-scoped code — the ONLY thing "wrong" at attack time
+  // Each is a real, routable Org-scoped code â€” the ONLY thing "wrong" at attack time
   // is the worker-supplied hello.targetId, so the denial exercises the tenant-scoped
   // findTargetByAuthority path (not a "route not found" short-circuit).
   for (const extra of P.extraCodes) {
@@ -1318,8 +1318,8 @@ try {
   return dexecModule("control-plane", script);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// DAT-002 slice-7 — live-MinIO artifact round-trip additions (ADDITIVE ONLY —
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// DAT-002 slice-7 â€” live-MinIO artifact round-trip additions (ADDITIVE ONLY â€”
 // nothing above is modified). These ADD the two frozen artifact ops
 // (artifact_transfer_grant + artifact_commit) as e6f HTTP clients (clones of ack()
 // with the new route + inner body + device proof), a control-plane bucket
@@ -1327,9 +1327,9 @@ try {
 // presigned https URL, and a control-plane owner-DB job_artifacts probe. They never
 // change the behaviour or signature of any existing export.
 //
-// ── The checksum header (the #1 live-run risk) ───────────────────────────────
+// â”€â”€ The checksum header (the #1 live-run risk) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // s3-provider.presign binds `ChecksumAlgorithm:"SHA256"` into the signed PUT but
-// returns `headers:{}` — so the presigned PUT URL carries
+// returns `headers:{}` â€” so the presigned PUT URL carries
 // `x-amz-sdk-checksum-algorithm=SHA256` in its query and the raw PUT MUST send the
 // actual checksum as request headers or MinIO 400s the PUT. `putPresignedBytes`
 // computes `x-amz-checksum-sha256 = base64(sha256(body))` INSIDE the step-script
@@ -1338,7 +1338,7 @@ try {
 // returns the hex digest so the caller uses the SAME hash for the grant request +
 // the commit manifest (manifest.sha256 is hex; headObject's stored base64 checksum
 // is converted back to hex server-side and compared).
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /** The ordinary attempt object-key prefix (mirrors worker-protocol
  * expectedAttemptObjectPrefix). objectKey = prefix + a safe non-empty suffix. */
@@ -1499,7 +1499,7 @@ try {
   return dexecModule("control-plane", script);
 }
 
-/** Direct raw-bytes PUT to a presigned upload URL (the direct-to-store bypass — the
+/** Direct raw-bytes PUT to a presigned upload URL (the direct-to-store bypass â€” the
  * bytes NEVER traverse the control-plane API). Computes the SHA256 checksum INSIDE the
  * step-script from the exact bytes it sends and sets both the
  * `x-amz-checksum-sha256` (base64) and `x-amz-sdk-checksum-algorithm: SHA256` headers
@@ -1563,14 +1563,14 @@ try {
   return dexecModule("control-plane", script);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// DAT-009/DAT-011 — orphan-sweep additions (ADDITIVE ONLY).
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// DAT-009/DAT-011 â€” orphan-sweep additions (ADDITIVE ONLY).
 //
 // These let a test prove the ORPHAN path end to end against the live stack: mint a
 // grant, PUT the bytes, lose the fence, watch the commit refuse `stale_fence`, age the
 // grant intent past its expiry, and assert the sweep actually DELETED the object from
 // MinIO. Until now the sweep was unit-proven and its wiring only grep-verified.
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /** Age a `status='granted'` intent row so its grant is past expiry.
  *
@@ -1601,7 +1601,7 @@ try {
 
 /** Does `objectKey` still exist in the artifact bucket? Runs in control-plane, which
  * holds the S3 endpoint + credentials. `exists:false` on a 404/NotFound is the ANSWER,
- * not an error — that is precisely what a swept orphan looks like. */
+ * not an error â€” that is precisely what a swept orphan looks like. */
 export function artifactObjectExists({ objectKey }) {
   const params = { objectKey };
   const script = `
@@ -1629,36 +1629,36 @@ try {
   return dexecModule("control-plane", script);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// DAT-002 slice-7 — Increment 2: toxiproxy incomplete-upload additions (ADDITIVE
-// ONLY — nothing above is modified). These ADD a RUNTIME toxiproxy-admin client
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// DAT-002 slice-7 â€” Increment 2: toxiproxy incomplete-upload additions (ADDITIVE
+// ONLY â€” nothing above is modified). These ADD a RUNTIME toxiproxy-admin client
 // (set/remove a toxic on the in-path `worker-to-minio` proxy) and a fault-tolerant
 // raw-bytes PUT so the caller can prove that a TRUNCATED upload never commits. No
 // compose / toxiproxy.json / server change: the toxic is injected + removed at
 // RUNTIME via the toxiproxy admin API from a test-runner step-script.
 //
-// ── Why `limit_data`, `upstream`, and a small byte cap ───────────────────────
+// â”€â”€ Why `limit_data`, `upstream`, and a small byte cap â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // The presigned PUT body flows worker(client) -> minio(upstream server), so the
 // data being written to the store travels on the proxy's `upstream` stream. The
 // `limit_data` toxic closes the connection once `attributes.bytes` have crossed
 // that stream, so a cap well below the object size truncates the write. toxiproxy
 // is L4 and forwards OPAQUE TLS bytes, so the cap counts TLS-record bytes, not
-// plaintext body bytes — a very small cap (e.g. 64) severs the connection during
+// plaintext body bytes â€” a very small cap (e.g. 64) severs the connection during
 // the TLS handshake, so the PUT typically fails at the network layer and NO object
 // is stored; a cap that lands after the handshake would instead leave a short
 // object. BOTH outcomes make the subsequent fenced commit fail closed (a missing
-// or short object → `malformed`; an unverifiable/short-hash object →
+// or short object â†’ `malformed`; an unverifiable/short-hash object â†’
 // `event_hash_mismatch`), which is exactly the invariant under test. The admin
 // port is toxiproxy's default 8474 (the compose command sets no `-port`); the
 // test-runner reaches it as a control-net peer.
 //
-// ── The toxic MUST be removed (the campaign is serial) ───────────────────────
+// â”€â”€ The toxic MUST be removed (the campaign is serial) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // The d1 campaign runs `--test-concurrency=1`, so a LEAKED toxic on
 // `worker-to-minio` would truncate every later test's presigned PUT/GET and break
 // the shared stack. Callers therefore ALWAYS remove the toxic in a `finally`.
-// `removeToxiproxyToxic` treats a 404 as success (idempotent removal — an
+// `removeToxiproxyToxic` treats a 404 as success (idempotent removal â€” an
 // already-absent toxic is a satisfied post-condition).
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const TOXIPROXY_ADMIN_URL = "http://toxiproxy:8474";
 
@@ -1666,7 +1666,7 @@ const TOXIPROXY_ADMIN_URL = "http://toxiproxy:8474";
  * /proxies/<proxy>/toxics). `toxic` is the full admin-API body, e.g.
  * `{ name, type: "limit_data", stream: "upstream", attributes: { bytes: 64 } }`.
  * Runs in test-runner (a control-net peer that can reach toxiproxy:8474). Returns
- * { ok, status, body } — `ok` is true only for a 2xx create. */
+ * { ok, status, body } â€” `ok` is true only for a 2xx create. */
 export function setToxiproxyToxic({ proxy, toxic, adminUrl = TOXIPROXY_ADMIN_URL }) {
   const params = { url: `${adminUrl}/proxies/${proxy}/toxics`, toxic };
   const script = `
@@ -1710,9 +1710,9 @@ try {
 /** Fault-tolerant raw-bytes PUT to a presigned upload URL. Identical wire shape to
  * `putPresignedBytes` (computes + sends the x-amz-checksum-sha256 / -sdk-checksum-
  * algorithm headers the signed PUT's query demands), but CATCHES a network-level
- * failure instead of crashing the step-script — a truncating toxic frequently
+ * failure instead of crashing the step-script â€” a truncating toxic frequently
  * severs the TLS connection so `fetch` itself rejects. Runs in test-runner. Returns
- * { threw, error?, status?, sha256Hex, sha256B64, sizeBytes, body? } — the caller
+ * { threw, error?, status?, sha256Hex, sha256B64, sizeBytes, body? } â€” the caller
  * accepts EITHER a thrown PUT or a non-2xx PUT, since both leave the store without a
  * committable object. */
 export function putPresignedBytesAllowError({ url, bodyBase64 }) {
@@ -1739,8 +1739,8 @@ try {
   return dexecModule("test-runner", script);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// DEP-005 — network-failure + clock-control additions (ADDITIVE ONLY — nothing
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// DEP-005 â€” network-failure + clock-control additions (ADDITIVE ONLY â€” nothing
 // above is modified). These ADD the four primitives the three lease-fault demos
 // (e6f-09) need on top of the frozen E6F substrate: a SQL clock helper that back-
 // dates the durable lease deadline columns, a client for the DORMANT flag-gated
@@ -1750,11 +1750,11 @@ try {
 // the whole convergence picture for a job. They never change the behaviour or
 // signature of any existing export.
 //
-// ── Clock control: back-date the durable lease deadline row (D1) ──────────────
+// â”€â”€ Clock control: back-date the durable lease deadline row (D1) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // The control plane's ONLY time source is the Postgres clock_timestamp() re-read
 // per locked mutation; there is no injectable clock / shortenable-deadline config
 // in the running stack. (STALE PREMISE, CORRECTED: this note used to continue "and the
-// reaper has no live trigger — so a back-dated lease never converges on its own".
+// reaper has no live trigger â€” so a back-dated lease never converges on its own".
 // MIG-002 `c341cf680` started a LIVE background lease reaper on every control-plane
 // replica, so a back-dated lease CAN now converge on its own, on a cadence that drops to
 // 1 second after any productive tick. Back-dating is still the deterministic lever for
@@ -1766,7 +1766,7 @@ try {
 // ack_deadline < expires_at (leases_authority_atomic_check). The back-date is ALWAYS
 // clock_timestamp()-relative (server clock), NEVER a host Date.
 //
-// ── Reaper trigger + partition (D2/D4) ───────────────────────────────────────
+// â”€â”€ Reaper trigger + partition (D2/D4) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // reapOrganization() drives the dormant POST /api/worker-control/_test/reap (gated on
 // AOA_DISTRIBUTED_EXECUTION_ENABLED, which is true on the D1 control plane). It is
 // device/board-auth-free and reaches control-plane:3100 DIRECTLY (not through
@@ -1774,19 +1774,19 @@ try {
 // fires. setProxyEnabled() severs/restores a whole link via the Toxiproxy 2.x proxy-
 // update endpoint (POST /proxies/<name> {enabled}); for degraded/latency cuts use the
 // existing setToxiproxyToxic (timeout/reset_peer) instead.
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const EVENTS_URL = `${CONTROL_PLANE_URL}/api/worker-control/events`;
 const REAP_URL = `${CONTROL_PLANE_URL}/api/worker-control/_test/reap`;
 
 /** Back-date the durable lease deadline column(s) so the reaper treats the worker as
  * gone. Runs in control-plane under the OWNER DSN (seeding channel). Back-dates ONLY
- * the column(s) whose interval is supplied — `ackDeadlineIntervalSec` (the pre-ACK /
- * offered case) and/or `expiresAtIntervalSec` (the expired / active case) — ALWAYS via
+ * the column(s) whose interval is supplied â€” `ackDeadlineIntervalSec` (the pre-ACK /
+ * offered case) and/or `expiresAtIntervalSec` (the expired / active case) â€” ALWAYS via
  * clock_timestamp() (server-relative), NEVER a host Date. The caller MUST keep
  * ack_deadline < expires_at: for the expired/active case pass BOTH with
  * ackDeadlineIntervalSec > expiresAtIntervalSec (e.g. 2 and 1, as the proven idiom
- * does). Returns { updated } — the row count touched. */
+ * does). Returns { updated } â€” the row count touched. */
 export function expireLeaseDeadlines({ leaseId, ackDeadlineIntervalSec, expiresAtIntervalSec }) {
   const setAck = ackDeadlineIntervalSec !== undefined && ackDeadlineIntervalSec !== null;
   const setExpires = expiresAtIntervalSec !== undefined && expiresAtIntervalSec !== null;
@@ -1794,7 +1794,7 @@ export function expireLeaseDeadlines({ leaseId, ackDeadlineIntervalSec, expiresA
     throw new Error("expireLeaseDeadlines: supply ackDeadlineIntervalSec and/or expiresAtIntervalSec");
   }
   // Coerce to positive integers before embedding as an interval literal (no untrusted
-  // value ever reaches SQL as text — the leaseId binds as a parameter, the interval is
+  // value ever reaches SQL as text â€” the leaseId binds as a parameter, the interval is
   // a validated integer).
   const ackSec = setAck ? Math.max(1, Math.floor(Number(ackDeadlineIntervalSec))) : null;
   const expiresSec = setExpires ? Math.max(1, Math.floor(Number(expiresAtIntervalSec))) : null;
@@ -1806,7 +1806,7 @@ const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value)
 const sql = postgres(process.env.DATABASE_URL, { max: 1 });
 try {
   // postgres.js cannot compose interval literals via fragments cleanly, so build the
-  // whole UPDATE with make_interval(secs => $n) — a parameterized, injection-safe
+  // whole UPDATE with make_interval(secs => $n) â€” a parameterized, injection-safe
   // interval. Back-date ONLY the requested column(s); always stamp updated_at.
   let row;
   if (P.ackSec !== null && P.expiresSec !== null) {
@@ -1841,7 +1841,7 @@ try {
  * control-plane. Returns { ok, updated }. */
 export function advanceJobAvailableAt({ jobId, secondsAgo = 1 }) {
   // secondsAgo coerces to a positive integer before embedding as an interval literal (the jobId
-  // binds as a parameter; the interval is a validated integer — injection-safe).
+  // binds as a parameter; the interval is a validated integer â€” injection-safe).
   const params = { jobId, secs: Math.max(1, Math.floor(Number(secondsAgo))) };
   const script = `
 import postgres from "postgres";
@@ -1863,8 +1863,8 @@ try {
 }
 
 /** Fire ONE synchronous reap for an org via the dormant flag-gated trigger. Runs in
- * test-runner (a control-net peer reaching control-plane:3100 DIRECTLY — not through
- * toxiproxy:13100 — so a worker-to-control-plane cut never blocks it). Returns
+ * test-runner (a control-net peer reaching control-plane:3100 DIRECTLY â€” not through
+ * toxiproxy:13100 â€” so a worker-to-control-plane cut never blocks it). Returns
  * { status, body } where body is the ReapExpiredLeasesResult (200) or a 404 if the
  * distributed-execution flag is off (dormant). */
 export function reapOrganization({ organizationId, limit }) {
@@ -1887,7 +1887,7 @@ report({ status: res.status, body: safeJson(text) });
 /** Enable/disable a whole Toxiproxy proxy (clean bidirectional link sever/restore) via
  * the 2.x proxy-update endpoint (POST /proxies/<name> {enabled}). Confirmed against the
  * pinned image ghcr.io/shopify/toxiproxy:2.9.0. Runs in test-runner. Returns
- * { ok, status, body }. Callers ALWAYS restore (enabled:true) in a finally — the
+ * { ok, status, body }. Callers ALWAYS restore (enabled:true) in a finally â€” the
  * campaign is serial (--test-concurrency=1) so a leaked disable would break the stack. */
 export function setProxyEnabled({ proxy, enabled, adminUrl = TOXIPROXY_ADMIN_URL }) {
   const params = { url: `${adminUrl}/proxies/${proxy}`, enabled: Boolean(enabled) };
@@ -1914,7 +1914,7 @@ try {
  * from test-runner). Lets a test OBSERVE a link cut, not merely toggle it. */
 export const TOXIPROXY_LISTEN = {
   "worker-to-control-plane": "toxiproxy:13100",
-  // DEP-009 — the per-replica worker→control-plane-b link, so a replica-loss cut is
+  // DEP-009 â€” the per-replica workerâ†’control-plane-b link, so a replica-loss cut is
   // OBSERVABLE via a poll THROUGH this listen port (not merely toggled).
   "worker-to-control-plane-b": "toxiproxy:13101",
   "worker-to-minio": "toxiproxy:19000",
@@ -1923,8 +1923,8 @@ export const TOXIPROXY_LISTEN = {
 
 /** Probe whether a Toxiproxy-fronted link is reachable FROM test-runner by issuing a
  * short HTTP GET through the proxy's LISTEN port (NOT the direct upstream). When the
- * proxy is disabled the TCP connect is refused → { reachable:false }; when enabled the
- * upstream answers with any HTTP status → { reachable:true, status }. This makes a link
+ * proxy is disabled the TCP connect is refused â†’ { reachable:false }; when enabled the
+ * upstream answers with any HTTP status â†’ { reachable:true, status }. This makes a link
  * cut genuinely OBSERVABLE (invariant 1) rather than a decorative toggle. HTTP upstreams
  * only (worker-to-control-plane). Runs in test-runner. */
 export function probeProxyReachable({ proxy, path = "/health", timeoutMs = 3000 }) {
@@ -1950,7 +1950,7 @@ try {
 
 /** Fill each event's `eventDigest` = sha256hex(canonicalEventDigestInputV1(event))
  * using the FROZEN worker-protocol canonicalizer (available in control-plane, NOT in
- * test-runner — so the digest is never hand-rolled). `events` is an array of complete
+ * test-runner â€” so the digest is never hand-rolled). `events` is an array of complete
  * wire events WITHOUT eventDigest (the digest input strips eventDigest anyway). Runs in
  * control-plane. Returns { ok, events: [...with eventDigest] }. */
 export function computeEventDigests({ events }) {
@@ -1978,7 +1978,7 @@ try {
  * eventUploadOperationRequestV1 envelope. `batch` is the FULL workerEventBatchV1
  * (delivery identity + events each carrying eventDigest, from computeEventDigests).
  * `idempotencyKey` is optional but STABLE across calls for the lost-ACK replay demo
- * (pass the same key twice → the idempotency-replay path). Runs in test-runner.
+ * (pass the same key twice â†’ the idempotency-replay path). Runs in test-runner.
  * Returns { status, body } (eventUploadOperationResponseV1 with the cumulative ack). */
 export function uploadEvents({ url = EVENTS_URL, session, batch, idempotencyKey = null, deviceKey }) {
   const params = { url, session, batch, idempotencyKey, privateKeyPem: deviceKey.privateKeyPem, publicKeyDer: deviceKey.publicKeyDer };
@@ -2045,17 +2045,17 @@ try {
   return dexecModule("control-plane", script);
 }
 
-/** DEP-009 — race the SHARED Organization-capacity claim across concurrent contenders to
+/** DEP-009 â€” race the SHARED Organization-capacity claim across concurrent contenders to
  * prove the advisory lock serializes count-then-claim so the cap is never exceeded. Uses the
  * EXACT authority admitAttemptCapacity composes into submitJobWithinTenant: one
  * `pg_advisory_xact_lock(hashtext('aoa:org-capacity'), hashtext(org))` per tx, count the
  * 'held' attempts, and claim (unclaimed->held) only if under the cap. The claims run
- * concurrently over DISTINCT connections in ONE control-plane exec — the advisory lock is
+ * concurrently over DISTINCT connections in ONE control-plane exec â€” the advisory lock is
  * process-agnostic (it serializes at PostgreSQL), so N connections contend exactly as N
- * replicas would. The production wiring (submit → admitAttemptCapacity) is proven separately
+ * replicas would. The production wiring (submit â†’ admitAttemptCapacity) is proven separately
  * by job-submit-capacity-admission.integration; this demonstrates the cross-replica
  * serialization live. `attemptIds` must be pre-seeded 'unclaimed' attempts for the org.
- * Sets organizations.concurrency_cap = `cap` first. Returns { ok, admitted, held } — how many
+ * Sets organizations.concurrency_cap = `cap` first. Returns { ok, admitted, held } â€” how many
  * claims won and how many attempts ended 'held' (must both equal `cap` when attemptIds > cap). */
 export function raceOrgCapacityClaims({ organizationId, attemptIds, cap, workloadType = "batch" }) {
   const params = { organizationId, attemptIds, cap, workloadType };
@@ -2095,7 +2095,7 @@ try {
   return dexecModule("control-plane", script);
 }
 
-/** DEP-009 — owner-DB probe (bypasses RLS, like queryLeaseFaultState) of the SHARED
+/** DEP-009 â€” owner-DB probe (bypasses RLS, like queryLeaseFaultState) of the SHARED
  * worker-poll admission rate-limit counter for one org. Returns every fixed-window row
  * (there is ONE per window across BOTH replicas), so a test can assert that concurrent A+B
  * polls landed in ONE window row (shared, not process-local). Runs in control-plane.
@@ -2122,12 +2122,12 @@ try {
   return dexecModule("control-plane", script);
 }
 
-/** DEP-007 — owner-DB probe (bypasses RLS, like queryLeaseFaultState) that reconstructs
+/** DEP-007 â€” owner-DB probe (bypasses RLS, like queryLeaseFaultState) that reconstructs
  * the DURABLE end-to-end trace for one job: the job's execution SOURCE (jobs.source_kind
- * = the exec-source end of exec-source→job→attempt→lease→sandbox) plus every job_events
- * row ORDERED BY the contiguous `sequence`, each carrying its attempt/lease and — for the
- * attempt_started event — the terminal `sandboxId` parsed from the event jsonb payload
- * (sandboxId is payload-only; there is no column/FK for it, D1/§7.7). Runs in
+ * = the exec-source end of exec-sourceâ†’jobâ†’attemptâ†’leaseâ†’sandbox) plus every job_events
+ * row ORDERED BY the contiguous `sequence`, each carrying its attempt/lease and â€” for the
+ * attempt_started event â€” the terminal `sandboxId` parsed from the event jsonb payload
+ * (sandboxId is payload-only; there is no column/FK for it, D1/Â§7.7). Runs in
  * control-plane. Returns { ok, job:{sourceKind,companyId,status}, events:[...] }. */
 export function queryJobEventTrace({ organizationId, jobId }) {
   const params = { organizationId, jobId };
@@ -2162,9 +2162,9 @@ try {
   return dexecModule("control-plane", script);
 }
 
-/** DEP-007 — a NON-OWNER read of `job_events` under the bounded `aoa_app` serving role
+/** DEP-007 â€” a NON-OWNER read of `job_events` under the bounded `aoa_app` serving role
  * (AOA_APP_DATABASE_URL: NOSUPERUSER/NOBYPASSRLS), scoped to `scopeOrganizationId` via
- * the transaction-local `aoa.organization_id` GUC — the SAME isolation filter
+ * the transaction-local `aoa.organization_id` GUC â€” the SAME isolation filter
  * runInTenant writes (with_tenant_tx). A scope that is NOT the job's owning org returns
  * ZERO rows under FORCE RLS even though the job_id matches (tenant ids never leak to a
  * foreign reader); scoping to the owning org returns the real count (positive control).
@@ -2192,20 +2192,20 @@ try {
   return dexecModule("control-plane", script);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// DEP-016 — the m1-spine campaign profile's helpers (ADDITIVE ONLY — nothing above changes).
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// DEP-016 â€” the m1-spine campaign profile's helpers (ADDITIVE ONLY â€” nothing above changes).
 //
 // The profile runs three FIXED Organizations (the per-Organization rollout policy is static env
 // on the replicas, so it must name them before the stack boots): two enabled, one control. The
 // Organization, Company and Agent rows are therefore inserted IF ABSENT, so the profile's
 // usage-suppressed positive-control run can follow its green run on the same stack. Everything
-// below them — issue, target, enrolment code, job, attempt, worker — is fresh per run, and every
+// below them â€” issue, target, enrolment code, job, attempt, worker â€” is fresh per run, and every
 // assertion is scoped to this run's job, never to an Organization total.
 //
 // The job source is `task_run` (the M1 journey's source kind), so the server prices it off the
 // assignee agent's `adapter_config.model` (`resolveAuthoritativeRate`), and a tenant's cost row
 // rolls up to that tenant's agent and Company.
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /** The server dist inside the control-plane image (`pnpm deploy` of @armyofagents/server). */
 const CP_DIST = "/cp-app/dist";
@@ -2577,7 +2577,7 @@ try {
   return dexecModule("control-plane", script);
 }
 
-/** MIG-009 — run the OPERATOR drain CLI inside the control-plane container, with that container's
+/** MIG-009 â€” run the OPERATOR drain CLI inside the control-plane container, with that container's
  * own env (owner DSN + the bounded app/operator pools + the distributed flag), exactly as an
  * operator would during a rollback rehearsal. Returns { status, stdout, stderr, lines } where
  * `lines` are the parsed JSON report lines the CLI prints. */
@@ -2630,7 +2630,7 @@ try {
   return dexecModule("control-plane", script);
 }
 
-/** MIG-009 — every NON-TERMINAL attempt of the named Organizations, with the facts the rehearsal
+/** MIG-009 â€” every NON-TERMINAL attempt of the named Organizations, with the facts the rehearsal
  * has to judge afterwards: its tenant, whether it is LEASED (a leased attempt's cancel goes through
  * a command; an unleased one does not), and its placement disposition. Taken BEFORE the drain, so
  * the rehearsal judges everything the drain will touch and not only what the test seeded. */
@@ -2663,22 +2663,253 @@ try {
   return dexecModule("control-plane", script);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// DEP-018 — the campaign fault matrix's injection + observation helpers
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+// â”€â”€ DEP-019: the WORKER-DRIVEN journey â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//
+// `DEP-016` plays the worker itself. These helpers instead let the DEPLOYED worker do it: the
+// harness only DISPATCHES (seeds a job placed on that worker's own target, with the one secret
+// handle the run capability rides) and then ASSERTS what the worker wrote.
+//
+// â˜… THE SECRET HANDLE IS NOT OPTIONAL, and this is the single least obvious fact on the lane.
+// The OwnedLabelsCapability is minted ONLY in a RESOLVED secret-resolve reply
+// (`applyOwnedLabelsCapability`, server/src/services/secret-broker.ts), and the worker redeems
+// only handles whose `materialization.kind === "env"` and `usePolicy === "sandbox_local_only"`
+// (`packages/worker-daemon/src/lease/secret-redemption.ts`). A job with no such handle produces
+// no resolve round-trip, so `capability === undefined` and the supervisor terminates the attempt
+// `no_run_capability` BEFORE it ever creates a sandbox.
+//
+// Three more facts, each MEASURED on the D1 stack while building this (each one cost a run):
+//   - `handle` must be a UUID. The frozen `jobEnvelopeV1Schema` rejects anything else, and
+//     `buildJobEnvelope` returning null is a `JobLeasingError("internal_unavailable")` â€” the poll
+//     503s for that worker, so ONE malformed handle stalls every job it could have been offered.
+//   - the handle must NOT be owner-bound here. `authorizeSecretResolve` re-checks a denormalized
+//     owner against the locked job's executor AND, for a membership-capable owner, an active
+//     membership; a seeded agent has none, and the resolve is denied.
+//   - the job's `policy_hash` must be the target profile's own `policyHash`.
+
+/** The committed profile the DEPLOYED worker presents (`docker/d1/m1-spine-worker.profile.json`),
+ * mounted into `migrate` (which seeds its target + authorizes its ticket) and into the worker. */
+export const SPINE_DEPLOYED_TARGET_ID = "33333333-3333-4333-8333-333333333333";
+export const SPINE_DEPLOYED_POLICY_HASH = "cccc3333".repeat(8);
+/** The Company secret the run's one handle resolves to. A NAME, never a value; the value is a
+ * throwaway string this seed writes through the server's OWN secret service, under the per-run
+ * master key the override requires. */
+export const SPINE_PROVIDER_SECRET_NAME = "provider:m1-spine";
+
+/** The workerId the DEPLOYED container enrolled as, read from its own target's workers.
+ * `null` when it has not enrolled â€” which the verdict treats as a violation, never a skip. */
+export function queryDeployedWorker({ targetId = SPINE_DEPLOYED_TARGET_ID } = {}) {
+  const params = { targetId };
+  const script = `
+import postgres from "postgres";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  const rows = await sql\`SELECT id FROM workers WHERE execution_target_id = \${P.targetId} AND revoked_at IS NULL ORDER BY enrolled_at DESC\`;
+  const [t] = await sql\`SELECT registered_profile_hash AS "profileHash", provider_constraint_profile->>'digest' AS "providerDigest",
+    device_generation AS "generation", organization_id AS "organizationId" FROM execution_targets WHERE id = \${P.targetId}\`;
+  report({ ok: Boolean(t), workerId: rows[0]?.id ?? null, workerCount: rows.length, target: t ?? null });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script);
+}
+
+/**
+ * Seed ONE worker-driven `task_run` for `tenant`, placed on the DEPLOYED worker's own target.
+ *
+ * `workloadArgs` is how the profile scripts the reference provider: the flags ride the TENANT
+ * COMMAND (`--aoa-fake-usage=suppressed` is the usage positive control), because a worker-driven
+ * journey mints the provider id inside the worker and the harness has no id to `/script`.
+ */
+export function seedSpineWorkerDrivenJob({ tenant, issueId, runId, jobId, attemptId, handleId, workloadArgs = [], target }) {
+  const params = {
+    ...tenant, issueId, runId, jobId, attemptId, handleId, workloadArgs,
+    targetId: SPINE_DEPLOYED_TARGET_ID,
+    policyHash: SPINE_DEPLOYED_POLICY_HASH,
+    secretName: SPINE_PROVIDER_SECRET_NAME,
+    profileHash: target.profileHash,
+    providerDigest: target.providerDigest,
+    generation: target.generation,
+  };
+  const script = `
+import postgres from "postgres";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  // â˜… SEED HYGIENE, and it is REQUIRED rather than tidy. The deployed worker has ONE batch slot,
+  // and a lease row can remain 'active' after its attempt has already reached a terminal state â€”
+  // measured on the live stack as {status:"active", live:true, attempt_status:"succeeded"}. The
+  // lane runs this profile FOUR times against ONE stack (the profile plus three controls), so a
+  // later run's job would never be offered and its case would red on a TIMEOUT rather than on the
+  // thing it asserts. A control that reds for the wrong reason proves nothing, which is the same
+  // failure this ticket already had to fix once.
+  //
+  // SCOPED so it can never touch live work: only leases of THIS deployed worker, and only where
+  // the attempt is ALREADY terminal. A lease on a running attempt is left exactly as it is.
+  await sql\`UPDATE leases l SET status = 'released', released_at = now(), updated_at = now()
+    FROM job_attempts a
+    WHERE a.id = l.attempt_id
+      AND l.status = 'active'
+      AND a.status IN ('succeeded', 'failed', 'cancelled')
+      AND l.worker_id IN (
+        SELECT id FROM workers WHERE execution_target_id = \${P.targetId} AND revoked_at IS NULL
+      )\`;
+  // The Company secret, written through the server's OWN service so the stored material is
+  // encrypted with the same per-run master key the server will decrypt it with.
+  const { createDb } = await import("@armyofagents/db");
+  const { secretService } = await import("${CP_DIST}/services/secrets.js");
+  const svc = secretService(createDb(process.env.DATABASE_URL));
+  if (!(await svc.getByName(P.companyId, P.secretName))) {
+    await svc.create(P.companyId, { name: P.secretName, provider: "local_encrypted", value: "m1-spine-reference-credential" });
+  }
+  await sql\`INSERT INTO issues (id, company_id, title, assignee_agent_id)
+    VALUES (\${P.issueId}, \${P.companyId}, \${"m1-spine worker-driven " + P.jobId.slice(0, 8)}, \${P.agentId})\`;
+  const sourceIntent = { kind: "task_run", runId: P.runId, issueId: P.issueId, assigneeAgentId: P.agentId };
+  const workload = { command: "claude", args: P.workloadArgs, stdinArtifactId: null, maxRuntimeSeconds: 600 };
+  const requirements = { workloadType: "batch", requiredCapabilities: [] };
+  const placementRequest = { policyId: "job-submission-default", policyVersion: 1, requestedTarget: null };
+  await sql\`INSERT INTO jobs
+    (id, organization_id, company_id, workload_type, source_kind, source_intent, input, input_hash,
+     policy_hash, requirements, placement_request, status, available_at,
+     executor_principal_kind, executor_principal_id)
+    VALUES (\${P.jobId}, \${P.organizationId}, \${P.companyId}, 'batch', 'task_run', \${sql.json(sourceIntent)},
+      \${sql.json(workload)}, \${"b".repeat(64)}, \${P.policyHash}, \${sql.json(requirements)},
+      \${sql.json(placementRequest)}, 'queued', now(), 'agent', \${P.agentId})\`;
+  await sql\`INSERT INTO job_attempts
+    (id, organization_id, company_id, job_id, attempt_number, status,
+     placement_disposition, placement_owner, placement_target_id, placement_target_class,
+     placement_target_scope, placement_target_generation, placement_profile_hash,
+     placement_provider_constraint_hash, placement_fallback_disposition, placement_reason_code,
+     placement_mode, placement_lease_eligible, placement_input_digest, placement_policy_digest,
+     placement_decided_at)
+    VALUES (\${P.attemptId}, \${P.organizationId}, \${P.companyId}, \${P.jobId}, 1, 'pending',
+      'selected', 'organization_dedicated', \${P.targetId}, 'organization_dedicated',
+      'organization', \${P.generation}, \${P.profileHash}, \${P.providerDigest}, 'primary', 'target_selected',
+      'active', true, \${"c".repeat(64)}, \${"d".repeat(64)}, now())\`;
+  // A UUID handle, env / sandbox_local_only, on an allow-listed target NAME, NOT owner-bound.
+  await sql\`INSERT INTO job_secret_handles
+    (id, organization_id, job_id, handle, ref_kind, ref_id, owner_principal_kind, owner_principal_id,
+     materialization, materialization_target, use_policy, status, bound_target_generation)
+    VALUES (\${P.handleId}, \${P.organizationId}, \${P.jobId}, \${P.handleId}, 'provider_key', \${P.secretName},
+      NULL, NULL, 'env', 'ANTHROPIC_API_KEY', 'sandbox_local_only', 'active', \${P.generation})\`;
+  report({ ok: true });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script);
+}
+
+/** What the DEPLOYED worker wrote for one attempt: the accepted events WITH the worker id each
+ * carries, the workers that ever held a lease on it, the attempt's status + placed target, and the
+ * `log` messages (which is where the DEP-017 probe summary rides). */
+export function querySpineWorkerDriven({ jobId }) {
+  const params = { jobId };
+  const script = `
+import postgres from "postgres";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  const [attempt] = await sql\`SELECT id, status, placement_target_id AS "targetId" FROM job_attempts WHERE job_id = \${P.jobId}\`;
+  const events = await sql\`SELECT event_type AS "eventType", event FROM job_events WHERE job_id = \${P.jobId} ORDER BY sequence\`;
+  const leases = await sql\`SELECT worker_id AS "workerId" FROM leases WHERE job_id = \${P.jobId}\`;
+  report({
+    ok: Boolean(attempt),
+    attemptStatus: attempt?.status ?? null,
+    attemptTargetId: attempt?.targetId ?? null,
+    // The worker id lives INSIDE the stored frozen event, not in a column.
+    events: events.map((e) => ({ eventType: e.eventType, workerId: e.event?.workerId ?? null })),
+    leaseWorkerIds: leases.map((l) => l.workerId),
+    logMessages: events.filter((e) => e.eventType === "log").map((e) => String(e.event?.payload?.message ?? "")),
+    terminal: events.filter((e) => e.eventType === "terminal").map((e) => e.event?.payload ?? null),
+  });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script);
+}
+
+/**
+ * Wait for the DEPLOYED worker to drive `jobId` to a terminal attempt state.
+ *
+ * Deliberately a POLL of the database and not of the worker: the claim is about what the control
+ * plane durably recorded, so the wait reads the same rows the verdict will. Returns the final
+ * observation either way â€” a timeout is judged by the verdict (as `attempt_not_succeeded`), never
+ * swallowed here.
+ */
+export function awaitSpineWorkerDrivenTerminal({ jobId, timeoutMs = 180_000, intervalMs = 3_000 }) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  for (;;) {
+    const res = querySpineWorkerDriven({ jobId });
+    last = res;
+    const status = res.result?.attemptStatus ?? null;
+    if (status && ["succeeded", "failed", "cancelled"].includes(status)) return res;
+    if (Date.now() >= deadline) return res;
+    // A busy wait on a container exec is the only clock this harness has; `Atomics.wait` blocks
+    // the thread without a timer, which is what a synchronous node:test case needs.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, intervalMs);
+  }
+}
+
+/** DEP-019 Â§2c â€” is any OTHER tenant's attempt placed on the DEPLOYED worker's target, and does
+ * the owning tenant have one (the positive control that the zero is isolation, not an empty
+ * table)? A ROW fact rather than a poll: the deployed worker polls continuously, so "we saw no
+ * offer" cannot tell refusal from timing. */
+export function queryForeignPlacementOnDeployedTarget({ targetId, ownOrganizationId, otherOrganizationIds }) {
+  const script = `
+import postgres from "postgres";
+const P = ${JSON.stringify({ targetId, ownOrganizationId, otherOrganizationIds })};
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  const [t] = await sql\`SELECT organization_id AS "organizationId" FROM execution_targets WHERE id = \${P.targetId}\`;
+  const [foreign] = await sql\`SELECT count(*)::int AS n FROM job_attempts
+    WHERE placement_target_id = \${P.targetId} AND organization_id <> \${P.ownOrganizationId}\`;
+  const [own] = await sql\`SELECT count(*)::int AS n FROM job_attempts
+    WHERE placement_target_id = \${P.targetId} AND organization_id = \${P.ownOrganizationId}\`;
+  const [others] = await sql\`SELECT count(*)::int AS n FROM job_attempts
+    WHERE organization_id = ANY(\${P.otherOrganizationIds})\`;
+  report({ ok: Boolean(t), targetOrganizationId: t?.organizationId ?? null,
+    foreignAttemptsOnDeployedTarget: foreign.n, ownAttemptsOnDeployedTarget: own.n,
+    otherTenantAttemptsAnywhere: others.n });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script);
+}
+
+// DEP-018 â€” the campaign fault matrix's injection + observation helpers
 // (ADDITIVE ONLY: nothing above is modified).
 //
 // Every helper here answers ONE of the two questions the matrix asks of a case:
-//   * did the INJECTION fire? — `composeServiceRuntime`, `tcpProbeFromTestRunner`, plus the
+//   * did the INJECTION fire? â€” `composeServiceRuntime`, `tcpProbeFromTestRunner`, plus the
 //     existing `probeProxyReachable` / `expireLeaseDeadlines` / the provider's own `timedOut`;
-//   * what did the system then DO? — `leaseRenew`, `resolveExecutionSecretHttp`,
+//   * what did the system then DO? â€” `leaseRenew`, `resolveExecutionSecretHttp`,
 //     `requestCancellationInContainer`, `queryJobAttemptsAndCommands`, `queryScopedRowsAsApp`,
 //     `probeLegacyTableIsolation`, `probeToolSurfaceAtUse`.
 //
 // The legacy-table probe is deliberately ONE helper rather than four: acceptance 5's four tables
-// share a single shape — plant the foreign tenant's row, read through the PRODUCTION reader under
-// each tenant, then read AGAIN with the tenant predicate removed — and splitting it would have
+// share a single shape â€” plant the foreign tenant's row, read through the PRODUCTION reader under
+// each tenant, then read AGAIN with the tenant predicate removed â€” and splitting it would have
 // given four chances for one of them to drift into a weaker assertion.
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /** One compose service's container id and start time, from the HOST docker daemon. `startedAt`
  * is what makes a RESTART observable: a restart that did not happen leaves it unchanged, so the
@@ -2806,7 +3037,7 @@ report({ status: res.status, body: safeJson(text) });
 }
 
 /** Mint ONE `job_secret_handles` row for an attempt, so the secrets surface has a durable row to
- * redeem and to read. Owner DSN, like every E6F seed. NO secret VALUE lands here — the table
+ * redeem and to read. Owner DSN, like every E6F seed. NO secret VALUE lands here â€” the table
  * stores an opaque handle and a non-secret pointer, and `refId` deliberately names a secret that
  * does not exist, so no credential is created anywhere by this fixture. */
 export function seedExecutionSecretHandle({ organizationId, jobId, handleId, envTarget = "M1_FAULT_MATRIX_FIXTURE" }) {
@@ -2835,7 +3066,7 @@ try {
 }
 
 /** Count rows of one RLS-protected table for a job, through the NON-OWNER `aoa_app` pool under a
- * given tenant scope — the same channel `queryJobEventsAsApp` uses, generalized to the tables the
+ * given tenant scope â€” the same channel `queryJobEventsAsApp` uses, generalized to the tables the
  * secrets and staged-input surfaces live in. `table` is checked against a fixed allow-list, never
  * interpolated from a caller's free text. */
 export function queryScopedRowsAsApp({ table, jobId, scopeOrganizationId }) {
@@ -2930,26 +3161,26 @@ try {
 }
 
 /**
- * DEP-018 acceptance 5 — the four legacy `companyId` tables the distributed path writes or reads.
+ * DEP-018 acceptance 5 â€” the four legacy `companyId` tables the distributed path writes or reads.
  *
  * Per E2-D03 (LOCKED) these are granted to the non-owner role and carry NO RLS, so acceptance 2's
- * "denied … with RLS" cannot hold for them: the boundary is the QUERY PREDICATE. For each table
+ * "denied â€¦ with RLS" cannot hold for them: the boundary is the QUERY PREDICATE. For each table
  * this probe therefore does three reads on the SAME `aoa_app` pool:
  *
- *   own      — the owner's own request through the PRODUCTION reader, which must return the row;
- *   foreign  — the ATTACKER's identical request through the SAME reader, which must return none;
- *   unscoped — the same read with the tenant predicate REMOVED, which MUST return the owner's row.
+ *   own      â€” the owner's own request through the PRODUCTION reader, which must return the row;
+ *   foreign  â€” the ATTACKER's identical request through the SAME reader, which must return none;
+ *   unscoped â€” the same read with the tenant predicate REMOVED, which MUST return the owner's row.
  *
  * The third is the anti-vacuity control. Without it, `foreign === 0` is equally explained by an
  * empty table, and the case would prove nothing.
  *
  * `plantedBy` names how the victim's row got there, per table:
- *   cost_events / activity_log — written by the REAL ingest during the victim's journey (the
+ *   cost_events / activity_log â€” written by the REAL ingest during the victim's journey (the
  *     JOB-016 pricing projector and the JOB-017 audit writer), never planted by this probe;
- *   task_outputs — planted through the PRODUCTION writer `upsertTaskOutputForIssue`, because the
+ *   task_outputs â€” planted through the PRODUCTION writer `upsertTaskOutputForIssue`, because the
  *     distributed projector only fires on an `artifact_prepared` event, which this lane's
  *     reference provider does not produce;
- *   provider_credentials — planted by owner SQL (aoa_app holds SELECT only, by design).
+ *   provider_credentials â€” planted by owner SQL (aoa_app holds SELECT only, by design).
  */
 export function probeLegacyTableIsolation({ owner, attacker }) {
   const params = { owner, attacker, dist: CP_DIST };
@@ -2968,7 +3199,7 @@ try {
   const appSql = postgres(process.env.AOA_APP_DATABASE_URL, { max: 1 });
   const out = {};
 
-  // ── task_outputs: planted through the PRODUCTION writer, under the owner's Company ──
+  // â”€â”€ task_outputs: planted through the PRODUCTION writer, under the owner's Company â”€â”€
   const taskOutputs = taskOutputService(appDb);
   const planted = await taskOutputs.upsertForIssue(P.owner.companyId, P.owner.issueId, {
     type: "artifact",
@@ -2990,7 +3221,7 @@ try {
     ownIds: ownOutputs.map((r) => r.id),
   };
 
-  // ── activity_log: the rows JOB-017 wrote during the victim's journey ──
+  // â”€â”€ activity_log: the rows JOB-017 wrote during the victim's journey â”€â”€
   const activity = activityService(appDb);
   const ownActivity = await activity.list({ companyId: P.owner.companyId, entityType: "job", entityId: P.owner.jobId });
   const foreignActivity = await activity.list({ companyId: P.attacker.companyId, entityType: "job", entityId: P.owner.jobId });
@@ -3002,7 +3233,7 @@ try {
     ownActions: ownActivity.map((r) => r.action),
   };
 
-  // ── cost_events: the charge the REAL ingest priced during the victim's journey ──
+  // â”€â”€ cost_events: the charge the REAL ingest priced during the victim's journey â”€â”€
   const costs = costService(appDb);
   const ownByAgent = await costs.byAgent(P.owner.companyId);
   const foreignByAgent = await costs.byAgent(P.attacker.companyId);
@@ -3014,10 +3245,10 @@ try {
     unscoped: unscopedCost.length,
   };
 
-  // ── provider_credentials: planted by owner SQL (aoa_app holds SELECT only) and read with the
+  // â”€â”€ provider_credentials: planted by owner SQL (aoa_app holds SELECT only) and read with the
   //    two predicates the fenced device_local arm uses: id = refId AND company_id = <lease's>.
   // owner_user_id is NOT NULL and references the auth user table, so the fixture needs an
-  // owner row; execution_target_id is NOT NULL text. Neither carries any credential VALUE —
+  // owner row; execution_target_id is NOT NULL text. Neither carries any credential VALUE â€”
   // this table stores logical ownership only ("no materialized secret value ever lands here").
   const ownerUserId = "m1fm-owner-" + P.owner.credentialId.slice(0, 8);
   await owner\`INSERT INTO "user" (id, name, email, created_at, updated_at)
@@ -3053,20 +3284,20 @@ process.exit(0);
  *
  * Three arms, because on M1a the surface is DISARMED and a naive "same-tenant call succeeds"
  * control could not exist:
- *   cross      — the victim's LOCAL run under the ATTACKER's companyId -> must be `deny`;
- *   own        — the SAME LOCAL run under the victim's OWN companyId   -> must be `admit`.
+ *   cross      â€” the victim's LOCAL run under the ATTACKER's companyId -> must be `deny`;
+ *   own        â€” the SAME LOCAL run under the victim's OWN companyId   -> must be `admit`.
  *
- * ★ THE PAIR IS THE POINT, and it was WRONG in the first version (Codex P1, PR #573). That version
+ * â˜… THE PAIR IS THE POINT, and it was WRONG in the first version (Codex P1, PR #573). That version
  * put the hostile call on the DISTRIBUTED run, whose refusal M1a's freeze already guarantees for
- * every tenant — so deleting the company-mismatch guard would have left the case green, the hostile
+ * every tenant â€” so deleting the company-mismatch guard would have left the case green, the hostile
  * call denied by the freeze and the unrelated local control still admitted. These two calls now
  * differ ONLY in the companyId, over the SAME run, so they traverse the SAME arms of
  * `classifyToolSurfaceAtUse` up to the mismatch check. Remove that guard and `cross` falls through
  * to "not distributed -> admit", and the case reds.
  *
  * Two further arms are recorded, not used as the control:
- *   crossDistributed — the attacker's companyId with the victim's DISTRIBUTED run;
- *   distributed      — the victim's own DISTRIBUTED run, which is denied because M1a leaves the
+ *   crossDistributed â€” the attacker's companyId with the victim's DISTRIBUTED run;
+ *   distributed      â€” the victim's own DISTRIBUTED run, which is denied because M1a leaves the
  *                      Organization unarmed. That is the freeze posture, not isolation, and the
  *                      ARMED cross-tenant case is CLI-016's (`d2c.tenant.cross.tool_calls`).
  */
