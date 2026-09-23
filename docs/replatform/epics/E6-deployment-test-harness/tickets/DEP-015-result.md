@@ -1,6 +1,6 @@
 # DEP-015 Result — the shipped CI boot lane
 
-**Status:** `complete` (set by the distinct reviewer of attempt 2; the author left it at `gate_review`). *Original line, kept as first written:* "`gate_review`. The **keyed acceptance is PENDING**: it needs one dispatched keyed run from the F8 named list, which is the planning session's to dispatch."
+**Status:** `complete` (set by the distinct reviewer of attempt 2; the author left it at `gate_review`). ★ **Re-affirmed 2026-09-23** by the distinct reviewer of attempt 3, appended as a separate sentence so attempt 2's own wording stays byte-identical: §14 item 27 re-opened this record to `gate_review` by its own status line, and the withdrawal raised in PR #582 is discharged by that attempt. *Original line, kept as first written:* "`gate_review`. The **keyed acceptance is PENDING**: it needs one dispatched keyed run from the F8 named list, which is the planning session's to dispatch."
 **Date (UTC):** `2026-09-21`
 **Epic:** `E6-deployment-test-harness`
 **Plan task:** `E6 implementation-plan §4c DEP-015 — The shipped CI boot lane (M, ≤3 agent-days, M1a)`
@@ -308,6 +308,7 @@ Once the addendum lands, a re-review should be short. Nothing else I checked nee
 |---:|---|---|---|---|
 | 1 | M1 review-batch-2A independent reviewer (Claude Opus 5) | `dbe6f5da2a9316ac3f9762294d87991d7ec6f885` | `changes_requested` | Record only. The header's reviewed revision `1ec5533b5` predates the E6-D001 code (`dbe6f5da2`) that the record describes. §4's CI run `35591595055` was `cancelled`, on `c31dccf87`, with the pre-E6-D001 guard (46 tests). The covering run `35596651522` (policy `106322893461`: 49/49, 53/53) is uncited, and §8's post-merge citation is missing: registration `35598343418` (job `106328314759` skipped, 0 steps) and keyless rehearsal `35600507289` (job `106335219133` success). Code sound: guards green locally, M13 reproduced (2 failed), Codex clean on `dbe6f5da2a`. Acceptance 1 and the enabled half of 6 are OPEN (keyed). |
 | 2 | M1 review-batch-3A independent reviewer (Claude Opus 5) | `60aafb32ec6f8316f92079789cf8814f981f3ed3` | `approved` | §12 verified at source against keyed run `35619555883` (job `106398898162`, 30 steps, `success`) and its artifact `10649025333`: `journey.json` `passed: true`, candidate `dd839129bf…`, `MODE: keyed` / `aoa-base`; tenants a and b `execution_owner="distributed"`, `succeeded`, `verifierExit 0`, usage 8/734 and 8/730, `costUsd: null`; sandbox ids `iofom0nu25ztf3kc5tte1` and `isqx7nvhgf40txm5vc4b6`, 1 line each, on that tenant's own lease and in that tenant's own worker log, `rejected {shape:0, foreignLease:0}`; control c `execution_owner=null`, `failed`, `rolloutState "off"`, 0 jobs. Three distinct Organizations in `tenants.json` (F10 real). Acceptance 2 is now MEASURED: the hard leak scan reported `clean` over 20 files for 28 named secrets including the ed25519 private PEM, and I found no PRIVATE KEY in the downloaded bundle. Attempt 1's (a), (b) and (c) are all delivered by §10. Local rerun of the three pure-node suites: 140/140. All seven acceptance items MET; `Status` flipped to `complete` in a separate commit. **Codex P1 on this review, accepted as real in mechanism and then MEASURED:** the leak scan walks only `$M1_OUT/evidence` and `trackSecret` emits no `::add-mask::`, so the Actions job log is an unprotected surface — but the COMPLETE job log for `106398898162` (2 347 lines) has 0 PEM markers and every base64-shaped run of 60+ chars is a 64-hex docker digest, so acceptance 2 holds on both surfaces for this run. A second P1 — the public half is never registered with the scanner (`prepare` tracks only `privatePem` and its body) — is also real and also measured: `BEGIN PUBLIC KEY` and the ed25519 DER prefixes `MCowBQYDK2VwAyEA` / `MC4CAQAwBQYDK2VwBCIEI` have **0** hits in the job log AND in all 20 artifact files, so acceptance 2 holds for the WHOLE keypair on both surfaces. The two-part standing gap (no log-side control; the public half unregistered) is recommended to the planning session as one change to `trackSecret` — emit `::add-mask::` and register `publicPem` — not fixed in a review commit. |
+| 3 | M1 independent reviewer (Claude Opus 5) | `ae73bcc2a3adf59e17f49699386ecaa4005b2061` | `approved` | §14 item 27 (the deferred absent-log refusal) only — see *Independent review — attempt 3* at the end of this record. Carries one non-blocking finding on the TRUNCATED-log arm. |
 
 ---
 
@@ -1019,3 +1020,63 @@ They are recorded because each would have made the control worse than none:
     record — set by attempt 2's distinct reviewer — is left exactly as written.
 **Status unchanged.** This is a control added after the fact to a run that was already clean; it
 neither re-opens nor re-decides §12's keyed acceptance.
+
+## Independent review — attempt 3 (2026-09-23): §14 item 27, the deferred absent-log refusal
+
+**Reviewer:** M1 independent reviewer (Claude Opus 5), distinct from the author of item 27.
+**Reviewed revision:** `ae73bcc2a3adf59e17f49699386ecaa4005b2061` (PR #574; this branch's HEAD, so
+nothing has moved under it). **Scope:** item 27 only. §12's keyed acceptance is neither re-opened
+nor re-decided, and the `Status` line at the top of this record is not rewritten.
+
+**The precedence change, at source.** Met. In `leakScan` (`scripts/m1-shipped-boot/journey.mjs`)
+`jobLogAbsent` and `absentLogError` are computed but not acted on; the evidence and job-log scans
+run unconditionally; the findings block prints every named secret and key-material hit, appends the
+absent-log `::error::` line alongside them and folds it into the combined summary; only after that
+does the standalone `if (jobLogAbsent)` refusal fire. A refusal to judge the log surface can no
+longer swallow a finding the evidence scan already holds.
+
+**The retitle is a fix, not a rename around the problem.** Met. The case is now `leak scan (phase):
+OUTSIDE CI, with no job log at all, the evidence scan still runs (no silent skip)`, and it runs
+through `leakScanIn(out)` whose default `ci = false` **deletes** `GITHUB_ACTIONS` from the child
+environment rather than inheriting the runner's. The premise the title states is therefore the
+premise the test establishes — which is exactly what was inverted before. Every phase case now goes
+through `leakScanIn`, so none of them inherits the runner's variable.
+
+**The CI counterpart asserts both arms.** Met. `POSITIVE CONTROL: an ABSENT job log fails the scan
+IN CI, and is merely nothing to scan outside it` builds the same fixture twice, spawns once with
+`GITHUB_ACTIONS: 'true'` (asserting exit 1, `job log is ABSENT`, bundle deleted) and once with the
+variable deleted, so the switch is pinned in both directions by one test.
+
+**The positive control the fixture change owed.** Met. `POSITIVE CONTROL: with a job log PRESENT in
+CI, a planted canary still reds and the absent-log line does NOT appear` plants the canary, writes a
+well-formed bracketed `job-log.txt`, and asserts both that the secret is named and that
+`job log is ABSENT` is *absent* — so the new control cannot be satisfied by the refusal it replaced.
+
+**Reproduced on this revision.** `node --test scripts/lib/__tests__/m1-shipped-boot.test.mjs` →
+93/93 with `GITHUB_ACTIONS` unset **and** 93/93 with `GITHUB_ACTIONS=true`, matching §14 item 27.
+The mutation that matters was applied alone and reverted: restoring the short-circuit (moving the
+`jobLogAbsent` refusal above the scans) reds **exactly one** test, `PRECEDENCE: a planted canary is
+still named IN CI when the job log is ABSENT, and both are reported` (92 pass / 1 fail), on the
+assertion that the evidence finding is named. That is the claimed red, and it is specific.
+
+**Finding (non-blocking, filed rather than waived): the TRUNCATED-log refusal still
+short-circuits — the same class item 27 ruled against, one arm over.** In the same `leakScan`, the
+intactness check (item 24, added in this same PR) `rmSync`s the bundle and `fail()`s on an unmatched
+`[log-filter] opened` sentinel **before** `findings` and `keyMaterial` are computed. A run whose job
+log is truncated *and* whose evidence carries a planted secret is told only "the job log is
+TRUNCATED"; the secret is never named, so the operator is not told to rotate it. That is precisely
+the shape item 27's ruling calls never acceptable, and the comment block immediately above it now
+asserts as a general property that "a refusal to judge never suppresses a finding" — which is not
+true of the lines ten below it.
+
+I do not treat this as blocking item 27: item 27's acceptance is scoped to the absent-log arm and
+that arm is met; and because both outcomes delete the bundle, the gap costs operator *messaging*,
+never publication. But the invariant as written in the code overclaims, and the fix is the same
+shape as item 27's — compute the truncation refusal, run the scans, report it alongside. Recommend a
+follow-up that extends the deferral to the truncation arm and narrows the comment to the arm it
+actually describes.
+
+**Disposition: `approved`** for item 27. Every acceptance clause it states is met and re-measured at
+source, its retitle corrects rather than conceals the inverted premise, its positive control is
+real, and the mutation reds a distinct control. The withdrawal of the top-level `Status` raised in
+PR #582 is discharged by this attempt, and `Status: complete` is restored in a separate commit.
