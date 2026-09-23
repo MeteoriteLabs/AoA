@@ -2560,31 +2560,44 @@ A cheap, non-frozen mitigation exists and is deliberately NOT proposed as a fix 
 truncation happened (a metric, a `system`-stream marker event) would make the loss visible without
 touching `worker-protocol`. That is a design decision, not an obvious repair.
 
-**Owner — CLI-008** (unchanged). ~~It bounds Unit F's option space and nothing else; it is not a live
-data-loss defect for any shipped path.~~
+**Owner — CLI-008** (unchanged). It bounds Unit F's option space and nothing else; it is not a live
+data-loss defect for any shipped path.
 
-★ **SUPERSEDED 2026-09-23 (record custodian, accepted Codex P2) — the categorical half is withdrawn,
-and the honest replacement is a stated unknown, not a new claim.** With `DEP-017`'s env probe
-composed on every shipped-boot worker, a `log` event **is** written on a shipped path, so *"not a
-live data-loss defect for any shipped path"* can no longer be asserted flatly — and this section's
-severity note above already says so. The two statements contradicted each other; this note removes
-the contradiction in the direction of the weaker claim.
+★ **RE-ESTABLISHED 2026-09-23 (record custodian), after a withdrawal that was itself wrong — the
+struck sentence is CORRECT and stands; what follows is the derivation it never had.** With `DEP-017`'s env probe composed on every shipped-boot worker, a `log` event **is** written on a
+shipped path — so the sentence needed a reason, which it did not have. It now has one, and the
+sentence holds: the only shipped `log` producer is structurally incapable of truncating.
 
-**Why a bound is NOT established here, measured rather than assumed.** `envProbeLogMessage`
-(`packages/worker-daemon/src/supervisor/env-probe.ts`) is
-`ENV_PROBE_LOG_PREFIX + JSON.stringify(summary)`, and `EnvProbeSummary` is names-and-classes only —
-but it carries **arrays sized by the sandbox's environment**: `redeemedNames`, the `clean` report's
-present/mismatch lists, and `plantedControl.planted` / `.detected`. Their length is bounded by the
-number of env names, which is small in every shipped topology and has **no declared ceiling in the
-type**. So the message is *very probably* orders of magnitude under 65,536 characters and that
-cannot be asserted as a proof. Establishing a real bound — a length cap in `envProbeLogMessage`, or
-a measured maximum from a shipped-boot run — would settle it.
+**★ A BOUND IS ESTABLISHED, and my first attempt at this paragraph had it backwards.** *Corrected
+2026-09-23 on a second accepted Codex P2. It said "a bound is NOT established" because
+`EnvProbeSummary` carries name ARRAYS which I took to be sized by the sandbox's environment. That is
+false, and the refutation was two lines inside the type I had already opened — I read the field list
+and not the doc comment on it.* Measured at source:
+- **The probe NEVER serializes an arbitrary env name.** `EnvProbeReport.unreportedPresentCount`'s own
+  doc comment states the rule: *"Credential-shaped env names the probe did NOT serialize, because
+  their canonical form is not in its own table — **counted, never named**. An env NAME is
+  sandbox-controlled data and, unlike a redeemed value, is not in the run canaries … `presentNames`
+  therefore only ever carries the probe's own tokens."* `envCount`, `unnamedEnvCount` and
+  `unreportedPresentCount` are numbers. So `checked`, `present`, `presentNames`, `allowedPresent` and
+  `allowedMismatch` are all drawn from **fixed tables**, never from the sandbox.
+- **`redeemedNames` is bounded twice over.** It is `Object.keys(spec.env)`, and `synthesiseRunSecrets`
+  accepts only the three names in `PROVIDER_AUTH_ENV_TARGETS` (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+  `AOA_API_KEY` — `packages/worker-daemon/src/lease/secret-redemption.ts`), deduplicated into
+  `spec.env`; upstream, `jobEnvelopeBaseSchema` caps `secretHandles` at **64**
+  (`packages/worker-protocol/src/job.ts`).
+- **`plantedControl.planted` / `.detected`** likewise come from the probe's fixed class table.
 
-**What stands, and what the owner is left with.** The finding still bounds Unit F's option space,
-which is why it stays with `CLI-008`, and the transcript-corruption it names is still not reachable
-from **model output** (`createUsageObserver` never re-emits stdout or the transcript). **Severity
-MEDIUM and Status `open` are deliberately UNCHANGED** — a re-rating on the env-probe path is the
-owner's, not a custodian's.
+**Conclusion: this shipped producer cannot approach the 65,536-character ceiling.** Every unbounded
+input is reduced to a count, and every serialized array is table-sized plus at most three env names.
+So this finding's *"for lower"* argument **survives on the env-probe path**, and the owner sentence
+below is restored rather than left withdrawn. What does **not** come back is the blanket phrasing
+*"nothing emits a `log` event today"*: one is emitted — it simply cannot truncate.
+
+**What stands.** The finding still bounds Unit F's option space, which is why it stays with
+`CLI-008`; the transcript-corruption it names is still not reachable from **model output**
+(`createUsageObserver` never re-emits stdout or the transcript); and, per the bound above, the one
+shipped `log` producer cannot truncate. **Severity MEDIUM and Status `open` are UNCHANGED** — as
+they were before this custodian pass touched the finding.
 
 ---
 
