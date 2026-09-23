@@ -99,38 +99,25 @@ on:
       # not `packages/sandbox-fake-provider/src`, and the `scripts/lib` entries are per file).
       - "scripts/lib/m1-spine-assertions.mjs"
       - "packages/sandbox-fake-provider/**"
-      # DEP-016 (Codex, PR #566) — the PRODUCTION code whose behaviour the m1-spine profile asserts.
-      # Without these, a change to the ingest's pricing or audit registration, to placement, to the
-      # rollout source or to the MIG-009 drain could land on this branch and the spine evidence would
-      # never be refreshed. Deliberately a NAMED LIST rather than `server/**`: this lane takes ~45
-      # minutes and `cancel-in-progress: false` queues it, so the trade is "every file that decides
-      # the verdict" against "every server edit".
-      - "server/src/services/job-events.ts"
-      - "server/src/services/job-accepted-usage-pricing.ts"
-      - "server/src/services/job-accepted-activity-audit.ts"
-      - "server/src/services/job-accepted-output-projection.ts"
-      - "server/src/services/job-budget-cost-bridge.ts"
-      - "server/src/services/job-authoritative-rate.ts"
-      # The RATE TABLE itself: the spine pins the exact 81-cent charge, so a re-price here is
-      # precisely what must re-run this lane (Codex, PR #566). `costs.ts` carries the billing-type
-      # inference and the cost writer the charge goes through.
-      - "server/src/services/internal-agent/cost-model.ts"
-      - "server/src/services/costs.ts"
-      - "server/src/services/job-audit-bridge.ts"
-      - "server/src/services/job-placement.ts"
-      - "server/src/services/job-placement-transaction.ts"
-      - "server/src/services/canary-credential-binding.ts"
-      - "server/src/services/distributed-execution-drain-trigger.ts"
-      - "server/src/services/distributed-execution-drain-trigger-store.ts"
-      # The drain the trigger DELEGATES to, and its store + audit writer: the trigger is process
-      # wiring, so a regression in the cancel/audit implementation lives in these (Codex, PR #566).
-      - "server/src/services/job-distributed-drain.ts"
-      - "server/src/services/job-distributed-drain-store.ts"
-      - "server/src/services/job-control-audit.ts"
-      - "server/src/cli/drain-distributed-execution.ts"
-      - "server/src/config/distributed-execution.ts"
-      - "server/src/config/distributed-execution-rollout-source.ts"
-      - "packages/db/src/repositories/tenant/job-control.ts"
+      # ★ DEP-016 — THE PRODUCTION CODE THE m1-spine PROFILE ASSERTS, AS A CLASS, NOT A LIST.
+      # This started as a named list of the ~20 files the profile's verdicts read (ingest, the three
+      # seam registrations, the pricing cores, placement, the rollout source, the MIG-009 drain, the
+      # rate table). Codex then found four more, one round at a time — the delegated drain, its
+      # store, the audit writer, the rate table — which is the shape of an enumeration that cannot
+      # be complete: the profile asserts END-TO-END behaviour, so almost any server or db change can
+      # decide its verdict. The enumeration is therefore replaced by the two trees it kept reaching
+      # into. Codex's own first framing of this offered exactly that alternative ("include the
+      # production source paths that determine this profile's result, or move the spine into an
+      # unfiltered workflow").
+      #
+      # COST, STATED RATHER THAN HIDDEN: this fires a ~45-minute lane (with `cancel-in-progress:
+      # false`, so runs queue) on any `server/src` or `packages/db/src` edit. That is a deliberate
+      # reversal, FOR THIS LANE, of the older practice recorded in `docker/d1/campaign.env` — where
+      # `server/src` was off the filter and a change that needed the lane bumped a nonce by hand.
+      # A nonce bump is a human remembering; this is not. The planning session may narrow it back if
+      # the queue cost outweighs that.
+      - "server/src/**"
+      - "packages/db/src/**"
       - "scripts/lib/d1-evidence-bundle.mjs"
       - "scripts/lib/image-admission.mjs"
       # DEP-014: the lane now RUNS the admission verifier on every image it builds.
