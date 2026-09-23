@@ -307,6 +307,7 @@ Once the addendum lands, a re-review should be short. Nothing else I checked nee
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
 | 1 | M1 review-batch-2A independent reviewer (Claude Opus 5) | `dbe6f5da2a9316ac3f9762294d87991d7ec6f885` | `changes_requested` | Record only. The header's reviewed revision `1ec5533b5` predates the E6-D001 code (`dbe6f5da2`) that the record describes. §4's CI run `35591595055` was `cancelled`, on `c31dccf87`, with the pre-E6-D001 guard (46 tests). The covering run `35596651522` (policy `106322893461`: 49/49, 53/53) is uncited, and §8's post-merge citation is missing: registration `35598343418` (job `106328314759` skipped, 0 steps) and keyless rehearsal `35600507289` (job `106335219133` success). Code sound: guards green locally, M13 reproduced (2 failed), Codex clean on `dbe6f5da2a`. Acceptance 1 and the enabled half of 6 are OPEN (keyed). |
+| 2 | M1 review-batch-3A independent reviewer (Claude Opus 5) | `60aafb32ec6f8316f92079789cf8814f981f3ed3` | `approved` | §12 verified at source against keyed run `35619555883` (job `106398898162`, 30 steps, `success`) and its artifact `10649025333`: `journey.json` `passed: true`, candidate `dd839129bf…`, `MODE: keyed` / `aoa-base`; tenants a and b `execution_owner="distributed"`, `succeeded`, `verifierExit 0`, usage 8/734 and 8/730, `costUsd: null`; sandbox ids `iofom0nu25ztf3kc5tte1` and `isqx7nvhgf40txm5vc4b6`, 1 line each, on that tenant's own lease and in that tenant's own worker log, `rejected {shape:0, foreignLease:0}`; control c `execution_owner=null`, `failed`, `rolloutState "off"`, 0 jobs. Three distinct Organizations in `tenants.json` (F10 real). Acceptance 2 is now MEASURED: the hard leak scan reported `clean` over 20 files for 28 named secrets including the ed25519 private PEM, and I found no PRIVATE KEY in the downloaded bundle. Attempt 1's (a), (b) and (c) are all delivered by §10. Local rerun of the three pure-node suites: 140/140. All seven acceptance items MET; `Status` flipped to `complete` in a separate commit. |
 
 ---
 
@@ -463,3 +464,87 @@ terms** and says nothing about capability.
 **Status:** this record's acceptance items are now met. `Status` stays `gate_review` until a
 **distinct reviewer** re-reviews (attempt 2) — attempt 1 was `changes_requested` on the citation
 defects, which §10 fixed.
+
+---
+
+## Independent review — attempt 2 (2026-09-23)
+
+**Reviewer:** M1 review-batch-3A independent reviewer (Claude Opus 5). I did not author DEP-015, I am not the planning session, and I am not the attempt-1 reviewer.
+**Reviewed revision:** 60aafb32ec6f8316f92079789cf8814f981f3ed3 (the program tip). The keyed candidate `dd839129bf82347867180133029f242a0b4c9ed5`, the attempt-1 revision `dbe6f5da2a9316ac3f9762294d87991d7ec6f885` and the follow-up merges `d0f065b13` and `9f9cdaf55` are all ancestors of it.
+**Disposition:** `approved`
+**Attempt:** 2 (attempt 1, above, was `changes_requested` on citation defects; §10 fixed them and §12 records the keyed acceptance)
+
+**Disposition: `approved`.** Attempt 1 asked for three record corrections and left acceptance 1 and
+the enabled half of acceptance 6 open on the keyed run. §10 makes all three corrections, and §12
+records the keyed run as MET. **I verified §12's claims at source against the run and its retained
+artifact, not against the record's summary of them.** Every acceptance item is now met, so I set
+`Status` to `complete` in a separate commit.
+
+**§12, checked claim by claim against run `35619555883`.**
+
+| §12 claim | What the run says |
+|---|---|
+| Dispatched on candidate `dd839129bf82347867180133029f242a0b4c9ed5` | `workflow_dispatch`, headSha `dd839129bf82347867180133029f242a0b4c9ed5`, conclusion **`success`**, single job `shipped-boot` **`106398898162`**, 30 steps, all `success`. The checkout step logs `HEAD is now at dd839129b Merge pull request #563`. |
+| Mode / template `keyed`, `aoa-base` | Step *Validate the named candidate* and step *Prepare*: `MODE: keyed`, `E2B_TEMPLATE: aoa-base`. |
+| Keyless rehearsal `35618468241` — success | `workflow_dispatch` on the same candidate, conclusion `success`. |
+| `journey.json` `"passed": true` | Artifact `10649025333` (`m1-shipped-boot-keyed-35619555883`, 20 files, not expired): `journey.json` `passed: true`, `mode: "keyed"`, `candidate: dd839129bf…`. |
+| Tenants a and b: routed `distributed`, `succeeded`, verifier exit **0** | `outcomes.a.run.execution_owner = "distributed"`, `status: "succeeded"`, both distributed ids set, `verifierExit: 0`, `verdict.ok: true`; same for b. The job log's own lines: `dispatch: tenant a (enabled) … owner=distributed verifierExit=0 capabilityProven=false → PASS`, and the same for b. |
+| Usage tokens 8/734 and 8/730 | `usage_json` `inputTokens: 8, outputTokens: 734` for a; `8 / 730` for b. |
+| Real E2B sandbox ids `iofom0nu25ztf3kc5tte1` / `isqx7nvhgf40txm5vc4b6`, one line each, on that tenant's own lease | `providerEvidence` for a: `sandboxIds: ["iofom0nu25ztf3kc5tte1"]`, `sandboxLogLines: 1`, `leaseIds: ["9830f917-…"]`, `rejected: {shape: 0, foreignLease: 0}`, `polls: 1`; for b: `isqx7nvhgf40txm5vc4b6`, lease `20ebf335-…`. Each id also appears in **that tenant's own** worker log (`logs-m1-worker-a.txt`, `logs-m1-worker-b.txt`) as `"sandboxId":"…"`; `logs-m1-worker-c.txt` has none. Both ids are 21 characters of `[a-z0-9]`, so they satisfy `E2B_SANDBOX_ID_SHAPE` and no test double's hyphenated id could. |
+| Control tenant c: **not** distributed, run `failed` | `outcomes.c.run.execution_owner = null`, `status: "failed"`, `error: "Command not found in PATH: \"claude\""`, `rolloutResolution.rolloutState = "off"` for its own Organization, `signals.jobsForOrganization: 0`. The log line is `owner=null verifierExit=null → PASS` — the lane's check passed **because** the control was refused, which is exactly the distinction §12 draws. |
+| `capabilityProven = false` throughout | `capabilityProven: false` for a and b, with the `clause 6` reason naming CLI-008 Unit F's unbuilt output capture. A PASS for `M1a` by the triage's terms, and it says nothing about capability — as §12 states. |
+| No `cost_events` row proven here | `usage_json.costUsd` is `null` on both; `signals.cost.costEventsForRun: 0` with the note naming E3-F037/JOB-016. §12's "must not be read as" list is accurate. |
+| The three named steps succeeded; the leak scan did not fail the run | *Probe the presign store from the adapter-manager's seat* → `PRESIGN_PROBE_OK status=200`; *Run the journey* `success`; *Collect the evidence (redacted)* `success`; *Scan the evidence for job secrets* → `leak-scan: 20 evidence file(s) scanned for 28 named job secret(s) in raw/base64/base64url form: clean`. |
+
+**Acceptance 2 is now measured on the keyed run, not only "met in design".** Attempt 1 noted that
+the lane redacted but did not ASSERT. It does now: `leakScan` (`journey.mjs`) walks the evidence
+directory, runs `scanEvidenceForSecrets` over every file in raw/base64/base64url form, and on any
+match **deletes the bundle** and fails; the upload step is gated on it. `trackSecret` registers the
+generated ed25519 private PEM twice — whole and body-only — among the 28 named secrets, and the run
+reported `clean` over 20 files. I also grepped the downloaded artifact myself: no
+`BEGIN … PRIVATE KEY` in any retained file.
+
+**Multi-tenant (F10) is real in the keyed run.** `tenants.json` carries three distinct Organizations
+with three distinct Companies and agents, and `companiesToOrganizations` pins each Company to its own
+Organization. Two were enabled and each reached its own E2B sandbox on its own lease; the third was
+refused the distributed path. That is a three-Organization proof, not an assertion.
+
+**What attempt 1 asked for, and whether §10 delivered it.**
+
+- **(a) Re-point the reviewed revision.** §10 names `dbe6f5da2a9316ac3f9762294d87991d7ec6f885` as the
+  reviewed revision and keeps `1ec5533b5…` as superseded. Done, and the header's original text is
+  left as written, which is the right way to record a correction.
+- **(b) Cite the covering run.** §10 cites `35596651522` with `policy` `106322893461` and the
+  49/49 and 53/53 counts, and records that `35591595055` was `cancelled` on `c31dccf87` with the
+  pre-E6-D001 guard at 46 tests. Done.
+- **(c) Cite the registration and keyless runs.** §10 cites registration `35598343418` (job
+  `106328314759`, `skipped`, 0 steps) and keyless `35600507289` (job `106335219133`, 28 steps).
+  Done.
+
+**Re-run locally at the tip.** `node --test scripts/check-staging-manifest.test.mjs
+scripts/lib/__tests__/m1-shipped-boot.test.mjs scripts/check-m1-shipped-boot-shape.test.mjs` →
+**140 tests, 140 pass, 0 fail** (the three suites have grown since attempt 1's 49 + 53, because
+`DEP-017` and the #561/#563 follow-ups added cases to the same files). `node
+scripts/check-finding-ownership.mjs` is OK.
+
+**Acceptance items (E6 plan `### DEP-015`) — final.**
+
+| # | Attempt 1 | Now |
+|---|---|---|
+| 1 | OPEN (keyed pending) | **MET** — run `35619555883`, verified above. |
+| 2 | Met in design | **MET and measured** — the hard leak scan reported `clean` over 20 files for 28 secrets, including the private PEM, on the keyed run itself. |
+| 3 | Evidenced | **MET**, unchanged. |
+| 4 | Evidenced (E6-D001) | **MET**, unchanged. |
+| 5 | Met in design | **MET** — the keyed spend happened on a named candidate, dispatched by the planning session under F8. |
+| 6 | Control half only | **MET** — both enabled tenants ran the distributed journey; the control stayed legacy with `rolloutState: "off"`. |
+| 7 | Evidenced | **MET**, unchanged. |
+
+**One thing a later reader must not lose, carried forward from §12 rather than softened.** The
+control tenant's own run FAILED (`adapter_failed`, no `claude` on the control-plane image's PATH).
+What tenant c proves is refusal of the distributed path, and nothing about the health of the legacy
+path. §12 says so; no gate record may cite it otherwise. The other two exclusions §12 names — no
+`cost_events` proof here (that is `DEP-016`'s, and it is now proven there on the `m1-spine` lane),
+and no `usage` CARDINALITY (also `DEP-016`'s, and likewise now proven) — are accurate as written for
+this lane.
+
+Nothing is pending, so I set `Status` to `complete` in a separate commit.
