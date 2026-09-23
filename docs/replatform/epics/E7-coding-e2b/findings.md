@@ -4096,7 +4096,23 @@ ruling has improvised a boundary — which the row says in terms.
 
 ## E7-F039 — the symlink refusal is a check-then-read pair: a swap between `lstat` and the read is exported through the link's target, and the re-hash refusal passes
 
-**Status:** open · **Owner:** `CLI-012` (`epics/E7-coding-e2b/tickets/CLI-012-design.md`, no result doc) · **Severity:** MEDIUM
+**Status:** open · **Owner:** `CLI-012` · **Successor:** `CLI-017` · **Severity:** MEDIUM
+★ *Updated 2026-09-23 (CLI-012 build).* **Superseded:** *"**Owner:** `CLI-012`
+(`epics/E7-coding-e2b/tickets/CLI-012-design.md`, no result doc)"* — `CLI-012-result.md` now exists,
+so `check-finding-ownership` reads that ticket as shipped and requires a successor.
+**What `CLI-012` DELIVERED:** the branch measurement the ruling demanded (`e2b@2.30.5` exposes **no**
+no-follow or handle-bound read — `FilesystemReadOpts` is `{gzip, streamIdleTimeoutMs}` over
+`{requestTimeoutMs, signal}` — so the pre-authorized second means was taken), the per-entry `lstat`
+over `Filesystem.getInfo` (`E2bTransport.statEntry`), and the recheck applied **at the read
+boundary** in `E2bSandboxProvider.#readArtifactBytes`, which both `digestArtifact` and
+`exportArtifact` read through — with a control that mutates **between enumeration and the read** and
+whose swapped-in target hashes identically, so the existing re-hash check provably cannot catch it.
+**What REMAINS, and why it is `CLI-017`'s:** the **real-run** swap attempt is unreachable until
+`CLI-017-A` ships the SD-1b directive (before it, a real run writes nothing under `R` and there is
+nothing to swap), and this residual's **bound is SD-5**, which is `CLI-017-B`. Acceptable outcome
+(i), the `lstat` refusal, is built; outcome (ii), SD-5 refusing the bytes, is `CLI-017-B`'s. **A swap
+that produces a stored artifact containing the planted canary is still a FAIL, and it is `CLI-017`'s
+to run and record.**
 **Filed:** 2026-09-23, with ruling **F7** (`../decisions.md`, `E7-D11`). Raised by Codex on PR #575,
 verified by reading the code before filing, and **ruled a bounded residual rather than a blocker** by
 the planning session under F2.
@@ -4162,3 +4178,79 @@ route is **not obviously** a breach. **Measure it if the route is taken; do not 
 
 **Blocks gate:** no. It does not block `M1b`, and it is **not closed by `CLI-012` shipping a
 `lstat`** — only by the swap-attempt acceptance passing, and ultimately by the atomic read.
+
+## E7-F040 — the SD-5 export scanner is the one bounded-operation seam that carries no abort signal, and whether that matters is `CLI-017-B`'s to decide
+
+**Status:** open · **Owner:** `CLI-017-B` · **Severity:** LOW
+
+**What was measured.** `CLI-012`'s round-5 sweep checked every `boundedBySignal` site in
+`E2bSandboxProvider` (5) and every SDK call reachable beneath one, for the class *"the deadline
+bounds the CALLER but not the OPERATION"*. Three carried the defect and were fixed —
+`E2bTransport.readFile`, `listDir` and `statEntry`, each now threading the op's own signal into the
+SDK request and each pinned by an **abort-fired** proof rather than a timing-only test. One did
+not, and is recorded here rather than silently judged:
+
+**The site.** `E2bSandboxProvider.exportArtifact` wraps the SD-5 scan in `boundedBySignal`, but the
+injected callback's own signature is `scanExportBytes(bytes, sandboxId)` — **no signal**. So a
+scanner that overran the deadline would be abandoned, not cancelled.
+
+**Why it was NOT fixed under `CLI-012`.** Two reasons, both stated so a later reader can overturn
+them on evidence rather than on taste. The harm class that motivated the other three does not
+apply as built: the scanner is an **in-process callback**, so an abandoned scan holds no pooled
+connection and streams no tenant bytes anywhere — it burns CPU the process was going to hold
+anyway. And the signature belongs to the ticket that supplies the implementation, so widening it
+from here would be `CLI-012` designing `CLI-017-B`'s interface.
+
+**What would make it real, and what the owner owes.** If `CLI-017-B`'s scanner does any REMOTE or
+IO-bound work — a lookup against a secret set held out of process, a streaming scan — then it is
+the same class as the three fixed here, and the seam must take a signal, with the same abort-fired
+control (assert the scanner RECEIVED a signal and that it FIRED; a test that only checks the
+caller returned on time passes against the defect verbatim). If it stays a pure in-process
+literal-value scan over bytes already in hand, this closes as not-applicable, with the measurement
+recorded.
+
+**Filed:** 2026-09-23 by `CLI-012` (PR #576), from its own family sweep rather than from a review
+finding — the ruling was to sweep the class, and a site the sweep deliberately left alone is part
+of the sweep's result, not an omission from it.
+
+## E7-F041 — the producer's refusal channel is bounded only by the ACCEPTED-file cap, so a listing of entries that are all refused still emits one record per entry
+
+**Status:** open · **Owner:** `unowned` · **Severity:** LOW
+
+**What it is.** `createExportRequestProducer` calls `onRefused` per rejected entry, and production
+wires that to a `logger.warn`. `CLI-012` (PR #576, round 5) bounded that channel by aggregating at
+the **accepted**-file cap: once `requests.length` reaches `MAX_OUTPUT_FILES` no later entry can ever
+be admitted, so one refusal carrying a count is emitted and the scan stops.
+
+★★★ **That bound is reachable only through ACCEPTANCE, and refusals do not advance the counter.**
+So a listing made up of entries that are all refused — 100,000 symlinks, or 100,000 oversized files
+— never reaches the cap, and every one of them emits its own refusal record. The
+log-amplification channel `CLI-012` set out to close is closed for the *valid-file* shape and open
+for the *refused-entry* shape, which is the cheaper one for a tenant to produce.
+
+**Verified at source before filing**, on `b48ad8b43`: the `output_symlink_refused`,
+`output_too_large` and `output_path_escaped` branches each `refuse(...)` and `continue` without
+touching `requests`, so the aggregating branch above them is never reached.
+
+**Severity, and why it is LOW rather than higher.** No byte leaves the sandbox and no bound on
+exported data is affected — the file, byte and depth caps are untouched and the produced list is
+still correct. The damage is operational: a tenant-controlled write amplification into the
+worker's log sink.
+
+**What would close it.** A bound on the refusal CHANNEL itself rather than on acceptance — emit
+the first N refusals per reason and then aggregate the remainder into one record carrying a count,
+or cap total refusal emissions per invocation. The existing log-bound test
+(`export-request-producer.test.ts`, the 5,000-entry tail arm) is the shape to extend: assert the
+number of emissions is bounded for a listing that is *entirely* refused, with a non-vacuity arm
+showing the entries really were there and really were refused.
+
+**Why `unowned` rather than a named ticket.** `CLI-012` owns this surface and is **shipped**
+(`CLI-012-result.md`, `Status: gate_review`), and no chartered ticket downstream owns the
+producer's refusal channel: `CLI-017` owns the SD-1b directive and SD-5, neither of which touches
+it. Naming `CLI-017` here would be an invented owner, which the ownership manifest exists to
+prevent. Recorded as unowned **on the record** so the next ticket touching
+`export-request-producer.ts` inherits it visibly.
+
+**Filed:** 2026-09-23. Raised by Codex on PR #576 (round 6) against `CLI-012`'s own round-5 fix,
+verified at source, and **filed rather than fixed** by the planning session's standing ruling that
+after the round-5 push anything further on `#576` becomes a named finding rather than another fix.

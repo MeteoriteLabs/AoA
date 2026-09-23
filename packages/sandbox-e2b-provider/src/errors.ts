@@ -44,3 +44,43 @@ export class SandboxEgressDeniedError extends Error {
     this.destinationClass = destinationClass;
   }
 }
+
+/**
+ * CLI-012, planning-session ruling on §11.9 (2026-09-23) — **SD-5's refusal, shipped BEFORE
+ * SD-5's scanner.** No export scanner is configured, or the one configured is not callable.
+ *
+ * ★★★ FAIL-CLOSED ON PRESENCE, NEVER ON A FLAG. `E7-D11` rules SD-5 REQUIRED before `M1b`'s
+ * campaign, but until `CLI-017-B` supplies the scanner the only thing closing that window was a
+ * PROSE precondition — which in this programme is the *"a check that nothing runs is not a
+ * check"* class. Codex proposed closing it by deferring the producer's composition; the ruling
+ * refused that (it would un-promote `E5-2` under `E5-D07` ruling 4, and it protects only the one
+ * path someone remembered to defer) and ordered this instead: the export boundary itself refuses
+ * while the scanner is absent. Every caller is covered, including callers nobody defers, and the
+ * ship order inverts correctly — `CLI-017-B` flips this on against an interface that already
+ * refuses without it.
+ *
+ * ★ REFUSED BEFORE THE READ, so the bytes are not even materialised, let alone uploaded.
+ */
+export class SandboxExportScannerUnavailableError extends Error {
+  constructor() {
+    super("artifact export refused: no export secret scanner is configured (SD-5 fail-closed)");
+    this.name = "SandboxExportScannerUnavailableError";
+  }
+}
+
+/**
+ * CLI-012 — the scanner ran and did NOT clear the bytes: it rejected, or it threw.
+ *
+ * ★ A THROWN SCANNER IS A REFUSAL, NOT A BYPASS. A scanner that fails to complete has witnessed
+ * nothing, and "the check errored" must never read as "the check passed".
+ *
+ * ★ THE SCANNER'S OWN MESSAGE NEVER RIDES OUT. It has seen the file's bytes and may have been
+ * handed the grant, so interpolating it here would be the exfiltration channel the scan exists to
+ * close. Fixed string, deliberately.
+ */
+export class SandboxExportScannerRefusedError extends Error {
+  constructor() {
+    super("artifact export refused: the export secret scanner did not clear the bytes");
+    this.name = "SandboxExportScannerRefusedError";
+  }
+}

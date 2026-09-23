@@ -55,7 +55,8 @@ function makeStubTransport() {
       if (!b) throw new Error(`not found: ${path}`);
       return b;
     },
-    listDir: async (_sid, path) => [...fs.keys()].filter((p) => p.startsWith(path)),
+    // CLI-012 — entries, not bare paths (see `FileStagingTransport.listDir`).
+    listDir: async (_sid, path) => [...fs.keys()].filter((p) => p.startsWith(path)).map((p) => ({ path: p })),
   };
   return { transport, fs, writeFiles };
 }

@@ -10,7 +10,7 @@
     },
     "packages/adapter-manager": {
       "mode": "floor",
-      "count": 11
+      "count": 21
     },
     "packages/adapter-utils": {
       "mode": "floor",
@@ -22,11 +22,11 @@
     },
     "packages/browser-runtime": {
       "mode": "floor",
-      "count": 9
+      "count": 11
     },
     "packages/db": {
       "mode": "floor",
-      "count": 58
+      "count": 63
     },
     "packages/plugins": {
       "mode": "floor",
@@ -38,11 +38,11 @@
     },
     "packages/provider-wire": {
       "mode": "floor",
-      "count": 3
+      "count": 7
     },
     "packages/sandbox-e2b-provider": {
       "mode": "pinned",
-      "count": 21
+      "count": 22
     },
     "packages/sandbox-fake-provider": {
       "mode": "pinned",
@@ -58,7 +58,7 @@
     },
     "packages/worker-daemon": {
       "mode": "pinned",
-      "count": 172
+      "count": 173
     },
     "packages/worker-keystore": {
       "mode": "pinned",
@@ -78,7 +78,7 @@
     },
     "server": {
       "mode": "floor",
-      "count": 1501
+      "count": 1584
     },
     "tests": {
       "mode": "pinned",
@@ -86,7 +86,7 @@
     },
     "ui": {
       "mode": "floor",
-      "count": 553
+      "count": 555
     }
   }
 }

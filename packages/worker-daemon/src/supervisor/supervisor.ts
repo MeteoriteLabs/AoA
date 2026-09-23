@@ -44,6 +44,7 @@ import {
   type ProviderOpContext,
   type ResourceLabels,
   type SandboxProvider,
+  type SandboxOutputEntry,
   type StagedFileRequest,
 } from "./provider.js";
 import type { RunCanaryCoordinator } from "./run-canaries.js";
@@ -252,6 +253,16 @@ export interface SupervisorDeps {
   readonly resolveExportArtifacts?: (input: {
     handoff: LeaseHandoff;
     exec: ExecuteResult;
+    /**
+     * CLI-012 (E5-D07) — THE PER-RUN SANDBOX VIEW, additive on DAT-009-3c's `{handoff, exec}`.
+     *
+     * ★ THE PRODUCER IS COMPOSED AT THE BOOT ROOT AND HAS NO SANDBOX OF ITS OWN. It never names
+     * a sandbox id: this closure is bound to THIS run's sandbox and THIS run's `run.effect`, so
+     * enumeration passes the same fence gate `digestArtifact`/`exportArtifact` do and cannot
+     * become a second, quieter door onto a gated action. It also honours the window latch, so
+     * an enumeration that resolves after the window closed hands nothing back.
+     */
+    enumerate: (root: string) => Promise<readonly SandboxOutputEntry[]>;
   }) => Promise<readonly ArtifactExportRequest[]>;
   /** DAT-009-3c — ONE budget for the whole export window (producer + every file), default 30 s.
    * On the networked lane it is further clamped so destroy keeps `EXPORT_TEARDOWN_RESERVE_MS`. */
@@ -1150,11 +1161,21 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       },
     };
 
+    // CLI-012 — the per-run enumeration view. Latched exactly like `digest`/`export` above: a
+    // listing that resolves after the window ended must not hand an abandoned producer a list it
+    // would go on to mint grants from.
+    const enumerate = async (root: string): Promise<readonly SandboxOutputEntry[]> => {
+      assertOpen();
+      const result = await run.effect.enumerateOutputs(sandboxId, root, run.makeCtx());
+      assertOpen();
+      return result.entries;
+    };
+
     let phase: "produce" | "sequence" = "produce";
     const work = (async () => {
-      const requests = await resolveExportArtifacts({ handoff, exec });
+      const requests = await resolveExportArtifacts({ handoff, exec, enumerate });
       phase = "sequence";
-      return exportArtifacts({ handoff, exporter, requests });
+      return exportArtifacts({ handoff, exporter, requests, isOpen: () => open });
     })();
     // A raced-out window leaves `work` running; its eventual rejection is expected and handled.
     work.catch(() => undefined);
@@ -1166,7 +1187,18 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         report("timed_out", phase, "deadline");
         return;
       }
-      report("success", phase, "exported", raced.length);
+      // ★ TRUTHFUL, NOT OPTIMISTIC (CLI-012, `E5-D07` ruling 7). The window now gets a partial
+      // outcome rather than all-or-throw, so `success` means "every named file committed". A
+      // window that committed some and refused others reports `failed` with the FIRST refusal's
+      // stage and reason and the count that DID commit — reporting `success` because something
+      // got through would make a per-file refusal invisible to the operator, which is the whole
+      // reason the classification exists.
+      const firstFailure = raced.failures[0];
+      if (firstFailure) {
+        report("failed", firstFailure.stage, firstFailure.reason, raced.exported.length);
+        return;
+      }
+      report("success", phase, "exported", raced.exported.length);
     } catch (err) {
       open = false;
       if (err instanceof ArtifactExportFailedError) {

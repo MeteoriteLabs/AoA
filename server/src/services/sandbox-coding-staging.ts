@@ -33,7 +33,14 @@ import { buildActorGatedMemoryBundle } from "./sandbox-coding-memory-bundle.js";
 export interface FileStagingTransport {
   writeFiles(sandboxId: string, files: readonly { path: string; bytes: Uint8Array }[]): Promise<void>;
   readFile(sandboxId: string, path: string): Promise<Uint8Array>;
-  listDir(sandboxId: string, path: string): Promise<readonly string[]>;
+  /**
+   * ★ CLI-012 (ruling F7, `E7-D11`) — the entries carry METADATA, not bare paths.
+   * (Superseded: `listDir(sandboxId: string, path: string): Promise<readonly string[]>;`.)
+   * Only `path` is named here, so this seam stays provider-neutral and `E2bTransport` stays
+   * STRUCTURALLY ASSIGNABLE to it while carrying its own `sizeBytes`/`symlink` besides —
+   * which is the property the comment above claims and this line has to keep true.
+   */
+  listDir(sandboxId: string, path: string): Promise<readonly { readonly path: string }[]>;
 }
 
 /** A declared runtime input (declared snapshot file / approved input). Its bytes are

@@ -27,6 +27,7 @@ import {
   type CleanupResult,
   type CreateResult,
   type CreateSandboxSpec,
+  type EnumerateOutputsResult,
   type ExecuteInput,
   type ExecuteResult,
   type HealthMode,
@@ -42,6 +43,7 @@ import {
   type ProviderOpContext,
   type ProviderOperation,
   type RestoreResult,
+  type SandboxEnumerationMode,
   type SandboxProvider,
   type StopResult,
 } from "./provider.js";
@@ -76,6 +78,8 @@ export function createNoopProvider(): SandboxProvider {
   const healthMode: HealthMode = "none";
   const artifactExportMode: ArtifactExportMode = "none";
   const fileStagingMode: FileStagingMode = "none";
+  // CLI-012 — the null object enumerates nothing, and says so.
+  const sandboxEnumerationMode: SandboxEnumerationMode = "none";
   // SVC-008a — the null object supervises nothing, and says so. The trio below THROWS
   // rather than returning an `unknown` observation: an unsupported capability must never
   // be called again, while a returned `unknown` means "escalate and retry" — one value
@@ -88,6 +92,7 @@ export function createNoopProvider(): SandboxProvider {
     healthMode,
     artifactExportMode,
     fileStagingMode,
+    sandboxEnumerationMode,
     processSupervisionMode,
     create(_spec: CreateSandboxSpec, _ctx: ProviderOpContext): Promise<CreateResult> {
       throw new NoopProviderReachedError("create");
@@ -133,6 +138,9 @@ export function createNoopProvider(): SandboxProvider {
     },
     stageFiles(): Promise<StageFilesResult> {
       throw new NoopProviderReachedError("stage_files");
+    },
+    enumerateOutputs(_sandboxId: string, _root: string, _ctx: ProviderOpContext): Promise<EnumerateOutputsResult> {
+      throw new NoopProviderReachedError("enumerate_outputs");
     },
     startProcess(_input: ExecuteInput, _ctx: ProviderOpContext): Promise<ProcessStartResult> {
       throw new NoopProviderReachedError("start_process");

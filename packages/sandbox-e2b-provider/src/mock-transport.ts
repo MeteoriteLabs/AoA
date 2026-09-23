@@ -15,8 +15,9 @@
 // -----------------------------------------------------------------------------
 
 import { decodeCreateFaults, decodeExecuteFaults } from "./directives.js";
-import { filesOnlyFromListing } from "./list-dir-contract.js";
+import { filesOnlyFromListing, type ListingEntry } from "./list-dir-contract.js";
 import {
+  E2bReadBoundExceededError,
   E2bProcessLaunchNotAcknowledgedError,
   E2bTransportEgressBlockedError,
   E2bTransportNotFoundError,
@@ -38,6 +39,7 @@ import {
   type E2bStagedFile,
   type E2bStreamHandlers,
   type E2bTransport,
+  type E2bDirEntry,
 } from "./transport.js";
 
 interface MockRecord {
@@ -50,6 +52,16 @@ interface MockRecord {
   destroyFailuresRemaining: number;
   /** CLI-002/D1 — deterministic in-memory filesystem: absolute path → bytes. */
   fs: Map<string, Uint8Array>;
+  /**
+   * CLI-012 (ruling F7) — SYMLINKS, modelled because the CONTRACT has them.
+   *
+   * ★ `E7-F014`'s class is a mock that models the OPPOSITE contract to the real binding, so a
+   * suite proves a behaviour production does not have. The live SDK reports a symlink as
+   * `type: "file"` WITH a `symlinkTarget` and `files.read` FOLLOWS it (P-011 probe, arm
+   * `S-P5`). This map reproduces exactly that: a link path is listed as a file, carries the
+   * marker, and reads through to its target's bytes.
+   */
+  links: Map<string, string>;
   /** SVC-008a — every `getInfo`/`list` read of this record THROWS. Models the branch that
    * used to be laundered into `{delivered: true}` from `signal`'s own catch (E7-F034). */
   readFails: boolean;
@@ -126,6 +138,7 @@ export class MockE2bTransport implements E2bTransport {
       ignoreKill: faults.ignoreKill,
       destroyFailuresRemaining: faults.destroyFailures,
       fs: new Map<string, Uint8Array>(),
+      links: new Map<string, string>(),
       readFails: faults.readFails,
       stateUnknown: faults.stateUnknown,
       refuseLaunch: faults.refuseLaunch,
@@ -305,31 +318,81 @@ export class MockE2bTransport implements E2bTransport {
     }
   }
 
-  async readFile(sandboxId: string, path: string): Promise<Uint8Array> {
+  /**
+   * CLI-012 — the read FOLLOWS a link, exactly as the live SDK does, and honours `maxBytes`.
+   *
+   * ★ A mock that refused a link here would be `E7-F014`'s class: it would make the symlink
+   * refusal look enforced when the only thing refusing it was the double.
+   */
+  async readFile(sandboxId: string, path: string, opts?: { readonly maxBytes?: number }): Promise<Uint8Array> {
     const record = this.#requireRecord(sandboxId);
+    const resolved = record.links.get(path) ?? path;
+    const bytes = record.fs.get(resolved);
+    if (bytes === undefined) throw new E2bTransportNotFoundError(`${sandboxId}:${path}`);
+    const maxBytes = opts?.maxBytes;
+    // ★ REFUSED BEFORE THE COPY, so the "never allocates the oversized buffer" property the
+    // real streaming binding has is the one this double models too.
+    if (typeof maxBytes === "number" && bytes.byteLength > maxBytes) {
+      throw new E2bReadBoundExceededError(path, maxBytes);
+    }
+    return Uint8Array.from(bytes);
+  }
+
+  /** CLI-012 (`E7-F039`) — the `lstat` half: describes the PATH, never its target. */
+  async statEntry(sandboxId: string, path: string): Promise<E2bDirEntry> {
+    const record = this.#requireRecord(sandboxId);
+    const target = record.links.get(path);
+    if (target !== undefined) {
+      const bytes = record.fs.get(target);
+      return { path, sizeBytes: bytes?.byteLength ?? 0, symlink: true };
+    }
     const bytes = record.fs.get(path);
     if (bytes === undefined) throw new E2bTransportNotFoundError(`${sandboxId}:${path}`);
-    return Uint8Array.from(bytes);
+    return { path, sizeBytes: bytes.byteLength, symlink: false };
+  }
+
+  /** Test-only (CLI-012): plant a symlink at `path` pointing at `target`. */
+  plantSymlink(sandboxId: string, path: string, target: string): void {
+    this.#requireRecord(sandboxId).links.set(path, target);
+  }
+
+  /** Test-only (CLI-012): write bytes directly, as the agent would. */
+  plantFile(sandboxId: string, path: string, bytes: Uint8Array): void {
+    this.#requireRecord(sandboxId).fs.set(path, Uint8Array.from(bytes));
   }
 
   /** CLI-010 (E7-D09) — the SAME contract as the real binding: the in-memory fs holds files
    * only, so the typed listing is every file strictly under `path` PLUS each implied
    * directory between it and `path` (so the entry-count bound counts what a real recursive
    * listing would), handed to the one contract enforcer. */
-  async listDir(sandboxId: string, path: string): Promise<readonly string[]> {
+  async listDir(sandboxId: string, path: string): Promise<readonly E2bDirEntry[]> {
     const record = this.#requireRecord(sandboxId);
     const prefix = `${path.replace(/\/+$/, "")}/`;
-    const entries = new Map<string, "file" | "dir">();
-    for (const p of record.fs.keys()) {
-      if (!p.startsWith(prefix) || p.length === prefix.length) continue;
-      entries.set(p, "file");
+    const entries = new Map<string, ListingEntry>();
+    const addDirs = (p: string): void => {
       const segments = p.slice(prefix.length).split("/");
       for (let i = 1; i < segments.length; i++) {
         const dir = `${prefix}${segments.slice(0, i).join("/")}`;
-        if (!entries.has(dir)) entries.set(dir, "dir");
+        if (!entries.has(dir)) entries.set(dir, { path: dir, type: "dir", size: 0 });
       }
+    };
+    for (const [p, bytes] of record.fs) {
+      if (!p.startsWith(prefix) || p.length === prefix.length) continue;
+      entries.set(p, { path: p, type: "file", size: bytes.byteLength });
+      addDirs(p);
     }
-    return filesOnlyFromListing(path, [...entries].map(([p, type]) => ({ path: p, type })));
+    // ★ A LINK IS LISTED AS A FILE WITH A TARGET, which is what the live SDK does.
+    for (const [p, target] of record.links) {
+      if (!p.startsWith(prefix) || p.length === prefix.length) continue;
+      entries.set(p, {
+        path: p,
+        type: "file",
+        size: record.fs.get(target)?.byteLength ?? 0,
+        symlinkTarget: target,
+      });
+      addDirs(p);
+    }
+    return filesOnlyFromListing(path, [...entries.values()]);
   }
 
   /** Test-only: current live sandbox count (zero after a full converge). */

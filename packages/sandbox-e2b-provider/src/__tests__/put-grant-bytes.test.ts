@@ -26,6 +26,17 @@ import { grantPutHeaders } from "@armyofagents/worker-daemon";
 import { E2bSandboxProvider, putGrantBytes } from "../e2b-provider.js";
 import { MockE2bTransport } from "../mock-transport.js";
 
+/**
+ * CLI-012 (SD-5, planning-session ruling on §11.9) — a PRESENT, CLEAN export scanner.
+ *
+ * ★ EVERY export now refuses while no scanner is configured, fail-closed on its PRESENCE. These
+ * suites assert other properties of the export path, so they supply a clean one; the refusal
+ * itself is proved, with its positive control and its anti-vacuity arm, in
+ * `enumerate-and-bounded-read.test.ts`.
+ */
+const CLEAN_SCAN = (): void => undefined;
+
+
 const enc = (s: string) => new TextEncoder().encode(s);
 const hex = (b: Uint8Array) => createHash("sha256").update(b).digest("hex");
 const b64 = (b: Uint8Array) => createHash("sha256").update(b).digest("base64");
@@ -185,7 +196,7 @@ describe("DAT-009-3e — exportArtifact bounds the upload by ctx.deadlineMs (Cod
 
   async function providerWith(performUploadGrant: (g: ArtifactUploadGrantV1, b: Uint8Array, s?: AbortSignal) => Promise<void>) {
     const transport = new MockE2bTransport();
-    const p = new E2bSandboxProvider({ transport, performUploadGrant });
+    const p = new E2bSandboxProvider({ scanExportBytes: CLEAN_SCAN, transport, performUploadGrant });
     const created = await p.create({ resourceLabels: LABELS, command: "c", args: [], env: {}, workloadType: "batch" }, {
       deadlineMs: 60_000,
       idempotencyKey: "c-1",
@@ -219,7 +230,7 @@ describe("DAT-009-3e — exportArtifact bounds the upload by ctx.deadlineMs (Cod
 
   it("★ a stalled sandbox READ is bounded by the same budget (Codex P1, PR #557): export", async () => {
     const transport = new StallingReadTransport();
-    const p = new E2bSandboxProvider({ transport, performUploadGrant: async () => undefined });
+    const p = new E2bSandboxProvider({ scanExportBytes: CLEAN_SCAN, transport, performUploadGrant: async () => undefined });
     const created = await p.create({ resourceLabels: LABELS, command: "c", args: [], env: {}, workloadType: "batch" }, {
       deadlineMs: 60_000,
       idempotencyKey: "c-read-stall",
@@ -231,7 +242,7 @@ describe("DAT-009-3e — exportArtifact bounds the upload by ctx.deadlineMs (Cod
 
   it("★ a stalled sandbox READ is bounded by the same budget: digest", async () => {
     const transport = new StallingReadTransport();
-    const p = new E2bSandboxProvider({ transport });
+    const p = new E2bSandboxProvider({ scanExportBytes: CLEAN_SCAN, transport });
     const created = await p.create({ resourceLabels: LABELS, command: "c", args: [], env: {}, workloadType: "batch" }, {
       deadlineMs: 60_000,
       idempotencyKey: "c-read-stall-d",
@@ -256,7 +267,7 @@ describe("DAT-009-3e — exportArtifact bounds the upload by ctx.deadlineMs (Cod
         return typeof value === "function" ? value.bind(target) : value;
       },
     });
-    const p = new E2bSandboxProvider({ transport: counting });
+    const p = new E2bSandboxProvider({ scanExportBytes: CLEAN_SCAN, transport: counting });
     const created = await p.create({ resourceLabels: LABELS, command: "c", args: [], env: {}, workloadType: "batch" }, {
       deadlineMs: 60_000,
       idempotencyKey: "c-d0",

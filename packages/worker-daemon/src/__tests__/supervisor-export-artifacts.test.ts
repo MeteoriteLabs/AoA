@@ -234,7 +234,9 @@ describe("DAT-009-3c — the export window's placement", () => {
       seenHandoff = input.handoff;
       eventsAtSequencer = sink.events.map((e) => e.eventType);
       expect(input.requests).toEqual([REQUEST]);
-      return [];
+      // ★ CLI-012 (E5-D07 ruling 7) — the sequencer returns a PER-FILE OUTCOME, not a bare
+      // array. (Superseded: `return [];`.)
+      return { exported: [], failures: [] };
     };
     const { metrics, incs } = spyMetrics();
     const supervisor = createSupervisor(
@@ -370,7 +372,7 @@ describe("DAT-009-3c — hook absent is byte-identical (anti-vacuity control)", 
           producerCalls += 1;
           return [REQUEST];
         },
-        exportArtifacts: async () => [],
+        exportArtifacts: async () => ({ exported: [], failures: [] }),
       }),
     );
     const running = supervisor.accept(handoff);
@@ -606,7 +608,7 @@ describe("DAT-009-3c — a withdrawn authority refuses before the grant reaches 
           producerCalls += 1;
           return [REQUEST];
         },
-        exportArtifacts: async () => [],
+        exportArtifacts: async () => ({ exported: [], failures: [] }),
       }),
     );
     supervisorRef.current = supervisor;
@@ -642,25 +644,34 @@ describe("DAT-009-3c — no log line or metric label carries a path, a grant url
     }
   });
 
-  it("ArtifactExportFailedError carries a path-free reason; the message still names the path for its thrower", async () => {
+  it("the sequencer's OUTCOME carries a path-free reason; the path-bearing message never leaves it", async () => {
+    // ★ CLI-012 (E5-D07 ruling 7) — the classified failure is now RETURNED, not thrown out of
+    // the loop. (Superseded assertions: `expect(err).toBeInstanceOf(ArtifactExportFailedError)`
+    // and friends, taken off a `.catch`.) The path-free property is STRONGER for it: the
+    // message that names the tenant-authored path is no longer reachable by a caller at all.
     const c = echoClient({ grantRejectReason: "stale_fence" });
     const seq = realSequencer(c);
     const exporter: SandboxArtifactExporter = {
       digest: async () => ({ sha256: SHA, sizeBytes: Buffer.byteLength(BODY) }),
       export: async () => ({ objectKey: "x" }),
     };
-    const err = await seq({ handoff: makeHandoff(), exporter, requests: [REQUEST] }).catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(ArtifactExportFailedError);
-    expect((err as ArtifactExportFailedError).reason).toBe("stale_fence");
-    expect((err as ArtifactExportFailedError).stage).toBe("grant");
+    const outcome = await seq({ handoff: makeHandoff(), exporter, requests: [REQUEST] });
+    expect(outcome.failures).toEqual([{ stage: "grant", reason: "stale_fence" }]);
+    expect(JSON.stringify(outcome)).not.toContain(PATH);
 
-    const digestErr = await seq({
+    const digestOutcome = await seq({
       handoff: makeHandoff(),
       exporter: { ...exporter, digest: async () => Promise.reject(new Error(`ENOENT ${PATH}`)) },
       requests: [REQUEST],
-    }).catch((e: unknown) => e);
-    expect((digestErr as ArtifactExportFailedError).reason).toBe("digest_failed");
-    expect((digestErr as ArtifactExportFailedError).reason).not.toContain(PATH);
+    });
+    expect(digestOutcome.failures).toEqual([{ stage: "digest", reason: "digest_failed" }]);
+    expect(JSON.stringify(digestOutcome)).not.toContain(PATH);
+
+    // ★ THE CLASS ITSELF STILL NORMALISES, proven directly so the property is not left resting
+    // on a code path no caller reaches: free text — including a path — becomes `unknown`.
+    const direct = new ArtifactExportFailedError("digest", PATH, "id", `ENOENT ${PATH}`, `ENOENT ${PATH}`);
+    expect(direct.reason).toBe("unknown");
+    expect(direct.message).toContain(PATH);
   });
 });
 
@@ -746,7 +757,7 @@ describe("DAT-009-3c — networked lane: the export budget is clamped inside the
   it("★ the window's deadline is min(30 s, capExpiresAt − now − 30 s)", async () => {
     const scheduled: number[] = [];
     const supervisor = createSupervisor(
-      networkedDeps(T0 + 40_000, { resolveExportArtifacts: async () => [REQUEST], exportArtifacts: async () => [] }, scheduled),
+      networkedDeps(T0 + 40_000, { resolveExportArtifacts: async () => [REQUEST], exportArtifacts: async () => ({ exported: [], failures: [] }) }, scheduled),
     );
     await supervisor.accept(makeHandoff());
     expect(scheduled[scheduled.length - 1]).toBe(10_000);
@@ -767,7 +778,7 @@ describe("DAT-009-3c — networked lane: the export budget is clamped inside the
             producerCalls += 1;
             return [REQUEST];
           },
-          exportArtifacts: async () => [],
+          exportArtifacts: async () => ({ exported: [], failures: [] }),
         },
         scheduled,
       ),
@@ -788,7 +799,7 @@ describe("DAT-009-3c — networked lane: the export budget is clamped inside the
           return setTimeout(fn, ms);
         },
         resolveExportArtifacts: async () => [REQUEST],
-        exportArtifacts: async () => [],
+        exportArtifacts: async () => ({ exported: [], failures: [] }),
       }),
     );
     await supervisor.accept(makeHandoff());

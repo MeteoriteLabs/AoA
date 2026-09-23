@@ -52,7 +52,12 @@ describe("CLI-002/D1 — staging fs primitives (mock transport, no key)", () => 
       { path: "/other/c.txt", bytes: enc("c") },
     ]);
     const listed = await transport.listDir(sandboxId, "/work");
-    expect([...listed].sort()).toEqual(["/work/a.txt", "/work/b.txt"]);
+    // ★ CLI-012 — entries, not bare paths. (Superseded: `expect([...listed].sort()).toEqual(
+    // ["/work/a.txt", "/work/b.txt"])`.)
+    expect(listed).toEqual([
+      { path: "/work/a.txt", sizeBytes: 1, symlink: false },
+      { path: "/work/b.txt", sizeBytes: 1, symlink: false },
+    ]);
   });
 
   it("readFile of a missing sandbox or file throws the transport not-found denial", async () => {

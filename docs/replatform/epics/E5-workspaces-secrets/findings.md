@@ -442,7 +442,33 @@ asserting the ctx a provider receives never exceeds the window that is racing it
 
 ## E5-F009 - an artifact is read whole into the adapter-manager's memory before any size check
 
-**Status:** open
+**Status:** `resolved` (resolving revision recorded in
+`../E7-coding-e2b/tickets/CLI-012-result.md`) - **CLI-012**, 2026-09-23. *(Superseded:
+`**Status:** open`.)*
+
+**How it was closed, and it is the BOUNDED READ, not the pre-digest check.**
+`E2bTransport.readFile` gained an optional `maxBytes`; `RealE2bTransport.readFile` honours it by
+asking the SDK for `format: "stream"` and refusing at the chunk that would cross the cap
+(`readStreamBounded`, which cancels the stream and never allocates past the bound), and
+`E2bSandboxProvider.#readArtifactBytes` - the ONE place both `digestArtifact` and `exportArtifact`
+read through - passes `E2B_MAX_ARTIFACT_BYTES` (25 MiB). So the enlarged file is never materialised
+on either path. The cheap arm is there too: `createExportRequestProducer`
+(`packages/worker-daemon/src/lease/export-request-producer.ts`) applies the `SD-6` admission bounds
+from listing metadata BEFORE any read, so the common oversized case costs no read at all.
+
+★ **The measurement behind the streaming branch.** `e2b@2.30.5`'s
+`Filesystem.read(path, {format: "stream"})` resolves a `ReadableStream<Uint8Array>`
+(`dist/index.d.ts`), so no new transport operation was needed here either - the same finding this
+entry's own update predicted for `size`.
+
+★ **Proven by the case this entry demanded**: a file inside the cap at enumeration and over it at
+digest is refused and never allocated
+(`packages/sandbox-e2b-provider/src/__tests__/enumerate-and-bounded-read.test.ts`, *"a file that
+GREW between enumeration and digest is refused, not materialised"*, beside a `readStreamBounded`
+arm that counts the chunks the source offered and asserts the stream was cancelled).
+
+**The original entry, kept as written:**
+
 **Severity:** MEDIUM (a shared-process resource exposure on a path with no production producer yet;
 it is not a data-integrity or cross-tenant defect)
 **Filed:** 2026-09-23 (`DAT-009-3e`), verified at source.

@@ -45,6 +45,24 @@ export function shellJoin(command: string, args: readonly string[]): string {
  * its `.message` is "exit status N" (the "command not found" text is in `.stderr`),
  * so a 127 command exit is never mis-read as a sandbox-not-found.
  */
+/**
+ * CLI-012 (Codex P2, PR #576) — is this specifically a FILE/PATH not-found, as opposed to a
+ * missing sandbox?
+ *
+ * ★ MEASURED, NOT GUESSED. The installed `e2b@2.30.5` declares `FileNotFoundError` and
+ * `SandboxNotFoundError` as two distinct subclasses of the (deprecated) `NotFoundError` in
+ * `dist/index.d.ts`, so the two cases really are distinguishable at source.
+ *
+ * ★ FAIL-CLOSED BY CONSTRUCTION. It answers TRUE only for a positively named file-not-found.
+ * The ambiguous shapes `isE2bNotFound` also accepts — the bare deprecated `NotFoundError`, a
+ * `SandboxError` carrying a 4xx, any name merely containing "notfound" — answer FALSE, so an
+ * unclassifiable failure is treated as a missing SANDBOX (an error) and never as an empty
+ * directory (a normal, silent "no output").
+ */
+export function isE2bFileNotFound(err: unknown): boolean {
+  return err instanceof Error && err.name === "FileNotFoundError";
+}
+
 export function isE2bNotFound(err: unknown): boolean {
   const name = err instanceof Error ? err.name : "";
   if (
