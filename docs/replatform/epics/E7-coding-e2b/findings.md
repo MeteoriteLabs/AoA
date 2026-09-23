@@ -2442,8 +2442,10 @@ production: `SupervisorDeps.observeRun` is the only producer (`supervisor.ts:774
 uncomposed (E7-F016 §(a) records the same zero). And with no distributed run at all (E7-F018), the
 `events` array is empty by `:396`'s `bothIds` guard.~~
 
-★ **Corrected 2026-09-23 (record custodian), verified at source — BOTH sentences above are false at
-HEAD, and the narrow fact that survives is stated here. Severity, Status and owner are UNCHANGED.**
+★ **Corrected 2026-09-23 (record custodian), verified at source — the PRODUCER sentence is false at
+HEAD; the `bothIds` sentence is still TRUE under its own stated condition. Severity, Status and owner
+are UNCHANGED.** *★ Narrowed on an accepted Codex P2: this note first said "BOTH sentences above are
+false", which overstated it and contradicted the third bullet below.*
 - **`observeRun` is COMPOSED.** `WRK-018` (PR #546): `composeDispatchRuntime` sets
   `observeRun: createUsageObserver({ metrics: deps.metrics })`
   (`packages/worker-daemon/src/lifecycle/dispatch-runtime.ts`;
@@ -2452,10 +2454,12 @@ HEAD, and the narrow fact that survives is stated here. Severity, Status and own
   live env-absence probe calls `events.log({ stream: "system", … envProbeLogMessage(probeSummary) })`
   whenever `deps.envProbe` is composed, and `docker/m1-boot/docker-compose.m1-boot.yml` sets
   `AOA_WORKER_ENV_PROBE=1` on **every** shipped-boot worker.
-- **The `events` array is not empty either.** `store.listJobEvents(attemptId)` returns the attempt's
-  lifecycle events (`attempt_started`, `terminal`, and now `usage`), and the clause-4 scan reads
-  every returned payload. The `bothIds` guard leaves it empty only when there is **no distributed
-  run at all**, which is the condition the struck sentence relied on.
+- **The `events` array claim is NOT refuted — it is narrowed to the condition it already named.**
+  The `bothIds` guard does still assign `events = []` when there is **no distributed run at all**,
+  exactly as the struck sentence says, and that path is unchanged. What is no longer available is
+  reading it as a general emptiness claim: **on a real distributed run**,
+  `store.listJobEvents(attemptId)` returns the attempt's lifecycle events (`attempt_started`,
+  `terminal`, and now `usage`) and the clause-4 scan reads every returned payload.
 
 **The surviving narrow fact, which is what this finding actually rests on:** `createUsageObserver`
 returns `usage` and **never re-emits stdout or the transcript as `log` events** (its own docstring
