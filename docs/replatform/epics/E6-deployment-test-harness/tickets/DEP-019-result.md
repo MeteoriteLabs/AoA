@@ -369,6 +369,30 @@ So runs `35849990593` and `35839618733` are evidence for the code as it stood BE
 verdict is recorded in §11d. Nothing above is rewritten — those runs happened and are cited for the
 trees they ran on.
 
+### 11d. ★★★ THE MERGE BROKE A SIBLING JOB, AND IT WAS MY CHANGE THAT BROKE IT
+
+The probe on the merged tree (`35853547516`, head `3d55763d3`) concluded `failure`. **`m1-spine`
+PASSED (job `107156617625`) and so did `d1-merge-train` (`107156617274`); the failure is
+`m1-fault-matrix` (`107156617510`)** — `DEP-018`'s new job, which arrived in the merge — at its step
+*"Bring up the ONE-worker topology"*.
+
+**Cause, measured from that job's own env block: it is MINE.** `m1-fault-matrix` sets
+`SPINE_OVERRIDE_PATH: docker/d1/m1-spine.override.yml` and reuses this ticket's override wholesale.
+`DEP-019` made the secrets master key a REQUIRED `${…:?}` variable and added the per-run keypair, so
+that job's `docker compose up` began failing the RENDER. It was green on the program branch before
+this branch merged; the two tickets are only in contact through that file.
+
+**Fixed, and deliberately not by weakening the requirement.** Defaulting the master key would
+restore the silent-fresh-key failure the `:?` exists to prevent. Instead the generation moved into
+ONE script, `scripts/generate-d1-spine-keys.mjs`, called by BOTH jobs — so the next requirement the
+topology gains cannot drift between two inline copies, which is exactly how this one appeared.
+
+★ A redaction defect of my own fell out of writing it, and is fixed here: the first version printed
+`::add-mask::<key>` unconditionally. That is a workflow command the RUNNER consumes — outside
+Actions nothing consumes it and the line is simply the key on a terminal. The key is now emitted
+ONLY into `GITHUB_ENV`, and only when running under Actions; locally the script says so and prints
+nothing. Verified both ways.
+
 ★ The merge with the program tip (`499ec4d1c`) that sits between those heads touched **no** input of
 this lane: `git diff ec0a2d132 13ed9c7f7 -- server/src packages/db/src packages/shared/src
 packages/worker-protocol/src packages/sandbox-fake-provider docker docker-compose.d1.yml tests/d1

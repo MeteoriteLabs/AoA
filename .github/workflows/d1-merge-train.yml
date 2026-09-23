@@ -472,23 +472,7 @@ jobs:
       # logs but is still an environment file, so the master key is registered with `::add-mask::`
       # first — a value that reaches a log is a value that reaches the evidence bundle.
       - name: Generate the per-run control-plane keypair and secrets master key
-        run: |
-          set -euo pipefail
-          mkdir -p docker/d1/runtime-keys
-          node -e '
-            const { generateKeyPairSync } = require("node:crypto");
-            const { writeFileSync } = require("node:fs");
-            const { privateKey, publicKey } = generateKeyPairSync("ed25519");
-            writeFileSync("docker/d1/runtime-keys/control-plane-signing-key.pem", privateKey.export({ type: "pkcs8", format: "pem" }), { mode: 0o644 });
-            writeFileSync("docker/d1/runtime-keys/control-plane-public-key.pem", publicKey.export({ type: "spki", format: "pem" }), { mode: 0o644 });
-          '
-          test -s docker/d1/runtime-keys/control-plane-signing-key.pem
-          test -s docker/d1/runtime-keys/control-plane-public-key.pem
-          master="$(node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("base64"))')"
-          echo "::add-mask::${master}"
-          echo "AOA_D1_SPINE_SECRETS_MASTER_KEY=${master}" >> "$GITHUB_ENV"
-          echo "generated: 1 ed25519 keypair (public half gates the provider wire) + 1 secrets master key"
-
+        run: node scripts/generate-d1-spine-keys.mjs
       - name: Bring up the ONE-worker m1-spine topology
         run: |
           set -euo pipefail
@@ -722,6 +706,13 @@ jobs:
             echo "AOA_D1_CONTROL_PLANE_IMAGE=${CP_TAG}"
             echo "AOA_D1_WORKER_IMAGE=${WK_TAG}"
           } > docker/d1/.env
+
+      # DEP-019 — this job reuses `docker/d1/m1-spine.override.yml`, which requires the per-run
+      # control-plane keypair and the `${…:?}` secrets master key. Measured on probe run
+      # 35853547516: without this step the bring-up fails the compose RENDER. ONE script, called by
+      # both jobs, so the two cannot drift the next time the topology gains a requirement.
+      - name: Generate the per-run control-plane keypair and secrets master key
+        run: node scripts/generate-d1-spine-keys.mjs
 
       - name: Bring up the ONE-worker topology
         run: |
