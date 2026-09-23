@@ -25,7 +25,12 @@ import process from "node:process";
 import { evaluateExecutionCensus } from "./lib/execution-census.mjs";
 
 export const MANIFEST_RELATIVE_PATH = "scripts/test-execution-census.json";
-const SEARCH_ROOTS = ["scripts", "docker"];
+// ★ `tests` joined the roots for DEP-016 (Codex, PR #566): the live D1 profiles are `*.test.mjs`
+// invoked by a workflow step like every other file here, and leaving them undiscovered meant the
+// census could stay green while a live gate profile stopped running. Declaring them forced the
+// D1 lane to NAME each file it runs instead of globbing `tests/d1/e6f-*.test.mjs`, which is what
+// makes the `runs` verdict checkable at all.
+const SEARCH_ROOTS = ["scripts", "docker", "tests"];
 const EXCLUDED = new Set(["node_modules", ".git", "dist", "coverage", ".pnpm-store"]);
 
 /**

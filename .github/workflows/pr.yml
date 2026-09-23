@@ -589,7 +589,12 @@ jobs:
       # was placed distributed, a positive control that is itself legacy) and to the committed
       # override's text. The LIVE half runs in the d1-merge-train `m1-spine` job.
       - name: m1-spine profile verdict self-test (DEP-016)
-        run: node --test scripts/lib/__tests__/m1-spine-assertions.test.mjs
+        run: |
+          node --test scripts/lib/__tests__/m1-spine-assertions.test.mjs
+          # Its pure half (the bundle assembler + the deliberate-failure fixture) needs no Docker;
+          # the one live case skips without AOA_D1_LIVE=1. It was invoked by NOTHING until the
+          # census learned to look in `tests/` (DEP-016, Codex PR #566).
+          node --test tests/d1/evidence-retention.test.mjs
 
       - name: Embedded-secret scan self-test (DSK-003)
         run: node --test scripts/lib/__tests__/embedded-secret-scan.test.mjs

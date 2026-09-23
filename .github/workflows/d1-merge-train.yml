@@ -99,6 +99,28 @@ on:
       # not `packages/sandbox-fake-provider/src`, and the `scripts/lib` entries are per file).
       - "scripts/lib/m1-spine-assertions.mjs"
       - "packages/sandbox-fake-provider/**"
+      # DEP-016 (Codex, PR #566) — the PRODUCTION code whose behaviour the m1-spine profile asserts.
+      # Without these, a change to the ingest's pricing or audit registration, to placement, to the
+      # rollout source or to the MIG-009 drain could land on this branch and the spine evidence would
+      # never be refreshed. Deliberately a NAMED LIST rather than `server/**`: this lane takes ~45
+      # minutes and `cancel-in-progress: false` queues it, so the trade is "every file that decides
+      # the verdict" against "every server edit".
+      - "server/src/services/job-events.ts"
+      - "server/src/services/job-accepted-usage-pricing.ts"
+      - "server/src/services/job-accepted-activity-audit.ts"
+      - "server/src/services/job-accepted-output-projection.ts"
+      - "server/src/services/job-budget-cost-bridge.ts"
+      - "server/src/services/job-authoritative-rate.ts"
+      - "server/src/services/job-audit-bridge.ts"
+      - "server/src/services/job-placement.ts"
+      - "server/src/services/job-placement-transaction.ts"
+      - "server/src/services/canary-credential-binding.ts"
+      - "server/src/services/distributed-execution-drain-trigger.ts"
+      - "server/src/services/distributed-execution-drain-trigger-store.ts"
+      - "server/src/cli/drain-distributed-execution.ts"
+      - "server/src/config/distributed-execution.ts"
+      - "server/src/config/distributed-execution-rollout-source.ts"
+      - "packages/db/src/repositories/tenant/job-control.ts"
       - "scripts/lib/d1-evidence-bundle.mjs"
       - "scripts/lib/image-admission.mjs"
       # DEP-014: the lane now RUNS the admission verifier on every image it builds.
@@ -309,8 +331,25 @@ jobs:
           # not a lease-race defect. Serial execution makes the live campaign deterministic
           # (each scenario gets the stack to itself); the per-file docker-exec cost already
           # dominates, so the wall-clock impact is small.
+          # ★ ENUMERATED, not globbed (Codex, PR #566). The execution census verifies a `runs`
+          # declaration by looking for the file's path in this step's run block, and a glob names
+          # none of them — so every E6F file was declared-but-unverifiable. Listing them makes the
+          # census's verdict real; a NEW e6f file is then undeclared and the census says so, which
+          # is the failure mode worth having.
+          FOUNDATION="tests/d1/e6f-01-lease-races.test.mjs \
+              tests/d1/e6f-03-networked-smoke.test.mjs \
+              tests/d1/e6f-04-tenancy.test.mjs \
+              tests/d1/e6f-05-live-minio.test.mjs \
+              tests/d1/e6f-08-egress-isolation.test.mjs \
+              tests/d1/e6f-08-stale-fence.test.mjs \
+              tests/d1/e6f-09-lease-faults.test.mjs \
+              tests/d1/e6f-10-telemetry.test.mjs \
+              tests/d1/e6f-11-two-replica.test.mjs \
+              tests/d1/e6f-12-staging-render.test.mjs \
+              tests/d1/e6f-13-realtime-fanout.test.mjs \
+              tests/d1/e6f-14-orphan-sweep.test.mjs"
           if [ "${CAMPAIGN}" = "foundation" ]; then
-            node --test --test-concurrency=1 ${BOUNDED} tests/d1/e6f-*.test.mjs
+            node --test --test-concurrency=1 ${BOUNDED} ${FOUNDATION}
           else
             node --test --test-concurrency=1 ${BOUNDED}
           fi
