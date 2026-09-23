@@ -40,6 +40,27 @@ export const M1_SPINE_COST_MARKER = "[m1-spine:cost]";
  */
 export const M1_SPINE_USAGE_MARKER = "[m1-spine:usage]";
 
+/**
+ * ★★★ THE WORKER-SPECIFIC FAILURE MARKER (added 2026-09-23, DEP-019 follow-up).
+ *
+ * Raised by Codex on PR #579 and UPHELD: the usage-suppressed positive control grepped
+ * `M1_SPINE_COST_MARKER`, which `violation()` attaches to EVERY `cost:` violation — and
+ * `evaluateEnabledTenantSpine` runs on BOTH the harness-driven attempts of the profile's §2 and the
+ * worker-only block guarded by `EXECUTOR === "worker"`. So deleting the entire worker-only
+ * cost/audit verdict left the suppressed run still red, still emitting that marker from the HARNESS
+ * path, and the control still announcing success. The control certified *a* cost assertion and said
+ * nothing about WHO EXECUTED, which is the ticket's only claim.
+ *
+ * This marker is attached ONLY when the caller declares the observation worker-driven
+ * (`observation.workerDriven === true`), which the profile does at exactly one call site — inside
+ * that `EXECUTOR === "worker"` block. The suppressed-usage control greps BOTH markers, so the
+ * mutation "delete the worker-only block" now reds the control on the missing worker marker.
+ *
+ * It deliberately does NOT contain `M1_SPINE_COST_MARKER` as a substring (pinned in the self-test):
+ * a `grep -F` for either marker must never be satisfied by the other.
+ */
+export const M1_SPINE_WORKER_COST_MARKER = "[m1-spine:worker-cost]";
+
 function tenant(key, n) {
   // Fixed ids: the rollout policy is static env on the replicas, so the Organizations it names
   // must be known before the stack boots. Version-4-shaped so every uuid validator accepts them.
@@ -411,7 +432,10 @@ export function evaluateReplicaRollout(o) {
  *   costReceipts: [{status, organizationId, companyId, sourceIdentity, aggregateKind}] — authoritative_cost, this job,
  *   activity: [{action, companyId, actorType, actorId}]        — job.attempt_* rows for this job,
  *   expectedActorId — `worker:<the leased worker id>`, the actor JOB-017 must have recorded,
- *   auditReceipts: [{status, organizationId, companyId, sourceIdentity, aggregateKind}] } — activity_audit, this job
+ *   auditReceipts: [{status, organizationId, companyId, sourceIdentity, aggregateKind}] — activity_audit, this job,
+ *   workerDriven — optional boolean; `true` declares this attempt was driven by the DEPLOYED
+ *     worker, and every violation this verdict returns then also carries
+ *     `M1_SPINE_WORKER_COST_MARKER`. See that constant for why. }
  */
 export function evaluateEnabledTenantSpine({ tenant: t, observation: o }) {
   const out = [];
@@ -618,6 +642,36 @@ export function evaluateEnabledTenantSpine({ tenant: t, observation: o }) {
     if (row.sourceIdempotencyKey !== `cost:${t.companyId}:${usageEvents[0].eventId}`) {
       out.push(violation("usage:row_not_keyed_to_event", `${k}: the cost row is not keyed to this attempt's usage event`));
     }
+  }
+
+  // ── DEP-019 follow-up: WHO EXECUTED, in the failure text ────────────────────
+  //
+  // `observation.workerDriven` is the caller's declaration that this attempt was driven by the
+  // DEPLOYED worker. When it is set, every violation of THIS verdict additionally carries
+  // `M1_SPINE_WORKER_COST_MARKER`, so the lane's usage-suppressed control can require the
+  // worker-driven arm to have produced a failure — rather than accepting the harness path's
+  // identical `[m1-spine:cost]` text, which is the defect this exists to close.
+  //
+  // FAIL CLOSED on a malformed declaration: a truthy non-boolean must not be read as "worker", or
+  // a typo would silently restore the vacuity. It reds instead, WITHOUT the marker, so the control
+  // still fails.
+  if (o.workerDriven !== undefined && typeof o.workerDriven !== "boolean") {
+    out.push(violation(
+      "journey:worker_driven_flag_invalid",
+      `${k}: observation.workerDriven is ${JSON.stringify(o.workerDriven)}, not a boolean`,
+    ));
+    return out;
+  }
+  // ★ ONLY on `cost:` / `usage:` codes (Codex P2, PR #580 — verified at source and fixed). The
+  // lane's two greps are INDEPENDENT: the harness attempts already supply `[m1-spine:cost]`. If the
+  // worker marker rode every worker-arm violation, a run whose worker attempt priced correctly but
+  // failed on, say, `audit:wrong_actor` would satisfy both greps — and the step would announce that
+  // the worker's COST assertion went red when it had not. The marker's meaning is exactly
+  // "the worker arm's cost/usage verdict failed", so it is attached to exactly those codes.
+  if (o.workerDriven === true) {
+    return out.map((v) => (v.code.startsWith("cost:") || v.code.startsWith("usage:")
+      ? { ...v, message: `${M1_SPINE_WORKER_COST_MARKER} ${v.message}` }
+      : v));
   }
   return out;
 }

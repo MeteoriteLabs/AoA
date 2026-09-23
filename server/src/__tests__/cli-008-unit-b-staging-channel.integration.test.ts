@@ -217,8 +217,11 @@ function observingTransport(inner: MockE2bTransport, watchDir: string) {
       if (prop === "runCommand") {
         return async (req: Parameters<MockE2bTransport["runCommand"]>[0], handlers?: unknown) => {
           ran += 1;
-          for (const path of await target.listDir(req.sandboxId, watchDir)) {
-            snapshot[path] = dec(await target.readFile(req.sandboxId, path));
+          // ★ CLI-012 — `listDir` returns per-entry METADATA now, not bare paths (ruling F7,
+          // `E7-D11`): a path alone cannot express the link marker the `A-O2-4` refusal needs.
+          // (Superseded: `for (const path of await target.listDir(...))`.)
+          for (const entry of await target.listDir(req.sandboxId, watchDir)) {
+            snapshot[entry.path] = dec(await target.readFile(req.sandboxId, entry.path));
           }
           return target.runCommand(req, handlers as never);
         };

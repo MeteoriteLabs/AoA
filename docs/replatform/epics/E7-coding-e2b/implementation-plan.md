@@ -611,7 +611,15 @@ forgeable gate into an **unpassable** one, which forced the widening that §4.3 
 pressure is real and remains unrelieved** — a proposal that does not address it is not a proposal.
 
 **Ticket non-goals:** **any product change.** No literal in `task-run-sandbox-invocation.ts`, no
-argv, no template, no test edit. No adapter-agnostic mechanism. No keyed dispatch **other than the
+argv, no template, no test edit. ★ **Amended 2026-09-23** (M1 planning session, under ruling
+F2), on Codex's PR #579 finding that the ticket changed `e2b/e2b.Dockerfile` against this line.
+**One template change is authorized, and only this one:** pinning
+`@anthropic-ai/claude-code@2.1.251`, the version every arm of the F7 measurement ran against.
+The reason is recorded in `decisions.md` `E7-D11` ("Accidental drift → the version is PINNED"):
+the ruling's four model arms were measured on `claude 2.1.251` while the template installed the
+package **unpinned**, so a rebuild could have silently invalidated the evidence the ruling rests
+on. The pin is evidence-integrity for this ticket's own measurement, not product work; it changes
+no product literal, no argv and no test. Any further template change stays forbidden. No adapter-agnostic mechanism. No keyed dispatch **other than the
 `files.read` probe**, which founder ruling F8 authorizes for this review on a named candidate.
 
 ★ *Amended 2026-09-21 (M1 Step 0, S0-4), from the approved M1 plan

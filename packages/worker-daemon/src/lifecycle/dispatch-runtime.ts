@@ -49,6 +49,7 @@ import { resolveRunOpDeadlineMs } from "./run-op-deadline.js";
 import { createRedeemer, synthesiseRunSecrets } from "../lease/secret-redemption.js";
 import { createStagedInputResolver } from "../lease/staged-input.js";
 import { createArtifactExportSequencer } from "../lease/artifact-export.js";
+import { createExportRequestProducer } from "../lease/export-request-producer.js";
 import { createLeaseRenewalDriver, createRealRenewalSchedule } from "../lease/lease-renewal.js";
 import { openEventOutboxStore, type DurableEventStore } from "../events/event-outbox-store.js";
 import { DurableWorkerEventSink } from "../events/durable-event-sink.js";
@@ -257,14 +258,49 @@ export async function composeDispatchRuntime(deps: ComposeDispatchRuntimeDeps): 
   // bound to no run here: the supervisor hands it THIS run's handoff and a per-run exporter over
   // THIS run's sandbox, so every tenant identity it writes comes from the lease (F10).
   //
-  // ★ NO PRODUCER is composed (`resolveExportArtifacts` is CLI-012's). The supervisor opens an
-  // export window only when both are present, so until CLI-012 this sequencer is built at boot
-  // and run by nothing — which is why `E5-2` stays `unwired` (E5-D07 ruling 4). A `[]` stub
-  // producer here would be the vacuous clause E5-D03 forbids.
+  // ★ CLI-012 — THE PRODUCER IS NOW COMPOSED, and this one line is what makes the whole export
+  // sequence reachable in production. (Superseded text: "★ NO PRODUCER is composed
+  // (`resolveExportArtifacts` is CLI-012's). The supervisor opens an export window only when
+  // both are present, so until CLI-012 this sequencer is built at boot and run by nothing —
+  // which is why `E5-2` stays `unwired` (E5-D07 ruling 4). A `[]` stub producer here would be
+  // the vacuous clause E5-D03 forbids.") The supervisor opens the window only when BOTH are
+  // present, so this is the commit that promotes `E5-2-fenced-object-commit-worker-half` to
+  // `wired`.
+  //
+  // ★ IT HOLDS NO SANDBOX. `enumerate` is supplied PER RUN on `resolveExportArtifacts`'s input,
+  // bound to that run's sandbox and its `EffectAuthority`; the `enumerate` below is the
+  // construction-time fallback and is never the one production uses. It refuses rather than
+  // returning `[]`, because a producer that answered "no output" when it had no way to look
+  // would be a check that evaluates nothing (`E5-D03`).
   const exportArtifacts = createArtifactExportSequencer({
     client: deps.client,
     key: deps.key,
     session: () => session.get(),
+  });
+  const resolveExportArtifacts = createExportRequestProducer({
+    enumerate: () => Promise.reject(new Error("export producer: no per-run sandbox view was supplied")),
+    // ★ `E7-D08` — `other`, decided by CLI-012 and recorded in the epic's `decisions.md`. It is
+    // deliberately NOT `workspace_patch`: that kind is what `countProducedOutputs` arm 1 filters
+    // on, and an agent-written file under the output root is not a workspace patch. Declaring it
+    // one would move a capability counter this ticket did not earn.
+    kind: "other",
+    retention: "run",
+    // ★ REFUSALS ARE VISIBLE, and PATH-FREE. Without this, a run whose only deliverable was a
+    // symlink or an oversized file would export nothing and say nothing — indistinguishable from a
+    // run that wrote nothing at all, which is the exact ambiguity `E5-D07`'s per-file
+    // classification exists to remove. `OutputRefusal` carries ONE closed snake_case token and no
+    // path, so this line cannot carry a tenant-authored string; the port's own observability rule
+    // ("no path, byte, grant URL or file content in any log line or metric label") is satisfied by
+    // the TYPE, not by discipline at the call site. No new `emitOp` label is minted — that
+    // vocabulary stays closed to `digest_artifact` / `export_artifact`.
+    onRefused: (refusal) => {
+      // ★ The COUNT rides the line when the refusal is the aggregated file-cap one, so the
+      // operator sees how many entries were dropped without one record per entry (round 5).
+      deps.logger?.warn(
+        refusal.count === undefined ? { reason: refusal.reason } : { reason: refusal.reason, count: refusal.count },
+        "worker: output file refused before export",
+      );
+    },
   });
 
   // `redactionCanaries: []` is the construction-time PREFIX; the run's real canaries are seeded
@@ -291,6 +327,7 @@ export async function composeDispatchRuntime(deps: ComposeDispatchRuntimeDeps): 
     materializeRunSecrets,
     resolveStagedFiles,
     exportArtifacts,
+    resolveExportArtifacts,
     canaryCoordinator,
     observeRun: createUsageObserver({ metrics: deps.metrics }),
     // ★ H1 — the run's OWN budget, from `workload.maxRuntimeSeconds`. Before this the

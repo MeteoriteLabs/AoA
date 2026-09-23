@@ -1815,9 +1815,52 @@ probe as broader than it is. Resolve = build route 1 or provision route 2, prove
 cross-tenant mis-resolution case, then flip this Status and delete the `E6-F025` key in
 `scripts/finding-ownership.json` in the SAME commit.
 
+## E6-F026 - the DEP-015 log-surface controls cannot join a key that is split ONE FRAGMENT PER JSON RECORD, on either surface
+
+**Severity:** MEDIUM
+**Status:** open
+**Filed:** 2026-09-23, by the DEP-015 log-surface work from the Codex review of PR #574.
+
+The lane's published-log redactor and its leak scan both judge a line, and both join each line to
+the tail of the ones before so a key wrapped across lines still forms its marker. Framing that
+sits INSIDE a line is removed first: the compose service prefix, a timestamp on either side of it,
+and — since this finding's own PR — JSON punctuation and escaped whitespace (`base64Payload`). A
+key carried in ONE JSON record, however it is wrapped inside that record's string, is therefore
+caught on both surfaces.
+
+**What is NOT caught:** a key split so that each JSON RECORD carries one fragment. Every record
+contributes its own field names between the fragments (`{"level":30,"frag":"…"}`), so the fixed
+DER prefix is never contiguous in the joined window, and at a narrow wrap no fragment reaches the
+40-character base64-run rule either. Both surfaces then read clean. The limit is PINNED by a
+KNOWN LIMIT test in `scripts/lib/__tests__/m1-shipped-boot.test.mjs`, which asserts today's
+behaviour exactly — the fragments publish and the scan finds nothing — so it cannot be mistaken
+for coverage.
+
+**Why it is not closed here.** The two obvious closures are both wrong at this size:
+
+- Parsing every log line as JSON and joining its string VALUES: the worker's logger is not the only
+  producer on this surface, and a per-line parse that fails open would be the same gap with more
+  code.
+- A run-length rule inside the DER latch: measured against the lane's own captured worker logs
+  (run 35613849443), ordinary lines already carry a 36-character UUID and a 21-character E2B
+  sandbox id. Any threshold low enough to catch an 8-character fragment redacts the sandbox line —
+  which is the line the lane's OWN sandbox-evidence assertion reads. The control would break the
+  check it exists to protect.
+
+**What it does NOT undermine.** No observed leak: review batch 3A measured both surfaces of run
+`35619555883` clean for the whole keypair, and this lane never prints a key by design — the
+controls exist for a key it did not generate. The registered-secret mask and scan are unaffected,
+since they match by VALUE and not by shape.
+
+**Not `accepted`:** nobody has accepted the residual; it is filed so the DEP-015 record cannot read
+its log-surface control as broader than it is. Resolve = a producer-side rule (a logger that never
+emits key material) or a framing-aware join with a measured threshold that provably leaves the
+sandbox-evidence line intact, proven by a control that reds without it; then flip this Status and
+delete the `E6-F026` key in `scripts/finding-ownership.json` in the SAME commit.
+
 ---
 
-## E6-F026 - `embeddings-circuit.test.ts` asserts `nextRetryAt > Date.now()` against a clock read AFTER the product's, so a 1 ms backoff draw reds the required Linux `verify` gate on an unrelated PR
+## E6-F027 - `embeddings-circuit.test.ts` asserts `nextRetryAt > Date.now()` against a clock read AFTER the product's, so a 1 ms backoff draw reds the required Linux `verify` gate on an unrelated PR
 
 **Status:** `open` - Owner: `unowned`
 **Severity:** LOW (one assertion, no product claim rests on it - but it is on a REQUIRED gate)
@@ -1908,5 +1951,5 @@ at all. Injecting the clock into `computeBackoffMs`'s caller would also work and
 change in a required-gate suite, and it is only provable with a positive control - reverting to
 `> Date.now()` and forcing `rng() -> 0` plus an elapsed tick must red it. A custodian pass that
 cannot run that control should not land the change. Whoever picks this up should apply the two-line
-edit with that control, then flip this Status and delete the `E6-F026` key in
+edit with that control, then flip this Status and delete the `E6-F027` key in
 `scripts/finding-ownership.json` in the SAME commit.

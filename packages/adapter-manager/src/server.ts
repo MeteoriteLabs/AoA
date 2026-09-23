@@ -138,6 +138,11 @@ const GATE_REQUIRED_OPS: ReadonlySet<string> = new Set([
   // frozen `ProviderOperation` vocabulary, and neither becomes one.
   "digest_artifact",
   "export_artifact",
+  // CLI-012 — the metadata-only output enumeration, on the same precedent: it READS the
+  // directory tree of ONE live owned sandbox, which is itself a disclosure about that tenant's
+  // work, so it is a single-sandbox owned op, GATED-ONLY, routed through `gateOwnedOp`. It is
+  // not a member of the frozen `ProviderOperation` vocabulary and does not become one.
+  "enumerate_outputs",
 ]);
 
 export function createProviderServer(options: CreateProviderServerOptions): Server {
@@ -262,6 +267,31 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
         // verifies sha256/maxBytes, and writes; only the result paths cross back.
         const { sandboxId, files } = args as { sandboxId: string; files: readonly StagedFileRequest[] };
         return gateOwnedOp(deps, sandboxId, ctx, capability, () => provider.stageFiles(sandboxId, files, ctx));
+      }
+      case "enumerate_outputs": {
+        // CLI-012 — METADATA ONLY: paths, byte sizes and link markers cross back, never content.
+        // Owned-checked first, for the same reason `digest_artifact` is: the shape of another
+        // tenant's output tree is a disclosure about that tenant even with no bytes attached.
+        const { sandboxId, root } = args as { sandboxId: string; root: string };
+        return gateOwnedOp(
+          deps,
+          sandboxId,
+          ctx,
+          capability,
+          (_detail, remainingMs) => {
+            // Bounded for the same reason the artifact pair is: this runs under the per-sandbox
+            // lock, and the budget is what is LEFT after the mutex queue, which the gate measures.
+            if (remainingMs === undefined || !(remainingMs > 0)) {
+              return Promise.reject(
+                new WireProtocolError("enumerate_outputs refused: no budget left before the teardown reserve"),
+              );
+            }
+            return provider.enumerateOutputs(sandboxId, root, { ...ctx, deadlineMs: remainingMs });
+          },
+          // The deadline covers the ownership inspection too — `inspect` honours no deadline of
+          // its own and it runs inside the lock.
+          artifactOpDeadlineAtMs(ctx, capability, now()),
+        );
       }
       case "digest_artifact": {
         // DAT-009-3e — metadata only (sha256 + byte size), never content. Owned-checked first: a

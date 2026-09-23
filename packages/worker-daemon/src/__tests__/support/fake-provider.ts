@@ -34,6 +34,7 @@ import {
   SandboxNotFoundError,
   UnsupportedProviderOperation,
   type ArtifactExportMode,
+  type SandboxEnumerationMode,
   type ProcessHandle,
   type ProcessObservation,
   type ProcessSignalResult,
@@ -89,6 +90,13 @@ export interface FakeProviderScript {
   readonly artifactExportMode?: ArtifactExportMode;
   /** In-sandbox path -> the bytes the double pretends are there. */
   readonly artifactFiles?: Readonly<Record<string, string>>;
+  /** CLI-012 — defaults to "none" so an unscripted double DECLINES rather than reporting a
+   * phantom (and always-empty) listing. Same reasoning as `artifactExportMode`: a double that
+   * answered `[]` would make every export window look correctly empty. */
+  readonly sandboxEnumerationMode?: SandboxEnumerationMode;
+  /** CLI-012 — in-sandbox paths the double reports as SYMLINKS in its listing. They still read
+   * through `artifactFiles`, exactly as the live SDK follows a link. */
+  readonly artifactSymlinks?: readonly string[];
   /** CLI-008 Unit B — defaults to "none" so an unscripted double DECLINES rather than
    * reporting a phantom stage. Same reasoning as `artifactExportMode`. */
   readonly fileStagingMode?: FileStagingMode;
@@ -258,6 +266,8 @@ export function createFakeSandboxProvider(script: FakeProviderScript = {}): Fake
   const healthMode: HealthMode = script.healthMode ?? "none";
   const artifactExportMode: ArtifactExportMode = script.artifactExportMode ?? "none";
   const artifactFiles: Readonly<Record<string, string>> = script.artifactFiles ?? {};
+  const sandboxEnumerationMode: SandboxEnumerationMode = script.sandboxEnumerationMode ?? "none";
+  const artifactSymlinks = new Set<string>(script.artifactSymlinks ?? []);
   const fileStagingMode: FileStagingMode = script.fileStagingMode ?? "none";
   const processSupervisionMode: ProcessSupervisionMode = script.processSupervisionMode ?? "none";
   /** Live process handles per sandbox, and whether each has been stopped. */
@@ -346,6 +356,7 @@ export function createFakeSandboxProvider(script: FakeProviderScript = {}): Fake
     advertisedOperations: advertised,
     checkpointMode,
     artifactExportMode,
+    sandboxEnumerationMode,
     exportedObjectKeys,
     fileStagingMode,
     redeemedObjectKeys,
@@ -381,6 +392,21 @@ export function createFakeSandboxProvider(script: FakeProviderScript = {}): Fake
       // not retained anywhere a projection, log or assertion could surface it.
       for (const file of files) redeemedObjectKeys.push(file.grant.objectKey);
       return { stagedPaths: resolved.map((entry) => entry.path) };
+    },
+
+    async enumerateOutputs(sandboxId: string, root: string) {
+      if (sandboxEnumerationMode === "none") throw new UnsupportedProviderOperation("enumerate_outputs");
+      requireSandbox(sandboxId);
+      const prefix = `${root.replace(/\/+$/, "")}/`;
+      const entries = Object.entries(artifactFiles)
+        .filter(([path]) => path.startsWith(prefix) && path.length > prefix.length)
+        .map(([path, body]) => ({
+          path,
+          sizeBytes: Buffer.byteLength(body),
+          symlink: artifactSymlinks.has(path),
+        }))
+        .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+      return { entries };
     },
 
     async digestArtifact(_sandboxId: string, path: string) {

@@ -1324,6 +1324,19 @@ injects each case:
 **Acceptance:**
 1. Every declared case has a run showing **its injection fired** and the observed classification
    matching the expected one; a case whose injection did not fire is a failure, not a pass.
+   ★ **Amended 2026-09-23** (M1 planning session, under ruling F2), after Codex raised on PR #579
+   that `DEP-018` completes with 25 of 74 declared cases evidenced. The amendment states the
+   two-tier contract the checker already enforces, which this clause's wording predates:
+   every case carries `evidence: "required" | "pending"` (`EVIDENCE_MODES`,
+   `scripts/lib/campaign-fault-matrix.mjs`). **Required** cases must fire, as above. **Pending**
+   cases must declare a `pendingKind` and a `pendingReason` (`declaration:pending_missing_kind`),
+   and a bundle that reports evidence for one is a **violation**
+   (`evidence:pending_case_reported`) — a pending case can never inherit a pass, and
+   `summary.complete` stays `false` while any remains. The 49 unevidenced cases are the two keyed
+   D2 profiles' 23 + 23 (`pendingKind: "keyed"`, which only a keyed campaign can fire) plus three
+   D1 structural pendings. Acceptance 1 is met when every **required** case of the profile under
+   test fired; it is not met by declaring an inconvenient case pending without a kind and reason,
+   which the checker rejects.
 2. Every cross-tenant denial is **denied, not merely empty**, through the non-owner `aoa_app` pool
    with RLS, and has a **positive control**: the same request by the owning tenant succeeds.
 3. The control tenant is refused distributed execution and stays on the legacy path.

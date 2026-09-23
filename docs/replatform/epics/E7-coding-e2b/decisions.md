@@ -17,6 +17,70 @@ output-mechanism ruling (**F7**, still open), and the `CLI-013` event-contiguity
 
 ★ `E7-D08` is **reserved**, not recorded: the implementation plan's `CLI-012` task assigns that id to
 the `kind` decision (`implementation-plan.md`, `### CLI-012`), so the first entry here takes `E7-D09`.
+★ *Superseded 2026-09-23: `E7-D08` is now RECORDED, below, by the ticket it was reserved for. The
+sentence above is kept as written.*
+
+---
+
+## E7-D08 — the exported artifact's `kind` is **`other`**, NOT `workspace_patch`: `CLI-012` does not move a counter it did not earn
+
+**Date (UTC):** 2026-09-23
+**Status:** `locked` — decided by `CLI-012`, whose task section assigns this decision to it
+(`implementation-plan.md`, `### CLI-012`) and requires it to state which it chose and why.
+**Owner role:** `CLI-012` (build) · **Affected:** `CLI-015` (the judge), `E7-1` arm 1
+**Decided on:** source, read at this tip — `countProducedOutputs`
+(`server/src/services/e7-distributed-run-verifier-store.ts`) and the frozen `ARTIFACT_KINDS`
+(`packages/worker-protocol/src/artifacts.ts`).
+
+### Decision
+
+The production composition (`composeDispatchRuntime`,
+`packages/worker-daemon/src/lifecycle/dispatch-runtime.ts`) declares **`kind: "other"`** and
+**`retention: "run"`** on every export request the producer mints from the ruled output root.
+
+### Reason
+
+The task states the trade in terms, and it is a trade between two defensible products:
+
+- **`workspace_patch`** is what `countProducedOutputs` **arm 1** filters on. Choosing it would make
+  the E7-1 QUALIFYING ARTIFACT counter move the first time a run writes a file under
+  `/home/user/aoa-output`.
+- **`other`** produces a real, attributable, `committed` `job_artifacts` row that arm 1 does **not**
+  count.
+
+★★★ **`other` is chosen because the file IS NOT A WORKSPACE PATCH, and because the task forbids
+picking the one that makes a number go up.** A file the agent wrote under a conventional output
+root is a deliverable; `workspace_patch` means the Unit-E workspace diff, which is **XL and out of
+`M1b`** (`E7-D05`). Declaring an agent-written markdown file a workspace patch would make arm 1
+report a capability nobody built — the `E7-F020` class the whole counter exists to refuse — and the
+`kind` conjunct is the ONLY thing arm 1's precision rests on, because `stageJobInputFiles` commits
+FENCELESS `job_artifacts` rows on the same job and attempt.
+
+★ **Nothing is lost by it.** Per `E7-D11` (*What this ruling does NOT decide*) and the review's
+`SD-3`, the judge counts through **arm 2** (predicate **P-A**, the receipt-backed `taskOutputs`
+path), which is unchanged — so this decision does not decide what `CLI-015` counts. Moving arm 1 is
+link 6's decision to take deliberately, on evidence, not a side effect of link 3's default.
+
+★ **`retention: "run"`** is declared honestly and is **ignored** by the control plane, which derives
+retention from `kind` (`artifact-commit.ts`, DAT-010). It is sent rather than hard-coded so a
+disagreement surfaces as the server's own warning instead of silently.
+
+### Alternatives considered
+
+- **`workspace_patch`.** Rejected above: it is a false description AND it moves a counter.
+- **A new frozen kind.** Rejected: `ARTIFACT_KINDS` is frozen (`@armyofagents/worker-protocol`) and
+  adding a member is an `E4-D02` STOP. `other` exists for exactly this.
+- **Leaving the kind to the caller with no default.** It already is the caller's: the producer takes
+  `kind` as a required dep and the sequencer never substitutes one. This entry records what the
+  PRODUCTION composition declares, which is the thing an operator sees.
+
+### Consequences
+
+- `CLI-012`'s exports are attributable and `committed` but are **not counted by arm 1**, and the
+  ticket says so rather than reporting a moved number.
+- `packages/worker-daemon/src/__tests__/dispatch-runtime-export-composition.test.ts` asserts
+  `manifest.kind === "other"` **at the commit**, so a silent change of it reds at the production
+  composition and not only at the producer's unit.
 
 ---
 

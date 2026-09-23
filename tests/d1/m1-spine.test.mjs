@@ -480,6 +480,15 @@ test("m1-spine: the DEPLOYED worker performs tenant A's journey — lease, execu
     const costViolations = evaluateEnabledTenantSpine({
       tenant,
       observation: {
+        // ★ THE ONE WORKER-DRIVEN DECLARATION IN THIS FILE (DEP-019 follow-up, Codex on PR #579).
+        // It makes every violation of THIS verdict carry `M1_SPINE_WORKER_COST_MARKER`, which the
+        // lane's usage-suppressed control greps in ADDITION to `[m1-spine:cost]`. Before it, the
+        // control was satisfied by the harness attempts' identical cost text, so deleting this
+        // whole block left the control green — a control about *a* cost assertion, not about who
+        // executed. The self-test pins that this file carries exactly one such declaration and
+        // that it sits inside the `EXECUTOR === "worker"` block, so the harness path cannot mint
+        // the marker.
+        workerDriven: true,
         attemptStatus: rows.attemptStatus,
         events: rows.events,
         usageEvents: rows.usageEvents,

@@ -247,6 +247,7 @@ Both gained the DAT-009 slice-3c export hook (`79961c97c`, `f5e2aff1f`). That is
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
 | 1 | M1 review-batch-2A independent reviewer (Claude Opus 5) | `ad4cdfdf28ddb8bb66b730a4b9f66f7de2e7785f` | `approved` | §0 true at source (argv both sides; real fixture's final result line). Run `35593307741` per job: `verify (2)` 15+11, `verify (3)` 28+5+7+11+5 — all match. Four Codex threads resolved, clean on the final heads. Focused rerun 65 + 7 + 5 + 5, boundary PASS. M2 (2 failed) and M1 (9 failed) reproduced. F10 real. **Acceptance 1 (keyed F8 run) OPEN**; not claimed met. |
+| 2 | M1 review-batch-4 independent reviewer (Claude Opus 5) | `99bff824d1c4fd641cea3b05ab7fe588f8255b96` | `approved` (code + record); **Status NOT flipped** | The 1(a)/1(b)/1(c) split's wording verified identical in this record, the E4 implementation plan, `E3-F037` in `E3-job-control/findings.md`, its `scripts/finding-ownership.json` reason, and `E4-F019` (open, MEDIUM, unowned). The withdrawn parser→ingest sentence is visibly withdrawn, not silently. `DEP-016-result.md`'s two stale hits are disclosed and correctly left to their owner. **Finding (non-blocking): `scripts/gate-clause-wiring.json` clause `E3-15-budget` still says promotion waits on "the one keyed E2B run proving the real claude_local usage parser" — a third, UNDISCLOSED home of the superseded expectation.** 1(a) pending ⇒ no flip, per the binding rule. |
 
 ## Keyed acceptance 1 — the keyed run HAPPENED; acceptance 1 stays **PENDING** (added 2026-09-23, corrected the same day)
 
@@ -430,3 +431,75 @@ would be a build agent rewriting someone else's evidence, so it is flagged rathe
 
 **Status:** unchanged — `gate_review`. A distinct reviewer alone may set `complete`.
 
+---
+
+### Independent review — attempt 2 (the acceptance split)
+
+**Reviewer:** M1 review-batch-4 independent reviewer (Claude Opus 5) — distinct from the WRK-018 build agent, from the attempt-1 reviewer and from the M1 planning session.
+**Reviewed revision:** `99bff824d1c4fd641cea3b05ab7fe588f8255b96` (`origin/docs/replatform-program`). The enacting head `e207e922dcee9420551dd07fe1ceef3fa40332df`, the attempt-1 revision `ad4cdfdf28ddb8bb66b730a4b9f66f7de2e7785f` and the PR #571 merge `4ef301547` are all ancestors of it.
+**Disposition: `approved` — THE CODE AND THE RECORD. `Status` STAYS `gate_review`, and I did not flip it.**
+
+★ **Why the flip is withheld, stated first.** The binding rule is that `complete` requires EVERY
+acceptance item met. **1(a) is not met:** the record's own words are *"assertion MERGED (PR #567),
+closure PENDING one keyed shipped-boot run that carries it"*, and no keyed run has executed
+`evaluateUsageCardinality`. So this attempt approves the work and leaves the disposition exactly
+where attempt 1 left it, for the same item. A later reviewer flips only when the closing run exists
+and is named.
+
+- **The split's wording is the same in all five places, checked one by one.**
+  - This record's *"Acceptance 1, amended into three parts"* table and the starred summary beneath it.
+  - `docs/replatform/epics/E4-worker-daemon/implementation-plan.md` — *"**1(a) cardinality — assertion
+    MERGED (PR #567), closure PENDING one keyed shipped-boot run that carries it**"*, *"1(b)
+    producer→ingest fidelity — NOT LIVE-PROVABLE (ruled 2026-09-23, F2)"* and *"1(c) parser fidelity
+    to a REAL result line"* resting on the fixture. It also keeps the superseded entry text
+    (*"this entry read 'Closed by the keyed lane's assertion' when first…"*) rather than editing it away.
+  - `docs/replatform/epics/E3-job-control/findings.md`, `E3-F037`'s dated amendment — the same three
+    clauses verbatim, including *"1(a) is not called closed before then"*.
+  - `scripts/finding-ownership.json`, key `E3-F037`, the `AMENDED 2026-09-23 (WRK-018 1(b) ruling,
+    F2 — Codex P2 on PR #571)` paragraph — the same three clauses, with every PRIOR REASON retained
+    below it rather than rewritten.
+  - `E4-F019` exists in `docs/replatform/epics/E4-worker-daemon/findings.md` with **Status open**,
+    Severity MEDIUM, `unowned` in `scripts/finding-ownership.json`, the production-logger evidence
+    line, the two closure routes, and *"NOT introduced by WRK-018, and NOT blocking M1a"*.
+- **No record claims the live lane proves parser→ingest fidelity — with one residual I am
+  reporting.** I swept `docs/` and `scripts/` for the superseded expectation. The two hits in
+  `DEP-016-result.md` (§"What remains", and the quoted reason at :484) are **disclosed** by this
+  record's *"Left to its owner, deliberately"* paragraph and are another ticket's evidence, correctly
+  not edited here. ★ **But there is a third home that is NOT disclosed:**
+  `scripts/gate-clause-wiring.json`, clause `E3-15-budget`, whose `reason` still reads *"promotion
+  waits on WRK-018 acceptance 1 -- the one keyed E2B run proving the real claude_local usage
+  parser"*. That is the same sentence `E3-F037`'s amendment corrected, in a register CI reads,
+  left carrying an expectation the ruling makes unachievable. **Not blocking:** the clause's state is
+  `unwired` either way and no verdict moves, and correcting a register reason is a one-line dated
+  amendment of exactly the kind this ruling already made twice. It is recorded so the next editor of
+  that clause does not have to rediscover it, and so the ruling's *"Downstream records this ruling
+  touches"* list can be completed.
+- **The claim withdrawn in §"Why 1(c) is not proven live" is genuinely withdrawn.** The paragraph now
+  says *"no live run observes what the parser produced at all, so the live lane cannot show
+  parser→ingest fidelity either"*, and the sentence it replaces is kept in a parenthetical naming
+  the Codex P2 that caught it. That is the right shape: the correction is visible, not silent.
+- **1(b)'s stopping reason is measured, not argued.** The five-surface table is the record of five
+  distinct Codex P1s, and the fifth — the sink adding `msg`/`time`/`level` below every caller-side
+  scrubber — is the one that is not fixable caller-side and is what `E4-F019` records. The refusal
+  (drop the diagnostic) over emitting is consistent with the programme's standing rule.
+- **The hardening that outlives the dropped line is real, and its honesty is checkable.**
+  `scrubLogRecord` is in `run-output.ts` and its doc comment says it has **no production caller
+  today** — a retained helper that says so rather than implying use. The record also states plainly
+  which two fixes could NOT survive the removal.
+- **1(c) is fixture-only and is stated as such.** The fixture
+  `server/src/__tests__/fixtures/claude-stream-json-tool-call.jsonl` is a real CLI capture, and
+  attempt 1 verified its final `type:"result"` line at source; nothing in the split upgrades that to
+  a live claim.
+- **CI for the amendment.** §"CI for this amendment (PR #571)" cites run `35842432353` on head
+  `e207e922d…` with `ci-required` success and the two lowered executed counts explained by the cases
+  that went with the dropped line. That head is an ancestor of the reviewed revision.
+- **Guards.** The full `pr.yml` pure-node guard set is **0 failures** at the reviewed revision, plus
+  `check-evidence-immutability --base origin/docs/replatform-program`.
+- **Attempt 1's approval of the code still stands on my reading** — I did not re-run its mutation
+  table, and this attempt is scoped to the acceptance split, the wording propagation and the flip
+  decision.
+
+**What remains open after this approval:** WRK-018 acceptance **1(a)** — one keyed shipped-boot run
+that executes `evaluateUsageCardinality`, dispatched by the planning session under F8, named here
+when it exists. **1(b)** is ruled NOT live-provable and **1(c)** is fixture-only; neither is
+outstanding work. `E4-F019` and `E3-F037` stay open. `Status` stays `gate_review`.

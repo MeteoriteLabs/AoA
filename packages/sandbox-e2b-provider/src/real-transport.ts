@@ -25,9 +25,12 @@ import {
   E2bProcessLaunchNotAcknowledgedError,
   E2B_LIST_DIR_MAX_DEPTH,
   E2bListDirMalformedEntryError,
+  E2bReadBoundExceededError,
   E2bTransportNotFoundError,
+  E2bTransportPathNotFoundError,
   E2bTransportTransientError,
   type E2bCommandResult,
+  type E2bDirEntry,
   type E2bProcessHandle,
   type E2bProcessObservation,
   type E2bProcessSignalResult,
@@ -45,12 +48,74 @@ import {
   type E2bStreamHandlers,
   type E2bTransport,
 } from "./transport.js";
-import { isE2bNotFound, shellJoin } from "./real-transport-helpers.js";
+import { isE2bFileNotFound, isE2bNotFound, shellJoin } from "./real-transport-helpers.js";
 import { filesOnlyFromListing, type ListingEntry } from "./list-dir-contract.js";
 
 /** Loose facade over the version-sensitive `e2b` SDK surface (keyed lane only). */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SandboxSdk = any;
+
+/**
+ * CLI-012 (`E5-F009`) — drain a `ReadableStream` into at most `maxBytes`, REFUSING at the cap.
+ *
+ * ★ THE REFUSAL COMES BEFORE THE ACCUMULATION, per chunk. `total + chunk.length > maxBytes` is
+ * checked BEFORE the chunk is pushed, so the oversized buffer is never allocated, and the stream
+ * is cancelled so the wire read stops rather than being abandoned mid-flight. Exported for the
+ * no-key suite, which is the only way to prove "never allocates" without a sandbox.
+ */
+export async function readStreamBounded(
+  stream: ReadableStream<Uint8Array>,
+  path: string,
+  maxBytes: number,
+): Promise<Uint8Array> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      if (total + value.byteLength > maxBytes) {
+        // Cancel FIRST, then refuse: an abandoned stream holds a pooled connection open.
+        await reader.cancel().catch(() => undefined);
+        throw new E2bReadBoundExceededError(path, maxBytes);
+      }
+      chunks.push(value);
+      total += value.byteLength;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
+
+/**
+ * CLI-012 — read one SDK `EntryInfo` into the transport's own {@link E2bDirEntry}.
+ *
+ * ★ FAIL-CLOSED ON A MISSING FIELD. An entry with no readable `size` is MALFORMED, never 0, and
+ * an entry whose `type` cannot be classified is malformed too — a stat that answers nothing must
+ * not be laundered into "an ordinary zero-byte file", which is precisely what would let an
+ * unreadable answer through the admission check and the symlink refusal alike.
+ */
+export function entryFromInfo(path: string, info: unknown): E2bDirEntry {
+  const record = (info ?? {}) as { size?: unknown; type?: unknown; symlinkTarget?: unknown };
+  const size = record.size;
+  if (typeof size !== "number" || !Number.isFinite(size) || size < 0) {
+    throw new E2bListDirMalformedEntryError(path, `stat of ${path} has no byte size (${JSON.stringify(size)})`);
+  }
+  if (record.type !== "file" && record.type !== "dir") {
+    throw new E2bListDirMalformedEntryError(path, `stat of ${path} has no file/dir type (${JSON.stringify(record.type)})`);
+  }
+  const target = record.symlinkTarget;
+  return { path, sizeBytes: size, symlink: typeof target === "string" && target.length > 0 };
+}
 
 export interface RealE2bTransportOptions {
   /** The provider-control API key. Defaults to `process.env.E2B_API_KEY`. Read
@@ -453,10 +518,39 @@ export class RealE2bTransport implements E2bTransport {
     }
   }
 
-  async readFile(sandboxId: string, path: string): Promise<Uint8Array> {
+  /**
+   * CLI-012 (`E5-F009`) — bounded when `opts.maxBytes` is given, unbounded otherwise.
+   *
+   * ★ THE BOUND IS ENFORCED WHILE THE BYTES ARRIVE, not after. The installed `e2b@2.30.5`
+   * `Filesystem.read(path, {format: "stream"})` resolves a `ReadableStream<Uint8Array>`, so the
+   * chunks are summed as they come and the stream is CANCELLED the moment the running total
+   * passes the cap — nothing over the cap is ever accumulated. A whole-file `format: "bytes"`
+   * read followed by a length check is exactly the defect `E5-F009` names: it materialises the
+   * tenant-controlled file in the shared adapter-manager process first.
+   *
+   * ★ WHY NOT THE LISTING SIZE ALONE. The listing size is a SNAPSHOT. A background writer the
+   * agent left running (the `A-O2-9`/`W7` class) can leave a file inside the cap at enumeration
+   * and grow it before the read, after which a pre-read check passes. The pre-read check is the
+   * cheap arm that avoids the read entirely in the common case; THIS is the arm that closes it.
+   */
+  async readFile(
+    sandboxId: string,
+    path: string,
+    opts?: { readonly maxBytes?: number; readonly signal?: AbortSignal },
+  ): Promise<Uint8Array> {
+    const maxBytes = opts?.maxBytes;
+    // ★ CLI-012 (Codex P2, round 4) — the caller's deadline reaches the SDK REQUEST. Passed on
+    // BOTH read shapes, because the abandoned-work problem is the same either way, and pinned by
+    // a test that asserts the handed signal FIRED rather than that the caller returned on time
+    // (the latter passes against the defect verbatim).
+    const signal = opts?.signal;
     try {
       const sandbox = await this.#sdk.connect(sandboxId, { apiKey: this.#apiKey });
-      const data = await sandbox.files.read(path, { format: "bytes" });
+      if (typeof maxBytes === "number") {
+        const stream = (await sandbox.files.read(path, { format: "stream", ...(signal ? { signal } : {}) })) as ReadableStream<Uint8Array>;
+        return await readStreamBounded(stream, path, maxBytes);
+      }
+      const data = await sandbox.files.read(path, { format: "bytes", ...(signal ? { signal } : {}) });
       if (data instanceof Uint8Array) return data;
       if (typeof data === "string") return new TextEncoder().encode(data);
       return new Uint8Array(data as ArrayBufferLike);
@@ -464,6 +558,29 @@ export class RealE2bTransport implements E2bTransport {
       if (this.#isNotFound(err)) throw new E2bTransportNotFoundError(`${sandboxId}:${path}`);
       throw err;
     }
+  }
+
+  /**
+   * CLI-012 (`E7-F039`) — the `lstat` half, over the SDK's `Filesystem.getInfo`.
+   *
+   * ★ MEASURED, NOT ASSUMED. `e2b@2.30.5`'s `getInfo(path) => EntryInfo` carries `size`,
+   * `type` and `symlinkTarget` (`dist/index.d.ts`), and `symlinkTarget` is set when the path
+   * ITSELF is a link — which is what makes this a no-follow inspection of the named path. The
+   * same release exposes NO no-follow read option (`FilesystemReadOpts` is `{gzip,
+   * streamIdleTimeoutMs}` over `{requestTimeoutMs, signal}`), which is why this branch exists.
+   */
+  async statEntry(sandboxId: string, path: string, opts?: { readonly signal?: AbortSignal }): Promise<E2bDirEntry> {
+    let info: unknown;
+    const signal = opts?.signal;
+    try {
+      const sandbox = await this.#sdk.connect(sandboxId, { apiKey: this.#apiKey });
+      // ★ CLI-012 — the caller's deadline reaches the SDK request (`FilesystemRequestOpts.signal`).
+      info = await sandbox.files.getInfo(path, ...(signal ? [{ signal }] : []));
+    } catch (err) {
+      if (this.#isNotFound(err)) throw new E2bTransportNotFoundError(`${sandboxId}:${path}`);
+      throw err;
+    }
+    return entryFromInfo(path, info);
   }
 
   /**
@@ -483,12 +600,19 @@ export class RealE2bTransport implements E2bTransport {
    * kinds the SDK itself skips (`Filesystem.list` drops any entry whose wire type is neither
    * FILE nor DIRECTORY before it reaches this code), is CLI-012's keyed real-run acceptance.
    */
-  async listDir(sandboxId: string, path: string): Promise<readonly string[]> {
+  async listDir(sandboxId: string, path: string, opts?: { readonly signal?: AbortSignal }): Promise<readonly E2bDirEntry[]> {
     let entries: unknown;
+    const signal = opts?.signal;
     try {
       const sandbox = await this.#sdk.connect(sandboxId, { apiKey: this.#apiKey });
-      entries = await sandbox.files.list(path, { depth: E2B_LIST_DIR_MAX_DEPTH + 1 });
+      // ★ CLI-012 — the caller's deadline reaches the SDK request (`FilesystemListOpts.signal`).
+      entries = await sandbox.files.list(path, { depth: E2B_LIST_DIR_MAX_DEPTH + 1, ...(signal ? { signal } : {}) });
     } catch (err) {
+      // ★ CLI-012 (Codex P2, PR #576) — A MISSING DIRECTORY IS NOT A MISSING SANDBOX. A run that
+      // wrote no output never creates the output root, and the SDK answers `files.list` on it
+      // with `FileNotFoundError`. Collapsing that into the sandbox error made every normal
+      // no-output run a `producer_failed`. Narrow first, then the fail-closed general case.
+      if (isE2bFileNotFound(err)) throw new E2bTransportPathNotFoundError(sandboxId, path);
       if (this.#isNotFound(err)) throw new E2bTransportNotFoundError(`${sandboxId}:${path}`);
       throw err;
     }
