@@ -581,6 +581,125 @@ Because that last item is open, I approve the code and **do not** make the `Stat
 `Status` stays `gate_review` until the keyed run is dispatched, its outcome recorded here per §7, and
 a distinct reviewer re-reviews (attempt 2).
 
+### Independent review — attempt 2
+
+**Reviewer:** M1 independent reviewer (Claude Opus 5). I did not author `DEP-017`, I am not the
+planning session, and I am not attempt 1's reviewer.
+**Reviewed revision:** `8c01f4e94f8e25d7abaf524e8b266b809c67b8cb` (the program tip).
+**Disposition: `approved` (code). `Status` stays `gate_review`** — acceptance is not complete, so I
+make no `Status` flip.
+
+**Why attempt 2 exists at all: attempt 1 certified a revision this record has since outgrown.**
+Attempt 1 reviewed `5aa787b2a6c7c98e8cec321dea371a2cc9f551fa`. At source, the probe's product code
+moved **twice** after that revision — `9d9699a21` (*one name policy for every probe arm*, the §8h
+fix, which landed BEFORE the attempt-1 commit `f37d3c288`) and `2e2a625b8` (*count each unreported
+env name once*, the §8h follow-up on PR #568, which landed AFTER it). Both touch
+`packages/worker-daemon/src/supervisor/env-probe.ts`. Attempt 1 reported
+`env-probe.test.ts` → **60 passed** as "matching §3 exactly"; §3 as it stands says **61 passed**,
+and the count that matched was §3 as it read at `5aa787b2a` (verified with `git show` at each of
+`5aa787b2a`, `9d9699a21`, `2e2a625b8` and the tip). So no reviewer had yet certified the code this
+record describes. This attempt does, at the tip.
+
+**The probe is sound at the tip, verified at source (not from the record's prose).**
+
+- **Fail-closed, before the tenant command.** `createSupervisor` (`supervisor.ts`, step 2a) runs
+  `runEnvProbe` after `attemptStarted` and before both the service branch and the tenant `execute`,
+  through `run.effect.execute(..., run.makeCtx())` with `env: spec.env` — the same channel and the
+  same environment the tenant command receives. On any verdict other than `absent` it emits the
+  `log` summary, then a durable `terminal` with `ENV_PROBE_ERROR_CODES[verdict]`, escalates cleanup
+  and **returns**. The probe's elapsed time is subtracted from `run.opDeadlineMs`, not added.
+- **A short taxonomy cannot pass.** `evaluateEnvProbe` compares the reported `checked` set for
+  **equality** with `envProbeCheckedClasses()` and returns `not_run` / `checked_set_mismatch` on any
+  difference — and it does so on the RAW reported set, before the worker-derived
+  `unredeemed_provider_credential` is folded in, so the two lists cannot drift into agreeing by
+  construction.
+- **Each control arm is bound to its planted variable.** `evaluateEnvProbe`'s `satisfied` map
+  requires the expected class AND the expected NAME (`allowedMismatch` for the value-identity arm,
+  `presentNames` otherwise); `red` requires **every** expectation satisfied. A blind probe is
+  `blind`, a throwing/non-zero one is `not_run`, and both fail the run.
+- **Names are drawn from the probe's own vocabulary**, never from the sandbox: everything else is a
+  class plus `unreportedPresentCount`. Corroborated independently at source in E7 `findings.md`
+  under `E7-F024`, whose "A BOUND IS ESTABLISHED" paragraph measures the same property for a
+  different purpose (the shipped `log` producer cannot reach the 65,536-character ceiling).
+- **The lane's read-back reds for each of the four right reasons.** `evaluateEnvProbeEvidence`
+  (`scripts/lib/m1-shipped-boot.mjs`) fails a tenant when the summary is **missing**, when the
+  verdict is not `absent`, when `present` is non-empty (and it NAMES the classes and names), when
+  the `checked` set differs from `ENV_PROBE_EXPECTED_CLASSES` in EITHER direction, and when
+  `plantedControl.red !== true`. The DE-08 metadata observation is recorded and judged nowhere —
+  §5's "OBSERVED, not enforced" is true at source.
+- **The arming cannot be silently dropped**: `SHIPPED_BOOT_ENV_PROBE_ENV`
+  (`scripts/lib/staging-manifest-invariants.mjs`) reds an overlay worker that drops
+  `AOA_WORKER_ENV_PROBE` or sets anything but `"1"`, with positive controls in
+  `check-staging-manifest.test.mjs` for both the dropped case and `"true"`.
+
+**Keyless evidence reproduced at the tip.** `node --test scripts/check-staging-manifest.test.mjs
+scripts/lib/__tests__/m1-shipped-boot.test.mjs scripts/check-m1-shipped-boot-shape.test.mjs` →
+**200 pass, 0 fail** (§3's 140 was the count at build time; the suites have grown since). I could
+NOT run the vitest suites: this worktree has no installed `node_modules`. So §3's
+`env-probe.test.ts` **61 passed** and the whole-package **1220 passed** are neither CI results nor
+mine — §3 labels them LOCAL, and scopes the package figure to the older `1bd5c8bbc` tree, so they
+do not speak for the reviewed tip. The nearest exact-tip figure is also local and belongs to another
+record: `docs/replatform/qa/2026-09-24-class-sweeps-result.md` reports the `worker-daemon` package
+at **166 files, 1268 pass, 1 skipped** with `tsc --noEmit` clean. I cite that rather than borrowing
+§3's older counts, and I claim no CI verification of any vitest count on this revision.
+
+**THE PROBE HAS NOT RUN IN A REAL SANDBOX. This is the open acceptance item, and it is the whole
+reason `Status` stays `gate_review`.** What has demonstrably run is the probe's exact bytes under a
+real local `node` and a real `sh`, and the supervisor chain through a test provider. What has NOT
+happened is the thing criterion 5 asks for: the §3 verify row of the E6 plan requires *"the probe
+observed inside the `DEP-015` lane"*, and the M1 plan requires criterion 5 *"observed via `DEP-017`
+— per enabled tenant on the `M1a-D2-MECHANISM` (`DEP-015`) lane"*. Measured across the repo: no
+`env-probe-<tenant>.json` bundle, no keyed-run citation, and the M1a reachability ledger row
+**E6-11** ("live env-absence probe (criterion 5, F9)") still reads `TO MEASURE AT CANDIDATE FREEZE`
+in both its measured columns. §7 states exactly what that run must show, including the two
+legitimate first-run reds. **I dispatched nothing** (the M1 rules forbid it), and no `complete` can
+be justified until that run exists and is recorded here.
+
+**Multi-tenant (F10).** Per-tenant observation is structurally right: `ownOrganizationId` is the
+run's own `job.organizationId`, the cross-tenant arm fires on a marked VALUE under ANY name, and
+`plantedTenantCanary` binds the marker to a uuid Organization with a ≥16-character random tail, so
+tenant A's real seeded provider key is a genuinely tenant-distinct value in every other tenant's
+sandbox. The cross-tenant case is exercised keyless in `env-probe.test.ts`; on the real lane it is
+part of the pending keyed run, not something already observed. The E6-D002 amendment (per-tenant
+observation allocated to the mechanism lane, the spine lane recording its other tenants as
+unobserved) is in the M1 plan with its ruling id, and the spine override does arm the probe
+(`docker/d1/m1-spine.override.yml`), so the carried-in DEP-016 obligation landed.
+
+**`E6-F026` checked, and it does NOT bear on this ticket's claims.** F026 is about the `DEP-015`
+published-Actions-log redactor and leak scan failing to join a key split ONE FRAGMENT PER JSON
+RECORD. The probe's evidence is a different surface and a different shape: one `log` event carrying
+class tokens, known names and counts, with values structurally excluded by `parseEnvProbeReport` and
+by the known-token name gate, and the planted values seeded into the run canaries before the control
+executes. There is no value for a fragmenting redactor to miss. Worth stating explicitly so a later
+reader does not assume F026 weakens the probe's evidence; it does not.
+
+**Non-blocking defects, both carried over from attempt 1 and both still open at the tip.**
+
+1. **§9 remains superseded in place.** It still reads "BLOCKED, not skipped … No claim of CI green is
+   made", which was true when written; attempt 1 recorded run `35823594587` green with `ci-required`
+   `107064489142` on `5aa787b2a`. A reader of §9 alone gets a stale picture. I do not rewrite §9 —
+   the record keeps its history — but the correction now sits in two attempts rather than one.
+2. **The duplicate object keys in `env-probe.test.ts` were NOT fixed, and there are more than
+   attempt 1 counted.** At the tip: two copies at 439–440, **three** at 485–487 and **three** at
+   776–778, all `unreportedPresentCount: 0`, all mis-indented relative to their literal. Every copy
+   is `0`, so no assertion changes and nothing is vacuous — but this is a file whose entire job is to
+   be exact, and the shape (identical lines at decreasing indentation) reads like a mechanical
+   insertion that nobody re-read. One cleanup commit; not a reason to withhold approval of the code.
+
+**Acceptance, restated against the E6 plan's `### DEP-017` and its §3 verify row.** Acceptance 1–3
+(absence report naming every class checked; the planted-canary positive control; the per-run canary
+redaction) are **evidenced keyless at the tip**. **Acceptance 4 is SPLIT and only half met** — a
+correction I owe to a Codex P2 on this review, which was right at source. Acceptance 4 reads *"the
+probe runs for each enabled tenant, and another tenant's credential is one of the planted cases"*
+(plan `### DEP-017`). Its second clause — another tenant's credential among the planted cases — is
+evidenced keyless. Its FIRST clause is campaign-level: the probe **running for each enabled tenant**
+can only be established by the keyed run, and no per-tenant evidence bundle exists. My first draft
+called all four evidenced and left only the Linux/CI verify row open, which would have let a later
+reviewer read the campaign half of acceptance 4 as satisfied. It is not. **OPEN:** acceptance 4's
+per-enabled-tenant clause, and the verify row's Linux/CI half — the probe **observed inside the
+`DEP-015` lane**. `complete` requires every acceptance item, so this ticket stays `gate_review` and a
+later attempt must re-review it once the keyed run is recorded per §7.
+
 ## Review attempt history
 
 The implementation author leaves the table body empty. The first independent reviewer appends attempt 1, and later reviewers append rows with increasing attempt numbers without replacing earlier ones. Do not include a `Review commit` column: a row cannot embed the SHA of the commit that first contains it.
@@ -588,3 +707,4 @@ The implementation author leaves the table body empty. The first independent rev
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
 | 1 | M1 review-batch-3A independent reviewer (Claude Opus 5) | `5aa787b2a6c7c98e8cec321dea371a2cc9f551fa` | `approved` (code); `Status` stays `gate_review` | Fail-closed verified at source: the step runs through `EffectAuthority.execute` with `spec.env` before the tenant command, and any non-`absent` verdict emits a durable terminal with `ENV_PROBE_ERROR_CODES[verdict]`, escalates cleanup and returns; `evaluateEnvProbe` requires set EQUALITY of `checked`, so a short set is `not_run`. Reruns match §3 exactly: `env-probe.test.ts` **60 passed**; the three pure-node suites **140/140**. Mutation M12 reproduced: 1 failed, *not_run: … a report that checked nothing*. The plan amendment's RATIFIED note is in the E6 plan itself (two places), not only in this record. `E6-F025` is filed `unowned`/MEDIUM with both closure routes and the explicit exclusion from `M1a`'s criterion-5 isolation claim; `E8-F012` reason-amended only. §8c's dispute is correct at source (`toAcceptInputs` stores the whole envelope). Defects recorded: §9's CI-blocked statement is superseded — run `35823594587` is `success` with `ci-required` `107064489142`; and `env-probe.test.ts` has a duplicate `unreportedPresentCount` key in three literals (harmless, 5 vite warnings per shard). **OPEN: acceptance 1, the keyed `m1-shipped-boot.yml` run of §7. Nothing was dispatched.** |
+| 2 | M1 independent reviewer (Claude Opus 5) | `8c01f4e94f8e25d7abaf524e8b266b809c67b8cb` | `approved` (code); `Status` stays `gate_review` | Re-certifies the tip, because attempt 1 reviewed `5aa787b2a` and the probe moved twice after it (`9d9699a21`, `2e2a625b8`, both in `supervisor/env-probe.ts`); attempt 1 reported 60 tests "matching §3 exactly" while §3 now says 61. Verified at source at the tip: step 2a runs through `run.effect.execute` with `spec.env` before the tenant command and any non-`absent` verdict terminalizes with `ENV_PROBE_ERROR_CODES` and returns; `evaluateEnvProbe` requires set EQUALITY of the RAW reported `checked`; every control expectation is bound to its planted NAME; `presentNames` is drawn only from the probe own vocabulary (corroborated under `E7-F024`); `evaluateEnvProbeEvidence` reds on missing summary, non-`absent`, non-empty `present`, a `checked` set differing in EITHER direction, and a control that did not red; `SHIPPED_BOOT_ENV_PROBE_ENV` reds a dropped or wrong arming. Reproduced: the three pure-node suites **200 pass, 0 fail**. NOT reproduced (no `node_modules` in this worktree): the vitest counts, which §3 labels LOCAL and scopes to the older `1bd5c8bbc` tree -- no CI verification of any vitest count on this revision is claimed; the nearest exact-tip local figure is the class-sweep record’s 1268 pass. `E6-F026` checked and does NOT bear — the probe emits no value for a fragmenting redactor to miss. Carried-over defects still open: §9 superseded in place, and the duplicate `unreportedPresentCount` keys are at 439-440, 485-487 and 776-778 (more than attempt 1 counted). **OPEN: acceptance 4’s per-enabled-tenant clause is NOT met keyless (a Codex P2 on this review, accepted) — the probe has never run in a real sandbox — no `env-probe-<tenant>.json`, no keyed-run citation, and M1a reachability row E6-11 still reads `TO MEASURE AT CANDIDATE FREEZE`. I dispatched nothing.** |
