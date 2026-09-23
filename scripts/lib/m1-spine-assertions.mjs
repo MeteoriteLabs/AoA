@@ -717,7 +717,8 @@ export function evaluateRollbackRehearsal(o) {
   // runs (a LEASED one stays `cancel_requested` until its lease holder completes it, and nothing
   // on this lane does) legitimately accumulates one audit row PER drain — measured on the second
   // live run. Counting them all would make the rehearsal fail on its own history.
-  const rows = (o.auditRows ?? []).filter((r) => r.action === DRAIN_AUDIT_ACTION && r.actorId === o.expectedActorId);
+  const rows = (o.auditRows ?? []).filter((r) => r.action === DRAIN_AUDIT_ACTION &&
+    r.actorType === "system" && r.actorId === o.expectedActorId);
   const rowsAnyDrain = (o.auditRows ?? []).filter((r) => r.action === DRAIN_AUDIT_ACTION);
 
   // ★ EVERY attempt the drain could touch, not only the ones this profile seeded (Codex P1,
@@ -731,9 +732,12 @@ export function evaluateRollbackRehearsal(o) {
   const statusByAttempt = new Map((o.attempts ?? []).map((a) => [a.attemptId, a.status]));
   const statusesByJob = new Map();
   for (const a of o.attempts ?? []) statusesByJob.set(a.jobId, [...(statusesByJob.get(a.jobId) ?? []), a.status]);
-  const commandsByJob = new Map();
+  // Per ATTEMPT, not per job (Codex P2, PR #566): a stale command from an earlier lease of the same
+  // job would otherwise satisfy every leased candidate of that job, leaving the current attempt
+  // with nothing telling its lease holder to stop.
+  const commandsByAttempt = new Map();
   for (const command of o.commands ?? []) {
-    commandsByJob.set(command.jobId, [...(commandsByJob.get(command.jobId) ?? []), command]);
+    commandsByAttempt.set(command.attemptId, [...(commandsByAttempt.get(command.attemptId) ?? []), command]);
   }
   for (const candidate of o.preDrainCandidates ?? []) {
     const leased = Number(candidate.activeLeases) > 0;
@@ -751,11 +755,11 @@ export function evaluateRollbackRehearsal(o) {
           `${leased ? "LEASED" : "unleased"}, placement ${candidate.disposition}) is ${JSON.stringify(status ?? null)}, expected ${expected}`,
       ));
     }
-    const cancels = (commandsByJob.get(candidate.jobId) ?? []).filter((c) => c.commandKind === "cancel");
+    const cancels = (commandsByAttempt.get(candidate.attemptId) ?? []).filter((c) => c.commandKind === "cancel");
     if (leased && cancels.length === 0) {
       out.push(violation(
         "rollback:leased_candidate_no_command",
-        `the LEASED attempt of job ${candidate.jobId} has no cancel command — nothing tells its lease holder to stop`,
+        `the LEASED attempt ${candidate.attemptId} of job ${candidate.jobId} has no cancel command of its own — nothing tells its lease holder to stop`,
       ));
     }
     if (leased && cancels.length > 0 && cancels.every((c) => c.reason !== DRAIN_REASON)) {

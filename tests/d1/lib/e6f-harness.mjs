@@ -2610,7 +2610,8 @@ try {
   // and a cancelled one must not mask a sibling the drain left running.
   const attempts = await sql\`SELECT id AS "attemptId", job_id AS "jobId", attempt_number AS "attemptNumber", status
     FROM job_attempts WHERE job_id = ANY(\${P.jobIds}::uuid[]) ORDER BY job_id, attempt_number\`;
-  const commands = await sql\`SELECT job_id AS "jobId", command_kind AS "commandKind", reason FROM job_control_commands
+  const commands = await sql\`SELECT job_id AS "jobId", attempt_id AS "attemptId", lease_id AS "leaseId",
+      command_kind AS "commandKind", reason FROM job_control_commands
     WHERE job_id = ANY(\${P.jobIds}::uuid[])\`;
   report({ ok: true, audit, attempts, commands });
 } catch (error) {

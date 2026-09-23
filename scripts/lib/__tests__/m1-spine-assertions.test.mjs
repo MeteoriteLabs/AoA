@@ -601,7 +601,7 @@ function goodRehearsal(overrides = {}) {
       { attemptId: "d1000000-0000-4000-8000-00000000000d", jobId: "d0000000-0000-4000-8000-00000000000d", status: "cancel_requested" },
       { attemptId: "c1000000-0000-4000-8000-00000000000c", jobId: "c0000000-0000-4000-8000-00000000000c", status: "succeeded" },
     ],
-    commands: [{ jobId: "d0000000-0000-4000-8000-00000000000d", commandKind: "cancel", reason: DRAIN_REASON }],
+    commands: [{ jobId: "d0000000-0000-4000-8000-00000000000d", attemptId: "d1000000-0000-4000-8000-00000000000d", commandKind: "cancel", reason: DRAIN_REASON }],
     ...overrides,
   };
 }
@@ -652,10 +652,13 @@ test("the two branches differ, and each is pinned: unleased -> cancelled, leased
     "a leased attempt jumping straight to cancelled skips its lease holder");
   const noCommand = goodRehearsal({ commands: [] });
   assert.ok(evaluateRollbackRehearsal(noCommand).map((x) => x.code).includes("rollback:leased_candidate_no_command"));
-  const wrongReason = goodRehearsal({ commands: [{ jobId: "d0000000-0000-4000-8000-00000000000d", commandKind: "cancel", reason: "something_else" }] });
+  const wrongReason = goodRehearsal({ commands: [{ jobId: "d0000000-0000-4000-8000-00000000000d", attemptId: "d1000000-0000-4000-8000-00000000000d", commandKind: "cancel", reason: "something_else" }] });
+  const staleCommand = goodRehearsal({ commands: [{ jobId: "d0000000-0000-4000-8000-00000000000d", attemptId: "99999999-0000-4000-8000-000000000099", commandKind: "cancel", reason: DRAIN_REASON }] });
+  assert.ok(evaluateRollbackRehearsal(staleCommand).map((x) => x.code).includes("rollback:leased_candidate_no_command"),
+    "a command of ANOTHER attempt of the same job must not satisfy this one");
   assert.ok(evaluateRollbackRehearsal(wrongReason).map((x) => x.code).includes("rollback:command_wrong_reason"));
   const strayCommand = goodRehearsal();
-  strayCommand.commands = [...strayCommand.commands, { jobId: strayCommand.drainableJobs[0].jobId, commandKind: "cancel", reason: DRAIN_REASON }];
+  strayCommand.commands = [...strayCommand.commands, { jobId: strayCommand.drainableJobs[0].jobId, attemptId: strayCommand.drainableJobs[0].attemptId, commandKind: "cancel", reason: DRAIN_REASON }];
   assert.ok(evaluateRollbackRehearsal(strayCommand).map((x) => x.code).includes("rollback:unleased_candidate_has_command"));
 });
 
@@ -693,6 +696,15 @@ test("a drain audit row that records no reason, or another one, is refused (Code
     rehearsal.auditRows = rehearsal.auditRows.map((r, i) => (i === 0 ? { ...r, detailsReason: reason } : r));
     assert.ok(evaluateRollbackRehearsal(rehearsal).map((x) => x.code).includes("rollback:audit_wrong_reason"), JSON.stringify(reason));
   }
+});
+
+test("a NON-system actor on a census candidate's audit row is refused (Codex P2)", () => {
+  const rehearsal = goodRehearsal();
+  rehearsal.auditRows = rehearsal.auditRows.map((r) => (r.entityId === "d0000000-0000-4000-8000-00000000000d"
+    ? { ...r, actorType: "user" } : r));
+  const v = evaluateRollbackRehearsal(rehearsal).map((x) => x.code);
+  assert.ok(v.includes("rollback:audit_wrong_actor") || v.includes("rollback:candidate_no_audit_row"),
+    `a user-actor row must not satisfy a candidate: ${JSON.stringify(v)}`);
 });
 
 test("a drain that also cancelled an already-terminal attempt is refused (it must be selective)", () => {
