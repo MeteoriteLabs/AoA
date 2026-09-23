@@ -328,6 +328,11 @@ finding would have split one cause across two records, so it is named here inste
 wall clock to reach a specific arm. Injecting the ordering fixes the family; widening a timeout
 fixes neither, because the two cases want opposite timings.
 
+**Cross-link (added 2026-09-23):** `E6-F026` is the same class on the same gate — an assertion filed
+as advisory that reds the required Linux `verify` lane on an unrelated PR. Different bug (that one
+races the wall clock against a jitter draw; this one races child processes) and neither fix helps the
+other, but the shape is shared: **a test whose verdict depends on timing the test does not control.**
+
 **Blocks gate:** ~~no. These are two advisory tests, and the batch-rejection behaviour they exercise
 is observed on all three platforms - only the error TYPE, or which arm is reached, differs.~~
 ★ **See the 2026-09-23 widening below: this line is superseded.**

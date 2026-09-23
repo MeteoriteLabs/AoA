@@ -1877,6 +1877,14 @@ failed on Linux"*, recorded with the rule *"an assertion that holds only on slow
 not a check."* This is the mirror case - an assertion that holds only on **fast** hardware - and the
 rule is the same in both directions.
 
+**Cross-links.** `E5-F005`, widened in the same custodian pass, is the **same class on the same
+gate**: an assertion whose arm depends on real-process scheduling, filed as advisory and then found
+redding the required Linux `verify` lane on an unrelated PR. The two are not the same bug — that one
+races child processes, this one races the wall clock against a jitter draw — and neither fix helps
+the other. What they share is the shape: **a test whose verdict depends on timing the test does not
+control, on a required gate.** A third instance would be a pattern worth a systematic answer rather
+than a third finding.
+
 **Blocks gate:** not a gate clause, but it can **red the required Linux `verify` gate on an unrelated
 PR**, which is how it surfaced. That is why it is filed rather than left as a re-run note, and it is
 the same reason `E5-F005`'s advisory scoping had to be widened in the same pass.
