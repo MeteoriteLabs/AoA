@@ -346,3 +346,27 @@ PR #566, head `9e49de33923a46c2836f8b4b379dca993de63977`.
 - The `d1-merge-train` `m1-spine` job has therefore never executed either. Its live half is
   evidenced here by local runs on a real stack (§3); the lane itself remains unobserved, which is
   exactly what §9 and this section say.
+
+## 12. Merge with the program tip (2026-09-23)
+
+Merged `origin/docs/replatform-program` at `1bd5c8bbc` (which brought `WRK-013` #553,
+`DAT-009-3e` #557 and the keyed-evidence / `E7-1-JOURNEY-ARM` #564) into this branch — a merge, not
+a rebase, so the reviewed revisions stay ancestors.
+
+- **One conflict**, in `docs/architecture/distributed-execution-threat-controls.json`: three
+  `deliveryEvidence` blocks that `WRK-013` re-pointed for its own code (the
+  `startup-reconcile.ts` line map, plus its amendments saying the factory now HAS a production
+  caller). Their side was taken, and my `pr.yml` citations were then re-applied onto the merged
+  file by the new line map — `:766→:781` (`image-admission.test.mjs`), `:1599→:1616`
+  (`check-distributed-execution-foundation.mjs`), `:1118→:1135` (the vitest shard, 14 entries).
+  `check-register-citation-integrity` is PASS: 397 enforced citations.
+- **Pins recomputed on the combined tree**: `check-test-inventory` OK at 2855 files;
+  `check-execution-census` OK at 92 discovered / 89 running / 3 unrun.
+- **The merge touched no `server/`, `packages/db/`, `packages/shared/` or `packages/worker-protocol/`
+  file** (`git diff --stat` over those paths is empty), so the control-plane image the live runs
+  used is still built from this tree's server code, and §3's evidence stands unchanged.
+- **Re-run after the merge:** the profile 6/6 green, and both positive controls still red with their
+  markers.
+- The full pure guard set is green on the merged tree, including
+  `check-evidence-immutability --base origin/docs/replatform-program` (33 base records intact across
+  29 walked commits).
