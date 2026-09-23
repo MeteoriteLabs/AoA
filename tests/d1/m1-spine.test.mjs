@@ -506,6 +506,7 @@ test("m1-spine: the control tenant is refused distributed execution on every rep
     tenant: control,
     observation: {
       placements: record.placements,
+      persistedAttempts: counts.attempts,
       positiveControlPlacement: record.positiveControlPlacement,
       pollOutcome: record.pollOutcome,
       jobEvents: counts.jobEvents,

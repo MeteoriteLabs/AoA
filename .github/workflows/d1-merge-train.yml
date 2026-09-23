@@ -118,6 +118,9 @@ on:
       # the queue cost outweighs that.
       - "server/src/**"
       - "packages/db/src/**"
+      # The FROZEN wire protocol the ingest validates against and the profile's events are built
+      # with (digests, the usage payload schema, the canonicalizers). Codex, PR #566.
+      - "packages/worker-protocol/src/**"
       - "scripts/lib/d1-evidence-bundle.mjs"
       - "scripts/lib/image-admission.mjs"
       # DEP-014: the lane now RUNS the admission verifier on every image it builds.

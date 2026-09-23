@@ -420,6 +420,11 @@ test("a ledger without exactly one attempt_started and one terminal is refused, 
   assert.ok(codes(extraTerminal).includes("audit:audited_event_cardinality"));
   const noStart = evaluateEnabledTenantSpine(goodEnabled(A, { events: obs.events.filter((e) => e.eventType !== "attempt_started") }));
   assert.ok(codes(noStart).includes("audit:audited_event_cardinality"));
+  // TWO terminals and no start is still two audited events — a length check alone would pass it.
+  const twoTerminals = evaluateEnabledTenantSpine(goodEnabled(A, {
+    events: [{ eventId: "aaaaaaa2-0000-4000-8000-00000000000a", eventType: "terminal" }, ...obs.events.filter((e) => e.eventType === "terminal")],
+  }));
+  assert.ok(codes(twoTerminals).includes("audit:audited_event_cardinality"));
 });
 
 test("a journey the ingest did not fully accept is refused before cost is judged", () => {
@@ -525,6 +530,11 @@ function goodControl(overrides = {}) {
         { replica: "control-plane-b", disposition: "legacy", leaseEligible: false, reasonCode: "organization_disabled" },
       ], // a superset is allowed; the RUNNING control plane's placement is what is required
       positiveControlPlacement: { replica: "control-plane", tenant: "A", disposition: "selected", mode: "active", leaseEligible: true, reasonCode: "target_selected" },
+      // One persisted attempt per placement decision above.
+      persistedAttempts: [
+        { jobId: "0c000000-0000-4000-8000-00000000000c", disposition: "legacy", mode: "legacy", leaseEligible: false, reasonCode: "organization_disabled" },
+        { jobId: "0c000000-0000-4000-8000-00000000000d", disposition: "legacy", mode: "legacy", leaseEligible: false, reasonCode: "organization_disabled" },
+      ],
       pollOutcome: "no_work",
       jobEvents: 0,
       costRowsForCompany: 0,
@@ -573,6 +583,22 @@ test("a positive control that is legacy, queued, failed or not lease-eligible is
 test("a positive-control placement that ERRORED is not a decision, and voids the refusal", () => {
   const v = evaluateControlTenant(goodControl({ positiveControlPlacement: { replica: "control-plane", tenant: "A", error: "connection refused" } }));
   assert.ok(codes(v).includes("control:positive_control_not_selected"));
+});
+
+test("a control tenant whose STORED placement is leasable, or wrongly reasoned, is refused (Codex P2)", () => {
+  const stored = goodControl().observation.persistedAttempts[0];
+  for (const patch of [
+    { disposition: "selected" },
+    { mode: "active" },
+    { leaseEligible: true },
+  ]) {
+    const v = evaluateControlTenant(goodControl({ persistedAttempts: [{ ...stored, ...patch }, goodControl().observation.persistedAttempts[1]] }));
+    assert.ok(codes(v).includes("control:persisted_not_legacy"), JSON.stringify(patch));
+  }
+  assert.ok(codes(evaluateControlTenant(goodControl({ persistedAttempts: [{ ...stored, reasonCode: "no_eligible_target" }, goodControl().observation.persistedAttempts[1]] })))
+    .includes("control:persisted_wrong_reason"));
+  assert.ok(codes(evaluateControlTenant(goodControl({ persistedAttempts: [] })))
+    .includes("control:persisted_missing"));
 });
 
 test("a control tenant that was offered work, or that has events, cost or receipts, is refused", () => {

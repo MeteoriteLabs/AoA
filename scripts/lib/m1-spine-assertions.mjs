@@ -322,7 +322,8 @@ export function evaluateEnabledTenantSpine({ tenant: t, observation: o }) {
   // `attempt_started` or `terminal` mutation unguarded. Require exactly the two identities JOB-017
   // mints, `activity:<company>:<that accepted event id>`, over the named set.
   const auditedEvents = (o.events ?? []).filter((e) => e.eventType === "attempt_started" || e.eventType === "terminal");
-  if (auditedEvents.length !== 2) {
+  const auditedByType = (type) => auditedEvents.filter((e) => e.eventType === type).length;
+  if (auditedByType("attempt_started") !== 1 || auditedByType("terminal") !== 1) {
     // Anything but exactly one `attempt_started` and one `terminal` in the durable ledger means the
     // receipt-binding checks below would silently skip — a check that evaluates nothing (Codex P2).
     out.push(violation(
@@ -522,6 +523,8 @@ export function evaluateEnabledTenantSpine({ tenant: t, observation: o }) {
  *   placement service's decision for a control-tenant attempt, one per replica;
  *   positiveControlPlacement: {disposition, mode, reasonCode} | {error} — the SAME service on an
  *     ENABLED tenant;
+ *   persistedAttempts: [{jobId, disposition, mode, leaseEligible, reasonCode}] — what the control
+ *     tenant's attempts actually hold in `job_attempts` after the decisions;
  *   pollOutcome; jobEvents; costRowsForCompany; receipts }
  */
 export function evaluateControlTenant({ tenant: t, observation: o }) {
@@ -550,6 +553,29 @@ export function evaluateControlTenant({ tenant: t, observation: o }) {
     out.push(violation(
       "control:positive_control_not_selected",
       `${k}: the same placement service on an ENABLED tenant returned ${JSON.stringify(pc ?? null)} — it must SELECT a lease-eligible target (disposition "selected", mode "active", leaseEligible true), or the refusal is not shown to be the rollout's`,
+    ));
+  }
+  // The PERSISTED rows, not only the decision the service returned (Codex P2, PR #566): a decision
+  // that was computed `legacy` but stored as something leasable would leave the tenant one poll away
+  // from distributed execution.
+  for (const attempt of o.persistedAttempts ?? []) {
+    if (attempt.disposition !== "legacy" || attempt.leaseEligible !== false || attempt.mode !== "legacy") {
+      out.push(violation(
+        "control:persisted_not_legacy",
+        `${k}: the stored placement of job ${attempt.jobId} is ${JSON.stringify({ disposition: attempt.disposition, mode: attempt.mode, leaseEligible: attempt.leaseEligible })}, not legacy`,
+      ));
+    }
+    if (attempt.reasonCode !== "organization_disabled") {
+      out.push(violation(
+        "control:persisted_wrong_reason",
+        `${k}: the stored placement of job ${attempt.jobId} records ${JSON.stringify(attempt.reasonCode)}, not organization_disabled`,
+      ));
+    }
+  }
+  if ((o.persistedAttempts ?? []).length !== (o.placements ?? []).length) {
+    out.push(violation(
+      "control:persisted_missing",
+      `${k}: ${(o.persistedAttempts ?? []).length} persisted attempts for ${(o.placements ?? []).length} placement decisions`,
     ));
   }
   if (o.pollOutcome !== "no_work") out.push(violation("control:offered_work", `${k}: poll outcome ${String(o.pollOutcome)}`));
