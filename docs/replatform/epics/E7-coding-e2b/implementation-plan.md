@@ -800,10 +800,17 @@ background process the agent started can keep writing after it. So a regular fil
 by a symlink between enumeration and digest**, and because the probe measured `readFollowsLink=true`,
 `digestArtifact` would then hash the **target** and `exportArtifact` read the same stable target — so
 the existing re-hash TOCTOU check **passes** and the staged prompt is exported as output. An
-enumeration-time marker alone does not close `A-O2-4`. This ticket owes a **provider-side no-follow
+enumeration-time marker alone does not close `A-O2-4`. ★★★ **AND THE ANSWER MUST BE ATOMIC — A SEPARATE CHECK PLUS A READ IS NOT ENOUGH.** *Corrected
+2026-09-23 (Codex P1, PR #575). **Superseded text:** "This ticket owes a **provider-side no-follow
 check (or an equivalent atomic file-handle design) applied at digest and at export**, and a test with
-the mutation **between enumeration and digest**, not only the easier case of a symlink already
-present at enumeration.
+the mutation **between enumeration and digest**."* A standalone recheck before the read just moves
+the window: the background process can swap the file **after the check and before `files.read`**, and
+checking at both digest and export creates **two** new windows rather than closing one. So this ticket
+owes **one atomic operation** — an `O_NOFOLLOW`-style open bound to a file handle that the digest and
+the export both read through, or an equivalent single operation that resolves and reads without a gap
+— **not** a check-then-read pair. Its test must mutate **between the recheck and the read**, because a
+mutation only between enumeration and digest **passes a vulnerable implementation** and would be a
+check that proves nothing.
 
 ★ **This ticket owes a test that FAILS if the crossing returns** — a composition assertion that the
 producer's dependency surface contains no byte-returning read. No existing guard catches it:
@@ -838,7 +845,23 @@ only, no bytes", which would have made the required symlink refusal unimplementa
 "…plus a link marker", which still left the size to `digestArtifact` and so to a whole-file read*);
 modify
 `packages/sandbox-e2b-provider/src/e2b-provider.ts` (implement it over the private
-`#transport.listDir`); modify `packages/provider-wire/src/driver.ts` (the networked-lane binding,
+`#transport.listDir`, **and bound `#readArtifactBytes`**); ★★★ **and the TRANSPORT itself, which this
+list was missing** — *added 2026-09-23 (Codex P1, PR #575), verified at source: changing
+`e2b-provider.ts` alone cannot make `#transport.listDir` return a marker or a size, because
+`E2bTransport.listDir` is **declared** `Promise<readonly string[]>` in `transport.ts` and
+`real-transport.ts` sends the SDK's typed entries through `filesOnlyFromListing`
+(`list-dir-contract.ts`), which throws away everything but the path. The bounded read needs the real
+transport too, since `readFile` returns whole bytes today* — so **modify
+`packages/sandbox-e2b-provider/src/transport.ts`** (the `listDir` return type gains the per-entry
+marker and size; a bounded/streaming read shape is added), **`packages/sandbox-e2b-provider/src/list-dir-contract.ts`**
+(`filesOnlyFromListing` preserves `symlinkTarget`/`type` and `size` instead of discarding them —
+**files-only, recursive, absolute and bounded are unchanged**, so `E7-D09` is **not** reopened),
+**`packages/sandbox-e2b-provider/src/real-transport.ts`** (carry the SDK metadata through; use the
+SDK's streaming/bounded read rather than a whole-byte read) and
+**`packages/sandbox-e2b-provider/src/mock-transport.ts`** (the mock must model the **same** contract —
+`E7-F014`'s class is a mock modelling the opposite one); and update
+`packages/sandbox-e2b-provider/src/__tests__/list-dir-files-only.test.ts` plus the transport tests
+that pin the old `string[]` shape. modify `packages/provider-wire/src/driver.ts` (the networked-lane binding,
 which has no enumeration today — **its shape carries the per-entry marker too, not a bare
 `string[]`**); modify `packages/adapter-manager/src/server.ts` (the matching
 op route **and** its ownership gate — the server answers any op outside `GATE_REQUIRED_OPS` or its
