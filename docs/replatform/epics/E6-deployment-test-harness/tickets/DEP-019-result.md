@@ -1088,3 +1088,211 @@ control was hardened against a vacuous *subject* and left vacuous in its *reason
 **Scope of the withdrawal.** Acceptance items other than the worker-driven cost one are unaffected,
 and no evidence already recorded is retracted. What is retracted is the *disposition*: a ticket with
 an unmet acceptance item may not read `complete`.
+
+## 14. The fix for the withdrawal — a WORKER-SPECIFIC marker (2026-09-23)
+
+**Author:** Claude Opus 5 (M1 build agent), a session distinct from both the implementer of §0–§13
+and the reviewer who withdrew the flip. **Status stays `gate_review`**: only a DISTINCT reviewer
+restores `complete`, and only after this lands.
+
+This section discharges the three requirements the withdrawal names. Nothing above it is retracted
+or rewritten.
+
+**Revisions.** The live probe runs of §14.6 were taken at
+`1e8e852bfa0b8e70ee2a2a64ff24dad0f5f61b30` on `claude/dep-019-worker-marker`: the probe branch head
+`824ec906a220595120643996ad93db64e2db2118` is that commit plus the two-line trigger edit, and the
+mutation branch head `0e3ca1e09cb7af8273cc64fb8fe91521e24b3529` is the probe branch plus the
+deletion. One later code change followed them — the Codex P2 narrowing in §14.2 item 2, which only
+**removes** codes from the marker and so cannot make either probe's verdict weaker: the RED run's
+worker arm produced no violation of any kind, and the GREEN run's worker arm reds on `cost:` /
+`usage:` codes, which still carry it. The self-test's M7 row covers the narrowing itself.
+
+**Placement.** The section the withdrawal names lives on PR #579, which was still open when this was
+written, so this lands at the end of the file rather than immediately under it. If #579 merges
+first, this section follows it; the ordering is stated so a reader does not read the gap as a lost
+edit.
+
+### 14.1 The diagnosis, re-verified at source before building
+
+| Claim | Verified at |
+|---|---|
+| `[m1-spine:cost]` is attached to EVERY `cost:` code, by one branch | `violation()`, `scripts/lib/m1-spine-assertions.mjs` |
+| `evaluateEnabledTenantSpine` runs on the harness attempts too | the per-tenant case in `tests/d1/m1-spine.test.mjs` §2, and `tests/d1/m1-fault-matrix.test.mjs` |
+| …and on the worker-only block | the `EXECUTOR === "worker"` block inside the *"the DEPLOYED worker performs tenant A's journey"* case |
+| the suppressed-usage step's only reason check was that one grep | `d1-merge-train.yml`, step *"POSITIVE CONTROL — with usage suppressed, the profile MUST go red"* |
+| in suppressed mode the worker-driven attempt still reaches `succeeded`, so the deleted block really is the arm that would have red | §4 of this record: `attempt_started · log(env_probe) · terminal` |
+
+The diagnosis holds exactly as written. It is **upheld, not narrowed**.
+
+### 14.2 What shipped
+
+1. **`M1_SPINE_WORKER_COST_MARKER = "[m1-spine:worker-cost]"`**, defined beside
+   `M1_SPINE_COST_MARKER` and `M1_SPINE_USAGE_MARKER` — one source of truth, no hand-written
+   literal anywhere else.
+2. `evaluateEnabledTenantSpine` attaches it to the worker arm's **`cost:` and `usage:`**
+   violations when the caller declares `observation.workerDriven === true`. The pre-existing
+   markers are not displaced; the lane requires both reasons. ★ It is scoped to those two code
+   families **because the lane's two greps are independent** (Codex P2 on this PR, verified at
+   source and fixed): the harness attempts always supply `[m1-spine:cost]`, so a marker riding
+   every worker-arm violation would let a run whose worker attempt priced correctly but failed on,
+   say, `audit:wrong_actor` satisfy both greps — and the step would announce that the worker's cost
+   assertion went red when it had not.
+3. **Fail-closed on a malformed declaration.** A truthy non-boolean is not read as "worker": it
+   raises `journey:worker_driven_flag_invalid` and mints **no** marker, so a typo reds the control
+   rather than silently restoring the vacuity.
+4. The profile declares it at **exactly one call site**, inside the `EXECUTOR === "worker"` block.
+5. The suppressed-usage step greps **both** literals, the second with a failure message naming what
+   was not shown: *"the WORKER-DRIVEN cost/audit verdict produced no failure — the claim under test
+   is not the one that failed"*.
+
+### 14.3 Why "the harness path cannot produce it" is a check and not a hope
+
+The marker is minted from a caller's declaration, so the guarantee is held at two levels, both of
+which go red under mutation (§14.5):
+
+- **Behavioural** — `worker marker: ★ the HARNESS path CANNOT produce it, however broken the attempt
+  is`: every arm of the verdict violated at once, with `workerDriven` absent and with it explicitly
+  `false`. Non-vacuity is asserted first (the fixture really violates something, and still carries
+  `[m1-spine:cost]`), then every message is required to be free of the worker marker.
+- **Structural** — `worker marker: the PROFILE declares it exactly once, inside the
+  EXECUTOR === "worker" block`: the self-test reads `tests/d1/m1-spine.test.mjs` and requires
+  exactly one declaration, preceded by an `EXECUTOR === "worker"` guard that has not closed before
+  it, with the harness call site strictly earlier. Moving the declaration to the harness path, or
+  adding a second one, reds here.
+
+And a third, against drift between the code and the grep: `worker marker: the d1 lane's
+usage-suppressed control greps BOTH literals` reads the workflow and pins the two `grep -F`
+arguments to the **constants**, not to copies of them.
+
+### 14.4 RED and GREEN — the pure self-test
+
+`node --test scripts/lib/__tests__/m1-spine-assertions.test.mjs`
+
+| | tests | pass | fail |
+|---|---:|---:|---:|
+| before this change (`99bff824d1`) | 118 | 118 | 0 |
+| after | **125** | **125** | **0** |
+
+The seven new cases are listed in §14.5; each one's RED is the mutation opposite it.
+
+### 14.5 Mutation table — every new assertion shown going red
+
+Each mutation applied alone to the reviewed tree, then reverted.
+
+| # | Mutation | Result |
+|---|---|---|
+| M1 | drop the `workerDriven === true` arm, so the marker is never minted | RED — `a worker-driven observation carries it on EVERY violation` (123 pass / 1 fail) |
+| M2 | mint the marker unconditionally (`if (true)`) | RED — `★ the HARNESS path CANNOT produce it` (123 / 1) |
+| M3 | set `M1_SPINE_WORKER_COST_MARKER` equal to `M1_SPINE_COST_MARKER` | RED — `it is DISTINCT …` **and** `★ the HARNESS path CANNOT produce it` (122 / 2) |
+| M4 | delete the profile's `workerDriven` declaration | RED — `the PROFILE declares it exactly once …` (123 / 1) |
+| M5 | move that declaration to the HARNESS call site of §2 | RED — `the PROFILE declares it exactly once …` (123 / 1) |
+| M6 | delete the workflow's second `grep -F` | RED — `the d1 lane's usage-suppressed control greps BOTH literals` (123 / 1) |
+| M7 | attach the marker to **every** worker-arm code, not only `cost:`/`usage:` — i.e. revert the Codex P2 fix | RED — `★ an AUDIT-only worker failure does NOT mint it` (124 / 1) |
+
+M2, M3 and M5 are the three shapes of "item 1 renames the defect under a new name"; all three are
+caught. M7 is the fourth shape, found by Codex on this PR: a marker that is worker-specific but not
+**reason**-specific lets an unrelated worker-arm failure stand in for the cost one.
+
+### 14.6 ★ THE MUTATION THAT MATTERS, ON THE LIVE LANE
+
+Requirement 2 of the withdrawal is not a unit-test property: it is about what the **lane** does. The
+`DEP-014` throwaway-probe-branch pattern was used, exactly as §11 did, because `d1-merge-train`
+fires only on push to `main` / `docs/replatform-program` and so cannot run on a pull request.
+
+Two branches, neither with a PR and neither merged:
+
+| Branch | Content | `d1-merge-train` run |
+|---|---|---|
+| `claude/dep-019-worker-marker-d1-probe` | the PR tree + **one** two-line trigger edit | `35872864106`, head `824ec906a2` — **`m1-spine` job `107221163030`: success** |
+| `claude/dep-019-worker-marker-d1-mutation` | that, **plus the whole worker-only cost/audit verdict block deleted** | `35872902394`, head `0e3ca1e09c` — **`m1-spine` job `107221292863`: FAILURE, in the step under test** |
+
+The mutation branch also removes the §14.3 structural self-test, and that is stated rather than
+hidden: without removing it the job would fail in its **pure preflight** step and never reach the
+live control — which would prove the structural pin works, but not the lane-level one. Removing it
+is what makes the mutation reach the step under test, and it makes the branch a faithful model of
+the defect as the withdrawal describes it: a tree in which nothing but the lane's grep stands
+between the deleted block and a green control.
+
+**RED — run `35872902394`, `m1-spine` job `107221292863`, step *"POSITIVE CONTROL — with usage
+suppressed, the profile MUST go red"*.** The profile's own result in that step is the defect,
+printed:
+
+```
+✖ m1-spine: tenant A — a handed-off attempt through the REAL ingest is priced once and audited
+✖ m1-spine: tenant B — a handed-off attempt through the REAL ingest is priced once and audited
+✔ m1-spine: the DEPLOYED worker performs tenant A's journey — lease, execute, events, terminal
+✔ m1-spine: ★ the worker-driven verdict REDS on tenant A's HARNESS-driven attempt (the control)
+ℹ tests 10 · pass 8 · fail 2
+    - cost:no_cost_row:     [m1-spine:cost] tenant A: the handed-off attempt wrote NO cost_events row
+    - cost:receipt_missing: [m1-spine:cost] tenant A: no authoritative_cost receipt
+    - cost:no_cost_row:     [m1-spine:cost] tenant B: the handed-off attempt wrote NO cost_events row
+```
+
+Read it exactly: the two failures are the **harness** tenants, and the **worker-driven case PASSED**
+— because with the block deleted nothing judges its cost or usage at all. Every `[m1-spine:cost]`
+in that output belongs to the harness path, so the **old** step would have found its marker and
+announced *"the profile went red on the cost assertion, as required"*. The new grep does not:
+
+```
+##[error]m1-spine went red with usage suppressed, but the WORKER-DRIVEN cost/audit verdict
+         produced no failure — the claim under test is not the one that failed
+##[error]Process completed with exit code 1.
+```
+
+That is the withdrawal's requirement 2, discharged on the live lane rather than argued.
+
+**GREEN — run `35872864106`, `m1-spine` job `107221163030`: success.** Same lane, unmutated tree:
+
+```
+static preflight (self-test):     tests 124 · pass 124 · fail 0
+running worker services:          1
+the profile (live):               tests 10 · pass 10 · fail 0
+usage-suppressed control:         "the profile went red on the cost assertion, on the
+                                   worker-driven arm, as required"
+duplicate-usage control:          "a duplicate usage event reds the cardinality assertion on the
+                                   HARNESS attempts, as required"
+not-the-executor control:         "the worker-driven claim is withdrawn and the verdict's red arm
+                                   still runs"
+```
+
+and, from that step's own output, the marker on the arm that matters — **both** markers on one
+violation, which is what "BOTH reasons must hold" means concretely:
+
+```
+- cost:no_cost_row:     [m1-spine:worker-cost] [m1-spine:cost] tenant A: the handed-off attempt
+                        wrote NO cost_events row
+- cost:receipt_missing: [m1-spine:worker-cost] [m1-spine:cost] tenant A: no authoritative_cost
+                        receipt
+```
+
+The sibling `d1-merge-train` (`107221162804`) and `m1-fault-matrix` (`107221163187`) jobs are
+`success` in the same run, so nothing else in the lane moved. ★ Per `E6-F023`: these are
+**per-job** conclusions read off the run, not the run conclusion.
+
+### 14.7 Self-audit before the first push (M1-BUILD-RULES §A)
+
+| Family | Finding |
+|---|---|
+| 1 redaction | nothing new is logged, serialized or uploaded; the marker is a fixed literal |
+| 2 vacuous control | the new behavioural case asserts non-vacuity first, and the lane now requires **two** reasons rather than one |
+| 3 bounds | no lock, read, upload or retry is introduced |
+| 4 replay | no idempotency key or durable write is touched |
+| 5 crash windows | no durable write ordering is touched |
+| 6 authenticating the right half | **the live one.** The marker rides a caller declaration, so the "right half" is the call site — pinned structurally by §14.3 and exercised by M4/M5 |
+| 7 record rot | code cited by symbol; the 118 → 124 count recomputed from the combined tree |
+| 8 fail-closed | an absent declaration mints nothing and a malformed one reds without the marker; both leave the control failing |
+
+### 14.8 Guards
+
+The full `pr.yml` pure-node guard set plus
+`check-evidence-immutability --base origin/docs/replatform-program`: **0 failures**, run before
+every push. `scripts/check-campaign-fault-matrix.test.mjs` 25/25 — it holds the "one shared verdict,
+never a second implementation" rule that this change deliberately does not break: the worker-driven
+path still calls `evaluateEnabledTenantSpine`, with one added declaration.
+
+### 14.9 What this does NOT claim
+
+- It does not re-open or re-close any other acceptance item, and it owns no finding.
+- It does not make the duplicate-usage control reach the worker-driven attempt; §13.7's recorded
+  limit is unchanged.
+- It does not set `Status: complete`. That is the distinct reviewer's, after this lands.

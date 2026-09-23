@@ -525,7 +525,21 @@ jobs:
             echo "::error::m1-spine went red with usage suppressed, but NOT on the cost assertion"
             exit 1
           }
-          echo "positive control: the profile went red on the cost assertion, as required"
+          # ★★★ AND ON THE WORKER-DRIVEN ARM (added 2026-09-23 — Codex on PR #579, UPHELD).
+          # `[m1-spine:cost]` alone was NOT worker-specific: `violation()` attaches it to every
+          # `cost:` code, and `evaluateEnabledTenantSpine` runs on the harness attempts of §2 as
+          # well as on the `EXECUTOR === "worker"` block. Deleting that whole block therefore left
+          # this step red, marked, and reporting success — a control certifying *a* cost assertion
+          # and nothing about WHO EXECUTED, which is the ticket's only claim.
+          # `[m1-spine:worker-cost]` is minted only where `observation.workerDriven` is declared,
+          # which happens at exactly one call site inside that block (pinned by the self-test), so
+          # this grep is the mutation's detector. BOTH reasons must hold.
+          grep -F '[m1-spine:worker-cost]' "$out" || {
+            cat "$out"
+            echo "::error::m1-spine went red with usage suppressed, but the WORKER-DRIVEN cost/audit verdict produced no failure — the claim under test is not the one that failed"
+            exit 1
+          }
+          echo "positive control: the profile went red on the cost assertion, on the worker-driven arm, as required"
           tail -n 40 "$out"
 
       - name: POSITIVE CONTROL — a DUPLICATE usage event MUST turn the assertion red
