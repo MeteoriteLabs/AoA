@@ -369,6 +369,33 @@ So runs `35849990593` and `35839618733` are evidence for the code as it stood BE
 verdict is recorded in §11d. Nothing above is rewritten — those runs happened and are cited for the
 trees they ran on.
 
+### 11e. THE FINAL PROBE — all THREE jobs green, including `DEP-018`'s
+
+**Run `35856129644`, head `441b90caa` (= the final PR head + the trigger line): `success`.**
+
+| Job | Result |
+|---|---|
+| `m1-spine` (`107165160976`) | **success** |
+| `d1-merge-train` | **success** |
+| `m1-fault-matrix` (`DEP-018`'s) | **success** — restored by the shared key-generation step (§11d) |
+
+From the `m1-spine` job's own log, on the post-merge tree:
+
+```
+the verdict self-test:    tests 118 · pass 118 · fail 0
+running worker services:  1
+fake-provider-1 | GATED provider wire on 0.0.0.0:8082
+                  (1 pinned probe-script digest + a pinned probe argv shape; ownership gate ON)
+the profile:              tests 10 · pass 10 · fail 0
+usage-suppressed control: "the profile went red on the cost assertion, as required"
+duplicate-usage control:  "a duplicate usage event reds the cardinality assertion on the HARNESS
+                           attempts, as required"          ← narrowed, §13.7
+not-the-executor control: "the worker-driven claim is withdrawn and the verdict's red arm still runs"
+```
+
+This is the run that stands for the reviewed code: it is on the tree that carries the `DEP-018`
+merge, both ruled rounds of fixes, and the cross-ticket repair.
+
 ### 11d. ★★★ THE MERGE BROKE A SIBLING JOB, AND IT WAS MY CHANGE THAT BROKE IT
 
 The probe on the merged tree (`35853547516`, head `3d55763d3`) concluded `failure`. **`m1-spine`
