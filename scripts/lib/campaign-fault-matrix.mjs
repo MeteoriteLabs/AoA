@@ -50,6 +50,7 @@ export const CASE_FAMILIES = Object.freeze([
   "provider_failure",
   "cleanup",
   "credential",
+  "redaction",
   "tenant",
 ]);
 
@@ -62,14 +63,47 @@ export const CASE_FAMILIES = Object.freeze([
  * `tenant` is required everywhere ("Every profile — the F10 tenant matrix").
  */
 export const REQUIRED_FAMILIES = Object.freeze({
-  "M1-D1-SPINE": Object.freeze(["fault_control", "restart_reconciliation", "cancellation", "tenant"]),
+  "M1-D1-SPINE": Object.freeze([
+    "fault_control", "restart_reconciliation", "cancellation", "credential", "redaction", "tenant",
+  ]),
   "M1a-D2-MECHANISM": Object.freeze([
-    "cancellation", "provider_failure", "restart_reconciliation", "cleanup", "tenant",
+    "cancellation", "provider_failure", "restart_reconciliation", "cleanup", "credential",
+    "redaction", "tenant",
   ]),
   "M1-D2-CODING": Object.freeze([
-    "cancellation", "provider_failure", "restart_reconciliation", "cleanup", "credential", "tenant",
+    "cancellation", "provider_failure", "restart_reconciliation", "cleanup", "credential",
+    "redaction", "tenant",
   ]),
 });
+
+/**
+ * ★ ADDED 2026-09-24 — the E5 exit-gate audit's clause 4 and clause 5 floors, made
+ * STRUCTURAL rather than left to whoever next edits the declaration.
+ *
+ * The `a2\` audit (\`docs/replatform/epics/E5-workspaces-secrets/qa/2026-09-24-d0-e5-exit-gate-audit-7be35ae6b771-a2.md`)
+ * graded both clauses `proven_weakly\` against an \`M1a\` floor of \`proven_in_d1`, and its §4 table
+ * names the two gaps precisely:
+ *
+ *   clause 4 — *"no declared D1 lease-expiry / wrong-lease redemption-refusal case"*;
+ *   clause 5 — *"no declared planted-leak case with an unseeded control on either M1a lane"*,
+ *              after the author *"enumerated every case id in all three profiles … not one names
+ *              redaction, a canary, or a planted leak"*.
+ *
+ * A floor recorded only in a QA record is a floor the next declaration edit can silently drop —
+ * which is how both of these came to be missing in the first place. So `redaction` and
+ * `credential` are now REQUIRED families in EVERY profile (above), and the two clauses' shapes are
+ * enumerated here so that dropping either one reds `policy` on the PR that drops it. Enumerated,
+ * not counted, for the same reason `REQUIRED_TENANT_SURFACES` is: a surface must not be droppable
+ * by editing a number.
+ */
+export const REQUIRED_CREDENTIAL_REFUSAL_KINDS = Object.freeze([
+  "lease_expired_redemption_refused",
+  "wrong_lease_redemption_refused",
+]);
+
+/** The stream classes a redaction case must assert the canary marker on. A scrubbed EVENT stream
+ * with an unscrubbed LOG stream is still a leak, so both are named. */
+export const REQUIRED_REDACTION_STREAMS = Object.freeze(["events", "logs"]);
 
 /**
  * The nine cross-tenant surfaces the M1 plan's `DEP-018` row names: *"A cannot lease, read,
@@ -97,7 +131,7 @@ export const REQUIRED_LEGACY_TABLES = Object.freeze([
 export const MIN_ENABLED_TENANT_JOURNEYS = 2;
 
 export const EVIDENCE_MODES = Object.freeze(["required", "pending"]);
-/** `keyed` — an E2B run only the planning session may dispatch (F8). `structural` — the
+/** `keyed\` — an E2B run only the planning session may dispatch (F8). \`structural` — the
  * injection has no reachable producer on this lane, with the blocker cited at source. */
 export const PENDING_KINDS = Object.freeze(["keyed", "structural"]);
 
@@ -176,6 +210,7 @@ export function evaluateFaultMatrixDeclaration(matrix) {
     // checker would certify a profile that leaves an enabled tenant unproven, which is exactly
     // the claim F10 exists to make.
     const journeyTenants = new Set();
+    const credentialRefusalKinds = new Set();
     let controlTenantRefused = 0;
 
     for (const c of entry.cases) {
@@ -229,6 +264,58 @@ export function evaluateFaultMatrixDeclaration(matrix) {
         if (!isNonEmptyString(c.pendingOwner)) {
           v("declaration:pending_missing_owner", `${where}: a pending case needs a \`pendingOwner\` — an unowned pending case is a case nobody will ever run`);
         }
+      }
+
+      // CLAUSE 4's floor. A `credential` case may declare a REFUSAL kind, and when it does the
+      // kind must be one of the two the E5 audit names and must carry a same-tenant positive
+      // control: a refusal with no control cannot be told apart from "nothing resolves on this
+      // lane", which is exactly what the audit found the existing cross-tenant secrets arm
+      // admitting about itself.
+      if (c.family === "credential" && c.credentialCase !== undefined) {
+        const cc = c.credentialCase;
+        if (!isPlainObject(cc)) {
+          v("declaration:credential_case_not_an_object", `${where}: \`credentialCase\` is not an object`);
+        } else {
+          if (!REQUIRED_CREDENTIAL_REFUSAL_KINDS.includes(cc.kind)) {
+            v("declaration:credential_case_unknown_kind", `${where}: credentialCase.kind ${JSON.stringify(cc.kind ?? null)} is not one of ${REQUIRED_CREDENTIAL_REFUSAL_KINDS.join(", ")}`);
+          } else {
+            credentialRefusalKinds.add(cc.kind);
+          }
+          if (cc.positiveControl !== true) {
+            v("declaration:credential_refusal_without_positive_control", `${where}: a lease-scoped redemption-refusal case must declare \`positiveControl: true\` — a same-tenant live-lease redemption that gets PAST the fence, else the refusal is indistinguishable from "nothing resolves here"`);
+          }
+        }
+      } else if (c.family !== "credential" && c.credentialCase !== undefined) {
+        v("declaration:credential_case_on_non_credential", `${where}: a non-\`credential\` case must not carry a \`credentialCase\``);
+      }
+
+      // CLAUSE 5's floor. A redaction case exists to plant a canary and prove the scrubber
+      // catches it on EVERY stream, with an UNSEEDED control that leaks the value verbatim. A
+      // redaction case without the unseeded control is the "probe that cannot go red" the audit
+      // refuses; without the stream list it could assert one stream and imply both.
+      if (c.family === "redaction") {
+        const rc = c.redactionCase;
+        if (!isPlainObject(rc)) {
+          v("declaration:redaction_case_missing", `${where}: a \`redaction\` case needs a \`redactionCase\` object`);
+        } else {
+          if (rc.plantedCanary !== true) {
+            v("declaration:redaction_without_planted_canary", `${where}: a redaction case must declare \`plantedCanary: true\` — a scan of whatever a run happened to emit is not a redaction proof`);
+          }
+          if (rc.unseededControl !== true) {
+            v("declaration:redaction_without_unseeded_control", `${where}: a redaction case must declare \`unseededControl: true\` — without a run that leaks the value VERBATIM, a clean stream is not shown to be the scrubber's work`);
+          }
+          const streams = Array.isArray(rc.streams) ? rc.streams.map(String) : [];
+          for (const stream of REQUIRED_REDACTION_STREAMS) {
+            if (!streams.includes(stream)) {
+              v("declaration:redaction_stream_missing", `${where}: the redaction case asserts no marker on the \`${stream}\` stream (declared: ${JSON.stringify(streams)}) — a scrubbed event stream beside an unscrubbed log stream is still a leak`);
+            }
+          }
+          if (!isNonEmptyString(rc.producer)) {
+            v("declaration:redaction_without_producer", `${where}: the redaction case must name the \`producer\` (file + symbol) whose scrubbing it proves, so a reviewer can check the clause's own symbol is the one exercised`);
+          }
+        }
+      } else if (c.redactionCase !== undefined) {
+        v("declaration:redaction_case_on_non_redaction", `${where}: a non-\`redaction\` case must not carry a \`redactionCase\``);
       }
 
       if (c.family === "tenant") {
@@ -291,6 +378,14 @@ export function evaluateFaultMatrixDeclaration(matrix) {
       for (const family of REQUIRED_FAMILIES[profile] ?? []) {
         if (!families.has(family)) {
           v("declaration:required_family_missing", `profile ${profile} declares no \`${family}\` case`);
+        }
+      }
+      // CLAUSE 4's floor, per profile: BOTH refusal kinds, everywhere. The E5 audit's blocker is
+      // "no declared D1 lease-expiry / wrong-lease redemption-refusal case", and a profile that
+      // declared only one of the two would leave the other uncertified while looking done.
+      for (const kind of REQUIRED_CREDENTIAL_REFUSAL_KINDS) {
+        if (!credentialRefusalKinds.has(kind)) {
+          v("declaration:credential_refusal_kind_missing", `profile ${profile} declares no \`credential\` case with credentialCase.kind \`${kind}\` (E5 exit-gate clause 4: redemption after the lease ends, or on a different lease, must be REFUSED)`);
         }
       }
       // The F10 tenant matrix, in EVERY profile.
@@ -390,6 +485,32 @@ export function evaluateFaultMatrixEvidence(matrix, bundle) {
     }
     if (row.observedClassification !== c.expectedClassification) {
       v("evidence:classification_mismatch", `case ${id}: observed ${JSON.stringify(row.observedClassification ?? null)}, declared ${JSON.stringify(c.expectedClassification)}`);
+    }
+    // CLAUSE 4 — the same-tenant live-lease control, on the evidence side. Without it the row
+    // records a refusal that nothing distinguishes from a lane where no redemption ever works.
+    if (c.family === "credential" && isPlainObject(c.credentialCase) && row.positiveControlPassed !== true) {
+      v("evidence:credential_positive_control_missing", `case ${id}: no passing same-tenant live-lease positive control (positiveControlPassed=${JSON.stringify(row.positiveControlPassed ?? null)}) — a refusal with no control is not a refusal`);
+    }
+    // CLAUSE 5 — BOTH arms are required on the row, and they are separate facts: the seeded run
+    // must be observed CLEAN on every declared stream, and the unseeded control must be observed
+    // LEAKING. Either alone proves nothing — a clean stream with no control may be a run that
+    // emitted nothing, and a leaking control with no clean arm is just a leak.
+    if (c.family === "redaction") {
+      const rc = isPlainObject(c.redactionCase) ? c.redactionCase : null;
+      if (row.redactedOnAllStreams !== true) {
+        v("evidence:redaction_not_clean", `case ${id}: redactedOnAllStreams=${JSON.stringify(row.redactedOnAllStreams ?? null)} — the planted canary was NOT scrubbed from every declared stream`);
+      }
+      if (row.unseededControlLeaked !== true) {
+        v("evidence:redaction_control_did_not_leak", `case ${id}: unseededControlLeaked=${JSON.stringify(row.unseededControlLeaked ?? null)} — the unseeded control did not emit the value verbatim, so the clean arm above is not shown to be the scrubber's work (a probe that cannot go red is not a probe)`);
+      }
+      // Non-vacuity, as its own row fact: a scan over ZERO bytes is "clean" and proves nothing.
+      const observed = isPlainObject(row.streamBytesObserved) ? row.streamBytesObserved : null;
+      for (const stream of (Array.isArray(rc?.streams) ? rc.streams.map(String) : [])) {
+        const bytes = observed ? observed[stream] : undefined;
+        if (!(typeof bytes === "number" && bytes > 0)) {
+          v("evidence:redaction_stream_vacuous", `case ${id}: streamBytesObserved.${stream}=${JSON.stringify(bytes ?? null)} — a scan over an empty stream is vacuously clean`);
+        }
+      }
     }
     const t = isPlainObject(c.tenantCase) ? c.tenantCase : null;
     if (t && (t.kind === "cross_tenant_denial" || t.kind === "legacy_table_isolation")) {

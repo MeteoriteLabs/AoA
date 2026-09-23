@@ -267,6 +267,36 @@ jobs:
       - name: Run the journey
         run: node scripts/m1-shipped-boot/journey.mjs dispatch --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
 
+      # M1a HARNESS GAP 1 (2026-09-24) — THE FAULT-MATRIX STEP THIS LANE NEVER HAD.
+      #
+      # The `M1a-D2-MECHANISM` QA record `a2` measured it: *"m1-shipped-boot.yml at the candidate
+      # has no fault-matrix step, and the uploaded artifact contains no fault-matrix bundle. The
+      # M1a-D2-MECHANISM profile in tests/d1/fault-matrix.json therefore stands at 23 declared,
+      # 23 pending, 0 fired."* Its §11.1 recommends exactly this step ("the lane exists, it works,
+      # and the declaration is already written; what is missing is a step that runs it").
+      #
+      # It emits rows ONLY for the three cases this journey's own observations decide — the two
+      # per-tenant journeys and the control tenant's refusal — and REFUSES rather than filing a
+      # row it cannot support. The other twenty declared cases need injections this lane does not
+      # yet perform and stay `pending` with their kind, reason and owner.
+      #
+      # KEYED ONLY: in keyless mode only the control tenant is dispatched, so the two enabled
+      # journeys have no observation at all and the phase fails closed rather than filing fewer
+      # rows in one mode than the other.
+      - name: Run the M1a-D2-MECHANISM fault matrix over the journey's observations (keyed only)
+        if: inputs.mode == 'keyed'
+        run: node scripts/m1-shipped-boot/journey.mjs fault-matrix --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
+
+      # The matrix's own verdict, re-run as its own step over the retained bundle — the same shape
+      # the D1 lane's `m1-fault-matrix` job uses, so a reader comparing the two lanes sees one
+      # contract rather than two. The phase above already refuses on a violation; this step is what
+      # a QA owner can point at without reading the driver.
+      - name: The matrix's own verdict over the retained bundle (keyed only)
+        if: inputs.mode == 'keyed'
+        run: >-
+          node scripts/check-campaign-fault-matrix.mjs
+          --evidence "$M1_OUT/evidence/fault-matrix-bundle.json"
+
       - name: Collect the evidence (redacted)
         id: collect
         if: always()

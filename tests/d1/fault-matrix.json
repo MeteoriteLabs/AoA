@@ -1,6 +1,6 @@
 {
   "$schema": "DEP-018 — the campaign fault matrix. Its invariants are scripts/lib/campaign-fault-matrix.mjs; its checker is scripts/check-campaign-fault-matrix.mjs, whose reds are scripts/check-campaign-fault-matrix.test.mjs. The M1-D1-SPINE cases are injected by tests/d1/m1-fault-matrix.test.mjs on the D1 stack with the DEP-016 one-worker override; the D2 profiles' cases are keyed and their runs are the planning session's to dispatch (founder ruling F8).",
-  "$fields": "case = the id, unique across profiles. family ∈ fault_control|restart_reconciliation|cancellation|provider_failure|cleanup|credential|tenant. injection.mechanism = WHAT is injected; injection.observedBy = the probe whose result decides whether it FIRED (acceptance 1: a case whose injection did not fire is a failure, not a pass). expectedClassification = the outcome the campaign requires. tenantCase = the F10 matrix entry. evidence = required|pending; a pending case carries pendingKind (keyed|structural), pendingReason and pendingOwner, is never a pass, and reds if a bundle reports evidence for it.",
+  "$fields": "case = the id, unique across profiles. family ∈ fault_control|restart_reconciliation|cancellation|provider_failure|cleanup|credential|redaction|tenant. injection.mechanism = WHAT is injected; injection.observedBy = the probe whose result decides whether it FIRED (acceptance 1: a case whose injection did not fire is a failure, not a pass). expectedClassification = the outcome the campaign requires. tenantCase = the F10 matrix entry. credentialCase = the E5 exit-gate clause-4 lease-scoped redemption-refusal entry (kind ∈ lease_expired_redemption_refused|wrong_lease_redemption_refused, each with a same-tenant positiveControl). redactionCase = the E5 clause-5 entry (a plantedCanary, an unseededControl that leaks verbatim, the streams the marker is asserted on, and the producer whose scrubbing is proven). evidence = required|pending; a pending case carries pendingKind (keyed|structural), pendingReason and pendingOwner, is never a pass, and reds if a bundle reports evidence for it.",
   "schemaVersion": 1,
   "profiles": [
     {
@@ -73,8 +73,8 @@
           "expectedClassification": "startup_reconciler_fences_its_own_prior_lease",
           "evidence": "pending",
           "pendingKind": "structural",
-          "pendingReason": "No worker on the D1 lane ever holds a lease to reconcile: AOA_WORKER_DISPATCH_ENABLED is declared ABSENT for both D1 workers (scripts/lib/d1-dispatch-declared.mjs, enforced by check-d1-dispatch-declared), and every E6F suite — this one included — plays the worker over the real /worker-control HTTP endpoints rather than running the daemon's poll loop. Restarting worker-b would therefore reconcile an EMPTY candidate store, which is a check that evaluates nothing. WRK-013's composed reconciler is proven behaviourally in packages/worker-daemon/src/__tests__/startup-reconcile-composed.component.test.ts (two real lifetimes over one candidate store, 25 mutations all red); its DEPLOYED-boot case is the shipped-boot lane's, where a real daemon holds a real lease.",
-          "pendingOwner": "DEP-015 shipped-boot lane (keyed), dispatched by the planning session under F8"
+          "pendingReason": "CORRECTED 2026-09-24. The reason previously recorded here — that AOA_WORKER_DISPATCH_ENABLED is declared ABSENT for both D1 workers — was measured against the BASE compose file, which is not the file this campaign boots: docker/d1/m1-spine.override.yml:137 sets it to \"1\" on worker-b, and .github/workflows/d1-merge-train.yml binds that override on both certified jobs. The spine `a2` QA record (milestones/M1a/qa/2026-09-24-m1-d1-spine-m1a-candidate-7be35ae6b771-a2.md §0) establishes this and grades the old reason a FAILURE (SPINE-MATRIX-3). The case is therefore NOT structurally unavailable here; it is UNBUILT — nothing in tests/d1/m1-fault-matrix.test.mjs restarts the deployed worker and inspects its startup reconciler's fencing of its own prior lease. It is routed to the M1a-D2-MECHANISM lane, whose daemon-restart case is its direct analogue, and that lane now HAS a fault-matrix step to run it in.",
+          "pendingOwner": "planning session (F8), on the DEP-015 lane"
         },
         {
           "case": "d1.cancel.leased_attempt",
@@ -120,8 +120,8 @@
           "expectedClassification": "worker_maps_provider_timeout_to_failed_terminal",
           "evidence": "pending",
           "pendingKind": "structural",
-          "pendingReason": "No worker on the D1 lane maps anything: AOA_WORKER_DISPATCH_ENABLED is declared ABSENT for both D1 workers (scripts/lib/d1-dispatch-declared.mjs, enforced by check-d1-dispatch-declared), and every E6F suite plays the worker over the real /worker-control HTTP endpoints. Its sibling d1.provider.execute_deadline_exceeded proves the INGEST's classification of a provider-derived terminal; this case owns the deployed worker's mapping, is filed separately so the two claims can never be confused, and is never a pass.",
-          "pendingOwner": "DEP-015 shipped-boot lane (keyed), dispatched by the planning session under F8; see also d2m.provider_failure.e2b_create_refused"
+          "pendingReason": "CORRECTED 2026-09-24, same measurement and same record as d1.reconcile.worker_startup_lease_probe above: the old \"the D1 workers do not dispatch\" reason is false of the lane that boots the override. UNBUILT rather than unavailable — no case drives a provider timeout through the DEPLOYED worker and asserts its terminal mapping (d1.provider.execute_deadline_exceeded asserts the INGEST side, from a harness-minted worker). Routed to M1a-D2-MECHANISM, whose provider-failure case is its analogue.",
+          "pendingOwner": "planning session (F8), on the DEP-015 lane"
         },
         {
           "case": "d1.cleanup.orphan_object_swept",
@@ -407,6 +407,53 @@
             "antiVacuityControl": true,
             "productionPath": "the device_local arm's two predicates from packages/db/src/repositories/tenant/job-control.ts resolveExecutionSecret (`id = refId AND company_id = <the locked lease's companyId>`), REPLICATED as the same two-predicate read on the same non-owner aoa_app pool. ★ NOT resolveExecutionSecret itself: that entry point admits a device_local handle only through a broker the D1 compose wires fail-closed, so no resolvable fixture exists on this lane. This case proves the PREDICATE and the grant, not the production reader's own invocation of it; the reader half is d1.credential.production_reader_company_predicate, pending (Codex, PR #573)."
           }
+        },
+        {
+          "case": "d1.credential.lease_expired_redemption_refused",
+          "family": "credential",
+          "credentialCase": {
+            "kind": "lease_expired_redemption_refused",
+            "positiveControl": true
+          },
+          "injection": {
+            "mechanism": "lease.expire_deadlines_then_reap",
+            "observedBy": "the expiry reports a NON-ZERO updated row count (an `assert.ok(result)` would be vacuously true — the E6F-14 lesson recorded in docker/d1/campaign.env), and the fenced resolve route then answers outcome=denied with a FENCE-family reason (stale_fence|attempt_terminal|target_revoked) that `admitSandboxLocalResolution` passes through — never the route's catch-all `malformed`, which proves nothing about the fence. The tenant's own `security.denied.secret_resolve` activity_log rows are read and recorded beside it (secret-resolve-denial-audit.ts) but are NOT classified on: the wire refusal is the contract."
+          },
+          "expectedClassification": "redemption_refused_after_lease_end_with_live_lease_control",
+          "evidence": "required"
+        },
+        {
+          "case": "d1.credential.wrong_lease_redemption_refused",
+          "family": "credential",
+          "credentialCase": {
+            "kind": "wrong_lease_redemption_refused",
+            "positiveControl": true
+          },
+          "injection": {
+            "mechanism": "resolve.present_another_live_attempts_lease",
+            "observedBy": "the presented leaseId differs from the attempt's own (recorded), and the resolve is refused — while the IDENTICAL request with the attempt's own lease resolves. The pair is the observation: the route is deliberately not an oracle for which lease exists, so the case does not depend on WHICH refusal reason comes back; it depends on the control resolving, which is what makes the refusal attributable to the lease binding."
+          },
+          "expectedClassification": "redemption_refused_on_foreign_lease_with_own_lease_control",
+          "evidence": "required"
+        },
+        {
+          "case": "d1.redaction.planted_canary_scrubbed",
+          "family": "redaction",
+          "redactionCase": {
+            "plantedCanary": true,
+            "unseededControl": true,
+            "streams": [
+              "events",
+              "logs"
+            ],
+            "producer": "packages/worker-daemon/src/lease/secret-redemption.ts synthesiseRunSecrets"
+          },
+          "injection": {
+            "mechanism": "secret.plant_high_entropy_canary_as_the_redeemed_value",
+            "observedBy": "the run's event stream and the worker's container log are scanned for BOTH markers: the canary (redeemed through synthesiseRunSecrets and registered as a redaction canary) must be ABSENT, and an UNSEEDED TWIN of identical shape and entropy, carried on the same run through the workload args and never registered, must be PRESENT VERBATIM. Each stream's observed byte length must be non-zero. Neither arm passes alone: a clean stream with no twin is indistinguishable from a run that emitted nothing, and a twin with no clean arm is just a leak."
+          },
+          "expectedClassification": "canary_scrubbed_while_unseeded_twin_leaks",
+          "evidence": "required"
         }
       ]
     },
@@ -504,13 +551,10 @@
           "injection": {
             "mechanism": "journey.real_e2b_task_run",
             "target": "tenant A",
-            "observedBy": "the verifier's verdict-json for A's run"
+            "observedBy": "the verifier's verdict-json for A's run ★ 2026-09-24: emitted as a fault-matrix evidence row by the `fault-matrix` phase of scripts/m1-shipped-boot/journey.mjs, which reads this tenant's own journey.json outcome — the same facts the QA record reads, mapped once rather than re-derived per reader. The phase REFUSES rather than emitting a row it cannot support, so a missing outcome fails the step instead of passing vacuously."
           },
           "expectedClassification": "distributed_run_corroborated",
-          "evidence": "pending",
-          "pendingKind": "keyed",
-          "pendingReason": "The per-tenant journey on this gate IS a keyed E2B run.",
-          "pendingOwner": "planning session (F8), on the DEP-015 lane",
+          "evidence": "required",
           "tenantCase": {
             "kind": "per_tenant_journey",
             "tenant": "A"
@@ -522,13 +566,10 @@
           "injection": {
             "mechanism": "journey.real_e2b_task_run",
             "target": "tenant B",
-            "observedBy": "the verifier's verdict-json for B's run"
+            "observedBy": "the verifier's verdict-json for B's run ★ 2026-09-24: emitted as a fault-matrix evidence row by the `fault-matrix` phase of scripts/m1-shipped-boot/journey.mjs, which reads this tenant's own journey.json outcome — the same facts the QA record reads, mapped once rather than re-derived per reader. The phase REFUSES rather than emitting a row it cannot support, so a missing outcome fails the step instead of passing vacuously."
           },
           "expectedClassification": "distributed_run_corroborated",
-          "evidence": "pending",
-          "pendingKind": "keyed",
-          "pendingReason": "The per-tenant journey on this gate IS a keyed E2B run.",
-          "pendingOwner": "planning session (F8), on the DEP-015 lane",
+          "evidence": "required",
           "tenantCase": {
             "kind": "per_tenant_journey",
             "tenant": "B"
@@ -711,13 +752,10 @@
           "injection": {
             "mechanism": "rollout.control_organization_absent",
             "target": "the control tenant C on the shipped boot",
-            "observedBy": "the control plane logs rolloutState 'off' for the control run"
+            "observedBy": "the control plane logs rolloutState 'off' for the control run ★ 2026-09-24: emitted as a fault-matrix evidence row by the `fault-matrix` phase of scripts/m1-shipped-boot/journey.mjs, which reads this tenant's own journey.json outcome — the same facts the QA record reads, mapped once rather than re-derived per reader. The phase REFUSES rather than emitting a row it cannot support, so a missing outcome fails the step instead of passing vacuously."
           },
           "expectedClassification": "legacy_for_organization_disabled",
-          "evidence": "pending",
-          "pendingKind": "keyed",
-          "pendingReason": "The shipped-boot lane's own control-tenant arm (classifyTenantOutcome, role 'control') runs only on a dispatched boot.",
-          "pendingOwner": "planning session (F8), on the DEP-015 lane",
+          "evidence": "required",
           "tenantCase": {
             "kind": "control_tenant_refused"
           }
@@ -819,6 +857,62 @@
           "pendingKind": "keyed",
           "pendingReason": "Routed here from M1-D1-SPINE by E6-D003 (planning session, F2): this is the gate whose topology redeems a real provider credential, so authorizeSecretResolve can ADMIT and the two arms become distinguishable. A handle on tenant A's job whose refId names tenant B's credential must find NOTHING (the company predicate) and deny; the same handle naming A's own credential is the positive control. Needs a keyed E2B run, which founder ruling F8 reserves to the planning session.",
           "pendingOwner": "planning session (F8), on the DEP-015 shipped-boot lane"
+        },
+        {
+          "case": "d2m.credential.lease_expired_redemption_refused",
+          "family": "credential",
+          "credentialCase": {
+            "kind": "lease_expired_redemption_refused",
+            "positiveControl": true
+          },
+          "injection": {
+            "mechanism": "lease.expire_deadlines_then_reap",
+            "observedBy": "the expiry reports a NON-ZERO updated row count (an `assert.ok(result)` would be vacuously true — the E6F-14 lesson recorded in docker/d1/campaign.env), and the fenced resolve route then answers outcome=denied with a FENCE-family reason (stale_fence|attempt_terminal|target_revoked) that `admitSandboxLocalResolution` passes through — never the route's catch-all `malformed`, which proves nothing about the fence. The tenant's own `security.denied.secret_resolve` activity_log rows are read and recorded beside it (secret-resolve-denial-audit.ts) but are NOT classified on: the wire refusal is the contract."
+          },
+          "expectedClassification": "redemption_refused_after_lease_end_with_live_lease_control",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "Needs a real sandbox-bearing attempt on the keyed DEP-015 lane, and the lane's fault-matrix step (added 2026-09-24) emits rows only for the three cases the journey itself observes. The clause-4 pair is PROVEN KEYLESSLY on M1-D1-SPINE at this revision; this is its real-provider mirror and is not what the E5 clause-4 floor depends on.",
+          "pendingOwner": "planning session (F8), on the DEP-015 lane"
+        },
+        {
+          "case": "d2m.credential.wrong_lease_redemption_refused",
+          "family": "credential",
+          "credentialCase": {
+            "kind": "wrong_lease_redemption_refused",
+            "positiveControl": true
+          },
+          "injection": {
+            "mechanism": "resolve.present_another_live_attempts_lease",
+            "observedBy": "the presented leaseId differs from the attempt's own (recorded), and the resolve is refused — while the IDENTICAL request with the attempt's own lease resolves. The pair is the observation: the route is deliberately not an oracle for which lease exists, so the case does not depend on WHICH refusal reason comes back; it depends on the control resolving, which is what makes the refusal attributable to the lease binding."
+          },
+          "expectedClassification": "redemption_refused_on_foreign_lease_with_own_lease_control",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "Needs a real sandbox-bearing attempt on the keyed DEP-015 lane, and the lane's fault-matrix step (added 2026-09-24) emits rows only for the three cases the journey itself observes. The clause-4 pair is PROVEN KEYLESSLY on M1-D1-SPINE at this revision; this is its real-provider mirror and is not what the E5 clause-4 floor depends on.",
+          "pendingOwner": "planning session (F8), on the DEP-015 lane"
+        },
+        {
+          "case": "d2m.redaction.planted_canary_scrubbed",
+          "family": "redaction",
+          "redactionCase": {
+            "plantedCanary": true,
+            "unseededControl": true,
+            "streams": [
+              "events",
+              "logs"
+            ],
+            "producer": "packages/worker-daemon/src/lease/secret-redemption.ts synthesiseRunSecrets"
+          },
+          "injection": {
+            "mechanism": "secret.plant_high_entropy_canary_as_the_redeemed_value",
+            "observedBy": "the run's event stream and the worker's container log are scanned for BOTH markers: the canary (redeemed through synthesiseRunSecrets and registered as a redaction canary) must be ABSENT, and an UNSEEDED TWIN of identical shape and entropy, carried on the same run through the workload args and never registered, must be PRESENT VERBATIM. Each stream's observed byte length must be non-zero. Neither arm passes alone: a clean stream with no twin is indistinguishable from a run that emitted nothing, and a twin with no clean arm is just a leak."
+          },
+          "expectedClassification": "canary_scrubbed_while_unseeded_twin_leaks",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "Needs a real E2B run whose redeemed credential is a planted canary. The clause-5 floor is PROVEN KEYLESSLY on M1-D1-SPINE at this revision against the same producer (synthesiseRunSecrets); this is the real-provider mirror. NOTE that the lane's existing \"Scan the evidence AND the job log for job secrets\" step is NOT this case: it scrubs the uploaded bundle, seeds no per-run canary, and has no unseeded control (E5 exit-gate audit a2 §4, clause 5).",
+          "pendingOwner": "planning session (F8), on the DEP-015 lane"
         }
       ]
     },
@@ -1231,6 +1325,62 @@
             "antiVacuityControl": true,
             "productionPath": "packages/db/src/repositories/tenant/job-control.ts resolveExecutionSecret (the device_local arm)"
           }
+        },
+        {
+          "case": "d2c.credential.lease_expired_redemption_refused",
+          "family": "credential",
+          "credentialCase": {
+            "kind": "lease_expired_redemption_refused",
+            "positiveControl": true
+          },
+          "injection": {
+            "mechanism": "lease.expire_deadlines_then_reap",
+            "observedBy": "the expiry reports a NON-ZERO updated row count (an `assert.ok(result)` would be vacuously true — the E6F-14 lesson recorded in docker/d1/campaign.env), and the fenced resolve route then answers outcome=denied with a FENCE-family reason (stale_fence|attempt_terminal|target_revoked) that `admitSandboxLocalResolution` passes through — never the route's catch-all `malformed`, which proves nothing about the fence. The tenant's own `security.denied.secret_resolve` activity_log rows are read and recorded beside it (secret-resolve-denial-audit.ts) but are NOT classified on: the wire refusal is the contract."
+          },
+          "expectedClassification": "redemption_refused_after_lease_end_with_live_lease_control",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "M1-D2-CODING is not scheduled at M1a; no campaign of this profile has run. The clause-4 pair is proven keylessly on M1-D1-SPINE at this revision.",
+          "pendingOwner": "planning session (F8), on the DEP-015 lane"
+        },
+        {
+          "case": "d2c.credential.wrong_lease_redemption_refused",
+          "family": "credential",
+          "credentialCase": {
+            "kind": "wrong_lease_redemption_refused",
+            "positiveControl": true
+          },
+          "injection": {
+            "mechanism": "resolve.present_another_live_attempts_lease",
+            "observedBy": "the presented leaseId differs from the attempt's own (recorded), and the resolve is refused — while the IDENTICAL request with the attempt's own lease resolves. The pair is the observation: the route is deliberately not an oracle for which lease exists, so the case does not depend on WHICH refusal reason comes back; it depends on the control resolving, which is what makes the refusal attributable to the lease binding."
+          },
+          "expectedClassification": "redemption_refused_on_foreign_lease_with_own_lease_control",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "M1-D2-CODING is not scheduled at M1a; no campaign of this profile has run. The clause-4 pair is proven keylessly on M1-D1-SPINE at this revision.",
+          "pendingOwner": "planning session (F8), on the DEP-015 lane"
+        },
+        {
+          "case": "d2c.redaction.planted_canary_scrubbed",
+          "family": "redaction",
+          "redactionCase": {
+            "plantedCanary": true,
+            "unseededControl": true,
+            "streams": [
+              "events",
+              "logs"
+            ],
+            "producer": "packages/worker-daemon/src/lease/secret-redemption.ts synthesiseRunSecrets"
+          },
+          "injection": {
+            "mechanism": "secret.plant_high_entropy_canary_as_the_redeemed_value",
+            "observedBy": "the run's event stream and the worker's container log are scanned for BOTH markers: the canary (redeemed through synthesiseRunSecrets and registered as a redaction canary) must be ABSENT, and an UNSEEDED TWIN of identical shape and entropy, carried on the same run through the workload args and never registered, must be PRESENT VERBATIM. Each stream's observed byte length must be non-zero. Neither arm passes alone: a clean stream with no twin is indistinguishable from a run that emitted nothing, and a twin with no clean arm is just a leak."
+          },
+          "expectedClassification": "canary_scrubbed_while_unseeded_twin_leaks",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "M1-D2-CODING is not scheduled at M1a; no campaign of this profile has run. The clause-5 case is proven keylessly on M1-D1-SPINE at this revision. Distinct from d2c.credential.no_plaintext_in_evidence, which scans the retained BUNDLE rather than the run's own streams.",
+          "pendingOwner": "planning session (F8), on the DEP-015 lane"
         }
       ]
     }
