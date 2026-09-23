@@ -307,7 +307,7 @@ Once the addendum lands, a re-review should be short. Nothing else I checked nee
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
 | 1 | M1 review-batch-2A independent reviewer (Claude Opus 5) | `dbe6f5da2a9316ac3f9762294d87991d7ec6f885` | `changes_requested` | Record only. The header's reviewed revision `1ec5533b5` predates the E6-D001 code (`dbe6f5da2`) that the record describes. §4's CI run `35591595055` was `cancelled`, on `c31dccf87`, with the pre-E6-D001 guard (46 tests). The covering run `35596651522` (policy `106322893461`: 49/49, 53/53) is uncited, and §8's post-merge citation is missing: registration `35598343418` (job `106328314759` skipped, 0 steps) and keyless rehearsal `35600507289` (job `106335219133` success). Code sound: guards green locally, M13 reproduced (2 failed), Codex clean on `dbe6f5da2a`. Acceptance 1 and the enabled half of 6 are OPEN (keyed). |
-| 2 | M1 review-batch-3A independent reviewer (Claude Opus 5) | `60aafb32ec6f8316f92079789cf8814f981f3ed3` | `approved` | §12 verified at source against keyed run `35619555883` (job `106398898162`, 30 steps, `success`) and its artifact `10649025333`: `journey.json` `passed: true`, candidate `dd839129bf…`, `MODE: keyed` / `aoa-base`; tenants a and b `execution_owner="distributed"`, `succeeded`, `verifierExit 0`, usage 8/734 and 8/730, `costUsd: null`; sandbox ids `iofom0nu25ztf3kc5tte1` and `isqx7nvhgf40txm5vc4b6`, 1 line each, on that tenant's own lease and in that tenant's own worker log, `rejected {shape:0, foreignLease:0}`; control c `execution_owner=null`, `failed`, `rolloutState "off"`, 0 jobs. Three distinct Organizations in `tenants.json` (F10 real). Acceptance 2 is now MEASURED: the hard leak scan reported `clean` over 20 files for 28 named secrets including the ed25519 private PEM, and I found no PRIVATE KEY in the downloaded bundle. Attempt 1's (a), (b) and (c) are all delivered by §10. Local rerun of the three pure-node suites: 140/140. All seven acceptance items MET; `Status` flipped to `complete` in a separate commit. |
+| 2 | M1 review-batch-3A independent reviewer (Claude Opus 5) | `60aafb32ec6f8316f92079789cf8814f981f3ed3` | `approved` | §12 verified at source against keyed run `35619555883` (job `106398898162`, 30 steps, `success`) and its artifact `10649025333`: `journey.json` `passed: true`, candidate `dd839129bf…`, `MODE: keyed` / `aoa-base`; tenants a and b `execution_owner="distributed"`, `succeeded`, `verifierExit 0`, usage 8/734 and 8/730, `costUsd: null`; sandbox ids `iofom0nu25ztf3kc5tte1` and `isqx7nvhgf40txm5vc4b6`, 1 line each, on that tenant's own lease and in that tenant's own worker log, `rejected {shape:0, foreignLease:0}`; control c `execution_owner=null`, `failed`, `rolloutState "off"`, 0 jobs. Three distinct Organizations in `tenants.json` (F10 real). Acceptance 2 is now MEASURED: the hard leak scan reported `clean` over 20 files for 28 named secrets including the ed25519 private PEM, and I found no PRIVATE KEY in the downloaded bundle. Attempt 1's (a), (b) and (c) are all delivered by §10. Local rerun of the three pure-node suites: 140/140. All seven acceptance items MET; `Status` flipped to `complete` in a separate commit. **Codex P1 on this review, accepted as real in mechanism and then MEASURED:** the leak scan walks only `$M1_OUT/evidence` and `trackSecret` emits no `::add-mask::`, so the Actions job log is an unprotected surface — but the COMPLETE job log for `106398898162` (2 347 lines) has 0 PEM markers and every base64-shaped run of 60+ chars is a 64-hex docker digest, so acceptance 2 holds on both surfaces for this run. The standing gap (no log-side control) is recommended to the planning session as `::add-mask::` in `trackSecret`, not fixed in a review commit. |
 
 ---
 
@@ -579,6 +579,44 @@ generated ed25519 private PEM twice — whole and body-only — among the 28 nam
 reported `clean` over 20 files. I also grepped the downloaded artifact myself: no
 `BEGIN … PRIVATE KEY` in any retained file.
 
+**★★★ Acceptance 2's LOG half — a Codex P1 on this review, verified at source, ACCEPTED as real in
+mechanism, and then measured (added 2026-09-23).** Codex objected that acceptance 2 says the keypair
+appears in no artifact **or log**, while the evidence above covers only the artifact: the hard leak
+scan walks `$M1_OUT/evidence` and nothing else, and the GitHub Actions job log is a separate surface.
+The mechanism half of that is **true**, and I checked it at source rather than reasoning about it:
+
+- `leakScan` (`journey.mjs`) walks exactly `path.join(state.out, "evidence")`. Nothing outside that
+  directory is scanned.
+- **`trackSecret` does not emit `::add-mask::`.** There is no `add-mask` anywhere in
+  `scripts/m1-shipped-boot/journey.mjs`. The generated private PEM is minted in-job, so it is not a
+  repository secret and GitHub does not mask it automatically. A step that printed it would print it
+  in the clear, and both the leak scan and the job would still pass.
+
+**So I measured the log half instead of assuming it.** I pulled the **complete** job log for
+`shipped-boot` job **`106398898162`** of keyed run `35619555883` — 2 347 lines, the whole job, every
+step — and scanned it:
+
+- **0** occurrences of `BEGIN … PRIVATE KEY`, `END … PRIVATE KEY` or `BEGIN PUBLIC KEY`.
+- Every base64-shaped run of 60 characters or more — 27 distinct values — is a 64-character
+  **hex** docker image digest (`^[0-9a-f]{64}$`). An ed25519 PKCS#8 PEM body is base64, not hex, and
+  would have been caught by that scan. The only non-hex hits at a 40-character threshold are
+  filesystem paths and the artifact URL.
+
+**Verdict on acceptance 2: MET, on both surfaces, for this run.** The artifact half is asserted by
+the lane (`clean` over 20 files for 28 named secrets, with the upload gated on it); the log half is
+measured here, by me, over the whole job log. `complete` stands.
+
+**What is NOT true, and is worth a follow-up rather than a status change.** The log half has **no
+standing control** — it is a measurement of one run, not a check. A future change that printed the
+key would red nothing, which is precisely the *"a check that evaluates nothing is not a check"* class
+this programme tracks; here it is weaker still, because there is no check at all on that surface.
+**Recommended to the planning session, as a one-line fix on the right seam:** have `trackSecret`
+also write `::add-mask::<value>` for every secret it registers. That is the same list the leak scan
+already uses (28 values on the keyed run, including the PEM whole and body-only), it covers **every**
+log line rather than the ones the driver happens to route through `redactSecrets`, and it needs no
+new inventory. I am not making that change inside a review commit; it is `DEP-015` follow-up work,
+and the run under review is measurably clean without it.
+
 **Multi-tenant (F10) is real in the keyed run.** `tenants.json` carries three distinct Organizations
 with three distinct Companies and agents, and `companiesToOrganizations` pins each Company to its own
 Organization. Two were enabled and each reached its own E2B sandbox on its own lease; the third was
@@ -607,7 +645,7 @@ scripts/check-finding-ownership.mjs` is OK.
 | # | Attempt 1 | Now |
 |---|---|---|
 | 1 | OPEN (keyed pending) | **MET** — run `35619555883`, verified above. |
-| 2 | Met in design | **MET and measured** — the hard leak scan reported `clean` over 20 files for 28 secrets, including the private PEM, on the keyed run itself. |
+| 2 | Met in design | **MET and measured on BOTH surfaces** — artifact: the hard leak scan reported `clean` over 20 files for 28 secrets, including the private PEM, on the keyed run itself. Log: the complete job log for `106398898162` (2 347 lines) has 0 PEM markers and no base64 run that is not a docker sha256 digest. See the Codex-P1 block above, including the missing standing control on the log surface. |
 | 3 | Evidenced | **MET**, unchanged. |
 | 4 | Evidenced (E6-D001) | **MET**, unchanged. |
 | 5 | Met in design | **MET** — the keyed spend happened on a named candidate, dispatched by the planning session under F8. |
