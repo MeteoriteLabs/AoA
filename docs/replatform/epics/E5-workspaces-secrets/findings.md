@@ -484,6 +484,14 @@ against the real file — so the size rides the enumeration entry the port is be
 and the pre-read refusal costs no new transport operation. `CLI-012`'s task now requires `size` in
 every entry and the `SD-6` bounds enforced from that metadata **before** `digestArtifact`, with the
 review's **PC-6** as its control (drop the pre-digest check → the provider reads the whole file).
+★★★ **But the pre-digest check alone does NOT discharge this finding.** *Added 2026-09-23 (Codex P1,
+PR #575).* The listing size is a **snapshot**: a background writer can leave a file inside the cap at
+enumeration and grow it to gigabytes before `digestArtifact`, after which the metadata check passes
+and `#readArtifactBytes` still materialises the enlarged file. **`E5-F009` is discharged by a bounded
+or streaming read** that stops and refuses at the cap on **both** the digest and the export path —
+the pre-digest check is only the cheap arm that avoids the read at all in the common case — proven by
+a case whose file **grows between enumeration and digest** and which never allocates the oversized
+buffer.
 The *"Why it was not fixed here"* paragraph above stands as written: it is `DAT-009-3e`'s record of
 why the fix was not its.
 

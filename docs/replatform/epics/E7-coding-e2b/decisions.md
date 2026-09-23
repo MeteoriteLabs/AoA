@@ -405,6 +405,38 @@ contract, `CLI-010-result.md` is `complete`, and the enforcer (`filesOnlyFromLis
 the same arm returned `["/home/user/aoa-output/a.txt", "/home/user/aoa-output/sub/b.txt"]` — files
 only, recursive, absolute.
 
+### Conditions on the ruling — the template precondition
+
+★★★ **`R` IS PROVEN EMPTY ON `aoa-base` AND ON NOTHING ELSE, AND THAT IS A GATING PRECONDITION, NOT A
+FOOTNOTE.** *Added 2026-09-23 (Codex P1, PR #575), which noticed this ruling had not carried
+`E7-F022`'s own standing instruction forward.*
+
+`E7-F022`'s severity block has always read: *"Re-derive this to HIGH the moment any candidate output
+mechanism becomes location-based; the conditional is the only thing holding it down."* This ruling
+**is** that moment, so **`E7-F022` is re-derived from MEDIUM to HIGH** in the same commit, in both
+`findings.md` and `scripts/finding-ownership.json`.
+
+Why it bites: `CLI-012` counts every regular file under `R`, so a template that pre-populates `R`
+makes **every run of every tenant "produce output" with the agent doing nothing** — the `E7-F020`
+class, arriving through the template instead of through a predicate, and `A-O2-2` in the review's
+attack table. The probe's `S-P0` arm closes it for **one** template: `root-absent`, `present=false`,
+`paths=[]`, on **`aoa-base`**. The committed record states in terms that it establishes nothing about
+*"any template other than the one named"*, and the production template is an unpinned operator input
+under three uncoordinated variable names — which is exactly `E7-F022`.
+
+**So the ruling is conditional, and the condition is discharged per deployment, not once:**
+
+1. **Before any template is used for `M1b`'s campaign, `R` must be proven empty on THAT template** by
+   the `S-P0` arm, with the result recorded (a verdict that lives only in a job log is lost —
+   `E7-F025`).
+2. **Re-run it on every template change or rebuild.** The template is built by an operator from a
+   repo Dockerfile with nothing verifying that the registered template matches it.
+3. **If `R` is not empty on a template, do not run the campaign on it.** Per the review's §10.5 row
+   for `S-P0`: *"choose another `R` and re-run"*. **Do not rule around it.**
+4. **It is an OPERATOR precondition, not code.** `CLI-017` cannot discharge it, and `CLI-012` cannot
+   tell a template-owned file from an agent-written one — that is the whole point of the closure
+   property in the review's §4.3.
+
 ### What this ruling does NOT decide
 
 - **The `+1 day` lstat contingency does not fire — but the metadata does NOT reach a consumer today,

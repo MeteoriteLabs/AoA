@@ -777,9 +777,22 @@ new transport operation is needed. This ticket must therefore enforce the review
 before `digestArtifact`**, with the grant's `maxBytes` equal to the per-file cap, each refusal
 classified (`output_too_large` / `output_limit_exceeded` / `output_symlink_refused`) and per-file
 (`E5-D07`: one refusal never drops the others). Control **PC-6**: drop the pre-digest check and the
-provider reads the whole file → red. ★ Flipping `E5-F009` to `resolved` happens in the same commit
-as the code that earns it, and its manifest entry flips to `owned: CLI-012` as soon as this ticket
-has a ticket file (see that entry).
+provider reads the whole file → red.
+
+★★★ **AND THE LISTING CHECK ALONE DOES NOT CLOSE `E5-F009` — THE READ ITSELF MUST BE BOUNDED.**
+*Added 2026-09-23 (Codex P1, PR #575).* The listing size is a **snapshot**, exactly like the link
+marker: a background writer the agent left running can leave a file inside 25 MiB at enumeration and
+grow it to gigabytes before `digestArtifact`, and the pre-digest check then passes while
+`#readArtifactBytes` still materialises the enlarged file in the shared adapter-manager. The symlink
+recheck below does not cover it — that is replacement, this is growth. So this ticket owes a **bounded
+or streaming read**: `#readArtifactBytes` must **stop and refuse** once the cap is exceeded, rather
+than materialising the file and measuring afterwards, on **both** the digest and the export path.
+Control: a fake transport whose file **grows between enumeration and digest** → the read refuses
+(classified) and **never allocates the oversized buffer**; remove the bound and the whole file is
+materialised → red. **`E5-F009` is closed by the bounded read, not by the pre-digest check** — the
+pre-digest check is the cheap arm that avoids the read at all in the common case. ★ Flipping
+`E5-F009` to `resolved` happens in the same commit as the code that earns it, and its manifest entry
+flips to `owned: CLI-012` as soon as this ticket has a ticket file (see that entry).
 
 ★★★ **THE LINK MARKER IS A SNAPSHOT — RECHECK AT THE READ BOUNDARY.** *Added 2026-09-23 (Codex P2,
 PR #575).* Enumeration metadata is taken at one instant, and `W7`/`A-O2-9` already establish that a

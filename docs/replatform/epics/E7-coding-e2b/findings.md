@@ -2184,9 +2184,15 @@ carrying a green measurement beside it), and the run's own codex verdict oversta
 ## E7-F022 — The E2B template is an unpinned operator input under three uncoordinated variable names, invisible to every protocol surface, and the evidence lanes silently default to a template with no CLIs
 
 **Status:** open · **Owner:** unowned (see reason)
-**Severity:** MEDIUM
+**Severity:** HIGH
 **Filed:** W6U1, 2026-09-06. **Corrected DOWN from the HIGH stated in the tasking brief** — see
 severity below — and corrected UP in SCOPE: the brief named one variable; there are three.
+★★★ **RE-DERIVED TO HIGH 2026-09-23, on this entry's own standing instruction** (severity block
+below: *"Re-derive this to HIGH the moment any candidate output mechanism becomes location-based; the
+conditional is the only thing holding it down"*). Ruling **F7** (`decisions.md`, `E7-D11`) chose
+**option 2, a conventional output root** `/home/user/aoa-output` — a location-based mechanism — so the
+condition has fired. **Superseded severity: MEDIUM.** *Raised by Codex on PR #575, which noticed the
+ruling had not carried the re-derivation forward.*
 **Cross-links:** E7-F020 (evidence produced by something other than the agent), E7-F018 (the operator
 preconditions that sit outside a code PR).
 
@@ -2246,6 +2252,21 @@ fail-open today — a keyed run against bare `base` can be reported green while 
 present, which is the same class as E7-F025 below — and the three-name divergence means a proof on one
 lane is quoted for another. ★ **Re-derive this to HIGH the moment any candidate output mechanism
 becomes location-based**; the conditional is the only thing holding it down.
+★★★ **THE CONDITION HAS FIRED (2026-09-23, ruling F7).** The severity above is now **HIGH**; this
+paragraph is kept as written because it is the derivation. What fires it: `CLI-012` counts every
+regular file under `R`, so **a template that pre-populates `R` makes every run of every tenant
+"produce output" with the agent doing nothing** — the `E7-F020` class, arriving through the template
+instead of through a predicate. The P-011 probe's `S-P0` arm proves `R` is empty on **`aoa-base` and
+on nothing else**: the committed record (`epics/E7-coding-e2b/tickets/CLI-011-probe-record.json`, and
+its reading) states in terms that it establishes nothing about *"any template other than the one
+named"*, while the production template stays an **unpinned operator input** under three uncoordinated
+variable names — which is this finding.
+**The precondition ruling F7 therefore carries** (`E7-D11`, *"Conditions on the ruling"*): before any
+template is used for `M1b`'s campaign, **`R` must be proven empty on that template**, by the `S-P0`
+arm, **re-run on every template change or rebuild**, with the result recorded. It is an **operator
+precondition, not code**: `CLI-017` cannot discharge it, and `CLI-012` cannot tell a template-owned
+file from an agent-written one. A campaign that skips it can report produced output that no agent
+produced.
 
 **Owner — unowned, with a reason.** The template is an OPERATOR/DEPLOYMENT artefact, not a code unit:
 the fix is either a boot-time or lane-time assertion that the registered template contains what the
