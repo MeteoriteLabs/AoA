@@ -55,4 +55,6 @@ work it can do:
   `e2b/e2b.Dockerfile`. They are operator acts, owned by the `M1b` gate owner (`E7-D11`, *Conditions on the
   ruling*; `E7-F022`, HIGH; `scope-triage.md`'s `M1b` required set).
 - **A keyed dispatch.** Not authorized by this ticket. The one `A-neg` re-run is authorized under F8
-  for the **campaign**, not for a build agent to fire.
+  for the **campaign**, not for a build agent to fire — and when the campaign fires it, it uses
+  **`-f arms=a-neg-only`**, the one-model-turn value added by ruling F7 so that what F8 authorizes is
+  what the workflow can actually dispatch.

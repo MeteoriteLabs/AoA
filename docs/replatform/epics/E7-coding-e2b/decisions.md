@@ -450,6 +450,18 @@ while `S-P0` still passed**. Two separate remedies, because they close different
   probe on the `M1b` candidate, **before `M1b`'s campaign** — added to F8's named list by this ruling.
   ★ It is a precondition of **`M1b`**, not of `M1a`, and it is the **campaign's** to fire: no build
   agent may dispatch it. Cost: one claude turn capped at 180 s plus one `aoa-base`-class sandbox.
+  ★★★ **It is dispatched with `-f arms=a-neg-only`, and that value exists because of this ruling.**
+  *Added 2026-09-23 (Codex P2, PR #575).* As built the workflow's `arms` input offered only `all`
+  (**four** model turns) and `shell-only` (**no** `A-neg` at all), so the operation authorized here
+  **was not dispatchable** — an operator could only over-spend or under-measure. The third choice
+  `a-neg-only` runs P-011a **plus `A-neg` and its `C-census` control**, and nothing else: exactly
+  **one** model turn, so the authorization and the mechanism now match. It keeps the shell arms
+  because they cost no model tokens and this precondition needs `S-P0` too, so **one dispatch collects
+  both**; and it keeps `C-census` because that is `A-neg`'s positive control — an `A-neg` null result
+  with no control proves nothing — and it is a shell write in the same sandbox. The value is enforced
+  in both directions by the probe's workflow-shape check (`arms-options-mismatch` /
+  `arms-options-unreadable`, `scripts/lib/cli-011-output-probe.mjs`), so the dispatchable options and
+  the modes the core accepts cannot drift apart again.
 
 **So the ruling is conditional, and the condition is discharged per deployment, not once:**
 
@@ -485,7 +497,17 @@ while `S-P0` still passed**. Two separate remedies, because they close different
   a symlink from what it is given**.
   **Obligation, on `CLI-012` and not on `CLI-017`:** the transport/port must carry enough per-entry
   metadata (at minimum a link marker) for the refusal, or the refusal must come from a means that
-  does. The refusal itself stays required (`A-O2-4`): unrefused, `R/l1 → .aoa-run-prompt.md` exports
+  does.
+  ★★★ **AND THE FALLBACK IS PRE-AUTHORIZED, so `CLI-012` is NOT blocked on an unmeasured SDK
+  detail.** *Ruled 2026-09-23 by the planning session under F2 (Codex P1, PR #575).* Whether
+  `e2b@2.30.5` exposes a no-follow / handle-bound read is **unmeasured here and must not be guessed**.
+  `CLI-012` measures it against the **installed** SDK when it builds and records which branch it took:
+  **if a primitive exists**, it is the atomic operation; **if it does not**, `CLI-012` implements the
+  refusal **by a second means — a per-entry `lstat`**, which the review already priced at **about +1
+  agent-day** (§10.5's contingency). **Both outcomes are authorized in advance, so `CLI-012` is
+  assignable.** It stops and reports **only if BOTH** the primitive is absent **and** a per-entry
+  `lstat` proves unavailable. What is never authorized is a check-then-read pair presented as
+  atomic. The refusal itself stays required (`A-O2-4`): unrefused, `R/l1 → .aoa-run-prompt.md` exports
   the run's own input and re-creates §4.3, and `R/l1 → /proc/self/environ` exports the secrets.
 - **SD-2, SD-3, SD-4, SD-7 and SD-8 stand as the review states them** and are not re-argued here.
 - ★★★ **SD-6 stands EXCEPT for its grant clause, which is SUPERSEDED BY SHIPPED BEHAVIOUR.**

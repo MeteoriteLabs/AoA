@@ -13,7 +13,10 @@ import {
   CLI_BEARING_TEMPLATE_ALIAS,
   CwdPrefixAnchorError,
   HOME_DIR,
+  ARMS_MODES,
   MODEL_ARMS,
+  MODEL_ARMS_FOR_MODE,
+  readChoiceOptions,
   OUTPUT_DIRECTIVE,
   OUTPUT_ROOT,
   PROBE_RECORD_SCHEMA,
@@ -613,6 +616,65 @@ test("POSITIVE CONTROL: each workflow mutation reds with its own code", () => {
   assert.ok(codes(good.replace(/CLI011_DEFAULT_TEMPLATE: aoa-base/, "CLI011_DEFAULT_TEMPLATE: base")).includes("default-template-mismatch"));
   assert.ok(codes(good.replaceAll(PROBE_RECORD_SCHEMA, "aoa.cli-011.output-probe-record/0")).includes("fallback-schema-mismatch"));
   assert.ok(codes(good.replace(/exit 1/g, "exit 0")).includes("skip-guard-missing"));
+  // ── the dispatchable arms must be exactly the ones the core accepts (Codex P2, PR #575) ──
+  // Ruling F8 authorizes ONE A-neg re-run; before `a-neg-only` existed the choice offered only
+  // `all` (four turns) and `shell-only` (no A-neg), so the authorized operation was undispatchable.
+  const NL = String.fromCharCode(10);
+  assert.ok(codes(mutate(`          - a-neg-only${NL}`, "")).includes("arms-options-mismatch"));
+  assert.ok(codes(mutate(`          - shell-only${NL}`, "")).includes("arms-options-mismatch"));
+  assert.ok(codes(mutate(`          - a-neg-only${NL}`, `          - a-neg-only${NL}          - rogue-mode${NL}`)).includes("arms-options-mismatch"));
+  assert.ok(codes(mutate(`        options:${NL}`, `        optionsX:${NL}`)).includes("arms-options-unreadable"));
+});
+
+// ── readChoiceOptions, on its own ─────────────────────────────────────────────
+
+test("readChoiceOptions reads the committed `arms` list, and says null rather than guessing", () => {
+  const good = readFileSync(WORKFLOW, "utf8");
+  assert.deepEqual(readChoiceOptions(good, "arms"), [...ARMS_MODES]);
+  // ANTI-VACUITY: it is reading the file, not returning a constant.
+  assert.equal(readChoiceOptions(good, "no_such_input"), null);
+  const yaml = (...lines) => `${lines.join(String.fromCharCode(10))}${String.fromCharCode(10)}`;
+  // a `choice` with no `options:` list at all
+  assert.equal(readChoiceOptions(yaml("on:", "  workflow_dispatch:", "    inputs:", "      arms:", "        type: choice"), "arms"), null);
+  // and it stops at the next input rather than swallowing it
+  assert.deepEqual(
+    readChoiceOptions(
+      yaml("on:", "  workflow_dispatch:", "    inputs:", "      arms:", "        type: choice", "        options:", "          - a", "          - b", "      other:", "        type: string"),
+      "arms",
+    ),
+    ["a", "b"],
+  );
+});
+
+// ── the a-neg-only mode: one model turn, and it still carries its control ─────
+
+test("a-neg-only asks for A-neg alone, and `measured` requires it plus C-census", () => {
+  assert.deepEqual([...MODEL_ARMS_FOR_MODE["a-neg-only"]], ["A-neg"]);
+  assert.deepEqual([...MODEL_ARMS_FOR_MODE["shell-only"]], []);
+  assert.deepEqual([...MODEL_ARMS_FOR_MODE.all], [...MODEL_ARMS]);
+  assert.deepEqual(resolveArmsMode("a-neg-only"), { mode: "a-neg-only", source: "explicit" });
+  assert.throws(() => resolveArmsMode("a-neg"), /unknown arms mode/);
+
+  const obs = (arm, findings = {}) => ({ arm, state: "observed", reason: "ok", findings });
+  const shell = SHELL_ARMS.map((a) => obs(a));
+  const census = { id: "C-census", arm: "C-census", expectation: "x", held: true };
+  const held = [{ id: "PC-1", arm: "S-PC1", expectation: "x", held: true }, { id: "PC-2", arm: "S-PC2", expectation: "x", held: true }, census];
+
+  // The mode's own arms present + the skipped ones marked not-run → measured.
+  const ok = [...shell, obs("C-census"), obs("A-neg"),
+    { arm: "A-dir", state: "not-run", reason: "arms=a-neg-only" },
+    { arm: "A-cwd", state: "not-run", reason: "arms=a-neg-only" },
+    { arm: "A-decl", state: "not-run", reason: "arms=a-neg-only" }];
+  assert.equal(packDisposition(ok, held, "a-neg-only").disposition, "measured");
+
+  // POSITIVE CONTROL: an arm the MODE ASKED FOR coming back not-run is NOT a measurement.
+  const aNegSkipped = ok.map((v) => (v.arm === "A-neg" ? { arm: "A-neg", state: "not-run", reason: "silently skipped" } : v));
+  assert.equal(packDisposition(aNegSkipped, held, "a-neg-only").disposition, "inconclusive");
+  // POSITIVE CONTROL: A-neg without its control is not a measurement either.
+  const noCensus = ok.filter((v) => v.arm !== "C-census");
+  assert.equal(packDisposition(noCensus, held, "a-neg-only").disposition, "inconclusive");
+  // And the OLD mode is unchanged: `all` still demands all four.
+  assert.equal(packDisposition(ok, held, "all").disposition, "inconclusive");
 });
 
 // ── the keyed test, as committed: it runs the SHIPPED literal and always tears down ──

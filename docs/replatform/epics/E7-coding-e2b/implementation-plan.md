@@ -827,12 +827,19 @@ question and not as a fact. The first act of this ticket's TOCTOU work is to **m
 installed SDK**:
 - **If a no-follow / handle-bound primitive exists**, use it: that is the atomic operation above, and
   there is nothing further to decide.
-- **If it does not**, the atomic read is **unreachable through the plain SDK**, and the `A-O2-4`
-  refusal must come from a **second means** — a per-entry `lstat`-shaped operation (the review's
-  §10.5 `+1 day` contingency, which `E7-D11` records as *not* firing **on the assumption that the
-  metadata suffices**), or a copy-into-a-fresh-path step, or an SDK/template change. **Any of those is
-  a design change, not a wording fix: STOP and report it** rather than shipping a check-then-read
-  pair and calling it atomic.
+- **If it does not**, the atomic read is unreachable through the plain SDK — and **the outcome is
+  PRE-AUTHORIZED, so this ticket is NOT blocked.** ★ *Ruled 2026-09-23 by the planning session under
+  F2, recorded in `E7-D11`.* The `A-O2-4` refusal is then implemented **by a second means: a
+  per-entry `lstat`**, which the `CLI-011` review already priced at **about +1 agent-day** (§10.5's
+  contingency row). Take it, record that you took it, and carry the +1 day. **Do not** ship a
+  check-then-read pair and call it atomic.
+- **STOP and report only if BOTH** the primitive is absent **and** a per-entry `lstat` proves
+  unavailable too. That is the one state neither branch covers.
+- **Either way, record which branch was taken and the measurement behind it** in the ticket's result.
+  ★ *This replaces an earlier revision of this bullet which said any second means is "a design
+  change, not a wording fix: STOP and report it" — that would have made `CLI-012` unassignable on an
+  unmeasured SDK detail, which the planning session ruled against: the branch is authorized in
+  advance, and only the doubly-negative case stops.*
 This question is shared with `CLI-017` only in the sense that both depend on the same SDK; the work
 and the answer are `CLI-012`'s. Its test must mutate **between the recheck and the read**, because a
 mutation only between enumeration and digest **passes a vulnerable implementation** and would be a
@@ -894,7 +901,17 @@ op route **and** its ownership gate — the server answers any op outside `GATE_
 raw-handler map with `404 operation not available in this slice`, so a driver-only change is
 unreachable on the networked lane); create
 `packages/provider-wire/src/__tests__/driver-enumerate.test.ts` and
-`packages/adapter-manager/src/__tests__/server-enumerate.test.ts`. Enumeration is a
+`packages/adapter-manager/src/__tests__/server-enumerate.test.ts`;
+★★★ **and modify `packages/worker-daemon/src/lease/artifact-export.ts` and its tests** — *added
+2026-09-23 (ruling F7, `E7-D11`; Codex P1, PR #575), verified at source. **Superseded Files text:** the
+list ended at `server-enumerate.test.ts`, omitting the sequencer.* `createArtifactExportSequencer`
+loops `for (const request of requests)` and **every `fail(...)` throws `ArtifactExportFailedError`**,
+so it is **all-or-throw**: one refused file drops every valid output after it — and an agent can make
+a secret-bearing or oversized file sort first. This ticket's own `E5-D07` amendment already says *"The
+per-file failure policy is this ticket's … Changing that changes the sequencer's return contract, and
+that change belongs here"*, so the omission made the ticket unable to do what its own decision
+assigns it. **Acceptance row:** a refused first file is classified and the remaining valid outputs
+still export — a mutant that restores the throw reds it. Enumeration is a
 **single-sandbox owned op**: route it through `gateOwnedOp` like `stage_files` (E7-F011), never a
 keyless raw handler. **Non-goal:** changing the frozen `PROVIDER_OPERATIONS` vocabulary in
 `@armyofagents/worker-protocol` — the export ops `DAT-009-3e` added are wire routes outside it,
