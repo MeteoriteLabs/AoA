@@ -738,6 +738,22 @@ let the sequencer's provider-backed `digestArtifact` (which returns `{sha256, si
 bytes) supply the digest and size the frozen grant schema requires, and `exportArtifact` do the
 upload. The daemon sees paths and metadata, never content.
 
+★★★ **AND IT MUST WIDEN THE SEAM ENOUGH TO REFUSE A SYMLINK — `listDir` AS BUILT CANNOT.**
+*Added 2026-09-23 (ruling F7, `decisions.md` `E7-D11`; Codex P1, PR #575), verified at source.*
+`RealE2bTransport.listDir` returns `readonly string[]`: it asks the SDK for typed entries, then passes
+them through `filesOnlyFromListing` (`packages/sandbox-e2b-provider/src/list-dir-contract.ts`), which
+uses `type` only to drop directories and **discards `symlinkTarget`**. The `CLI-011` P-011 probe
+measured the consequence on a live sandbox (run `35833717162`, arm `S-P5`): the SDK reports
+`type: "file"`, `symlinkTarget: "/home/user/.aoa-run-prompt.md"` for the planted link `l1`, while the
+transport's own output carries `includesL1: true` among 5 plain paths — **the link is
+indistinguishable from a file** — and `readFollowsLink=true`, so digesting it reads the target. So a
+paths-only port **cannot** apply the symlink refusal `A-O2-4` requires, and building it that way would
+export the run's own staged prompt (`R/l1 → .aoa-run-prompt.md`) or its environment
+(`→ /proc/self/environ`) as "output". This ticket owes the widened per-entry metadata (at minimum a
+link marker) through the transport and the port, and a test in which a symlink under the root is
+**refused, never digested** (review PC-5). ★ *This does not reopen `E7-D09`: files-only, recursive,
+absolute and bounded all stand; what is added is the per-entry marker the refusal needs.*
+
 ★ **This ticket owes a test that FAILS if the crossing returns** — a composition assertion that the
 producer's dependency surface contains no byte-returning read. No existing guard catches it:
 `check-worker-daemon-boundary` passes a violation because it enforces a *dependency* boundary while
@@ -1412,9 +1428,24 @@ programme already uses:
 
 `CLI-017-B` depends on nothing in `CLI-017-A` and may run in parallel. **Both slices are required
 before `M1b`'s campaign** — SD-5 is ruled REQUIRED (`E7-D11` §3), so a green `CLI-017-A` alone does not
-satisfy this ticket. Each slice writes its own result (`tickets/CLI-017-A-result.md`,
-`tickets/CLI-017-B-result.md`), and the graph keeps one `CLI-017` node, exactly as `WRK-008` and
-`DAT-009` do.
+satisfy this ticket. The graph keeps one `CLI-017` node, exactly as `WRK-008` and `DAT-009` do.
+
+★★★ **THE SLICES DO NOT WRITE `-result.md` FILES, AND THAT IS THE POINT.** *Corrected 2026-09-23
+(Codex P2, PR #575).* An earlier revision of this block said each slice writes
+`tickets/CLI-017-A-result.md` / `-B-result.md`. Those names **both** match
+`findCompletedTicketIds`' `/^([A-Z]+-\d+).*-result\.md$/` and resolve to **`CLI-017`** — so landing
+slice A alone would mark the whole ticket shipped while the **security** slice did not exist. That is
+the same hole the `CLI-008-F1a` renumbering was done to close (`scope-triage.md`, the M0 unit-4
+note), reproduced one level down.
+
+- Each slice writes **`tickets/CLI-017-A-record.md`** / **`tickets/CLI-017-B-record.md`** — RED/GREEN,
+  mutations, reviewed revision, CI jobs and executed counts, in the normal result format. They are
+  **records, not results**, and a distinct reviewer approves each.
+- **One aggregate `tickets/CLI-017-result.md` is written only after BOTH slice records are approved**,
+  and it does nothing but name them and their reviewed revisions. Its existence is the single signal
+  that `CLI-017` shipped, which is exactly what the regex reads.
+- **Do not rename the slices to independent ticket ids.** `CLI-018`/`CLI-019` would give two graph
+  nodes for one outcome and lose the "both required" edge that `CLI-015` depends on.
 
 **Depends on:** **ruling F7**, recorded as `E7-D11` in this epic's `decisions.md` — already satisfied.
 Its graph edge is `CLI-011` (`program-design.md`, `#### CLI-017`). **Blocks:** `CLI-012`'s real-run
@@ -1506,16 +1537,23 @@ chosen."* The mechanism ruled is **option 2, a conventional output root**; the p
    - **What it does not buy:** it is **not** a secure boundary against a hostile agent, and it does
      **not** by itself enforce Decision #104's artifact invariant. `E7-D01` already holds that
      provenance is not productivity; the same discipline applies here — a refusal is not a proof of
-     containment.
+     containment. **Filed as `E7-F038`.**
    - **Acceptance row 8 (adversarial, required):** the encoded and split cases are **written as tests
      that assert the CURRENT behaviour — they pass through**. They are characterisation tests, not
      aspirational ones: they exist so the gap is in the suite rather than in nobody's head, and so a
      later boundary design has its RED already written.
-   - **The residual is named and owned, not accepted silently.** *"An agent can exfiltrate a run
-     credential through an artifact in any encoded or split form"* is recorded as **open** against
-     `E7-D11`, and closing it needs a different boundary (an egress/DLP design over the artifact path,
-     or removing the credential from the sandbox's environment altogether). **That is out of `M1b` and
-     needs its own ruling** — this ticket must not improvise one.
+   - **The residual is FILED, with a declared owner status — not left as narrative.**
+     ★ *Corrected 2026-09-23 (Codex P2, PR #575): an earlier revision claimed it was "named and owned"
+     while naming no finding, ticket or owner, so no guard or backlog edge would have kept it visible
+     after this ticket completed.* It is **`E7-F038`** (`findings.md`), MEDIUM, **open**, declared
+     **`unowned`** in `scripts/finding-ownership.json` with its closure path written out. It is
+     `unowned` on purpose: `CLI-017` must **not** be named its owner, because this ticket
+     *characterises* the gap as passing rather than fixing it — and because `CLI-017`'s aggregate
+     result doc would then mark the owner shipped and orphan the finding, which is the exact hole
+     `check-finding-ownership` exists to catch. Closing it needs a different boundary (an egress/DLP
+     design over the artifact path, or removing the credential from the sandbox environment
+     altogether). **That is out of `M1b` and needs its own ruling** — this ticket must not improvise
+     one, and **`E7-F038` is not closed by `CLI-017-B` shipping.**
 
 **Acceptance (each row names the mutant that must red it):**
 
@@ -1553,8 +1591,10 @@ server-side pin test for PC-12; modify
 `packages/sandbox-e2b-provider/src/e2b-provider.ts` (the sandbox-scoped secret handoff at `create`/teardown **and** `exportArtifact`'s refusal) and its unit tests;
 create the worker-side `R` constant where `CLI-012` composes `outputRoot`; create
 `scripts/check-<name>.mjs` for the SD-4 equality check plus its `scripts/lib/__tests__` positive
-control; modify `scripts/guard-inventory.json` and `.github/workflows/pr.yml` (`policy` job); append
-`tickets/CLI-017-result.md`.
+control; modify `scripts/guard-inventory.json` and `.github/workflows/pr.yml` (`policy` job); create
+`tickets/CLI-017-A-record.md` and `tickets/CLI-017-B-record.md` (one per slice), and — **only after
+both are approved** — `tickets/CLI-017-result.md`, the aggregate. ★ The per-slice files are
+deliberately **not** `*-result.md`: see the sizing block above.
 
 **Interfaces:** no new port operation, no route, no schema, no wire change. The directive is prompt
 text; `R` is a constant; the refusal is internal to `exportArtifact`.
@@ -1599,9 +1639,13 @@ lane. Until that case runs, `CLI-017` is proven against unit pins and `CLI-012` 
 sandbox, and **both results must say so**. ★ Keyed dispatch here is not authorized by this task: it
 needs a named F8 entry and a planning-session instruction.
 
-**Evidence / commit:** `tickets/CLI-017-result.md`; one commit
-`feat(server): direct distributed claude runs to the conventional output root, and refuse exported secrets`.
-Maps H-04, H-05.
+**Evidence / commit:** per slice — `tickets/CLI-017-A-record.md` with
+`feat(server): direct distributed claude runs to the conventional output root`, and
+`tickets/CLI-017-B-record.md` with
+`feat(sandbox-e2b-provider): refuse exporting artifacts that carry the run's own secrets`.
+**Then**, once both slice records are approved by a distinct reviewer, the aggregate
+`tickets/CLI-017-result.md`, which names them and their reviewed revisions and adds nothing else —
+its existence is the only signal that `CLI-017` shipped. Maps H-04, H-05.
 
 ---
 

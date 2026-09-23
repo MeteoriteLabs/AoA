@@ -3996,3 +3996,61 @@ Evidence: `docs/replatform/qa/2026-09-20-m0-record-lane-health-plan.md` section 
 section 6.
 
 **Blocks gate:** no.
+
+---
+
+## E7-F038 — SD-5's export refusal is a LITERAL-VALUE scan, so an encoded, reversed or split credential still reaches durable object storage
+
+**Status:** open · **Owner:** unowned (declared, `scripts/finding-ownership.json`) · **Severity:** MEDIUM
+**Filed:** 2026-09-23, with ruling **F7** (`decisions.md`, `E7-D11`). Raised by Codex on PR #575 and
+verified at source before filing.
+
+**The claim being bounded.** `E7-D11` rules **SD-5 REQUIRED**: `E2bSandboxProvider.exportArtifact`
+must refuse bytes carrying any secret-classified value of the run's own `env`, and `CLI-017`'s PC-11
+proves it with a planted canary. That is a **substring refusal on the literal value**, and it must not
+be read as closing credential exfiltration through the artifact path.
+
+**What is measured.**
+
+- The hazard is real, not hypothetical. The `CLI-011` P-011 probe (run
+  [`35833717162`](https://github.com/MeteoriteLabs/AoA/actions/runs/35833717162), arm `S-P7`, verdict
+  `nonce-exported-in-file-bytes`, decision row **R4** `noncePresent=true`) wrote an environment value
+  into a file under the output root and read it back out of the sandbox. The record is committed at
+  `tickets/CLI-011-probe-record.json`.
+- The sandbox gives the agent a shell. `buildSandboxInvocation`
+  (`server/src/services/task-run-sandbox-invocation.ts`) emits a `sh` script and both claude literals
+  carry `--dangerously-skip-permissions`, so `base64`, `xxd`, `rev` and `split` are all available to
+  the model's tool calls.
+- The per-file policy makes splitting free. `E5-D07` has each file refused or exported **on its own**
+  (`CLI-012` Failure behavior: a per-file refusal never drops the others), so a value written half
+  into `R/a` and half into `R/b` leaves **no exported file containing the literal value**, and every
+  PUT proceeds.
+- The credential is in the environment by design. `E2bSandboxProvider.create` passes `envVars:
+  spec.env`; its `[Cred-1]` comment records that the key must not hit a durable store (Decision
+  #104). An encoded copy inside an exported artifact **is** a durable store.
+
+**So:** SD-5 closes the case the probe measured — a **verbatim** env value written out, which is the
+accident and the naive-agent case, and which nothing stops today. It is **not** a secure boundary
+against a hostile or injected agent, and it does not by itself enforce Decision #104's invariant over
+the artifact path. `E7-D01`'s discipline applies one level over: a refusal is not a proof of
+containment.
+
+**Why MEDIUM.** For lower: it is **tenant-scoped** — the Company's own key into the Company's own
+restricted artifact, not a cross-tenant crossing (`A-O2-5`, and `A-O2-10`/`A-O2-11` are unaffected:
+attribution comes from the fence, never from bytes) — and it changes no shipped behaviour today,
+because no output mechanism has shipped. For higher: it is a **credential reaching a durable store**,
+which Decision #104 forbids in terms, and the ruling that introduces the path is the same ruling that
+introduces this residual, so filing it anywhere but here would lose it.
+
+**What would close it.** A different boundary, not a wider substring list — an egress/DLP design over
+the artifact path, or removing the model-provider credential from the sandbox's environment
+altogether (the `E7-F010`-shaped provider change). Either is **out of `M1b` and needs its own ruling**;
+`CLI-017` must not improvise one.
+
+**What is in place meanwhile.** `CLI-017`'s acceptance **row 8** requires the encoded and split cases
+to be written as **characterisation tests that assert the current pass-through**. They are
+deliberately not aspirational: the gap then lives in the suite rather than in nobody's head, a future
+boundary design has its RED already written, and a build that quietly flips them to refusals without a
+ruling has improvised a boundary — which the row says in terms.
+
+**Blocks gate:** no. It does not block `M1b`; it must not be read as closed by `CLI-017-B` shipping.

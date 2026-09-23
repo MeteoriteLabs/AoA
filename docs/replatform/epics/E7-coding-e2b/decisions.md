@@ -359,8 +359,10 @@ then finds no exported file containing the literal value and **every PUT proceed
 the case the probe actually measured (`S-P7`, a **verbatim** env value written out) and **not**
 Decision #104's artifact invariant in general. It is the accident and naive-agent control, not a
 secure boundary against a hostile agent. `E7-D01`'s discipline applies: a refusal is not a proof of
-containment. **The residual is recorded as OPEN, not accepted** — unlike `A-O2-8` below, which is
-accepted because it under-claims, this one over-permits. Closing it needs a different boundary (an
+containment. **The residual is FILED as `E7-F038`** (`findings.md`, MEDIUM, **open**, declared
+`unowned` in `scripts/finding-ownership.json` with its closure path) — **not accepted**: unlike
+`A-O2-8` below, which is accepted because it under-claims, this one over-permits, and it is **not
+closed by `CLI-017-B` shipping.** Closing it needs a different boundary (an
 egress/DLP design over the artifact path, or removing the credential from the sandbox environment
 altogether), which is **out of `M1b` and needs its own ruling**; `CLI-017` carries the encoded and
 split cases as **characterisation tests that assert the current pass-through**, so the gap lives in
@@ -405,12 +407,26 @@ only, recursive, absolute.
 
 ### What this ruling does NOT decide
 
-- **The `+1 day` lstat contingency does not fire.** §10.5's row *"S-P5: list does not expose
-  `symlinkTarget`/`type`, and read follows links"* (**R3**) did **not** fire: the record reports
-  `listExposesLink=true` **and** `readFollowsLink=true`, so the SDK's own listing metadata is
-  sufficient for `CLI-012` to refuse a symlink, and no per-entry `lstat` path is needed. The refusal
-  itself is still required (`A-O2-4`), because `readFollowsLink=true` means an unrefused link exports
-  its target.
+- **The `+1 day` lstat contingency does not fire — but the metadata does NOT reach a consumer today,
+  and `CLI-012` must widen the seam.** §10.5's row **R3** (*"list does not expose `symlinkTarget`/`type`,
+  **and** read follows links"*) did not fire, because the record reports `listExposesLink=true`: the
+  **SDK** returns `type: "file"` and `symlinkTarget: "/home/user/.aoa-run-prompt.md"` for the probe's
+  `l1`. So a second means (a per-entry `lstat`) is not needed, and the contingency's `+1 day` is not
+  spent.
+  ★★★ *Corrected 2026-09-23 (Codex P1, PR #575), verified at source: this bullet first concluded
+  "the SDK's own listing metadata is sufficient for `CLI-012` to refuse a symlink", which confuses
+  what the SDK exposes with what a consumer receives.* `RealE2bTransport.listDir` returns
+  `readonly string[]`: it passes the typed entries through `filesOnlyFromListing`
+  (`packages/sandbox-e2b-provider/src/list-dir-contract.ts`), which uses `type` only to drop
+  directories and **discards `symlinkTarget` entirely**. The probe shows the consequence directly —
+  the same arm's `transportListDir` returned 5 paths with `includesL1: true`, i.e. **the link arrives
+  as an ordinary file path**, while `readFollowsLink=true` means digesting it reads the target. So
+  `CLI-012`, whose port is *"paths only"* over that same private `#transport.listDir`, **cannot refuse
+  a symlink from what it is given**.
+  **Obligation, on `CLI-012` and not on `CLI-017`:** the transport/port must carry enough per-entry
+  metadata (at minimum a link marker) for the refusal, or the refusal must come from a means that
+  does. The refusal itself stays required (`A-O2-4`): unrefused, `R/l1 → .aoa-run-prompt.md` exports
+  the run's own input and re-creates §4.3, and `R/l1 → /proc/self/environ` exports the secrets.
 - **SD-2, SD-3, SD-4, SD-6, SD-7 and SD-8 stand as the review states them** and are not re-argued
   here. SD-8 is already enacted as the dated amendment to `E7-D06` above.
 - **The `kind` (`E7-D08`) stays `CLI-012`'s**, per the review's SD-3: the judge counts through arm 2

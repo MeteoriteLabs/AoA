@@ -1272,9 +1272,13 @@ evidence.
   refusal (≤1.5 agent-days). They are independent and may run in parallel; **both are required**.
   ★ *Added 2026-09-23 (Codex P2, PR #575), which measured the undivided estimate at up to 3.5 days.*
 - ★ **SD-5 is a LITERAL-VALUE refusal and does not close exfiltration.** Encoded, reversed or
-  split-across-files credentials still export. That residual is recorded **open** against `E7-D11`
-  and needs its own boundary ruling, out of `M1b`; the slice carries the encoded and split cases as
-  characterisation tests asserting the current pass-through.
+  split-across-files credentials still export. Filed as **`E7-F038`** (MEDIUM, open, declared
+  `unowned`); it needs its own boundary ruling, out of `M1b`, and is **not closed by `CLI-017-B`
+  shipping**. The slice carries the encoded and split cases as characterisation tests asserting the
+  current pass-through.
+- ★ **Result files:** each slice writes `CLI-017-A-record.md` / `CLI-017-B-record.md` — deliberately
+  **not** `*-result.md`, which would resolve to `CLI-017` and mark the node shipped on slice A alone.
+  The aggregate `CLI-017-result.md` is written only after both slice records are approved.
 - ★ **It must not redirect or pipe the claude process's stdout** — that would silently remove
   `WRK-018`'s usage parse (review §7.1, and the `E7-D06` amendment above it).
 
