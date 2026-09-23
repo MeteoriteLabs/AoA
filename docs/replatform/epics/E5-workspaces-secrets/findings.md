@@ -382,9 +382,17 @@ records when `exits-early`'s process actually exited relative to the validation 
 "inject the ordering" fix above would also settle, because under injected ordering (P) would still
 fail and (H) could not.
 
-**What does NOT change.** The recommended fix is unchanged and is now better motivated: inject the
-ordering rather than race it. Raising the timeout is still wrong, and now visibly so - the two
-platforms want opposite timings and Linux failed in the direction extra time makes *more* likely.
+**What does NOT change.** The recommended fix is unchanged: inject the ordering rather than race
+it. Raising the readiness timeout is still wrong for the reason already given above - it makes the
+test pass without making it deterministic - and, ★ *corrected 2026-09-23 on an accepted Codex P2*,
+**this occurrence is not evidence about timeout direction either way.** `waitForReadiness`
+(`server/src/services/workspace-runtime.ts`) returns as soon as the survivor answers, at ~700 ms;
+`timeoutSec: 3` is a DEADLINE, not a delay, so raising it does not move the validation moment on a
+path where readiness succeeds. Lengthening the survivor's 700 ms sleep would give `exits-early` MORE
+time to exit and make the expected rejection MORE likely - the opposite of what was observed - so
+this run says nothing about extra time. *(Superseded text: "Raising the timeout is still wrong, and
+now visibly so - the two platforms want opposite timings and Linux failed in the direction extra time
+makes more likely.")*
 Skipping remains refused (`E6-F023`). The sibling case
 (`startRuntimeServicesForWorkspaceControl > validates the whole batch before committing any service`)
 has **not** been observed on Linux; only this one has, and only once - no second Linux occurrence was
