@@ -39,6 +39,8 @@ import {
   M1_SPINE_DEPLOYED_TARGET_ID,
   M1_SPINE_EXECUTOR_MODES,
   M1_SPINE_WORKER_DRIVEN_MARKER,
+  // DEP-019 follow-up (Codex, PR #579) — the worker-specific cost/audit failure marker.
+  M1_SPINE_WORKER_COST_MARKER,
   evaluateWorkerDrivenJourney,
   evaluateSpineEnvProbe,
 } from "../m1-spine-assertions.mjs";
@@ -1241,4 +1243,100 @@ test("usage: WITHOUT the arm the duration is still pinned (the harness path is u
     observation: { usageEvents: [usageEvent(measured)], expectedUnits: measured },
   });
   assert.ok(codes(v).includes("usage:units_not_canned"), JSON.stringify(v));
+});
+
+// ── DEP-019 follow-up: the WORKER-SPECIFIC failure marker ────────────────────
+//
+// Codex on PR #579, UPHELD: the usage-suppressed lane control grepped `[m1-spine:cost]`, which
+// `violation()` attaches to EVERY `cost:` code — and `evaluateEnabledTenantSpine` runs on the
+// harness attempts of the profile's §2 as well as on its `EXECUTOR === "worker"` block. So deleting
+// the whole worker-only cost/audit verdict left the control red, marked and reporting success.
+// These cases hold the three properties that close it: the marker exists and is distinct, the
+// HARNESS path cannot mint it, and the literal the workflow greps is the constant.
+
+test("worker marker: it is DISTINCT from the cost and usage markers, in both directions", () => {
+  for (const other of [M1_SPINE_COST_MARKER, M1_SPINE_USAGE_MARKER, M1_SPINE_WORKER_DRIVEN_MARKER]) {
+    assert.notEqual(M1_SPINE_WORKER_COST_MARKER, other);
+    // `grep -F` on either literal must never be satisfied by the other, or the two controls
+    // collapse back into one.
+    assert.ok(!M1_SPINE_WORKER_COST_MARKER.includes(other), `${other} is a substring of the worker marker`);
+    assert.ok(!other.includes(M1_SPINE_WORKER_COST_MARKER), `the worker marker is a substring of ${other}`);
+  }
+});
+
+test("worker marker: a worker-driven observation carries it on EVERY violation", () => {
+  // The usage-suppressed state, declared worker-driven: what the lane's control must see.
+  const v = evaluateEnabledTenantSpine(goodEnabled(A, { workerDriven: true, costRows: [], costReceipts: [], usageEvents: [] }));
+  assert.ok(v.length > 0, "non-vacuity: the fixture really does violate something");
+  assert.ok(codes(v).includes("cost:no_cost_row"), JSON.stringify(codes(v)));
+  assert.ok(codes(v).includes("usage:no_usage_event"), JSON.stringify(codes(v)));
+  for (const x of v) {
+    assert.ok(x.message.includes(M1_SPINE_WORKER_COST_MARKER), `${x.code} lacks the worker marker`);
+  }
+  // The pre-existing markers are NOT displaced — the lane requires BOTH reasons.
+  assert.ok(v.some((x) => x.message.includes(M1_SPINE_COST_MARKER)));
+  assert.ok(v.some((x) => x.message.includes(M1_SPINE_USAGE_MARKER)));
+});
+
+test("worker marker: ★ the HARNESS path CANNOT produce it, however broken the attempt is", () => {
+  // Every arm of the verdict violated at once, with no `workerDriven` declaration (the §2 shape)
+  // and with an explicit `false`. Both must be entirely free of the worker marker, or the lane's
+  // control is satisfied by harness activity again and item 1 just renamed the defect.
+  const wrecked = {
+    attemptStatus: "failed",
+    events: [],
+    usageEvents: [],
+    costRows: [],
+    costReceipts: [],
+    activity: [],
+    auditReceipts: [],
+  };
+  for (const workerDriven of [undefined, false]) {
+    const observation = workerDriven === undefined ? wrecked : { ...wrecked, workerDriven };
+    const v = evaluateEnabledTenantSpine({ tenant: A, observation });
+    assert.ok(v.length > 0, "non-vacuity: the harness fixture really does violate something");
+    assert.ok(v.some((x) => x.message.includes(M1_SPINE_COST_MARKER)), "it still reds on the cost marker");
+    for (const x of v) {
+      assert.ok(
+        !x.message.includes(M1_SPINE_WORKER_COST_MARKER),
+        `workerDriven=${JSON.stringify(workerDriven)}: ${x.code} minted the worker marker on the harness path`,
+      );
+    }
+  }
+});
+
+test("worker marker: a MALFORMED declaration fails closed — it reds, and without the marker", () => {
+  for (const bad of ["worker", 1, "true", {}]) {
+    const v = evaluateEnabledTenantSpine(goodEnabled(A, { workerDriven: bad }));
+    assert.ok(codes(v).includes("journey:worker_driven_flag_invalid"), `${JSON.stringify(bad)}: ${JSON.stringify(codes(v))}`);
+    for (const x of v) {
+      assert.ok(!x.message.includes(M1_SPINE_WORKER_COST_MARKER), `${JSON.stringify(bad)} minted the marker`);
+    }
+  }
+});
+
+test("worker marker: the PROFILE declares it exactly once, inside the EXECUTOR === \"worker\" block", () => {
+  const profile = readFileSync(path.join(repoRoot, "tests", "d1", "m1-spine.test.mjs"), "utf8");
+  const declarations = [...profile.matchAll(/workerDriven:\s*true/g)];
+  assert.equal(declarations.length, 1, `the profile carries ${declarations.length} \`workerDriven: true\` declarations, expected exactly 1`);
+  const at = declarations[0].index;
+  const guard = profile.lastIndexOf('if (EXECUTOR === "worker") {', at);
+  assert.ok(guard !== -1, "the declaration is not preceded by an `EXECUTOR === \"worker\"` guard");
+  // …and no `}` at that guard's own indentation closes it before the declaration, i.e. the
+  // declaration really is INSIDE the block rather than after it.
+  assert.ok(!profile.slice(guard, at).includes("\n  }\n"), "the EXECUTOR block closes before the declaration");
+  // The harness path's own call site must come BEFORE that guard, so it is a different call.
+  assert.ok(profile.indexOf("evaluateEnabledTenantSpine({") < guard, "the harness call site is not distinct from the worker-driven one");
+});
+
+test("worker marker: the d1 lane's usage-suppressed control greps BOTH literals", () => {
+  const workflow = readFileSync(path.join(repoRoot, ".github", "workflows", "d1-merge-train.yml"), "utf8");
+  const start = workflow.indexOf("POSITIVE CONTROL — with usage suppressed, the profile MUST go red");
+  assert.ok(start !== -1, "the usage-suppressed control step is gone");
+  const end = workflow.indexOf("- name:", start);
+  const step = workflow.slice(start, end === -1 ? undefined : end);
+  // Pinned as the CONSTANT, not as a hand-written literal: the grep site and the code that mints
+  // the marker cannot drift apart without this test going red.
+  assert.ok(step.includes(`grep -F '${M1_SPINE_COST_MARKER}'`), "the step no longer greps the cost marker");
+  assert.ok(step.includes(`grep -F '${M1_SPINE_WORKER_COST_MARKER}'`), "the step does not grep the WORKER-specific marker");
 });
