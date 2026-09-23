@@ -596,6 +596,18 @@ jobs:
           # census learned to look in `tests/` (DEP-016, Codex PR #566).
           node --test tests/d1/evidence-retention.test.mjs
 
+      # DEP-018. The campaign fault matrix's DECLARATION is checkable on a PR: all three gate
+      # profiles, every case family each profile's Outcome names, and the F10 tenant matrix in
+      # EVERY profile — the per-tenant journeys, the nine cross-tenant denial surfaces, the
+      # control tenant, and the four legacy tables that carry GRANTs and NO RLS (E2-D03), each
+      # with its positive control and its anti-vacuity control. The self-test is one red fixture
+      # per violation code, so a checker that stopped refusing anything reds here. The INJECTION
+      # half runs live in the d1-merge-train `m1-fault-matrix` job.
+      - name: Campaign fault matrix declaration (DEP-018)
+        run: |
+          node scripts/check-campaign-fault-matrix.mjs
+          node --test scripts/check-campaign-fault-matrix.test.mjs
+
       - name: Embedded-secret scan self-test (DSK-003)
         run: node --test scripts/lib/__tests__/embedded-secret-scan.test.mjs
 

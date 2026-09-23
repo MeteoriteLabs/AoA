@@ -74,7 +74,7 @@
     },
     "scripts": {
       "mode": "pinned",
-      "count": 69
+      "count": 70
     },
     "server": {
       "mode": "floor",
@@ -82,7 +82,7 @@
     },
     "tests": {
       "mode": "pinned",
-      "count": 108
+      "count": 109
     },
     "ui": {
       "mode": "floor",

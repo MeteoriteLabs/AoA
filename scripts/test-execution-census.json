@@ -120,6 +120,11 @@
       "workflow": "pr.yml",
       "step": "Validate split-image deps stages (DEP-001)"
     },
+    "scripts/check-campaign-fault-matrix.test.mjs": {
+      "status": "runs",
+      "workflow": "pr.yml",
+      "step": "Campaign fault matrix declaration (DEP-018)"
+    },
     "scripts/check-m1-shipped-boot-shape.test.mjs": {
       "status": "runs",
       "workflow": "pr.yml",
@@ -457,6 +462,11 @@
       "status": "runs",
       "workflow": "d1-merge-train.yml",
       "step": "Run the m1-spine profile (live)"
+    },
+    "tests/d1/m1-fault-matrix.test.mjs": {
+      "status": "runs",
+      "workflow": "d1-merge-train.yml",
+      "step": "Run the M1-D1-SPINE fault matrix (live)"
     },
     "tests/d1/network-denial.test.mjs": {
       "status": "runs",

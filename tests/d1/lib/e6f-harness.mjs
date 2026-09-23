@@ -2656,3 +2656,453 @@ try {
 `;
   return dexecModule("control-plane", script);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DEP-018 — the campaign fault matrix's injection + observation helpers
+// (ADDITIVE ONLY: nothing above is modified).
+//
+// Every helper here answers ONE of the two questions the matrix asks of a case:
+//   * did the INJECTION fire? — `composeServiceRuntime`, `tcpProbeFromTestRunner`, plus the
+//     existing `probeProxyReachable` / `expireLeaseDeadlines` / the provider's own `timedOut`;
+//   * what did the system then DO? — `leaseRenew`, `resolveExecutionSecretHttp`,
+//     `requestCancellationInContainer`, `queryJobAttemptsAndCommands`, `queryScopedRowsAsApp`,
+//     `probeLegacyTableIsolation`, `probeToolSurfaceAtUse`.
+//
+// The legacy-table probe is deliberately ONE helper rather than four: acceptance 5's four tables
+// share a single shape — plant the foreign tenant's row, read through the PRODUCTION reader under
+// each tenant, then read AGAIN with the tenant predicate removed — and splitting it would have
+// given four chances for one of them to drift into a weaker assertion.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** One compose service's container id and start time, from the HOST docker daemon. `startedAt`
+ * is what makes a RESTART observable: a restart that did not happen leaves it unchanged, so the
+ * case cannot pass without the injection firing. */
+export function composeServiceRuntime(service) {
+  const idRes = spawnSync("docker", ["compose", "-f", COMPOSE_FILE, "ps", "-q", service], { encoding: "utf8", timeout: 60_000 });
+  const containerId = (idRes.stdout ?? "").trim().split("\n")[0] ?? "";
+  if (!containerId) return { ok: false, error: `no container for service ${service}`, stderr: idRes.stderr ?? "" };
+  const inspect = spawnSync(
+    "docker",
+    ["inspect", containerId, "--format", "{{.State.StartedAt}}|{{.State.Running}}|{{.State.Health.Status}}"],
+    { encoding: "utf8", timeout: 60_000 },
+  );
+  const [startedAt, running, health] = (inspect.stdout ?? "").trim().split("|");
+  return { ok: Boolean(startedAt), containerId, startedAt: startedAt ?? null, running: running === "true", health: health ?? null };
+}
+
+/** Restart one compose service. The restart is the injection; `composeServiceRuntime().startedAt`
+ * before/after is the observation. */
+export function restartComposeService(service, { timeout = 300_000 } = {}) {
+  const res = spawnSync(
+    "docker",
+    ["compose", "-f", COMPOSE_FILE, "restart", "--timeout", "30", service],
+    { encoding: "utf8", timeout },
+  );
+  return { ok: res.status === 0, status: res.status, stdout: res.stdout ?? "", stderr: res.stderr ?? "" };
+}
+
+/** A raw TCP connect from test-runner, so a NON-HTTP link cut is observable. The
+ * control-plane -> postgres link carries the PostgreSQL wire protocol, which
+ * `probeProxyReachable`'s HTTP GET cannot speak; a TCP connect to toxiproxy's listen port answers
+ * the only question that matters: is the link up. Returns { connected } (+ `error` when refused). */
+export function tcpProbeFromTestRunner({ host, port, timeoutMs = 3000 }) {
+  const params = { host, port, timeoutMs };
+  const script = `
+import net from "node:net";
+${embedParams(params)}
+function report(value) { console.log("${RESULT_MARKER}" + JSON.stringify(value)); }
+const result = await new Promise((resolve) => {
+  const socket = net.connect({ host: P.host, port: P.port });
+  const done = (value) => { try { socket.destroy(); } catch {} resolve(value); };
+  socket.setTimeout(P.timeoutMs, () => done({ connected: false, error: "timeout" }));
+  socket.once("connect", () => done({ connected: true }));
+  socket.once("error", (error) => done({ connected: false, error: String(error && error.message ? error.message : error) }));
+});
+report(result);
+`;
+  return dexecModule("test-runner", script);
+}
+
+/** Renew a lease over the REAL /worker-control/leases/:id/renew. The cross-tenant `lease`
+ * surface: a foreign worker's session + device key presented against the victim's lease. */
+export function leaseRenew({ session, workerId, jobId, attempt, leaseId, fenceToken, deviceKey, url }) {
+  const target = url ?? `${CONTROL_PLANE_URL}/api/worker-control/leases/${leaseId}/renew`;
+  const params = { url: target, session, workerId, jobId, attempt, leaseId, fenceToken, privateKeyPem: deviceKey.privateKeyPem, publicKeyDer: deviceKey.publicKeyDer };
+  const script = `
+${DEVICE_PROOF_SNIPPET}
+${embedParams(params)}
+const body = {
+  protocolVersion: 1,
+  correlationId: randomUUID(),
+  issuedAt: new Date().toISOString(),
+  nonce: randomBytes(16).toString("base64url"),
+  audience: "worker_run",
+  idempotencyKey: randomUUID(),
+  body: {
+    protocolVersion: 1,
+    workerId: P.workerId,
+    jobId: P.jobId,
+    attempt: P.attempt,
+    leaseId: P.leaseId,
+    fenceToken: P.fenceToken,
+    observedAt: new Date().toISOString(),
+    extensions: [],
+  },
+};
+const bodyString = JSON.stringify(body);
+const headers = deviceProofHeaders({
+  method: "POST", url: P.url, bodyString, correlationId: body.correlationId,
+  privateKeyPem: P.privateKeyPem, publicKeyDer: P.publicKeyDer,
+});
+headers["content-type"] = "application/json";
+headers["authorization"] = "Bearer " + P.session;
+const res = await fetch(P.url, { method: "POST", headers, body: bodyString });
+const text = await res.text();
+report({ status: res.status, body: safeJson(text) });
+`;
+  return dexecModule("test-runner", script);
+}
+
+/** Redeem an execution-secret handle over the REAL fenced
+ * /worker-control/execution-secrets/resolve. The route collapses every refusal to
+ * { outcome: "denied", reason } on purpose (it must not be an oracle for which handle exists),
+ * so the case reads the REASON: a foreign worker presenting the victim's lease is refused by the
+ * FENCE (`stale_fence`), while the owner's identical call gets past it. */
+export function resolveExecutionSecretHttp({ session, workerId, jobId, attempt, leaseId, fenceToken, handleId, deviceKey }) {
+  const url = `${CONTROL_PLANE_URL}/api/worker-control/execution-secrets/resolve`;
+  const params = { url, session, workerId, jobId, attempt, leaseId, fenceToken, handleId, privateKeyPem: deviceKey.privateKeyPem, publicKeyDer: deviceKey.publicKeyDer };
+  const script = `
+${DEVICE_PROOF_SNIPPET}
+${embedParams(params)}
+const body = {
+  protocolVersion: 1,
+  correlationId: randomUUID(),
+  issuedAt: new Date().toISOString(),
+  workerId: P.workerId,
+  jobId: P.jobId,
+  attempt: P.attempt,
+  leaseId: P.leaseId,
+  fenceToken: P.fenceToken,
+  handleId: P.handleId,
+};
+const bodyString = JSON.stringify(body);
+const headers = deviceProofHeaders({
+  method: "POST", url: P.url, bodyString, correlationId: body.correlationId,
+  privateKeyPem: P.privateKeyPem, publicKeyDer: P.publicKeyDer,
+});
+headers["content-type"] = "application/json";
+headers["authorization"] = "Bearer " + P.session;
+const res = await fetch(P.url, { method: "POST", headers, body: bodyString });
+const text = await res.text();
+report({ status: res.status, body: safeJson(text) });
+`;
+  return dexecModule("test-runner", script);
+}
+
+/** Mint ONE `job_secret_handles` row for an attempt, so the secrets surface has a durable row to
+ * redeem and to read. Owner DSN, like every E6F seed. NO secret VALUE lands here — the table
+ * stores an opaque handle and a non-secret pointer, and `refId` deliberately names a secret that
+ * does not exist, so no credential is created anywhere by this fixture. */
+export function seedExecutionSecretHandle({ organizationId, jobId, handleId, envTarget = "M1_FAULT_MATRIX_FIXTURE" }) {
+  const params = { organizationId, jobId, handleId, envTarget };
+  const script = `
+import postgres from "postgres";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  await sql\`INSERT INTO job_secret_handles
+    (id, organization_id, job_id, handle, ref_kind, ref_id, materialization, materialization_target,
+     use_policy, destination, status)
+    VALUES (\${P.handleId}, \${P.organizationId}, \${P.jobId}, \${"m1fm-" + P.handleId.slice(0, 8)},
+      'company_secret', \${"m1fm-absent-" + P.handleId.slice(0, 8)}, 'env', \${P.envTarget},
+      'sandbox_local_only', NULL, 'active')\`;
+  const [row] = await sql\`SELECT id FROM job_secret_handles WHERE id = \${P.handleId}\`;
+  report({ ok: Boolean(row), handleId: P.handleId });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script);
+}
+
+/** Count rows of one RLS-protected table for a job, through the NON-OWNER `aoa_app` pool under a
+ * given tenant scope — the same channel `queryJobEventsAsApp` uses, generalized to the tables the
+ * secrets and staged-input surfaces live in. `table` is checked against a fixed allow-list, never
+ * interpolated from a caller's free text. */
+export function queryScopedRowsAsApp({ table, jobId, scopeOrganizationId }) {
+  const ALLOWED = ["job_secret_handles", "job_artifacts", "job_events", "leases", "job_attempts"];
+  if (!ALLOWED.includes(table)) throw new Error(`queryScopedRowsAsApp: unsupported table ${table}`);
+  const params = { table, jobId, scopeOrganizationId };
+  const script = `
+import postgres from "postgres";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+const sql = postgres(process.env.AOA_APP_DATABASE_URL, { max: 1 });
+try {
+  const out = await sql.begin(async (tx) => {
+    await tx\`SELECT set_config('aoa.organization_id', \${P.scopeOrganizationId}, true)\`;
+    const rows = await tx.unsafe(
+      'SELECT count(*)::int AS total FROM ' + P.table + ' WHERE job_id = $1',
+      [P.jobId],
+    );
+    return rows[0]?.total ?? 0;
+  });
+  report({ ok: true, total: out });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script);
+}
+
+/** Cancel a job through the PRODUCTION reconciliation service, composed on the control plane the
+ * way `server/src/index.ts` composes it. The cross-tenant case calls it with the ATTACKER's
+ * Organization and Company against the victim's job; the positive control calls it with the
+ * owner's own. Returns { ok, outcome } or { ok:false, error }. */
+export function requestCancellationInContainer({ organizationId, companyId, jobId, reason, graceful = true }) {
+  const params = { organizationId, companyId, jobId, reason, graceful, dist: CP_DIST };
+  const script = `
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+process.env.AOA_LOG_STDOUT = "0";
+try {
+  const { createDb } = await import("@armyofagents/db");
+  const { createJobReconciliationService } = await import(P.dist + "/services/job-reconciliation.js");
+  const service = createJobReconciliationService({ appDb: createDb(process.env.AOA_APP_DATABASE_URL) });
+  const outcome = await service.requestCancellation({
+    organizationId: P.organizationId,
+    companyId: P.companyId,
+    jobId: P.jobId,
+    reason: P.reason,
+    graceful: P.graceful,
+  });
+  report({ ok: true, outcome });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error), code: error?.code ?? null });
+}
+process.exit(0);
+`;
+  return dexecModule("control-plane", script, { timeout: 120_000 });
+}
+
+/** Every probed job's attempts, control commands and leases, owner DSN. Keyed per ATTEMPT: a job
+ * may carry siblings, and a stale command from an earlier lease must never satisfy the current
+ * one (the lesson DEP-016's rehearsal recorded). */
+export function queryJobAttemptsAndCommands({ jobIds }) {
+  // An EMPTY array would leave postgres.js unable to infer the array's element type
+  // (`ANY($1)` with no members), so the probe would fail with a type error rather than return
+  // nothing. A caller using this as a liveness check passes no ids on purpose, so substitute an
+  // id that matches no row instead of refusing.
+  const params = { jobIds: jobIds.length > 0 ? jobIds : ["00000000-0000-4000-8000-000000000000"] };
+  const script = `
+import postgres from "postgres";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  const attempts = await sql\`SELECT id AS "attemptId", job_id AS "jobId", attempt_number AS "attemptNumber",
+      status FROM job_attempts WHERE job_id = ANY(\${P.jobIds}) ORDER BY job_id, attempt_number\`;
+  const commands = await sql\`SELECT job_id AS "jobId", attempt_id AS "attemptId", lease_id AS "leaseId",
+      command_kind AS "commandKind", reason, command_seq AS "commandSeq"
+    FROM job_control_commands WHERE job_id = ANY(\${P.jobIds}) ORDER BY command_seq\`;
+  const leases = await sql\`SELECT id, job_id AS "jobId", attempt_id AS "attemptId", status
+    FROM leases WHERE job_id = ANY(\${P.jobIds})\`;
+  const jobs = await sql\`SELECT id AS "jobId", status FROM jobs WHERE id = ANY(\${P.jobIds})\`;
+  report({ ok: true, attempts, commands, leases, jobs });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script);
+}
+
+/**
+ * DEP-018 acceptance 5 — the four legacy `companyId` tables the distributed path writes or reads.
+ *
+ * Per E2-D03 (LOCKED) these are granted to the non-owner role and carry NO RLS, so acceptance 2's
+ * "denied … with RLS" cannot hold for them: the boundary is the QUERY PREDICATE. For each table
+ * this probe therefore does three reads on the SAME `aoa_app` pool:
+ *
+ *   own      — the owner's own request through the PRODUCTION reader, which must return the row;
+ *   foreign  — the ATTACKER's identical request through the SAME reader, which must return none;
+ *   unscoped — the same read with the tenant predicate REMOVED, which MUST return the owner's row.
+ *
+ * The third is the anti-vacuity control. Without it, `foreign === 0` is equally explained by an
+ * empty table, and the case would prove nothing.
+ *
+ * `plantedBy` names how the victim's row got there, per table:
+ *   cost_events / activity_log — written by the REAL ingest during the victim's journey (the
+ *     JOB-016 pricing projector and the JOB-017 audit writer), never planted by this probe;
+ *   task_outputs — planted through the PRODUCTION writer `upsertTaskOutputForIssue`, because the
+ *     distributed projector only fires on an `artifact_prepared` event, which this lane's
+ *     reference provider does not produce;
+ *   provider_credentials — planted by owner SQL (aoa_app holds SELECT only, by design).
+ */
+export function probeLegacyTableIsolation({ owner, attacker }) {
+  const params = { owner, attacker, dist: CP_DIST };
+  const script = `
+import postgres from "postgres";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+process.env.AOA_LOG_STDOUT = "0";
+const owner = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  const { createDb } = await import("@armyofagents/db");
+  const { costService } = await import(P.dist + "/services/costs.js");
+  const { activityService } = await import(P.dist + "/services/activity.js");
+  const { taskOutputService } = await import(P.dist + "/services/task-outputs.js");
+  const appDb = createDb(process.env.AOA_APP_DATABASE_URL);
+  const appSql = postgres(process.env.AOA_APP_DATABASE_URL, { max: 1 });
+  const out = {};
+
+  // ── task_outputs: planted through the PRODUCTION writer, under the owner's Company ──
+  const taskOutputs = taskOutputService(appDb);
+  const planted = await taskOutputs.upsertForIssue(P.owner.companyId, P.owner.issueId, {
+    type: "artifact",
+    provider: "m1-fault-matrix",
+    externalId: P.owner.jobId,
+    title: "m1-fault-matrix planted output",
+    status: "active",
+    reviewState: "none",
+    metadata: { jobId: P.owner.jobId },
+  });
+  const ownOutputs = await taskOutputs.listForIssue(P.owner.companyId, P.owner.issueId);
+  const foreignOutputs = await taskOutputs.listForIssue(P.attacker.companyId, P.owner.issueId);
+  const unscopedOutputs = await appSql\`SELECT id FROM task_outputs WHERE issue_id = \${P.owner.issueId}\`;
+  out.task_outputs = {
+    plantedId: planted?.id ?? null,
+    own: ownOutputs.length,
+    foreign: foreignOutputs.length,
+    unscoped: unscopedOutputs.length,
+    ownIds: ownOutputs.map((r) => r.id),
+  };
+
+  // ── activity_log: the rows JOB-017 wrote during the victim's journey ──
+  const activity = activityService(appDb);
+  const ownActivity = await activity.list({ companyId: P.owner.companyId, entityType: "job", entityId: P.owner.jobId });
+  const foreignActivity = await activity.list({ companyId: P.attacker.companyId, entityType: "job", entityId: P.owner.jobId });
+  const unscopedActivity = await appSql\`SELECT id FROM activity_log WHERE entity_type = 'job' AND entity_id = \${P.owner.jobId}\`;
+  out.activity_log = {
+    own: ownActivity.length,
+    foreign: foreignActivity.length,
+    unscoped: unscopedActivity.length,
+    ownActions: ownActivity.map((r) => r.action),
+  };
+
+  // ── cost_events: the charge the REAL ingest priced during the victim's journey ──
+  const costs = costService(appDb);
+  const ownByAgent = await costs.byAgent(P.owner.companyId);
+  const foreignByAgent = await costs.byAgent(P.attacker.companyId);
+  const unscopedCost = await appSql\`SELECT id FROM cost_events WHERE agent_id = \${P.owner.agentId}\`;
+  out.cost_events = {
+    own: ownByAgent.filter((r) => r.agentId === P.owner.agentId).length,
+    ownCents: ownByAgent.filter((r) => r.agentId === P.owner.agentId).reduce((n, r) => n + Number(r.costCents), 0),
+    foreign: foreignByAgent.filter((r) => r.agentId === P.owner.agentId).length,
+    unscoped: unscopedCost.length,
+  };
+
+  // ── provider_credentials: planted by owner SQL (aoa_app holds SELECT only) and read with the
+  //    two predicates the fenced device_local arm uses: id = refId AND company_id = <lease's>.
+  // owner_user_id is NOT NULL and references the auth user table, so the fixture needs an
+  // owner row; execution_target_id is NOT NULL text. Neither carries any credential VALUE —
+  // this table stores logical ownership only ("no materialized secret value ever lands here").
+  const ownerUserId = "m1fm-owner-" + P.owner.credentialId.slice(0, 8);
+  await owner\`INSERT INTO "user" (id, name, email, created_at, updated_at)
+    VALUES (\${ownerUserId}, 'm1 fault-matrix fixture', \${ownerUserId + "@fault-matrix.invalid"}, now(), now())
+    ON CONFLICT (id) DO NOTHING\`;
+  await owner\`INSERT INTO provider_credentials
+      (id, company_id, provider, kind, state, owner_user_id, execution_target_id)
+    VALUES (\${P.owner.credentialId}, \${P.owner.companyId}, 'anthropic', 'device_local', 'verified',
+      \${ownerUserId}, \${"m1fm-target-" + P.owner.credentialId.slice(0, 8)})
+    ON CONFLICT (id) DO NOTHING\`;
+  const ownCred = await appSql\`SELECT id FROM provider_credentials
+    WHERE id = \${P.owner.credentialId} AND company_id = \${P.owner.companyId}\`;
+  const foreignCred = await appSql\`SELECT id FROM provider_credentials
+    WHERE id = \${P.owner.credentialId} AND company_id = \${P.attacker.companyId}\`;
+  const unscopedCred = await appSql\`SELECT id FROM provider_credentials WHERE id = \${P.owner.credentialId}\`;
+  out.provider_credentials = { own: ownCred.length, foreign: foreignCred.length, unscoped: unscopedCred.length };
+
+  await appSql.end({ timeout: 5 });
+  report({ ok: true, tables: out });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error), stack: String(error?.stack ?? "").slice(0, 1200) });
+} finally {
+  await owner.end({ timeout: 5 });
+}
+process.exit(0);
+`;
+  return dexecModule("control-plane", script, { timeout: 180_000 });
+}
+
+/**
+ * The `tool_calls` surface, through the PRODUCTION per-Organization tool-surface resolver
+ * (`createDistributedToolSurfaceUseResolver`, CLI-016) on the non-owner `aoa_app` pool.
+ *
+ * Three arms, because on M1a the surface is DISARMED and a naive "same-tenant call succeeds"
+ * control could not exist:
+ *   cross      — the attacker's companyId with the victim's run id  -> must be `deny`
+ *                (`classifyToolSurfaceAtUse` company-mismatch arm);
+ *   own        — the victim's own LOCAL run under its own companyId -> must be `admit`, so
+ *                `admit` is demonstrably reachable and the deny above is the TENANT check's;
+ *   distributed— the victim's DISTRIBUTED run under its own companyId -> `deny`, which records
+ *                the M1a freeze posture (the Organization is not armed) rather than isolation.
+ */
+export function probeToolSurfaceAtUse({ victim, attacker, localRunId, distributedRunId }) {
+  const params = { victim, attacker, localRunId, distributedRunId, dist: CP_DIST };
+  const script = `
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+process.env.AOA_LOG_STDOUT = "0";
+try {
+  const { createDb } = await import("@armyofagents/db");
+  const { createDistributedToolSurfaceUseResolver } =
+    await import(P.dist + "/mcp/distributed-tool-surface-use-resolver.js");
+  const resolver = createDistributedToolSurfaceUseResolver(createDb(process.env.AOA_APP_DATABASE_URL));
+  const cross = await resolver.resolve({ signedRunId: P.distributedRunId, companyId: P.attacker.companyId });
+  const own = await resolver.resolve({ signedRunId: P.localRunId, companyId: P.victim.companyId });
+  const distributed = await resolver.resolve({ signedRunId: P.distributedRunId, companyId: P.victim.companyId });
+  report({ ok: true, cross, own, distributed });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+}
+process.exit(0);
+`;
+  return dexecModule("control-plane", script, { timeout: 120_000 });
+}
+
+/** Seed two `heartbeat_runs` rows for the tool-surface probe: one LOCAL (no execution owner) and
+ * one DISTRIBUTED, both of the victim's Company. Owner DSN. */
+export function seedToolSurfaceRuns({ companyId, agentId, localRunId, distributedRunId, jobId, attemptId }) {
+  const params = { companyId, agentId, localRunId, distributedRunId, jobId, attemptId };
+  const script = `
+import postgres from "postgres";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  await sql\`INSERT INTO heartbeat_runs (id, company_id, agent_id, status)
+    VALUES (\${P.localRunId}, \${P.companyId}, \${P.agentId}, 'completed')
+    ON CONFLICT (id) DO NOTHING\`;
+  await sql\`INSERT INTO heartbeat_runs (id, company_id, agent_id, status,
+      execution_owner, distributed_job_id, distributed_attempt_id)
+    VALUES (\${P.distributedRunId}, \${P.companyId}, \${P.agentId}, 'completed',
+      'distributed', \${P.jobId}, \${P.attemptId})
+    ON CONFLICT (id) DO NOTHING\`;
+  const rows = await sql\`SELECT id, execution_owner AS "executionOwner" FROM heartbeat_runs
+    WHERE id = ANY(\${[P.localRunId, P.distributedRunId]})\`;
+  report({ ok: rows.length === 2, rows });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script);
+}
