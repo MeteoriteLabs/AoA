@@ -75,6 +75,7 @@ import {
 import {
   M1_SPINE_TENANTS,
   M1_SPINE_AGENT_MODEL,
+  M1_SPINE_AGENT_ADAPTER_TYPE,
   M1_SPINE_WORKLOAD,
   M1_SPINE_CONTROL_PLANE_REPLICAS,
   evaluateReplicaRollout,
@@ -229,9 +230,10 @@ for (const tenant of M1_SPINE_TENANTS.enabled) {
     const record = { jobId: ids.jobId, attemptId: ids.attemptId, workerId: ids.workerId, targetId: ids.targetId };
     evidence.enabled[tenant.key] = record;
 
-    const org = step(seedSpineOrganization({ tenant, model: M1_SPINE_AGENT_MODEL }), `${tenant.key} org`);
+    const org = step(seedSpineOrganization({ tenant, model: M1_SPINE_AGENT_MODEL, adapterType: M1_SPINE_AGENT_ADAPTER_TYPE }), `${tenant.key} org`);
     assert.equal(org.ok, true, `${tenant.key} org seed: ${truncate(org)}`);
     assert.equal(org.agentModel, M1_SPINE_AGENT_MODEL, `${tenant.key} agent model`);
+    assert.equal(org.agentAdapterType, M1_SPINE_AGENT_ADAPTER_TYPE, `${tenant.key} agent adapter type`);
     const worker = enrollWorker(tenant, ids);
     const job = step(seedSpineJob({
       tenant,
@@ -425,7 +427,7 @@ test("m1-spine: the control tenant is refused distributed execution on every rep
   const record = { placements: [], positiveControlPlacement: null, jobIds: [] };
   evidence.control = record;
 
-  const org = step(seedSpineOrganization({ tenant: control, model: M1_SPINE_AGENT_MODEL }), "control org");
+  const org = step(seedSpineOrganization({ tenant: control, model: M1_SPINE_AGENT_MODEL, adapterType: M1_SPINE_AGENT_ADAPTER_TYPE }), "control org");
   assert.equal(org.ok, true, `control org seed: ${truncate(org)}`);
   const worker = enrollWorker(control, ids);
 
@@ -443,7 +445,7 @@ test("m1-spine: the control tenant is refused distributed execution on every rep
 
   // Positive control: the SAME service, on an ENABLED tenant's unplaced attempt.
   {
-    const orgA = step(seedSpineOrganization({ tenant: positiveTenant, model: M1_SPINE_AGENT_MODEL }), "positive-control org");
+    const orgA = step(seedSpineOrganization({ tenant: positiveTenant, model: M1_SPINE_AGENT_MODEL, adapterType: M1_SPINE_AGENT_ADAPTER_TYPE }), "positive-control org");
     assert.equal(orgA.ok, true, `positive-control org seed: ${truncate(orgA)}`);
     const jobId = randomUUID();
     const attemptId = randomUUID();

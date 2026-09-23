@@ -18,6 +18,9 @@ import {
   M1_SPINE_TENANTS,
   M1_SPINE_ROLLOUT_ENV_VALUE,
   M1_SPINE_COST_MARKER,
+  M1_SPINE_AGENT_MODEL,
+  M1_SPINE_AGENT_ADAPTER_TYPE,
+  M1_SPINE_RATE_VERSION,
   M1_SPINE_USAGE_MARKER,
   evaluateSpineOverrideText,
   evaluateReplicaRollout,
@@ -149,6 +152,10 @@ function goodEnabled(tenant = A, overrides = {}) {
         companyId: tenant.companyId,
         agentId: tenant.agentId,
         costCents: 81,
+        provider: M1_SPINE_AGENT_ADAPTER_TYPE,
+        model: M1_SPINE_AGENT_MODEL,
+        rateId: M1_SPINE_AGENT_MODEL,
+        rateVersion: M1_SPINE_RATE_VERSION,
         inputTokens: 120000,
         outputTokens: 30000,
         cachedInputTokens: 0,
@@ -273,6 +280,15 @@ test("a cost row whose tokens or key are not the accepted usage event's is refus
     costRows: [{ ...obs.costRows[0], sourceIdempotencyKey: `cost:${A.companyId}:99999999-9999-4999-8999-999999999999` }],
   }));
   assert.ok(codes(wrongKey).includes("usage:row_not_keyed_to_event"));
+});
+
+test("a POSITIVE charge priced from another model, provider or rate version is refused (Codex P2)", () => {
+  const obs = goodEnabled(A).observation;
+  for (const [field, value] of [["model", "claude-opus-4-6"], ["provider", "openai"], ["rateId", "gpt-4o"], ["rateVersion", 2]]) {
+    const v = evaluateEnabledTenantSpine(goodEnabled(A, { costRows: [{ ...obs.costRows[0], [field]: value }] }));
+    assert.ok(codes(v).includes("cost:wrong_rate_metadata"), `${field} must be checked`);
+    assert.ok(!codes(v).includes("cost:zero_cost"), "the charge is still positive — that is the point");
+  }
 });
 
 test("a cost row rolled up to ANOTHER agent of the same Company is refused (Codex P2)", () => {

@@ -63,6 +63,18 @@ export const M1_SPINE_TENANTS = Object.freeze({
  * (`server/src/services/internal-agent/cost-model.ts` RATES), so the fail-closed resolver prices it. */
 export const M1_SPINE_AGENT_MODEL = "claude-sonnet-4-6";
 
+/** The adapter type every enabled tenant's agent carries. The server resolves a `task_run`'s rate
+ * from the assignee agent's `adapter_type` + `adapter_config.model` (`resolveModelForSource`), so
+ * this is the provider the charge must name. One constant, used by the seed AND by the expectation:
+ * a charge that names anything else means the resolver did not price from this agent. */
+export const M1_SPINE_AGENT_ADAPTER_TYPE = "claude_local";
+
+/** The rate schedule version the charge must be priced against
+ * (`AUTHORITATIVE_RATE_VERSION`, `server/src/services/job-authoritative-rate.ts`). Pinned on
+ * purpose: a re-price bumps that constant, and this profile should go red until the campaign's
+ * expectation is updated with it. */
+export const M1_SPINE_RATE_VERSION = 1;
+
 /** The workload the profile runs and the rollout enables. */
 export const M1_SPINE_WORKLOAD = "batch";
 
@@ -271,6 +283,23 @@ export function evaluateEnabledTenantSpine({ tenant: t, observation: o }) {
   if (costRows.some((row) => row.companyId !== t.companyId)) {
     out.push(violation("cost:wrong_company", `${k}: a cost_events row is attributed to another Company`));
   }
+  // Codex P2 (PR #566), third round: a positive charge is not enough. A row priced from another
+  // KNOWN model, another provider or another rate version is still positive, and still wrong — the
+  // spend and the hard stop would then be computed from the wrong schedule.
+  for (const row of costRows) {
+    const wrong = [];
+    if (row.provider !== M1_SPINE_AGENT_ADAPTER_TYPE) wrong.push(`provider ${JSON.stringify(row.provider)}`);
+    if (row.model !== M1_SPINE_AGENT_MODEL) wrong.push(`model ${JSON.stringify(row.model)}`);
+    if (row.rateId !== M1_SPINE_AGENT_MODEL) wrong.push(`rateId ${JSON.stringify(row.rateId)}`);
+    if (Number(row.rateVersion) !== M1_SPINE_RATE_VERSION) wrong.push(`rateVersion ${JSON.stringify(row.rateVersion)}`);
+    if (wrong.length > 0) {
+      out.push(violation(
+        "cost:wrong_rate_metadata",
+        `${k}: a cost_events row was priced with ${wrong.join(", ")} — expected ${M1_SPINE_AGENT_ADAPTER_TYPE} / ${M1_SPINE_AGENT_MODEL} at rate version ${M1_SPINE_RATE_VERSION}`,
+      ));
+    }
+  }
+
   // Codex P2 (PR #566): the Company is not the whole attribution. A charge rolled up to a DIFFERENT
   // agent of the same Company corrupts per-agent spend and the agent-scope hard stop while every
   // company-level number stays right, so the agent is checked too.

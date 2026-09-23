@@ -2206,8 +2206,8 @@ const CP_DIST = "/cp-app/dist";
 
 /** Insert-if-absent the fixed Organization, Company and task-run Agent of one spine tenant.
  * Runs in `control-plane` under the owner DSN (like every E6F seed). */
-export function seedSpineOrganization({ tenant, model }) {
-  const params = { ...tenant, model };
+export function seedSpineOrganization({ tenant, model, adapterType }) {
+  const params = { ...tenant, model, adapterType };
   const script = `
 import postgres from "postgres";
 ${embedParams(params)}
@@ -2221,14 +2221,14 @@ try {
     VALUES (\${P.companyId}, \${P.organizationId}, \${"M1 spine Company " + P.key}, \${P.issuePrefix})
     ON CONFLICT (id) DO NOTHING\`;
   await sql\`INSERT INTO agents (id, company_id, name, adapter_type, adapter_config)
-    VALUES (\${P.agentId}, \${P.companyId}, \${"m1-spine-agent-" + P.key.toLowerCase()}, 'claude_local',
+    VALUES (\${P.agentId}, \${P.companyId}, \${"m1-spine-agent-" + P.key.toLowerCase()}, \${P.adapterType},
       \${sql.json({ model: P.model })})
     ON CONFLICT (id) DO NOTHING\`;
   const [org] = await sql\`SELECT id FROM organizations WHERE id = \${P.organizationId}\`;
   const [company] = await sql\`SELECT organization_id AS "organizationId" FROM companies WHERE id = \${P.companyId}\`;
-  const [agent] = await sql\`SELECT company_id AS "companyId", adapter_config->>'model' AS model FROM agents WHERE id = \${P.agentId}\`;
+  const [agent] = await sql\`SELECT company_id AS "companyId", adapter_type AS "adapterType", adapter_config->>'model' AS model FROM agents WHERE id = \${P.agentId}\`;
   report({ ok: Boolean(org) && company?.organizationId === P.organizationId && agent?.companyId === P.companyId,
-    agentModel: agent?.model ?? null });
+    agentModel: agent?.model ?? null, agentAdapterType: agent?.adapterType ?? null });
 } catch (error) {
   report({ ok: false, error: String(error && error.message ? error.message : error) });
 } finally {
