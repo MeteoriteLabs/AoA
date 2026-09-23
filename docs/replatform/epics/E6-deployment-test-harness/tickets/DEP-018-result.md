@@ -13,10 +13,10 @@
 
 | Piece | File | What it is |
 |---|---|---|
-| The declaration | `tests/d1/fault-matrix.json` | **3 gate profiles, 71 cases** (25 required, 46 pending). Each case carries `case`, `family`, `injection.{mechanism,target,observedBy}`, `expectedClassification` and — for a tenant case — `tenantCase`. |
+| The declaration | `tests/d1/fault-matrix.json` | **3 gate profiles, 73 cases** (25 required, 48 pending — the pending count rose during review; see §11b). Each case carries `case`, `family`, `injection.{mechanism,target,observedBy}`, `expectedClassification` and — for a tenant case — `tenantCase`. |
 | The pure verdicts | `scripts/lib/campaign-fault-matrix.mjs` | `evaluateFaultMatrixDeclaration` (is the matrix complete?) and `evaluateFaultMatrixEvidence` (did each case's injection FIRE, and did the classification match?), plus the enumerated constants `GATE_PROFILES`, `REQUIRED_FAMILIES`, `REQUIRED_TENANT_SURFACES`, `REQUIRED_LEGACY_TABLES`. |
 | The checker | `scripts/check-campaign-fault-matrix.mjs` | Thin CLI. Bare = the declaration; `--evidence <bundle>` = a lane's run. Declared in `scripts/guard-inventory.json`. |
-| The checker's reds | `scripts/check-campaign-fault-matrix.test.mjs` (24 tests) | One red fixture per violation code, against a zero-violation anchor. Wired into `pr.yml` `policy` → *Campaign fault matrix declaration (DEP-018)*, declared in `scripts/test-execution-census.json`. |
+| The checker's reds | `scripts/check-campaign-fault-matrix.test.mjs` (25 tests) | One red fixture per violation code, against a zero-violation anchor. Wired into `pr.yml` `policy` → *Campaign fault matrix declaration (DEP-018)*, declared in `scripts/test-execution-census.json`. |
 | The injection harness | `tests/d1/m1-fault-matrix.test.mjs` (20 cases) + 12 additive helpers in `tests/d1/lib/e6f-harness.mjs` | The live `M1-D1-SPINE` lane, on the D1 compose with DEP-016's one-worker override and its F10 tenant set. |
 | The lane | `.github/workflows/d1-merge-train.yml` job **`m1-fault-matrix`** | Builds the split images, brings the override up, asserts ONE worker service, runs the matrix, runs the checker over the retained bundle, collects the PASSING bundle, then runs the **suppressed-injection positive control** and fails the lane if it passes. New trigger paths: `tests/d1/fault-matrix.json`, `scripts/lib/campaign-fault-matrix.mjs`, `scripts/check-campaign-fault-matrix.mjs`. |
 
@@ -35,13 +35,13 @@ needed extending, so none was changed.
 ★ **And that is held, not merely asserted.** The task's reuse clause asks for a test that the lanes
 cannot drift. Since nothing was extended, the real drift risk is not a diverging signature — it is
 someone later pasting a second `evaluateEnabledTenantSpine` into the lane and quietly asserting
-something weaker while both files still claim to prove the same thing. The 24th self-test requires
+something weaker while both files still claim to prove the same thing. The anti-drift self-test requires
 the lane to IMPORT all three symbols from `m1-spine-assertions.mjs` and to define no rival under
 those names, **and** requires those three to be genuinely exported there — so the check cannot pass
 by searching for a name that does not exist. Positive control, run: removing
 `evaluateControlTenant` from the lane's import and defining a local stub in its place reds it with
 *"the lane must IMPORT evaluateControlTenant from DEP-016 rather than restate it"* (`23/24`);
-reverted, `24/24`.
+reverted, and the suite is green again.
 
 ## 2. Acceptance → evidence
 
@@ -50,7 +50,7 @@ reverted, `24/24`.
 | 1 | Every declared case has a run showing **its injection fired**, with the observed classification matching | §3: **25/25 required cases fired and classified**, twice. The verdict is `evaluateFaultMatrixEvidence`, run by the harness's own last case AND by the checker over the retained bundle. §4's suppressed control is what shows it can say NO. |
 | 2 | Every cross-tenant denial is **denied, not merely empty**, with a same-tenant **positive control** | §3a — nine surfaces, each with its control. ★ For the four tables of acceptance 5 the "with RLS" half **cannot** hold and is not claimed; see §3b. |
 | 3 | The control tenant is refused distributed execution and stays legacy | §3c, through the REAL placement service with the enabled-tenant positive control. |
-| 4 | The checker reds on an undeclared case, a case with no injection evidence, or a profile missing the tenant matrix | §5 — 24 self-tests, one red fixture per violation code, including "drop ANY of the nine surfaces" and "drop ANY of the four legacy tables" as loops. |
+| 4 | The checker reds on an undeclared case, a case with no injection evidence, or a profile missing the tenant matrix | §5 — 25 self-tests, one red fixture per violation code, including "drop ANY of the nine surfaces" and "drop ANY of the four legacy tables" as loops. |
 | 5 | ★★★ The four legacy tables are tested **DIRECTLY**, through the production query path, with a positive control **and** an anti-vacuity control | §3b. |
 
 ## 3. GREEN — the live run (local, real D1 stack)
@@ -167,7 +167,7 @@ the SAME service on an enabled tenant — returned **`selected` / `active` / `le
 **TDD order, stated.** The checker's self-test was written and run FIRST, against a module and a
 declaration that did not exist: the anchor and all 22 mutation tests passed, and the one test that
 reads the committed `tests/d1/fault-matrix.json` failed `ENOENT` — the RED. Writing the declaration
-turned it green (23/23; 24/24 with the anti-drift control added in §1). The first RED run also caught a defect in the test itself: a mutation that
+turned it green (23/23; the suite grew to 25 with the anti-drift control of §1 and the duplicate-tenant fixture of §11). The first RED run also caught a defect in the test itself: a mutation that
 selected `…fault_control` because it matched the suffix `control`, so it was asserting a violation
 code against a non-tenant case. Fixed, with the reason recorded in the file.
 
@@ -460,3 +460,22 @@ traversed), the provider terminal (a hard-coded status), the tool surface (a con
 arm), the secrets route (owner and attacker indistinguishable), four denials that accepted any
 non-success, the database cut (an outage response recorded but never asserted), the restart (a lease
 checked for existence only), and the checker itself (journey labels counted instead of tenants).
+
+## 11e. Codex round five — two P2s, both taken
+
+Head `d4efb9d52`.
+
+| Finding | Verified | Fix |
+|---|---|---|
+| **P2** — the late-ack check accepted **any** non-200 carrying a `code`, so the route's `503 internal_unavailable`, or a malformed/auth refusal, would have been classified as a reclaim | True — and the same trap the four hostile surfaces were already pinned against, left unpinned on this one | The denial is pinned to **`409`** with a code from e6f-09's `NON_DISCLOSING_DENIALS`. Measured live: **`409 attempt_terminal`** — the reclaim has already terminated the attempt by the time the belated ack arrives. The set is used rather than a single code because which of those the fence path yields is a deliberate non-disclosure and must not be over-pinned |
+| **P2** — §1's "What shipped" still said **71 cases / 46 pending / 24 tests** while the committed tree reports **73 / 48 / 25** after the review added two structural cases and the duplicate-tenant fixture | True, and the right kind of finding: a reviewer reading the summary would have got numbers contradicting the checker | §1 updated. ★ §10's counts are **deliberately unchanged** — they record what the CI run on head `2aa3855aa` actually printed, and a record of a past run keeps its own numbers |
+
+Re-measured after the pin: matrix **20/20** twice, **25/25 required cases fired**, 3 pending;
+suppressed-injection control `pass 10 / fail 10` with **9 × `evidence:injection_did_not_fire`**;
+`scripts/check-campaign-fault-matrix.test.mjs` **25/25**.
+
+**Thirteen findings over five rounds — 5 P1 and 8 P2, every one verified at source before being
+fixed.** Two things a reviewer should weigh: the profile's verdict moved from "complete except one"
+to **`INCOMPLETE`, three pending**, because two claims were being made by cases that could not prove
+them; and one round (§11d) falsified its own prediction while its premise still found a real defect,
+which is why the record keeps both.

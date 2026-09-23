@@ -13,7 +13,7 @@
           "injection": {
             "mechanism": "toxiproxy.proxy_disabled",
             "target": "worker-to-control-plane",
-            "observedBy": "a REAL worker request through the Toxiproxy LISTEN address a worker uses (toxiproxy:13100) succeeds before the cut, FAILS during it, and succeeds after the restore -- the fault is load-bearing on the path under test, not merely visible on a side probe. The reap still reaches the control plane directly, deliberately: it is the operator's path, and routing it through the cut would prevent the reclaim this case observes."
+            "observedBy": "a REAL worker request through the Toxiproxy LISTEN address a worker uses (toxiproxy:13100) succeeds before the cut, FAILS during it, and succeeds after the restore -- the fault is load-bearing on the path under test, not merely visible on a side probe. The reap still reaches the control plane directly, deliberately: it is the operator's path, and routing it through the cut would prevent the reclaim this case observes. The reconnected worker's late ack must then be denied 409 with a non-disclosing fence code (measured: attempt_terminal), not merely be non-200 -- the route also emits 503 internal_unavailable, which would otherwise pass as a reclaim."
           },
           "expectedClassification": "lease_reclaimed_and_late_ack_refused",
           "evidence": "required"

@@ -1228,7 +1228,16 @@ test("fault-matrix: cutting worker-to-control-plane severs real worker traffic, 
       attempt: live.offer.job.attempt, leaseId: live.offer.leaseId, fenceToken: live.offer.fenceToken,
       deviceKey: live.deviceKey,
     }), "late ack");
-    const lateAckRefused = lateAck.status !== 200 && typeof lateAck.body?.code === "string";
+    // ★ The EXACT denial, as the hostile worker-control cases already require (Codex P2, PR #573).
+    // "Any non-200 carrying a code" also accepts the route's `503 internal_unavailable` and its
+    // malformed/auth refusals, so a regression that crashed before ever checking the revoked fence
+    // would still have been classified as a reclaim. Measured live: `409 attempt_terminal` — the
+    // reclaim has already terminated the attempt by the time the belated ack arrives. The set is
+    // e6f-09's `NON_DISCLOSING_DENIALS`, because which of those the fence path yields is a
+    // deliberate non-disclosure and must not be over-pinned.
+    const NON_DISCLOSING_DENIALS = new Set(["stale_fence", "target_revoked", "attempt_terminal", "terminal"]);
+    const lateAckRefused = lateAck.status === EXPECTED_FOREIGN_ACK_STATUS &&
+      NON_DISCLOSING_DENIALS.has(lateAck.body?.code);
 
     // The injection FIRED iff a REAL worker request was interrupted: it worked before the cut,
     // failed during it, and worked again after the restore.
@@ -1256,7 +1265,10 @@ test("fault-matrix: cutting worker-to-control-plane severs real worker traffic, 
         `before=${truncate(pollBeforeCut?.status)} during=${truncate(pollDuringCut)} after=${truncate(pollAfterRestore?.status)}`,
     );
     assert.equal(converged.ok, true, `the lease must be reclaimed: ${truncate(converged.last?.leases)}`);
-    assert.equal(lateAckRefused, true, `the reconnected worker's late ack must be DENIED with a code: ${truncate(lateAck.body)}`);
+    assert.equal(
+      lateAckRefused, true,
+      `the reconnected worker's late ack must be denied ${EXPECTED_FOREIGN_ACK_STATUS} with a non-disclosing fence code: ${truncate(lateAck.body)}`,
+    );
   } finally {
     if (cut) {
       const r = setProxyEnabled({ proxy: "worker-to-control-plane", enabled: true });
