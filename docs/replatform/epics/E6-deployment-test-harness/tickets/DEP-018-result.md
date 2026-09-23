@@ -522,3 +522,21 @@ sites. Verified on the retained bundle: **zero** matches for `X-Amz-Signature`, 
 the cap was published mid-ticket and is respected from this point. **15 findings, 6 P1 and 9 P2,
 every one verified at source before being fixed, none cosmetic.** No further review was requested;
 the two round-six findings above are fixed and measured, and nothing is outstanding from any round.
+
+## 12. CI evidence — the final head
+
+**Run `35844176268`, head `460dca4eb78d84cbda99bcd84ea4d2cde085d97e`: `ci-required` PASS, and
+ZERO jobs concluded anything other than `success`.**
+
+- `policy`, step *Campaign fault matrix declaration (DEP-018)*:
+  `scripts/check-campaign-fault-matrix.mjs` printed *"3 gate profile(s) and 73 case(s) (25
+  required, 48 pending)"*, and `scripts/check-campaign-fault-matrix.test.mjs` ran
+  **25 tests, 25 pass, 0 fail** — a non-zero executed count, on Linux, matching the committed tree.
+- **Still not run: the `m1-fault-matrix` job itself.** It lives in `d1-merge-train.yml`, which fires
+  on push to `main` / `docs/replatform-program` and on the merge queue — not on pull requests. Its
+  first execution will be the merge of this PR. The live half is evidenced here by repeated runs
+  against a real D1 stack (§3, §9b, §11c, §11h) with the suppressed-injection control red every
+  time, and the lane's own verdict is owed.
+
+**Reviewed revision (code): `460dca4eb78d84cbda99bcd84ea4d2cde085d97e`.** Everything in §3, §9b,
+§11 and §11h was measured on this code against a live D1 stack.
