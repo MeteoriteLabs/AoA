@@ -963,7 +963,8 @@ test("POSITIVE CONTROL: the FINAL short continuation of a wrap is redacted too (
 test("POSITIVE CONTROL: a COMPOSE-PREFIXED wrap still joins — `svc | ` is not payload (Codex P1)", () => {
   // This lane's own collector runs `docker compose logs`, so every worker line arrives prefixed.
   const key = 'MC4CAQAwBQYDK2VwBCIEIG' + 'HhSeedBytes'.repeat(4);
-  for (const prefix of ['m1-worker-a  | ', '2026-09-23T09:26:17.468Z m1-worker-a | ']) {
+  // Both orders: `compose logs --timestamps` puts the timestamp AFTER the service (Codex P1).
+  for (const prefix of ['m1-worker-a  | ', '2026-09-23T09:26:17.468Z m1-worker-a | ', 'm1-worker-a-1  | 2026-09-21T14:50:20.038698833Z ']) {
     const wrapped = key.match(/.{1,8}/g).map((frag) => prefix + frag);
     const redact = createLineRedactor();
     const published = wrapped.map(redact);
@@ -979,6 +980,8 @@ test("POSITIVE CONTROL: a COMPOSE-PREFIXED wrap still joins — `svc | ` is not 
 test("stripLogPrefix removes a service prefix and NOTHING else (it must not eat ordinary output)", () => {
   assert.equal(stripLogPrefix('m1-worker-a  | hello'), 'hello');
   assert.equal(stripLogPrefix('2026-09-23T09:26:17.468Z cp-a | hello'), 'hello');
+  // The real shape this lane collects: `docker compose logs --timestamps`.
+  assert.equal(stripLogPrefix('m1-worker-a-1  | 2026-09-21T14:50:20.038698833Z {"msg":"x"}'), '{"msg":"x"}');
   for (const keep of ['reconcile: 3 Organizations', 'MC4CAQAwBQYD', '']) {
     assert.equal(stripLogPrefix(keep), keep, keep);
   }

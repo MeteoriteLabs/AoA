@@ -880,5 +880,12 @@ They are recorded because each would have made the control worse than none:
     itself — a control asserts both halves. Two mutations (the strip removed, the scan keeping the
     prefix) each red a test, and the gate grows a seventh behavioural marker, verified absent from
     `aa884b517` and `3889924c6`.
+19. **…and the timestamp comes AFTER that prefix, not before.** Item 18 stripped a timestamp only
+    ahead of the service name, but `docker compose logs --timestamps` — which this lane runs —
+    emits `svc | <ts> payload`, as the captured fixture from run 35613849443 shows. A different
+    timestamp therefore sat between every wrapped fragment and no marker ever formed.
+    `stripLogPrefix` now removes a leading timestamp, then the service prefix, then a timestamp
+    that followed it, so both producers reduce to the payload. The wrap control gains the real
+    collected shape as a third prefix, and two mutations (either timestamp strip) each red a test.
 **Status unchanged.** This is a control added after the fact to a run that was already clean; it
 neither re-opens nor re-decides §12's keyed acceptance.

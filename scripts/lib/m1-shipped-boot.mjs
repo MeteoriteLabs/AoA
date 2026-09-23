@@ -424,9 +424,16 @@ const BASE64_CONTINUATION = /^[A-Za-z0-9+/_-]+={0,2}$/;
  * matches and, at a narrow wrap, nothing else fires either. The prefix comes off first, on both
  * surfaces, so the fragments join as they were written.
  */
-const LOG_PREFIX = /^\s*(?:\d{4}-\d\d-\d\dT[\d:.]+Z?\s+)?[\w.-]+\s*\|\s?/;
+const LOG_TIMESTAMP = /^\s*\d{4}-\d\d-\d\dT[\d:.]+Z?\s*/;
+const LOG_PREFIX = /^\s*[\w.-]+\s*\|\s?/;
 export function stripLogPrefix(line) {
-  return String(line ?? "").replace(LOG_PREFIX, "");
+  // BOTH orders (Codex P1, PR #574). `docker compose logs --timestamps` — which this lane's own
+  // collector runs — emits `svc | <ts> payload`, the timestamp AFTER the service, and the captured
+  // fixture from run 35613849443 proves it. Other producers put a timestamp first. So a leading
+  // timestamp comes off, then the service prefix, then a timestamp that followed it.
+  let text = String(line ?? "").replace(LOG_TIMESTAMP, "");
+  text = text.replace(LOG_PREFIX, "");
+  return text.replace(LOG_TIMESTAMP, "");
 }
 
 /**
