@@ -171,7 +171,11 @@ export function evaluateFaultMatrixDeclaration(matrix) {
     const families = new Set();
     const surfaces = new Set();
     const tables = new Set();
-    let journeys = 0;
+    // ★ DISTINCT tenants, not a count (Codex P2, PR #573). Counting labels let a matrix that
+    // declared tenant A's journey TWICE and omitted tenant B satisfy the F10 minimum — i.e. the
+    // checker would certify a profile that leaves an enabled tenant unproven, which is exactly
+    // the claim F10 exists to make.
+    const journeyTenants = new Set();
     let controlTenantRefused = 0;
 
     for (const c of entry.cases) {
@@ -240,8 +244,10 @@ export function evaluateFaultMatrixDeclaration(matrix) {
         if (t.kind === "per_tenant_journey") {
           if (!isNonEmptyString(t.tenant)) {
             v("declaration:journey_missing_tenant", `${where}: a per-tenant journey names no tenant`);
+          } else if (journeyTenants.has(t.tenant)) {
+            v("declaration:duplicate_journey_tenant", `${where}: tenant ${JSON.stringify(t.tenant)} already has a per-tenant journey in this profile`);
           } else {
-            journeys += 1;
+            journeyTenants.add(t.tenant);
           }
         } else if (t.kind === "cross_tenant_denial") {
           if (!REQUIRED_TENANT_SURFACES.includes(t.surface)) {
@@ -288,8 +294,8 @@ export function evaluateFaultMatrixDeclaration(matrix) {
         }
       }
       // The F10 tenant matrix, in EVERY profile.
-      if (journeys < MIN_ENABLED_TENANT_JOURNEYS) {
-        v("declaration:tenant_matrix_journeys", `profile ${profile} declares ${journeys} per-tenant journey case(s); F10 requires at least ${MIN_ENABLED_TENANT_JOURNEYS}`);
+      if (journeyTenants.size < MIN_ENABLED_TENANT_JOURNEYS) {
+        v("declaration:tenant_matrix_journeys", `profile ${profile} declares per-tenant journeys for ${journeyTenants.size} DISTINCT tenant(s) (${JSON.stringify([...journeyTenants])}); F10 requires at least ${MIN_ENABLED_TENANT_JOURNEYS}`);
       }
       for (const surface of REQUIRED_TENANT_SURFACES) {
         if (!surfaces.has(surface)) {

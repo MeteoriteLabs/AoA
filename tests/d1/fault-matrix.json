@@ -13,7 +13,7 @@
           "injection": {
             "mechanism": "toxiproxy.proxy_disabled",
             "target": "worker-to-control-plane",
-            "observedBy": "probeProxyReachable(worker-to-control-plane).reachable === false while cut, and true again after restore"
+            "observedBy": "a REAL worker request through the Toxiproxy LISTEN address a worker uses (toxiproxy:13100) succeeds before the cut, FAILS during it, and succeeds after the restore -- the fault is load-bearing on the path under test, not merely visible on a side probe. The reap still reaches the control plane directly, deliberately: it is the operator's path, and routing it through the cut would prevent the reclaim this case observes."
           },
           "expectedClassification": "lease_reclaimed_and_late_ack_refused",
           "evidence": "required"
@@ -24,7 +24,7 @@
           "injection": {
             "mechanism": "toxiproxy.proxy_disabled",
             "target": "control-plane-to-postgres",
-            "observedBy": "a raw TCP connect to the toxiproxy listen port (toxiproxy:15432) is REFUSED while cut and connects after restore. Measured rather than an HTTP probe: this link carries the PostgreSQL wire protocol, which probeProxyReachable cannot speak, and the test-runner image has no postgres client."
+            "observedBy": "a raw TCP connect to the toxiproxy listen port (toxiproxy:15432) is REFUSED while cut and connects after restore (measured rather than an HTTP probe: this link carries the PostgreSQL wire protocol, which probeProxyReachable cannot speak, and the test-runner image has no postgres client). The classification ALSO requires the outage response: the SAME production poll is refused 4xx while the database is up and fails CLOSED with a 5xx while it is severed, so a control plane answering a fabricated offer during the outage cannot pass."
           },
           "expectedClassification": "database_link_severed_and_restored",
           "evidence": "required"
@@ -35,7 +35,7 @@
           "injection": {
             "mechanism": "toxiproxy.toxic.limit_data",
             "target": "worker-to-minio",
-            "observedBy": "the presigned PUT through the throttled link either throws or returns non-2xx (putPresignedBytesAllowError)"
+            "observedBy": "the presigned PUT through the throttled link either throws or returns non-2xx (putPresignedBytesAllowError). The classification then requires the EXACT protocol rejection -- 200 with {outcome: rejected, reason: malformed|event_hash_mismatch} -- so a 500 or a crashed commit route cannot be read as a successful refusal."
           },
           "expectedClassification": "fenced_commit_refuses_unverifiable_object",
           "evidence": "required"
@@ -46,7 +46,7 @@
           "injection": {
             "mechanism": "docker.compose.restart",
             "target": "control-plane",
-            "observedBy": "the container's State.StartedAt advances across the restart and its docker health returns to healthy"
+            "observedBy": "the container's State.StartedAt advances across the restart and its docker health returns to healthy. The classification compares the attempt AND lease rows byte-for-byte across the restart, not merely the lease's existence, so a lease whose status moved would red."
           },
           "expectedClassification": "durable_lease_state_survives_restart",
           "evidence": "required"
@@ -198,7 +198,7 @@
           "injection": {
             "mechanism": "hostile.execution_secret_resolve",
             "target": "B's worker resolves A's secret handle through the real fenced /worker-control/execution-secrets/resolve, AND B's tenant scope reads A's job_secret_handles row through the non-owner aoa_app pool with RLS",
-            "observedBy": "A's own tenant scope reads the same handle row and sees it. ★ The HTTP arm carries no control of its own: the resolve route collapses EVERY refusal to denied/malformed by design, so that arm proves refusal and nothing finer; a `resolved` reply needs a real credential, which is the keyed gate's case (d2m.tenant.cross.secrets)."
+            "observedBy": "A's own tenant scope reads the SAME handle row, on the SAME aoa_app pool, and sees it -- so the foreign 0 is the RLS policy's work. ★ The CLASSIFIED denial is that row read, NOT the fenced route: owner and attacker both get denied/malformed there (the route collapses every refusal by design, and this lane's fixture handle is unresolvable because the D1 compose configures no broker that could return a value), so the route arm carries no control and is recorded as an observation only. A resolvable owner handle is the keyed gate's case, d2m.tenant.cross.secrets."
           },
           "expectedClassification": "denied_with_same_tenant_positive_control",
           "evidence": "required",
@@ -246,7 +246,7 @@
           "injection": {
             "mechanism": "hostile.tool_surface_at_use",
             "target": "B's companyId presents A's run id to the production per-Organization tool-surface resolver",
-            "observedBy": "the SAME resolver admits A's own local run under A's own companyId, so `admit` is reachable and the deny is the tenant check's"
+            "observedBy": "the SAME resolver, over the SAME run id, under A's OWN companyId, ADMITS. The hostile and control calls differ ONLY in the companyId, so they traverse the same arms of classifyToolSurfaceAtUse up to the company-mismatch check: delete that guard and the hostile call falls through to not-distributed -> admit, and the case reds. The distributed-run arms are recorded as the M1a freeze posture and are NOT the control -- the freeze denies them for every tenant, so they could not detect the guard's removal."
           },
           "expectedClassification": "denied_with_same_tenant_positive_control",
           "evidence": "required",

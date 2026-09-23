@@ -1,0 +1,685 @@
+{
+  "profile": "M1-D1-SPINE",
+  "ticket": "DEP-018",
+  "suppressInjection": true,
+  "startedAt": "2026-09-23T08:29:06.870Z",
+  "finishedAt": "2026-09-23T08:31:10.743Z",
+  "tenants": {
+    "enabled": [
+      {
+        "key": "A",
+        "organizationId": "0d016a00-0000-4000-8000-00000000000a",
+        "companyId": "0d016a01-0000-4000-8000-00000000000a"
+      },
+      {
+        "key": "B",
+        "organizationId": "0d016b00-0000-4000-8000-00000000000b",
+        "companyId": "0d016b01-0000-4000-8000-00000000000b"
+      }
+    ],
+    "control": {
+      "key": "C",
+      "organizationId": "0d016c00-0000-4000-8000-00000000000c"
+    }
+  },
+  "cases": [
+    {
+      "case": "d1.tenant.journey.A",
+      "injectionFired": true,
+      "observedClassification": "journey_priced_once_and_audited"
+    },
+    {
+      "case": "d1.tenant.journey.B",
+      "injectionFired": true,
+      "observedClassification": "journey_priced_once_and_audited"
+    },
+    {
+      "case": "d1.tenant.cross.events",
+      "injectionFired": true,
+      "observedClassification": "denied_with_same_tenant_positive_control",
+      "positiveControlPassed": true
+    },
+    {
+      "case": "d1.tenant.cross.read",
+      "injectionFired": true,
+      "observedClassification": "denied_with_same_tenant_positive_control",
+      "positiveControlPassed": true
+    },
+    {
+      "case": "d1.tenant.cross.lease",
+      "injectionFired": true,
+      "observedClassification": "denied_with_same_tenant_positive_control",
+      "positiveControlPassed": true
+    },
+    {
+      "case": "d1.tenant.cross.cancel",
+      "injectionFired": true,
+      "observedClassification": "denied_with_same_tenant_positive_control",
+      "positiveControlPassed": true
+    },
+    {
+      "case": "d1.tenant.cross.secrets",
+      "injectionFired": true,
+      "observedClassification": "denied_with_same_tenant_positive_control",
+      "positiveControlPassed": true
+    },
+    {
+      "case": "d1.tenant.cross.staged_inputs",
+      "injectionFired": true,
+      "observedClassification": "denied_with_same_tenant_positive_control",
+      "positiveControlPassed": true
+    },
+    {
+      "case": "d1.tenant.cross.outputs",
+      "injectionFired": true,
+      "observedClassification": "denied_with_same_tenant_positive_control",
+      "positiveControlPassed": true
+    },
+    {
+      "case": "d1.tenant.legacy.cost_events",
+      "injectionFired": true,
+      "observedClassification": "filtered_by_query_predicate_not_rls",
+      "positiveControlPassed": true,
+      "antiVacuityObservedForeignRow": true
+    },
+    {
+      "case": "d1.tenant.legacy.activity_log",
+      "injectionFired": true,
+      "observedClassification": "filtered_by_query_predicate_not_rls",
+      "positiveControlPassed": true,
+      "antiVacuityObservedForeignRow": true
+    },
+    {
+      "case": "d1.tenant.legacy.task_outputs",
+      "injectionFired": true,
+      "observedClassification": "filtered_by_query_predicate_not_rls",
+      "positiveControlPassed": true,
+      "antiVacuityObservedForeignRow": true
+    },
+    {
+      "case": "d1.tenant.legacy.provider_credentials",
+      "injectionFired": true,
+      "observedClassification": "filtered_by_query_predicate_not_rls",
+      "positiveControlPassed": true,
+      "antiVacuityObservedForeignRow": true
+    },
+    {
+      "case": "d1.tenant.cross.cost_rows",
+      "injectionFired": true,
+      "observedClassification": "denied_with_same_tenant_positive_control",
+      "positiveControlPassed": true
+    },
+    {
+      "case": "d1.tenant.control_refused",
+      "injectionFired": true,
+      "observedClassification": "legacy_for_organization_disabled"
+    },
+    {
+      "case": "d1.tenant.cross.tool_calls",
+      "injectionFired": true,
+      "observedClassification": "denied_with_same_tenant_positive_control",
+      "positiveControlPassed": true
+    },
+    {
+      "case": "d1.cancel.unleased_attempt",
+      "injectionFired": false,
+      "observedClassification": "attempt_pending_with_0_command(s)"
+    },
+    {
+      "case": "d1.cancel.leased_attempt",
+      "injectionFired": false,
+      "observedClassification": "attempt_leased_command_bound_false"
+    },
+    {
+      "case": "d1.provider.execute_deadline_exceeded",
+      "injectionFired": false,
+      "observedClassification": "failed_arm_succeeded_control_arm_succeeded"
+    },
+    {
+      "case": "d1.fault.object_store.truncated_upload",
+      "injectionFired": false,
+      "observedClassification": "committed"
+    },
+    {
+      "case": "d1.cleanup.orphan_object_swept",
+      "injectionFired": false,
+      "observedClassification": "uncommitted_object_deleted"
+    },
+    {
+      "case": "d1.fault.link_cut.worker_to_control_plane",
+      "injectionFired": false,
+      "observedClassification": "lease_reclaimed_and_late_ack_refused"
+    },
+    {
+      "case": "d1.reconcile.expired_lease_reaped",
+      "injectionFired": false,
+      "observedClassification": "not_converged"
+    },
+    {
+      "case": "d1.restart.control_plane_process",
+      "injectionFired": false,
+      "observedClassification": "durable_lease_state_survives_restart"
+    },
+    {
+      "case": "d1.fault.link_cut.control_plane_to_postgres",
+      "injectionFired": false,
+      "observedClassification": "database_link_severed_and_restored"
+    }
+  ],
+  "detail": {
+    "d1.tenant.journey.A": {
+      "jobId": "5d77e176-c072-436e-a5c6-3b3c2e0fd9d2",
+      "acceptedThroughSeq": 3,
+      "attemptStatus": "succeeded",
+      "costRows": 1,
+      "activity": [
+        "job.attempt_started",
+        "job.attempt_terminal"
+      ],
+      "violations": []
+    },
+    "d1.tenant.journey.B": {
+      "jobId": "8ea207f9-43fb-43c2-9b99-287829fe381c",
+      "acceptedThroughSeq": 3,
+      "attemptStatus": "succeeded",
+      "costRows": 1,
+      "activity": [
+        "job.attempt_started",
+        "job.attempt_terminal"
+      ],
+      "violations": []
+    },
+    "d1.tenant.cross.events": {
+      "hostileUpload": {
+        "status": 401,
+        "ackStatus": null,
+        "code": "unauthorized"
+      },
+      "ownUpload": {
+        "status": 200,
+        "ackStatus": "accepted",
+        "code": null
+      },
+      "hostileAck": {
+        "status": 409,
+        "outcome": null,
+        "code": "stale_fence"
+      }
+    },
+    "d1.tenant.cross.read": {
+      "foreignScopeEventCount": 0,
+      "ownScopeEventCount": 1
+    },
+    "d1.tenant.cross.lease": {
+      "hostile": {
+        "status": 409,
+        "body": {
+          "protocolVersion": 1,
+          "code": "stale_fence",
+          "correlationId": "ba040563-2b86-4166-aff0-1045f1ae242c",
+          "message": "Worker control request denied",
+          "retryAfterMs": null,
+          "serverTime": "2026-09-23T08:29:34.404Z",
+          "redaction": "secret",
+          "detail": {}
+        }
+      },
+      "own": {
+        "status": 200,
+        "outcome": "renewed"
+      }
+    },
+    "d1.tenant.cross.cancel": {
+      "hostileOutcome": {
+        "status": "not_found",
+        "command": null
+      },
+      "ownOutcome": {
+        "status": "queued",
+        "command": {
+          "id": "4bca60fc-17bb-4c7f-a752-48209406831a",
+          "organizationId": "0d016a00-0000-4000-8000-00000000000a",
+          "companyId": "0d016a01-0000-4000-8000-00000000000a",
+          "jobId": "bcf3c538-6c28-4258-8481-692bc4068490",
+          "attemptId": "bc7e6ca5-85ed-4297-8cc0-fd5230d1ae4d",
+          "attemptNumber": 1,
+          "leaseId": "a41f7fb2-6498-407e-8635-79503ba1510b",
+          "commandId": "3549019c-cbbc-41b8-9047-f8066a134d02",
+          "commandSeq": 1,
+          "commandKind": "cancel",
+          "fenceToken": "zvlEWl0jfxInXpIj_Ff5EIWYttIZahtwnxamAiY9K0U",
+          "reason": "m1-fault-matrix-positive-control",
+          "graceful": true,
+          "command": {
+            "jobId": "bcf3c538-6c28-4258-8481-692bc4068490",
+            "nonce": "14b61bab-fa48-41c3-9db6-c5df3f7f0d2b",
+            "reason": "m1-fault-matrix-positive-control",
+            "attempt": 1,
+            "leaseId": "a41f7fb2-6498-407e-8635-79503ba1510b",
+            "audience": "control_channel",
+            "graceful": true,
+            "issuedAt": "2026-09-23T08:29:39.961Z",
+            "workerId": "b9870b74-5c58-4dc3-9c4c-b3f3631744e7",
+            "commandId": "3549019c-cbbc-41b8-9047-f8066a134d02",
+            "companyId": "0d016a01-0000-4000-8000-00000000000a",
+            "commandSeq": 1,
+            "fenceToken": "zvlEWl0jfxInXpIj_Ff5EIWYttIZahtwnxamAiY9K0U",
+            "commandKind": "cancel",
+            "idempotencyKey": "3549019c-cbbc-41b8-9047-f8066a134d02",
+            "organizationId": "0d016a00-0000-4000-8000-00000000000a",
+            "protocolVersion": 1
+          },
+          "ackStatus": null
+        }
+      },
+      "victimAttempts": [
+        {
+          "attemptId": "5126c274-0d6f-4453-923f-d01addb1baab",
+          "jobId": "48f28762-e616-41f8-91fa-6e1b6399112a",
+          "attemptNumber": 1,
+          "status": "leased"
+        }
+      ],
+      "ownAttempts": [
+        {
+          "attemptId": "bc7e6ca5-85ed-4297-8cc0-fd5230d1ae4d",
+          "jobId": "bcf3c538-6c28-4258-8481-692bc4068490",
+          "attemptNumber": 1,
+          "status": "cancel_requested"
+        }
+      ]
+    },
+    "d1.tenant.cross.secrets": {
+      "handleId": "d009a1b3-8495-40ba-8710-6f1bc8b82a0a",
+      "foreignScopedRows": 0,
+      "ownScopedRows": 1,
+      "routeObservationOnly": {
+        "hostile": {
+          "status": 200,
+          "outcome": "denied",
+          "reason": "malformed"
+        },
+        "own": {
+          "status": 200,
+          "outcome": "denied",
+          "reason": "malformed"
+        },
+        "note": "RECORDED, NOT CLASSIFIED ON: the fenced route collapses every refusal to denied/malformed by design and this lane's fixture handle is unresolvable, so owner and attacker are indistinguishable here and the arm carries no control. The classified denial is the RLS row read above; a resolvable owner handle is d2m.tenant.cross.secrets, keyed."
+      }
+    },
+    "d1.tenant.cross.staged_inputs": {
+      "hostile": {
+        "status": 409,
+        "body": {
+          "protocolVersion": 1,
+          "code": "stale_fence",
+          "correlationId": "2f3479cf-fe86-4403-af1b-c28a9f39804d",
+          "message": "Worker control request denied",
+          "retryAfterMs": null,
+          "serverTime": "2026-09-23T08:29:44.522Z",
+          "redaction": "secret",
+          "detail": {}
+        }
+      },
+      "own": {
+        "status": 200,
+        "outcome": "upload_granted"
+      }
+    },
+    "d1.tenant.cross.outputs": {
+      "hostile": {
+        "status": 409,
+        "body": {
+          "protocolVersion": 1,
+          "code": "stale_fence",
+          "correlationId": "35d817db-cccb-457d-b88c-65f7ea9cfda7",
+          "message": "Worker control request denied",
+          "retryAfterMs": null,
+          "serverTime": "2026-09-23T08:29:46.395Z",
+          "redaction": "secret",
+          "detail": {}
+        }
+      },
+      "own": {
+        "status": 200,
+        "outcome": "committed"
+      }
+    },
+    "legacyTables": {
+      "task_outputs": {
+        "plantedId": "44dffa27-30ec-4f5d-8b0e-e2e660ad105f",
+        "own": 1,
+        "foreign": 0,
+        "unscoped": 1,
+        "ownIds": [
+          "44dffa27-30ec-4f5d-8b0e-e2e660ad105f"
+        ]
+      },
+      "activity_log": {
+        "own": 2,
+        "foreign": 0,
+        "unscoped": 2,
+        "ownActions": [
+          "job.attempt_terminal",
+          "job.attempt_started"
+        ]
+      },
+      "cost_events": {
+        "own": 1,
+        "ownCents": 166,
+        "foreign": 0,
+        "unscoped": 4
+      },
+      "provider_credentials": {
+        "own": 1,
+        "foreign": 0,
+        "unscoped": 1
+      }
+    },
+    "d1.tenant.legacy.cost_events": {
+      "own": 1,
+      "ownCents": 166,
+      "foreign": 0,
+      "unscoped": 4
+    },
+    "d1.tenant.legacy.activity_log": {
+      "own": 2,
+      "foreign": 0,
+      "unscoped": 2,
+      "ownActions": [
+        "job.attempt_terminal",
+        "job.attempt_started"
+      ]
+    },
+    "d1.tenant.legacy.task_outputs": {
+      "plantedId": "44dffa27-30ec-4f5d-8b0e-e2e660ad105f",
+      "own": 1,
+      "foreign": 0,
+      "unscoped": 1,
+      "ownIds": [
+        "44dffa27-30ec-4f5d-8b0e-e2e660ad105f"
+      ]
+    },
+    "d1.tenant.legacy.provider_credentials": {
+      "own": 1,
+      "foreign": 0,
+      "unscoped": 1
+    },
+    "d1.tenant.cross.cost_rows": {
+      "own": 1,
+      "ownCents": 166,
+      "foreign": 0,
+      "unscoped": 4
+    },
+    "d1.tenant.control_refused": {
+      "placements": [
+        {
+          "replica": "control-plane",
+          "jobId": "9041bb76-0a95-464b-bae9-65a4fa88c403",
+          "disposition": "legacy",
+          "owner": "legacy",
+          "targetId": null,
+          "targetClass": null,
+          "targetScope": null,
+          "targetGeneration": null,
+          "profileHash": null,
+          "providerConstraintHash": null,
+          "fallbackDisposition": "not_applicable",
+          "reasonCode": "organization_disabled",
+          "mode": "legacy",
+          "leaseEligible": false,
+          "inputDigest": "c7ae207c727f8a6b3dd503ba13407000653801b62154fc5015ea58769c32d0a5",
+          "policyDigest": "c7ae207c727f8a6b3dd503ba13407000653801b62154fc5015ea58769c32d0a5"
+        }
+      ],
+      "positiveControl": {
+        "disposition": "selected",
+        "owner": "organization_dedicated",
+        "targetId": "7a878794-665a-4338-8a77-066996a825cf",
+        "targetClass": "organization_dedicated",
+        "targetScope": "organization",
+        "targetGeneration": 1,
+        "profileHash": "ccba6e9f67df18255b860186c6e091b00105e029d13a6d240f0a79048173d3ac",
+        "providerConstraintHash": "6806f456d41a7608b6cef8db6115d2c1e7f53781ffbcecceaf0031df12823e2f",
+        "fallbackDisposition": "primary",
+        "reasonCode": "target_selected",
+        "mode": "active",
+        "leaseEligible": true,
+        "inputDigest": "dee50f65e868483cd14d62aefb08426f2ecac3fafc7e627d03fcf2d3114d7315",
+        "policyDigest": "dee50f65e868483cd14d62aefb08426f2ecac3fafc7e627d03fcf2d3114d7315"
+      },
+      "pollOutcome": "no_work",
+      "counts": {
+        "ok": true,
+        "jobEvents": 0,
+        "costRows": 0,
+        "receipts": 0,
+        "leases": 0,
+        "attempts": [
+          {
+            "jobId": "9041bb76-0a95-464b-bae9-65a4fa88c403",
+            "status": "pending",
+            "disposition": "legacy",
+            "leaseEligible": false,
+            "reasonCode": "organization_disabled",
+            "mode": "legacy"
+          }
+        ]
+      },
+      "violations": []
+    },
+    "d1.tenant.cross.tool_calls": {
+      "cross": "deny",
+      "own": "admit",
+      "crossDistributed": "deny",
+      "ownDistributed": "deny",
+      "localRunId": "70d47d46-0171-4dc3-8179-5a77fccf6423",
+      "distributedRunId": "37150930-de85-4ae5-ac87-430056e4ab45",
+      "note": "cross and own are the SAME run id under different Companies, so they differ only in the fact under test; crossDistributed and ownDistributed record the M1a freeze posture and are not the control"
+    },
+    "d1.cancel.unleased_attempt": {
+      "jobId": "e3540464-7438-498a-abf9-33b434fc93dd",
+      "beforeStatus": "pending",
+      "afterStatus": "pending",
+      "commands": [],
+      "outcome": {
+        "ok": false,
+        "error": "injection suppressed"
+      }
+    },
+    "d1.cancel.leased_attempt": {
+      "jobId": "e52582eb-032d-4a32-b2cf-f90e20a787e7",
+      "leaseId": "78a1a124-12d5-448b-b681-dcc64bda63c3",
+      "beforeStatus": "leased",
+      "afterStatus": "leased",
+      "commands": [],
+      "outcome": {
+        "ok": false,
+        "error": "injection suppressed"
+      }
+    },
+    "d1.provider.execute_deadline_exceeded": {
+      "failedArm": {
+        "providerResult": {
+          "kind": "executed",
+          "terminalState": "succeeded",
+          "faultInjected": false,
+          "timedOut": false,
+          "usage": {
+            "inputTokens": 120000,
+            "outputTokens": 30000,
+            "cachedInputTokens": 0,
+            "runtimeMillis": 4200
+          }
+        },
+        "terminalPayload": {
+          "status": "succeeded",
+          "exitCode": 0,
+          "errorCode": null,
+          "errorMessage": null
+        },
+        "attemptStatus": "succeeded"
+      },
+      "controlArm": {
+        "providerResult": {
+          "kind": "executed",
+          "terminalState": "succeeded",
+          "faultInjected": false,
+          "timedOut": false,
+          "usage": {
+            "inputTokens": 120000,
+            "outputTokens": 30000,
+            "cachedInputTokens": 0,
+            "runtimeMillis": 4200
+          }
+        },
+        "terminalPayload": {
+          "status": "succeeded",
+          "exitCode": 0,
+          "errorCode": null,
+          "errorMessage": null
+        },
+        "attemptStatus": "succeeded"
+      },
+      "note": "the terminal payload is DERIVED from the provider's report by terminalPayloadFor, not hard-coded; the control arm shows the derivation can produce the other answer. The DEPLOYED worker's own mapping is not exercised here -- the D1 workers do not dispatch -- and is d2m.provider_failure.e2b_create_refused's, on the keyed lane."
+    },
+    "d1.fault.object_store.truncated_upload": {
+      "toxicName": "m1fm-limit-1d695f",
+      "put": {
+        "threw": false,
+        "status": 200
+      },
+      "commit": {
+        "status": 200,
+        "body": {
+          "protocolVersion": 1,
+          "correlationId": "24a5c869-1f25-4995-ae4a-e234d6659a68",
+          "serverTime": "2026-09-23T08:30:25.054Z",
+          "outcome": "committed",
+          "artifactId": "5793076f-ceb4-4029-94ea-ea08209d284e",
+          "versionNumber": 1,
+          "committedAt": "2026-09-23T08:30:25.067Z"
+        }
+      }
+    },
+    "d1.cleanup.orphan_object_swept": {
+      "objectKey": "organizations/1edc42e9-a427-4b89-8f0d-2b7d0606a598/jobs/51bc58fe-7955-429c-a77e-1052f69789d2/attempts/1/output/orphan-bed9040b.bin",
+      "commit": {
+        "status": 200,
+        "outcome": "committed",
+        "code": null
+      },
+      "polls": 1
+    },
+    "d1.fault.link_cut.worker_to_control_plane": {
+      "proxiedBase": "http://toxiproxy:13100",
+      "pollBeforeCut": {
+        "status": 200,
+        "outcome": "no_work"
+      },
+      "pollDuringCut": null,
+      "pollAfterRestore": null,
+      "leases": [
+        {
+          "id": "5b717d7f-5ab3-4a5b-b4e1-61ffffc643d6",
+          "jobId": "2de95b63-ed69-478f-9265-0f47ea24a811",
+          "attemptId": "6bf90232-92ea-4610-a5c5-ab2e4f143cd4",
+          "status": "expired"
+        }
+      ],
+      "attempts": [
+        {
+          "attemptId": "6bf90232-92ea-4610-a5c5-ab2e4f143cd4",
+          "jobId": "2de95b63-ed69-478f-9265-0f47ea24a811",
+          "attemptNumber": 1,
+          "status": "expired"
+        },
+        {
+          "attemptId": "54c41f9a-05bb-4e60-8b83-4c8d1fab87d8",
+          "jobId": "2de95b63-ed69-478f-9265-0f47ea24a811",
+          "attemptNumber": 2,
+          "status": "pending"
+        }
+      ],
+      "lateAck": {
+        "status": 409,
+        "code": "attempt_terminal"
+      }
+    },
+    "d1.reconcile.expired_lease_reaped": {
+      "backDated": 0,
+      "attempts": [
+        {
+          "attemptId": "eb16ba00-751b-4551-8f78-5acac25d8455",
+          "jobId": "0077c158-4497-4845-a7f4-795f44809f58",
+          "attemptNumber": 1,
+          "status": "leased"
+        }
+      ],
+      "leases": [
+        {
+          "id": "f712d741-7789-4416-888e-3a66f0a0ad91",
+          "jobId": "0077c158-4497-4845-a7f4-795f44809f58",
+          "attemptId": "eb16ba00-751b-4551-8f78-5acac25d8455",
+          "status": "active"
+        }
+      ]
+    },
+    "d1.restart.control_plane_process": {
+      "startedAtBefore": "2026-09-23T08:28:32.122831362Z",
+      "startedAtAfter": "2026-09-23T08:28:32.122831362Z",
+      "health": "healthy",
+      "attemptsBefore": [
+        {
+          "attemptId": "0db6fe5c-6787-4c14-b9c5-86120ae72a2e",
+          "jobId": "a43c1aae-d5e0-40da-9c9b-7a375ecedf8d",
+          "attemptNumber": 1,
+          "status": "leased"
+        }
+      ],
+      "attemptsAfter": [
+        {
+          "attemptId": "0db6fe5c-6787-4c14-b9c5-86120ae72a2e",
+          "jobId": "a43c1aae-d5e0-40da-9c9b-7a375ecedf8d",
+          "attemptNumber": 1,
+          "status": "leased"
+        }
+      ],
+      "leasesBefore": [
+        {
+          "id": "bebcb293-9a54-47ce-a064-95ebcc6b28af",
+          "jobId": "a43c1aae-d5e0-40da-9c9b-7a375ecedf8d",
+          "attemptId": "0db6fe5c-6787-4c14-b9c5-86120ae72a2e",
+          "status": "active"
+        }
+      ],
+      "leasesAfter": [
+        {
+          "id": "bebcb293-9a54-47ce-a064-95ebcc6b28af",
+          "jobId": "a43c1aae-d5e0-40da-9c9b-7a375ecedf8d",
+          "attemptId": "0db6fe5c-6787-4c14-b9c5-86120ae72a2e",
+          "status": "active"
+        }
+      ]
+    },
+    "d1.fault.link_cut.control_plane_to_postgres": {
+      "cutProbe": null,
+      "restoreProbe": {
+        "connected": true
+      },
+      "pollBeforeCut": {
+        "status": 401
+      },
+      "pollDuringCut": null,
+      "recoveryPolls": 1
+    }
+  },
+  "summary": {
+    "profile": "M1-D1-SPINE",
+    "declared": 26,
+    "required": 25,
+    "pending": 1,
+    "fired": 16,
+    "complete": false
+  }
+}

@@ -3053,12 +3053,22 @@ process.exit(0);
  *
  * Three arms, because on M1a the surface is DISARMED and a naive "same-tenant call succeeds"
  * control could not exist:
- *   cross      — the attacker's companyId with the victim's run id  -> must be `deny`
- *                (`classifyToolSurfaceAtUse` company-mismatch arm);
- *   own        — the victim's own LOCAL run under its own companyId -> must be `admit`, so
- *                `admit` is demonstrably reachable and the deny above is the TENANT check's;
- *   distributed— the victim's DISTRIBUTED run under its own companyId -> `deny`, which records
- *                the M1a freeze posture (the Organization is not armed) rather than isolation.
+ *   cross      — the victim's LOCAL run under the ATTACKER's companyId -> must be `deny`;
+ *   own        — the SAME LOCAL run under the victim's OWN companyId   -> must be `admit`.
+ *
+ * ★ THE PAIR IS THE POINT, and it was WRONG in the first version (Codex P1, PR #573). That version
+ * put the hostile call on the DISTRIBUTED run, whose refusal M1a's freeze already guarantees for
+ * every tenant — so deleting the company-mismatch guard would have left the case green, the hostile
+ * call denied by the freeze and the unrelated local control still admitted. These two calls now
+ * differ ONLY in the companyId, over the SAME run, so they traverse the SAME arms of
+ * `classifyToolSurfaceAtUse` up to the mismatch check. Remove that guard and `cross` falls through
+ * to "not distributed -> admit", and the case reds.
+ *
+ * Two further arms are recorded, not used as the control:
+ *   crossDistributed — the attacker's companyId with the victim's DISTRIBUTED run;
+ *   distributed      — the victim's own DISTRIBUTED run, which is denied because M1a leaves the
+ *                      Organization unarmed. That is the freeze posture, not isolation, and the
+ *                      ARMED cross-tenant case is CLI-016's (`d2c.tenant.cross.tool_calls`).
  */
 export function probeToolSurfaceAtUse({ victim, attacker, localRunId, distributedRunId }) {
   const params = { victim, attacker, localRunId, distributedRunId, dist: CP_DIST };
@@ -3071,10 +3081,13 @@ try {
   const { createDistributedToolSurfaceUseResolver } =
     await import(P.dist + "/mcp/distributed-tool-surface-use-resolver.js");
   const resolver = createDistributedToolSurfaceUseResolver(createDb(process.env.AOA_APP_DATABASE_URL));
-  const cross = await resolver.resolve({ signedRunId: P.distributedRunId, companyId: P.attacker.companyId });
+  // crossSameArm / own differ ONLY in the companyId, over the SAME run, so both traverse the same
+  // arms up to the company check. crossDistributed is recorded for the M1a freeze posture.
+  const crossSameArm = await resolver.resolve({ signedRunId: P.localRunId, companyId: P.attacker.companyId });
   const own = await resolver.resolve({ signedRunId: P.localRunId, companyId: P.victim.companyId });
+  const crossDistributed = await resolver.resolve({ signedRunId: P.distributedRunId, companyId: P.attacker.companyId });
   const distributed = await resolver.resolve({ signedRunId: P.distributedRunId, companyId: P.victim.companyId });
-  report({ ok: true, cross, own, distributed });
+  report({ ok: true, cross: crossSameArm, own, crossDistributed, distributed });
 } catch (error) {
   report({ ok: false, error: String(error && error.message ? error.message : error) });
 }

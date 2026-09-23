@@ -594,29 +594,47 @@ test("fault-matrix: cross-tenant secrets — denied at the fence and invisible u
 
   const hostileReason = hostileResolve.body?.reason ?? null;
   const ownReason = ownResolve.body?.reason ?? null;
+
+  // ★★★ WHAT THIS CASE CLASSIFIES ON, and what it does NOT (Codex P1, PR #573 — the finding was
+  // right and it changed the case, not only its wording).
+  //
+  // The FENCED ROUTE is NOT the tested boundary here. Both the owner's and the attacker's resolve
+  // come back `denied/malformed`, because the route collapses every refusal to one shape by design
+  // (it must not be an oracle for which worker, lease or handle exists) AND because this lane's
+  // fixture handle is deliberately unresolvable — the D1 compose configures no broker that could
+  // return a value. So removing the resolver's tenant enforcement would leave the route arm
+  // unchanged, and classifying on it would have been a check that evaluates nothing. The route
+  // result is RECORDED as an observation and asserted only as "it refused"; it carries no control.
+  //
+  // The DENIAL this case classifies on is the DURABLE ROW. `job_secret_handles` is in
+  // `TENANT_RLS_TABLES` (forced RLS, `server/src/db/rls-tenant.ts`), so the same query, on the same
+  // non-owner `aoa_app` pool, over the same row, must return 1 under the owner's tenant scope and 0
+  // under the attacker's. That pair is mutation-sensitive: drop the policy and the foreign read
+  // returns the row.
+  //
+  // A resolve that actually SUCCEEDS needs a real credential, which is `d2m.tenant.cross.secrets`
+  // on the keyed lane — already declared, already owned.
   const routeRefused = hostileResolve.status === 200 && hostileResolve.body?.outcome === "denied";
-  // The DENIAL with its control is the durable-row arm: `job_secret_handles` carries FORCED RLS
-  // (`TENANT_RLS_TABLES`), so the foreign tenant scope must see none of it while the owner's own
-  // scope sees it — a denial and a same-tenant success on the same pool, the same table and the
-  // same row.
   const rowDenied = foreignRows.total === 0;
   const positiveControlPassed = ownRows.total > 0;
 
   record("d1.tenant.cross.secrets", {
     injectionFired: typeof hostileResolve.status === "number" && hostileResolve.status !== 0,
-    observedClassification: routeRefused && rowDenied ? "denied_with_same_tenant_positive_control" : "not_denied",
+    observedClassification: rowDenied ? "denied_with_same_tenant_positive_control" : "not_denied",
     positiveControlPassed,
     detail: {
       handleId,
-      hostile: { status: hostileResolve.status, outcome: hostileResolve.body?.outcome ?? null, reason: hostileReason },
-      own: { status: ownResolve.status, outcome: ownResolve.body?.outcome ?? null, reason: ownReason },
       foreignScopedRows: foreignRows.total, ownScopedRows: ownRows.total,
-      note: "the fenced route collapses every refusal to denied/malformed by design, so the HTTP arm proves refusal only; the denial's positive control is the RLS row read",
+      routeObservationOnly: {
+        hostile: { status: hostileResolve.status, outcome: hostileResolve.body?.outcome ?? null, reason: hostileReason },
+        own: { status: ownResolve.status, outcome: ownResolve.body?.outcome ?? null, reason: ownReason },
+        note: "RECORDED, NOT CLASSIFIED ON: the fenced route collapses every refusal to denied/malformed by design and this lane's fixture handle is unresolvable, so owner and attacker are indistinguishable here and the arm carries no control. The classified denial is the RLS row read above; a resolvable owner handle is d2m.tenant.cross.secrets, keyed.",
+      },
     },
   });
   assert.equal(ownRows.total > 0, true, `the owner's own scope must see its handle, else the 0 below is not isolation: ${truncate(ownRows)}`);
   assert.equal(foreignRows.total, 0, `a foreign tenant scope must see NO handle of another tenant: ${truncate(foreignRows)}`);
-  assert.equal(routeRefused, true, `the foreign resolve must be REFUSED by the fenced route: ${truncate(hostileResolve.body)}`);
+  assert.equal(routeRefused, true, `the foreign resolve must at least be REFUSED by the fenced route: ${truncate(hostileResolve.body)}`);
 });
 
 test("fault-matrix: cross-tenant staged inputs + outputs — denied, with same-tenant positive controls", { skip: SKIP }, () => {
@@ -823,18 +841,22 @@ test("fault-matrix: cross-tenant tool calls — denied by the per-Organization t
   }), "tool surface");
   assert.equal(probe.ok, true, `tool-surface probe: ${truncate(probe)}`);
 
-  // `admit` is demonstrably REACHABLE through this same resolver (A's own LOCAL run under A's own
-  // Company), so the cross-tenant `deny` is the company-mismatch arm's work and not "the resolver
-  // denies everything" — which it would otherwise look like on M1a, where the distributed tool
-  // surface is disarmed for every tenant by the freeze checklist.
+  // ★ The hostile call and its control differ ONLY in the companyId, over the SAME run (Codex P1,
+  // PR #573). Putting the hostile call on the DISTRIBUTED run — as the first version did — meant
+  // the M1a freeze would have denied it even with the company-mismatch guard deleted, so the case
+  // could pass without testing the boundary at all.
   record("d1.tenant.cross.tool_calls", {
     injectionFired: typeof probe.cross === "string",
     observedClassification: probe.cross === "deny" ? "denied_with_same_tenant_positive_control" : "not_denied",
     positiveControlPassed: probe.own === "admit",
-    detail: { cross: probe.cross, ownLocal: probe.own, ownDistributed: probe.distributed, localRunId, distributedRunId },
+    detail: {
+      cross: probe.cross, own: probe.own, crossDistributed: probe.crossDistributed, ownDistributed: probe.distributed,
+      localRunId, distributedRunId,
+      note: "cross and own are the SAME run id under different Companies, so they differ only in the fact under test; crossDistributed and ownDistributed record the M1a freeze posture and are not the control",
+    },
   });
-  assert.equal(probe.own, "admit", `the same resolver must ADMIT the owner's own run, else the deny proves nothing: ${truncate(probe)}`);
-  assert.equal(probe.cross, "deny", `a foreign Company presenting another tenant's run id must be DENIED: ${truncate(probe)}`);
+  assert.equal(probe.own, "admit", `the same resolver, same run, OWN Company must ADMIT — else the deny proves nothing: ${truncate(probe)}`);
+  assert.equal(probe.cross, "deny", `the SAME run under a foreign Company must be DENIED by the company-mismatch arm: ${truncate(probe)}`);
   assert.equal(probe.distributed, "deny", `M1a freeze: a distributed run's tool surface is not armed for any tenant: ${truncate(probe)}`);
 });
 
@@ -1034,7 +1056,15 @@ test("fault-matrix: a truncating toxic on worker-to-minio makes the fenced commi
     createdAt: new Date().toISOString(),
   };
   const commit = step(artifactCommit({ session: live.session, ...fence, manifest, deviceKey: live.deviceKey }), "toxic commit");
-  const refused = commit.body?.outcome !== "committed";
+  // ★ The EXACT rejection (Codex P2, PR #573). `outcome !== "committed"` also accepts a 500, an
+  // auth failure or a protocol `malformed` — none of which shows that INTEGRITY VERIFICATION
+  // refused the truncated object, and a crash in the commit route would have been classified as
+  // a successful refusal. Measured live: `200` with `{outcome:"rejected", reason:"malformed"}` —
+  // a successful protocol exchange whose verification arm said no.
+  const REJECTION_REASONS = new Set(["malformed", "event_hash_mismatch"]);
+  const refused = commit.status === 200 &&
+    commit.body?.outcome === "rejected" &&
+    REJECTION_REASONS.has(commit.body?.reason);
 
   record("d1.fault.object_store.truncated_upload", {
     injectionFired: putBlocked,
@@ -1042,7 +1072,10 @@ test("fault-matrix: a truncating toxic on worker-to-minio makes the fenced commi
     detail: { toxicName, put: { threw: put.threw ?? false, status: put.status ?? null }, commit: { status: commit.status, body: commit.body } },
   });
   assert.equal(putBlocked, true, `the truncating toxic must block the PUT — the injection: ${truncate(put)}`);
-  assert.equal(refused, true, `the fenced commit must refuse an unverifiable object: ${truncate(commit.body)}`);
+  assert.equal(
+    refused, true,
+    `the fenced commit must answer 200 {outcome:"rejected", reason: malformed|event_hash_mismatch}: ${truncate(commit.body)}`,
+  );
 });
 
 test("fault-matrix: a fence lost mid-flight makes the commit refuse and the orphan object is swept", { skip: SKIP }, () => {
@@ -1284,8 +1317,12 @@ test("fault-matrix: restarting the control plane leaves the durable lease state 
     (last) => last && last.ok === true,
     { attempts: 30, everyMs: 2000 },
   );
+  // ★ The lease's STATE, not merely its existence (Codex P2, PR #573): a restart that moved the
+  // lease from `active` to `expired` would have left the old check green while the durable state
+  // it claims to preserve had in fact changed.
   const survived = stateAfter.ok &&
     JSON.stringify(stateAfter.last.attempts) === JSON.stringify(stateBefore.attempts) &&
+    JSON.stringify(stateAfter.last.leases) === JSON.stringify(stateBefore.leases) &&
     stateAfter.last.leases.some((l) => l.id === live.offer.leaseId);
 
   record("d1.restart.control_plane_process", {
@@ -1295,10 +1332,16 @@ test("fault-matrix: restarting the control plane leaves the durable lease state 
       startedAtBefore: before.startedAt, startedAtAfter: afterRuntime?.startedAt ?? null,
       health: afterRuntime?.health ?? null,
       attemptsBefore: stateBefore.attempts, attemptsAfter: stateAfter.last?.attempts ?? null,
+      leasesBefore: stateBefore.leases, leasesAfter: stateAfter.last?.leases ?? null,
     },
   });
   assert.equal(restartObserved, true, `the control plane must actually have restarted — the injection: before=${before.startedAt} after=${afterRuntime?.startedAt}`);
-  assert.equal(survived, true, `the durable attempt and lease state must survive the restart: ${truncate(stateAfter.last)}`);
+  assert.equal(
+    survived, true,
+    `the durable attempt AND lease rows must be byte-identical across the restart:
+before=${truncate(stateBefore)}
+after=${truncate(stateAfter.last)}`,
+  );
 });
 
 test("fault-matrix: cutting control-plane-to-postgres severs the stack's own database link, and it recovers", { skip: SKIP }, () => {
@@ -1308,10 +1351,22 @@ test("fault-matrix: cutting control-plane-to-postgres severs the stack's own dat
   let cut = false;
   let cutProbe = null;
   let restoreProbe = null;
+  let pollBeforeCut = null;
   let pollDuringCut = null;
   try {
     const healthyBefore = step(tcpProbeFromTestRunner({ host: "toxiproxy", port: 15432 }), "db probe before");
     assert.equal(healthyBefore.connected, true, `the database link must be up before the cut: ${truncate(healthyBefore)}`);
+
+    // ★ A PRE-CUT CONTROL on the very request the during-cut arm judges (Codex P2, PR #573).
+    // The same unauthenticated poll must reach the control plane and be REFUSED at the auth layer
+    // (4xx) while the database is up — so "500 while cut" is demonstrably the outage and not this
+    // request's normal answer.
+    const probeIds = newScenarioIds();
+    const probeKey = generateDeviceKey();
+    const probePoll = () => poll({
+      session: "not-a-session", workerId: probeIds.workerId, targetId: probeIds.targetId, deviceKey: probeKey,
+    }).result ?? { status: 0, body: null };
+    pollBeforeCut = probePoll();
 
     if (!SUPPRESS_INJECTION) {
       const disabled = step(setProxyEnabled({ proxy: "control-plane-to-postgres", enabled: false }), "cut db link");
@@ -1322,10 +1377,7 @@ test("fault-matrix: cutting control-plane-to-postgres severs the stack's own dat
       cutProbe = step(tcpProbeFromTestRunner({ host: "toxiproxy", port: 15432 }), "db probe during cut");
       // The control plane must FAIL CLOSED rather than answer a fabricated offer. A poll needs the
       // database for every step of the authority check, so it cannot succeed while the link is down.
-      const ids = newScenarioIds();
-      pollDuringCut = poll({
-        session: "not-a-session", workerId: ids.workerId, targetId: ids.targetId, deviceKey: generateDeviceKey(),
-      }).result ?? { status: 0, body: null };
+      pollDuringCut = probePoll();
     }
 
     if (cut) {
@@ -1346,15 +1398,32 @@ test("fault-matrix: cutting control-plane-to-postgres severs the stack's own dat
     const injectionFired = SUPPRESS_INJECTION
       ? false
       : cutProbe?.connected === false && restoreProbe?.connected === true;
+    // ★ The OUTAGE RESPONSE is part of the verdict (Codex P2, PR #573). The classification used to
+    // rest only on post-restore recovery, so a control plane that answered a fabricated offer while
+    // its database was severed would still have passed. It must FAIL CLOSED: a 5xx, never a 2xx,
+    // and never the 4xx it correctly gives the same request when the database is up.
+    const failedClosed = SUPPRESS_INJECTION
+      ? false
+      : pollBeforeCut?.status >= 400 && pollBeforeCut?.status < 500 && pollDuringCut?.status >= 500;
     record("d1.fault.link_cut.control_plane_to_postgres", {
       injectionFired,
-      observedClassification: recovered.ok ? "database_link_severed_and_restored" : "not_recovered",
+      observedClassification: recovered.ok && (SUPPRESS_INJECTION || failedClosed)
+        ? "database_link_severed_and_restored"
+        : "not_recovered",
       detail: {
         cutProbe, restoreProbe,
+        pollBeforeCut: pollBeforeCut ? { status: pollBeforeCut.status } : null,
         pollDuringCut: pollDuringCut ? { status: pollDuringCut.status } : null,
         recoveryPolls: recovered.polls,
       },
     });
+    if (!SUPPRESS_INJECTION) {
+      assert.equal(
+        failedClosed, true,
+        "with the database link up the same poll must be refused 4xx, and with it severed the control plane must fail CLOSED with a 5xx: " +
+          `before=${truncate(pollBeforeCut?.status)} during=${truncate(pollDuringCut?.status)}`,
+      );
+    }
     assert.equal(injectionFired, true, `the database link must be OBSERVED severed and restored: cut=${truncate(cutProbe)} restore=${truncate(restoreProbe)}`);
     assert.equal(recovered.ok, true, `the control plane must serve queries again after the restore: ${truncate(recovered.last)}`);
   } finally {

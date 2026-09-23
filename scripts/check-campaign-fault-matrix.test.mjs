@@ -184,6 +184,21 @@ test("DEP-018 declaration: dropping ANY of the four no-RLS legacy tables reds (E
   }
 });
 
+test("DEP-018 declaration: two journeys for the SAME tenant do not satisfy F10 (Codex P2, PR #573)", () => {
+  // Counting LABELS rather than distinct tenants let a matrix declare tenant A twice and omit
+  // tenant B while still reporting two journeys — i.e. certify a profile that leaves an enabled
+  // tenant unproven, which is the one claim F10 exists to make.
+  const m = mutate((mm) => {
+    const p = mm.profiles[0];
+    const journeys = p.cases.filter((c) => c.tenantCase?.kind === "per_tenant_journey");
+    assert.equal(journeys.length, MIN_ENABLED_TENANT_JOURNEYS, "the anchor must declare exactly the minimum");
+    journeys[1].tenantCase.tenant = journeys[0].tenantCase.tenant;
+  });
+  const violations = evaluateFaultMatrixDeclaration(m);
+  assert.ok(has(violations, "declaration:duplicate_journey_tenant"), codes(violations).join(","));
+  assert.ok(has(violations, "declaration:tenant_matrix_journeys"), codes(violations).join(","));
+});
+
 test("DEP-018 declaration: too few per-tenant journeys, and a missing control tenant, red", () => {
   const fewer = mutate((m) => {
     const p = m.profiles[0];

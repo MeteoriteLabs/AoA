@@ -356,3 +356,31 @@ PASS, all 16 checks `success`** — `changes`, `policy`, `lint`, `migrations`,
   local runs against a real D1 stack (§3, §9b), and the lane's own verdict is owed.
 - A later addendum records `ci-required` on the FINAL head, which carries the two Codex P1 fixes
   (§9a). This section is not rewritten.
+
+## 11. The second Codex round — six more findings, all real (2026-09-23)
+
+Head `820b9b4d7`. **`ci-required` PASS** (run on that head; the per-job record is §10's addendum
+below). Codex then raised **six** further findings on the same head — **two P1 and four P2** — and
+every one was verified at source before being fixed. Five of the six are the SAME defect wearing
+different clothes: **an assertion whose control could not detect the guard being removed.**
+
+| Finding | Verified | Fix, and what it now measures |
+|---|---|---|
+| **P1** — the `tool_calls` control was on a DIFFERENT arm: the hostile call used the DISTRIBUTED run, whose refusal the M1a freeze already guarantees for every tenant, so deleting the company-mismatch guard would have left the case green | **True, and decisive.** `classifyToolSurfaceAtUse` denies a distributed run whenever the Organization is unarmed, which M1a always is | The hostile call and its control are now the **SAME run id under two different Companies**, so the only fact that differs is the one under test and both traverse the same arms up to the mismatch check. Live: `cross: "deny"` / `own: "admit"`. ★ That pair IS the mutation proof: `companyId` is read by exactly one arm (the classifier is four lines), so with the guard removed `cross` falls through to *not distributed → admit* and the case reds. The distributed arms are recorded as freeze posture and explicitly NOT the control |
+| **P1** — the `secrets` case classified on the fenced route, whose owner and attacker are indistinguishable (`denied/malformed` both), with an unrelated row read as its "control" | **True.** Measured: both `denied/malformed`, because the route collapses every refusal by design AND this lane's fixture handle is unresolvable — the D1 compose configures no broker that could return a value (I checked: `resolveProviderOrCompanySecret` needs a decryptable `company_secrets` row, and `resolveRunJwt` needs an agent-JWT signing key the D1 compose does not set) | Codex's second option, taken: **the route is no longer the tested boundary.** The case classifies on the DURABLE ROW — `job_secret_handles` is in `TENANT_RLS_TABLES`, so the same query, same `aoa_app` pool, same row returns **1** under the owner's scope and **0** under the attacker's, which drop-the-policy would flip. The route result is recorded under `routeObservationOnly` with the reason it carries no control. A resolvable owner handle is `d2m.tenant.cross.secrets`, keyed |
+| **P2** — the truncated-upload commit accepted any non-`committed` answer, so a crashed commit route would have been classified as a successful refusal | True | The EXACT protocol rejection is required: **`200` with `{outcome: "rejected", reason: malformed \| event_hash_mismatch}`**. Live: exactly that |
+| **P2** — the database-cut classification rested only on post-restore recovery; `pollDuringCut` was recorded and never asserted | True | A **pre-cut control on the same request** (it must be refused `4xx` while the database is up) and a **fail-closed requirement** during the cut. Live: **`401` → `500` → recovered**, so a control plane answering a fabricated offer during the outage cannot pass |
+| **P2** — the restart verdict checked only that a lease with the old id still existed | True | The attempt **and lease** rows are compared byte-for-byte across the restart, so a lease whose status moved reds |
+| **P2** — `evaluateFaultMatrixDeclaration` counted journey LABELS, so two journeys for tenant A would satisfy F10 while tenant B was omitted | True | Distinct tenants are tracked; a repeated tenant reds `declaration:duplicate_journey_tenant` **and** `declaration:tenant_matrix_journeys`. A 25th self-test is the red fixture |
+
+### 11a. Re-measured after the six fixes
+
+| Run | Result |
+|---|---|
+| The matrix | `tests 20, pass 20, fail 0`; checker: **25/25 required cases fired and classified**, 1 pending |
+| **Suppressed-injection positive control** | `pass 10 / fail 10`, **9 × `evidence:injection_did_not_fire`** — unchanged, so the strengthened assertions did not weaken the control |
+| The matrix again | `tests 20, pass 20, fail 0` |
+| `scripts/check-campaign-fault-matrix.test.mjs` | **25/25** |
+
+The declaration's `observedBy` strings were rewritten in the same commit to state what each case now
+measures, so the record and the code cannot disagree.
