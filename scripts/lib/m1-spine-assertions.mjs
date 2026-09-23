@@ -234,6 +234,17 @@ export function evaluateEnabledTenantSpine({ tenant: t, observation: o }) {
         `${k}: the activity_audit receipts name ${JSON.stringify(seen)}, not the accepted attempt_started + terminal events ${JSON.stringify(expected)}`,
       ));
     }
+    // Codex P2 (PR #566), fifth round: the receipt's TARGET is the row it says it wrote. A receipt
+    // whose `target_aggregate_id` points at an unrelated row makes the replay/re-drive evidence
+    // claim a link that does not exist.
+    const activityIds = (o.activity ?? []).map((a) => a.id).filter(Boolean).sort();
+    const auditTargets = auditReceipts.map((r) => r.targetAggregateId).sort();
+    if (activityIds.length === 2 && JSON.stringify(activityIds) !== JSON.stringify(auditTargets)) {
+      out.push(violation(
+        "audit:receipt_target_mismatch",
+        `${k}: the activity_audit receipts target ${JSON.stringify(auditTargets)}, not this attempt's two activity rows ${JSON.stringify(activityIds)}`,
+      ));
+    }
     if (auditReceipts.some((r) => r.aggregateKind !== "activity_log")) {
       out.push(violation(
         "audit:receipt_wrong_aggregate",
@@ -331,6 +342,12 @@ export function evaluateEnabledTenantSpine({ tenant: t, observation: o }) {
       out.push(violation(
         "cost:receipt_not_keyed_to_event",
         `${k}: the authoritative_cost receipt names ${JSON.stringify(receipts[0].sourceIdentity)}, not ${expected}`,
+      ));
+    }
+    if (costRows.length === 1 && receipts[0].targetAggregateId !== costRows[0].id) {
+      out.push(violation(
+        "cost:receipt_target_mismatch",
+        `${k}: the authoritative_cost receipt targets ${JSON.stringify(receipts[0].targetAggregateId)}, not the cost row it says it wrote (${costRows[0].id})`,
       ));
     }
     if (receipts[0].aggregateKind !== "cost_events") {

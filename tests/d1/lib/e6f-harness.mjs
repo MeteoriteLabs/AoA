@@ -2490,9 +2490,9 @@ try {
     ORDER BY c.id\`;
   const receipts = await sql\`SELECT projection_kind AS "projectionKind", status,
       organization_id AS "organizationId", company_id AS "companyId", source_identity AS "sourceIdentity",
-      aggregate_kind AS "aggregateKind"
+      aggregate_kind AS "aggregateKind", target_aggregate_id AS "targetAggregateId"
     FROM job_projection_receipts WHERE job_id = \${P.jobId} ORDER BY projection_kind, source_identity\`;
-  const activity = await sql\`SELECT action, company_id AS "companyId", organization_id AS "organizationId",
+  const activity = await sql\`SELECT id, action, company_id AS "companyId", organization_id AS "organizationId",
       actor_type AS "actorType", actor_id AS "actorId", entity_type AS "entityType", entity_id AS "entityId"
     FROM activity_log WHERE entity_type = 'job' AND entity_id = \${P.jobId}
       AND action IN ('job.attempt_started', 'job.attempt_terminal')

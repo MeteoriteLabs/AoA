@@ -129,6 +129,9 @@ test("a replica with the deployment flag off is refused (the profile would run n
 function goodEnabled(tenant = A, overrides = {}) {
   const usageEventId = "11111111-1111-4111-8111-111111111111";
   const startedEventId = "55555555-5555-4555-8555-555555555555";
+  const costRowId = "aaaaaaa1-0000-4000-8000-00000000000a";
+  const startedActivityId = "bbbbbbb1-0000-4000-8000-00000000000b";
+  const terminalActivityId = "ccccccc1-0000-4000-8000-00000000000c";
   const terminalEventId = "66666666-6666-4666-8666-666666666666";
   return {
     tenant,
@@ -149,6 +152,7 @@ function goodEnabled(tenant = A, overrides = {}) {
       }],
       expectedActorId: "worker:33333333-3333-4333-8333-333333333333",
       costRows: [{
+        id: costRowId,
         companyId: tenant.companyId,
         agentId: tenant.agentId,
         costCents: 81,
@@ -167,14 +171,15 @@ function goodEnabled(tenant = A, overrides = {}) {
         companyId: tenant.companyId,
         sourceIdentity: `cost:${tenant.companyId}:${usageEventId}`,
         aggregateKind: "cost_events",
+        targetAggregateId: costRowId,
       }],
       activity: [
-        { action: "job.attempt_started", companyId: tenant.companyId, actorType: "system", actorId: "worker:33333333-3333-4333-8333-333333333333" },
-        { action: "job.attempt_terminal", companyId: tenant.companyId, actorType: "system", actorId: "worker:33333333-3333-4333-8333-333333333333" },
+        { id: startedActivityId, action: "job.attempt_started", companyId: tenant.companyId, actorType: "system", actorId: "worker:33333333-3333-4333-8333-333333333333" },
+        { id: terminalActivityId, action: "job.attempt_terminal", companyId: tenant.companyId, actorType: "system", actorId: "worker:33333333-3333-4333-8333-333333333333" },
       ],
       auditReceipts: [
-        { status: "applied", organizationId: tenant.organizationId, companyId: tenant.companyId, sourceIdentity: `activity:${tenant.companyId}:${startedEventId}`, aggregateKind: "activity_log" },
-        { status: "applied", organizationId: tenant.organizationId, companyId: tenant.companyId, sourceIdentity: `activity:${tenant.companyId}:${terminalEventId}`, aggregateKind: "activity_log" },
+        { status: "applied", organizationId: tenant.organizationId, companyId: tenant.companyId, sourceIdentity: `activity:${tenant.companyId}:${startedEventId}`, aggregateKind: "activity_log", targetAggregateId: startedActivityId },
+        { status: "applied", organizationId: tenant.organizationId, companyId: tenant.companyId, sourceIdentity: `activity:${tenant.companyId}:${terminalEventId}`, aggregateKind: "activity_log", targetAggregateId: terminalActivityId },
       ],
       ...overrides,
     },
@@ -320,6 +325,18 @@ test("activity_audit receipts keyed to the WRONG events, or the wrong aggregate,
     auditReceipts: [obs.auditReceipts[0], { ...obs.auditReceipts[1], aggregateKind: "cost_events" }],
   }));
   assert.ok(codes(wrongAggregate).includes("audit:receipt_wrong_aggregate"));
+});
+
+test("a receipt whose TARGET is an unrelated row is refused (Codex P2)", () => {
+  const obs = goodEnabled(A).observation;
+  const costTarget = evaluateEnabledTenantSpine(goodEnabled(A, {
+    costReceipts: [{ ...obs.costReceipts[0], targetAggregateId: "ddddddd1-0000-4000-8000-00000000000d" }],
+  }));
+  assert.ok(codes(costTarget).includes("cost:receipt_target_mismatch"));
+  const auditTarget = evaluateEnabledTenantSpine(goodEnabled(A, {
+    auditReceipts: [obs.auditReceipts[0], { ...obs.auditReceipts[1], targetAggregateId: "ddddddd1-0000-4000-8000-00000000000d" }],
+  }));
+  assert.ok(codes(auditTarget).includes("audit:receipt_target_mismatch"));
 });
 
 test("a journey the ingest did not fully accept is refused before cost is judged", () => {
