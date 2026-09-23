@@ -1133,8 +1133,17 @@ evidence.
   flips no counter.
 - **Acceptance:** A committed `job_artifacts` row of the counted kind, produced by a real run.
 - **Test:** The keyed export lane extended to the full sequence, with a TOCTOU refusal case.
-- ★ **It enumerates PATHS only and must NOT call `captureSandboxEntries`** (see `CLI-010`); the
-  provider's `digestArtifact` supplies digest and size, `exportArtifact` does the upload.
+- ★ **It enumerates METADATA ONLY — never bytes — and must NOT call `captureSandboxEntries`** (see
+  `CLI-010`); the provider's `digestArtifact` supplies digest and size, `exportArtifact` does the
+  upload. **Per-entry it must carry at minimum an absolute path plus a LINK MARKER.**
+  ★ *Corrected 2026-09-23 (ruling F7, `epics/E7-coding-e2b/decisions.md` `E7-D11`; Codex P1, PR #575).
+  **Superseded text:** "It enumerates PATHS only and must NOT call `captureSandboxEntries`".*
+  "Paths only" is the wrong axis: the rule is **no bytes**. `RealE2bTransport.listDir` returns
+  `readonly string[]` — `filesOnlyFromListing` uses `type` only to drop directories and discards
+  `symlinkTarget` — and the `CLI-011` P-011 probe (run `35833717162`, arm `S-P5`) measured the
+  consequence live: the link `l1` arrives as an ordinary file path while `files.read` follows it. A
+  paths-only seam therefore makes the required symlink refusal (`A-O2-4`) **impossible**, and
+  `R/l1 → .aoa-run-prompt.md` or `→ /proc/self/environ` would be digested and exported as "output".
 - ★ **This ticket owns the enumeration PORT — its file list says so.** A fenced **metadata-only enumeration operation** on the worker's `SandboxProvider` port (`packages/worker-daemon/src/supervisor/provider.ts`), implemented by the E2B provider over its private `#transport.listDir` (`packages/sandbox-e2b-provider/src/e2b-provider.ts`) and bound on the networked lane (`packages/provider-wire/src/driver.ts`, which has no enumeration today, **plus** the matching gated owned-op route in `packages/adapter-manager/src/server.ts` — without it the server 404s the op, so a driver-only binding is unreachable; no change to the frozen `PROVIDER_OPERATIONS` vocabulary). The port exposes no enumeration at all at present, so without this the consumer has nothing to call.
 - ★ **The sequencer COMPOSITION surface is NOT this ticket's** — it belongs to E5's `DAT-009-3c`/`3d`, which this ticket waits on (they supply `SupervisorDeps.resolveExportArtifacts` and its composition). ★ *Corrected (Codex, PR #526): an earlier revision of this node said both seams were “scheduled nowhere else”, which assigned the composition surface twice and left the port out of every file list.*
 - ★ **The real-run acceptance also depends on the emit build** (filed after `CLI-011`), because a

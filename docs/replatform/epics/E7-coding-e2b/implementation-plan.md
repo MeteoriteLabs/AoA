@@ -1433,8 +1433,16 @@ programme already uses:
 
 | slice | scope | size |
 |---|---|---|
-| **`CLI-017-A`** | SD-1b's directive + **PC-12**; `R`'s two constants + SD-4's `policy` equality check; acceptance rows 1, 3, 4 and the directive half of row 5 | **≤2 agent-days** |
-| **`CLI-017-B`** | SD-5's sandbox-scoped secret handoff + lifecycle + the export refusal; acceptance rows 2, 6, 7 and the export half of row 5 | **≤1.5 agent-days** |
+| **`CLI-017-A`** | SD-1b's directive + **PC-12**; `R`'s two constants + SD-4's `policy` equality check; acceptance rows **1, 3, 4** and the directive half of row 5 | **≤2 agent-days** |
+| **`CLI-017-B`** | SD-5's sandbox-scoped secret handoff + its **full** lifecycle (cleanup purge **and** the TTL-bound expiry) + the export refusal; acceptance rows **2, 6, 6b, 7, 8** and the export half of row 5 | **≤1.5 agent-days** |
+
+★ *Corrected 2026-09-23 (Codex P2, PR #575): the `CLI-017-B` row first read "acceptance rows 2, 6, 7
+and the export half of row 5", which left rows **6b** (purge on TTL expiry with no cleanup call) and
+**8** (the encoded/split characterisation) assigned to **neither** slice — so both slice records could
+be approved, and the aggregate written, with two required security checks never run. Every acceptance
+row is now owned by exactly one slice: **A** owns 1, 3, 4 and the directive half of 5; **B** owns 2,
+6, 6b, 7, 8 and the export half of 5. A slice record that does not carry every row in its column is
+not complete, and the aggregate may not be written.*
 
 `CLI-017-B` depends on nothing in `CLI-017-A` and may run in parallel. **Both slices are required
 before `M1b`'s campaign** — SD-5 is ruled REQUIRED (`E7-D11` §3), so a green `CLI-017-A` alone does not
@@ -1452,7 +1460,9 @@ note), reproduced one level down.
   mutations, reviewed revision, CI jobs and executed counts, in the normal result format. They are
   **records, not results**, and a distinct reviewer approves each.
 - **One aggregate `tickets/CLI-017-result.md` is written only after BOTH slice records are approved**,
-  and it does nothing but name them and their reviewed revisions. Its existence is the single signal
+  and it does nothing but name them and their reviewed revisions — **and assert that every acceptance
+  row 1–8 is carried by one of them**, which is the check that stops a row falling between the
+  slices. Its existence is the single signal
   that `CLI-017` shipped, which is exactly what the regex reads.
 - **Do not rename the slices to independent ticket ids.** `CLI-018`/`CLI-019` would give two graph
   nodes for one outcome and lose the "both required" edge that `CLI-015` depends on.
