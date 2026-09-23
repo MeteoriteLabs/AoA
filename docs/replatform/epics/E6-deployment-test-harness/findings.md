@@ -1858,7 +1858,7 @@ emits key material) or a framing-aware join with a measured threshold that prova
 sandbox-evidence line intact, proven by a control that reds without it; then flip this Status and
 delete the `E6-F026` key in `scripts/finding-ownership.json` in the SAME commit.
 
-## E6-F027 — `leakScan` emits one `::error::` annotation per finding, with no aggregation, over a surface whose line count the run does not bound
+## E6-F028 — `leakScan` emits one `::error::` annotation per finding, with no aggregation, over a surface whose line count the run does not bound
 
 **Status:** open · **Owner:** `unowned` · **Severity:** LOW
 

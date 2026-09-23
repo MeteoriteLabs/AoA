@@ -4,10 +4,14 @@
 **Branch:** `claude/m1-class-sweeps` · **Base:** `docs/replatform-program` · **Reviewed revision:** see the PR head
 **Method:** `M1-BUILD-RULES.md` §E, *SWEEP THE CLASS, NEVER THE INSTANCE*.
 
-★★★ **GitHub Actions is DOWN repo-wide** (no run created since 2026-09-23 17:37 UTC; an
-account-level billing failure only the founder can clear). Everything below was verified LOCALLY,
-with the executed counts recorded. **No CI green is claimed.** The PR is opened awaiting CI and is
-NOT merged.
+★★★ **LESSON, recorded because this record briefly asserted the opposite: THE ABSENCE OF A
+RESULT IS NOT A RESULT.** This document first claimed *"GitHub Actions is DOWN repo-wide"*, inferred
+— by the planning session and repeated here without challenge — from the fact that no run existed.
+It was false. `pr.yml` triggers on `pull_request` and on `push` to `main`; a quiet window with
+nothing pushed to an open branch and nothing merged creates no runs at all. **That is the trigger
+design working, and from the outside it is indistinguishable from a broken platform.** Only a
+positive control — actually causing a run — separates them, and neither of us ran one before
+asserting. PR #584 got **14 checks** the moment it was opened. CI results are cited below.
 
 ---
 
@@ -97,7 +101,7 @@ placed somewhere the loop's items do not reach.
 | checked | 14 | `export-request-producer.ts`; every loop adjacent to a `logger`/`logger?` call in `packages/worker-daemon/src`, `packages/adapter-manager/src` and `packages/sandbox-e2b-provider/src` (13 sites, all iterating configured step/offer/stream/summary lists, not tenant-authored listings); and `leakScan`'s two annotation loops |
 | found | 2 | the producer's refusal channel (`E7-F041`) and `leakScan`'s per-finding `::error::` emission |
 | fixed | 1 | `E7-F041` — **closed** |
-| filed | 1 | **`E6-F027`**, `unowned`, for the `leakScan` half |
+| filed | 1 | **`E6-F028`**, `unowned`, for the `leakScan` half |
 
 **The fix (`E7-F041`).** `createExportRequestProducer`
 (`packages/worker-daemon/src/lease/export-request-producer.ts`) now bounds the refusal channel ON
@@ -132,7 +136,7 @@ achieved by dropping entries. An under-budget arm proves nothing is aggregated b
 
 ---
 
-## What was verified locally vs what awaits CI
+## What was verified locally, and what CI verified
 
 | claim | evidence |
 |---|---|
@@ -140,11 +144,41 @@ achieved by dropping entries. An under-budget arm proves nothing is aggregated b
 | Class 3 fix + 6 new cases + M3/M4/M5 mutations | `packages/worker-daemon` vitest — 27/27 focused, 1268 pass package-wide |
 | `packages/worker-daemon` typecheck | `tsc --noEmit`, clean |
 | the guard set (pure-node, no arguments) + `check-evidence-immutability --base origin/docs/replatform-program` + `check-finding-ownership` + `check-register-citation-integrity` | run locally before the push; see the PR body |
-| **the required `ci-required` verdict** | **NOT OBTAINED** — Actions is down repo-wide. Locally-unverified: the Linux `verify` shards, `e2e`, `migrations`, `policy` and `brand-check`. |
+| **`ci-required`** | see the PR — CI ran normally; the earlier "Actions is down" claim was the false inference recorded at the top of this document. |
 
 ## Findings filed
 
 - **`E7-F042`** — class 2 residue in `Supervisor.withDeadline`'s dependency seams. `unowned`, LOW.
-- **`E6-F027`** — class 3 residue in `leakScan`'s annotation emission. `unowned`, LOW.
+- **`E6-F028`** — class 3 residue in `leakScan`'s annotation emission. `unowned`, LOW.
+- **`E0-F021`** — the id-collision class itself: parallel branches mint from the same high-water
+  mark, and the guards that DO exist fire only if both copies survive the merge textually.
+  `unowned`, LOW. Filed, not built, per the planning session's instruction.
 - **`E7-F041`** — **resolved**; its ownership key is deleted in the same commit as the code that
   earns it, per the manifest's own convention.
+
+---
+
+## Two lessons this sweep paid for, recorded because both are recurring classes
+
+**1. The absence of a result is not a result.** See the box at the top. A never-satisfied trigger
+and a broken platform look identical from outside; only a positive control distinguishes them. This
+is the same family as `checks-that-nothing-runs`: *a check that evaluates nothing is not a check*,
+and here, *a check that was never triggered is not a check that passed — nor one that could not run.*
+
+**2. Parallel branches mint the same finding id, and the collision is invisible until the merge.**
+PR #581 and this PR both minted `E6-F027`, for unrelated findings, each correctly applying "take the
+max across the repo at your branch point". This sweep's entry was renumbered to **`E6-F028`** on a
+first-pushed tie-break — order, not merit — and every referrer was updated together: the
+`findings.md` heading, the result record's two mentions, and the `scripts/finding-ownership.json`
+key. Filed as **`E0-F021`**.
+
+★ **The finding as filed CORRECTS the brief that requested it.** The request said
+`check-finding-ownership` was blind to the collision because it "validates each entry rather than id
+uniqueness". Measured at source instead of accepted: inserting a second `"E6-F028"` object into the
+manifest and running the guard fails with `manifest_duplicate_key: findings.E6-F028 (repeated 2
+times)` — `findDuplicateJsonKeys` scans the RAW TEXT for exactly this, and
+`check-register-id-uniqueness` covers duplicate headings. Both guards exist and both fire. What is
+genuinely uncovered is narrower: nothing can see the clash BEFORE the merge, and at the merge the
+guards fire only if BOTH copies survive textually — a resolution that keeps one object under the id
+satisfies every guard while silently losing the other finding. `E0-F021` records that window and the
+two proposed fixes; per the planning session's instruction it is FILED, not built.
