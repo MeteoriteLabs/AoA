@@ -706,10 +706,17 @@ at this tip; the daemon's HTTP client declares `artifactCommit`
 explicitly: *"Slice f — NOT DAT-009's. The producer, the kind, and the counter… That is CLI-008 Unit
 F. DAT-009 must not absorb it."*
 
-**Outcome:** a producer that, on attempt completion, **enumerates paths only** under the
-designated output root, turns each path into an `ArtifactExportRequest` with an **explicit declared
+**Outcome:** a producer that, on attempt completion, **enumerates the output root METADATA-ONLY —
+never bytes** — turns each regular file into an `ArtifactExportRequest` with an **explicit declared
 `kind`**, and hands the list to the sequencer through the E5 hook — so that one file the sandbox
 produced becomes a `committed` `job_artifacts` row under a worker-minted grant.
+★★★ *Corrected 2026-09-23 (ruling F7, `E7-D11`; Codex P1, PR #575). **Superseded text:** "a producer
+that, on attempt completion, **enumerates paths only** under the designated output root, turns each
+path into an `ArtifactExportRequest`…".* **"Paths only" is the wrong axis and it is load-bearing.**
+The rule that matters is **no bytes** (the `GRANTS OUT, NEVER BYTES` contract). Per-entry **link
+metadata is required**, because without it a symlink is indistinguishable from a file and the
+symlink refusal `A-O2-4` demands is unimplementable — see the seam-widening block below, which
+measures it. Metadata-only ≠ paths-only.
 
 ★★★ **IT MUST NOT CALL `captureSandboxEntries`, AND THIS IS A HARD CONSTRAINT, NOT A PREFERENCE.**
 That helper does `readFile` then `sha256(bytes)`, so every file's bytes would transit the worker
@@ -781,10 +788,13 @@ this ticket. It never did; but removing this edit, as suggested, would leave the
 unconnected, so the edit stays and its scope is now stated exactly; create `packages/worker-daemon/src/__tests__/export-request-producer.test.ts`; append to
 `decisions.md`. ★ **And the enumeration port** — modify
 `packages/worker-daemon/src/supervisor/provider.ts` (the `SandboxProvider` port gains a fenced,
-metadata-only enumeration operation: paths only, no bytes); modify
+**metadata-only** enumeration operation: **no bytes**, and **per-entry at minimum an absolute path
+plus a link marker** — ★ *corrected 2026-09-23, Codex P1, PR #575; superseded text: "paths only, no
+bytes", which would have made the required symlink refusal unimplementable*); modify
 `packages/sandbox-e2b-provider/src/e2b-provider.ts` (implement it over the private
 `#transport.listDir`); modify `packages/provider-wire/src/driver.ts` (the networked-lane binding,
-which has no enumeration today); modify `packages/adapter-manager/src/server.ts` (the matching
+which has no enumeration today — **its shape carries the per-entry marker too, not a bare
+`string[]`**); modify `packages/adapter-manager/src/server.ts` (the matching
 op route **and** its ownership gate — the server answers any op outside `GATE_REQUIRED_OPS` or its
 raw-handler map with `404 operation not available in this slice`, so a driver-only change is
 unreachable on the networked lane); create
@@ -1515,8 +1525,14 @@ chosen."* The mechanism ruled is **option 2, a conventional output root**; the p
    deliverable, not an implementation detail:
    - **populated** at `create` from `spec.env`, keyed by `sandboxId`, in process memory only —
      **never** in E2B metadata, never in a log, never in durable storage (`[Cred-1]`, Decision #104);
-   - **purged** on `destroy`/teardown and on the same paths that drop the sandbox, so a terminated
-     run leaves no secret set behind;
+   - **purged** on `destroy`/`reconcileCleanup` and on the same paths that drop the sandbox, so a
+     terminated run leaves no secret set behind — **and, independently, on a provider-local expiry
+     bound to the sandbox's own TTL.** ★ *Added 2026-09-23 (Codex P2, PR #575).* `create` installs an
+     E2B TTL (`setTimeout`) and the sandbox can end on that TTL **without either cleanup method being
+     called on this provider instance**, so a map purged only on explicit cleanup would hold the run's
+     credentials in memory indefinitely after the sandbox is gone. The expiry must be **replaced or
+     cancelled safely** when explicit cleanup does happen (no double purge, no resurrected entry, no
+     leaked timer);
    - **fail-closed when absent.** An export for a `sandboxId` with **no registered secret set** is
      **refused**, never allowed through unchecked. This is the arm that makes an adapter-manager
      restart safe: after a restart the map is empty, and the honest behaviour is refusal, not a
@@ -1565,6 +1581,7 @@ chosen."* The mechanism ruled is **option 2, a conventional output root**; the p
 | 4 | **`codex_local` is untouched** and a `codex` run's `R` stays absent | **the codex shape pins (census rows 4 and 7) stay green unedited**; a mutant that appends the directive for codex reds them |
 | 5 | **Cross-tenant (F10).** Two Organizations dispatching concurrently each get the directive in their own run's prompt, and neither run's directive, root or refusal reads the other's state. **The secret handoff is keyed by `sandboxId`**, so Organization A's secret set is never consulted for Organization B's export | swap the Organization on the second run's context → the assertion on the first run's prompt must not move; feed sandbox B's export against sandbox A's registered set → it must not match, and must not refuse on A's secrets; `R` is a per-sandbox path (review `A-O2-12`) |
 | 6 | **The handoff is fail-closed.** An export for a `sandboxId` with **no registered secret set** (the adapter-manager-restart state) is **refused with a classification** | **make the absent case fall through to an unchecked export → red.** Without this row the whole of SD-5 is bypassable by restarting a process, and `create`'s own state is not durable |
+| 6b | **The secret set expires with the sandbox.** Advance the clock past the sandbox's TTL **without** calling `destroy` or `reconcileCleanup` → the entry is gone, and a later export for that `sandboxId` hits the fail-closed arm (row 6) | **remove the TTL-bound expiry, keeping only cleanup-path purging → red.** Explicit cleanup must still purge, and must not leave a stale timer or resurrect the entry |
 | 7 | **The secret set is not durable and does not leak.** It is in process memory only — absent from E2B metadata, from `inspect`/`list`, from every log line and from every thrown message | assert against the transport's recorded `metadata` and the op's emitted labels; a mutant that writes it into `metadata` reds, and re-proves `[Cred-1]` (DEP-012 slices 4+5) and Decision #104 |
 | 8 | **The encoded and split cases are characterised, not claimed closed.** A base64/hex/reversed canary, and a canary split across two files, are asserted to **export** — the current behaviour | it is a characterisation row: the mutant is a future boundary design, which must **flip** these two rows to refusals. A build that quietly makes them pass as refusals without a ruling has improvised a boundary |
 
