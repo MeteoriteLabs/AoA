@@ -531,10 +531,12 @@ test("m1-spine: ★ the worker-driven verdict REDS on tenant A's HARNESS-driven 
 // self-policing: it reds if a summary EVER appears on such an attempt (the record has gone stale
 // and must be rewritten), and it reds if observation is CLAIMED with no summary.
 //
-// ★ FLAGGED FOR THE PLANNING SESSION, and it is a gate question rather than a build one: if
-// criterion 5 must be observed for EVERY enabled tenant on this lane, `M1-D1-SPINE` needs one
-// deployed worker PER enabled tenant, which contradicts its own topology clause. Recorded in
-// `DEP-019-result.md`; this profile does not resolve it by widening what it claims.
+// ★★★ RULED — `E6-D002` (E6 `decisions.md`, 2026-09-23, under F2). Criterion 5's PER-TENANT
+// observation is satisfied by the `M1a-D2-MECHANISM` campaign, not by `M1-D1-SPINE`: the `DEP-015`
+// shipped-boot lane boots ONE WORKER PER TENANT and observes it for every enabled tenant, and its
+// keyed run is already an `M1a` exit requirement. Nothing is dropped and no worker is added to
+// either gate. This profile therefore KEEPS the record below as a RECORD and does not convert it
+// into a claim — which is the ruling's own instruction.
 
 test("m1-spine: criterion 5 is observed for the worker-driven tenant and RECORDED unobserved for the others", { skip: SKIP }, () => {
   const others = M1_SPINE_TENANTS.enabled.filter((t) => t.key !== M1_SPINE_WORKER_DRIVEN_TENANT_KEY);

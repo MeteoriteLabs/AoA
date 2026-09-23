@@ -254,7 +254,15 @@ Step 0 (S0-1..S0-7, parallel) ──┬─ Track A ─────────�
      the **rollback rehearsal via the MIG-009 CLI**, attributed to the rollback owner (criterion 6);`)
    - a `M1a-D2-MECHANISM` record (the `DEP-015` lane, keyed), recording audit, cost and failure
      classification, with `capabilityProven=false` acceptable;
-   - criterion 5 observed via `DEP-017`;
+   - criterion 5 observed via `DEP-017` — **per enabled tenant on the `M1a-D2-MECHANISM`
+     (`DEP-015`) lane, which boots one worker per tenant**, and for the single worker-driven tenant
+     on `M1-D1-SPINE`. ★ *Amended 2026-09-23, ruling `E6-D002` (E6 `decisions.md`), under F2: the
+     probe runs inside a sandbox, only a dispatching worker creates one, and `M1-D1-SPINE`'s own
+     topology clause is ONE separately deployed worker — so per-tenant observation is structurally
+     unavailable on the spine lane and is allocated to the mechanism lane. The spine lane RECORDS
+     its other enabled tenants as unobserved, with a tripwire in both directions. Nothing is
+     dropped, no clause is weakened, and no worker is added to either gate.* (Superseded text:
+     `criterion 5 observed via DEP-017;`)
    - the E5 audit `a2`;
    - zero open milestone-blocking findings.
 3. Then the non-promoting handoff under `milestones/M1a/handoffs/`.

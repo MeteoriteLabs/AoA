@@ -1466,9 +1466,12 @@ run that still prices fails it.
    **RECORDS it unobserved for every other enabled tenant with the `DEP-016` tripwire
    (`evaluateEnvProbeObservability`) still holding that record in both directions** — it reds if a
    summary ever appears on such an attempt, and if observation is claimed without one.
-   **For the planning session:** if criterion 5 must be observed for EVERY enabled tenant on this
-   lane, `M1-D1-SPINE` needs one deployed worker PER enabled tenant, which contradicts its topology
-   clause. That is a gate question; `DEP-019` does not resolve it by widening what it claims.* A missing or blind summary fails the profile,
+   ★★★ **RULED 2026-09-23 — `E6-D002`** (`decisions.md`), under F2: criterion 5's **per-tenant**
+   observation is satisfied by the **`M1a-D2-MECHANISM`** campaign, not by `M1-D1-SPINE`. The probe
+   runs inside a sandbox, only a dispatching worker creates one, and this gate's topology clause is
+   ONE separately deployed worker — so per-tenant observation is structurally unavailable here. The
+   `DEP-015` lane boots one worker PER tenant and observes it for every enabled tenant, and its
+   keyed run is already an `M1a` exit requirement. Nothing is dropped and no topology changes.* A missing or blind summary fails the profile,
    exactly as the keyed lane does; the `DEP-016` tripwire is replaced by this positive assertion and
    the replacement is recorded. **Control:** a worker without the probe env reds the new assertion.
    ★ The evidence must state the narrowing: a reference sandbox has no baked image env and no

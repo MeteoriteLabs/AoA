@@ -244,6 +244,36 @@ creates twice with `""` and asserts two distinct sandboxes with their own labels
 
 Live after both fixes: **10/10** on the D1 stack (was 9/9), the new criterion-5 case included.
 
+### 10b. The RULING that closed the per-tenant question — `E6-D002`
+
+The planning session ruled it under F2 on 2026-09-23, recorded in
+`docs/replatform/epics/E6-deployment-test-harness/decisions.md` as **`E6-D002`**:
+
+> **Criterion 5's PER-TENANT observation is satisfied by the `M1a-D2-MECHANISM` campaign, not by
+> `M1-D1-SPINE`.**
+
+The reasons, in the ruling's own terms:
+
+1. **Why the spine lane cannot do it.** The probe runs INSIDE a sandbox; only a **dispatching
+   worker** creates one; and `M1-D1-SPINE`'s own topology clause is *"one control-plane instance,
+   **one separately deployed worker**"*. One deployed worker drives one tenant's sandbox, so
+   per-tenant observation is **structurally unavailable on that lane** — a property of the gate's
+   topology, not a shortfall of this build. A second worker would satisfy the probe clause **by
+   breaking the topology clause**.
+2. **Where it is satisfied instead.** The `DEP-015` shipped-boot lane boots **one worker per
+   tenant** (`m1-worker-a`/`-b`/`-c`, each with `AOA_WORKER_ENV_PROBE=1`), which is the topology
+   `DEP-017`'s probe was designed for. That lane observes criterion 5 for EVERY enabled tenant, and
+   its keyed run is already an `M1a` exit requirement.
+3. **Nothing is lost and no clause is weakened.** The obligation is allocated, not dropped: the
+   spine lane observes criterion 5 for its single tenant; the mechanism lane observes it per tenant.
+   `M1-D1-SPINE`'s topology clause stands unchanged and **no extra workers are added to it**.
+
+Per the ruling, this profile KEEPS its record of the other enabled tenant as **unobserved**, with the
+`DEP-016` tripwire holding it in both directions, and does **not** convert that record into a claim.
+
+★ **For a future gate owner:** do not read this ticket's "criterion 5 observed" as per-tenant on the
+spine lane. The record names which tenant it observed and why the others cannot be observed there.
+
 ## 11. CI evidence
 
 To be recorded, by job with its executed count, in an addendum. This section is not rewritten.
