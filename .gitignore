@@ -123,3 +123,6 @@ docker/images/trust-root.key
 docker/images/trust-root.pub.pem
 docker/images/sbom/
 docker/images/provenance.*.json
+docker/d1/runtime-keys/
+build.log
+fp-build.log

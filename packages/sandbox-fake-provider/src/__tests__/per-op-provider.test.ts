@@ -136,3 +136,27 @@ describe("per-op reference provider — the optional ops are REFUSED, never sile
     },
   );
 });
+
+describe("per-op reference provider — an EMPTY idempotency key is not a key (DEP-019)", () => {
+  // ★ A LIVE DEFECT, not a hypothetical. `gateCreate` calls
+  // `provider.create(spec, { ...ctx, idempotencyKey: "" })` on purpose — its header records that
+  // stripping the key makes the durable ledger the sole idempotency authority. So every gated
+  // create arrives with the SAME empty key. Keying the replay map on it handed the second run the
+  // first run's sandbox, whose ownership labels belong to another lease; the gate refused it and
+  // the D1 run died `create_failed` / `errorClass: "other"`. Caught by the live lane, pinned here.
+  it("two creates with an EMPTY key are two DISTINCT sandboxes, each with its own labels", async () => {
+    const p = createFakeSandboxProviderPort();
+    const first = await p.create(spec(LABELS_A), { deadlineMs: 60_000, idempotencyKey: "" });
+    const second = await p.create(spec(LABELS_B), { deadlineMs: 60_000, idempotencyKey: "" });
+    expect(second.sandboxId).not.toBe(first.sandboxId);
+    expect(second.resourceLabels).toEqual(LABELS_B);
+    expect((await p.inspect(second.sandboxId)).resourceLabels).toEqual(LABELS_B);
+    expect((await p.inspect(first.sandboxId)).resourceLabels).toEqual(LABELS_A);
+  });
+
+  it("a NON-empty key still replays — the guard narrows the empty case only", async () => {
+    const p = createFakeSandboxProviderPort();
+    const first = await p.create(spec(LABELS_A), ctx("k"));
+    expect((await p.create(spec(LABELS_A), ctx("k"))).sandboxId).toBe(first.sandboxId);
+  });
+});

@@ -206,7 +206,17 @@ export function createFakeSandboxProviderPort(options: FakeSandboxProviderPortOp
     processSupervisionMode: "none" as const,
 
     async create(spec: PortCreateSpec, ctx: PortOpContext): Promise<PortCreateResult> {
-      const replay = createdByKey.get(ctx.idempotencyKey);
+      // ★ AN EMPTY KEY IS NOT A KEY, and this is not a nicety — it is a live defect this
+      // provider had (found on the D1 lane, second worker-driven run, as `create_failed` /
+      // `errorClass: "other"`). `gateCreate` (`packages/adapter-manager/src/create-gate.ts`)
+      // deliberately calls `provider.create(spec, { ...ctx, idempotencyKey: "" })`: its own
+      // header records that stripping the key makes the DURABLE LEDGER the sole idempotency
+      // authority. So EVERY gated create arrives with the same empty key, and a provider that
+      // keys its replay map on it hands the SECOND run the FIRST run's sandbox — whose ownership
+      // labels belong to another lease, which the gate then refuses. Replay is recorded only for
+      // a non-empty key.
+      const replayKey = ctx.idempotencyKey === "" ? undefined : ctx.idempotencyKey;
+      const replay = replayKey === undefined ? undefined : createdByKey.get(replayKey);
       if (replay !== undefined) {
         // Lost-response replay: the SAME sandbox, never a second one.
         return Promise.resolve({
@@ -225,7 +235,7 @@ export function createFakeSandboxProviderPort(options: FakeSandboxProviderPortOp
         env: { ...spec.env },
         executed: 0,
       });
-      createdByKey.set(ctx.idempotencyKey, sandboxId);
+      if (replayKey !== undefined) createdByKey.set(replayKey, sandboxId);
       return Promise.resolve({ sandboxId, providerOpId: opId("create"), resourceLabels: spec.resourceLabels });
     },
 

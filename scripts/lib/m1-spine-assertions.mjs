@@ -658,14 +658,30 @@ export function evaluateControlTenant({ tenant: t, observation: o }) {
 // ── criterion 5 / the DEP-017 env probe (acceptance 6) ──────────────────────
 
 /**
- * The message prefix the DEP-017 probe's summary carries (`ENV_PROBE_LOG_PREFIX` in
- * `scripts/lib/m1-shipped-boot.mjs` on that ticket's branch). MIRRORED rather than imported,
+ * The message prefix the DEP-017 probe's summary carries.
+ *
+ * ★ RE-POINTED TO THE SHARED MODULE by DEP-019. `scripts/lib/m1-shipped-boot.mjs` is merged and
+ * its read side — `extractEnvProbeSummary` + `evaluateEnvProbeEvidence` — is PROFILE-AGNOSTIC: it
+ * judges any attempt's `job_events` log rows. So the spine calls it rather than re-implementing the
+ * verdict, the same rule every other shared verdict here follows: extend in place, never fork.
+ *
+ * Superseded text, kept as the record of why it was a mirror: "MIRRORED rather than imported,
  * deliberately: that module does not exist in this tree yet, and this profile's job is to prove the
- * probe is NOT observed here — a check that imported the thing it says is absent could not run.
+ * probe is NOT observed here — a check that imported the thing it says is absent could not run."
+ * Both halves of that reason are gone: the module exists, and DEP-019 makes the probe OBSERVED here.
  */
-export const ENV_PROBE_LOG_PREFIX = "dep017.env_probe ";
+export { ENV_PROBE_LOG_PREFIX } from "./m1-shipped-boot.mjs";
+import { ENV_PROBE_LOG_PREFIX, evaluateEnvProbeEvidence, extractEnvProbeSummary } from "./m1-shipped-boot.mjs";
 
 /**
+ * ★★★ SUPERSEDED BY `evaluateSpineEnvProbe` BELOW (DEP-019), and KEPT rather than deleted.
+ * `DEP-016` took acceptance item 6's SECOND fork — "criterion 5 is observed only in the DEP-015
+ * lane" — for one stated reason: the reference provider ran no command. DEP-019 Unit A removes that
+ * reason, so item 6 is now closed by a POSITIVE assertion that the probe RAN and reported `absent`.
+ * This tripwire is what the profile used while the probe could not be observed, and it still reds
+ * in both directions, so a lane that reverts to the harness-driven journey has its honest check
+ * back. The paragraph below describes the world it was written for; it is not rewritten.
+ *
  * DEP-016 acceptance 6, second fork. The `m1-spine` lane cannot observe the DEP-017 env probe: its
  * workers do not dispatch (`AOA_WORKER_DISPATCH_ENABLED` is declared ABSENT for them —
  * `scripts/lib/d1-dispatch-declared.mjs`), the harness plays the worker over the real HTTP
