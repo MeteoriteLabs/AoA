@@ -20,6 +20,7 @@ import {
   MAX_OUTPUT_TOTAL_BYTES,
   type OutputRefusal,
 } from "../lease/export-request-producer.js";
+import { MAX_ATTEMPT_EXPORT_BYTES } from "../lease/artifact-export.js";
 import type { SandboxOutputEntry } from "../supervisor/provider.js";
 
 const R = DEFAULT_OUTPUT_ROOT;
@@ -289,5 +290,17 @@ describe("CLI-012 — the producer's dependency surface has NO byte-returning re
     for (const forbidden of ["bytes", "content", "body", "data", "Uint8Array"]) {
       expect(body, `SandboxOutputEntry must not carry ${forbidden}`).not.toContain(forbidden);
     }
+  });
+
+  // ★★★ THE DRIFT PIN THAT REPLACES AN IMPORT (Codex P1, PR #576). The attempt ceiling is
+  // enforced TWICE on purpose — cheaply here from the listing snapshot, and for real in the
+  // sequencer on the DIGESTED size — and the two numbers must be ONE number. Sharing it by
+  // importing the sequencer's constant would put a VALUE import into the producer's dependency
+  // surface, which the arm above deliberately refuses, so it is pinned here instead: this reds
+  // the moment either side is edited alone.
+  it("★ the producer and the sequencer agree on the attempt ceiling — pinned, not imported", () => {
+    expect(MAX_OUTPUT_TOTAL_BYTES).toBe(MAX_ATTEMPT_EXPORT_BYTES);
+    // Non-vacuity: both are real, positive byte counts, not two undefineds comparing equal.
+    expect(MAX_OUTPUT_TOTAL_BYTES).toBe(100 * 1024 * 1024);
   });
 });

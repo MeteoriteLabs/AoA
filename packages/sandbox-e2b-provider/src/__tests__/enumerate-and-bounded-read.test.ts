@@ -129,6 +129,99 @@ describe("CLI-012 / E7-F039 — the no-follow recheck at the READ boundary", () 
       E2bSymlinkRefusedError,
     );
   });
+
+  // ---------------------------------------------------------------------------------------
+  // ★★★ THE STORE ITSELF, NOT THE RETURN VALUE — `E7-D11`'s FAIL condition, run rather than
+  // reasoned about. E7-D11 admits exactly two outcomes for a deliberate swap: (i) the `lstat`
+  // check refuses it, or (ii) it exports and SD-5's scan refuses the bytes — and says in terms
+  // that *"a swap that produces a STORED artifact containing the planted canary is a FAIL of
+  // this ticket, not a residual"*. The two arms above assert that the CALL rejects, which is
+  // not the same claim: a PUT already in flight, or a second write path, would still have put
+  // the canary in the object store. So this arm watches the STORE.
+  //
+  // ★ SD-5 IS NOT CLI-012's, and this test does not pretend otherwise. Verified at source in
+  // `decisions.md` `E7-D11`: SD-5's sandbox-scoped secret handoff and refusal are `CLI-017-B`'s
+  // build ("SD-5 cannot be delivered by adding a content check to `exportArtifact` alone").
+  // So outcome (ii) is unavailable here, and this asserts outcome (i) holds ABSOLUTELY on the
+  // fixture: on the swap, the store receives NOTHING. If the recheck ever regresses, this reds
+  // on the stored bytes, which is the condition E7-D11 calls a FAIL.
+  // ---------------------------------------------------------------------------------------
+  describe("★★★ the OBJECT STORE never receives the canary (E7-D11's FAIL condition)", () => {
+    const CANARY = "CANARY-SECRET-aoa-cli012";
+
+    /** Replace `fetch` with a recorder; every PUT body is kept as text. Restored by the caller. */
+    function recordingFetch(): { puts: string[]; restore: () => void } {
+      const puts: string[] = [];
+      const original = globalThis.fetch;
+      globalThis.fetch = (async (_url: string, init?: { body?: unknown }) => {
+        const body = init?.body;
+        puts.push(typeof body === "string" ? body : new TextDecoder().decode(body as Uint8Array));
+        return new Response(null, { status: 200 });
+      }) as typeof globalThis.fetch;
+      return { puts, restore: () => { globalThis.fetch = original; } };
+    }
+
+    function grantFor(described: { sha256: string; sizeBytes: number }) {
+      return {
+        protocolVersion: 1,
+        operation: "upload",
+        artifactId: "a",
+        method: "PUT",
+        url: "https://store.example/put",
+        headers: {},
+        issuedAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 300_000).toISOString(),
+        maxBytes: described.sizeBytes,
+        expectedSha256: described.sha256,
+        objectKey: "k",
+        redaction: "secret",
+      } as never;
+    }
+
+    it("★ POSITIVE CONTROL — an UNswapped file really does reach the store (so the arm below is not vacuous)", async () => {
+      const { provider, transport, sandboxId } = await providerOver();
+      transport.plantFile(sandboxId, "/home/user/.aoa-run-prompt.md", new TextEncoder().encode(CANARY));
+      transport.plantFile(sandboxId, `${ROOT}/answer.md`, new TextEncoder().encode("real output"));
+      const described = await provider.digestArtifact(sandboxId, `${ROOT}/answer.md`, CTX);
+      const store = recordingFetch();
+      try {
+        await provider.exportArtifact(sandboxId, `${ROOT}/answer.md`, grantFor(described), CTX);
+      } finally {
+        store.restore();
+      }
+      // The recorder WORKS and the store is reachable — without this the arm below would pass
+      // for a provider that simply never uploads anything.
+      expect(store.puts).toEqual(["real output"]);
+      expect(store.puts.join("")).not.toContain(CANARY);
+    });
+
+    it("★★★ a file SWAPPED for a symlink to the canary puts NOTHING in the store", async () => {
+      const { provider, transport, sandboxId } = await providerOver();
+      transport.plantFile(sandboxId, "/home/user/.aoa-run-prompt.md", new TextEncoder().encode(CANARY));
+      transport.plantFile(sandboxId, `${ROOT}/answer.md`, new TextEncoder().encode(CANARY));
+      // Digested BEFORE the swap, so the grant's `expectedSha256` matches the target exactly —
+      // the re-hash TOCTOU check provably cannot catch this, and only the recheck can.
+      const described = await provider.digestArtifact(sandboxId, `${ROOT}/answer.md`, CTX);
+      transport.plantSymlink(sandboxId, `${ROOT}/answer.md`, "/home/user/.aoa-run-prompt.md");
+
+      const store = recordingFetch();
+      let outcome: unknown;
+      try {
+        outcome = await provider.exportArtifact(sandboxId, `${ROOT}/answer.md`, grantFor(described), CTX).catch((e) => e);
+      } finally {
+        store.restore();
+      }
+      // ★★★ THE FAIL CONDITION IS ASSERTED FIRST, AND ON THE STORE — deliberately before the
+      // error kind. `E7-D11` names the stored artifact, not the return value, as what separates
+      // a bound from a hole, so the assertion that must red is the one about bytes at rest. A
+      // `rejects` assertion placed first would throw before ever looking at the store and the
+      // evidence would be about the CALL again.
+      expect(store.puts).toEqual([]);
+      expect(store.puts.join("")).not.toContain(CANARY);
+      // …and only then, the classification.
+      expect(outcome).toBeInstanceOf(E2bSymlinkRefusedError);
+    });
+  });
 });
 
 describe("CLI-012 / E5-F009 — the read itself is bounded", () => {

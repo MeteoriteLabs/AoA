@@ -588,3 +588,195 @@ describe("CLI-012 — per-file: a refused FIRST file never drops the valid ones 
     // so `h.digested` becomes `[A, B, C]` and `failures` grows a second entry.
   });
 });
+
+
+// ---------------------------------------------------------------------------------------
+// CLI-012, second round (Codex P1 + P2, PR #576) -- the two holes the per-file policy left.
+// ---------------------------------------------------------------------------------------
+
+function grantingClient(script: {
+  minted?: string[];
+  committed?: string[];
+  rejectGrantFor?: string;
+  rejectCommitFor?: string;
+}) {
+  return {
+    artifactTransferGrantPath: "/api/worker-control/artifact-transfer-grants",
+    artifactCommitPath: "/api/worker-control/artifact-commits",
+    async artifactTransferGrant(request: { bytes: Buffer }) {
+      const parsed = JSON.parse(request.bytes.toString("utf8")) as Record<string, unknown>;
+      const body = parsed.body as Record<string, unknown>;
+      if (script.rejectGrantFor !== undefined && String(body.artifactId) === script.rejectGrantFor) {
+        // A signed url in the CLIENT's own message -- the most likely real leak.
+        throw new Error("fetch failed: POST https://cp.example/grants?X-Amz-Signature=SECRETSIGNATURE");
+      }
+      script.minted?.push(String(body.expectedObjectKey));
+      return {
+        status: 200,
+        body: {
+          protocolVersion: 1,
+          correlationId: parsed.correlationId,
+          serverTime: "2026-09-04T12:00:00.000Z",
+          outcome: "upload_granted",
+          grant: uploadGrant({ artifactId: body.artifactId, objectKey: body.expectedObjectKey }),
+        },
+      };
+    },
+    async artifactCommit(request: { bytes: Buffer }) {
+      const parsed = JSON.parse(request.bytes.toString("utf8")) as Record<string, unknown>;
+      const manifest = (parsed.body as Record<string, unknown>).manifest as Record<string, unknown>;
+      if (script.rejectCommitFor !== undefined && String(manifest.artifactId) === script.rejectCommitFor) {
+        throw new Error("ETIMEDOUT");
+      }
+      script.committed?.push(String(manifest.objectKey));
+      return {
+        status: 200,
+        body: {
+          protocolVersion: 1,
+          correlationId: parsed.correlationId,
+          serverTime: "2026-09-04T12:00:00.000Z",
+          outcome: "committed",
+          artifactId: manifest.artifactId,
+          versionNumber: 1,
+          committedAt: "2026-09-04T12:00:00.000Z",
+        },
+      };
+    },
+  };
+}
+
+function sizedExporter(sizes: ReadonlyMap<string, number>): SandboxArtifactExporter {
+  return {
+    async digest(path) {
+      return { sha256: SHA, sizeBytes: sizes.get(path) ?? SIZE };
+    },
+    async export(_path, grant) {
+      return { objectKey: grant.objectKey };
+    },
+  };
+}
+
+function req(path: string): ArtifactExportRequest {
+  return { path, kind: "other", contentType: "application/octet-stream", retention: "run" };
+}
+
+describe("CLI-012 -- the ATTEMPT ceiling is held on DIGESTED sizes, not enumeration snapshots", () => {
+  it("*** five files that each GREW after enumeration cannot export past the attempt ceiling", async () => {
+    // The producer admitted all five from a listing snapshot inside both bounds. By digest time
+    // each is 30 units against a ceiling of 100, so exactly three fit.
+    const paths = ["a", "b", "c", "d", "e"].map((n) => "/home/user/aoa-output/" + n + ".bin");
+    const minted: string[] = [];
+    const committed: string[] = [];
+    const run = createArtifactExportSequencer({
+      maxAttemptBytes: 100,
+      client: grantingClient({ minted, committed }) as never,
+      key: generateDeviceKey(),
+      session: async () => SESSION,
+    });
+
+    const outcome = await run({
+      handoff: makeHandoff(),
+      exporter: sizedExporter(new Map(paths.map((p) => [p, 30]))),
+      requests: paths.map(req),
+    });
+
+    expect(outcome.exported.map((r) => r.path)).toEqual(paths.slice(0, 3));
+    expect(outcome.failures).toEqual([
+      { stage: "digest", reason: "output_limit_exceeded" },
+      { stage: "digest", reason: "output_limit_exceeded" },
+    ]);
+    // * REFUSED BEFORE THE MINT, so the two over-ceiling files leave NO durable `granted` row.
+    expect(minted).toHaveLength(3);
+    expect(committed).toHaveLength(3);
+    // * THE MUTANT THIS REDS: delete the attemptBytes + described.sizeBytes > maxAttemptBytes
+    // check and all five export -- 150 against a ceiling of 100.
+  });
+
+  it("* a later SMALL file still exports after a refusal -- per-file, not a stop", async () => {
+    const big = "/home/user/aoa-output/a-big.bin";
+    const small = "/home/user/aoa-output/b-small.bin";
+    const run = createArtifactExportSequencer({
+      maxAttemptBytes: 100,
+      client: grantingClient({}) as never,
+      key: generateDeviceKey(),
+      session: async () => SESSION,
+    });
+    const outcome = await run({
+      handoff: makeHandoff(),
+      exporter: sizedExporter(new Map([[big, 120], [small, 4]])),
+      requests: [req(big), req(small)],
+    });
+    expect(outcome.exported.map((r) => r.path)).toEqual([small]);
+    expect(outcome.failures).toEqual([{ stage: "digest", reason: "output_limit_exceeded" }]);
+  });
+});
+
+describe("CLI-012 -- a control-plane call that REJECTS is a per-file failure, not a loop abort", () => {
+  const A = "/home/user/aoa-output/a.md";
+  const B = "/home/user/aoa-output/b.md";
+  const idA = exportArtifactId({ jobId: POLL_FIXTURE_IDS.job, attempt: 1, path: A });
+
+  it("*** a GRANT that rejects (timeout / DNS / reset) classifies and the next file still commits", async () => {
+    const committed: string[] = [];
+    const run = createArtifactExportSequencer({
+      client: grantingClient({ committed, rejectGrantFor: idA }) as never,
+      key: generateDeviceKey(),
+      session: async () => SESSION,
+    });
+    const outcome = await run({
+      handoff: makeHandoff(),
+      exporter: sizedExporter(new Map()),
+      requests: [req(A), req(B)],
+    });
+    expect(outcome.failures).toEqual([{ stage: "grant", reason: "transport_failed" }]);
+    expect(outcome.exported.map((r) => r.path)).toEqual([B]);
+    expect(committed).toHaveLength(1);
+    // * And the client's own message -- which carried a signed url -- reaches nothing.
+    const serialized = JSON.stringify(outcome);
+    expect(serialized).not.toContain("SECRETSIGNATURE");
+    expect(serialized).not.toContain("https://");
+  });
+
+  it("*** a file whose COMMIT failed STILL CHARGED the attempt ceiling -- the bytes already left", async () => {
+    // A is 60 of a 100 ceiling and its commit rejects; B is another 60. The bytes of A were
+    // granted and exported before the commit failed, so they left the sandbox and the ceiling
+    // must already hold them -- otherwise a run failing at commit exports without limit.
+    const A2 = "/home/user/aoa-output/a2.md";
+    const B2 = "/home/user/aoa-output/b2.md";
+    const run = createArtifactExportSequencer({
+      maxAttemptBytes: 100,
+      client: grantingClient({
+        rejectCommitFor: exportArtifactId({ jobId: POLL_FIXTURE_IDS.job, attempt: 1, path: A2 }),
+      }) as never,
+      key: generateDeviceKey(),
+      session: async () => SESSION,
+    });
+    const outcome = await run({
+      handoff: makeHandoff(),
+      exporter: sizedExporter(new Map([[A2, 60], [B2, 60]])),
+      requests: [req(A2), req(B2)],
+    });
+    expect(outcome.exported).toEqual([]);
+    expect(outcome.failures).toEqual([
+      { stage: "commit", reason: "transport_failed" },
+      { stage: "digest", reason: "output_limit_exceeded" },
+    ]);
+    // * THE MUTANT THIS REDS: charge `attemptBytes` only on the success path and B exports,
+    // for a total of 120 against a ceiling of 100.
+  });
+
+  it("*** a COMMIT that rejects does the same", async () => {
+    const run = createArtifactExportSequencer({
+      client: grantingClient({ rejectCommitFor: idA }) as never,
+      key: generateDeviceKey(),
+      session: async () => SESSION,
+    });
+    const outcome = await run({
+      handoff: makeHandoff(),
+      exporter: sizedExporter(new Map()),
+      requests: [req(A), req(B)],
+    });
+    expect(outcome.failures).toEqual([{ stage: "commit", reason: "transport_failed" }]);
+    expect(outcome.exported.map((r) => r.path)).toEqual([B]);
+  });
+});

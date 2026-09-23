@@ -227,6 +227,11 @@ export function createFakeSandboxProviderPort(options: FakeSandboxProviderPortOp
     artifactExportMode: "none" as const,
     fileStagingMode: "none" as const,
     processSupervisionMode: "none" as const,
+    // CLI-012 — the metadata-only output enumeration. Declined, like the export pair: this
+    // façade advertises exactly the frozen CORE ops and the `m1-spine` journey drives none of
+    // the optional ones. `DEP-019`'s `per-op-port-mirror` test is what keeps this in step with
+    // the daemon's own `SandboxProvider`.
+    sandboxEnumerationMode: "none" as const,
 
     async create(spec: PortCreateSpec, ctx: PortOpContext): Promise<PortCreateResult> {
       // ★ AN EMPTY KEY IS NOT A KEY, and this is not a nicety — it is a live defect this
@@ -350,6 +355,7 @@ export function createFakeSandboxProviderPort(options: FakeSandboxProviderPortOp
     health: () => unsupported("health"),
     digestArtifact: () => unsupported("digest_artifact"),
     exportArtifact: () => unsupported("export_artifact"),
+    enumerateOutputs: () => unsupported("enumerate_outputs"),
     stageFiles: () => unsupported("stage_files"),
     startProcess: () => unsupported("start_process"),
     processStatus: () => unsupported("process_status"),

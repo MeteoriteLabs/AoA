@@ -56,6 +56,21 @@ export const DEFAULT_OUTPUT_ROOT = "/home/user/aoa-output";
  * and refuses at the cap; this check is what avoids the read at all in the common case.
  */
 export const MAX_OUTPUT_FILE_BYTES = 25 * 1024 * 1024;
+/**
+ * ★ THE SAME CEILING AS the sequencer's `MAX_ATTEMPT_EXPORT_BYTES`, deliberately — and kept in
+ * step by a TEST, not by an import.
+ * *Added 2026-09-23 (Codex P1, PR #576).* This module's dependency surface is asserted to be
+ * TYPE-ONLY (`export-request-producer.test.ts`, *"its only runtime import is relative"*, which
+ * also refuses any non-`type` import): that assertion is this ticket's data-plane guard — the
+ * test *"that FAILS if the crossing returns"* its task section owes — so importing a value out
+ * of `artifact-export.ts`, even a number, would trade that guard for a convenience. Instead the
+ * literal is declared here and `producer and sequencer agree on the attempt ceiling` pins the
+ * two against each other, so a drift reds.
+ *
+ * The check HERE is the cheap arm, applied from a listing SNAPSHOT; the sequencer re-applies
+ * the ceiling on the DIGESTED size, which is what actually holds the bound when files grow
+ * after enumeration.
+ */
 export const MAX_OUTPUT_TOTAL_BYTES = 100 * 1024 * 1024;
 export const MAX_OUTPUT_FILES = 64;
 export const MAX_OUTPUT_DEPTH = 8;

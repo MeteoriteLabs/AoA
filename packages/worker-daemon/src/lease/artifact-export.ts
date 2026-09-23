@@ -53,6 +53,22 @@ import type { ControlPlaneClient } from "../transport/client.js";
 import type { LeaseHandoff } from "../poll/poll-loop.js";
 import type { RunFenceContext } from "./secret-redemption.js";
 
+/**
+ * CLI-012 (review `SD-6`) — the PER-ATTEMPT export ceiling, **100 MiB**.
+ *
+ * ★★★ IT IS ENFORCED HERE, ON DIGESTED SIZES, AND THAT IS NOT A DUPLICATE OF THE PRODUCER'S CHECK.
+ * *Added 2026-09-23 (Codex P1, PR #576), verified at source.* The producer applies the same bound
+ * from LISTING metadata, which is a snapshot — and this ticket's own design says in terms that a
+ * file may grow between enumeration and digest. So five files listed at 20 MiB each can every one
+ * grow to the 25 MiB per-file cap, pass the bounded read, and export 125 MiB; sixty-four initially
+ * tiny files can reach 64 × 25 MiB. The producer's arm is the CHEAP one (it avoids the digest
+ * entirely in the common case); this is the arm that actually holds the attempt-level bound,
+ * because `described.sizeBytes` is what the file really was when it was read.
+ *
+ * Refused BEFORE the mint, so a file over the ceiling leaves no durable `granted` row behind.
+ */
+export const MAX_ATTEMPT_EXPORT_BYTES = 100 * 1024 * 1024;
+
 /** The stage of the four-step sequence a failure happened at. */
 export type ArtifactExportStage = "digest" | "grant" | "export" | "commit";
 
@@ -193,6 +209,8 @@ export interface CreateArtifactExportSequencerDeps {
   readonly now?: () => number;
   readonly newCorrelationId?: () => string;
   readonly newProofId?: () => string;
+  /** CLI-012 — override {@link MAX_ATTEMPT_EXPORT_BYTES}. Tests only; production takes the default. */
+  readonly maxAttemptBytes?: number;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -347,8 +365,29 @@ export function createArtifactExportSequencer(deps: CreateArtifactExportSequence
     const session = await deps.session();
     const now = deps.now ?? (() => Date.now());
 
+    /**
+     * ★★★ A CONTROL-PLANE CALL THAT REJECTS IS A PER-FILE FAILURE, NOT A LOOP ABORT.
+     * *Added 2026-09-23 (Codex P2, PR #576), verified at source.* `artifactTransferGrant` and
+     * `artifactCommit` are HTTP: a timeout, a DNS failure or a socket reset REJECTS rather than
+     * answering, and a raw rejection is not an `ArtifactExportFailedError`, so the per-request
+     * catch below would rethrow it and drop every later valid output — exactly what the per-file
+     * policy promises not to do. Classified as `transport_failed` at the stage that was calling.
+     *
+     * ★ The error is NOT interpolated: a client that put a signed url in its own message would
+     * leak it here, the same rule the `export` stage already follows.
+     */
+    const postOp = async <T>(stage: "grant" | "commit", call: () => Promise<T>, onFail: (detail: string, reason: string) => never): Promise<T> => {
+      try {
+        return await call();
+      } catch (error) {
+        return onFail(error instanceof Error ? error.name : `${stage} call failed`, "transport_failed");
+      }
+    };
+
     const exported: ExportedArtifactRef[] = [];
     const failures: { stage: ArtifactExportStage; reason: string }[] = [];
+    const maxAttemptBytes = deps.maxAttemptBytes ?? MAX_ATTEMPT_EXPORT_BYTES;
+    let attemptBytes = 0;
     for (const request of requests) {
       // ★ THE LATCH, BEFORE ANY WORK ON THIS FILE. A closed window stops the loop rather than
       // minting grants nobody is waiting for; the files not attempted are simply absent from
@@ -383,8 +422,21 @@ export function createArtifactExportSequencer(deps: CreateArtifactExportSequence
           fail("digest", error instanceof Error ? error.message : "digest failed", "digest_failed");
         }
 
+        // ★ THE ATTEMPT-LEVEL CEILING, ON THE DIGESTED SIZE (Codex P1, PR #576). Checked AFTER the
+        // digest, because only the digest knows what the file actually was, and BEFORE the mint,
+        // because a mint is a durable row. Per-file (`E5-D07`): this one is refused and the loop
+        // continues, so a later small file can still export.
+        if (attemptBytes + described.sizeBytes > maxAttemptBytes) {
+          fail("digest", `attempt export ceiling of ${maxAttemptBytes} bytes exceeded`, "output_limit_exceeded");
+        }
+        // ★ CHARGED AT ADMISSION, NOT AT SUCCESS. The bound is on BYTES THAT LEAVE THE SANDBOX,
+        // and a file whose grant is minted and whose `export` completes has already moved them —
+        // a later `commit` failure does not bring them back. Counting only fully-committed files
+        // would let a run that fails at commit repeatedly export without limit.
+        attemptBytes += described.sizeBytes;
+
         // --- 2. MINT the upload grant --------------------------------------------------------
-        const grantResponse = await deps.client.artifactTransferGrant(
+        const grantResponse = await postOp("grant", () => deps.client.artifactTransferGrant(
           signed(deps, session, deps.client.artifactTransferGrantPath, (correlationId, issuedAt) => ({
             protocolVersion: 1 as const,
             correlationId,
@@ -410,7 +462,7 @@ export function createArtifactExportSequencer(deps: CreateArtifactExportSequence
               maxBytes: described.sizeBytes,
             },
           })),
-        );
+        ), (detail, reason) => fail("grant", detail, reason));
         if (grantResponse.status !== 200) fail("grant", `status ${grantResponse.status}`, `http_${grantResponse.status}`);
         const grantOutcome = readOutcome(grantResponse.body);
         if (!grantOutcome) fail("grant", "unreadable response", "unreadable_response");
@@ -448,7 +500,7 @@ export function createArtifactExportSequencer(deps: CreateArtifactExportSequence
         if (reference.objectKey !== objectKey) fail("export", "exported a different object key", "object_key_mismatch");
 
         // --- 4. COMMIT the reference ---------------------------------------------------------
-        const commitResponse = await deps.client.artifactCommit(
+        const commitResponse = await postOp("commit", () => deps.client.artifactCommit(
           signed(deps, session, deps.client.artifactCommitPath, (correlationId, issuedAt) => ({
             protocolVersion: 1 as const,
             correlationId,
@@ -481,7 +533,7 @@ export function createArtifactExportSequencer(deps: CreateArtifactExportSequence
               },
             },
           })),
-        );
+        ), (detail, reason) => fail("commit", detail, reason));
         if (commitResponse.status !== 200) fail("commit", `status ${commitResponse.status}`, `http_${commitResponse.status}`);
         const commitOutcome = readOutcome(commitResponse.body);
         if (!commitOutcome) fail("commit", "unreadable response", "unreadable_response");

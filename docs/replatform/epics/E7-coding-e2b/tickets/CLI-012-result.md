@@ -341,3 +341,123 @@ origin/docs/replatform-program` ran locally with `failures: 0`.
 - Reviewed revision (40-hex):
 - Decision:
 - Notes:
+
+---
+
+## 11. Second round — the merge with the program tip, and Codex's two findings
+
+*Added 2026-09-23. Sections 1-10 record the state at `5b64b84a`; this section records what changed
+after it and does not rewrite them.*
+
+### 11.1 `ci-required` was FAILURE, and the cause was a MERGE, not this diff
+
+Measured at source (run `35861597873`): two jobs red, `distributed-contract` and `verify (4)`, both
+on the **same single assertion** —
+`packages/sandbox-fake-provider/src/__tests__/per-op-port-mirror.test.ts` >
+*"every method on the daemon's SandboxProvider exists on the façade"*:
+`AssertionError: façade is missing enumerateOutputs`.
+
+That test **does not exist on this branch's base**; `DEP-019` added it to
+`docs/replatform-program` (merge of PR #572) while `CLI-012` was in flight, and CI tests the merge.
+It reads the method names out of the daemon's own `SandboxProvider` source and requires each to
+exist on `createFakeSandboxProviderPort`. `CLI-012` adds `enumerateOutputs` to that port, so the
+mirror was legitimately red: the fake provider is the D1 lane's reference implementation and an op
+the worker can call but the façade cannot answer is exactly the drift `DEP-019` built the test for.
+
+**Fixed by declaring it, honestly:** `per-op-provider.ts` gains
+`sandboxEnumerationMode: "none"` and `enumerateOutputs: () => unsupported("enumerate_outputs")`,
+alongside the export pair it already declines. The façade advertises exactly the frozen CORE ops
+and the `m1-spine` journey drives none of the optional ones, so declining is the truthful
+declaration, not a stub.
+
+- RED (local, before the fix): `sandbox-fake-provider exec vitest run` →
+  `Tests 1 failed | 90 passed (91)`, the assertion above.
+- GREEN: `Tests 91 passed (91)`.
+
+### 11.2 Codex P1 — the attempt ceiling was held on ENUMERATION snapshots only
+
+Verified at source, and real: the producer applied `MAX_OUTPUT_TOTAL_BYTES` from listing metadata,
+which this ticket's own design says is a snapshot a file may grow past before `digestArtifact`. So
+five files listed at 20 MiB could each reach the 25 MiB per-file cap and export 125 MiB.
+
+`createArtifactExportSequencer` now re-applies the ceiling **on the digested size**, after the
+digest (only the digest knows what the file was) and **before the mint** (a mint is a durable row),
+per-file per `E5-D07`. The charge is taken **at admission, not at success**: a file whose grant was
+minted and whose `export` completed has already moved its bytes, and a later `commit` failure does
+not bring them back.
+
+★ The producer's constant was **not** pointed at the sequencer's by an import. This module's
+dependency surface is asserted TYPE-ONLY by `export-request-producer.test.ts`, and that assertion
+**is** this ticket's data-plane guard — the test *"that FAILS if the crossing returns"* the task
+section owes. A value import, even of a number, would have traded the guard for a convenience, and
+it reds that test. The two constants are pinned against each other by a test instead.
+
+### 11.3 Codex P2 — a rejected control-plane call aborted the whole loop
+
+Also real. `artifactTransferGrant` and `artifactCommit` are HTTP: a timeout, a DNS failure or a
+socket reset **rejects** rather than answering, and a raw rejection is not an
+`ArtifactExportFailedError`, so the outer catch rethrew it and dropped every later valid output —
+the opposite of the per-file policy `E5-D07` ruling 7 assigns to this ticket. Both calls are now
+wrapped and classified as `transport_failed` at the stage that was calling. The error is **not
+interpolated** into the failure: a client that put a signed url in its own message would leak it,
+and a test asserts the serialized outcome contains neither the planted signature nor `https://`.
+
+### 11.4 `E7-D11`'s FAIL condition, asserted on the STORE
+
+`E7-D11` says a swap that produces a **stored** artifact containing the planted canary is a FAIL of
+this ticket, not a residual. The two `E7-F039` arms above assert that the **call** rejects, which is
+a weaker claim. Added: an arm that stubs `fetch`, records every PUT body, and asserts the store
+receives **nothing** on the swap — the store assertion placed **first**, before the error-kind
+assertion, so the evidence a regression produces is about bytes at rest. Its positive control
+exports an unswapped file and asserts the recorder really captured the real bytes, so the arm
+cannot pass against a provider that simply never uploads.
+
+★ Outcome (ii) — *"it exports and SD-5's scan refuses the bytes"* — is **not** assertable here, and
+this record does not pretend it is. Verified at source in `decisions.md` `E7-D11`: SD-5's
+sandbox-scoped secret handoff and refusal are **`CLI-017-B`'s** build (*"SD-5 cannot be delivered by
+adding a content check to `exportArtifact` alone"*). The real-run swap stays pending with
+`successor: CLI-017`, as §8 already records.
+
+### 11.5 Second-round mutation table
+
+| # | Mutation | Suite | Result |
+|---|----------|-------|--------|
+| M15 | Fake façade: remove `enumerateOutputs` (the state CI found) | `per-op-port-mirror` | **RED** (1 failed, `façade is missing enumerateOutputs`) |
+| M16 | Sequencer: delete the digested-size attempt ceiling | `artifact-export-sequencer` | **RED** (2 failed) |
+| M17 | Sequencer: unwrap the GRANT call's transport classification | `artifact-export-sequencer` | **RED** (1 failed) |
+| M18 | Sequencer: unwrap the COMMIT call's transport classification | `artifact-export-sequencer` | **RED** (1 failed) |
+| M19 | Sequencer: charge `attemptBytes` only on the success path | `artifact-export-sequencer` | **RED** (1 failed) |
+| M20 | Producer: drift `MAX_OUTPUT_TOTAL_BYTES` to 200 MiB | `export-request-producer` | **RED** (2 failed) |
+| M21 | Provider: drop the no-follow recheck (M6 re-run against the new STORE arm) | `enumerate-and-bounded-read` | **RED** (3 failed; the store arm reds on the planted canary literally at rest) |
+
+Every mutation was reverted; a `MUTANT` grep over the touched sources returns `0`.
+
+### 11.6 Second-round suite counts
+
+| Command | Result |
+|---------|--------|
+| `sandbox-fake-provider exec vitest run` | `Tests 91 passed (91)` |
+| `worker-daemon exec vitest run src/__tests__/artifact-export-sequencer.test.ts` | `Tests 24 passed (24)` |
+| `worker-daemon exec vitest run src/__tests__/export-request-producer.test.ts` | `Tests 20 passed (20)` |
+| `worker-daemon exec vitest run` (whole package) | `Tests 1255 passed, 1 skipped (1256)` |
+| `sandbox-e2b-provider exec vitest run` (whole package) | `Tests 184 passed, 32 skipped (216)` |
+| `pnpm --filter worker-daemon --filter sandbox-e2b-provider --filter sandbox-fake-provider typecheck` | all `Done` |
+| full `pr.yml` guard set + `check-evidence-immutability --base origin/docs/replatform-program` | `failures: 0` |
+
+### 11.7 The eight-family self-audit (M1 build rules §A), run before this push
+
+1. **Redaction / secret collision** — the two new failure paths carry `error.name`, never the
+   message; asserted by a test whose fake client puts a signed url in its own error.
+2. **Vacuous control** — the store arm has a positive control that proves the recorder captures a
+   real upload; the drift pin asserts a concrete byte count, not two `undefined`s comparing equal.
+3. **Bounds and deadlines** — the ceiling is charged at admission, so a commit-stage failure still
+   consumes it.
+4. **Replay / idempotency** — untouched; the artifact id stays derived from (jobId, attempt, path).
+5. **Crash windows and ordering** — the ceiling check sits before the mint, so an over-ceiling file
+   leaves no durable `granted` row.
+6. **Authentication of the right half** — the swap test pins the STORE, which is the half that
+   matters, not the returned value.
+7. **Record rot** — the citation-integrity guard is green after the merge; this section is appended
+   rather than rewriting §§1-10.
+8. **Fail-closed on missing input** — `maxAttemptBytes` is a test-only override and a `0` refuses
+   everything rather than disabling the bound.
