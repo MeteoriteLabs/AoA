@@ -1002,12 +1002,34 @@ images belongs to the **M5 release lane** at the integration checkpoint.
    correction to acceptance item 3 in the E6 plan's `### DEP-014`, with the superseded text quoted.
    That plan text is not this record's to edit."* This note is that correction.
 
-   **What the item should have asserted, and what the boundary actually rests on:** the worker holds
-   **no E2B key and never constructs an E2B transport** — the real one lives in the adapter-manager
-   (`docker/worker/Dockerfile`, same header) — and `scripts/check-worker-daemon-boundary.mjs` keeps
-   `worker-daemon` importing no provider. The invariant is *no credential and no constructed
-   transport off the adapter-management surface*, which the guard does enforce; *no SDK bytes in the
-   image* was never true and is not what anything checks. **`DEP-014` shipped and was reviewed
+   **What the item should have asserted, and what the boundary actually rests on.** ★ *Narrowed
+   2026-09-23 on an accepted Codex P2; the first draft of this paragraph overreached in the same
+   direction as the text it was correcting, and its claim is quoted at the end.* Two separate things,
+   and only one of them is guarded:
+   - **The WORKER-specific statement, which is true and is the `DEP-011` boundary:** the container
+     worker holds **no E2B key and never constructs an E2B transport** — *"the real one lives in the
+     adapter-manager"* (`docker/worker/Dockerfile`, same header) — and
+     `scripts/check-worker-daemon-boundary.mjs` keeps `worker-daemon` importing no provider. This is
+     a statement about the worker, not a repository-wide invariant.
+   - **The CONTROL PLANE does construct an E2B transport, by design.** `environmentRuntimeService`
+     (`server/src/services/environment-runtime.ts`) composes the default `sandboxProviderRuntime`,
+     which registers `createE2bSandboxRuntimeProvider`
+     (`server/src/services/sandbox-provider-runtime.ts`); that provider calls `Sandbox.create` and
+     `Sandbox.connect` with a resolved API key. That is the `cloud_auth` extraction path of Decision
+     #104, which `DEP-014-result.md` §5.2 also names. So *"never constructs an E2B transport"* is
+     **false of the control plane** and must not be stated repository-wide.
+   - **And `checkProviderControlBoundary` does not check transport construction either.** It reads
+     Compose service definitions: `provider-ctl-net` membership, and the credential across
+     `environment` / `env_file` / `secrets` / `configs` / `volumes` / `command` / `entrypoint`. It
+     cannot see what code does; **what it enforces is credential delivery and network reachability
+     per Compose surface**, and that is the whole of its contribution here.
+
+   *(Superseded first draft: "The invariant is **no credential and no constructed transport off the
+   adapter-management surface**, which the guard does enforce".)* What remains sound, and is the point
+   of the correction: *no SDK bytes in the image* was never true, is not what any shipped assertion
+   tests, and is not what `checkProviderControlBoundary` checks.
+
+   **`DEP-014` shipped and was reviewed
    against this text, so this is a correction of the acceptance wording, not a re-opening of the
    ticket**: no image-content assertion that was actually written is invalidated, because none of
    them tested for the SDK.
