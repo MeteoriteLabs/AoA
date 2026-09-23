@@ -35,7 +35,15 @@ import {
   DRAIN_AUDIT_ACTION,
   DRAIN_REASON,
   ENV_PROBE_LOG_PREFIX,
+  // DEP-019 — the worker-driven arm, the env-probe verdict and the deployed worker's constants.
+  M1_SPINE_DEPLOYED_TARGET_ID,
+  M1_SPINE_EXECUTOR_MODES,
+  M1_SPINE_WORKER_DRIVEN_MARKER,
+  evaluateWorkerDrivenJourney,
+  evaluateSpineEnvProbe,
 } from "../m1-spine-assertions.mjs";
+// The SHARED expected class list, so the probe fixtures below cannot drift from the worker's own.
+import { ENV_PROBE_EXPECTED_CLASSES } from "../m1-shipped-boot.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const [A, B] = M1_SPINE_TENANTS.enabled;
@@ -874,4 +882,282 @@ test("the spine and the keyed lane share ONE implementation — neither re-imple
   for (const code of ["usage:not_exactly_one", "usage:no_usage_event", "usage:wrong_tenant"]) {
     assert.ok(!journey.includes(code), `the keyed driver must not re-implement ${code}`);
   }
+});
+
+// ── DEP-019: the worker-driven verdict, the env probe, and the override posture ──
+//
+// The `M1-D1-SPINE` gate says "one separately deployed worker". `DEP-016` satisfied that as a
+// TOPOLOGY while the harness performed the journey. These cases pin the verdict that makes it a
+// JOURNEY claim — and, more importantly, pin that it CANNOT pass on a harness-driven attempt,
+// because a claim that cannot fail is not evidence.
+
+const DEPLOYED = "df013cec-4be6-4e1e-b2a5-378c7e886364";
+const OTHER = "11111111-2222-4333-8444-555555555555";
+
+/** The shape the live profile reads out of `job_events` / `leases` for the worker-driven case,
+ * with the values a real GREEN run produced on the D1 stack. */
+function greenObservation() {
+  return {
+    attemptStatus: "succeeded",
+    attemptTargetId: M1_SPINE_DEPLOYED_TARGET_ID,
+    leaseWorkerIds: [DEPLOYED],
+    events: [
+      { eventType: "attempt_started", workerId: DEPLOYED },
+      { eventType: "log", workerId: DEPLOYED },
+      { eventType: "usage", workerId: DEPLOYED },
+      { eventType: "terminal", workerId: DEPLOYED },
+    ],
+  };
+}
+
+const workerDriven = (overrides = {}, declaredExecutor = "worker") =>
+  evaluateWorkerDrivenJourney({
+    declaredExecutor,
+    deployedWorkerId: DEPLOYED,
+    deployedTargetId: M1_SPINE_DEPLOYED_TARGET_ID,
+    observation: { ...greenObservation(), ...overrides },
+    ...(overrides.__deployedWorkerId !== undefined ? { deployedWorkerId: overrides.__deployedWorkerId } : {}),
+  });
+
+
+test("worker-driven: the ZERO-VIOLATION anchor — a real green run passes", () => {
+  assert.deepEqual(workerDriven(), []);
+});
+
+test("worker-driven: every violation carries the marker, so the lane's control can grep its arm", () => {
+  const v = workerDriven({ attemptStatus: "failed" });
+  assert.ok(v.length > 0);
+  for (const one of v) assert.ok(one.message.includes(M1_SPINE_WORKER_DRIVEN_MARKER), one.message);
+});
+
+test("worker-driven: ★ an event produced by ANOTHER worker reds — the not-the-executor case", () => {
+  const o = greenObservation();
+  o.events[2] = { eventType: "usage", workerId: OTHER };
+  assert.deepEqual(codes(workerDriven(o)), ["worker_driven:events_not_deployed_worker"]);
+});
+
+test("worker-driven: ★★★ a WHOLLY harness-driven attempt reds on both the events and the lease", () => {
+  // This is the acceptance-2 control in its purest form: the same journey, the same rows, but
+  // produced by a harness-minted worker. If this ever passes, "worker-driven" means nothing.
+  const v = workerDriven({
+    leaseWorkerIds: [OTHER],
+    events: greenObservation().events.map((e) => ({ ...e, workerId: OTHER })),
+  });
+  assert.deepEqual(codes(v), ["worker_driven:events_not_deployed_worker", "worker_driven:lease_not_deployed_worker"]);
+});
+
+test("worker-driven: a lease taken by a second worker reds even when the events look right", () => {
+  assert.deepEqual(codes(workerDriven({ leaseWorkerIds: [DEPLOYED, OTHER] })), ["worker_driven:lease_not_deployed_worker"]);
+});
+
+test("worker-driven: no lease at all reds", () => {
+  assert.deepEqual(codes(workerDriven({ leaseWorkerIds: [] })), ["worker_driven:no_lease"]);
+});
+
+test("worker-driven: no events at all reds, and names the missing ones", () => {
+  assert.deepEqual(codes(workerDriven({ events: [] })), [
+    "worker_driven:missing_event",
+    "worker_driven:missing_event",
+    "worker_driven:no_events",
+  ]);
+});
+
+test("worker-driven: a missing terminal reds (a run that never durably ended is not a journey)", () => {
+  const o = greenObservation();
+  o.events = o.events.filter((e) => e.eventType !== "terminal");
+  assert.deepEqual(codes(workerDriven(o)), ["worker_driven:missing_event"]);
+});
+
+test("worker-driven: ★ a MISSING usage event does NOT red — that is the cost verdict's job", () => {
+  // The usage-suppressed control must go red for exactly ONE reason. If this verdict also
+  // required `usage`, the control would red twice and stop isolating the thing it exists for.
+  const o = greenObservation();
+  o.events = o.events.filter((e) => e.eventType !== "usage");
+  assert.deepEqual(workerDriven(o), []);
+});
+
+test("worker-driven: an attempt placed on ANOTHER target reds", () => {
+  assert.deepEqual(codes(workerDriven({ attemptTargetId: "99999999-9999-4999-8999-999999999999" })), [
+    "worker_driven:target_mismatch",
+  ]);
+});
+
+test("worker-driven: a non-succeeded attempt reds", () => {
+  assert.deepEqual(codes(workerDriven({ attemptStatus: "failed" })), ["worker_driven:attempt_not_succeeded"]);
+  assert.deepEqual(codes(workerDriven({ attemptStatus: "pending" })), ["worker_driven:attempt_not_succeeded"]);
+});
+
+test("worker-driven: NO deployed worker id is a violation, never a vacuous pass", () => {
+  const v = evaluateWorkerDrivenJourney({
+    declaredExecutor: "worker",
+    deployedWorkerId: "",
+    deployedTargetId: M1_SPINE_DEPLOYED_TARGET_ID,
+    observation: greenObservation(),
+  });
+  assert.deepEqual(codes(v), ["worker_driven:no_deployed_worker"]);
+});
+
+test("worker-driven: an unknown executor mode is refused", () => {
+  const v = evaluateWorkerDrivenJourney({
+    declaredExecutor: "magic",
+    deployedWorkerId: DEPLOYED,
+    deployedTargetId: M1_SPINE_DEPLOYED_TARGET_ID,
+    observation: greenObservation(),
+  });
+  assert.deepEqual(codes(v), ["worker_driven:unknown_executor_mode"]);
+  assert.deepEqual([...M1_SPINE_EXECUTOR_MODES], ["worker", "harness"]);
+});
+
+test("worker-driven: the HARNESS control passes when the attempt really was harness-driven", () => {
+  const v = evaluateWorkerDrivenJourney({
+    declaredExecutor: "harness",
+    deployedWorkerId: DEPLOYED,
+    deployedTargetId: M1_SPINE_DEPLOYED_TARGET_ID,
+    observation: {
+      ...greenObservation(),
+      leaseWorkerIds: [OTHER],
+      events: greenObservation().events.map((e) => ({ ...e, workerId: OTHER })),
+    },
+  });
+  assert.deepEqual(v, []);
+});
+
+test("worker-driven: ★ the HARNESS control REDS if the attempt was in fact worker-driven", () => {
+  // The other direction of the tripwire: once the lane is genuinely worker-driven, a control that
+  // forgot to switch executors would otherwise pass and be reported as a control.
+  const v = evaluateWorkerDrivenJourney({
+    declaredExecutor: "harness",
+    deployedWorkerId: DEPLOYED,
+    deployedTargetId: M1_SPINE_DEPLOYED_TARGET_ID,
+    observation: greenObservation(),
+  });
+  assert.deepEqual(codes(v), ["worker_driven:control_was_actually_worker_driven"]);
+});
+
+// ── the env probe (DEP-016 acceptance item 6, closed positively) ─────────────
+
+/** A clean summary in the shape `evaluateEnvProbeEvidence` judges, built from the SHARED expected
+ * class list so it cannot drift from the worker's own. */
+function cleanProbeSummary() {
+  return {
+    probe: "dep017-env-absence/v1",
+    verdict: "absent",
+    clean: { checked: [...ENV_PROBE_EXPECTED_CLASSES], present: [], presentNames: [], metadata: { attempted: false } },
+    plantedControl: { red: true },
+  };
+}
+const probeLog = (summary) => [`${ENV_PROBE_LOG_PREFIX}${JSON.stringify(summary)}`];
+
+test("env probe: a clean summary passes, and it is the SHARED verdict that judges it", () => {
+  assert.deepEqual(evaluateSpineEnvProbe({ logMessages: probeLog(cleanProbeSummary()) }), []);
+});
+
+test("env probe: ★ NO summary reds — a probe that did not run must never read as a pass", () => {
+  const v = evaluateSpineEnvProbe({ logMessages: [] });
+  assert.equal(v.length, 1);
+  assert.equal(v[0].code, "criterion5:env_probe");
+  assert.match(v[0].message, /did not run/);
+});
+
+test("env probe: a summary reporting a PRESENT credential class reds", () => {
+  const s = cleanProbeSummary();
+  s.clean.present = ["datastore_credential"];
+  assert.ok(evaluateSpineEnvProbe({ logMessages: probeLog(s) }).length > 0);
+});
+
+test("env probe: ★ a BLIND probe reds — the planted control must have turned red", () => {
+  const s = cleanProbeSummary();
+  s.plantedControl = { red: false };
+  const v = evaluateSpineEnvProbe({ logMessages: probeLog(s) });
+  assert.ok(v.some((one) => /planted-canary control did not turn red/.test(one.message)), JSON.stringify(v));
+});
+
+test("env probe: an unreadable summary reds", () => {
+  assert.ok(evaluateSpineEnvProbe({ logMessages: [`${ENV_PROBE_LOG_PREFIX}{not json`] }).length > 0);
+});
+
+// ── the override's worker-driven posture ────────────────────────────────────
+
+const OVERRIDE_PATH = new URL("../../../docker/d1/m1-spine.override.yml", import.meta.url);
+const overrideText = () => readFileSync(OVERRIDE_PATH, "utf8");
+
+test("override: the COMMITTED file has zero violations (the anchor)", () => {
+  assert.deepEqual(evaluateSpineOverrideText(overrideText()), []);
+});
+
+test("override: ★ dropping dispatch from the deployed worker reds", () => {
+  const broken = overrideText().replace('AOA_WORKER_DISPATCH_ENABLED: "1"', 'AOA_WORKER_DISPATCH_ENABLED: "0"');
+  assert.ok(codes(evaluateSpineOverrideText(broken)).includes("override:dispatch_not_armed"));
+});
+
+test("override: ★ dropping the DEP-017 probe reds (acceptance item 6 cannot be dropped quietly)", () => {
+  const broken = overrideText().replace('AOA_WORKER_ENV_PROBE: "1"', 'AOA_WORKER_ENV_PROBE: "0"');
+  assert.ok(codes(evaluateSpineOverrideText(broken)).includes("override:probe_not_armed"));
+});
+
+test("override: dropping the event outbox reds", () => {
+  const broken = overrideText().replace(/^\s*AOA_WORKER_EVENT_OUTBOX_PATH:.*$/m, "");
+  assert.ok(codes(evaluateSpineOverrideText(broken)).includes("override:no_event_outbox"));
+});
+
+test("override: leaving the worker on a boot root that injects NO provider reds", () => {
+  const broken = overrideText().replace(
+    '["node", "/worker-net-app/dist/bin/networked-host.js"]',
+    '["node", "dist/bin/container-host.js"]',
+  );
+  assert.ok(codes(evaluateSpineOverrideText(broken)).includes("override:worker_not_networked_boot_root"));
+});
+
+test("override: ★ arming dispatch on a SECOND service reds — M1-D1-SPINE is ONE deployed worker", () => {
+  const broken = overrideText().replace(
+    "  worker-a:\n    profiles:",
+    '  worker-a:\n    environment:\n      AOA_WORKER_DISPATCH_ENABLED: "1"\n    profiles:',
+  );
+  assert.ok(codes(evaluateSpineOverrideText(broken)).includes("override:dispatch_armed_beyond_the_deployed_worker"));
+});
+
+test("override: ★★★ arming the wire WITHOUT the control-plane public key reds (an ungated provider)", () => {
+  const broken = overrideText().replace(/^\s*AOA_FAKE_PROVIDER_CONTROL_PLANE_PUBLIC_KEY_FILE:.*$/m, "");
+  assert.ok(codes(evaluateSpineOverrideText(broken)).includes("override:wire_ungated"));
+});
+
+test("override: not arming the wire at all reds", () => {
+  const broken = overrideText().replace(/^\s*AOA_FAKE_PROVIDER_WIRE_PORT:.*$/m, "");
+  assert.ok(codes(evaluateSpineOverrideText(broken)).includes("override:wire_not_armed"));
+});
+
+test("override: ★ a worker pointed at a port the provider does not serve reds", () => {
+  const broken = overrideText().replace('AOA_WORKER_PROVIDER_URL: "http://fake-provider:8082"', 'AOA_WORKER_PROVIDER_URL: "http://fake-provider:8080"');
+  assert.ok(codes(evaluateSpineOverrideText(broken)).includes("override:provider_url_not_the_wire"));
+});
+
+test("override: ★ dropping the capability MINT key reds (every run would die no_run_capability)", () => {
+  const broken = overrideText().replace(/^\s*AOA_CONTROL_PLANE_SIGNING_KEY_FILE:.*$/m, "");
+  assert.ok(codes(evaluateSpineOverrideText(broken)).includes("override:mint_key_not_configured"));
+});
+
+test("override: ★ a seed that authorizes a DIFFERENT ticket than the worker presents reds", () => {
+  const broken = overrideText().replace(
+    './docker/d1/m1-spine-worker.enrollment-ticket:/seed-enrolment-ticket:ro',
+    './docker/d1/worker-b.enrollment-ticket:/seed-enrolment-ticket:ro',
+  );
+  assert.ok(codes(evaluateSpineOverrideText(broken)).includes("override:enrolment_seed_mismatch"));
+});
+
+test("override: ★★★ committed key material reds, in both shapes", () => {
+  const pem = overrideText().replace(
+    'AOA_CONTROL_PLANE_SIGNING_KEY_FILE: "/keys/control-plane-signing-key.pem"',
+    'AOA_CONTROL_PLANE_SIGNING_KEY_FILE: "/keys/k.pem"\n      X_KEY: "-----BEGIN PRIVATE KEY-----"',
+  );
+  assert.ok(codes(evaluateSpineOverrideText(pem)).includes("override:committed_key_material"));
+  const literal = overrideText().replace(
+    /AOA_SECRETS_MASTER_KEY: "\$\{[^}]*\}"/,
+    'AOA_SECRETS_MASTER_KEY: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"',
+  );
+  assert.ok(codes(evaluateSpineOverrideText(literal)).includes("override:committed_key_material"));
+});
+
+test("override: the DEP-016 clauses still hold (this ticket extends them, it does not fork them)", () => {
+  const broken = overrideText().replace(/^  worker-a:\n    profiles: \[[^\]]+\]$/m, "  worker-a:\n    environment: {}");
+  assert.ok(codes(evaluateSpineOverrideText(broken)).includes("override:worker_a_not_excluded"));
 });

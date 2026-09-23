@@ -2656,3 +2656,215 @@ try {
 `;
   return dexecModule("control-plane", script);
 }
+
+// ── DEP-019: the WORKER-DRIVEN journey ───────────────────────────────────────
+//
+// `DEP-016` plays the worker itself. These helpers instead let the DEPLOYED worker do it: the
+// harness only DISPATCHES (seeds a job placed on that worker's own target, with the one secret
+// handle the run capability rides) and then ASSERTS what the worker wrote.
+//
+// ★ THE SECRET HANDLE IS NOT OPTIONAL, and this is the single least obvious fact on the lane.
+// The OwnedLabelsCapability is minted ONLY in a RESOLVED secret-resolve reply
+// (`applyOwnedLabelsCapability`, server/src/services/secret-broker.ts), and the worker redeems
+// only handles whose `materialization.kind === "env"` and `usePolicy === "sandbox_local_only"`
+// (`packages/worker-daemon/src/lease/secret-redemption.ts`). A job with no such handle produces
+// no resolve round-trip, so `capability === undefined` and the supervisor terminates the attempt
+// `no_run_capability` BEFORE it ever creates a sandbox.
+//
+// Three more facts, each MEASURED on the D1 stack while building this (each one cost a run):
+//   - `handle` must be a UUID. The frozen `jobEnvelopeV1Schema` rejects anything else, and
+//     `buildJobEnvelope` returning null is a `JobLeasingError("internal_unavailable")` — the poll
+//     503s for that worker, so ONE malformed handle stalls every job it could have been offered.
+//   - the handle must NOT be owner-bound here. `authorizeSecretResolve` re-checks a denormalized
+//     owner against the locked job's executor AND, for a membership-capable owner, an active
+//     membership; a seeded agent has none, and the resolve is denied.
+//   - the job's `policy_hash` must be the target profile's own `policyHash`.
+
+/** The committed profile the DEPLOYED worker presents (`docker/d1/m1-spine-worker.profile.json`),
+ * mounted into `migrate` (which seeds its target + authorizes its ticket) and into the worker. */
+export const SPINE_DEPLOYED_TARGET_ID = "33333333-3333-4333-8333-333333333333";
+export const SPINE_DEPLOYED_POLICY_HASH = "cccc3333".repeat(8);
+/** The Company secret the run's one handle resolves to. A NAME, never a value; the value is a
+ * throwaway string this seed writes through the server's OWN secret service, under the per-run
+ * master key the override requires. */
+export const SPINE_PROVIDER_SECRET_NAME = "provider:m1-spine";
+
+/** The workerId the DEPLOYED container enrolled as, read from its own target's workers.
+ * `null` when it has not enrolled — which the verdict treats as a violation, never a skip. */
+export function queryDeployedWorker({ targetId = SPINE_DEPLOYED_TARGET_ID } = {}) {
+  const params = { targetId };
+  const script = `
+import postgres from "postgres";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  const rows = await sql\`SELECT id FROM workers WHERE execution_target_id = \${P.targetId} AND revoked_at IS NULL ORDER BY enrolled_at DESC\`;
+  const [t] = await sql\`SELECT registered_profile_hash AS "profileHash", provider_constraint_profile->>'digest' AS "providerDigest",
+    device_generation AS "generation", organization_id AS "organizationId" FROM execution_targets WHERE id = \${P.targetId}\`;
+  report({ ok: Boolean(t), workerId: rows[0]?.id ?? null, workerCount: rows.length, target: t ?? null });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script);
+}
+
+/**
+ * Seed ONE worker-driven `task_run` for `tenant`, placed on the DEPLOYED worker's own target.
+ *
+ * `workloadArgs` is how the profile scripts the reference provider: the flags ride the TENANT
+ * COMMAND (`--aoa-fake-usage=suppressed` is the usage positive control), because a worker-driven
+ * journey mints the provider id inside the worker and the harness has no id to `/script`.
+ */
+export function seedSpineWorkerDrivenJob({ tenant, issueId, runId, jobId, attemptId, handleId, workloadArgs = [], target }) {
+  const params = {
+    ...tenant, issueId, runId, jobId, attemptId, handleId, workloadArgs,
+    targetId: SPINE_DEPLOYED_TARGET_ID,
+    policyHash: SPINE_DEPLOYED_POLICY_HASH,
+    secretName: SPINE_PROVIDER_SECRET_NAME,
+    profileHash: target.profileHash,
+    providerDigest: target.providerDigest,
+    generation: target.generation,
+  };
+  const script = `
+import postgres from "postgres";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  // The Company secret, written through the server's OWN service so the stored material is
+  // encrypted with the same per-run master key the server will decrypt it with.
+  const { createDb } = await import("@armyofagents/db");
+  const { secretService } = await import("${CP_DIST}/services/secrets.js");
+  const svc = secretService(createDb(process.env.DATABASE_URL));
+  if (!(await svc.getByName(P.companyId, P.secretName))) {
+    await svc.create(P.companyId, { name: P.secretName, provider: "local_encrypted", value: "m1-spine-reference-credential" });
+  }
+  await sql\`INSERT INTO issues (id, company_id, title, assignee_agent_id)
+    VALUES (\${P.issueId}, \${P.companyId}, \${"m1-spine worker-driven " + P.jobId.slice(0, 8)}, \${P.agentId})\`;
+  const sourceIntent = { kind: "task_run", runId: P.runId, issueId: P.issueId, assigneeAgentId: P.agentId };
+  const workload = { command: "claude", args: P.workloadArgs, stdinArtifactId: null, maxRuntimeSeconds: 600 };
+  const requirements = { workloadType: "batch", requiredCapabilities: [] };
+  const placementRequest = { policyId: "job-submission-default", policyVersion: 1, requestedTarget: null };
+  await sql\`INSERT INTO jobs
+    (id, organization_id, company_id, workload_type, source_kind, source_intent, input, input_hash,
+     policy_hash, requirements, placement_request, status, available_at,
+     executor_principal_kind, executor_principal_id)
+    VALUES (\${P.jobId}, \${P.organizationId}, \${P.companyId}, 'batch', 'task_run', \${sql.json(sourceIntent)},
+      \${sql.json(workload)}, \${"b".repeat(64)}, \${P.policyHash}, \${sql.json(requirements)},
+      \${sql.json(placementRequest)}, 'queued', now(), 'agent', \${P.agentId})\`;
+  await sql\`INSERT INTO job_attempts
+    (id, organization_id, company_id, job_id, attempt_number, status,
+     placement_disposition, placement_owner, placement_target_id, placement_target_class,
+     placement_target_scope, placement_target_generation, placement_profile_hash,
+     placement_provider_constraint_hash, placement_fallback_disposition, placement_reason_code,
+     placement_mode, placement_lease_eligible, placement_input_digest, placement_policy_digest,
+     placement_decided_at)
+    VALUES (\${P.attemptId}, \${P.organizationId}, \${P.companyId}, \${P.jobId}, 1, 'pending',
+      'selected', 'organization_dedicated', \${P.targetId}, 'organization_dedicated',
+      'organization', \${P.generation}, \${P.profileHash}, \${P.providerDigest}, 'primary', 'target_selected',
+      'active', true, \${"c".repeat(64)}, \${"d".repeat(64)}, now())\`;
+  // A UUID handle, env / sandbox_local_only, on an allow-listed target NAME, NOT owner-bound.
+  await sql\`INSERT INTO job_secret_handles
+    (id, organization_id, job_id, handle, ref_kind, ref_id, owner_principal_kind, owner_principal_id,
+     materialization, materialization_target, use_policy, status, bound_target_generation)
+    VALUES (\${P.handleId}, \${P.organizationId}, \${P.jobId}, \${P.handleId}, 'provider_key', \${P.secretName},
+      NULL, NULL, 'env', 'ANTHROPIC_API_KEY', 'sandbox_local_only', 'active', \${P.generation})\`;
+  report({ ok: true });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script);
+}
+
+/** What the DEPLOYED worker wrote for one attempt: the accepted events WITH the worker id each
+ * carries, the workers that ever held a lease on it, the attempt's status + placed target, and the
+ * `log` messages (which is where the DEP-017 probe summary rides). */
+export function querySpineWorkerDriven({ jobId }) {
+  const params = { jobId };
+  const script = `
+import postgres from "postgres";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  const [attempt] = await sql\`SELECT id, status, placement_target_id AS "targetId" FROM job_attempts WHERE job_id = \${P.jobId}\`;
+  const events = await sql\`SELECT event_type AS "eventType", event FROM job_events WHERE job_id = \${P.jobId} ORDER BY sequence\`;
+  const leases = await sql\`SELECT worker_id AS "workerId" FROM leases WHERE job_id = \${P.jobId}\`;
+  report({
+    ok: Boolean(attempt),
+    attemptStatus: attempt?.status ?? null,
+    attemptTargetId: attempt?.targetId ?? null,
+    // The worker id lives INSIDE the stored frozen event, not in a column.
+    events: events.map((e) => ({ eventType: e.eventType, workerId: e.event?.workerId ?? null })),
+    leaseWorkerIds: leases.map((l) => l.workerId),
+    logMessages: events.filter((e) => e.eventType === "log").map((e) => String(e.event?.payload?.message ?? "")),
+    terminal: events.filter((e) => e.eventType === "terminal").map((e) => e.event?.payload ?? null),
+  });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script);
+}
+
+/**
+ * Wait for the DEPLOYED worker to drive `jobId` to a terminal attempt state.
+ *
+ * Deliberately a POLL of the database and not of the worker: the claim is about what the control
+ * plane durably recorded, so the wait reads the same rows the verdict will. Returns the final
+ * observation either way — a timeout is judged by the verdict (as `attempt_not_succeeded`), never
+ * swallowed here.
+ */
+export function awaitSpineWorkerDrivenTerminal({ jobId, timeoutMs = 180_000, intervalMs = 3_000 }) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  for (;;) {
+    const res = querySpineWorkerDriven({ jobId });
+    last = res;
+    const status = res.result?.attemptStatus ?? null;
+    if (status && ["succeeded", "failed", "cancelled"].includes(status)) return res;
+    if (Date.now() >= deadline) return res;
+    // A busy wait on a container exec is the only clock this harness has; `Atomics.wait` blocks
+    // the thread without a timer, which is what a synchronous node:test case needs.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, intervalMs);
+  }
+}
+
+/** DEP-019 §2c — is any OTHER tenant's attempt placed on the DEPLOYED worker's target, and does
+ * the owning tenant have one (the positive control that the zero is isolation, not an empty
+ * table)? A ROW fact rather than a poll: the deployed worker polls continuously, so "we saw no
+ * offer" cannot tell refusal from timing. */
+export function queryForeignPlacementOnDeployedTarget({ targetId, ownOrganizationId, otherOrganizationIds }) {
+  const script = `
+import postgres from "postgres";
+const P = ${JSON.stringify({ targetId, ownOrganizationId, otherOrganizationIds })};
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  const [t] = await sql\`SELECT organization_id AS "organizationId" FROM execution_targets WHERE id = \${P.targetId}\`;
+  const [foreign] = await sql\`SELECT count(*)::int AS n FROM job_attempts
+    WHERE placement_target_id = \${P.targetId} AND organization_id <> \${P.ownOrganizationId}\`;
+  const [own] = await sql\`SELECT count(*)::int AS n FROM job_attempts
+    WHERE placement_target_id = \${P.targetId} AND organization_id = \${P.ownOrganizationId}\`;
+  const [others] = await sql\`SELECT count(*)::int AS n FROM job_attempts
+    WHERE organization_id = ANY(\${P.otherOrganizationIds})\`;
+  report({ ok: Boolean(t), targetOrganizationId: t?.organizationId ?? null,
+    foreignAttemptsOnDeployedTarget: foreign.n, ownAttemptsOnDeployedTarget: own.n,
+    otherTenantAttemptsAnywhere: others.n });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script);
+}

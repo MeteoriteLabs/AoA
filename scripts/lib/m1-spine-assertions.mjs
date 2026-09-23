@@ -204,6 +204,113 @@ export function evaluateSpineOverrideText(text) {
       "test-runner still depends on control-plane-b, which the active profile does not start",
     ));
   }
+  // ── DEP-019: the override's WORKER-DRIVEN posture ─────────────────────────
+  //
+  // ★ WHY IT IS CHECKED HERE AND NOWHERE ELSE. `check-d1-dispatch-declared` and
+  // `shipped-binary-refuses.test.ts` both parse `docker-compose.d1.yml` ONLY, so they still hold
+  // the two BASE workers to `AOA_WORKER_DISPATCH_ENABLED` ABSENT — which is exactly right, and is
+  // the positive control that the global invariant is untouched. But it also means an OVERRIDE
+  // that arms dispatch is covered by nothing. A guard that silently stops covering the topology
+  // under test is this programme's first-named failure class, so the override's posture is held
+  // here, in both directions.
+  const workerBlock = blocks.get("worker-b");
+  const fakeBlock = blocks.get("fake-provider");
+  const controlPlaneBlock = blocks.get("control-plane");
+  const migrateBlock = blocks.get("migrate");
+  const hasLine = (block, re) => Array.isArray(block) && block.some((line) => re.test(line));
+
+  if (!workerBlock) {
+    out.push(violation("override:deployed_worker_missing", "the override has no worker-b block; the deployed worker is the journey"));
+  } else {
+    if (!hasLine(workerBlock, /^\s*AOA_WORKER_DISPATCH_ENABLED:\s*"1"\s*$/)) {
+      out.push(violation(
+        "override:dispatch_not_armed",
+        'worker-b must set AOA_WORKER_DISPATCH_ENABLED: "1" — without it `decideDispatchComposition` refuses and the journey is harness-driven again',
+      ));
+    }
+    if (!hasLine(workerBlock, /^\s*AOA_WORKER_ENV_PROBE:\s*"1"\s*$/)) {
+      out.push(violation(
+        "override:probe_not_armed",
+        'worker-b must set AOA_WORKER_ENV_PROBE: "1" — DEP-016 acceptance item 6 is closed by asserting the probe RAN',
+      ));
+    }
+    if (!hasLine(workerBlock, /^\s*AOA_WORKER_EVENT_OUTBOX_PATH:\s*"/)) {
+      out.push(violation(
+        "override:no_event_outbox",
+        "worker-b must set AOA_WORKER_EVENT_OUTBOX_PATH — dispatch refuses to compose without a durable outbox home",
+      ));
+    }
+    if (!hasLine(workerBlock, /^\s*command:\s*\["node",\s*"\/worker-net-app\/dist\/bin\/networked-host\.js"\]\s*$/)) {
+      out.push(violation(
+        "override:worker_not_networked_boot_root",
+        "worker-b must enter /worker-net-app/dist/bin/networked-host.js — the other boot roots inject no provider and are inert `no_provider`",
+      ));
+    }
+  }
+
+  // Dispatch armed on the ONE deployed worker and NOWHERE else in this file.
+  for (const [service, block] of blocks) {
+    if (service === "worker-b") continue;
+    if (hasLine(block, /^\s*AOA_WORKER_DISPATCH_ENABLED:/)) {
+      out.push(violation(
+        "override:dispatch_armed_beyond_the_deployed_worker",
+        `service ${service} also sets AOA_WORKER_DISPATCH_ENABLED; M1-D1-SPINE is ONE separately deployed worker`,
+      ));
+    }
+  }
+
+  // The wire, and the two keys. An armed wire with no PUBLIC key would be an UNGATED provider
+  // server, which is `createProviderServer`'s fail-OPEN posture; the entry refuses to boot on it,
+  // and this refuses to merge it.
+  const wirePort = Array.isArray(fakeBlock)
+    ? fakeBlock.map((l) => /^\s*AOA_FAKE_PROVIDER_WIRE_PORT:\s*"(\d+)"\s*$/.exec(l)).find(Boolean)?.[1] ?? null
+    : null;
+  if (wirePort === null) {
+    out.push(violation("override:wire_not_armed", "fake-provider must set AOA_FAKE_PROVIDER_WIRE_PORT — it is the port the deployed worker dials"));
+  } else if (!hasLine(fakeBlock, /^\s*AOA_FAKE_PROVIDER_CONTROL_PLANE_PUBLIC_KEY_FILE:\s*"/)) {
+    out.push(violation(
+      "override:wire_ungated",
+      "fake-provider arms the wire without AOA_FAKE_PROVIDER_CONTROL_PLANE_PUBLIC_KEY_FILE; an absent key leaves create + execute on RAW, UNGATED handlers",
+    ));
+  }
+  if (workerBlock && wirePort !== null) {
+    const url = workerBlock.map((l) => /^\s*AOA_WORKER_PROVIDER_URL:\s*"([^"]*)"\s*$/.exec(l)).find(Boolean)?.[1] ?? null;
+    if (url !== `http://fake-provider:${wirePort}`) {
+      out.push(violation(
+        "override:provider_url_not_the_wire",
+        `worker-b dials ${JSON.stringify(url)} but the reference provider serves the wire on ${wirePort}`,
+      ));
+    }
+  }
+  if (!hasLine(controlPlaneBlock, /^\s*AOA_CONTROL_PLANE_SIGNING_KEY_FILE:\s*"/)) {
+    out.push(violation(
+      "override:mint_key_not_configured",
+      "control-plane must set AOA_CONTROL_PLANE_SIGNING_KEY_FILE; without it no ownedLabelsCapability rides the resolve reply and every run dies `no_run_capability`",
+    ));
+  }
+
+  // The enrolment seed and the worker must read the SAME committed ticket — the WRK-017 invariant,
+  // which `checkEnrolmentSeedWiring` enforces for the BASE file and cannot see here.
+  const seedTicket = migrateBlock?.map((l) => /^\s*-\s*"([^":]+):\/seed-enrolment-ticket:ro"\s*$/.exec(l)).find(Boolean)?.[1] ?? null;
+  const workerTicket = workerBlock?.map((l) => /^\s*-\s*"([^":]+):\/enrollment-code:ro"\s*$/.exec(l)).find(Boolean)?.[1] ?? null;
+  if (seedTicket === null || workerTicket === null || seedTicket !== workerTicket) {
+    out.push(violation(
+      "override:enrolment_seed_mismatch",
+      `migrate seeds from ${JSON.stringify(seedTicket)} but worker-b presents ${JSON.stringify(workerTicket)}; the seed must authorize the SAME committed ticket the worker reads`,
+    ));
+  }
+
+  // ★ NO KEY MATERIAL IN THE FILE. The control-plane signing key and the secrets master key are
+  // GENERATED PER RUN; a committed PEM, or a literal master key, would put them in git.
+  if (/-----BEGIN [A-Z ]*KEY-----/.test(src)) {
+    out.push(violation("override:committed_key_material", "the override carries PEM key material; the lane generates both keys per run"));
+  }
+  if (/^\s*AOA_SECRETS_MASTER_KEY:\s*"(?!\$\{)/m.test(src)) {
+    out.push(violation(
+      "override:committed_key_material",
+      "AOA_SECRETS_MASTER_KEY must be a ${…} compose variable the lane generates, never a literal",
+    ));
+  }
   return out;
 }
 
@@ -1010,4 +1117,148 @@ export function evaluateRollbackRehearsal(o) {
 
 export function formatViolations(violations) {
   return violations.map((v) => `  - ${v.code}: ${v.message}`).join("\n");
+}
+
+// ── DEP-019: the journey is performed by the DEPLOYED worker ─────────────────
+
+/** Every worker-driven violation carries this, so the lane's NOT-THE-EXECUTOR control can grep for
+ * the arm it expects rather than "the profile went red for some reason". */
+export const M1_SPINE_WORKER_DRIVEN_MARKER = "[m1-spine:worker-driven]";
+
+/** The committed target the DEPLOYED worker enrols against
+ * (`docker/d1/m1-spine-worker.profile.json`, seeded by `migrate` and authorized by the committed
+ * ticket). ONE deployed worker means ONE worker-driven tenant: it is bound to the FIRST enabled
+ * Organization, and tenant B's journey stays harness-driven with every F10 property still
+ * asserted. */
+export const M1_SPINE_DEPLOYED_TARGET_ID = "33333333-3333-4333-8333-333333333333";
+/** The enabled tenant whose journey the deployed worker performs. */
+export const M1_SPINE_WORKER_DRIVEN_TENANT_KEY = "A";
+
+/** How the profile says an attempt was driven. `worker` is the claim; `harness` is the
+ * NOT-THE-EXECUTOR control, which must make `evaluateWorkerDrivenJourney` go RED. */
+export const M1_SPINE_EXECUTOR_MODES = Object.freeze(["worker", "harness"]);
+
+function workerDrivenViolation(code, message) {
+  return { code, message: `${M1_SPINE_WORKER_DRIVEN_MARKER} ${message}` };
+}
+
+/**
+ * `M1-D1-SPINE` requires the included lifecycle on "one separately deployed worker". `DEP-016`
+ * satisfied that as a TOPOLOGY: its deployed worker existed while the HARNESS performed the
+ * journey. This verdict is what makes the claim a JOURNEY claim, and it is written so it CANNOT
+ * pass on a harness-driven attempt — which is the whole point of the control.
+ *
+ * `declaredExecutor` is what the lane says it did; everything else is what the database holds. The
+ * verdict reds in BOTH directions, exactly like the `DEP-016` criterion-5 tripwire: a lane that
+ * claims `worker` while the rows name another worker is refused, and so is a lane that claims
+ * `harness` while every row names the deployed one — otherwise the control would start passing by
+ * accident the moment the lane became worker-driven for real.
+ *
+ * @param {object} o
+ * @param {"worker"|"harness"} o.declaredExecutor
+ * @param {string|null} o.deployedWorkerId  the workerId the deployed container ENROLLED as
+ * @param {string|null} o.deployedTargetId  that worker's target (the committed one)
+ * @param {object} o.observation  { attemptStatus, attemptTargetId, leaseWorkerIds[], events[] },
+ *   where `events` is [{ eventType, workerId }] for the attempt's ACCEPTED events in sequence.
+ */
+export function evaluateWorkerDrivenJourney({ declaredExecutor, deployedWorkerId, deployedTargetId, observation: o }) {
+  const out = [];
+  if (!M1_SPINE_EXECUTOR_MODES.includes(declaredExecutor)) {
+    out.push(workerDrivenViolation(
+      "worker_driven:unknown_executor_mode",
+      `declaredExecutor ${JSON.stringify(declaredExecutor)} is not one of ${M1_SPINE_EXECUTOR_MODES.join(", ")}`,
+    ));
+    return out;
+  }
+  if (typeof deployedWorkerId !== "string" || deployedWorkerId === "") {
+    // The deployed worker's identity is what everything else is compared against. Without it the
+    // verdict could only be vacuous, so its absence is a violation and never a skip.
+    out.push(workerDrivenViolation(
+      "worker_driven:no_deployed_worker",
+      "no enrolled worker id was read for the deployed worker container; the verdict cannot be computed (fail closed)",
+    ));
+    return out;
+  }
+
+  const events = Array.isArray(o?.events) ? o.events : [];
+  const eventTypes = events.map((e) => String(e?.eventType ?? ""));
+  const foreign = events.filter((e) => String(e?.workerId ?? "") !== deployedWorkerId);
+  const leaseWorkerIds = Array.isArray(o?.leaseWorkerIds) ? o.leaseWorkerIds.map(String) : [];
+
+  if (declaredExecutor === "worker") {
+    if (events.length === 0) {
+      out.push(workerDrivenViolation("worker_driven:no_events", "the attempt carries no accepted events at all"));
+    }
+    // `usage` is deliberately NOT required here. The usage-suppressed control legitimately produces
+    // none, and requiring it would make that control red for TWO reasons and stop isolating the one
+    // it exists for; the cost verdict is what judges usage.
+    for (const required of ["attempt_started", "terminal"]) {
+      if (!eventTypes.includes(required)) {
+        out.push(workerDrivenViolation("worker_driven:missing_event", `the attempt has no accepted ${required} event`));
+      }
+    }
+    if (foreign.length > 0) {
+      const names = [...new Set(foreign.map((e) => `${e.eventType}:${e.workerId ?? "null"}`))].join(", ");
+      out.push(workerDrivenViolation(
+        "worker_driven:events_not_deployed_worker",
+        `${foreign.length} accepted event(s) were produced by a worker that is NOT the deployed one (${names})`,
+      ));
+    }
+    if (leaseWorkerIds.length === 0) {
+      out.push(workerDrivenViolation("worker_driven:no_lease", "no lease was ever taken on this attempt"));
+    } else if (leaseWorkerIds.some((w) => w !== deployedWorkerId)) {
+      out.push(workerDrivenViolation(
+        "worker_driven:lease_not_deployed_worker",
+        `the attempt was leased by ${[...new Set(leaseWorkerIds)].join(", ")}, not only by the deployed worker`,
+      ));
+    }
+    if (deployedTargetId && o?.attemptTargetId && String(o.attemptTargetId) !== String(deployedTargetId)) {
+      out.push(workerDrivenViolation(
+        "worker_driven:target_mismatch",
+        `the attempt is placed on ${o.attemptTargetId}, not on the deployed worker's target ${deployedTargetId}`,
+      ));
+    }
+    if (o?.attemptStatus !== "succeeded") {
+      out.push(workerDrivenViolation(
+        "worker_driven:attempt_not_succeeded",
+        `the attempt is ${JSON.stringify(o?.attemptStatus ?? null)}; a worker-driven journey must reach a durable succeeded terminal`,
+      ));
+    }
+    return out;
+  }
+
+  // declaredExecutor === "harness" — the NOT-THE-EXECUTOR control. It must NOT look worker-driven.
+  const drivenByDeployed = events.length > 0
+    && foreign.length === 0
+    && leaseWorkerIds.length > 0
+    && leaseWorkerIds.every((w) => w === deployedWorkerId);
+  if (drivenByDeployed) {
+    out.push(workerDrivenViolation(
+      "worker_driven:control_was_actually_worker_driven",
+      "the profile declared this attempt HARNESS-driven, but every event and lease on it belongs to the deployed worker — the control proves nothing",
+    ));
+  }
+  return out;
+}
+
+/**
+ * `DEP-016` acceptance item 6, CLOSED POSITIVELY (DEP-019).
+ *
+ * The read side is NOT re-implemented: `extractEnvProbeSummary` + `evaluateEnvProbeEvidence`
+ * (`scripts/lib/m1-shipped-boot.mjs`) are profile-agnostic — they judge any attempt's `job_events`
+ * log rows — so the spine CALLS them and only adapts their `{pass, reasons}` to this module's
+ * violation shape. `DEP-016` could not: its reference provider ran no command, so the probe would
+ * have reported nothing. `DEP-019` Unit A removes that, and the probe now RUNS inside the
+ * reference sandbox over exactly the run's own env.
+ *
+ * ★ WHAT THIS LANE OBSERVES, stated so the record cannot be misread: a reference sandbox has no
+ * baked image env and no provider-host env, so what the probe sees here is the STAGE-IN env only.
+ * The template-baked and provider-host classes stay the `DEP-015` keyed lane's to observe. That is
+ * a narrowing of the OBSERVATION, not of the verdict — the verdict is the shared one, unchanged.
+ */
+export function evaluateSpineEnvProbe({ logMessages }) {
+  const summary = extractEnvProbeSummary(logMessages ?? []);
+  const verdict = evaluateEnvProbeEvidence(summary);
+  if (verdict.pass) return [];
+  return verdict.reasons.map((reason) => workerDrivenViolation("criterion5:env_probe", reason));
 }

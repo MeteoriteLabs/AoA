@@ -444,10 +444,44 @@ jobs:
             echo "AOA_D1_WORKER_IMAGE=${WK_TAG}"
           } > docker/d1/.env
 
+      # DEP-019 — the two per-run secrets, GENERATED HERE and never committed:
+      #   * the control-plane ed25519 SIGNING key, whose PUBLIC half gates the reference
+      #     provider's wire. Without it the mint is inert and every distributed run terminates
+      #     `no_run_capability` before it creates a sandbox.
+      #   * the secrets MASTER key, under which the profile's one Company secret is written and
+      #     read. The override takes it as a REQUIRED `${…:?}` variable, so a missing value fails
+      #     the compose render instead of silently minting a fresh key inside the container.
+      # Neither is echoed, and `docker/d1/runtime-keys/` is git-ignored. `GITHUB_ENV` is masked in
+      # logs but is still an environment file, so the master key is registered with `::add-mask::`
+      # first — a value that reaches a log is a value that reaches the evidence bundle.
+      - name: Generate the per-run control-plane keypair and secrets master key
+        run: |
+          set -euo pipefail
+          mkdir -p docker/d1/runtime-keys
+          node -e '
+            const { generateKeyPairSync } = require("node:crypto");
+            const { writeFileSync } = require("node:fs");
+            const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+            writeFileSync("docker/d1/runtime-keys/control-plane-signing-key.pem", privateKey.export({ type: "pkcs8", format: "pem" }), { mode: 0o644 });
+            writeFileSync("docker/d1/runtime-keys/control-plane-public-key.pem", publicKey.export({ type: "spki", format: "pem" }), { mode: 0o644 });
+          '
+          test -s docker/d1/runtime-keys/control-plane-signing-key.pem
+          test -s docker/d1/runtime-keys/control-plane-public-key.pem
+          master="$(node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("base64"))')"
+          echo "::add-mask::${master}"
+          echo "AOA_D1_SPINE_SECRETS_MASTER_KEY=${master}" >> "$GITHUB_ENV"
+          echo "generated: 1 ed25519 keypair (public half gates the provider wire) + 1 secrets master key"
+
       - name: Bring up the ONE-worker m1-spine topology
         run: |
           set -euo pipefail
           docker compose -f "$COMPOSE_FILE_PATH" -f "$SPINE_OVERRIDE_PATH" up -d --wait --wait-timeout 300
+          # DEP-019 — the DEPLOYED worker must be DISPATCHING, and it is the journey. A worker that
+          # booted but composed no dispatch would leave every worker-driven assertion to fail much
+          # later with a symptom several layers from its cause.
+          docker compose -f "$COMPOSE_FILE_PATH" -f "$SPINE_OVERRIDE_PATH" logs worker-b             | grep -F 'dispatch COMPOSED'             || { echo "::error::the deployed worker did not compose dispatch"; exit 1; }
+          # And the reference provider must be serving a GATED wire — never an ungated one.
+          docker compose -f "$COMPOSE_FILE_PATH" -f "$SPINE_OVERRIDE_PATH" logs fake-provider             | grep -F 'GATED provider wire'             || { echo "::error::the reference provider is not serving the gated wire"; exit 1; }
           # The topology is part of the claim, so assert it rather than assuming the override
           # merged: exactly ONE worker service is running in this project.
           workers="$(docker compose -f "$COMPOSE_FILE_PATH" -f "$SPINE_OVERRIDE_PATH" ps --services --status running | grep -c '^worker-' || true)"
@@ -518,6 +552,36 @@ jobs:
             exit 1
           }
           echo "positive control: a duplicate usage event reds the cardinality assertion, as required"
+
+      # DEP-019 — THE NOT-THE-EXECUTOR CONTROL, at the lane level.
+      #
+      # The profile already carries an always-on in-test control (§2b-control): it judges tenant
+      # A's HARNESS-driven attempt with the SAME verdict and requires it to red on both arms. This
+      # step is the second half — it runs the whole profile with the worker-driven case DISABLED
+      # and proves the lane notices, so "worker-driven" cannot quietly become "not run".
+      - name: POSITIVE CONTROL — with the deployed worker NOT the executor, the claim MUST NOT stand
+        env:
+          AOA_D1_LIVE: "1"
+          AOA_M1_SPINE_EXECUTOR: harness
+        run: |
+          set -uo pipefail
+          out="${RUNNER_TEMP}/m1-spine-not-the-executor.txt"
+          node --test --test-concurrency=1 tests/d1/m1-spine.test.mjs > "$out" 2>&1 || true
+          # The worker-driven case must NOT have run, and the in-test control must still have run
+          # and passed — that pairing is what distinguishes "the claim was withdrawn" from "the
+          # whole profile fell over".
+          grep -F 'the DEPLOYED worker performs' "$out" | grep -qF '# SKIP' || {
+            cat "$out"
+            echo "::error::the worker-driven case was not withdrawn under AOA_M1_SPINE_EXECUTOR=harness"
+            exit 1
+          }
+          grep -qF 'the worker-driven verdict REDS' "$out" || {
+            cat "$out"
+            echo "::error::the in-test not-the-executor control did not run"
+            exit 1
+          }
+          echo "not-the-executor control: the worker-driven claim is withdrawn and the verdict's red arm still runs"
+          tail -n 30 "$out"
           tail -n 40 "$out"
 
       # ★ The bundle the M1-D1-SPINE record is made from is the one collected ABOVE, immediately
