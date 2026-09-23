@@ -331,6 +331,55 @@ describe("CLI-013 — placement on the sequencer-completion / supervisor path", 
     expect(errors.join(" ")).toContain("run lifecycle error");
   });
 
+  it("★ the fail-closed join ESCAPES the window's catch — an unmatched committed path aborts, it does not become sequencer_failed", async () => {
+    // ★★★ Codex P2 on PR #589, verified at source and fixed. `announcementsFor` sat INSIDE
+    // `runExportWindow`'s broad catch, so its fail-closed throw was converted into
+    // `report("failed", …, "sequencer_failed")` + an empty list and the terminal was emitted
+    // anyway — a refusal short-circuited by an enclosing catch (the E7-F043 class, in this
+    // ticket's own diff), silently hiding a committed artifact instead of aborting per E7-D12.
+    const seen: string[] = [];
+    const sink: WorkerEventSink = {
+      emit(event) {
+        seen.push(event.eventType);
+      },
+    };
+    const errors: string[] = [];
+    const logger = {
+      info: () => {}, warn: () => {}, debug: () => {}, flush: async () => {},
+      error: (...a: unknown[]) => errors.push(JSON.stringify(a)),
+    };
+    const supervisor = createSupervisor(
+      baseDeps({
+        eventSink: sink,
+        logger: logger as never,
+        resolveExportArtifacts: async () => [REQ_A],
+        // A committed reference whose path NO request named — the join cannot know its `kind`.
+        exportArtifacts: async () => ({
+          exported: [
+            {
+              path: "/home/user/aoa-output/never-requested.md",
+              artifactId: ARTIFACT_ID,
+              objectKey: "k",
+              sha256: "0".repeat(64),
+              sizeBytes: 1,
+              versionNumber: 1,
+            },
+          ] as readonly ExportedArtifactRef[],
+          failures: [],
+        }),
+      }),
+    );
+
+    await supervisor.accept(makeHandoff());
+
+    // Anti-vacuity: the run really got as far as the export window.
+    expect(seen).toContain("attempt_started");
+    // THE PROPERTY: the refusal aborted the lifecycle. No announcement, and NO terminal.
+    expect(seen.filter((t) => t === "artifact_prepared")).toHaveLength(0);
+    expect(seen).not.toContain("terminal");
+    expect(errors.join(" ")).toContain("run lifecycle error");
+  });
+
   it("★ F10 — two Organizations through ONE supervisor: each announcement carries its OWN tenant", async () => {
     const sink = collectingSink();
     const supervisor = createSupervisor(

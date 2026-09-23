@@ -1196,32 +1196,10 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     // A raced-out window leaves `work` running; its eventual rejection is expected and handled.
     work.catch(() => undefined);
 
+    let raced: Awaited<ReturnType<typeof exportArtifacts>> | typeof TIMEOUT;
     try {
-      const raced = await withDeadline(work, budget);
+      raced = await withDeadline(work, budget);
       open = false;
-      if (raced === TIMEOUT) {
-        report("timed_out", phase, "deadline");
-        return [];
-      }
-      // ★ TRUTHFUL, NOT OPTIMISTIC (CLI-012, `E5-D07` ruling 7). The window now gets a partial
-      // outcome rather than all-or-throw, so `success` means "every named file committed". A
-      // window that committed some and refused others reports `failed` with the FIRST refusal's
-      // stage and reason and the count that DID commit — reporting `success` because something
-      // got through would make a per-file refusal invisible to the operator, which is the whole
-      // reason the classification exists.
-      // ★★★ CLI-013 — THE ANNOUNCEMENTS ARE BUILT BEFORE THE PARTIAL-FAILURE EXIT, NOT AFTER IT.
-      // A window that committed some files and refused others still made those commits durable;
-      // returning the committed set only on the all-success path would silently drop the
-      // announcement for every artifact in a partial window. `report` classifies the WINDOW; the
-      // announcement is per COMMITTED artifact, and the two are not the same question.
-      const prepared = announcementsFor(raced.exported, requests);
-      const firstFailure = raced.failures[0];
-      if (firstFailure) {
-        report("failed", firstFailure.stage, firstFailure.reason, raced.exported.length);
-        return prepared;
-      }
-      report("success", phase, "exported", raced.exported.length);
-      return prepared;
     } catch (err) {
       open = false;
       if (err instanceof ArtifactExportFailedError) {
@@ -1231,6 +1209,41 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       }
       return [];
     }
+
+    if (raced === TIMEOUT) {
+      report("timed_out", phase, "deadline");
+      // ★ KNOWN GAP, recorded not hidden (`E7-F044`): a window that committed some files and then
+      // timed out loses their announcements, because the sequencer only returns its accumulated
+      // `exported` set when it resolves. Closing it needs an incremental-progress signal on the
+      // E5-owned `ArtifactExportSequencer` seam, which this ticket may not change. The artifacts
+      // stay durable and counted; only the events are missing.
+      return [];
+    }
+
+    // ★ TRUTHFUL, NOT OPTIMISTIC (CLI-012, `E5-D07` ruling 7). The window now gets a partial
+    // outcome rather than all-or-throw, so `success` means "every named file committed". A
+    // window that committed some and refused others reports `failed` with the FIRST refusal's
+    // stage and reason and the count that DID commit — reporting `success` because something
+    // got through would make a per-file refusal invisible to the operator, which is the whole
+    // reason the classification exists.
+    const firstFailure = raced.failures[0];
+    if (firstFailure) {
+      report("failed", firstFailure.stage, firstFailure.reason, raced.exported.length);
+    } else {
+      report("success", phase, "exported", raced.exported.length);
+    }
+
+    // ★★★ DELIBERATELY OUTSIDE THE CATCH ABOVE, AND AFTER BOTH `report` ARMS (CLI-013).
+    //
+    // Two things at once. (1) The announcements are built for a PARTIAL window too: a window that
+    // committed some files and refused others still made those commits durable, and `report`
+    // classifies the WINDOW while the announcement is per COMMITTED artifact — not the same
+    // question. (2) `announcementsFor`'s fail-closed throw must ESCAPE. While this sat inside the
+    // try, the throw was converted into `sequencer_failed` + an empty list and the terminal was
+    // emitted anyway — a refusal short-circuited by an enclosing catch, which is the exact defect
+    // class this ticket filed as `E7-F043`, and it silently hid a committed artifact instead of
+    // aborting the lifecycle as `E7-D12` requires.
+    return announcementsFor(raced.exported, requests);
   }
 
   /**

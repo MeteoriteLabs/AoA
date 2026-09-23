@@ -55,7 +55,7 @@ attempt" actually means here*.
 |---|---|
 | `packages/worker-daemon/src/supervisor/events.ts` | `EventSequencer.artifactPrepared(input: ArtifactPreparedPayloadV1)` — the emitter, identical in shape to every sibling (contiguous `seq`, `canonicalEventDigestInputV1` + `node:crypto` digest, frozen-schema parse, injected sink). It PROJECTS `{artifactId, kind}`, so a path handed to it cannot ride along. |
 | `packages/worker-daemon/src/supervisor/supervisor.ts` | `runExportWindow` now returns the announcements for the **committed** references (`announcementsFor`, joining each `ExportedArtifactRef` back to the request that named it for its `kind`); `runLifecycle` emits one `artifact_prepared` per announcement **after the window and before the terminal**, deliberately OUTSIDE the window's catch. |
-| `packages/worker-daemon/src/__tests__/events-artifact-prepared.test.ts` | New — 8 tests. |
+| `packages/worker-daemon/src/__tests__/events-artifact-prepared.test.ts` | New — 9 tests. |
 | `docs/replatform/epics/E7-coding-e2b/decisions.md` | `E7-D12` (new). |
 | `docs/replatform/epics/E7-coding-e2b/findings.md` | `E7-F024` disposition paragraph; `E7-F043` (new, the class twin). |
 | `scripts/finding-ownership.json` | `E7-F043` entry, `unowned` with its reason. |
@@ -126,9 +126,10 @@ behaviour that is actually there.
 | Command | Result |
 |---|---|
 | `pnpm --filter @armyofagents/worker-protocol build` | pass |
-| `pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/events-artifact-prepared.test.ts` (this ticket's file) | **1 file, 8 tests passed** |
+| `pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/events-artifact-prepared.test.ts` (this ticket's file) | **1 file, 9 tests passed** |
 | neighbours: `+ supervisor-export-artifacts` `+ event-sequencer-producers` `+ dispatch-runtime-export-composition` | **4 files, 46 tests passed** |
-| `pnpm --filter @armyofagents/worker-daemon exec vitest run` (whole package) | **167 files, 1276 passed, 1 skipped** |
+| ★ the one flake, named not hidden | `supervisor-hung-stage-input.test.ts > "the deadline is ONE budget across both halves"` went red in 2 of 3 full-package runs and green alone and in the third. It is a **real-clock** test (`setTimeout(…, 30)` against a small budget) and it references **none** of `resolveExportArtifacts` / `exportArtifacts` / `artifactPrepared`, so this diff cannot reach it — the announcement path runs only when both export deps are present. Already named as a flake in `CLI-012-result.md`; not re-filed. |
+| `pnpm --filter @armyofagents/worker-daemon exec vitest run` (whole package) | **167 files, 1277 passed, 1 skipped** |
 | `pnpm check:worker-daemon-boundary` | `worker daemon boundary: PASS` |
 | `pnpm --filter @armyofagents/worker-daemon typecheck` | pass |
 | `pnpm --filter @armyofagents/worker-daemon build` | pass |
@@ -137,7 +138,7 @@ behaviour that is actually there.
 ## 5. Mutation and positive-control table
 
 Each mutation was applied to the implementation, the focused suite run, then **reverted**; the
-baseline was re-run afterwards and returned `8 passed (8)`.
+baseline was re-run afterwards and returned `9 passed (9)`.
 
 | # | Mutation | Expected red | Result |
 |---|---|---|---|
@@ -148,6 +149,7 @@ baseline was re-run afterwards and returned `8 passed (8)`.
 | **M5** | Emit after the terminal (defer the loop) | ordering + presence | **4 failed / 4 passed** |
 | **M6** | Build announcements from `requests` instead of `exported` | partial + the anti-vacuity control | **5 failed / 3 passed** — incl. `nothing committed ⇒ NO announcement`, which is how that control is shown non-vacuous |
 | **M7** | Drop the payload projection in the emitter (`#emit(…, input)`) | the reference case | **1 failed** — `the payload is a REFERENCE — a path handed to the emitter cannot ride along` |
+| **M8** | Restore the pre-fix shape: put `announcementsFor` back inside the window's catch | the fail-closed-escape case | **1 failed / 8 passed** — `the fail-closed join ESCAPES the window's catch …` |
 
 **Positive controls, and what makes each non-vacuous**
 
@@ -209,9 +211,22 @@ with the honest reason, per §E rule 4, rather than an invented owner. Note that
   to truncate and no 480-event cap in play. **The finding stays open against the `log` route.**
 - **`E7-F043`** — NEW, filed by the class sweep above. Id minted after taking the true max across
   the repo (`git grep -oh "E7-F[0-9]\+" -- docs scripts server packages ui` → max `E7-F042`).
+- **`E7-F044`** — NEW, from Codex round 1 P1 (see §8a).
 - **`E7-F040`** (owner `CLI-017`), **`E7-F042`** (`unowned`) — untouched, neither duplicated nor closed.
 - **`E7-F041`** — checked before assuming, per the brief: it is already `resolved (2026-09-24, the
   class sweep)`. Not re-opened, not re-filed.
+
+## 8a. Codex round 1 (PR #589) — both findings real, verified at source
+
+| Finding | Verdict | Action |
+|---|---|---|
+| **P1** — a timed-out window discards announcements for files it had already committed | **REAL.** On `withDeadline` → `TIMEOUT` the sequencer promise has not resolved, so its accumulated `exported` is unreachable. | **Filed as `E7-F044`** (LOW, `unowned`). Not fixable here: every fix needs an incremental-progress signal on the **E5-owned** `ArtifactExportSequencer` seam, and the two alternatives — awaiting the pending promise past the deadline, or announcing after the terminal — reintroduce the unbounded wait and break this ticket's own ordering invariant respectively. |
+| **P2** — the fail-closed join throws inside the window's broad catch | **REAL, and it was this ticket's own bug.** `announcementsFor`'s throw was converted into `report("failed", …, "sequencer_failed")` + an empty list, and the terminal was emitted anyway — hiding a committed artifact instead of aborting per `E7-D12`. | **FIXED.** `runExportWindow`'s tail is restructured so the try covers only the await; the join runs after it, outside the catch. New test + mutation **M8**. |
+
+★★★ **P2 is an instance of the class this ticket had already filed as `E7-F043`** — a refusal
+short-circuited by an enclosing catch — sitting inside my own diff. The sweep in §7 searched for
+*swallowed emits* and did not search for *swallowed refusals*, which is why it walked past this one.
+Recorded as a miss, not smoothed over: a class sweep is only as wide as the class you name.
 
 ## 9. Non-goals honoured
 

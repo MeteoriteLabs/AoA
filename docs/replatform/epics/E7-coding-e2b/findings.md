@@ -4491,3 +4491,46 @@ fix it**, and says so here rather than leaving a fixed neighbour to imply the fa
 supersede `E7-D12`'s site too), or retry-before-terminal — plus a test of the `CLI-013` shape:
 a sink that throws on `usage`, asserting the emit was ATTEMPTED (non-vacuity) and that no terminal
 follows the hole. A test that only asserts the run "did not crash" passes against the defect.
+
+---
+
+## E7-F044 — a timed-out export window loses the announcements for files it had ALREADY committed, because the sequencer only surfaces its accumulated `exported` set when it resolves
+
+**Status:** open · **Owner:** `unowned` (honest reason below) · **Severity:** LOW
+**Filed:** 2026-09-24 by `CLI-013` (raised as Codex P1 on PR #589, verified at source before filing).
+**Cross-links:** `E7-D12` (the announcement's contiguity posture), `E7-F042` (the same shape of
+blocker: a fix that needs a cross-package interface change nobody owns).
+
+**What happens.** `runExportWindow` (`packages/worker-daemon/src/supervisor/supervisor.ts`) races the
+whole window against one budget. When `withDeadline` returns `TIMEOUT`, the sequencer promise has not
+resolved, so its accumulated `ArtifactExportOutcome.exported` is unreachable and the window returns
+no announcements. If the sequencer had already committed file 1 of 3 before the deadline, that
+artifact is **durable and unannounced**: `artifactCommit` returned `committed`, the `job_artifacts`
+row exists, and no `artifact_prepared` event ever names it.
+
+**Why it is LOW, measured.** The artifact is not lost and is not miscounted. `countProducedOutputs`
+reads `job_artifacts` directly and joins no events, so it counts either way, and nothing about the
+charge invariant moves. What is lost is the evidence-stream entry and therefore the `task_outputs`
+projection for that one file, on the timeout path only. It is the same exposure as a crash between
+the commit and the announcement, which is inherent to any non-atomic announce.
+
+**Why `CLI-013` did not fix it.** Every fix needs something the ticket may not change:
+
+- Surfacing partial progress requires an incremental-progress signal (a per-commit callback, or a
+  mutable accumulator the caller can read) on `ArtifactExportSequencer` — the **E5-owned**
+  `DAT-009-3c`/`3d` seam. `CLI-013`'s task section rules seam changes out in the same terms it rules
+  out `E7-D12` option 2.
+- Awaiting the pending `work` promise after the deadline reintroduces the unbounded wait the
+  deadline exists to prevent.
+- Announcing later, once `work` resolves, would put the event **after** the terminal, which breaks
+  the ordering invariant `CLI-013` pins and which the ingest would not accept anyway.
+
+**Why `unowned`.** `CLI-012` is shipped, `CLI-017` owns the SD-1b directive and SD-5, and
+`CLI-014`/`CLI-015` are the projector and the judge. `DAT-009` built the seam and is shipped. Naming
+any of them would be invented ownership.
+
+**What would close it.** An incremental-progress signal on the sequencer seam, plus a test of the
+`CLI-013` shape: a sequencer that commits one file, then hangs past the budget, asserting the
+committed file IS announced (non-vacuity — assert the announcement exists and names that artifact,
+not merely that the run survived) and that the hung file is not. A test asserting only that the
+window reports `timed_out` passes against the defect verbatim.
