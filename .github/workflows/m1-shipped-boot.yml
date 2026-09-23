@@ -198,62 +198,62 @@ jobs:
           ANTHROPIC_API_KEY: ${{ inputs.mode == 'keyed' && secrets.ANTHROPIC_API_KEY || '' }}
         run: >-
           node scripts/m1-shipped-boot/journey.mjs prepare --out "$M1_OUT"
-          --candidate "$CANDIDATE" --mode "$MODE" --e2b-template "$E2B_TEMPLATE" 2>&1 | tee -a "$M1_OUT/job-log.txt"
+          --candidate "$CANDIDATE" --mode "$MODE" --e2b-template "$E2B_TEMPLATE" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
 
       - name: Verify the control-plane / adapter-manager keypair
         run: |
           AOA_CONTROL_PLANE_SIGNING_KEY_FILE="$M1_OUT/keys/control-plane-signing-key.pem" \
           AOA_ADAPTER_MANAGER_CONTROL_PLANE_PUBLIC_KEY_FILE="$M1_OUT/keys/adapter-manager-cp-pubkey.pem" \
-            pnpm verify:cp-am-keypair 2>&1 | tee -a "$M1_OUT/job-log.txt"
+            pnpm verify:cp-am-keypair 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
 
       - name: Boot the core (stores, migrate, both control-plane replicas)
         env:
           AOA_M1_SECRET_OWNER: "1000:1000"
-        run: node scripts/m1-shipped-boot/journey.mjs boot-core --out "$M1_OUT" 2>&1 | tee -a "$M1_OUT/job-log.txt"
+        run: node scripts/m1-shipped-boot/journey.mjs boot-core --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
 
       - name: Seed the three Organizations through the API
         env:
           E2B_API_KEY: ${{ inputs.mode == 'keyed' && secrets.E2B_API_KEY || '' }}
           ANTHROPIC_API_KEY: ${{ inputs.mode == 'keyed' && secrets.ANTHROPIC_API_KEY || '' }}
-        run: node scripts/m1-shipped-boot/journey.mjs seed --out "$M1_OUT" 2>&1 | tee -a "$M1_OUT/job-log.txt"
+        run: node scripts/m1-shipped-boot/journey.mjs seed --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
 
       - name: Apply the F10 tenant set to every control-plane replica
-        run: node scripts/m1-shipped-boot/journey.mjs apply-rollout --out "$M1_OUT" 2>&1 | tee -a "$M1_OUT/job-log.txt"
+        run: node scripts/m1-shipped-boot/journey.mjs apply-rollout --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
 
       - name: Assert the tenant set and the must-be-off switches (render + running replicas)
-        run: node scripts/m1-shipped-boot/journey.mjs assert-tenants --out "$M1_OUT" 2>&1 | tee -a "$M1_OUT/job-log.txt"
+        run: node scripts/m1-shipped-boot/journey.mjs assert-tenants --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
 
       - name: Provision each Organization's target and enrolment ticket
         env:
           AOA_M1_SECRET_OWNER: "1000:1000"
-        run: node scripts/m1-shipped-boot/journey.mjs provision-targets --out "$M1_OUT" 2>&1 | tee -a "$M1_OUT/job-log.txt"
+        run: node scripts/m1-shipped-boot/journey.mjs provision-targets --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
 
       - name: Boot the workers (keyed also boots the adapter-manager)
         env:
           E2B_API_KEY: ${{ inputs.mode == 'keyed' && secrets.E2B_API_KEY || '' }}
-        run: node scripts/m1-shipped-boot/journey.mjs boot-workers --out "$M1_OUT" 2>&1 | tee -a "$M1_OUT/job-log.txt"
+        run: node scripts/m1-shipped-boot/journey.mjs boot-workers --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
 
       - name: Await each worker enrolled on its own Organization's target
-        run: node scripts/m1-shipped-boot/journey.mjs await-workers --out "$M1_OUT" 2>&1 | tee -a "$M1_OUT/job-log.txt"
+        run: node scripts/m1-shipped-boot/journey.mjs await-workers --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
 
       - name: Reconcile and preflight every Organization
-        run: node scripts/m1-shipped-boot/journey.mjs reconcile --out "$M1_OUT" 2>&1 | tee -a "$M1_OUT/job-log.txt"
+        run: node scripts/m1-shipped-boot/journey.mjs reconcile --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
 
       # DEP-015 follow-up (keyed run 35601445269 failed at stage_files: the adapter-manager could
       # not reach the presign store). A throwaway `compose run` of the adapter-manager SERVICE —
       # its networks, CA env and mounts, the bin never started, so no E2B call — HEADs the
       # presign endpoint. Free, and in BOTH modes, so the keyless rehearsal catches this class.
       - name: Probe the presign store from the adapter-manager's seat
-        run: node scripts/m1-shipped-boot/journey.mjs probe-presign --out "$M1_OUT" 2>&1 | tee -a "$M1_OUT/job-log.txt"
+        run: node scripts/m1-shipped-boot/journey.mjs probe-presign --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
 
       - name: Run the journey
-        run: node scripts/m1-shipped-boot/journey.mjs dispatch --out "$M1_OUT" 2>&1 | tee -a "$M1_OUT/job-log.txt"
+        run: node scripts/m1-shipped-boot/journey.mjs dispatch --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
 
       - name: Collect the evidence (redacted)
         if: always()
         run: |
           if [ -f "$M1_OUT/state.json" ]; then
-            node scripts/m1-shipped-boot/journey.mjs collect --out "$M1_OUT" 2>&1 | tee -a "$M1_OUT/job-log.txt" || true
+            node scripts/m1-shipped-boot/journey.mjs collect --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt" || true
           fi
 
       # HARD pre-upload check (ruled in under F2 after the distinct review of DEP-015): every job

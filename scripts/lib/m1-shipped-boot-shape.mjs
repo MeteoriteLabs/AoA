@@ -22,8 +22,10 @@ export const SHIPPED_BOOT_WORKFLOW = ".github/workflows/m1-shipped-boot.yml";
 export const GATED_SECRETS = ["E2B_API_KEY", "ANTHROPIC_API_KEY"];
 const GATED_SECRET_RE = /\$\{\{\s*inputs\.mode\s*==\s*'keyed'\s*&&\s*secrets\.([A-Z0-9_]+)\s*\|\|\s*''\s*\}\}/;
 /** Review batch 3A (PR #569): the ACTIONS LOG is a published surface and had no scanner. Every
- * phase therefore tees its output into the one file the leak scan reads as the log surface. */
-export const JOB_LOG_TEE = ' 2>&1 | tee -a "$M1_OUT/job-log.txt"';
+ * phase therefore pipes its output through `log-filter.mjs`, which CAPTURES the raw line into the
+ * file the leak scan reads and PUBLISHES a shape-redacted line to the runner (Codex P1, PR #574:
+ * a plain `tee` would publish an unregistered key before any scan could see it). */
+export const JOB_LOG_TEE = ' 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"';
 /** The phases whose output must be teed. `leak-scan` reads the file and `teardown` deletes the
  * state, so neither writes to it; everything that could print a secret does. */
 export const TEED_PHASES = [
@@ -257,7 +259,7 @@ export function evaluateShippedBootWorkflowShape(text) {
   if (!/\n\s+defaults:\s*\n\s+run:\s*\n(?:\s*#.*\n)*\s+shell: bash/.test(src)) {
     v.push("the job must declare `defaults: run: shell: bash` so every teed pipeline runs under pipefail");
   }
-  if (/pnpm verify:cp-am-keypair(?!.*tee -a)/.test(src)) {
+  if (/pnpm verify:cp-am-keypair(?!.*log-filter.mjs)/.test(src)) {
     v.push("the keypair check must tee its output into the job-log surface too — it is the step that handles the key");
   }
 

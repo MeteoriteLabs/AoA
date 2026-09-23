@@ -782,5 +782,17 @@ They are recorded because each would have made the control worse than none:
    each gate line, and a second test asserts those markers are present in THIS tree — a gate that
    refused every candidate, including the one it ships with, would be the same defect one level up.
 
+6. **An UNREGISTERED key would still have been published.** Masking covers only registered values;
+   a phase printing a key this job did not generate (a re-run's, an operator's — the very case the
+   shape scan exists for) reached the runner's log raw, and no later scan can retract a published
+   log. Every phase now pipes through `scripts/m1-shipped-boot/log-filter.mjs`, which CAPTURES the
+   raw line into the file the scan judges and PUBLISHES a shape-redacted line
+   (`redactKeyMaterialLine`); an `::add-mask::` line passes through, since that is the mechanism.
+   A `tee` no longer appears in the lane, and the shape guard requires the filter.
+7. **The directive exception must not travel to the evidence bundle.** An uploaded artifact does
+   not interpret `::add-mask::`, so a key on such a line in an evidence file would ship raw. The
+   evidence scan now runs with `skipMaskDirectives: false`; only the captured job log keeps the
+   exception, because only that surface is rendered by GitHub.
+
 **Status unchanged.** This is a control added after the fact to a run that was already clean; it
 neither re-opens nor re-decides §12's keyed acceptance.

@@ -958,7 +958,10 @@ function leakScan(state) {
     ...scanEvidenceForSecrets(logSurface, secrets).map((f) => ({ ...f, surface: "job log" })),
   ];
   const keyMaterial = [
-    ...scanForKeyMaterial(files).findings.map((f) => ({ ...f, surface: "evidence" })),
+    // An uploaded artifact does not INTERPRET `::add-mask::`; a key on such a line in an evidence
+    // file would be published raw, and the named-secret scan cannot know an unregistered key
+    // (Codex P2, PR #574). The directive exception belongs to the captured job log alone.
+    ...scanForKeyMaterial(files, { skipMaskDirectives: false }).findings.map((f) => ({ ...f, surface: "evidence" })),
     ...logScan.findings.map((f) => ({ ...f, surface: "job log" })),
   ];
   if (findings.length > 0 || keyMaterial.length > 0) {

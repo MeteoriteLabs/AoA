@@ -186,7 +186,7 @@ test("REJECT: write permissions", () => {
 });
 
 test("REJECT: the in-job keypair check removed", () => {
-  const text = mutate(real(), '            pnpm verify:cp-am-keypair 2>&1 | tee -a "$M1_OUT/job-log.txt"\n', "            true\n");
+  const text = mutate(real(), '            pnpm verify:cp-am-keypair 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"\n', "            true\n");
   assert.ok(anyMatch(violationsOf(text), /verify:cp-am-keypair/), violationsOf(text).join("\n"));
 });
 
@@ -215,7 +215,7 @@ test("REJECT: a phase that does not tee its output into the job-log surface", ()
   for (const phase of ["seed", "dispatch"]) {
     const text = mutate(
       real(),
-      `        run: node scripts/m1-shipped-boot/journey.mjs ${phase} --out "$M1_OUT" 2>&1 | tee -a "$M1_OUT/job-log.txt"\n`,
+      `        run: node scripts/m1-shipped-boot/journey.mjs ${phase} --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"\n`,
       `        run: node scripts/m1-shipped-boot/journey.mjs ${phase} --out "$M1_OUT"\n`,
     );
     assert.ok(anyMatch(violationsOf(text), new RegExp(`phase '${phase}' does not tee its output`)), violationsOf(text).join("\n"));
@@ -223,14 +223,14 @@ test("REJECT: a phase that does not tee its output into the job-log surface", ()
 });
 
 test("REJECT: the keypair check untee'd — it is the step that handles the key", () => {
-  const text = mutate(real(), '            pnpm verify:cp-am-keypair 2>&1 | tee -a "$M1_OUT/job-log.txt"\n', "            pnpm verify:cp-am-keypair\n");
+  const text = mutate(real(), '            pnpm verify:cp-am-keypair 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"\n', "            pnpm verify:cp-am-keypair\n");
   assert.ok(anyMatch(violationsOf(text), /keypair check must tee its output/), violationsOf(text).join("\n"));
 });
 
 test("REJECT: a phase dropped from the lane entirely", () => {
   const text = mutate(
     real(),
-    '            node scripts/m1-shipped-boot/journey.mjs collect --out "$M1_OUT" 2>&1 | tee -a "$M1_OUT/job-log.txt" || true\n',
+    '            node scripts/m1-shipped-boot/journey.mjs collect --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt" || true\n',
     "            true\n",
   );
   assert.ok(anyMatch(violationsOf(text), /must run the 'collect' phase/), violationsOf(text).join("\n"));

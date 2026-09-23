@@ -384,6 +384,24 @@ export const KEY_MATERIAL_MARKERS = Object.freeze([
 export const MASK_DIRECTIVE_PREFIX = "::add-mask::";
 
 /**
+ * One line as it may be PUBLISHED to the Actions log.
+ *
+ * ★ Masking covers only REGISTERED values. A phase that prints a key this job did not generate —
+ * a re-run's, an operator's — would reach the runner's log raw, and no later scan can retract a
+ * published log (Codex P1, PR #574). So every line is shape-redacted on its way to stdout, while
+ * the captured file keeps the raw bytes for the scan to judge. A `::add-mask::` line passes
+ * through unchanged: it is the masking mechanism, and GitHub renders it as `***`.
+ */
+export function redactKeyMaterialLine(line) {
+  const text = String(line ?? "");
+  if (text.startsWith(MASK_DIRECTIVE_PREFIX)) return text;
+  for (const { marker, pattern } of KEY_MATERIAL_MARKERS) {
+    if (pattern.test(text)) return `[REDACTED: key material (${marker}) — see the leak scan]`;
+  }
+  return text;
+}
+
+/**
  * The `::add-mask::` directives for one value.
  *
  * ★ A workflow command ENDS AT THE FIRST NEWLINE, so a multi-line value (a PEM) in one

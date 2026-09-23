@@ -705,3 +705,56 @@ test("the driver emits directives through the shared helper, never ad hoc", () =
   assert.match(driver, /for \(const directive of maskDirectivesFor\(value\)\) console\.log\(directive\);/);
   assert.match(driver, /stripMaskDirectives\(rawLog\)/);
 });
+
+// === Codex P1/P2 (second round, PR #574): publish redacted, capture raw ======================
+
+import { redactKeyMaterialLine } from "../m1-shipped-boot.mjs";
+
+test("POSITIVE CONTROL: an UNREGISTERED key is redacted on its way to the published log", () => {
+  // Masking covers only registered values. This is the re-run / operator-key case: nothing knows
+  // these bytes, and a published Actions log cannot be retracted.
+  for (const line of PRIVATE_PEM.split("\n").concat(PUBLIC_PEM.split("\n"))) {
+    const out = redactKeyMaterialLine(line);
+    // The BEGIN armour and the DER-prefixed body are what carry (or announce) the key; a bare
+    // `-----END …-----` footer carries nothing and is left readable.
+    if (/BEGIN|MCow|MC4C/.test(line)) {
+      assert.match(out, /^\[REDACTED: key material \((pem_private|pem_public|ed25519_spki_der|ed25519_pkcs8_der)\)/, line);
+      assert.ok(!out.includes(line), "the redacted form must not carry the line");
+    }
+  }
+  assert.equal(redactKeyMaterialLine("boot ok, nothing to hide"), "boot ok, nothing to hide");
+  // A masking directive passes through: it IS the mechanism, and GitHub renders it as ***.
+  const directive = maskDirectivesFor(CANARY)[0];
+  assert.equal(redactKeyMaterialLine(directive), directive);
+});
+
+test("the log filter CAPTURES raw and PUBLISHES redacted (end to end)", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "m1-filter-"));
+  const capture = path.join(dir, "nested", "job-log.txt");
+  const filter = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "m1-shipped-boot", "log-filter.mjs");
+  const input = `starting\n${PRIVATE_PEM}\n${maskDirectivesFor(CANARY)[0]}\ndone\n`;
+  const res = spawnSync(process.execPath, [filter, capture], { input, encoding: "utf8" });
+  assert.equal(res.status, 0, res.stderr);
+  // Published: no key material, but the run is still readable and the directive survives.
+  assert.ok(!res.stdout.includes("MC4CAQAwBQYDK2VwBCIEI"), res.stdout);
+  assert.match(res.stdout, /\[REDACTED: key material \(pem_private\)/);
+  assert.match(res.stdout, /starting/);
+  assert.ok(res.stdout.includes(maskDirectivesFor(CANARY)[0]));
+  // Captured: the RAW bytes, so the leak scan can still judge them.
+  const captured = readFileSync(capture, "utf8");
+  assert.ok(captured.includes("MC4CAQAwBQYDK2VwBCIEI"), "the capture must keep the raw line for the scan");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("POSITIVE CONTROL (P2): an unregistered key on an ::add-mask:: line in EVIDENCE is still caught", () => {
+  // An uploaded artifact does not interpret workflow commands, so the directive exception must not
+  // apply there. The same line in the JOB LOG is stripped (that surface is rendered by GitHub).
+  const out = mkdtempSync(path.join(tmpdir(), "m1-evidence-directive-"));
+  mkdirSync(path.join(out, "evidence"), { recursive: true });
+  writeFileSync(path.join(out, "evidence", "verifier-a.txt"), `${MASK_DIRECTIVE_PREFIX}${PRIVATE_PEM.split("\n")[1]}\n`);
+  writeFileSync(path.join(out, "state.json"), JSON.stringify({ out, redact: Object.values(SECRETS), secrets: SECRETS }));
+  const res = spawnSync(process.execPath, [journey, "leak-scan", "--out", out], { encoding: "utf8" });
+  rmSync(out, { recursive: true, force: true });
+  assert.equal(res.status, 1, res.stdout + res.stderr);
+  assert.match(`${res.stdout}${res.stderr}`, /evidence file 'verifier-a\.txt' line 1 carries key material \(ed25519_pkcs8_der\)/);
+});
