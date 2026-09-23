@@ -1,6 +1,8 @@
 # DEP-019 — The `m1-spine` journey, driven by the DEPLOYED worker — result
 
-**Status:** `complete` (set 2026-09-23 by the M1 review-batch-4 independent reviewer; see *Independent review*).
+**Status:** `gate_review`. ★ **The `complete` flip of 2026-09-23 is WITHDRAWN by the M1 planning
+session the same day**, on a Codex P1 raised against PR #579 and verified at source. Only a distinct
+reviewer may restore it, and not before the fix below lands.
 **Epic:** E6 · **Plan task:** `E6 implementation-plan §4c DEP-019` (filed by this PR) · **Milestone:** `M1a`
 **Date (UTC):** `2026-09-23`
 **Implementer:** Claude Opus 5 (M1 build agent)
@@ -1055,3 +1057,34 @@ record says, and `E4-F019` (filed by WRK-018) is the open register entry behind 
 |---:|---|---|---|---|
 | 1 | M1 review-batch-4 independent reviewer (Claude Opus 5) | `99bff824d1c4fd641cea3b05ab7fe588f8255b96` | `approved` | Worker-driven attempt judged by the SHARED `querySpineAttempt` + `evaluateEnabledTenantSpine` (which itself calls `evaluateUsageCardinality`); the only narrowing is `measuredRuntimeMillis`, with `usage:runtime_not_measured` as its floor. Suppressed control reds as `worker-driven cost/audit violations` in the probe log. Not-the-executor control asserts non-vacuity then BOTH arms, always-on. Private PEM bound as an individual file into `control-plane` only; three override clauses hold it. `assertProbeArgvShape` called before any spawn, fail-closed with no pinned URL. Probe run `35856129644`: `m1-spine` `107165160976`, `d1-merge-train` `107165160905`, `m1-fault-matrix` `107165161005`, all success; self-test 118/118, profile 10/10. Broken run `35853547516` and the shared `generate-d1-spine-keys.mjs` fix both verified. F10 real (2 enabled Organizations + 1 control). **Finding (non-blocking): the usage-suppressed control step greps only `[m1-spine:cost]`, which the harness attempts also emit — the §13.7 narrowing was not applied to this sibling.** |
 <!-- Later reviewers append attempt 2 below without replacing this row. -->
+
+## Withdrawal of the `complete` flip — the worker-driven cost control is not worker-specific
+
+**Raised by** Codex on PR #579 (`DEP-019-result.md:1022`). **Verified at source and UPHELD** by the
+M1 planning session on 2026-09-23, under ruling F2.
+
+**The defect.** The suppressed-usage positive control (`d1-merge-train.yml`, *"POSITIVE CONTROL —
+with usage suppressed, the profile MUST go red"*) proves the profile went red *for the cost reason*
+by grepping `[m1-spine:cost]`. That marker is attached to **every** violation whose code starts with
+`cost:` (`scripts/lib/m1-spine-assertions.mjs:141`), and `evaluateEnabledTenantSpine` runs on **both**
+paths: the harness-driven attempt of §2 and the worker-driven block guarded by
+`EXECUTOR === "worker"` (`tests/d1/m1-spine.test.mjs:468`).
+
+**Therefore the mutation that matters survives.** Delete the whole worker-only cost-verdict block and
+the suppressed run still fails, still emits `[m1-spine:cost]` from the harness path, and the control
+still reports "the profile went red on the cost assertion, as required". The control is real about
+*a* cost assertion and says nothing about **who executed** — which is the only thing this ticket
+claims. It is the vacuity class the ticket's own §2b control was written to close, one level up: the
+control was hardened against a vacuous *subject* and left vacuous in its *reason check*.
+
+**What is required before `complete` is restored.**
+1. A **worker-specific** failure marker, distinct from `[m1-spine:cost]`, emitted only by the
+   `EXECUTOR === "worker"` verdict — and the suppressed control greps **that**.
+2. The mutation as the positive control: with the worker-only block deleted, the suppressed-usage
+   step must **fail** on the missing worker marker. Record the red.
+3. A same-shape check that the marker cannot be produced by the harness path — otherwise item 1
+   reintroduces the same defect under a new name.
+
+**Scope of the withdrawal.** Acceptance items other than the worker-driven cost one are unaffected,
+and no evidence already recorded is retracted. What is retracted is the *disposition*: a ticket with
+an unmet acceptance item may not read `complete`.
