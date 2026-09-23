@@ -445,8 +445,20 @@ describe("WRK-018 1(b) — the worker logs the counts it parsed", () => {
       leaseId: `lease-${REDACTION_MARKER}`,
     });
     expect(scrubLogFields({ leaseId: "wxyzq" }, ["xyzq", `w${REDACTION_MARKER}`])).toBeNull();
-    // Numbers pass through untouched, so a numeric canary can never mangle a count.
-    expect(scrubLogFields({ parsedInputCount: 111 }, ["111"])).toEqual({ parsedInputCount: 111 });
+    // An unrelated canary leaves numbers exactly as they are - counts are never mangled.
+    expect(scrubLogFields({ parsedInputCount: 111 }, [CANARY_A])).toEqual({ parsedInputCount: 111 });
+  });
+
+  it("★ a DIGITS-ONLY canary that appears in a count's decimal text drops the line (Codex P1, PR #571)", () => {
+    // Superseded expectation: this case asserted `scrubLogFields({ parsedInputCount: 111 },
+    // ["111"])` KEPT the value, on the reasoning that numbers cannot carry text. Under H-04 zero
+    // tolerance that is a leak: a redeemed secret may be any non-empty string, so a digits-only
+    // one equal to (or inside) a count's decimal rendering would print the secret bytes verbatim
+    // in the production JSON log. The whole set is refused instead - the run then contributes no
+    // 1(b) evidence, which is the safe direction.
+    expect(scrubLogFields({ parsedInputCount: 111 }, ["111"])).toBeNull();
+    expect(scrubLogFields({ parsedInputCount: 1110 }, ["111"])).toBeNull(); // a substring counts
+    expect(scrubLogFields({ attempt: 7, leaseId: "lease-1" }, ["7"])).toBeNull();
   });
 
   it("a REFUSED payload logs NO line - never a zeroed stand-in the lane would compare against", async () => {

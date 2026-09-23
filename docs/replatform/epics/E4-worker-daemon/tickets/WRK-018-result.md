@@ -356,9 +356,19 @@ no call-site edit can smuggle the stdout tail into this line without changing th
 `scrubLogFields` (`run-output.ts`) scrubs every string value with the run's canaries and returns
 `null` — dropping the WHOLE line — if a value cannot be scrubbed.
 
+★★★ **A NUMBER CAN CARRY A SECRET (Codex P1 on PR #571, second finding, and it was right).** The
+first revision let numbers through untouched, reasoning that a count cannot carry text, and a test
+asserted exactly that. But a redeemed secret may be ANY non-empty string, so a digits-only canary
+equal to (or inside) a count's decimal rendering would print the secret bytes verbatim into the
+production JSON log — a silent H-04 breach with a test blessing it. A number is still never
+REWRITTEN (that would mangle the count the lane compares); instead the WHOLE set is refused, so
+such a run simply contributes no parsed-counts line. Over-conservative by construction, in the safe
+direction.
+
 RED first: `expected [] to have a length of 1` (no line existed) and `(0 , parsedUsageLogFields) is
 not a function`; for the production-logger case, `expected undefined to be 111`. GREEN:
-`usage-observer.test.ts` 14 tests, `usage-stream-redaction.test.ts` 20 tests.
+`usage-observer.test.ts` 14 tests, `usage-stream-redaction.test.ts` 21 tests; worker-daemon suite 1228
+passed / 1 skipped.
 
 | Mutation | Reds |
 |---|---|
@@ -368,6 +378,7 @@ not a function`; for the production-logger case, `expected undefined to be 111`.
 | MU4 accept a non-integer count | the refused-payload case |
 | MU5 log a zeroed stand-in when the payload is refused | the "a REFUSED payload logs NO line" case |
 | MU6 rename a count key back to `parsedInputTokens` | the production-logger case (the value arrives `"[redacted]"`) |
+| MU7 let numbers bypass the canary check | the digits-only-canary case |
 
 Leak controls: the canary rides the very stdout the counts came from (asserted present in the
 stream), and no canary appears in any log line; the payload's keys are pinned exactly, so any text

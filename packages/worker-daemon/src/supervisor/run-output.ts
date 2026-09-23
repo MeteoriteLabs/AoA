@@ -111,17 +111,28 @@ export function scrubOutputText(text: string, canaries: readonly string[]): stri
 /**
  * Scrub the STRING values of a bounded set of log bindings with the run's canaries, fail closed: a
  * value that cannot be scrubbed refuses the WHOLE set (`null`), so the caller drops the line rather
- * than printing a partially-scrubbed one. Numbers pass through untouched (so a numeric canary can
- * never mangle a count); any other value type is refused, because this helper serves lines whose
+ * than printing a partially-scrubbed one. A NUMBER is never rewritten - that would mangle the count
+ * a consumer compares - but a number whose decimal text carries a canary refuses the set too
+ * (Codex P1, PR #571). Any other value type is refused, because this helper serves lines whose
  * payload is bounded and known (WRK-018's parsed-counts line), not arbitrary structures.
  */
 export function scrubLogFields<T extends Record<string, string | number>>(
   fields: T,
   canaries: readonly string[],
 ): T | null {
+  const numericNeedles = redactionNeedles(canaries);
   const out: Record<string, string | number> = {};
   for (const [key, value] of Object.entries(fields)) {
     if (typeof value === "number") {
+      // ★★★ A NUMBER CAN CARRY A SECRET (Codex P1, PR #571). A redeemed secret may be ANY
+      // non-empty string, so a digits-only canary equal to - or inside - a count's decimal
+      // rendering would print the secret bytes verbatim, and "numbers are safe" would be a
+      // silent H-04 breach. A number is never REWRITTEN (that would mangle the count the lane
+      // compares); the WHOLE set is refused instead, so the run simply contributes no
+      // parsed-counts line. Over-conservative by construction: a short all-digit needle can
+      // refuse a line that leaks nothing, which is the safe direction.
+      const text = String(value);
+      if (numericNeedles.some((needle) => text.includes(needle))) return null;
       out[key] = value;
       continue;
     }
