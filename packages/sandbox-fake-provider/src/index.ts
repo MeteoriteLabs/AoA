@@ -6,6 +6,8 @@ export {
   createFakeSandboxProvider,
   UnsupportedProviderOperation,
   LIFECYCLE_CHECKPOINTS,
+  FAKE_PROVIDER_CANNED_USAGE_V1,
+  FAKE_PROVIDER_USAGE_MODES,
 } from "./fake-driver.js";
 export type {
   FakeSandboxProviderOptions,
@@ -22,6 +24,8 @@ export type {
   ReplayResult,
   LifecycleCheckpoint,
   FailureInjection,
+  FakeProviderUsageV1,
+  FakeProviderUsageMode,
 } from "./fake-driver.js";
 
 export {

@@ -141,6 +141,9 @@ const ctlServer = createServer((req, res) => {
         loadFixture: (id) => loadFixtureFromDir(FIXTURES_DIR, id),
         failureInjection: body.failureInjection ?? null,
         includeAllCheckpoints: body.includeAllCheckpoints === true,
+        // DEP-016 — `canned` (default) | `suppressed`; the driver refuses any other value.
+        // `suppressed` is the m1-spine profile's positive control (execute reports usage: null).
+        usageMode: body.usageMode === undefined ? undefined : body.usageMode,
       });
       return send(res, 200, { ok: true, fixtureId: fixture.id });
     }

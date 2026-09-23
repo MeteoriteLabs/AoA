@@ -1,6 +1,6 @@
 # DEP-016 — The `m1-spine` campaign profile on the D1 compose
 
-**Status:** `scoping` · **Epic:** E6 · **Plan node:** `docs/replatform/program-design.md`, `#### DEP-016`
+**Status:** superseded by `tickets/DEP-016-result.md` (2026-09-23); the value on this line was `scoping` · **Epic:** E6 · **Plan node:** `docs/replatform/program-design.md`, `#### DEP-016`
 **Depends on:** `JOB-016`, `JOB-017`, `DEP-004`; `WRK-018` for closing `E3-F037` · **Milestone:** `M1a`
 **Owns:** finding **E3-F037** (`epics/E3-job-control/findings.md`)
 **Filed:** 2026-09-21 (planning-session ruling under founder delegation F2, applied in `JOB-016`'s PR #547)
@@ -39,3 +39,14 @@ When all three hold, `findings.md` `Status` flips and the `E3-F037` key in
 ## Status
 
 Scoping stub. No result doc until the profile is built and reviewed by a distinct reviewer.
+
+---
+
+## Superseded (2026-09-23)
+
+The profile is built and its result record is `DEP-016-result.md`. Everything above is kept as
+written, including the sentence saying this file "carries no design and no result" — it was true
+when written. Two things it states have since changed and are recorded in the result, not here:
+`E3-F037` is no longer `owned` by this ticket (a ticket with a result record cannot hold an open
+finding; it is now `unowned`, with the residual named), and what closes `E3-F037` now has exactly
+one item left — `WRK-018`'s keyed E2B acceptance for the real claude usage parser.
