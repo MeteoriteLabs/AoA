@@ -701,8 +701,9 @@ export const DRAIN_REASON = "distributed_execution_rollback";
  * @param {Array<{tenantKey:string, organizationId:string, companyId:string, jobId:string}>} o.drainableJobs
  * @param {Array<{action:string, entityId:string, organizationId:string, companyId:string, actorType:string, actorId:string}>} o.auditRows
  * @param {string[]} o.terminalJobIds  jobs that were already terminal when the drain ran
- * @param {Array<{jobId:string, status:string}>} o.attempts  every probed attempt's state AFTER the drain
- * @param {Array<{jobId:string, organizationId:string, companyId:string, activeLeases:number, disposition:string|null}>} o.preDrainCandidates
+ * @param {Array<{attemptId:string, jobId:string, status:string}>} o.attempts  every probed attempt's
+ *        state AFTER the drain, PER ATTEMPT
+ * @param {Array<{attemptId:string, jobId:string, organizationId:string, companyId:string, activeLeases:number, disposition:string|null}>} o.preDrainCandidates
  *        every NON-TERMINAL attempt of the profile's Organizations, taken BEFORE the drain ran
  * @param {Array<{jobId:string, commandKind:string, reason:string|null}>} o.commands  the control
  *        commands those jobs carry after the drain
@@ -724,7 +725,12 @@ export function evaluateRollbackRehearsal(o) {
   // attempt, the enabled-placement probe and the control tenant's legacy attempt — so a drain that
   // skipped the leased branch, or that left a tenant's attempt running, cannot pass because two
   // freshly seeded unleased attempts happened to move.
-  const statusAfter = new Map((o.attempts ?? []).map((a) => [a.jobId, a.status]));
+  // ★ Keyed by ATTEMPT, not by job (Codex P1, PR #566): the drain's store deduplicates cancellation
+  // per job, so a job carrying two simultaneously non-terminal attempts could show one cancelled
+  // while a sibling kept running — which a job-keyed map would hide.
+  const statusByAttempt = new Map((o.attempts ?? []).map((a) => [a.attemptId, a.status]));
+  const statusesByJob = new Map();
+  for (const a of o.attempts ?? []) statusesByJob.set(a.jobId, [...(statusesByJob.get(a.jobId) ?? []), a.status]);
   const commandsByJob = new Map();
   for (const command of o.commands ?? []) {
     commandsByJob.set(command.jobId, [...(commandsByJob.get(command.jobId) ?? []), command]);
@@ -737,7 +743,7 @@ export function evaluateRollbackRehearsal(o) {
     // "cancelled" for both would have been wrong, and asserting only one branch would let the
     // other regress unseen.
     const expected = leased ? "cancel_requested" : "cancelled";
-    const status = statusAfter.get(candidate.jobId);
+    const status = statusByAttempt.get(candidate.attemptId);
     if (status !== expected) {
       out.push(violation(
         "rollback:candidate_not_cancelled",
@@ -775,6 +781,13 @@ export function evaluateRollbackRehearsal(o) {
       out.push(violation(
         "rollback:candidate_audit_wrong_tenant",
         `the drain audit row for job ${candidate.jobId} names another tenant`,
+      ));
+    } else if (own[0].detailsReason !== DRAIN_REASON) {
+      // The row must say WHY the mutation happened. A correct command beside an audit row that
+      // records no reason, or another one, misstates the record a rehearsal exists to make.
+      out.push(violation(
+        "rollback:audit_wrong_reason",
+        `the drain audit row for job ${candidate.jobId} records reason ${JSON.stringify(own[0].detailsReason ?? null)}, not ${DRAIN_REASON}`,
       ));
     }
   }
@@ -818,9 +831,9 @@ export function evaluateRollbackRehearsal(o) {
   }
   // ★ The drain's EFFECT, not only its audit (Codex P1, PR #566): an audit row written while the
   // attempt stayed non-terminal would be a rehearsal that rolled nothing back.
-  const statusByJob = new Map((o.attempts ?? []).map((a) => [a.jobId, a.status]));
+
   for (const job of o.drainableJobs ?? []) {
-    const status = statusByJob.get(job.jobId);
+    const status = job.attemptId ? statusByAttempt.get(job.attemptId) : (statusesByJob.get(job.jobId) ?? [])[0];
     if (status !== "cancelled") {
       out.push(violation(
         "rollback:attempt_not_cancelled",
@@ -829,11 +842,11 @@ export function evaluateRollbackRehearsal(o) {
     }
   }
   for (const jobId of o.terminalJobIds ?? []) {
-    const status = statusByJob.get(jobId);
-    if (status !== undefined && status !== "succeeded") {
+    const statuses = statusesByJob.get(jobId) ?? [];
+    if (statuses.some((status) => status !== "succeeded")) {
       out.push(violation(
         "rollback:terminal_attempt_moved",
-        `the drain moved an already-terminal attempt (${jobId}) to ${JSON.stringify(status)} — it is not selective`,
+        `the drain moved an already-terminal attempt (${jobId}) to ${JSON.stringify(statuses)} — it is not selective`,
       ));
     }
     if (rowsAnyDrain.some((r) => r.entityId === jobId)) {

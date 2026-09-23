@@ -574,8 +574,8 @@ test("a control observation missing the RUNNING control plane's placement is ref
 
 function goodRehearsal(overrides = {}) {
   const drainableJobs = [
-    { tenantKey: "A", organizationId: A.organizationId, companyId: A.companyId, jobId: "a0000000-0000-4000-8000-00000000000a" },
-    { tenantKey: "B", organizationId: B.organizationId, companyId: B.companyId, jobId: "b0000000-0000-4000-8000-00000000000b" },
+    { tenantKey: "A", organizationId: A.organizationId, companyId: A.companyId, jobId: "a0000000-0000-4000-8000-00000000000a", attemptId: "a1000000-0000-4000-8000-00000000000a" },
+    { tenantKey: "B", organizationId: B.organizationId, companyId: B.companyId, jobId: "b0000000-0000-4000-8000-00000000000b", attemptId: "b1000000-0000-4000-8000-00000000000b" },
   ];
   return {
     exitCode: 0,
@@ -589,16 +589,17 @@ function goodRehearsal(overrides = {}) {
       companyId: job.companyId,
       actorType: "system",
       actorId: "operator-cli:m1-spine-1234abcd",
+      detailsReason: DRAIN_REASON,
     })),
     terminalJobIds: ["c0000000-0000-4000-8000-00000000000c"],
     preDrainCandidates: [
       ...drainableJobs.map((job) => ({ ...job, activeLeases: 0, disposition: "selected" })),
-      { jobId: "d0000000-0000-4000-8000-00000000000d", organizationId: A.organizationId, companyId: A.companyId, activeLeases: 1, disposition: "selected" },
+      { jobId: "d0000000-0000-4000-8000-00000000000d", attemptId: "d1000000-0000-4000-8000-00000000000d", organizationId: A.organizationId, companyId: A.companyId, activeLeases: 1, disposition: "selected" },
     ],
     attempts: [
-      ...drainableJobs.map((job) => ({ jobId: job.jobId, status: "cancelled" })),
-      { jobId: "d0000000-0000-4000-8000-00000000000d", status: "cancel_requested" },
-      { jobId: "c0000000-0000-4000-8000-00000000000c", status: "succeeded" },
+      ...drainableJobs.map((job) => ({ attemptId: job.attemptId, jobId: job.jobId, status: "cancelled" })),
+      { attemptId: "d1000000-0000-4000-8000-00000000000d", jobId: "d0000000-0000-4000-8000-00000000000d", status: "cancel_requested" },
+      { attemptId: "c1000000-0000-4000-8000-00000000000c", jobId: "c0000000-0000-4000-8000-00000000000c", status: "succeeded" },
     ],
     commands: [{ jobId: "d0000000-0000-4000-8000-00000000000d", commandKind: "cancel", reason: DRAIN_REASON }],
     ...overrides,
@@ -674,6 +675,24 @@ test("a census attempt with no drain audit row, or one naming another tenant, is
   foreign.auditRows = foreign.auditRows.map((r) => (r.entityId === "d0000000-0000-4000-8000-00000000000d"
     ? { ...r, companyId: B.companyId, detailsOrganizationId: B.organizationId } : r));
   assert.ok(evaluateRollbackRehearsal(foreign).map((x) => x.code).includes("rollback:candidate_audit_wrong_tenant"));
+});
+
+test("a SIBLING attempt of the same job left running is refused — state is keyed per attempt (Codex P1)", () => {
+  const rehearsal = goodRehearsal();
+  const drained = rehearsal.preDrainCandidates[0];
+  const sibling = { ...drained, attemptId: "e1000000-0000-4000-8000-00000000000e" };
+  rehearsal.preDrainCandidates = [...rehearsal.preDrainCandidates, sibling];
+  // The job already shows a `cancelled` attempt, so a job-keyed map would find it and pass.
+  rehearsal.attempts = [...rehearsal.attempts, { attemptId: sibling.attemptId, jobId: sibling.jobId, status: "running" }];
+  assert.ok(evaluateRollbackRehearsal(rehearsal).map((x) => x.code).includes("rollback:candidate_not_cancelled"));
+});
+
+test("a drain audit row that records no reason, or another one, is refused (Codex P2)", () => {
+  for (const reason of [null, "some_other_reason"]) {
+    const rehearsal = goodRehearsal();
+    rehearsal.auditRows = rehearsal.auditRows.map((r, i) => (i === 0 ? { ...r, detailsReason: reason } : r));
+    assert.ok(evaluateRollbackRehearsal(rehearsal).map((x) => x.code).includes("rollback:audit_wrong_reason"), JSON.stringify(reason));
+  }
 });
 
 test("a drain that also cancelled an already-terminal attempt is refused (it must be selective)", () => {

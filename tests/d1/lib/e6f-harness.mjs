@@ -2604,10 +2604,12 @@ const sql = postgres(process.env.DATABASE_URL, { max: 1 });
 try {
   const audit = await sql\`SELECT action, entity_id AS "entityId", company_id AS "companyId",
       organization_id AS "organizationId", details->>'organizationId' AS "detailsOrganizationId",
-      actor_type AS "actorType", actor_id AS "actorId"
+      details->>'reason' AS "detailsReason", actor_type AS "actorType", actor_id AS "actorId"
     FROM activity_log WHERE action = 'job.drain.requested' AND entity_id = ANY(\${P.jobIds})\`;
-  const attempts = await sql\`SELECT job_id AS "jobId", status FROM job_attempts
-    WHERE job_id = ANY(\${P.jobIds}::uuid[])\`;
+  // Per ATTEMPT, never collapsed by job: a job may carry two simultaneously non-terminal attempts,
+  // and a cancelled one must not mask a sibling the drain left running.
+  const attempts = await sql\`SELECT id AS "attemptId", job_id AS "jobId", attempt_number AS "attemptNumber", status
+    FROM job_attempts WHERE job_id = ANY(\${P.jobIds}::uuid[]) ORDER BY job_id, attempt_number\`;
   const commands = await sql\`SELECT job_id AS "jobId", command_kind AS "commandKind", reason FROM job_control_commands
     WHERE job_id = ANY(\${P.jobIds}::uuid[])\`;
   report({ ok: true, audit, attempts, commands });

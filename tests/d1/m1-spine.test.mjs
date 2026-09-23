@@ -531,7 +531,10 @@ test("m1-spine: the MIG-009 drain CLI rolls back live distributed work, per tena
       placement: { targetId: ids.targetId, registeredProfileHash: worker.target.registeredProfileHash, providerDigest: worker.target.providerDigest },
     }), `${tenant.key} drainable job`);
     assert.equal(job.ok, true, `${tenant.key} drainable job seed: ${truncate(job)}`);
-    drainable.push({ tenantKey: tenant.key, organizationId: tenant.organizationId, companyId: tenant.companyId, jobId: ids.jobId });
+    drainable.push({
+      tenantKey: tenant.key, organizationId: tenant.organizationId, companyId: tenant.companyId,
+      jobId: ids.jobId, attemptId: ids.attemptId,
+    });
   }
 
   // The census of everything the drain will touch, taken BEFORE it runs: the two jobs seeded above,
