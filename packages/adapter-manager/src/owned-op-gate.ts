@@ -122,10 +122,16 @@ export async function gateOwnedOp<R>(
   sandboxId: string,
   ctx: ProviderOpContext,
   capability: OwnedLabelsCapability | undefined,
-  dispatch: (detail: InspectResult) => Promise<R>,
+  dispatch: (detail: InspectResult, remainingMs?: number) => Promise<R>,
   /**
-   * DAT-009-3e (Codex P1, PR #557) — an OPTIONAL wall-clock bound on the LOCKED section: the
-   * ownership inspection AND the dispatch. Without it, a provider whose `inspect` ignores
+   * DAT-009-3e (Codex P1, PR #557) — an OPTIONAL ABSOLUTE ms-epoch deadline for the LOCKED section:
+   * the ownership inspection AND the dispatch.
+   *
+   * ★ AN INSTANT, NOT A DURATION, and that is the correction Codex's sixth round forced.
+   * `runExclusive` QUEUES: a request can wait behind a predecessor and only then start its timer,
+   * so a duration computed before enqueueing would hand every queued request a full, stale window.
+   * The remaining budget is measured HERE, after the lock is acquired, and the dispatch is handed
+   * that remaining budget rather than the caller's original one. Without it, a provider whose `inspect` ignores
    * `ctx.deadlineMs` (`E2bSandboxProvider`'s does) can hold the per-sandbox mutex for as long as
    * its transport hangs, and the run's own destroy queues behind it — the strand, one step before
    * the read and the upload. When the bound fires the exclusive section RETURNS, which releases
@@ -133,7 +139,7 @@ export async function gateOwnedOp<R>(
    * its rejection is handled so it is never unhandled. Omitted ⇒ byte-identical to before, so the
    * ops that pass no bound (execute, the teardown ops, inspect, stage_files) are unchanged.
    */
-  opBudgetMs?: number,
+  opDeadlineAtMs?: number,
 ): Promise<R> {
   const { provider, controlPlanePublicKey, now, sandboxLock } = deps;
 
@@ -157,6 +163,8 @@ export async function gateOwnedOp<R>(
     // timed out and teardown had taken the lock. Checked after the awaited inspection, exactly as
     // the supervisor's export window re-checks its own latch after every await.
     let budgetFired = false;
+    // Measured AFTER the queue, so time spent waiting for the lock is spent budget.
+    const remainingMs = opDeadlineAtMs === undefined ? undefined : opDeadlineAtMs - now();
     const locked = (async (): Promise<R> => {
       // Resolve the target AM-local. MIRROR #requireOwned: SandboxNotFoundError -> the
       // uniform error; RETHROW any OTHER (transient) inspect fault as its own class.
@@ -177,11 +185,11 @@ export async function gateOwnedOp<R>(
       if (budgetFired) throw new WireProtocolError("gated operation abandoned: its budget fired before dispatch");
 
       // Allow — dispatch OUTSIDE the inspect-collapse try. A dispatch fault is ITS OWN class.
-      return dispatch(detail);
+      return dispatch(detail, remainingMs);
     })();
-    return opBudgetMs === undefined
+    return remainingMs === undefined
       ? locked
-      : boundLockedSection(locked, opBudgetMs, () => {
+      : boundLockedSection(locked, remainingMs, () => {
           budgetFired = true;
         });
   });

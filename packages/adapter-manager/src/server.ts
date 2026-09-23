@@ -200,12 +200,14 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
    * own contract is "a repeated key returns the recorded result and does not double-apply", and a
    * lost response must not turn a stored object into a missing output (Codex P2, PR #557).
    *
-   * ★ BOUNDED IN TIME, not unbounded growth (Codex P2, fifth round). A record is useful only while
-   * the grant that produced it can still be redeemed, so each carries that grant's own `expiresAt`
-   * and every export first drops the records that have passed it. A grant past its expiry is
-   * refused outright (`assertUploadGrantBound`), so an evicted record can never be replayed.
+   * ★ BOUNDED IN TIME, on the SERVER's own clock (Codex P2 then P1, fifth and sixth rounds). The
+   * first attempt retained each record for the grant's own `expiresAt` — which is WORKER-SUPPLIED
+   * and unauthenticated, so a worker could shorten it, wait for its own record to be evicted, and
+   * then replay the still-live url with different bytes. Retention is therefore a fixed
+   * server-side window (`UPLOAD_REDEMPTION_RETENTION_MS`) measured from the redemption, which no
+   * worker field can shorten, and the map stays bounded by the exports in one window.
    */
-  const redeemedUploads = new Map<string, { idempotencyKey: string; result: unknown; expiresAtMs: number }>();
+  const redeemedUploads = new Map<string, { idempotencyKey: string; result: unknown; recordedAtMs: number }>();
 
   const gateDeps: OwnedOpGateDeps | null = gated
     ? { provider, controlPlanePublicKey: controlPlanePublicKey!, now, sandboxLock: new KeyedMutex() }
@@ -265,22 +267,22 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
         // DAT-009-3e — metadata only (sha256 + byte size), never content. Owned-checked first: a
         // digest of another tenant's file is itself a disclosure (it confirms content by hash).
         const { sandboxId, path } = args as { sandboxId: string; path: string };
-        const digestBudget = artifactOpBudgetMs(ctx, capability, now());
         return gateOwnedOp(
           deps,
           sandboxId,
           ctx,
           capability,
-          () => {
-            // Bounded for the same reason the export is: this runs under the per-sandbox lock.
-            if (!(digestBudget > 0)) {
+          (_detail, remainingMs) => {
+            // Bounded for the same reason the export is: this runs under the per-sandbox lock. The
+            // budget is what is LEFT after the mutex queue, which the gate measures.
+            if (remainingMs === undefined || !(remainingMs > 0)) {
               return Promise.reject(new WireProtocolError("digest_artifact refused: no budget left before the teardown reserve"));
             }
-            return provider.digestArtifact(sandboxId, path, { ...ctx, deadlineMs: digestBudget });
+            return provider.digestArtifact(sandboxId, path, { ...ctx, deadlineMs: remainingMs });
           },
-          // The bound covers the ownership inspection too — the provider's `inspect` honours no
+          // The deadline covers the ownership inspection too — the provider's `inspect` honours no
           // deadline of its own, and it runs inside the lock.
-          digestBudget,
+          artifactOpDeadlineAtMs(ctx, capability, now()),
         );
       }
       case "export_artifact": {
@@ -303,21 +305,20 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
         // EXPORT_TEARDOWN_RESERVE_MS, the same clamp the supervisor applies to its export window,
         // so destroy always keeps its reserve. It is passed BOTH to the provider (which aborts the
         // read and the upload on it) and to the gate (which releases the lock on it).
-        const exportBudget = artifactOpBudgetMs(ctx, capability, now());
         return gateOwnedOp(
           deps,
           sandboxId,
           ctx,
           capability,
-          (detail) => {
+          (detail, remainingMs) => {
             assertUploadGrantBound(grant, detail.resourceLabels, artifactUploadOrigins, now());
-            if (!(exportBudget > 0)) {
+            if (remainingMs === undefined || !(remainingMs > 0)) {
               return Promise.reject(new WireProtocolError("export_artifact refused: no budget left before the teardown reserve"));
             }
             const objectKey = (grant as { objectKey: string }).objectKey;
             const nowMs = now();
             for (const [key, record] of redeemedUploads) {
-              if (record.expiresAtMs <= nowMs) redeemedUploads.delete(key);
+              if (nowMs - record.recordedAtMs > UPLOAD_REDEMPTION_RETENTION_MS) redeemedUploads.delete(key);
             }
             const redeemed = redeemedUploads.get(objectKey);
             if (redeemed !== undefined) {
@@ -326,17 +327,13 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
               if (redeemed.idempotencyKey === ctx.idempotencyKey) return Promise.resolve(redeemed.result);
               return Promise.reject(new WireProtocolError("export_artifact refused: this object key has already been uploaded"));
             }
-            return provider.exportArtifact(sandboxId, path, grant, { ...ctx, deadlineMs: exportBudget }).then((result) => {
+            return provider.exportArtifact(sandboxId, path, grant, { ...ctx, deadlineMs: remainingMs }).then((result) => {
               // Recorded only on SUCCESS: a failed export must stay retryable.
-              redeemedUploads.set(objectKey, {
-                idempotencyKey: ctx.idempotencyKey,
-                result,
-                expiresAtMs: Date.parse((grant as { expiresAt: string }).expiresAt),
-              });
+              redeemedUploads.set(objectKey, { idempotencyKey: ctx.idempotencyKey, result, recordedAtMs: now() });
               return result;
             });
           },
-          exportBudget,
+          artifactOpDeadlineAtMs(ctx, capability, now()),
         );
       }
       default:
@@ -445,13 +442,27 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
 }
 
 /**
- * DAT-009-3e — the budget an artifact op may hold the per-sandbox lock for: the caller's own budget,
- * clamped to the capability's remaining life minus `EXPORT_TEARDOWN_RESERVE_MS`. That is the clamp
- * the supervisor applies to its own export window, so the run's destroy always keeps its reserve
- * (Codex P1, PR #557). `capability` is defined at every call site: the gate verified it first.
+ * DAT-009-3e — how long a record of a successful export is kept, measured from the redemption on
+ * the SERVER's clock. Long enough to cover any honest retry or lost-response replay of a grant
+ * (grants are minted with short lives), short enough that the map is bounded by one window's
+ * exports. Deliberately NOT the grant's own `expiresAt`, which is worker-supplied (Codex P1).
  */
-function artifactOpBudgetMs(ctx: ProviderOpContext, capability: OwnedLabelsCapability | undefined, nowMs: number): number {
-  return Math.min(ctx.deadlineMs, (capability?.expiresAt ?? 0) - nowMs - EXPORT_TEARDOWN_RESERVE_MS);
+export const UPLOAD_REDEMPTION_RETENTION_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * DAT-009-3e — the ABSOLUTE instant by which an artifact op must be done: the caller's own budget,
+ * clamped to the capability's life minus `EXPORT_TEARDOWN_RESERVE_MS`. That is the clamp the
+ * supervisor applies to its own export window, so the run's destroy always keeps its reserve
+ * (Codex P1, PR #557). An INSTANT rather than a duration, because the gate's mutex queues: time
+ * spent waiting for the lock must be spent budget, not a fresh window.
+ * `capability` is defined at every call site: the gate verified it first.
+ */
+function artifactOpDeadlineAtMs(
+  ctx: ProviderOpContext,
+  capability: OwnedLabelsCapability | undefined,
+  nowMs: number,
+): number {
+  return Math.min(nowMs + ctx.deadlineMs, (capability?.expiresAt ?? 0) - EXPORT_TEARDOWN_RESERVE_MS);
 }
 
 /**

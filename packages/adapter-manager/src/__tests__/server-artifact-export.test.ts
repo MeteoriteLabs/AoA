@@ -33,7 +33,7 @@ import type { ArtifactUploadGrantV1 } from "@armyofagents/worker-protocol";
 import { E2bSandboxProvider } from "@armyofagents/sandbox-e2b-provider/e2b-provider.js";
 import { MockE2bTransport } from "@armyofagents/sandbox-e2b-provider/mock-transport.js";
 
-import { createProviderServer } from "../server.js";
+import { UPLOAD_REDEMPTION_RETENTION_MS, createProviderServer } from "../server.js";
 
 const NOW = 1_700_000_000_000;
 const UNIFORM_ERR_BODY = JSON.stringify({ err: { name: "ResourceNotAvailableError", message: "resource not available" } });
@@ -127,12 +127,19 @@ let transport: RecordingMockTransport;
 let uploads: { objectKey: string; bytes: Uint8Array }[];
 /** When set, the injected uploader STALLS until its signal aborts (a hung object store). */
 let stallUploads = false;
+/** Or: stall only the next N uploads, so a LATER upload can still prove a point. */
+let stallUploadCalls = 0;
 let exportCtxDeadlines: number[];
 let digestCtxDeadlines: number[];
 let server: ReturnType<typeof createProviderServer>;
 let baseUrl: string;
 
+/** The server's clock: a fixed base a test can move, PLUS the real time that has elapsed since the
+ * server started. The real-time term matters: the gate measures a queued request's remaining budget
+ * after it acquires the mutex, and a frozen clock could not express that wait at all. */
 let clockNow = NOW;
+let clockRealStart = Date.now();
+const serverNow = (): number => clockNow + (Date.now() - clockRealStart);
 
 async function startServer(
   opts: { gated?: boolean; exportMode?: "grant_upload" | "none"; uploadOrigins?: readonly string[] | null } = {},
@@ -143,7 +150,8 @@ async function startServer(
   exportCtxDeadlines = [];
   digestCtxDeadlines = [];
   const performUploadGrant = async (g: ArtifactUploadGrantV1, bytes: Uint8Array, signal?: AbortSignal): Promise<void> => {
-    if (stallUploads) {
+    if (stallUploads || stallUploadCalls > 0) {
+      if (stallUploadCalls > 0) stallUploadCalls -= 1;
       await new Promise<void>((_resolve, reject) => {
         if (signal === undefined) return; // an unbounded upload: never settles
         signal.addEventListener("abort", () => reject(new Error("aborted")));
@@ -180,7 +188,7 @@ async function startServer(
   server = createProviderServer({
     provider,
     controlPlanePublicKey: gated ? controlPlane.publicKey : undefined,
-    now: () => clockNow,
+    now: serverNow,
     artifactUploadOrigins,
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -192,10 +200,12 @@ async function stopServer(): Promise<void> {
 
 beforeEach(() => {
   clockNow = NOW;
+  clockRealStart = Date.now();
   return startServer();
 });
 afterEach(async () => {
   stallUploads = false;
+  stallUploadCalls = 0;
   await stopServer();
 });
 
@@ -402,7 +412,11 @@ describe("DAT-009-3e — digest/export over the networked wire (gated owned ops)
     const sandboxId = await sandboxWithOutput(ORG_A);
     const driver = new NetworkedProviderDriver({ baseUrl, capability: mint(ORG_A, NOW + 60_000) });
     await driver.exportArtifact(sandboxId, OUT_PATH, grant(ORG_A), { deadlineMs: 600_000, idempotencyKey: "e-clamp" });
-    expect(exportCtxDeadlines).toEqual([60_000 - EXPORT_TEARDOWN_RESERVE_MS]);
+    // The budget the provider receives is the capability's life minus the reserve, minus whatever
+    // real time the request itself took (single-digit ms here).
+    expect(exportCtxDeadlines).toHaveLength(1);
+    expect(exportCtxDeadlines[0]!).toBeLessThanOrEqual(60_000 - EXPORT_TEARDOWN_RESERVE_MS);
+    expect(exportCtxDeadlines[0]!).toBeGreaterThan(60_000 - EXPORT_TEARDOWN_RESERVE_MS - 5_000);
     // A tighter caller budget is kept. (A second object key: a redemption is one-time per key.)
     const secondKey = `${objectKeyFor(ORG_A)}-clamp2`;
     await driver.exportArtifact(
@@ -411,7 +425,8 @@ describe("DAT-009-3e — digest/export over the networked wire (gated owned ops)
       grant(ORG_A, { objectKey: secondKey, url: urlFor(secondKey) }),
       { deadlineMs: 5_000, idempotencyKey: "e-clamp-2" },
     );
-    expect(exportCtxDeadlines[1]).toBe(5_000);
+    expect(exportCtxDeadlines[1]!).toBeLessThanOrEqual(5_000);
+    expect(exportCtxDeadlines[1]!).toBeGreaterThan(4_000);
   });
 
   it("★ inside the teardown reserve the export is refused WITHOUT dispatch", async () => {
@@ -463,7 +478,9 @@ describe("DAT-009-3e — digest/export over the networked wire (gated owned ops)
     // A generous caller budget is clamped to the capability's life minus the reserve...
     const wide = new NetworkedProviderDriver({ baseUrl, capability: mint(ORG_A, NOW + 60_000) });
     await wide.digestArtifact(sandboxId, OUT_PATH, { deadlineMs: 600_000, idempotencyKey: "d-clamp" });
-    expect(digestCtxDeadlines).toEqual([60_000 - EXPORT_TEARDOWN_RESERVE_MS]);
+    expect(digestCtxDeadlines).toHaveLength(1);
+    expect(digestCtxDeadlines[0]!).toBeLessThanOrEqual(60_000 - EXPORT_TEARDOWN_RESERVE_MS);
+    expect(digestCtxDeadlines[0]!).toBeGreaterThan(60_000 - EXPORT_TEARDOWN_RESERVE_MS - 5_000);
 
     // ...and inside the reserve the ROUTE refuses: the provider is never called at all.
     const reads = transport.readFileCalls;
@@ -545,8 +562,10 @@ describe("DAT-009-3e — digest/export over the networked wire (gated owned ops)
     await expect(
       driver.digestArtifact(sandboxId, OUT_PATH, { deadlineMs: 600_000, idempotencyKey: "d-inspect-stall" }),
     ).rejects.toBeInstanceOf(WireProtocolError);
-    // The lock is free: the same sandbox answers the next request.
-    expect(await driver.digestArtifact(sandboxId, OUT_PATH, ctx("d-after-stall"))).toEqual({
+    // The lock is free: the same sandbox answers the next request. (A fresh capability, because the
+    // first request's own window was deliberately tiny and real time has passed.)
+    const after = new NetworkedProviderDriver({ baseUrl, capability: mint(ORG_A, NOW + 60_000) });
+    expect(await after.digestArtifact(sandboxId, OUT_PATH, ctx("d-after-stall"))).toEqual({
       sha256: BODY_SHA,
       sizeBytes: BODY.byteLength,
     });
@@ -590,24 +609,64 @@ describe("DAT-009-3e — digest/export over the networked wire (gated owned ops)
     expect(uploads).toHaveLength(0);
   });
 
-  it("★ an EXPIRED upload grant is refused, and its redemption record is evicted rather than kept forever", async () => {
+  it("★ an EXPIRED upload grant is refused, and the redemption record outlives the grant's OWN claimed expiry", async () => {
     const sandboxId = await sandboxWithOutput(ORG_A);
     // A long-lived capability, so the GRANT's expiry is the only thing that lapses here.
-    const driver = new NetworkedProviderDriver({ baseUrl, capability: mint(ORG_A, NOW + 600_000) });
+    const driver = new NetworkedProviderDriver({ baseUrl, capability: mint(ORG_A, NOW + 60 * 60_000) });
+    // ★ Codex P1 (sixth round): `expiresAt` is WORKER-SUPPLIED. A worker that shortened it must not
+    // be able to buy the eviction of its own redemption record and then replay the live url.
     const short = grant(ORG_A, { expiresAt: new Date(NOW + 60_000).toISOString() });
     await driver.exportArtifact(sandboxId, OUT_PATH, short, ctx("e-ttl-1"));
     expect(uploads).toHaveLength(1);
 
-    // Past the grant's expiry: a replay of the SAME grant is refused because the grant is dead...
+    // Past the grant's CLAIMED expiry: the dead grant is refused...
     clockNow = NOW + 120_000;
     await expect(driver.exportArtifact(sandboxId, OUT_PATH, short, ctx("e-ttl-1"))).rejects.toBeInstanceOf(WireProtocolError);
+    // ...and a FRESH grant for the same key is STILL refused: the record is retained on the
+    // server's own retention, not on the worker's claim.
+    const fresh = grant(ORG_A, { expiresAt: new Date(clockNow + 60_000).toISOString() });
+    await expect(driver.exportArtifact(sandboxId, OUT_PATH, fresh, ctx("e-ttl-2"))).rejects.toBeInstanceOf(WireProtocolError);
+    expect(uploads).toHaveLength(1);
+  });
+
+  it("★ the ledger IS bounded: a record past the SERVER's retention is evicted", async () => {
+    const sandboxId = await sandboxWithOutput(ORG_A);
+    const driver = new NetworkedProviderDriver({ baseUrl, capability: mint(ORG_A, NOW + 48 * 60 * 60_000) });
+    await driver.exportArtifact(sandboxId, OUT_PATH, grant(ORG_A), ctx("e-ret-1"));
     expect(uploads).toHaveLength(1);
 
-    // ...and the expired record no longer occupies the ledger: a FRESH grant for the same key is
-    // dispatched again rather than refused as a re-PUT of the evicted record.
-    const fresh = grant(ORG_A, { expiresAt: new Date(clockNow + 60_000).toISOString() });
-    await driver.exportArtifact(sandboxId, OUT_PATH, fresh, ctx("e-ttl-2"));
+    // Past the server-side retention window, the record is dropped, so the key is usable again.
+    clockNow = NOW + UPLOAD_REDEMPTION_RETENTION_MS + 1;
+    const later = grant(ORG_A, { expiresAt: new Date(clockNow + 60_000).toISOString() });
+    await driver.exportArtifact(sandboxId, OUT_PATH, later, ctx("e-ret-2"));
     expect(uploads).toHaveLength(2);
+  });
+
+  // ★ Codex P1 (sixth round): `runExclusive` queues, so a request can sit in the mutex behind a
+  // predecessor and only then start its timer. A budget computed BEFORE enqueueing would hand every
+  // queued request a full, stale window — the reserve defeated by queueing rather than by hanging.
+  it("★ a QUEUED request is measured from the deadline it was given, not from when it reaches the lock", async () => {
+    const sandboxId = await sandboxWithOutput(ORG_A);
+    // 400 ms of budget before the reserve, for BOTH requests.
+    const cap = mint(ORG_A, NOW + EXPORT_TEARDOWN_RESERVE_MS + 400);
+    const driver = new NetworkedProviderDriver({ baseUrl, capability: cap });
+    // The predecessor holds the lock by stalling its upload until its own budget aborts it. ONLY
+    // the first upload stalls, so if the queued request were handed a fresh window it would upload.
+    stallUploadCalls = 1;
+    const first = driver.exportArtifact(sandboxId, OUT_PATH, grant(ORG_A), { deadlineMs: 600_000, idempotencyKey: "q-1" });
+    // The queued one targets a second key, so the redemption ledger cannot be what refuses it.
+    const secondKey = `${objectKeyFor(ORG_A)}-queued`;
+    const queued = driver.exportArtifact(
+      sandboxId,
+      OUT_PATH,
+      grant(ORG_A, { objectKey: secondKey, url: urlFor(secondKey) }),
+      { deadlineMs: 600_000, idempotencyKey: "q-2" },
+    );
+    await expect(first).rejects.toBeInstanceOf(WireProtocolError);
+    // By the time it acquires the lock the window is spent, so it must be refused, not granted a
+    // fresh 400 ms — and nothing may be uploaded.
+    await expect(queued).rejects.toBeInstanceOf(WireProtocolError);
+    expect(uploads).toHaveLength(0);
   });
 
   it("a FAR provider that declares artifactExportMode='none' declines honestly, as its own class", async () => {
