@@ -2437,10 +2437,31 @@ failure text names a leak class, so the operator's first reading is a security i
 false positive. This is a direct constraint on the "derive provenance from the transcript" option
 family: any mechanism that puts model output into `job_events` inherits it.
 
-**Not reachable today, and that is why it is MEDIUM and not HIGH.** Nothing emits a `log` event in
+**Not reachable today, and that is why it is MEDIUM and not HIGH.** ~~Nothing emits a `log` event in
 production: `SupervisorDeps.observeRun` is the only producer (`supervisor.ts:774-783`) and it is
 uncomposed (E7-F016 §(a) records the same zero). And with no distributed run at all (E7-F018), the
-`events` array is empty by `:396`'s `bothIds` guard. MEDIUM rather than LOW because it becomes live
+`events` array is empty by `:396`'s `bothIds` guard.~~
+
+★ **Corrected 2026-09-23 (record custodian), verified at source — BOTH sentences above are false at
+HEAD, and the narrow fact that survives is stated here. Severity, Status and owner are UNCHANGED.**
+- **`observeRun` is COMPOSED.** `WRK-018` (PR #546): `composeDispatchRuntime` sets
+  `observeRun: createUsageObserver({ metrics: deps.metrics })`
+  (`packages/worker-daemon/src/lifecycle/dispatch-runtime.ts`;
+  `createUsageObserver` in `packages/worker-daemon/src/supervisor/usage-observer.ts`).
+- **It is also no longer the only producer, and a `log` event IS emitted in production.** `DEP-017`'s
+  live env-absence probe calls `events.log({ stream: "system", … envProbeLogMessage(probeSummary) })`
+  whenever `deps.envProbe` is composed, and `docker/m1-boot/docker-compose.m1-boot.yml` sets
+  `AOA_WORKER_ENV_PROBE=1` on **every** shipped-boot worker.
+- **The `events` array is not empty either.** `store.listJobEvents(attemptId)` returns the attempt's
+  lifecycle events (`attempt_started`, `terminal`, and now `usage`), and the clause-4 scan reads
+  every returned payload. The `bothIds` guard leaves it empty only when there is **no distributed
+  run at all**, which is the condition the struck sentence relied on.
+
+**The surviving narrow fact, which is what this finding actually rests on:** `createUsageObserver`
+returns `usage` and **never re-emits stdout or the transcript as `log` events** (its own docstring
+says so), so the **model-output** route into `job_events` — the family this finding names — still has
+no producer. The false hard-fail therefore still is not reachable *from agent output*, which is the
+reachability claim that matters here. MEDIUM rather than LOW because it becomes live
 on the SAME action that makes clause 6 meaningful — composing a stdout producer — so the two would
 land together and the false hard-fail would be discovered by an operator rather than by a designer.
 
@@ -2451,8 +2472,13 @@ is very likely harmless — `listJobEvents` is keyed on a globally-unique attemp
 recorded here rather than filed separately because it is one line of the same code and a fix for
 either should look at both.
 
-**Owner — CLI-008.** This is a defect in the JUDGE, which CLI-008 owns (E7-F015, E7-F016, E7-F020 are
-all there for the same reason), and it is a hard constraint on Unit F's remaining option space rather
+**Owner — CLI-008.** This is a defect in the JUDGE, which CLI-008 owns (E7-F015, ~~E7-F016,~~ E7-F020 are
+all there for the same reason ★ *— `E7-F016` was RE-POINTED to `CLI-015` on 2026-09-21 (M0 unit 4,
+founder decisions D1 + D5) and is struck from this list on 2026-09-23 by the record custodian.
+`scripts/finding-ownership.json` is authoritative and has said `CLI-015` since the re-point; leaving
+`E7-F016` in this sentence let a planner route the work back to the retired ticket. **`E7-F023`'s own
+owner is UNCHANGED — it stays `CLI-008`** — and `E7-F015` and `E7-F020` are unchanged too*), and it
+is a hard constraint on Unit F's remaining option space rather
 than a standalone repair. ★ **No fix is proposed.** Narrowing the matchers, excluding `job_events`
 from the hard arm, or moving it to the advisory `heuristicHits` set are three non-equivalent
 remedies with different security postures, and choosing is the ticket work.
@@ -2508,8 +2534,21 @@ runs those were. Combined with E7-F016 part (b) — a protocol transcript is non
 model never spoke — a transcript-derived counter can be simultaneously **non-empty and corrupt**,
 which is the worst of the two available failure directions for a capability bar.
 
-**Severity — MEDIUM.** *For lower:* nothing emits a `log` event today (`observeRun` uncomposed), so
-no data is being lost right now, and the truncation is a deliberate, commented choice that correctly
+**Severity — MEDIUM.** *For lower:* ~~nothing emits a `log` event today (`observeRun` uncomposed), so
+no data is being lost right now~~ ★ *— **corrected 2026-09-23 (record custodian), verified at source,
+and this one is load-bearing for the rating.** `observeRun` IS composed (`WRK-018`, PR #546:
+`composeDispatchRuntime` sets `observeRun: createUsageObserver({ metrics })` in
+`packages/worker-daemon/src/lifecycle/dispatch-runtime.ts`), and a `log` event **is** emitted in
+production — `DEP-017`'s env probe calls `events.log({ stream: "system", …envProbeLogMessage(…) })`
+whenever `deps.envProbe` is composed, with `AOA_WORKER_ENV_PROBE=1` on every worker in
+`docker/m1-boot/docker-compose.m1-boot.yml`. **What survives:** `createUsageObserver` returns `usage`
+and never re-emits stdout or the transcript as `log` events, so no **model output** flows into
+`job_events` and the transcript-corruption this finding is about is still not reachable from agent
+output. **What does NOT survive:** the blanket "no data is being lost right now". Whether a short
+fixed-shape `envProbeLogMessage` summary can reach the 65,536-character ceiling — and therefore
+whether this "for lower" argument still holds in full — is a **re-rating for the owner**, not a
+custodian's call. **Severity is deliberately left at MEDIUM and Status at open**, with the question
+stated rather than resolved* —, and the truncation is a deliberate, commented choice that correctly
 protects the run's terminal from an instrumentation parse failure — the alternative (drop the event,
 and with it the run's trailing `usage` evidence, per the `truncateUtf16Safe` doc comment) is worse.
 *For MEDIUM rather than LOW:* the loss is **silent on a frozen contract**, so the ceiling cannot be
