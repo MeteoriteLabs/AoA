@@ -45,6 +45,24 @@ export {
 } from "./fixture-runtime.js";
 export type { ValidatedFixture, RunStep, RunPlan } from "./fixture-runtime.js";
 
+// DEP-019 — the DETERMINISTIC SCRIPTED COMMAND. `DEP-016`'s canned usage rides the CONTRACT
+// driver's result, which only a harness reads; a DEPLOYED worker derives usage from the run's
+// stdout. This is what the reference provider writes there.
+export {
+  SCRIPT_FLAG_PREFIX,
+  DEFAULT_SCRIPTED_COMMAND_PLAN,
+  ScriptedCommandError,
+  parseScriptedCommand,
+  buildScriptedStdoutChunks,
+  executeScriptedCommand,
+} from "./scripted-command.js";
+export type {
+  ScriptedCommandPlan,
+  ScriptedExecuteInput,
+  ScriptedExecuteResult,
+  ScriptedExecuteOptions,
+} from "./scripted-command.js";
+
 export { InvocationLedger } from "./invocation-ledger.js";
 export type { InvocationLedgerEntry, FakeClockOptions } from "./invocation-ledger.js";
 
