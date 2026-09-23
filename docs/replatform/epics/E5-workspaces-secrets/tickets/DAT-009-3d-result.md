@@ -1,6 +1,6 @@
 # DAT-009-3d Result — the export sequencer composed at the dispatch runtime
 
-**Status:** `complete` (set 2026-09-23 by the M1 review-batch-3B independent reviewer at attempt 2, revision `60aafb32ec6f8316f92079789cf8814f981f3ed3`, once the `DAT-009-3c` dependency reached `complete` in the same batch)
+**Status:** `complete` (set 2026-09-23 by the M1 review-batch-3B independent reviewer at attempt 2, reviewed at revision `60aafb32ec6f8316f92079789cf8814f981f3ed3`, after the `DAT-009-3c` dependency reached `complete` in its own earlier commit `54b376f0a` in the same batch)
 **Date (UTC):** `2026-09-21`
 **Epic:** `E5-workspaces-secrets`
 **Plan task:** `E5 implementation-plan DAT-009-3d — compose the sequencer (S, M1b)`, as amended by E5-D07 ruling 4
@@ -255,11 +255,19 @@ reviewed revision `4a3a0000f` are all ancestors of it.
 **The dependency, stated explicitly.** Attempt 1 approved this ticket on the merits and withheld the
 `Status` flip for exactly one reason: the E5 plan's `### DAT-009-3d` says *"Depends on: `DAT-009-3c`
 `complete` at a recorded reviewed revision"*, and at that time `DAT-009-3c` was `changes_requested`.
-**In this same batch I have set `DAT-009-3c` to `complete`** at revision
-`60aafb32ec6f8316f92079789cf8814f981f3ed3`, as attempt 2 of its review — the requested correction
-(the verify count 50 → 52) was made in PR #562 and I confirmed the corrected figure at source by
-rerunning the command. The dependency is therefore satisfied at a recorded reviewed revision, which
-is the precise condition attempt 1 named, and nothing else was outstanding. Per attempt 1's own
+**In this same batch I have set `DAT-009-3c` to `complete`**, as attempt 2 of its review, *reviewed
+at* revision `60aafb32ec6f8316f92079789cf8814f981f3ed3` — the requested correction (the verify count
+50 → 52) was made in PR #562 and I confirmed the corrected figure at source by rerunning the
+command. ★ *Two revisions must not be conflated here (Codex P2 on this PR, and the finding's first
+half is real).* `60aafb32ec…` is the revision the review was **conducted at**, and at that revision
+`DAT-009-3c` is still `gate_review`; the revision at which `DAT-009-3c` **is** `complete` is commit
+`54b376f0a`, *"review(M1): DAT-009-3c — disposition, Status moves to complete"*, which is a separate
+commit and a strict ancestor of the commit that flips this record. At `54b376f0a` this record is
+still `gate_review`, so the dependency transition is recorded **before** the dependent's, not
+alongside it. The plan's condition (`implementation-plan.md` `### DAT-009-3d`, *"`DAT-009-3c`
+`complete` at a recorded reviewed revision"*) constrains the reviewed revision, which is
+`60aafb32ec…`, and both facts are now stated separately rather than merged into one citation.
+Nothing else was outstanding. Per attempt 1's own
 closing instruction — *"once `DAT-009-3c` is `complete`, a distinct reviewer may flip this record's
 `Status` to `complete` in a separate commit, citing that revision"* — I flip it, in a separate
 commit, citing that revision. §6 item 2 of this record, which flagged the gap honestly at build
@@ -313,4 +321,4 @@ Later reviewers append rows with increasing attempt numbers without replacing ea
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
 | 1 | M1 review-batch-2B independent reviewer (Claude Opus 5) | `4a3a0000fac90f2a772648fff8fa28dc9ac75538` | `approved` (Status flip withheld) | The composition was verified at source; both lanes, no producer, `E5-2` unwired at `expectedReferences: 1`. Rerun at the tip: verify pair 36, full suite 162 / 1107 / 1 skipped, typecheck and build 0. P1 reproduced (guard exits 1) and M1 reproduced (8 failed). The F10 two-Organization case is real. CI by job: pre-merge `verify (4)` 8 with shard 6131 / 2, and the merged head's `verify (4)` 8 and `verify (3)` 28. Codex clean on three heads. `Status` stays `gate_review` because the plan's dependency `DAT-009-3c` `complete` is unmet (3c attempt 1 is `changes_requested`, for a record count). Flip once 3c is `complete`, or on a planning-session F2 record. |
-| 2 | M1 review-batch-3B independent reviewer (Claude Opus 5) | `60aafb32ec` (program tip, the #565 merge) | `approved` (Status flipped to `complete`) | The sole reason attempt 1 withheld the flip is discharged: in this same batch `DAT-009-3c` was set to `complete` at `60aafb32ec6f8316f92079789cf8814f981f3ed3` after its attempt-2 review confirmed the corrected verify count at source. Dependency satisfied at a recorded reviewed revision, which is the exact condition attempt 1 named. Re-verified independently before flipping: the composition at source (both lanes, no producer), `E5-2` `unwired` with `expectedReferences: 1` and a measured count of 1, **M1 reproduced** (8 failed), the verify pair at the tip giving 2 files / 40 passed (the new file still 8; `dispatch-runtime.test.ts` grew to 32 from later merges, not from this ticket), and the guard set at 0 failures. Every acceptance item met. |
+| 2 | M1 review-batch-3B independent reviewer (Claude Opus 5) | `60aafb32ec` (program tip, the #565 merge) | `approved` (Status flipped to `complete`) | The sole reason attempt 1 withheld the flip is discharged: in this same batch `DAT-009-3c` was set to `complete` in its own separate commit `54b376f0a`, a strict ancestor of this record's flip (at `54b376f0a` this record is still `gate_review`), after its attempt-2 review — conducted at revision `60aafb32ec6f8316f92079789cf8814f981f3ed3` — confirmed the corrected verify count at source. The reviewed revision and the revision at which the dependency is `complete` are stated separately (Codex P2 on the review PR). Dependency satisfied at a recorded reviewed revision, which is the exact condition attempt 1 named. Re-verified independently before flipping: the composition at source (both lanes, no producer), `E5-2` `unwired` with `expectedReferences: 1` and a measured count of 1, **M1 reproduced** (8 failed), the verify pair at the tip giving 2 files / 40 passed (the new file still 8; `dispatch-runtime.test.ts` grew to 32 from later merges, not from this ticket), and the guard set at 0 failures. Every acceptance item met. |
