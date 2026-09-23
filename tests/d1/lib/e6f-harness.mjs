@@ -2383,7 +2383,8 @@ const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value)
 try {
   const { createDistributedExecutionRolloutSource, DISTRIBUTED_EXECUTION_ROLLOUT_ENV } =
     await import(P.dist + "/config/distributed-execution-rollout-source.js");
-  const { readDistributedExecutionDeploymentFlag, readDistributedCrewRolloutFlag, DISTRIBUTED_CREW_ROLLOUT_ENABLED_ENV } =
+  const { readDistributedExecutionDeploymentFlag, readDistributedCrewRolloutFlag, readDistributedToolSurfaceFlag,
+    DISTRIBUTED_CREW_ROLLOUT_ENABLED_ENV, DISTRIBUTED_TOOL_SURFACE_ENABLED_ENV } =
     await import(P.dist + "/config/distributed-execution.js");
   const rolloutRaw = process.env[DISTRIBUTED_EXECUTION_ROLLOUT_ENV] ?? null;
   const source = createDistributedExecutionRolloutSource(process.env);
@@ -2395,6 +2396,17 @@ try {
   const crewRaw = process.env[DISTRIBUTED_CREW_ROLLOUT_ENABLED_ENV] ?? null;
   let crewEnabled = null;
   try { crewEnabled = readDistributedCrewRolloutFlag(process.env); } catch { crewEnabled = null; }
+  // The M1a freeze also asserts the distributed TOOL SURFACE is off: the deployment flag (whose
+  // reader THROWS on the legacy truthy spellings, so an unparseable value is reported as null) and
+  // the per-Organization tools opt-in, which is the other half of the gate (E7-D10 / CLI-016).
+  // (No backticks in this comment: it lives inside the template literal that carries the script.)
+  const toolSurfaceRaw = process.env[DISTRIBUTED_TOOL_SURFACE_ENABLED_ENV] ?? null;
+  let toolSurfaceArmed = null;
+  try { toolSurfaceArmed = readDistributedToolSurfaceFlag(process.env); } catch { toolSurfaceArmed = null; }
+  const organizationToolSurface = {};
+  for (const organizationId of P.organizationIds) {
+    organizationToolSurface[organizationId] = source.resolveOrganizationToolSurface({ organizationId });
+  }
   report({
     ok: true,
     deploymentMode,
@@ -2404,6 +2416,9 @@ try {
     resolved,
     crewRaw,
     crewEnabled,
+    toolSurfaceRaw,
+    toolSurfaceArmed,
+    organizationToolSurface,
   });
 } catch (error) {
   report({ ok: false, error: String(error && error.message ? error.message : error) });

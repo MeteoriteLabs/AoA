@@ -213,6 +213,9 @@ test("m1-spine: every control-plane replica carries the F10 tenant set, and the 
       resolved: probe.resolved,
       crewRaw: probe.crewRaw,
       crewEnabled: probe.crewEnabled,
+      toolSurfaceRaw: probe.toolSurfaceRaw,
+      toolSurfaceArmed: probe.toolSurfaceArmed,
+      organizationToolSurface: probe.organizationToolSurface,
     };
     violations.push(...evaluateReplicaRollout({ replica, ...probe }));
   }

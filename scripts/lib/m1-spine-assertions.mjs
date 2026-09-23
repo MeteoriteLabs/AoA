@@ -161,6 +161,19 @@ export function evaluateReplicaRollout(o) {
   if (control !== "off") {
     out.push(violation("rollout:control_not_off", `${r}: control tenant resolves to ${String(control)}`));
   }
+  // The M1a freeze checklist (M1 plan §6) also requires the distributed TOOL SURFACE off — the
+  // deployment flag AND every tenant's per-Organization `tools` opt-in, since either alone is
+  // necessary-not-sufficient (E7-D10 / CLI-016). Codex, seventh round.
+  if (o.toolSurfaceArmed === null) {
+    out.push(violation("tools:flag_unparseable", `${r}: AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED=${JSON.stringify(o.toolSurfaceRaw)} is not a value this binary accepts`));
+  } else if (o.toolSurfaceArmed !== false) {
+    out.push(violation("tools:deployment_armed", `${r}: the distributed tool surface is ARMED deployment-wide; M1a excludes it`));
+  }
+  for (const [organizationId, enabled] of Object.entries(o.organizationToolSurface ?? {})) {
+    if (enabled !== false) {
+      out.push(violation("tools:organization_opted_in", `${r}: Organization ${organizationId} opts in to the distributed tool surface`));
+    }
+  }
   if (o.crewEnabled === null) {
     out.push(violation("crew:switch_unparseable", `${r}: AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED=${JSON.stringify(o.crewRaw)} is not a boolean`));
   } else if (o.crewEnabled !== false) {

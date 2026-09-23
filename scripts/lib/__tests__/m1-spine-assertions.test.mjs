@@ -86,6 +86,9 @@ function goodReplica(overrides = {}) {
     resolved: { [A.organizationId]: "canary", [B.organizationId]: "canary", [C.organizationId]: "off" },
     crewRaw: null,
     crewEnabled: false,
+    toolSurfaceRaw: null,
+    toolSurfaceArmed: false,
+    organizationToolSurface: { [A.organizationId]: false, [B.organizationId]: false, [C.organizationId]: false },
     ...overrides,
   };
 }
@@ -118,6 +121,14 @@ test("a replica with the crew switch ON, or set to an unparseable value, is refu
   assert.ok(codes(evaluateReplicaRollout(goodReplica({ crewRaw: "maybe", crewEnabled: null }))).includes("crew:switch_unparseable"));
   // A false spelling is OFF, which is allowed.
   assert.deepEqual(evaluateReplicaRollout(goodReplica({ crewRaw: "false", crewEnabled: false })), []);
+});
+
+test("a replica with the TOOL SURFACE armed, unparseable, or opted in per-Organization is refused (M1a freeze)", () => {
+  assert.ok(codes(evaluateReplicaRollout(goodReplica({ toolSurfaceRaw: "per-organization", toolSurfaceArmed: true }))).includes("tools:deployment_armed"));
+  assert.ok(codes(evaluateReplicaRollout(goodReplica({ toolSurfaceRaw: "true", toolSurfaceArmed: null }))).includes("tools:flag_unparseable"));
+  assert.ok(codes(evaluateReplicaRollout(goodReplica({
+    organizationToolSurface: { [A.organizationId]: true, [B.organizationId]: false, [C.organizationId]: false },
+  }))).includes("tools:organization_opted_in"));
 });
 
 test("a replica with the deployment flag off is refused (the profile would run nothing distributed)", () => {
