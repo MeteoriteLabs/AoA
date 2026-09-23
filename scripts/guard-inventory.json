@@ -24,6 +24,10 @@
       "status": "ci",
       "reason": "invoked by a workflow"
     },
+    "scripts/check-campaign-fault-matrix.mjs": {
+      "status": "ci",
+      "reason": "policy job — the DEP-018 campaign fault matrix declaration (all three gate profiles, every required case family, the F10 tenant matrix incl. the four no-RLS legacy tables)"
+    },
     "scripts/check-ci-lanes.mjs": {
       "status": "ci",
       "reason": "invoked by a workflow"

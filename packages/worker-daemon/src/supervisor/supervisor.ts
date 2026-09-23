@@ -1025,6 +1025,12 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         for (const tick of obs.progress ?? []) {
           await events.progress({ message: tick.message, percent: tick.percent });
         }
+        // WRK-018 1(b) — there is deliberately NO diagnostic log of the parsed counts here.
+        // One was built and then DROPPED by the M1 planning session (F2, 2026-09-23) after five
+        // Codex P1s of one family: a line that must carry data while every surface of it is
+        // subject to canary redaction has no caller-side boundary — the last finding showed the
+        // LOGGER ITSELF adds `msg`/`time`/`level` below any scrubber a caller can run (E4-F019).
+        // Consequence, recorded rather than hidden: acceptance 1(b) is not live-provable.
         if (obs.usage) await events.usage(obs.usage);
       } catch (err) {
         deps.logger?.warn({ leaseId: run.leaseId, err }, "supervisor: run observation failed (best-effort)");

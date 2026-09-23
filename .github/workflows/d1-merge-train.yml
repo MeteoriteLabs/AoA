@@ -98,6 +98,12 @@ on:
       # matched by an entry above (`docker/**` covers the override and the provider entry, but
       # not `packages/sandbox-fake-provider/src`, and the `scripts/lib` entries are per file).
       - "scripts/lib/m1-spine-assertions.mjs"
+      # DEP-018 — the campaign fault matrix's declaration and its pure verdicts. An edit to
+      # either decides what the live `m1-fault-matrix` job must fire and classify, so it must
+      # re-run the lane that produces the evidence.
+      - "tests/d1/fault-matrix.json"
+      - "scripts/lib/campaign-fault-matrix.mjs"
+      - "scripts/check-campaign-fault-matrix.mjs"
       - "packages/sandbox-fake-provider/**"
       # ★ DEP-016 — THE PRODUCTION CODE THE m1-spine PROFILE ASSERTS, AS A CLASS, NOT A LIST.
       # This started as a named list of the ~20 files the profile's verdicts read (ingest, the three
@@ -633,5 +639,147 @@ jobs:
           if-no-files-found: warn
 
       - name: Tear down the m1-spine stack
+        if: always()
+        run: docker compose -f "$COMPOSE_FILE_PATH" -f "$SPINE_OVERRIDE_PATH" down -v --remove-orphans || true
+
+  # ---------------------------------------------------------------------------
+  # DEP-018 — the M1-D1-SPINE campaign FAULT MATRIX (its own job, for the same reason
+  # `m1-spine` is: `AOA_D1_CAMPAIGN` is single-valued, so a third value would DISPLACE the
+  # foundation campaign on any run that selected it).
+  #
+  # It shares the `m1-spine` one-worker override and its F10 tenant set on purpose — the two
+  # profiles are the same gate's control plane, and a second topology would give the matrix
+  # different tenants from the ones the spine profile's record names. The two jobs do NOT share a
+  # stack: each brings its own up and tears it down.
+  #
+  # ★ THE POSITIVE CONTROL IS THE POINT. With `AOA_M1_FAULT_MATRIX_SUPPRESS_INJECTION=1` every
+  # injection is skipped while every case still records and classifies. If the matrix still
+  # PASSES then, it is measuring nothing — the failure class this ticket exists to stop — so the
+  # lane runs exactly that and fails if it succeeds, and greps the evidence marker to prove it
+  # went red for the INJECTION reason rather than a bring-up failure.
+  # ---------------------------------------------------------------------------
+  m1-fault-matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      COMPOSE_FILE_PATH: docker-compose.d1.yml
+      SPINE_OVERRIDE_PATH: docker/d1/m1-spine.override.yml
+      EVIDENCE_DIR: ${{ github.workspace }}/m1-fault-matrix-evidence
+      AOA_D1_FAKE_PROVIDER_IMAGE: aoa-d1-fake-provider:m1-fault-matrix
+      AOA_D1_CAMPAIGN: m1-fault-matrix
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Static preflight (the declaration, its reds, and the compose invariants)
+        run: |
+          node scripts/check-d1-compose.mjs
+          node scripts/check-campaign-fault-matrix.mjs
+          node --test scripts/check-campaign-fault-matrix.test.mjs
+
+      - name: Enable Docker containerd image store (attestation + --load)
+        run: |
+          sudo mkdir -p /etc/docker
+          printf '%s\n' '{ "features": { "containerd-snapshotter": true } }' | sudo tee /etc/docker/daemon.json
+          sudo systemctl restart docker
+          for _ in $(seq 1 30); do docker info >/dev/null 2>&1 && break; sleep 1; done
+
+      - name: Build the split D1 images + the reference provider
+        run: |
+          set -euo pipefail
+          bash docker/images/build.sh
+          docker build -f docker/d1/fake-provider.Dockerfile -t "$AOA_D1_FAKE_PROVIDER_IMAGE" .
+          CP_TAG="$(grep -E '^CONTROL-PLANE_IMAGE=' docker/images/digests.env | cut -d= -f2-)"
+          WK_TAG="$(grep -E '^WORKER_IMAGE=' docker/images/digests.env | cut -d= -f2-)"
+          test -n "$CP_TAG" && test -n "$WK_TAG"
+          {
+            echo "AOA_D1_CONTROL_PLANE_IMAGE=${CP_TAG}"
+            echo "AOA_D1_WORKER_IMAGE=${WK_TAG}"
+          } >> "$GITHUB_ENV"
+          mkdir -p docker/d1
+          {
+            echo "AOA_D1_FAKE_PROVIDER_IMAGE=${AOA_D1_FAKE_PROVIDER_IMAGE}"
+            echo "AOA_D1_CONTROL_PLANE_IMAGE=${CP_TAG}"
+            echo "AOA_D1_WORKER_IMAGE=${WK_TAG}"
+          } > docker/d1/.env
+
+      - name: Bring up the ONE-worker topology
+        run: |
+          set -euo pipefail
+          docker compose -f "$COMPOSE_FILE_PATH" -f "$SPINE_OVERRIDE_PATH" up -d --wait --wait-timeout 300
+          workers="$(docker compose -f "$COMPOSE_FILE_PATH" -f "$SPINE_OVERRIDE_PATH" ps --services --status running | grep -c '^worker-' || true)"
+          echo "running worker services: ${workers}"
+          test "${workers}" = "1" || { echo "::error::m1-fault-matrix expects exactly one worker service, saw ${workers}"; exit 1; }
+
+      - name: Run the M1-D1-SPINE fault matrix (live)
+        env:
+          AOA_D1_LIVE: "1"
+          AOA_M1_FAULT_MATRIX_EVIDENCE_DIR: ${{ github.workspace }}/m1-fault-matrix-evidence/profile
+        run: node --test --test-concurrency=1 tests/d1/m1-fault-matrix.test.mjs
+
+      - name: The matrix's own verdict over the retained bundle
+        run: >-
+          node scripts/check-campaign-fault-matrix.mjs
+          --evidence m1-fault-matrix-evidence/profile/m1-fault-matrix-evidence.json
+
+      - name: Collect the PASSING evidence bundle (before the negative control mutates the stack)
+        run: >-
+          node scripts/collect-d1-evidence.mjs
+          --compose "$COMPOSE_FILE_PATH"
+          --out "$EVIDENCE_DIR/passing"
+          --run-id "${{ github.run_id }}"
+          --reason "m1-fault-matrix PASSING profile on ${{ github.sha }}"
+
+      - name: POSITIVE CONTROL — with every injection suppressed, the matrix MUST go red
+        env:
+          AOA_D1_LIVE: "1"
+          AOA_M1_FAULT_MATRIX_SUPPRESS_INJECTION: "1"
+          AOA_M1_FAULT_MATRIX_EVIDENCE_DIR: ${{ github.workspace }}/m1-fault-matrix-evidence/suppressed-control
+        run: |
+          set -uo pipefail
+          out="${RUNNER_TEMP}/m1-fault-matrix-suppressed.txt"
+          if node --test --test-concurrency=1 tests/d1/m1-fault-matrix.test.mjs > "$out" 2>&1; then
+            cat "$out"
+            echo "::error::the fault matrix PASSED with every injection suppressed — it is measuring nothing"
+            exit 1
+          fi
+          grep -F '[fault-matrix:evidence]' "$out" || {
+            cat "$out"
+            echo "::error::the fault matrix went red with injections suppressed, but NOT on the evidence verdict"
+            exit 1
+          }
+          grep -F 'injection_did_not_fire' "$out" || {
+            cat "$out"
+            echo "::error::the suppressed run did not report an unfired injection — the observers are not deciding anything"
+            exit 1
+          }
+          echo "positive control: a suppressed injection reds the matrix, as required"
+          tail -n 40 "$out"
+
+      - name: Collect the post-control (or failure) evidence bundle
+        if: always()
+        run: >-
+          node scripts/collect-d1-evidence.mjs
+          --compose "$COMPOSE_FILE_PATH"
+          --out "$EVIDENCE_DIR/post-controls"
+          --run-id "${{ github.run_id }}"
+          --reason "m1-fault-matrix post-control state on ${{ github.sha }} (${{ job.status }})"
+
+      - name: Upload the retained fault-matrix evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: m1-fault-matrix-evidence-${{ github.run_id }}
+          path: ${{ env.EVIDENCE_DIR }}/
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Tear down the fault-matrix stack
         if: always()
         run: docker compose -f "$COMPOSE_FILE_PATH" -f "$SPINE_OVERRIDE_PATH" down -v --remove-orphans || true

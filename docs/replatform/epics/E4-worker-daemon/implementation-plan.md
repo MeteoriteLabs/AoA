@@ -1167,8 +1167,40 @@ transport's stream directive; **C** — the provider-wire and adapter-manager re
 component tests; then the one keyed acceptance run.
 
 **Acceptance:**
-1. One real run (keyed, F8) emits **exactly one** `usage` event whose token counts equal the agent's
-   result line.
+1. **AMENDED 2026-09-23** (M1 planning session, founder delegation F2), after the `DEP-015` keyed
+   run and the Codex P1 on PR #567. *Superseded text: "One real run (keyed, F8) emits **exactly one**
+   `usage` event whose token counts equal the agent's result line."* That sentence names two
+   different claims and one of them cannot be established on the keyed lane at all, so it is split
+   into three parts with the reason recorded — this is a statement of what each piece of evidence
+   proves, **not** a relaxation:
+   - **1(a) cardinality — assertion MERGED (PR #567), closure PENDING one keyed shipped-boot run that carries it.** Exactly one accepted `usage` event per attempt, belonging to
+     that tenant. The assertion is `evaluateUsageCardinality`
+     (`scripts/lib/m1-spine-assertions.mjs`), counting the attempt's accepted `usage` rows in
+     `job_events` per enabled tenant; PR #567 merged it into the keyed lane, and **no keyed run has
+     executed it yet** (`DEP-015-result.md`). Name the closing run here when it exists; until then
+     1(a) is not closed. *(This entry read "Closed by the keyed lane's assertion" when first
+     written, which overstated it — Codex P2, PR #571, and the planning session corrected its own
+     instruction on the same point.)*
+   - **1(b) producer→ingest fidelity — NOT LIVE-PROVABLE (ruled 2026-09-23, F2).** The claim is
+     that the counts the worker PARSED equal the counts accepted and stored.
+     `heartbeat_runs.usage_json` is PROJECTED from the same accepted event, so that pair alone
+     proves projection fidelity, not parser correctness (Codex P1, PR #567). What was ATTEMPTED: a
+     worker log line carrying the parsed counts — numbers and the run's own identifiers only — for
+     the keyed lane to compare. What was MEASURED: five distinct Codex P1s on that one line, each
+     a way a per-run canary reaches it, ending in one that cannot be fixed caller-side — the sink
+     adds `msg`/`time`/`level` to every record BELOW any scrubber a caller can run, and a redeemed
+     secret may be any non-empty string (filed as **E4-F019**, pre-existing, `unowned`). Why it
+     STOPS: proving 1(b) needs a second data path out of the worker, every such path is wholly
+     subject to canary redaction, and that redaction has no enforceable caller-side boundary. The
+     diagnostic was DROPPED; redaction wins over diagnostics. 1(b) is therefore proven by the
+     keyless supervisor suites only (the observer's output is the event's payload, on every lane),
+     and NOT live.
+   - **1(c) parser fidelity to a REAL result line.** Proven by unit tests against the captured
+     `claude_local` transcript (`server/src/__tests__/fixtures/claude-stream-json-tool-call.jsonl`),
+     **not live** — and that limit is deliberate: proving it live would require emitting the
+     scrubbed result line from the daemon, which pushes tenant MODEL OUTPUT across the daemon
+     boundary (data minimisation) and would pre-empt the open **F7** output-mechanism decision. The
+     line is NOT emitted; `1(c)` therefore rests on the fixture, and says so.
 2. A planted canary in stdout appears in **no** event, log or evidence, on each lane (fake, E2B mock,
    networked). Zero tolerance.
 3. A run with no parseable usage emits **no** `usage` event and does not fail; `JOB-016`'s

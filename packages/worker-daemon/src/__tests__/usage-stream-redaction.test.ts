@@ -3,16 +3,18 @@ import { describe, expect, it } from "vitest";
 import { leaseOfferV1Schema, type WorkerEventV1 } from "@armyofagents/worker-protocol";
 
 import { createMetrics } from "../metrics/metrics.js";
-import type { Logger } from "../logging/logger.js";
+import { createWorkerLogger, type Logger } from "../logging/logger.js";
 import type { LeaseHandoff } from "../poll/poll-loop.js";
 import { REDACTION_MARKER } from "../supervisor/redaction.js";
 import { createRunCanaryCoordinator } from "../supervisor/run-canaries.js";
 import {
   RUN_OUTPUT_DROPPED_METRIC,
   createRunOutputCapture,
+  scrubLogFields,
+  scrubLogRecord,
 } from "../supervisor/run-output.js";
 import { createSupervisor, type RunObservation, type SupervisorDeps } from "../supervisor/supervisor.js";
-import { createUsageObserver } from "../supervisor/usage-observer.js";
+import { PARSED_USAGE_LOG_MESSAGE, createUsageObserver } from "../supervisor/usage-observer.js";
 import { createFakeSandboxProvider } from "./support/fake-provider.js";
 import { compatibleOffer } from "./support/poll-fixtures.js";
 import { collectingSink, makeHandoff, SUPERVISOR_IDENTITY } from "./support/supervisor-fixtures.js";
@@ -370,5 +372,74 @@ describe("WRK-018 — multi-tenant (F10): two Organizations' concurrent runs on 
       expect(t).not.toContain(CANARY_B);
     }
     expect(JSON.stringify(sink.events)).not.toMatch(/CANARY-(AAAA|BBBB)/);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// WRK-018 1(b) — what SURVIVES the dropped parsed-counts line.
+//
+// A diagnostic carrying the parsed counts was built here and then DROPPED by the M1 planning
+// session (F2, 2026-09-23) after five Codex P1s of one family. The hardening it forced is general
+// and stays: the whole-record scrubber below, and the logger-key hazard the first finding exposed.
+// The line itself is gone, so the cases that asserted it are gone with it — an assertion about a
+// line nothing emits would be exactly the vacuous check this programme keeps finding.
+// -----------------------------------------------------------------------------
+
+describe("WRK-018 — the whole-record log scrubber (kept; no production caller today)", () => {
+  it("scrubs string values and refuses a set it cannot scrub (fail closed)", () => {
+    expect(scrubLogFields({ parsedInputCount: 7, leaseId: `lease-${CANARY_A}` }, [CANARY_A])).toEqual({
+      parsedInputCount: 7,
+      leaseId: `lease-${REDACTION_MARKER}`,
+    });
+    expect(scrubLogFields({ leaseId: "wxyzq" }, ["xyzq", `w${REDACTION_MARKER}`])).toBeNull();
+    // An unrelated canary leaves numbers exactly as they are.
+    expect(scrubLogFields({ parsedInputCount: 111 }, [CANARY_A])).toEqual({ parsedInputCount: 111 });
+  });
+
+  it("a DIGITS-ONLY canary that appears in a number's decimal text refuses the set", () => {
+    // A redeemed secret may be any non-empty string, so "numbers cannot carry text" is false:
+    // a digits-only canary equal to (or inside) a number's rendering would print it verbatim.
+    expect(scrubLogFields({ parsedInputCount: 111 }, ["111"])).toBeNull();
+    expect(scrubLogFields({ parsedInputCount: 1110 }, ["111"])).toBeNull();
+    expect(scrubLogFields({ attempt: 7, leaseId: "lease-1" }, ["7"])).toBeNull();
+  });
+
+  it("a canary inside the MESSAGE or a KEY refuses the whole record", () => {
+    // Values are not the only surface: a secret can equal a substring of the fixed message or of
+    // a key, and `createWorkerLogger` canary-scrubs neither.
+    expect(scrubLogRecord("worker: parsed agent usage", { parsedInputCount: 1 }, ["worker"])).toBeNull();
+    expect(scrubLogRecord("worker: parsed agent usage", { leaseId: "x" }, ["leaseId"])).toBeNull();
+    expect(scrubLogRecord("worker: parsed agent usage", { leaseId: `l-${CANARY_A}`, parsedInputCount: 1 }, [CANARY_A])).toEqual({
+      message: "worker: parsed agent usage",
+      fields: { leaseId: `l-${REDACTION_MARKER}`, parsedInputCount: 1 },
+    });
+  });
+});
+
+describe("WRK-018 — the logger-key hazard the dropped line exposed (E4-F019, part 1)", () => {
+  it("★ a binding key containing `token` is REDACTED by the production logger; a `…Count` key survives", () => {
+    // This is why the dropped line's keys were never `parsedInputTokens`: `createWorkerLogger`
+    // redacts by key NAME, so the natural name for a token count silently destroys the number,
+    // and a test using a hand-rolled logger would never see it. Kept as a standing regression for
+    // any future numeric log field.
+    const lines: string[] = [];
+    const logger = createWorkerLogger({ destination: { write: (chunk: string) => void lines.push(chunk) } });
+    logger.info({ inputTokens: 5, inputCount: 5 }, "probe");
+    const record = JSON.parse(lines[0]!) as Record<string, unknown>;
+    expect(record.inputTokens).toBe("[redacted]");
+    expect(record.inputCount).toBe(5);
+  });
+
+  it("★ the logger ADDS keys of its own below any caller-side scrub (the reason the line was dropped)", () => {
+    // E4-F019: `msg`/`time`/`level` are added by the sink AFTER `scrubLogRecord` has run, so a
+    // canary equal to one of them - or a digit string inside the epoch `time` - reaches the line
+    // on a surface no caller can reach. This case exists so that property is measured, not argued.
+    const lines: string[] = [];
+    const logger = createWorkerLogger({ destination: { write: (chunk: string) => void lines.push(chunk) } });
+    logger.info({ leaseId: "lease-1" }, "probe");
+    const keys = Object.keys(JSON.parse(lines[0]!) as Record<string, unknown>);
+    expect(keys).toContain("msg");
+    expect(keys).toContain("time");
+    expect(keys).toContain("level");
   });
 });

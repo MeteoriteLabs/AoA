@@ -660,3 +660,65 @@ controls. `node scripts/check-gate-clause-wiring.mjs` exits 0 on the real regist
 **Effect on the register, measured with `--counts` before and after.** Exactly ONE declared symbol
 moved: `createSupervisor` 4 → 2. Every other declared count is byte-identical, and **no clause's
 verdict changed** — `wiredCount` 9, dormant 11, exit 0 in both states.
+
+## E4-F019 — Canary redaction has no defence when a redeemed secret collides with a STRUCTURAL token: the logger itself emits `msg`/`time`/`level` below every caller-side scrubber
+
+**Status:** open
+**Severity:** MEDIUM (a known-secret can reach a worker log line verbatim; bounded by how improbable
+such a secret is, unbounded in the sense that nothing DETECTS it)
+**Filed:** 2026-09-23 (WRK-018 1(b), M1a), measured at `daf4396ba` on `claude/m1-wrk-018-usage-log`.
+**Owner:** `unowned` — see `scripts/finding-ownership.json`.
+**NOT introduced by WRK-018, and NOT blocking M1a** — see "Scope" below.
+
+**What.** The worker's redaction model scrubs per-run canaries out of everything a CALLER hands the
+logger. `createWorkerLogger` (`packages/worker-daemon/src/logging/logger.ts`) additionally redacts
+bindings by KEY NAME. Neither reaches the keys the SINK adds. Measured by driving the production
+logger directly:
+
+```
+{"level":30,"time":1790154392922,"parsedInputCount":5,"leaseId":"lease-1","msg":"worker: parsed agent usage"}
+keys: level,time,parsedInputCount,leaseId,msg
+```
+
+A redeemed secret is accepted as ANY non-empty string (`synthesiseRunSecrets`,
+`packages/worker-daemon/src/lease/secret-redemption.ts` — it stores `outcome.value` with no shape
+constraint). So a secret equal to `msg`, `time` or `level` — or a digit string occurring inside the
+epoch `time` — is emitted verbatim, on EVERY worker log line, by the logger itself, below any
+scrubber a caller can run. The same holds for a secret equal to a substring of any fixed log message
+or binding key: those two surfaces are now refused by `scrubLogRecord`
+(`packages/worker-daemon/src/supervisor/run-output.ts`), but only for callers that use it.
+
+**How it was found.** WRK-018 built a diagnostic log line carrying four parsed token counts. Five
+Codex P1 reviews in a row found five distinct ways a canary reaches that line: a key name the
+redactor itself ate (`…Tokens` → `[redacted]`, destroying the number), a digits-only canary equal to
+a count, a throwing logger suppressing the `usage` event, the fixed message and key names needing
+the same scrub as the values, and finally this one. Four were fixed; the fifth cannot be fixed
+caller-side, which is the finding. The M1 planning session then dropped the line (F2, 2026-09-23).
+
+**Why it is not WRK-018's defect.** Every property above is true of the worker's logging before this
+ticket and independent of it: the sink adds its keys to every line the daemon writes, and no secret
+shape is constrained anywhere. WRK-018 only made a line whose payload had to SURVIVE redaction,
+which is what made the collision observable. Nothing WRK-018 shipped is the cause, and dropping its
+line does not close this.
+
+**Scope / blast radius.** Requires a redeemed secret to be, or to contain, a very short structural
+token. That is improbable in practice (provider API keys are long and prefixed) and is bounded by
+`PROVIDER_AUTH_ENV_TARGETS`, but it is NOT detected: no guard, test or runtime check would notice,
+and the H-04 posture this programme states is zero-tolerance rather than probabilistic.
+
+**Two closure routes, neither taken here:**
+1. **Constrain what may be redeemed as a secret** — reject a resolved value that is shorter than
+   some bound, or that matches a structural-token denylist, at `synthesiseRunSecrets`. Cheap and
+   local; changes a contract about tenant secrets, so it is a decision, not a repair.
+2. **Serialize and scrub at the TRANSPORT boundary** — scrub the fully-serialized record inside the
+   logger's destination, after the sink has added its keys, rather than at the call site.
+   `scrubLogRecord` is the caller-side half of this and is deliberately retained; on its own it
+   cannot close the finding.
+
+**Blocks nothing.** `M1a` does not depend on any worker log carrying data. Acceptance 1(a) is
+**assertion MERGED (PR #567), closure PENDING one keyed shipped-boot run that carries it** — no
+keyed run has executed `evaluateUsageCardinality` yet (`DEP-015-result.md`), so 1(a) is not closed
+today (this sentence read "is closed by the keyed lane's `usage` cardinality assertion" when first
+written, which overstated it — Codex P2, PR #571). 1(b) is **not live-provable** and 1(c) is
+**fixture-only**, each with its reason (`tickets/WRK-018-result.md`). Nothing here waits on any of
+them: this finding is about the logging model, not about usage evidence.
