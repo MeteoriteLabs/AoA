@@ -234,6 +234,16 @@ creates twice with `""` and asserts two distinct sandboxes with their own labels
 - Images built from this tree: control-plane, worker, adapter-manager (`docker/images/build.sh`) and
   the reference provider with its new `/wire-app` stage.
 
+## 10a. Codex review, second round — the per-tenant probe limit, answered rather than widened
+
+| Finding | Verified | Resolution |
+|---|---|---|
+| **P1** — *"Probe every enabled tenant before closing criterion 5"*: the worker-driven case is hard-coded to tenant A, so a tenant-B-specific stage-in credential leak would not red this lane, although the acceptance said *per enabled tenant* | **True**, and the cause is a collision between two LOCKED requirements, not an oversight. The `DEP-017` probe runs INSIDE a sandbox; only a DISPATCHING worker creates one; and `M1-D1-SPINE` is *"one control-plane instance, ONE SEPARATELY DEPLOYED WORKER"*. One worker drives one tenant's sandbox, and a second worker would satisfy this clause by breaking the gate's own topology clause | A new always-on case asserts, for every OTHER enabled tenant, that the probe is **RECORDED UNOBSERVED** — held in both directions by `evaluateEnvProbeObservability`, the `DEP-016` tripwire this ticket deliberately kept: it reds if a summary EVER appears on such an attempt, and if observation is claimed without one. It also asserts non-vacuity first (the attempt really carries events). The E6 plan's acceptance 4 is amended with the superseded text kept verbatim, and the gate question is **flagged for the planning session**: if criterion 5 must be observed for every enabled tenant on this lane, `M1-D1-SPINE` needs one deployed worker PER enabled tenant. `DEP-019` does not resolve that by widening what it claims |
+| **P1** — *"Preserve the harness-mode test exit status"*: `|| true` discarded a failing suite, and the greps match the title on both `ok` and `not ok` | **True for the suite-level half.** The control's own line was already matched as `^(ok\|not ok)` and cased on, but a failure in ANY OTHER case still reached the greps and was announced as a passing control | The step now captures the exit status and requires **0** before it greps anything: under `harness` the worker-driven case is withdrawn and everything else, the in-test control included, must still pass |
+| **P2** — *"Append the delivered Units B and C to the result record"* | **Already addressed at the time it was raised.** Codex reviewed `ec0a2d132`; the record was rewritten at `1a5e4f0c2`, and it retains the earlier partial history VERBATIM in §12 as the finding asks | No change beyond this row |
+
+Live after both fixes: **10/10** on the D1 stack (was 9/9), the new criterion-5 case included.
+
 ## 11. CI evidence
 
 To be recorded, by job with its executed count, in an addendum. This section is not rewritten.

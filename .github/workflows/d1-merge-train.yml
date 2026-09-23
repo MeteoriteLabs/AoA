@@ -568,7 +568,17 @@ jobs:
           out="${RUNNER_TEMP}/m1-spine-not-the-executor.txt"
           # The TAP reporter, deliberately: `# SKIP` is a stable TAP token, while the default spec
           # reporter's skip glyph is a unicode character whose shape is not a contract.
-          node --test --test-concurrency=1 --test-reporter=tap tests/d1/m1-spine.test.mjs > "$out" 2>&1 || true
+          # ★ THE EXIT STATUS IS KEPT (Codex P1, PR #572). `|| true` discarded it, so a profile in
+          # which some OTHER case failed would still reach the greps below and be announced as a
+          # passing control. The suite must exit 0 here: under `harness` the worker-driven case is
+          # withdrawn and everything else — including the in-test control — must still pass.
+          status=0
+          node --test --test-concurrency=1 --test-reporter=tap tests/d1/m1-spine.test.mjs > "$out" 2>&1 || status=$?
+          if [ "$status" != "0" ]; then
+            cat "$out"
+            echo "::error::the profile FAILED under AOA_M1_SPINE_EXECUTOR=harness (exit ${status}); the control proves nothing"
+            exit 1
+          fi
           # The worker-driven case must be WITHDRAWN, and the in-test control must have really RUN
           # and passed. That pairing is what distinguishes "the claim was withdrawn" from "the whole
           # profile fell over", and it is why the control is checked for the ABSENCE of `# SKIP`.

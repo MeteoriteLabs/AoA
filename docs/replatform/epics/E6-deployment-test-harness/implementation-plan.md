@@ -1454,8 +1454,21 @@ run that still prices fails it.
    harness's forwarding: `--aoa-fake-usage=suppressed` removes the stream-json result line, the
    worker emits no `usage` event, and the cost assertion goes red.
 4. **`DEP-016` acceptance item 6, CLOSED properly.** The profile arms `AOA_WORKER_ENV_PROBE=1` and
-   asserts, per enabled tenant, that the probe RAN and reported `absent`, read from the attempt's
-   `job_events` through `evaluateEnvProbeEvidence`. A missing or blind summary fails the profile,
+   asserts that the probe RAN and reported `absent`, read from the attempt's `job_events` through
+   `evaluateEnvProbeEvidence`.
+   ★★★ *Amended 2026-09-23 by `DEP-019`'s build, from a Codex P1 on PR #572 verified at source.
+   Superseded text: “asserts, **per enabled tenant**, that the probe RAN”. It is not achievable on this
+   lane, and the cause is a collision between two LOCKED requirements rather than an oversight: the
+   probe runs INSIDE a sandbox, only a DISPATCHING worker creates one, and `M1-D1-SPINE` is “one
+   control-plane instance, **one separately deployed worker**”. One worker drives one tenant's
+   sandbox; a second worker would satisfy this clause and break the gate's own topology clause. So
+   the profile asserts the probe RAN and reported `absent` for the WORKER-DRIVEN tenant, and
+   **RECORDS it unobserved for every other enabled tenant with the `DEP-016` tripwire
+   (`evaluateEnvProbeObservability`) still holding that record in both directions** — it reds if a
+   summary ever appears on such an attempt, and if observation is claimed without one.
+   **For the planning session:** if criterion 5 must be observed for EVERY enabled tenant on this
+   lane, `M1-D1-SPINE` needs one deployed worker PER enabled tenant, which contradicts its topology
+   clause. That is a gate question; `DEP-019` does not resolve it by widening what it claims.* A missing or blind summary fails the profile,
    exactly as the keyed lane does; the `DEP-016` tripwire is replaced by this positive assertion and
    the replacement is recorded. **Control:** a worker without the probe env reds the new assertion.
    ★ The evidence must state the narrowing: a reference sandbox has no baked image env and no

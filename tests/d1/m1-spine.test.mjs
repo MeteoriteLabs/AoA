@@ -513,6 +513,56 @@ test("m1-spine: ★ the worker-driven verdict REDS on tenant A's HARNESS-driven 
     `the control did not red on the lease arm: ${formatViolations(violations)}`);
 });
 
+// ── 2b-tenants. DEP-019: criterion 5 per enabled tenant, and the LIMIT one worker imposes ──
+//
+// ★★★ CODEX P1, PR #572, VERIFIED AT SOURCE AND ANSWERED HONESTLY RATHER THAN BY WIDENING A CLAIM.
+// The finding: the worker-driven case covers tenant A only, so a tenant-B-specific stage-in
+// credential leak would not red this lane, although the acceptance says "per enabled tenant".
+//
+// It is right, and the cause is a collision between two LOCKED requirements, not an oversight:
+//   * the `DEP-017` probe runs INSIDE a sandbox, and only a DISPATCHING worker creates one;
+//   * `M1-D1-SPINE` is "one control-plane instance, ONE SEPARATELY DEPLOYED WORKER".
+// One worker can drive one tenant's sandbox. A second worker would satisfy the probe clause and
+// break the topology clause — which is the gate's own definition, not this profile's choice.
+//
+// So this profile does the honest thing in BOTH directions. For the worker-driven tenant the probe
+// is asserted RAN and `absent` (§2b). For every OTHER enabled tenant it is RECORDED UNOBSERVED, and
+// `evaluateEnvProbeObservability` — the DEP-016 tripwire, kept for exactly this — makes that record
+// self-policing: it reds if a summary EVER appears on such an attempt (the record has gone stale
+// and must be rewritten), and it reds if observation is CLAIMED with no summary.
+//
+// ★ FLAGGED FOR THE PLANNING SESSION, and it is a gate question rather than a build one: if
+// criterion 5 must be observed for EVERY enabled tenant on this lane, `M1-D1-SPINE` needs one
+// deployed worker PER enabled tenant, which contradicts its own topology clause. Recorded in
+// `DEP-019-result.md`; this profile does not resolve it by widening what it claims.
+
+test("m1-spine: criterion 5 is observed for the worker-driven tenant and RECORDED unobserved for the others", { skip: SKIP }, () => {
+  const others = M1_SPINE_TENANTS.enabled.filter((t) => t.key !== M1_SPINE_WORKER_DRIVEN_TENANT_KEY);
+  assert.ok(others.length > 0, "the F10 set must carry more than one enabled tenant");
+  const violations = [];
+  for (const tenant of others) {
+    const attempt = leased.get(tenant.key);
+    assert.ok(attempt, `the per-tenant case did not record tenant ${tenant.key}'s attempt`);
+    const rows = step(querySpineWorkerDriven({ jobId: attempt.ids.jobId }), `${tenant.key} probe rows`);
+    assert.equal(rows.ok, true, `${tenant.key} probe row probe: ${truncate(rows)}`);
+    // Non-vacuity: this attempt really exists and really was driven, so "no probe summary" is a
+    // fact about the probe and not about an empty table.
+    assert.ok(rows.events.length > 0, `tenant ${tenant.key}'s attempt carries no events at all`);
+    evidence.enabled[tenant.key] = {
+      ...(evidence.enabled[tenant.key] ?? {}),
+      criterion5EnvProbe: {
+        observed: false,
+        reason: "harness-driven: the DEP-017 probe runs inside a sandbox, and M1-D1-SPINE has ONE deployed worker, which drives the first enabled tenant",
+        logMessages: rows.logMessages.length,
+      },
+    };
+    violations.push(...evaluateEnvProbeObservability({ declaredObserved: false, logMessages: rows.logMessages }));
+  }
+  evidence.verdicts.criterion5Others = violations;
+  assert.deepEqual(violations, [], `criterion-5 record violations:
+${formatViolations(violations)}`);
+});
+
 // ── 2c. DEP-019: the deployed worker is offered NOTHING of another tenant's ──
 
 test("m1-spine: the deployed worker is offered no work for tenant B or the control tenant", { skip: SKIP }, () => {
