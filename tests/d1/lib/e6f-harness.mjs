@@ -224,14 +224,36 @@ export function buildWorkerHello({ workerId, targetId, deviceGeneration = 1 }) {
 
 /** Run an ESM script inside a compose service (source piped on STDIN). Returns the
  * exit status, raw stdout/stderr, and the parsed `__E6F_RESULT__` line if present. */
-export function dexecModule(service, scriptSource, { timeout = 60_000 } = {}) {
+/**
+ * ★ `secrets` ADDED 2026-09-24, from the self-audit of the M1a harness-gap diff, and it closes a
+ * channel that existed BEFORE that diff as well.
+ *
+ * THE CLASS: a helper that embeds a caller-supplied secret VALUE into a dexec script whose
+ * `stdout`/`stderr` is printed verbatim into the CI job log on failure. The script goes in on
+ * STDIN, so the value is never in argv — but if node cannot parse or run it, node echoes the
+ * offending SOURCE LINE to stderr, and `step()` prints both streams into its assertion message.
+ * The fault-matrix job's log is a public run log. *A channel that leaks only when the system is
+ * broken is still a channel.*
+ *
+ * The scrub is here, at the chokepoint, and not at each message site: a fix applied per-message
+ * would have to be repeated by every future caller and by every future assertion, which is how
+ * this kind of gap regenerates. Callers that embed a value pass it here and nothing downstream can
+ * print it. `maxBuffer` truncation cannot defeat it either — the replacement runs over whatever
+ * text came back.
+ */
+export function dexecModule(service, scriptSource, { timeout = 60_000, secrets = [] } = {}) {
   const res = spawnSync(
     "docker",
     ["compose", "-f", COMPOSE_FILE, "exec", "-T", service, "node", "--input-type=module"],
     { input: scriptSource, encoding: "utf8", timeout, maxBuffer: 16 * 1024 * 1024 },
   );
-  const stdout = res.stdout ?? "";
-  const stderr = res.stderr ?? "";
+  // Longest first, so a value that contains another is not partly revealed by the shorter
+  // replacement running first.
+  const toScrub = [...new Set(secrets.filter((v) => typeof v === "string" && v.length > 0))]
+    .sort((a, b) => b.length - a.length);
+  const scrub = (text) => toScrub.reduce((acc, v) => acc.split(v).join("[REDACTED]"), text ?? "");
+  const stdout = scrub(res.stdout ?? "");
+  const stderr = scrub(res.stderr ?? "");
   let result = null;
   const idx = stdout.indexOf(RESULT_MARKER);
   if (idx >= 0) {
@@ -2845,7 +2867,9 @@ try {
   await sql.end({ timeout: 5 });
 }
 `;
-  return dexecModule("control-plane", script);
+  // Same chokepoint scrub as `seedResolvableProviderSecretHandle`: when a caller overrides
+  // `secretValue` with a per-run canary, that value must not be printable from either stream.
+  return dexecModule("control-plane", script, { secrets: [secretValue] });
 }
 
 /**
@@ -3426,7 +3450,10 @@ try {
   await sql.end({ timeout: 5 });
 }
 `;
-  return dexecModule("control-plane", script);
+  // The VALUE is scrubbed from both streams at the chokepoint: a postgres or secret-service error
+  // could otherwise echo it, and a syntax error in this script would make node print the embedded
+  // literal to stderr.
+  return dexecModule("control-plane", script, { secrets: [value] });
 }
 
 /**
@@ -3487,8 +3514,14 @@ export function composeServiceLogs(service, { tail = 5000, timeout = 120_000 } =
   return { ok: res.status === 0, status: res.status, text, bytes: Buffer.byteLength(text, "utf8") };
 }
 
-/** Every `job_events` payload for one job, as ONE text blob plus its byte length — the EVENT half
- * of clause 5's two streams. Owner DSN: the case is asking what the tenant's own durable event
+/** Every `job_events` row for one job, as ONE text blob plus its byte length — the EVENT half of
+ * clause 5's two streams.
+ *
+ * ★ MEASURED on run 35933605253: there is no `payload` column and no `seq`. The wire event is
+ * stored WHOLE in `event` (jsonb) and the per-attempt ordering column is `sequence`
+ * (packages/db/src/schema/job_events.ts). Scanning the whole event is also the stronger read for
+ * a redaction case: a canary that leaked into an envelope field rather than a payload field is
+ * still a leak. Owner DSN: the case is asking what the tenant's own durable event
  * stream contains, not whether another tenant can see it (that is `d1.tenant.cross.events`). */
 export function queryJobEventPayloadText({ jobId }) {
   const params = { jobId };
@@ -3498,9 +3531,9 @@ ${embedParams(params)}
 const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
 const sql = postgres(process.env.DATABASE_URL, { max: 1 });
 try {
-  const rows = await sql\`SELECT event_type AS "eventType", payload FROM job_events
-    WHERE job_id = \${P.jobId} ORDER BY seq ASC\`;
-  const text = rows.map((r) => r.eventType + " " + JSON.stringify(r.payload ?? null)).join("\\n");
+  const rows = await sql\`SELECT event_type AS "eventType", event FROM job_events
+    WHERE job_id = \${P.jobId} ORDER BY sequence ASC\`;
+  const text = rows.map((r) => r.eventType + " " + JSON.stringify(r.event ?? null)).join("\\n");
   report({ ok: true, events: rows.length, text, bytes: Buffer.byteLength(text, "utf8") });
 } catch (error) {
   report({ ok: false, error: String(error && error.message ? error.message : error) });
