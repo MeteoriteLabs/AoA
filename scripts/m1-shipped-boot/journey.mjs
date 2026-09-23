@@ -974,6 +974,25 @@ function leakScan(state) {
     );
   }
   const rawLog = existsSync(jobLogPath(state)) ? readFileSync(jobLogPath(state), "latin1") : null;
+  // ★ INTACTNESS (Codex P1, PR #574). A filter killed outright — OOM, SIGKILL, an uncaught throw —
+  // fails its own phase through `pipefail` but leaves no `capture-failed` marker, and the NEXT
+  // phase's filter appends after the hole, so neither the step outcomes this job gates on nor the
+  // content of the log reveal the missing stretch. Every invocation therefore brackets itself, and
+  // an unmatched OPEN is a phase whose capture ended abruptly. This is a property of the LOG, so it
+  // holds for every piped phase without the gate having to enumerate them.
+  if (process.env.GITHUB_ACTIONS === "true" && rawLog !== null) {
+    const opened = (rawLog.match(/^\[log-filter\] opened$/gm) ?? []).length;
+    const closed = (rawLog.match(/^\[log-filter\] closed$/gm) ?? []).length;
+    if (opened !== closed) {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(jobLogPath(state), { force: true });
+      fail(
+        `leak scan: the job log is TRUNCATED — ${opened} capture(s) opened but ${closed} closed, so at ` +
+          "least one phase's filter died mid-stream and that stretch of the Actions log was never " +
+          "captured; the evidence and the partial log were deleted",
+      );
+    }
+  }
   const stripped = rawLog === null ? { text: "", removed: 0 } : stripMaskDirectives(rawLog);
   const logSurface = rawLog === null ? [] : [{ name: "job-log.txt", text: stripped.text }];
   const secrets = state.secrets ?? {};

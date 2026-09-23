@@ -924,5 +924,22 @@ They are recorded because each would have made the control worse than none:
     that exact ancestor rather than assumed. Eight behavioural markers now: the accumulating carry
     (both surfaces), the floorless latch, `stripLogPrefix`, `LOG_TIMESTAMP`, `base64Payload`, the
     fail-closed filter and its durable marker, and the absent-log refusal.
+24. **A filter KILLED outright leaves no marker at all — so the log proves its own intactness.** A
+    filter that dies without reaching its fail-closed arm (OOM, SIGKILL, an uncaught throw) fails
+    its own phase through `pipefail`, but writes no `capture-failed` marker, and the NEXT phase+s
+    filter appends after the hole. Neither the step outcomes the upload is gated on nor the content
+    of the log reveals the missing stretch.
+
+    Gating on twelve step ids would have been the weak fix — it enumerates what to watch, and the
+    next phase added silently escapes it. Instead every filter invocation BRACKETS itself, writing
+    `[log-filter] opened` on start and `[log-filter] closed` on a clean end of input, into the
+    capture only (never the published log), and the scan requires the two counts to match. That is
+    a property of the LOG, so it covers every piped phase without naming any of them. Controls:
+    an unmatched open reds and the bundle is deleted; a balanced log passes, so it is not an
+    always-deny; and two mutations (the scan ignoring the imbalance, the filter not closing) red.
+
+    Residual, stated rather than implied: a filter killed BEFORE its open sentinel lands leaves the
+    counts balanced and that phase absent entirely. Its step still fails through `pipefail`, so the
+    run is red and the lane is not claiming a pass; the bundle it retains is the failure evidence.
 **Status unchanged.** This is a control added after the fact to a run that was already clean; it
 neither re-opens nor re-decides §12's keyed acceptance.

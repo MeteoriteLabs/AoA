@@ -1046,3 +1046,52 @@ test("POSITIVE CONTROL: an ABSENT job log fails the scan IN CI, and is merely no
   rmSync(local, { recursive: true, force: true });
   assert.equal(off.status, 0, off.stdout + off.stderr);  // a by-hand phase run tees nothing
 });
+
+test("POSITIVE CONTROL: a filter KILLED mid-stream leaves an unmatched OPEN, and the scan refuses (Codex P1)", () => {
+  // A filter that dies without reaching captureFailed (OOM/SIGKILL) writes no marker, and the NEXT
+  // phase appends after the hole — so neither the step outcomes nor the log content show it.
+  const out = mkdtempSync(path.join(tmpdir(), 'm1-truncated-'));
+  mkdirSync(path.join(out, 'evidence'), { recursive: true });
+  writeFileSync(path.join(out, 'evidence', 'verifier-a.txt'), 'clean\n');
+  writeFileSync(
+    path.join(out, 'job-log.txt'),
+    ['[log-filter] opened', 'prepare ok', '[log-filter] closed',
+     '[log-filter] opened', 'boot-core …',                      // killed here: no closed
+     '[log-filter] opened', 'seed ok', '[log-filter] closed'].join('\n') + '\n',
+  );
+  writeFileSync(path.join(out, 'state.json'), JSON.stringify({ out, redact: [], secrets: {} }));
+  const res = spawnSync(process.execPath, [journey, 'leak-scan', '--out', out], {
+    encoding: 'utf8', env: { ...process.env, GITHUB_ACTIONS: 'true' },
+  });
+  const gone = !existsSync(path.join(out, 'evidence'));
+  rmSync(out, { recursive: true, force: true });
+  assert.equal(res.status, 1, res.stdout + res.stderr);
+  assert.match(`${res.stdout}${res.stderr}`, /TRUNCATED — 3 capture\(s\) opened but 2 closed/);
+  assert.ok(gone, 'a bundle whose log has a hole must not survive to upload');
+});
+
+test("POSITIVE CONTROL: a BALANCED log passes, and the filter brackets itself end to end", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'm1-sentinel-'));
+  const capture = path.join(dir, 'job-log.txt');
+  const filter = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'm1-shipped-boot', 'log-filter.mjs');
+  for (const phase of ['one', 'two']) {
+    const r = spawnSync(process.execPath, [filter, capture], { input: `${phase} ok\n`, encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(!r.stdout.includes('[log-filter]'), 'the sentinels are CAPTURE-only; they never publish');
+  }
+  const text = readFileSync(capture, 'utf8');
+  assert.equal((text.match(/^\[log-filter] opened$/gm) ?? []).length, 2);
+  assert.equal((text.match(/^\[log-filter] closed$/gm) ?? []).length, 2);
+
+  const out = mkdtempSync(path.join(tmpdir(), 'm1-balanced-'));
+  mkdirSync(path.join(out, 'evidence'), { recursive: true });
+  writeFileSync(path.join(out, 'evidence', 'verifier-a.txt'), 'clean\n');
+  writeFileSync(path.join(out, 'job-log.txt'), text);
+  writeFileSync(path.join(out, 'state.json'), JSON.stringify({ out, redact: [], secrets: {} }));
+  const res = spawnSync(process.execPath, [journey, 'leak-scan', '--out', out], {
+    encoding: 'utf8', env: { ...process.env, GITHUB_ACTIONS: 'true' },
+  });
+  rmSync(out, { recursive: true, force: true });
+  rmSync(dir, { recursive: true, force: true });
+  assert.equal(res.status, 0, res.stdout + res.stderr);  // not an always-deny
+});

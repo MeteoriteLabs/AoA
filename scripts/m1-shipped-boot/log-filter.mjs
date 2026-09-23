@@ -58,6 +58,19 @@ try {
   captureFailed(err, "mkdir");
 }
 
+// ★ INTACTNESS SENTINELS (Codex P1, PR #574). A filter that dies WITHOUT reaching `captureFailed`
+// — OOM, SIGKILL, an uncaught throw — fails its own phase through `pipefail` but leaves no marker;
+// the next phase's filter then appends happily, and the scan reads a log missing a stretch it can
+// neither see nor suspect. So every invocation writes OPENED on start and CLOSED on a clean end of
+// input, and the scan requires the two counts to match — which a killed filter breaks.
+const OPENED = "[log-filter] opened";
+const CLOSED = "[log-filter] closed";
+try {
+  appendFileSync(capturePath, `${OPENED}\n`);
+} catch (err) {
+  captureFailed(err, "open-sentinel");
+}
+
 // STATEFUL: a PEM block is redacted whole, because a re-wrapped PEM splits the DER prefix across
 // lines and per-line matching alone would forward the body (Codex P1, PR #574).
 const redact = createLineRedactor();
@@ -75,4 +88,12 @@ rl.on("line", (line) => {
   }
   // … REDACTED to the published Actions log.
   process.stdout.write(`${redact(line)}\n`);
+});
+rl.on("close", () => {
+  // stdin ended normally: this invocation captured everything its producer wrote.
+  try {
+    appendFileSync(capturePath, `${CLOSED}\n`);
+  } catch (err) {
+    captureFailed(err, "close-sentinel");
+  }
 });
