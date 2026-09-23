@@ -939,3 +939,119 @@ gave was not wrong, it was answered.
 > To be recorded, by job with its executed count, in an addendum once the PR's run on the reviewed
 > revision completes. This section is not rewritten.
 >
+
+---
+
+## Independent review
+
+**Reviewer:** M1 review-batch-4 independent reviewer (Claude Opus 5) — distinct from the DEP-019 build agent and from the M1 planning session. I authored none of this ticket.
+**Reviewed revision:** `99bff824d1c4fd641cea3b05ab7fe588f8255b96` (`origin/docs/replatform-program`, the merge of PR #572). `a3f68e9c8`, `cc85ca7d8`, `19ad584a3` and `5e5c1f196` are all ancestors of it.
+**Disposition:** `approved`
+**Attempt:** 1 (see *Independent review — attempt 1* and the attempt history)
+
+### Independent review — attempt 1
+
+**Disposition: `approved`.** The headline claim — the journey is performed by the deployed worker and
+that is ASSERTED rather than observed — holds at source and in CI. One non-blocking finding is
+recorded at the end.
+
+- **The worker-driven attempt is judged by the SHARED verdicts, not a second implementation.**
+  In `tests/d1/m1-spine.test.mjs`, the `EXECUTOR === "worker"` block calls the same
+  `querySpineAttempt` probe the harness path uses and hands its rows to
+  `evaluateEnabledTenantSpine`; `evaluateEnabledTenantSpine`
+  (`scripts/lib/m1-spine-assertions.mjs`) itself pushes `...evaluateUsageCardinality({tenant, observation})`,
+  so both verdicts do run against the deployed worker's own attempt. There is no rival definition of
+  either symbol in the lane.
+- **The one narrowing is bounded and is the one the record names.** `measuredRuntimeMillis === true`
+  drops `runtimeMillis` from the pinned-field set and nothing else: `inputTokens`, `outputTokens` and
+  `cachedInputTokens` stay pinned exactly against `M1_SPINE_CANNED_UNITS`, and a missing or negative
+  duration reds `usage:runtime_not_measured`. The reason given (the worker takes `runtimeMillis` from
+  the supervisor's clock) is stated in `usage-observer.ts`'s own header.
+- **The usage-suppressed control reds on the WORKER's parser.** In the final probe job's log the
+  suppressed run fails with `AssertionError … worker-driven cost/audit violations:` carrying
+  `usage:no_usage_event`, `cost:no_cost_row` and `cost:receipt_missing` — i.e. on the worker-driven
+  verdict, not only on harness activity.
+- **The not-the-executor control reds on BOTH arms and is not vacuous.** The case reads tenant A's
+  own harness-driven attempt, asserts non-vacuity first (`observation.events.length > 0` and
+  `harnessDriven.ids.workerId !== deployed.workerId`), then requires both
+  `worker_driven:events_not_deployed_worker` and `worker_driven:lease_not_deployed_worker` in the
+  codes. The fix for the vacuous first shape is therefore in the code, not only in the prose: the
+  earlier shape seeded its own job and read empty rows, and the committed shape cannot, because the
+  attempt it judges is the one the per-tenant case recorded. It runs on every execution of the
+  profile, and the lane additionally runs `AOA_M1_SPINE_EXECUTOR=harness` requiring the suite's exit
+  status to be **0** before it greps.
+- **The private signing key is no longer directory-mounted into the provider.**
+  `docker/d1/m1-spine.override.yml` binds
+  `./docker/d1/runtime-keys/control-plane-signing-key.pem:/keys/control-plane-signing-key.pem:ro`
+  into `control-plane` and `./docker/d1/runtime-keys/control-plane-public-key.pem:…:ro` into
+  `fake-provider` — two individual files, no directory bind anywhere in the file. The boundary is
+  additionally held by `evaluateSpineOverrideText`'s `override:key_directory_mounted`,
+  `override:wrong_key_half` and `override:key_mounted_into_unexpected_service` clauses, each with a
+  red fixture; `scripts/lib/__tests__/m1-spine-assertions.test.mjs` runs **118 tests, 118 pass, 0
+  fail** locally at the reviewed revision, matching the probe job's own `ℹ tests 118`.
+- **`assertProbeArgvShape` pins the supervisor's argv.** It is defined in
+  `packages/sandbox-fake-provider/src/node-eval.ts`, exported from the package index, and called from
+  `node-eval.ts` before anything is spawned. Its suite includes the fail-closed case: with **no**
+  pinned metadata URL only the empty value is admitted, and a good argv carrying the real URL throws
+  *"not the pinned endpoint"*.
+- **The final probe run, read by job and by log.**
+  [`35856129644`](https://github.com/MeteoriteLabs/AoA/actions/runs/35856129644), branch
+  `claude/m1-dep-019-d1-probe`, head `441b90caa7290d9ccbeb07544ae3b2b418277144`, conclusion
+  `success`: **`m1-spine` `107165160976` success**, `d1-merge-train` `107165160905` success,
+  **`m1-fault-matrix` `107165161005` success**. From the `m1-spine` log: the verdict self-test
+  `tests 118 / pass 118 / fail 0`; `fake-provider GATED provider wire on 0.0.0.0:8082 (1 pinned
+  probe-script digest + a pinned probe argv shape; ownership gate ON)`; `running worker services: 1`;
+  the profile `tests 10 / pass 10 / fail 0`; and all three control lines, the duplicate one in its
+  narrowed wording. §11e quotes the log accurately.
+- **The disclosed cross-ticket breakage is real, and the fix is shared.** Run `35853547516` (head
+  `3d55763d3`) concluded `failure` with `m1-spine` `107156617625` and `d1-merge-train` `107156617274`
+  **success** and `m1-fault-matrix` `107156617510` **failure** — exactly as §11d states. The repair is
+  `scripts/generate-d1-spine-keys.mjs`, called from BOTH jobs (`d1-merge-train.yml` line 475 under
+  `m1-spine:`, line 715 under `m1-fault-matrix:`), so the required `${…:?}` master key was not
+  defaulted away. The script's own redaction fix is at source: `::add-mask::` is emitted only when
+  `GITHUB_ENV` is set, and otherwise the script says so and prints nothing.
+- **Multi-tenant (F10), real.** `M1_SPINE_TENANTS` is two enabled Organizations (`A`, `B`) plus a
+  separate control Organization (`C`); `evaluateSpineRollout` requires both enabled tenants to
+  resolve `canary` and the control to resolve `off`, and the isolation case asserts as a ROW fact
+  that no attempt of `B` or `C` is placed on the deployed worker's target while `A`'s are.
+- **Acceptance (E6 plan §4c `DEP-019`), clause by clause.**
+  1. Worker-driven, provably — **evidenced** by `evaluateWorkerDrivenJourney` against the enrolled
+     identity, plus the shared cost/usage verdicts on that attempt.
+  2. The not-the-executor control reds — **evidenced**, both arms, always-on, non-vacuity asserted.
+  3. The usage positive control reds at the worker's real parser — **evidenced** (see the finding
+     below for the one place this is weaker than it reads).
+  4. `DEP-016` acceptance item 6 closed properly — **evidenced** for the worker-driven tenant, with
+     the per-tenant half amended into the plan **keeping the superseded text verbatim** and ruled to
+     `M1a-D2-MECHANISM` by locked `E6-D002`. I checked the plan: the amendment is dated, the old
+     sentence is quoted, and nothing was rewritten in place.
+  5. Multi-tenant unchanged and re-proven — **evidenced**.
+  6. Keyless — **evidenced**; no keyed workflow is dispatched by this lane.
+- **Guards.** The full `pr.yml` pure-node guard set is **0 failures** at the reviewed revision, plus
+  `check-evidence-immutability --base origin/docs/replatform-program`.
+- **★ One finding, not blocking — the usage-suppressed CONTROL STEP is not narrowed to the
+  worker-driven arm.** The lane step (`d1-merge-train.yml`, *POSITIVE CONTROL — with usage
+  suppressed, the profile MUST go red*) accepts any `[m1-spine:cost]` marker in the output. Under
+  `suppressed`, tenants A and B's HARNESS-driven attempts also emit `cost:no_cost_row` — I read all
+  three failures in the probe log — so deleting the `EXECUTOR === "worker"` cost block added by
+  §13.1 would leave the step printing *"the profile went red on the cost assertion, as required"* and
+  passing. This is the same family as §13.7 finding 1, which was fixed for the DUPLICATE control by
+  requiring `usage:not_exactly_one`, and was not applied to its sibling. **Why it does not block:**
+  the primary gate is the GREEN profile run, which does assert `costViolations` is empty on the
+  worker-driven attempt, so a worker that stopped parsing usage still reds the lane. What is loose
+  is only the control step's reason-grep. The cheap fix is to require a marker unique to the
+  worker-driven arm (e.g. `worker-driven cost/audit violations`) alongside `[m1-spine:cost]`.
+- **Not blocking, noted.** The section numbering runs 11 → 11b → 11c → 11e → 11d → 11a → 13 → 12,
+  which makes the chronology hard to follow on a first read; §11c and §11d are the two a later
+  reader most needs and they sit out of order. §11b's sibling-job failure on head `20b9eadcf` is left
+  stated rather than re-run, with its reasons; run `35856129644` supersedes it with all three jobs
+  green, so I did not hold it open.
+
+**What remains open after this approval:** nothing at this ticket. `E3-F037` stays `unowned` as this
+record says, and `E4-F019` (filed by WRK-018) is the open register entry behind §13.5's disposition.
+
+## Review attempt history
+
+| Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
+|---:|---|---|---|---|
+| 1 | M1 review-batch-4 independent reviewer (Claude Opus 5) | `99bff824d1c4fd641cea3b05ab7fe588f8255b96` | `approved` | Worker-driven attempt judged by the SHARED `querySpineAttempt` + `evaluateEnabledTenantSpine` (which itself calls `evaluateUsageCardinality`); the only narrowing is `measuredRuntimeMillis`, with `usage:runtime_not_measured` as its floor. Suppressed control reds as `worker-driven cost/audit violations` in the probe log. Not-the-executor control asserts non-vacuity then BOTH arms, always-on. Private PEM bound as an individual file into `control-plane` only; three override clauses hold it. `assertProbeArgvShape` called before any spawn, fail-closed with no pinned URL. Probe run `35856129644`: `m1-spine` `107165160976`, `d1-merge-train` `107165160905`, `m1-fault-matrix` `107165161005`, all success; self-test 118/118, profile 10/10. Broken run `35853547516` and the shared `generate-d1-spine-keys.mjs` fix both verified. F10 real (2 enabled Organizations + 1 control). **Finding (non-blocking): the usage-suppressed control step greps only `[m1-spine:cost]`, which the harness attempts also emit — the §13.7 narrowing was not applied to this sibling.** |
+<!-- Later reviewers append attempt 2 below without replacing this row. -->
