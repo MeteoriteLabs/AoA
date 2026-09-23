@@ -100,6 +100,7 @@ import {
   M1_SPINE_EXECUTOR_MODES,
   evaluateWorkerDrivenJourney,
   evaluateSpineEnvProbe,
+  M1_SPINE_CANNED_UNITS,
   formatViolations,
 } from "../../scripts/lib/m1-spine-assertions.mjs";
 
@@ -448,6 +449,53 @@ test("m1-spine: the DEPLOYED worker performs tenant A's journey — lease, execu
   });
   evidence.verdicts.workerDriven = violations;
   assert.deepEqual(violations, [], `worker-driven violations:\n${formatViolations(violations)}`);
+
+  // ★★★ THE SHARED COST + USAGE VERDICTS, ON THIS ATTEMPT (Codex P1, PR #572, ruled FIX).
+  //
+  // Without this the ticket's core claim was unasserted: `evaluateWorkerDrivenJourney` deliberately
+  // does not require a `usage` event (the suppressed control needs it not to), and the shared
+  // `evaluateEnabledTenantSpine` / `evaluateUsageCardinality` ran ONLY against the earlier
+  // HARNESS-created attempts. So the profile would have stayed green if the deployed worker stopped
+  // parsing stdout usage or pricing stopped firing for its attempt — and the usage-suppressed
+  // control would have red on HARNESS activity, which is a control proving something other than
+  // what it appears to.
+  //
+  // It is the SAME probe and the SAME verdicts the harness path uses — `querySpineAttempt`,
+  // `evaluateEnabledTenantSpine`, `evaluateUsageCardinality` — never a second implementation. The
+  // one narrowing is `measuredRuntimeMillis`, because on this path the worker produces the event
+  // and takes `runtimeMillis` from the SUPERVISOR'S clock; the three token counts are still pinned
+  // exactly, and the charge is still the derived 81 cents.
+  if (EXECUTOR === "worker") {
+    const rows = step(querySpineAttempt({ organizationId: tenant.organizationId, jobId: ids.jobId }), "worker-driven cost rows");
+    assert.equal(rows.ok, true, `worker-driven cost probe: ${truncate(rows)}`);
+    Object.assign(record, {
+      usageEvents: rows.usageEvents,
+      costRows: rows.costRows,
+      receipts: rows.receipts,
+      activity: rows.activity,
+    });
+    // The units the charge is pinned to are the CANNED ones the transcript carries; the worker
+    // parsed them out of the run's own stdout, which is the thing under test.
+    const expectedUnits = { ...M1_SPINE_CANNED_UNITS, runtimeMillis: rows.usageEvents?.[0]?.payload?.runtimeMillis ?? 0 };
+    const costViolations = evaluateEnabledTenantSpine({
+      tenant,
+      observation: {
+        attemptStatus: rows.attemptStatus,
+        events: rows.events,
+        usageEvents: rows.usageEvents,
+        expectedUnits,
+        measuredRuntimeMillis: true,
+        costRows: rows.costRows,
+        costReceipts: rows.receipts.filter((r) => r.projectionKind === "authoritative_cost"),
+        activity: rows.activity,
+        expectedActorId: `worker:${deployed.workerId}`,
+        auditReceipts: rows.receipts.filter((r) => r.projectionKind === "activity_audit"),
+      },
+    });
+    evidence.verdicts.workerDrivenCost = costViolations;
+    assert.deepEqual(costViolations, [], `worker-driven cost/audit violations:
+${formatViolations(costViolations)}`);
+  }
 
   // DEP-016 acceptance item 6, closed POSITIVELY: the probe RAN inside the reference sandbox and
   // reported `absent`, judged by the SHARED read side. Only on the worker-driven path — the

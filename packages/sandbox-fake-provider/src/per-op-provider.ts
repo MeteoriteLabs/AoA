@@ -158,6 +158,8 @@ export interface FakeSandboxProviderPortOptions {
   /** DEP-019 (Codex P1) — the pinned probe-script digests. Absent ⇒ every shell invocation is
    * refused; the D1 host builds the set from the daemon's own `ENV_PROBE_SCRIPT`. */
   readonly allowedProbeScriptDigests?: ReadonlySet<string>;
+  /** DEP-019 (Codex P2) — the pinned metadata endpoint; the pinned script fetches `argv[2]`. */
+  readonly allowedProbeMetadataUrl?: string;
   /** Overrides the canned units the scripted transcript reports. The D1 lane never does. */
   readonly usage?: FakeProviderUsageV1;
   /** Injectable id source, so a test can pin every id. Default: `randomUUID`. */
@@ -249,6 +251,7 @@ export function createFakeSandboxProviderPort(options: FakeSandboxProviderPortOp
           usage: options.usage,
           runNodeEval: options.runNodeEval,
           allowedProbeScriptDigests: options.allowedProbeScriptDigests,
+          allowedProbeMetadataUrl: options.allowedProbeMetadataUrl,
         }),
       );
     },

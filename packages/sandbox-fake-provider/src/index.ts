@@ -68,6 +68,8 @@ export type {
 export {
   NODE_EVAL_WRAPPER_PATTERN,
   NodeEvalRefusedError,
+  PROBE_ARGV_LENGTH,
+  assertProbeArgvShape,
   classifyShellInvocation,
   createNodeEvalRunner,
 } from "./node-eval.js";

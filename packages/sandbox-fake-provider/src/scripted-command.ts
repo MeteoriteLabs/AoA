@@ -233,6 +233,11 @@ export interface ScriptedExecuteOptions {
    * and `$0` comes from the job envelope. Absent or empty ⇒ every shell invocation is refused.
    */
   readonly allowedProbeScriptDigests?: ReadonlySet<string>;
+  /**
+   * DEP-019 (Codex P2, PR #572) — the metadata endpoint the probe may OBSERVE. The pinned script
+   * `fetch`es `argv[2]`, so pinning the script alone still lets a job choose the address.
+   */
+  readonly allowedProbeMetadataUrl?: string;
 }
 
 /**
@@ -272,6 +277,7 @@ export function executeScriptedCommand(
   // must not be able to steer the fake.
   const invocation = classifyShellInvocation(input.command, input.args, input.env, {
     allowedScriptDigests: options.allowedProbeScriptDigests,
+    allowedMetadataUrl: options.allowedProbeMetadataUrl,
   });
   if (invocation.kind === "node_eval") {
     if (options.runNodeEval === undefined) {

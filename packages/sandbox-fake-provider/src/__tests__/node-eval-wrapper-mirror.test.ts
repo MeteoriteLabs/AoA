@@ -52,9 +52,14 @@ describe("DEP-017 probe wrapper mirror (DEP-019)", () => {
 
   it("a probe invocation built from the daemon's wrapper classifies as a node_eval", () => {
     const script = "console.log(1);";
-    const invocation = classifyShellInvocation("sh", ["-c", readDaemonWrapper(), script, "org"], {}, {
-      allowedScriptDigests: new Set([sha256Hex(script)]),
-    });
+    // The full supervisor argv shape, because DEP-019 pins the ARGUMENTS as well as the script
+    // (Codex P2): `<ownOrganizationId> <allowedCsv> <metadataUrl> <salt> <expectedDigestsJson>`.
+    const invocation = classifyShellInvocation(
+      "sh",
+      ["-c", readDaemonWrapper(), script, "org", "ANTHROPIC_API_KEY", "", "salt", "{}"],
+      {},
+      { allowedScriptDigests: new Set([sha256Hex(script)]) },
+    );
     expect(invocation.kind).toBe("node_eval");
   });
 

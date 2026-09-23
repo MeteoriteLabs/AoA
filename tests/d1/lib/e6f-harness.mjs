@@ -2735,6 +2735,24 @@ ${embedParams(params)}
 const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
 const sql = postgres(process.env.DATABASE_URL, { max: 1 });
 try {
+  // ★ SEED HYGIENE, and it is REQUIRED rather than tidy. The deployed worker has ONE batch slot,
+  // and a lease row can remain 'active' after its attempt has already reached a terminal state —
+  // measured on the live stack as {status:"active", live:true, attempt_status:"succeeded"}. The
+  // lane runs this profile FOUR times against ONE stack (the profile plus three controls), so a
+  // later run's job would never be offered and its case would red on a TIMEOUT rather than on the
+  // thing it asserts. A control that reds for the wrong reason proves nothing, which is the same
+  // failure this ticket already had to fix once.
+  //
+  // SCOPED so it can never touch live work: only leases of THIS deployed worker, and only where
+  // the attempt is ALREADY terminal. A lease on a running attempt is left exactly as it is.
+  await sql\`UPDATE leases l SET status = 'released', released_at = now(), updated_at = now()
+    FROM job_attempts a
+    WHERE a.id = l.attempt_id
+      AND l.status = 'active'
+      AND a.status IN ('succeeded', 'failed', 'cancelled')
+      AND l.worker_id IN (
+        SELECT id FROM workers WHERE execution_target_id = \${P.targetId} AND revoked_at IS NULL
+      )\`;
   // The Company secret, written through the server's OWN service so the stored material is
   // encrypted with the same per-run master key the server will decrypt it with.
   const { createDb } = await import("@armyofagents/db");

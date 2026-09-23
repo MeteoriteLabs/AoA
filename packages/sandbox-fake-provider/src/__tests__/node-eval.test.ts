@@ -23,6 +23,7 @@ import {
   NodeEvalRefusedError,
   ScriptedCommandError,
   classifyShellInvocation,
+  assertProbeArgvShape,
   createNodeEvalRunner,
   executeScriptedCommand,
   sha256Hex,
@@ -136,7 +137,9 @@ describe("node-eval — through execute (DEP-019)", () => {
       {
         sandboxId: "sbx",
         command: "sh",
-        args: probeArgs(SCRIPT, ["--aoa-fake-usage=suppressed"]),
+        // The look-alike rides argv[0] (the Organization id), which keeps the supervisor's pinned
+        // five-argument shape while still putting a `--aoa-fake-*` token in the probe's argv.
+        args: probeArgs(SCRIPT, ["--aoa-fake-usage=suppressed", "", "", "salt", "{}"]),
         env: {},
         onStdout: (c) => chunks.push(c),
       },
@@ -148,7 +151,7 @@ describe("node-eval — through execute (DEP-019)", () => {
       },
     );
     expect(result.exitCode).toBe(0);
-    expect(JSON.parse(chunks.join(""))).toEqual(["--aoa-fake-usage=suppressed"]);
+    expect(JSON.parse(chunks.join(""))).toEqual(["--aoa-fake-usage=suppressed", "", "", "salt", "{}"]);
     expect(chunks.join("")).not.toContain('"type":"result"');
   });
 
@@ -224,5 +227,64 @@ describe("node-eval — the SCRIPT is pinned by digest, not just the wrapper (DE
     const both = { allowedScriptDigests: new Set([sha256Hex(SCRIPT), sha256Hex(other)]) };
     expect(classifyShellInvocation("sh", probeArgs(SCRIPT), {}, both).kind).toBe("node_eval");
     expect(classifyShellInvocation("sh", probeArgs(other), {}, both).kind).toBe("node_eval");
+  });
+});
+
+describe("node-eval — the probe's ARGUMENTS are pinned too, not just its script (DEP-019, Codex P2)", () => {
+  // ★ The same family as the round-1 finding, one level down. The pinned script reads argv[2] as a
+  // metadata URL and fetches it, and a job's workload command/args reach `execute` verbatim — so
+  // pinning the bytes while leaving the arguments free still lets a job make this provider host
+  // probe an arbitrary address on the container networks.
+  const META = "http://169.254.169.254/";
+  const good = ["org-a", "ANTHROPIC_API_KEY", META, "salt", "{}"];
+
+  it("the supervisor's own argv shape is admitted, with the pinned URL and with the empty one", () => {
+    expect(() => assertProbeArgvShape(good, META)).not.toThrow();
+    expect(() => assertProbeArgvShape(["org-a", "", "", "salt", '{"A":"d"}'], META)).not.toThrow();
+  });
+
+  it("★ an ARBITRARY metadata URL is refused, even with the correctly pinned script", () => {
+    const hostile = ["org-a", "", "http://minio:9000/", "salt", "{}"];
+    expect(() => assertProbeArgvShape(hostile, META)).toThrow(NodeEvalRefusedError);
+    expect(() => assertProbeArgvShape(hostile, META)).toThrow(/not the pinned endpoint/);
+    // and end to end, through the recognised wrapper and the pinned script
+    expect(() =>
+      classifyShellInvocation("sh", probeArgs(SCRIPT, hostile), {}, { ...pin, allowedMetadataUrl: META }),
+    ).toThrow(/not the pinned endpoint/);
+  });
+
+  it("★ with NO pinned URL only the EMPTY one is admitted — a host that forgot to pin fetches nothing", () => {
+    expect(() => assertProbeArgvShape(["org-a", "", "", "salt", "{}"])).not.toThrow();
+    expect(() => assertProbeArgvShape(good)).toThrow(/not the pinned endpoint/);
+  });
+
+  it("the argument COUNT is pinned", () => {
+    expect(() => assertProbeArgvShape(good.slice(0, 4), META)).toThrow(/expected 5/);
+    expect(() => assertProbeArgvShape([...good, "extra"], META)).toThrow(/expected 5/);
+  });
+
+  it("a non-POSIX allowed-names list, an empty org id, an empty salt and non-object digests are refused", () => {
+    expect(() => assertProbeArgvShape(["org-a", "not a name", META, "salt", "{}"], META)).toThrow(/POSIX/);
+    expect(() => assertProbeArgvShape(["", "", META, "salt", "{}"], META)).toThrow(/own-Organization id/);
+    expect(() => assertProbeArgvShape(["org-a", "", META, " ", "{}"], META)).toThrow(/no salt/);
+    expect(() => assertProbeArgvShape(["org-a", "", META, "salt", "not json"], META)).toThrow(/not JSON/);
+    expect(() => assertProbeArgvShape(["org-a", "", META, "salt", "[]"], META)).toThrow(/not a JSON object/);
+  });
+
+  it("the argv check runs BEFORE anything is spawned", () => {
+    let spawned = 0;
+    expect(() =>
+      executeScriptedCommand(
+        { sandboxId: "s", command: "sh", args: probeArgs(SCRIPT, ["org-a", "", "http://evil/", "salt", "{}"]), env: {} },
+        {
+          deadlineMs: 30_000,
+          providerOpId: "op",
+          allowedProbeScriptDigests: PINNED,
+          allowedProbeMetadataUrl: META,
+          runNodeEval: () => { spawned += 1; return { stdout: "", stderr: "", exitCode: 0, signal: null }; },
+        },
+      ),
+    ).toThrow(NodeEvalRefusedError);
+    expect(spawned).toBe(0);
   });
 });

@@ -40,11 +40,13 @@ durable outbox. The harness only seeded the job and read the rows.
 **And the controls red.** The usage control (§4), the not-the-executor control (§5) and the
 probe's own arms (§6) each go red for their own named reason.
 
-★ **READ THE COST LINE ABOVE AS AN OBSERVATION, NOT AS AN ASSERTION.** The `cost_events` row and
-the `usage` event are what I MEASURED on the live run; the profile does not yet assert them ON THE
-WORKER-DRIVEN ATTEMPT — its shared cost and usage-cardinality verdicts run against the harness-driven
-attempts. Codex found that (P1) after this ticket passed the two-round cap, so it is verified and
-HANDED OVER in §13.1 rather than fixed here.
+★★★ **THE COST LINE IS NOW ASSERTED, not merely observed** — corrected 2026-09-23 after the
+planning session ruled Codex's P1 a FIX (§13.1). *Superseded text, kept because the record must not
+read as though it was always so:* “READ THE COST LINE ABOVE AS AN OBSERVATION, NOT AS AN ASSERTION.
+… the profile does not yet assert them ON THE WORKER-DRIVEN ATTEMPT.” It does now: the SHARED
+`evaluateEnabledTenantSpine` + `evaluateUsageCardinality` run against the deployed worker's own
+attempt, and the usage-suppressed control reds on **the worker's parser** — proven twice
+back-to-back (§13.1).
 
 ---
 
@@ -355,10 +357,14 @@ sixteen checks green — `changes`, `policy`, `lint`, `migrations`, `distributed
 
 ## 13. HANDED TO THE PLANNING SESSION — five Codex findings past the two-round cap
 
-**Speed rule C** (`M1-BUILD-RULES.md`): *"After two rounds on a PR, STOP and report — do not attempt
-a third fix."* Rounds 1 and 2 are fixed (§8, §10a). Rounds 3 and 4 produced the five below. **None of
-them is fixed here.** Each is verified at source, with a proposed fix, for the planning session to
-rule: fix it, file it as a finding, or descope.
+**Speed rule C** (`M1-BUILD-RULES.md`): *"After two rounds on a PR, STOP and report."* Rounds 1 and 2
+are fixed (§8, §10a). Rounds 3 and 4 produced the five below; each was verified at source and HANDED
+OVER rather than fixed.
+
+★★★ **THE PLANNING SESSION RULED ALL FIVE ON 2026-09-23 (F2): FIX FOUR; 13.5 discharged by the
+record correction.** What each says below is what was handed over; **“SHIPPED” records what the
+ruling produced.** The handover text is kept as written — it is the evidence that the findings were
+verified before they were fixed, not after.
 
 ★ **Two exceptions were made, and only two, and they are not fixes.** Findings 3 and 5 are FALSE
 CLAIMS IN THIS TICKET'S OWN RECORDS — the override comment said the provider gets only the public
@@ -384,6 +390,28 @@ cost rows, receipts and audit rows, and apply the shared `evaluateEnabledTenantS
 `evaluateUsageCardinality` to it — the same verdicts, on the worker-driven attempt. The
 usage-suppressed control then reds on the WORKER's parser, which is what the ticket claims.
 
+
+**SHIPPED (ruled FIX, highest priority).** The worker-driven case now runs the SHARED
+`querySpineAttempt` probe and the SHARED `evaluateEnabledTenantSpine` + `evaluateUsageCardinality`
+against the DEPLOYED worker's own attempt — the same probe and the same verdicts the harness path
+uses, never a second implementation. The one narrowing is a new named arm,
+`measuredRuntimeMillis`: on this path the WORKER produces the event and takes `runtimeMillis` from
+the supervisor's clock (`usage-observer.ts` says so in its header), so the duration is an
+observation, while the three token counts stay pinned exactly and the charge is still the derived
+81 cents. A missing or negative duration reds as `usage:runtime_not_measured`.
+
+**Proven, live, twice back-to-back:** with `--aoa-fake-usage=suppressed` the worker-driven case now
+reds as *"worker-driven cost/audit violations"* with `usage:no_usage_event`, `cost:no_cost_row` and
+`cost:receipt_missing` — on the WORKER's parser, which is the thing the ticket claims.
+
+★ **A second defect fell out of proving it, and it is the vacuity family again.** The first
+suppressed run red on a TIMEOUT rather than on cost: the deployed worker has ONE batch slot, and a
+lease row stays `active` after its attempt is already terminal (measured:
+`{status:"active", live:true, attempt_status:"succeeded"}`). The lane runs this profile FOUR times
+against ONE stack, so every run after the first would have red for the wrong reason — and the
+lane's grep, which only looks for `[m1-spine:cost]` anywhere in the output, would have accepted it.
+The seed now releases leases of THIS deployed worker whose attempt is ALREADY terminal, scoped so it
+can never touch live work.
 ### 13.2 — P1: the reference provider is mounted the PRIVATE capability key
 
 *Codex, `docker/d1/m1-spine.override.yml:110`.* **Verified: true.** Both `control-plane` and
@@ -395,6 +423,14 @@ because that container also hosts the child-process probe execution path.
 the private half only into `control-plane` — and add an override clause that reds on a directory
 mount of `runtime-keys` into the provider, so the boundary is held by a check and not by a comment.
 
+
+**SHIPPED (ruled FIX).** Each PEM is bound as an individual FILE: the private half into
+`control-plane` only, the public half into `fake-provider` only. Verified on the running stack —
+`ls /keys` is `control-plane-signing-key.pem` in the control plane and `control-plane-public-key.pem`
+in the provider. The boundary is held by a CHECK, not a comment: `evaluateSpineOverrideText` gains
+`override:key_directory_mounted` (a directory mount of `runtime-keys` into any service),
+`override:wrong_key_half` (the private half in the provider, or the public half in the control
+plane) and `override:key_mounted_into_unexpected_service`. Each has a red fixture.
 ### 13.3 — P2: the probe's ARGUMENTS are not pinned, only its script
 
 *Codex, `packages/sandbox-fake-provider/src/node-eval.ts:141`.* **Verified: true, and it is the
@@ -408,6 +444,14 @@ reachability of any address on the D1 networks.
 metadata URL must equal `ENV_PROBE_METADATA_URL` or be empty, the allowed-names CSV must be a CSV of
 POSIX names, and the expected-digests argument must parse as a JSON object.
 
+
+**SHIPPED (ruled FIX).** `assertProbeArgvShape` pins the supervisor's own shape: exactly five
+positional arguments, a non-empty Organization id, a CSV of POSIX env names, the metadata URL equal
+to the pinned `ENV_PROBE_METADATA_URL` **or empty** (the planted control passes empty), a non-empty
+salt, and a JSON OBJECT of expected digests. Fail-closed: with no pinned URL only the empty value is
+admitted, so a host that forgot to pin cannot be made to fetch anything at all. The D1 host takes the
+URL from the daemon's own constant — the same no-second-copy reason as the digest — and refuses to
+boot if that export is missing. Six new cases, including one proving the refusal precedes any spawn.
 ### 13.4 — P2: the lane's `push.paths` do not name the new runtime dependencies
 
 *Codex, `.github/workflows/d1-merge-train.yml`.* **Verified: true.** The worker-driven path executes
@@ -420,6 +464,12 @@ of them skips this profile although it can break the exact boot root and wire th
 `packages/provider-capability/src/**`. (`DEP-016` already recorded that this enumeration cannot be
 complete and that the alternative is removing the filter for this gate; that is the session's call.)
 
+
+**SHIPPED (ruled FIX).** `packages/worker-daemon/src/**`, `packages/worker-networked-host/src/**`,
+`packages/provider-wire/src/**`, `packages/adapter-manager/src/**` and
+`packages/provider-capability/src/**` are on the lane's `push.paths`. **The queue cost, stated:** a
+change to any of those now fires the ~45-minute lane, exactly as a `server/src` edit already does.
+That is the correct trade — a lane that cannot see a change to the code it exercises is not a gate.
 ### 13.5 — P2: the retained evidence is uploaded with no secret scan
 
 *Codex, `.github/workflows/d1-merge-train.yml:457`.* **Verified: true.** The `m1-spine` job runs
@@ -431,6 +481,11 @@ that is a property of what the services happen to log, not a control.
 **Proposed fix:** a hard scan of both evidence directories for the two generated values before the
 upload, failing the job on a match.
 
+
+**RULED: already handled by the record correction; nothing further.** The false claim is gone from
+both the override comment and §9; the collector's actual reach (container logs, job events, a
+SCHEMA-ONLY `pg_dump`) is recorded there as a property of what the services log rather than as a
+control.
 ### What a reviewer should take from this section
 
 Findings 13.2 and 13.5 are the `records-disagreeing-with-code` class, and they were in MY records.

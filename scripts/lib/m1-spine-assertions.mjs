@@ -300,6 +300,40 @@ export function evaluateSpineOverrideText(text) {
     ));
   }
 
+  // ★★★ THE KEY BOUNDARY, held by a CHECK and not by a comment (Codex P1, PR #572). Mounting the
+  // `runtime-keys` DIRECTORY hands a service every key in it — which is how the reference provider,
+  // the container that also hosts the child-process probe path, came to hold the PRIVATE
+  // capability-minting key while this file's own header claimed it held only the public half. Each
+  // PEM must be bound as an individual FILE: the private half into the control plane only, the
+  // public half into the reference provider only.
+  for (const [service, block] of blocks) {
+    for (const line of block) {
+      const mount = /^\s*-\s*"\.\/docker\/d1\/runtime-keys(\/[A-Za-z0-9._-]+)?:([^":]+):ro"\s*$/.exec(line);
+      if (!mount) continue;
+      if (mount[1] === undefined) {
+        out.push(violation(
+          "override:key_directory_mounted",
+          `service ${service} mounts the whole runtime-keys DIRECTORY; bind each PEM as an individual file so a service receives only the half it needs`,
+        ));
+        continue;
+      }
+      const file = mount[1].slice(1);
+      const allowed = service === "control-plane"
+        ? "control-plane-signing-key.pem"
+        : service === "fake-provider"
+          ? "control-plane-public-key.pem"
+          : null;
+      if (allowed === null) {
+        out.push(violation("override:key_mounted_into_unexpected_service", `service ${service} mounts ${file}; only control-plane and fake-provider may hold a key`));
+      } else if (file !== allowed) {
+        out.push(violation(
+          "override:wrong_key_half",
+          `service ${service} mounts ${file}, but only ${allowed} belongs there`,
+        ));
+      }
+    }
+  }
+
   // ★ NO KEY MATERIAL IN THE FILE. The control-plane signing key and the secrets master key are
   // GENERATED PER RUN; a committed PEM, or a literal master key, would put them in git.
   if (/-----BEGIN [A-Z ]*KEY-----/.test(src)) {
@@ -630,7 +664,21 @@ export function evaluateUsageCardinality({ tenant: t, observation: o }) {
   // The units the amount expectation is derived from must be the ones the provider reported, or the
   // exact-charge check above would be pinned to something this run did not use.
   if (o.expectedUnits) {
-    const drifted = Object.keys(M1_SPINE_CANNED_UNITS)
+    // ★ DEP-019 — `measuredRuntimeMillis` is the WORKER-DRIVEN arm, and it narrows exactly one
+    // field. On the harness path the profile FORWARDS the units the provider reported, so
+    // `runtimeMillis` is the canned 4 200. On the worker-driven path the worker produces the event
+    // itself, and `createUsageObserver` takes `runtimeMillis` from the SUPERVISOR'S CLOCK measured
+    // around `execute` — never from the agent's own `duration_ms`
+    // (`packages/worker-daemon/src/supervisor/usage-observer.ts` says so in its header). So on that
+    // path the duration is an OBSERVATION and cannot be pinned to a constant; the three TOKEN
+    // counts still are, exactly. Without this the worker-driven attempt could not be judged by the
+    // shared verdict at all, and the alternative — a second implementation — is the drift this
+    // function's own header forbids.
+    const measured = o.measuredRuntimeMillis === true;
+    const pinnedFields = measured
+      ? ["inputTokens", "outputTokens", "cachedInputTokens"]
+      : ["inputTokens", "outputTokens", "cachedInputTokens", "runtimeMillis"];
+    const drifted = pinnedFields
       .filter((field) => Number(o.expectedUnits[field]) !== Number(M1_SPINE_CANNED_UNITS[field]));
     if (drifted.length > 0) {
       out.push(violation(
@@ -640,13 +688,24 @@ export function evaluateUsageCardinality({ tenant: t, observation: o }) {
     }
     for (const event of usageEvents) {
       const stored = event.payload ?? {};
-      const differs = ["inputTokens", "outputTokens", "cachedInputTokens", "runtimeMillis"]
-        .some((field) => Number(stored[field]) !== Number(o.expectedUnits[field]));
+      const differs = pinnedFields.some((field) => Number(stored[field]) !== Number(o.expectedUnits[field]));
       if (differs) {
         out.push(violation(
           "usage:units_differ",
           `${k}: the stored usage ${JSON.stringify(stored)} is not the units the provider reported ${JSON.stringify(o.expectedUnits)}`,
         ));
+      }
+      // The duration is not pinned on the worker-driven path, but it is still REQUIRED to be a
+      // real measurement: a missing or negative one would mean the observer emitted a unit it
+      // never measured, and `usagePayloadV1Schema` admits only non-negative integers.
+      if (measured) {
+        const runtime = Number(stored.runtimeMillis);
+        if (!Number.isSafeInteger(runtime) || runtime < 0) {
+          out.push(violation(
+            "usage:runtime_not_measured",
+            `${k}: the stored usage carries runtimeMillis ${JSON.stringify(stored.runtimeMillis)}, which is not a non-negative integer measurement`,
+          ));
+        }
       }
     }
   }

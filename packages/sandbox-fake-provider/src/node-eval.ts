@@ -92,7 +92,18 @@ export interface ClassifyOptions {
    * Absent or empty ⇒ every shell invocation is refused (fail-closed rule 1b).
    */
   readonly allowedScriptDigests?: ReadonlySet<string>;
+  /**
+   * The metadata endpoint the probe may OBSERVE — the daemon's own `ENV_PROBE_METADATA_URL`. The
+   * D1 host passes it from that constant, for the same no-second-copy reason as the digest.
+   * Absent ⇒ only the empty value (the planted control's) is admitted.
+   */
+  readonly allowedMetadataUrl?: string;
 }
+
+/** The argv the supervisor builds for the probe: `<ownOrganizationId> <allowedCsv> <metadataUrl>
+ * <salt> <expectedDigestsJson>` (`envProbeNodeArgs`, worker-daemon). Pinned as a SHAPE below. */
+export const PROBE_ARGV_LENGTH = 5;
+const POSIX_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
  * Decide what a tenant command is.
@@ -138,7 +149,56 @@ export function classifyShellInvocation(
       `the probe script is not one of the ${allowed.size} pinned digests (observed sha256 ${digest})`,
     );
   }
-  return { kind: "node_eval", request: { script, argv: args.slice(3).map(String), env } };
+  const argv = args.slice(3).map(String);
+  assertProbeArgvShape(argv, options.allowedMetadataUrl);
+  return { kind: "node_eval", request: { script, argv, env } };
+}
+
+/**
+ * Pin the ARGUMENTS, not only the script (Codex P2, PR #572, verified at source).
+ *
+ * ★ THE SAME FAMILY AS THE ROUND-1 FINDING, ONE LEVEL DOWN. The digest pin authenticates the
+ * script BYTES — but the pinned script itself reads `argv[2]` as a metadata URL and `fetch`es it,
+ * and a job's `workload.command` / `workload.args` reach `execute` verbatim. So a job could present
+ * the public wrapper, the CORRECTLY pinned script, and any URL it liked, and use this provider host
+ * to probe the reachability of arbitrary addresses on the container networks. Authenticating the
+ * payload while leaving its arguments free authenticates the wrong half, again.
+ *
+ * The shape is the supervisor's own: exactly five positional arguments, a non-empty Organization
+ * id, a CSV of POSIX env NAMES (possibly empty), the metadata URL equal to the pinned one or empty
+ * (the planted control passes empty), a non-empty salt, and a JSON OBJECT of expected digests.
+ */
+export function assertProbeArgvShape(argv: readonly string[], allowedMetadataUrl?: string): void {
+  if (argv.length !== PROBE_ARGV_LENGTH) {
+    throw new NodeEvalRefusedError(`the probe argv has ${argv.length} arguments, expected ${PROBE_ARGV_LENGTH}`);
+  }
+  const [ownOrganizationId, allowedCsv, metadataUrl, salt, expectedDigestsJson] = argv as [string, string, string, string, string];
+  if (ownOrganizationId.trim() === "") {
+    throw new NodeEvalRefusedError("the probe argv carries no own-Organization id");
+  }
+  if (allowedCsv !== "" && !allowedCsv.split(",").every((name) => POSIX_NAME_RE.test(name))) {
+    throw new NodeEvalRefusedError("the probe argv's allowed-names argument is not a CSV of POSIX environment names");
+  }
+  // FAIL-CLOSED on the URL: with no pinned value only the empty one is admitted, so a host that
+  // forgot to pin cannot be made to fetch anything at all.
+  const permitted = allowedMetadataUrl === undefined ? [""] : ["", allowedMetadataUrl];
+  if (!permitted.includes(metadataUrl)) {
+    throw new NodeEvalRefusedError(
+      `the probe argv's metadata URL is not the pinned endpoint (or empty); this provider will not fetch an arbitrary address`,
+    );
+  }
+  if (salt.trim() === "") {
+    throw new NodeEvalRefusedError("the probe argv carries no salt");
+  }
+  let expected: unknown;
+  try {
+    expected = JSON.parse(expectedDigestsJson);
+  } catch {
+    throw new NodeEvalRefusedError("the probe argv's expected-digests argument is not JSON");
+  }
+  if (typeof expected !== "object" || expected === null || Array.isArray(expected)) {
+    throw new NodeEvalRefusedError("the probe argv's expected-digests argument is not a JSON object");
+  }
 }
 
 export interface NodeEvalResult {

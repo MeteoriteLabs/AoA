@@ -121,6 +121,17 @@ on:
       # The FROZEN wire protocol the ingest validates against and the profile's events are built
       # with (digests, the usage payload schema, the canonicalizers). Codex, PR #566.
       - "packages/worker-protocol/src/**"
+      # DEP-019 (Codex P2, PR #572) — the runtime trees the WORKER-DRIVEN path executes and
+      # traverses. Without them a push changing only one of these skips this live profile, although
+      # it can break the exact boot root and wire the m1-spine topology introduced. A lane that
+      # cannot see a change to the code it exercises is not a gate; the extra queue cost is the
+      # correct trade, and it is stated rather than hidden — a change to any of these now fires the
+      # ~45-minute lane, as a `server/src` edit already does.
+      - "packages/worker-daemon/src/**"
+      - "packages/worker-networked-host/src/**"
+      - "packages/provider-wire/src/**"
+      - "packages/adapter-manager/src/**"
+      - "packages/provider-capability/src/**"
       # The shared contracts the server and the profile both read (submit-source schemas, job-control
       # validators, constants). Same reasoning as the two trees above: this lane asserts end-to-end
       # behaviour, so a contract change can decide its verdict. Codex, PR #566.

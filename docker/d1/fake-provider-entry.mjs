@@ -206,21 +206,28 @@ async function startWireServer() {
   // wrapper alone would let a job put arbitrary JavaScript in `$0`. Importing `ENV_PROBE_SCRIPT`
   // here — out of the wire tree's own worker-daemon build — means the pin has no second copy that
   // could drift from what `DEP-017` actually ships.
-  const { ENV_PROBE_SCRIPT } = await import(
+  const { ENV_PROBE_SCRIPT, ENV_PROBE_METADATA_URL } = await import(
     `${wireAppDir}/node_modules/@armyofagents/worker-daemon/dist/supervisor/env-probe.js`
   );
   const allowedProbeScriptDigests = new Set([sha256Hex(ENV_PROBE_SCRIPT)]);
+  // ★ AND THE ARGUMENTS (Codex P2, PR #572). The pinned script reads `argv[2]` as a metadata URL
+  // and `fetch`es it, so pinning the bytes alone would still let a job choose the address this
+  // host dials. Taken from the daemon's OWN constant, for the same no-second-copy reason.
+  if (typeof ENV_PROBE_METADATA_URL !== "string" || ENV_PROBE_METADATA_URL === "") {
+    throw new Error("the worker-daemon build exports no ENV_PROBE_METADATA_URL; refusing to run the probe unpinned");
+  }
 
   const { createProviderServer } = await import(`${wireAppDir}/dist/server.js`);
   const wireProvider = createFakeSandboxProviderPort({
     runNodeEval: createNodeEvalRunner(),
     allowedProbeScriptDigests,
+    allowedProbeMetadataUrl: ENV_PROBE_METADATA_URL,
   });
   const server = createProviderServer({ provider: wireProvider, controlPlanePublicKey });
   server.listen(wirePort, "0.0.0.0", () =>
     console.log(
       `fake-provider GATED provider wire on 0.0.0.0:${wirePort} ` +
-        `(1 pinned probe-script digest; ownership gate ON)`,
+        `(1 pinned probe-script digest + a pinned probe argv shape; ownership gate ON)`,
     ),
   );
   return server;

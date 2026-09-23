@@ -1161,3 +1161,84 @@ test("override: the DEP-016 clauses still hold (this ticket extends them, it doe
   const broken = overrideText().replace(/^  worker-a:\n    profiles: \[[^\]]+\]$/m, "  worker-a:\n    environment: {}");
   assert.ok(codes(evaluateSpineOverrideText(broken)).includes("override:worker_a_not_excluded"));
 });
+
+// ── DEP-019, ruled round: the key boundary and the measured-runtime arm ──────
+
+test("override: ★★★ mounting the runtime-keys DIRECTORY reds — the provider must not hold the private key", () => {
+  const broken = overrideText().replace(
+    "./docker/d1/runtime-keys/control-plane-public-key.pem:/keys/control-plane-public-key.pem:ro",
+    "./docker/d1/runtime-keys:/keys:ro",
+  );
+  assert.ok(codes(evaluateSpineOverrideText(broken)).includes("override:key_directory_mounted"));
+});
+
+test("override: ★ the PRIVATE half bound into the reference provider reds", () => {
+  const broken = overrideText().replace(
+    "./docker/d1/runtime-keys/control-plane-public-key.pem:/keys/control-plane-public-key.pem:ro",
+    "./docker/d1/runtime-keys/control-plane-signing-key.pem:/keys/control-plane-signing-key.pem:ro",
+  );
+  assert.ok(codes(evaluateSpineOverrideText(broken)).includes("override:wrong_key_half"));
+});
+
+test("override: the PUBLIC half bound into the control plane reds too (the boundary is two-sided)", () => {
+  const broken = overrideText().replace(
+    "./docker/d1/runtime-keys/control-plane-signing-key.pem:/keys/control-plane-signing-key.pem:ro",
+    "./docker/d1/runtime-keys/control-plane-public-key.pem:/keys/control-plane-public-key.pem:ro",
+  );
+  assert.ok(codes(evaluateSpineOverrideText(broken)).includes("override:wrong_key_half"));
+});
+
+test("override: a key mounted into ANY other service reds", () => {
+  const nl = String.fromCharCode(10);
+  const broken = overrideText().replace(
+    `  worker-b:${nl}`,
+    `  worker-b:${nl}    volumes:${nl}      - "./docker/d1/runtime-keys/control-plane-signing-key.pem:/keys/k.pem:ro"${nl}`,
+  );
+  assert.ok(codes(evaluateSpineOverrideText(broken)).includes("override:key_mounted_into_unexpected_service"));
+});
+
+// ── the measuredRuntimeMillis arm (DEP-019 13.1) ─────────────────────────────
+
+const usageEvent = (payload) => ({ organizationId: A.organizationId, companyId: A.companyId, payload });
+
+test("usage: the WORKER-DRIVEN arm pins the three token counts and lets the duration be measured", () => {
+  // The worker takes runtimeMillis from the SUPERVISOR'S clock, so it is an observation; the token
+  // counts are still the canned ones, exactly.
+  const measured = { ...M1_SPINE_CANNED_UNITS, runtimeMillis: 8123 };
+  assert.deepEqual(
+    evaluateUsageCardinality({
+      tenant: A,
+      observation: { usageEvents: [usageEvent(measured)], expectedUnits: measured, measuredRuntimeMillis: true },
+    }),
+    [],
+  );
+});
+
+test("usage: ★ the worker-driven arm still reds when a TOKEN count drifts from the canned units", () => {
+  const drifted = { ...M1_SPINE_CANNED_UNITS, inputTokens: 1, runtimeMillis: 8123 };
+  const v = evaluateUsageCardinality({
+    tenant: A,
+    observation: { usageEvents: [usageEvent(drifted)], expectedUnits: drifted, measuredRuntimeMillis: true },
+  });
+  assert.ok(codes(v).includes("usage:units_not_canned"), JSON.stringify(v));
+});
+
+test("usage: ★ a missing or negative measured duration reds — the observer must have measured one", () => {
+  for (const runtimeMillis of [undefined, -1, "soon"]) {
+    const units = { ...M1_SPINE_CANNED_UNITS, runtimeMillis };
+    const v = evaluateUsageCardinality({
+      tenant: A,
+      observation: { usageEvents: [usageEvent(units)], expectedUnits: units, measuredRuntimeMillis: true },
+    });
+    assert.ok(codes(v).includes("usage:runtime_not_measured"), `${JSON.stringify(runtimeMillis)}: ${JSON.stringify(v)}`);
+  }
+});
+
+test("usage: WITHOUT the arm the duration is still pinned (the harness path is unchanged)", () => {
+  const measured = { ...M1_SPINE_CANNED_UNITS, runtimeMillis: 8123 };
+  const v = evaluateUsageCardinality({
+    tenant: A,
+    observation: { usageEvents: [usageEvent(measured)], expectedUnits: measured },
+  });
+  assert.ok(codes(v).includes("usage:units_not_canned"), JSON.stringify(v));
+});
