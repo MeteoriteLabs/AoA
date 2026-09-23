@@ -321,8 +321,25 @@ packages/worker-protocol/src packages/sandbox-fake-provider docker docker-compos
 scripts/lib/m1-spine-assertions.mjs scripts/lib/m1-shipped-boot.mjs
 .github/workflows/d1-merge-train.yml` is **empty**.
 
-**`pr.yml` / `ci-required`** on the final head is recorded in §11a once its run completes. This
-section is not rewritten.
+### 11a. `pr.yml` — and a gap in my own pre-push loop, found by it
+
+Run `35842257449` on `2c291fc02` failed **`brand-check`**, and the cause is worth recording because
+it is a gap in the loop rather than a one-off: the pre-push guard set I run is derived from
+`grep -oE "node scripts/check-[a-z0-9-]+\.mjs" .github/workflows/pr.yml`, so it covers only the
+guards that are SCRIPTS. `brand-check` is an INLINE shell step in `pr.yml` and was therefore never
+run locally.
+
+What it caught: guard 9 requires every `process.env.AOA_*` read by a `.ts` file to be documented in
+`docs/deploy/environment-variables.md`, and a test fixture of mine planted `AOA_HOST_ONLY` to prove
+the probe's child process cannot see the host's environment. Documenting a test fixture there would
+have been exactly the drift the guard exists to catch, so the fixture is renamed out of the `AOA_`
+namespace (`DEP019_HOST_ONLY_CANARY`) with a comment saying why. The case proves the same thing: the
+name is irrelevant to "the child cannot see the host's environment at all".
+
+Guard 9 now reports nothing missing, and guards 1–8 find nothing in any surface this ticket adds.
+
+The `ci-required` verdict on the final head is recorded below once its run completes. This section
+is not rewritten.
 
 ---
 

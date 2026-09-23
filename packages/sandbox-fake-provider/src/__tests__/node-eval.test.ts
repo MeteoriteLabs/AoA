@@ -34,8 +34,14 @@ const WRAPPER =
   'if command -v node >/dev/null 2>&1; then exec node -e "$0" "$@"; ' +
   "else echo DEP017_ENV_PROBE_NO_NODE >&2; exit 97; fi";
 
-/** A stand-in probe script: prints its argv and whether a planted host variable is visible. */
-const SCRIPT = 'console.log(JSON.stringify({argv:process.argv.slice(1),seen:process.env.AOA_HOST_ONLY??null,own:process.env.OWN??null}));';
+/** A stand-in probe script: prints its argv and whether a planted host variable is visible.
+ *
+ * ★ The canary is deliberately NOT in the `AOA_` namespace. `pr.yml`'s brand-check guard 9 requires
+ * every `process.env.AOA_*` a `.ts` file reads to be documented in
+ * `docs/deploy/environment-variables.md`, and a TEST fixture is not a deploy variable — documenting
+ * it there would be the drift the guard exists to catch. The name is irrelevant to what the case
+ * proves: that the child cannot see the host's environment at all. */
+const SCRIPT = 'console.log(JSON.stringify({argv:process.argv.slice(1),seen:process.env.DEP019_HOST_ONLY_CANARY??null,own:process.env.OWN??null}));';
 
 function probeArgs(script = SCRIPT, argv: readonly string[] = ["org-a", "ANTHROPIC_API_KEY", "", "salt", "{}"]) {
   return ["-c", WRAPPER, script, ...argv];
@@ -73,7 +79,7 @@ describe("node-eval — only the committed probe wrapper is recognised (DEP-019)
 
 describe("node-eval — the child sees EXACTLY the sandbox env (DEP-019)", () => {
   it("runs the script with the handed env and NOTHING of the host's", () => {
-    process.env.AOA_HOST_ONLY = "host-value-that-must-not-be-seen";
+    process.env.DEP019_HOST_ONLY_CANARY = "host-value-that-must-not-be-seen";
     try {
       const run = createNodeEvalRunner();
       const result = run({ script: SCRIPT, argv: ["a", "b"], env: { OWN: "sandbox-value" } });
@@ -85,7 +91,7 @@ describe("node-eval — the child sees EXACTLY the sandbox env (DEP-019)", () =>
       expect(report.seen).toBeNull();
       expect(report.argv).toEqual(["a", "b"]);
     } finally {
-      delete process.env.AOA_HOST_ONLY;
+      delete process.env.DEP019_HOST_ONLY_CANARY;
     }
   });
 
