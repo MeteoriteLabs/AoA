@@ -145,8 +145,8 @@
           "expectedClassification": "production_reader_denies_a_foreign_company_credential",
           "evidence": "pending",
           "pendingKind": "structural",
-          "pendingReason": "The D1 control plane wires failClosedDeviceLocalBroker (server/src/services/device-local-broker.ts holds the ONLY implementation in the tree), and the fenced resolve route collapses every outcome to denied/malformed by design, so on this lane an admitted read and a denied one are indistinguishable at every observable surface. Making them distinguishable needs a real device_local broker or a resolvable credential fixture, both topology changes beyond this ticket. Its sibling d1.tenant.legacy.provider_credentials proves the PREDICATE and the grant on the same pool; this case owns the reader's own invocation of it, and is never a pass.",
-          "pendingOwner": "FLAGGED FOR THE PLANNING SESSION: no ticket on disk owns this today -- it needs either a D1 device_local broker or the keyed lane"
+          "pendingReason": "STRUCTURALLY UNAVAILABLE ON THIS LANE, and ROUTED by E6-D003 (planning session, F2) to the M1a-D2-MECHANISM profile -- it is NOT an oversight and NOT unowned. Measured at source: reaching this reader's decision needs authorizeSecretResolve to ADMIT, which needs a resolvable device_local credential; server/src/services/device-local-broker.ts holds failClosedDeviceLocalBroker and no other implementation in the tree, and the fenced route collapses every outcome to denied/malformed by design (it must not be an oracle). So on D1 an admitted read and a denied one are indistinguishable at every observable surface, and a case built here could not tell its two arms apart. Its sibling d1.tenant.legacy.provider_credentials proves the PREDICATE and the grant on the same non-owner pool, with both controls; this case is the reader's own invocation of it and is never a pass here.",
+          "pendingOwner": "M1a-D2-MECHANISM, case d2m.credential.production_reader_company_predicate, per E6-D003"
         },
         {
           "case": "d1.tenant.journey.A",
@@ -805,6 +805,20 @@
             "antiVacuityControl": true,
             "productionPath": "packages/db/src/repositories/tenant/job-control.ts resolveExecutionSecret (the device_local arm)"
           }
+        },
+        {
+          "case": "d2m.credential.production_reader_company_predicate",
+          "family": "credential",
+          "injection": {
+            "mechanism": "device_local_handle.naming_a_foreign_company_credential",
+            "target": "packages/db/src/repositories/tenant/job-control.ts resolveExecutionSecret, the device_local arm, on the shipped boot where a REAL provider credential is redeemed",
+            "observedBy": "the handle's resolve_count audit column, which resolveExecutionSecret increments ONLY on admit -- the one surface that distinguishes an admitted read from a denied one, and the reason this case can exist here and not on D1"
+          },
+          "expectedClassification": "production_reader_denies_a_foreign_company_credential",
+          "evidence": "pending",
+          "pendingKind": "keyed",
+          "pendingReason": "Routed here from M1-D1-SPINE by E6-D003 (planning session, F2): this is the gate whose topology redeems a real provider credential, so authorizeSecretResolve can ADMIT and the two arms become distinguishable. A handle on tenant A's job whose refId names tenant B's credential must find NOTHING (the company predicate) and deny; the same handle naming A's own credential is the positive control. Needs a keyed E2B run, which founder ruling F8 reserves to the planning session.",
+          "pendingOwner": "planning session (F8), on the DEP-015 shipped-boot lane"
         }
       ]
     },
