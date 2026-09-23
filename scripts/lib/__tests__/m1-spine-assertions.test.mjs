@@ -125,11 +125,17 @@ test("a replica with the deployment flag off is refused (the profile would run n
 
 function goodEnabled(tenant = A, overrides = {}) {
   const usageEventId = "11111111-1111-4111-8111-111111111111";
+  const startedEventId = "55555555-5555-4555-8555-555555555555";
+  const terminalEventId = "66666666-6666-4666-8666-666666666666";
   return {
     tenant,
     observation: {
       acceptedThroughSeq: 3,
-      jobEventTypes: ["attempt_started", "usage", "terminal"],
+      events: [
+        { eventId: startedEventId, eventType: "attempt_started" },
+        { eventId: usageEventId, eventType: "usage" },
+        { eventId: terminalEventId, eventType: "terminal" },
+      ],
       attemptStatus: "succeeded",
       expectedUnits: { inputTokens: 120000, outputTokens: 30000, cachedInputTokens: 0, runtimeMillis: 4200 },
       usageEvents: [{
@@ -160,8 +166,8 @@ function goodEnabled(tenant = A, overrides = {}) {
         { action: "job.attempt_terminal", companyId: tenant.companyId, actorType: "system", actorId: "worker:33333333-3333-4333-8333-333333333333" },
       ],
       auditReceipts: [
-        { status: "applied", organizationId: tenant.organizationId, companyId: tenant.companyId },
-        { status: "applied", organizationId: tenant.organizationId, companyId: tenant.companyId },
+        { status: "applied", organizationId: tenant.organizationId, companyId: tenant.companyId, sourceIdentity: `activity:${tenant.companyId}:${startedEventId}`, aggregateKind: "activity_log" },
+        { status: "applied", organizationId: tenant.organizationId, companyId: tenant.companyId, sourceIdentity: `activity:${tenant.companyId}:${terminalEventId}`, aggregateKind: "activity_log" },
       ],
       ...overrides,
     },
@@ -286,6 +292,18 @@ test("an audit row naming a DIFFERENT worker, or a non-system actor, is refused 
     activity: [obs.activity[0], { ...obs.activity[1], actorType: "user" }],
   }));
   assert.ok(codes(wrongType).includes("audit:wrong_actor"));
+});
+
+test("activity_audit receipts keyed to the WRONG events, or the wrong aggregate, are refused (Codex P2)", () => {
+  const obs = goodEnabled(A).observation;
+  const strayIdentity = evaluateEnabledTenantSpine(goodEnabled(A, {
+    auditReceipts: [obs.auditReceipts[0], { ...obs.auditReceipts[1], sourceIdentity: `activity:${A.companyId}:88888888-8888-4888-8888-888888888888` }],
+  }));
+  assert.ok(codes(strayIdentity).includes("audit:receipt_not_keyed_to_events"));
+  const wrongAggregate = evaluateEnabledTenantSpine(goodEnabled(A, {
+    auditReceipts: [obs.auditReceipts[0], { ...obs.auditReceipts[1], aggregateKind: "cost_events" }],
+  }));
+  assert.ok(codes(wrongAggregate).includes("audit:receipt_wrong_aggregate"));
 });
 
 test("a journey the ingest did not fully accept is refused before cost is judged", () => {

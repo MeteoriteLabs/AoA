@@ -161,7 +161,8 @@ export function evaluateReplicaRollout(o) {
 
 /**
  * @param {{ tenant: object, observation: object }} input
- * observation: { acceptedThroughSeq, jobEventTypes, attemptStatus,
+ * observation: { acceptedThroughSeq, attemptStatus,
+ *   events: [{eventId, eventType}] — this attempt's accepted job_events, in order,
  *   usageEvents: [{eventId, organizationId, companyId, payload:{inputTokens,outputTokens,cachedInputTokens,runtimeMillis}}]
  *              — the ACCEPTED `usage` events of THIS attempt, from `job_events`,
  *   costRows: [{companyId, costCents, sourceIdempotencyKey}]  — every cost_events row whose key
@@ -169,7 +170,7 @@ export function evaluateReplicaRollout(o) {
  *   costReceipts: [{status, organizationId, companyId, sourceIdentity, aggregateKind}] — authoritative_cost, this job,
  *   activity: [{action, companyId, actorType, actorId}]        — job.attempt_* rows for this job,
  *   expectedActorId — `worker:<the leased worker id>`, the actor JOB-017 must have recorded,
- *   auditReceipts: [{status, organizationId, companyId}] }     — activity_audit, this job
+ *   auditReceipts: [{status, organizationId, companyId, sourceIdentity, aggregateKind}] } — activity_audit, this job
  */
 export function evaluateEnabledTenantSpine({ tenant: t, observation: o }) {
   const out = [];
@@ -206,6 +207,27 @@ export function evaluateEnabledTenantSpine({ tenant: t, observation: o }) {
   }
   if (auditReceipts.some((r) => r.organizationId !== t.organizationId || r.companyId !== t.companyId)) {
     out.push(violation("audit:receipt_wrong_tenant", `${k}: an activity_audit receipt names another tenant`));
+  }
+  // Codex P2 (PR #566), the audit side of the same point: a receipt is a per-EVENT replay/re-drive
+  // guard, so two applied receipts keyed to unrelated events of the same job would leave the
+  // `attempt_started` or `terminal` mutation unguarded. Require exactly the two identities JOB-017
+  // mints, `activity:<company>:<that accepted event id>`, over the named set.
+  const auditedEvents = (o.events ?? []).filter((e) => e.eventType === "attempt_started" || e.eventType === "terminal");
+  if (auditedEvents.length === 2) {
+    const expected = auditedEvents.map((e) => `activity:${t.companyId}:${e.eventId}`).sort();
+    const seen = auditReceipts.map((r) => r.sourceIdentity).sort();
+    if (JSON.stringify(expected) !== JSON.stringify(seen)) {
+      out.push(violation(
+        "audit:receipt_not_keyed_to_events",
+        `${k}: the activity_audit receipts name ${JSON.stringify(seen)}, not the accepted attempt_started + terminal events ${JSON.stringify(expected)}`,
+      ));
+    }
+    if (auditReceipts.some((r) => r.aggregateKind !== "activity_log")) {
+      out.push(violation(
+        "audit:receipt_wrong_aggregate",
+        `${k}: an activity_audit receipt's aggregate kind is ${JSON.stringify(auditReceipts.map((r) => r.aggregateKind))}, not activity_log`,
+      ));
+    }
   }
 
   // Usage cardinality (the WRK-018 acceptance-1 collection point). EXACTLY ONE accepted `usage`

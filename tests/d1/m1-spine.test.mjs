@@ -316,7 +316,7 @@ for (const tenant of M1_SPINE_TENANTS.enabled) {
       tenant,
       observation: {
         attemptStatus: rows.attemptStatus,
-        jobEventTypes: rows.events.map((e) => e.eventType),
+        events: rows.events,
         usageEvents: rows.usageEvents,
         expectedUnits: usage,
         costRows: rows.costRows,
