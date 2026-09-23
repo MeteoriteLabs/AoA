@@ -40,6 +40,10 @@ export const CANDIDATE_CONTROL_MARKERS = [
   ["scripts/m1-shipped-boot/journey.mjs", "maskDirectivesFor"],
   ["scripts/m1-shipped-boot/journey.mjs", "stripMaskDirectives"],
   ["scripts/lib/m1-shipped-boot.mjs", "KEY_MATERIAL_MARKERS"],
+  // The EXECUTABLE the workflow pipes every phase through: a candidate carrying the symbols but
+  // not the file passes the greps above and then dies at the first phase on the missing module
+  // (Codex P2, PR #574). The grep proves the file EXISTS and that it is the redacting filter.
+  ["scripts/m1-shipped-boot/log-filter.mjs", "redactKeyMaterialLine"],
 ];
 
 export const EVIDENCE_UPLOAD_PATH = "${{ env.M1_OUT }}/evidence/";

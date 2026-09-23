@@ -758,3 +758,31 @@ test("POSITIVE CONTROL (P2): an unregistered key on an ::add-mask:: line in EVID
   assert.equal(res.status, 1, res.stdout + res.stderr);
   assert.match(`${res.stdout}${res.stderr}`, /evidence file 'verifier-a\.txt' line 1 carries key material \(ed25519_pkcs8_der\)/);
 });
+
+test("POSITIVE CONTROL: the log filter FAILS CLOSED when the capture cannot be written (Codex P1)", () => {
+  // A capture that silently failed would leave the pipeline green while the leak scan read an
+  // absent job log as clean — coverage claimed, not had. The parent here is a FILE, so the
+  // append cannot succeed.
+  const dir = mkdtempSync(path.join(tmpdir(), "m1-filter-fail-"));
+  const blocker = path.join(dir, "blocker");
+  writeFileSync(blocker, "not a directory\n");
+  const filter = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "m1-shipped-boot", "log-filter.mjs");
+  const res = spawnSync(process.execPath, [filter, path.join(blocker, "job-log.txt")], { input: "a line\n", encoding: "utf8" });
+  rmSync(dir, { recursive: true, force: true });
+  assert.notEqual(res.status, 0, `${res.stdout}${res.stderr}`);
+  assert.match(`${res.stdout}${res.stderr}`, /log-filter: the job-log capture failed/);
+});
+
+test("POSITIVE CONTROL: a PER-LINE capture failure also fails closed (not only the startup mkdir)", () => {
+  // The capture PATH is an existing directory: `mkdir -p` of its parent succeeds, so the startup
+  // arm passes and the failure lands on the append — the arm a surviving mutation showed was
+  // otherwise untested.
+  const dir = mkdtempSync(path.join(tmpdir(), "m1-filter-line-"));
+  const capture = path.join(dir, "capture-dir");
+  mkdirSync(capture);
+  const filter = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "m1-shipped-boot", "log-filter.mjs");
+  const res = spawnSync(process.execPath, [filter, capture], { input: "a line\n", encoding: "utf8" });
+  rmSync(dir, { recursive: true, force: true });
+  assert.notEqual(res.status, 0, `${res.stdout}${res.stderr}`);
+  assert.match(`${res.stdout}${res.stderr}`, /log-filter: the job-log capture failed/);
+});

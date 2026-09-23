@@ -264,3 +264,17 @@ test("the candidate-controls gate names files that EXIST and markers that are pr
     assert.ok(text.includes(marker), `${file} must carry ${marker}, or the gate would refuse this very tree`);
   }
 });
+
+test("the candidate-controls gate covers the whole control set, the log FILTER included", () => {
+  // Iterating the list cannot notice a list that lost an entry, so the set itself is pinned.
+  assert.deepEqual(
+    CANDIDATE_CONTROL_MARKERS.map(([file, marker]) => `${file}:${marker}`).sort(),
+    [
+      "scripts/lib/m1-shipped-boot.mjs:KEY_MATERIAL_MARKERS",
+      "scripts/m1-shipped-boot/journey.mjs:CONTROL_PLANE_PUBLIC_KEY_PEM",
+      "scripts/m1-shipped-boot/journey.mjs:maskDirectivesFor",
+      "scripts/m1-shipped-boot/journey.mjs:stripMaskDirectives",
+      "scripts/m1-shipped-boot/log-filter.mjs:redactKeyMaterialLine",
+    ],
+  );
+});

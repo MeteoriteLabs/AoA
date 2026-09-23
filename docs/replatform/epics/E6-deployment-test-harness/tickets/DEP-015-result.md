@@ -794,5 +794,15 @@ They are recorded because each would have made the control worse than none:
    evidence scan now runs with `skipMaskDirectives: false`; only the captured job log keeps the
    exception, because only that surface is rendered by GitHub.
 
+8. **The capture must fail closed.** A swallowed write error would leave the pipeline green while
+   the scan read an absent or truncated job log as clean — coverage claimed, not had. The filter
+   now exits non-zero on either arm (the startup mkdir and the per-line append), which `pipefail`
+   turns into a failed step. Both arms have their own control: a mutation that swallowed the
+   per-line failure survived until the second one was added.
+9. **The candidate gate covers the FILTER too.** A candidate carrying the four symbols but not
+   `scripts/m1-shipped-boot/log-filter.mjs` passed the greps and would then die at the first phase
+   on the missing module. The gate greps that file as well, and a test pins the whole marker SET —
+   iterating the list cannot notice a list that lost an entry, which a surviving mutation showed.
+
 **Status unchanged.** This is a control added after the fact to a run that was already clean; it
 neither re-opens nor re-decides §12's keyed acceptance.

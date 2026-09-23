@@ -28,16 +28,32 @@ if (!capturePath) {
   console.error("usage: log-filter.mjs <capture-file>");
   process.exit(2);
 }
-mkdirSync(path.dirname(capturePath), { recursive: true });
+try {
+  mkdirSync(path.dirname(capturePath), { recursive: true });
+} catch (err) {
+  // Same fail-closed rule as the per-line write: a capture directory that cannot exist means no
+  // log surface, and the leak scan would read that absence as clean.
+  process.stdout.write(
+    `::error::DEP-015 log-filter: the job-log capture failed (${err && err.code ? err.code : "unknown"}); ` +
+      "the log surface would be incomplete\n",
+  );
+  process.exit(1);
+}
 
 const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
 rl.on("line", (line) => {
   // RAW to the capture file (what the leak scan reads) …
   try {
     appendFileSync(capturePath, `${line}\n`);
-  } catch {
-    // A capture failure must not swallow the phase's output: the scan will then find no job log
-    // and say so, which is visible, rather than silently dropping the line from both surfaces.
+  } catch (err) {
+    // ★ FAIL CLOSED (Codex P1, PR #574). Swallowing this would leave the pipeline green while the
+    // leak scan read an absent or truncated job log as clean — the lane would claim a log-surface
+    // coverage it did not have. Exiting non-zero fails the step through `pipefail`.
+    process.stdout.write(
+      `::error::DEP-015 log-filter: the job-log capture failed (${err && err.code ? err.code : "unknown"}); ` +
+        "the log surface would be incomplete\n",
+    );
+    process.exit(1);
   }
   // … REDACTED to the published Actions log.
   process.stdout.write(`${redactKeyMaterialLine(line)}\n`);
