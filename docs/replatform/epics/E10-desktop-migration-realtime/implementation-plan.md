@@ -647,6 +647,32 @@ cancelled}` — plus a final summary `{organizationsScanned, cancelled, skippedC
 only: no Company name, no actor, no job content, no key, no secret. The operator invocation itself
 is an auditable action; the CLI prints the exact `reason` string it passed to `drainAll`.
 
+★ **Corrected 2026-09-23 (record custodian) — "no actor" is superseded by this plan's own ★★★
+paragraph below, and the SHIPPED CLI correctly prints the actor. The PLAN is corrected; the code is
+NOT changed.** Measured at source at HEAD: `runDrainCli`
+(`server/src/services/distributed-execution-drain-trigger.ts`) prints
+`draining distributed execution: reason=<reason> actor=<actorId>` before the drain, and
+`formatDrainReport` puts `actorId` in the final summary object. That is a deliberate divergence, and
+the right one:
+
+- **The ★★★ paragraph immediately below this bullet is what changed the ticket's shape.** It ruled
+  that the CLI *"owes an actor identity and an explicit audit write"* — *"a fleet-wide rollback with
+  no answer to **who ran it**"*. An actor-attributed rollback whose operator console line cannot say
+  who ran it defeats the correction that created the requirement. The two clauses were written in
+  different rounds and were never reconciled; **the ★★★ paragraph governs.**
+- **The value leaks nothing this bullet was protecting.** `parseDrainOperator` builds
+  `{ actorType: "system", actorId: "operator-cli:" + <the --operator argument> }` — an
+  operator-supplied label, not a resolved user, not a Company name, not job content, and not a
+  credential. The same string is already written durably to `activity_log` as the actor of every
+  `job.drain.requested` row, so the console reveals nothing the audit trail does not.
+- **The rest of the bullet stands unamended:** no Company name, no job content, no key, no secret,
+  and opaque ids everywhere else. Superseded fragment: *"no actor"*.
+
+**Chosen disposition: note, not align.** Aligning would mean deleting `actor=` from a shipped
+operator CLI to satisfy a clause its own ticket superseded — a record-driven code change with a
+negative safety effect. Nothing in `MIG-009`'s acceptance, its result records or its review turns on
+this clause.
+
 ★★★ **THERE IS NO `activity_log` ROW ON THIS PATH TODAY, and an earlier revision of this line
 implied the console merely “agrees” with one.** *Corrected 2026-09-20 (fifth round), verified at
 source.* `job-distributed-drain.ts` imports no audit module, and the job audit helpers
@@ -664,6 +690,25 @@ was invisible.
 ★ **The audit write must be ATOMIC with the mutation it records**, not best-effort beside it: a
 best-effort audit that is skipped on failure is permanently lost, and this repo has that failure
 class on record already.
+
+★★★ **SUPERSEDED 2026-09-23 (record custodian, accepted Codex P2) — THE THREE PARAGRAPHS ABOVE, from
+*"THERE IS NO `activity_log` ROW ON THIS PATH TODAY"* to *"…on record already"*, DESCRIBE THE TREE
+BEFORE `MIG-009` SHIPPED. They are kept verbatim as the record of the gap that shaped the ticket, and
+they must NOT be read as present state or as outstanding work.** Without this marker the plan
+simultaneously described a shipped requirement as complete (in the `actorId` correction above) and as
+outstanding (here), which is exactly the defect class this custodian pass exists to close.
+
+Measured at source at HEAD, all three are discharged:
+- **The `activity_log` row exists.** `createAuditedDrainCancellation`
+  (`server/src/services/distributed-execution-drain-trigger.ts`) wraps each per-attempt cancel and
+  writes `JOB_DRAIN_ACTION` (`"job.drain.requested"`, `server/src/services/job-control-audit.ts`).
+- **The actor identity exists.** `parseDrainOperator` requires `--operator <who>` and builds
+  `{ actorType: "system", actorId: "operator-cli:" + <who> }`; the CLI refuses to run without it.
+- **It is ATOMIC, as this paragraph demanded.** The audit write happens in the **same tenant
+  transaction** as the cancel it records, so a commit yields both and a rollback yields neither —
+  recorded as `E10-D002` in the epic's `decisions.md`.
+- **The dependency the plan said was missing is present**: `server/src/cli/drain-distributed-execution.ts`
+  reaches `runDistributedExecutionDrainTrigger`, not `drainAll` directly.
 
 **Rollback of this ticket.** Purely additive: one new CLI file, one root script, one register
 status flip, tests, and docs. No migration, no schema, no service change. Rolling back means

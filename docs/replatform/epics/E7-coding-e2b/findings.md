@@ -1185,9 +1185,39 @@ is unchanged from the original filing — only its consequence shrank.
 
 ## E7-F016 — Clause 6's operator-facing text misdescribes its own subject: four blamed links (three of which flip neither counter), and a verdict named for more than it proves
 
-**Status:** open · **Owner:** CLI-008 (Unit F — part (a) repairable, part (b) recorded)
+**Status:** open · **Owner:** CLI-015 (link 6, the judge — part (a) repairable, part (b) recorded)
 **Severity:** LOW · **Filed:** 2026-09-03, by CLI-008 Unit F's terrain pass — which was sent to size
 Unit F against this text and found the text wrong about its own subject.
+
+★ **Corrected 2026-09-23 (record custodian).** The Owner line above said **`CLI-008` (Unit F)** and
+disagreed with the register. **`scripts/finding-ownership.json` is authoritative** — it is the file
+`check-finding-ownership` reads, and its `E7-F016` entry records the re-point *"REPOINTED from
+CLI-008 to CLI-015 on 2026-09-21 (M0 unit 4, founder decisions D1 + D5)"*, on the subject ground that
+clause 6 **is** `countProducedOutputs` (`e7-distributed-run-verifier-store.ts`, link 6). The E7
+implementation plan already carried `CLI-015` in its ownership table and in its *"`CLI-015` owns only
+`E7-F016`"* sentence; only this prose line was left behind. Superseded text: `**Owner:** CLI-008
+(Unit F — part (a) repairable, part (b) recorded)`.
+
+★ **Corrected 2026-09-23 (record custodian) — one of the four links below is no longer true.**
+*"`observeRun` is uncomposed"* was true when this finding was filed and is **false at HEAD**:
+`WRK-018` (PR #546) composes it — `composeDispatchRuntime` sets
+`observeRun: createUsageObserver({ metrics: deps.metrics })`
+(`packages/worker-daemon/src/lifecycle/dispatch-runtime.ts`, `createUsageObserver` in
+`packages/worker-daemon/src/supervisor/usage-observer.ts`). **The finding is unaffected**: its subject
+is that the reason string names links which cannot flip either counter, and a *composed* `observeRun`
+flips neither counter either — it emits `usage`, not a `job_artifacts` or `task_outputs` row. The
+table below is kept as written, because it records what was measured at `d0b75be19`.
+**Part (a)'s repair is now strictly larger than it was**: the reason string at
+`e7-distributed-run-verifier.ts` (`capabilityFailures`, clause 6) still asserts *"observeRun is
+uncomposed"* to the operator, which is now a false statement and not merely a misattributed one.
+That string is production code owned by `CLI-015`; the custodian does not edit it. The same stale
+sentence survives in two other server sites, also left to `CLI-015`:
+`server/src/cli/verify-e7-1-distributed-run.ts` (a header comment) and
+`server/src/services/canary-terminal-projection.ts` (*"`observeRun` is default-off (E4-D12)"*, whose
+**conclusion still holds** — the observer emits `usage` only when the provider yields a parseable
+result line, so a real canary attempt may still emit none — while its stated reason is stale).
+`WRK-018-result.md` §6 disclosed all three and declined to edit them; this note records the same
+three at HEAD rather than closing them.
 
 **What.** The reason string at `server/src/services/e7-distributed-run-verifier.ts:509-515` is
 printed to the operator beside every verdict and is the programme's standing answer to "what does
@@ -2407,10 +2437,35 @@ failure text names a leak class, so the operator's first reading is a security i
 false positive. This is a direct constraint on the "derive provenance from the transcript" option
 family: any mechanism that puts model output into `job_events` inherits it.
 
-**Not reachable today, and that is why it is MEDIUM and not HIGH.** Nothing emits a `log` event in
+**Not reachable today, and that is why it is MEDIUM and not HIGH.** ~~Nothing emits a `log` event in
 production: `SupervisorDeps.observeRun` is the only producer (`supervisor.ts:774-783`) and it is
 uncomposed (E7-F016 §(a) records the same zero). And with no distributed run at all (E7-F018), the
-`events` array is empty by `:396`'s `bothIds` guard. MEDIUM rather than LOW because it becomes live
+`events` array is empty by `:396`'s `bothIds` guard.~~
+
+★ **Corrected 2026-09-23 (record custodian), verified at source — the PRODUCER sentence is false at
+HEAD; the `bothIds` sentence is still TRUE under its own stated condition. Severity, Status and owner
+are UNCHANGED.** *★ Narrowed on an accepted Codex P2: this note first said "BOTH sentences above are
+false", which overstated it and contradicted the third bullet below.*
+- **`observeRun` is COMPOSED.** `WRK-018` (PR #546): `composeDispatchRuntime` sets
+  `observeRun: createUsageObserver({ metrics: deps.metrics })`
+  (`packages/worker-daemon/src/lifecycle/dispatch-runtime.ts`;
+  `createUsageObserver` in `packages/worker-daemon/src/supervisor/usage-observer.ts`).
+- **It is also no longer the only producer, and a `log` event IS emitted in production.** `DEP-017`'s
+  live env-absence probe calls `events.log({ stream: "system", … envProbeLogMessage(probeSummary) })`
+  whenever `deps.envProbe` is composed, and `docker/m1-boot/docker-compose.m1-boot.yml` sets
+  `AOA_WORKER_ENV_PROBE=1` on **every** shipped-boot worker.
+- **The `events` array claim is NOT refuted — it is narrowed to the condition it already named.**
+  The `bothIds` guard does still assign `events = []` when there is **no distributed run at all**,
+  exactly as the struck sentence says, and that path is unchanged. What is no longer available is
+  reading it as a general emptiness claim: **on a real distributed run**,
+  `store.listJobEvents(attemptId)` returns the attempt's lifecycle events (`attempt_started`,
+  `terminal`, and now `usage`) and the clause-4 scan reads every returned payload.
+
+**The surviving narrow fact, which is what this finding actually rests on:** `createUsageObserver`
+returns `usage` and **never re-emits stdout or the transcript as `log` events** (its own docstring
+says so), so the **model-output** route into `job_events` — the family this finding names — still has
+no producer. The false hard-fail therefore still is not reachable *from agent output*, which is the
+reachability claim that matters here. MEDIUM rather than LOW because it becomes live
 on the SAME action that makes clause 6 meaningful — composing a stdout producer — so the two would
 land together and the false hard-fail would be discovered by an operator rather than by a designer.
 
@@ -2421,8 +2476,16 @@ is very likely harmless — `listJobEvents` is keyed on a globally-unique attemp
 recorded here rather than filed separately because it is one line of the same code and a fix for
 either should look at both.
 
-**Owner — CLI-008.** This is a defect in the JUDGE, which CLI-008 owns (E7-F015, E7-F016, E7-F020 are
-all there for the same reason), and it is a hard constraint on Unit F's remaining option space rather
+**Owner — CLI-008.** This is a defect in the JUDGE, which CLI-008 owns (E7-F015, ~~E7-F016, E7-F020~~ are
+all there for the same reason ★ *— `E7-F016` was RE-POINTED to `CLI-015` on 2026-09-21 (M0 unit 4,
+founder decisions D1 + D5) and is struck from this list on 2026-09-23 by the record custodian.
+`scripts/finding-ownership.json` is authoritative and has said `CLI-015` since the re-point; leaving
+`E7-F016` in this sentence let a planner route the work back to the retired ticket. **`E7-F020` is also
+struck, on a second Codex P2:** it is `resolved` (by W21 + the PR #422 review, 2026-09-11), the
+authoritative registry holds no entry for it, and a resolved finding has no owner — so listing it
+among live `CLI-008` defects could route already-closed work back. **`E7-F023`'s own owner is
+UNCHANGED — it stays `CLI-008`** — and `E7-F015` is unchanged*), and it
+is a hard constraint on Unit F's remaining option space rather
 than a standalone repair. ★ **No fix is proposed.** Narrowing the matchers, excluding `job_events`
 from the hard arm, or moving it to the advisory `heuristicHits` set are three non-equivalent
 remedies with different security postures, and choosing is the ticket work.
@@ -2478,8 +2541,21 @@ runs those were. Combined with E7-F016 part (b) — a protocol transcript is non
 model never spoke — a transcript-derived counter can be simultaneously **non-empty and corrupt**,
 which is the worst of the two available failure directions for a capability bar.
 
-**Severity — MEDIUM.** *For lower:* nothing emits a `log` event today (`observeRun` uncomposed), so
-no data is being lost right now, and the truncation is a deliberate, commented choice that correctly
+**Severity — MEDIUM.** *For lower:* ~~nothing emits a `log` event today (`observeRun` uncomposed), so
+no data is being lost right now~~ ★ *— **corrected 2026-09-23 (record custodian), verified at source,
+and this one is load-bearing for the rating.** `observeRun` IS composed (`WRK-018`, PR #546:
+`composeDispatchRuntime` sets `observeRun: createUsageObserver({ metrics })` in
+`packages/worker-daemon/src/lifecycle/dispatch-runtime.ts`), and a `log` event **is** emitted in
+production — `DEP-017`'s env probe calls `events.log({ stream: "system", …envProbeLogMessage(…) })`
+whenever `deps.envProbe` is composed, with `AOA_WORKER_ENV_PROBE=1` on every worker in
+`docker/m1-boot/docker-compose.m1-boot.yml`. **What survives:** `createUsageObserver` returns `usage`
+and never re-emits stdout or the transcript as `log` events, so no **model output** flows into
+`job_events` and the transcript-corruption this finding is about is still not reachable from agent
+output. **What does NOT survive:** the blanket "no data is being lost right now". Whether a short
+fixed-shape `envProbeLogMessage` summary can reach the 65,536-character ceiling — and therefore
+whether this "for lower" argument still holds in full — is a **re-rating for the owner**, not a
+custodian's call. **Severity is deliberately left at MEDIUM and Status at open**, with the question
+stated rather than resolved* —, and the truncation is a deliberate, commented choice that correctly
 protects the run's terminal from an instrumentation parse failure — the alternative (drop the event,
 and with it the run's trailing `usage` evidence, per the `truncateUtf16Safe` doc comment) is worse.
 *For MEDIUM rather than LOW:* the loss is **silent on a frozen contract**, so the ceiling cannot be
@@ -2488,8 +2564,44 @@ A cheap, non-frozen mitigation exists and is deliberately NOT proposed as a fix 
 truncation happened (a metric, a `system`-stream marker event) would make the loss visible without
 touching `worker-protocol`. That is a design decision, not an obvious repair.
 
-**Owner — CLI-008.** It bounds Unit F's option space and nothing else; it is not a live data-loss
-defect for any shipped path.
+**Owner — CLI-008** (unchanged). It bounds Unit F's option space and nothing else; it is not a live
+data-loss defect for any shipped path.
+
+★ **RE-ESTABLISHED 2026-09-23 (record custodian), after a withdrawal that was itself wrong — the
+struck sentence is CORRECT and stands; what follows is the derivation it never had.** With `DEP-017`'s env probe composed on every shipped-boot worker, a `log` event **is** written on a
+shipped path — so the sentence needed a reason, which it did not have. It now has one, and the
+sentence holds: the only shipped `log` producer is structurally incapable of truncating.
+
+**★ A BOUND IS ESTABLISHED, and my first attempt at this paragraph had it backwards.** *Corrected
+2026-09-23 on a second accepted Codex P2. It said "a bound is NOT established" because
+`EnvProbeSummary` carries name ARRAYS which I took to be sized by the sandbox's environment. That is
+false, and the refutation was two lines inside the type I had already opened — I read the field list
+and not the doc comment on it.* Measured at source:
+- **The probe NEVER serializes an arbitrary env name.** `EnvProbeReport.unreportedPresentCount`'s own
+  doc comment states the rule: *"Credential-shaped env names the probe did NOT serialize, because
+  their canonical form is not in its own table — **counted, never named**. An env NAME is
+  sandbox-controlled data and, unlike a redeemed value, is not in the run canaries … `presentNames`
+  therefore only ever carries the probe's own tokens."* `envCount`, `unnamedEnvCount` and
+  `unreportedPresentCount` are numbers. So `checked`, `present`, `presentNames`, `allowedPresent` and
+  `allowedMismatch` are all drawn from **fixed tables**, never from the sandbox.
+- **`redeemedNames` is bounded twice over.** It is `Object.keys(spec.env)`, and `synthesiseRunSecrets`
+  accepts only the three names in `PROVIDER_AUTH_ENV_TARGETS` (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+  `AOA_API_KEY` — `packages/worker-daemon/src/lease/secret-redemption.ts`), deduplicated into
+  `spec.env`; upstream, `jobEnvelopeBaseSchema` caps `secretHandles` at **64**
+  (`packages/worker-protocol/src/job.ts`).
+- **`plantedControl.planted` / `.detected`** likewise come from the probe's fixed class table.
+
+**Conclusion: this shipped producer cannot approach the 65,536-character ceiling.** Every unbounded
+input is reduced to a count, and every serialized array is table-sized plus at most three env names.
+So this finding's *"for lower"* argument **survives on the env-probe path**, and the owner sentence
+below is restored rather than left withdrawn. What does **not** come back is the blanket phrasing
+*"nothing emits a `log` event today"*: one is emitted — it simply cannot truncate.
+
+**What stands.** The finding still bounds Unit F's option space, which is why it stays with
+`CLI-008`; the transcript-corruption it names is still not reachable from **model output**
+(`createUsageObserver` never re-emits stdout or the transcript); and, per the bound above, the one
+shipped `log` producer cannot truncate. **Severity MEDIUM and Status `open` are UNCHANGED** — as
+they were before this custodian pass touched the finding.
 
 ---
 
