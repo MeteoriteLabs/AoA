@@ -930,6 +930,19 @@ function jobLogPath(state) {
 
 function leakScan(state) {
   const dir = path.join(state.out, "evidence");
+  // ★ A CAPTURE FAILURE IS NOT A CLEAN SCAN (Codex P1, PR #574). The filter exits non-zero, but the
+  // step that fails is not the one the upload is gated on: this scan runs `if: always()`, and a
+  // truncated job log reads clean. The filter therefore leaves a DURABLE marker beside the capture,
+  // and the scan refuses before reading anything — the log surface it would judge is incomplete.
+  const marker = `${jobLogPath(state)}.capture-failed`;
+  if (existsSync(marker)) {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(jobLogPath(state), { force: true });
+    fail(
+      `leak scan: the job-log capture FAILED during this run (${readFileSync(marker, "utf8").trim() || "no detail"}), so the ` +
+        `log surface is incomplete and cannot be judged clean; the evidence and the partial log were deleted`,
+    );
+  }
   const files = [];
   const walk = (d) => {
     if (!existsSync(d)) return;

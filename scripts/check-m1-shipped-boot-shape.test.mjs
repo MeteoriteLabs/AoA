@@ -165,7 +165,7 @@ test("REJECT: the evidence upload widened to the whole output dir (keys, env, st
 test("REJECT: the evidence upload only on success, or the teardown not always", () => {
   const upload = mutate(
     real(),
-    "      - name: Upload the evidence bundle (on pass and fail)\n        if: always() && steps.leak-scan.outcome == 'success'\n",
+    "      - name: Upload the evidence bundle (on pass and fail)\n        if: always() && steps.leak-scan.outcome == 'success' && steps.collect.outcome != 'failure'\n",
     "      - name: Upload the evidence bundle (on pass and fail)\n",
   );
   assert.ok(anyMatch(violationsOf(upload), /evidence upload must run `if: always\(\)`/), violationsOf(upload).join("\n"));
@@ -198,8 +198,17 @@ test("REJECT: the leak-scan step removed", () => {
 });
 
 test("REJECT: the upload NOT gated on the leak scan's success (a leaking bundle would publish)", () => {
-  const text = mutate(real(), "        if: always() && steps.leak-scan.outcome == 'success'\n", "        if: always()\n");
+  const text = mutate(real(), "        if: always() && steps.leak-scan.outcome == 'success' && steps.collect.outcome != 'failure'\n", "        if: always()\n");
   assert.ok(anyMatch(violationsOf(text), /upload must be gated `if: always\(\) && steps\.leak-scan\.outcome == 'success'`/), violationsOf(text).join("\n"));
+});
+
+test("REJECT: the upload gated on the SCAN alone, with the collect step's capture failure ignored", () => {
+  // Codex P1, PR #574: the scan runs `if: always()`, so a capture that broke during the
+  // best-effort collect step fails THAT step while the scan reads the truncated log as clean.
+  const text = mutate(real(), " && steps.collect.outcome != 'failure'", "");
+  assert.ok(anyMatch(violationsOf(text), /steps\.collect\.outcome != 'failure'/), violationsOf(text).join("\n"));
+  const noId = mutate(real(), "        id: collect\n", "");
+  assert.ok(anyMatch(violationsOf(noId), /collect step must carry an `id:`/), violationsOf(noId).join("\n"));
 });
 
 test("REJECT: the leak-scan step without an id, or not always()", () => {
@@ -277,6 +286,8 @@ test("the candidate-controls gate covers the whole control set, the log FILTER i
       "scripts/m1-shipped-boot/journey.mjs:stripMaskDirectives",
       "scripts/m1-shipped-boot/log-filter.mjs:createLineRedactor",
       "scripts/m1-shipped-boot/log-filter.mjs:the job-log capture failed",
+      "scripts/m1-shipped-boot/log-filter.mjs:capture-failed",
+      "scripts/m1-shipped-boot/journey.mjs:capture-failed",
     ].sort(),
   );
 });

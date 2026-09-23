@@ -49,6 +49,10 @@ export const CANDIDATE_CONTROL_MARKERS = [
   // …and the FAIL-CLOSED arm of it: a candidate whose filter swallows a capture failure would
   // report a truncated job log as clean (Codex P1, PR #574).
   ["scripts/m1-shipped-boot/log-filter.mjs", "the job-log capture failed"],
+  // The DURABLE trace of that failure, and the scan arm that reads it: without both, a capture that
+  // broke during the best-effort collect step is judged clean (Codex P1, PR #574).
+  ["scripts/m1-shipped-boot/log-filter.mjs", "capture-failed"],
+  ["scripts/m1-shipped-boot/journey.mjs", "capture-failed"],
 ];
 
 export const EVIDENCE_UPLOAD_PATH = "${{ env.M1_OUT }}/evidence/";
@@ -230,6 +234,16 @@ export function evaluateShippedBootWorkflowShape(text) {
     v.push(`the evidence upload must be gated \`if: always() && steps.${scanId}.outcome == 'success'\` — a bundle that fails the leak scan must never be uploaded`);
   }
   if (scanIdx !== -1 && !/if:\s*always\(\)/.test(scanStep)) v.push("the leak-scan step must run `if: always()` (a failed journey's evidence is scanned too)");
+  // ★ The scan's own success is NOT sufficient (Codex P1, PR #574): a capture that failed during
+  //   the best-effort collect step fails THAT step, while the scan runs `if: always()` and would
+  //   read the truncated log as clean. The gate must name the collect step too.
+  const collectIdx = src.indexOf("journey.mjs collect --out");
+  const collectStep = collectIdx === -1 ? "" : src.slice(src.lastIndexOf("- name:", collectIdx), collectIdx);
+  const collectId = /\bid:\s*([A-Za-z0-9_-]+)/.exec(collectStep)?.[1];
+  if (collectIdx !== -1 && !collectId) v.push("the collect step must carry an `id:` so the upload can be gated on its outcome");
+  if (collectId && !new RegExp(`steps\\.${collectId}\\.outcome\\s*!=\\s*'failure'`).test(before)) {
+    v.push(`the evidence upload must also require \`steps.${collectId}.outcome != 'failure'\` — a failed job-log capture must not ship a bundle the scan judged on a truncated log`);
+  }
 
   // (8c) The LOG surface is collected (review batch 3A, PR #569). A phase whose output is not
   //      teed into the job log is a phase the leak scan cannot see, and the keypair check's

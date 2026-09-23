@@ -147,6 +147,8 @@ jobs:
           grep -q "createLineRedactor" scripts/m1-shipped-boot/log-filter.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: it has no redacting log filter, and every phase pipeline would die on the missing module (missing createLineRedactor in scripts/m1-shipped-boot/log-filter.mjs)"; exit 1; }
           grep -q "createLineRedactor" scripts/lib/m1-shipped-boot.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its redactor is per-line only, so a re-wrapped PEM body would be published (missing createLineRedactor in scripts/lib/m1-shipped-boot.mjs)"; exit 1; }
           grep -q "the job-log capture failed" scripts/m1-shipped-boot/log-filter.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its log filter SWALLOWS a capture failure, so a truncated job log would be reported clean (missing the fail-closed arm in scripts/m1-shipped-boot/log-filter.mjs)"; exit 1; }
+          grep -q "capture-failed" scripts/m1-shipped-boot/log-filter.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its log filter leaves no durable trace of a capture failure (missing capture-failed in scripts/m1-shipped-boot/log-filter.mjs)"; exit 1; }
+          grep -q "capture-failed" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its leak scan does not refuse after a failed capture (missing capture-failed in scripts/m1-shipped-boot/journey.mjs)"; exit 1; }
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -253,6 +255,7 @@ jobs:
         run: node scripts/m1-shipped-boot/journey.mjs dispatch --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
 
       - name: Collect the evidence (redacted)
+        id: collect
         if: always()
         run: |
           # Collection stays best-effort — a failed journey must still upload what it has — but the
@@ -282,8 +285,13 @@ jobs:
             echo "leak-scan: no state (the job stopped before prepare); nothing was collected"
           fi
 
+      # The gate names BOTH steps (Codex P1). A capture that failed during the best-effort collect
+      # step fails THAT step, not the scan, and the scan runs `if: always()`; gating on the scan
+      # alone would upload a bundle whose log surface was never fully captured. (The scan also
+      # refuses on the filter's durable marker — two independent arms, neither sufficient alone:
+      # this one covers a marker that could not be written, that one covers a later step's failure.)
       - name: Upload the evidence bundle (on pass and fail)
-        if: always() && steps.leak-scan.outcome == 'success'
+        if: always() && steps.leak-scan.outcome == 'success' && steps.collect.outcome != 'failure'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: m1-shipped-boot-${{ inputs.mode }}-${{ github.run_id }}

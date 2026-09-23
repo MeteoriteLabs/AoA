@@ -18,7 +18,7 @@
 // `pipefail` (the job declares `shell: bash`), which the workflow-shape guard enforces.
 // -----------------------------------------------------------------------------
 
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline";
 
@@ -29,16 +29,33 @@ if (!capturePath) {
   console.error("usage: log-filter.mjs <capture-file>");
   process.exit(2);
 }
+
+/**
+ * Fail closed, and leave a DURABLE trace of it.
+ *
+ * ★ Exiting non-zero is not enough (Codex P1, PR #574): the step that fails may be the best-effort
+ * COLLECT step, while the leak scan runs `if: always()` and the upload is gated on the SCAN. A
+ * truncated job log would then read clean and ship. The marker beside the capture makes the scan
+ * refuse, whichever step the failure happened in.
+ */
+function captureFailed(err, where) {
+  const code = err && err.code ? err.code : "unknown";
+  try {
+    writeFileSync(`${capturePath}.capture-failed`, `${where}: ${code}\n`);
+  } catch {
+    // The marker is a second line of defence; its own failure must not mask the first.
+  }
+  process.stdout.write(
+    `::error::DEP-015 log-filter: the job-log capture failed (${code}); the log surface would be incomplete\n`,
+  );
+  process.exit(1);
+}
 try {
   mkdirSync(path.dirname(capturePath), { recursive: true });
 } catch (err) {
   // Same fail-closed rule as the per-line write: a capture directory that cannot exist means no
   // log surface, and the leak scan would read that absence as clean.
-  process.stdout.write(
-    `::error::DEP-015 log-filter: the job-log capture failed (${err && err.code ? err.code : "unknown"}); ` +
-      "the log surface would be incomplete\n",
-  );
-  process.exit(1);
+  captureFailed(err, "mkdir");
 }
 
 // STATEFUL: a PEM block is redacted whole, because a re-wrapped PEM splits the DER prefix across
@@ -52,12 +69,9 @@ rl.on("line", (line) => {
   } catch (err) {
     // ★ FAIL CLOSED (Codex P1, PR #574). Swallowing this would leave the pipeline green while the
     // leak scan read an absent or truncated job log as clean — the lane would claim a log-surface
-    // coverage it did not have. Exiting non-zero fails the step through `pipefail`.
-    process.stdout.write(
-      `::error::DEP-015 log-filter: the job-log capture failed (${err && err.code ? err.code : "unknown"}); ` +
-        "the log surface would be incomplete\n",
-    );
-    process.exit(1);
+    // coverage it did not have. Exiting non-zero fails the step through `pipefail`, and the marker
+    // makes the scan refuse even when the failing step is the best-effort one.
+    captureFailed(err, "append");
   }
   // … REDACTED to the published Actions log.
   process.stdout.write(`${redact(line)}\n`);

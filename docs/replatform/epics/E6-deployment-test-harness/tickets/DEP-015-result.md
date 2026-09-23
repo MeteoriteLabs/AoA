@@ -821,5 +821,21 @@ They are recorded because each would have made the control worse than none:
     keeps it raw, and a mutation back to a per-line redactor reds four tests. The candidate gate and
     its pinned marker set name `createLineRedactor` in both files.
 
+13. **An UNARMOURED DER value wrapped across lines defeated the block redactor too.** With no
+    `BEGIN` line there is nothing to latch, and a wrap such as `MC4CAQAwBQYD` / `K2VwBCIEI…`
+    leaves neither fragment matching the whole prefix, on the published surface AND in the scan.
+    Both now test each line JOINED to the tail of the one before (32 characters, enough for the
+    longest marker), and the scan reports the finding at the line that COMPLETES it. The published
+    log additionally drops any unbroken base64 run of 40 characters or more — the shape a wrapped
+    key's BODY has once its prefix is on the line before. Over-redaction there is free: review
+    batch 3A found no such run in 2347 lines of a real run, and ordinary lines are kept by a
+    control. Four mutations (either joined arm, the base64 rule, both surfaces) each red a test.
+14. **A failed capture could still ship a bundle.** The filter's non-zero exit fails the step it
+    runs in — which, during collection, is the best-effort one — while the leak scan runs
+    `if: always()` and the upload was gated on the SCAN alone. A truncated job log therefore read
+    clean and uploaded. The filter now leaves a durable `job-log.txt.capture-failed` marker beside
+    the capture and the scan REFUSES on it (deleting the bundle it could not judge), and the upload
+    gate additionally requires `steps.collect.outcome != 'failure'`. Two independent arms: the
+    marker covers a failure in a later step, the gate covers a marker that could not be written.
 **Status unchanged.** This is a control added after the fact to a run that was already clean; it
 neither re-opens nor re-decides §12's keyed acceptance.

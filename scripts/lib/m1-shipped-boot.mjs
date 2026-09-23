@@ -405,6 +405,13 @@ export function redactKeyMaterialLine(line) {
 const PEM_END = /-----END [A-Z0-9 ]*(PRIVATE|PUBLIC) KEY-----/;
 const PEM_BEGIN = /-----BEGIN [A-Z0-9 ]*(PRIVATE|PUBLIC) KEY-----/;
 
+/** Enough of the previous line to complete the longest marker (`MC4CAQAwBQYDK2VwBCIEI`, 21) across
+ * a wrap, with room to spare. */
+export const JOIN_CARRY_CHARS = 32;
+/** A long unbroken base64/base64url run — what a wrapped key's BODY looks like once its prefix is
+ * on the line before. Deliberately used only where OVER-redaction is free (the published log). */
+const BASE64_RUN = /[A-Za-z0-9+/_-]{40,}={0,2}/;
+
 /**
  * A STATEFUL line redactor for the published Actions log: the whole PEM BLOCK, not only the lines
  * that match a marker.
@@ -420,19 +427,35 @@ const PEM_BEGIN = /-----BEGIN [A-Z0-9 ]*(PRIVATE|PUBLIC) KEY-----/;
  */
 export function createLineRedactor() {
   let insidePemBlock = false;
+  let carry = "";
+  const redacted = (marker) => `[REDACTED: key material (${marker}) — see the leak scan]`;
   return (line) => {
     const text = String(line ?? "");
     if (text.startsWith(MASK_DIRECTIVE_PREFIX)) return text;
+    const stripped = text.replace(/\s+/g, "");
+    const joined = carry + stripped;
+    carry = stripped.slice(-JOIN_CARRY_CHARS);
     if (insidePemBlock) {
       if (PEM_END.test(text)) insidePemBlock = false;
-      return "[REDACTED: key material (pem_block) — see the leak scan]";
+      return redacted("pem_block");
     }
     if (PEM_BEGIN.test(text)) {
       // A single-line PEM (armour and body on one line) opens and closes in the same line.
       insidePemBlock = !PEM_END.test(text);
-      return "[REDACTED: key material (pem_block) — see the leak scan]";
+      return redacted("pem_block");
     }
-    return redactKeyMaterialLine(text);
+    const own = redactKeyMaterialLine(text);
+    if (own !== text) return own;
+    // ★ UNARMOURED DER across a line break (Codex P1, PR #574). Without a `BEGIN` line there is no
+    // block to latch, and a wrap such as `MC4CAQAwBQYD` / `K2VwBCIEI…` leaves neither fragment
+    // matching the whole prefix. So each line is also tested JOINED to the tail of the one before.
+    const joinedHit = KEY_MATERIAL_MARKERS.find(({ pattern }) => pattern.test(joined));
+    if (joinedHit) return redacted(`${joinedHit.marker}, wrapped`);
+    // …and the key BODY, which carries no marker of its own once the prefix is on the line before.
+    // A published log loses nothing by dropping a long unbroken base64 run: review batch 3A found
+    // none at all in 2347 lines of a real run.
+    if (BASE64_RUN.test(text)) return redacted("base64_run");
+    return text;
   };
 }
 
@@ -482,14 +505,27 @@ export function scanForKeyMaterial(files, { skipMaskDirectives = true } = {}) {
   let maskDirectiveLines = 0;
   for (const file of files ?? []) {
     const lines = String(file.text ?? "").split(/\r?\n/);
+    // ★ The same wrap the redactor defends against (Codex P1, PR #574): an unarmoured DER value
+    // split across lines matches no single line, so each line is ALSO tested joined to the tail of
+    // the one before. A finding is reported at the line that COMPLETES the marker.
+    let carry = "";
     for (let i = 0; i < lines.length; i += 1) {
       const line = lines[i];
       if (line.startsWith(MASK_DIRECTIVE_PREFIX)) {
         maskDirectiveLines += 1;
-        if (skipMaskDirectives) continue;
+        if (skipMaskDirectives) {
+          carry = "";
+          continue;
+        }
       }
+      const stripped = line.replace(/\s+/g, "");
+      const joined = carry + stripped;
+      carry = stripped.slice(-JOIN_CARRY_CHARS);
       for (const { marker, pattern } of KEY_MATERIAL_MARKERS) {
         if (pattern.test(line)) findings.push({ file: file.name, marker, line: i + 1 });
+        else if (pattern.test(joined)) {
+          findings.push({ file: file.name, marker, line: i + 1, wrapped: true });
+        }
       }
     }
   }

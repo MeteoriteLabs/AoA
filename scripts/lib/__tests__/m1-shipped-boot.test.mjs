@@ -838,3 +838,65 @@ test("the log filter publishes NO part of a re-wrapped PEM, and still captures i
   assert.ok(!res.stdout.includes(body) && !res.stdout.includes("MC4CAQAwBQYD"), res.stdout);
   assert.ok(captured.includes(body), "the capture keeps the raw block for the leak scan");
 });
+
+test("POSITIVE CONTROL: UNARMOURED DER wrapped across lines is redacted on the completing line (Codex P1)", () => {
+  // No `BEGIN` armour, so nothing latches a block, and neither fragment carries the whole prefix.
+  const wrapped = ["MC4CAQAwBQYD", "K2VwBCIEIGHhSECRETSECRETSECRETSECRETSECRET"];
+  assert.equal(redactKeyMaterialLine(wrapped[0]), wrapped[0], 'neither fragment matches on its own');
+  assert.equal(redactKeyMaterialLine(wrapped[1]), wrapped[1]);
+  const redact = createLineRedactor();
+  const published = wrapped.map(redact);
+  assert.match(published[1], /\[REDACTED: key material \(ed25519_pkcs8_der, wrapped\)/);
+  assert.equal(redact('ordinary output resumes'), 'ordinary output resumes');
+});
+
+test("POSITIVE CONTROL: a long base64 RUN is redacted, so a wrapped key BODY never publishes", () => {
+  const redact = createLineRedactor();
+  const body = 'GHh' + 'SECRETb64'.repeat(6);
+  assert.ok(body.length >= 40);
+  assert.match(redact(body), /\[REDACTED: key material \(base64_run\)/);
+  // Ordinary prose and short tokens survive: the lane must stay readable.
+  for (const keep of ['reconcile: 3 Organizations', 'sha256:abc123', 'run 8dc34e90 ok']) {
+    assert.equal(redact(keep), keep);
+  }
+});
+
+test("the SCAN joins lines too: a wrapped DER value in evidence is found, at the completing line", () => {
+  const text = ['noise', 'MC4CAQAwBQYD', 'K2VwBCIEIGHh', 'noise'].join('\n');
+  const { findings } = scanForKeyMaterial([{ name: 'e.txt', text }], { skipMaskDirectives: false });
+  assert.equal(findings.length, 1, JSON.stringify(findings));
+  assert.deepEqual(
+    { marker: findings[0].marker, line: findings[0].line, wrapped: findings[0].wrapped },
+    { marker: 'ed25519_pkcs8_der', line: 3, wrapped: true },
+  );
+  // POSITIVE CONTROL that this is not an always-find: unrelated adjacent lines stay clean.
+  const clean = scanForKeyMaterial([{ name: 'e.txt', text: 'hello\nworld' }], { skipMaskDirectives: false });
+  assert.deepEqual(clean.findings, []);
+});
+
+test("POSITIVE CONTROL: a failed capture leaves a DURABLE marker, and the leak scan REFUSES on it", () => {
+  const out = mkdtempSync(path.join(tmpdir(), 'm1-capture-marker-'));
+  mkdirSync(path.join(out, 'evidence'), { recursive: true });
+  writeFileSync(path.join(out, 'evidence', 'verifier-a.txt'), 'clean\n');
+  writeFileSync(path.join(out, 'job-log.txt'), 'a truncated but clean-looking log\n');
+  writeFileSync(path.join(out, 'job-log.txt.capture-failed'), 'append: ENOSPC\n');
+  writeFileSync(path.join(out, 'state.json'), JSON.stringify({ out, redact: [], secrets: {} }));
+  const res = spawnSync(process.execPath, [journey, 'leak-scan', '--out', out], { encoding: 'utf8' });
+  const gone = !existsSync(path.join(out, 'evidence'));
+  rmSync(out, { recursive: true, force: true });
+  assert.equal(res.status, 1, res.stdout + res.stderr);
+  assert.match(`${res.stdout}${res.stderr}`, /capture FAILED during this run/);
+  assert.ok(gone, 'the bundle the scan could not judge must not survive to be uploaded');
+});
+
+test("POSITIVE CONTROL: the filter WRITES that marker when the capture cannot be appended", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'm1-marker-write-'));
+  const capture = path.join(dir, 'job-log.txt');
+  mkdirSync(capture);  // a DIRECTORY where the capture file belongs: every append fails
+  const filter = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'm1-shipped-boot', 'log-filter.mjs');
+  const res = spawnSync(process.execPath, [filter, capture], { input: 'one line\n', encoding: 'utf8' });
+  const marked = existsSync(`${capture}.capture-failed`);
+  rmSync(dir, { recursive: true, force: true });
+  assert.equal(res.status, 1, res.stdout);
+  assert.ok(marked, 'the failure must outlive the step that saw it');
+});
