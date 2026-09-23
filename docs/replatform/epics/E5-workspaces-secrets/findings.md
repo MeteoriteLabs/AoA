@@ -330,3 +330,73 @@ fixes neither, because the two cases want opposite timings.
 
 **Blocks gate:** no. These are two advisory tests, and the batch-rejection behaviour they exercise
 is observed on all three platforms - only the error TYPE, or which arm is reached, differs.
+---
+
+## E5-F006 - the relayed upload grant is unauthenticated at the adapter-manager, and the redemption guard that narrows the replay is per-instance and in-memory
+
+**Status:** open
+**Severity:** MEDIUM (nothing produces `ArtifactExportRequest[]` in production yet, so no byte moves
+on this path today; when it does move, the guard is real but partial)
+**Filed:** 2026-09-23 (`DAT-009-3e`), verified at source on the ticket's own head.
+
+**What.** `ArtifactUploadGrantV1` (`packages/worker-protocol/src/artifacts.ts`) carries no
+control-plane signature over its integrity fields, and the presigned url binds the checksum
+ALGORITHM, not the value (`grantPutHeaders`' own docstring says so). The adapter-manager therefore
+cannot verify that the `expectedSha256`, `maxBytes`, `objectKey` and `url` a worker hands it are the
+ones the control plane minted. `DAT-009-3e` confines what a forged or replayed grant can do
+(`assertUploadGrantBound` in `packages/adapter-manager/src/server.ts`: an upload/PUT grant, an https
+url on a configured store origin, an object key under the caller's own attempt prefix, a url that
+targets that key, and an unexpired grant), and makes a successful redemption one-time per object key
+with a lost-response replay allowed under the same `idempotencyKey`. **It does not authenticate the
+grant.**
+
+**The residual, stated precisely.** The redemption ledger is a `Map` inside one server process:
+- it does not survive a restart, and it does not reach a second replica, so a re-PUT that lands on a
+  different instance than the first redemption is not seen by this guard;
+- two concurrent FIRST exports of one object key can both pass the check;
+- retention is a fixed server-side window (`UPLOAD_REDEMPTION_RETENTION_MS`, 24 h, measured from the
+  redemption on the server's own clock - deliberately not the worker's `expiresAt`, which a worker
+  could shorten to buy its own eviction). Memory is bounded by one window's exports, and the window
+  is a constant rather than a configured policy.
+
+**Why this is not a defect the ticket left behind.** The complete fix is a control-plane signature
+over the grant's integrity fields - i.e. a change to the FROZEN `worker-protocol` package. The E5
+implementation plan names exactly that move as a STOP for this ticket (`DAT-009-3e`,
+migration/compatibility: a frozen-package change for a non-frozen concern "is a STOP"), so the
+ticket narrowed the replay and filed the rest rather than improvising a protocol change.
+
+**What would close it.** One of: (a) a control-plane-signed grant covering `objectKey`,
+`expectedSha256`, `maxBytes` and the url, verified at the adapter-manager - a protocol decision, not
+an engineering one; or (b) a durable, shared redemption record (the control plane already refuses to
+MINT a second grant for a committed artifact in
+`server/src/services/artifact-transfer-grant.ts`, so the same authority could refuse a second
+REDEMPTION), which would also remove the per-instance and restart limits.
+
+**Blocks gate:** no. `E5-2` stays `unwired`; nothing produces export requests in production.
+
+---
+
+## E5-F007 - the shipped adapter-manager bin configures no artifact store origin, so a deployed networked export fails closed
+
+**Status:** open
+**Severity:** LOW (fail-closed and deploy-owed: an export is refused, never mis-sent)
+**Filed:** 2026-09-23 (`DAT-009-3e`), verified at source on the ticket's own head.
+
+**What.** `createProviderServer` accepts `artifactUploadOrigins`, the allow-list of object-store
+origins a relayed upload grant may target, and refuses every export when it is empty - the
+fail-closed default that stops a forged grant sending sandbox bytes to an arbitrary endpoint. The
+composition root `packages/adapter-manager/src/bin/adapter-manager.ts` does not read any environment
+variable for it (it reads the provider, template, control-plane public key, ledger dir and reaper
+envs, each via `env[CONST]`). So a deployed adapter-manager refuses `export_artifact` until a deploy
+ticket supplies the store origin.
+
+**Why it was not done here.** Adding a boot env is deploy-surface work (the staging compose and the
+D1/E6 harness own how the store origin reaches the container), and `DAT-009-3e`'s files are the wire
+route, the adapter-manager route and the provider's header derivation. Refusing loudly and honestly
+was preferred to defaulting to "any origin", which would have made the binding decorative.
+
+**What would close it.** A DEP/E6 deploy ticket that threads the configured store origin into the
+adapter-manager bin the way the control-plane public key is threaded, with a boot case proving an
+unset origin still refuses.
+
+**Blocks gate:** no. No shipped CI boot starts this bin today (`E7-1-coding-journey` records that).

@@ -217,6 +217,34 @@ hoists the measurement outside `runExclusive`, and that goes red.
   DE-17 citation re-point (`server.ts:122-131`, anchor `ReadonlySet`) that the first merge left
   uncommitted.** That omission is what reddened `policy` on `f34b65a` (§9).
 
+### Scope boundary (planning session, founder delegation F2)
+
+Codex raised eight distinct findings on this PR and all were real. The line the planning session
+drew, and this ticket followed:
+
+**Built here — a real defect in code this PR introduces.** Each is a property the relay itself owes:
+a field a caller controls that nothing checked (the forged upload grant, the worker-supplied
+eviction deadline), a lock held with no bound (the upload, the sandbox read, the ownership
+inspection, and the mutex queue in front of them), a timeout that did not cover the operation it
+named (the read; the queued request's stale window), and a contract the relay broke (the
+lost-response replay).
+
+**Filed, not built — hardening of the guard rather than a defect in the relay.**
+- **`E5-F006`** — the relayed grant cannot be AUTHENTICATED at the adapter-manager, because
+  `ArtifactUploadGrantV1` carries no control-plane signature. The redemption guard narrows the
+  replay; it is per-instance, in-memory, races on two concurrent first exports, and retains on a
+  fixed 24 h constant rather than a configured policy. The complete fix is a signature over the
+  grant's integrity fields, i.e. a change to the **frozen** `worker-protocol` — which this ticket's
+  own plan text names as a STOP.
+- **`E5-F007`** — the shipped adapter-manager bin configures no store origin, so a deployed export
+  fails closed until a deploy ticket supplies one.
+
+**Why this is the right line.** The relay is what the ticket owes, and a guard that refuses honestly
+plus a filed residual is truthful; a redemption subsystem with its own durability and eviction
+policy is a second ticket, and building it here would have made this PR the owner of a capability
+nobody chartered. Both findings are `unowned` with a reason, so the residual is visible rather than
+implied.
+
 ## 2. RED → GREEN
 
 RED runs used unchanged behaviour. The only source change made before the `put-grant-bytes` RED was
@@ -385,12 +413,16 @@ which this PR does not touch.
    HTTPS url and write the response into the caller's own sandbox, which is an SSRF read from the
    adapter-manager's network position. It is outside this ticket's files and is reported to the
    planning session rather than filed with a newly minted id.
-5. **A stop for the planning session (commit 6).** The relayed upload grant cannot be
+5. **Filed rather than built (see the scope boundary in §1):** `E5-F006` (the grant cannot be
+   authenticated; the redemption guard's per-instance limits and its retention constant) and
+   `E5-F007` (the bin configures no store origin). Both are `unowned` with reasons in
+   `scripts/finding-ownership.json`.
+6. **A stop for the planning session (commit 6).** The relayed upload grant cannot be
    authenticated at the adapter-manager: `ArtifactUploadGrantV1` carries no control-plane signature,
    and adding one is a frozen-`worker-protocol` change, which this ticket's own plan text calls a
    STOP. The one-time redemption above is a per-instance narrowing, not authentication. A durable,
    shared decision (sign the grant, or make redemption durable and cross-replica) is owed.
-6. A process note: the session's shared scratchpad held another session's mutation script under a
+7. A process note: the session's shared scratchpad held another session's mutation script under a
    generic name. One of this session's runs executed that script, and it overwrote
    `packages/worker-daemon/src/lifecycle/dispatch-runtime.ts` in this worktree with a `3d` draft.
    The file was restored with `git checkout` before any commit. It is in neither commit, and the
