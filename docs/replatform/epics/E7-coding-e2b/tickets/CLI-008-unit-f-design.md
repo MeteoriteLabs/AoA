@@ -1165,7 +1165,12 @@ licenses different next steps.
   `scripts/finding-ownership.json`, which is authoritative.** The list above was true when written
   and is stale in three ways; it is kept as the record of what it said. A planner consulting this
   design could otherwise route re-pointed work back to `CLI-008`.
-  - **Still `CLI-008`, unchanged:** `E7-F003`, `E7-F015`, `E7-F017`, `E7-F023`, `E7-F024`, `E7-F027`.
+  - **Still `CLI-008`, unchanged — EIGHT, enumerated from the register itself, not from the list
+    above:** `E7-F003`, `E7-F015`, `E7-F017`, `E7-F023`, `E7-F024`, `E7-F027`, **`E7-F032`** and
+    **`E7-F033`**. ★ *The last two were added on an accepted Codex P2: they post-date the original
+    list, so a correction derived from that list — as my first pass was — inherits its omission.
+    The authoritative enumeration is every entry in `scripts/finding-ownership.json` whose `ticket`
+    is `CLI-008`.*
   - **RE-POINTED away, and no longer `CLI-008`'s:** **`E7-F016` → `CLI-015`** (2026-09-21, M0 unit 4,
     founder decisions D1 + D5 — clause 6 IS `countProducedOutputs`, i.e. link 6), and
     **`E7-F026` → `CLI-017`**.
@@ -1174,8 +1179,10 @@ licenses different next steps.
     `E7-F021` (`resolved` by the F021/F027 posture PR, 2026-09-11). Their `Owner: CLI-008` lines in
     `findings.md` are historical by design and are not live claims.
 
-  **The bullet's point survives:** `CLI-008` is not unowned by accident, and it still owns the
-  six live findings named above.
+  **The bullet's point survives, and is STRONGER than the stale list suggested:** `CLI-008` is not
+  unowned by accident, and it still owns **eight** live findings — not six, and not the eleven the
+  original list implied. A planner must not read the re-points and resolutions above as bringing the
+  parent closer to a result record.
 - ~~**NOT "blocked on a decision."** Nobody owes an opinion. What is owed is a **measurement**, and
   §12.2 names three, all cheap, all standalone, none requiring a design.~~
   **★ REPLACED: all three measurements are taken (§12.0), and what is owed now IS a decision — a
