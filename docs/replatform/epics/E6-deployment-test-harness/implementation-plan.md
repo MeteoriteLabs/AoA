@@ -371,7 +371,7 @@ code, test count, duration, platform, and exact revision.
 | DEP-014 | **Local (pure):** `Invoke-NativeGate 'DEP-014 admission' { node --test scripts/lib/__tests__/image-admission.test.mjs }`. **Linux/CI only (docker):** the `d1-merge-train` job that builds, signs and admits all three images; the evidence is that job, cited by job name. |
 | DEP-015 | **Local (pure):** `Invoke-NativeGate 'DEP-015 staging manifest' { node scripts/check-staging-manifest.mjs; node --test scripts/check-staging-manifest.test.mjs scripts/lib/__tests__/staging-manifest.test.mjs }; Invoke-NativeGate 'DEP-015 boot shape' { node scripts/check-m1-shipped-boot-shape.mjs; node --test scripts/check-m1-shipped-boot-shape.test.mjs }` (the shape guard is **created** by the ticket). **Linux/CI only, keyed (F8):** one `workflow_dispatch` of `m1-shipped-boot.yml` on a named candidate. |
 | DEP-016 | **Local (static):** `Invoke-NativeGate 'DEP-016 compose' { node scripts/check-d1-compose.mjs; node --test scripts/lib/__tests__/d1-compose-invariants.test.mjs }`. **Linux/CI only (docker):** `AOA_D1_LIVE=1 node --test tests/d1/m1-spine.test.mjs` inside the `d1-merge-train` job with `AOA_D1_CAMPAIGN=m1-spine`, plus the usage-suppressed positive-control run; the evidence is the retained on-pass bundle. |
-| DEP-017 | **Local (pure):** the probe's unit test (created by the ticket). **Linux/CI:** the probe observed inside the `DEP-016` profile run and the `DEP-015` lane, plus the planted-canary positive-control run. |
+| DEP-017 | **Local (pure):** the probe's unit test (created by the ticket). **Linux/CI:** the probe observed inside the `DEP-015` lane, plus the planted-canary positive-control run (which runs inside every probed sandbox). ★ *Amended 2026-09-23 by DEP-017's build, after the Codex review of PR #565, and RATIFIED by the M1 planning session under founder delegation F2 on 2026-09-23. NOT a narrowing of criterion 5:* the probe cannot be observed inside the `DEP-016` profile from `DEP-017`, because `tests/d1/m1-spine.test.mjs` does not exist yet (`DEP-016` is unbuilt) and because the D1 lane runs the FAKE provider, whose `execute` returns a canned `executed` result and runs no command (`packages/sandbox-fake-provider/src/fake-driver.ts`, the `case "execute"` arm) — arming the probe there today would fail every D1 distributed run `env_probe_not_run` while observing nothing. The obligation is therefore CARRIED INTO `DEP-016` (see its task section), which owns the profile and must arm `AOA_WORKER_ENV_PROBE` and assert the probe summary per enabled tenant on whatever provider that profile runs. `DEP-017` delivers the probe and its observation in the `DEP-015` lane. |
 | DEP-018 | **Local (pure):** `Invoke-NativeGate 'DEP-018 matrix' { node scripts/check-campaign-fault-matrix.mjs; node --test scripts/check-campaign-fault-matrix.test.mjs }` (created by the ticket). **Linux/CI only (docker):** `AOA_D1_LIVE=1 node --test tests/d1/m1-fault-matrix.test.mjs` per profile; the evidence is one injection-fired line per declared case. |
 
 ---
@@ -1121,6 +1121,16 @@ from, including the rollback rehearsal through the `MIG-009` CLI.
 5. **Crew switch off.** *Added at S0-8:* the profile asserts `AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED`
    is unset or false on both replicas (deployment-wide, per the M1 plan §6 freeze checklist) and
    records it in the retained bundle.
+6. **The DEP-017 env probe, CARRIED IN** *(added 2026-09-23 from DEP-017's build after the Codex
+   review of PR #565, and RATIFIED by the M1 planning session under founder delegation F2 on
+   2026-09-23 — not a build agent's own authority)*: the profile arms `AOA_WORKER_ENV_PROBE=1` on its worker(s) and asserts, per
+   enabled tenant, a clean live env-absence summary with a RED planted control, read from the
+   attempt's `job_events` exactly as the `DEP-015` journey does
+   (`evaluateEnvProbeEvidence`, `scripts/lib/m1-shipped-boot.mjs`). `DEP-017` could not deliver this
+   half: the profile did not exist, and the D1 lane's FAKE provider runs no command, so the probe
+   would report nothing there. If this profile still runs the fake provider, `DEP-016` must either
+   make the fake execute the probe command faithfully or record, in its result, that criterion 5 is
+   observed ONLY in the `DEP-015` lane — an unobserved probe must not be reported as a pass.
 
 **Ticket non-goals:** the fault matrix (`DEP-018`); real E2B; changing the `foundation`/`bounded`
 scopes.
@@ -1183,8 +1193,8 @@ to include — if left out, the record says so; a DE-08 amendment; non-distribut
 
 **Files:** **create** the probe (a small script staged into the sandbox, under
 `packages/worker-daemon/src/` or `tests/fixtures/distributed-execution/`, decided and recorded);
-**create** its unit test; the campaign profiles that invoke it (`DEP-016`'s `tests/d1/m1-spine.test.mjs`
-and the `DEP-015` lane); `scripts/test-execution-census.json`; `scripts/finding-ownership.json` —
+**create** its unit test; the campaign profiles that invoke it (the `DEP-015` lane; `DEP-016`'s
+`tests/d1/m1-spine.test.mjs` is carried into `DEP-016` — ★ *Amended 2026-09-23 by DEP-017's build, after the Codex review of PR #565, and RATIFIED by the M1 planning session under founder delegation F2 on 2026-09-23. NOT a narrowing of criterion 5:* the probe cannot be observed inside the `DEP-016` profile from `DEP-017`, because `tests/d1/m1-spine.test.mjs` does not exist yet (`DEP-016` is unbuilt) and because the D1 lane runs the FAKE provider, whose `execute` returns a canned `executed` result and runs no command (`packages/sandbox-fake-provider/src/fake-driver.ts`, the `case "execute"` arm) — arming the probe there today would fail every D1 distributed run `env_probe_not_run` while observing nothing. The obligation is therefore CARRIED INTO `DEP-016` (see its task section), which owns the profile and must arm `AOA_WORKER_ENV_PROBE` and assert the probe summary per enabled tenant on whatever provider that profile runs. `DEP-017` delivers the probe and its observation in the `DEP-015` lane.); `scripts/test-execution-census.json`; `scripts/finding-ownership.json` —
 **`E8-F012` stays `unowned`**; this ticket only **amends that entry's `reason`** to record that
 `DEP-017` covers the M1 distributed stage-in path only, and that the other stage-in paths (Commander,
 U13 extraction, warm resume, and the non-distributed org/crew paths) and the metadata-endpoint half

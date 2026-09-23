@@ -1,7 +1,7 @@
 # WRK-013 — A durable lease-candidate source for the startup reconciler (E4-F009 successor)
 
 **Epic:** E4 · **Plan node:** `docs/replatform/program-design.md`, `#### WRK-013`
-**Depends on:** WRK-008 slice 2b, WRK-007 · **Size:** M · **Status:** `design` — task defined, not built
+**Depends on:** WRK-008 slice 2b, WRK-007 · **Size:** M · **Status:** `gate_review` — built, result at `WRK-013-result.md` (★ *was `design` — task defined, not built; changed 2026-09-21 when the ticket was built*)
 (★ *was `scoping`, and **Size:** (scope only); changed 2026-09-21 at M1 Step 0, S0-3, when the task was
 written into the E4 implementation plan §4c against founder rulings F4 and F5*)
 **Owns:** finding **E4-F009** (`epics/E4-worker-daemon/findings.md`)
@@ -71,4 +71,10 @@ recommended. They settle the two questions a restart-reconciler design could not
 design is written at that sprint's start."*
 
 The task is written: `docs/replatform/epics/E4-worker-daemon/implementation-plan.md` §4c, `WRK-013`
-(M1 Step 0, S0-3, 2026-09-21). No result doc yet; a distinct reviewer alone sets `complete`.
+(M1 Step 0, S0-3, 2026-09-21). ★ *Superseded text: "No result doc yet; a distinct reviewer alone sets
+`complete`."*
+
+**Built 2026-09-21.** The result is [`WRK-013-result.md`](./WRK-013-result.md), at `gate_review`. It
+records the F4 narrowing and its owner, the F5 fence, and one reading this design did not settle: the
+"org/owner-scoped" condition gates only the **sandbox** pass, not the whole reconciler (result §4).
+A distinct reviewer alone sets `complete`.

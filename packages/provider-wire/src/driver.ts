@@ -12,6 +12,8 @@
 // worker-daemon class, re-exported via the e2b leaf's `errors.js`) until Unit B builds
 // their routes + the server-side ownership gate. `execute`'s route here has NO ownership
 // gate and is COMPONENT-TEST-ONLY / not deploy-safe (S1.4).
+// (Superseded for the artifact pair by DAT-009-3e: `digestArtifact`/`exportArtifact` now
+// relay as gated owned ops — see `artifactExportMode` below.)
 //
 // ★ execute (ONLY) applies the driver-owned zero-deadline short-circuit BEFORE any RPC
 // (`deadlineMs <= 0` -> the deterministic timedOut verdict). `create` has no such
@@ -60,6 +62,7 @@ import { ResourceNotAvailableError, UnsupportedProviderOperation } from "@armyof
 import {
   EXECUTE_CAPTURE_STDOUT_KEY,
   EXECUTE_STDOUT_TAIL_KEY,
+  WireProtocolError,
   decodeOpResponse,
   encodeOpRequest,
 } from "./codec.js";
@@ -90,7 +93,22 @@ export class NetworkedProviderDriver implements SandboxProvider {
   readonly advertisedOperations: ReadonlySet<ProviderOperation> = new Set(CORE_PROVIDER_OPERATIONS);
   readonly checkpointMode: CheckpointMode = "none";
   readonly healthMode: HealthMode = "none";
-  readonly artifactExportMode: ArtifactExportMode = "none";
+  /**
+   * DAT-009-3e — `"grant_upload"`: this driver RELAYS the artifact pair over the wire, as it
+   * relays `stage_files` (E7-F011). `digest_artifact` / `export_artifact` are NOT members of the
+   * frozen `ProviderOperation` vocabulary (they are `DeclinableOperation`s), so `#post`'s op type
+   * is widened LOCALLY, never the vocabulary. Both are GATED OWNED OPS on the adapter-manager:
+   * they read out of, or upload from, one live sandbox, so the capability rides every call.
+   *
+   * ★ THE MODE IS READ, NOT DECORATIVE. Both methods refuse with `UnsupportedProviderOperation`
+   * before any RPC when this says `"none"` — the rollback is to set it back, and before 3e the
+   * methods threw without ever consulting it, so `"none"` was enforced by nothing.
+   *
+   * Like `fileStagingMode`, it asserts only that the driver can RELAY: a far provider that is
+   * `"none"` throws `UnsupportedProviderOperation`, which the codec carries back as its own
+   * class. Grant in, reference out — no bytes cross this hop (Option D).
+   */
+  readonly artifactExportMode: ArtifactExportMode = "grant_upload";
   /**
    * E7-F011 — `"grant_download"`: this driver RELAYS staging over the wire (the route CLI-008
    * Unit B's comment called "its own piece of work"). `stage_files` is still NOT a member of
@@ -224,16 +242,38 @@ export class NetworkedProviderDriver implements SandboxProvider {
   async health(_sandboxId: string, _ctx: ProviderOpContext): Promise<HealthResult> {
     throw new UnsupportedProviderOperation("health");
   }
-  async digestArtifact(_sandboxId: string, _path: string, _ctx: ProviderOpContext): Promise<ArtifactDigestResult> {
-    throw new UnsupportedProviderOperation("digest_artifact");
+  // --- DAT-009-3e — the artifact pair, relayed as gated owned ops ------------------------
+  // ONE call is ONE RPC: no retry, no prefetch, no buffering. Whether a result that arrives late
+  // is USED is the supervisor's export-window latch (`runExportWindow`, DAT-009-3c: re-checked
+  // after every await, so a late digest mints nothing and a late upload is never committed); the
+  // driver's part is to issue a call only when asked and to hand back exactly what came back.
+
+  async digestArtifact(sandboxId: string, path: string, ctx: ProviderOpContext): Promise<ArtifactDigestResult> {
+    if (this.artifactExportMode === "none") throw new UnsupportedProviderOperation("digest_artifact");
+    const result = await this.#post<unknown>("digest_artifact", { sandboxId, path }, ctx, this.#capability);
+    // A malformed digest is refused HERE: the sequencer would otherwise mint a grant (a durable
+    // row) for a sha256/size the sandbox never produced.
+    if (!isDigestResult(result)) throw new WireProtocolError("digest_artifact returned a malformed digest");
+    return { sha256: result.sha256, sizeBytes: result.sizeBytes };
   }
+
   async exportArtifact(
-    _sandboxId: string,
-    _path: string,
-    _grant: ArtifactUploadGrantV1,
-    _ctx: ProviderOpContext,
+    sandboxId: string,
+    path: string,
+    grant: ArtifactUploadGrantV1,
+    ctx: ProviderOpContext,
   ): Promise<ArtifactExportResult> {
-    throw new UnsupportedProviderOperation("export_artifact");
+    if (this.artifactExportMode === "none") throw new UnsupportedProviderOperation("export_artifact");
+    // GRANT IN (a bearer capability, `redaction:"secret"` — never logged, never in a message),
+    // REFERENCE OUT.
+    const result = await this.#post<unknown>("export_artifact", { sandboxId, path, grant }, ctx, this.#capability);
+    // The only reference a successful export can honestly return is the grant's own key. Anything
+    // else — absent, or another key — is refused rather than handed to the fenced commit as if
+    // the bytes were there.
+    if (!isRecord(result) || result.objectKey !== grant.objectKey) {
+      throw new WireProtocolError("export_artifact returned a reference that is not the grant's object key");
+    }
+    return { objectKey: grant.objectKey };
   }
   async stageFiles(
     sandboxId: string,
@@ -277,8 +317,9 @@ export class NetworkedProviderDriver implements SandboxProvider {
   async #post<R>(
     // E7-F011 — locally widened beyond the FROZEN `ProviderOperation` vocabulary to carry the
     // non-frozen `stage_files` route (the vocabulary itself is untouched — E4-D02). Additive:
-    // every existing caller still passes a `ProviderOperation`.
-    op: ProviderOperation | "stage_files",
+    // every existing caller still passes a `ProviderOperation`. DAT-009-3e widens it the same
+    // way, and only locally, for the artifact pair.
+    op: ProviderOperation | "stage_files" | "digest_artifact" | "export_artifact",
     args: unknown,
     ctx: ProviderOpContext,
     capability?: OwnedLabelsCapability,
@@ -334,4 +375,21 @@ export class NetworkedProviderDriver implements SandboxProvider {
       hasLiveLease: projection.state === "running",
     };
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** The port's digest shape, checked structurally: lowercase-hex sha256 (the grant schema's own
+ * `sha256DigestSchema` form) and a non-negative integer byte size. */
+function isDigestResult(value: unknown): value is ArtifactDigestResult {
+  return (
+    isRecord(value) &&
+    typeof value.sha256 === "string" &&
+    /^[a-f0-9]{64}$/.test(value.sha256) &&
+    typeof value.sizeBytes === "number" &&
+    Number.isSafeInteger(value.sizeBytes) &&
+    value.sizeBytes >= 0
+  );
 }

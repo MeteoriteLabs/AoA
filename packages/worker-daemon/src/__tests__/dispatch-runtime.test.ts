@@ -88,7 +88,7 @@ function harness() {
     openStore: (async (o: unknown) => { order.push("openStore"); captured.storeOpts = o; return { close: () => {}, __store: true } as never; }) as never,
     makeSink: ((d: { store: unknown; kek: unknown }) => { order.push("makeSink"); captured.sinkStore = d.store; captured.sinkKek = d.kek; return sinkSentinel; }) as never,
     makeDrain: ((d: { kek: unknown }) => { order.push("makeDrain"); captured.drainKek = d.kek; return { recover: () => { order.push("recover"); return 0; }, start: () => { order.push("drainStart"); }, stop: () => {}, drainOnce: async () => ({}), flush: async () => {} } as never; }) as never,
-    makeSupervisor: ((d: { eventSink: unknown; redactionCanaries: unknown; observeRun?: unknown; opDeadlineMs?: unknown }) => { order.push("makeSupervisor"); captured.supEventSink = d.eventSink; captured.redactionCanaries = d.redactionCanaries; captured.observeRun = d.observeRun; captured.opDeadlineMs = d.opDeadlineMs; return supSentinel; }) as never,
+    makeSupervisor: ((d: { eventSink: unknown; redactionCanaries: unknown; observeRun?: unknown; opDeadlineMs?: unknown }) => { order.push("makeSupervisor"); captured.supEventSink = d.eventSink; captured.redactionCanaries = d.redactionCanaries; captured.observeRun = d.observeRun; captured.opDeadlineMs = d.opDeadlineMs; captured.envProbe = (d as { envProbe?: unknown }).envProbe; captured.hasEnvProbeKey = "envProbe" in (d as object); return supSentinel; }) as never,
     makeDriver: ((d: { eventSink: unknown; supervisor: unknown; schedule: unknown; controlHandlers?: unknown }) => { order.push("makeDriver"); captured.driverEventSink = d.eventSink; captured.driverSupervisor = d.supervisor; captured.driverSchedule = d.schedule; captured.driverControlHandlers = d.controlHandlers; return driverSentinel; }) as never,
     makePollLoop: ((d: { supervisor: unknown; self: unknown; measure: unknown }) => { order.push("makePollLoop"); captured.pollSupervisor = d.supervisor; captured.pollSelf = d.self; captured.pollMeasure = d.measure; captured.pollRun = () => { order.push("pollRun"); }; return { ...pollSentinel, run: async () => { order.push("pollRun"); return { kind: "stopped" }; } } as never; }) as never,
     makeSchedule: (() => ({ __schedule: true }) as never) as never,
@@ -149,6 +149,18 @@ describe("composeDispatchRuntime — the composition wiring", () => {
   // "a function": a stub `() => ({})` would satisfy `typeof`, so the second case drives the
   // captured observer with a real claude result line and requires the usage it must build.
   // Removing the composition from `makeSupervisor({...})` reds both (mutation M2).
+  // DEP-017 — the live env-absence probe is composed ONLY when the boot asked for it. Absent, the
+  // supervisor deps carry NO `envProbe` key at all (byte-identical to pre-DEP-017).
+  it("★ DEP-017: envProbe is ABSENT from the supervisor deps by default", async () => {
+    const { captured } = await compose();
+    expect(captured.hasEnvProbeKey).toBe(false);
+  });
+
+  it("★ DEP-017: envProbe: true composes the probe into the supervisor", async () => {
+    const { captured } = await compose({ envProbe: true });
+    expect(captured.envProbe).toEqual({});
+  });
+
   it("★ redactionCanaries is [] and observeRun is COMPOSED (WRK-018)", async () => {
     const { captured } = await compose();
     expect(captured.redactionCanaries).toEqual([]);
@@ -193,9 +205,51 @@ describe("composeDispatchRuntime — the composition wiring", () => {
 
   it("start() starts the drain then the poll loop (fire-and-forget)", async () => {
     const { runtime, order } = await compose();
-    runtime.start();
+    await runtime.start();
     expect(order).toContain("drainStart");
     expect(order.indexOf("drainStart")).toBeLessThan(order.indexOf("pollRun"));
+  });
+
+  it("★ WRK-013 — start() COMPLETES the startup reconcile before the drain loop or the poll loop starts", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const { runtime, order } = await compose({
+      makeStartupReconciler: (() => ({
+        run: async () => {
+          order.push("reconcileStart");
+          await gate; // a reconcile still in flight must hold the poll loop back
+          order.push("reconcileDone");
+          return { fencedLeaseIds: [], leaseProbes: new Map() } as never;
+        },
+      })) as never,
+    });
+    const started = runtime.start();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(order).toContain("reconcileStart");
+    expect(order).not.toContain("pollRun"); // not yet: the reconcile has not completed
+    expect(order).not.toContain("drainStart");
+    release();
+    await started;
+    expect(order.indexOf("reconcileDone")).toBeLessThan(order.indexOf("drainStart"));
+    expect(order.indexOf("reconcileDone")).toBeLessThan(order.indexOf("pollRun"));
+  });
+
+  it("★ WRK-013 — a shutdown that begins DURING the reconcile never starts the poll loop", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const { runtime, order } = await compose({
+      makeStartupReconciler: (() => ({
+        run: async () => {
+          await gate;
+          return { fencedLeaseIds: [], leaseProbes: new Map() } as never;
+        },
+      })) as never,
+    });
+    const started = runtime.start();
+    runtime.leasing.stopLeasing();
+    release();
+    await started;
+    expect(order).not.toContain("pollRun");
   });
 });
 

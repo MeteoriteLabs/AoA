@@ -220,7 +220,26 @@ failure is closed: a stale digest makes the worker **unmatchable**, not wrongly 
 
 ## E4-F009 — `createStartupReconciler` is not composable at boot — one blocker, not two
 
-**Status:** `open` · owned by **WRK-013** (repointed from WRK-008 at slice-2b completion) · Severity: MED · Source: WRK-008 slice 2b planning pass (2026-08-25), adversarial review round 2.
+**Status:** `resolved` (WRK-013, M1a, 2026-09-21) · Severity: MED · Source: WRK-008 slice 2b planning pass (2026-08-25), adversarial review round 2.
+*Superseded status line: "`open` · owned by **WRK-013** (repointed from WRK-008 at slice-2b completion)".*
+
+> **★ RESOLUTION — WRK-013, 2026-09-21** (`tickets/WRK-013-result.md`). The one blocker this entry
+> names is gone. `leaseCandidates` now has a durable local source: the lease-candidate store
+> (`lease/lease-candidate-store.ts`, `openLeaseCandidateStore`), **written just before the ACK** in the poll loop's
+> `handleOffer` and **pruned** when that handoff settles (`trackHandoff`). `composeDispatchRuntime`
+> builds `createStartupReconciler` over it inside `start()`, and the reconcile **completes before the
+> poll loop starts**. The probe therefore runs over real prior state, not `[]`: a component test
+> composes the real runtime twice over the same files, and the restarted lifetime probes exactly the
+> lease the first lifetime ACKed. Removing the write-on-ACK turns that case red (the positive
+> control). `E4-3-survives-restart` is `wired` in the same commit, and this entry's manifest key is
+> deleted in the same commit.
+>
+> The wiring is conditional, as the entry said, but the condition moved. The **lease and outbox
+> passes** run on every target. Only the **sandbox pass** needs an Organization-scoped ownership
+> selector and a process-level provider, so it is skipped by name on a platform-scoped target and on
+> the container path. The container-path skip is founder ruling **F4**, recorded in the result as a
+> **named narrowing** owned by WRK-013, not as a residual. A live lease found at restart is **fenced**
+> (ruling **F5**): the probe's renewal is its last.
 
 **★ REPOINTED to WRK-013 at slice-2b completion** (2026-08-26): slice 2b DEFERRED
 `createStartupReconciler` for the one real blocker below and shipped, so leaving E4-F009 `owned` by

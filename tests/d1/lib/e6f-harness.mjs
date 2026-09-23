@@ -2185,3 +2185,474 @@ try {
 `;
   return dexecModule("control-plane", script);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DEP-016 — the m1-spine campaign profile's helpers (ADDITIVE ONLY — nothing above changes).
+//
+// The profile runs three FIXED Organizations (the per-Organization rollout policy is static env
+// on the replicas, so it must name them before the stack boots): two enabled, one control. The
+// Organization, Company and Agent rows are therefore inserted IF ABSENT, so the profile's
+// usage-suppressed positive-control run can follow its green run on the same stack. Everything
+// below them — issue, target, enrolment code, job, attempt, worker — is fresh per run, and every
+// assertion is scoped to this run's job, never to an Organization total.
+//
+// The job source is `task_run` (the M1 journey's source kind), so the server prices it off the
+// assignee agent's `adapter_config.model` (`resolveAuthoritativeRate`), and a tenant's cost row
+// rolls up to that tenant's agent and Company.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The server dist inside the control-plane image (`pnpm deploy` of @armyofagents/server). */
+const CP_DIST = "/cp-app/dist";
+
+/** Insert-if-absent the fixed Organization, Company and task-run Agent of one spine tenant.
+ * Runs in `control-plane` under the owner DSN (like every E6F seed). */
+export function seedSpineOrganization({ tenant, model, adapterType }) {
+  const params = { ...tenant, model, adapterType };
+  const script = `
+import postgres from "postgres";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  await sql\`INSERT INTO organizations (id, name, slug)
+    VALUES (\${P.organizationId}, \${"M1 spine Org " + P.key}, \${"m1s-org-" + P.key.toLowerCase()})
+    ON CONFLICT (id) DO NOTHING\`;
+  await sql\`INSERT INTO companies (id, organization_id, name, issue_prefix)
+    VALUES (\${P.companyId}, \${P.organizationId}, \${"M1 spine Company " + P.key}, \${P.issuePrefix})
+    ON CONFLICT (id) DO NOTHING\`;
+  await sql\`INSERT INTO agents (id, company_id, name, adapter_type, adapter_config)
+    VALUES (\${P.agentId}, \${P.companyId}, \${"m1-spine-agent-" + P.key.toLowerCase()}, \${P.adapterType},
+      \${sql.json({ model: P.model })})
+    ON CONFLICT (id) DO NOTHING\`;
+  const [org] = await sql\`SELECT id FROM organizations WHERE id = \${P.organizationId}\`;
+  const [company] = await sql\`SELECT organization_id AS "organizationId" FROM companies WHERE id = \${P.companyId}\`;
+  const [agent] = await sql\`SELECT company_id AS "companyId", adapter_type AS "adapterType", adapter_config->>'model' AS model FROM agents WHERE id = \${P.agentId}\`;
+  report({ ok: Boolean(org) && company?.organizationId === P.organizationId && agent?.companyId === P.companyId,
+    agentModel: agent?.model ?? null, agentAdapterType: agent?.adapterType ?? null });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script);
+}
+
+/** One spine tenant's per-run organization-scoped target + single-use enrolment code, with the
+ * same provider profile and registered-profile digests as seedTenancyOrg. Returns
+ * { ok, registeredProfileHash, providerDigest }. */
+export function seedSpineTarget({ tenant, slug, targetId, code, targetSlug, policyHash = POLICY_HASH, capabilityCeiling = WORKER_CAPABILITIES }) {
+  const params = {
+    organizationId: tenant.organizationId,
+    slug,
+    targetId,
+    // The slug the PRODUCTION canary credential binding routes to
+    // (`CANARY_EXECUTION_TARGET_SLUG`, server/src/services/canary-credential-binding.ts). Naming the
+    // tenant's target with it is what lets the REAL placement service select this target, so the
+    // profile's enabled-path control is a working placement and not merely a non-legacy one
+    // (Codex P1, PR #566). `execution_targets` is unique on (organization_id, slug), so every
+    // tenant may carry the same slug.
+    targetSlug: targetSlug ?? ("m1s-target-" + slug),
+    locatorHash: code.locatorHash,
+    secretHash: code.secretHash,
+    policyHash,
+    capabilityCeiling,
+  };
+  const script = `
+import postgres from "postgres";
+import { createHash } from "node:crypto";
+import { canonicalizeJsonV1, canonicalProviderConstraintProfileDigestInputV1 } from "@armyofagents/worker-protocol";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+const sha256 = (v) => createHash("sha256").update(v).digest("hex");
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  const providerUnsigned = {
+    profileId: "e6f-org-dedicated",
+    version: 1,
+    maxContinuousRuntimeSeconds: 3600,
+    maxIdleSeconds: 300,
+    resourceCeiling: { cpuMillis: 2000, memoryMiB: 4096, pids: 512, diskMiB: 8192 },
+    maxConcurrentOperations: 8,
+    supportedOperations: ["create", "execute", "cancel", "kill", "destroy", "list", "inspect", "reconcile_cleanup"],
+    localityTags: ["transfer_allowed"],
+    checkpointMode: "none",
+    healthMode: "none",
+  };
+  const providerDigest = sha256(Buffer.from(canonicalProviderConstraintProfileDigestInputV1(providerUnsigned)));
+  const provider = { ...providerUnsigned, digest: providerDigest };
+  const authorityKey = "organization:" + P.organizationId;
+  const registeredProfile = {
+    protocolVersion: 1,
+    targetId: P.targetId,
+    targetClass: "organization_dedicated",
+    scope: "organization",
+    organizationId: P.organizationId,
+    ownerPrincipalId: null,
+    trustCeiling: "organization_isolated",
+    credentialCeiling: "organization_brokered",
+    dataLocalityCeiling: "organization_target_only",
+    providerConstraints: { profileId: provider.profileId, version: provider.version, digest: provider.digest },
+    capabilityCeiling: P.capabilityCeiling,
+    deviceGeneration: 1,
+    revokedAt: null,
+    policyHash: P.policyHash,
+  };
+  const registeredProfileHash = sha256(canonicalizeJsonV1(registeredProfile));
+  const targetCapabilities = { providerConstraints: { profileId: provider.profileId, version: provider.version, digest: provider.digest } };
+  // The canary slug is a SINGLE per-Organization slot (execution_targets is unique on
+  // (organization_id, slug)) and these Organizations are FIXED, so a previous run of this profile
+  // already holds it. Retire the previous holder by renaming it rather than deleting it: the row is
+  // referenced by that run's workers and leases, and its history is part of the evidence.
+  await sql\`UPDATE execution_targets
+    SET slug = slug || '-superseded-' || left(id::text, 8), status = 'disabled', updated_at = now()
+    WHERE organization_id = \${P.organizationId} AND slug = \${P.targetSlug}\`;
+  await sql\`INSERT INTO execution_targets
+    (id, organization_id, scope, target_authority_key, device_generation, slug, kind, trust_class,
+     status, capabilities, registered_profile, registered_profile_hash, provider_constraint_profile, last_seen_at)
+    VALUES (\${P.targetId}, \${P.organizationId}, 'organization', \${authorityKey}, 1, \${P.targetSlug},
+      'dedicated_worker', 'dedicated_tenant', 'active', \${sql.json(targetCapabilities)}, \${sql.json(registeredProfile)},
+      \${registeredProfileHash}, \${sql.json(provider)}, now())\`;
+  await sql\`INSERT INTO worker_enrollment_code_routes (locator_hash, candidate_organization_id, expires_at)
+    VALUES (\${P.locatorHash}, \${P.organizationId}, now() + interval '30 minutes')\`;
+  await sql\`INSERT INTO worker_enrollment_codes
+    (organization_id, scope, execution_target_id, target_authority_key, locator_hash, secret_hash,
+     expires_at, created_by_principal_kind, created_by_principal_id)
+    VALUES (\${P.organizationId}, 'organization', \${P.targetId}, \${authorityKey}, \${P.locatorHash}, \${P.secretHash},
+      now() + interval '30 minutes', 'user', 'm1-spine-seed')\`;
+  report({ ok: true, registeredProfileHash, providerDigest });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script);
+}
+
+/** One spine `task_run` job (fresh issue + job + attempt 1) for a tenant. Its executor principal is
+ * the assignee agent: the frozen task_run source binds `executionPrincipal` to `assigneeAgentId`,
+ * and the offer's envelope parse refuses anything else. With `placement`
+ * ({ targetId, registeredProfileHash, providerDigest }) the attempt is placed lease-eligible to
+ * that target by direct SQL, exactly as every E6F seed does; with `placement: null` the attempt is
+ * left UNPLACED, for the real placement service to decide (`placeSpineAttemptOnReplica`). */
+export function seedSpineJob({ tenant, issueId, runId, jobId, attemptId, placement, policyHash = POLICY_HASH }) {
+  const params = { ...tenant, issueId, runId, jobId, attemptId, placement, policyHash };
+  const script = `
+import postgres from "postgres";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  await sql\`INSERT INTO issues (id, company_id, title, assignee_agent_id)
+    VALUES (\${P.issueId}, \${P.companyId}, \${"m1-spine task " + P.jobId.slice(0, 8)}, \${P.agentId})\`;
+  const sourceIntent = { kind: "task_run", runId: P.runId, issueId: P.issueId, assigneeAgentId: P.agentId };
+  const workload = { command: "true", args: [], stdinArtifactId: null, maxRuntimeSeconds: 600 };
+  const requirements = { workloadType: "batch", requiredCapabilities: [] };
+  const placementRequest = { policyId: "job-submission-default", policyVersion: 1, requestedTarget: null };
+  await sql\`INSERT INTO jobs
+    (id, organization_id, company_id, workload_type, source_kind, source_intent, input, input_hash,
+     policy_hash, requirements, placement_request, status, available_at,
+     executor_principal_kind, executor_principal_id)
+    VALUES (\${P.jobId}, \${P.organizationId}, \${P.companyId}, 'batch', 'task_run', \${sql.json(sourceIntent)},
+      \${sql.json(workload)}, \${"b".repeat(64)}, \${P.policyHash}, \${sql.json(requirements)},
+      \${sql.json(placementRequest)}, 'queued', now(), 'agent', \${P.agentId})\`;
+  if (P.placement) {
+    await sql\`INSERT INTO job_attempts
+      (id, organization_id, company_id, job_id, attempt_number, status,
+       placement_disposition, placement_owner, placement_target_id, placement_target_class,
+       placement_target_scope, placement_target_generation, placement_profile_hash,
+       placement_provider_constraint_hash, placement_fallback_disposition, placement_reason_code,
+       placement_mode, placement_lease_eligible, placement_input_digest, placement_policy_digest,
+       placement_decided_at)
+      VALUES (\${P.attemptId}, \${P.organizationId}, \${P.companyId}, \${P.jobId}, 1, 'pending',
+        'selected', 'organization_dedicated', \${P.placement.targetId}, 'organization_dedicated',
+        'organization', 1, \${P.placement.registeredProfileHash}, \${P.placement.providerDigest}, 'primary', 'target_selected',
+        'active', true, \${"c".repeat(64)}, \${"d".repeat(64)}, now())\`;
+  } else {
+    await sql\`INSERT INTO job_attempts (id, organization_id, company_id, job_id, attempt_number, status)
+      VALUES (\${P.attemptId}, \${P.organizationId}, \${P.companyId}, \${P.jobId}, 1, 'pending')\`;
+  }
+  report({ ok: true });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script);
+}
+
+/** Read one replica's OWN rollout configuration through the server's OWN code: the deployed
+ * rollout source, deployment flag and crew-flag reader from the control-plane dist, evaluated
+ * against that container's environment (the environment the replica's server process was started
+ * with). Runs in `replica`. Returns { ok, deploymentMode, deploymentEnabled, rolloutRaw,
+ * rolloutSha256, resolved: {orgId: off|shadow|active|canary}, crewRaw, crewEnabled|null }. */
+export function probeReplicaRollout({ replica, organizationIds, workloadType }) {
+  const params = { organizationIds, workloadType, dist: CP_DIST };
+  const script = `
+import { createHash } from "node:crypto";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+try {
+  const { createDistributedExecutionRolloutSource, DISTRIBUTED_EXECUTION_ROLLOUT_ENV } =
+    await import(P.dist + "/config/distributed-execution-rollout-source.js");
+  const { readDistributedExecutionDeploymentFlag, readDistributedCrewRolloutFlag, readDistributedToolSurfaceFlag,
+    DISTRIBUTED_CREW_ROLLOUT_ENABLED_ENV, DISTRIBUTED_TOOL_SURFACE_ENABLED_ENV } =
+    await import(P.dist + "/config/distributed-execution.js");
+  const rolloutRaw = process.env[DISTRIBUTED_EXECUTION_ROLLOUT_ENV] ?? null;
+  const source = createDistributedExecutionRolloutSource(process.env);
+  const deploymentMode = process.env.AOA_DEPLOYMENT_MODE;
+  const resolved = {};
+  for (const organizationId of P.organizationIds) {
+    resolved[organizationId] = source.resolveRunRolloutState({ deploymentMode, organizationId, workloadType: P.workloadType });
+  }
+  const crewRaw = process.env[DISTRIBUTED_CREW_ROLLOUT_ENABLED_ENV] ?? null;
+  let crewEnabled = null;
+  try { crewEnabled = readDistributedCrewRolloutFlag(process.env); } catch { crewEnabled = null; }
+  // The M1a freeze also asserts the distributed TOOL SURFACE is off: the deployment flag (whose
+  // reader THROWS on the legacy truthy spellings, so an unparseable value is reported as null) and
+  // the per-Organization tools opt-in, which is the other half of the gate (E7-D10 / CLI-016).
+  // (No backticks in this comment: it lives inside the template literal that carries the script.)
+  const toolSurfaceRaw = process.env[DISTRIBUTED_TOOL_SURFACE_ENABLED_ENV] ?? null;
+  let toolSurfaceArmed = null;
+  try { toolSurfaceArmed = readDistributedToolSurfaceFlag(process.env); } catch { toolSurfaceArmed = null; }
+  const organizationToolSurface = {};
+  for (const organizationId of P.organizationIds) {
+    organizationToolSurface[organizationId] = source.resolveOrganizationToolSurface({ organizationId });
+  }
+  report({
+    ok: true,
+    deploymentMode,
+    deploymentEnabled: readDistributedExecutionDeploymentFlag(process.env),
+    rolloutRaw,
+    rolloutSha256: rolloutRaw === null ? null : createHash("sha256").update(rolloutRaw).digest("hex"),
+    resolved,
+    crewRaw,
+    crewEnabled,
+    toolSurfaceRaw,
+    toolSurfaceArmed,
+    organizationToolSurface,
+  });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+}
+`;
+  return dexecModule(replica, script);
+}
+
+/** Decide ONE unplaced attempt with the REAL placement service, composed on `replica` exactly as
+ * `server/src/index.ts` composes it: the replica's rollout source (resolveOrganizationPolicy +
+ * resolveWorkloadPolicy), its deployment flag and mode, the production canary credential binding
+ * (`resolveCanaryCredentialBinding`), and the non-owner app + operator pools. The decision is
+ * persisted by the service itself. Returns { ok, decision } or { ok:false, error }. */
+export function placeSpineAttemptOnReplica({ replica, tenant, jobId, attemptId }) {
+  const params = { organizationId: tenant.organizationId, companyId: tenant.companyId, jobId, attemptId, dist: CP_DIST };
+  const script = `
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+// The server logger is imported transitively by the placement transaction; keep it off stdout
+// so the result marker line is never interleaved with a pretty-printed log line.
+process.env.AOA_LOG_STDOUT = "0";
+try {
+  const { createDb } = await import("@armyofagents/db");
+  const { createDistributedExecutionRolloutSource } = await import(P.dist + "/config/distributed-execution-rollout-source.js");
+  const { readDistributedExecutionDeploymentFlag } = await import(P.dist + "/config/distributed-execution.js");
+  const { createJobPlacementService } = await import(P.dist + "/services/job-placement.js");
+  const { resolveCanaryCredentialBinding } = await import(P.dist + "/services/canary-credential-binding.js");
+  const rollout = createDistributedExecutionRolloutSource(process.env);
+  const service = createJobPlacementService({
+    appDb: createDb(process.env.AOA_APP_DATABASE_URL),
+    operatorDb: createDb(process.env.AOA_OPERATOR_DATABASE_URL),
+    deploymentMode: process.env.AOA_DEPLOYMENT_MODE,
+    deploymentEnabled: readDistributedExecutionDeploymentFlag(process.env),
+    resolveOrganizationPolicy: rollout.resolveOrganizationPolicy,
+    resolveWorkloadPolicy: rollout.resolveWorkloadPolicy,
+    resolveCredentialBinding: resolveCanaryCredentialBinding,
+  });
+  const decision = await service.place({
+    organizationId: P.organizationId,
+    companyId: P.companyId,
+    jobId: P.jobId,
+    attemptId: P.attemptId,
+    now: new Date(),
+    maxHeartbeatAgeMs: 120000,
+  });
+  report({ ok: true, decision });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error), code: error?.code ?? null });
+}
+process.exit(0);
+`;
+  return dexecModule(replica, script, { timeout: 120_000 });
+}
+
+/** Owner-DB probe of everything the spine asserts for ONE attempt. Cost rows are matched on
+ * their idempotency key's EVENT half (`cost:<company>:<eventId>`) across ALL Companies, so a row
+ * written under the wrong Company is SEEN and judged, not silently missed. Runs in control-plane.
+ * Returns { ok, attemptStatus, events, usageEvents, costRows, receipts, activity }. */
+export function querySpineAttempt({ organizationId, jobId }) {
+  const params = { organizationId, jobId };
+  const script = `
+import postgres from "postgres";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  const attempts = await sql\`SELECT id, status FROM job_attempts
+    WHERE organization_id = \${P.organizationId} AND job_id = \${P.jobId} ORDER BY attempt_number\`;
+  const events = await sql\`SELECT event_id AS "eventId", event_type AS "eventType", sequence,
+      organization_id AS "organizationId", company_id AS "companyId"
+    FROM job_events WHERE job_id = \${P.jobId} ORDER BY sequence\`;
+  // The ACCEPTED usage events of this attempt, with the units as STORED (event->'payload'), so the
+  // cardinality claim is counted from the durable ledger rather than from what the test sent.
+  // DEP-016 acceptance 6 / criterion 5: the messages of this attempt's log events, which is where
+  // the DEP-017 env probe would emit its summary if it ran on this lane. Read so the profile can
+  // assert it did NOT, rather than leaving the absence unexamined. (No backticks in this comment:
+  // it lives inside the template literal that carries the script.)
+  const logMessages = await sql\`SELECT event->'payload'->>'message' AS message
+    FROM job_events WHERE job_id = \${P.jobId} AND event_type = 'log' ORDER BY sequence\`;
+  const usageEvents = await sql\`SELECT event_id AS "eventId", sequence,
+      organization_id AS "organizationId", company_id AS "companyId", event->'payload' AS payload
+    FROM job_events WHERE job_id = \${P.jobId} AND event_type = 'usage' ORDER BY sequence\`;
+  const costRows = await sql\`SELECT c.id, c.company_id AS "companyId", c.agent_id AS "agentId",
+      c.provider, c.model, c.input_tokens AS "inputTokens", c.output_tokens AS "outputTokens",
+      c.cached_input_tokens AS "cachedInputTokens", c.cost_cents AS "costCents",
+      c.source_idempotency_key AS "sourceIdempotencyKey", c.rate_id AS "rateId", c.rate_version AS "rateVersion"
+    FROM cost_events c
+    WHERE EXISTS (SELECT 1 FROM job_events e WHERE e.job_id = \${P.jobId}
+      AND c.source_idempotency_key LIKE 'cost:%:' || e.event_id::text)
+    ORDER BY c.id\`;
+  const receipts = await sql\`SELECT projection_kind AS "projectionKind", status,
+      organization_id AS "organizationId", company_id AS "companyId", source_identity AS "sourceIdentity",
+      aggregate_kind AS "aggregateKind", target_aggregate_id AS "targetAggregateId"
+    FROM job_projection_receipts WHERE job_id = \${P.jobId} ORDER BY projection_kind, source_identity\`;
+  const activity = await sql\`SELECT id, action, company_id AS "companyId", organization_id AS "organizationId",
+      details->>'organizationId' AS "detailsOrganizationId",
+      actor_type AS "actorType", actor_id AS "actorId", entity_type AS "entityType", entity_id AS "entityId"
+    FROM activity_log WHERE entity_type = 'job' AND entity_id = \${P.jobId}
+      AND action IN ('job.attempt_started', 'job.attempt_terminal')
+    ORDER BY action\`;
+  report({ ok: true, attemptStatus: attempts[0]?.status ?? null, attempts: attempts.length, events, usageEvents, costRows, receipts, activity,
+    logMessages: logMessages.map((r) => r.message).filter((m) => m !== null) });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script);
+}
+
+/** Owner-DB counts of everything a REFUSED control tenant must not have: job events, cost rows,
+ * projection receipts and leases, plus the persisted placement of each of its attempts. */
+export function querySpineControl({ organizationId, companyId, jobIds }) {
+  const params = { organizationId, companyId, jobIds };
+  const script = `
+import postgres from "postgres";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  const [{ jobEvents }] = await sql\`SELECT count(*)::int AS "jobEvents" FROM job_events WHERE organization_id = \${P.organizationId}\`;
+  const [{ costRows }] = await sql\`SELECT count(*)::int AS "costRows" FROM cost_events WHERE company_id = \${P.companyId}\`;
+  const [{ receipts }] = await sql\`SELECT count(*)::int AS receipts FROM job_projection_receipts WHERE organization_id = \${P.organizationId}\`;
+  const [{ leases }] = await sql\`SELECT count(*)::int AS leases FROM leases WHERE organization_id = \${P.organizationId}\`;
+  const attempts = await sql\`SELECT job_id AS "jobId", status, placement_disposition AS disposition,
+      placement_lease_eligible AS "leaseEligible", placement_reason_code AS "reasonCode", placement_mode AS mode
+    FROM job_attempts WHERE organization_id = \${P.organizationId} AND job_id = ANY(\${P.jobIds}::uuid[])\`;
+  report({ ok: true, jobEvents, costRows, receipts, leases, attempts });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script);
+}
+
+/** MIG-009 — run the OPERATOR drain CLI inside the control-plane container, with that container's
+ * own env (owner DSN + the bounded app/operator pools + the distributed flag), exactly as an
+ * operator would during a rollback rehearsal. Returns { status, stdout, stderr, lines } where
+ * `lines` are the parsed JSON report lines the CLI prints. */
+export function runDistributedDrainCli({ operator, timeout = 180_000 }) {
+  const res = spawnSync(
+    "docker",
+    ["compose", "-f", COMPOSE_FILE, "exec", "-T", "control-plane",
+      "node", `${CP_DIST}/cli/drain-distributed-execution.js`, "--operator", operator],
+    { encoding: "utf8", timeout, maxBuffer: 16 * 1024 * 1024 },
+  );
+  const stdout = res.stdout ?? "";
+  const lines = [];
+  for (const line of stdout.split(/\r?\n/)) {
+    const text = line.trim();
+    if (!text.startsWith("{")) continue;
+    try { lines.push(JSON.parse(text)); } catch { /* not a report line */ }
+  }
+  return { status: res.status, error: res.error, stdout, stderr: res.stderr ?? "", lines };
+}
+
+/** The drain's audit trail for a set of jobs: the `job.drain.requested` activity rows MIG-009
+ * writes in the same transaction as each cancel, plus each attempt's current status. Runs in
+ * control-plane under the owner DSN. */
+export function queryDrainAudit({ jobIds }) {
+  const params = { jobIds };
+  const script = `
+import postgres from "postgres";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  const audit = await sql\`SELECT action, entity_id AS "entityId", company_id AS "companyId",
+      organization_id AS "organizationId", details->>'organizationId' AS "detailsOrganizationId",
+      details->>'reason' AS "detailsReason", actor_type AS "actorType", actor_id AS "actorId"
+    FROM activity_log WHERE action = 'job.drain.requested' AND entity_id = ANY(\${P.jobIds})\`;
+  // Per ATTEMPT, never collapsed by job: a job may carry two simultaneously non-terminal attempts,
+  // and a cancelled one must not mask a sibling the drain left running.
+  const attempts = await sql\`SELECT id AS "attemptId", job_id AS "jobId", attempt_number AS "attemptNumber", status
+    FROM job_attempts WHERE job_id = ANY(\${P.jobIds}::uuid[]) ORDER BY job_id, attempt_number\`;
+  const commands = await sql\`SELECT job_id AS "jobId", attempt_id AS "attemptId", lease_id AS "leaseId",
+      command_kind AS "commandKind", reason FROM job_control_commands
+    WHERE job_id = ANY(\${P.jobIds}::uuid[])\`;
+  report({ ok: true, audit, attempts, commands });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script);
+}
+
+/** MIG-009 — every NON-TERMINAL attempt of the named Organizations, with the facts the rehearsal
+ * has to judge afterwards: its tenant, whether it is LEASED (a leased attempt's cancel goes through
+ * a command; an unleased one does not), and its placement disposition. Taken BEFORE the drain, so
+ * the rehearsal judges everything the drain will touch and not only what the test seeded. */
+export function queryDrainCandidates({ organizationIds }) {
+  const params = { organizationIds };
+  const script = `
+import postgres from "postgres";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  const rows = await sql\`SELECT a.job_id AS "jobId", a.id AS "attemptId", a.organization_id AS "organizationId",
+      a.company_id AS "companyId", a.status, a.placement_disposition AS "disposition",
+      (SELECT count(*)::int FROM leases l WHERE l.organization_id = a.organization_id AND l.job_id = a.job_id
+         AND l.attempt_id = a.id AND l.status NOT IN ('released', 'expired', 'revoked')) AS "activeLeases",
+      (SELECT l.id FROM leases l WHERE l.organization_id = a.organization_id AND l.job_id = a.job_id
+         AND l.attempt_id = a.id AND l.status NOT IN ('released', 'expired', 'revoked')
+         ORDER BY l.created_at DESC LIMIT 1) AS "activeLeaseId"
+    FROM job_attempts a
+    WHERE a.organization_id = ANY(\${P.organizationIds}::uuid[])
+      AND a.status NOT IN ('succeeded', 'failed', 'cancelled', 'expired')
+    ORDER BY a.created_at, a.id\`;
+  report({ ok: true, candidates: rows });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script);
+}

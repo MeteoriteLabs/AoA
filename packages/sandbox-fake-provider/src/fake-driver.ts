@@ -72,7 +72,19 @@ export interface ProviderCleanupResult {
 }
 export type ProviderOpResult =
   | { readonly kind: "created"; readonly resource: ProviderResourceRef; readonly deduplicated: boolean }
-  | { readonly kind: "executed"; readonly terminalState: string; readonly faultInjected: boolean; readonly timedOut: boolean }
+  | {
+      readonly kind: "executed";
+      readonly terminalState: string;
+      readonly faultInjected: boolean;
+      readonly timedOut: boolean;
+      /**
+       * DEP-016 — the units this execution consumed, or `null` when the provider reports none.
+       * The fake reports {@link FAKE_PROVIDER_CANNED_USAGE_V1} unless the provider id was scripted
+       * with `usageMode: "suppressed"`. Optional so the structural mirror in
+       * `@armyofagents/sandbox-provider-contract` (which has no usage) still accepts this result.
+       */
+      readonly usage?: FakeProviderUsageV1 | null;
+    }
   | { readonly kind: "acknowledged"; readonly op: "cancel" | "kill" | "destroy"; readonly faultInjected: boolean }
   | { readonly kind: "list"; readonly list: ProviderListResult }
   | { readonly kind: "inspect"; readonly projection: ProviderResourceProjection | null }
@@ -109,6 +121,42 @@ export interface FakeSandboxDriver extends SandboxProviderDriver {
     args: ProviderOpArgs,
     opts?: { faultInjected?: boolean },
   ): Promise<ProviderOpResult>;
+}
+
+// --- DEP-016: canned usage ---------------------------------------------------
+
+/**
+ * The bounded usage units one fake execution reports: the SAME four fields, with the same
+ * non-negative-integer bounds, as the frozen wire `usagePayloadV1Schema`
+ * (`@armyofagents/worker-protocol`), so a harness can forward them as a `usage` event unchanged.
+ */
+export interface FakeProviderUsageV1 {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cachedInputTokens: number;
+  readonly runtimeMillis: number;
+}
+
+/**
+ * DEP-016 — the reference provider's CANNED usage. FIXED, so every run of every fixture reports
+ * byte-identical units (determinism is the whole point of this provider). The token counts are
+ * large enough that a server-side price at any rate in the versioned schedule is at least one
+ * cent, so a "cost > 0" assertion downstream cannot pass or fail on rounding.
+ */
+export const FAKE_PROVIDER_CANNED_USAGE_V1: FakeProviderUsageV1 = Object.freeze({
+  inputTokens: 120_000,
+  outputTokens: 30_000,
+  cachedInputTokens: 0,
+  runtimeMillis: 4_200,
+});
+
+/** `canned` (the default) reports {@link FAKE_PROVIDER_CANNED_USAGE_V1}; `suppressed` reports
+ * `usage: null` — the m1-spine profile's positive control. */
+export const FAKE_PROVIDER_USAGE_MODES = Object.freeze(["canned", "suppressed"] as const);
+export type FakeProviderUsageMode = (typeof FAKE_PROVIDER_USAGE_MODES)[number];
+
+function isUsageMode(value: unknown): value is FakeProviderUsageMode {
+  return typeof value === "string" && (FAKE_PROVIDER_USAGE_MODES as readonly string[]).includes(value);
 }
 
 // --- Internal provider state -------------------------------------------------
@@ -153,6 +201,7 @@ export interface ScriptInput {
   readonly fixture: ValidatedFixture;
   readonly failureInjection?: FailureInjection | null;
   readonly includeAllCheckpoints?: boolean;
+  readonly usageMode?: FakeProviderUsageMode;
 }
 
 export interface ReplayResult {
@@ -171,6 +220,8 @@ export class FakeSandboxProvider {
   private readonly ledger: InvocationLedger;
   private readonly providers = new Map<string, ProviderState>();
   private readonly scripts = new Map<string, ScriptState>();
+  /** DEP-016 — per provider id; absent means `canned`. Cleared by `reset()`. */
+  private readonly usageModes = new Map<string, FakeProviderUsageMode>();
 
   constructor(options: FakeSandboxProviderOptions = {}) {
     this.ledger = new InvocationLedger(options);
@@ -251,7 +302,10 @@ export class FakeSandboxProvider {
       case "execute": {
         const timedOut = args.deadlineMs === 0;
         this.touch(state, args.resourceId, "executed", checkpoint);
-        return { kind: "executed", terminalState: timedOut ? "expired" : "succeeded", faultInjected: opts.faultInjected, timedOut };
+        const usage = (this.usageModes.get(providerId) ?? "canned") === "suppressed"
+          ? null
+          : { ...FAKE_PROVIDER_CANNED_USAGE_V1 };
+        return { kind: "executed", terminalState: timedOut ? "expired" : "succeeded", faultInjected: opts.faultInjected, timedOut, usage };
       }
       case "cancel":
       case "kill":
@@ -342,7 +396,12 @@ export class FakeSandboxProvider {
     loadFixture?: (fixtureId: string) => Promise<unknown>;
     failureInjection?: FailureInjection | null;
     includeAllCheckpoints?: boolean;
+    /** DEP-016 — `canned` (default) or `suppressed`. Any other value is refused. */
+    usageMode?: FakeProviderUsageMode;
   }): Promise<ValidatedFixture> {
+    if (input.usageMode !== undefined && !isUsageMode(input.usageMode)) {
+      throw new Error(`usageMode must be one of ${FAKE_PROVIDER_USAGE_MODES.join(", ")}, got ${String(input.usageMode)}`);
+    }
     let raw: unknown;
     if (input.fixture !== undefined) {
       raw = input.fixture;
@@ -366,6 +425,7 @@ export class FakeSandboxProvider {
 
     const plan = derivePlan(fixture, input.includeAllCheckpoints ?? false);
     this.scripts.set(input.providerId, { fixture, plan, failureInjection: injection });
+    this.usageModes.set(input.providerId, input.usageMode ?? "canned");
     return fixture;
   }
 
@@ -436,6 +496,7 @@ export class FakeSandboxProvider {
     this.ledger.reset();
     this.providers.clear();
     this.scripts.clear();
+    this.usageModes.clear();
   }
 }
 

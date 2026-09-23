@@ -409,3 +409,138 @@ export function extractRolloutResolution(logText, runId) {
   }
   return null;
 }
+
+// --- DEP-017 — the live env-absence probe's evidence ----------------------------------------
+//
+// The probe runs INSIDE each distributed sandbox as a worker supervisor step
+// (`packages/worker-daemon/src/supervisor/env-probe.ts`, armed by `AOA_WORKER_ENV_PROBE=1` on the
+// shipped-boot workers) and emits its summary as ONE `system` log event on the attempt, through the
+// run's canary scrub. The journey reads that event back from `job_events` and judges it here.
+// These two constants MIRROR the daemon's (a script cannot import the worker package); the unit
+// test pins the mirror against the daemon's source text.
+
+/** The log-event message prefix the worker emits (`ENV_PROBE_LOG_PREFIX`). */
+export const ENV_PROBE_LOG_PREFIX = "dep017.env_probe ";
+/** The public marker every planted canary carries (`ENV_PROBE_CANARY_MARKER`). */
+export const ENV_PROBE_CANARY_MARKER = "aoa-dep017-canary.";
+
+/**
+ * EVERY class the probe must report as checked — the whole §9-derived taxonomy, the two
+ * name/value heuristics, and the two worker-derived classes. Mirrors the daemon's
+ * `envProbeCheckedClasses()` plus `ENV_PROBE_UNREDEEMED`; the unit test pins the mirror against the
+ * daemon's source, so a class added or dropped there without updating this list reds.
+ *
+ * ★ Why the FULL set and not "non-empty" (Codex P2, PR #565): a drifted or partially replaced probe
+ * could report a short list, still detect the classes the planted control exercises, and pass — a
+ * gate that observed a fraction of what it claims to observe.
+ */
+export const ENV_PROBE_EXPECTED_CLASSES = Object.freeze([
+  "datastore_credential",
+  "secrets_master_key",
+  "auth_signing_secret",
+  "source_control_token",
+  "subscription_login",
+  "provider_control_key",
+  "object_store_credential",
+  "worker_enrollment",
+  "oauth_client_secret",
+  "connector_token",
+  "embeddings_key",
+  "legacy_agent_key",
+  "host_control_plane_env",
+  "model_provider_key_not_allowed",
+  "unclassified_credential_shaped",
+  "cross_tenant_credential",
+  "provider_credential_value_mismatch",
+  "unredeemed_provider_credential",
+]);
+
+/**
+ * A planted per-tenant credential canary: `<marker><organizationId>.<class>.<random>`. The journey
+ * saves one as each tenant's own model-provider key (a REAL secret in that tenant's store), so
+ * every OTHER tenant's sandbox must not see it — the probe's `cross_tenant_credential` class
+ * fires on a marked value whose Organization is not the run's own.
+ */
+export function plantedTenantCanary(organizationId, providerClass, randomTail) {
+  if (!/^[0-9a-f-]{36}$/i.test(String(organizationId))) throw new Error("plantedTenantCanary: organizationId must be a uuid");
+  if (!/^[a-z_]+$/.test(String(providerClass))) throw new Error("plantedTenantCanary: class must be a token");
+  if (!/^[A-Za-z0-9_-]{16,}$/.test(String(randomTail))) throw new Error("plantedTenantCanary: the random tail must be >= 16 url-safe characters");
+  return `${ENV_PROBE_CANARY_MARKER}${organizationId}.${providerClass}.${randomTail}`;
+}
+
+/** The LAST probe summary among an attempt's log-event messages, or null (no probe ran). */
+export function extractEnvProbeSummary(messages) {
+  let found = null;
+  for (const message of messages ?? []) {
+    const text = String(message ?? "");
+    if (!text.startsWith(ENV_PROBE_LOG_PREFIX)) continue;
+    try {
+      found = JSON.parse(text.slice(ENV_PROBE_LOG_PREFIX.length));
+    } catch {
+      found = { unreadable: true };
+    }
+  }
+  return found;
+}
+
+/**
+ * Judge one enabled tenant's probe evidence. PASS only when ALL hold:
+ *  - a summary exists (a probe that did not run fails — a check that runs nothing is not a check);
+ *  - verdict `absent` with an EMPTY `present` list;
+ *  - the report names the classes it checked, including `cross_tenant_credential` (F10);
+ *  - the in-sandbox planted control turned red (the probe could see).
+ * The metadata observation is RECORDED (the DE-08 residual) and never judged: DE-08 leaves H-06
+ * unmet, and nothing here claims egress enforcement.
+ */
+export function evaluateEnvProbeEvidence(summary) {
+  const reasons = [];
+  if (summary === null || summary === undefined) {
+    return {
+      pass: false,
+      reasons: ["no DEP-017 env-probe summary on this attempt (the probe did not run; AOA_WORKER_ENV_PROBE unset, or an older worker)"],
+      observed: null,
+    };
+  }
+  if (summary.unreadable) return { pass: false, reasons: ["the DEP-017 env-probe summary is unreadable"], observed: null };
+  const clean = summary.clean ?? null;
+  const checked = Array.isArray(clean?.checked) ? clean.checked : [];
+  const present = Array.isArray(clean?.present) ? clean.present : null;
+  if (summary.verdict !== "absent") reasons.push(`env-probe verdict is ${JSON.stringify(summary.verdict)}${summary.reason ? ` (${summary.reason})` : ""}, not "absent"`);
+  if (present === null) reasons.push("env-probe report has no present list");
+  else if (present.length > 0) reasons.push(`credential classes PRESENT in the sandbox: ${present.join(", ")} (names: ${(clean.presentNames ?? []).join(", ")})`);
+  // SET EQUALITY, both directions (Codex P2, second round): a MISSING class is a gate observing
+  // less than it claims, and an UNEXPECTED one is a taxonomy drift the record would not show.
+  const missing = ENV_PROBE_EXPECTED_CLASSES.filter((c) => !checked.includes(c));
+  const unexpected = checked.filter((c) => !ENV_PROBE_EXPECTED_CLASSES.includes(c));
+  if (checked.length === 0) reasons.push("env-probe report names no checked classes");
+  else if (missing.length > 0) reasons.push(`env-probe did not check ${missing.length} expected class(es): ${missing.join(", ")}`);
+  if (unexpected.length > 0) {
+    reasons.push(`env-probe reported ${unexpected.length} unexpected checked class(es): ${unexpected.join(", ")} (the lane mirror and the worker list have drifted)`);
+  }
+  if (summary.plantedControl?.red !== true) reasons.push("the planted-canary control did not turn red (the probe could not see)");
+  const metadata = clean?.metadata ?? null;
+  return {
+    pass: reasons.length === 0,
+    reasons,
+    observed: {
+      verdict: summary.verdict ?? null,
+      checked,
+      present: present ?? [],
+      presentNames: clean?.presentNames ?? [],
+      allowedPresent: clean?.allowedPresent ?? [],
+      allowedMismatch: clean?.allowedMismatch ?? [],
+      redeemedNames: clean?.redeemedNames ?? [],
+      plantedControl: summary.plantedControl ?? null,
+      de08MetadataResidual: metadata
+        ? {
+            attempted: metadata.attempted === true,
+            target: metadata.target ?? null,
+            reachable: typeof metadata.reachable === "boolean" ? metadata.reachable : null,
+            httpStatus: Number.isInteger(metadata.httpStatus) ? metadata.httpStatus : null,
+            errorCode: metadata.errorCode ?? null,
+            note: "OBSERVED, not enforced: DE-08 is an accepted residual that leaves H-06 unmet; this is a record, not a claim.",
+          }
+        : null,
+    },
+  };
+}

@@ -2169,6 +2169,37 @@ promoted by this ticket").
 > usage producer), `DEP-016`'s end-to-end assertion, and `WRK-018`'s keyed E2B acceptance for the
 > real claude usage parser. Severity (HIGH) and Status (open) are unchanged; the `JOB-016`
 > ownership line above is kept as the record of that state.
+>
+> ★ **CONSUMER HALF PROVEN END TO END 2026-09-23 (`DEP-016`, the `m1-spine` campaign profile).** The
+> clause this finding leads with — *"a handed-off distributed attempt writes NO cost event"* — is no
+> longer true of the D1 lane. On a live one-worker `m1-spine` run (`docker-compose.d1.yml` +
+> `docker/d1/m1-spine.override.yml`, `tests/d1/m1-spine.test.mjs`), a handed-off attempt through the
+> REAL fenced `/worker-control/events` ingest wrote **exactly one `cost_events` row, `cost_cents` 81,
+> `model` `claude-sonnet-4-6`, `rate_version` 1**, attributed to its own tenant's Company, plus one
+> applied `authoritative_cost` receipt — per enabled Organization, for two Organizations side by side,
+> with a third control Organization refused distributed execution on every replica. Three RED controls
+> hold the assertion up (usage suppressed at the reference provider; the pre-DEP-016 provider image
+> with no usage code; and a control-plane image built with `JOB-016`'s
+> `createAcceptedUsagePricingProjector` registration removed — in which the `usage` event is still
+> accepted and the audit rows are still written, and there is still NO cost row). Evidence:
+> `docs/replatform/epics/E6-deployment-test-harness/tickets/DEP-016-result.md`.
+>
+> **This finding still does NOT close.** Its fourth closure condition is `WRK-018` acceptance 1 — the
+> one keyed E2B run proving the REAL `claude_local` stream-json usage parser on the deployed worker —
+> and that run is PENDING (F8 envelope; the planning session dispatches it). The spine's units are
+> **canned** by construction, which is what keeps the lane keyless and deterministic and is exactly
+> why it cannot discharge the real-parser clause. Ownership moves to **`unowned`** in
+> `scripts/finding-ownership.json`, because `DEP-016` has now filed a result record and the guard's
+> successor field has no eligible ticket to name (`WRK-018` has filed its own result; `DEP-018` has a
+> program-design node but no ticket file). Severity (HIGH) and Status (open) are unchanged.
+>
+> The same profile is now also where **`WRK-018` acceptance 1's cardinality half** is collected (a
+> Codex P1 on PR #564, accepted by the planning session): per attempt, EXACTLY ONE accepted `usage`
+> event in `job_events`, of that tenant, whose stored units are the ones the provider reported, with
+> the single cost row keyed to it — and a duplicate-usage positive control that must red. That
+> control measured that a duplicate carrying a DISTINCT event id is accepted and priced again (the
+> ingest's replay guard keys on the event id), which is why a stored `usage_json` row cannot
+> establish the claim on its own. `WRK-018`'s keyed run is still outstanding for the REAL parser.
 
 ## E3-F038 — The wiring register's census is not closed, and three symbols the guard's own header names have no clause at all
 
