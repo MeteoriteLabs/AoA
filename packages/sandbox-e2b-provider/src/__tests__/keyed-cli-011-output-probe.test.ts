@@ -54,6 +54,7 @@ import {
   HOME_DIR,
   LISTING_RECORD_LIMIT,
   MODEL_ARMS,
+  MODEL_ARMS_FOR_MODE,
   OUTPUT_ROOT,
   buildProbeRecord,
   censusDelta,
@@ -678,13 +679,19 @@ describeKeyed("CLI-011 P-011 — the output probe, against REAL E2B", () => {
       const verdicts: Verdict[] = [];
       try {
         verdicts.push(...(await p011a().catch((err) => [inconclusive("S-P0", `p011a-threw: ${safe(String((err as Error)?.message ?? err), 300)}`)])));
-        if (ARMS_MODE.mode === "all") {
-          for (const arm of MODEL_ARMS as readonly ModelArm[]) {
-            await claudeArm(arm, verdicts).catch((err) => verdicts.push(inconclusive(arm, `sandbox-threw: ${safe(String((err as Error)?.message ?? err), 300)}`)));
-          }
-        } else {
-          verdicts.push(notRun("C-census", "arms=shell-only") as Verdict, ...MODEL_ARMS.map((a) => notRun(a, "arms=shell-only") as Verdict));
+        // ★ The MODE decides which model arms run, and the skipped ones are recorded `not-run`
+        //   with the mode named — never silently absent. `a-neg-only` (ruling F8's pre-M1b re-run)
+        //   runs A-neg alone, and `claudeArm` emits its C-census control inside that same arm, so
+        //   the one turn still carries its positive control.
+        const asked = MODEL_ARMS_FOR_MODE[ARMS_MODE.mode] as readonly ModelArm[];
+        for (const arm of MODEL_ARMS as readonly ModelArm[]) {
+          if (!asked.includes(arm)) continue;
+          await claudeArm(arm, verdicts).catch((err) => verdicts.push(inconclusive(arm, `sandbox-threw: ${safe(String((err as Error)?.message ?? err), 300)}`)));
         }
+        for (const arm of MODEL_ARMS as readonly ModelArm[]) {
+          if (!asked.includes(arm)) verdicts.push(notRun(arm, `arms=${ARMS_MODE.mode}`) as Verdict);
+        }
+        if (!asked.includes("A-neg" as ModelArm)) verdicts.push(notRun("C-census", `arms=${ARMS_MODE.mode}`) as Verdict);
       } finally {
         await emitDurableRecord(verdicts);
       }

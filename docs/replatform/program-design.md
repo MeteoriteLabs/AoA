@@ -1113,6 +1113,10 @@ evidence.
 - **Test:** Not a build ticket; the evidence is the decision record and the pin census it cites.
 - ★ **The emit-half BUILD has no id yet, deliberately.** It is filed **after** this ruling, because
   what it builds depends on which mechanism is chosen. Filing it earlier would pre-empt the ruling.
+- ★ *Updated 2026-09-23: the ruling is taken (`epics/E7-coding-e2b/decisions.md`, `E7-D11`, ruling F7
+  under founder delegation F2) and the emit build is filed as **`CLI-017`**, whose node is at the end
+  of this E7 section. The sentence above is kept as written, because it records why the id did not
+  exist until now.*
 
 #### CLI-012 — Unit F link 3, the worker-side consumer (M)
 
@@ -1129,8 +1133,22 @@ evidence.
   flips no counter.
 - **Acceptance:** A committed `job_artifacts` row of the counted kind, produced by a real run.
 - **Test:** The keyed export lane extended to the full sequence, with a TOCTOU refusal case.
-- ★ **It enumerates PATHS only and must NOT call `captureSandboxEntries`** (see `CLI-010`); the
-  provider's `digestArtifact` supplies digest and size, `exportArtifact` does the upload.
+- ★ **It enumerates METADATA ONLY — never bytes — and must NOT call `captureSandboxEntries`** (see
+  `CLI-010`); the provider's `digestArtifact` supplies digest and size, `exportArtifact` does the
+  upload. **Per-entry it must carry an absolute path, a LINK MARKER and a byte SIZE** — the size so
+  the `SD-6` bounds are enforced before `digestArtifact` materialises a whole tenant-controlled file
+  in the shared adapter-manager process, which is **`E5-F009`**, and which this ticket closes. The
+  marker is an enumeration-time **snapshot**, so a **no-follow recheck at digest/export** is required
+  too: a file swapped for a symlink after enumeration would otherwise be hashed and exported through
+  its target, and the existing re-hash TOCTOU check would pass.
+  ★ *Corrected 2026-09-23 (ruling F7, `epics/E7-coding-e2b/decisions.md` `E7-D11`; Codex P1, PR #575).
+  **Superseded text:** "It enumerates PATHS only and must NOT call `captureSandboxEntries`".*
+  "Paths only" is the wrong axis: the rule is **no bytes**. `RealE2bTransport.listDir` returns
+  `readonly string[]` — `filesOnlyFromListing` uses `type` only to drop directories and discards
+  `symlinkTarget` — and the `CLI-011` P-011 probe (run `35833717162`, arm `S-P5`) measured the
+  consequence live: the link `l1` arrives as an ordinary file path while `files.read` follows it. A
+  paths-only seam therefore makes the required symlink refusal (`A-O2-4`) **impossible**, and
+  `R/l1 → .aoa-run-prompt.md` or `→ /proc/self/environ` would be digested and exported as "output".
 - ★ **This ticket owns the enumeration PORT — its file list says so.** A fenced **metadata-only enumeration operation** on the worker's `SandboxProvider` port (`packages/worker-daemon/src/supervisor/provider.ts`), implemented by the E2B provider over its private `#transport.listDir` (`packages/sandbox-e2b-provider/src/e2b-provider.ts`) and bound on the networked lane (`packages/provider-wire/src/driver.ts`, which has no enumeration today, **plus** the matching gated owned-op route in `packages/adapter-manager/src/server.ts` — without it the server 404s the op, so a driver-only binding is unreachable; no change to the frozen `PROVIDER_OPERATIONS` vocabulary). The port exposes no enumeration at all at present, so without this the consumer has nothing to call.
 - ★ **The sequencer COMPOSITION surface is NOT this ticket's** — it belongs to E5's `DAT-009-3c`/`3d`, which this ticket waits on (they supply `SupervisorDeps.resolveExportArtifacts` and its composition). ★ *Corrected (Codex, PR #526): an earlier revision of this node said both seams were “scheduled nowhere else”, which assigned the composition surface twice and left the port out of every file list.*
 - ★ **The real-run acceptance also depends on the emit build** (filed after `CLI-011`), because a
@@ -1180,7 +1198,11 @@ evidence.
 
 #### CLI-015 — Unit F link 6, the judge (M)
 
-- **Depends on:** CLI-011, CLI-012.
+- **Depends on:** CLI-011, CLI-012, CLI-017.
+- ★ *Corrected 2026-09-23 (ruling F7, `E7-D11`):* the `CLI-017` edge is added. The Codex correction
+  below says the emit-build prerequisite *"cannot be written in the machine-readable line above until
+  the ticket has an id"*; ruling F7 filed that ticket as `CLI-017`, so the edge is now expressible and
+  the prose fallback is discharged. **Superseded text:** *"**Depends on:** CLI-011, CLI-012."*
 - ★ *Corrected 2026-09-21 (M1 Step 0, S0-4):* the edge read `CLI-011` only, while the E7
   implementation plan's `CLI-015` task depends on "`CLI-011`'s **ruling** and `CLI-012`". The
   `CLI-012` edge is added.
@@ -1227,6 +1249,52 @@ evidence.
 - ★ **Currency is enforced at USE — MCP authorization and redemption — not at mint.**
   `mintRunJwtHandleForPlacement` takes no lease or clock input, so an arming ticket cannot add a
   mint-time check; the observable is denial at use.
+
+#### CLI-017 — Unit F link 2, the EMIT build: tell the agent where to write, and refuse secrets on the way out (M — two slices)
+
+- **Depends on:** CLI-011.
+- **Filed 2026-09-23 by ruling F7 (`epics/E7-coding-e2b/decisions.md`, `E7-D11`), which is the ticket
+  the `CLI-011` node reserves: *"The emit-half BUILD has no id yet, deliberately. It is filed after
+  this ruling, because what it builds depends on which mechanism is chosen."* The mechanism ruled is
+  **option 2, a conventional output root** `R = /home/user/aoa-output`; the placement is **SD-1b**, a
+  `claude_local`-only directive at the distributed caller.
+- **Outcome:** a distributed `claude_local` run is told, in its own task markdown, to write every
+  deliverable under `R`; `R` has **one** source of truth shared by the server-side directive and the
+  worker-side `outputRoot` (SD-4); and `E2bSandboxProvider.exportArtifact` refuses bytes carrying any
+  secret-classified value of the run's own `env`, with a classification (SD-5, ruled REQUIRED before
+  `M1b`'s campaign because the probe measured `noncePresent=true`).
+- **Acceptance:** (1) **PC-12** — a pin at the SD-1b site asserts the **exact** directive reaches the
+  agent, and deleting the directive reds it. This is not optional: the review's pin census recorded
+  SD-1b's "moves no pin" as *"a search result, not a proof"*, so an unpinned directive can be deleted
+  silently. (2) **PC-11** — a planted canary env value written into `R/x` makes the export refuse with
+  a classification, and a provider without the check exports it. (3) The two copies of `R` cannot
+  drift (a failing equality check, or one imported constant). (4) `codex_local` is untouched and a
+  codex run enumerates an empty `R`.
+- **Test:** a server-side unit pin at the heartbeat call site (`server/src/services/heartbeat.ts`, the
+  canary block that passes `currentTaskMarkdown` into `buildTaskRunBatchWorkload`), a provider unit
+  for the refusal plus its no-check mutant, and the SD-4 drift check.
+- ★ **Its real-run acceptance pairs with `CLI-012`.** A real run produces a file under `R` only once
+  this directive ships, and this directive is only observable once `CLI-012` enumerates `R` — so
+  neither ticket's real-run half is provable alone, and neither may claim the other's evidence.
+- ★ **Non-goals:** the enumeration port, the producer, the `kind` (all `CLI-012`); the announcement
+  (`CLI-013`); the projection (`CLI-014`); the counter (`CLI-015`); option 1b's stdout declaration,
+  which `E7-D11` records as a post-`M1b` refinement and does not build; any `codex_local` change
+  (`E7-D04`).
+- ★ **Two slices, each inside the Definition of Ready's three-day cap** (`CLI-017` is not on its
+  closed exemption list): **`CLI-017-A`** — the directive, `R`'s two constants and the SD-4 equality
+  check (≤2 agent-days); **`CLI-017-B`** — SD-5's sandbox-scoped secret handoff, lifecycle and export
+  refusal (≤1.5 agent-days). They are independent and may run in parallel; **both are required**.
+  ★ *Added 2026-09-23 (Codex P2, PR #575), which measured the undivided estimate at up to 3.5 days.*
+- ★ **SD-5 is a LITERAL-VALUE refusal and does not close exfiltration.** Encoded, reversed or
+  split-across-files credentials still export. Filed as **`E7-F038`** (MEDIUM, open, declared
+  `unowned`); it needs its own boundary ruling, out of `M1b`, and is **not closed by `CLI-017-B`
+  shipping**. The slice carries the encoded and split cases as characterisation tests asserting the
+  current pass-through.
+- ★ **Result files:** each slice writes `CLI-017-A-record.md` / `CLI-017-B-record.md` — deliberately
+  **not** `*-result.md`, which would resolve to `CLI-017` and mark the node shipped on slice A alone.
+  The aggregate `CLI-017-result.md` is written only after both slice records are approved.
+- ★ **It must not redirect or pipe the claude process's stdout** — that would silently remove
+  `WRK-018`'s usage parse (review §7.1, and the `E7-D06` amendment above it).
 
 ### E8 — Browser automation
 

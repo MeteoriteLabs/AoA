@@ -77,8 +77,27 @@ export const LISTING_RECORD_LIMIT = 400;
 export const SHELL_ARMS = Object.freeze(["S-P0", "S-PC1", "S-P1", "S-PC2", "S-P2", "S-P3", "S-P4", "S-P5", "S-P6", "S-P7"]);
 export const MODEL_ARMS = Object.freeze(["A-neg", "A-dir", "A-cwd", "A-decl"]);
 
-/** The dispatch input `arms`. `shell-only` runs P-011a and spends NO model tokens. */
-export const ARMS_MODES = Object.freeze(["all", "shell-only"]);
+/**
+ * The dispatch input `arms`.
+ * - `all` — P-011a + P-011b: four model turns. The full first measurement.
+ * - `shell-only` — P-011a alone. NO model tokens.
+ * - `a-neg-only` — P-011a **plus A-neg and its C-census control**, and nothing else: exactly
+ *   **ONE** model turn. ★ Added 2026-09-23 for the pre-`M1b` re-run founder ruling F8 authorizes
+ *   (`epics/E7-coding-e2b/decisions.md`, `E7-D11`). Before it, the authorization was not
+ *   dispatchable: `all` spends four turns and `shell-only` omits `A-neg` entirely (Codex P2, PR #575).
+ *   It keeps the shell arms because they spend NO model tokens and the campaign precondition needs
+ *   `S-P0` as well as `A-neg`, so one dispatch collects both. It keeps `C-census` because that is
+ *   `A-neg`'s POSITIVE CONTROL — an `A-neg` null result with no control is a check that proves
+ *   nothing — and `C-census` is a shell write inside the same sandbox, costing no extra turn.
+ */
+export const ARMS_MODES = Object.freeze(["all", "shell-only", "a-neg-only"]);
+
+/** The model arms each mode asks for. `all` asks for every one; `a-neg-only` for exactly one. */
+export const MODEL_ARMS_FOR_MODE = Object.freeze({
+  all: MODEL_ARMS,
+  "shell-only": Object.freeze([]),
+  "a-neg-only": Object.freeze(["A-neg"]),
+});
 
 export const ARM_STATES = Object.freeze(["observed", "inconclusive", "not-run"]);
 
@@ -90,7 +109,7 @@ export const ARM_STATES = Object.freeze(["observed", "inconclusive", "not-run"])
  * Resolve the `arms` dispatch input. Empty means `all`. Anything else is REFUSED rather
  * than guessed: a typo must not silently run the token-spending half, or silently skip it.
  * @param {unknown} raw
- * @returns {{mode: "all"|"shell-only", source: "explicit"|"default"}}
+ * @returns {{mode: "all"|"shell-only"|"a-neg-only", source: "explicit"|"default"}}
  */
 export function resolveArmsMode(raw) {
   const trimmed = typeof raw === "string" ? raw.trim() : "";
@@ -98,7 +117,7 @@ export function resolveArmsMode(raw) {
   if (!ARMS_MODES.includes(trimmed)) {
     throw new Error(`CLI-011 probe: unknown arms mode ${JSON.stringify(trimmed)}; expected one of ${ARMS_MODES.join(", ")}`);
   }
-  return { mode: /** @type {"all"|"shell-only"} */ (trimmed), source: "explicit" };
+  return { mode: /** @type {"all"|"shell-only"|"a-neg-only"} */ (trimmed), source: "explicit" };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -788,14 +807,19 @@ export function evaluateControls(verdicts) {
 }
 
 /**
- * `measured` only when every arm that was asked to run is `observed` AND every control that
- * ran held. `shell-only` mode legitimately marks the model arms `not-run`.
+ * `measured` only when every arm the MODE asked for is `observed` AND every control that ran
+ * held. A mode legitimately marks the model arms it did not ask for `not-run` — and ONLY those:
+ * an arm the mode DID ask for coming back `not-run` is still `inconclusive`, which is what stops
+ * `a-neg-only` from reading as a measurement when `A-neg` silently did not run.
  */
 export function packDisposition(verdicts, controls, mode = "all") {
+  const asked = MODEL_ARMS_FOR_MODE[mode] ?? MODEL_ARMS;
+  const skippedModelArms = MODEL_ARMS.filter((a) => !asked.includes(a));
+  const censusSkipped = !asked.includes("A-neg");
   const inconc = verdicts.filter((x) => x.state === "inconclusive");
-  const unexpectedNotRun = verdicts.filter((x) => x.state === "not-run" && !(mode === "shell-only" && (MODEL_ARMS.includes(x.arm) || x.arm === "C-census")));
+  const unexpectedNotRun = verdicts.filter((x) => x.state === "not-run" && !(skippedModelArms.includes(x.arm) || (censusSkipped && x.arm === "C-census")));
   const failed = controls.filter((c) => c.held === false);
-  const expectedArms = mode === "shell-only" ? SHELL_ARMS : [...SHELL_ARMS, "C-census", ...MODEL_ARMS];
+  const expectedArms = [...SHELL_ARMS, ...(censusSkipped ? [] : ["C-census"]), ...asked];
   const missing = expectedArms.filter((a) => !verdicts.some((x) => x.arm === a));
   if (inconc.length || unexpectedNotRun.length || failed.length || missing.length) {
     return {
@@ -808,7 +832,12 @@ export function packDisposition(verdicts, controls, mode = "all") {
       ].filter(Boolean).join("; "),
     };
   }
-  return { disposition: "measured", detail: mode === "shell-only" ? "every P-011a arm observed and every control held; P-011b NOT run (shell-only)" : "every arm observed and every control held" };
+  const detail = mode === "shell-only"
+    ? "every P-011a arm observed and every control held; P-011b NOT run (shell-only)"
+    : mode === "a-neg-only"
+      ? "every P-011a arm observed, A-neg observed and its C-census control held; A-dir/A-cwd/A-decl NOT run (a-neg-only)"
+      : "every arm observed and every control held";
+  return { disposition: "measured", detail };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -937,6 +966,35 @@ export function readJobGates(text) {
  *  - The shell fallback's template default and schema agree with this module.
  * @returns {{violations: {code: string, detail: string}[]}}
  */
+/**
+ * The `options:` list of a `workflow_dispatch` `choice` input, in file order, or `null` when the
+ * input or its list cannot be read. Deliberately literal: a shape check that guesses is worse than
+ * one that says it could not read the file.
+ * @returns {string[] | null}
+ */
+export function readChoiceOptions(workflowText, inputName) {
+  const lines = String(workflowText ?? "").split(/\r?\n/);
+  const head = lines.findIndex((l) => new RegExp(`^\\s+${inputName}:\\s*$`).test(l));
+  if (head < 0) return null;
+  const indent = (lines[head].match(/^\s*/) ?? [""])[0].length;
+  let optionsAt = -1;
+  for (let i = head + 1; i < lines.length; i += 1) {
+    const l = lines[i];
+    if (l.trim().length === 0) continue;
+    const ind = (l.match(/^\s*/) ?? [""])[0].length;
+    if (ind <= indent) break;
+    if (/^\s*options:\s*$/.test(l)) { optionsAt = i; break; }
+  }
+  if (optionsAt < 0) return null;
+  const out = [];
+  for (let k = optionsAt + 1; k < lines.length; k += 1) {
+    const m = /^\s*-\s*"?([^"#\s]+)"?\s*$/.exec(lines[k]);
+    if (!m) break;
+    out.push(m[1]);
+  }
+  return out.length > 0 ? out : null;
+}
+
 export function evaluateWorkflowShape(workflowText) {
   const text = String(workflowText ?? "");
   const lines = text.split(/\r?\n/);
@@ -1034,6 +1092,19 @@ export function evaluateWorkflowShape(workflowText) {
   if (!/RESOLVED_TEMPLATE[^\n]*strip\(\)/.test(text)) {
     v("fallback-template-untrimmed", "the fallback record does not trim the `e2b_template` input before resolving it, so a whitespace-only input would be recorded as an explicit template while the probe would have used the default");
   }
+  // ★ THE DISPATCHABLE ARMS MUST BE EXACTLY THE ONES THIS MODULE ACCEPTS. Founder ruling F8
+  // authorizes ONE `A-neg` re-run before `M1b`'s campaign, and before 2026-09-23 the workflow's
+  // `choice` offered only `all` (four model turns) and `shell-only` (no `A-neg` at all) — so the
+  // authorized operation was NOT DISPATCHABLE, and an operator could only over-spend or
+  // under-measure (Codex P2, PR #575). Drift in EITHER direction is a defect: an option the core
+  // refuses fails the run after the E2B spend, and a mode the core accepts but the workflow hides
+  // is an authorization nobody can exercise.
+  const armsOptions = readChoiceOptions(text, "arms");
+  if (!armsOptions) v("arms-options-unreadable", "the `arms` dispatch input has no readable `options:` list");
+  else if (armsOptions.join(",") !== ARMS_MODES.join(",")) {
+    v("arms-options-mismatch", `the arms choice offers ${JSON.stringify(armsOptions)} but this module accepts ${JSON.stringify([...ARMS_MODES])}`);
+  }
+
   const def = /CLI011_DEFAULT_TEMPLATE:\s*"?([A-Za-z0-9._-]+)"?/.exec(text);
   if (!def) v("default-template-undeclared", "CLI011_DEFAULT_TEMPLATE is not declared");
   else if (def[1] !== CLI_BEARING_TEMPLATE_ALIAS) v("default-template-mismatch", `CLI011_DEFAULT_TEMPLATE=${def[1]} but the core resolves an omitted input to ${CLI_BEARING_TEMPLATE_ALIAS}`);

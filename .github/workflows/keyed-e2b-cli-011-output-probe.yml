@@ -39,6 +39,15 @@ name: Keyed E2B — CLI-011 P-011 output probe
 #
 # `-f arms=shell-only` runs P-011a alone and spends NO model tokens.
 #
+# ★ `-f arms=a-neg-only` runs P-011a PLUS `A-neg` and its `C-census` control, and nothing else:
+#   exactly ONE model turn. That is the pre-`M1b` re-run founder ruling F8 authorizes
+#   (`docs/replatform/epics/E7-coding-e2b/decisions.md`, `E7-D11`). Added 2026-09-23 because the
+#   authorization was not dispatchable before it: `all` spends four turns and `shell-only` omits
+#   `A-neg` entirely (Codex P2, PR #575). It keeps the shell arms because they cost no model tokens
+#   and the campaign precondition needs `S-P0` as well as `A-neg`, so ONE dispatch collects both;
+#   and it keeps `C-census` because that is `A-neg`'s POSITIVE CONTROL, a shell write in the same
+#   sandbox — an `A-neg` null result with no control proves nothing.
+#
 # SECRETS. `E2B_API_KEY` and `ANTHROPIC_API_KEY` only — codex is excluded (E7-D04), so no
 # `OPENAI_API_KEY`. Each is bound to an env var and never interpolated into a script. The
 # model key reaches the sandbox as a per-command env var; no key is written into a file. The
@@ -58,13 +67,14 @@ on:
         default: ""
         type: string
       arms:
-        description: '"all" = P-011a + P-011b (spends < $1 of Anthropic tokens). "shell-only" = P-011a only, no model tokens.'
+        description: '"all" = P-011a + P-011b, FOUR model turns. "shell-only" = P-011a only, no model tokens. "a-neg-only" = P-011a + A-neg + its C-census control, ONE model turn — the pre-M1b re-run ruling F8 authorizes.'
         required: false
         default: all
         type: choice
         options:
           - all
           - shell-only
+          - a-neg-only
   push:
     branches: [docs/replatform-program]
     paths: [".github/workflows/keyed-e2b-cli-011-output-probe.yml"]

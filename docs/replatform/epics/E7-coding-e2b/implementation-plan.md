@@ -638,8 +638,33 @@ a redirected `sh -c` through `RealE2bTransport.runCommand` and reads it back byt
    `WRK-018` channel priced as an input).
 2. **The probe:** the `files.read` probe the review designs (its §10), dispatched only inside the F8
    envelope on a named candidate.
-3. **The ruling:** founder ruling **F7**, recorded as an entry in `decisions.md` (this epic).
+   ★ **DONE and PRESERVED IN THE REPOSITORY:** run
+   [`35833717162`](https://github.com/MeteoriteLabs/AoA/actions/runs/35833717162), job `probe`,
+   `success`, head `499ec4d1c3c3aab7324dcf0ca98ea34872fe18a0`, `disposition: measured`. The durable
+   record is committed as `tickets/CLI-011-probe-record.json` with a reading in
+   `tickets/CLI-011-probe-record.md`. *The review's §10.3 named that file `CLI-011-probe-result.md`;
+   that name would make `findCompletedTicketIds` read `CLI-011` as shipped, so the copy uses
+   `-probe-record`. The review's wording is quoted, not edited.* Committing it is the point: the
+   workflow's artifact carries `retention-days: 90`, so a record living only in a job log expires
+   under the decision it justifies (`E7-F025`'s lesson; Codex P1, PR #575).
+3. **The ruling — DONE:** founder ruling **F7**, recorded as **`E7-D11`** in `decisions.md` (this
+   epic) on 2026-09-23, under founder delegation F2. It rules **option 2, a conventional output root**
+   `/home/user/aoa-output`, placement **SD-1b**, **SD-5 required**, option 1b deferred, `A-O2-8`
+   accepted as a named residual — decided on the P-011 probe run
+   [`35833717162`](https://github.com/MeteoriteLabs/AoA/actions/runs/35833717162) (job `probe`,
+   `success`, head `499ec4d1c3c3aab7324dcf0ca98ea34872fe18a0`, record `disposition: measured`). The
+   ruling files the emit build as **`CLI-017`**.
 4. **The result:** `tickets/CLI-011-result.md`, written after the ruling.
+   ★★★ **NOT YET WRITTEN, and it is not a simple write.** Creating that filename makes
+   `findCompletedTicketIds` (`scripts/check-finding-ownership.mjs`, `/^([A-Z]+-\d+).*-result\.md$/`)
+   treat **`CLI-011` as shipped**, and `CLI-011` **owns the still-open `E7-F026`** — so
+   `check-finding-ownership` reports `owner_ticket_already_complete` **and** `successor_missing` for
+   `E7-F026`. Measured 2026-09-23 by positive control: with a stub
+   `tickets/CLI-011-result.md` present, the guard prints both problems; with it absent, the full guard
+   set is green. **Resolving it is a decision, not a formality** — either declare `ownerStillOpen`
+   plus a `successor` for `E7-F026` in `scripts/finding-ownership.json` (which asserts who inherits
+   that residual), or dispose of `E7-F026` on the record. Neither is implied by ruling F7, and the
+   session that filed `CLI-017` deliberately did not guess.
 
 **No source files.** The review is the decision request; no separate `DECISION-REQUEST-…` file is
 written, and where this task (Observability) and plan step T3 say "decision request" they mean the
@@ -681,10 +706,17 @@ at this tip; the daemon's HTTP client declares `artifactCommit`
 explicitly: *"Slice f — NOT DAT-009's. The producer, the kind, and the counter… That is CLI-008 Unit
 F. DAT-009 must not absorb it."*
 
-**Outcome:** a producer that, on attempt completion, **enumerates paths only** under the
-designated output root, turns each path into an `ArtifactExportRequest` with an **explicit declared
+**Outcome:** a producer that, on attempt completion, **enumerates the output root METADATA-ONLY —
+never bytes** — turns each regular file into an `ArtifactExportRequest` with an **explicit declared
 `kind`**, and hands the list to the sequencer through the E5 hook — so that one file the sandbox
 produced becomes a `committed` `job_artifacts` row under a worker-minted grant.
+★★★ *Corrected 2026-09-23 (ruling F7, `E7-D11`; Codex P1, PR #575). **Superseded text:** "a producer
+that, on attempt completion, **enumerates paths only** under the designated output root, turns each
+path into an `ArtifactExportRequest`…".* **"Paths only" is the wrong axis and it is load-bearing.**
+The rule that matters is **no bytes** (the `GRANTS OUT, NEVER BYTES` contract). Per-entry **link
+metadata is required**, because without it a symlink is indistinguishable from a file and the
+symlink refusal `A-O2-4` demands is unimplementable — see the seam-widening block below, which
+measures it. Metadata-only ≠ paths-only.
 
 ★★★ **IT MUST NOT CALL `captureSandboxEntries`, AND THIS IS A HARD CONSTRAINT, NOT A PREFERENCE.**
 That helper does `readFile` then `sha256(bytes)`, so every file's bytes would transit the worker
@@ -713,6 +745,136 @@ let the sequencer's provider-backed `digestArtifact` (which returns `{sha256, si
 bytes) supply the digest and size the frozen grant schema requires, and `exportArtifact` do the
 upload. The daemon sees paths and metadata, never content.
 
+★★★ **AND IT MUST WIDEN THE SEAM ENOUGH TO REFUSE A SYMLINK — `listDir` AS BUILT CANNOT.**
+*Added 2026-09-23 (ruling F7, `decisions.md` `E7-D11`; Codex P1, PR #575), verified at source.*
+`RealE2bTransport.listDir` returns `readonly string[]`: it asks the SDK for typed entries, then passes
+them through `filesOnlyFromListing` (`packages/sandbox-e2b-provider/src/list-dir-contract.ts`), which
+uses `type` only to drop directories and **discards `symlinkTarget`**. The `CLI-011` P-011 probe
+measured the consequence on a live sandbox (run `35833717162`, arm `S-P5`): the SDK reports
+`type: "file"`, `symlinkTarget: "/home/user/.aoa-run-prompt.md"` for the planted link `l1`, while the
+transport's own output carries `includesL1: true` among 5 plain paths — **the link is
+indistinguishable from a file** — and `readFollowsLink=true`, so digesting it reads the target. So a
+paths-only port **cannot** apply the symlink refusal `A-O2-4` requires, and building it that way would
+export the run's own staged prompt (`R/l1 → .aoa-run-prompt.md`) or its environment
+(`→ /proc/self/environ`) as "output". This ticket owes the widened per-entry metadata (at minimum a
+link marker) through the transport and the port, and a test in which a symlink under the root is
+**refused, never digested** (review PC-5). ★ *This does not reopen `E7-D09`: files-only, recursive,
+absolute and bounded all stand; what is added is the per-entry marker the refusal needs.*
+
+★★★ **AND `size` RIDES THE SAME ENTRY, SO THE SD-6 BOUNDS ARE ENFORCED BEFORE ANY READ — THIS
+TICKET OWNS `E5-F009`.** *Added 2026-09-23 (ruling F7, `E7-D11`; Codex P1, PR #575).*
+`E2bSandboxProvider.#readArtifactBytes` materialises the **whole** tenant-controlled file in the
+shared adapter-manager process; `exportArtifact` checks `grant.maxBytes` only **after** that read and
+`digestArtifact` has no size guard at all, while the server ceiling
+(`DEFAULT_MAX_ARTIFACT_BYTES`, `server/src/services/artifact-size-ceiling.ts`) is in gigabytes. That
+is `E5-F009`, filed by `DAT-009-3e`, whose own *"what would close it"* names an E7/CLI ticket — this
+one. **`E5-F009`'s stated blocker is measured gone:** it assumed a pre-read refusal needed a new
+`stat`-shaped or streaming op on `E2bTransport`, but the P-011 probe's `S-P6` arm measured
+`files.list` already reporting a correct size on a live sandbox (`listSize` 3,145,728,
+`listSizeMatches: true`). So the size rides the entry the port is already being widened for, and no
+new transport operation is needed. This ticket must therefore enforce the review's **SD-6** bounds —
+**per file ≤ 25 MiB, per attempt ≤ 100 MiB, ≤ 64 files, depth ≤ 8** — **from the listing metadata,
+before `digestArtifact`**. ★★★ *Corrected 2026-09-23 (Codex P2, PR #575), verified at source.
+**Superseded text:** "with the grant's `maxBytes` equal to the per-file cap".* **The grant carries the
+EXACT digested size, not the cap** — the shipped sequencer already does this and says why:
+`packages/worker-daemon/src/lease/artifact-export.ts` sets `maxBytes: described.sizeBytes`, commented
+*"the EXACT size, not a ceiling … declaring more than the file is only a wider orphan bound with
+nothing to gain"*. A cap-sized grant would let a file that **grew after digest** be read and retained
+up to the cap before the hash mismatch rejected it. The 25 MiB per-file limit stays an **independent
+admission check** applied from listing metadata before the read; the review's SD-6 wording is
+superseded by shipped behaviour (`E7-D11`, *What this ruling does NOT decide*). Each refusal
+classified (`output_too_large` / `output_limit_exceeded` / `output_symlink_refused`) and per-file
+(`E5-D07`: one refusal never drops the others). Control **PC-6**: drop the pre-digest check and the
+provider reads the whole file → red.
+
+★★★ **AND THE LISTING CHECK ALONE DOES NOT CLOSE `E5-F009` — THE READ ITSELF MUST BE BOUNDED.**
+*Added 2026-09-23 (Codex P1, PR #575).* The listing size is a **snapshot**, exactly like the link
+marker: a background writer the agent left running can leave a file inside 25 MiB at enumeration and
+grow it to gigabytes before `digestArtifact`, and the pre-digest check then passes while
+`#readArtifactBytes` still materialises the enlarged file in the shared adapter-manager. The symlink
+recheck below does not cover it — that is replacement, this is growth. So this ticket owes a **bounded
+or streaming read**: `#readArtifactBytes` must **stop and refuse** once the cap is exceeded, rather
+than materialising the file and measuring afterwards, on **both** the digest and the export path.
+Control: a fake transport whose file **grows between enumeration and digest** → the read refuses
+(classified) and **never allocates the oversized buffer**; remove the bound and the whole file is
+materialised → red. **`E5-F009` is closed by the bounded read, not by the pre-digest check** — the
+pre-digest check is the cheap arm that avoids the read at all in the common case. ★ Flipping
+`E5-F009` to `resolved` happens in the same commit as the code that earns it, and its manifest entry
+flips to `owned: CLI-012` as soon as this ticket has a ticket file (see that entry).
+
+★★★ **THE LINK MARKER IS A SNAPSHOT — RECHECK AT THE READ BOUNDARY.** *Added 2026-09-23 (Codex P2,
+PR #575).* Enumeration metadata is taken at one instant, and `W7`/`A-O2-9` already establish that a
+background process the agent started can keep writing after it. So a regular file can be **replaced
+by a symlink between enumeration and digest**, and because the probe measured `readFollowsLink=true`,
+`digestArtifact` would then hash the **target** and `exportArtifact` read the same stable target — so
+the existing re-hash TOCTOU check **passes** and the staged prompt is exported as output. An
+enumeration-time marker alone does not close `A-O2-4`. ★★★ **AND THE ANSWER MUST BE ATOMIC — A SEPARATE CHECK PLUS A READ IS NOT ENOUGH.** *Corrected
+2026-09-23 (Codex P1, PR #575). **Superseded text:** "This ticket owes a **provider-side no-follow
+check (or an equivalent atomic file-handle design) applied at digest and at export**, and a test with
+the mutation **between enumeration and digest**."* A standalone recheck before the read just moves
+the window: the background process can swap the file **after the check and before `files.read`**, and
+checking at both digest and export creates **two** new windows rather than closing one. So this ticket
+owes **one atomic operation** — an `O_NOFOLLOW`-style open bound to a file handle that the digest and
+the export both read through, or an equivalent single operation that resolves and reads without a gap
+— **not** a check-then-read pair.
+
+★★★ **OPEN DESIGN QUESTION, TO BE MEASURED WHEN THIS TICKET BUILDS — DO NOT GUESS IT.** *Filed
+2026-09-23 (ruling F7, `E7-D11`; raised by Codex on PR #575 and deliberately left unresolved).*
+**Does the installed `e2b` SDK expose any no-follow primitive at all?** The reviewer reports that
+`e2b@2.30.5`'s `FilesystemReadOpts` carries gzip and timeout options and **no** no-follow flag; **that
+was not verifiable from the authoring worktree** (no `node_modules/e2b`), so it is recorded as a
+question and not as a fact. The first act of this ticket's TOCTOU work is to **measure it against the
+installed SDK**:
+- **If a no-follow / handle-bound primitive exists**, use it: that is the atomic operation above, and
+  there is nothing further to decide.
+- **If it does not**, the atomic read is unreachable through the plain SDK — and **the outcome is
+  PRE-AUTHORIZED, so this ticket is NOT blocked.** ★ *Ruled 2026-09-23 by the planning session under
+  F2, recorded in `E7-D11`.* The `A-O2-4` refusal is then implemented **by a second means: a
+  per-entry `lstat`**, which the `CLI-011` review already priced at **about +1 agent-day** (§10.5's
+  contingency row). Take it, record that you took it, and carry the +1 day. **Do not** ship a
+  check-then-read pair and call it atomic.
+- **STOP and report only if BOTH** the primitive is absent **and** a per-entry `lstat` proves
+  unavailable too. That is the one state neither branch covers.
+- **Either way, record which branch was taken and the measurement behind it** in the ticket's result.
+
+★★★ **THE `lstat` BRANCH LEAVES A RACE, AND IT IS A NAMED, BOUNDED RESIDUAL — NOT A REASON TO STOP.**
+*Ruled 2026-09-23 by the planning session under F2 (`E7-D11`), after Codex raised it on PR #575.*
+A per-entry `lstat` is the **check** half of the check-then-read pair forbidden above: it inspects a
+path, the later read **re-resolves** it, a swap between them wins, and the stable target makes the
+re-hash refusal pass. **This ticket proceeds anyway, on a stated bound:**
+
+- the sandbox is **per-run and single-tenant** (a fresh `randomUUID` idempotency key per supervisor
+  op, so `E2bSandboxProvider.create` never reuses one across attempts — review `A-O2-12`), so a
+  successful swap reads a file in the **tenant's own** sandbox, never another tenant's;
+- the one materially damaging outcome — **a redeemed secret reaching durable storage** — is what
+  **`SD-5` refuses**, and SD-5 is ruled **IN and REQUIRED** before `M1b`'s campaign (`E7-D11` §3).
+  **The bound IS that clause:** if SD-5 is ever descoped or weakened, this residual is no longer
+  bounded and the in-sandbox atomic read becomes **required**.
+
+★ **So this ticket's real-run acceptance carries a DELIBERATE SYMLINK-SWAP ATTEMPT**, with exactly
+two acceptable outcomes: **(i)** the `lstat` check refuses it, or **(ii)** it exports and **SD-5's
+scan refuses the bytes**. ★★★ **A swap that produces a STORED artifact containing the planted canary
+is a FAIL of this ticket, not a residual.** That case is the whole difference between a bound and a
+hole, so it must be run and recorded, not reasoned about.
+
+★ **The closure route, recorded and NOT required now:** an in-sandbox `O_RDONLY|O_NOFOLLOW`
+open-and-read-from-the-file-descriptor through `runCommand`, so the inode inspected is the inode read.
+**It is UNVERIFIED** — proposed from the template's `python3` and `runCommand`'s existence, not
+measured — and its cost is real: running an interpreter inside the tenant's sandbox during export,
+plus encoding and bounding a byte path that is a direct provider PUT today. Whether it breaches
+`E7-D06` is **open**: that decision's operative rule is *"No payload crosses the dependency-pinned
+daemon"*, and `digest_artifact`/`export_artifact` already materialise bytes in the **adapter-manager**
+(`packages/adapter-manager/src/server.ts` — that is `E5-F009`'s subject), so it is **not obviously** a
+breach. **Measure it if the route is taken; do not assert it either way.**
+  ★ *This replaces an earlier revision of this bullet which said any second means is "a design
+  change, not a wording fix: STOP and report it" — that would have made `CLI-012` unassignable on an
+  unmeasured SDK detail, which the planning session ruled against: the branch is authorized in
+  advance, and only the doubly-negative case stops.*
+This question is shared with `CLI-017` only in the sense that both depend on the same SDK; the work
+and the answer are `CLI-012`'s. Its test must mutate **between the recheck and the read**, because a
+mutation only between enumeration and digest **passes a vulnerable implementation** and would be a
+check that proves nothing.
+
 ★ **This ticket owes a test that FAILS if the crossing returns** — a composition assertion that the
 producer's dependency surface contains no byte-returning read. No existing guard catches it:
 `check-worker-daemon-boundary` passes a violation because it enforces a *dependency* boundary while
@@ -740,15 +902,46 @@ this ticket. It never did; but removing this edit, as suggested, would leave the
 unconnected, so the edit stays and its scope is now stated exactly; create `packages/worker-daemon/src/__tests__/export-request-producer.test.ts`; append to
 `decisions.md`. ★ **And the enumeration port** — modify
 `packages/worker-daemon/src/supervisor/provider.ts` (the `SandboxProvider` port gains a fenced,
-metadata-only enumeration operation: paths only, no bytes); modify
+**metadata-only** enumeration operation: **no bytes**, and **per-entry an absolute path, a link
+marker and a byte SIZE** — ★ *corrected 2026-09-23, Codex P1 ×2, PR #575; superseded text: "paths
+only, no bytes", which would have made the required symlink refusal unimplementable, and then
+"…plus a link marker", which still left the size to `digestArtifact` and so to a whole-file read*);
+modify
 `packages/sandbox-e2b-provider/src/e2b-provider.ts` (implement it over the private
-`#transport.listDir`); modify `packages/provider-wire/src/driver.ts` (the networked-lane binding,
-which has no enumeration today); modify `packages/adapter-manager/src/server.ts` (the matching
+`#transport.listDir`, **and bound `#readArtifactBytes`**); ★★★ **and the TRANSPORT itself, which this
+list was missing** — *added 2026-09-23 (Codex P1, PR #575), verified at source: changing
+`e2b-provider.ts` alone cannot make `#transport.listDir` return a marker or a size, because
+`E2bTransport.listDir` is **declared** `Promise<readonly string[]>` in `transport.ts` and
+`real-transport.ts` sends the SDK's typed entries through `filesOnlyFromListing`
+(`list-dir-contract.ts`), which throws away everything but the path. The bounded read needs the real
+transport too, since `readFile` returns whole bytes today* — so **modify
+`packages/sandbox-e2b-provider/src/transport.ts`** (the `listDir` return type gains the per-entry
+marker and size; a bounded/streaming read shape is added), **`packages/sandbox-e2b-provider/src/list-dir-contract.ts`**
+(`filesOnlyFromListing` preserves `symlinkTarget`/`type` and `size` instead of discarding them —
+**files-only, recursive, absolute and bounded are unchanged**, so `E7-D09` is **not** reopened),
+**`packages/sandbox-e2b-provider/src/real-transport.ts`** (carry the SDK metadata through; use the
+SDK's streaming/bounded read rather than a whole-byte read) and
+**`packages/sandbox-e2b-provider/src/mock-transport.ts`** (the mock must model the **same** contract —
+`E7-F014`'s class is a mock modelling the opposite one); and update
+`packages/sandbox-e2b-provider/src/__tests__/list-dir-files-only.test.ts` plus the transport tests
+that pin the old `string[]` shape. modify `packages/provider-wire/src/driver.ts` (the networked-lane binding,
+which has no enumeration today — **its shape carries the per-entry marker too, not a bare
+`string[]`**); modify `packages/adapter-manager/src/server.ts` (the matching
 op route **and** its ownership gate — the server answers any op outside `GATE_REQUIRED_OPS` or its
 raw-handler map with `404 operation not available in this slice`, so a driver-only change is
 unreachable on the networked lane); create
 `packages/provider-wire/src/__tests__/driver-enumerate.test.ts` and
-`packages/adapter-manager/src/__tests__/server-enumerate.test.ts`. Enumeration is a
+`packages/adapter-manager/src/__tests__/server-enumerate.test.ts`;
+★★★ **and modify `packages/worker-daemon/src/lease/artifact-export.ts` and its tests** — *added
+2026-09-23 (ruling F7, `E7-D11`; Codex P1, PR #575), verified at source. **Superseded Files text:** the
+list ended at `server-enumerate.test.ts`, omitting the sequencer.* `createArtifactExportSequencer`
+loops `for (const request of requests)` and **every `fail(...)` throws `ArtifactExportFailedError`**,
+so it is **all-or-throw**: one refused file drops every valid output after it — and an agent can make
+a secret-bearing or oversized file sort first. This ticket's own `E5-D07` amendment already says *"The
+per-file failure policy is this ticket's … Changing that changes the sequencer's return contract, and
+that change belongs here"*, so the omission made the ticket unable to do what its own decision
+assigns it. **Acceptance row:** a refused first file is classified and the remaining valid outputs
+still export — a mutant that restores the throw reds it. Enumeration is a
 **single-sandbox owned op**: route it through `gateOwnedOp` like `stage_files` (E7-F011), never a
 keyless raw handler. **Non-goal:** changing the frozen `PROVIDER_OPERATIONS` vocabulary in
 `@armyofagents/worker-protocol` — the export ops `DAT-009-3e` added are wire routes outside it,
@@ -1137,9 +1330,14 @@ back. The distributed flag remains the outer off-switch.
 
 ### `CLI-015` — the judge: clause 6 and the four scanner findings (M, ≤3 agent-days, M1b)
 
-**Depends on:** `CLI-011`'s **ruling** and `CLI-012`. **This ticket may not be assigned
-before the ruling**, because round 3 proved that changing the predicate without knowing what
-supplies the output converts a forgeable gate into an unpassable one.
+**Depends on:** `CLI-011`'s **ruling**, `CLI-012`, and **`CLI-017`** (the emit build). **This ticket
+may not be assigned before the ruling**, because round 3 proved that changing the predicate without
+knowing what supplies the output converts a forgeable gate into an unpassable one.
+★ *Amended 2026-09-23 (ruling F7, `decisions.md` `E7-D11`): the ruling is taken, and the emit build it
+files is `CLI-017`, which this line now names. **Superseded text:** "`CLI-011`'s **ruling** and
+`CLI-012`." The ruling itself changes nothing this ticket counts — it counts through arm 2's existing
+predicate (SD-3, P-A unchanged) — so this stays a text/attribution fix (`E7-F016`), not a predicate
+change.*
 
 **Current state, measured:** `E7ProducedOutputCounts` is two numbers
 (`server/src/services/e7-distributed-run-verifier.ts:130-133`). Clause 6 is the module's **only**
@@ -1365,6 +1563,261 @@ tool surface for the named internal Organization`".*
 
 ---
 
+### `CLI-017` — the EMIT build: the output-root directive (SD-1b), one source of truth for `R`, and the export secret refusal (SD-5) (M, **two slices, each inside the three-day cap**, M1b)
+
+★★★ **SIZING — TWO SLICES, AND THE WHOLE IS NEVER ASSIGNED AS ONE.** *Corrected 2026-09-23 (Codex P2,
+PR #575), verified at source.* This section first read *"S–M, ≤2 agent-days +1–1.5 for SD-5"*, which
+permits **3.5** agent-days, and `program-design.md`'s **Definition of Ready** caps every implementation
+ticket at *"no more than three agent-days; otherwise split it"* — with a **closed** exemption list
+(MIG-002/004/005/008, JOB-010…JOB-014, REL-001…REL-005) that does not include `CLI-017`, and which is
+explicitly **not transitive**. So the ticket is split, on the same WRK-008 / DAT-009 pattern the
+programme already uses:
+
+| slice | scope | size |
+|---|---|---|
+| **`CLI-017-A`** | SD-1b's directive + **PC-12**; `R`'s two constants + SD-4's `policy` equality check; acceptance rows **1, 3, 4** and the directive half of row 5 | **≤2 agent-days** |
+| **`CLI-017-B`** | SD-5's sandbox-scoped secret handoff + its **full** lifecycle (cleanup purge **and** the TTL-bound expiry) + the export refusal; acceptance rows **2, 6, 6b, 7, 8** and the export half of row 5 | **≤1.5 agent-days** |
+
+★ *Corrected 2026-09-23 (Codex P2, PR #575): the `CLI-017-B` row first read "acceptance rows 2, 6, 7
+and the export half of row 5", which left rows **6b** (purge on TTL expiry with no cleanup call) and
+**8** (the encoded/split characterisation) assigned to **neither** slice — so both slice records could
+be approved, and the aggregate written, with two required security checks never run. Every acceptance
+row is now owned by exactly one slice: **A** owns 1, 3, 4 and the directive half of 5; **B** owns 2,
+6, 6b, 7, 8 and the export half of 5. A slice record that does not carry every row in its column is
+not complete, and the aggregate may not be written.*
+
+`CLI-017-B` depends on nothing in `CLI-017-A` and may run in parallel. **Both slices are required
+before `M1b`'s campaign** — SD-5 is ruled REQUIRED (`E7-D11` §3), so a green `CLI-017-A` alone does not
+satisfy this ticket. The graph keeps one `CLI-017` node, exactly as `WRK-008` and `DAT-009` do.
+
+★★★ **THE SLICES DO NOT WRITE `-result.md` FILES, AND THAT IS THE POINT.** *Corrected 2026-09-23
+(Codex P2, PR #575).* An earlier revision of this block said each slice writes
+`tickets/CLI-017-A-result.md` / `-B-result.md`. Those names **both** match
+`findCompletedTicketIds`' `/^([A-Z]+-\d+).*-result\.md$/` and resolve to **`CLI-017`** — so landing
+slice A alone would mark the whole ticket shipped while the **security** slice did not exist. That is
+the same hole the `CLI-008-F1a` renumbering was done to close (`scope-triage.md`, the M0 unit-4
+note), reproduced one level down.
+
+- Each slice writes **`tickets/CLI-017-A-record.md`** / **`tickets/CLI-017-B-record.md`** — RED/GREEN,
+  mutations, reviewed revision, CI jobs and executed counts, in the normal result format. They are
+  **records, not results**, and a distinct reviewer approves each.
+- **One aggregate `tickets/CLI-017-result.md` is written only after BOTH slice records are approved**,
+  and it does nothing but name them and their reviewed revisions — **and assert that every acceptance
+  row 1–8 is carried by one of them**, which is the check that stops a row falling between the
+  slices. Its existence is the single signal
+  that `CLI-017` shipped, which is exactly what the regex reads.
+- **Do not rename the slices to independent ticket ids.** `CLI-018`/`CLI-019` would give two graph
+  nodes for one outcome and lose the "both required" edge that `CLI-015` depends on.
+
+**Depends on:** **ruling F7**, recorded as `E7-D11` in this epic's `decisions.md` — already satisfied.
+Its graph edge is `CLI-011` (`program-design.md`, `#### CLI-017`). **Blocks:** `CLI-012`'s real-run
+acceptance and `CLI-015`.
+
+**Filed 2026-09-23 by ruling F7** (`decisions.md`, `E7-D11`, decided under founder delegation F2).
+This is the ticket the `CLI-011` task and graph node deliberately left unnamed — *"the emit-half BUILD
+has no id yet … it is filed after this ruling, because what it builds depends on which mechanism is
+chosen."* The mechanism ruled is **option 2, a conventional output root**; the placement is **SD-1b**.
+
+**Current state, measured at `499ec4d1c`:**
+
+- **Nothing tells the agent where to write.** `buildSandboxInvocation`
+  (`server/src/services/task-run-sandbox-invocation.ts`) stages three flat files under
+  `STAGED_INPUT_DIR = "/home/user"` and emits a claude script whose tail is
+  `exec "$0" --print - --dangerously-skip-permissions --output-format stream-json --verbose … < "$1"`.
+  There is no cwd change and no output-location directive anywhere in it.
+- **The caller-side seam exists and is unpinned.** `server/src/services/heartbeat.ts`'s canary block
+  passes `currentTaskMarkdown` (and `instructions`, and `aoaMcpConfig`) into
+  `buildTaskRunBatchWorkload`. The `CLI-011` review's §6 pin census found **no test asserting the
+  staged prompt bytes at that call site** — which is why acceptance 1 below exists.
+- **`R` has no constant.** Verified at source: **no production `aoa-output` literal exists** in
+  `server/src/`, `packages/worker-daemon/src/` or `packages/sandbox-e2b-provider/src/`. The path
+  appears only in the probe apparatus (`scripts/lib/cli-011-output-probe.mjs`, which production code
+  must not import) and, already, as a **test fixture path** in two worker-daemon suites —
+  `dispatch-runtime-export-composition.test.ts` and `supervisor-export-artifacts.test.ts` both use
+  `/home/user/aoa-output/…`. Those fixtures anticipate the root; they do not define it, and this
+  ticket must not make them the source of truth.
+- **`exportArtifact` inspects size and hash only.** `E2bSandboxProvider.exportArtifact`
+  (`packages/sandbox-e2b-provider/src/e2b-provider.ts`) reads bytes through `#readArtifactBytes`,
+  re-hashes and refuses a mismatch. **It never looks at content**, and the run's env reaches the same
+  provider as `envVars: spec.env` at `create` — so the provider is the only component holding both
+  the bytes and the secret values (review §3.5).
+- **The probe measured the hazard as real:** run `35833717162`, arm `S-P7`, verdict
+  `nonce-exported-in-file-bytes`, decision-table row **R4** fired on `noncePresent=true`.
+
+**Outcome:**
+
+1. **SD-1b — the directive.** A `claude_local`-only directive, appended at the **distributed caller**
+   (the `heartbeat.ts` canary block, to the task markdown it passes into
+   `buildTaskRunBatchWorkload`), telling the agent to write every deliverable file under `R` and to
+   create `R` if it does not exist. `codex_local` is untouched (`E7-D04`), and a non-distributed run
+   is unchanged.
+2. **SD-2 / SD-4 — one `R`, provably.** `R = /home/user/aoa-output`, as a named constant, with the
+   server-side directive and the worker-side `outputRoot` (`CLI-012`'s
+   `createExportRequestProducer` input) provably equal.
+   ★ **The "one shared constant" route is not available**, verified at source: the only
+   `@armyofagents/*` package both `server/package.json` and `packages/worker-daemon/package.json`
+   depend on is `@armyofagents/worker-protocol`, which is **frozen** (`E7-D07`). So SD-4 is
+   implemented as the review's second form — **two constants plus an equality check that runs in the
+   `policy` job** — modelled on the probe pack's own `default-template-mismatch` assertion
+   (`scripts/lib/cli-011-output-probe.mjs`). A new `scripts/check-*.mjs` must be declared in
+   `scripts/guard-inventory.json` (`check-guard-inventory.mjs`) and wired into `pr.yml`'s `policy`
+   job, or it is a check that nothing runs.
+3. **SD-5 — the export secret refusal, WITH the sandbox-scoped secret handoff it needs.**
+   `E2bSandboxProvider.exportArtifact` refuses bytes carrying any **secret-classified** value of the
+   run's own `env`, with a classified refusal, **before** the PUT. Ruled **REQUIRED before `M1b`'s
+   campaign** by `E7-D11` §3 on the probe's R4.
+
+   ★★★ **A content check on `exportArtifact` alone CANNOT deliver this, and a test that pretends
+   otherwise is a check that nothing runs.** *Added 2026-09-23 (Codex, PR #575), verified at source.*
+   `E2bSandboxProvider.create` forwards `spec.env` to the transport as `envVars` and retains only
+   `{sandboxId, resourceLabels}` in its idempotency map — deliberately, per the `[Cred-1]` comment
+   (DEP-012 slices 4+5): the tenant env must not reach durable E2B metadata. And
+   `exportArtifact(sandboxId, path, grant, ctx)` takes **no env**. So this ticket owes a
+   **sandbox-scoped, in-memory secret handoff with a stated lifecycle**, and the design is part of the
+   deliverable, not an implementation detail:
+   - **populated** at `create` from `spec.env`, keyed by `sandboxId`, in process memory only —
+     **never** in E2B metadata, never in a log, never in durable storage (`[Cred-1]`, Decision #104);
+   - **purged** on `destroy`/`reconcileCleanup` and on the same paths that drop the sandbox, so a
+     terminated run leaves no secret set behind — **and, independently, on a provider-local expiry
+     bound to the sandbox's own TTL.** ★ *Added 2026-09-23 (Codex P2, PR #575).* `create` installs an
+     E2B TTL (`setTimeout`) and the sandbox can end on that TTL **without either cleanup method being
+     called on this provider instance**, so a map purged only on explicit cleanup would hold the run's
+     credentials in memory indefinitely after the sandbox is gone. The expiry must be **replaced or
+     cancelled safely** when explicit cleanup does happen (no double purge, no resurrected entry, no
+     leaked timer);
+   - **fail-closed when absent.** An export for a `sandboxId` with **no registered secret set** is
+     **refused**, never allowed through unchecked. This is the arm that makes an adapter-manager
+     restart safe: after a restart the map is empty, and the honest behaviour is refusal, not a
+     silent unscanned export. **It is a required acceptance row (row 6), with its own mutant.**
+   - **no port or wire change.** The handoff lives inside the E2B provider, between two of its own
+     operations. If the build finds it cannot be done without a port or wire change, that is a
+     **STOP and report**, not an improvisation — `E7-D07` freezes the protocol.
+
+   ★★★ **WHAT SD-5 DOES NOT DO, STATED SO NOBODY READS IT AS CLOSING EXFILTRATION.** *Added
+   2026-09-23 (Codex P1, PR #575).* SD-5 is a **literal-value** refusal. An agent with shell access
+   can `base64`- or `hex`-encode `$ANTHROPIC_API_KEY`, reverse it, or split it across several files —
+   and the per-file policy (`E5-D07`, each file refused or exported on its own) means no single
+   exported file then contains the literal value, so **every PUT proceeds**. PC-11 measures a verbatim
+   canary in one file and **nothing more**, and this ticket must not claim more.
+   - **What SD-5 genuinely buys:** it closes the case the probe actually measured — `S-P7`, a
+     **verbatim** env value written to a file and read back out (`noncePresent=true`). That is the
+     accident and the naive-agent case, and today nothing at all stops it.
+   - **What it does not buy:** it is **not** a secure boundary against a hostile agent, and it does
+     **not** by itself enforce Decision #104's artifact invariant. `E7-D01` already holds that
+     provenance is not productivity; the same discipline applies here — a refusal is not a proof of
+     containment. **Filed as `E7-F038`.**
+   - **Acceptance row 8 (adversarial, required):** the encoded and split cases are **written as tests
+     that assert the CURRENT behaviour — they pass through**. They are characterisation tests, not
+     aspirational ones: they exist so the gap is in the suite rather than in nobody's head, and so a
+     later boundary design has its RED already written.
+   - **The residual is FILED, with a declared owner status — not left as narrative.**
+     ★ *Corrected 2026-09-23 (Codex P2, PR #575): an earlier revision claimed it was "named and owned"
+     while naming no finding, ticket or owner, so no guard or backlog edge would have kept it visible
+     after this ticket completed.* It is **`E7-F038`** (`findings.md`), MEDIUM, **open**, declared
+     **`unowned`** in `scripts/finding-ownership.json` with its closure path written out. It is
+     `unowned` on purpose: `CLI-017` must **not** be named its owner, because this ticket
+     *characterises* the gap as passing rather than fixing it — and because `CLI-017`'s aggregate
+     result doc would then mark the owner shipped and orphan the finding, which is the exact hole
+     `check-finding-ownership` exists to catch. Closing it needs a different boundary (an egress/DLP
+     design over the artifact path, or removing the credential from the sandbox environment
+     altogether). **That is out of `M1b` and needs its own ruling** — this ticket must not improvise
+     one, and **`E7-F038` is not closed by `CLI-017-B` shipping.**
+
+**Acceptance (each row names the mutant that must red it):**
+
+| # | acceptance | positive control / mutant |
+|---|---|---|
+| 1 | **PC-12 — the directive reaches the agent.** A pin at the SD-1b site asserts the **exact** directive text in the staged prompt bytes for a distributed `claude_local` run | **delete the directive → red.** This row is not optional: the review recorded SD-1b's "moves no pin" as *"a search result, not a proof … an unpinned directive can be deleted silently"* |
+| 2 | **PC-11 — a secret does not reach the store.** A planted canary env value written into `R/x` makes `exportArtifact` **REFUSE with a classification** | **a provider without the check exports it** — run the same case against the pre-change path and see the bytes exported |
+| 3 | **`R` cannot drift.** The server-side and worker-side constants are equal, checked in `policy` | **change one constant → the check reds** (and it is declared in `guard-inventory.json`, so it demonstrably runs) |
+| 4 | **`codex_local` is untouched** and a `codex` run's `R` stays absent | **the codex shape pins (census rows 4 and 7) stay green unedited**; a mutant that appends the directive for codex reds them |
+| 5 | **Cross-tenant (F10).** Two Organizations dispatching concurrently each get the directive in their own run's prompt, and neither run's directive, root or refusal reads the other's state. **The secret handoff is keyed by `sandboxId`**, so Organization A's secret set is never consulted for Organization B's export | swap the Organization on the second run's context → the assertion on the first run's prompt must not move; feed sandbox B's export against sandbox A's registered set → it must not match, and must not refuse on A's secrets; `R` is a per-sandbox path (review `A-O2-12`) |
+| 6 | **The handoff is fail-closed.** An export for a `sandboxId` with **no registered secret set** (the adapter-manager-restart state) is **refused with a classification** | **make the absent case fall through to an unchecked export → red.** Without this row the whole of SD-5 is bypassable by restarting a process, and `create`'s own state is not durable |
+| 6b | **The secret set expires with the sandbox.** Advance the clock past the sandbox's TTL **without** calling `destroy` or `reconcileCleanup` → the entry is gone, and a later export for that `sandboxId` hits the fail-closed arm (row 6) | **remove the TTL-bound expiry, keeping only cleanup-path purging → red.** Explicit cleanup must still purge, and must not leave a stale timer or resurrect the entry |
+| 7 | **The secret set is not durable and does not leak.** It is in process memory only — absent from E2B metadata, from `inspect`/`list`, from every log line and from every thrown message | assert against the transport's recorded `metadata` and the op's emitted labels; a mutant that writes it into `metadata` reds, and re-proves `[Cred-1]` (DEP-012 slices 4+5) and Decision #104 |
+| 8 | **The encoded and split cases are characterised, not claimed closed.** A base64/hex/reversed canary, and a canary split across two files, are asserted to **export** — the current behaviour | it is a characterisation row: the mutant is a future boundary design, which must **flip** these two rows to refusals. A build that quietly makes them pass as refusals without a ruling has improvised a boundary |
+
+**Ticket non-goals:** the enumeration port, the producer, the `kind` decision (`E7-D08`) and the
+per-file failure policy — **all `CLI-012`'s**; the announcement (`CLI-013`); the projection
+(`CLI-014`); the counter or its text (`CLI-015`); **option 1b's stdout declaration**, which `E7-D11`
+records as feasible (probe row **R11**) and defers to a post-`M1b` refinement; any `codex_local`
+change (`E7-D04`); a workspace patch (`E7-D05`); any frozen-protocol edit (`E7-D07`).
+
+★★★ **IT MUST NOT REDIRECT OR PIPE THE CLAUDE PROCESS'S STDOUT.** A redirect or `tee` removes
+`WRK-018`'s usage parse (and so `JOB-016`/`E3-F037`) silently, breaks census pin 3, and a POSIX `sh`
+pipe loses `exec`'s exit code because it has no `pipefail` (review §7.1). The probe's `S-P4` arm also
+measured that an unwritable redirect target fails **before** the command runs
+(`commandRan=false`, `failedClosed=true`) — so a redirect route would not merely lose output, it
+would prevent the agent from starting.
+
+**Files:** modify `server/src/services/heartbeat.ts` (append the directive in the canary block, gated
+on `claude_local` **and** on the run targeting a sandbox); create the server-side `R` constant
+(alongside `STAGED_INPUT_DIR` in `server/src/services/task-run-sandbox-invocation.ts`, which is
+already the home of the sandbox path vocabulary — **note that editing this file auto-fires
+`keyed-e2b-unit-d.yml` on merge to `docs/replatform-program`, review §3.7; if that spend is not
+wanted, put the constant in a new server module instead and say so in the result**); create the
+server-side pin test for PC-12; modify
+`packages/sandbox-e2b-provider/src/e2b-provider.ts` (the sandbox-scoped secret handoff at `create`/teardown **and** `exportArtifact`'s refusal) and its unit tests;
+create the worker-side `R` constant where `CLI-012` composes `outputRoot`; create
+`scripts/check-<name>.mjs` for the SD-4 equality check plus its `scripts/lib/__tests__` positive
+control; modify `scripts/guard-inventory.json` and `.github/workflows/pr.yml` (`policy` job); create
+`tickets/CLI-017-A-record.md` and `tickets/CLI-017-B-record.md` (one per slice), and — **only after
+both are approved** — `tickets/CLI-017-result.md`, the aggregate. ★ The per-slice files are
+deliberately **not** `*-result.md`: see the sizing block above.
+
+**Interfaces:** no new port operation, no route, no schema, no wire change. The directive is prompt
+text; `R` is a constant; the refusal is internal to `exportArtifact`.
+
+**Failure behavior:** the directive is **additive text** — if it cannot be appended the run proceeds
+without it and produces no output, which under-claims (`E7-D11` §5, `A-O2-8`) rather than
+mis-attributing. ★ **Stated behaviour change:** under SD-1b the directive counts against
+`MAX_STAGED_FILE_BYTES` (`1_048_576`, `server/src/services/task-run-batch-workload.ts`), so a task
+within roughly 200 bytes of that ceiling which built before is now refused — a refusal, never a
+truncation. The SD-5 refusal is **per file** and classified; it refuses that file's export and does
+**not** fail the attempt (`E5-D07`, best-effort outward), and the refusal names no path, byte or
+content.
+
+**Migration/compatibility / rollback:** additive and behind the default-OFF distributed flag. Rollback
+is removing the directive append — the staged prompt returns byte-identical — and the SD-5 refusal is
+independent of it.
+
+**Observability:** the refusal surfaces through `emitOp`'s closed labels with a classification only.
+**No path, byte, grant URL, env-var name or file content in any log line or metric label**, and never
+the canary value itself.
+
+**RED → GREEN:**
+
+- RED: a distributed `claude_local` run's staged prompt contains the exact directive; deleting the
+  append reds it (PC-12).
+- RED: a `codex_local` run's staged prompt does **not** contain it, and the codex shape pins are
+  unedited.
+- RED: `exportArtifact` on bytes containing a planted canary env value refuses with a classification;
+  the same bytes without the canary export (PC-11 plus its negative half).
+- RED: the two `R` constants disagree → the `policy` check reds; agreeing → green.
+- RED: two Organizations, concurrent — each run's prompt carries its own directive and neither reads
+  the other's (F10).
+- GREEN: all of the above, plus server and `sandbox-e2b-provider` typecheck and build, the full guard
+  set, and the Linux `verify` shard's executed test count recorded (non-zero).
+
+**Real-run acceptance — it PAIRS WITH `CLI-012`, and neither may claim the other's evidence.** A real
+run produces a file under `R` only once this directive ships, and the directive is only observable
+once `CLI-012` enumerates `R` and commits what it finds. So the keyed real-run half is **one joint
+case** recorded in both results: a distributed run whose agent writes under `R`, one `committed`
+`job_artifacts` row for that file, and the SD-5 refusal exercised on a planted canary in the same
+lane. Until that case runs, `CLI-017` is proven against unit pins and `CLI-012` against a fixture
+sandbox, and **both results must say so**. ★ Keyed dispatch here is not authorized by this task: it
+needs a named F8 entry and a planning-session instruction.
+
+**Evidence / commit:** per slice — `tickets/CLI-017-A-record.md` with
+`feat(server): direct distributed claude runs to the conventional output root`, and
+`tickets/CLI-017-B-record.md` with
+`feat(sandbox-e2b-provider): refuse exporting artifacts that carry the run's own secrets`.
+**Then**, once both slice records are approved by a distinct reviewer, the aggregate
+`tickets/CLI-017-result.md`, which names them and their reviewed revisions and adds nothing else —
+its existence is the only signal that `CLI-017` shipped. Maps H-04, H-05.
+
+---
+
 ### `E7-1-JOURNEY-ARM` — promote the coding-journey clause when its two preconditions ship (S, ≤1 agent-day, M1a)
 
 **Depends on:** **E6** — **`DEP-014`** (the adapter-manager image built, signed and admitted in CI)
@@ -1496,7 +1949,7 @@ content, secret, or session byte.
 | H-08 supply chain | No new runtime dependency; the daemon boundary checker stays green. |
 | H-10 evidence integrity | Append-only ticket results; the unit-F design is amended by appended note, never by deletion. |
 | Exit criterion 3 (**`M1a-D2-MECHANISM`**) | `E7-1-JOURNEY-ARM`, with `capabilityProven=false` explicitly acceptable. ★ *Corrected 2026-09-20 (third round): this row said “`M1-D2-CODING`, mechanism verdict”. There is no mechanism half of `M1-D2-CODING` — a QA record has ONE normative `Result`, which is why the companion change made the mechanism verdict its own gate. Recording this ticket under `M1-D2-CODING` would either falsely pass the capability gate or leave `M1a` unpassable.* |
-| **Exit criterion 4 (useful capability — `M1b` only)** | **`CLI-011` + `CLI-012` + `CLI-013` + `CLI-014` + `CLI-015`, plus E5's `DAT-009-3c/3d`.** This is the only criterion the split moves, and `CLI-011` is the one link with no design. |
+| **Exit criterion 4 (useful capability — `M1b` only)** | **`CLI-011` + `CLI-017` (both slices) + `CLI-012` + `CLI-013` + `CLI-014` + `CLI-015`, plus E5's `DAT-009-3c/3d`** — **and the `S-P0` (root empty) PLUS `A-neg` (a no-op run writes nothing under it) evidence for the template the campaign actually runs on** (`E7-D11`, *Conditions on the ruling*; `E7-F022`, HIGH). ★ The `A-neg` re-run is **authorized under F8** by ruling F7, once, before the campaign. This is the only criterion the split moves. ★ *Updated 2026-09-23 (ruling F7, `E7-D11`; Codex P2+P1, PR #575). **Superseded text:** "**`CLI-011` + `CLI-012` + `CLI-013` + `CLI-014` + `CLI-015`, plus E5's `DAT-009-3c/3d`.** This is the only criterion the split moves, and `CLI-011` is the one link with no design."* `CLI-011` now has its ruling, and the emit build it files is `CLI-017`; without it a run writes nothing under `R`, so every other row can pass with zero produced output. **The template row is an OPERATOR evidence edge, not a ticket** — nothing in the ticket set can discharge it, and a campaign that skips it can count template-owned files as agent output. |
 | Exit criterion 6 (rollback rehearsal) | `CLI-016`'s config-only disablement is part of the rehearsal. |
 
 **What no ticket here satisfies:** the E7 **epic** exit gate. `M1-D1-SPINE`, `M1a-D2-MECHANISM` and
@@ -1518,7 +1971,20 @@ M1b:   CLI-010 ──▶ CLI-012 ──▶ CLI-013 ──▶ CLI-014 ──▶ C
                       ▲                                   ▲
        DAT-009-3c ─▶ 3d                                   │
                                                           │
-       CLI-011 ──(founder ruling)──▶ emit build [TO FILE] ─┘
+       CLI-011 ──(ruling F7 = E7-D11)──▶ CLI-017-A ─┐
+                                    └──▶ CLI-017-B ─┴──────────┘
+
+       ★ CLI-017 was "emit build [TO FILE]" until 2026-09-23; ruling F7 filed it (Codex P2, PR #575).
+         CLI-017-A (directive + R + SD-4 check) and CLI-017-B (SD-5 handoff + refusal) are
+         INDEPENDENT of each other and both required. CLI-012's REAL-RUN acceptance additionally
+         waits on CLI-017-A, since a run produces a file under R only once the directive ships.
+
+       ★ PRECONDITION, not a ticket: S-P0 (the root is empty) AND A-neg (a no-op run writes nothing
+         under it) on the template the campaign runs on — E7-D11 "Conditions on the ruling";
+         E7-F022, HIGH. Re-run BOTH on every template change or rebuild, and on any bump of the
+         pinned claude-code version (e2b/e2b.Dockerfile pins 2.1.251, the version A-neg was measured
+         against). The A-neg re-run is authorized under F8, once, before the M1b campaign, and is
+         the CAMPAIGN's to fire. No ticket can discharge it.
 
        ★ CLI-010 (enumeration seam) and CLI-011 (mechanism review) are INDEPENDENT — neither
          precedes the other. The emit build has no id until CLI-011 rules. CLI-012's REAL-RUN
@@ -1655,6 +2121,12 @@ authorize implementation.
   that field gates **which tenant gets the surface**, not currency, so the rule above stands: currency
   is still enforced at use. Verify also the two-Organization case (tool-enabled tenant admitted, the
   other denied).
+- [ ] **T10 (P1, S–M)** — `CLI-017`: the emit build, **filed 2026-09-23 by ruling F7** (`E7-D11`).
+  ★ **It is sequenced BEFORE T7**, because `CLI-015` now depends on it (`program-design.md`,
+  `#### CLI-015`); it is numbered T10 rather than renumbered in, so no existing checkbox id moves.
+  Verify: the PC-12 directive pin reds when the append is deleted; the PC-11 export refusal reds when
+  the check is removed; the SD-4 equality check is declared in `scripts/guard-inventory.json` and runs
+  in `policy`; the codex shape pins are unedited; **no stdout redirect or pipe**.
 - [ ] **T9 (P2, S)** — `E7-1-JOURNEY-ARM`: promote the clause once E6 ships both preconditions.
   Verify: the positive control fired on a **controlled checker fixture** (not on the boot — ★ the
   checker counts references and cannot see a deployment); promotion carried by shipped-boot

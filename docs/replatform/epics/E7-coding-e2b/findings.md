@@ -2184,9 +2184,15 @@ carrying a green measurement beside it), and the run's own codex verdict oversta
 ## E7-F022 — The E2B template is an unpinned operator input under three uncoordinated variable names, invisible to every protocol surface, and the evidence lanes silently default to a template with no CLIs
 
 **Status:** open · **Owner:** unowned (see reason)
-**Severity:** MEDIUM
+**Severity:** HIGH
 **Filed:** W6U1, 2026-09-06. **Corrected DOWN from the HIGH stated in the tasking brief** — see
 severity below — and corrected UP in SCOPE: the brief named one variable; there are three.
+★★★ **RE-DERIVED TO HIGH 2026-09-23, on this entry's own standing instruction** (severity block
+below: *"Re-derive this to HIGH the moment any candidate output mechanism becomes location-based; the
+conditional is the only thing holding it down"*). Ruling **F7** (`decisions.md`, `E7-D11`) chose
+**option 2, a conventional output root** `/home/user/aoa-output` — a location-based mechanism — so the
+condition has fired. **Superseded severity: MEDIUM.** *Raised by Codex on PR #575, which noticed the
+ruling had not carried the re-derivation forward.*
 **Cross-links:** E7-F020 (evidence produced by something other than the agent), E7-F018 (the operator
 preconditions that sit outside a code PR).
 
@@ -2246,6 +2252,21 @@ fail-open today — a keyed run against bare `base` can be reported green while 
 present, which is the same class as E7-F025 below — and the three-name divergence means a proof on one
 lane is quoted for another. ★ **Re-derive this to HIGH the moment any candidate output mechanism
 becomes location-based**; the conditional is the only thing holding it down.
+★★★ **THE CONDITION HAS FIRED (2026-09-23, ruling F7).** The severity above is now **HIGH**; this
+paragraph is kept as written because it is the derivation. What fires it: `CLI-012` counts every
+regular file under `R`, so **a template that pre-populates `R` makes every run of every tenant
+"produce output" with the agent doing nothing** — the `E7-F020` class, arriving through the template
+instead of through a predicate. The P-011 probe's `S-P0` arm proves `R` is empty on **`aoa-base` and
+on nothing else**: the committed record (`epics/E7-coding-e2b/tickets/CLI-011-probe-record.json`, and
+its reading) states in terms that it establishes nothing about *"any template other than the one
+named"*, while the production template stays an **unpinned operator input** under three uncoordinated
+variable names — which is this finding.
+**The precondition ruling F7 therefore carries** (`E7-D11`, *"Conditions on the ruling"*): before any
+template is used for `M1b`'s campaign, **`R` must be proven empty on that template**, by the `S-P0`
+arm, **re-run on every template change or rebuild**, with the result recorded. It is an **operator
+precondition, not code**: `CLI-017` cannot discharge it, and `CLI-012` cannot tell a template-owned
+file from an agent-written one. A campaign that skips it can report produced output that no agent
+produced.
 
 **Owner — unowned, with a reason.** The template is an OPERATOR/DEPLOYMENT artefact, not a code unit:
 the fix is either a boot-time or lane-time assertion that the registered template contains what the
@@ -2538,7 +2559,23 @@ this would not move. It is `unowned` on the record so that the next reader who w
 
 ## E7-F026 — The 'agent declares its own output' option's "no test edits" claim is false against three existing pins, because its mechanism touches the staged PROMPT while its argument is about the WORKLOAD
 
-**Status:** open · **Owner:** CLI-011 (`epics/E7-coding-e2b/tickets/CLI-011-review.md`, no result doc) — ★ *Corrected 2026-09-21 (M1 corrections batch 1), per `CLI-011-review.md` §3.6/§13 item 3:* this line read *"**Owner:** CLI-008 (`epics/E7-coding-e2b/tickets/CLI-008-unit-f-design.md`, no result doc)"* after the register (`scripts/finding-ownership.json`, key `E7-F026`) had been re-pointed to `CLI-011` by M0 unit 4 (founder decisions D1 + D5). The register is authoritative; this prose now agrees with it.
+**Status:** open · **Owner:** **`CLI-017`** (`epics/E7-coding-e2b/tickets/CLI-017-design.md`, no result doc)
+★★★ **RE-POINTED 2026-09-23 from `CLI-011` to `CLI-017` by ruling F7 (`../decisions.md`, `E7-D11`,
+under founder delegation F2). Superseded owner: `CLI-011`.** *Measured before re-pointing, not
+guessed.* **It is NOT superseded by `E7-D11`:** its subject is **option 1**'s completeness/sizing
+claim, not option 4's fitness, and the mechanism actually ruled **is** an append that reaches the
+staged prompt bytes — SD-1b appends the output-root directive to the task markdown at the distributed
+caller, so the **staged prompt**, not the workload, is the surface that moves. **It still BINDS the
+emit build, in two concrete ways:** (1) the review's pin census recorded SD-1b's *"moves no pin"* as a
+**search result, not a proof**, which is why `E7-D11` makes **PC-12** mandatory; and (2) this
+finding's own under-counted fourth test, *"accepts a prompt exactly at the staging ceiling"*, is
+**live** under the ruled placement — `E7-D11` records as a stated behaviour change that the directive
+now counts against `MAX_STAGED_FILE_BYTES`, so a task within ~200 bytes of the ceiling that built
+before is refused. That is exactly the invariant this finding says moves. It constrains what the emit
+build must produce and enumerate, **not** what the judge counts, so the successor is `CLI-017` and not
+`CLI-015`. `ownerStillOpen` is recorded in `scripts/finding-ownership.json`.
+★ *Corrected 2026-09-21 (M1 corrections batch 1), per `CLI-011-review.md` §3.6/§13 item 3, and kept as
+written:* this line read *"**Owner:** CLI-008 (`epics/E7-coding-e2b/tickets/CLI-008-unit-f-design.md`, no result doc)"* after the register (`scripts/finding-ownership.json`, key `E7-F026`) had been re-pointed to `CLI-011` by M0 unit 4 (founder decisions D1 + D5). The register is authoritative; this prose now agrees with it.
 **Severity:** LOW
 **Filed:** W6U1, 2026-09-06, by re-verifying the 26-agent wave's fourth candidate answer against the
 pin corpus.
@@ -3996,3 +4033,132 @@ Evidence: `docs/replatform/qa/2026-09-20-m0-record-lane-health-plan.md` section 
 section 6.
 
 **Blocks gate:** no.
+
+---
+
+## E7-F038 — SD-5's export refusal is a LITERAL-VALUE scan, so an encoded, reversed or split credential still reaches durable object storage
+
+**Status:** open · **Owner:** unowned (declared, `scripts/finding-ownership.json`) · **Severity:** MEDIUM
+**Filed:** 2026-09-23, with ruling **F7** (`decisions.md`, `E7-D11`). Raised by Codex on PR #575 and
+verified at source before filing.
+
+**The claim being bounded.** `E7-D11` rules **SD-5 REQUIRED**: `E2bSandboxProvider.exportArtifact`
+must refuse bytes carrying any secret-classified value of the run's own `env`, and `CLI-017`'s PC-11
+proves it with a planted canary. That is a **substring refusal on the literal value**, and it must not
+be read as closing credential exfiltration through the artifact path.
+
+**What is measured.**
+
+- The hazard is real, not hypothetical. The `CLI-011` P-011 probe (run
+  [`35833717162`](https://github.com/MeteoriteLabs/AoA/actions/runs/35833717162), arm `S-P7`, verdict
+  `nonce-exported-in-file-bytes`, decision row **R4** `noncePresent=true`) wrote an environment value
+  into a file under the output root and read it back out of the sandbox. The record is committed at
+  `tickets/CLI-011-probe-record.json`.
+- The sandbox gives the agent a shell. `buildSandboxInvocation`
+  (`server/src/services/task-run-sandbox-invocation.ts`) emits a `sh` script and both claude literals
+  carry `--dangerously-skip-permissions`, so `base64`, `xxd`, `rev` and `split` are all available to
+  the model's tool calls.
+- The per-file policy makes splitting free. `E5-D07` has each file refused or exported **on its own**
+  (`CLI-012` Failure behavior: a per-file refusal never drops the others), so a value written half
+  into `R/a` and half into `R/b` leaves **no exported file containing the literal value**, and every
+  PUT proceeds.
+- The credential is in the environment by design. `E2bSandboxProvider.create` passes `envVars:
+  spec.env`; its `[Cred-1]` comment records that the key must not hit a durable store (Decision
+  #104). An encoded copy inside an exported artifact **is** a durable store.
+
+**So:** SD-5 closes the case the probe measured — a **verbatim** env value written out, which is the
+accident and the naive-agent case, and which nothing stops today. It is **not** a secure boundary
+against a hostile or injected agent, and it does not by itself enforce Decision #104's invariant over
+the artifact path. `E7-D01`'s discipline applies one level over: a refusal is not a proof of
+containment.
+
+**Why MEDIUM.** For lower: it is **tenant-scoped** — the Company's own key into the Company's own
+restricted artifact, not a cross-tenant crossing (`A-O2-5`, and `A-O2-10`/`A-O2-11` are unaffected:
+attribution comes from the fence, never from bytes) — and it changes no shipped behaviour today,
+because no output mechanism has shipped. For higher: it is a **credential reaching a durable store**,
+which Decision #104 forbids in terms, and the ruling that introduces the path is the same ruling that
+introduces this residual, so filing it anywhere but here would lose it.
+
+**What would close it.** A different boundary, not a wider substring list — an egress/DLP design over
+the artifact path, or removing the model-provider credential from the sandbox's environment
+altogether (the `E7-F010`-shaped provider change). Either is **out of `M1b` and needs its own ruling**;
+`CLI-017` must not improvise one.
+
+**What is in place meanwhile.** `CLI-017`'s acceptance **row 8** requires the encoded and split cases
+to be written as **characterisation tests that assert the current pass-through**. They are
+deliberately not aspirational: the gap then lives in the suite rather than in nobody's head, a future
+boundary design has its RED already written, and a build that quietly flips them to refusals without a
+ruling has improvised a boundary — which the row says in terms.
+
+**Blocks gate:** no. It does not block `M1b`; it must not be read as closed by `CLI-017-B` shipping.
+
+---
+
+## E7-F039 — the symlink refusal is a check-then-read pair: a swap between `lstat` and the read is exported through the link's target, and the re-hash refusal passes
+
+**Status:** open · **Owner:** `CLI-012` (`epics/E7-coding-e2b/tickets/CLI-012-design.md`, no result doc) · **Severity:** MEDIUM
+**Filed:** 2026-09-23, with ruling **F7** (`../decisions.md`, `E7-D11`). Raised by Codex on PR #575,
+verified by reading the code before filing, and **ruled a bounded residual rather than a blocker** by
+the planning session under F2.
+
+**What.** `A-O2-4` requires a symlink under the output root to be refused: unrefused,
+`R/l1 → /home/user/.aoa-run-prompt.md` exports the run's **own staged input** as its output, and
+`R/l1 → /proc/self/environ` exports its **environment**. The refusal `CLI-012` is authorized to build
+when the SDK exposes no no-follow primitive is a **per-entry `lstat`** — and that is the *check* half
+of a check-then-read pair. `lstat` inspects a **path**; the later read **re-resolves** that path. A
+background process the agent left running (the `A-O2-9` class, and `W7`) can swap the file between the
+two, and the read follows the link.
+
+**Why the existing TOCTOU control does not catch it.** `exportArtifact` re-hashes and refuses a
+mismatch, which is what makes `A-O2-9` (a file still being written) safe. It does **not** help here:
+the swapped-in **target is stable**, so digest and export read the same bytes and the re-hash
+**passes**. The probe measured the enabling fact — `readFollowsLink=true`, arm `S-P5`, run
+`35833717162`.
+
+**Why it is BOUNDED — and the bound is `SD-5`, a ruled clause, not a coincidence.**
+
+1. **It is not cross-tenant.** The sandbox is **per-run and single-tenant**: every supervisor op mints
+   a fresh `randomUUID` idempotency key, so `E2bSandboxProvider.create` never reuses a sandbox across
+   attempts (`CLI-011-review.md` `A-O2-12`). A successful swap therefore reads a file in the
+   **tenant's own** sandbox — its own staged prompt, its own environment — never another tenant's.
+   Founder ruling **F10**'s line is not crossed.
+2. **The one materially damaging outcome is refused by `SD-5`.** What makes an exported symlink target
+   harmful is a **redeemed secret reaching durable storage**, and `SD-5` (`E7-D11` §3) has
+   `E2bSandboxProvider.exportArtifact` refuse bytes carrying any secret-classified value of the run's
+   own `env`. **`SD-5` is ruled IN and REQUIRED before `M1b`'s campaign**, so the bound ships with the
+   mechanism rather than after it.
+
+★★★ **IF `SD-5` IS EVER DESCOPED OR WEAKENED, THIS RESIDUAL IS NO LONGER BOUNDED AND THE IN-SANDBOX
+ATOMIC READ BECOMES REQUIRED.** That is the dependency this entry exists to make discoverable from the
+register side: a bound recorded only inside a decision document is invisible to anyone auditing what
+depends on `SD-5`.
+
+**What `CLI-012` owes, and where the line is.** Its real-run acceptance carries a **deliberate
+symlink-swap attempt**. Exactly two outcomes are acceptable: **(i)** the `lstat` check refuses it, or
+**(ii)** it exports and **`SD-5`'s scan refuses the bytes**.
+★★★ **A swap that produces a STORED artifact containing the planted canary is a FAIL of `CLI-012`, not
+a residual.** That case is the entire difference between a bound and a hole, so it is **run and
+recorded**, never reasoned about.
+
+**Severity — MEDIUM, argued both ways.** *For lower:* it is tenant-scoped, needs an adversarial or
+injected agent plus a race, changes no shipped behaviour (nothing produces output today), and its
+damaging outcome is refused by a control ruled in alongside it. *For higher:* it can export the run's
+**own input or environment** as its "output", which is the `§4.3` class the whole output mechanism was
+designed to exclude, and `E7-D01`'s discipline applies — a refusal that loses a race is not a proof of
+containment. It is **not LOW**, because the thing standing between it and a stored credential is a
+single other clause.
+
+**The closure route, recorded and NOT required now.** An **in-sandbox atomic read**: open with
+`O_RDONLY|O_NOFOLLOW` and stream from the **file descriptor** through `runCommand`, so the inode
+inspected is the inode read. ★ **UNVERIFIED** — proposed from the template's contents
+(`e2b/e2b.Dockerfile` installs `python3`) and `E2bTransport.runCommand`'s existence, **not measured**;
+no `node_modules/e2b` was available to the session that proposed it and no keyed run was authorized.
+Its cost is real and unpriced: running an interpreter **inside the tenant's sandbox during export**,
+plus encoding and bounding a byte path that is a direct provider PUT today. On the data-plane
+question: `E7-D06`'s operative rule is *"No payload crosses the **dependency-pinned daemon**"*, and
+`digest_artifact`/`export_artifact` already materialise bytes in the **adapter-manager**
+(`packages/adapter-manager/src/server.ts` — that materialisation is `E5-F009`'s subject), so this
+route is **not obviously** a breach. **Measure it if the route is taken; do not assert it either way.**
+
+**Blocks gate:** no. It does not block `M1b`, and it is **not closed by `CLI-012` shipping a
+`lstat`** — only by the swap-attempt acceptance passing, and ultimately by the atomic read.
