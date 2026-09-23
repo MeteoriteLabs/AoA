@@ -328,8 +328,70 @@ finding would have split one cause across two records, so it is named here inste
 wall clock to reach a specific arm. Injecting the ordering fixes the family; widening a timeout
 fixes neither, because the two cases want opposite timings.
 
-**Blocks gate:** no. These are two advisory tests, and the batch-rejection behaviour they exercise
-is observed on all three platforms - only the error TYPE, or which arm is reached, differs.
+**Blocks gate:** ~~no. These are two advisory tests, and the batch-rejection behaviour they exercise
+is observed on all three platforms - only the error TYPE, or which arm is reached, differs.~~
+★ **See the 2026-09-23 widening below: this line is superseded.**
+
+★★★ **WIDENED 2026-09-23 (record custodian), verified at source - THE WINDOWS SCOPING IS
+CONTRADICTED, AND THE NEW ARM IS WORSE THAN THE OLD ONE.** Recorded here rather than as a new
+finding: same test, same subject, same cause family.
+
+**The occurrence.** `ensureRuntimeServicesForRun > rejects and rolls back the whole run batch when an
+earlier service exits during later readiness` failed on **`ubuntu-latest`**, on the **required**
+`pr.yml` gate: run **`35877620179`**, job **`107237619508`** (`verify (2)`, conclusion `failure`,
+labels `["ubuntu-latest"]`, head `5e14340c3ee79f4b7b1365cb62c4d9b27a981b05`), `1 failed | 661 passed
+| 2 skipped`. It was PR #580, whose diff is `.github/workflows/d1-merge-train.yml`,
+`scripts/lib/m1-spine-assertions.mjs` + its self-test, `tests/d1/m1-spine.test.mjs` and a result doc
+- **nothing in `workspace-runtime.ts` or its test**. It passed on rerun.
+
+**Two sentences in this finding are now false, and they are the two that set its scope.**
+- *"Green on macOS and on the required Linux lane"* - not on this run.
+- *"**Blocks gate:** no. These are two advisory tests"* - the `verify` shards on `pr.yml` **are** the
+  required gate. This case can red it on an unrelated PR, and just did. `E5-F005` is therefore no
+  longer confined to an advisory lane. **Severity is left at LOW and the finding is left `unowned`**
+  - that is a re-rating for the owner, not a custodian's call - but the LOW rationale *"one test, on
+  an advisory lane"* no longer holds as written.
+
+**★★★ THE LINUX ARM IS NOT THE WINDOWS ARM, and this is the load-bearing difference.** On Windows
+*"the batch **is** rejected - the behaviour under test happens - but the race resolves down a
+different arm, so the type assertion fails."* On Linux the assertion was
+`AssertionError: promise resolved "[ { ...(26) }, { ...(26) } ]" instead of rejecting`: the promise
+**resolved with two service refs**. There was no rejection at all, and no rollback. So the claim
+*"the rejection itself is observed on all three platforms; only the error TYPE differs"* - the whole
+basis for "blocks gate: no" - **is refuted**.
+
+**Is it a harness race or a product race? THE EVIDENCE DOES NOT DISTINGUISH THEM, and this note will
+not guess.** Read at source: the batch is rejected by `validateRuntimeServiceAcquisition`
+(`server/src/services/workspace-runtime.ts`), which throws `RuntimeServiceActivationFenceError` when
+a record's `status` is neither `starting` nor `running`. The test arranges `exits-early`
+(`node -e "setTimeout(() => process.exit(0), 100)"`, no readiness config) to die inside the survivor's
+~700 ms readiness window. A resolve means `exits-early`'s record was still `starting`/`running` at
+validation time, and there are two ways to get there, observationally identical in this log:
+- **(H) harness/arrangement race** - the `node -e` child had not yet exited, because process spawn
+  plus node startup on a loaded shared runner outran the survivor's 700 ms. The test's own
+  precondition never held, no service had failed, and no rollback was owed. **This is the reading
+  consistent with the existing finding's diagnosis** (both cases race real children against a wall
+  clock) and with the failure being load-correlated and passing on rerun.
+- **(P) product race** - the child HAD exited and the record's `status` had not caught up, so a dead
+  service was still reported live to the acquisition validator. That would be a real staleness window
+  in the product's view of its own children, not merely a flaky assertion.
+
+Nothing in the job log separates (H) from (P): both yield exactly the observed resolve, and the log
+carries no child-process exit timestamp. **Distinguishing them requires an instrumented rerun** that
+records when `exits-early`'s process actually exited relative to the validation call - which the
+"inject the ordering" fix above would also settle, because under injected ordering (P) would still
+fail and (H) could not.
+
+**What does NOT change.** The recommended fix is unchanged and is now better motivated: inject the
+ordering rather than race it. Raising the timeout is still wrong, and now visibly so - the two
+platforms want opposite timings and Linux failed in the direction extra time makes *more* likely.
+Skipping remains refused (`E6-F023`). The sibling case
+(`startRuntimeServicesForWorkspaceControl > validates the whole batch before committing any service`)
+has **not** been observed on Linux; only this one has, and only once - no second Linux occurrence was
+found in the last 120 `pr.yml` runs (17 failures, every failed `verify` job's log searched for
+`workspace-runtime.test.ts`; zero hits). **One occurrence is an observation, not a pattern** - but the
+platform-scoping contradiction stands on this single run, because it is a claim about where the case
+*can* fail, not about how often.
 ---
 
 ## E5-F006 - the relayed upload grant is unauthenticated at the adapter-manager, and the redemption guard that narrows the replay is per-instance and in-memory
