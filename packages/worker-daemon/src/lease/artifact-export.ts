@@ -482,6 +482,35 @@ export function createArtifactExportSequencer(deps: CreateArtifactExportSequence
         // what is being written, and the safe reading is "do not upload".
         if (grant.objectKey !== objectKey) fail("grant", "granted a different object key", "object_key_mismatch");
 
+        // ★★★ THE CHARGE IS RESERVED HERE, BEFORE THE ONLY HOP THAT MOVES BYTES.
+        //
+        //     INVARIANT: THE TENANT IS CHARGED UNLESS IT IS **PROVEN** THAT NO BYTES LEFT.
+        //
+        // ★ *Refined 2026-09-23 by the planning session, correcting its own earlier wording.*
+        // **Superseded wording:** *"the tenant is charged if and only if bytes left the sandbox"*.
+        // That reads as enforceable but is not: when the body is transmitted and the RESPONSE
+        // times out, bytes-left is **unknowable**, and an invariant presuming knowledge you
+        // cannot have has no placement that satisfies it. The refinement keeps every earlier
+        // conclusion and decides only the unknowable case.
+        //
+        // Applied to the stages — and note this placement changes NONE of the first three:
+        //   * GRANT FAILS → this line is never reached → **no charge**. Proven: without a grant
+        //     there is no upload, so no bytes can have moved. (Codex round 3.)
+        //   * BYTE-MOVE SUCCEEDS, COMMIT FAILS → already charged → **charged**. (Codex round 2.)
+        //   * FULL SUCCESS → charged **exactly once**, here and nowhere else.
+        //   * BODY TRANSMITTED, RESPONSE TIMED OUT → **charged**, because it is NOT PROVEN that
+        //     nothing left. (Codex round 5.)
+        //
+        // ★★★ WHY IT FAILS CLOSED, AND THIS IS THE LOAD-BEARING PART. This is a
+        // BUDGET-ENFORCEMENT mechanism before it is a billing one. An under-charge makes the
+        // bound **bypassable**: a tenant that can induce an ambiguous timeout gets free bytes,
+        // and because failures are per-file (`E5-D07`) that bypass repeats — all 64 files, up to
+        // 1.6 GiB, against a 100 MiB cap. An over-charge on a genuinely ambiguous timeout is a
+        // visible, disputable billing error; a silently bypassable budget is neither visible nor
+        // bounded. Proven per tenant (F10): a bypass that works per tenant is worth MORE to an
+        // attacker, not less.
+        attemptBytes += described.sizeBytes;
+
         // --- 3. EXPORT — the only hop that moves bytes, and it is provider → S3 --------------
         let reference: { objectKey: string };
         try {
@@ -494,27 +523,6 @@ export function createArtifactExportSequencer(deps: CreateArtifactExportSequence
         }
         if (reference.objectKey !== objectKey) fail("export", "exported a different object key", "object_key_mismatch");
 
-        // ★★★ THE CHARGE, AND ITS PLACEMENT IS AN INVARIANT RATHER THAN A PREFERENCE.
-        //
-        //     THE TENANT IS CHARGED IF AND ONLY IF BYTES LEFT THE SANDBOX.
-        //
-        // Test that against the three stages and this point falls out as the ONLY one that
-        // satisfies it:
-        //   * ADMISSION (before the mint) is TOO EARLY — a grant-stage failure would charge for
-        //     bytes that never moved, which on a multi-tenant billing path is a tenant-visible
-        //     over-charge (Codex round 3, correct);
-        //   * THE END OF THE FLOW (after the commit) is TOO LATE — a commit-stage failure after
-        //     the bytes moved would not charge, and a run failing at commit could export without
-        //     limit (Codex round 2, also correct);
-        //   * IMMEDIATELY AFTER `exporter.export` RETURNS — the only hop that moves bytes — is
-        //     the one placement that satisfies both.
-        //
-        // ★ So the two rounds that pushed opposite ways on this line are not an oscillation
-        // between reviewers' preferences: each observed one half of the invariant, and this is
-        // where the halves meet. Pinned per stage in `artifact-export-sequencer.test.ts`,
-        // including a charged-EXACTLY-ONCE arm, because moving a charge point is a natural place
-        // to introduce a double charge, and an F10 cross-tenant arm with its same-tenant control.
-        attemptBytes += described.sizeBytes;
 
         // --- 4. COMMIT the reference ---------------------------------------------------------
         const commitResponse = await postOp("commit", () => deps.client.artifactCommit(

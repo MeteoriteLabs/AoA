@@ -96,6 +96,12 @@ export type OutputRefusalReason =
 /** ONE refusal. Path-free. */
 export interface OutputRefusal {
   readonly reason: OutputRefusalReason;
+  /**
+   * ★ HOW MANY ENTRIES THIS ONE REFUSAL STANDS FOR — present only on the aggregated refusal the
+   * file-count cap emits. *Added 2026-09-23 (Codex round 5, PR #576).* A number, so it stays
+   * path-free and safe in a log line or a metric label, exactly like `reason`.
+   */
+  readonly count?: number;
 }
 
 export interface CreateExportRequestProducerDeps {
@@ -181,9 +187,9 @@ function depthUnder(root: string, path: string): number {
 export function createExportRequestProducer(deps: CreateExportRequestProducerDeps) {
   const outputRoot = (deps.outputRoot ?? DEFAULT_OUTPUT_ROOT).replace(/\/+$/, "");
   const contentTypeFor = deps.contentTypeFor ?? contentTypeForPath;
-  const refuse = (reason: OutputRefusalReason): void => {
+  const refuse = (reason: OutputRefusalReason, count?: number): void => {
     try {
-      deps.onRefused?.({ reason });
+      deps.onRefused?.(count === undefined ? { reason } : { reason, count });
     } catch {
       // Observation is best-effort and must never turn a produced list into a thrown window.
     }
@@ -198,7 +204,8 @@ export function createExportRequestProducer(deps: CreateExportRequestProducerDep
     const requests: ArtifactExportRequest[] = [];
     let totalBytes = 0;
     const prefix = `${outputRoot}/`;
-    for (const entry of entries) {
+    for (let index = 0; index < entries.length; index++) {
+      const entry = entries[index]!;
       // ★ FAIL-CLOSED ON A PATH THAT IS NOT UNDER THE ROOT. The transport's contract already
       // guarantees it, so this can only fire on a compromised or re-implemented driver — which
       // is exactly when a capture that trusted the list would export something else entirely.
@@ -218,8 +225,20 @@ export function createExportRequestProducer(deps: CreateExportRequestProducerDep
         refuse("output_too_large");
         continue;
       }
+      // ★★★ THE FILE-COUNT CAP IS TERMINAL, AND ITS REFUSAL IS AGGREGATED.
+      // *Added 2026-09-23 (Codex round 5, PR #576).* Two facts, both load-bearing. Once
+      // `requests.length` reaches the cap NO later entry can ever be admitted — admission means
+      // pushing onto `requests` — so continuing the scan is pure work with no possible outcome.
+      // And `onRefused` is wired to a per-refusal WARNING in production, so an agent that leaves
+      // the listing bound's worth of entries under the root could mint ~99,936 warning records
+      // from a single run despite the intended 64-file bound: an operational defect on its own,
+      // and a log-amplification channel a tenant controls. ONE refusal is emitted carrying the
+      // number of entries it stands for, which is the truthful signal, and the scan stops.
+      if (requests.length >= MAX_OUTPUT_FILES) {
+        refuse("output_limit_exceeded", entries.length - index);
+        break;
+      }
       if (
-        requests.length >= MAX_OUTPUT_FILES ||
         totalBytes + entry.sizeBytes > MAX_OUTPUT_TOTAL_BYTES ||
         depthUnder(outputRoot, entry.path) > MAX_OUTPUT_DEPTH
       ) {

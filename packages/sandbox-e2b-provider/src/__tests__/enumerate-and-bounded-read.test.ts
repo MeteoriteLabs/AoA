@@ -583,6 +583,56 @@ describe("CLI-012 — a bounded read ABORTS the underlying SDK request, not mere
     expect(aborted, "nothing observed the abort").toBe(true);
   });
 
+  // -------------------------------------------------------------------------------------
+  // ★★★ THE FAMILY SWEEP, not one more patch. The read was the member Codex pointed at; the
+  // remedy ruled was to sweep the CLASS. Every `boundedBySignal` site in `e2b-provider.ts` was
+  // checked (5) and every SDK call reachable beneath one: `listDir` and `statEntry` carried the
+  // SAME defect and are fixed here with the SAME abort-fired proof, not a timing-only test.
+  // `FilesystemListOpts` and `FilesystemRequestOpts` both carry `signal` in `e2b@2.30.5`.
+  // -------------------------------------------------------------------------------------
+  it("★★★ SWEEP — the output LISTING is aborted at its deadline too, not abandoned mid-enumeration", async () => {
+    let handed: AbortSignal | undefined;
+    let aborted = false;
+    const sdk = {
+      connect: async () => ({
+        files: {
+          list: async (_path: string, opts?: { signal?: AbortSignal }) => {
+            handed = opts?.signal;
+            handed?.addEventListener("abort", () => {
+              aborted = true;
+            });
+            return await new Promise(() => undefined); // stalls forever, the finding's shape
+          },
+        },
+      }),
+    };
+    const provider = new E2bSandboxProvider({ transport: new RealE2bTransport({ apiKey: "test-key-not-a-credential", sdk }) as never });
+    await expect(provider.enumerateOutputs("s", ROOT, { deadlineMs: 25 } as never)).rejects.toThrow(/timed out/);
+    expect(handed, "the SDK listing received no AbortSignal at all").toBeInstanceOf(AbortSignal);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(handed!.aborted, "the signal handed to files.list never fired").toBe(true);
+    expect(aborted, "nothing observed the listing abort").toBe(true);
+  });
+
+  it("★★★ SWEEP — the no-follow STAT is aborted at its deadline too", async () => {
+    let handed: AbortSignal | undefined;
+    const sdk = {
+      connect: async () => ({
+        files: {
+          getInfo: async (_path: string, opts?: { signal?: AbortSignal }) => {
+            handed = opts?.signal;
+            return await new Promise(() => undefined);
+          },
+        },
+      }),
+    };
+    const provider = new E2bSandboxProvider({ transport: new RealE2bTransport({ apiKey: "test-key-not-a-credential", sdk }) as never });
+    await expect(provider.digestArtifact("s", `${ROOT}/x.bin`, { deadlineMs: 25 } as never)).rejects.toThrow(/timed out/);
+    expect(handed, "the SDK stat received no AbortSignal at all").toBeInstanceOf(AbortSignal);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(handed!.aborted, "the signal handed to files.getInfo never fired").toBe(true);
+  });
+
   it("★ a read that FITS inside the deadline is not aborted — the bound is not just 'everything fails'", async () => {
     let handed: AbortSignal | undefined;
     const sdk = {

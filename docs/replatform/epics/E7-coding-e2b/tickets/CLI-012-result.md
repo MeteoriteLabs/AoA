@@ -687,3 +687,122 @@ and that the signal **fired**, observed through an `abort` listener.
 `sandbox-fake-provider 91 passed`. Typecheck `Done` across all four affected packages, **after**
 `pnpm --filter sandbox-e2b-provider build` — the stale-`dist` lesson from §11.10 applied rather
 than re-learned. Every mutation reverted; a `MUTANT` grep over the touched sources returns `0`.
+
+### 11.12 Codex round 5 — the invariant REFINED, the family SWEPT, and the refusal channel BOUNDED
+
+*Ruled 2026-09-23 by the planning session under founder delegation F2: fix all three, then hard-stop.*
+
+#### (a) The invariant is REFINED, not reversed — a correction of the ruling, by the ruling
+
+> **Earlier wording (§11.11):** *"The tenant is charged **if and only if** bytes left the sandbox."*
+> **Refined wording, which governs:** **"The tenant is charged UNLESS IT IS PROVEN that no bytes
+> left the sandbox."**
+
+★★★ **Both wordings are recorded deliberately, so no later round reads the grant-failure arm and
+the timeout arm as contradicting each other.** The earlier wording reads as enforceable but is
+not: when the body is transmitted and the **response** times out, bytes-left is **unknowable**, and
+an invariant that presumes knowledge you cannot have has no placement satisfying it. The
+refinement keeps every earlier conclusion and decides only that case.
+
+| Stage | Verdict | Changed by the refinement? |
+|---|---|---|
+| Grant fails | **No charge** — proven: without a grant there is no upload | No |
+| Byte-move succeeds, commit fails | **Charged** | No |
+| Full success | **Charged exactly once** | No |
+| **Body transmitted, response timed out** | **CHARGED** — *not proven* that nothing left | **This is the case it decides** |
+
+The charge is therefore **reserved immediately before** `exporter.export`, the only hop that moves
+bytes. Every earlier arm holds unchanged: the reservation line is unreachable when the grant fails,
+so "grant fails → no charge" is still proven rather than merely arranged.
+
+★★★ **Why it fails closed, which is the load-bearing part.** This is a **budget-enforcement**
+mechanism before it is a billing one. An under-charge makes the bound **bypassable**: a tenant able
+to induce an ambiguous timeout gets free bytes, and because failures are per-file (`E5-D07`) that
+bypass repeats — up to 64 files, 1.6 GiB, against a 100 MiB cap. An over-charge on a genuinely
+ambiguous timeout is a **visible, disputable** billing error; a silently bypassable budget is
+neither visible nor bounded.
+
+| Arm | Result |
+|---|---|
+| **Unknowable case** — two 80s, ceiling 100, A's `export` rejects after transmit; B must be refused | GREEN (`export_failed` then `output_limit_exceeded`, nothing exported) |
+| **F10 cross-tenant on the unknowable case** — a per-tenant bypass is worth **more** to an attacker; run for a second Organization with the same-tenant control first | GREEN for both |
+| The three §11.11 stage arms | GREEN, unchanged |
+
+| # | Mutation | Result |
+|---|---|---|
+| M30 | Charge only on `export` **success** (round-4 placement restored) | **RED** — the unknowable-case arm and its cross-tenant twin |
+
+#### (b) The family SWEPT, not the twin patched
+
+The remedy ruled was to sweep the **class** — *"a bound that bounds the caller is not a bound on the
+operation"* — because *"I fixed the family member I was pointed at and did not sweep the family"*
+was the correct diagnosis of what went wrong.
+
+**Sweep: 5 `boundedBySignal` sites in `E2bSandboxProvider` checked, plus every SDK call reachable
+beneath one. 4 sites found carrying the shape. 3 fixed. 1 filed.**
+
+| Site | Before | Disposition |
+|---|---|---|
+| `#readArtifactBytes` → `readFile` | unsignalled | **Fixed** (round 4) |
+| `enumerateOutputs` → `listDir` | unsignalled | **Fixed** — `FilesystemListOpts` carries `signal` |
+| `#readArtifactBytes` → `statEntry` (the no-follow stat) | unsignalled | **Fixed** — `FilesystemRequestOpts` carries `signal`; found by the sweep, not by review |
+| `exportArtifact` → the SD-5 scan | unsignalled | **Filed as `E7-F040`**, owner `CLI-017` — see below |
+| `exportArtifact` → `#performUploadGrant` | signalled | Already correct (reaches `fetch`) |
+
+Each fix carries the **abort-fired** proof, never a timing-only test: the arm asserts the SDK
+**received** an `AbortSignal` (non-vacuity — not `undefined`, which is what the defect handed it)
+and that it **fired**. A test asserting only *"the call rejected on time"* passes against the defect
+verbatim, because `boundedBySignal` already guarantees that.
+
+| # | Mutation | Result |
+|---|---|---|
+| M31 | Drop the signal from `files.list` at the SDK boundary | **RED** (*"the SDK listing received no AbortSignal at all"*) |
+| M32 | Drop the signal from `files.getInfo` at the SDK boundary | **RED** (*"the SDK stat received no AbortSignal at all"*) |
+
+★ **`E7-F040` — the site the sweep deliberately left alone**, recorded rather than silently judged.
+`scanExportBytes(bytes, sandboxId)` takes no signal. The harm class does not apply as built (an
+in-process callback holds no connection and streams no bytes), and the signature belongs to
+`CLI-017-B`, which supplies the implementation. If that scanner does remote or IO-bound work it is
+the same class and the seam must take a signal, with the same abort-fired control; if it stays a
+pure in-process literal scan, the finding closes as not-applicable. **A site the sweep chose not to
+fix is part of the sweep's result, not an omission from it.**
+
+#### (c) The refusal channel is BOUNDED
+
+`onRefused` is wired to a per-refusal **warning** in production, so an agent leaving the listing
+bound's worth of entries under the root could mint **~99,936 warning records from one run** despite
+the intended 64-file bound: an operational defect on its own, and a log-amplification channel the
+tenant controls.
+
+Two facts make the fix simple and total. Once `requests.length` reaches the file cap **no later
+entry can ever be admitted** — admission *means* pushing onto `requests` — so continuing the scan is
+work with no possible outcome. And one aggregated refusal carrying a **count** is a strictly more
+truthful signal than a flood of identical ones. So the cap now emits **one** `output_limit_exceeded`
+carrying the number of entries it stands for, and **stops**. `OutputRefusal.count` is a number, so
+the type stays path-free and safe in a log line or metric label exactly as `reason` is; the
+production log line carries it.
+
+| Arm | Result |
+|---|---|
+| **Log bound** — 64 admitted + a 5,000-entry tail | GREEN: exactly **one** refusal, `{reason: "output_limit_exceeded", count: 5000}` |
+| Existing 64+3 arm, updated | GREEN: one refusal with `count: 3` (*superseded expectation: three separate refusals*) |
+
+| # | Mutation | Result |
+|---|---|---|
+| M33 | Restore the per-entry refusal flood | **RED** (both log-bound arms) |
+
+#### Suites, and the stale-`dist` lesson applied again
+
+Re-run **after** `pnpm --filter sandbox-e2b-provider build`: `sandbox-e2b-provider 197 passed,
+32 skipped (229)` · `worker-daemon 1262 passed, 1 skipped (1263)` · `adapter-manager 204 passed` ·
+`provider-wire 87 passed, 1 skipped` · `sandbox-fake-provider 91 passed`. Typecheck `Done` across
+all four affected packages. Every mutation reverted; a `MUTANT` grep over the touched sources
+returns `0`.
+
+★ **One flake observed and not buried:** the first full `worker-daemon` run after the log-line edit
+reported `1 failed | 1261 passed`; two subsequent full runs were clean at `1262 passed`, and the
+failure did not name a suite this change touches. It is recorded here rather than explained away —
+§4 already carries a flake note for this package.
+
+**This is the last push on `#576`.** Anything found after it becomes a filed finding with an owner,
+not a fix.

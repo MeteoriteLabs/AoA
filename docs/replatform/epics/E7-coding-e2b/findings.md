@@ -4178,3 +4178,37 @@ route is **not obviously** a breach. **Measure it if the route is taken; do not 
 
 **Blocks gate:** no. It does not block `M1b`, and it is **not closed by `CLI-012` shipping a
 `lstat`** — only by the swap-attempt acceptance passing, and ultimately by the atomic read.
+
+## E7-F040 — the SD-5 export scanner is the one bounded-operation seam that carries no abort signal, and whether that matters is `CLI-017-B`'s to decide
+
+**Status:** open · **Owner:** `CLI-017-B` · **Severity:** LOW
+
+**What was measured.** `CLI-012`'s round-5 sweep checked every `boundedBySignal` site in
+`E2bSandboxProvider` (5) and every SDK call reachable beneath one, for the class *"the deadline
+bounds the CALLER but not the OPERATION"*. Three carried the defect and were fixed —
+`E2bTransport.readFile`, `listDir` and `statEntry`, each now threading the op's own signal into the
+SDK request and each pinned by an **abort-fired** proof rather than a timing-only test. One did
+not, and is recorded here rather than silently judged:
+
+**The site.** `E2bSandboxProvider.exportArtifact` wraps the SD-5 scan in `boundedBySignal`, but the
+injected callback's own signature is `scanExportBytes(bytes, sandboxId)` — **no signal**. So a
+scanner that overran the deadline would be abandoned, not cancelled.
+
+**Why it was NOT fixed under `CLI-012`.** Two reasons, both stated so a later reader can overturn
+them on evidence rather than on taste. The harm class that motivated the other three does not
+apply as built: the scanner is an **in-process callback**, so an abandoned scan holds no pooled
+connection and streams no tenant bytes anywhere — it burns CPU the process was going to hold
+anyway. And the signature belongs to the ticket that supplies the implementation, so widening it
+from here would be `CLI-012` designing `CLI-017-B`'s interface.
+
+**What would make it real, and what the owner owes.** If `CLI-017-B`'s scanner does any REMOTE or
+IO-bound work — a lookup against a secret set held out of process, a streaming scan — then it is
+the same class as the three fixed here, and the seam must take a signal, with the same abort-fired
+control (assert the scanner RECEIVED a signal and that it FIRED; a test that only checks the
+caller returned on time passes against the defect verbatim). If it stays a pure in-process
+literal-value scan over bytes already in hand, this closes as not-applicable, with the measurement
+recorded.
+
+**Filed:** 2026-09-23 by `CLI-012` (PR #576), from its own family sweep rather than from a review
+finding — the ruling was to sweep the class, and a site the sweep deliberately left alone is part
+of the sweep's result, not an omission from it.

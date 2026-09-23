@@ -387,7 +387,8 @@ export interface E2bTransport {
    *
    * Missing sandbox OR path throws {@link E2bTransportNotFoundError}.
    */
-  statEntry(sandboxId: string, path: string): Promise<E2bDirEntry>;
+  /** ★ CLI-012 — `signal` BOUNDS THE OPERATION (see {@link E2bTransport.readFile}). */
+  statEntry(sandboxId: string, path: string, opts?: { readonly signal?: AbortSignal }): Promise<E2bDirEntry>;
   /**
    * CLI-002/D1, contract fixed by CLI-010 (E7-D09) — enumerate the files under `path`:
    * FILES ONLY (never a directory), RECURSIVELY, as ABSOLUTE paths strictly under `path`
@@ -402,7 +403,13 @@ export interface E2bTransport {
    * ★ CLI-012 (ruling F7) — each entry now carries its absolute path, a LINK MARKER and a byte
    * SIZE ({@link E2bDirEntry}). It used to return `readonly string[]`; see that type for why.
    */
-  listDir(sandboxId: string, path: string): Promise<readonly E2bDirEntry[]>;
+  /**
+   * ★ CLI-012 — `signal` BOUNDS THE OPERATION (see {@link E2bTransport.readFile}). Without it a
+   * stalled `files.list` runs on after the caller's deadline, holding a connection and
+   * enumerating up to the entry bound while the adapter-manager has already released its
+   * per-sandbox lock and moved on to teardown. `FilesystemListOpts` carries `signal`.
+   */
+  listDir(sandboxId: string, path: string, opts?: { readonly signal?: AbortSignal }): Promise<readonly E2bDirEntry[]>;
   /** Deliver a graceful-cancel or forced-kill signal to a live sandbox. */
   signal(sandboxId: string, kind: "cancel" | "kill"): Promise<E2bSignalResult>;
   /** Terminate + reclaim a sandbox. May throw {@link E2bTransportTransientError}. */

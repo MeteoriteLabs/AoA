@@ -748,7 +748,7 @@ export class E2bSandboxProvider implements SandboxProvider {
     // refuses). It is NOT presented as atomic.
     let entry;
     try {
-      entry = await this.#transport.statEntry(sandboxId, path);
+      entry = await this.#transport.statEntry(sandboxId, path, ...(signal ? [{ signal }] : []));
     } catch (err) {
       if (err instanceof E2bTransportNotFoundError) throw new SandboxNotFoundError();
       throw err;
@@ -786,9 +786,10 @@ export class E2bSandboxProvider implements SandboxProvider {
     if (!(ctx.deadlineMs > 0)) throw new Error("output enumeration budget exhausted before the listing");
     let entries;
     try {
+      const listSignal = AbortSignal.timeout(ctx.deadlineMs);
       entries = await boundedBySignal(
-        this.#transport.listDir(sandboxId, root),
-        AbortSignal.timeout(ctx.deadlineMs),
+        this.#transport.listDir(sandboxId, root, { signal: listSignal }),
+        listSignal,
         "output enumeration timed out",
       );
     } catch (err) {

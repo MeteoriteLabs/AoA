@@ -763,6 +763,81 @@ describe("CLI-012 -- a control-plane call that REJECTS is a per-file failure, no
     expect(committed).toHaveLength(1);
   });
 
+  it("*** THE UNKNOWABLE CASE: a transmit whose RESPONSE timed out is CHARGED -- not proven that no bytes left", async () => {
+    // The refinement of the invariant (planning session, correcting its own earlier wording):
+    // "charged UNLESS IT IS PROVEN that no bytes left". A body that was transmitted and whose
+    // response timed out is precisely the case where bytes-left is UNKNOWABLE, and this is a
+    // BUDGET-ENFORCEMENT mechanism before it is a billing one -- an under-charge makes the bound
+    // BYPASSABLE by inducing an ambiguous timeout, and per-file handling amplifies that 64x.
+    const A5 = "/home/user/aoa-output/a5.bin";
+    const B5 = "/home/user/aoa-output/b5.bin";
+    const run = createArtifactExportSequencer({
+      maxAttemptBytes: 100,
+      client: grantingClient({}) as never,
+      key: generateDeviceKey(),
+      session: async () => SESSION,
+    });
+    const outcome = await run({
+      handoff: makeHandoff(),
+      exporter: {
+        async digest(path) {
+          return { sha256: SHA, sizeBytes: path === A5 ? 80 : 80 };
+        },
+        async export(path) {
+          // The body went out; only the RESPONSE was lost. Indistinguishable, from here, from a
+          // reset before a single byte moved -- which is the whole point.
+          if (path === A5) throw new Error("ETIMEDOUT");
+          return { objectKey: "k" };
+        },
+      },
+      requests: [req(A5), req(B5)],
+    });
+    expect(outcome.failures).toEqual([
+      { stage: "export", reason: "export_failed" },
+      // * CHARGED: A's 80 stands against the ceiling, so B's 80 no longer fits. Uncharged, B
+      // would export and the 100-unit bound would have been walked straight through.
+      { stage: "digest", reason: "output_limit_exceeded" },
+    ]);
+    expect(outcome.exported).toEqual([]);
+  });
+
+  it("*** F10 MULTI-TENANT on the UNKNOWABLE case -- a per-tenant bypass is worth MORE, not less", async () => {
+    // A bypass that works per tenant is worth more to an attacker, so the ambiguous-timeout
+    // charge is proven for a SECOND Organization too, with the same-tenant control first.
+    const P = "/home/user/aoa-output/ambiguous.bin";
+    const Q = "/home/user/aoa-output/follow.bin";
+    const attempt = (handoff: ReturnType<typeof makeHandoff>) =>
+      createArtifactExportSequencer({
+        maxAttemptBytes: 100,
+        client: grantingClient({}) as never,
+        key: generateDeviceKey(),
+        session: async () => SESSION,
+      })({
+        handoff,
+        exporter: {
+          async digest() {
+            return { sha256: SHA, sizeBytes: 80 };
+          },
+          async export(path) {
+            if (path === P) throw new Error("ETIMEDOUT");
+            return { objectKey: "k" };
+          },
+        },
+        requests: [req(P), req(Q)],
+      });
+
+    const tenantA = makeHandoff();
+    const offerB = JSON.parse(JSON.stringify(tenantA.offer)) as Record<string, unknown>;
+    (offerB.job as Record<string, unknown>).organizationId = "00000000-0000-4000-8000-0000000000b2";
+    const tenantB = { ...tenantA, offer: offerB as typeof tenantA.offer };
+
+    for (const [name, handoff] of [["same-tenant control", tenantA], ["cross-tenant", tenantB]] as const) {
+      const outcome = await attempt(handoff);
+      expect(outcome.exported, `${name}: the ambiguous transmit must not buy a free follower`).toEqual([]);
+      expect(outcome.failures.map((f) => f.reason), name).toEqual(["export_failed", "output_limit_exceeded"]);
+    }
+  });
+
   it("*** the charge happens EXACTLY ONCE on a fully successful file", async () => {
     // A move of the charge point is a natural place to introduce a DOUBLE charge, so this is
     // pinned rather than assumed: with a ceiling of 100 and two 40-unit files, both must fit.

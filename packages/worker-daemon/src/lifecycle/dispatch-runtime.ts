@@ -294,7 +294,12 @@ export async function composeDispatchRuntime(deps: ComposeDispatchRuntimeDeps): 
     // the TYPE, not by discipline at the call site. No new `emitOp` label is minted — that
     // vocabulary stays closed to `digest_artifact` / `export_artifact`.
     onRefused: (refusal) => {
-      deps.logger?.warn({ reason: refusal.reason }, "worker: output file refused before export");
+      // ★ The COUNT rides the line when the refusal is the aggregated file-cap one, so the
+      // operator sees how many entries were dropped without one record per entry (round 5).
+      deps.logger?.warn(
+        refusal.count === undefined ? { reason: refusal.reason } : { reason: refusal.reason, count: refusal.count },
+        "worker: output file refused before export",
+      );
     },
   });
 

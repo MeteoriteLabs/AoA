@@ -569,11 +569,13 @@ export class RealE2bTransport implements E2bTransport {
    * same release exposes NO no-follow read option (`FilesystemReadOpts` is `{gzip,
    * streamIdleTimeoutMs}` over `{requestTimeoutMs, signal}`), which is why this branch exists.
    */
-  async statEntry(sandboxId: string, path: string): Promise<E2bDirEntry> {
+  async statEntry(sandboxId: string, path: string, opts?: { readonly signal?: AbortSignal }): Promise<E2bDirEntry> {
     let info: unknown;
+    const signal = opts?.signal;
     try {
       const sandbox = await this.#sdk.connect(sandboxId, { apiKey: this.#apiKey });
-      info = await sandbox.files.getInfo(path);
+      // ★ CLI-012 — the caller's deadline reaches the SDK request (`FilesystemRequestOpts.signal`).
+      info = await sandbox.files.getInfo(path, ...(signal ? [{ signal }] : []));
     } catch (err) {
       if (this.#isNotFound(err)) throw new E2bTransportNotFoundError(`${sandboxId}:${path}`);
       throw err;
@@ -598,11 +600,13 @@ export class RealE2bTransport implements E2bTransport {
    * kinds the SDK itself skips (`Filesystem.list` drops any entry whose wire type is neither
    * FILE nor DIRECTORY before it reaches this code), is CLI-012's keyed real-run acceptance.
    */
-  async listDir(sandboxId: string, path: string): Promise<readonly E2bDirEntry[]> {
+  async listDir(sandboxId: string, path: string, opts?: { readonly signal?: AbortSignal }): Promise<readonly E2bDirEntry[]> {
     let entries: unknown;
+    const signal = opts?.signal;
     try {
       const sandbox = await this.#sdk.connect(sandboxId, { apiKey: this.#apiKey });
-      entries = await sandbox.files.list(path, { depth: E2B_LIST_DIR_MAX_DEPTH + 1 });
+      // ★ CLI-012 — the caller's deadline reaches the SDK request (`FilesystemListOpts.signal`).
+      entries = await sandbox.files.list(path, { depth: E2B_LIST_DIR_MAX_DEPTH + 1, ...(signal ? { signal } : {}) });
     } catch (err) {
       // ★ CLI-012 (Codex P2, PR #576) — A MISSING DIRECTORY IS NOT A MISSING SANDBOX. A run that
       // wrote no output never creates the output root, and the SDK answers `files.list` on it

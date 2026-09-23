@@ -127,11 +127,26 @@ describe("CLI-012 — the SD-6 admission bounds, from listing metadata, before a
     const refusals: OutputRefusal[] = [];
     const { produce } = producerOver(entries, refusals);
     expect(await produce({})).toHaveLength(MAX_OUTPUT_FILES);
-    expect(refusals).toEqual([
-      { reason: "output_limit_exceeded" },
-      { reason: "output_limit_exceeded" },
-      { reason: "output_limit_exceeded" },
-    ]);
+    // ★★★ ONE refusal, CARRYING THE COUNT — not one per dropped entry (Codex round 5).
+    // *Superseded expectation: three separate `{reason: "output_limit_exceeded"}` refusals.*
+    expect(refusals).toEqual([{ reason: "output_limit_exceeded", count: 3 }]);
+  });
+
+  it("★★★ the refusal OUTPUT is bounded: a huge tail past the file cap logs ONCE, with its count", async () => {
+    // The operational defect: `onRefused` is wired to a per-refusal warning in production, so an
+    // agent that leaves 100k entries under the root could mint ~99,936 warning records from one
+    // run despite the intended 64-file bound. The bound on the refusal channel is asserted, not
+    // assumed — and the count is the truthful signal that replaces the flood.
+    const TAIL = 5_000;
+    const entries = Array.from({ length: MAX_OUTPUT_FILES + TAIL }, (_, i) =>
+      file(`${R}/f${String(i).padStart(6, "0")}`, 1),
+    );
+    const refusals: OutputRefusal[] = [];
+    const { produce } = producerOver(entries, refusals);
+    expect(await produce({})).toHaveLength(MAX_OUTPUT_FILES);
+    // NON-VACUITY: the tail really was there, and really was refused — the count says so.
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0]).toEqual({ reason: "output_limit_exceeded", count: TAIL });
   });
 
   it("refuses past depth 8 and keeps a depth-8 sibling", async () => {
