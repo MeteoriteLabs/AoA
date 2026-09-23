@@ -40,22 +40,23 @@ import { METADATA_KEYS } from "../directives.js";
 
 const CTX = { deadlineMs: 5_000 } as never;
 const ROOT = "/home/user/aoa-output";
+/** CLI-017-B — the labels every `provider.create` in this file uses. */
+const LABELS = { leaseId: "lease-1", attemptId: "attempt-1", deviceGeneration: 1 } as never;
 
 async function providerOver(): Promise<{ provider: E2bSandboxProvider; transport: MockE2bTransport; sandboxId: string }> {
   const transport = new MockE2bTransport();
-  const { sandboxId } = await transport.create({
-    templateId: "base",
-    timeoutMs: 60_000,
-    metadata: { [METADATA_KEYS.env]: "{}" },
-    envVars: {},
-  });
   // CLI-012 (SD-5) — a PRESENT, CLEAN scanner: every export refuses without one, fail-closed on
   // its presence. The refusal has its own describe block below, with both controls.
-  return {
-    provider: new E2bSandboxProvider({ transport, scanExportBytes: () => undefined }),
-    transport,
-    sandboxId,
-  };
+  const provider = new E2bSandboxProvider({ transport, scanExportBytes: () => undefined });
+  // CLI-017-B — created THROUGH the provider so SD-5's sandbox-scoped secret set is registered.
+  // Reaching past `create` straight to the transport leaves the registry empty, and an export
+  // for an unregistered sandbox now refuses (row 6, fail-closed) — a state production never
+  // reaches, because production's only route to a sandbox is this method.
+  const { sandboxId } = await provider.create(
+    { resourceLabels: LABELS, command: "claude", args: [], env: {}, workloadType: "batch" },
+    CTX,
+  );
+  return { provider, transport, sandboxId };
 }
 
 describe("CLI-012 — enumerateOutputs is metadata-only and carries the marker and the size", () => {
@@ -408,17 +409,21 @@ describe("CLI-012 / SD-5 — an ABSENT export scanner REFUSES; no bytes leave th
     scanExportBytes?: unknown,
   ): Promise<{ provider: E2bSandboxProvider; sandboxId: string; grant: never }> {
     const transport = new MockE2bTransport();
-    const { sandboxId } = await transport.create({
-      templateId: "base",
-      timeoutMs: 60_000,
-      metadata: { [METADATA_KEYS.env]: "{}" },
-      envVars: {},
-    });
-    transport.plantFile(sandboxId, `${ROOT}/answer.md`, new TextEncoder().encode(SECRET));
     const provider = new E2bSandboxProvider({
       transport,
       ...(scanExportBytes === undefined ? {} : { scanExportBytes: scanExportBytes as never }),
     });
+    // CLI-017-B — the sandbox is created THROUGH THE PROVIDER, not straight through the
+    // transport as it was before. SD-5's handoff is populated at `E2bSandboxProvider.create` and
+    // an export for a sandbox with no registered secret set now REFUSES (row 6, fail-closed), so
+    // a harness that reached past `create` would be testing a state production never reaches.
+    // The env is empty here on purpose: these are CLI-012's refusal arms, and giving them a
+    // secret would change what they measure. The secret-bearing cases are CLI-017-B's own suite.
+    const { sandboxId } = await provider.create(
+      { resourceLabels: LABELS, command: "claude", args: [], env: {}, workloadType: "batch" },
+      CTX,
+    );
+    transport.plantFile(sandboxId, `${ROOT}/answer.md`, new TextEncoder().encode(SECRET));
     const described = await provider.digestArtifact(sandboxId, `${ROOT}/answer.md`, CTX);
     const grant = {
       protocolVersion: 1,
@@ -491,7 +496,7 @@ describe("CLI-012 / SD-5 — an ABSENT export scanner REFUSES; no bytes leave th
 
   it("★★★ A scanner that REJECTS (a secret found) refuses, and nothing is stored", async () => {
     const seen: number[] = [];
-    const { provider, sandboxId, grant } = await sandboxWith(async (bytes: Uint8Array) => {
+    const { provider, sandboxId, grant } = await sandboxWith(async ({ bytes }: { bytes: Uint8Array }) => {
       seen.push(bytes.byteLength);
       throw new Error("redeemed secret found in exported bytes");
     });
@@ -510,7 +515,7 @@ describe("CLI-012 / SD-5 — an ABSENT export scanner REFUSES; no bytes leave th
 
   it("★★★ ANTI-VACUITY — a scanner that is PRESENT and CLEAN exports normally", async () => {
     const scanned: number[] = [];
-    const { provider, sandboxId, grant } = await sandboxWith(async (bytes: Uint8Array) => {
+    const { provider, sandboxId, grant } = await sandboxWith(async ({ bytes }: { bytes: Uint8Array }) => {
       scanned.push(bytes.byteLength);
     });
     const store = recordingFetch();

@@ -45,8 +45,13 @@ const LEDGER_DIR = "/data/ledger";
 /** A fake provider module: names E2bSandboxProvider + createRealE2bTransport WITHOUT the
  * real SDK (and without ever reading E2B_API_KEY). Records what it was handed. */
 function fakeProviderModule() {
-  const record: { transportCreated: number; ctorOptions?: { transport: unknown; templateId?: string } } = {
+  const record: {
+    transportCreated: number;
+    scannersCreated: number;
+    ctorOptions?: { transport: unknown; templateId?: string; scanExportBytes?: unknown };
+  } = {
     transportCreated: 0,
+    scannersCreated: 0,
   };
   const provider = { __fake: "provider" } as unknown as SandboxProvider;
   const mod: ProviderModule = {
@@ -54,8 +59,15 @@ function fakeProviderModule() {
       record.transportCreated += 1;
       return { __fake: "transport" };
     },
+    // CLI-017-B (SD-5) — the boot must BUILD a scanner and hand it to the provider. The provider
+    // refuses every export while `scanExportBytes` is absent, so a boot that forgot this would
+    // produce a server that can never export anything.
+    createRunSecretExportScanner: () => {
+      record.scannersCreated += 1;
+      return () => undefined;
+    },
     E2bSandboxProvider: class {
-      constructor(options: { transport: unknown; templateId?: string }) {
+      constructor(options: { transport: unknown; templateId?: string; scanExportBytes?: unknown }) {
         record.ctorOptions = options;
         return provider as unknown as object;
       }
@@ -202,6 +214,7 @@ describe("bootAdapterManager — fail-closed: createProviderServer is NEVER call
           // must turn that into a refusal, never boot a degraded/ungated server.
           throw new Error("transport requires its provider-control credential");
         },
+        createRunSecretExportScanner: () => () => undefined,
         E2bSandboxProvider: class {
           constructor() {
             /* unreached */
@@ -211,6 +224,29 @@ describe("bootAdapterManager — fail-closed: createProviderServer is NEVER call
     });
     const result = await bootAdapterManager(deps);
     expect(result.kind).toBe("refused");
+    expect(createProviderServer).not.toHaveBeenCalled();
+  });
+
+  it("CLI-017-B (SD-5) — a provider module with NO createRunSecretExportScanner REFUSES the boot", async () => {
+    // Fail-closed on missing input. Without this the boot would succeed and every export would
+    // then refuse at runtime for a reason nothing at the boot surface explains.
+    const constructed: unknown[] = [];
+    const { deps, createProviderServer } = makeDeps({
+      loadProviderModule: async () =>
+        ({
+          createRealE2bTransport: () => ({ __fake: "transport" }),
+          E2bSandboxProvider: class {
+            constructor(options: unknown) {
+              constructed.push(options);
+            }
+          },
+        }) as unknown as ProviderModule,
+    });
+    const result = await bootAdapterManager(deps);
+    expect(result.kind).toBe("refused");
+    expect(result.kind === "refused" && result.reason).toContain("createRunSecretExportScanner");
+    // NON-VACUITY: it refused BEFORE constructing a provider, not after building a broken one.
+    expect(constructed).toEqual([]);
     expect(createProviderServer).not.toHaveBeenCalled();
   });
 });

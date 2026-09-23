@@ -71,8 +71,20 @@ export interface ProviderModule {
   readonly E2bSandboxProvider: new (options: {
     readonly transport: unknown;
     readonly templateId?: string;
+    readonly scanExportBytes?: unknown;
   }) => SandboxProvider;
   readonly createRealE2bTransport: () => unknown;
+  /**
+   * CLI-017-B (SD-5, `E7-D11` section 3) — the export secret scanner FACTORY.
+   *
+   * It is named here, and injected below, rather than defaulted inside the provider. The
+   * provider refuses every export while `scanExportBytes` is not a callable function, and that
+   * refusal is keyed on PRESENCE precisely so it cannot be satisfied by a flag or by a no-op
+   * default. A provider that quietly supplied its own scanner would turn the strongest part of
+   * the control into a formality, so the wiring is explicit and this boot is the ONE place that
+   * does it. A provider module that does not export it makes the boot REFUSE below.
+   */
+  readonly createRunSecretExportScanner: () => unknown;
 }
 
 export type ProviderModuleLoader = () => Promise<ProviderModule>;
@@ -138,7 +150,19 @@ export async function bootAdapterManager(deps: AdapterManagerDeps): Promise<Adap
     // A missing credential throws SYNCHRONOUSLY from the transport constructor; that becomes
     // a refusal here (refuse-not-degrade), never an ungated boot.
     const transport = mod.createRealE2bTransport();
-    provider = new mod.E2bSandboxProvider({ transport, templateId: template });
+    // CLI-017-B — SD-5 is wired HERE and nowhere else. `createRunSecretExportScanner` missing or
+    // not callable is a construct failure, which the catch below turns into a REFUSAL: an
+    // adapter-manager that booted without it would refuse every export anyway (the provider is
+    // fail-closed on the scanner's presence), so refusing at boot reports the real fault instead
+    // of surfacing it later as an unexplained export outage.
+    if (typeof mod.createRunSecretExportScanner !== "function") {
+      throw new Error("the provider module exports no createRunSecretExportScanner (SD-5, CLI-017-B)");
+    }
+    provider = new mod.E2bSandboxProvider({
+      transport,
+      templateId: template,
+      scanExportBytes: mod.createRunSecretExportScanner(),
+    });
   } catch (err) {
     return refused(`sandbox provider could not be constructed: ${(err as Error).message}`);
   }

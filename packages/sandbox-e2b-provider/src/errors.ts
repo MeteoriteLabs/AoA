@@ -84,3 +84,27 @@ export class SandboxExportScannerRefusedError extends Error {
     this.name = "SandboxExportScannerRefusedError";
   }
 }
+
+/**
+ * CLI-017-B — SD-5's FAIL-CLOSED arm (acceptance row 6): an export for a `sandboxId` with **no
+ * registered secret set**.
+ *
+ * ★★★ THIS IS THE ADAPTER-MANAGER-RESTART STATE, AND REFUSING IS THE ONLY HONEST ANSWER. The
+ * secret registry is populated at `create` and lives in PROCESS MEMORY ONLY — deliberately, per
+ * `[Cred-1]` (DEP-012 slices 4+5) and Decision #104, because the tenant credential must not reach
+ * durable E2B metadata or any durable store. The cost of that choice is that it does NOT survive
+ * a restart: after one, the map is empty while sandboxes created by the previous process are
+ * still alive and still exportable. Allowing those exports through unscanned would make the whole
+ * of SD-5 bypassable by restarting a process — so the absence of a set is a refusal, never a
+ * silent unscanned export.
+ *
+ * ★ REFUSED BEFORE THE READ, like the scanner-absent refusal above: no bytes are materialised.
+ *
+ * ★ IT NAMES THE SANDBOX AND NOTHING ELSE. No env key, no value, no path, no grant.
+ */
+export class SandboxExportSecretSetUnavailableError extends Error {
+  constructor() {
+    super("artifact export refused: no secret set is registered for this sandbox (SD-5 fail-closed)");
+    this.name = "SandboxExportSecretSetUnavailableError";
+  }
+}
