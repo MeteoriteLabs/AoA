@@ -357,6 +357,18 @@ no call-site edit can smuggle the stdout tail into this line without changing th
 run's canaries and returns `null`, dropping the WHOLE line, if any of them carries one or a value
 cannot be scrubbed.
 
+★★★ **ONE FAMILY, AND THIS IS ITS GENERAL FORM.** The four Codex P1s on this change are not four
+defects; they are one: *a line that must carry NUMBERS while living inside canary redaction, whose
+every surface a secret can occupy.* Field names a secret can equal (the redactor ate `…Tokens`),
+numeric canaries that equal a count, a diagnostic failure suppressing the evidence event, and the
+fixed message and keys needing the same scrub as the values. So the last fix is deliberately the
+GENERAL one rather than a fourth point patch: `scrubLogRecord` takes the COMPLETE record — message,
+keys, values — and refuses it whole unless every surface is clean. The M1 planning session (F2,
+2026-09-23) set the bound that follows from this: **redaction wins over logging**, and if another
+distinct P1 of this family appears, the log channel is dropped and 1(b) is recorded as not
+live-provable for the same reason as 1(c) — proving it needs a second data path out of the worker,
+and every such path collides with redaction. 1(a) is closed by the keyed lane either way.
+
 ★★★ **VALUES ARE NOT THE ONLY SURFACE (Codex P1 on PR #571, fourth finding, and it was right).**
 The helper scrubbed VALUES only. A redeemed secret may be any non-empty string, so it can equal a
 substring of the fixed MESSAGE (`"worker"`, `"parsed agent"`) or of a KEY (`"leaseId"`), and
@@ -433,5 +445,37 @@ Codex: **three P1 findings**, each verified at source, fixed, replied to and res
 redacted count keys on `9b576152f`, the digits-only canary in a number on `3262a86e8`, and the
 diagnostic suppressing the usage event on `b8354be3e`. The review on `75cd0d9e8` completed with no
 findings.
+
+### STOPPED at the bound — a fifth P1 of the same family (2026-09-23)
+
+The M1 planning session's bound (F2) was: fix the fourth finding in its GENERAL form, and if the
+next Codex round raises another distinct P1 in this family, STOP and report rather than patch.
+
+It did. On `daf4396ba` Codex raised: `scrubLogRecord` checks the message and bindings the CALLER
+supplies, but `createWorkerLogger` hands the record to pino, which ADDS its own keys afterwards.
+**Verified at source** by driving the production logger:
+
+```
+{"level":30,"time":1790154392922,"parsedInputCount":5,"leaseId":"lease-1","msg":"worker: parsed agent usage"}
+keys: level,time,parsedInputCount,leaseId,msg
+```
+
+A redeemed secret may be any non-empty string, so a canary of `"msg"`, `"time"` or `"level"` — or a
+digit string occurring inside the epoch `time` — lands in the emitted line on a surface no
+caller-side helper can see. Checking it would mean serializing the record the way pino will, i.e.
+re-implementing the sink, which is the same collision one layer further down.
+
+**So this is the family's real shape, stated plainly:** a second data path out of the worker that
+must carry data while every byte of it is subject to canary redaction has no clean caller-side
+boundary — each fix moves the surface, it does not remove it. Six rounds, six real findings, one
+cause.
+
+**No further patch was made.** The code on this branch carries the general fix (message + keys +
+values) and is green; the open question is whether the channel should exist at all, which is the
+planning session's to rule under its own bound: drop the log channel and record **1(b)** as NOT
+live-provable for the same reason as **1(c)** — proving it requires a second data path out of the
+worker, and every such path collides with redaction. **1(a)** (cardinality) is closed by the keyed
+lane regardless, and nothing here weakens redaction to make logging work: at every step the refusal
+(drop the line) was chosen over emitting.
 
 **Status:** unchanged — `gate_review`. A distinct reviewer alone may set `complete`.
