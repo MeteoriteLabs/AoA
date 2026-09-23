@@ -413,11 +413,15 @@ Until that lands, 1(b) is proven on the worker side only.
 
 ### CI for this amendment (PR #571)
 
-Run `35830452057` on head `681699b287eb7f8026588c1821a92bd5e97d5fba`: **`ci-required` success**
-(job `107086368105`), all four `verify` shards green — `usage-observer.test.ts` **14 executed**
-(job `107081629168`, shard total 6017 passed / 29 skipped) and `usage-stream-redaction.test.ts`
-**20 executed** (job `107081629234`, shard total 6285 passed / 33 skipped). Codex: one P1 on
-`9b576152f` (the redacted-key defect above), verified, fixed, replied and resolved; the review on
-`681699b28` completed with no findings.
+Run `35836233193` on head `75cd0d9e85dc727f95fa5785c540a2e43a1d79bd`: **`ci-required` success**
+(job `107106094171`), all four `verify` shards green — `usage-observer.test.ts` **14 executed**
+(job `107100309357`, shard total 6024 passed / 29 skipped) and `usage-stream-redaction.test.ts`
+**22 executed** (job `107100309201`, shard total 6289 passed / 33 skipped). *(An earlier record of
+run `35830452057` on `681699b28` predates the last two Codex fixes and is superseded by this run.)*
+
+Codex: **three P1 findings**, each verified at source, fixed, replied to and resolved — the
+redacted count keys on `9b576152f`, the digits-only canary in a number on `3262a86e8`, and the
+diagnostic suppressing the usage event on `b8354be3e`. The review on `75cd0d9e8` completed with no
+findings.
 
 **Status:** unchanged — `gate_review`. A distinct reviewer alone may set `complete`.
