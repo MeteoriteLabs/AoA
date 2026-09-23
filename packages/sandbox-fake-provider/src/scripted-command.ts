@@ -39,6 +39,7 @@
 // -----------------------------------------------------------------------------
 
 import { FAKE_PROVIDER_CANNED_USAGE_V1, type FakeProviderUsageMode, type FakeProviderUsageV1 } from "./fake-driver.js";
+import { NodeEvalRefusedError, classifyShellInvocation, type NodeEvalRunner } from "./node-eval.js";
 
 /** The namespace every scripting flag carries. An argument outside it is an ordinary agent
  * argument and is passed over without comment. */
@@ -216,6 +217,16 @@ export interface ScriptedExecuteOptions {
   readonly providerOpId: string;
   /** Overrides the canned units (the D1 lane never does; the tests do). */
   readonly usage?: FakeProviderUsageV1;
+  /**
+   * DEP-019 — the runner for the `DEP-017` env-absence probe (`node-eval.ts`).
+   *
+   * The probe is not a transcript to be scripted: it is a PROGRAM whose output must be a
+   * genuine observation of the sandbox env, so it is EXECUTED. A recognised probe invocation
+   * reaching a caller that supplied no runner THROWS — returning the scripted transcript
+   * instead would hand the worker a run that reads as a probe that found nothing, which is
+   * the fabricated pass `DEP-016` acceptance item 6 forbids.
+   */
+  readonly runNodeEval?: NodeEvalRunner;
 }
 
 /**
@@ -245,6 +256,31 @@ export function executeScriptedCommand(
       exitCode: null,
       signal: "SIGKILL",
       timedOut: true,
+      stdoutRef,
+      stderrRef,
+    };
+  }
+
+  // DEP-019 — the DEP-017 probe is EXECUTED, never scripted. Classified BEFORE the scripting
+  // flags are read: the probe's argv is the daemon's, and a `--aoa-fake-*` look-alike inside it
+  // must not be able to steer the fake.
+  const invocation = classifyShellInvocation(input.command, input.args, input.env);
+  if (invocation.kind === "node_eval") {
+    if (options.runNodeEval === undefined) {
+      throw new NodeEvalRefusedError(
+        "a DEP-017 probe invocation reached a provider with no node-eval runner; this provider will not answer a probe with canned output",
+      );
+    }
+    const ran = options.runNodeEval(invocation.request);
+    // The probe prints ONE line on stdout and the worker reads it from the run's capture, so
+    // the channel is the only delivery. stderr is NOT relayed: the port carries an opaque
+    // `stderrRef`, and the probe's own no-node marker is a stderr contract of the daemon's.
+    input.onStdout?.(ran.stdout);
+    return {
+      providerOpId: options.providerOpId,
+      exitCode: ran.exitCode,
+      signal: ran.signal,
+      timedOut: false,
       stdoutRef,
       stderrRef,
     };

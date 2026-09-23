@@ -63,6 +63,16 @@ export type {
   ScriptedExecuteOptions,
 } from "./scripted-command.js";
 
+// DEP-019 — the DEP-017 env-absence probe is EXECUTED, not scripted. `DEP-016` acceptance item 6
+// took the "cannot live here" fork only because the reference provider ran no command.
+export {
+  NODE_EVAL_WRAPPER_PATTERN,
+  NodeEvalRefusedError,
+  classifyShellInvocation,
+  createNodeEvalRunner,
+} from "./node-eval.js";
+export type { NodeEvalRequest, NodeEvalResult, NodeEvalRunner, NodeEvalRunnerOptions, ShellInvocation } from "./node-eval.js";
+
 export { InvocationLedger } from "./invocation-ledger.js";
 export type { InvocationLedgerEntry, FakeClockOptions } from "./invocation-ledger.js";
 
