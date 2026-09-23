@@ -772,10 +772,16 @@ export function evaluateRollbackRehearsal(o) {
         `the cancel command(s) for attempt ${candidate.attemptId} target ${JSON.stringify(cancels.map((c) => c.leaseId))}, not its ACTIVE lease ${candidate.activeLeaseId}`,
       ));
     }
-    if (leased && cancels.length > 0 && cancels.every((c) => c.reason !== DRAIN_REASON)) {
+    // The reason is judged on the command that actually binds the CURRENT holder, not on any
+    // historical command of the attempt (Codex P2, PR #566): a stale correctly-reasoned command
+    // would otherwise excuse a current one that records the wrong reason.
+    const activeCancels = candidate.activeLeaseId
+      ? cancels.filter((c) => c.leaseId === candidate.activeLeaseId)
+      : cancels;
+    if (leased && activeCancels.length > 0 && activeCancels.every((c) => c.reason !== DRAIN_REASON)) {
       out.push(violation(
         "rollback:command_wrong_reason",
-        `the cancel command for job ${candidate.jobId} carries ${JSON.stringify(cancels.map((c) => c.reason))}, not ${DRAIN_REASON}`,
+        `the cancel command on attempt ${candidate.attemptId}'s active lease carries ${JSON.stringify(activeCancels.map((c) => c.reason))}, not ${DRAIN_REASON}`,
       ));
     }
     if (!leased && cancels.length > 0) {

@@ -653,6 +653,12 @@ test("the two branches differ, and each is pinned: unleased -> cancelled, leased
   const noCommand = goodRehearsal({ commands: [] });
   assert.ok(evaluateRollbackRehearsal(noCommand).map((x) => x.code).includes("rollback:leased_candidate_no_command"));
   const wrongReason = goodRehearsal({ commands: [{ jobId: "d0000000-0000-4000-8000-00000000000d", attemptId: "d1000000-0000-4000-8000-00000000000d", leaseId: "f1000000-0000-4000-8000-00000000000f", commandKind: "cancel", reason: "something_else" }] });
+  const staleGoodReasonCurrentBad = goodRehearsal({ commands: [
+    { jobId: "d0000000-0000-4000-8000-00000000000d", attemptId: "d1000000-0000-4000-8000-00000000000d", leaseId: "09090909-0000-4000-8000-000000000009", commandKind: "cancel", reason: DRAIN_REASON },
+    { jobId: "d0000000-0000-4000-8000-00000000000d", attemptId: "d1000000-0000-4000-8000-00000000000d", leaseId: "f1000000-0000-4000-8000-00000000000f", commandKind: "cancel", reason: "something_else" },
+  ] });
+  assert.ok(evaluateRollbackRehearsal(staleGoodReasonCurrentBad).map((x) => x.code).includes("rollback:command_wrong_reason"),
+    "a correctly-reasoned STALE command must not excuse the current lease's wrong reason");
   const staleLease = goodRehearsal({ commands: [{ jobId: "d0000000-0000-4000-8000-00000000000d", attemptId: "d1000000-0000-4000-8000-00000000000d", leaseId: "09090909-0000-4000-8000-000000000009", commandKind: "cancel", reason: DRAIN_REASON }] });
   assert.ok(evaluateRollbackRehearsal(staleLease).map((x) => x.code).includes("rollback:command_wrong_lease"),
     "a command on a PREVIOUS lease of the same attempt must not satisfy the current holder");
