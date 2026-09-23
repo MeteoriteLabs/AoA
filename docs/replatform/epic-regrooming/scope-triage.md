@@ -746,6 +746,14 @@ Ticket shipment or an earlier mechanism run cannot substitute for items 2–9. P
 > | `DEP-016` | E6 | ✅ E6 plan **§4c** | the `m1-spine` campaign profile: one worker, evidence retained on pass, canned usage priced to exactly one `cost_events` row with cost > 0, with a usage-suppressed positive control |
 > | `DEP-017` | E6 | ✅ E6 plan **§4c** | the live env-absence probe on the distributed stage-in path (ruling **F9**), with a planted-canary positive control — criterion 5 observed |
 > | `DEP-018` | E6 | ✅ E6 plan **§4c** | the declared campaign fault matrix and injection harness, per gate profile, each carrying the **F10** tenant matrix |
+> | `DEP-019` | E6 | ✅ E6 plan **§4c** | the `m1-spine` journey made **worker-driven**: the DEPLOYED worker leases, executes on the reference provider, forwards usage and reaches terminal, with the harness reduced to dispatching and asserting — plus a **not-the-executor control that reds**, so “worker-driven” cannot be claimed vacuously, and `DEP-016` acceptance item 6 (the `DEP-017` env probe) closed by positive assertion rather than by an obsolete reason |
+> 
+> ★★★ **THIRTEEN, NOT TWELVE, SINCE 2026-09-23.** `DEP-019` was added by the M1 planning session under
+> founder delegation **F2**, after the distinct reviewer of `DEP-016` found that `M1-D1-SPINE` requires the
+> included lifecycle on *“one separately deployed worker”* while `DEP-016`'s profile satisfies that as a
+> TOPOLOGY only — its deployed worker does not perform the work (`DEP-016-result.md` §5.3, which names the
+> gap and flags it for a D1 topology ticket). The set is not otherwise changed, and `DEP-016` keeps its own row:
+> `DEP-019` completes that row's gate clause, it does not replace it.
 >
 > ★★★ **MULTI-TENANT (founder ruling F10, 2026-09-21).** Every row above is proven for **each
 > enabled Organization**, and every campaign runs at least three Organizations — two enabled through

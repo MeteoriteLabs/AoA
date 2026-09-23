@@ -244,8 +244,14 @@ Step 0 (S0-1..S0-7, parallel) ──┬─ Track A ─────────�
    - **the tenant set (F10)**: the enabled Organizations and the control Organization, read from the rollout policy digest, and asserted unchanged at campaign start and end.
    - **`AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED` is off** (unset, or a false value). ★ *Added at M1 Step 0 (S0-8), a planning-session decision under founder delegation (F2), verified at source:* it is the deployment-wide crew switch (`DISTRIBUTED_CREW_ROLLOUT_ENABLED_ENV`, read by `readDistributedCrewRolloutFlag` in `server/src/config/distributed-execution.ts`, called from `process.env` in `runAoaAgent`, `server/src/services/internal-agent/aoa-agents/runner.ts`). It has **no per-Organization dimension**: when on, every Organization whose rollout state is `canary` transfers its crew runs (`crew-distributed-gate.ts`), so it would arm crew for every enabled tenant at once. Crew distributed execution is not in the M1 claim, so the digest asserts it off, and the same assertion is made in the `DEP-015` and `DEP-016` boots.
 2. Then, on that exact candidate:
-   - a `M1-D1-SPINE` record (`DEP-016` profile), including the **rollback rehearsal via the `MIG-009`
-     CLI**, attributed to the rollback owner (criterion 6);
+   - a `M1-D1-SPINE` record (`DEP-016` profile **as made worker-driven by `DEP-019`**), including the
+     **rollback rehearsal via the `MIG-009` CLI**, attributed to the rollback owner (criterion 6).
+     ★ *Amended 2026-09-23 under founder delegation F2, after the distinct reviewer of `DEP-016`
+     measured that the gate's worker clause — the included lifecycle on "one separately deployed
+     worker" — is NOT satisfiable from `DEP-016` alone: its profile has a deployed worker service,
+     but the journey is harness-driven (`DEP-016-result.md` §5.3). The record may not be produced
+     from a harness-driven run.* (Superseded text: `a M1-D1-SPINE record (DEP-016 profile), including
+     the **rollback rehearsal via the MIG-009 CLI**, attributed to the rollback owner (criterion 6);`)
    - a `M1a-D2-MECHANISM` record (the `DEP-015` lane, keyed), recording audit, cost and failure
      classification, with `capabilityProven=false` acceptable;
    - criterion 5 observed via `DEP-017`;

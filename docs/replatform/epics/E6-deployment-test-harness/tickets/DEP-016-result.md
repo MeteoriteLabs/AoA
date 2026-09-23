@@ -390,3 +390,28 @@ The GitHub Actions billing block cleared, and `pr.yml` ran for the first time on
   push to `main` / `docs/replatform-program` and on the merge queue — not on pull requests. Its
   first execution will be the merge of this PR, and §9's requirement stands: the live half is
   evidenced here by local runs against a real D1 stack, and the lane's own verdict is owed.
+
+## 14. Attempt history — 2026-09-23: `DEP-019` closes the worker-clause gap this review named
+
+**An APPEND, not a rewrite.** Nothing above is altered; this ticket's `Status` and its measured
+evidence stand as written.
+
+The distinct reviewer of this ticket found that `M1-D1-SPINE` requires the included lifecycle on
+*"one control-plane instance, one separately deployed worker"* while this profile satisfies the
+worker half as a TOPOLOGY and not as a JOURNEY: the profile plays the worker itself over
+`/worker-control/*`, the D1 workers do not dispatch, and the reference provider runs no command.
+§5.3 records exactly that, states the limitation plainly, and flags it for a D1 topology ticket.
+The M1 planning session accepted the finding under founder delegation F2 and filed **`DEP-019` —
+The `m1-spine` journey, driven by the DEPLOYED worker** (E6 implementation plan §4c; graph node in
+`docs/replatform/program-design.md`). It closes that gap and nothing more: this profile's tenant
+set, cost expectation, audit assertions, hostile cross-tenant cases and rollback rehearsal are
+unchanged and are re-proven by it.
+
+`DEP-019` also carries **acceptance item 6** (the `DEP-017` env probe) forward. §4b took this
+ticket's second fork — *"criterion 5 is observed only in the `DEP-015` lane"* — and the reason it
+gave was correct when written: *"the reference provider's `execute` runs no command"*. `DEP-019`
+Unit A removes that reason, so the item is closed by a POSITIVE assertion instead: the profile arms
+`AOA_WORKER_ENV_PROBE=1` and asserts per enabled tenant that the probe RAN and reported `absent`,
+through the shared `evaluateEnvProbeEvidence` read side. §4b's tripwire
+(`evaluateEnvProbeObservability`, which reds if a summary ever appears here) is REPLACED by that
+assertion rather than deleted — recorded in `DEP-019-result.md`, which points back to this section.
