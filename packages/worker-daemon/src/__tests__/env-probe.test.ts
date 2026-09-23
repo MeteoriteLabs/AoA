@@ -136,7 +136,17 @@ describe("DEP-017 — the in-sandbox probe script (real node execution)", () => 
   it.each(perClass)("POSITIVE CONTROL: a planted %s turns the probe red as class %s", (name, cls) => {
     const { report } = runProbe({ [name]: `planted-${name}-value-9f8e7d6c5b4a` });
     expect(report!.present).toEqual([cls]);
-    expect(report!.presentNames).toEqual([name]);
+    // A name is SERIALIZED only when it is one the probe's own table names exactly; a name matched
+    // by PATTERN (or by the heuristic) is sandbox-controlled data and is counted instead, never
+    // echoed (Codex P2, 7th round). The expectation is derived from the table, not hand-listed.
+    const known = new Set([...ENV_PROBE_CREDENTIAL_CLASSES.flatMap((c) => [...c.names]), ...ALLOWED]);
+    if (known.has(name)) {
+      expect(report!.presentNames).toEqual([name]);
+      expect(report!.unreportedPresentCount).toBe(0);
+    } else {
+      expect(report!.presentNames).toEqual([]);
+      expect(report!.unreportedPresentCount).toBe(1);
+    }
   });
 
   it("covers every class in the table (no class is untested)", () => {
@@ -153,6 +163,7 @@ describe("DEP-017 — the in-sandbox probe script (real node execution)", () => 
     };
     const { stdout, report } = runProbe(values);
     expect(report!.present.sort()).toEqual(["cross_tenant_credential", "datastore_credential", "provider_control_key"]);
+    expect(report!.presentNames).toEqual(["DATABASE_URL", "E2B_API_KEY", "OPENAI_API_KEY"]);
     for (const v of Object.values(values)) expect(stdout).not.toContain(v);
     expect(stdout).not.toContain("Zq9vT3kLr8wYp2mN4bX6cJ1h"); // the canary's random tail
     expect(stdout).not.toContain(ORG_B); // not even the foreign Organization's id
@@ -189,13 +200,25 @@ describe("DEP-017 — the in-sandbox probe script (real node execution)", () => 
     expect(runProbe(env).report!.allowedMismatch).toEqual([]);
   });
 
-  it("POSITIVE CONTROL: a credential under a legal NON-POSIX name is classified and COUNTED, never named (Codex P2, 4th round)", () => {
+  it("POSITIVE CONTROL: a credential under a legal NON-POSIX name is classified, and reported as the CANONICAL token (Codex P2, 4th round)", () => {
     const { stdout, report } = runProbe({ "GITHUB-TOKEN": "ghp_not_a_posix_name_0001", "DATABASE-URL": "postgres://u:p@h/db" });
     expect(report!.present.sort()).toEqual(["datastore_credential", "source_control_token"]);
-    expect(report!.unnamedPresentCount).toBe(2);
-    expect(report!.presentNames).toEqual([]); // only POSIX names may ride the report
+    // The probe's OWN tokens, never the sandbox's spelling.
+    expect(report!.presentNames).toEqual(["DATABASE_URL", "GITHUB_TOKEN"]);
+    expect(report!.unreportedPresentCount).toBe(0);
     expect(stdout).not.toContain("ghp_not_a_posix_name_0001");
     expect(stdout).not.toContain("GITHUB-TOKEN");
+  });
+
+  it("POSITIVE CONTROL: a sandbox-controlled NAME is never serialized, it is counted (Codex P2, 7th round)", () => {
+    // A legal POSIX name that carries secret material and matches the credential-shape heuristic.
+    // Unlike a redeemed VALUE it is not in the run canaries, so nothing downstream would scrub it.
+    const { stdout, report } = runProbe({ SECRET_sk_live_ABC123: "x", SOME_VENDOR_PASSWORD: "y" });
+    expect(report!.present).toEqual(["unclassified_credential_shaped"]);
+    expect(report!.presentNames).toEqual([]);
+    expect(report!.unreportedPresentCount).toBe(2);
+    expect(stdout).not.toContain("sk_live_ABC123");
+    expect(stdout).not.toContain("SOME_VENDOR_PASSWORD");
   });
 
   it("POSITIVE CONTROL: a lowercase or mixed-case credential name is classified too (Codex P2, 5th round)", () => {
@@ -220,9 +243,9 @@ describe("DEP-017 — the in-sandbox probe script (real node execution)", () => 
       "provider_control_key",
       "source_control_token",
     ]);
-    // `_AWS_SECRET_ACCESS_KEY_` is a legal POSIX name, so it is NAMED; the other three are counted.
-    expect(report!.presentNames).toEqual(["_AWS_SECRET_ACCESS_KEY_"]);
-    expect(report!.unnamedPresentCount).toBe(3);
+    // Every one canonicalises to a name the probe's table knows, so each is reported as THAT token.
+    expect(report!.presentNames).toEqual(["AWS_SECRET_ACCESS_KEY", "DATABASE_URL", "E2B_API_KEY", "GITHUB_TOKEN"]);
+    expect(report!.unreportedPresentCount).toBe(0);
   });
 
   it("a name that merely CONTAINS a keyword is not credential-shaped (TOKENIZERS_PARALLELISM)", () => {
@@ -313,7 +336,7 @@ describe("DEP-017 — parseEnvProbeReport is strict (an unreadable report fails,
     allowedMismatch: [],
     envCount: 3,
     unnamedEnvCount: 0,
-    unnamedPresentCount: 0,
+    unreportedPresentCount: 0,
     metadata: { attempted: false },
   });
   const line = (o: unknown) => `${ENV_PROBE_REPORT_PREFIX}${JSON.stringify(o)}`;
@@ -342,7 +365,7 @@ describe("DEP-017 — evaluateEnvProbe (the verdict)", () => {
     allowedMismatch: [],
     envCount: 1,
     unnamedEnvCount: 0,
-    unnamedPresentCount: 0,
+    unreportedPresentCount: 0,
     metadata: { attempted: false },
     ...over,
   });
@@ -391,8 +414,8 @@ describe("DEP-017 — evaluateEnvProbe (the verdict)", () => {
       allowedMismatch: [names[ENV_PROBE_VALUE_MISMATCH]!],
       envCount: 1,
       unnamedEnvCount: 0,
-      unnamedPresentCount: 0,
-    unnamedPresentCount: 0,
+      unreportedPresentCount: 0,
+    unreportedPresentCount: 0,
       metadata: { attempted: false },
       ...over,
     });
@@ -437,9 +460,9 @@ describe("DEP-017 — runEnvProbe scrubs the probe's output with the run's canar
         allowedMismatch: planted ? ["ANTHROPIC_API_KEY"] : [],
         envCount: 1,
         unnamedEnvCount: 0,
-        unnamedPresentCount: 0,
-      unnamedPresentCount: 0,
-    unnamedPresentCount: 0,
+        unreportedPresentCount: 0,
+      unreportedPresentCount: 0,
+    unreportedPresentCount: 0,
         metadata: { attempted: true, target: secret, reachable: false, errorCode: "ECONNREFUSED" },
       })}\n`);
       return Promise.resolve({ providerOpId: "p", exitCode: 0, signal: null, timedOut: false, stdoutRef: "r", stderrRef: "r" });
@@ -667,7 +690,7 @@ describe("DEP-017 — the supervisor runs the probe inside the run's sandbox, fa
   it("BLIND: a probe that reports nothing for the planted control fails the run (a check that sees nothing is not a check)", async () => {
     const emptyReport = `${ENV_PROBE_REPORT_PREFIX}${JSON.stringify({
       probe: "dep017-env-absence/v1", checked: envProbeCheckedClasses(), present: [], presentNames: [], allowedPresent: [], allowedMismatch: [],
-      envCount: 1, unnamedEnvCount: 0, unnamedPresentCount: 0, metadata: { attempted: false },
+      envCount: 1, unnamedEnvCount: 0, unreportedPresentCount: 0, metadata: { attempted: false },
     })}\n`;
     const { events, tenantExecutions } = await runSupervised({
       local: {
@@ -728,9 +751,9 @@ describe("DEP-017 — the supervisor runs the probe inside the run's sandbox, fa
         allowedMismatch: input.env.DATABASE_URL === undefined ? [] : ["ANTHROPIC_API_KEY"],
         envCount: 1,
         unnamedEnvCount: 0,
-        unnamedPresentCount: 0,
-      unnamedPresentCount: 0,
-    unnamedPresentCount: 0,
+        unreportedPresentCount: 0,
+      unreportedPresentCount: 0,
+    unreportedPresentCount: 0,
         metadata: { attempted: false },
       })}
 `);

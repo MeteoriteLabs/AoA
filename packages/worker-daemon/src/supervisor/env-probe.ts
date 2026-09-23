@@ -165,8 +165,15 @@ export const ENV_PROBE_SCRIPT = [
   "const crypto=require(\"node:crypto\");",
   "const digest=(v)=>crypto.createHash(\"sha256\").update(salt+v).digest(\"hex\");",
   "const present=new Set(),names=new Set(),allowedPresent=new Set(),allowedMismatch=new Set();",
-  "let envCount=0,unnamed=0,unnamedPresent=0;",
+  "let envCount=0,unnamed=0,unreported=0;",
   "const compiled=CLASSES.map((c)=>({cls:c.class,names:new Set(c.names),res:c.patterns.map((p)=>new RegExp(p))}));",
+  // ★ THE ONLY NAMES THAT MAY BE SERIALIZED (Codex P2, 7th round). An env NAME is
+  // sandbox-controlled data: `SECRET_sk_live_ABC123` is a legal POSIX name, matches the
+  // credential-shape heuristic, and — unlike a redeemed VALUE — is not in the run canaries, so
+  // nothing downstream would scrub it. The report therefore carries a name ONLY when the
+  // canonical form is one this table already knows, and it carries THAT canonical token rather
+  // than the sandbox's spelling. Everything else is a class plus a count.
+  "const KNOWN=new Set([].concat(...CLASSES.map((c)=>c.names),[...allowed]));",
   // CASE- AND SEPARATOR-INSENSITIVE matching (Codex P2, 5th + 6th rounds): env names are
   // case-sensitive to the OS, so a lowercase `github_token` is a DIFFERENT variable from the
   // allow-listed one and must still be classified. The class table is written in the canonical
@@ -193,11 +200,11 @@ export const ENV_PROBE_SCRIPT = [
   " present.add(cls);",
   // A non-POSIX name is COUNTED, never printed: `parseEnvProbeReport` admits only POSIX names, so
   // a value masquerading as a name can never ride the report out.
-  " if(posix)names.add(name);else unnamedPresent++;",
+  " if(KNOWN.has(key))names.add(key);else unreported++;",
   "}",
   "const out=(metadata)=>{console.log(" + JSON.stringify(ENV_PROBE_REPORT_PREFIX) + "+JSON.stringify({probe:" +
     JSON.stringify(ENV_PROBE_VERSION) +
-    ",checked:CHECKED,present:[...present].sort(),presentNames:[...names].sort(),allowedPresent:[...allowedPresent].sort(),allowedMismatch:[...allowedMismatch].sort(),envCount,unnamedEnvCount:unnamed,unnamedPresentCount:unnamedPresent,metadata}));};",
+    ",checked:CHECKED,present:[...present].sort(),presentNames:[...names].sort(),allowedPresent:[...allowedPresent].sort(),allowedMismatch:[...allowedMismatch].sort(),envCount,unnamedEnvCount:unnamed,unreportedPresentCount:unreported,metadata}));};",
   "if(!metaUrl){out({attempted:false});}else{",
   " let host=\"invalid\";try{host=new URL(metaUrl).host;}catch{}",
   " const ac=new AbortController();const t=setTimeout(()=>ac.abort(),3000);",
@@ -219,9 +226,11 @@ export interface EnvProbeReport {
   readonly allowedMismatch: readonly string[];
   readonly envCount: number;
   readonly unnamedEnvCount: number;
-  /** Credential-shaped env names OUTSIDE the POSIX shape (e.g. `GITHUB-TOKEN`) whose class was
-   * reported. COUNTED, never named: only POSIX names may ride the report (Codex P2, 4th round). */
-  readonly unnamedPresentCount: number;
+  /** Credential-shaped env names the probe did NOT serialize, because their canonical form is not
+   * in its own table — counted, never named. An env NAME is sandbox-controlled data and, unlike a
+   * redeemed value, is not in the run canaries, so nothing downstream would scrub it (Codex P2,
+   * 4th + 7th rounds). `presentNames` therefore only ever carries the probe's own tokens. */
+  readonly unreportedPresentCount: number;
   readonly metadata: {
     readonly attempted: boolean;
     readonly target?: string;
@@ -316,7 +325,7 @@ export function parseEnvProbeReport(stdoutTail: string): EnvProbeReport | null {
   if (!isStringArray(r.presentNames, NAME_RE) || !isStringArray(r.allowedPresent, NAME_RE)) return null;
   if (!isStringArray(r.allowedMismatch, NAME_RE)) return null;
   if (!Number.isInteger(r.envCount) || !Number.isInteger(r.unnamedEnvCount)) return null;
-  if (!Number.isInteger(r.unnamedPresentCount)) return null;
+  if (!Number.isInteger(r.unreportedPresentCount)) return null;
   const m = r.metadata;
   if (m === null || typeof m !== "object" || Array.isArray(m) || typeof (m as { attempted?: unknown }).attempted !== "boolean") return null;
   const meta = m as Record<string, unknown>;
@@ -336,7 +345,7 @@ export function parseEnvProbeReport(stdoutTail: string): EnvProbeReport | null {
     allowedMismatch: r.allowedMismatch,
     envCount: r.envCount as number,
     unnamedEnvCount: r.unnamedEnvCount as number,
-    unnamedPresentCount: r.unnamedPresentCount as number,
+    unreportedPresentCount: r.unreportedPresentCount as number,
     metadata,
   };
 }

@@ -128,8 +128,8 @@ invocation → in-sandbox read → stdout channel → per-run scrub → strict p
 
 | Suite | Result |
 |---|---|
-| `pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/env-probe.test.ts` | **59 passed** |
-| `pnpm --filter @armyofagents/worker-daemon exec vitest run` (whole package) | **1174 passed, 1 skipped, 163 files** |
+| `pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/env-probe.test.ts` | **60 passed** |
+| `pnpm --filter @armyofagents/worker-daemon exec vitest run` (whole package) | **1219 passed, 1 skipped, 165 files** (on the tree merged with program tip `1bd5c8bbc`) |
 | `pnpm --filter @armyofagents/worker-daemon exec tsc --noEmit` | clean |
 | `node --test scripts/check-staging-manifest.test.mjs scripts/lib/__tests__/m1-shipped-boot.test.mjs scripts/check-m1-shipped-boot-shape.test.mjs` | **140 passed, 0 failed** |
 | the M1 guard loop (all pure `pr.yml` guards) + `check-evidence-immutability --base origin/docs/replatform-program` | **0 failures** |
@@ -192,6 +192,7 @@ produced by removing the implementation from the tree and running the suite agai
 | M16 | credential-shaped NON-POSIX env names left unclassified | **killed** — 1 failed |
 | M17 | the matching key not canonicalised for CASE | **killed** — 1 failed |
 | M18 | repeated/edge separators not collapsed in the key | **killed** — 1 failed |
+| M19 | the probe serializes the sandbox’s own env NAMES | **killed** — 7 failed |
 
 ### 4a. Two defects this review caught before the PR, worth recording
 
@@ -415,6 +416,21 @@ separators (`DATABASE--URL`). The canonical key now folds every non-alphanumeric
 `_AWS_SECRET_ACCESS_KEY_` and `E2B.API-KEY` all reach their classes. The positive control plants all
 four at once and asserts the four classes, which name is reported (only the POSIX one) and the count
 of the rest; mutation **M18**.
+
+## 8g. The Codex review on the merge head `9360bc26e`
+
+One finding, real and fixed: **"stop serializing raw POSIX environment names."** An env NAME is
+sandbox-controlled data — `SECRET_sk_live_ABC123` is a legal POSIX name, matches the credential-shape
+heuristic, and, unlike a redeemed VALUE, is not in the run canaries, so nothing downstream would
+scrub it out of the persisted probe log. The report now serializes a name ONLY when its canonical
+form is one the probe’s OWN table names exactly (the class tables’ `names` plus the allowed set), and
+it carries THAT canonical token rather than the sandbox’s spelling; everything else — a
+pattern-matched name, a heuristic match, any odd spelling — is a class plus a count
+(`unreportedPresentCount`, renamed from `unnamedPresentCount` because the rule is no longer about
+POSIX shape). So `presentNames` is now provably a subset of the probe’s own vocabulary. Positive
+controls: `SECRET_sk_live_ABC123` and `SOME_VENDOR_PASSWORD` are counted, not echoed, and neither the
+value nor the name appears in the output; the per-class table derives its expectation from the table
+itself rather than a hand-list. Mutation **M19** (serialize the raw name) reds 7 cases.
 
 ## 9. CI evidence
 
