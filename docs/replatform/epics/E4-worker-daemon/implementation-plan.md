@@ -1173,10 +1173,13 @@ component tests; then the one keyed acceptance run.
    different claims and one of them cannot be established on the keyed lane at all, so it is split
    into three parts with the reason recorded — this is a statement of what each piece of evidence
    proves, **not** a relaxation:
-   - **1(a) cardinality.** Exactly one accepted `usage` event per attempt, belonging to that tenant.
-     Closed by the keyed lane's assertion (`evaluateUsageCardinality`,
-     `scripts/lib/m1-spine-assertions.mjs`), which counts the attempt's accepted `usage` rows in
-     `job_events` per enabled tenant.
+   - **1(a) cardinality — PENDING one keyed run.** Exactly one accepted `usage` event per attempt,
+     belonging to that tenant. Its assertion EXISTS — `evaluateUsageCardinality`
+     (`scripts/lib/m1-spine-assertions.mjs`), counting the attempt's accepted `usage` rows in
+     `job_events` per enabled tenant — and 1(a) closes on the next keyed run that passes it.
+     `DEP-015-result.md` records that no keyed run has carried the assertion yet, so it is NOT
+     closed today. *(This entry read "Closed by the keyed lane's assertion" when first written,
+     which overstated it — Codex P2, PR #571.)*
    - **1(b) producer→ingest fidelity — NOT LIVE-PROVABLE (ruled 2026-09-23, F2).** The claim is
      that the counts the worker PARSED equal the counts accepted and stored.
      `heartbeat_runs.usage_json` is PROJECTED from the same accepted event, so that pair alone

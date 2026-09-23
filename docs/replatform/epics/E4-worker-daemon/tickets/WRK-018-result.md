@@ -326,11 +326,17 @@ original sentence is kept above, unedited, as the record of what it said.
 Proving 1(c) live would mean emitting the scrubbed result line out of the daemon so the lane could
 parse it independently. That pushes tenant **model output** across the daemon boundary, which
 conflicts with data minimisation and would pre-empt the still-open **F7** output-mechanism decision.
-The M1 planning session ruled (F2 delegation, 2026-09-23) to log the COUNTS and not the line. The
-limit that leaves is stated rather than hidden: **no live run demonstrates that the parser read a
-real result line correctly**; what the live lane can show is that whatever the parser produced is
-what was accepted and stored (1(b)), and the fixture shows the parser reads a real captured line
-correctly (1(c)).
+The M1 planning session first ruled (F2 delegation, 2026-09-23) to log the COUNTS and not the line,
+and then — after five Codex P1s on that line — to drop the line too (see the 1(b) section below).
+
+The limit that leaves is stated rather than hidden: **no live run demonstrates that the parser read
+a real result line correctly**, and — since the diagnostic was dropped — **no live run observes what
+the parser produced at all**, so the live lane cannot show parser→ingest fidelity either. What
+remains is: the fixture shows the parser reads a real captured line correctly (1(c)), and the
+keyless supervisor suites show the observer's payload IS the emitted event's payload (1(b)).
+*(This paragraph claimed the live lane could show "whatever the parser produced is what was accepted
+and stored"; that was written before the line was dropped and is false without it — Codex P2,
+PR #571.)*
 
 ### 1(b): what was attempted, what was measured, why it stops (ruled 2026-09-23, F2)
 
