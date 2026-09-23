@@ -1,6 +1,6 @@
 # DEP-016 — The `m1-spine` campaign profile on the D1 compose — result
 
-**Status:** `gate_review`. Only a DISTINCT reviewer sets `complete`.
+**Status:** `complete` (set by the distinct reviewer of attempt 1; the author left it at `gate_review`).
 **Epic:** E6 · **Plan task:** `E6 implementation-plan §4c DEP-016` (as amended at M1 Step 0, S0-8) · **Milestone:** `M1a`
 **Date (UTC):** `2026-09-23`
 **Implementer:** Claude Opus 5 (M1 build agent)
@@ -391,7 +391,192 @@ The GitHub Actions billing block cleared, and `pr.yml` ran for the first time on
   first execution will be the merge of this PR, and §9's requirement stands: the live half is
   evidenced here by local runs against a real D1 stack, and the lane's own verdict is owed.
 
-## 14. Attempt history — 2026-09-23: `DEP-019` closes the worker-clause gap this review named
+---
+
+## Independent review
+
+**Reviewer:** M1 review-batch-3A independent reviewer (Claude Opus 5). I did not author DEP-016, and I am not the planning session.
+**Reviewed revision:** 58b70fa5ea87b751f033007e9f9402c9bf370c43 (the final PR #566 head, merged as `3baa997b84168fec20522c92d686b885fb104795`; an ancestor of the program tip `60aafb32ec6f8316f92079789cf8814f981f3ed3`). The record's own `b34fc34c2321256491446454fa48337fb5392d75` and `e8b25bf6fb62d76e94706d1c60b4dffb8f3cce0f` are ancestors of it.
+**Disposition:** `approved`
+**Attempt:** 1 (see *Independent review — attempt 1* and the attempt history)
+
+### Independent review — attempt 1
+
+**Disposition: `approved`.** Every acceptance item of the E6 plan's `### DEP-016` section is
+evidenced, and **the one thing the record itself said was owed has since been paid**: the `m1-spine`
+lane executed for the first time, on the merge of this PR, and it passed with both positive controls
+red. I verified that run's own evidence bundle rather than the record's summary of a local run.
+
+**★ The lane's first real verdict (new since the record was written, and it settles §9 and §13).**
+`d1-merge-train` run **`35825332876`** (`push` on `docs/replatform-program`, headSha
+`3baa997b84168fec20522c92d686b885fb104795`), job **`m1-spine` `107065690182`**, conclusion
+**`success`**, all 14 steps `success`. From its log, by step:
+
+- *Static preflight*: `scripts/lib/__tests__/m1-spine-assertions.test.mjs` **69 tests, 69 pass,
+  0 fail**.
+- *Bring up the ONE-worker m1-spine topology*: `running worker services: 1`.
+- *Run the m1-spine profile (live)*: **pass 6, fail 0** — the tenant-set/crew case, tenant A, tenant
+  B, the cross-tenant isolation case, and the rest.
+- *POSITIVE CONTROL — with usage suppressed*: `positive control: the profile went red on the cost
+  assertion, as required`.
+- *POSITIVE CONTROL — a DUPLICATE usage event*: `positive control: a duplicate usage event reds the
+  cardinality assertion, as required`, and the failure carries exactly
+  `usage:not_exactly_one` (*"the attempt has 2 accepted usage event(s) … expected exactly 1"*),
+  `cost:not_exactly_one` and `cost:receipt_not_exactly_one`, **for both tenants**.
+- *Collect the PASSING evidence bundle* ran before either control, and
+  `m1-spine-evidence-35825332876` (artifact `10735300784`) was uploaded, with `profile/`,
+  `passing/`, `positive-control/`, `duplicate-usage-control/` and `post-controls/` directories.
+  That is acceptance 1, observed on the lane rather than locally.
+
+**★ Count pinned to its revision (added after merging the program tip, 2026-09-23).** Every "69 tests"
+above is the verdict self-test AT the reviewed revision `58b70fa5ea…` and in the lane run
+`35825332876`, and both measured 69. #567 has since added eight cases to the same file for its
+keyed usage-cardinality assertion, so the same command at the program tip gives **77 / 77 / 0**
+(I re-ran it on the merged tree). The figure is not wrong; it is anchored, and a later reader
+should not read a larger number as a discrepancy.
+
+**The cost claim, verified in that bundle and not from the record.** `profile/m1-spine-evidence.json`,
+per enabled tenant:
+
+| Tenant | accepted `usage` events | `cost_events` | `cost_cents` | provider / model / rateVersion | idempotency key |
+|---|---:|---:|---:|---|---|
+| A (`0d016a00…a`) | **1** (event `10390bdc…`, units 120000/30000/0, 4200 ms) | **1** | **81** | `claude_local` / `claude-sonnet-4-6` / **1** | `cost:0d016a01…a:10390bdc…` — that event |
+| B (`0d016b00…b`) | **1** (event `55b93bd0…`, same units) | **1** | **81** | same | `cost:0d016b01…b:55b93bd0…` — that event |
+
+Each row's `companyId`/`agentId` is that tenant's own, and the `activity_audit` receipts are
+`applied` against that tenant's own activity rows. The replica record shows
+`rolloutSha256 02cebb95542a…`, A and B `canary`, **C `off`**, `crewRaw: null` / `crewEnabled: false`,
+tool surface unarmed — acceptance 4, 5 and 5a, observed live.
+
+**81 cents is derived, not asserted, and the mirror is true.** `M1_SPINE_EXPECTED_COST_CENTS` is
+computed from `M1_SPINE_CANNED_UNITS` × `M1_SPINE_RATE_CENTS_PER_M`; evaluating the module gives
+**81**. The mirrored rate is correct at source: `cost-model.ts` `RATES["claude-sonnet-4-6"] =
+{ inputCentsPerM: 300, outputCentsPerM: 1500 }`, and `job-authoritative-rate.ts`
+`AUTHORITATIVE_RATE_VERSION = 1`. So the pin cannot pass a charge priced from another model or rate
+version, which is what the eighth-round Codex P2 asked for.
+
+**RED-2's mechanism is real at source.** `createAcceptedUsagePricingProjector` is imported and
+registered in `server/src/services/job-events.ts` (the registration site the control is built by
+removing). I cannot re-run a live D1 control, so that row rests on the record's own measurement;
+what I can confirm is that the thing it removes exists and is the pricing registration, and that the
+suppressed-usage and duplicate-usage controls — the two the lane runs on every trigger — both fired
+in CI above. Two of the four red controls are therefore now CI-observed, not only author-measured.
+
+**Mutation reproduced by me.** Relaxing `cost:unexpected_amount` from
+`Number(row.costCents) !== M1_SPINE_EXPECTED_COST_CENTS` to `Number(row.costCents) <= 0` gives
+**68 pass / 1 fail** in the verdict self-test, and the failing case is *a POSITIVE charge of the
+wrong AMOUNT is refused (Codex)* — exactly one fixture, as a non-vacuous verdict should. Reverted;
+the tree was clean.
+
+**F10 is real, not asserted.** `M1_SPINE_TENANTS` names three distinct Organizations
+(`0d016a00…a`, `0d016b00…b` enabled; `0d016c00…c` control), the live bundle carries all three, and
+§3a's hostile cases are pinned to specific refusals — `EXPECTED_FOREIGN_UPLOAD_STATUS = 401` and
+`EXPECTED_FOREIGN_ACK_STATUS = 409` / `stale_fence`, with `isolation:foreign_*_not_denied` otherwise,
+so a 500 or a transport failure cannot pass as enforcement.
+
+**`E3-F037` → `unowned` is what the guard requires, and the residual is exactly `WRK-018`
+acceptance 1.** Checked at source rather than reasoned:
+`scripts/check-finding-ownership.mjs` carries `successor_not_on_disk` (*"a false claim of
+inheritance"*) and `successor_already_complete` (*"the same hole one level down"*). `WRK-018` has
+filed `tickets/WRK-018-result.md`, so naming it would trip the second; `DEP-018` has no ticket file,
+so naming it would trip the first. `unowned` with a written reason is the only admissible state, and
+`node scripts/check-finding-ownership.mjs` is **OK** with `E3-F037` in the unowned list. The residual
+the reason names is *"WRK-018 acceptance 1, the ONE keyed E2B run proving the real claude_local
+stream-json usage parser on the deployed worker"*; the E4 plan's `### WRK-018` acceptance 1 reads
+*"One real run (keyed, F8) emits **exactly one** `usage` event whose token counts equal the agent's
+result line"*, and `WRK-018-result.md` states it `PENDING`. That is the same item, not a paraphrase
+of a different one. `E3-15-budget` stays `unwired`, as the record says.
+
+**Acceptance 6 (the DEP-017 probe) — the second fork still holds after the merge, for the reason
+that survives.** §4b's first reason (*"the probe does not exist in this tree at all"*) is now
+obsolete: `DEP-017` merged, and `env-probe.ts` and `AOA_WORKER_ENV_PROBE` are at the tip. The
+load-bearing reason survives and I checked it at source: the D1 reference provider's `execute`
+(`packages/sandbox-fake-provider/src/fake-driver.ts`, the `case "execute"` arm) still runs **no
+command** — it returns `{kind: "executed", …, usage}` — so arming the probe on this lane would report
+`env_probe_not_run` while observing nothing. The self-policing record
+(`criterion5EnvProbe`, red in both directions) is the right disposition and is in the retained
+bundle. **For the planning session:** §4b's obsolete first reason should not be read as still true
+of the tip.
+
+**Record defects, recorded (non-blocking).**
+
+1. **§4's self-test count is stale.** *"`m1-spine-assertions.test.mjs`: 26 tests"* — the file has
+   **69**, as §1, §8 and §13 all say and as both my local run and the lane's static preflight
+   measured. A reader who trusts §4 would under-count the non-vacuity evidence by two thirds.
+2. **§13's CI citation stops one commit short.** It cites run `35822540893` on
+   `e8b25bf6fb62d76e94706d1c60b4dffb8f3cce0f`; the final head is
+   `58b70fa5ea87b751f033007e9f9402c9bf370c43`, whose run is **`35823960714`** — conclusion
+   `success`, `ci-required` `107065333616`, `policy` `107061566583`, whose *m1-spine profile verdict
+   self-test (DEP-016)* step printed **69 tests / 69 pass / 0 fail** plus
+   `evidence-retention.test.mjs` **4 tests, 3 pass, 1 skipped**. The delta between the two heads is
+   this record's own §13 text, so the evidence is unaffected; the citation is simply one commit
+   behind.
+
+**Acceptance items (E6 plan `### DEP-016`).**
+
+| # | Status |
+|---|---|
+| 1 | **Evidenced, now on the lane itself** — the passing bundle is collected before either control and uploaded (`if: always()`), artifact `10735300784`. |
+| 2 | **Evidenced live**, in the lane's own bundle: one `cost_events` row at 81 cents and one applied `authoritative_cost` receipt per enabled tenant, with the named audit rows. |
+| 2a | **Evidenced live**: exactly one accepted `usage` event per attempt, of that tenant, units equal to the provider's, the cost row keyed to that event. |
+| 3 | **Evidenced in CI**: both the usage-suppressed and the duplicate-usage controls went red, on the named codes. |
+| 4 / 4a | **Evidenced**: three Organizations, two `canary` and the control `off` on the running replica; the hostile cross-tenant cases pin `401` and `409 stale_fence`. |
+| 5 / 5a | **Evidenced**: `crewEnabled: false`, `toolSurfaceArmed: false`, no Organization opted in. |
+| 6 | **Evidenced as the second fork**, with the tripwire; the surviving reason re-checked at source. |
+| O | **Evidenced**: the `MIG-009` rollback rehearsal runs the real CLI in the control-plane container, with a pre-drain census and a selectivity control. |
+
+**★★★ What this ticket's `complete` does NOT establish (added after the Codex review of this PR;
+both findings verified at source and ACCEPTED as real).** Codex raised two P1s against my approval,
+and both are true. Neither is an unmet item of the plan's `### DEP-016` acceptance list, which is
+what `complete` is measured against — so the disposition stands — but each is a live constraint on
+what the `M1-D1-SPINE` gate record may claim from this ticket, and leaving them out of a `complete`
+review would be the overclaiming this programme exists to catch. They are therefore named here, in
+the section a later gate author reads.
+
+1. **The journey is harness-driven, and the gate definition says "separately deployed worker".**
+   Verified at source: `docs/replatform/epic-regrooming/scope-triage.md` §`M1-D1-SPINE` requires
+   *"the included lifecycle on one control-plane instance, one separately deployed worker …"*, and
+   this plan's own **Outcome** says *"It is the harness the `M1-D1-SPINE` gate record is made from"*.
+   §5.3 states the gap plainly and I confirm it: the profile plays the worker over the real
+   `/worker-control/*` endpoints, `AOA_WORKER_DISPATCH_ENABLED` is declared **ABSENT** for the D1
+   workers (`scripts/lib/d1-dispatch-declared.mjs`, enforced by `check-d1-dispatch-declared`), and
+   **a broken worker daemon or a broken usage-forwarding path in the daemon would not red this
+   profile.** One worker container is present and enrolled; it does not execute the journey. What is
+   proven here is the CONTROL-PLANE half of the spine. **Consequence for the gate owner:** `M1-D1-SPINE`
+   cannot be recorded as passed from this profile alone on the strength of its worker clause. Either
+   a D1 topology ticket makes the journey worker-driven, or the planning session formally amends the
+   gate's wording — the record flags exactly this, and it is above this ticket.
+2. **Criterion 5 is observed NOWHERE today, not merely "elsewhere".** Acceptance 6's second fork
+   requires this ticket to *"record … that criterion 5 is observed ONLY in the `DEP-015` lane — an
+   unobserved probe must not be reported as a pass."* §4b discharges that obligation: it records the
+   probe as not observed here, writes `criterion5EnvProbe {observed: false, …}` into the retained
+   bundle, and reds in both directions. So the acceptance item is met **as an obligation to record**.
+   But the lane it points to has not observed it either: `DEP-017`'s keyed `m1-shipped-boot.yml` run
+   is PENDING (F8), which is why I left `DEP-017` at `gate_review` in the same batch. **Consequence
+   for the gate owner:** no `M1a` record may cite criterion 5 as satisfied until that keyed run
+   exists and `DEP-017`'s §7 checklist is recorded against it. `DEP-016` being `complete` says
+   nothing about criterion 5 except that this profile honestly declines to claim it.
+
+Read together with the acceptance table above: every item the plan asks of DEP-016 is met, **and**
+two of the things a reader might expect a completed spine ticket to have settled are not settled by
+it. Both are named in the record's own §4b and §5.3; I am confirming them, not discovering them.
+
+Nothing is pending, so I set `Status` to `complete` in a separate commit. The two deviations the
+record flags for the planning session — the worker is the harness rather than the daemon (§5.3), and
+the broad `server/src/**` + `packages/db/src/**` lane trigger (§4a) — are correctly flagged as
+decisions above this ticket, and I leave them there rather than ruling on them.
+
+## Review attempt history
+
+The implementation author leaves the table body empty. The first independent reviewer appends attempt 1, and later reviewers append rows with increasing attempt numbers without replacing earlier ones. Do not include a `Review commit` column: a row cannot embed the SHA of the commit that first contains it.
+
+| Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
+|---:|---|---|---|---|
+| 1 | M1 review-batch-3A independent reviewer (Claude Opus 5) | `58b70fa5ea87b751f033007e9f9402c9bf370c43` | `approved` | The `m1-spine` lane ran for the first time on the merge and PASSED: run `35825332876`, job `107065690182`, profile **6/6**, `running worker services: 1`, self-test **69/69**, and BOTH positive controls red on their named codes (`usage:not_exactly_one` + `cost:not_exactly_one` + `cost:receipt_not_exactly_one` for A and B). Its own artifact `10735300784` shows, per enabled tenant, **1** accepted `usage` event and **1** `cost_events` row at **81** cents, `claude_local`/`claude-sonnet-4-6`/rateVersion 1, keyed to that event, own Company and agent; rollout A+B `canary`, C `off`, crew and tool surface off. 81 derived, and the mirrored rate matches `cost-model.ts` (300/1500) and `AUTHORITATIVE_RATE_VERSION = 1`. `E3-F037` `unowned` is what `check-finding-ownership` permits (`successor_already_complete` for WRK-018, `successor_not_on_disk` for DEP-018) and its residual is exactly WRK-018 acceptance 1. Mutation reproduced: relaxing `cost:unexpected_amount` to `> 0` reds exactly one fixture. Defects recorded: §4 says the self-test has 26 tests (it has 69); §13 cites `35822540893` on the penultimate head — the covering run is `35823960714` (`ci-required` `107065333616`). **Codex on this review PR raised two P1s; both verified at source and ACCEPTED as real, and both are now named in the review section: (1) the journey is harness-driven while `M1-D1-SPINE` requires a separately deployed worker, so the gate's worker clause is NOT satisfiable from this profile alone; (2) criterion 5 is observed NOWHERE today, because `DEP-017`'s keyed run is pending — acceptance 6 is met only as an obligation to RECORD. Neither is an unmet plan acceptance item, so the disposition stands.** |
+
+---
+
+## Attempt history addendum — 2026-09-23: `DEP-019` closes the worker-clause gap this review named
 
 **An APPEND, not a rewrite.** Nothing above is altered; this ticket's `Status` and its measured
 evidence stand as written.

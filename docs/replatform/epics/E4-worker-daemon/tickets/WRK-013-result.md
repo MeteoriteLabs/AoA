@@ -1,6 +1,6 @@
 # WRK-013 Result - a durable lease-candidate store, and the startup reconciler composed before the first poll
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Date (UTC):** `2026-09-21`
 **Epic:** `E4-worker-daemon`
 **Plan task:** `E4 implementation-plan ### WRK-013 - A durable lease-candidate source for the startup reconciler (M1a)` (§4c)
@@ -423,10 +423,11 @@ no `Errors` line; `tsc --noEmit` clean; `check-test-inventory` OK; the full guar
 
 ## Independent review
 
-**Reviewer:** _pending_
-**Reviewed revision:** _pending_
-**Disposition:** _pending_
-**Attempt:** _none yet_
+**Reviewer:** M1 review-batch-3A independent reviewer (Claude Opus 5). I did not author WRK-013, and I am not the planning session.
+**Reviewed revision:** b9189e1c7c6226f2460717d9bfb9910f36a13849 (the final PR #553 head, merged as `535661d2fe76a8b10af13e3d97655709f13955e7`; an ancestor of the program tip `60aafb32ec6f8316f92079789cf8814f981f3ed3`). The record's §8 merge commit `80af143b1a76ba668c252b0a96cac540cf46566a` and the Codex-reviewed `312db08461` are both ancestors of it.
+**Disposition:** `approved`
+**Attempt:** 1 (see *Independent review — attempt 1* and the attempt history)
+
 
 For `approved`, check each claim above against its named source at the reviewed revision. In
 particular, confirm three things: that §4 item 1 is a contradiction between the build brief and the
@@ -434,10 +435,131 @@ task section, and that the shipped one-renewal behaviour matches the task text; 
 is named at runtime and in the `M1a` ledger; and that §6's "not proven" is accepted as such. Then
 change the top-level `Status` to `complete` and commit that disposition separately.
 
+### Independent review — attempt 1
+
+**Disposition: `approved`.** Every acceptance item of the E4 plan's `### WRK-013` section is
+evidenced at the reviewed revision, the F4 narrowing is named at runtime and in the `M1a` ledger, the
+fenced-lease teardown is ratified by a separate planning-session commit whose reasons I checked at
+source, and I reproduced one mutation exactly. Two record defects are corrected below; neither
+falsifies a pass claim, and both are about CITATION, not about the code.
+
+**The three things the record asks the reviewer to confirm.**
+
+1. **§4 item 1 is a real contradiction, and the shipped one-renewal behaviour matches the task
+   section.** The build brief is not in the repo, so I can check only the half that is: all four of
+   the task-section quotes are true at source (`implementation-plan.md ### WRK-013`) — the Outcome's
+   F5 bullet *"the probe's own renewal is the last one"*, acceptance 2 *"no renewal after the
+   probe"*, acceptance 6 *"no `lease_renew`, including the probe's"* (scoped, correctly, to the
+   corrupt-store case), and the non-goal *"there is still no lease-state query op, so authority stays
+   inferred by renewal"*. A probe that renews nothing is therefore unreachable without a protocol
+   change the ticket lists as a non-goal, and acceptance 1 and 8 would become unsatisfiable. The
+   shipped behaviour — exactly one renewal per lease, the probe, claimed durably before the request —
+   is the one the contract names. The flag for a successor decision stands as written; I add nothing
+   to it.
+2. **The F4 narrowing is named at runtime and in the ledger.** At source:
+   `SANDBOX_PASS_SKIP_REASONS.containerPathNoEnumeration = "sandbox_pass_skipped_container_path_f4"`
+   (`supervisor/startup-reconcile.ts`), returned by `sandboxPassDeps` on the container path
+   (`lifecycle/dispatch-runtime.ts`) and asserted in both
+   `startup-reconcile-composed.component.test.ts` and `startup-reconcile-lifecycle.test.ts`. The
+   `M1a` ledger row `E4-3 · WRK-013` (`milestones/M1a/reachability/E4-worker-daemon.md`) carries the
+   narrowing verbatim, including *"the candidate-freeze record must repeat this"*.
+3. **§6's "not proven" is accepted AS NOT PROVEN.** No deployed restart, no real E2B, and no
+   server-side proof that the reaper ends a fenced attempt. Nothing in the plan's acceptance requires
+   a keyed run for this ticket, so §6 does not leave an acceptance item open — it bounds the claim,
+   and `DEP-018` owns the deployed restart fault.
+
+**The ratification (F2), checked as a record and not re-decided.** The ★★★ block in §8's
+fourth-P1 section was added by commit `836614aee0b8fcd6772e178f3f0f89dc1af67206`,
+*"docs(E4): ratify WRK-013's fenced-lease teardown (F2 delegation)"* — a separate commit from the
+implementation, with the reasons in its message as well as in the record. F2 (M1 plan §2) lets the
+planning session record a decision *"in the E-epic `decisions.md` or here"*, so the location is
+admissible. I checked the two load-bearing reasons at source rather than accepting them:
+`WRK-007-design.md` §4 D2 does say *"regardless of `renewed`, do NOT re-attach … kill it via the
+cleanup authority, and let JOB-006 mint a fresh fenced attempt N+1"*, so the change closes a gap
+between two records rather than opening a position; and the blast radius is as stated —
+`StartupReconcilerDeps.fencedLeasesAreStale` is optional and read as `!== true`
+(`startup-reconcile.ts`), set only by the composed daemon (`dispatch-runtime.ts`). **I judge the
+evidence, not the decision:** ★ 15 and the `startup-sandbox-classification` unit case (6 tests, with
+the no-flag positive control) carry it, and M24 is the control that shows the default is what keeps
+WRK-007 CORE green.
+
+**What I re-ran and re-measured, on the reviewed tree.**
+
+- **The plan's §3 focused command**, verbatim (five files):
+  `vitest run lease-candidate-store.test.ts startup-reconcile-composed.component.test.ts startup-lease-authority.test.ts startup-reconcile-lifecycle.test.ts dispatch-runtime.test.ts`
+  → **5 files, 79 passed** at the program tip, and **77** at the reviewed revision `b9189e1c7`
+  (the difference is two `dispatch-runtime.test.ts` cases that `DEP-017` added afterwards; nothing
+  else in the five files changed — `git diff b9189e1c7 60aafb32e` over them is that one file).
+- **Mutation M25 reproduced exactly.** Replacing the prune filter
+  `entry !== undefined && entry.probeKind !== "unprobed"` with `entry !== undefined` gives
+  **1 failed / 20 passed** in the composed component test, and the failing case is
+  *★ 16 — a boot that cannot obtain a SESSION probes nothing and KEEPS its candidates for the next
+  boot*. Reverted; the tree was clean afterwards.
+- **The `"unprobed"` discriminator is exact**, as §8 claims: it is written at exactly one site
+  (`startup-reconcile.ts`, the no-session arm), and the other two assignments carry the renew
+  attempt's own kind and `"transient"`.
+- **Multi-tenant (F10) is real, not asserted.** ★ 8 ACKs one lease for `ORG_X` and one for `ORG_Y`
+  on one daemon, seeds X live and Y dead, then asserts each lease is renewed **exactly once** with
+  its own `jobId`/`fenceToken`, that no probe ever pairs one Organization's lease with the other's
+  job or fence, that `fenced` names only `[LEASE_X, ORG_X]` and `ended` only `[LEASE_Y, ORG_Y]`, and
+  that the renewal driver holds neither. That is a two-Organization proof.
+
+**CI, corrected and supplied.** §7 names *"Final code head: PR #553, CI run `35601768029`, on head
+`7b17cd66f`"*. That was true when written and is **superseded**: five code commits landed after it
+(`8203284a1`, `312db0846`, `2cafa51c6`, `189f5d921`, `b9189e1c7`), and `7b17cd66f` is **not** an
+ancestor of `docs/replatform-program`. §8 promised *"CI on the merged head is recorded in §7 once it
+completes"*; that never happened. I discharge it here rather than ask for an addendum, because the
+covering run exists and is green:
+
+**Run `35799183278`** (`pull_request`, headSha `b9189e1c7c6226f2460717d9bfb9910f36a13849`,
+conclusion `success`, all 16 checks `success`, `ci-required` job `107053616534`). Per job, with the
+executed counts for this ticket's files:
+
+| Job | This ticket's files it executed | Shard totals |
+|---|---|---|
+| `verify (1)` (`107050193231`) | `startup-reconcile-lifecycle.test.ts` **9 tests** | 658 files passed, 3 skipped |
+| `verify (3)` (`107050193343`) | `dispatch-runtime.test.ts` **30 tests**; `startup-lease-authority.test.ts` **5 tests** | 657 files passed, 4 skipped |
+| `verify (4)` (`107050193224`) | `startup-reconcile-composed.component.test.ts` **21 tests**; `lease-candidate-store.test.ts` **12 tests**; `config.test.ts` **9 tests** | 660 files passed |
+| `verify (2)` (`107050193392`) | none of this ticket's files | 659 files passed, 2 skipped |
+
+Those counts supersede §7's table (which recorded 14 and 10 for the composed and store suites at the
+earlier head); the growth is the four later Codex fixes. Codex reviewed `312db08461` and, per §8,
+found no major issues; I did not find an unresolved thread on #553.
+
+**The disclosed intermittent failure — judged, not waived.** §8 records *"one full-suite run between
+these two fixes reported a single failure that the next two runs did not reproduce … and its name was
+not captured."* Disclosing it is the right call and is worth more than a silent omission. Its cost is
+that an uncaptured name cannot be tracked: if the same flake recurs, nobody can tell it is the same
+one. It is **not** blocking here — the covering CI run is green on all four shards at the reviewed
+revision, the composed suite ran green four times afterwards, and no acceptance item rests on that
+run. **Recommendation for the planning session, not a change request:** if a worker-daemon full-suite
+failure recurs without an obvious cause, file it as an E4 finding rather than re-recording it as
+uncaptured.
+
+**Two record defects, recorded (non-blocking).**
+
+1. §7's *"Final code head … `7b17cd66f`"* is superseded and `7b17cd66f` is not an ancestor of the
+   program tip, and §8's promised §7 update never landed. Corrected above with run `35799183278` by
+   job. This is the "record disagreeing with code" class; it is a stale citation, not a false pass
+   claim — the run it names did exist and was green on the code it named.
+2. The "focused command **83 tests**" and "**76 tests**" figures in §8 do not describe the plan's §3
+   focused command, which is five files. They are that command **plus**
+   `startup-sandbox-classification.test.ts` (6 tests). The arithmetic checks out (77 + 6 = 83), so
+   the numbers are honest but mislabelled. The plan's focused command at the reviewed revision is
+   **77 tests**, green.
+
+**Acceptance items (E4 plan `### WRK-013`).** All eight are evidenced, and I checked each against its
+named ★ case rather than against the record's summary: 1 (★ 1), 2 (★ 2 + the `startup-lease-authority`
+F5 cases), 3 (★ 3), 4 (★ 4 ×3 with the Organization-scoped positive control, and ★ F4), 5 (★ 1's
+ordering plus the `dispatch-runtime` gate test), 6 (★ 6 ×2, both naming `lease_candidate_store_unreadable`
+and not `empty`), 7 (M1 plus the in-suite ★ 7 controls), 8 (★ 8, above). Nothing is pending, so I set
+`Status` to `complete` in a separate commit.
+
 ## Review attempt history
 
 The implementation author leaves the table body empty. The first independent reviewer appends attempt 1, and later reviewers append rows with increasing attempt numbers without replacing earlier ones. Do not include a `Review commit` column: a row cannot embed the SHA of the commit that first contains it.
 
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
+| 1 | M1 review-batch-3A independent reviewer (Claude Opus 5) | `b9189e1c7c6226f2460717d9bfb9910f36a13849` | `approved` | All 8 acceptance items evidenced at source. F4 token `sandbox_pass_skipped_container_path_f4` named at runtime and in the M1a ledger row `E4-3 · WRK-013`. §4 item 1: all four task-section quotes true at source; one-renewal behaviour matches the contract. Teardown ratification is a separate planning-session commit `836614aee`; WRK-007 D2 verified at source; `fencedLeasesAreStale` off by default. Plan §3 focused command rerun: 77 tests at the reviewed revision, 79 at the tip, green. M25 reproduced exactly (1 failed, ★ 16). ★ 8 is a real two-Organization proof. CI CORRECTED: §7 names a superseded, non-ancestor head `7b17cd66f`; the covering run is `35799183278` on `b9189e1c7c` — `ci-required` `107053616534` pass; verify (1) 9, (3) 30 + 5, (4) 21 + 12 + 9. §8 "83 tests" counts a sixth file outside the focused command. Uncaptured intermittent failure: accepted as an honest disclosure, not blocking. |
 <!-- The first reviewer appends attempt 1 below. -->
