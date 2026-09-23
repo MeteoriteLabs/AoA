@@ -344,8 +344,10 @@ name is irrelevant to "the child cannot see the host's environment at all".
 
 Guard 9 now reports nothing missing, and guards 1–8 find nothing in any surface this ticket adds.
 
-The `ci-required` verdict on the final head is recorded below once its run completes. This section
-is not rewritten.
+**`ci-required`: PASS** on the final head `75eb25f9b`, run `35844283361` (job `107132960224`), all
+sixteen checks green — `changes`, `policy`, `lint`, `migrations`, `distributed-contract`, `browser`,
+`brand-check`, both `worker-protocol-contract-bytes` lanes, `e2e`, `e2e-pgvector` and
+`verify (1..4)`. This section is not rewritten.
 
 ---
 
