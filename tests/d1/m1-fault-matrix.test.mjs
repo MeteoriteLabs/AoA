@@ -929,8 +929,9 @@ test("fault-matrix: cancelling a LEASED attempt requests cancellation and fences
 // ═══ 6. provider failure ═════════════════════════════════════════════════════
 
 /**
- * The worker's mapping from a provider result to a terminal event, written ONCE and used by both
- * arms below. ★ Added after a Codex P1 on PR #573: the first version handed the ingest a constant
+ * A provider result → the terminal event a worker would emit, written ONCE and used by both arms
+ * below. ★ HARNESS CODE, not the deployed worker's mapper, and the case is named accordingly
+ * (Codex, PR #573, second round). ★ Added after the first Codex round: the first version handed the ingest a constant
  * `status: "failed"`, so a regression that reported a timeout as a success would have left the case
  * green — the ingest was being TOLD the answer. The payload is now DERIVED from what the provider
  * reported, and the success arm below is the control that shows the derivation can produce the
@@ -983,13 +984,19 @@ test("fault-matrix: a provider execute that exceeds its deadline lands as a clas
 
   record("d1.provider.execute_deadline_exceeded", {
     injectionFired: timedOut,
+    // ★ RENAMED to what it measures (Codex P1, second round, PR #573). `terminalPayloadFor` is
+    // harness code, so the pair proves the INGEST's classification of a provider-derived terminal —
+    // a real defect class, since an ingest that ignored the terminal status would red here — and
+    // NOT the deployed worker's mapping, which no D1 worker performs. That half is filed as its own
+    // declared case, `d1.provider.worker_terminal_mapping`, pending/structural, so it can never be
+    // reported as a pass under this one's name.
     observedClassification: failed.attemptStatus === "failed" && succeeded.attemptStatus === "succeeded"
-      ? "attempt_terminal_failed_and_classified"
+      ? "ingest_classifies_provider_derived_terminal"
       : `failed_arm_${String(failed.attemptStatus)}_control_arm_${String(succeeded.attemptStatus)}`,
     detail: {
       failedArm: { providerResult: failed.providerResult, terminalPayload: failed.payload, attemptStatus: failed.attemptStatus },
       controlArm: { providerResult: succeeded.providerResult, terminalPayload: succeeded.payload, attemptStatus: succeeded.attemptStatus },
-      note: "the terminal payload is DERIVED from the provider's report by terminalPayloadFor, not hard-coded; the control arm shows the derivation can produce the other answer. The DEPLOYED worker's own mapping is not exercised here -- the D1 workers do not dispatch -- and is d2m.provider_failure.e2b_create_refused's, on the keyed lane.",
+      note: "the terminal payload is DERIVED from the provider's report by terminalPayloadFor (harness code), and the control arm shows the derivation can produce the other answer -- so what is proven here is the INGEST's classification of a provider-derived terminal. The DEPLOYED worker's own mapping is NOT exercised (the D1 workers do not dispatch) and is its own declared pending case, d1.provider.worker_terminal_mapping.",
     },
   });
   assert.equal(timedOut, true, `the provider must report timedOut — the injection: ${truncate(failed.providerResult)}`);

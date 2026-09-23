@@ -124,7 +124,7 @@ All three reads run on the **same non-owner `aoa_app` pool**, inside the control
 | `cost_events` | `costService(db).byAgent(companyId)` — over the charge the REAL ingest priced during A's journey | 1 row, **81 cents** | **0** | > 0 |
 | `activity_log` | `activityService(db).list({companyId, entityType:"job", entityId})` — over the rows `job-accepted-activity-audit.ts` wrote | 2 rows (`job.attempt_started`, `job.attempt_terminal`) | **0** | > 0 |
 | `task_outputs` | `taskOutputService(db).listForIssue(companyId, issueId)` — planted through the production writer `upsertForIssue` | 1 row | **0** | > 0 |
-| `provider_credentials` | the two predicates the fenced `device_local` arm uses (`resolveExecutionSecret`): `id = refId AND company_id = <the locked lease's companyId>` | 1 row | **0** | > 0 |
+| `provider_credentials` | ★ the two predicates the fenced `device_local` arm uses (`resolveExecutionSecret`), **replicated**, not that reader invoked — see §11b | 1 row | **0** | > 0 |
 
 The **anti-vacuity** column is the same read with the tenant predicate REMOVED, and it returns the
 owner's row every time — so each `foreign = 0` is shown to be the filter's work and not an empty
@@ -133,10 +133,9 @@ table. The assertion order in the case is deliberately `own > 0`, then `unscoped
 
 **Two bounded points, stated rather than discovered later.**
 1. `provider_credentials` is planted by owner SQL and read through an equivalent two-predicate
-   query on the `aoa_app` pool, not by calling `resolveExecutionSecret` itself — that entry point
-   lives in `packages/db` behind `runInTenant` + a live fence, and reaching its `device_local` arm
-   needs a real broker. The predicate under test is the one that arm uses, cited by symbol in the
-   declaration's `productionPath`.
+   query on the `aoa_app` pool, **not** by calling `resolveExecutionSecret` itself. ★ **This is an
+   acceptance-5 GAP, not a satisfied clause** — see §11b, where it is filed as its own declared
+   pending case rather than left as a footnote.
 2. `task_outputs` is planted through the production **writer**, not by the distributed projector:
    `job-accepted-output-projection.ts` fires only on an `artifact_prepared` event, which this
    lane's reference provider does not produce. The READ under test is the production reader.
@@ -384,3 +383,38 @@ different clothes: **an assertion whose control could not detect the guard being
 
 The declaration's `observedBy` strings were rewritten in the same commit to state what each case now
 measures, so the record and the code cannot disagree.
+
+## 11b. Codex round three — two more P1s, and what they changed
+
+Head `0794f44c1`. Both were right, both were about a case **claiming more than it measures**, and
+neither is measurable on this lane. So rather than argue the gap away in prose, each claim was
+**split**: the measurable half keeps a name that states what it proves, and the unmeasurable half is
+**filed as its own declared `pending` case** — which the checker can never report as a pass, and
+which therefore keeps the profile honestly `INCOMPLETE`.
+
+| Finding | Verified | What changed |
+|---|---|---|
+| **P1** — *"Run timeout classification through the production worker mapper."* `terminalPayloadFor` is harness code, so both arms validate that helper and the ingest, not the deployed worker's mapping that the case claimed to protect | **True.** `AOA_WORKER_DISPATCH_ENABLED` is declared ABSENT for both D1 workers, so no worker on this lane maps anything | The measured case is renamed to what it proves — **`ingest_classifies_provider_derived_terminal`** (a real defect class: an ingest that ignored the terminal status reds here, and the success arm is the control that shows the derivation can produce the other answer). The worker's own mapping is now **`d1.provider.worker_terminal_mapping`**, `pendingKind: structural`, owned by the DEP-015 keyed lane |
+| **P1** — *"Exercise credential isolation through the production reader."* The `provider_credentials` case hard-codes the two predicates instead of invoking `resolveExecutionSecret`, while the record claimed acceptance 5's production-query-path coverage | **True, and the record was the worse half of it.** I checked whether the reader is drivable here: its `device_local` arm needs `authorizeSecretResolve` to admit, the D1 control plane wires `failClosedDeviceLocalBroker` (the only implementation in the tree), and the fenced route collapses every outcome to `denied/malformed` — so an admitted read and a denied one are indistinguishable at every observable surface on this lane | §3b now states this as an **acceptance-5 gap**, not a satisfied clause, and the reader half is **`d1.credential.production_reader_company_predicate`**, `pendingKind: structural`. ★ **FLAGGED FOR THE PLANNING SESSION: no ticket on disk owns it.** Closing it needs either a D1 `device_local` broker or the keyed lane — a topology decision beyond this ticket. The legacy case still proves the PREDICATE and the grant on the same non-owner pool, and now says only that |
+
+### 11c. Re-measured after the split
+
+```
+AOA_D1_LIVE=1 AOA_D1_CAMPAIGN=m1-fault-matrix node --test --test-concurrency=1 \
+  tests/d1/m1-fault-matrix.test.mjs
+→ tests 20, pass 20, fail 0
+
+node scripts/check-campaign-fault-matrix.mjs --evidence <bundle>
+→ OK: profile M1-D1-SPINE: 25/25 required case(s) fired and classified as declared,
+      3 pending. Profile INCOMPLETE (pending cases remain).
+```
+
+The declaration is now **73 cases (25 required, 48 pending)**, and the three D1 pending cases are
+`d1.reconcile.worker_startup_lease_probe`, `d1.provider.worker_terminal_mapping` and
+`d1.credential.production_reader_company_predicate` — every one structural, every one with its
+blocker cited at source and an owner named. `scripts/check-campaign-fault-matrix.test.mjs`: **25/25**.
+
+★ **What a reviewer should take from this section.** The profile's verdict moved from "complete
+except one" to **`INCOMPLETE`, three pending** as a direct result of the review, and that is the
+right direction: two of those three were previously being claimed by cases that could not prove
+them. A gate record made from this bundle must carry the three, and `d1.credential.production_reader_company_predicate` has **no owner on disk** and needs a planning-session decision.
