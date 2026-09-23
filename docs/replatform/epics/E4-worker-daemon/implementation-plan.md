@@ -1167,8 +1167,28 @@ transport's stream directive; **C** — the provider-wire and adapter-manager re
 component tests; then the one keyed acceptance run.
 
 **Acceptance:**
-1. One real run (keyed, F8) emits **exactly one** `usage` event whose token counts equal the agent's
-   result line.
+1. **AMENDED 2026-09-23** (M1 planning session, founder delegation F2), after the `DEP-015` keyed
+   run and the Codex P1 on PR #567. *Superseded text: "One real run (keyed, F8) emits **exactly one**
+   `usage` event whose token counts equal the agent's result line."* That sentence names two
+   different claims and one of them cannot be established on the keyed lane at all, so it is split
+   into three parts with the reason recorded — this is a statement of what each piece of evidence
+   proves, **not** a relaxation:
+   - **1(a) cardinality.** Exactly one accepted `usage` event per attempt, belonging to that tenant.
+     Closed by the keyed lane's assertion (`evaluateUsageCardinality`,
+     `scripts/lib/m1-spine-assertions.mjs`), which counts the attempt's accepted `usage` rows in
+     `job_events` per enabled tenant.
+   - **1(b) producer→ingest fidelity.** The counts the worker PARSED equal the counts accepted and
+     stored. `heartbeat_runs.usage_json` is PROJECTED from the same accepted event, so that pair
+     alone proves projection fidelity, not parser correctness (Codex P1, PR #567). The worker
+     therefore logs the counts it parsed — numbers and the run's own identifiers only, scrubbed by
+     the run's canaries — under `PARSED_USAGE_LOG_MESSAGE`
+     (`packages/worker-daemon/src/supervisor/usage-observer.ts`), and the lane compares the three.
+   - **1(c) parser fidelity to a REAL result line.** Proven by unit tests against the captured
+     `claude_local` transcript (`server/src/__tests__/fixtures/claude-stream-json-tool-call.jsonl`),
+     **not live** — and that limit is deliberate: proving it live would require emitting the
+     scrubbed result line from the daemon, which pushes tenant MODEL OUTPUT across the daemon
+     boundary (data minimisation) and would pre-empt the open **F7** output-mechanism decision. The
+     line is NOT emitted; `1(c)` therefore rests on the fixture, and says so.
 2. A planted canary in stdout appears in **no** event, log or evidence, on each lane (fake, E2B mock,
    networked). Zero tolerance.
 3. A run with no parseable usage emits **no** `usage` event and does not fail; `JOB-016`'s

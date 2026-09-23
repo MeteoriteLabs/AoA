@@ -127,7 +127,7 @@ sequencer's event scrub also applied to random event ids (~1 run in 10 failed); 
 
 | # | Clause | Evidence |
 |---|---|---|
-| 1 | one real keyed run emits exactly one `usage` equal to the result line | **PENDING** - key-less equivalents on all three lanes: `usage-stream-redaction.test.ts` (fake), `streaming.test.ts` "E2B lane end to end", `server-usage-stream.test.ts` "networked LANE end to end" |
+| 1 | one real keyed run emits exactly one `usage` equal to the result line — **AMENDED 2026-09-23 into 1(a)/1(b)/1(c); see the final section** | key-less equivalents on all three lanes: `usage-stream-redaction.test.ts` (fake), `streaming.test.ts` "E2B lane end to end", `server-usage-stream.test.ts` "networked LANE end to end" |
 | 2 | a planted canary appears in no event, log or evidence, per lane | fake: observer input + events + logger; E2B mock: same; networked: raw HTTP body + observer input + events |
 | 3 | no parseable usage -> no `usage` event, run does not fail | "no parseable usage" case: `attempt_started -> terminal(succeeded)`, `run_usage_missing_total 1` |
 | 4 | a provider without the channel is byte-identical | "does NOT implement the channel" case (event streams equal minus ids/timestamps/digests); E2B one-arg call; driver body == pre-channel `encodeOpRequest` |
@@ -300,3 +300,84 @@ it. Until a keyed run carries that assertion, acceptance 1 is **NOT met**.
 **Status:** `gate_review`, and it must stay there. The distinct reviewer approved the CODE at attempt
 1 and held the flip for exactly this item. A `complete` flip is not available until the cardinality
 evidence exists.
+
+---
+
+## Acceptance 1, amended into three parts (2026-09-23, M1 planning session under founder delegation F2)
+
+The section above leaves acceptance 1 `PENDING` on a single sentence — *"one real keyed run emits
+exactly one `usage` equal to the result line"* — which names two different claims. `DEP-015`'s keyed
+lane then landed (PR #567, `a08de9213`): per enabled tenant it asserts EXACTLY ONE accepted `usage`
+event for the attempt, scoped to that tenant, and that `heartbeat_runs.usage_json` matches it. Codex
+showed, correctly, that the second half of that assertion proves **projection** fidelity and not
+**parser** correctness, because the row is projected from the same event.
+
+So the acceptance is split, with the reason recorded so this is not read as moving goalposts. The
+original sentence is kept above, unedited, as the record of what it said.
+
+| Part | Claim | Closed by | State |
+|---|---|---|---|
+| **1(a)** | exactly one accepted `usage` event per attempt, belonging to that tenant | the keyed lane's `evaluateUsageCardinality` (`scripts/lib/m1-spine-assertions.mjs`), counting the attempt's accepted `usage` rows in `job_events` | closes on the next keyed run; not this ticket's to dispatch |
+| **1(b)** | the numbers the worker PARSED equal the numbers accepted and stored | this ticket's parsed-counts log line (below) **plus** a lane comparison that DEP-015 must add | worker side DONE here; lane side OWED by DEP-015 (§ below) |
+| **1(c)** | the parser's fidelity to a REAL `claude_local` result line | unit tests against the captured transcript fixture `server/src/__tests__/fixtures/claude-stream-json-tool-call.jsonl` (`usage-observer.test.ts`, the first case) | **met, and NOT live — stated plainly** |
+
+### Why 1(c) is not proven live, and why that is the right trade
+
+Proving 1(c) live would mean emitting the scrubbed result line out of the daemon so the lane could
+parse it independently. That pushes tenant **model output** across the daemon boundary, which
+conflicts with data minimisation and would pre-empt the still-open **F7** output-mechanism decision.
+The M1 planning session ruled (F2 delegation, 2026-09-23) to log the COUNTS and not the line. The
+limit that leaves is stated rather than hidden: **no live run demonstrates that the parser read a
+real result line correctly**; what the live lane can show is that whatever the parser produced is
+what was accepted and stored (1(b)), and the fixture shows the parser reads a real captured line
+correctly (1(c)).
+
+### The worker side of 1(b), as built
+
+`supervisor.ts` logs, immediately before emitting the `usage` event and after the parser produced it:
+
+- message: `PARSED_USAGE_LOG_MESSAGE` = `"worker: parsed agent usage"` (a stable grep token);
+- payload: `parsedInputTokens`, `parsedOutputTokens`, `parsedCachedInputTokens`,
+  `parsedRuntimeMillis` (numbers), plus `leaseId`, `jobId`, `attempt` (the run's own identifiers).
+
+`parsedUsageLogFields` (`usage-observer.ts`) takes only the frozen `UsagePayloadV1`, refuses a
+payload that is not exactly four non-negative integers, and refuses one carrying any extra key — so
+no call-site edit can smuggle the stdout tail into this line without changing that signature.
+`scrubLogFields` (`run-output.ts`) scrubs every string value with the run's canaries and returns
+`null` — dropping the WHOLE line — if a value cannot be scrubbed.
+
+RED first: `expected [] to have a length of 1` (no line existed) and `(0 , parsedUsageLogFields) is
+not a function`. GREEN: `usage-observer.test.ts` 14 tests, `usage-stream-redaction.test.ts` 19 tests;
+worker-daemon suite 1226 passed / 1 skipped.
+
+| Mutation | Reds |
+|---|---|
+| MU1 delete the log call | the "exactly the four counts" case |
+| MU2 allow an extra key in the payload | the refused-payload case (a `stdoutTail` key then passes) |
+| MU3 stop scrubbing string values | the `scrubLogFields` case |
+| MU4 accept a non-integer count | the refused-payload case |
+| MU5 log a zeroed stand-in when the payload is refused | the "a REFUSED payload logs NO line" case |
+
+Leak controls: the canary rides the very stdout the counts came from (asserted present in the
+stream), and no canary appears in any log line; the payload's keys are pinned exactly, so any text
+field added to this line reds.
+
+### What DEP-015 still owes for 1(b), and why it is not done here
+
+The ruling allowed extending the lane comparison here only if it were a one-line addition to the
+shared verdict. It is not. `evaluateUsageCardinality` would need a new `parsedUsage` arm (compare
+all four fields against the single accepted event), and — the larger half —
+`scripts/m1-shipped-boot/journey.mjs` would need to EXTRACT the counts from the worker container
+logs it already collects (`compose logs <worker>`, beside `extractSandboxEvidence`) and key them by
+lease. Two files, a new extractor, and its own tests, in `DEP-015`'s ticket rather than this one.
+What DEP-015 needs from the worker is exactly:
+
+- grep the worker log for the message `worker: parsed agent usage`;
+- read `parsedInputTokens` / `parsedOutputTokens` / `parsedCachedInputTokens` /
+  `parsedRuntimeMillis`, keyed by `leaseId` (also `jobId` + `attempt`);
+- compare them field-for-field with the single accepted `usage` event's payload, and red on any
+  difference.
+
+Until that lands, 1(b) is proven on the worker side only.
+
+**Status:** unchanged — `gate_review`. A distinct reviewer alone may set `complete`.
