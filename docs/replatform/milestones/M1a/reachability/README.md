@@ -1,12 +1,30 @@
-# M1a candidate reachability ledgers — E3, E4, E5, E6 (skeletons)
+# M1a candidate reachability ledgers — E3, E4, E5, E6 (FILLED AT CANDIDATE)
 
 One ledger per epic: [E3](./E3-job-control.md) · [E4](./E4-worker-daemon.md) ·
 [E5](./E5-workspaces-secrets.md) · [E6](./E6-deployment-test-harness.md).
 
-**Status: SKELETON.** Measured at the program tip `b71f0dd539fe713c776f3935932be33af1a24fae`
-by a distinct review session (M1 plan §3, unit S0-7b). **Not yet candidate-specific.** Every cell
-that depends on the candidate reads `TO MEASURE AT CANDIDATE FREEZE`. A cell filled at the tip is a
-starting point to re-verify. It is **not** carried over to the candidate.
+**Status: FILLED AT THE `M1a` CANDIDATE `7be35ae6b7719877e61f54ab552de84de8491e7d`**, 2026-09-24,
+by the `M1a` QA owner — a review session distinct from the planning session that took the decisions
+and dispatched the runs (founder ruling F2). Every caller count in the `At candidate` column was
+re-measured at the candidate with `countProductionCallers`; no tip value was copied forward. At the
+candidate the wiring guard reports `OK (28 wired clause(s), 6 declared dormant, 2
+provider-capability claim(s) matched to source)`; at the tip it reported 22 wired / 12 dormant.
+
+*(Superseded status line, kept as first written: "**Status: SKELETON.** Measured at the program tip
+`b71f0dd539fe713c776f3935932be33af1a24fae` by a distinct review session (M1 plan §3, unit S0-7b).
+**Not yet candidate-specific.** Every cell that depends on the candidate reads `TO MEASURE AT
+CANDIDATE FREEZE`. A cell filled at the tip is a starting point to re-verify. It is **not** carried
+over to the candidate.")*
+
+★★★ **The `@tip` columns are preserved verbatim** and are not rewritten. A `TO MEASURE AT CANDIDATE
+FREEZE` still visible inside a `@tip` cell is answered in that row's `At candidate` cell.
+
+★★★ **The `Certified only by M1-D1-SPINE` judgement is now determinate, and the answer is
+lopsided.** The `M1a-D2-MECHANISM` profile of `tests/d1/fault-matrix.json` declares **23** cases at
+the candidate and **all 23 carry `evidence: "pending"`**; `.github/workflows/m1-shipped-boot.yml`
+has no fault-matrix step, so the keyed run `35920425288` fired none of them. Every cross-tenant
+denial, every cancellation case, every provider-failure case and every cleanup case in these
+ledgers is therefore certified by `M1-D1-SPINE` **only**.
 
 ## Where the rows come from
 
