@@ -1334,7 +1334,7 @@ and asserts `grep -F '<constant>'` for both imported constants — so the workfl
 code cannot drift.
 
 **Reproduced on this revision.** `node --test scripts/lib/__tests__/m1-spine-assertions.test.mjs` →
-tests 125 · pass 125 · fail 0. Three mutations applied alone and reverted, each red as the table
+tests 125 · pass 125 · fail 0. **Two** mutations applied alone and reverted, each red as the table
 claims (counts differ by one from §14.5 only because that table was taken on the pre-M7, 124-test
 tree):
 
