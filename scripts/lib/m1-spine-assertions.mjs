@@ -289,6 +289,15 @@ export function evaluateEnabledTenantSpine({ tenant: t, observation: o }) {
   if ((o.activity ?? []).some((a) => a.companyId !== t.companyId)) {
     out.push(violation("audit:wrong_company", `${k}: an audit row is attributed to another Company`));
   }
+  // The Organization too (Codex P2): JOB-017 records it in the row's `details` — the
+  // `activity_log.organization_id` COLUMN is nullable and this writer leaves it null, measured live
+  // — so the check reads whichever the row carries and requires it to be this tenant's.
+  if ((o.activity ?? []).some((a) => (a.detailsOrganizationId ?? a.organizationId ?? null) !== t.organizationId)) {
+    out.push(violation(
+      "audit:wrong_organization",
+      `${k}: an audit row records ${JSON.stringify((o.activity ?? []).map((a) => a.detailsOrganizationId ?? a.organizationId ?? null))}, not this tenant's Organization`,
+    ));
+  }
   // Codex P2 (PR #566): an audit row with the right action and Company but the WRONG actor records
   // false provenance — it says a different worker did the thing. JOB-017's actor for an accepted
   // mutation is `system` / `worker:<the worker whose fenced event was accepted>`.
@@ -313,6 +322,14 @@ export function evaluateEnabledTenantSpine({ tenant: t, observation: o }) {
   // `attempt_started` or `terminal` mutation unguarded. Require exactly the two identities JOB-017
   // mints, `activity:<company>:<that accepted event id>`, over the named set.
   const auditedEvents = (o.events ?? []).filter((e) => e.eventType === "attempt_started" || e.eventType === "terminal");
+  if (auditedEvents.length !== 2) {
+    // Anything but exactly one `attempt_started` and one `terminal` in the durable ledger means the
+    // receipt-binding checks below would silently skip — a check that evaluates nothing (Codex P2).
+    out.push(violation(
+      "audit:audited_event_cardinality",
+      `${k}: the attempt's ledger holds ${JSON.stringify((o.events ?? []).map((e) => e.eventType))}, not exactly one attempt_started and one terminal`,
+    ));
+  }
   if (auditedEvents.length === 2) {
     const expected = auditedEvents.map((e) => `activity:${t.companyId}:${e.eventId}`).sort();
     const seen = auditReceipts.map((r) => r.sourceIdentity).sort();

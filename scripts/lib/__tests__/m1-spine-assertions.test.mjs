@@ -202,8 +202,8 @@ function goodEnabled(tenant = A, overrides = {}) {
         targetAggregateId: costRowId,
       }],
       activity: [
-        { id: startedActivityId, action: "job.attempt_started", companyId: tenant.companyId, actorType: "system", actorId: "worker:33333333-3333-4333-8333-333333333333" },
-        { id: terminalActivityId, action: "job.attempt_terminal", companyId: tenant.companyId, actorType: "system", actorId: "worker:33333333-3333-4333-8333-333333333333" },
+        { id: startedActivityId, action: "job.attempt_started", companyId: tenant.companyId, organizationId: null, detailsOrganizationId: tenant.organizationId, actorType: "system", actorId: "worker:33333333-3333-4333-8333-333333333333" },
+        { id: terminalActivityId, action: "job.attempt_terminal", companyId: tenant.companyId, organizationId: null, detailsOrganizationId: tenant.organizationId, actorType: "system", actorId: "worker:33333333-3333-4333-8333-333333333333" },
       ],
       auditReceipts: [
         { status: "applied", organizationId: tenant.organizationId, companyId: tenant.companyId, sourceIdentity: `activity:${tenant.companyId}:${startedEventId}`, aggregateKind: "activity_log", targetAggregateId: startedActivityId },
@@ -401,6 +401,25 @@ test("SWAPPED audit receipt targets are refused — set equality would have pass
   );
   const v = evaluateEnabledTenantSpine(goodEnabled(A, { auditReceipts: swapped }));
   assert.ok(codes(v).includes("audit:receipt_target_mismatch"));
+});
+
+test("an audit row recording ANOTHER Organization is refused, even with the right Company (Codex P2)", () => {
+  const obs = goodEnabled(A).observation;
+  const v = evaluateEnabledTenantSpine(goodEnabled(A, {
+    activity: [obs.activity[0], { ...obs.activity[1], detailsOrganizationId: B.organizationId }],
+  }));
+  assert.ok(codes(v).includes("audit:wrong_organization"));
+  assert.ok(!codes(v).includes("audit:wrong_company"), "the Company is still right — only the Organization moved");
+});
+
+test("a ledger without exactly one attempt_started and one terminal is refused, not skipped (Codex P2)", () => {
+  const obs = goodEnabled(A).observation;
+  const extraTerminal = evaluateEnabledTenantSpine(goodEnabled(A, {
+    events: [...obs.events, { eventId: "77777777-7777-4777-8777-777777777777", eventType: "terminal" }],
+  }));
+  assert.ok(codes(extraTerminal).includes("audit:audited_event_cardinality"));
+  const noStart = evaluateEnabledTenantSpine(goodEnabled(A, { events: obs.events.filter((e) => e.eventType !== "attempt_started") }));
+  assert.ok(codes(noStart).includes("audit:audited_event_cardinality"));
 });
 
 test("a journey the ingest did not fully accept is refused before cost is judged", () => {
