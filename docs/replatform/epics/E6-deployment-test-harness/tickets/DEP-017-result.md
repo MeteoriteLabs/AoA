@@ -128,8 +128,8 @@ invocation → in-sandbox read → stdout channel → per-run scrub → strict p
 
 | Suite | Result |
 |---|---|
-| `pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/env-probe.test.ts` | **60 passed** |
-| `pnpm --filter @armyofagents/worker-daemon exec vitest run` (whole package) | **1219 passed, 1 skipped, 165 files** (on the tree merged with program tip `1bd5c8bbc`) |
+| `pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/env-probe.test.ts` | **61 passed** |
+| `pnpm --filter @armyofagents/worker-daemon exec vitest run` (whole package) | **1220 passed, 1 skipped, 165 files** (on the tree merged with program tip `1bd5c8bbc`) |
 | `pnpm --filter @armyofagents/worker-daemon exec tsc --noEmit` | clean |
 | `node --test scripts/check-staging-manifest.test.mjs scripts/lib/__tests__/m1-shipped-boot.test.mjs scripts/check-m1-shipped-boot-shape.test.mjs` | **140 passed, 0 failed** |
 | the M1 guard loop (all pure `pr.yml` guards) + `check-evidence-immutability --base origin/docs/replatform-program` | **0 failures** |
@@ -193,6 +193,8 @@ produced by removing the implementation from the tree and running the suite agai
 | M17 | the matching key not canonicalised for CASE | **killed** — 1 failed |
 | M18 | repeated/edge separators not collapsed in the key | **killed** — 1 failed |
 | M19 | the probe serializes the sandbox’s own env NAMES | **killed** — 7 failed |
+| M20 | the CROSS-TENANT arm names the raw variable, bypassing the gate | **killed** — 1 failed |
+| M21 | the unreported-name count increments per CALL, not per variable | **killed** — 1 failed |
 
 ### 4a. Two defects this review caught before the PR, worth recording
 
@@ -431,6 +433,23 @@ POSIX shape). So `presentNames` is now provably a subset of the probe’s own vo
 controls: `SECRET_sk_live_ABC123` and `SOME_VENDOR_PASSWORD` are counted, not echoed, and neither the
 value nor the name appears in the output; the per-class table derives its expectation from the table
 itself rather than a hand-list. Mutation **M19** (serialize the raw name) reds 7 cases.
+
+## 8h. The Codex review on `5aa787b2a`
+
+One finding, real and fixed: the known-token gate covered the taxonomy arm but **not the
+cross-tenant arm**, which fires on a VALUE and can therefore land on any name the sandbox chose —
+`SECRET_sk_live_ABC123=aoa-dep017-canary.<foreign-org>…` would have persisted the name verbatim.
+There is now ONE name policy for every arm: a single `report()` closure that emits the known
+canonical token or increments the count, used by the cross-tenant arm and the taxonomy arm alike.
+Positive controls: a foreign-marked value under a neutral name (`BUILD_sk_live_…`) is class + count
+with no name; under a credential-shaped name both arms fire and it is still never named; under a
+KNOWN name (`ANTHROPIC_API_KEY`) it is still named, so the arm keeps its diagnostics. Mutation
+**M20**.
+
+A second finding on the follow-up PR #568, also fixed: a variable hit by BOTH arms incremented
+`unreportedPresentCount` twice, corrupting a persisted diagnostic. The unreported names now live in
+a SET whose SIZE is serialized — the set itself never leaves the probe, which is the point of not
+naming them — so one variable counts once however many arms fire on it. Mutation **M21**.
 
 ## 9. CI evidence
 
