@@ -482,6 +482,20 @@ export function createLineRedactor() {
       const payload = text.slice(MASK_DIRECTIVE_PREFIX.length);
       if (insidePemBlock) insidePemBlock = !PEM_END.test(payload);
       else if (PEM_BEGIN.test(payload)) insidePemBlock = !PEM_END.test(payload);
+      // …and the UNARMOURED case (Codex P1, PR #574): a directive ends at the first newline, so a
+      // phase masking a wrapped DER value masks only its first fragment and prints the rest as
+      // ordinary lines — while `stripMaskDirectives` removes that first fragment before the scan.
+      // The payload therefore goes through the same carry and latch as any other line.
+      const directivePayload = base64Payload(payload);
+      const directiveJoined = carry + directivePayload;
+      carry = directiveJoined.slice(-JOIN_CARRY_CHARS);
+      const directiveHit = KEY_MATERIAL_MARKERS.find(
+        ({ pattern }) => pattern.test(payload) || pattern.test(directiveJoined),
+      );
+      if (directiveHit && directiveHit.marker.endsWith("_der")) {
+        insideDerBlock = true;
+        carry = "";
+      }
       return text;
     }
     // The service prefix `svc | ` is not part of the payload, and leaving it in the window breaks

@@ -1132,3 +1132,33 @@ test("POSITIVE CONTROL: a PEM masked through ::add-mask:: still opens the block 
   assert.match(redact('-----END PRIVATE KEY-----'), /pem_block/);
   assert.equal(redact('reconcile: 3 Organizations'), 'reconcile: 3 Organizations');
 });
+
+test("POSITIVE CONTROL: an UNARMOURED key masked by its first fragment still latches (Codex P1)", () => {
+  // A directive ends at the first newline, so a phase masking a wrapped DER value masks only the
+  // first fragment and prints the rest as ordinary lines — and the scan strips that first line.
+  const key = 'MC4CAQAwBQYDK2VwBCIEIG' + 'HhSeedBytes'.repeat(4);
+  const wrapped = key.match(/.{1,8}/g);
+  const redact = createLineRedactor();
+  const first = `${MASK_DIRECTIVE_PREFIX}${wrapped[0]}`;
+  assert.equal(redact(first), first, 'the directive is still forwarded verbatim');
+  // Fragment 2 is still inside the FIXED 21-character algorithm header (characters 9-16), so it
+  // carries no key bytes; the marker completes on fragment 3, and from there nothing may publish.
+  assert.ok(key.indexOf(wrapped[1]) + wrapped[1].length <= 21, 'fragment 2 must be header, not seed');
+  assert.equal(redact(wrapped[1]), wrapped[1]);
+  for (let i = 2; i < wrapped.length; i += 1) {
+    assert.match(redact(wrapped[i]), /\[REDACTED: key material /, `fragment ${i + 1} published raw`);
+  }
+  assert.equal(redact('reconcile: 3 Organizations'), 'reconcile: 3 Organizations');
+});
+
+test("a directive carrying the WHOLE prefix latches immediately, and an ordinary directive does not", () => {
+  const redact = createLineRedactor();
+  const whole = `${MASK_DIRECTIVE_PREFIX}MC4CAQAwBQYDK2VwBCIEIGHh`;
+  assert.equal(redact(whole), whole);
+  assert.match(redact('SeedBytes'), /der_block/, 'the latch is open after a DER-shaped directive');
+
+  const plain = createLineRedactor();
+  const canary = `${MASK_DIRECTIVE_PREFIX}m1-leak-canary-7f3a9c2e5b1d`;
+  assert.equal(plain(canary), canary);
+  assert.equal(plain('boot-core: 2 replicas up'), 'boot-core: 2 replicas up', 'an ordinary secret opens no block');
+});

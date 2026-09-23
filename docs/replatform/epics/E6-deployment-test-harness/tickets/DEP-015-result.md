@@ -957,5 +957,16 @@ They are recorded because each would have made the control worse than none:
     close with the wrong id reds although the COUNTS balance; the ids are unique per invocation and
     never publish. Three mutations (the early return, a fixed seal, counting instead of pairing)
     each red, and all three markers join the gate, verified absent from `4fcf4e4ce`.
+26. **…and the same directive hole for an UNARMOURED key.** A `::add-mask::` command ends at the
+    first newline, so a phase masking a wrapped DER value masks only its FIRST fragment and prints
+    the rest as ordinary lines — while the scan strips that first line, so the prefix can never be
+    reassembled there either. The directive payload now goes through the same joined window and
+    the same DER latch as any other line, while the directive itself is still forwarded verbatim.
+
+    Controls: with an 8-character wrap the marker completes on fragment 3 and every line from there
+    is redacted; fragment 2 is asserted to lie inside the FIXED 21-character header, so what still
+    publishes is header and not seed; a directive carrying the whole prefix latches at once; and an
+    ordinary masked secret opens no block. Two mutations (the latch, the carry) each red, and the
+    marker joins the gate, verified absent from `44b6c94a5`.
 **Status unchanged.** This is a control added after the fact to a run that was already clean; it
 neither re-opens nor re-decides §12's keyed acceptance.
