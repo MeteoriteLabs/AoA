@@ -2472,12 +2472,15 @@ is very likely harmless — `listJobEvents` is keyed on a globally-unique attemp
 recorded here rather than filed separately because it is one line of the same code and a fix for
 either should look at both.
 
-**Owner — CLI-008.** This is a defect in the JUDGE, which CLI-008 owns (E7-F015, ~~E7-F016,~~ E7-F020 are
+**Owner — CLI-008.** This is a defect in the JUDGE, which CLI-008 owns (E7-F015, ~~E7-F016, E7-F020~~ are
 all there for the same reason ★ *— `E7-F016` was RE-POINTED to `CLI-015` on 2026-09-21 (M0 unit 4,
 founder decisions D1 + D5) and is struck from this list on 2026-09-23 by the record custodian.
 `scripts/finding-ownership.json` is authoritative and has said `CLI-015` since the re-point; leaving
-`E7-F016` in this sentence let a planner route the work back to the retired ticket. **`E7-F023`'s own
-owner is UNCHANGED — it stays `CLI-008`** — and `E7-F015` and `E7-F020` are unchanged too*), and it
+`E7-F016` in this sentence let a planner route the work back to the retired ticket. **`E7-F020` is also
+struck, on a second Codex P2:** it is `resolved` (by W21 + the PR #422 review, 2026-09-11), the
+authoritative registry holds no entry for it, and a resolved finding has no owner — so listing it
+among live `CLI-008` defects could route already-closed work back. **`E7-F023`'s own owner is
+UNCHANGED — it stays `CLI-008`** — and `E7-F015` is unchanged*), and it
 is a hard constraint on Unit F's remaining option space rather
 than a standalone repair. ★ **No fix is proposed.** Narrowing the matchers, excluding `job_events`
 from the hard arm, or moving it to the advisory `heuristicHits` set are three non-equivalent
@@ -2557,8 +2560,31 @@ A cheap, non-frozen mitigation exists and is deliberately NOT proposed as a fix 
 truncation happened (a metric, a `system`-stream marker event) would make the loss visible without
 touching `worker-protocol`. That is a design decision, not an obvious repair.
 
-**Owner — CLI-008.** It bounds Unit F's option space and nothing else; it is not a live data-loss
-defect for any shipped path.
+**Owner — CLI-008** (unchanged). ~~It bounds Unit F's option space and nothing else; it is not a live
+data-loss defect for any shipped path.~~
+
+★ **SUPERSEDED 2026-09-23 (record custodian, accepted Codex P2) — the categorical half is withdrawn,
+and the honest replacement is a stated unknown, not a new claim.** With `DEP-017`'s env probe
+composed on every shipped-boot worker, a `log` event **is** written on a shipped path, so *"not a
+live data-loss defect for any shipped path"* can no longer be asserted flatly — and this section's
+severity note above already says so. The two statements contradicted each other; this note removes
+the contradiction in the direction of the weaker claim.
+
+**Why a bound is NOT established here, measured rather than assumed.** `envProbeLogMessage`
+(`packages/worker-daemon/src/supervisor/env-probe.ts`) is
+`ENV_PROBE_LOG_PREFIX + JSON.stringify(summary)`, and `EnvProbeSummary` is names-and-classes only —
+but it carries **arrays sized by the sandbox's environment**: `redeemedNames`, the `clean` report's
+present/mismatch lists, and `plantedControl.planted` / `.detected`. Their length is bounded by the
+number of env names, which is small in every shipped topology and has **no declared ceiling in the
+type**. So the message is *very probably* orders of magnitude under 65,536 characters and that
+cannot be asserted as a proof. Establishing a real bound — a length cap in `envProbeLogMessage`, or
+a measured maximum from a shipped-boot run — would settle it.
+
+**What stands, and what the owner is left with.** The finding still bounds Unit F's option space,
+which is why it stays with `CLI-008`, and the transcript-corruption it names is still not reachable
+from **model output** (`createUsageObserver` never re-emits stdout or the transcript). **Severity
+MEDIUM and Status `open` are deliberately UNCHANGED** — a re-rating on the env-probe path is the
+owner's, not a custodian's.
 
 ---
 
