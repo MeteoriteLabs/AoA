@@ -715,6 +715,10 @@ and the H-04 posture this programme states is zero-tolerance rather than probabi
    `scrubLogRecord` is the caller-side half of this and is deliberately retained; on its own it
    cannot close the finding.
 
-**Blocks nothing.** `M1a` does not depend on any worker log carrying data: acceptance 1(a) is closed
-by the keyed lane's `usage` cardinality assertion, and 1(b)/1(c) are recorded as not live-provable
-with their reasons (`tickets/WRK-018-result.md`).
+**Blocks nothing.** `M1a` does not depend on any worker log carrying data. Acceptance 1(a) has its
+assertion in the keyed lane (`evaluateUsageCardinality`) and **closes on the next keyed run that
+passes it** — `DEP-015-result.md` records that no keyed run has carried the assertion yet, so 1(a)
+is PENDING that run, not closed today (this sentence read "is closed by the keyed lane's `usage`
+cardinality assertion" when first written, which overstated it — Codex P2, PR #571). 1(b)/1(c) are
+recorded as not live-provable with their reasons (`tickets/WRK-018-result.md`). Nothing here waits
+on 1(a) either way: this finding is about the logging model, not about usage evidence.

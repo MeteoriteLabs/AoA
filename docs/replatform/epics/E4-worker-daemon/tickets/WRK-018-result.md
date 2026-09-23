@@ -359,6 +359,11 @@ sink, i.e. the same collision one layer down. The M1 planning session therefore 
 as **NOT LIVE-PROVABLE**, for the same reason as 1(c). Nothing was weakened to keep the line: at
 every step the refusal (drop the record) was chosen over emitting.
 
+★ **1(a)'s state, stated precisely:** its assertion EXISTS in the keyed lane and 1(a) closes on the
+next keyed run that passes it; `DEP-015-result.md` records that no keyed run has carried the
+assertion yet. So acceptance 1 today is: **(a) pending one keyed run**, **(b) and (c) keyless /
+fixture only, each with its reason**.
+
 **Filed, because the property is pre-existing and not this ticket's:** **E4-F019** (E4 `findings.md`,
 `unowned` in `scripts/finding-ownership.json`) — canary redaction has no defence when a redeemed
 secret collides with a structural token, with the production-logger evidence line and the two
