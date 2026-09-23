@@ -1,6 +1,6 @@
 # JOB-017 — Audit and output bridges registered on the accepted-event seam — result
 
-**Status:** `gate_review`. Only a DISTINCT reviewer sets `complete`.
+**Status:** `complete` (set 2026-09-23 by the M1 review-batch-3B independent reviewer at attempt 1, revision `60aafb32ec6f8316f92079789cf8814f981f3ed3`). The implementer left it at `gate_review`; only a DISTINCT reviewer sets `complete`.
 **Reviewed revision (code):** `f551565de6ff55c2c1691dba63c71b8ac6e0f3fd` (branch `claude/m1-job-017`), the one code commit `feat(job-control): register audit and output bridges on the E3-D-ACC seam`, based on program tip `fc2eb7dde`.
 **Date (UTC):** `2026-09-21`
 **Decisions:** `E3-D-AUDIT-SET`, `E3-D-OUTPUT-MAP` and `E3-D-TERMINAL-WINNER` in [`../decisions.md`](../decisions.md), all under the accepted `E3-D-ACC` seam contract, decided under founder delegation F2.
@@ -240,3 +240,105 @@ Today arm 2 still reads 0 on every real run, because no worker emits `artifact_p
 - **The previous addendum.** Its Codex line records the `a58278c` review. The `37a9c72` review then
   raised these two findings, so the reviewed revision moves to the head that carries this fix. CI
   for that head is cited in PR #560; this record is not rewritten for it.
+
+## Independent review
+
+**Reviewer:** M1 review-batch-3B independent reviewer (Claude Opus 5) — distinct from the JOB-017 build session and the planning session
+**Reviewed revision:** `60aafb32ec6f8316f92079789cf8814f981f3ed3`
+**Disposition:** `approved`
+**Attempt:** 1
+
+### Independent review — attempt 1
+
+**Disposition: `approved`.** Reviewed at the `docs/replatform-program` tip (the merge of PR #565).
+The code commit `f551565de`, the re-drive `dbf4628cf`, the citation re-point `a58278c39`, the
+Codex-P2 fix `56313ae361ba2ea652e432cbf2e0cd0bdce6d2fb` and the record head `b5c84fd94` are all
+ancestors of it.
+
+- **The P2 fix, at source.** In `job-audit-bridge.ts` the fast path returns
+  `{status: "pending", activityId: null, receiptId, hubAuditId: null}` when the existing receipt is
+  `pending`; in `job-output-bridge.ts` it returns `{status: "pending", outputId: null}`. Only a
+  non-pending receipt is reported `replayed` with its `targetAggregateId`. Both outcome unions gain
+  `pending` additively. I checked the third wrapper as well: `projectTerminalWinner`'s fast path
+  cannot hand back a wrong-kind id, because it returns `commentId` only when the receipt's
+  `aggregateKind` is `issue_comments`. Both Codex findings were real and are fixed at the cause.
+- **The retirement guard is not a blind scan.** The `[E3-D-TERMINAL-WINNER]` describe in
+  `job-output-parity.integration.test.ts` strips comments before scanning, asserts zero production
+  references outside `job-output-bridge.ts`, and its positive control requires the same scanner to
+  see the method in the test tree AND to see `createAcceptedActivityAuditProjector` referenced from
+  `job-events.ts`. A zero there is a measured zero.
+- **Mutation reproduced by me, and reverted.** **M9**: appending a production reference to
+  `projectTerminalWinner` in `job-events.ts` gives **1 failed** — *has ZERO production callers
+  outside its own definition file* — with the positive-control arm still green. Restoring the file
+  returns **2 passed**. The other fifteen rows I checked by reading the tests; each names a test
+  whose assertion the mutation defeats.
+- **Register.** `scripts/gate-clause-wiring.json` carries `E3-17-output`
+  (`resolveAcceptedOutputProjector`) and `E3-audit-parity-bridge`
+  (`createAcceptedActivityAuditProjector`), both `wired`, both retaining the prior unwired reason
+  verbatim. `node scripts/check-gate-clause-wiring.mjs` is OK at the reviewed tip and neither clause
+  appears on the dormant list.
+- **F10 is real.** `[acc 5 / F10]` seeds two leased attempts under `TENANT_A` / `TENANT_B` with
+  `COMPANY` / `COMPANY_B`, drives both through the real ingest, and partitions `activity_log`,
+  `task_outputs` and the six projection receipts by Organization and Company. `[acc 5 / F10
+  cross-tenant denial]`, `[F10] both cores refuse …` and `[re-drive F10]` each carry their own
+  same-tenant control.
+- **CI on the FINAL head, by job with executed counts.** The record defers this to PR #560 and does
+  not restate it, so I measured it. Run `35613948895` (`pull_request`, headSha
+  `b5c84fd94574d3c35a4aa69370b1cbab802101b9`, conclusion `success`); all sixteen jobs `success`,
+  including `ci-required` `106387307109`. Per job:
+  - `verify (3)` `106379861080`: `job-accepted-event-seam.integration.test.ts` **(36 tests)**,
+    `job-output-parity.integration.test.ts` **(21 tests)** and
+    `job-control-sweeper-pending-projections.test.ts` **(4 tests)**; shard 657 files passed, 4 skipped.
+  - `verify (1)` `106379860991`: `job-audit-parity.integration.test.ts` **(14 tests)**.
+  - `verify (2)` `106379860974`: `job-events.integration.test.ts` **(15 tests)**.
+
+  The two `+1`s over the `a58278c` addendum's 20 and 13 are exactly the two `[JOB-017 Codex P2]`
+  tests, one per wrapper. Locally, `job-output-parity.integration.test.ts` also collects 21 cases.
+- **Codex.** On PR #560, `chatgpt-codex-connector` reported no major issues on `240c240593`,
+  `a58278c392` and the final head `b5c84fd945`. Its two P2s on `37a9c72` are the ones fixed in
+  `56313ae36`; both threads are answered and resolved.
+- **The TDD deviation, judged.** The record states it plainly: cores, registrations and tests were
+  written in one sitting, and the code was not held back until a failing run existed. What is
+  genuine is the recorded RED — setting `job-events.ts` alone back to base `fc2eb7dde` reds
+  `[acc 1 + acc 2 + acc 4]` (expected the two audit actions, received `[]`) and `[acc 1 stale]` at
+  its live-fence positive control, which is precisely the task's own definition of RED. What that
+  RED cannot show is that the ten seam-level cases would have failed against unwritten code, and the
+  record says so rather than implying otherwise. The sixteen-row mutation table is the substitute,
+  and each row names the specific case it reds. I reproduced one exactly.
+  **Judgement: an acceptable substitution, recorded without overclaim.** It is weaker than test-first
+  and should not become this programme's norm; a reviewer can only confirm that the substitute was
+  actually run, which here it demonstrably was.
+- **Acceptance items, against the record's own `Acceptance → test` table.**
+  - 1, 2 and 3: evidenced, each through the real ingest and each with a named same-fence or
+    live-fence positive control.
+  - 4: evidenced by the scanner pair plus the REAL ingest case reading attempt `succeeded`, **0**
+    `task_terminal` receipts and **0** `issue_comments`.
+  - 5 (F10): evidenced, above.
+  - 6 (positive control: either registration removed reds acceptance AND `check-gate-clause-wiring`
+    reports zero callers): M1 and M2 state exactly that, and the register reason records why the
+    cited symbol had to move from the factory to the registration for that count to be able to
+    return to zero at all.
+  - The residual the record itself declared — a `pending` `activity_audit` or `output_projection`
+    receipt with no re-drive — is **closed** by the F2-ruled generalization, with six tests, four
+    mutations and the bound shared with JOB-016's.
+  Every acceptance item is met.
+- **Not blocking, noted.**
+  - The header's `Reviewed revision (code)` still names `f551565de`. The record's final section says
+    the reviewed revision moves to the head that carries the P2 fix, and the record is append-only,
+    so the header is stale by design rather than false — but a reader must reach the last section to
+    learn which tree was actually reviewed.
+  - The re-drive addendum's "the full guard set passes" at `dbf4628cf` was corrected by the record's
+    own next section, which names the three DE-30 citations that were red and the `a58278c` fix.
+    That correction is the right shape: it quotes the earlier claim instead of rewriting it.
+  - The arm-2 `kind` question stays open with `CLI-014` / `CLI-015` / ruling F7. Arm 2 still reads 0
+    on every real run because no worker emits `artifact_prepared` until `CLI-013`; I confirmed that
+    independently in the keyed journey run `35619555883`, whose verifier reports
+    `capabilityProven=false` with the arm-2 clause unmoved.
+
+## Review attempt history
+
+Later reviewers append rows with increasing attempt numbers without replacing earlier ones. Do not include a `Review commit` column: a row cannot embed the SHA of the commit that first contains it.
+
+| Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
+|---:|---|---|---|---|
+| 1 | M1 review-batch-3B independent reviewer (Claude Opus 5) | `60aafb32ec` (program tip, the #565 merge) | `approved` | Both Codex P2s verified fixed at source (both fast paths return `pending` with a null id; the third wrapper cannot mis-type an id either). The retirement guard has a real positive control; **M9 reproduced** — 1 failed, then 2 passed once restored. Register: both clauses `wired`, checker OK, neither dormant. F10 real: two Organizations, six receipts partitioned, per-case same-tenant controls. CI measured on the FINAL head `b5c84fd945`, run `35613948895`, all sixteen jobs green — `verify (3)` 36 + 21 + 4, `verify (1)` 14, `verify (2)` 15; the two `+1`s are the P2 tests. Codex clean on the final head and both P2 threads resolved. TDD deviation judged: the recorded RED is genuine for the task's own definition of RED, the mutation table is an adequate substitute, and the record does not overclaim. Noted, non-blocking: the header's reviewed revision is stale relative to the record's own final section. |
