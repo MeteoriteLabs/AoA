@@ -316,6 +316,8 @@ async function composeLane(input: {
   metrics?: Metrics;
   overlay?: Partial<SupervisorDeps>;
   makeRunProviderSpy?: (input: { handoff: LeaseHandoff; capability?: OwnedLabelsCapabilityLike }) => void;
+  /** CLI-012 — records every line the COMPOSED runtime logs, so the refusal line is inspectable. */
+  logLines?: unknown[];
 }): Promise<Composed> {
   const key = generateDeviceKey();
   let composed: SupervisorDeps | null = null;
@@ -341,6 +343,15 @@ async function composeLane(input: {
     backoff: { baseMs: 1, maxMs: 2, jitter: 0 } as never,
     workDir: "/tmp",
     metrics: input.metrics,
+    logger:
+      input.logLines === undefined
+        ? undefined
+        : ({
+            info: (fields: unknown) => input.logLines!.push(fields),
+            warn: (fields: unknown) => input.logLines!.push(fields),
+            error: (fields: unknown) => input.logLines!.push(fields),
+            debug: (fields: unknown) => input.logLines!.push(fields),
+          } as never),
     probes: { freeCpuMillis: () => 4000, freeMemoryMiB: () => 8192, freeDiskMiB: () => 16384 },
     openStore: (async () => ({ close: () => {} }) as never) as never,
     makeSink: (() => input.sink) as never,
@@ -627,4 +638,65 @@ describe("DAT-009-3d — F10: the composed sequencer is per-run bound", () => {
       expect(terminalOf(sink.events, handoffB.leaseId)).toMatchObject({ status: "succeeded", exitCode: 0 });
     },
   );
+});
+
+// ---------------------------------------------------------------------------------------
+// CLI-012 — the COMPOSED producer's refusals are visible, and PATH-FREE.
+//
+// ★ WHY IT MATTERS THAT THEY ARE VISIBLE AT ALL. Without a log line, a run whose only deliverable
+// was a symlink or an oversized file exports nothing and says nothing — indistinguishable from a
+// run that wrote nothing, which is the exact ambiguity `E5-D07`'s per-file classification exists to
+// remove. ★ And why it matters that the line is path-free: the paths are tenant-authored, and the
+// port's observability rule forbids a path, a byte, a grant url or file content in any log line.
+// ---------------------------------------------------------------------------------------
+
+describe("CLI-012 — the composed producer logs each refusal with a closed reason and no path", () => {
+  it("★★★ a symlink and an oversized file are refused, logged, and the good file still commits", async () => {
+    const CANARY = "/home/user/aoa-output/sk-ant-canary-link.md";
+    const HUGE = "/home/user/aoa-output/huge.bin";
+    const c = recordingClient();
+    const logLines: unknown[] = [];
+    const rec = sandboxRecorder(
+      createFakeSandboxProvider({
+        artifactExportMode: "grant_upload",
+        sandboxEnumerationMode: "metadata",
+        artifactFiles: {
+          [CANARY]: "PROMPT",
+          [HUGE]: "x".repeat(26 * 1024 * 1024),
+          [PATH]: BODY,
+        },
+        artifactSymlinks: [CANARY],
+      }),
+    );
+    const { supervisor } = await composeLane({
+      lane: "desktop",
+      provider: rec.provider,
+      client: c.client,
+      store: sessionStore().store,
+      sink: collectingSink(),
+      logLines,
+    });
+    await supervisor.accept(handoffFor(TENANT_A, "desktop"));
+
+    // NON-VACUITY: the good file really did go all the way through.
+    expect(rec.digestedPaths).toEqual([PATH]);
+    expect(c.commits).toHaveLength(1);
+    // Neither refused file was ever digested — refused BEFORE any read, which is the point.
+    expect(rec.digestedPaths).not.toContain(CANARY);
+    expect(rec.digestedPaths).not.toContain(HUGE);
+
+    const refusals = logLines.filter(
+      (l): l is { reason: string } =>
+        typeof l === "object" && l !== null && "reason" in l && typeof (l as { reason: unknown }).reason === "string",
+    );
+    expect(refusals.map((l) => l.reason)).toEqual(
+      expect.arrayContaining(["output_symlink_refused", "output_too_large"]),
+    );
+    // ★ PATH-FREE, asserted over EVERYTHING the composed runtime logged, not only the refusal lines.
+    const everything = JSON.stringify(logLines);
+    expect(everything).not.toContain(CANARY);
+    expect(everything).not.toContain(HUGE);
+    expect(everything).not.toContain("sk-ant-canary");
+    expect(everything).not.toContain("aoa-output");
+  });
 });

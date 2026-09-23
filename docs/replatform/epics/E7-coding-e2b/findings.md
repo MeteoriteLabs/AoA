@@ -4096,7 +4096,23 @@ ruling has improvised a boundary — which the row says in terms.
 
 ## E7-F039 — the symlink refusal is a check-then-read pair: a swap between `lstat` and the read is exported through the link's target, and the re-hash refusal passes
 
-**Status:** open · **Owner:** `CLI-012` (`epics/E7-coding-e2b/tickets/CLI-012-design.md`, no result doc) · **Severity:** MEDIUM
+**Status:** open · **Owner:** `CLI-012` · **Successor:** `CLI-017` · **Severity:** MEDIUM
+★ *Updated 2026-09-23 (CLI-012 build).* **Superseded:** *"**Owner:** `CLI-012`
+(`epics/E7-coding-e2b/tickets/CLI-012-design.md`, no result doc)"* — `CLI-012-result.md` now exists,
+so `check-finding-ownership` reads that ticket as shipped and requires a successor.
+**What `CLI-012` DELIVERED:** the branch measurement the ruling demanded (`e2b@2.30.5` exposes **no**
+no-follow or handle-bound read — `FilesystemReadOpts` is `{gzip, streamIdleTimeoutMs}` over
+`{requestTimeoutMs, signal}` — so the pre-authorized second means was taken), the per-entry `lstat`
+over `Filesystem.getInfo` (`E2bTransport.statEntry`), and the recheck applied **at the read
+boundary** in `E2bSandboxProvider.#readArtifactBytes`, which both `digestArtifact` and
+`exportArtifact` read through — with a control that mutates **between enumeration and the read** and
+whose swapped-in target hashes identically, so the existing re-hash check provably cannot catch it.
+**What REMAINS, and why it is `CLI-017`'s:** the **real-run** swap attempt is unreachable until
+`CLI-017-A` ships the SD-1b directive (before it, a real run writes nothing under `R` and there is
+nothing to swap), and this residual's **bound is SD-5**, which is `CLI-017-B`. Acceptable outcome
+(i), the `lstat` refusal, is built; outcome (ii), SD-5 refusing the bytes, is `CLI-017-B`'s. **A swap
+that produces a stored artifact containing the planted canary is still a FAIL, and it is `CLI-017`'s
+to run and record.**
 **Filed:** 2026-09-23, with ruling **F7** (`../decisions.md`, `E7-D11`). Raised by Codex on PR #575,
 verified by reading the code before filing, and **ruled a bounded residual rather than a blocker** by
 the planning session under F2.

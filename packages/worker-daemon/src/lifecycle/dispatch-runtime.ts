@@ -285,6 +285,17 @@ export async function composeDispatchRuntime(deps: ComposeDispatchRuntimeDeps): 
     // one would move a capability counter this ticket did not earn.
     kind: "other",
     retention: "run",
+    // ★ REFUSALS ARE VISIBLE, and PATH-FREE. Without this, a run whose only deliverable was a
+    // symlink or an oversized file would export nothing and say nothing — indistinguishable from a
+    // run that wrote nothing at all, which is the exact ambiguity `E5-D07`'s per-file
+    // classification exists to remove. `OutputRefusal` carries ONE closed snake_case token and no
+    // path, so this line cannot carry a tenant-authored string; the port's own observability rule
+    // ("no path, byte, grant URL or file content in any log line or metric label") is satisfied by
+    // the TYPE, not by discipline at the call site. No new `emitOp` label is minted — that
+    // vocabulary stays closed to `digest_artifact` / `export_artifact`.
+    onRefused: (refusal) => {
+      deps.logger?.warn({ reason: refusal.reason }, "worker: output file refused before export");
+    },
   });
 
   // `redactionCanaries: []` is the construction-time PREFIX; the run's real canaries are seeded

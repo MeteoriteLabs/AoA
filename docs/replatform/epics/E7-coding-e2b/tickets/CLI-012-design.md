@@ -1,6 +1,6 @@
 # CLI-012 — Unit F link 3, the worker-side consumer: capture → export requests → the sequencer
 
-**Status:** `filed` — **not started.**
+**Status:** `built` — result at `CLI-012-result.md` (`gate_review`). ★ *Superseded: `filed` — not started.*
 **Epic:** E7 · **Graph node:** `docs/replatform/program-design.md` `#### CLI-012` ·
 **Plan task (the contract):** `../implementation-plan.md` `### CLI-012`
 **Depends on:** `CLI-010`; **E5's `DAT-009-3c` and `DAT-009-3d` must be `complete`** at recorded
