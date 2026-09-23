@@ -774,7 +774,15 @@ one. **`E5-F009`'s stated blocker is measured gone:** it assumed a pre-read refu
 `listSizeMatches: true`). So the size rides the entry the port is already being widened for, and no
 new transport operation is needed. This ticket must therefore enforce the review's **SD-6** bounds —
 **per file ≤ 25 MiB, per attempt ≤ 100 MiB, ≤ 64 files, depth ≤ 8** — **from the listing metadata,
-before `digestArtifact`**, with the grant's `maxBytes` equal to the per-file cap, each refusal
+before `digestArtifact`**. ★★★ *Corrected 2026-09-23 (Codex P2, PR #575), verified at source.
+**Superseded text:** "with the grant's `maxBytes` equal to the per-file cap".* **The grant carries the
+EXACT digested size, not the cap** — the shipped sequencer already does this and says why:
+`packages/worker-daemon/src/lease/artifact-export.ts` sets `maxBytes: described.sizeBytes`, commented
+*"the EXACT size, not a ceiling … declaring more than the file is only a wider orphan bound with
+nothing to gain"*. A cap-sized grant would let a file that **grew after digest** be read and retained
+up to the cap before the hash mismatch rejected it. The 25 MiB per-file limit stays an **independent
+admission check** applied from listing metadata before the read; the review's SD-6 wording is
+superseded by shipped behaviour (`E7-D11`, *What this ruling does NOT decide*). Each refusal
 classified (`output_too_large` / `output_limit_exceeded` / `output_symlink_refused`) and per-file
 (`E5-D07`: one refusal never drops the others). Control **PC-6**: drop the pre-digest check and the
 provider reads the whole file → red.
@@ -808,7 +816,25 @@ the window: the background process can swap the file **after the check and befor
 checking at both digest and export creates **two** new windows rather than closing one. So this ticket
 owes **one atomic operation** — an `O_NOFOLLOW`-style open bound to a file handle that the digest and
 the export both read through, or an equivalent single operation that resolves and reads without a gap
-— **not** a check-then-read pair. Its test must mutate **between the recheck and the read**, because a
+— **not** a check-then-read pair.
+
+★★★ **OPEN DESIGN QUESTION, TO BE MEASURED WHEN THIS TICKET BUILDS — DO NOT GUESS IT.** *Filed
+2026-09-23 (ruling F7, `E7-D11`; raised by Codex on PR #575 and deliberately left unresolved).*
+**Does the installed `e2b` SDK expose any no-follow primitive at all?** The reviewer reports that
+`e2b@2.30.5`'s `FilesystemReadOpts` carries gzip and timeout options and **no** no-follow flag; **that
+was not verifiable from the authoring worktree** (no `node_modules/e2b`), so it is recorded as a
+question and not as a fact. The first act of this ticket's TOCTOU work is to **measure it against the
+installed SDK**:
+- **If a no-follow / handle-bound primitive exists**, use it: that is the atomic operation above, and
+  there is nothing further to decide.
+- **If it does not**, the atomic read is **unreachable through the plain SDK**, and the `A-O2-4`
+  refusal must come from a **second means** — a per-entry `lstat`-shaped operation (the review's
+  §10.5 `+1 day` contingency, which `E7-D11` records as *not* firing **on the assumption that the
+  metadata suffices**), or a copy-into-a-fresh-path step, or an SDK/template change. **Any of those is
+  a design change, not a wording fix: STOP and report it** rather than shipping a check-then-read
+  pair and calling it atomic.
+This question is shared with `CLI-017` only in the sense that both depend on the same SDK; the work
+and the answer are `CLI-012`'s. Its test must mutate **between the recheck and the read**, because a
 mutation only between enumeration and digest **passes a vulnerable implementation** and would be a
 check that proves nothing.
 
@@ -1876,7 +1902,7 @@ content, secret, or session byte.
 | H-08 supply chain | No new runtime dependency; the daemon boundary checker stays green. |
 | H-10 evidence integrity | Append-only ticket results; the unit-F design is amended by appended note, never by deletion. |
 | Exit criterion 3 (**`M1a-D2-MECHANISM`**) | `E7-1-JOURNEY-ARM`, with `capabilityProven=false` explicitly acceptable. ★ *Corrected 2026-09-20 (third round): this row said “`M1-D2-CODING`, mechanism verdict”. There is no mechanism half of `M1-D2-CODING` — a QA record has ONE normative `Result`, which is why the companion change made the mechanism verdict its own gate. Recording this ticket under `M1-D2-CODING` would either falsely pass the capability gate or leave `M1a` unpassable.* |
-| **Exit criterion 4 (useful capability — `M1b` only)** | **`CLI-011` + `CLI-017` (both slices) + `CLI-012` + `CLI-013` + `CLI-014` + `CLI-015`, plus E5's `DAT-009-3c/3d`** — **and the `S-P0` template-empty evidence for the template the campaign actually runs on** (`E7-D11`, *Conditions on the ruling*; `E7-F022`, HIGH). This is the only criterion the split moves. ★ *Updated 2026-09-23 (ruling F7, `E7-D11`; Codex P2+P1, PR #575). **Superseded text:** "**`CLI-011` + `CLI-012` + `CLI-013` + `CLI-014` + `CLI-015`, plus E5's `DAT-009-3c/3d`.** This is the only criterion the split moves, and `CLI-011` is the one link with no design."* `CLI-011` now has its ruling, and the emit build it files is `CLI-017`; without it a run writes nothing under `R`, so every other row can pass with zero produced output. **The template row is an OPERATOR evidence edge, not a ticket** — nothing in the ticket set can discharge it, and a campaign that skips it can count template-owned files as agent output. |
+| **Exit criterion 4 (useful capability — `M1b` only)** | **`CLI-011` + `CLI-017` (both slices) + `CLI-012` + `CLI-013` + `CLI-014` + `CLI-015`, plus E5's `DAT-009-3c/3d`** — **and the `S-P0` (root empty) PLUS `A-neg` (a no-op run writes nothing under it) evidence for the template the campaign actually runs on** (`E7-D11`, *Conditions on the ruling*; `E7-F022`, HIGH). ★ The `A-neg` re-run is **authorized under F8** by ruling F7, once, before the campaign. This is the only criterion the split moves. ★ *Updated 2026-09-23 (ruling F7, `E7-D11`; Codex P2+P1, PR #575). **Superseded text:** "**`CLI-011` + `CLI-012` + `CLI-013` + `CLI-014` + `CLI-015`, plus E5's `DAT-009-3c/3d`.** This is the only criterion the split moves, and `CLI-011` is the one link with no design."* `CLI-011` now has its ruling, and the emit build it files is `CLI-017`; without it a run writes nothing under `R`, so every other row can pass with zero produced output. **The template row is an OPERATOR evidence edge, not a ticket** — nothing in the ticket set can discharge it, and a campaign that skips it can count template-owned files as agent output. |
 | Exit criterion 6 (rollback rehearsal) | `CLI-016`'s config-only disablement is part of the rehearsal. |
 
 **What no ticket here satisfies:** the E7 **epic** exit gate. `M1-D1-SPINE`, `M1a-D2-MECHANISM` and
@@ -1906,9 +1932,12 @@ M1b:   CLI-010 ──▶ CLI-012 ──▶ CLI-013 ──▶ CLI-014 ──▶ C
          INDEPENDENT of each other and both required. CLI-012's REAL-RUN acceptance additionally
          waits on CLI-017-A, since a run produces a file under R only once the directive ships.
 
-       ★ PRECONDITION, not a ticket: the S-P0 template-empty evidence for the template the campaign
-         runs on (E7-D11 "Conditions on the ruling"; E7-F022, HIGH). Re-run on every template
-         change or rebuild. No ticket can discharge it.
+       ★ PRECONDITION, not a ticket: S-P0 (the root is empty) AND A-neg (a no-op run writes nothing
+         under it) on the template the campaign runs on — E7-D11 "Conditions on the ruling";
+         E7-F022, HIGH. Re-run BOTH on every template change or rebuild, and on any bump of the
+         pinned claude-code version (e2b/e2b.Dockerfile pins 2.1.251, the version A-neg was measured
+         against). The A-neg re-run is authorized under F8, once, before the M1b campaign, and is
+         the CAMPAIGN's to fire. No ticket can discharge it.
 
        ★ CLI-010 (enumeration seam) and CLI-011 (mechanism review) are INDEPENDENT — neither
          precedes the other. The emit build has no id until CLI-011 rules. CLI-012's REAL-RUN

@@ -424,13 +424,41 @@ attack table. The probe's `S-P0` arm closes it for **one** template: `root-absen
 *"any template other than the one named"*, and the production template is an unpinned operator input
 under three uncoordinated variable names — which is exactly `E7-F022`.
 
+★★★ **AND `S-P0` IS NOT ENOUGH ON ITS OWN — `A-neg` MUST BE RE-RUN TOO.** *Added 2026-09-23 (Codex
+P1, PR #575; ruled by the planning session under F2).* `S-P0` proves the root is empty **before
+execution**. It does **not** re-establish `A-neg`, the decisive result that the CLI itself writes
+nothing there — and those are different failures. The probe measured `A-neg` against
+**`claude 2.1.251 (Claude Code)`** (recorded on all four model arms of the committed record), while
+`e2b/e2b.Dockerfile` installed `@anthropic-ai/claude-code` **unpinned**. A rebuild could therefore
+pick up a release that writes session state into the working directory, **silently falsifying R6
+while `S-P0` still passed**. Two separate remedies, because they close different halves:
+
+- **Accidental drift → the version is PINNED.** `e2b/e2b.Dockerfile` now installs
+  `@anthropic-ai/claude-code@2.1.251`, **the version this ruling was measured against**, with a
+  comment saying that changing it re-opens the measurement. Codex stays unpinned: `E7-D04` excludes
+  it, so no ruling depends on its behaviour.
+  ★ **The pin's scope, stated so it is not over-read (found by this session's own self-audit).** It
+  pins the **image**. The spawn-time path — `SANDBOX_INSTALL_COMMAND`
+  (`packages/adapters/claude-local/src/index.ts`), delivered by
+  `buildNpmGlobalInstallIfMissingCommand` (`packages/adapter-utils/src/sandbox-install.ts`) as
+  `if ! command -v claude …; then npm install -g …; fi` — is **install-if-missing** and stays
+  unpinned. On this image `claude` is present, so that branch does not fire and the pinned version is
+  what runs; on a **bare** template it fires and installs latest. **This is exactly why the
+  precondition below is per-TEMPLATE:** the pin removes accidental drift on the built image, and the
+  `A-neg` re-run covers every other case.
+- **Deliberate change → an `A-neg` RE-RUN, authorized under F8.** One `A-neg` re-run of the `CLI-011`
+  probe on the `M1b` candidate, **before `M1b`'s campaign** — added to F8's named list by this ruling.
+  ★ It is a precondition of **`M1b`**, not of `M1a`, and it is the **campaign's** to fire: no build
+  agent may dispatch it. Cost: one claude turn capped at 180 s plus one `aoa-base`-class sandbox.
+
 **So the ruling is conditional, and the condition is discharged per deployment, not once:**
 
 1. **Before any template is used for `M1b`'s campaign, `R` must be proven empty on THAT template** by
-   the `S-P0` arm, with the result recorded (a verdict that lives only in a job log is lost —
-   `E7-F025`).
-2. **Re-run it on every template change or rebuild.** The template is built by an operator from a
-   repo Dockerfile with nothing verifying that the registered template matches it.
+   the `S-P0` arm **and a no-op run must be shown to write nothing under it** by the `A-neg` arm,
+   with both results recorded (a verdict that lives only in a job log is lost — `E7-F025`).
+2. **Re-run BOTH on every template change or rebuild**, and on any bump of the pinned CLI version.
+   The template is built by an operator from a repo Dockerfile with nothing verifying that the
+   registered template matches it.
 3. **If `R` is not empty on a template, do not run the campaign on it.** Per the review's §10.5 row
    for `S-P0`: *"choose another `R` and re-run"*. **Do not rule around it.**
 4. **It is an OPERATOR precondition, not code.** `CLI-017` cannot discharge it, and `CLI-012` cannot
@@ -459,8 +487,20 @@ under three uncoordinated variable names — which is exactly `E7-F022`.
   metadata (at minimum a link marker) for the refusal, or the refusal must come from a means that
   does. The refusal itself stays required (`A-O2-4`): unrefused, `R/l1 → .aoa-run-prompt.md` exports
   the run's own input and re-creates §4.3, and `R/l1 → /proc/self/environ` exports the secrets.
-- **SD-2, SD-3, SD-4, SD-6, SD-7 and SD-8 stand as the review states them** and are not re-argued
-  here. SD-8 is already enacted as the dated amendment to `E7-D06` above.
+- **SD-2, SD-3, SD-4, SD-7 and SD-8 stand as the review states them** and are not re-argued here.
+- ★★★ **SD-6 stands EXCEPT for its grant clause, which is SUPERSEDED BY SHIPPED BEHAVIOUR.**
+  *Corrected 2026-09-23 (Codex P2, PR #575; ruled by the planning session under F2), verified at
+  source.* The review's SD-6 says *"The grant's `maxBytes` = the per-file cap"*. The shipped sequencer
+  does the opposite and says why: `packages/worker-daemon/src/lease/artifact-export.ts` sets
+  **`maxBytes: described.sizeBytes`** with the comment *"`maxBytes` is the EXACT size, not a ceiling.
+  Step 1 always knows it, and the server refuses a declared size over its own ceiling before a byte
+  moves … so declaring more than the file is only a wider orphan bound with nothing to gain."*
+  **The code is the truth.** A cap-sized grant would let the adapter-manager read and retain a file
+  that grew after digest, up to the cap, before the hash mismatch rejected it — a wider window for no
+  benefit. **The bounds themselves are unchanged** (per file ≤ 25 MiB, per attempt ≤ 100 MiB, ≤ 64
+  files, depth ≤ 8): the 25 MiB per-file limit stays an **independent admission check** applied from
+  listing metadata before the read, and the **grant carries the exact digested size**. Recorded rather
+  than silently corrected so the next reader does not resurrect the review's wording. SD-8 is already enacted as the dated amendment to `E7-D06` above.
 - **The `kind` (`E7-D08`) stays `CLI-012`'s**, per the review's SD-3: the judge counts through arm 2
   (predicate **P-A**, unchanged), so the kind does not decide what the judge counts.
 - **Nothing about codex.** `E7-D04` binds; the probe ran no codex arm, and the codex literal is

@@ -2559,7 +2559,23 @@ this would not move. It is `unowned` on the record so that the next reader who w
 
 ## E7-F026 — The 'agent declares its own output' option's "no test edits" claim is false against three existing pins, because its mechanism touches the staged PROMPT while its argument is about the WORKLOAD
 
-**Status:** open · **Owner:** CLI-011 (`epics/E7-coding-e2b/tickets/CLI-011-review.md`, no result doc) — ★ *Corrected 2026-09-21 (M1 corrections batch 1), per `CLI-011-review.md` §3.6/§13 item 3:* this line read *"**Owner:** CLI-008 (`epics/E7-coding-e2b/tickets/CLI-008-unit-f-design.md`, no result doc)"* after the register (`scripts/finding-ownership.json`, key `E7-F026`) had been re-pointed to `CLI-011` by M0 unit 4 (founder decisions D1 + D5). The register is authoritative; this prose now agrees with it.
+**Status:** open · **Owner:** **`CLI-017`** (`epics/E7-coding-e2b/tickets/CLI-017-design.md`, no result doc)
+★★★ **RE-POINTED 2026-09-23 from `CLI-011` to `CLI-017` by ruling F7 (`../decisions.md`, `E7-D11`,
+under founder delegation F2). Superseded owner: `CLI-011`.** *Measured before re-pointing, not
+guessed.* **It is NOT superseded by `E7-D11`:** its subject is **option 1**'s completeness/sizing
+claim, not option 4's fitness, and the mechanism actually ruled **is** an append that reaches the
+staged prompt bytes — SD-1b appends the output-root directive to the task markdown at the distributed
+caller, so the **staged prompt**, not the workload, is the surface that moves. **It still BINDS the
+emit build, in two concrete ways:** (1) the review's pin census recorded SD-1b's *"moves no pin"* as a
+**search result, not a proof**, which is why `E7-D11` makes **PC-12** mandatory; and (2) this
+finding's own under-counted fourth test, *"accepts a prompt exactly at the staging ceiling"*, is
+**live** under the ruled placement — `E7-D11` records as a stated behaviour change that the directive
+now counts against `MAX_STAGED_FILE_BYTES`, so a task within ~200 bytes of the ceiling that built
+before is refused. That is exactly the invariant this finding says moves. It constrains what the emit
+build must produce and enumerate, **not** what the judge counts, so the successor is `CLI-017` and not
+`CLI-015`. `ownerStillOpen` is recorded in `scripts/finding-ownership.json`.
+★ *Corrected 2026-09-21 (M1 corrections batch 1), per `CLI-011-review.md` §3.6/§13 item 3, and kept as
+written:* this line read *"**Owner:** CLI-008 (`epics/E7-coding-e2b/tickets/CLI-008-unit-f-design.md`, no result doc)"* after the register (`scripts/finding-ownership.json`, key `E7-F026`) had been re-pointed to `CLI-011` by M0 unit 4 (founder decisions D1 + D5). The register is authoritative; this prose now agrees with it.
 **Severity:** LOW
 **Filed:** W6U1, 2026-09-06, by re-verifying the 26-agent wave's fourth candidate answer against the
 pin corpus.
