@@ -1,6 +1,6 @@
 # DAT-009-3e Result: the networked-lane export route, and `E5-F002` at the cause
 
-**Status:** `gate_review`
+**Status:** `complete` (set 2026-09-23 by the M1 review-batch-3B independent reviewer at attempt 1, revision `60aafb32ec6f8316f92079789cf8814f981f3ed3`)
 **Date (UTC):** `2026-09-21`
 **Epic:** `E5-workspaces-secrets`
 **Plan task:** `E5 implementation-plan DAT-009-3e — the networked-lane export route, and E5-F002 at the cause (M, M1b)`
@@ -8,8 +8,8 @@
 **Start SHA:** `cec1b48a796f177c6184884dc3c5043f5aa57ea8` (`docs/replatform-program` tip, the `3c` merge)
 **Reviewed revision (the code commits):** `b853ff0ffae57966241a7d123df9675eea84dade` (the wire route) + `8849a12066188c79393aa509fbada49d2e6d1328` (the `E5-F002` fix) + `d5e6a3612cd73cca3f6874baefa357a40a1d2e3d` (the Codex P1 grant-binding fix, §1 commit 3) + `ddfa0e61e57214aebda1d8d70b1337b0a7112799` (the second-round Codex P1/P2 fix, §1 commit 4) + `ffd0c65d44e38de2e0367d448378d301982bf6cf` (the third-round Codex P1 fix, §1 commit 5) + `3fd71f2072b6ae358c4f0d7c4f066daf8e669c6c` (the fourth-round Codex P1 fix, §1 commit 6) + `6dbb7ff371b9d60997b5b1427295571f77362b8b` (the fifth-round Codex P1+P2 fix, §1 commit 7) + `3884979efbc59be77279c995ecf51f02f30ec1ca` (the sixth-round Codex P2 fixes, §1 commit 8) + `ed6ba07e1e91d87de8ec490e5a91f5824dbdfc39` (the seventh-round Codex P1 fixes, §1 commit 9) + the eighth-round commit recorded in §1 commit 10.
 
-The implementer leaves `Status` at `gate_review`. Only a distinct reviewer may change it to
-`complete`.
+The implementer left `Status` at `gate_review`; only a distinct reviewer may change it to
+`complete`, and one has (§10, review attempt 1).
 
 ## 1. What was built
 
@@ -501,3 +501,134 @@ No test or guard verdict exists in those runs. The planning session re-runs CI o
 ## 10. Reviewer section
 
 *(Distinct reviewer only.)*
+
+**Reviewer:** M1 review-batch-3B independent reviewer (Claude Opus 5) — distinct from the DAT-009-3e build session and the planning session
+**Reviewed revision:** `60aafb32ec6f8316f92079789cf8814f981f3ed3`
+**Disposition:** `approved`
+**Attempt:** 1
+
+### Independent review — attempt 1
+
+**Disposition: `approved`.** Reviewed at the `docs/replatform-program` tip (the merge of PR #565).
+Every commit the record names — `b853ff0ff`, `8849a1206`, `d5e6a3612`, `ddfa0e61e`, `ffd0c65d4`,
+`3fd71f207`, `6dbb7ff37`, `3884979ef`, `ed6ba07e1` and the final head `f2041e74d6` — is an ancestor
+of it.
+
+**The wire route, at source.**
+
+- `NetworkedProviderDriver.artifactExportMode` is `"grant_upload"`, and `digestArtifact` reads it
+  first (`if (this.artifactExportMode === "none") throw new UnsupportedProviderOperation(…)`), which
+  is the exact defect the task names. `check-gate-clause-wiring` cross-checks that declared value
+  against the register's `providerCapabilityClaims` and is OK at the tip, so the record's claim and
+  the source cannot drift apart silently.
+- `createProviderServer` runs `assertUploadGrantBound(grant, detail.resourceLabels,
+  artifactUploadOrigins, now())` inside `gateOwnedOp`, before the budget check and before the
+  provider. `UPLOAD_REDEMPTION_RETENTION_MS` is a server-side `24 * 60 * 60 * 1000`, and eviction
+  compares `nowMs - record.recordedAtMs` against it — no worker field can shorten it, which is
+  commit 9(b)'s claim.
+- `gateOwnedOp` takes an **absolute** `opDeadlineAtMs`; `remainingMs` is measured after the mutex is
+  acquired, a `budgetFired` latch is re-checked after the awaited inspection and before dispatch,
+  and the dispatch's own budget is **re-measured** at the moment of dispatch
+  (`opDeadlineAtMs - now()`), which is commit 10. Omitting `opDeadlineAtMs` leaves the path
+  byte-identical, so the untouched ops really are untouched.
+- `packages/adapter-manager/src/bin/adapter-manager.ts` contains no `artifactUploadOrigins`. The
+  deployed adapter-manager therefore refuses every export. That is fail-closed and it is exactly
+  what `E5-F007` says.
+
+**Suites, rerun locally (Windows) at the reviewed tip.** After building `worker-protocol`,
+`worker-daemon`, `sandbox-provider-contract`, `sandbox-e2b-provider` and `provider-wire`:
+`server-artifact-export.test.ts` **29 passed**, `driver-artifact-export.test.ts` **14 passed**,
+`put-grant-bytes.test.ts` **15 passed**. These match §9's local evidence for the final tree, with
+the server suite at the post-commit-10 figure of 29.
+
+**Mutation reproduced by me, and reverted.** **M48**: handing `dispatch` the pre-inspection
+`remainingMs` instead of re-measuring gives **1 failed** — *★ the provider's budget is recomputed
+AFTER the ownership inspection* — and 28 passed. That is exactly the table's row. The other
+forty-seven I checked by reading the tests and the code each one targets.
+
+**F10 is real.** `server-artifact-export.test.ts` builds sandboxes for `org-a`, `org-b` and a second
+lease of `org-a` on one server, and asserts that A's capability can neither digest nor export B's
+sandbox (uniform `ResourceNotAvailableError`, `transport.readFile` never called, nothing uploaded),
+that a grant naming another Organization's object key is refused on the caller's own sandbox, and
+that the cross-Organization refusal body is byte-identical to not-found. M7/M8/M9/M19 are the
+mutants that red those cases.
+
+**The scope boundary is honest.** I read all four filed findings at source rather than taking the
+boundary section's word for it, and each states a property with symbol-level citations rather than
+concealing a defect this PR introduced:
+
+- `E5-F006` names the missing control-plane signature over `ArtifactUploadGrantV1`'s integrity
+  fields and then enumerates, without softening, the four limits of the guard this PR *did* build:
+  per-instance, in-memory, a race on two concurrent first redemptions, and a fixed 24 h constant
+  rather than a policy. That is the honest form — the partial mitigation ships, and its exact
+  residual is written down. The complete fix is a change to the frozen `worker-protocol`, which this
+  ticket's own plan text names as a STOP, so declining it here is correct rather than convenient.
+- `E5-F007` is a deploy-owed gap whose current behaviour is refusal, which I confirmed at the bin.
+- `E5-F008` is a defect whose fix site is `supervisor.ts`, i.e. `DAT-009-3c`'s file and outside this
+  ticket's Files list. It is newly *reachable* because of this PR, and the finding says so; the
+  adapter-manager's own `capExpiresAt − reserve` clamp limits the exposure meanwhile. Filing it
+  rather than reaching into a sibling ticket's file is the right call.
+- `E5-F009` is a pre-existing whole-file read whose blast radius this PR genuinely widens, from the
+  worker to the shared adapter-manager. The finding states that widening explicitly instead of
+  presenting the issue as purely inherited, and the fix needs a stat-shaped or streaming op on
+  `E2bTransport` — a port outside these files.
+
+All four are `unowned` **with reasons** in `scripts/finding-ownership.json`, so the residual is
+visible rather than implied. Both of the two structural excuses this programme watches for — "it was
+already broken" and "it is someone else's file" — are used here only where they are true, and each is
+paired with a filed id.
+
+**Codex, and the eight rounds.** On PR #557, `chatgpt-codex-connector` raised findings on
+`d2fc689ac`, `210991f7d`, `f34b65a0da`, `168a540c0f`, `16195c5533`, `2fe65ecd0c`, `06c5684d42` and
+`41db573dae` — eight rounds, matching the record — and reported no major issues on `7f7bf5317a` and
+`6ece122ad3`. **All fourteen review threads are resolved.** Each finding is answered by a named
+commit in §1, and I verified the last two at source (the re-measured dispatch budget, and the
+server-side retention window).
+
+**CI on the FINAL head, which the record's §9 addendum does not reach.** Run `35801313227`
+(`pull_request`, headSha `f2041e74d679030502317fd0fc80a9fb753d0750`, conclusion `success`): all
+sixteen jobs `success`, including `ci-required` `107054016317`, `policy`, `lint`, `verify (1..4)`,
+`migrations`, `e2e`, `e2e-pgvector`, `distributed-contract`, `browser`, `brand-check` and both
+`worker-protocol-contract-bytes` lanes. That supersedes the two infrastructure-failed runs §9's
+addendum records as having no verdict, and the record was right not to claim a verdict from them.
+
+**`E5-F002` stays open, correctly.** The plan's own RED → GREEN says so: *"Until that run exists,
+the result records the header decision as decided but not live-proven, and `E5-F002` stays open."*
+§6 goes further and shows at source that the named lane cannot supply the proof, because
+`keyed-dat-009-artifact-export.test.ts` injects its uploader and never executes `putGrantBytes`. The
+finding is `open` with a dated progress note and its ownership key intact — the brief said to delete
+that key, and **not** deleting it was the right refusal.
+
+**The predicted keyed auto-fire happened, and corroborates §6.** §7 says merging would fire
+`keyed-e2b-dat-009-export.yml` under F8. It did: run `35821678446`, `push` on `1bd5c8bbca` (the #557
+merge), conclusion `success`. Per §6 that re-proves the sandbox half only and is **not** evidence for
+the header decision. Nothing was dispatched by this review.
+
+**Acceptance items.** Outcome (a) the relayed routes and (b) `E5-F002` resolved at the cause are both
+met; the mode is read, grants go in and references come out, the frozen vocabulary is untouched
+(`check:frozen-worker-protocol-v1` is in the green guard set), both boundary checkers pass, the
+digest-source decision is pinned by an assertion whose opposite reds (M12), and no thrown message,
+returned value or logged field carries `grant.url` (M15, M6, M17). The one conditional item — the
+keyed re-run — resolves to the plan's own "stays open" branch. **Every acceptance item is met in the
+form the plan allows.**
+
+**Not blocking, noted.**
+
+1. **No Codex round ran on the final head.** `f2041e74d6` *is* the fix for the P1 Codex raised on
+   `41db573dae`, so the last round's finding is answered but not re-reviewed. The record does not
+   claim otherwise, and the merge decision was the planning session's. Recording it so the next
+   reader does not infer a clean Codex verdict on the merged tree.
+2. §8 item 5 says "filed rather than built: `E5-F006` … and `E5-F007`" — two of the four. §1's scope
+   boundary, written later, lists all four including `E5-F008` and `E5-F009`. §8 is not marked
+   superseded, so a reader who stops there undercounts the residual by half.
+3. `Start SHA` is a bare 40-hex here, which is the protocol; the record is unusually good on this.
+4. The plan asks for two commits. There are ten, eight of which answer a Codex round. The record
+   enumerates each with its finding, which is the honest handling.
+
+## Review attempt history
+
+Later reviewers append rows with increasing attempt numbers without replacing earlier ones. Do not include a `Review commit` column: a row cannot embed the SHA of the commit that first contains it.
+
+| Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
+|---:|---|---|---|---|
+| 1 | M1 review-batch-3B independent reviewer (Claude Opus 5) | `60aafb32ec` (program tip, the #565 merge) | `approved` | Verified at source: the driver reads `artifactExportMode` before the RPC; `assertUploadGrantBound` runs inside the gate before the provider; `UPLOAD_REDEMPTION_RETENTION_MS` is a fixed server-side 24 h; `gateOwnedOp` takes an absolute deadline, latches `budgetFired` after the inspection and re-measures the dispatch budget; the bin sets no `artifactUploadOrigins`, so a deployed export is fail-closed exactly as `E5-F007` says. Suites rerun locally: 29 / 14 / 15. **M48 reproduced** (1 failed, the re-measured-budget case). F10 real across `org-a`, `org-b` and a second `org-a` lease, with a byte-identical cross-Organization refusal. The scope boundary is honest: all four filed findings state properties with symbol citations, `E5-F006` enumerates its own guard's four limits rather than hiding them, and all four are `unowned` with reasons. Eight Codex rounds confirmed at source, all fourteen threads resolved. CI on the FINAL head `f2041e74d6`, run `35801313227`, all sixteen jobs green including `ci-required` `107054016317`. `E5-F002` correctly stays open, and the auto-fired keyed run `35821678446` (success) re-proves the sandbox half only. Noted, non-blocking: no Codex round ran on the final head (which is itself the last fix), and §8 item 5 lists two of the four filed findings while §1 lists four. |

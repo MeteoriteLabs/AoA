@@ -1,6 +1,6 @@
 # DAT-009-3d Result — the export sequencer composed at the dispatch runtime
 
-**Status:** `gate_review`
+**Status:** `complete` (set 2026-09-23 by the M1 review-batch-3B independent reviewer at attempt 2, reviewed at revision `60aafb32ec6f8316f92079789cf8814f981f3ed3`, after the `DAT-009-3c` dependency reached `complete` in its own earlier commit `54b376f0a` in the same batch)
 **Date (UTC):** `2026-09-21`
 **Epic:** `E5-workspaces-secrets`
 **Plan task:** `E5 implementation-plan DAT-009-3d — compose the sequencer (S, M1b)`, as amended by E5-D07 ruling 4
@@ -9,8 +9,8 @@
 **Start SHA:** `cec1b48a7` (`docs/replatform-program` tip, the #549 merge)
 **Reviewed revision (the code commit):** `c69a8b44f7d153f9a3ec2310754acae1216543e9`
 
-The implementer leaves `Status` at `gate_review`. Only a distinct reviewer may change it to
-`complete`.
+The implementer left `Status` at `gate_review`; only a distinct reviewer may change it to
+`complete`, and one has (review attempt 2, below).
 
 ## 1. What was built
 
@@ -239,6 +239,81 @@ the planning session may record under F2 that `3d` completes on `3c`'s merged co
   `7292fc942f`, `478dafbc34` and the final head `d09e77a3da`. There are no review-thread comments.
 - **Not blocking, noted.** `Start SHA` is a 9-character short SHA. It resolves to an ancestor.
 
+### Independent review — attempt 2
+
+**Reviewer:** M1 review-batch-3B independent reviewer (Claude Opus 5) — distinct from the DAT-009-3d
+build session, from the planning session, and from the attempt-1 reviewer
+**Reviewed revision:** `60aafb32ec6f8316f92079789cf8814f981f3ed3`
+**Disposition:** `approved` — **`Status` moves to `complete`**
+**Attempt:** 2
+
+**Disposition: `approved`, and the withheld flip is now released.** Reviewed at the
+`docs/replatform-program` tip (the merge of PR #565). The code commit `c69a8b44f`, the pre-merge CI
+head `7292fc942`, the program-tip merge `32b70c43e`, the final head `d09e77a3d` and attempt 1's
+reviewed revision `4a3a0000f` are all ancestors of it.
+
+**The dependency, stated explicitly.** Attempt 1 approved this ticket on the merits and withheld the
+`Status` flip for exactly one reason: the E5 plan's `### DAT-009-3d` says *"Depends on: `DAT-009-3c`
+`complete` at a recorded reviewed revision"*, and at that time `DAT-009-3c` was `changes_requested`.
+**In this same batch I have set `DAT-009-3c` to `complete`**, as attempt 2 of its review, *reviewed
+at* revision `60aafb32ec6f8316f92079789cf8814f981f3ed3` — the requested correction (the verify count
+50 → 52) was made in PR #562 and I confirmed the corrected figure at source by rerunning the
+command. ★ *Two revisions must not be conflated here (Codex P2 on this PR, and the finding's first
+half is real).* `60aafb32ec…` is the revision the review was **conducted at**, and at that revision
+`DAT-009-3c` is still `gate_review`; the revision at which `DAT-009-3c` **is** `complete` is commit
+`54b376f0a`, *"review(M1): DAT-009-3c — disposition, Status moves to complete"*, which is a separate
+commit and a strict ancestor of the commit that flips this record. At `54b376f0a` this record is
+still `gate_review`, so the dependency transition is recorded **before** the dependent's, not
+alongside it. The plan's condition (`implementation-plan.md` `### DAT-009-3d`, *"`DAT-009-3c`
+`complete` at a recorded reviewed revision"*) constrains the reviewed revision, which is
+`60aafb32ec…`, and both facts are now stated separately rather than merged into one citation.
+Nothing else was outstanding. Per attempt 1's own
+closing instruction — *"once `DAT-009-3c` is `complete`, a distinct reviewer may flip this record's
+`Status` to `complete` in a separate commit, citing that revision"* — I flip it, in a separate
+commit, citing that revision. §6 item 2 of this record, which flagged the gap honestly at build
+time, is now closed rather than merely noted.
+
+**Independently re-verified before flipping** (I did not flip on attempt 1's word alone):
+
+- **The composition, at source.** `composeDispatchRuntime`
+  (`packages/worker-daemon/src/lifecycle/dispatch-runtime.ts`) imports
+  `createArtifactExportSequencer` beside `createStagedInputResolver`, builds it once, and passes the
+  result as `exportArtifacts` into the single `makeSupervisor` call that serves both the desktop
+  `provider` lane and the container `makeRunProvider` lane. No `resolveExportArtifacts` is composed,
+  so the window still cannot open — which is the ticket's whole claim.
+- **Register.** `E5-2-fenced-object-commit-worker-half` is `status: unwired` with
+  `expectedReferences: 1` and symbol `createArtifactExportSequencer`.
+  `node scripts/check-gate-clause-wiring.mjs` is OK at the tip with `E5-2` on the dormant list, and
+  `--counts` gives `createArtifactExportSequencer` **1**. The declared number and the measured one
+  agree without either having been edited to fit.
+- **Mutation reproduced by me, and reverted.** **M1**: dropping `exportArtifacts` from the
+  `makeSupervisor` call gives **8 failed (8)** in
+  `dispatch-runtime-export-composition.test.ts` — the whole file, matching the table. That is the
+  control the brief asks for.
+- **Suites at the reviewed tip.** The verify pair
+  (`dispatch-runtime.test.ts` + `dispatch-runtime-export-composition.test.ts`) gives **2 files, 40
+  passed**: the new file still at **8**, and `dispatch-runtime.test.ts` now at **32**, up from the
+  28 attempt 1 measured. The growth is in the pre-existing file from later merges into the program
+  tip, not in this ticket's surface; §7a's figure of 36 remains true of the revision it describes.
+- **Guard set.** The full `pr.yml` guard set minus the six excluded by the M1 rules, plus
+  `check-evidence-immutability --base origin/docs/replatform-program`, is **0 failures**.
+
+**Acceptance items.** The sequencer is composed at the dispatch runtime for both lanes, no producer
+is composed, `E5-2` stays `unwired` with its raised `expectedReferences` and a dated amendment
+explaining why, the P1 register control and the M1 composition control both bite, the F10 case runs
+two Organizations concurrently through one composed runtime, and CI is green by job on both the
+pre-merge and the merged head. **Every acceptance item is met**, and the single gating dependency is
+now satisfied.
+
+**§6 item 1 matters beyond this ticket, and is true.** The wiring guard will **not** force
+`CLI-012`'s promotion: composing a producer adds no reference to `createArtifactExportSequencer`, so
+the count stays at 1 and the checker stays green while `E5-2` stays `unwired`. This ticket's author
+found that themselves and wrote the warning into the register entry next to the number, which is the
+right place for it. A future session must flip `E5-2` deliberately; no guard will remind it.
+
+**Not blocking, carried forward.** Attempt 1's note stands: the `Start SHA` is a 9-character short
+SHA rather than the bare 40-hex the protocol names, and it resolves unambiguously to an ancestor.
+
 ## Review attempt history
 
 Later reviewers append rows with increasing attempt numbers without replacing earlier ones. Do not include a `Review commit` column: a row cannot embed the SHA of the commit that first contains it.
@@ -246,3 +321,4 @@ Later reviewers append rows with increasing attempt numbers without replacing ea
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
 | 1 | M1 review-batch-2B independent reviewer (Claude Opus 5) | `4a3a0000fac90f2a772648fff8fa28dc9ac75538` | `approved` (Status flip withheld) | The composition was verified at source; both lanes, no producer, `E5-2` unwired at `expectedReferences: 1`. Rerun at the tip: verify pair 36, full suite 162 / 1107 / 1 skipped, typecheck and build 0. P1 reproduced (guard exits 1) and M1 reproduced (8 failed). The F10 two-Organization case is real. CI by job: pre-merge `verify (4)` 8 with shard 6131 / 2, and the merged head's `verify (4)` 8 and `verify (3)` 28. Codex clean on three heads. `Status` stays `gate_review` because the plan's dependency `DAT-009-3c` `complete` is unmet (3c attempt 1 is `changes_requested`, for a record count). Flip once 3c is `complete`, or on a planning-session F2 record. |
+| 2 | M1 review-batch-3B independent reviewer (Claude Opus 5) | `60aafb32ec` (program tip, the #565 merge) | `approved` (Status flipped to `complete`) | The sole reason attempt 1 withheld the flip is discharged: in this same batch `DAT-009-3c` was set to `complete` in its own separate commit `54b376f0a`, a strict ancestor of this record's flip (at `54b376f0a` this record is still `gate_review`), after its attempt-2 review — conducted at revision `60aafb32ec6f8316f92079789cf8814f981f3ed3` — confirmed the corrected verify count at source. The reviewed revision and the revision at which the dependency is `complete` are stated separately (Codex P2 on the review PR). Dependency satisfied at a recorded reviewed revision, which is the exact condition attempt 1 named. Re-verified independently before flipping: the composition at source (both lanes, no producer), `E5-2` `unwired` with `expectedReferences: 1` and a measured count of 1, **M1 reproduced** (8 failed), the verify pair at the tip giving 2 files / 40 passed (the new file still 8; `dispatch-runtime.test.ts` grew to 32 from later merges, not from this ticket), and the guard set at 0 failures. Every acceptance item met. |
