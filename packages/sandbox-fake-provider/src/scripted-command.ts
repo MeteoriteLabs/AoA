@@ -227,6 +227,12 @@ export interface ScriptedExecuteOptions {
    * the fabricated pass `DEP-016` acceptance item 6 forbids.
    */
   readonly runNodeEval?: NodeEvalRunner;
+  /**
+   * DEP-019 (Codex P1, PR #572) — the SHA-256 digests of the probe scripts this provider may
+   * execute. Authenticating only the wrapper authenticates the wrong half: the wrapper is public
+   * and `$0` comes from the job envelope. Absent or empty ⇒ every shell invocation is refused.
+   */
+  readonly allowedProbeScriptDigests?: ReadonlySet<string>;
 }
 
 /**
@@ -264,7 +270,9 @@ export function executeScriptedCommand(
   // DEP-019 — the DEP-017 probe is EXECUTED, never scripted. Classified BEFORE the scripting
   // flags are read: the probe's argv is the daemon's, and a `--aoa-fake-*` look-alike inside it
   // must not be able to steer the fake.
-  const invocation = classifyShellInvocation(input.command, input.args, input.env);
+  const invocation = classifyShellInvocation(input.command, input.args, input.env, {
+    allowedScriptDigests: options.allowedProbeScriptDigests,
+  });
   if (invocation.kind === "node_eval") {
     if (options.runNodeEval === undefined) {
       throw new NodeEvalRefusedError(

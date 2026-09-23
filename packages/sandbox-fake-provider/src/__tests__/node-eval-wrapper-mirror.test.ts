@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { NODE_EVAL_WRAPPER_PATTERN, classifyShellInvocation } from "../index.js";
+import { NODE_EVAL_WRAPPER_PATTERN, classifyShellInvocation, sha256Hex } from "../index.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 const ENV_PROBE_SOURCE = path.join(repoRoot, "packages", "worker-daemon", "src", "supervisor", "env-probe.ts");
@@ -51,7 +51,10 @@ describe("DEP-017 probe wrapper mirror (DEP-019)", () => {
   });
 
   it("a probe invocation built from the daemon's wrapper classifies as a node_eval", () => {
-    const invocation = classifyShellInvocation("sh", ["-c", readDaemonWrapper(), "console.log(1);", "org"], {});
+    const script = "console.log(1);";
+    const invocation = classifyShellInvocation("sh", ["-c", readDaemonWrapper(), script, "org"], {}, {
+      allowedScriptDigests: new Set([sha256Hex(script)]),
+    });
     expect(invocation.kind).toBe("node_eval");
   });
 

@@ -25,11 +25,20 @@
 // those two classes are observed. This narrowing belongs in the profile's evidence, not in a
 // comment alone.
 //
-// ── Fail-closed, three ways ──────────────────────────────────────────────────
+// ── Fail-closed, four ways ───────────────────────────────────────────────────
 //   1. NOT ARBITRARY EXECUTION. Only the committed `sh -c` wrapper `DEP-017` builds is
 //      recognised, matched structurally; every other shell program is REFUSED. The fake is a
 //      test double on a closed internal network, but "run whatever the job asked for" is a
 //      capability, and a capability nothing needs is one nobody audits.
+//   1b. ★ AND THE SCRIPT ITSELF IS PINNED BY DIGEST (Codex P1, PR #572, verified at source and
+//      fixed here). Authenticating only the WRAPPER authenticates the wrong half: the wrapper is
+//      published in this repo, and `$0` — the program that actually runs — comes from the job
+//      envelope's `workload.args`. A caller could reuse the known wrapper and put arbitrary
+//      JavaScript in `$0`, and clearing the child's ENVIRONMENT does nothing about that code
+//      reading the provider container's filesystem or using its network, which on this lane is
+//      where the campaign's own evidence lives. So the caller must hand in the set of script
+//      digests it accepts, and a script outside that set is REFUSED. The D1 host builds the set
+//      from `ENV_PROBE_SCRIPT` itself, so there is no second copy to drift.
 //   2. NO ENVIRONMENT IS INHERITED. The child's env is the request's map and nothing else —
 //      never `process.env`, not even merged. A merge would make the probe report on the
 //      provider host and turn a clean lane red for a reason that is not the run's.
@@ -39,6 +48,8 @@
 // -----------------------------------------------------------------------------
 
 import { spawnSync } from "node:child_process";
+
+import { sha256Hex } from "./hash.js";
 
 /** Raised when a shell invocation is not the recognised probe wrapper, or when a recognised
  * one reaches a host with no runner. Never a fallback. */
@@ -74,6 +85,15 @@ export type ShellInvocation =
   | { readonly kind: "node_eval"; readonly request: NodeEvalRequest }
   | { readonly kind: "scripted" };
 
+export interface ClassifyOptions {
+  /**
+   * The lowercase-hex SHA-256 digests of the probe scripts this provider may execute. The D1 host
+   * builds it from the daemon's own `ENV_PROBE_SCRIPT`, so the pin has no second copy to drift.
+   * Absent or empty ⇒ every shell invocation is refused (fail-closed rule 1b).
+   */
+  readonly allowedScriptDigests?: ReadonlySet<string>;
+}
+
 /**
  * Decide what a tenant command is.
  *
@@ -86,6 +106,7 @@ export function classifyShellInvocation(
   command: string,
   args: readonly string[],
   env: Readonly<Record<string, string>>,
+  options: ClassifyOptions = {},
 ): ShellInvocation {
   if (command !== "sh") return { kind: "scripted" };
   if (args[0] !== "-c") {
@@ -100,6 +121,22 @@ export function classifyShellInvocation(
   const script = args[2];
   if (typeof script !== "string" || script === "") {
     throw new NodeEvalRefusedError("the probe wrapper carries no script in $0");
+  }
+  // ★ The script is the program that RUNS, and it comes from the job envelope. An EMPTY or absent
+  // allow-list refuses everything: a caller that forgot to pin gets no execution at all, never a
+  // permissive default. The digest is the only thing compared — never the script's text, which
+  // must not reach a log or a message.
+  const allowed = options.allowedScriptDigests;
+  const digest = sha256Hex(script);
+  if (allowed === undefined || allowed.size === 0) {
+    throw new NodeEvalRefusedError(
+      "no probe-script digest allow-list was configured; this provider executes only scripts it was told to pin",
+    );
+  }
+  if (!allowed.has(digest)) {
+    throw new NodeEvalRefusedError(
+      `the probe script is not one of the ${allowed.size} pinned digests (observed sha256 ${digest})`,
+    );
   }
   return { kind: "node_eval", request: { script, argv: args.slice(3).map(String), env } };
 }

@@ -71,7 +71,39 @@ export {
   classifyShellInvocation,
   createNodeEvalRunner,
 } from "./node-eval.js";
-export type { NodeEvalRequest, NodeEvalResult, NodeEvalRunner, NodeEvalRunnerOptions, ShellInvocation } from "./node-eval.js";
+export type {
+  ClassifyOptions,
+  NodeEvalRequest,
+  NodeEvalResult,
+  NodeEvalRunner,
+  NodeEvalRunnerOptions,
+  ShellInvocation,
+} from "./node-eval.js";
+
+// DEP-019 — the reference provider on the AUTHORITATIVE per-op port, the face a DEPLOYED worker
+// reaches through the adapter-manager wire.
+export {
+  PER_OP_CORE_OPERATIONS,
+  SandboxNotFoundError,
+  createFakeSandboxProviderPort,
+} from "./per-op-provider.js";
+export type {
+  FakeSandboxProviderPort,
+  FakeSandboxProviderPortOptions,
+  PortCreateSpec,
+  PortCreateResult,
+  PortExecuteInput,
+  PortInspectResult,
+  PortListInput,
+  PortListResult,
+  PortOpContext,
+  PortOwnershipSelector,
+  PortResourceLabels,
+  PortResourceSummary,
+  PortSandboxState,
+  PortStopResult,
+  PortCleanupResult,
+} from "./per-op-provider.js";
 
 export { InvocationLedger } from "./invocation-ledger.js";
 export type { InvocationLedgerEntry, FakeClockOptions } from "./invocation-ledger.js";

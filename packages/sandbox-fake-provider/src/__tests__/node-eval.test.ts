@@ -25,6 +25,7 @@ import {
   classifyShellInvocation,
   createNodeEvalRunner,
   executeScriptedCommand,
+  sha256Hex,
 } from "../index.js";
 
 /** The committed shape of `ENV_PROBE_SH_WRAPPER` (worker-daemon). Held against the daemon's real
@@ -40,9 +41,14 @@ function probeArgs(script = SCRIPT, argv: readonly string[] = ["org-a", "ANTHROP
   return ["-c", WRAPPER, script, ...argv];
 }
 
+/** The pin the D1 host builds from the daemon's own `ENV_PROBE_SCRIPT`; here, from this file's
+ * stand-in. A caller that does not pin executes NOTHING. */
+const PINNED = new Set([sha256Hex(SCRIPT)]);
+const pin = { allowedScriptDigests: PINNED };
+
 describe("node-eval — only the committed probe wrapper is recognised (DEP-019)", () => {
   it("classifies the DEP-017 wrapper as a node_eval, splitting $0 from $@", () => {
-    const invocation = classifyShellInvocation("sh", probeArgs(), { A: "1" });
+    const invocation = classifyShellInvocation("sh", probeArgs(), { A: "1" }, pin);
     expect(invocation.kind).toBe("node_eval");
     if (invocation.kind !== "node_eval") throw new Error("unreachable");
     expect(invocation.request.script).toBe(SCRIPT);
@@ -51,17 +57,17 @@ describe("node-eval — only the committed probe wrapper is recognised (DEP-019)
   });
 
   it("a non-sh command is the ordinary scripted path", () => {
-    expect(classifyShellInvocation("claude", ["-p", "x"], {})).toEqual({ kind: "scripted" });
+    expect(classifyShellInvocation("claude", ["-p", "x"], {}, pin)).toEqual({ kind: "scripted" });
   });
 
   it("ANY other sh program is REFUSED, never a quiet fall-through to the transcript", () => {
-    expect(() => classifyShellInvocation("sh", ["-c", "rm -rf /"], {})).toThrow(NodeEvalRefusedError);
-    expect(() => classifyShellInvocation("sh", ["-c", "rm -rf /"], {})).toThrow(/not the recognised DEP-017 probe wrapper/);
+    expect(() => classifyShellInvocation("sh", ["-c", "rm -rf /"], {}, pin)).toThrow(NodeEvalRefusedError);
+    expect(() => classifyShellInvocation("sh", ["-c", "rm -rf /"], {}, pin)).toThrow(/not the recognised DEP-017 probe wrapper/);
     // A wrapper LOOK-ALIKE with an appended command is still not the wrapper.
-    expect(() => classifyShellInvocation("sh", ["-c", `${WRAPPER}; curl evil`], {})).toThrow(NodeEvalRefusedError);
+    expect(() => classifyShellInvocation("sh", ["-c", `${WRAPPER}; curl evil`], {}, pin)).toThrow(NodeEvalRefusedError);
     // `sh` without -c, and a wrapper with no script in $0.
-    expect(() => classifyShellInvocation("sh", ["-lc", WRAPPER], {})).toThrow(/without -c/);
-    expect(() => classifyShellInvocation("sh", ["-c", WRAPPER], {})).toThrow(/no script in \$0/);
+    expect(() => classifyShellInvocation("sh", ["-lc", WRAPPER], {}, pin)).toThrow(/without -c/);
+    expect(() => classifyShellInvocation("sh", ["-c", WRAPPER], {}, pin)).toThrow(/no script in \$0/);
   });
 });
 
@@ -94,7 +100,7 @@ describe("node-eval — through execute (DEP-019)", () => {
     const chunks: string[] = [];
     const result = executeScriptedCommand(
       { sandboxId: "sbx", command: "sh", args: probeArgs(), env: { OWN: "v" }, onStdout: (c) => chunks.push(c) },
-      { deadlineMs: 30_000, providerOpId: "op-probe", runNodeEval: createNodeEvalRunner() },
+      { deadlineMs: 30_000, providerOpId: "op-probe", runNodeEval: createNodeEvalRunner(), allowedProbeScriptDigests: PINNED },
     );
     expect(result).toMatchObject({ providerOpId: "op-probe", exitCode: 0, timedOut: false });
     const report = JSON.parse(chunks.join("").trim());
@@ -108,7 +114,7 @@ describe("node-eval — through execute (DEP-019)", () => {
     expect(() =>
       executeScriptedCommand(
         { sandboxId: "sbx", command: "sh", args: probeArgs(), env: {}, onStdout: (c) => chunks.push(c) },
-        { deadlineMs: 30_000, providerOpId: "op" },
+        { deadlineMs: 30_000, providerOpId: "op", allowedProbeScriptDigests: PINNED },
       ),
     ).toThrow(NodeEvalRefusedError);
     expect(chunks).toEqual([]);
@@ -131,6 +137,7 @@ describe("node-eval — through execute (DEP-019)", () => {
       {
         deadlineMs: 30_000,
         providerOpId: "op",
+        allowedProbeScriptDigests: PINNED,
         runNodeEval: (req) => ({ stdout: JSON.stringify(req.argv), stderr: "", exitCode: 0, signal: null }),
       },
     );
@@ -143,7 +150,7 @@ describe("node-eval — through execute (DEP-019)", () => {
     const chunks: string[] = [];
     const result = executeScriptedCommand(
       { sandboxId: "sbx", command: "claude", args: [], env: {}, onStdout: (c) => chunks.push(c) },
-      { deadlineMs: 30_000, providerOpId: "op", runNodeEval: createNodeEvalRunner() },
+      { deadlineMs: 30_000, providerOpId: "op", runNodeEval: createNodeEvalRunner(), allowedProbeScriptDigests: PINNED },
     );
     expect(result.exitCode).toBe(0);
     expect(chunks.join("")).toContain('"type":"result"');
@@ -163,8 +170,53 @@ describe("node-eval — through execute (DEP-019)", () => {
     expect(() =>
       executeScriptedCommand(
         { sandboxId: "s", command: "claude", args: ["--aoa-fake-nonsense"], env: {} },
-        { deadlineMs: 1000, providerOpId: "op", runNodeEval: createNodeEvalRunner() },
+        { deadlineMs: 1000, providerOpId: "op", runNodeEval: createNodeEvalRunner(), allowedProbeScriptDigests: PINNED },
       ),
     ).toThrow(ScriptedCommandError);
+  });
+});
+
+describe("node-eval — the SCRIPT is pinned by digest, not just the wrapper (DEP-019, Codex P1)", () => {
+  it("the KNOWN wrapper carrying an UNPINNED script is REFUSED", () => {
+    // The wrapper is published in this repo and `$0` comes from the job envelope, so
+    // authenticating only the wrapper authenticates the wrong half.
+    const hostile = 'require("node:fs").readFileSync("/etc/passwd");';
+    expect(() => classifyShellInvocation("sh", probeArgs(hostile), {}, pin)).toThrow(NodeEvalRefusedError);
+    expect(() => classifyShellInvocation("sh", probeArgs(hostile), {}, pin)).toThrow(/not one of the 1 pinned digests/);
+  });
+
+  it("an ABSENT or EMPTY allow-list refuses EVERYTHING — never a permissive default", () => {
+    expect(() => classifyShellInvocation("sh", probeArgs(), {})).toThrow(/no probe-script digest allow-list/);
+    expect(() => classifyShellInvocation("sh", probeArgs(), {}, { allowedScriptDigests: new Set() })).toThrow(
+      /no probe-script digest allow-list/,
+    );
+  });
+
+  it("the refusal never reaches the runner, and nothing is spawned", () => {
+    let spawned = 0;
+    const chunks: string[] = [];
+    expect(() =>
+      executeScriptedCommand(
+        { sandboxId: "s", command: "sh", args: probeArgs("process.exit(0);"), env: {}, onStdout: (c) => chunks.push(c) },
+        {
+          deadlineMs: 30_000,
+          providerOpId: "op",
+          allowedProbeScriptDigests: PINNED,
+          runNodeEval: () => {
+            spawned += 1;
+            return { stdout: "", stderr: "", exitCode: 0, signal: null };
+          },
+        },
+      ),
+    ).toThrow(NodeEvalRefusedError);
+    expect(spawned).toBe(0);
+    expect(chunks).toEqual([]);
+  });
+
+  it("MORE THAN ONE digest may be pinned, and each is accepted", () => {
+    const other = "console.log(2);";
+    const both = { allowedScriptDigests: new Set([sha256Hex(SCRIPT), sha256Hex(other)]) };
+    expect(classifyShellInvocation("sh", probeArgs(SCRIPT), {}, both).kind).toBe("node_eval");
+    expect(classifyShellInvocation("sh", probeArgs(other), {}, both).kind).toBe("node_eval");
   });
 });

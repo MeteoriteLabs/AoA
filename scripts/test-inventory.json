@@ -46,7 +46,7 @@
     },
     "packages/sandbox-fake-provider": {
       "mode": "pinned",
-      "count": 8
+      "count": 10
     },
     "packages/sandbox-provider-contract": {
       "mode": "pinned",
