@@ -47,7 +47,8 @@ import {
   type StagedFileRequest,
 } from "./provider.js";
 import type { RunCanaryCoordinator } from "./run-canaries.js";
-import { RUN_OUTPUT_DROPPED_METRIC, createRunOutputCapture } from "./run-output.js";
+import { RUN_OUTPUT_DROPPED_METRIC, createRunOutputCapture, scrubLogFields } from "./run-output.js";
+import { PARSED_USAGE_LOG_MESSAGE, parsedUsageLogFields } from "./usage-observer.js";
 import { ENV_PROBE_DEFAULT_DEADLINE_MS, ENV_PROBE_ERROR_CODES, envProbeLogMessage, runEnvProbe } from "./env-probe.js";
 import { PROVIDER_AUTH_ENV_TARGETS } from "../lease/secret-redemption.js";
 import {
@@ -1025,7 +1026,28 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         for (const tick of obs.progress ?? []) {
           await events.progress({ message: tick.message, percent: tick.percent });
         }
-        if (obs.usage) await events.usage(obs.usage);
+        if (obs.usage) {
+          // WRK-018 acceptance 1(b): log what the parser produced, BEFORE the event is emitted, so
+          // the keyed lane has a capture independent of the accepted event and of
+          // `heartbeat_runs.usage_json` (which is projected from that same event and so cannot
+          // witness a producer that parsed wrongly - Codex P1, PR #567). Numbers + this run's own
+          // identifiers only; scrubbed by the run's canaries and dropped WHOLE if a value cannot be
+          // scrubbed. Never the result line (see `parsedUsageLogFields`).
+          const counts = parsedUsageLogFields(obs.usage);
+          if (counts !== null) {
+            const bindings = scrubLogFields(
+              {
+                ...counts,
+                leaseId: run.leaseId,
+                jobId: String(handoff.offer.job.jobId),
+                attempt: handoff.offer.job.attempt,
+              },
+              runCanaries,
+            );
+            if (bindings !== null) deps.logger?.info(bindings, PARSED_USAGE_LOG_MESSAGE);
+          }
+          await events.usage(obs.usage);
+        }
       } catch (err) {
         deps.logger?.warn({ leaseId: run.leaseId, err }, "supervisor: run observation failed (best-effort)");
       }

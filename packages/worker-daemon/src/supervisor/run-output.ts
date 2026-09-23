@@ -108,6 +108,31 @@ export function scrubOutputText(text: string, canaries: readonly string[]): stri
   return scrubbed;
 }
 
+/**
+ * Scrub the STRING values of a bounded set of log bindings with the run's canaries, fail closed: a
+ * value that cannot be scrubbed refuses the WHOLE set (`null`), so the caller drops the line rather
+ * than printing a partially-scrubbed one. Numbers pass through untouched (so a numeric canary can
+ * never mangle a count); any other value type is refused, because this helper serves lines whose
+ * payload is bounded and known (WRK-018's parsed-counts line), not arbitrary structures.
+ */
+export function scrubLogFields<T extends Record<string, string | number>>(
+  fields: T,
+  canaries: readonly string[],
+): T | null {
+  const out: Record<string, string | number> = {};
+  for (const [key, value] of Object.entries(fields)) {
+    if (typeof value === "number") {
+      out[key] = value;
+      continue;
+    }
+    if (typeof value !== "string") return null;
+    const scrubbed = scrubOutputText(value, canaries);
+    if (scrubbed === null) return null;
+    out[key] = scrubbed;
+  }
+  return out as T;
+}
+
 export function createRunOutputCapture(options: RunOutputCaptureOptions): RunOutputCapture {
   const maxChars = options.maxChars ?? RUN_OUTPUT_TAIL_MAX_CHARS;
   const report = (reason: RunOutputDropReason): void => {

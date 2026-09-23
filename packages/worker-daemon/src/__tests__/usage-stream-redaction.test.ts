@@ -10,9 +10,10 @@ import { createRunCanaryCoordinator } from "../supervisor/run-canaries.js";
 import {
   RUN_OUTPUT_DROPPED_METRIC,
   createRunOutputCapture,
+  scrubLogFields,
 } from "../supervisor/run-output.js";
 import { createSupervisor, type RunObservation, type SupervisorDeps } from "../supervisor/supervisor.js";
-import { createUsageObserver } from "../supervisor/usage-observer.js";
+import { PARSED_USAGE_LOG_MESSAGE, createUsageObserver } from "../supervisor/usage-observer.js";
 import { createFakeSandboxProvider } from "./support/fake-provider.js";
 import { compatibleOffer } from "./support/poll-fixtures.js";
 import { collectingSink, makeHandoff, SUPERVISOR_IDENTITY } from "./support/supervisor-fixtures.js";
@@ -370,5 +371,87 @@ describe("WRK-018 — multi-tenant (F10): two Organizations' concurrent runs on 
       expect(t).not.toContain(CANARY_B);
     }
     expect(JSON.stringify(sink.events)).not.toMatch(/CANARY-(AAAA|BBBB)/);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// WRK-018 acceptance 1(b) — the parsed-counts log line, at the supervisor.
+//
+// It exists so the keyed lane can compare what the worker PARSED with what the control plane
+// ACCEPTED and STORED (those two being derived from one another). It carries the four counts and
+// the run's own identifiers - never the result line, never any tenant text - and it is scrubbed by
+// the run's canaries like the event stream, fail closed.
+// -----------------------------------------------------------------------------
+
+describe("WRK-018 1(b) — the worker logs the counts it parsed", () => {
+  const ALLOWED_KEYS = [
+    "attempt",
+    "jobId",
+    "leaseId",
+    "parsedCachedInputTokens",
+    "parsedInputTokens",
+    "parsedOutputTokens",
+    "parsedRuntimeMillis",
+  ];
+
+  function runWith(opts: { canaries: readonly string[]; stdout: string; logger: Logger }): Promise<void> {
+    const supervisor = createSupervisor({
+      provider: createFakeSandboxProvider({ stdoutChunks: [opts.stdout] }),
+      identity: SUPERVISOR_IDENTITY,
+      eventSink: collectingSink(),
+      redactionCanaries: [],
+      canaryCoordinator: createRunCanaryCoordinator(),
+      materializeRunSecrets: async () => ({
+        env: { ANTHROPIC_API_KEY: opts.canaries[0] ?? "" },
+        canaries: opts.canaries,
+      }),
+      observeRun: createUsageObserver(),
+      logger: opts.logger,
+    });
+    return supervisor.accept(makeHandoff());
+  }
+
+  it("★ logs EXACTLY the four counts plus the run's own ids - no stdout, no text, nothing else", async () => {
+    const logger = recordingLogger();
+    const stdout = `${resultLine({ i: 111, o: 222, c: 333 }, `prose mentioning ${CANARY_A}`)}\n`;
+    await runWith({ canaries: [CANARY_A], stdout, logger });
+
+    const lines = logger.lines.filter((l) => l.includes(PARSED_USAGE_LOG_MESSAGE));
+    expect(lines).toHaveLength(1);
+    const [bindings] = JSON.parse(lines[0]!) as [Record<string, unknown>, string];
+    expect(Object.keys(bindings).sort()).toEqual(ALLOWED_KEYS);
+    expect(bindings.parsedInputTokens).toBe(111);
+    expect(bindings.parsedOutputTokens).toBe(222);
+    expect(bindings.parsedCachedInputTokens).toBe(333);
+    expect(typeof bindings.parsedRuntimeMillis).toBe("number");
+    // Zero tolerance: the canary rode the very stdout these numbers came from.
+    expect(stdout).toContain(CANARY_A);
+    expect(logger.lines.join("\n")).not.toContain(CANARY_A);
+    // No free text in the payload: every value is a number except the two identifiers.
+    for (const [key, value] of Object.entries(bindings)) {
+      if (key === "leaseId" || key === "jobId") expect(typeof value).toBe("string");
+      else expect(typeof value).toBe("number");
+    }
+  });
+
+  // ★ Why the canary-inside-an-identifier case is a UNIT test and not a supervisor one: such a
+  // canary ALREADY fails the run upstream - the event sequencer scrubs the same canaries out of
+  // every event, so `leaseId` stops satisfying the frozen schema and the attempt dies before any
+  // usage. That is pre-existing behaviour, not this line's. What this line owes is that IF such a
+  // value reaches it, it is scrubbed, or the line is dropped whole.
+  it("★ scrubLogFields scrubs string values and refuses a set it cannot scrub (fail closed)", () => {
+    expect(scrubLogFields({ parsedInputTokens: 7, leaseId: `lease-${CANARY_A}` }, [CANARY_A])).toEqual({
+      parsedInputTokens: 7,
+      leaseId: `lease-${REDACTION_MARKER}`,
+    });
+    expect(scrubLogFields({ leaseId: "wxyzq" }, ["xyzq", `w${REDACTION_MARKER}`])).toBeNull();
+    // Numbers pass through untouched, so a numeric canary can never mangle a count.
+    expect(scrubLogFields({ parsedInputTokens: 111 }, ["111"])).toEqual({ parsedInputTokens: 111 });
+  });
+
+  it("a run with no parseable usage logs NO parsed-counts line", async () => {
+    const logger = recordingLogger();
+    await runWith({ canaries: [CANARY_A], stdout: "no result line here\n", logger });
+    expect(logger.lines.filter((l) => l.includes(PARSED_USAGE_LOG_MESSAGE))).toEqual([]);
   });
 });

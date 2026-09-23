@@ -3,13 +3,15 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { usagePayloadV1Schema } from "@armyofagents/worker-protocol";
+import { usagePayloadV1Schema, type UsagePayloadV1 } from "@armyofagents/worker-protocol";
 
 import { createMetrics } from "../metrics/metrics.js";
 import {
+  PARSED_USAGE_LOG_MESSAGE,
   RUN_USAGE_MISSING_METRIC,
   createUsageObserver,
   parseClaudeStreamJsonUsage,
+  parsedUsageLogFields,
 } from "../supervisor/usage-observer.js";
 import { makeHandoff } from "./support/supervisor-fixtures.js";
 
@@ -128,5 +130,39 @@ describe("WRK-018 — createUsageObserver (the composed observeRun)", () => {
     expect(noOutput.usage).toBeNull();
     expect(noResult.usage).toBeNull();
     expect(metrics.renderPrometheus()).toContain(`${RUN_USAGE_MISSING_METRIC} 2`);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// WRK-018 acceptance 1(b) — the worker LOGS the counts it PARSED, numbers only.
+//
+// The keyed lane can compare the accepted `usage` event with `heartbeat_runs.usage_json`, but both
+// are derived from the same event, so that pair proves PROJECTION fidelity and not PARSER
+// correctness (Codex P1 on PR #567). An INDEPENDENT capture of what the worker parsed closes 1(b).
+// It is the COUNTS, never the result line: emitting the line would push tenant model output across
+// the daemon boundary (data minimisation), and would pre-empt the open F7 output-mechanism
+// decision. Ruled by the M1 planning session under founder delegation F2, 2026-09-23.
+// -----------------------------------------------------------------------------
+
+describe("WRK-018 1(b) — parsedUsageLogFields (the log payload)", () => {
+  it("is EXACTLY the four counts, as numbers", () => {
+    const fields = parsedUsageLogFields({ inputTokens: 1, outputTokens: 2, cachedInputTokens: 3, runtimeMillis: 4 });
+    expect(fields).toEqual({ parsedInputTokens: 1, parsedOutputTokens: 2, parsedCachedInputTokens: 3, parsedRuntimeMillis: 4 });
+    expect(Object.values(fields ?? {}).every((v) => typeof v === "number")).toBe(true);
+  });
+
+  it("refuses a payload that is not four non-negative integers, or that carries an extra key", () => {
+    const bad: unknown[] = [
+      { inputTokens: "1", outputTokens: 2, cachedInputTokens: 3, runtimeMillis: 4 },
+      { inputTokens: 1.5, outputTokens: 2, cachedInputTokens: 3, runtimeMillis: 4 },
+      { inputTokens: -1, outputTokens: 2, cachedInputTokens: 3, runtimeMillis: 4 },
+      { inputTokens: 1, outputTokens: 2, cachedInputTokens: 3 },
+      { inputTokens: 1, outputTokens: 2, cachedInputTokens: 3, runtimeMillis: 4, stdoutTail: "tenant text" },
+    ];
+    for (const payload of bad) expect(parsedUsageLogFields(payload as UsagePayloadV1)).toBeNull();
+  });
+
+  it("the message is a stable token the lane can grep for", () => {
+    expect(PARSED_USAGE_LOG_MESSAGE).toBe("worker: parsed agent usage");
   });
 });

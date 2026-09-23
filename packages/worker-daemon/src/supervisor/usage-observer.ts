@@ -95,6 +95,43 @@ export function parseClaudeStreamJsonUsage(stdout: string): ParsedAgentUsage | n
   return { inputTokens, outputTokens, cachedInputTokens };
 }
 
+/**
+ * WRK-018 acceptance 1(b) — the message the worker logs its PARSED counts under. A stable token
+ * so the keyed lane can find the line without matching prose.
+ */
+export const PARSED_USAGE_LOG_MESSAGE = "worker: parsed agent usage";
+
+/**
+ * The log payload for {@link PARSED_USAGE_LOG_MESSAGE}: EXACTLY the four counts, as numbers, or
+ * `null` when the payload is not four non-negative integers (then nothing is logged - a guess in
+ * this line would be indistinguishable on the lane from a real parse).
+ *
+ * ★ COUNTS, NEVER THE LINE. The alternative - logging the scrubbed result line so the lane could
+ * parse it independently - was ruled against (M1 planning session under founder delegation F2,
+ * 2026-09-23): it pushes tenant MODEL OUTPUT across the daemon boundary, which conflicts with data
+ * minimisation and pre-empts the still-open F7 output-mechanism decision. The consequence is
+ * stated rather than hidden: acceptance 1(c) - the parser's fidelity to a REAL result line - is
+ * proven by unit tests against the captured transcript fixture and NOT live, because live proof
+ * would require emitting that output.
+ *
+ * The builder takes only the frozen `UsagePayloadV1`, so it has no access to the stdout tail: no
+ * edit at the call site can put tenant text in this line without changing THIS signature.
+ */
+export function parsedUsageLogFields(usage: UsagePayloadV1): Record<string, number> | null {
+  const fields = ["inputTokens", "outputTokens", "cachedInputTokens", "runtimeMillis"] as const;
+  const source = usage as unknown as Record<string, unknown>;
+  // An EXTRA key means the caller handed something that is not the frozen payload; refuse it
+  // rather than project four fields out of an object of unknown provenance.
+  if (Object.keys(source).length !== fields.length) return null;
+  const out: Record<string, number> = {};
+  for (const field of fields) {
+    const value = source[field];
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) return null;
+    out[`parsed${field.charAt(0).toUpperCase()}${field.slice(1)}`] = value;
+  }
+  return out;
+}
+
 export interface UsageObserverDeps {
   readonly metrics?: Metrics;
 }
