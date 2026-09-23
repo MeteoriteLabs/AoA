@@ -36,7 +36,8 @@
 //                      env-absence probe summary (read from its `job_events`), with a red
 //                      planted control; keyless observes no probe (no sandbox exists).
 //   collect            redacted service logs + `compose ps` into the evidence dir
-//   leak-scan          HARD check before upload: no job secret (raw/base64/base64url) in the evidence
+//   leak-scan          HARD check before upload, on BOTH surfaces: no job secret (raw/base64/
+//                      base64url) and no key material, in the evidence bundle OR the job log
 //   teardown           `compose down -v`, and the keypair + secrets deleted
 //
 // SECRETS. Every value `prepare` generates, plus E2B_API_KEY / ANTHROPIC_API_KEY, is listed in
@@ -63,6 +64,10 @@ import {
   redactSecrets,
   extractSandboxEvidence,
   scanEvidenceForSecrets,
+  scanForKeyMaterial,
+  maskDirectivesFor,
+  stripMaskDirectives,
+  KEY_MATERIAL_MARKERS,
   extractRolloutResolution,
   CANARY_EXECUTION_TARGET_SLUG,
   // DEP-017 — the live env-absence probe's read side.
@@ -136,14 +141,28 @@ function saveState(state) {
   writeSecretFile(statePath(state.out), JSON.stringify(state, null, 2));
 }
 
-/** Record a job secret under a NAME: redacted from every retained log, and scanned for (by name)
- * before any evidence is uploaded. Values shorter than 8 characters are not secrets this lane
- * mints, and would match by accident. */
+/** Record a job secret under a NAME: MASKED in the Actions log, redacted from every retained log,
+ * and scanned for (by name) on BOTH surfaces before any evidence is uploaded. Values shorter than
+ * 8 characters are not secrets this lane mints, and would match by accident.
+ *
+ * ★ The mask is what makes the LOG surface safe. Review batch 3A (PR #569) measured that run
+ * 35619555883's job log and evidence carried no key material at all — so the gap was in the
+ * CONTROL, not in an observed leak: `leakScan` walked only the evidence directory, and nothing
+ * emitted `::add-mask::`. The directive itself carries the value — that IS GitHub's mechanism,
+ * and the rendered log shows `***` — so it is emitted only inside Actions, and the log scan skips
+ * (and counts) those lines. */
 function trackSecret(state, name, value) {
   if (typeof value !== "string" || value.length < 8) return;
   state.secrets ??= {};
+  const alreadyRegistered = state.secrets[name] === value;
   state.secrets[name] = value;
   if (!state.redact.includes(value)) state.redact.push(value);
+  if (!alreadyRegistered && process.env.GITHUB_ACTIONS === "true") {
+    // A multi-line secret is masked ONLY per line: a workflow command ends at the first
+    // newline, so one directive carrying a whole PEM would print its body and footer
+    // (Codex P1, PR #574). `maskDirectivesFor` owns that rule and is unit-tested.
+    for (const directive of maskDirectivesFor(value)) console.log(directive);
+  }
 }
 
 function evidenceDir(state) {
@@ -327,6 +346,11 @@ function prepare(args) {
   trackSecret(state, "CONTROL_PLANE_SIGNING_KEY_PEM", privatePem.trim());
   // The PEM body without its armour lines too: a log that printed the key would rarely keep them.
   trackSecret(state, "CONTROL_PLANE_SIGNING_KEY_BODY", privatePem.replace(/-----[A-Z ]+-----/g, "").replace(/\s+/g, ""));
+  // The PUBLIC half too, whole and body-only (review batch 3A, PR #569). It is not a credential,
+  // but it is the pair's other half: a log or bundle carrying it says which key this job minted,
+  // and acceptance 2 is a claim about the KEYPAIR, not about the private half alone.
+  trackSecret(state, "CONTROL_PLANE_PUBLIC_KEY_PEM", publicPem.trim());
+  trackSecret(state, "CONTROL_PLANE_PUBLIC_KEY_BODY", publicPem.replace(/-----[A-Z ]+-----/g, "").replace(/\s+/g, ""));
   trackSecret(state, "E2B_API_KEY", process.env.E2B_API_KEY ?? "");
   trackSecret(state, "ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY ?? "");
   writeEnvFile(state);
@@ -899,8 +923,26 @@ async function dispatch(state) {
  * so the upload step (gated on this step's success) has nothing to publish. The output names the
  * file and the secret NAME, never the value.
  */
+/** The JOB-LOG surface: what every phase printed, teed there by the workflow. */
+function jobLogPath(state) {
+  return path.join(state.out, "job-log.txt");
+}
+
 function leakScan(state) {
   const dir = path.join(state.out, "evidence");
+  // ★ A CAPTURE FAILURE IS NOT A CLEAN SCAN (Codex P1, PR #574). The filter exits non-zero, but the
+  // step that fails is not the one the upload is gated on: this scan runs `if: always()`, and a
+  // truncated job log reads clean. The filter therefore leaves a DURABLE marker beside the capture,
+  // and the scan refuses before reading anything — the log surface it would judge is incomplete.
+  const marker = `${jobLogPath(state)}.capture-failed`;
+  if (existsSync(marker)) {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(jobLogPath(state), { force: true });
+    fail(
+      `leak scan: the job-log capture FAILED during this run (${readFileSync(marker, "utf8").trim() || "no detail"}), so the ` +
+        `log surface is incomplete and cannot be judged clean; the evidence and the partial log were deleted`,
+    );
+  }
   const files = [];
   const walk = (d) => {
     if (!existsSync(d)) return;
@@ -911,13 +953,92 @@ function leakScan(state) {
     }
   };
   walk(dir);
-  const findings = scanEvidenceForSecrets(files, state.secrets ?? {});
-  if (findings.length > 0) {
-    for (const f of findings) console.error(`::error::DEP-015 leak scan: evidence file '${f.file}' contains job secret '${f.secret}' (${f.form} form)`);
-    rmSync(dir, { recursive: true, force: true });
-    fail(`leak scan: ${findings.length} secret occurrence(s) in the evidence; the bundle was deleted and will not be uploaded`);
+  // ★ TWO SURFACES (review batch 3A, PR #569). The evidence bundle is uploaded; the ACTIONS LOG is
+  // published with the run and outlives it, and had no scanner at all. The bundle scan is unchanged;
+  // the job log is scanned for the same named secrets AND for key material BY SHAPE, which also
+  // catches a key whose bytes this scanner was never told (a re-run's, an operator's).
+  // ★ The captured log contains this driver's OWN `::add-mask::` directives, which carry the
+  // values by construction and which GitHub renders as `***`. They are stripped before either
+  // scan — otherwise every run would fail its own leak scan (Codex P1, PR #574) — and the
+  // number stripped is reported, so the exception is bounded and visible.
+  // ★ An ABSENT job log is not an empty surface (Codex P2, PR #574). Reaching here means `prepare`
+  // wrote state.json, so at least that phase was teed; a missing capture means the file was removed
+  // after the last filter ran, or the filter died before it could leave its marker. Either way the
+  // Actions-log coverage this scan claims was never had, so IN CI it fails closed. Outside CI (a
+  // by-hand phase run) there is no tee, and an absent log is simply nothing to scan.
+  // ★ PRECEDENCE: the refusal is DEFERRED, never short-circuiting (PR #574, after it red four of
+  // this lane's own phase tests IN CI ONLY). Both outcomes delete the bundle, so ordering changes
+  // nothing about what is published — it changes only what the operator is TOLD. "I cannot judge
+  // the log" and "a named secret is sitting in the evidence" are different verdicts, and only the
+  // second says ROTATE THIS NOW. Refusing first would swallow a finding the scan already has in
+  // hand. So the scans below always run, findings are always named, and the absent log is reported
+  // alongside them: a refusal to judge never suppresses a finding.
+  const jobLogAbsent = process.env.GITHUB_ACTIONS === "true" && !existsSync(jobLogPath(state));
+  const absentLogError =
+    "leak scan: the job log is ABSENT although the run got past prepare; the Actions-log surface " +
+    "was never captured and cannot be judged clean, so the evidence was deleted";
+  const rawLog = existsSync(jobLogPath(state)) ? readFileSync(jobLogPath(state), "latin1") : null;
+  // ★ INTACTNESS (Codex P1, PR #574). A filter killed outright — OOM, SIGKILL, an uncaught throw —
+  // fails its own phase through `pipefail` but leaves no `capture-failed` marker, and the NEXT
+  // phase's filter appends after the hole, so neither the step outcomes this job gates on nor the
+  // content of the log reveal the missing stretch. Every invocation therefore brackets itself, and
+  // an unmatched OPEN is a phase whose capture ended abruptly. This is a property of the LOG, so it
+  // holds for every piped phase without the gate having to enumerate them.
+  if (process.env.GITHUB_ACTIONS === "true" && rawLog !== null) {
+    const ids = (marker) =>
+      (rawLog.match(new RegExp(`^\\[log-filter\\] ${marker} ([0-9a-f-]{36})$`, "gm")) ?? []).map((l) => l.slice(-36));
+    const opened = ids("opened");
+    const closed = new Set(ids("closed"));
+    // ★ Paired BY ID, not counted (Codex P2). The sentinels share this file with producer output,
+    //   so a phase that printed a bare `closed` line could balance a killed filter's missing one.
+    //   Each invocation mints an id the filter never writes to stdout, so no producer can guess it.
+    const unmatched = opened.filter((id) => !closed.has(id));
+    if (unmatched.length > 0 || closed.size !== opened.length) {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(jobLogPath(state), { force: true });
+      fail(
+        `leak scan: the job log is TRUNCATED — ${opened.length} capture(s) opened and ${closed.size} closed, ` +
+          `${unmatched.length} never closed, so at least one phase's filter died mid-stream and that ` +
+          "stretch of the Actions log was never captured; the evidence and the partial log were deleted",
+      );
+    }
   }
-  console.log(`leak-scan: ${files.length} evidence file(s) scanned for ${Object.keys(state.secrets ?? {}).length} named job secret(s) in raw/base64/base64url form: clean`);
+  const stripped = rawLog === null ? { text: "", removed: 0 } : stripMaskDirectives(rawLog);
+  const logSurface = rawLog === null ? [] : [{ name: "job-log.txt", text: stripped.text }];
+  const secrets = state.secrets ?? {};
+  const logScan = scanForKeyMaterial(logSurface);
+  const findings = [
+    ...scanEvidenceForSecrets(files, secrets).map((f) => ({ ...f, surface: "evidence" })),
+    ...scanEvidenceForSecrets(logSurface, secrets).map((f) => ({ ...f, surface: "job log" })),
+  ];
+  const keyMaterial = [
+    // An uploaded artifact does not INTERPRET `::add-mask::`; a key on such a line in an evidence
+    // file would be published raw, and the named-secret scan cannot know an unregistered key
+    // (Codex P2, PR #574). The directive exception belongs to the captured job log alone.
+    ...scanForKeyMaterial(files, { skipMaskDirectives: false }).findings.map((f) => ({ ...f, surface: "evidence" })),
+    ...logScan.findings.map((f) => ({ ...f, surface: "job log" })),
+  ];
+  if (findings.length > 0 || keyMaterial.length > 0) {
+    for (const f of findings) console.error(`::error::DEP-015 leak scan: ${f.surface} file '${f.file}' contains job secret '${f.secret}' (${f.form} form)`);
+    for (const f of keyMaterial) console.error(`::error::DEP-015 leak scan: ${f.surface} file '${f.file}' line ${f.line} carries key material (${f.marker})`);
+    if (jobLogAbsent) console.error(`::error::DEP-015 ${absentLogError}`);
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(jobLogPath(state), { force: true });
+    fail(
+      `leak scan: ${findings.length} secret occurrence(s) + ${keyMaterial.length} key-material occurrence(s) across the evidence and the job log; ` +
+        `both were deleted and nothing will be uploaded` +
+        (jobLogAbsent ? "; the job log was ABSENT as well, so that surface was never judged" : ""),
+    );
+  }
+  if (jobLogAbsent) {
+    rmSync(dir, { recursive: true, force: true });
+    fail(absentLogError);
+  }
+  console.log(
+    `leak-scan: ${files.length} evidence file(s) + ${logSurface.length} job-log file(s) scanned for ` +
+      `${Object.keys(secrets).length} named job secret(s) (raw/base64/base64url) and ${KEY_MATERIAL_MARKERS.length} key-material shapes: clean ` +
+      `(${stripped.removed} ::add-mask:: directive line(s) stripped — GitHub renders those as ***)`,
+  );
 }
 
 function collect(state) {

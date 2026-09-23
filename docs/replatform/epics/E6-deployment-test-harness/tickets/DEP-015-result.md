@@ -702,3 +702,320 @@ unchanged after the merge. Two consequences worth pinning so no later reader has
   review names.
 
 Nothing is pending, so I set `Status` to `complete` in a separate commit.
+
+---
+
+## 14. Addendum, 2026-09-23: the ACTIONS LOG gets a scanner and a mask (review batch 3A, PR #569)
+
+**What review batch 3A measured, and it is the reason this is a control gap and not an incident.**
+Across the complete job log of keyed run `35619555883` (job `106398898162`, 2347 lines) and the
+whole evidence artifact (`10649025333`, 20 files), the reviewer found **zero** hits for
+`BEGIN PUBLIC KEY`, the ed25519 SPKI prefix `MCowBQYDK2VwAyEA`, the PKCS#8 prefix
+`MC4CAQAwBQYDK2VwBCIEI`, and no 40–48-character base64 runs; no artifact file contains
+`PRIVATE KEY`. **Acceptance 2 held for the whole keypair on both surfaces for that run. Nothing
+leaked.**
+
+**What was missing was the standing control,** verified at source by that reviewer:
+- `leakScan` walked only `$M1_OUT/evidence`, so the **Actions log surface had no scanner at all**;
+- there was no `::add-mask::` anywhere in `journey.mjs`, so the in-job PEM was **unmasked** in the log;
+- `prepare` registered only `privatePem` and its body — **never `publicPem`**.
+
+A clean measurement of one run is not a control. Ruled in under F2:
+
+1. **`trackSecret` masks.** Every registered secret is emitted as `::add-mask::` — once per value
+   and, for a multi-line secret such as a PEM, once per line, so a value that appears only
+   line-wrapped is masked too. The directive is emitted **only inside Actions**
+   (`GITHUB_ACTIONS === "true"`), because the directive itself carries the value; that is GitHub's
+   mechanism, and the rendered log shows `***`.
+2. **Both halves of the keypair are registered:** `CONTROL_PLANE_PUBLIC_KEY_PEM` and
+   `…_BODY` join the private pair. The public half is not a credential, but acceptance 2 is a claim
+   about the **keypair**, and a log carrying the public half says which key the job minted.
+3. **The leak scan now covers TWO surfaces.** The evidence-directory scan is unchanged. The job log
+   — what every phase prints, teed to `$M1_OUT/job-log.txt` by the workflow — is scanned for the
+   same named secrets **and for key material by SHAPE** (`KEY_MATERIAL_MARKERS`: PEM private, PEM
+   public, and the two ed25519 DER prefixes the reviewer measured). Shape-matching also catches a
+   key whose exact bytes the scanner was never told — a re-run's, or an operator's. A match fails
+   the run and deletes **both** surfaces, so the gated upload has nothing to publish. Findings name
+   the surface, the file, and the secret NAME or the marker — never a value.
+   - The one exception is counted, not hidden: `::add-mask::` lines are skipped, and the pass line
+     reports how many were skipped.
+4. **The shape guard keeps the surface collected.** Every phase, and the keypair check, must tee
+   into the job log, or `policy` reds. A phase the scan cannot see is a phase outside the control.
+
+**Positive controls** (`scripts/lib/__tests__/m1-shipped-boot.test.mjs`, `check-m1-shipped-boot-shape.test.mjs`):
+- a PEM planted in the **job log** reds the phase end to end (exit 1), names the marker and line,
+  prints no material, and deletes both surfaces;
+- a **registered secret** planted in the job log reds it, by name;
+- the **public half** planted in the job log reds it;
+- a clean job log passes and both surfaces survive; with no job log at all, the evidence scan still
+  runs and says so (no silent skip);
+- the DER prefixes are found with no PEM armour, and an `::add-mask::` line is skipped **and**
+  counted — with the exception off, the same line is found, so the skip is an excuse, not blindness;
+- **mutations, all killed:** the mask directive not emitted (1), the public half not registered (1),
+  the log surface not scanned (4), key-material shapes not scanned (4), the tee invariant not
+  checked (1).
+
+**Four defects in the first cut of this control, found by Codex on PR #574 and fixed before merge.**
+They are recorded because each would have made the control worse than none:
+1. **The mask could PUBLISH the key.** A workflow command ends at the first newline, so one
+   `::add-mask::` carrying a whole PEM would register the header and PRINT the body and footer.
+   `maskDirectivesFor` now emits a multi-line value ONLY per line, never whole, and a test asserts
+   no directive contains a newline.
+2. **The scan would have failed every run.** `tee` writes this driver's own directives into the
+   captured log verbatim, and the named-secret scan did not skip them — a guaranteed match on every
+   registered single-line secret. `stripMaskDirectives` removes whole directive lines before either
+   scan, counts them, and a test proves the same secret on an ORDINARY line in the same log still reds.
+3. **The first tee would have failed ENOENT.** `M1_OUT` is written to `$GITHUB_ENV`, which creates no
+   directory, and `prepare` mkdirs only after node starts. The validate step now creates it, and the
+   shape guard requires that to happen before the first teed step.
+4. **A failed phase could have passed.** The unspecified default shell is `bash -e`, WITHOUT
+   pipefail, so a phase failing into a successful `tee` would report success. The job now declares
+   `defaults: run: shell: bash`, and the shape guard requires it.
+
+5. **An older candidate would have been judged by its own pre-control driver.** Checkout replaces
+   the workspace with the candidate, so a candidate that predates these controls would tee phase
+   output into the new job log and then report clean with the evidence-only scanner that never
+   reads it — green, with the control absent. The "Bind the run to the candidate" step now REFUSES
+   a candidate whose own `journey.mjs` / `m1-shipped-boot.mjs` lacks the four control markers
+   (`CONTROL_PLANE_PUBLIC_KEY_PEM`, `maskDirectivesFor`, `stripMaskDirectives`,
+   `KEY_MATERIAL_MARKERS`), each with an error that names what is missing. The shape guard requires
+   each gate line, and a second test asserts those markers are present in THIS tree — a gate that
+   refused every candidate, including the one it ships with, would be the same defect one level up.
+
+6. **An UNREGISTERED key would still have been published.** Masking covers only registered values;
+   a phase printing a key this job did not generate (a re-run's, an operator's — the very case the
+   shape scan exists for) reached the runner's log raw, and no later scan can retract a published
+   log. Every phase now pipes through `scripts/m1-shipped-boot/log-filter.mjs`, which CAPTURES the
+   raw line into the file the scan judges and PUBLISHES a shape-redacted line
+   (`redactKeyMaterialLine`); an `::add-mask::` line passes through, since that is the mechanism.
+   A `tee` no longer appears in the lane, and the shape guard requires the filter.
+7. **The directive exception must not travel to the evidence bundle.** An uploaded artifact does
+   not interpret `::add-mask::`, so a key on such a line in an evidence file would ship raw. The
+   evidence scan now runs with `skipMaskDirectives: false`; only the captured job log keeps the
+   exception, because only that surface is rendered by GitHub.
+
+8. **The capture must fail closed.** A swallowed write error would leave the pipeline green while
+   the scan read an absent or truncated job log as clean — coverage claimed, not had. The filter
+   now exits non-zero on either arm (the startup mkdir and the per-line append), which `pipefail`
+   turns into a failed step. Both arms have their own control: a mutation that swallowed the
+   per-line failure survived until the second one was added.
+9. **The candidate gate covers the FILTER too.** A candidate carrying the four symbols but not
+   `scripts/m1-shipped-boot/log-filter.mjs` passed the greps and would then die at the first phase
+   on the missing module. The gate greps that file as well, and a test pins the whole marker SET —
+   iterating the list cannot notice a list that lost an entry, which a surviving mutation showed.
+
+10. **`|| true` on the collect step swallowed the filter's fail-closed exit.** Collection itself
+    stays best-effort — a failed journey must still upload what it has — but the FILTER's status is
+    now read from `PIPESTATUS` and fails the run, so a capture that broke during `collect` can no
+    longer leave the scan judging a truncated log and calling it clean.
+11. **The candidate gate now names the FAIL-CLOSED filter,** not merely a filter: an ancestor that
+    carries `redactKeyMaterialLine` but swallows a capture failure would restore exactly the
+    failure mode item 8 fixed. The gate greps the fail-closed arm's own message.
+
+12. **A RE-WRAPPED PEM defeated per-line redaction.** Node accepts a PEM wrapped at any width,
+    and re-wrapping splits the ed25519 DER prefix across lines, so no continuation line matched a
+    marker: the filter would have redacted only the `BEGIN` armour and published the key body. The
+    filter now uses `createLineRedactor()`, which is STATEFUL: once a `BEGIN ... KEY` line is seen
+    it redacts every line as `pem_block` until the matching `END`, and an unterminated block stays
+    closed. Controls: a re-wrapped PEM through the filter publishes no fragment while the capture
+    keeps it raw, and a mutation back to a per-line redactor reds four tests. The candidate gate and
+    its pinned marker set name `createLineRedactor` in both files.
+
+13. **An UNARMOURED DER value wrapped across lines defeated the block redactor too.** With no
+    `BEGIN` line there is nothing to latch, and a wrap such as `MC4CAQAwBQYD` / `K2VwBCIEI…`
+    leaves neither fragment matching the whole prefix, on the published surface AND in the scan.
+    Both now test each line JOINED to the tail of the one before (32 characters, enough for the
+    longest marker), and the scan reports the finding at the line that COMPLETES it. The published
+    log additionally drops any unbroken base64 run of 40 characters or more — the shape a wrapped
+    key's BODY has once its prefix is on the line before. Over-redaction there is free: review
+    batch 3A found no such run in 2347 lines of a real run, and ordinary lines are kept by a
+    control. Four mutations (either joined arm, the base64 rule, both surfaces) each red a test.
+14. **A failed capture could still ship a bundle.** The filter's non-zero exit fails the step it
+    runs in — which, during collection, is the best-effort one — while the leak scan runs
+    `if: always()` and the upload was gated on the SCAN alone. A truncated job log therefore read
+    clean and uploaded. The filter now leaves a durable `job-log.txt.capture-failed` marker beside
+    the capture and the scan REFUSES on it (deleting the bundle it could not judge), and the upload
+    gate additionally requires `steps.collect.outcome != 'failure'`. Two independent arms: the
+    marker covers a failure in a later step, the gate covers a marker that could not be written.
+15. **A DER prefix must LATCH, the way a PEM `BEGIN` does.** Redacting only the line that
+    completes a wrapped prefix leaves the key BODY on the lines after it — and at a narrow wrap
+    (12 characters, say) no continuation line is long enough for item 13's 40-character rule. The
+    redactor now opens a DER block on any DER hit, own-line or joined, and redacts every following
+    line that is nothing but base64; the first line carrying prose ends it. The lane's first
+    fragment (12 characters of the FIXED algorithm header, before anything has matched) is
+    unavoidable and carries no key bytes — a control asserts exactly that, and that no line of the
+    seed follows it into the log.
+
+    Writing that control found a defect in item 13 itself: the joined-window CARRY kept the
+    matched marker, so the very next line matched it again and ordinary output was redacted as a
+    phantom key. The carry is now cleared on every hit, in the redactor and in the scan. Three
+    more mutations (the latch, the joined arm's latch, the carry clear) each red a test.
+16. **The wrap can be narrower than the prefix, and its last line shorter than any floor.** Two
+    residual holes in items 13 and 15, both found by the reviewer:
+
+    - the joined window kept only the PREVIOUS line, so at an 8-character wrap the 21-character
+      prefix spans three lines and was never seen whole. The carry is now the tail of the JOINED
+      text, so it accumulates and a prefix may span any number of lines, on both surfaces.
+    - the latch required a continuation line of 8 characters or more, but a 64-character body
+      wrapped at 12 ends in a 4-character line — key bytes like any other. Inside a latched block
+      there is now no length floor at all; only prose (a line with whitespace in it) ends it.
+
+    Three more mutations (either carry, the restored floor) each red a test, and the controls are
+    the two wraps themselves: 8 characters across three lines, and a real 64-character export's
+    4-character tail.
+17. **A SYMBOL is not a BEHAVIOUR.** Every candidate-control grep above named a symbol, and an
+    ancestor of this branch (`aa884b517`) carries all of them while still holding the one-line
+    joined window and the latch's length floor. Dispatching that candidate would have restored
+    both holes under a green gate. Three of the greps are now BEHAVIOURAL — the accumulating
+    carry in the redactor and in the scan, and the floorless latch — and each was verified to be
+    absent from `aa884b517` and `d6460dc24` and present at this head. Measured, not assumed.
+18. **A per-line LOG PREFIX broke every join.** This lane collects with `docker compose logs`, so
+    a worker line arrives as `m1-worker-a  | …`. Stripping only whitespace left those repeated
+    tokens inside the joined window, so a wrapped DER prefix never matched on either surface — and
+    at a narrow wrap nothing else fired either. `stripLogPrefix` now removes a service prefix (and
+    an optional leading timestamp) before a line is judged, in the redactor and in the scan.
+
+    A pipe in ORDINARY prose is over-stripped by that rule, which is safe by construction: the
+    stripped form is only what a line is JUDGED by, and what the filter publishes is the line
+    itself — a control asserts both halves. Two mutations (the strip removed, the scan keeping the
+    prefix) each red a test, and the gate grows a seventh behavioural marker, verified absent from
+    `aa884b517` and `3889924c6`.
+19. **…and the timestamp comes AFTER that prefix, not before.** Item 18 stripped a timestamp only
+    ahead of the service name, but `docker compose logs --timestamps` — which this lane runs —
+    emits `svc | <ts> payload`, as the captured fixture from run 35613849443 shows. A different
+    timestamp therefore sat between every wrapped fragment and no marker ever formed.
+    `stripLogPrefix` now removes a leading timestamp, then the service prefix, then a timestamp
+    that followed it, so both producers reduce to the payload. The wrap control gains the real
+    collected shape as a third prefix, and two mutations (either timestamp strip) each red a test.
+20. **JSON FRAMING is not payload either — and one case stays open, on the record.** The worker
+    logs pino JSON, so a key can arrive framed. `base64Payload` now reduces a line to its base64
+    characters for the JOINED window only — escaped whitespace first, since the `n` of a `
+`
+    would otherwise be kept and injected between fragments — so a key wrapped inside ONE record is
+    caught on both surfaces. What a clean line PUBLISHES is still the line itself, and a control
+    pins that on a real worker log line carrying a sandbox id.
+
+    A key split ONE FRAGMENT PER RECORD is **not** caught: each record contributes its own field
+    names between the fragments, so the prefix is never contiguous. Filed as **`E6-F026`**
+    (`unowned`, with the reason) and pinned by a KNOWN LIMIT test that asserts today's behaviour
+    exactly — the fragments publish and the scan finds nothing — so it cannot be read as coverage.
+    Both obvious closures were rejected with a measurement, not a preference: a per-line JSON parse
+    that fails open is the same gap with more code, and a run-length rule inside the DER latch
+    would have to fire below 21 characters, which is the length of the E2B sandbox id on the very
+    line the lane's own sandbox-evidence assertion reads (run 35613849443's captured logs).
+
+21. **The gate keeps pace with each of those.** `LOG_TIMESTAMP` and `base64Payload` join the
+    behavioural markers, both verified absent from `22b500fb2` and the second absent from
+    `274f055a8` — so every earlier candidate on this branch is now refused rather than silently
+    run with a weaker control. Seven behavioural markers in all.
+22. **An ABSENT job log was read as an empty surface.** Reaching the scan means `prepare` wrote
+    `state.json`, so at least that phase was teed; a missing capture means the file was removed
+    after the last filter ran, or the filter died before it could leave its marker — and the scan
+    then reported zero log files and PASSED, so the upload gate published a bundle whose
+    Actions-log coverage was never had. In CI the scan now fails closed on an absent log and
+    deletes the bundle. Outside CI (a phase run by hand) nothing tees, so an absent log is simply
+    nothing to scan; both halves have a control, and a mutation tolerating the absence reds.
+23. **Standing rule, learned the hard way: a new control needs a new GATE MARKER in the same
+    commit.** Three separate rounds of this review ended the same way — the fix landed, and the
+    candidate gate still admitted the ancestor that lacked it, because the gate named SYMBOLS that
+    the ancestor already had. The lane is candidate-bound, so an admitted ancestor runs its own
+    driver and the hole comes back under a green gate. Every behavioural control on this surface
+    therefore carries a grep that is false on the revision before it, verified by `git show` on
+    that exact ancestor rather than assumed. Eight behavioural markers now: the accumulating carry
+    (both surfaces), the floorless latch, `stripLogPrefix`, `LOG_TIMESTAMP`, `base64Payload`, the
+    fail-closed filter and its durable marker, and the absent-log refusal.
+24. **A filter KILLED outright leaves no marker at all — so the log proves its own intactness.** A
+    filter that dies without reaching its fail-closed arm (OOM, SIGKILL, an uncaught throw) fails
+    its own phase through `pipefail`, but writes no `capture-failed` marker, and the NEXT phase+s
+    filter appends after the hole. Neither the step outcomes the upload is gated on nor the content
+    of the log reveals the missing stretch.
+
+    Gating on twelve step ids would have been the weak fix — it enumerates what to watch, and the
+    next phase added silently escapes it. Instead every filter invocation BRACKETS itself, writing
+    `[log-filter] opened` on start and `[log-filter] closed` on a clean end of input, into the
+    capture only (never the published log), and the scan requires the two counts to match. That is
+    a property of the LOG, so it covers every piped phase without naming any of them. Controls:
+    an unmatched open reds and the bundle is deleted; a balanced log passes, so it is not an
+    always-deny; and two mutations (the scan ignoring the imbalance, the filter not closing) red.
+
+    Residual, stated rather than implied: a filter killed BEFORE its open sentinel lands leaves the
+    counts balanced and that phase absent entirely. Its step still fails through `pipefail`, so the
+    run is red and the lane is not claiming a pass; the bundle it retains is the failure evidence.
+25. **A PEM masked THROUGH the directive escaped the block, and the sentinels were forgeable.**
+
+    - The directive exception returned early, so a phase masking an unregistered multi-line key —
+      `::add-mask::-----BEGIN PRIVATE KEY-----` and then the body as ordinary lines — left the
+      redactor outside the PEM block: GitHub masked the armour, the short body lines published,
+      and the scan then stripped the only generic marker. The directive is still published
+      verbatim, but its PAYLOAD now moves the block state.
+    - The intactness sentinels shared the capture with producer output, so a phase that printed a
+      bare `[log-filter] closed` could balance a killed filter. Each invocation now mints an
+      unpredictable id — never written to stdout, so no producer can guess it — and the scan pairs
+      open to close BY ID rather than counting.
+
+    Controls: a directive-masked PEM redacts its body and the block still ends at `END`; a forged
+    close with the wrong id reds although the COUNTS balance; the ids are unique per invocation and
+    never publish. Three mutations (the early return, a fixed seal, counting instead of pairing)
+    each red, and all three markers join the gate, verified absent from `4fcf4e4ce`.
+26. **…and the same directive hole for an UNARMOURED key.** A `::add-mask::` command ends at the
+    first newline, so a phase masking a wrapped DER value masks only its FIRST fragment and prints
+    the rest as ordinary lines — while the scan strips that first line, so the prefix can never be
+    reassembled there either. The directive payload now goes through the same joined window and
+    the same DER latch as any other line, while the directive itself is still forwarded verbatim.
+
+    Controls: with an 8-character wrap the marker completes on fragment 3 and every line from there
+    is redacted; fragment 2 is asserted to lie inside the FIXED 21-character header, so what still
+    publishes is header and not seed; a directive carrying the whole prefix latches at once; and an
+    ordinary masked secret opens no block. Two mutations (the latch, the carry) each red, and the
+    marker joins the gate, verified absent from `44b6c94a5`.
+27. **The absent-log arm red four of this file's OWN tests, IN CI ONLY — and the fix is a
+    PRECEDENCE ruling, not a fixture patch.** Item 22 keyed its refusal on `GITHUB_ACTIONS`, and
+    Actions sets that variable for the TEST process too. Four pre-existing phase cases build an
+    evidence-only fixture (no `job-log.txt`), so in Actions every one of them tripped the
+    absent-log arm before reaching the behaviour it means to prove, while every local run stayed
+    green. Measured at source on `2f213ea97`: `GITHUB_ACTIONS=true node --test
+    scripts/lib/__tests__/m1-shipped-boot.test.mjs` → `fail 4`; the same command without the
+    variable → `fail 0`. The four are the planted-canary phase control, the clean-evidence
+    baseline, the no-job-log case, and the P2 mask-directive-in-evidence control. The
+    planted-canary control received the absent-log refusal in place of its finding — i.e. **a
+    refusal to judge was swallowing a finding the scan already had in hand.**
+
+    **Ruling (question 1, precedence).** The absent-log refusal is now DEFERRED, never
+    short-circuiting (`leakScan` in `scripts/m1-shipped-boot/journey.mjs`: `jobLogAbsent` /
+    `absentLogError` are computed, the scans run, and the refusal fails at the end). Both outcomes
+    delete the bundle, so the order cannot change what is PUBLISHED — it changes only what the
+    operator is TOLD. "I cannot judge the log surface" and "a named secret is sitting in an
+    evidence file" are different verdicts, and only the second says ROTATE THIS NOW. A refusal
+    first loses that signal for no gain, so findings are always named and the absent log is
+    reported ALONGSIDE them (both `::error::` lines, one combined summary). The reverse order is
+    never acceptable.
+
+    **Finding (question 2, vacuity).** *"with no job log at all, the evidence scan still runs (no
+    silent skip)"* was not vacuous, but its PREMISE had been inverted by item 22: the property it
+    names holds only OUTSIDE CI, because inside CI an absent log is now a refusal by design. It is
+    retitled to say so (`leak scan (phase): OUTSIDE CI, …`) and pinned to a non-CI environment
+    explicitly. Its CI counterpart already exists and was never in doubt — *"POSITIVE CONTROL: an
+    ABSENT job log fails the scan IN CI, and is merely nothing to scan outside it"* asserts both
+    arms of the same switch. So this was a record/fixture defect, not a product defect: the
+    product arm is correct and stays.
+
+    **Fixtures say which environment they assert.** `leakScanIn(out, { ci })` sets or deletes
+    `GITHUB_ACTIONS` explicitly for every phase case; none of them inherits the runner's. The
+    lesson for this lane: a control keyed on an environment variable the runner also sets must be
+    exercised BOTH ways locally — `GITHUB_ACTIONS=true node --test …` — or local green means
+    nothing.
+
+    **Controls.** Two new cases pin the ruling: a planted canary with an ABSENT log IN CI is still
+    named by file and secret AND reports the absent log, never printing the value, bundle deleted;
+    and — the positive control the fixture change owes — a planted canary with a job log PRESENT
+    IN CI still reds, with the absent-log line asserted NOT to appear. GREEN after the change:
+    93/93 with `GITHUB_ACTIONS=true` and 93/93 without it. Three mutations, each reverted:
+    restoring the short-circuit reds the PRECEDENCE case only; deleting the deferred refusal reds
+    the item-22 absent-log control only; blinding `scanEvidenceForSecrets` over the evidence
+    surface reds all three canary controls.
+
+    **Status of this addendum:** `gate_review`. Only a DISTINCT reviewer may set `complete`; §12's
+    keyed acceptance is neither re-opened nor re-decided, and the `Status` line at the top of this
+    record — set by attempt 2's distinct reviewer — is left exactly as written.
+**Status unchanged.** This is a control added after the fact to a run that was already clean; it
+neither re-opens nor re-decides §12's keyed acceptance.

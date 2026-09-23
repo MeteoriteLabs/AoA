@@ -359,6 +359,276 @@ export function scanEvidenceForSecrets(files, secrets) {
   return findings;
 }
 
+// --- key material, on any surface ------------------------------------------------------------
+
+/**
+ * Markers for the CONTROL-PLANE KEYPAIR in every encoding it can appear in. These are SHAPES, not
+ * values: they catch a key this job did not generate (a re-run's, an operator's) and a key whose
+ * exact bytes the scanner was never told, which `scanEvidenceForSecrets` by construction cannot.
+ *
+ * The DER prefixes are the fixed ed25519 algorithm headers, and they are what review batch 3A
+ * (PR #569) measured both surfaces of run `35619555883` against:
+ *   - SPKI (public):  `MCowBQYDK2VwAyEA`
+ *   - PKCS#8 (private): `MC4CAQAwBQYDK2VwBCIEI`
+ */
+export const KEY_MATERIAL_MARKERS = Object.freeze([
+  { marker: "pem_private", pattern: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/ },
+  { marker: "pem_public", pattern: /-----BEGIN [A-Z0-9 ]*PUBLIC KEY-----/ },
+  { marker: "ed25519_spki_der", pattern: /MCowBQYDK2VwAyEA/ },
+  { marker: "ed25519_pkcs8_der", pattern: /MC4CAQAwBQYDK2VwBCIEI/ },
+]);
+
+/** The one line class a scan of the JOB LOG must skip: the masking directive itself carries the
+ * value, and GitHub renders it as `***`. Skipped lines are COUNTED and reported, so the exception
+ * can never hide an unbounded number of raw values. */
+export const MASK_DIRECTIVE_PREFIX = "::add-mask::";
+
+/**
+ * One line as it may be PUBLISHED to the Actions log.
+ *
+ * ★ Masking covers only REGISTERED values. A phase that prints a key this job did not generate —
+ * a re-run's, an operator's — would reach the runner's log raw, and no later scan can retract a
+ * published log (Codex P1, PR #574). So every line is shape-redacted on its way to stdout, while
+ * the captured file keeps the raw bytes for the scan to judge. A `::add-mask::` line passes
+ * through unchanged: it is the masking mechanism, and GitHub renders it as `***`.
+ */
+export function redactKeyMaterialLine(line) {
+  const text = String(line ?? "");
+  if (text.startsWith(MASK_DIRECTIVE_PREFIX)) return text;
+  for (const { marker, pattern } of KEY_MATERIAL_MARKERS) {
+    if (pattern.test(text)) return `[REDACTED: key material (${marker}) — see the leak scan]`;
+  }
+  return text;
+}
+
+/** The end of a PEM block. */
+const PEM_END = /-----END [A-Z0-9 ]*(PRIVATE|PUBLIC) KEY-----/;
+const PEM_BEGIN = /-----BEGIN [A-Z0-9 ]*(PRIVATE|PUBLIC) KEY-----/;
+
+/** Enough of the previous line to complete the longest marker (`MC4CAQAwBQYDK2VwBCIEI`, 21) across
+ * a wrap, with room to spare. */
+export const JOIN_CARRY_CHARS = 32;
+/** A long unbroken base64/base64url run — what a wrapped key's BODY looks like once its prefix is
+ * on the line before. Deliberately used only where OVER-redaction is free (the published log). */
+const BASE64_RUN = /[A-Za-z0-9+/_-]{40,}={0,2}/;
+/** A line that is NOTHING but base64: the shape a wrapped key's continuation lines have, at ANY
+ * width. Used only to decide how far a DER block extends, never on its own. */
+const BASE64_CONTINUATION = /^[A-Za-z0-9+/_-]+={0,2}$/;
+
+/**
+ * A per-line LOG PREFIX, removed before a line is judged.
+ *
+ * ★ Why (Codex P1, PR #574): this lane's own collector runs `docker compose logs`, which prefixes
+ * every line with its service — `m1-worker-a  | …`, optionally after a timestamp. Removing only
+ * whitespace leaves those repeated tokens INSIDE the joined window, so a wrapped DER prefix never
+ * matches and, at a narrow wrap, nothing else fires either. The prefix comes off first, on both
+ * surfaces, so the fragments join as they were written.
+ */
+/**
+ * The base64 PAYLOAD of a line, with every framing character removed, for the JOINED window only.
+ *
+ * ★ Why (Codex P1, PR #574): the worker logs pino JSON, so a key can arrive framed —
+ * `{"k":"MC4CAQAw\nBQYDK2Vw…"}` in one record, or a fragment per record. Joining the lines
+ * verbatim leaves quotes, braces, colons and `\n` escapes between the fragments, and the fixed
+ * prefix never appears. Escaped whitespace comes off first (its `n` would otherwise be kept as a
+ * base64 character), then everything that is not base64.
+ *
+ * This feeds the marker match ONLY. What a clean line PUBLISHES is always the line itself.
+ */
+export function base64Payload(text) {
+  return String(text ?? "")
+    .replace(/\\[nrtbf]/g, "")
+    .replace(/[^A-Za-z0-9+/_=-]/g, "");
+}
+
+const LOG_TIMESTAMP = /^\s*\d{4}-\d\d-\d\dT[\d:.]+Z?\s*/;
+const LOG_PREFIX = /^\s*[\w.-]+\s*\|\s?/;
+export function stripLogPrefix(line) {
+  // BOTH orders (Codex P1, PR #574). `docker compose logs --timestamps` — which this lane's own
+  // collector runs — emits `svc | <ts> payload`, the timestamp AFTER the service, and the captured
+  // fixture from run 35613849443 proves it. Other producers put a timestamp first. So a leading
+  // timestamp comes off, then the service prefix, then a timestamp that followed it.
+  let text = String(line ?? "").replace(LOG_TIMESTAMP, "");
+  text = text.replace(LOG_PREFIX, "");
+  return text.replace(LOG_TIMESTAMP, "");
+}
+
+/**
+ * A STATEFUL line redactor for the published Actions log: the whole PEM BLOCK, not only the lines
+ * that match a marker.
+ *
+ * ★ Why per-line matching is not enough (Codex P1, PR #574). A PEM re-wrapped at a different width
+ * splits the DER prefix across lines, so no continuation line matches a marker and the key body
+ * would be forwarded while only its `BEGIN` armour was redacted. Node accepts such a PEM, so this
+ * is a real encoding, not a hypothetical one. Once a `BEGIN … KEY` line is seen, every line is
+ * redacted until the matching `END`, inclusive.
+ *
+ * An UNTERMINATED block redacts to the end of the stream: a truncated key is still a key, and the
+ * failure mode of over-redacting a published log is a loss of readability, not of a secret.
+ */
+export function createLineRedactor() {
+  let insidePemBlock = false;
+  let insideDerBlock = false;
+  let carry = "";
+  const redacted = (marker) => `[REDACTED: key material (${marker}) — see the leak scan]`;
+  return (line) => {
+    const text = String(line ?? "");
+    if (text.startsWith(MASK_DIRECTIVE_PREFIX)) {
+      // ★ The directive is published verbatim (GitHub renders its value as `***`), but its PAYLOAD
+      // must still move the block state (Codex P1, PR #574): a phase masking an unregistered
+      // multi-line PEM prints `::add-mask::-----BEGIN PRIVATE KEY-----` and then the BODY as
+      // ordinary lines. Returning early left the redactor outside the block, so those short body
+      // lines published while the only generic marker — the armour — sat on a line the scan strips.
+      const payload = text.slice(MASK_DIRECTIVE_PREFIX.length);
+      if (insidePemBlock) insidePemBlock = !PEM_END.test(payload);
+      else if (PEM_BEGIN.test(payload)) insidePemBlock = !PEM_END.test(payload);
+      // …and the UNARMOURED case (Codex P1, PR #574): a directive ends at the first newline, so a
+      // phase masking a wrapped DER value masks only its first fragment and prints the rest as
+      // ordinary lines — while `stripMaskDirectives` removes that first fragment before the scan.
+      // The payload therefore goes through the same carry and latch as any other line.
+      const directivePayload = base64Payload(payload);
+      const directiveJoined = carry + directivePayload;
+      carry = directiveJoined.slice(-JOIN_CARRY_CHARS);
+      const directiveHit = KEY_MATERIAL_MARKERS.find(
+        ({ pattern }) => pattern.test(payload) || pattern.test(directiveJoined),
+      );
+      if (directiveHit && directiveHit.marker.endsWith("_der")) {
+        insideDerBlock = true;
+        carry = "";
+      }
+      return text;
+    }
+    // The service prefix `svc | ` is not part of the payload, and leaving it in the window breaks
+    // every join (Codex P1, PR #574).
+    const body = stripLogPrefix(text);
+    const stripped = base64Payload(body);  // JSON framing is not payload either (Codex P1).
+    const joined = carry + stripped;
+    // ★ The tail of JOINED, not of this line (Codex P1, PR #574): at an 8-character wrap the
+    // 21-character prefix spans three lines, and a window of one line never sees it whole.
+    carry = joined.slice(-JOIN_CARRY_CHARS);
+    if (insidePemBlock) {
+      if (PEM_END.test(text)) insidePemBlock = false;
+      return redacted("pem_block");
+    }
+    if (PEM_BEGIN.test(text)) {
+      // A single-line PEM (armour and body on one line) opens and closes in the same line.
+      insidePemBlock = !PEM_END.test(text);
+      return redacted("pem_block");
+    }
+    // ★ A DER prefix LATCHES, exactly as a PEM `BEGIN` does (Codex P1, PR #574). Redacting only the
+    // line that completes the prefix leaves the key BODY to follow on its own lines — and wrapped
+    // short enough (12 characters, say) no continuation line is long enough for the base64-run rule
+    // below. So once a DER marker is seen, every following CONTINUATION line — one that is nothing
+    // but base64 — is redacted too. The first line that is not pure base64 ends the block and is
+    // published normally: ordinary output resumes at the first ordinary line.
+    if (insideDerBlock) {
+      const trimmed = body.trim();
+      // The WHOLE line, not its stripped form: a line with spaces in it is prose, not a wrap. No
+      // LENGTH floor (Codex P2, PR #574): a 64-character body wrapped at 12 ends in a 4-character
+      // line, and that line is key bytes like any other.
+      if (trimmed !== "" && BASE64_CONTINUATION.test(trimmed)) return redacted("der_block");
+      insideDerBlock = false;
+    }
+    const ownHit = KEY_MATERIAL_MARKERS.find(({ pattern }) => pattern.test(text));
+    if (ownHit) {
+      insideDerBlock = ownHit.marker.endsWith("_der");
+      // The marker is SPENT: leaving it in the carry would match it again on the next line.
+      carry = "";
+      return redacted(ownHit.marker);
+    }
+    // ★ UNARMOURED DER across a line break (Codex P1, PR #574). Without a `BEGIN` line there is no
+    // block to latch, and a wrap such as `MC4CAQAwBQYD` / `K2VwBCIEI…` leaves neither fragment
+    // matching the whole prefix. So each line is also tested JOINED to the tail of the one before.
+    const joinedHit = KEY_MATERIAL_MARKERS.find(({ pattern }) => pattern.test(joined));
+    if (joinedHit) {
+      insideDerBlock = joinedHit.marker.endsWith("_der");
+      carry = "";
+      return redacted(`${joinedHit.marker}, wrapped`);
+    }
+    // …and the key BODY, which carries no marker of its own once the prefix is on the line before.
+    // A published log loses nothing by dropping a long unbroken base64 run: review batch 3A found
+    // none at all in 2347 lines of a real run.
+    if (BASE64_RUN.test(text)) return redacted("base64_run");
+    return text;
+  };
+}
+
+/**
+ * The `::add-mask::` directives for one value.
+ *
+ * ★ A workflow command ENDS AT THE FIRST NEWLINE, so a multi-line value (a PEM) in one
+ * directive would register only its first line and PRINT the rest as ordinary log output —
+ * publishing the key the mask was meant to hide (Codex P1, PR #574). A multi-line value is
+ * therefore emitted ONLY per line, never whole. A single-line value is emitted as itself.
+ * Parts shorter than 8 characters are dropped: masking `-----END PRIVATE KEY-----`-sized
+ * boilerplate is pointless, and a short token would mask unrelated text.
+ */
+export function maskDirectivesFor(value) {
+  const text = String(value ?? "");
+  const parts = /\r|\n/.test(text) ? text.split(/\r?\n/) : [text];
+  const out = [];
+  for (const part of parts) {
+    if (part.trim().length < 8 || out.includes(part)) continue;
+    out.push(part);
+  }
+  return out.map((part) => `${MASK_DIRECTIVE_PREFIX}${part}`);
+}
+
+/**
+ * A captured job log with every `::add-mask::` line REMOVED, plus how many were removed.
+ *
+ * ★ Those lines carry the value by construction — that is the masking mechanism, and GitHub
+ * renders them as `***` — and `tee` writes them into the captured file unchanged. Scanning
+ * them would make EVERY run fail its own leak scan (Codex P1, PR #574). Stripping them is the
+ * one exception, and it is COUNTED and reported, so it can never hide an unbounded number of
+ * raw values: anything a phase printed outside a directive is still scanned, on every line.
+ */
+export function stripMaskDirectives(text) {
+  const lines = String(text ?? "").split(/\r?\n/);
+  const kept = lines.filter((line) => !line.startsWith(MASK_DIRECTIVE_PREFIX));
+  return { text: kept.join("\n"), removed: lines.length - kept.length };
+}
+
+/**
+ * Key material in any of `files` (`[{ name, text }]`). Returns `[{ file, marker, line }]` — the
+ * marker NAME and the 1-based line number, never the matched text. `skipMaskDirectives` (default
+ * true) skips `::add-mask::` lines and returns how many were skipped.
+ */
+export function scanForKeyMaterial(files, { skipMaskDirectives = true } = {}) {
+  const findings = [];
+  let maskDirectiveLines = 0;
+  for (const file of files ?? []) {
+    const lines = String(file.text ?? "").split(/\r?\n/);
+    // ★ The same wrap the redactor defends against (Codex P1, PR #574): an unarmoured DER value
+    // split across lines matches no single line, so each line is ALSO tested joined to the tail of
+    // the one before. A finding is reported at the line that COMPLETES the marker.
+    let carry = "";
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i];
+      if (line.startsWith(MASK_DIRECTIVE_PREFIX)) {
+        maskDirectiveLines += 1;
+        if (skipMaskDirectives) {
+          carry = "";
+          continue;
+        }
+      }
+      const stripped = base64Payload(stripLogPrefix(line));  // `svc | ` and JSON framing are not payload.
+      const joined = carry + stripped;
+      carry = joined.slice(-JOIN_CARRY_CHARS);  // ACCUMULATES: a prefix may span any number of lines.
+      for (const { marker, pattern } of KEY_MATERIAL_MARKERS) {
+        if (pattern.test(line)) {
+          findings.push({ file: file.name, marker, line: i + 1 });
+          carry = "";  // SPENT: the same marker must not be re-found on the next line.
+        } else if (pattern.test(joined)) {
+          findings.push({ file: file.name, marker, line: i + 1, wrapped: true });
+          carry = "";
+        }
+      }
+    }
+  }
+  return { findings, maskDirectiveLines };
+}
+
 // --- redaction ---------------------------------------------------------------------------
 
 /** Replace every occurrence of every secret value (length >= 8) with a fixed marker. Applied to

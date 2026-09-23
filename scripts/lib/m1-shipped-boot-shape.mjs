@@ -21,6 +21,56 @@ export const SHIPPED_BOOT_WORKFLOW = ".github/workflows/m1-shipped-boot.yml";
 /** The only secrets the lane may read, and only through the keyed gate below. */
 export const GATED_SECRETS = ["E2B_API_KEY", "ANTHROPIC_API_KEY"];
 const GATED_SECRET_RE = /\$\{\{\s*inputs\.mode\s*==\s*'keyed'\s*&&\s*secrets\.([A-Z0-9_]+)\s*\|\|\s*''\s*\}\}/;
+/** Review batch 3A (PR #569): the ACTIONS LOG is a published surface and had no scanner. Every
+ * phase therefore pipes its output through `log-filter.mjs`, which CAPTURES the raw line into the
+ * file the leak scan reads and PUBLISHES a shape-redacted line to the runner (Codex P1, PR #574:
+ * a plain `tee` would publish an unregistered key before any scan could see it). */
+export const JOB_LOG_TEE = ' 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"';
+/** The phases whose output must be teed. `leak-scan` reads the file and `teardown` deletes the
+ * state, so neither writes to it; everything that could print a secret does. */
+export const TEED_PHASES = [
+  "prepare", "boot-core", "seed", "apply-rollout", "assert-tenants", "provision-targets",
+  "boot-workers", "await-workers", "reconcile", "probe-presign", "dispatch", "collect",
+];
+
+/** The markers the CANDIDATE's own copy of the lane must carry, or its run would be judged by a
+ * driver that predates these controls (Codex P1, PR #574). */
+export const CANDIDATE_CONTROL_MARKERS = [
+  ["scripts/m1-shipped-boot/journey.mjs", "CONTROL_PLANE_PUBLIC_KEY_PEM"],
+  ["scripts/m1-shipped-boot/journey.mjs", "maskDirectivesFor"],
+  ["scripts/m1-shipped-boot/journey.mjs", "stripMaskDirectives"],
+  ["scripts/lib/m1-shipped-boot.mjs", "KEY_MATERIAL_MARKERS"],
+  // The EXECUTABLE the workflow pipes every phase through: a candidate carrying the symbols but
+  // not the file passes the greps above and then dies at the first phase on the missing module
+  // (Codex P2, PR #574). The grep proves the file EXISTS and that it is the redacting filter.
+  ["scripts/m1-shipped-boot/log-filter.mjs", "createLineRedactor"],
+  // The BLOCK redactor itself: a per-line-only redactor forwards a re-wrapped PEM's body.
+  ["scripts/lib/m1-shipped-boot.mjs", "createLineRedactor"],
+  // …and the FAIL-CLOSED arm of it: a candidate whose filter swallows a capture failure would
+  // report a truncated job log as clean (Codex P1, PR #574).
+  ["scripts/m1-shipped-boot/log-filter.mjs", "the job-log capture failed"],
+  // The DURABLE trace of that failure, and the scan arm that reads it: without both, a capture that
+  // broke during the best-effort collect step is judged clean (Codex P1, PR #574).
+  ["scripts/m1-shipped-boot/log-filter.mjs", "capture-failed"],
+  ["scripts/m1-shipped-boot/journey.mjs", "capture-failed"],
+  // ★ BEHAVIOURAL markers, not merely symbols (Codex P1, PR #574): an ancestor carrying every
+  // symbol above still had the one-line joined window and the latch's length floor, so greps for
+  // names alone would admit a candidate that republishes a wrapped key.
+  ["scripts/lib/m1-shipped-boot.mjs", "carry = joined.slice("],
+  ["scripts/lib/m1-shipped-boot.mjs", "ACCUMULATES: a prefix may span"],
+  ["scripts/lib/m1-shipped-boot.mjs", "LENGTH floor"],
+  ["scripts/lib/m1-shipped-boot.mjs", "stripLogPrefix"],
+  ["scripts/lib/m1-shipped-boot.mjs", "LOG_TIMESTAMP"],
+  ["scripts/lib/m1-shipped-boot.mjs", "base64Payload"],
+  ["scripts/m1-shipped-boot/journey.mjs", "job log is ABSENT"],
+  ["scripts/m1-shipped-boot/log-filter.mjs", "log-filter] opened"],
+  ["scripts/m1-shipped-boot/journey.mjs", "is TRUNCATED"],
+  ["scripts/lib/m1-shipped-boot.mjs", "insidePemBlock = !PEM_END.test(payload)"],
+  ["scripts/lib/m1-shipped-boot.mjs", "directiveJoined"],
+  ["scripts/m1-shipped-boot/log-filter.mjs", "randomUUID"],
+  ["scripts/m1-shipped-boot/journey.mjs", "never closed"],
+];
+
 export const EVIDENCE_UPLOAD_PATH = "${{ env.M1_OUT }}/evidence/";
 /** E6-D001: the one branch the registration-only push may name. */
 export const REGISTRATION_BRANCH = "docs/replatform-program";
@@ -200,6 +250,65 @@ export function evaluateShippedBootWorkflowShape(text) {
     v.push(`the evidence upload must be gated \`if: always() && steps.${scanId}.outcome == 'success'\` — a bundle that fails the leak scan must never be uploaded`);
   }
   if (scanIdx !== -1 && !/if:\s*always\(\)/.test(scanStep)) v.push("the leak-scan step must run `if: always()` (a failed journey's evidence is scanned too)");
+  // ★ The scan's own success is NOT sufficient (Codex P1, PR #574): a capture that failed during
+  //   the best-effort collect step fails THAT step, while the scan runs `if: always()` and would
+  //   read the truncated log as clean. The gate must name the collect step too.
+  const collectIdx = src.indexOf("journey.mjs collect --out");
+  const collectStep = collectIdx === -1 ? "" : src.slice(src.lastIndexOf("- name:", collectIdx), collectIdx);
+  const collectId = /\bid:\s*([A-Za-z0-9_-]+)/.exec(collectStep)?.[1];
+  if (collectIdx !== -1 && !collectId) v.push("the collect step must carry an `id:` so the upload can be gated on its outcome");
+  if (collectId && !new RegExp(`steps\\.${collectId}\\.outcome\\s*!=\\s*'failure'`).test(before)) {
+    v.push(`the evidence upload must also require \`steps.${collectId}.outcome != 'failure'\` — a failed job-log capture must not ship a bundle the scan judged on a truncated log`);
+  }
+
+  // (8c) The LOG surface is collected (review batch 3A, PR #569). A phase whose output is not
+  //      teed into the job log is a phase the leak scan cannot see, and the keypair check's
+  //      output is on the same surface.
+  for (const phase of TEED_PHASES) {
+    // An invocation may be folded across lines (`run: >-`), so the window is the STEP: from the
+    // invocation to the next step's `- name:`.
+    const at = src.indexOf(`journey.mjs ${phase} --out`);
+    if (at === -1) {
+      v.push(`the lane must run the '${phase}' phase`);
+      continue;
+    }
+    const nextStep = src.indexOf("- name:", at);
+    const step = src.slice(at, nextStep === -1 ? src.length : nextStep);
+    if (!step.includes(JOB_LOG_TEE)) {
+      v.push(`phase '${phase}' does not tee its output into the job-log surface the leak scan reads`);
+    }
+  }
+  // The candidate must carry the controls it is judged by: checkout replaces the workspace, so an
+  // older candidate would run its own pre-control driver and report clean (Codex P1, PR #574).
+  for (const [file, marker] of CANDIDATE_CONTROL_MARKERS) {
+    if (!src.includes(`grep -q "${marker}" ${file}`)) {
+      v.push(`the lane must refuse a candidate whose ${file} lacks '${marker}' — it would run its own pre-control driver and report clean`);
+    }
+  }
+
+  // The collect step is best-effort for COLLECTION, but must not swallow the filter's status.
+  if (/journey\.mjs collect[^\n]*\|\|\s*true/.test(src)) {
+    v.push("the collect step must not swallow the log filter's exit status with `|| true` — a failed capture would be judged clean");
+  }
+  if (!/statuses\[1\]/.test(src)) {
+    v.push("the collect step must propagate the log filter's own status (PIPESTATUS), so a failed capture fails the run");
+  }
+
+  // The directory the job log lives in must be created BEFORE the first teed step, and it must
+  // be created by a step that runs earlier than the one whose pipeline opens the file.
+  const mkdirAt = src.indexOf('mkdir -p "${RUNNER_TEMP}/m1-shipped-boot"');
+  const firstTeeAt = src.indexOf(JOB_LOG_TEE);
+  if (mkdirAt === -1 || (firstTeeAt !== -1 && mkdirAt > firstTeeAt)) {
+    v.push("the job-log directory must be created before the first teed step (a tee into a missing directory fails ENOENT)");
+  }
+  // `shell: bash` (explicit) is `bash -eo pipefail`; the UNSPECIFIED default is `bash -e`, so a
+  // failed phase piped into a successful `tee` would report as a pass.
+  if (!/\n\s+defaults:\s*\n\s+run:\s*\n(?:\s*#.*\n)*\s+shell: bash/.test(src)) {
+    v.push("the job must declare `defaults: run: shell: bash` so every teed pipeline runs under pipefail");
+  }
+  if (/pnpm verify:cp-am-keypair(?!.*log-filter.mjs)/.test(src)) {
+    v.push("the keypair check must tee its output into the job-log surface too — it is the step that handles the key");
+  }
 
   // (9) Bounded.
   if (!/timeout-minutes:\s*\d+/.test(src)) v.push("the job must carry a `timeout-minutes` cap");

@@ -90,6 +90,12 @@ jobs:
     # E6-D001: a push-created (registration) run skips this job — zero steps, zero secrets.
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        # EXPLICIT `bash` = `bash --noprofile --norc -eo pipefail`. The UNSPECIFIED default is
+        # `bash -e`, WITHOUT pipefail, so a phase that failed into a successful `tee` would be
+        # reported as a pass and the lane would carry invalid acceptance evidence (Codex P1).
+        shell: bash
     timeout-minutes: 150
     steps:
       - name: Validate the named candidate
@@ -100,6 +106,10 @@ jobs:
           set -euo pipefail
           [[ "$CANDIDATE" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::candidate must be 40 lowercase hex characters"; exit 1; }
           [[ "$MODE" == "keyless" || "$MODE" == "keyed" ]] || { echo "::error::mode must be keyless or keyed"; exit 1; }
+          # The directory must EXIST before the first `tee` opens the job log in it: writing
+          # M1_OUT to $GITHUB_ENV creates nothing, and `prepare` only mkdirs after node starts,
+          # by which time the concurrently-launched tee has already failed ENOENT (Codex P1).
+          mkdir -p "${RUNNER_TEMP}/m1-shipped-boot"
           echo "M1_OUT=${RUNNER_TEMP}/m1-shipped-boot" >> "$GITHUB_ENV"
           echo "candidate ${CANDIDATE} (${MODE})"
 
@@ -125,6 +135,33 @@ jobs:
                    docker/images/build.sh docker/images/admit.sh docker/adapter-manager/Dockerfile; do
             test -f "$f" || { echo "::error::the candidate has no $f (it predates DEP-015/DEP-014)"; exit 1; }
           done
+          # ★ THE CANDIDATE MUST CARRY THE CONTROLS IT WILL BE JUDGED BY (Codex P1, PR #574).
+          # Checkout replaces the workspace with the candidate, so an OLDER candidate would run its
+          # OWN driver: it would tee phase output into the new job log and then report clean with
+          # the evidence-only scanner that never reads it — defeating the control while looking
+          # green. These greps are the "predates the controls" gate; each names what is missing.
+          grep -q "CONTROL_PLANE_PUBLIC_KEY_PEM" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: it does not register the public half of the keypair (missing CONTROL_PLANE_PUBLIC_KEY_PEM in scripts/m1-shipped-boot/journey.mjs)"; exit 1; }
+          grep -q "maskDirectivesFor" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its driver does not mask registered secrets in the Actions log (missing maskDirectivesFor in scripts/m1-shipped-boot/journey.mjs)"; exit 1; }
+          grep -q "stripMaskDirectives" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its leak scan does not read the job-log surface (missing stripMaskDirectives in scripts/m1-shipped-boot/journey.mjs)"; exit 1; }
+          grep -q "KEY_MATERIAL_MARKERS" scripts/lib/m1-shipped-boot.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: it cannot scan for key material by shape (missing KEY_MATERIAL_MARKERS in scripts/lib/m1-shipped-boot.mjs)"; exit 1; }
+          grep -q "createLineRedactor" scripts/m1-shipped-boot/log-filter.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: it has no redacting log filter, and every phase pipeline would die on the missing module (missing createLineRedactor in scripts/m1-shipped-boot/log-filter.mjs)"; exit 1; }
+          grep -q "createLineRedactor" scripts/lib/m1-shipped-boot.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its redactor is per-line only, so a re-wrapped PEM body would be published (missing createLineRedactor in scripts/lib/m1-shipped-boot.mjs)"; exit 1; }
+          grep -q "the job-log capture failed" scripts/m1-shipped-boot/log-filter.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its log filter SWALLOWS a capture failure, so a truncated job log would be reported clean (missing the fail-closed arm in scripts/m1-shipped-boot/log-filter.mjs)"; exit 1; }
+          grep -q "capture-failed" scripts/m1-shipped-boot/log-filter.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its log filter leaves no durable trace of a capture failure (missing capture-failed in scripts/m1-shipped-boot/log-filter.mjs)"; exit 1; }
+          grep -q "capture-failed" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its leak scan does not refuse after a failed capture (missing capture-failed in scripts/m1-shipped-boot/journey.mjs)"; exit 1; }
+          grep -q "carry = joined.slice(" scripts/lib/m1-shipped-boot.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its joined window keeps only the PREVIOUS line, so a prefix wrapped narrower than itself is never seen whole (missing carry = joined.slice( in scripts/lib/m1-shipped-boot.mjs)"; exit 1; }
+          grep -q "ACCUMULATES: a prefix may span" scripts/lib/m1-shipped-boot.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its SCAN's joined window does not accumulate, so a wrapped prefix is reported clean (missing ACCUMULATES: a prefix may span in scripts/lib/m1-shipped-boot.mjs)"; exit 1; }
+          grep -q "LENGTH floor" scripts/lib/m1-shipped-boot.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its DER latch has a length floor, so the final short line of a wrapped key is published (missing LENGTH floor in scripts/lib/m1-shipped-boot.mjs)"; exit 1; }
+          grep -q "stripLogPrefix" scripts/lib/m1-shipped-boot.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: it judges compose-prefixed lines with the service prefix still in them, so a wrapped key in a worker log never joins (missing stripLogPrefix in scripts/lib/m1-shipped-boot.mjs)"; exit 1; }
+          grep -q "LOG_TIMESTAMP" scripts/lib/m1-shipped-boot.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: it strips a timestamp only BEFORE the service prefix, while the lane collects `svc | <ts> payload`, so no wrapped key ever joins (missing LOG_TIMESTAMP in scripts/lib/m1-shipped-boot.mjs)"; exit 1; }
+          grep -q "base64Payload" scripts/lib/m1-shipped-boot.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: it leaves JSON punctuation and escapes between wrapped fragments, so a framed key never forms its marker (missing base64Payload in scripts/lib/m1-shipped-boot.mjs)"; exit 1; }
+          grep -q "job log is ABSENT" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its leak scan reads an ABSENT job log as an empty surface and passes, so a bundle without Actions-log coverage uploads (missing 'job log is ABSENT' in scripts/m1-shipped-boot/journey.mjs)"; exit 1; }
+          grep -q "log-filter] opened" scripts/m1-shipped-boot/log-filter.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its filter does not bracket its own capture, so a filter killed mid-stream leaves a hole no later check can see (missing 'log-filter] opened' in scripts/m1-shipped-boot/log-filter.mjs)"; exit 1; }
+          grep -q "is TRUNCATED" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its leak scan does not check that every capture that opened also closed, so a truncated log is judged clean (missing 'is TRUNCATED' in scripts/m1-shipped-boot/journey.mjs)"; exit 1; }
+          grep -q "insidePemBlock = !PEM_END.test(payload)" scripts/lib/m1-shipped-boot.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its redactor returns early on a mask directive, so a PEM masked by its armour publishes its BODY (missing 'insidePemBlock = !PEM_END.test(payload)' in scripts/lib/m1-shipped-boot.mjs)"; exit 1; }
+          grep -q "directiveJoined" scripts/lib/m1-shipped-boot.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its redactor does not run a mask directive PAYLOAD through the joined window, so a wrapped key masked by its first fragment publishes the rest (missing 'directiveJoined' in scripts/lib/m1-shipped-boot.mjs)"; exit 1; }
+          grep -q "randomUUID" scripts/m1-shipped-boot/log-filter.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its capture sentinels carry no unpredictable id, so a producer line can forge a close (missing 'randomUUID' in scripts/m1-shipped-boot/log-filter.mjs)"; exit 1; }
+          grep -q "never closed" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its leak scan counts sentinels instead of pairing them by id (missing 'never closed' in scripts/m1-shipped-boot/journey.mjs)"; exit 1; }
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -179,68 +216,79 @@ jobs:
           ANTHROPIC_API_KEY: ${{ inputs.mode == 'keyed' && secrets.ANTHROPIC_API_KEY || '' }}
         run: >-
           node scripts/m1-shipped-boot/journey.mjs prepare --out "$M1_OUT"
-          --candidate "$CANDIDATE" --mode "$MODE" --e2b-template "$E2B_TEMPLATE"
+          --candidate "$CANDIDATE" --mode "$MODE" --e2b-template "$E2B_TEMPLATE" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
 
       - name: Verify the control-plane / adapter-manager keypair
         run: |
           AOA_CONTROL_PLANE_SIGNING_KEY_FILE="$M1_OUT/keys/control-plane-signing-key.pem" \
           AOA_ADAPTER_MANAGER_CONTROL_PLANE_PUBLIC_KEY_FILE="$M1_OUT/keys/adapter-manager-cp-pubkey.pem" \
-            pnpm verify:cp-am-keypair
+            pnpm verify:cp-am-keypair 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
 
       - name: Boot the core (stores, migrate, both control-plane replicas)
         env:
           AOA_M1_SECRET_OWNER: "1000:1000"
-        run: node scripts/m1-shipped-boot/journey.mjs boot-core --out "$M1_OUT"
+        run: node scripts/m1-shipped-boot/journey.mjs boot-core --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
 
       - name: Seed the three Organizations through the API
         env:
           E2B_API_KEY: ${{ inputs.mode == 'keyed' && secrets.E2B_API_KEY || '' }}
           ANTHROPIC_API_KEY: ${{ inputs.mode == 'keyed' && secrets.ANTHROPIC_API_KEY || '' }}
-        run: node scripts/m1-shipped-boot/journey.mjs seed --out "$M1_OUT"
+        run: node scripts/m1-shipped-boot/journey.mjs seed --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
 
       - name: Apply the F10 tenant set to every control-plane replica
-        run: node scripts/m1-shipped-boot/journey.mjs apply-rollout --out "$M1_OUT"
+        run: node scripts/m1-shipped-boot/journey.mjs apply-rollout --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
 
       - name: Assert the tenant set and the must-be-off switches (render + running replicas)
-        run: node scripts/m1-shipped-boot/journey.mjs assert-tenants --out "$M1_OUT"
+        run: node scripts/m1-shipped-boot/journey.mjs assert-tenants --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
 
       - name: Provision each Organization's target and enrolment ticket
         env:
           AOA_M1_SECRET_OWNER: "1000:1000"
-        run: node scripts/m1-shipped-boot/journey.mjs provision-targets --out "$M1_OUT"
+        run: node scripts/m1-shipped-boot/journey.mjs provision-targets --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
 
       - name: Boot the workers (keyed also boots the adapter-manager)
         env:
           E2B_API_KEY: ${{ inputs.mode == 'keyed' && secrets.E2B_API_KEY || '' }}
-        run: node scripts/m1-shipped-boot/journey.mjs boot-workers --out "$M1_OUT"
+        run: node scripts/m1-shipped-boot/journey.mjs boot-workers --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
 
       - name: Await each worker enrolled on its own Organization's target
-        run: node scripts/m1-shipped-boot/journey.mjs await-workers --out "$M1_OUT"
+        run: node scripts/m1-shipped-boot/journey.mjs await-workers --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
 
       - name: Reconcile and preflight every Organization
-        run: node scripts/m1-shipped-boot/journey.mjs reconcile --out "$M1_OUT"
+        run: node scripts/m1-shipped-boot/journey.mjs reconcile --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
 
       # DEP-015 follow-up (keyed run 35601445269 failed at stage_files: the adapter-manager could
       # not reach the presign store). A throwaway `compose run` of the adapter-manager SERVICE —
       # its networks, CA env and mounts, the bin never started, so no E2B call — HEADs the
       # presign endpoint. Free, and in BOTH modes, so the keyless rehearsal catches this class.
       - name: Probe the presign store from the adapter-manager's seat
-        run: node scripts/m1-shipped-boot/journey.mjs probe-presign --out "$M1_OUT"
+        run: node scripts/m1-shipped-boot/journey.mjs probe-presign --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
 
       - name: Run the journey
-        run: node scripts/m1-shipped-boot/journey.mjs dispatch --out "$M1_OUT"
+        run: node scripts/m1-shipped-boot/journey.mjs dispatch --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
 
       - name: Collect the evidence (redacted)
+        id: collect
         if: always()
         run: |
+          # Collection stays best-effort — a failed journey must still upload what it has — but the
+          # FILTER's status is not swallowed with it (Codex P1): a capture that failed here would
+          # leave the leak scan judging a truncated job log and calling it clean.
           if [ -f "$M1_OUT/state.json" ]; then
-            node scripts/m1-shipped-boot/journey.mjs collect --out "$M1_OUT" || true
+            set +e
+            node scripts/m1-shipped-boot/journey.mjs collect --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
+            statuses=("${PIPESTATUS[@]}")
+            set -e
+            [ "${statuses[1]}" -eq 0 ] || { echo "::error::DEP-015 the job-log capture failed during collect; the log surface is incomplete"; exit 1; }
           fi
 
       # HARD pre-upload check (ruled in under F2 after the distinct review of DEP-015): every job
-      # secret, by NAME, in raw / base64 / base64url form, against every evidence file. A match
-      # FAILS the run and deletes the bundle; it reports file + secret NAME, never the value.
-      - name: Scan the evidence for job secrets (fails the run on any match)
+      # secret, by NAME, in raw / base64 / base64url form — and key material BY SHAPE — against
+      # every evidence file AND the job log every phase tees above. Review batch 3A (PR #569)
+      # measured that the log surface had no scanner and no mask at all: the gap was in the
+      # CONTROL, not in an observed leak. A match FAILS the run and deletes both; it reports the
+      # surface, the file and the secret NAME or marker, never the value.
+      - name: Scan the evidence AND the job log for job secrets and key material (fails the run on any match)
         id: leak-scan
         if: always()
         run: |
@@ -250,8 +298,13 @@ jobs:
             echo "leak-scan: no state (the job stopped before prepare); nothing was collected"
           fi
 
+      # The gate names BOTH steps (Codex P1). A capture that failed during the best-effort collect
+      # step fails THAT step, not the scan, and the scan runs `if: always()`; gating on the scan
+      # alone would upload a bundle whose log surface was never fully captured. (The scan also
+      # refuses on the filter's durable marker — two independent arms, neither sufficient alone:
+      # this one covers a marker that could not be written, that one covers a later step's failure.)
       - name: Upload the evidence bundle (on pass and fail)
-        if: always() && steps.leak-scan.outcome == 'success'
+        if: always() && steps.leak-scan.outcome == 'success' && steps.collect.outcome != 'failure'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: m1-shipped-boot-${{ inputs.mode }}-${{ github.run_id }}

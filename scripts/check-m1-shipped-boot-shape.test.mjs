@@ -14,7 +14,12 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { evaluateShippedBootWorkflowShape, jobDispatchGates, SHIPPED_BOOT_WORKFLOW } from "./lib/m1-shipped-boot-shape.mjs";
+import {
+  evaluateShippedBootWorkflowShape,
+  jobDispatchGates,
+  CANDIDATE_CONTROL_MARKERS,
+  SHIPPED_BOOT_WORKFLOW,
+} from "./lib/m1-shipped-boot-shape.mjs";
 import { parseYaml } from "./lib/yaml-lite.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -160,7 +165,7 @@ test("REJECT: the evidence upload widened to the whole output dir (keys, env, st
 test("REJECT: the evidence upload only on success, or the teardown not always", () => {
   const upload = mutate(
     real(),
-    "      - name: Upload the evidence bundle (on pass and fail)\n        if: always() && steps.leak-scan.outcome == 'success'\n",
+    "      - name: Upload the evidence bundle (on pass and fail)\n        if: always() && steps.leak-scan.outcome == 'success' && steps.collect.outcome != 'failure'\n",
     "      - name: Upload the evidence bundle (on pass and fail)\n",
   );
   assert.ok(anyMatch(violationsOf(upload), /evidence upload must run `if: always\(\)`/), violationsOf(upload).join("\n"));
@@ -181,7 +186,7 @@ test("REJECT: write permissions", () => {
 });
 
 test("REJECT: the in-job keypair check removed", () => {
-  const text = mutate(real(), "            pnpm verify:cp-am-keypair\n", "            true\n");
+  const text = mutate(real(), '            pnpm verify:cp-am-keypair 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"\n', "            true\n");
   assert.ok(anyMatch(violationsOf(text), /verify:cp-am-keypair/), violationsOf(text).join("\n"));
 });
 
@@ -193,8 +198,17 @@ test("REJECT: the leak-scan step removed", () => {
 });
 
 test("REJECT: the upload NOT gated on the leak scan's success (a leaking bundle would publish)", () => {
-  const text = mutate(real(), "        if: always() && steps.leak-scan.outcome == 'success'\n", "        if: always()\n");
+  const text = mutate(real(), "        if: always() && steps.leak-scan.outcome == 'success' && steps.collect.outcome != 'failure'\n", "        if: always()\n");
   assert.ok(anyMatch(violationsOf(text), /upload must be gated `if: always\(\) && steps\.leak-scan\.outcome == 'success'`/), violationsOf(text).join("\n"));
+});
+
+test("REJECT: the upload gated on the SCAN alone, with the collect step's capture failure ignored", () => {
+  // Codex P1, PR #574: the scan runs `if: always()`, so a capture that broke during the
+  // best-effort collect step fails THAT step while the scan reads the truncated log as clean.
+  const text = mutate(real(), " && steps.collect.outcome != 'failure'", "");
+  assert.ok(anyMatch(violationsOf(text), /steps\.collect\.outcome != 'failure'/), violationsOf(text).join("\n"));
+  const noId = mutate(real(), "        id: collect\n", "");
+  assert.ok(anyMatch(violationsOf(noId), /collect step must carry an `id:`/), violationsOf(noId).join("\n"));
 });
 
 test("REJECT: the leak-scan step without an id, or not always()", () => {
@@ -202,4 +216,106 @@ test("REJECT: the leak-scan step without an id, or not always()", () => {
   assert.ok(anyMatch(violationsOf(noId), /must carry an `id:`/), violationsOf(noId).join("\n"));
   const notAlways = mutate(real(), "        id: leak-scan\n        if: always()\n", "        id: leak-scan\n");
   assert.ok(anyMatch(violationsOf(notAlways), /leak-scan step must run `if: always\(\)`/), violationsOf(notAlways).join("\n"));
+});
+
+// === the log surface is collected (review batch 3A, PR #569) ================================
+
+test("REJECT: a phase that does not tee its output into the job-log surface", () => {
+  for (const phase of ["seed", "dispatch"]) {
+    const text = mutate(
+      real(),
+      `        run: node scripts/m1-shipped-boot/journey.mjs ${phase} --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"\n`,
+      `        run: node scripts/m1-shipped-boot/journey.mjs ${phase} --out "$M1_OUT"\n`,
+    );
+    assert.ok(anyMatch(violationsOf(text), new RegExp(`phase '${phase}' does not tee its output`)), violationsOf(text).join("\n"));
+  }
+});
+
+test("REJECT: the keypair check untee'd — it is the step that handles the key", () => {
+  const text = mutate(real(), '            pnpm verify:cp-am-keypair 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"\n', "            pnpm verify:cp-am-keypair\n");
+  assert.ok(anyMatch(violationsOf(text), /keypair check must tee its output/), violationsOf(text).join("\n"));
+});
+
+test("REJECT: a phase dropped from the lane entirely", () => {
+  const text = mutate(
+    real(),
+    '            node scripts/m1-shipped-boot/journey.mjs collect --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"\n',
+    "            true\n",
+  );
+  assert.ok(anyMatch(violationsOf(text), /must run the 'collect' phase/), violationsOf(text).join("\n"));
+});
+
+test("REJECT: the job-log directory not created before the first tee (Codex P1)", () => {
+  const text = mutate(real(), '          mkdir -p "${RUNNER_TEMP}/m1-shipped-boot"\n', "");
+  assert.ok(anyMatch(violationsOf(text), /job-log directory must be created before the first teed step/), violationsOf(text).join("\n"));
+});
+
+test("REJECT: no explicit `shell: bash`, so a teed pipeline would run without pipefail (Codex P1)", () => {
+  const text = mutate(real(), "    defaults:\n", "    x-defaults:\n");
+  assert.ok(anyMatch(violationsOf(text), /must declare .*shell: bash.* pipefail/), violationsOf(text).join("\n"));
+});
+
+/** A marker may carry regex metacharacters, so it is escaped before it becomes a pattern. */
+const escapeRe = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, (m) => "\\" + m);
+
+test("REJECT: the candidate-controls gate removed — an older candidate would run its own pre-control driver (Codex P1)", () => {
+  for (const [file, marker] of CANDIDATE_CONTROL_MARKERS) {
+    const line = real().split(/\r?\n/).find((l) => l.includes(`grep -q "${marker}" ${file}`));
+    assert.ok(line, `the workflow must gate on ${marker}`);
+    const text = mutate(real(), `${line}\n`, "");
+    assert.ok(
+      // A marker may carry regex metacharacters (`carry = joined.slice(`), so it is escaped.
+      anyMatch(violationsOf(text), new RegExp(`lacks '${escapeRe(marker)}'`)),
+      `${marker}:\n${violationsOf(text).join("\n")}`,
+    );
+  }
+});
+
+test("the candidate-controls gate names files that EXIST and markers that are present here (non-vacuous)", () => {
+  for (const [file, marker] of CANDIDATE_CONTROL_MARKERS) {
+    const text = readFileSync(path.join(repoRoot, file), "utf8");
+    assert.ok(text.includes(marker), `${file} must carry ${marker}, or the gate would refuse this very tree`);
+  }
+});
+
+test("the candidate-controls gate covers the whole control set, the log FILTER included", () => {
+  // Iterating the list cannot notice a list that lost an entry, so the set itself is pinned.
+  assert.deepEqual(
+    CANDIDATE_CONTROL_MARKERS.map(([file, marker]) => `${file}:${marker}`).sort(),
+    [
+      "scripts/lib/m1-shipped-boot.mjs:KEY_MATERIAL_MARKERS",
+      "scripts/lib/m1-shipped-boot.mjs:createLineRedactor",
+      "scripts/m1-shipped-boot/journey.mjs:CONTROL_PLANE_PUBLIC_KEY_PEM",
+      "scripts/m1-shipped-boot/journey.mjs:maskDirectivesFor",
+      "scripts/m1-shipped-boot/journey.mjs:stripMaskDirectives",
+      "scripts/m1-shipped-boot/log-filter.mjs:createLineRedactor",
+      "scripts/m1-shipped-boot/log-filter.mjs:the job-log capture failed",
+      "scripts/m1-shipped-boot/log-filter.mjs:capture-failed",
+      "scripts/m1-shipped-boot/journey.mjs:capture-failed",
+      "scripts/lib/m1-shipped-boot.mjs:carry = joined.slice(",
+      "scripts/lib/m1-shipped-boot.mjs:ACCUMULATES: a prefix may span",
+      "scripts/lib/m1-shipped-boot.mjs:LENGTH floor",
+      "scripts/lib/m1-shipped-boot.mjs:stripLogPrefix",
+      "scripts/lib/m1-shipped-boot.mjs:LOG_TIMESTAMP",
+      "scripts/lib/m1-shipped-boot.mjs:base64Payload",
+      "scripts/m1-shipped-boot/journey.mjs:job log is ABSENT",
+      "scripts/m1-shipped-boot/log-filter.mjs:log-filter] opened",
+      "scripts/m1-shipped-boot/journey.mjs:is TRUNCATED",
+      "scripts/lib/m1-shipped-boot.mjs:insidePemBlock = !PEM_END.test(payload)",
+      "scripts/lib/m1-shipped-boot.mjs:directiveJoined",
+      "scripts/m1-shipped-boot/log-filter.mjs:randomUUID",
+      "scripts/m1-shipped-boot/journey.mjs:never closed",
+    ].sort(),
+  );
+});
+
+test("REJECT: `|| true` on the collect pipeline, or the filter's status not propagated (Codex P1)", () => {
+  const swallowed = mutate(
+    real(),
+    '            node scripts/m1-shipped-boot/journey.mjs collect --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"\n',
+    '            node scripts/m1-shipped-boot/journey.mjs collect --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt" || true\n',
+  );
+  assert.ok(anyMatch(violationsOf(swallowed), /must not swallow the log filter's exit status/), violationsOf(swallowed).join("\n"));
+  const unpropagated = mutate(real(), '            [ "${statuses[1]}" -eq 0 ]', '            [ 0 -eq 0 ]');
+  assert.ok(anyMatch(violationsOf(unpropagated), /must propagate the log filter's own status/), violationsOf(unpropagated).join("\n"));
 });
