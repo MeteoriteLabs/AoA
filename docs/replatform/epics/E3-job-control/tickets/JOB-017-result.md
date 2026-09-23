@@ -1,6 +1,6 @@
 # JOB-017 — Audit and output bridges registered on the accepted-event seam — result
 
-**Status:** `gate_review`. Only a DISTINCT reviewer sets `complete`.
+**Status:** `complete` (set 2026-09-23 by the M1 review-batch-3B independent reviewer at attempt 1, revision `60aafb32ec6f8316f92079789cf8814f981f3ed3`). The implementer left it at `gate_review`; only a DISTINCT reviewer sets `complete`.
 **Reviewed revision (code):** `f551565de6ff55c2c1691dba63c71b8ac6e0f3fd` (branch `claude/m1-job-017`), the one code commit `feat(job-control): register audit and output bridges on the E3-D-ACC seam`, based on program tip `fc2eb7dde`.
 **Date (UTC):** `2026-09-21`
 **Decisions:** `E3-D-AUDIT-SET`, `E3-D-OUTPUT-MAP` and `E3-D-TERMINAL-WINNER` in [`../decisions.md`](../decisions.md), all under the accepted `E3-D-ACC` seam contract, decided under founder delegation F2.

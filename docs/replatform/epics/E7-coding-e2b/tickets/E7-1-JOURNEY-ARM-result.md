@@ -1,6 +1,6 @@
 # `E7-1-JOURNEY-ARM` — result
 
-**Status:** `gate_review`
+**Status:** `complete` (set 2026-09-23 by the M1 review-batch-3B independent reviewer at attempt 1, revision `60aafb32ec6f8316f92079789cf8814f981f3ed3`)
 **Ticket:** `E7-1-JOURNEY-ARM` (E7, S, `M1a`) — promote the coding-journey clause when its two preconditions ship
 **Implementer:** M1 planning session (Claude Opus 5), under founder delegation F2
 **Reviewed revision:** `dd839129bf82347867180133029f242a0b4c9ed5` (the candidate the keyed run tested)
