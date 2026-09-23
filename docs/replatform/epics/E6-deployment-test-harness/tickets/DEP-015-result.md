@@ -307,7 +307,7 @@ Once the addendum lands, a re-review should be short. Nothing else I checked nee
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
 | 1 | M1 review-batch-2A independent reviewer (Claude Opus 5) | `dbe6f5da2a9316ac3f9762294d87991d7ec6f885` | `changes_requested` | Record only. The header's reviewed revision `1ec5533b5` predates the E6-D001 code (`dbe6f5da2`) that the record describes. §4's CI run `35591595055` was `cancelled`, on `c31dccf87`, with the pre-E6-D001 guard (46 tests). The covering run `35596651522` (policy `106322893461`: 49/49, 53/53) is uncited, and §8's post-merge citation is missing: registration `35598343418` (job `106328314759` skipped, 0 steps) and keyless rehearsal `35600507289` (job `106335219133` success). Code sound: guards green locally, M13 reproduced (2 failed), Codex clean on `dbe6f5da2a`. Acceptance 1 and the enabled half of 6 are OPEN (keyed). |
-| 2 | M1 review-batch-3A independent reviewer (Claude Opus 5) | `60aafb32ec6f8316f92079789cf8814f981f3ed3` | `approved` | §12 verified at source against keyed run `35619555883` (job `106398898162`, 30 steps, `success`) and its artifact `10649025333`: `journey.json` `passed: true`, candidate `dd839129bf…`, `MODE: keyed` / `aoa-base`; tenants a and b `execution_owner="distributed"`, `succeeded`, `verifierExit 0`, usage 8/734 and 8/730, `costUsd: null`; sandbox ids `iofom0nu25ztf3kc5tte1` and `isqx7nvhgf40txm5vc4b6`, 1 line each, on that tenant's own lease and in that tenant's own worker log, `rejected {shape:0, foreignLease:0}`; control c `execution_owner=null`, `failed`, `rolloutState "off"`, 0 jobs. Three distinct Organizations in `tenants.json` (F10 real). Acceptance 2 is now MEASURED: the hard leak scan reported `clean` over 20 files for 28 named secrets including the ed25519 private PEM, and I found no PRIVATE KEY in the downloaded bundle. Attempt 1's (a), (b) and (c) are all delivered by §10. Local rerun of the three pure-node suites: 140/140. All seven acceptance items MET; `Status` flipped to `complete` in a separate commit. **Codex P1 on this review, accepted as real in mechanism and then MEASURED:** the leak scan walks only `$M1_OUT/evidence` and `trackSecret` emits no `::add-mask::`, so the Actions job log is an unprotected surface — but the COMPLETE job log for `106398898162` (2 347 lines) has 0 PEM markers and every base64-shaped run of 60+ chars is a 64-hex docker digest, so acceptance 2 holds on both surfaces for this run. The standing gap (no log-side control) is recommended to the planning session as `::add-mask::` in `trackSecret`, not fixed in a review commit. |
+| 2 | M1 review-batch-3A independent reviewer (Claude Opus 5) | `60aafb32ec6f8316f92079789cf8814f981f3ed3` | `approved` | §12 verified at source against keyed run `35619555883` (job `106398898162`, 30 steps, `success`) and its artifact `10649025333`: `journey.json` `passed: true`, candidate `dd839129bf…`, `MODE: keyed` / `aoa-base`; tenants a and b `execution_owner="distributed"`, `succeeded`, `verifierExit 0`, usage 8/734 and 8/730, `costUsd: null`; sandbox ids `iofom0nu25ztf3kc5tte1` and `isqx7nvhgf40txm5vc4b6`, 1 line each, on that tenant's own lease and in that tenant's own worker log, `rejected {shape:0, foreignLease:0}`; control c `execution_owner=null`, `failed`, `rolloutState "off"`, 0 jobs. Three distinct Organizations in `tenants.json` (F10 real). Acceptance 2 is now MEASURED: the hard leak scan reported `clean` over 20 files for 28 named secrets including the ed25519 private PEM, and I found no PRIVATE KEY in the downloaded bundle. Attempt 1's (a), (b) and (c) are all delivered by §10. Local rerun of the three pure-node suites: 140/140. All seven acceptance items MET; `Status` flipped to `complete` in a separate commit. **Codex P1 on this review, accepted as real in mechanism and then MEASURED:** the leak scan walks only `$M1_OUT/evidence` and `trackSecret` emits no `::add-mask::`, so the Actions job log is an unprotected surface — but the COMPLETE job log for `106398898162` (2 347 lines) has 0 PEM markers and every base64-shaped run of 60+ chars is a 64-hex docker digest, so acceptance 2 holds on both surfaces for this run. A second P1 — the public half is never registered with the scanner (`prepare` tracks only `privatePem` and its body) — is also real and also measured: `BEGIN PUBLIC KEY` and the ed25519 DER prefixes `MCowBQYDK2VwAyEA` / `MC4CAQAwBQYDK2VwBCIEI` have **0** hits in the job log AND in all 20 artifact files, so acceptance 2 holds for the WHOLE keypair on both surfaces. The two-part standing gap (no log-side control; the public half unregistered) is recommended to the planning session as one change to `trackSecret` — emit `::add-mask::` and register `publicPem` — not fixed in a review commit. |
 
 ---
 
@@ -617,6 +617,32 @@ log line rather than the ones the driver happens to route through `redactSecrets
 new inventory. I am not making that change inside a review commit; it is `DEP-015` follow-up work,
 and the run under review is measurably clean without it.
 
+**★★ And the PUBLIC half — a second Codex P1, likewise verified at source and then measured.** Codex
+objected that acceptance 2 covers *"the keypair"*, not the private half alone, and that the scanner
+never searches for the public one. At source: `prepare` derives `publicPem` and writes it to
+`keys/adapter-manager-cp-pubkey.pem`, but only `privatePem` and its armour-stripped body are handed
+to `trackSecret`, so `leakScan` has no public-half entry — and my own first scan above searched for
+`PRIVATE KEY`. **The mechanism claim is true.**
+
+Measured, over the same two surfaces, using the DER prefixes rather than a value I do not have — an
+ed25519 SPKI body always begins `MCowBQYDK2VwAyEA` and a PKCS#8 body always begins
+`MC4CAQAwBQYDK2VwBCIEI`, so these identify **any** such key regardless of its bytes:
+
+| Surface | `BEGIN PUBLIC KEY` | `MCowBQYDK2VwAyEA` | `MC4CAQAwBQYDK2VwBCIEI` | base64 runs of 40–48 chars ending `=` |
+|---|---:|---:|---:|---:|
+| The complete job log `106398898162` (2 347 lines) | **0** | **0** | **0** | **0** |
+| The retained artifact `10649025333` (20 files) | **0** | **0** | **0** | **0** |
+
+No artifact file contains `PRIVATE KEY` either. **So acceptance 2 holds for the WHOLE keypair, on
+both surfaces, for this run**, and `complete` stands on measurement rather than on the scanner's
+coverage.
+
+**The standing-control gap is now two-part, and both parts go to the planning session together:**
+the log surface has no control at all, and the public half is registered with no scanner on either
+surface. One change covers both — have `trackSecret` emit `::add-mask::` **and** register
+`publicPem` (whole and body-only) alongside the private one. Neither is a review-commit change, and
+neither changes what this run measurably did.
+
 **Multi-tenant (F10) is real in the keyed run.** `tenants.json` carries three distinct Organizations
 with three distinct Companies and agents, and `companiesToOrganizations` pins each Company to its own
 Organization. Two were enabled and each reached its own E2B sandbox on its own lease; the third was
@@ -645,7 +671,7 @@ scripts/check-finding-ownership.mjs` is OK.
 | # | Attempt 1 | Now |
 |---|---|---|
 | 1 | OPEN (keyed pending) | **MET** — run `35619555883`, verified above. |
-| 2 | Met in design | **MET and measured on BOTH surfaces** — artifact: the hard leak scan reported `clean` over 20 files for 28 secrets, including the private PEM, on the keyed run itself. Log: the complete job log for `106398898162` (2 347 lines) has 0 PEM markers and no base64 run that is not a docker sha256 digest. See the Codex-P1 block above, including the missing standing control on the log surface. |
+| 2 | Met in design | **MET and measured on BOTH surfaces** — artifact: the hard leak scan reported `clean` over 20 files for 28 secrets, including the private PEM, on the keyed run itself. Log: the complete job log for `106398898162` (2 347 lines) has 0 PEM markers and no base64 run that is not a docker sha256 digest. **Both halves** of the keypair checked on both surfaces by DER prefix (`MCowBQYDK2VwAyEA`, `MC4CAQAwBQYDK2VwBCIEI`): 0 hits everywhere. See the two Codex-P1 blocks above, including the two-part standing-control gap (no log-side control; the public half unregistered). |
 | 3 | Evidenced | **MET**, unchanged. |
 | 4 | Evidenced (E6-D001) | **MET**, unchanged. |
 | 5 | Met in design | **MET** — the keyed spend happened on a named candidate, dispatched by the planning session under F8. |
