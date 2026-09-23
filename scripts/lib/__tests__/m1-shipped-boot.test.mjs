@@ -900,3 +900,35 @@ test("POSITIVE CONTROL: the filter WRITES that marker when the capture cannot be
   assert.equal(res.status, 1, res.stdout);
   assert.ok(marked, 'the failure must outlive the step that saw it');
 });
+
+test("POSITIVE CONTROL: a DER prefix LATCHES — a 12-char wrap publishes NO body line (Codex P1)", () => {
+  // Codex's case: an unarmoured PKCS#8 export wrapped into 12-character lines. Every continuation
+  // line is far under the 40-character base64-run threshold, so only the latch can catch them.
+  const key = 'MC4CAQAwBQYDK2VwBCIEIG' + 'HhSeedBytes'.repeat(4) + 'ZZ';
+  const wrapped = key.match(/.{1,12}/g);
+  assert.ok(wrapped.length > 4);
+  const redact = createLineRedactor();
+  const published = wrapped.map(redact);
+  // Line 1 is the first 12 characters of the FIXED algorithm header and carries no key bytes;
+  // it is unavoidable, because nothing has matched yet. Line 2 COMPLETES the prefix when joined,
+  // and from there the latch must hold: no line of the SEED may ever be published.
+  assert.equal(published[0], wrapped[0]);
+  assert.ok(!key.slice(21).startsWith(wrapped[0]), 'line 1 must be header, not seed');
+  for (let i = 1; i < wrapped.length; i += 1) {
+    assert.match(published[i], /\[REDACTED: key material /, `line ${i + 1} (${published[i]}) published raw`);
+  }
+  // The block ends at the first line that is not a bare base64 wrap — output resumes.
+  assert.equal(redact('reconcile: 3 Organizations'), 'reconcile: 3 Organizations');
+  assert.equal(redact('MC4CAQAwBQYD'.slice(0, 4)), 'MC4C', 'a short token after the block is not key material');
+});
+
+test("the DER latch does not swallow ordinary output, and a PEM hit does not open one", () => {
+  const redact = createLineRedactor();
+  assert.match(redact('key=MCowBQYDK2VwAyEAabc'), /ed25519_spki_der/);
+  // A line with spaces is prose: the block ends there, and the NEXT line is published.
+  assert.equal(redact('boot-core: 2 replicas up'), 'boot-core: 2 replicas up');
+  assert.equal(redact('awaiting workers'), 'awaiting workers');
+  const pem = createLineRedactor();
+  assert.match(pem('-----BEGIN PUBLIC KEY-----MCowBQYD-----END PUBLIC KEY-----'), /pem_block/);
+  assert.equal(pem('plainword'), 'plainword', 'a closed single-line PEM opens no DER block');
+});

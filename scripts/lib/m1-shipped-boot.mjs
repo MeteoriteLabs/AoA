@@ -411,6 +411,9 @@ export const JOIN_CARRY_CHARS = 32;
 /** A long unbroken base64/base64url run — what a wrapped key's BODY looks like once its prefix is
  * on the line before. Deliberately used only where OVER-redaction is free (the published log). */
 const BASE64_RUN = /[A-Za-z0-9+/_-]{40,}={0,2}/;
+/** A line that is NOTHING but base64: the shape a wrapped key's continuation lines have, at ANY
+ * width. Used only to decide how far a DER block extends, never on its own. */
+const BASE64_CONTINUATION = /^[A-Za-z0-9+/_-]+={0,2}$/;
 
 /**
  * A STATEFUL line redactor for the published Actions log: the whole PEM BLOCK, not only the lines
@@ -427,6 +430,7 @@ const BASE64_RUN = /[A-Za-z0-9+/_-]{40,}={0,2}/;
  */
 export function createLineRedactor() {
   let insidePemBlock = false;
+  let insideDerBlock = false;
   let carry = "";
   const redacted = (marker) => `[REDACTED: key material (${marker}) — see the leak scan]`;
   return (line) => {
@@ -444,13 +448,34 @@ export function createLineRedactor() {
       insidePemBlock = !PEM_END.test(text);
       return redacted("pem_block");
     }
-    const own = redactKeyMaterialLine(text);
-    if (own !== text) return own;
+    // ★ A DER prefix LATCHES, exactly as a PEM `BEGIN` does (Codex P1, PR #574). Redacting only the
+    // line that completes the prefix leaves the key BODY to follow on its own lines — and wrapped
+    // short enough (12 characters, say) no continuation line is long enough for the base64-run rule
+    // below. So once a DER marker is seen, every following CONTINUATION line — one that is nothing
+    // but base64 — is redacted too. The first line that is not pure base64 ends the block and is
+    // published normally: ordinary output resumes at the first ordinary line.
+    if (insideDerBlock) {
+      const trimmed = text.trim();
+      // The WHOLE line, not its stripped form: a line with spaces in it is prose, not a wrap.
+      if (trimmed.length >= 8 && BASE64_CONTINUATION.test(trimmed)) return redacted("der_block");
+      insideDerBlock = false;
+    }
+    const ownHit = KEY_MATERIAL_MARKERS.find(({ pattern }) => pattern.test(text));
+    if (ownHit) {
+      insideDerBlock = ownHit.marker.endsWith("_der");
+      // The marker is SPENT: leaving it in the carry would match it again on the next line.
+      carry = "";
+      return redacted(ownHit.marker);
+    }
     // ★ UNARMOURED DER across a line break (Codex P1, PR #574). Without a `BEGIN` line there is no
     // block to latch, and a wrap such as `MC4CAQAwBQYD` / `K2VwBCIEI…` leaves neither fragment
     // matching the whole prefix. So each line is also tested JOINED to the tail of the one before.
     const joinedHit = KEY_MATERIAL_MARKERS.find(({ pattern }) => pattern.test(joined));
-    if (joinedHit) return redacted(`${joinedHit.marker}, wrapped`);
+    if (joinedHit) {
+      insideDerBlock = joinedHit.marker.endsWith("_der");
+      carry = "";
+      return redacted(`${joinedHit.marker}, wrapped`);
+    }
     // …and the key BODY, which carries no marker of its own once the prefix is on the line before.
     // A published log loses nothing by dropping a long unbroken base64 run: review batch 3A found
     // none at all in 2347 lines of a real run.
@@ -522,9 +547,12 @@ export function scanForKeyMaterial(files, { skipMaskDirectives = true } = {}) {
       const joined = carry + stripped;
       carry = stripped.slice(-JOIN_CARRY_CHARS);
       for (const { marker, pattern } of KEY_MATERIAL_MARKERS) {
-        if (pattern.test(line)) findings.push({ file: file.name, marker, line: i + 1 });
-        else if (pattern.test(joined)) {
+        if (pattern.test(line)) {
+          findings.push({ file: file.name, marker, line: i + 1 });
+          carry = "";  // SPENT: the same marker must not be re-found on the next line.
+        } else if (pattern.test(joined)) {
           findings.push({ file: file.name, marker, line: i + 1, wrapped: true });
+          carry = "";
         }
       }
     }

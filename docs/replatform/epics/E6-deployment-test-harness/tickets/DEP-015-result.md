@@ -837,5 +837,18 @@ They are recorded because each would have made the control worse than none:
     the capture and the scan REFUSES on it (deleting the bundle it could not judge), and the upload
     gate additionally requires `steps.collect.outcome != 'failure'`. Two independent arms: the
     marker covers a failure in a later step, the gate covers a marker that could not be written.
+15. **A DER prefix must LATCH, the way a PEM `BEGIN` does.** Redacting only the line that
+    completes a wrapped prefix leaves the key BODY on the lines after it — and at a narrow wrap
+    (12 characters, say) no continuation line is long enough for item 13's 40-character rule. The
+    redactor now opens a DER block on any DER hit, own-line or joined, and redacts every following
+    line that is nothing but base64; the first line carrying prose ends it. The lane's first
+    fragment (12 characters of the FIXED algorithm header, before anything has matched) is
+    unavoidable and carries no key bytes — a control asserts exactly that, and that no line of the
+    seed follows it into the log.
+
+    Writing that control found a defect in item 13 itself: the joined-window CARRY kept the
+    matched marker, so the very next line matched it again and ordinary output was redacted as a
+    phantom key. The carry is now cleared on every hit, in the redactor and in the scan. Three
+    more mutations (the latch, the joined arm's latch, the carry clear) each red a test.
 **Status unchanged.** This is a control added after the fact to a run that was already clean; it
 neither re-opens nor re-decides §12's keyed acceptance.
