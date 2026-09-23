@@ -397,6 +397,11 @@ which therefore keeps the profile honestly `INCOMPLETE`.
 | **P1** — *"Run timeout classification through the production worker mapper."* `terminalPayloadFor` is harness code, so both arms validate that helper and the ingest, not the deployed worker's mapping that the case claimed to protect | **True.** `AOA_WORKER_DISPATCH_ENABLED` is declared ABSENT for both D1 workers, so no worker on this lane maps anything | The measured case is renamed to what it proves — **`ingest_classifies_provider_derived_terminal`** (a real defect class: an ingest that ignored the terminal status reds here, and the success arm is the control that shows the derivation can produce the other answer). The worker's own mapping is now **`d1.provider.worker_terminal_mapping`**, `pendingKind: structural`, owned by the DEP-015 keyed lane |
 | **P1** — *"Exercise credential isolation through the production reader."* The `provider_credentials` case hard-codes the two predicates instead of invoking `resolveExecutionSecret`, while the record claimed acceptance 5's production-query-path coverage | **True, and the record was the worse half of it.** I checked whether the reader is drivable here: its `device_local` arm needs `authorizeSecretResolve` to admit, the D1 control plane wires `failClosedDeviceLocalBroker` (the only implementation in the tree), and the fenced route collapses every outcome to `denied/malformed` — so an admitted read and a denied one are indistinguishable at every observable surface on this lane | §3b now states this as an **acceptance-5 gap**, not a satisfied clause, and the reader half is **`d1.credential.production_reader_company_predicate`**, `pendingKind: structural`. ★ **FLAGGED FOR THE PLANNING SESSION: no ticket on disk owns it.** Closing it needs either a D1 `device_local` broker or the keyed lane — a topology decision beyond this ticket. The legacy case still proves the PREDICATE and the grant on the same non-owner pool, and now says only that |
 
+★ **SUPERSEDED, and the sentence above is kept as first written.** The flag was answered: the
+planning session ruled it as **`E6-D003`** and the case is no longer unowned. See **§13**. Nothing
+else in §11b changes — it is the record of what round three found and what was true when it was
+written.
+
 ### 11c. Re-measured after the split
 
 ```
