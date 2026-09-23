@@ -1,6 +1,6 @@
 # CLI-011 Result — the output mechanism is reviewed, probed and RULED: a conventional output root
 
-**Status:** `gate_review`
+**Status:** `complete` (set 2026-09-23 by the M1 review-batch-4 independent reviewer; see 8. Reviewer section)
 **Date (UTC):** `2026-09-23`
 **Epic:** `E7-coding-e2b`
 **Plan task:** E7 `implementation-plan.md` `### CLI-011 — the emit half: DESIGN ONLY, founder-ruling
