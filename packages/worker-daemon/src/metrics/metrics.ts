@@ -148,6 +148,8 @@ export const CLOSED_LABEL_VALUES: Readonly<Record<string, ReadonlySet<string>>> 
     // an offer that arrived after lease-stop began (drain-before-lease-stop) →
     // dropped un-ACKed rather than abandoned in flight at exit.
     "offer_dropped",
+    // WRK-013 — the lease-candidate write before the ACK failed, so the offer was NOT acknowledged.
+    "candidate_write_failed",
     // shared error/terminal outcomes
     "malformed",
     "unauthorized",

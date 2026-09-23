@@ -247,3 +247,46 @@ describe("startup-sandbox-classification — keep / kill-stale (escalated) / unk
     expect(result.sandboxOutcomes.map((o) => o.sandboxId).sort()).toEqual(["sbx-a-live", "sbx-b-dead", "sbx-c-live"]);
   });
 });
+
+// -----------------------------------------------------------------------------
+// WRK-013 / F5 (Codex P1, PR #553) — under the fence, a live-owned sandbox is NOT kept.
+//
+// The default above stays WRK-007 CORE's `keep`. The COMPOSED daemon sets `fencedLeasesAreStale`,
+// because a live-probed lease there is fenced: its renewal was the last, nothing re-attaches (D2),
+// and no later pass sees the sandbox again. WRK-007's own D2 prescribes the teardown.
+// -----------------------------------------------------------------------------
+
+describe("startup-sandbox-classification — fencedLeasesAreStale tears down a live-owned sandbox", () => {
+  it("destroys the live-lease sandbox through the cleanup authority; the default KEEPS it (positive control)", async () => {
+    const { session, key, client } = await enrollFixtureWorker(fake, RENEWAL_CODE);
+    fake.seedLeaseAuthority(LIVE_LEASE, { live: true });
+    const base = (provider: ReturnType<typeof mixedProvider>, fenced: boolean) => ({
+      provider,
+      ownershipSelector: SELECTOR,
+      makeCtx: () => makeCtx(),
+      client,
+      session: { get: async () => session, recover: async () => session },
+      key,
+      identity: RENEWAL_IDENTITY,
+      leaseCandidates: [makeRenewalHandoff({ leaseId: LIVE_LEASE }).offer],
+      ...(fenced ? { fencedLeasesAreStale: true } : {}),
+    });
+
+    // Positive control: without the flag the live-owned sandbox survives, untouched.
+    const kept = mixedProvider();
+    const keptResult = await createStartupReconciler(base(kept, false)).run();
+    expect(keptResult.sandboxesKept).toBe(1);
+    expect(kept.peek("sbx-live")?.state).toBe("running");
+    expect(kept.processTreeAlive("sbx-live")).toBe(true);
+
+    // With the flag it is torn down, and its process tree is provably gone.
+    const torn = mixedProvider();
+    const tornResult = await createStartupReconciler(base(torn, true)).run();
+    expect(tornResult.sandboxesKept).toBe(0);
+    expect(tornResult.sandboxOutcomes.find((o) => o.sandboxId === "sbx-live")?.disposition).toBe("killed");
+    expect(torn.peek("sbx-live")?.state).toBe("destroyed");
+    expect(torn.processTreeAlive("sbx-live")).toBe(false);
+    // The FENCE is what changed, not the probe: the lease was still renewed exactly once.
+    expect(tornResult.fencedLeaseIds).toEqual([LIVE_LEASE]);
+  });
+});

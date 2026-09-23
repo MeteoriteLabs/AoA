@@ -1,0 +1,275 @@
+// -----------------------------------------------------------------------------
+// DAT-009-3e / E5-F002 — the default uploader's signed-PUT headers come from ONE home.
+//
+// `grantPutHeaders` (worker-daemon `lease/artifact-export.ts`) exists, by its own docstring,
+// "because two providers re-deriving it independently is how the second one gets it wrong
+// silently". Before this slice it had zero production callers, and the shipped default uploader
+// `putGrantBytes` re-derived the headers differently on two axes (E5-F002):
+//   1. it OMITTED `x-amz-sdk-checksum-algorithm`, which every other derivation sends; and
+//   2. it sent the checksum of the BYTES BEING UPLOADED, not of the grant's `expectedSha256`.
+//
+// ★ THE DIGEST-SOURCE DECISION, pinned here: the checksum header is the GRANT's expectedSha256.
+// The signer binds the checksum ALGORITHM, never the value, so the store verifies the body against
+// whatever this header says. Carrying the grant's expectation makes the STORE refuse bytes that
+// are not the ones the grant was minted for — at the PUT, at the cause — instead of storing them
+// and leaving the fenced commit's `headObject` re-verification to refuse `hash_mismatch` later, in
+// another process. On the provider's own path the two are equal (`exportArtifact` re-hashes and
+// refuses a mismatch before calling the uploader), so the decision is visible only when the
+// uploader is handed bytes that disagree with the grant, which is exactly the case pinned below.
+// -----------------------------------------------------------------------------
+
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
+import type { ArtifactUploadGrantV1 } from "@armyofagents/worker-protocol";
+import { grantPutHeaders } from "@armyofagents/worker-daemon";
+
+import { E2bSandboxProvider, putGrantBytes } from "../e2b-provider.js";
+import { MockE2bTransport } from "../mock-transport.js";
+
+const enc = (s: string) => new TextEncoder().encode(s);
+const hex = (b: Uint8Array) => createHash("sha256").update(b).digest("hex");
+const b64 = (b: Uint8Array) => createHash("sha256").update(b).digest("base64");
+
+const GRANTED = enc("the bytes the grant was minted for ✓\n");
+const OTHER = enc("different bytes");
+const GRANT_URL = "https://store.example/put/out.txt?X-Amz-Signature=deadbeefsecret";
+
+function grant(overrides: Partial<ArtifactUploadGrantV1> = {}): ArtifactUploadGrantV1 {
+  return {
+    protocolVersion: 1,
+    operation: "upload",
+    artifactId: "00000000-0000-4000-8000-0000000000b1",
+    method: "PUT",
+    url: GRANT_URL,
+    headers: {},
+    issuedAt: "2026-09-21T12:00:00.000Z",
+    expiresAt: "2126-09-21T12:05:00.000Z",
+    maxBytes: GRANTED.byteLength,
+    expectedSha256: hex(GRANTED),
+    objectKey: "organizations/org-1/jobs/job-1/attempts/1/00000000-0000-4000-8000-0000000000b1",
+    redaction: "secret",
+    ...overrides,
+  } as ArtifactUploadGrantV1;
+}
+
+interface Seen {
+  url: string;
+  init: RequestInit;
+}
+function stubFetch(respond: () => Promise<Response> | Response = () => ({ ok: true, status: 200 }) as Response): Seen[] {
+  const seen: Seen[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: unknown, init?: unknown) => {
+      seen.push({ url: String(url), init: (init ?? {}) as RequestInit });
+      return respond();
+    }),
+  );
+  return seen;
+}
+const headersOf = (s: Seen) => s.init.headers as Record<string, string>;
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("DAT-009-3e / E5-F002 — putGrantBytes derives its signed-PUT headers from grantPutHeaders", () => {
+  it("★ sends BOTH header names — the checksum AND the algorithm the signed query demands", async () => {
+    const seen = stubFetch();
+    await putGrantBytes(grant(), GRANTED);
+    expect(seen).toHaveLength(1);
+    const h = headersOf(seen[0]!);
+    expect(h["x-amz-checksum-sha256"]).toBe(b64(GRANTED));
+    expect(h["x-amz-sdk-checksum-algorithm"]).toBe("SHA256");
+    expect(seen[0]!.init.method).toBe("PUT");
+    expect(seen[0]!.url).toBe(GRANT_URL);
+  });
+
+  it("★ the checksum is BASE64 of the raw digest — a hex-forwarding mutant dies here", async () => {
+    const seen = stubFetch();
+    await putGrantBytes(grant(), GRANTED);
+    const value = headersOf(seen[0]!)["x-amz-checksum-sha256"];
+    expect(value).not.toBe(hex(GRANTED));
+    expect(Buffer.from(value!, "base64").toString("hex")).toBe(hex(GRANTED));
+  });
+
+  it("★ DIGEST SOURCE = the GRANT's expectedSha256, NOT the bytes handed to the uploader", async () => {
+    // The opposite decision (hash what is being uploaded) would put b64(OTHER) here, and the store
+    // would accept bytes the grant was never minted for.
+    const seen = stubFetch();
+    await putGrantBytes(grant(), OTHER);
+    const value = headersOf(seen[0]!)["x-amz-checksum-sha256"];
+    expect(value).toBe(b64(GRANTED));
+    expect(value).not.toBe(b64(OTHER));
+  });
+
+  it("★ ONE HOME: every header grantPutHeaders derives is sent, verbatim", async () => {
+    const g = grant({ headers: { "x-amz-meta-origin": "aoa" } });
+    const seen = stubFetch();
+    await putGrantBytes(g, GRANTED);
+    expect(headersOf(seen[0]!)).toMatchObject(grantPutHeaders(g));
+  });
+
+  it("keeps its content-type default, and the GRANT's own headers still win over everything", async () => {
+    const seen = stubFetch();
+    await putGrantBytes(grant(), GRANTED);
+    expect(headersOf(seen[0]!)["content-type"]).toBe("application/octet-stream");
+
+    const seen2 = stubFetch();
+    await putGrantBytes(grant({ headers: { "content-type": "text/plain", "x-amz-checksum-sha256": "server-said-so" } }), GRANTED);
+    expect(headersOf(seen2[0]!)["content-type"]).toBe("text/plain");
+    expect(headersOf(seen2[0]!)["x-amz-checksum-sha256"]).toBe("server-said-so");
+  });
+
+  it("sends the bytes it was given as the body (the header describes the expectation, not the body)", async () => {
+    const seen = stubFetch();
+    await putGrantBytes(grant(), GRANTED);
+    expect(new Uint8Array(seen[0]!.init.body as Uint8Array)).toEqual(GRANTED);
+  });
+
+  it("★ H-04: a non-2xx store response throws with the STATUS only — never the url", async () => {
+    stubFetch(() => ({ ok: false, status: 400 }) as Response);
+    const err = (await putGrantBytes(grant(), GRANTED).catch((e: unknown) => e)) as Error;
+    expect(err.message).toContain("400");
+    expect(`${err.message}\n${err.stack ?? ""}`).not.toContain("deadbeefsecret");
+    expect(`${err.message}\n${err.stack ?? ""}`).not.toContain("store.example");
+  });
+
+  it("★ a SEVERED PUT is a distinguishable failure that carries neither the url nor the transport's own error", async () => {
+    // A transport error can name the host and query it was reaching; it must not ride out.
+    stubFetch(() => {
+      throw new TypeError(`fetch failed: socket closed while writing ${GRANT_URL}`);
+    });
+    const err = (await putGrantBytes(grant(), GRANTED).catch((e: unknown) => e)) as Error & { cause?: unknown };
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toMatch(/severed|did not complete/);
+    // Distinguishable from a store refusal, which reports a status.
+    expect(err.message).not.toMatch(/status \d+/);
+    expect(`${err.message}\n${err.stack ?? ""}\n${String(err.cause ?? "")}`).not.toContain("deadbeefsecret");
+    expect(err.cause).toBeUndefined();
+  });
+
+  it("★ never follows a redirect — the PUT body cannot be forwarded past the grant's origin (Codex P2, PR #557)", async () => {
+    const seen = stubFetch();
+    await putGrantBytes(grant(), GRANTED);
+    expect(seen[0]!.init.redirect).toBe("error");
+  });
+
+  it("★ the PUT is abortable: the caller's signal reaches fetch, and an abort is reported as a timeout", async () => {
+    const seen = stubFetch();
+    const controller = new AbortController();
+    await putGrantBytes(grant(), GRANTED, controller.signal);
+    expect(seen[0]!.init.signal).toBe(controller.signal);
+
+    const aborted = AbortSignal.abort();
+    stubFetch(() => {
+      throw new DOMException("This operation was aborted", "AbortError");
+    });
+    const err = (await putGrantBytes(grant(), GRANTED, aborted).catch((e: unknown) => e)) as Error;
+    expect(err.message).toMatch(/timed out/);
+    expect(err.message).not.toContain("deadbeefsecret");
+  });
+});
+
+describe("DAT-009-3e — exportArtifact bounds the upload by ctx.deadlineMs (Codex P1, PR #557)", () => {
+  const LABELS = {
+    organizationId: "org-1",
+    targetId: "tgt-1",
+    workerId: "wkr-1",
+    jobId: "job-1",
+    attempt: 1,
+    leaseId: "lease-1",
+    deviceGeneration: 1,
+  };
+  const PATH = "/home/user/out.txt";
+
+  async function providerWith(performUploadGrant: (g: ArtifactUploadGrantV1, b: Uint8Array, s?: AbortSignal) => Promise<void>) {
+    const transport = new MockE2bTransport();
+    const p = new E2bSandboxProvider({ transport, performUploadGrant });
+    const created = await p.create({ resourceLabels: LABELS, command: "c", args: [], env: {}, workloadType: "batch" }, {
+      deadlineMs: 60_000,
+      idempotencyKey: "c-1",
+    });
+    await transport.writeFiles(created.sandboxId, [{ path: PATH, bytes: GRANTED }]);
+    return { p, sandboxId: created.sandboxId };
+  }
+
+  it("★ a stalled upload is ABORTED at ctx.deadlineMs instead of hanging forever", async () => {
+    let signalSeen: AbortSignal | undefined;
+    const { p, sandboxId } = await providerWith(
+      (_g, _b, signal) =>
+        new Promise<void>((_resolve, reject) => {
+          signalSeen = signal;
+          signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        }),
+    );
+    const started = Date.now();
+    await expect(p.exportArtifact(sandboxId, PATH, grant(), { deadlineMs: 50, idempotencyKey: "e-1" })).rejects.toThrow();
+    expect(signalSeen).toBeDefined();
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  /** A transport whose `readFile` never resolves — a stalled sandbox read. */
+  class StallingReadTransport extends MockE2bTransport {
+    override async readFile(...args: Parameters<MockE2bTransport["readFile"]>): ReturnType<MockE2bTransport["readFile"]> {
+      void args;
+      return new Promise<Uint8Array>(() => undefined);
+    }
+  }
+
+  it("★ a stalled sandbox READ is bounded by the same budget (Codex P1, PR #557): export", async () => {
+    const transport = new StallingReadTransport();
+    const p = new E2bSandboxProvider({ transport, performUploadGrant: async () => undefined });
+    const created = await p.create({ resourceLabels: LABELS, command: "c", args: [], env: {}, workloadType: "batch" }, {
+      deadlineMs: 60_000,
+      idempotencyKey: "c-read-stall",
+    });
+    const started = Date.now();
+    await expect(p.exportArtifact(created.sandboxId, PATH, grant(), { deadlineMs: 50, idempotencyKey: "e-read" })).rejects.toThrow();
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it("★ a stalled sandbox READ is bounded by the same budget: digest", async () => {
+    const transport = new StallingReadTransport();
+    const p = new E2bSandboxProvider({ transport });
+    const created = await p.create({ resourceLabels: LABELS, command: "c", args: [], env: {}, workloadType: "batch" }, {
+      deadlineMs: 60_000,
+      idempotencyKey: "c-read-stall-d",
+    });
+    const started = Date.now();
+    await expect(p.digestArtifact(created.sandboxId, PATH, { deadlineMs: 50, idempotencyKey: "d-read" })).rejects.toThrow();
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it("★ digest with an exhausted budget reads nothing", async () => {
+    const transport = new MockE2bTransport();
+    let reads = 0;
+    const counting = new Proxy(transport, {
+      get(target, prop) {
+        if (prop === "readFile") {
+          return (...args: Parameters<MockE2bTransport["readFile"]>) => {
+            reads += 1;
+            return target.readFile(...args);
+          };
+        }
+        const value = Reflect.get(target, prop, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const p = new E2bSandboxProvider({ transport: counting });
+    const created = await p.create({ resourceLabels: LABELS, command: "c", args: [], env: {}, workloadType: "batch" }, {
+      deadlineMs: 60_000,
+      idempotencyKey: "c-d0",
+    });
+    await transport.writeFiles(created.sandboxId, [{ path: PATH, bytes: GRANTED }]);
+    await expect(p.digestArtifact(created.sandboxId, PATH, { deadlineMs: 0, idempotencyKey: "d-0" })).rejects.toThrow();
+    expect(reads).toBe(0);
+  });
+
+  it("★ an exhausted budget (deadlineMs <= 0) uploads nothing", async () => {
+    const upload = vi.fn(async () => undefined);
+    const { p, sandboxId } = await providerWith(upload);
+    await expect(p.exportArtifact(sandboxId, PATH, grant(), { deadlineMs: 0, idempotencyKey: "e-0" })).rejects.toThrow();
+    expect(upload).not.toHaveBeenCalled();
+  });
+});

@@ -415,3 +415,51 @@ The planning session dispatched keyed run **`35613849443`** on candidate `d0f065
 - **Polled, not one-shot** (Codex on PR #563, verified at source). The worker emits `terminal` before it destroys the sandbox (`supervisor.ts`: `events.terminal` then `finishRun`), and the lease-and-sandbox line is logged only after `destroy` returns. The worker log is therefore re-read every 5 s, up to 180 s, until the attempt-bound record appears. `providerEvidence.polls` records how many reads it took.
 
 **The keyed acceptance remains PENDING.** It needs one keyed re-run in which the lane's own verdict is green. From this run's evidence, the only thing that stood between it and green was the driver defect.
+
+## 12. Keyed acceptance — MET (added 2026-09-23 by the M1 planning session)
+
+**The keyed acceptance is no longer pending.** Dispatched under founder ruling F8 by the planning
+session, on the named candidate `dd839129bf82347867180133029f242a0b4c9ed5` (the program tip that
+carries #563's driver fix):
+
+| | |
+|---|---|
+| Keyless rehearsal | run `35618468241` — **success** |
+| Keyed journey | run **`35619555883`** — **success** (the lane's own verdict is green) |
+| Mode / template | `keyed`, `aoa-base` |
+| `journey.json` | `"passed": true` |
+
+Per tenant, from the run's evidence bundle (`journey.json`, and the worker logs):
+
+| Tenant | Role | Routed | Run status | Verifier exit | Usage tokens (in/out) | Sandbox lines | Real E2B sandbox id |
+|---|---|---|---|---:|---|---:|---|
+| a | enabled | `distributed` | `succeeded` | **0** | 8 / 734 | 1 | `iofom0nu25ztf3kc5tte1` |
+| b | enabled | `distributed` | `succeeded` | **0** | 8 / 730 | 1 | `isqx7nvhgf40txm5vc4b6` |
+| c | control | **not distributed** (`execution_owner = null`) | `failed` | — | — | 0 | — |
+
+Steps of record in that run: "Probe the presign store from the adapter-manager's seat" **success**
+(the #561 keyless probe, in the keyed run too), "Run the journey" **success**, "Collect the evidence
+(redacted)" **success**. The leak scan did not fail the run.
+
+★ **What this establishes, stated narrowly.** One control plane, three Organizations, three
+separately deployed workers and the adapter-manager, all built from the candidate and booted by CI;
+two enabled tenants each dispatched through the distributed path onto a **real E2B sandbox** whose
+id appears in that tenant's own worker log on that tenant's own lease; the mechanism verifier exits
+`0` for both. `capabilityProven=false` throughout, **which is a PASS for `M1a` by the triage's own
+terms** and says nothing about capability.
+
+★ **What it does NOT establish, and must not be read as:**
+- **The control tenant's own run FAILED** (`status: failed`). What tenant c proves is that it was
+  **refused the distributed path** (`execution_owner = null`), which is the F10 control. It is **not**
+  evidence that the legacy path is healthy, and no record may cite it that way.
+- **No `cost_events` row is proven here.** `usage_json.costUsd` is `null` on both enabled tenants.
+  The usage **producer** is proven live (real tokens, below); pricing end-to-end is `DEP-016`'s
+  assertion and `E3-F037`'s remaining half.
+- Nothing about tools (`CLI-016`'s surface is off here) or output (`M1b`).
+- **Not `usage` CARDINALITY.** The bundle shows the STORED per-run usage, not a count of accepted
+  `usage` events. `WRK-018`'s acceptance 1 therefore stays PENDING on this run (Codex P1 on PR #564);
+  the count-per-attempt assertion is `DEP-016`'s.
+
+**Status:** this record's acceptance items are now met. `Status` stays `gate_review` until a
+**distinct reviewer** re-reviews (attempt 2) — attempt 1 was `changes_requested` on the citation
+defects, which §10 fixed.
