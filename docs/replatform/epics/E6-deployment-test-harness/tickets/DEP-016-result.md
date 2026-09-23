@@ -428,6 +428,13 @@ red. I verified that run's own evidence bundle rather than the record's summary 
   `passing/`, `positive-control/`, `duplicate-usage-control/` and `post-controls/` directories.
   That is acceptance 1, observed on the lane rather than locally.
 
+**★ Count pinned to its revision (added after merging the program tip, 2026-09-23).** Every "69 tests"
+above is the verdict self-test AT the reviewed revision `58b70fa5ea…` and in the lane run
+`35825332876`, and both measured 69. #567 has since added eight cases to the same file for its
+keyed usage-cardinality assertion, so the same command at the program tip gives **77 / 77 / 0**
+(I re-ran it on the merged tree). The figure is not wrong; it is anchored, and a later reader
+should not read a larger number as a discrepancy.
+
 **The cost claim, verified in that bundle and not from the record.** `profile/m1-spine-evidence.json`,
 per enabled tenant:
 

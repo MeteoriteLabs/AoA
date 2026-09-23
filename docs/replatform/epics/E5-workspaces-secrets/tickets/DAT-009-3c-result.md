@@ -1,6 +1,6 @@
 # DAT-009-3c Result — the supervisor export-artifacts hook
 
-**Status:** `gate_review`
+**Status:** `complete` (set 2026-09-23 by the M1 review-batch-3B independent reviewer at attempt 2, revision `60aafb32ec6f8316f92079789cf8814f981f3ed3`)
 **Date (UTC):** `2026-09-21`
 **Epic:** `E5-workspaces-secrets`
 **Plan task:** `E5 implementation-plan DAT-009-3c — the supervisor export hook (M, M1b)`
@@ -9,8 +9,8 @@
 **Start SHA:** `28a2dd259` (`docs/replatform-program` tip)
 **Reviewed revision (the code commits):** `79961c97c46dda930c7f7ceda6c6ee6175fead6a` (the hook) + `f5e2aff1f466cd6ecebc9eaa74313e8251ef93fc` (the Codex latch fix); the tree under review is `f5e2aff1f`
 
-The implementer leaves `Status` at `gate_review`. Only a distinct reviewer may change it to
-`complete`.
+The implementer left `Status` at `gate_review`; only a distinct reviewer may change it to
+`complete`, and one has (review attempt 2, below).
 
 ## 1. What was built
 
@@ -234,6 +234,106 @@ records-disagree-with-code class that this programme treats as a defect, however
   - The plan asks for one commit. There are two code commits; the second is the Codex fix, and the
     record says so.
 
+### Independent review — attempt 2
+
+**Reviewer:** M1 review-batch-3B independent reviewer (Claude Opus 5) — distinct from the DAT-009-3c
+build session, from the planning session that applied the correction, and from the attempt-1 reviewer
+**Reviewed revision:** `60aafb32ec6f8316f92079789cf8814f981f3ed3`
+**Disposition:** `approved`
+**Attempt:** 2
+
+**Disposition: `approved`. `Status` moves to `complete` in a separate commit.** Reviewed at the
+`docs/replatform-program` tip (the merge of PR #565). The hook commit `79961c97c`, the Codex latch
+fix `f5e2aff1f`, the CI head `a040e3a39`, the attempt-1 reviewed revision `fc2eb7dde` and the
+correction PR #562's head `b29be4089` are all ancestors of it.
+
+**The one requested change is made, and it is correct.** Attempt 1 required §2 to state the verify
+command's result at `f5e2aff1f` as 52 rather than 50, keeping the old figure as superseded text. §2
+now reads *"gives 3 files, 52 passed (21 + 16 + 15)"* with the parenthetical *"Corrected 2026-09-21
+per the attempt-1 review, by the planning session (not the reviewer): Superseded text: '3 files, 50
+passed', the count from before the Codex fix."* The superseded figure keeps its original wording, the
+correction names who made it and why, and the reviewer is correctly not credited with editing the
+record under review.
+
+**Verified at source, not taken from the correction.** `git diff f5e2aff1f HEAD` over
+`supervisor-export-artifacts.test.ts`, `artifact-export-sequencer.test.ts`,
+`supervisor-happy.component.test.ts`, `supervisor/supervisor.ts` and `lease/artifact-export.ts` is
+**empty**, so the reviewed tip is the tree the count describes. I ran the task's verify command here
+— `worker-protocol` build exit 0, then
+`vitest run supervisor-export-artifacts + artifact-export-sequencer + supervisor-happy.component` —
+and got **3 files, 52 passed**: 21, 16 and 15 respectively. The corrected number is the measured one.
+
+**Re-checked independently of attempt 1.**
+
+- **The hook.** `runExportWindow` (`packages/worker-daemon/src/supervisor/supervisor.ts`) is called
+  from the batch arm at the single site after the `observeRun` block and before the normal
+  `events.terminal` and `finishRun`, taking this run's `created.sandboxId` as a parameter. It calls
+  `run.effect.digestArtifact(sandboxId, …)` and `run.effect.exportArtifact(sandboxId, …)`, so the
+  binding is per-run by construction rather than by discipline.
+- **Mutation reproduced by me, and reverted.** **M7**: rebinding the exporter to a supervisor-scoped
+  "last created sandbox" gives **1 failed** and 20 passed — the F10 case, on
+  `expect([...rec.digests].sort()).toEqual([sbxA, sbxB].sort())`, with tenant B's sandbox id
+  appearing twice and tenant A's missing. That is the table's row exactly, and it is the assertion
+  that makes the F10 case load-bearing rather than decorative: had the two tenants shared a sandbox
+  id or had the case asserted only a count, the mutant would have survived.
+- **F10 is real.** The case runs Organizations A and B concurrently in one supervisor and holds both
+  windows until both sandboxes exist, which is what gives a runtime-scoped binding the chance to
+  cross the tenants that M7 then exercises.
+- **M12's recorded survival is the right kind of disclosure.** §3 records that M12 first survived
+  because the Ruling B case asserted only that the producer was not called — a refusal at the
+  withdrawn-authority check produces the same observation — and that the case now also asserts no
+  `export_artifact` outcome is emitted. A case that survives its own mutant is a check that evaluates
+  nothing, and writing that down rather than quietly strengthening the test is the behaviour this
+  programme wants.
+- **Guard set.** The full `pr.yml` guard set minus the six excluded by the M1 rules, plus
+  `check-evidence-immutability --base origin/docs/replatform-program`, is **0 failures** at the
+  reviewed tip.
+
+**★ `E5-F008` is open against this ticket's own file, and it does NOT block `complete`.** Raised as a
+Codex P2 on the review PR and checked at source. The property is real: `runExportWindow` races the
+whole sequence against `exportArtifactsDeadlineMs`, but each provider call is made with
+`run.makeCtx()`, whose budget (from `workload.maxRuntimeSeconds`, minimum 60 s) can exceed the window
+racing it. `DAT-009-3e` filed it on 2026-09-23 and named `supervisor.ts` — this ticket's file — as
+the fix site. Four reasons it is not an unmet acceptance item of `DAT-009-3c`:
+
+1. **The mechanism `E5-D07` ruling 4 specifies is the one that shipped.** Ruling 4 says the producer
+   and every file's digest→grant→export→commit *"share one budget … raced with the existing
+   `withDeadline`, which is the `stageInputDeadlineMs` shape"*. That race, the networked clamp to
+   `capExpiresAt − now − EXPORT_TEARDOWN_RESERVE_MS`, and the `export_window_exhausted` refusal are
+   all present. Propagating the window's remaining budget into each RPC's `ctx` is a
+   **strengthening** of that mechanism, not the mechanism ruling 4 named.
+2. **Ruling 5 already declares the residual this describes, and narrows it.** It names an in-flight
+   call as a known residual, and the Codex-driven latch re-check after every await narrowed it to a
+   commit already in flight. The record does not claim the residual is absent.
+3. **The finding's own record says `Blocks gate: no`**, and states that no byte is mis-committed:
+   the window latch and the fenced commit both still refuse a late result. What remains is an
+   adapter-manager mutex held slightly past the supervisor's window — and `DAT-009-3e` bounds that
+   from the other side, with an absolute `opDeadlineAtMs` clamped to
+   `capability.expiresAt − EXPORT_TEARDOWN_RESERVE_MS`, a `budgetFired` latch and a re-measured
+   dispatch budget.
+4. **It is unreachable today.** `resolveExportArtifacts` has no production producer — that is
+   `CLI-012` — so `runExportWindow` never opens on a real run. The harm is contingent on code that
+   is not built.
+
+Withholding `complete` here would also be the wrong instrument: the finding is `unowned`, no ticket
+owns it, and `DAT-009-3c` could not discharge it by being re-reviewed. **What closes it** is the
+change `E5-F008` itself prescribes — derive each exporter call's `ctx` from the window's remaining
+budget, with a case asserting the `ctx` a provider receives never exceeds the window racing it —
+and that belongs to whoever takes `E5-F008`, most naturally alongside `CLI-012`, which is what makes
+the path reachable. Recording it here so that a reader of a `complete` record is not left unaware of
+an open finding against its own file.
+
+**Acceptance.** Attempt 1 verified the eight `E5-D07` rulings, the placement, clamp, latch and
+path-free logging at source, the `ReturnType` positive control, ruling 6's `timed_out`, the full
+suite, typecheck, build, boundary and frozen-protocol checks, and CI run `35590700974` by job. I
+re-derived the parts the correction touches and spot-checked the rest; I found nothing that
+contradicts attempt 1. With the one requested change made and independently confirmed, **every
+acceptance item is met**.
+
+**Not blocking, carried forward.** Attempt 1's two notes stand: the `Start SHA` is a 9-character
+short SHA rather than the bare 40-hex the E4 §3 protocol names, and there are two code commits where
+the plan asks for one (the second being the Codex fix, which the record states).
+
 ## Review attempt history
 
 Later reviewers append rows with increasing attempt numbers without replacing earlier ones. Do not include a `Review commit` column: a row cannot embed the SHA of the commit that first contains it.
@@ -241,3 +341,4 @@ Later reviewers append rows with increasing attempt numbers without replacing ea
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
 | 1 | M1 review-batch-2B independent reviewer (Claude Opus 5) | `fc2eb7dde6325803c77950ac4adb1d190db0bd9a` | `changes_requested` | BLOCKING: §2's GREEN focused count "3 files, 50 passed" is false. A rerun at `f5e2aff1f` on a clean checkout gives **52** (21 + 16 + 15); 50 is the pre-Codex figure. Fix: state 52 and keep the old figure as superseded text. Verified with no change needed: hook placement, clamp, latch and path-free logging at source; all eight E5-D07 rulings evidenced; the ReturnType positive control reproduced (guard red, `E5-2` has 1 reference); the F10 two-Organization case is real; full suite 159 / 1070 / 1 skipped; typecheck and build exit 0; boundary PASS; frozen-protocol OK; M13 and M14 reproduced (1 failed each); run `35590700974` `verify (2)` executed 21 + 16, shard 6231 / 33; Codex clean on `a040e3a39d` and `17a85bf8c8`. |
+| 2 | M1 review-batch-3B independent reviewer (Claude Opus 5) | `60aafb32ec` (program tip, the #565 merge) | `approved` | The one requested change is made and independently confirmed: §2 now states **3 files, 52 passed** (21 + 16 + 15) and keeps `Superseded text: "3 files, 50 passed"` with the correction attributed to the planning session. `git diff f5e2aff1f HEAD` over the three test files, `supervisor.ts` and `artifact-export.ts` is empty, and rerunning the task verify command at the tip gives **52**. Re-checked the hook at source (per-run `sandboxId` passed as a parameter). **M7 reproduced** — 1 failed, the F10 case, with B's sandbox id twice and A's missing — which shows the F10 case is load-bearing. M12's recorded first survival is the right disclosure. Guard set 0 failures. Attempt 1's substantive verifications re-derived or spot-checked with no contradiction; every acceptance item met. `E5-F008`, filed later by `DAT-009-3e` against this ticket's own file, is recorded in the review and judged non-blocking: `E5-D07` ruling 4's specified mechanism (the `withDeadline` race plus the clamp) shipped, ruling 5 already declares the in-flight residual, the finding's own record says `Blocks gate: no` and no byte is mis-committed, and the path is unreachable until `CLI-012` supplies a producer. `Status` moves to `complete`. |

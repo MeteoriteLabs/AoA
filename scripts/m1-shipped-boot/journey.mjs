@@ -30,6 +30,8 @@
 //   dispatch           keyed: one assigned task per tenant; the enabled ones must run distributed
 //                      and pass `verify-e7-1-distributed-run`; the control must stay legacy with
 //                      zero jobs. keyless: the CONTROL tenant only (it never reaches a provider).
+//                      Each enabled tenant also carries WRK-018 acceptance 1: EXACTLY ONE accepted
+//                      `usage` event for its attempt, equal to the run's stored usage_json.
 //                      DEP-017: each enabled tenant's attempt must also carry a clean live
 //                      env-absence probe summary (read from its `job_events`), with a red
 //                      planted control; keyless observes no probe (no sandbox exists).
@@ -68,6 +70,7 @@ import {
   extractEnvProbeSummary,
   evaluateEnvProbeEvidence,
 } from "../lib/m1-shipped-boot.mjs";
+import { evaluateUsageCardinality, formatViolations } from "../lib/m1-spine-assertions.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const PROJECT = "aoa-m1-boot";
@@ -710,10 +713,18 @@ function tenantSignals(state, key, run) {
       jobSubmitted: q(`SELECT action, entity_id, details FROM activity_log WHERE action = 'job.submitted' AND company_id = $1`, [t.companyId]),
       securityDenials: q(`SELECT action, details FROM activity_log WHERE action LIKE 'security.denied.%' AND company_id = $1`, [t.companyId]),
     },
+    // WRK-018 acceptance 1, on the KEYED lane: the accepted `usage` events of THIS attempt, from
+    // the durable ledger, scoped to this attempt (never the job: a retry attempt has its own).
+    usageEvents: run?.distributed_attempt_id
+      ? q(`SELECT event_id AS "eventId", organization_id AS "organizationId", company_id AS "companyId",
+             event->'payload' AS payload
+           FROM job_events WHERE attempt_id = $1 AND event_type = 'usage' ORDER BY sequence`,
+        [run.distributed_attempt_id])
+      : [],
     cost: {
       costEventsForRun: Number(q(`SELECT count(*)::int AS n FROM cost_events WHERE heartbeat_run_id = $1`, [runId])[0].n),
       usageJson: run?.usage_json ?? null,
-      note: "A distributed run writes no cost_events today (jobBudgetCostBridge has no production caller; E3-F037/JOB-016). Recorded, not judged.",
+      note: "JOB-016 prices accepted usage at ingest; the cost row is keyed to the usage EVENT, not to the heartbeat run, so this count can be 0 while a charge exists. The D1 spine profile (DEP-016) is what asserts cost cardinality; here it is recorded, not judged.",
     },
     failureClassification: {
       runStatus: run?.status ?? null,
@@ -738,6 +749,7 @@ async function dispatch(state) {
     const { issue, run } = await dispatchTenant(state, key);
     const signals = tenantSignals(state, key, run);
     let verifierExit = null;
+    let usageViolations = null;
     let verdict = null;
     let verifierOutput = null;
     let providerEvidence = null;
@@ -790,6 +802,20 @@ async function dispatch(state) {
         if (rolloutResolution) break;
       }
     }
+    // WRK-018 acceptance 1 on the keyed lane — EXACTLY ONE accepted `usage` event for this
+    // attempt, belonging to this tenant, and the run's stored `usage_json` equal to its numbers.
+    // The cardinality half of acceptance 1 closes here; the "equal to the result line" half does
+    // NOT — usage_json is projected from this same event, so the two sides are not independent
+    // (Codex P1, PR #567). DEP-015-result.md §13 names what an independent capture would need.
+    // The verdict is DEP-016's own `evaluateUsageCardinality` (scripts/lib/m1-spine-assertions.mjs);
+    // the spine proves the same acceptance against the reference provider, this lane against a
+    // real one, and a second implementation would let the two drift.
+    if (t.role === "enabled" && run) {
+      usageViolations = evaluateUsageCardinality({
+        tenant: { key: key, organizationId: t.organizationId, companyId: t.companyId },
+        observation: { usageEvents: signals.usageEvents, storedUsage: run.usage_json ?? null },
+      });
+    }
     const outcome = classifyTenantOutcome({
       role: t.role,
       run,
@@ -798,6 +824,10 @@ async function dispatch(state) {
       verdict,
       rolloutResolution,
     });
+    if (usageViolations && usageViolations.length > 0) {
+      outcome.pass = false;
+      outcome.reasons.push(`usage cardinality (WRK-018 acceptance 1): ${formatViolations(usageViolations)}`);
+    }
     if (t.role === "enabled" && run && (!providerEvidence || providerEvidence.sandboxLogLines === 0)) {
       outcome.pass = false;
       outcome.reasons.push("no worker log line names a provider sandbox for this tenant (runbook §11: the verifier cannot tell a real provider from a fake)");
@@ -834,6 +864,7 @@ async function dispatch(state) {
       verifierExit,
       verdict,
       capabilityProven: verdict?.capabilityProven ?? null,
+      usage: { events: signals.usageEvents.length, storedUsage: run?.usage_json ?? null, violations: usageViolations ?? [] },
       rolloutResolution,
       providerEvidence,
       signals,

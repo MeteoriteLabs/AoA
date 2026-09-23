@@ -467,6 +467,81 @@ defects, which §10 fixed.
 
 ---
 
+## 13. Addendum, 2026-09-23: the keyed lane now carries WRK-018's acceptance 1
+
+DEP-016 (#566) proves, on the D1 spine with the reference provider, exactly one accepted `usage`
+event and exactly one `cost_events` row per enabled tenant. **WRK-018 acceptance 1 — "exactly one
+`usage` equal to the result line" — was still open on a REAL keyed run**, because this lane
+recorded the stored `usage_json` but never counted the accepted events. A stored row cannot rule
+out a duplicate. That gap is why WRK-018 stayed `gate_review` and why `E3-F037` sits `unowned`
+with this as its written residual.
+
+**What the keyed lane now asserts,** per enabled tenant, in `dispatch`:
+- **exactly one** accepted `usage` event in `job_events` **for this attempt** (`attempt_id`, never
+  the job: a retry attempt has its own);
+- that event belongs to **this tenant's** Organization and Company (F10);
+- the run's stored `heartbeat_runs.usage_json` **equals that event's numbers**: `inputTokens`,
+  `outputTokens`, and `durationMs` against the event's `runtimeMillis`.
+
+A violation fails the tenant, and so the lane.
+
+**One implementation, not two.** The verdict is DEP-016's own, `evaluateUsageCardinality` in
+`scripts/lib/m1-spine-assertions.mjs`. It was extracted in place from `evaluateEnabledTenantSpine`,
+which now calls it, and extended with a `storedUsage` input for this lane. The spine passes
+`expectedUnits` (the reference provider's canned units); the keyed lane passes `storedUsage`. A
+test asserts the keyed driver calls it and re-implements none of its codes, so the two lanes
+cannot drift apart while both claim the same acceptance.
+
+**The duration comparison is deliberately conditional.** `canary-terminal-projection.ts` falls
+back to the run's wall clock when the usage event reports no `runtimeMillis`, so `durationMs` is
+compared only when the event actually carries one. Requiring it unconditionally would red a
+correct projection.
+
+**Positive controls, all keyless** (`scripts/lib/__tests__/m1-spine-assertions.test.mjs`, 77 cases):
+- a **duplicate** usage event (a second event id) and a **replay** (the same event id twice) each
+  red with `usage:not_exactly_one`;
+- zero events reds distinctly, with `usage:no_usage_event`;
+- **F10:** a second Organization's event reds as `usage:wrong_tenant`, and cannot satisfy the first
+  tenant's cardinality — its own event plus the foreign one is two;
+- stored usage that differs from the event in any compared field reds;
+- an event with no `runtimeMillis` passes on the wall-clock fallback;
+- an accepted event with no stored `usage_json` reds.
+- **Mutations:** disabling the cardinality check, the tenant scope or the stored-vs-event
+  comparison kills 5, 2 and 1 cases respectively.
+
+**What this closes, and what it does NOT** (Codex P1 on PR #567, and it is right). The
+cardinality half of acceptance 1 — *exactly one* accepted `usage` event per attempt, owned by this
+tenant — is closed by this assertion. The second half, *"equal to the result line"*, is **not**:
+`createCanaryRunProjector` derives `usage_json` from the same accepted event, so the stored-vs-event
+comparison proves the run's PROJECTION carries the ingested event faithfully (a real defect class —
+a projection that dropped or swapped a field would make every run summary lie) but cannot detect a
+producer that parsed the CLI result line wrongly.
+
+**Why no independent capture exists on this lane, measured at source.** The result line is parsed
+inside the worker (`parseClaudeStreamJsonUsage`, `packages/worker-daemon/src/supervisor/usage-observer.ts`)
+from the sandbox's scrubbed stdout tail. `createUsageObserver` returns usage ONLY; `observeRun`
+deliberately never re-emits stdout as log events, and the worker logs neither the line nor the parsed
+counts. So no line, and no second copy of the counts, reaches the control plane or the worker's log
+for the lane to read. Closing that half needs one of two things, both **E4 / WRK-018's** to decide:
+- the worker logging its parsed counts — same parser, so it would catch a projection or transport
+  fault but not a parse fault; or
+- the worker emitting the scrubbed result line itself, which the lane could re-parse with the
+  daemon's own exported pure function. That is a data-minimisation decision about tenant model
+  output, not a decision this ticket may take.
+
+`cachedInputTokens` is likewise not compared on this lane: the projector does not store it
+(`canary-run-projector.ts` writes `inputTokens` / `outputTokens` / `costUsd` / `durationMs`). The
+spine's `expectedUnits` arm does compare it.
+
+**What closes when.** §12 records that DEP-015's own keyed acceptance is MET, on run
+`35619555883` — and states, correctly, that the run establishes **no usage cardinality**: its
+bundle carries the stored per-run usage, not a count of accepted events. That is exactly the gap
+this addendum closes for the NEXT run. WRK-018 acceptance 1's CARDINALITY half therefore **closes on the next keyed
+run that passes this assertion**, and is not closed by this record: no keyed run has yet carried
+it. Nothing here re-opens §12.
+
+---
+
 ## Independent review — attempt 2 (2026-09-23)
 
 **Reviewer:** M1 review-batch-3A independent reviewer (Claude Opus 5). I did not author DEP-015, I am not the planning session, and I am not the attempt-1 reviewer.
@@ -546,5 +621,20 @@ path. §12 says so; no gate record may cite it otherwise. The other two exclusio
 `cost_events` proof here (that is `DEP-016`'s, and it is now proven there on the `m1-spine` lane),
 and no `usage` CARDINALITY (also `DEP-016`'s, and likewise now proven) — are accurate as written for
 this lane.
+
+**★ Note added after merging the program tip (2026-09-23): §13 postdates this review, and does not
+change it.** §13 (from #567) adds a usage-cardinality assertion to this lane's `dispatch` phase. It
+is an assertion for the NEXT keyed run, and §13 says so itself: *"no keyed run has yet carried it …
+Nothing here re-opens §12."* I re-read it against what I approved and confirm that reading — it
+touches neither the acceptance items above nor run `35619555883`'s evidence, which I verified
+unchanged after the merge. Two consequences worth pinning so no later reader has to re-derive them:
+
+- **DEP-015's own acceptance items stay MET**, so `complete` stands. §13 carries `WRK-018`
+  acceptance 1, which is a different ticket's item and was never DEP-015's.
+- **My sentence above — "no `usage` CARDINALITY (also `DEP-016`'s, and likewise now proven)" —
+  means the keyless D1 spine lane, where I verified it on run `35825332876`.** It does **not** mean
+  a real keyed run: `WRK-018` acceptance 1 needs the `claude_local` parser proven live, and §13's
+  assertion has not yet run keyed. That is the same residual `E3-F037` carries and that my DEP-016
+  review names.
 
 Nothing is pending, so I set `Status` to `complete` in a separate commit.
