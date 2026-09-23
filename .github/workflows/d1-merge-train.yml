@@ -111,6 +111,11 @@ on:
       - "server/src/services/job-accepted-output-projection.ts"
       - "server/src/services/job-budget-cost-bridge.ts"
       - "server/src/services/job-authoritative-rate.ts"
+      # The RATE TABLE itself: the spine pins the exact 81-cent charge, so a re-price here is
+      # precisely what must re-run this lane (Codex, PR #566). `costs.ts` carries the billing-type
+      # inference and the cost writer the charge goes through.
+      - "server/src/services/internal-agent/cost-model.ts"
+      - "server/src/services/costs.ts"
       - "server/src/services/job-audit-bridge.ts"
       - "server/src/services/job-placement.ts"
       - "server/src/services/job-placement-transaction.ts"
