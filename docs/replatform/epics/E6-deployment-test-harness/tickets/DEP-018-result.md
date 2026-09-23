@@ -16,7 +16,7 @@
 | The declaration | `tests/d1/fault-matrix.json` | **3 gate profiles, 71 cases** (25 required, 46 pending). Each case carries `case`, `family`, `injection.{mechanism,target,observedBy}`, `expectedClassification` and — for a tenant case — `tenantCase`. |
 | The pure verdicts | `scripts/lib/campaign-fault-matrix.mjs` | `evaluateFaultMatrixDeclaration` (is the matrix complete?) and `evaluateFaultMatrixEvidence` (did each case's injection FIRE, and did the classification match?), plus the enumerated constants `GATE_PROFILES`, `REQUIRED_FAMILIES`, `REQUIRED_TENANT_SURFACES`, `REQUIRED_LEGACY_TABLES`. |
 | The checker | `scripts/check-campaign-fault-matrix.mjs` | Thin CLI. Bare = the declaration; `--evidence <bundle>` = a lane's run. Declared in `scripts/guard-inventory.json`. |
-| The checker's reds | `scripts/check-campaign-fault-matrix.test.mjs` (23 tests) | One red fixture per violation code, against a zero-violation anchor. Wired into `pr.yml` `policy` → *Campaign fault matrix declaration (DEP-018)*, declared in `scripts/test-execution-census.json`. |
+| The checker's reds | `scripts/check-campaign-fault-matrix.test.mjs` (24 tests) | One red fixture per violation code, against a zero-violation anchor. Wired into `pr.yml` `policy` → *Campaign fault matrix declaration (DEP-018)*, declared in `scripts/test-execution-census.json`. |
 | The injection harness | `tests/d1/m1-fault-matrix.test.mjs` (20 cases) + 12 additive helpers in `tests/d1/lib/e6f-harness.mjs` | The live `M1-D1-SPINE` lane, on the D1 compose with DEP-016's one-worker override and its F10 tenant set. |
 | The lane | `.github/workflows/d1-merge-train.yml` job **`m1-fault-matrix`** | Builds the split images, brings the override up, asserts ONE worker service, runs the matrix, runs the checker over the retained bundle, collects the PASSING bundle, then runs the **suppressed-injection positive control** and fails the lane if it passes. New trigger paths: `tests/d1/fault-matrix.json`, `scripts/lib/campaign-fault-matrix.mjs`, `scripts/check-campaign-fault-matrix.mjs`. |
 
@@ -29,8 +29,19 @@
 **Reuse, not a second implementation.** The per-tenant journey verdict
 (`evaluateEnabledTenantSpine`), the control-tenant verdict (`evaluateControlTenant`) and the
 hostile-isolation verdict (`evaluateCrossTenantIsolation`) are **DEP-016's**
-(`scripts/lib/m1-spine-assertions.mjs`), called here rather than restated. No verdict needed
-extending; none was changed, so the two lanes cannot drift.
+(`scripts/lib/m1-spine-assertions.mjs`), called here rather than restated. No verdict's shape
+needed extending, so none was changed.
+
+★ **And that is held, not merely asserted.** The task's reuse clause asks for a test that the lanes
+cannot drift. Since nothing was extended, the real drift risk is not a diverging signature — it is
+someone later pasting a second `evaluateEnabledTenantSpine` into the lane and quietly asserting
+something weaker while both files still claim to prove the same thing. The 24th self-test requires
+the lane to IMPORT all three symbols from `m1-spine-assertions.mjs` and to define no rival under
+those names, **and** requires those three to be genuinely exported there — so the check cannot pass
+by searching for a name that does not exist. Positive control, run: removing
+`evaluateControlTenant` from the lane's import and defining a local stub in its place reds it with
+*"the lane must IMPORT evaluateControlTenant from DEP-016 rather than restate it"* (`23/24`);
+reverted, `24/24`.
 
 ## 2. Acceptance → evidence
 
@@ -39,7 +50,7 @@ extending; none was changed, so the two lanes cannot drift.
 | 1 | Every declared case has a run showing **its injection fired**, with the observed classification matching | §3: **25/25 required cases fired and classified**, twice. The verdict is `evaluateFaultMatrixEvidence`, run by the harness's own last case AND by the checker over the retained bundle. §4's suppressed control is what shows it can say NO. |
 | 2 | Every cross-tenant denial is **denied, not merely empty**, with a same-tenant **positive control** | §3a — nine surfaces, each with its control. ★ For the four tables of acceptance 5 the "with RLS" half **cannot** hold and is not claimed; see §3b. |
 | 3 | The control tenant is refused distributed execution and stays legacy | §3c, through the REAL placement service with the enabled-tenant positive control. |
-| 4 | The checker reds on an undeclared case, a case with no injection evidence, or a profile missing the tenant matrix | §5 — 23 self-tests, one red fixture per violation code, including "drop ANY of the nine surfaces" and "drop ANY of the four legacy tables" as loops. |
+| 4 | The checker reds on an undeclared case, a case with no injection evidence, or a profile missing the tenant matrix | §5 — 24 self-tests, one red fixture per violation code, including "drop ANY of the nine surfaces" and "drop ANY of the four legacy tables" as loops. |
 | 5 | ★★★ The four legacy tables are tested **DIRECTLY**, through the production query path, with a positive control **and** an anti-vacuity control | §3b. |
 
 ## 3. GREEN — the live run (local, real D1 stack)
@@ -157,7 +168,7 @@ the SAME service on an enabled tenant — returned **`selected` / `active` / `le
 **TDD order, stated.** The checker's self-test was written and run FIRST, against a module and a
 declaration that did not exist: the anchor and all 22 mutation tests passed, and the one test that
 reads the committed `tests/d1/fault-matrix.json` failed `ENOENT` — the RED. Writing the declaration
-turned it green (23/23). The first RED run also caught a defect in the test itself: a mutation that
+turned it green (23/23; 24/24 with the anti-drift control added in §1). The first RED run also caught a defect in the test itself: a mutation that
 selected `…fault_control` because it matched the suffix `control`, so it was asserting a violation
 code against a non-tenant case. Fixed, with the reason recorded in the file.
 

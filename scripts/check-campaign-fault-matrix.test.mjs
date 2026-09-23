@@ -341,6 +341,40 @@ test("DEP-018 evidence: an unreadable bundle, an undeclared profile, a missing c
   assert.ok(has(evaluateFaultMatrixEvidence(bad.matrix, bad.bundle).violations, "evidence:row_unreadable"));
 });
 
+// ── the lanes cannot drift ───────────────────────────────────────────────────
+
+test("DEP-018: the fault-matrix lane REUSES DEP-016's verdicts and defines no rival of its own", () => {
+  // The ticket's reuse clause: "Reuse DEP-016's and DEP-015's shared verdicts rather than writing
+  // parallel implementations." Nothing needed extending, so the drift risk is not a diverging
+  // signature — it is someone later pasting a second `evaluateEnabledTenantSpine` into the lane and
+  // quietly asserting something weaker, while both files still claim to prove the same thing.
+  // This is the control for exactly that.
+  const lane = readFileSync(path.join(repoRoot, "tests/d1/m1-fault-matrix.test.mjs"), "utf8");
+  const shared = ["evaluateEnabledTenantSpine", "evaluateControlTenant", "evaluateCrossTenantIsolation"];
+  const importBlock = /import\s*\{([\s\S]*?)\}\s*from\s*"\.\.\/\.\.\/scripts\/lib\/m1-spine-assertions\.mjs";/.exec(lane);
+  assert.ok(importBlock, "the lane must import DEP-016's verdicts from scripts/lib/m1-spine-assertions.mjs");
+  for (const symbol of shared) {
+    assert.ok(
+      importBlock[1].includes(symbol),
+      `the lane must IMPORT ${symbol} from DEP-016 rather than restate it`,
+    );
+    // …and must not define one of its own under the same name.
+    assert.ok(
+      !new RegExp(`(function|const|let)\\s+${symbol}\\b`).test(lane),
+      `the lane defines its own ${symbol} — a second implementation of a verdict both lanes claim to prove`,
+    );
+  }
+  // Positive control for THIS check: the patterns it looks for are real, so a green result is not
+  // an empty search. (A typo in a symbol name would otherwise pass every assertion above.)
+  const assertions = readFileSync(path.join(repoRoot, "scripts/lib/m1-spine-assertions.mjs"), "utf8");
+  for (const symbol of shared) {
+    assert.ok(
+      new RegExp(`export function ${symbol}\\b`).test(assertions),
+      `${symbol} must actually be exported by scripts/lib/m1-spine-assertions.mjs — otherwise this check is searching for a name that does not exist`,
+    );
+  }
+});
+
 // ── the COMMITTED declaration ────────────────────────────────────────────────
 
 test("DEP-018: the committed tests/d1/fault-matrix.json satisfies every declaration invariant", () => {
