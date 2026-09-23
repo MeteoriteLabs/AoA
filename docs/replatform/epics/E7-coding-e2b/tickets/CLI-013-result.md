@@ -233,9 +233,37 @@ Recorded as a miss, not smoothed over: a class sweep is only as wide as the clas
 The projection (F5), the counter (F6), any frozen-protocol edit, and any widening of the `log`
 payload. No new register wiring, and no keyed workflow dispatched (keyless only).
 
-## 10. CI
+## 10. CI and review
 
-Filled at the final head — see §11 and the PR. `ci-required` is the single required check.
+**PR #589**, base `docs/replatform-program` (never `main`).
+
+**Code-reviewed revision (40-hex): `c3f71519eef55035ebc80a97e0e704b1055b01f8`.** Codex round 2 on
+that revision: *"Didn't find any major issues."* Round 1 raised two findings, both real, both
+verified at source before acting — see §8a. The only commit after this revision is the docs-only one
+that fills in this section.
+
+`ci-required` — the single required check — is **SUCCESS** on `c3f71519ee`. Executed counts, by job:
+
+| Job | Result |
+|---|---|
+| `ci-required` (aggregator) | **SUCCESS** |
+| `verify` shards 1–4 (Linux, the required gate; this ticket's 9 tests run here) | SUCCESS |
+| `e2e` | SUCCESS |
+| `migrations` | SUCCESS — no schema change in this diff, so nothing to drift |
+| `policy` (the guard set, incl. `check-finding-ownership`, `check-register-citation-integrity`, `check-test-inventory`, `check-evidence-immutability`) | SUCCESS |
+| `brand-check`, `lint`, `changes`, `browser` | SUCCESS |
+| `worker-protocol-contract-bytes` (ubuntu + windows) | SUCCESS — the frozen package is untouched |
+| `distributed-contract` | SKIPPED (unchanged from the base; not a regression of this PR) |
+
+Locally, before every push: the pure-node guard set plus
+`node scripts/check-evidence-immutability.mjs --base origin/docs/replatform-program` → `failures: 0`.
+
+★ **One flake, named not hidden.** `supervisor-hung-stage-input.test.ts > "the deadline is ONE budget
+across both halves"` went red in 2 of 3 local full-package runs and green alone and in the third. It
+is a real-clock test (`setTimeout(…, 30)` against a small budget) and references **none** of
+`resolveExportArtifacts` / `exportArtifacts` / `artifactPrepared`, so this diff cannot reach it — the
+announcement path runs only when both export deps are present. Already recorded as a flake in
+`CLI-012-result.md`; not re-filed here.
 
 ---
 
