@@ -392,4 +392,13 @@ What DEP-015 needs from the worker is exactly:
 
 Until that lands, 1(b) is proven on the worker side only.
 
+### CI for this amendment (PR #571)
+
+Run `35830452057` on head `681699b287eb7f8026588c1821a92bd5e97d5fba`: **`ci-required` success**
+(job `107086368105`), all four `verify` shards green — `usage-observer.test.ts` **14 executed**
+(job `107081629168`, shard total 6017 passed / 29 skipped) and `usage-stream-redaction.test.ts`
+**20 executed** (job `107081629234`, shard total 6285 passed / 33 skipped). Codex: one P1 on
+`9b576152f` (the redacted-key defect above), verified, fixed, replied and resolved; the review on
+`681699b28` completed with no findings.
+
 **Status:** unchanged — `gate_review`. A distinct reviewer alone may set `complete`.
