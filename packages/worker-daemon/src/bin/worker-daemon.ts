@@ -139,6 +139,11 @@ export interface BootstrapDeps {
    * (E4-D12): the current default omits it, so the startup pass runs NOTHING and the
    * daemon still dispatches no work (rollback = omit it). WRK-007 does not rewire the
    * composition root to actually run at boot.
+   *
+   * ★ WRK-013 — this INJECTED seam is no longer the only route. When dispatch COMPOSES, the
+   * runtime's own `start()` builds the real reconciler over the durable lease-candidate store
+   * and runs it to completion BEFORE the poll loop (see `composeDispatchRuntime`). This seam
+   * stays for tests and for a host that injects its own pass; it runs at boot, before signals.
    */
   readonly reconciler?: StartupReconciler;
   /**
@@ -563,6 +568,8 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
           store: lifecycle.store,
           client: controlPlaneClient,
           eventOutboxPath: config.eventOutboxPath,
+          // WRK-013 — the durable lease-candidate store the startup reconcile replays.
+          leaseCandidatePath: config.leaseCandidatePath ?? undefined,
           concurrency: config.concurrency,
           backoff: config.backoff,
           workDir: process.cwd(),
@@ -603,11 +610,19 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
           // the daemon stays UP serving health, the same "healthy and inert" degradation.
           if (pollLoopStarted || shuttingDown) return;
           pollLoopStarted = true;
-          composed.start();
-          logger.info(
-            { workerId: identity.workerId, targetId: identity.targetId },
-            "worker-daemon dispatch COMPOSED; heartbeat seeded; leasing through the poll loop",
-          );
+          // WRK-013 — `start()` runs the startup reconcile to COMPLETION and only then arms the
+          // poll loop. It runs AFTER the first beat on purpose: the probe is a `lease_renew`, and the
+          // control plane refuses a renew (`target_revoked`) whose worker heartbeat is older than its
+          // bound (`ackAuthorityCurrent`, server/src/services/job-fencing.ts) — after a long enough
+          // outage, probing before the first beat would misread a live lease as revoked.
+          // `start()` never rejects; `Promise.resolve` also tolerates an injected runtime (the
+          // `composeDispatch` observation seam) whose `start` returns nothing.
+          void Promise.resolve(composed.start()).then(() => {
+            logger.info(
+              { workerId: identity.workerId, targetId: identity.targetId },
+              "worker-daemon dispatch COMPOSED; heartbeat seeded; startup reconcile complete; leasing through the poll loop",
+            );
+          });
         });
       } else {
         logger.info(

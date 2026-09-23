@@ -267,6 +267,18 @@ export interface FakeRenewRecord {
   readonly deviceThumbprint: string;
 }
 
+/** WRK-013 — every WELL-FORMED renew REQUEST, with the lease identity its body carried. Recorded
+ * before auth and before the verdict, so a dead/refused renew is visible too (`renewCountFor`
+ * counts only successful extensions). Lets a multi-tenant test prove a probe used its OWN lease's
+ * identity and never another's. */
+export interface FakeRenewRequestRecord {
+  readonly leaseId: string;
+  readonly workerId: string;
+  readonly jobId: string;
+  readonly attempt: number;
+  readonly fenceToken: string;
+}
+
 export interface FakeQuarantineRecord {
   readonly kind: "grant" | "finalize";
   readonly idempotencyKey: string;
@@ -327,6 +339,8 @@ export interface FakeControlPlane {
   renewCount(): number;
   renewCountFor(leaseId: string): number;
   renews(): readonly FakeRenewRecord[];
+  /** WRK-013 — every well-formed renew request (any outcome), in arrival order. */
+  renewRequests(): readonly FakeRenewRequestRecord[];
   /** Distinct idempotency keys the plane has seen across all renews (order-preserved). */
   renewKeys(): readonly string[];
   /** The expiry the plane recorded for a renew idempotency key (idempotent replay). */
@@ -523,6 +537,7 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
   const selfModelDirectives: FakeSelfModelDirective[] = [];
   const selfHelloDirectives: FakeSelfHelloDirective[] = [];
   const renewRecords: FakeRenewRecord[] = [];
+  const renewRequestRecords: FakeRenewRequestRecord[] = [];
   const controlAckRecords: FakeControlAckRecord[] = [];
   const controlAckAppliedQueue: boolean[] = [];
   // JOB-015 (V4): a settable latency gate for the control-ACK route + a count of ACKs
@@ -1290,6 +1305,13 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
     // Every well-formed renew REQUEST counts as an attempt (so a "no busy-spin"
     // assertion sees the real renew count, exactly like poll).
     renewRequestCount += 1;
+    renewRequestRecords.push({
+      leaseId: parsed.data.body.leaseId,
+      workerId: parsed.data.body.workerId,
+      jobId: parsed.data.body.jobId,
+      attempt: parsed.data.body.attempt,
+      fenceToken: parsed.data.body.fenceToken,
+    });
     if (renewUnauthorizedForced) {
       status = 401;
       outcome = "unauthorized";
@@ -2005,6 +2027,9 @@ export async function startFakeControlPlane(opts: FakeControlPlaneOptions = {}):
     },
     renews(): readonly FakeRenewRecord[] {
       return renewRecords;
+    },
+    renewRequests(): readonly FakeRenewRequestRecord[] {
+      return renewRequestRecords;
     },
     renewKeys(): readonly string[] {
       const seen: string[] = [];

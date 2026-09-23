@@ -45,6 +45,7 @@ import {
   hashResourceLabels,
   labelsEqual,
 } from "@armyofagents/worker-daemon";
+import { WireProtocolError } from "@armyofagents/provider-wire";
 import type { OwnedLabelsCapability, RedactedListResult } from "@armyofagents/provider-wire";
 
 import { verifyOwnedLabelsCapability } from "./capability-verify.js";
@@ -121,7 +122,24 @@ export async function gateOwnedOp<R>(
   sandboxId: string,
   ctx: ProviderOpContext,
   capability: OwnedLabelsCapability | undefined,
-  dispatch: (detail: InspectResult) => Promise<R>,
+  dispatch: (detail: InspectResult, remainingMs?: number) => Promise<R>,
+  /**
+   * DAT-009-3e (Codex P1, PR #557) — an OPTIONAL ABSOLUTE ms-epoch deadline for the LOCKED section:
+   * the ownership inspection AND the dispatch.
+   *
+   * ★ AN INSTANT, NOT A DURATION, and that is the correction Codex's sixth round forced.
+   * `runExclusive` QUEUES: a request can wait behind a predecessor and only then start its timer,
+   * so a duration computed before enqueueing would hand every queued request a full, stale window.
+   * The remaining budget is measured HERE, after the lock is acquired, and the dispatch is handed
+   * that remaining budget rather than the caller's original one. Without it, a provider whose `inspect` ignores
+   * `ctx.deadlineMs` (`E2bSandboxProvider`'s does) can hold the per-sandbox mutex for as long as
+   * its transport hangs, and the run's own destroy queues behind it — the strand, one step before
+   * the read and the upload. When the bound fires the exclusive section RETURNS, which releases
+   * the lock, and the caller gets a FIXED `WireProtocolError`; the abandoned work is detached and
+   * its rejection is handled so it is never unhandled. Omitted ⇒ byte-identical to before, so the
+   * ops that pass no bound (execute, the teardown ops, inspect, stage_files) are unchanged.
+   */
+  opDeadlineAtMs?: number,
 ): Promise<R> {
   const { provider, controlPlanePublicKey, now, sandboxLock } = deps;
 
@@ -139,24 +157,75 @@ export async function gateOwnedOp<R>(
   //    dispatcher that re-entered this lock on the same key would self-deadlock — keep
   //    dispatchers non-re-entrant, or key any inner gate on a different id.
   return sandboxLock.runExclusive(sandboxId, async () => {
-    // Resolve the target AM-local. MIRROR #requireOwned: SandboxNotFoundError -> the
-    // uniform error; RETHROW any OTHER (transient) inspect fault as its own class.
-    let detail: InspectResult;
-    try {
-      detail = await provider.inspect(sandboxId, ctx);
-    } catch (err) {
-      if (err instanceof SandboxNotFoundError) throw new ResourceNotAvailableError();
-      throw err; // transient / non-NotFound — existence-orthogonal, surfaced distinctly
-    }
+    // ★ The budget LATCH (Codex P2, PR #557). When the bound fires, the locked section is
+    // detached but still running: without this, an inspection that resolves afterwards would go
+    // on to dispatch, so an export could start reading and PUTting after the caller was told it
+    // timed out and teardown had taken the lock. Checked after the awaited inspection, exactly as
+    // the supervisor's export window re-checks its own latch after every await.
+    let budgetFired = false;
+    // Measured AFTER the queue, so time spent waiting for the lock is spent budget. This bounds
+    // the whole locked section; the DISPATCH's own budget is re-measured after the inspection.
+    const remainingMs = opDeadlineAtMs === undefined ? undefined : opDeadlineAtMs - now();
+    const locked = (async (): Promise<R> => {
+      // Resolve the target AM-local. MIRROR #requireOwned: SandboxNotFoundError -> the
+      // uniform error; RETHROW any OTHER (transient) inspect fault as its own class.
+      let detail: InspectResult;
+      try {
+        detail = await provider.inspect(sandboxId, ctx);
+      } catch (err) {
+        if (err instanceof SandboxNotFoundError) throw new ResourceNotAvailableError();
+        throw err; // transient / non-NotFound — existence-orthogonal, surfaced distinctly
+      }
 
-    // Field-wise owned-check (BOTH clauses — labels AND generation). A mismatch is
-    // refused IDENTICALLY to not-found.
-    if (!labelsEqual(detail.resourceLabels, ownedLabels) || detail.generation !== ownedLabels.deviceGeneration) {
-      throw new ResourceNotAvailableError();
-    }
+      // Field-wise owned-check (BOTH clauses — labels AND generation). A mismatch is
+      // refused IDENTICALLY to not-found.
+      if (!labelsEqual(detail.resourceLabels, ownedLabels) || detail.generation !== ownedLabels.deviceGeneration) {
+        throw new ResourceNotAvailableError();
+      }
 
-    // Allow — dispatch OUTSIDE the inspect-collapse try. A dispatch fault is ITS OWN class.
-    return dispatch(detail);
+      if (budgetFired) throw new WireProtocolError("gated operation abandoned: its budget fired before dispatch");
+
+      // Allow — dispatch OUTSIDE the inspect-collapse try. A dispatch fault is ITS OWN class.
+      // ★ The dispatch's budget is RE-MEASURED here (Codex P1, seventh round): the inspection above
+      // has already spent part of the window, and handing the provider the pre-inspection figure
+      // would give it a timer that outlives this section's own bound.
+      return dispatch(detail, opDeadlineAtMs === undefined ? undefined : opDeadlineAtMs - now());
+    })();
+    return remainingMs === undefined
+      ? locked
+      : boundLockedSection(locked, remainingMs, () => {
+          budgetFired = true;
+        });
+  });
+}
+
+/**
+ * Settle with the locked section, or — when `budgetMs` elapses first — reject with a FIXED
+ * `WireProtocolError` so the exclusive section returns and the per-sandbox lock is RELEASED. The
+ * abandoned work keeps running detached; its eventual rejection is swallowed, never unhandled. The
+ * message names no sandbox, path, grant or url.
+ */
+function boundLockedSection<R>(work: Promise<R>, budgetMs: number, onExpiry: () => void): Promise<R> {
+  work.catch(() => undefined);
+  if (!(budgetMs > 0)) {
+    onExpiry();
+    return Promise.reject(new WireProtocolError("gated operation refused: no budget left"));
+  }
+  return new Promise<R>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      onExpiry();
+      reject(new WireProtocolError("gated operation timed out before it completed"));
+    }, budgetMs);
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err: unknown) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
   });
 }
 

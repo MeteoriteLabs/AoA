@@ -16,10 +16,17 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { renewLeaseOnce } from "../lease/lease-renewal.js";
+import { createStartupReconciler } from "../supervisor/startup-reconcile.js";
 
 import type { FakeControlPlane } from "./support/fake-control-plane.js";
 import { enrollFixtureWorker } from "./support/poll-fixtures.js";
-import { FakeScheduler, RENEWAL_CODE, makeRenewalHandoff, startRenewalPlane } from "./support/renewal-fixtures.js";
+import {
+  FakeScheduler,
+  RENEWAL_CODE,
+  RENEWAL_IDENTITY,
+  makeRenewalHandoff,
+  startRenewalPlane,
+} from "./support/renewal-fixtures.js";
 
 const LEASE_L = "00000000-0000-4000-8000-0000000000c1";
 const LEASE_M = "00000000-0000-4000-8000-0000000000c2";
@@ -104,5 +111,52 @@ describe("startup-lease-authority — the fake answers lease_renew PER LEASE, no
       now: () => scheduler.now(),
     });
     expect(attempt.kind).toBe("rejected");
+  });
+});
+
+// -----------------------------------------------------------------------------
+// WRK-013 / founder ruling F5 — a live lease found at restart is FENCED.
+//
+// The frozen protocol has no lease-state query, so authority is inferred by ONE renew (the
+// probe). F5 makes that renewal the LAST: the reconciler names every live candidate `fenced`,
+// never renews it again, and never hands it to a renewal loop — the control plane's reaper ends
+// the attempt. The result carries the fenced set so the composition can log and prune by lease.
+// -----------------------------------------------------------------------------
+
+describe("startup-lease-authority — F5: a live candidate is fenced after exactly one probe renewal", () => {
+  it("probes each candidate ONCE and reports live leases as FENCED, dead ones as not fenced", async () => {
+    const { session, key, client } = await enrollFixtureWorker(fake, RENEWAL_CODE);
+    fake.seedLeaseAuthority(LEASE_L, { live: true });
+    fake.seedLeaseAuthority(LEASE_M, { live: false, deadReason: "target_revoked" });
+
+    const result = await createStartupReconciler({
+      client,
+      session: { get: async () => session, recover: async () => session },
+      key,
+      identity: RENEWAL_IDENTITY,
+      leaseCandidates: [makeRenewalHandoff({ leaseId: LEASE_L }).offer, makeRenewalHandoff({ leaseId: LEASE_M }).offer],
+      now: () => scheduler.now(),
+    }).run();
+
+    expect(result.fencedLeaseIds).toEqual([LEASE_L]);
+    expect(result.leaseProbes.get(LEASE_M)?.state).toBe("dead");
+    // Exactly one renew REQUEST per candidate — the probe — and nothing after it.
+    expect(fake.renewRequests().map((r) => r.leaseId).sort()).toEqual([LEASE_L, LEASE_M].sort());
+  });
+
+  it("a duplicated candidate is probed once (one renew per lease, never two)", async () => {
+    const { session, key, client } = await enrollFixtureWorker(fake, RENEWAL_CODE);
+    fake.seedLeaseAuthority(LEASE_L, { live: true });
+    const offer = makeRenewalHandoff({ leaseId: LEASE_L }).offer;
+    const result = await createStartupReconciler({
+      client,
+      session: { get: async () => session, recover: async () => session },
+      key,
+      identity: RENEWAL_IDENTITY,
+      leaseCandidates: [offer, offer],
+      now: () => scheduler.now(),
+    }).run();
+    expect(result.fencedLeaseIds).toEqual([LEASE_L]);
+    expect(fake.renewRequests().filter((r) => r.leaseId === LEASE_L)).toHaveLength(1);
   });
 });

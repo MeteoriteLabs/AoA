@@ -795,6 +795,18 @@ all four read as shipped.
    move**: the destroy half still fails on the worker-side code gap regardless, and the register
    row (`DE-10`, `deliveryStatus: partial`) was corrected in the same direction on the same day —
    this item is the derived half of that correction, and it was missed on the first pass.
+   ★ **Amended 2026-09-21 (WRK-013, M1a).** The worker-side half is **no longer dead code**.
+   `composeDispatchRuntime` (`packages/worker-daemon/src/lifecycle/dispatch-runtime.ts`) now builds
+   `createStartupReconciler` inside `start()`, over a durable lease-candidate store, and runs it
+   before the poll loop on every boot that composes dispatch. **What that does not change:** the
+   destroy half runs only where the daemon holds a process-level provider **and** an
+   Organization-scoped target (a desktop provider). On the **container** path, which is the M1
+   path, and on a platform-scoped target, the sandbox pass is **skipped by name**
+   (`SANDBOX_PASS_SKIP_REASONS`). Founder ruling **F4** accepts that as a **named narrowing owned by
+   WRK-013**: orphan reclamation there rests on the adapter-manager reaper, whose arming gap above
+   is unchanged. Item 1's third layer is gone (the factory is now called), but its verdict holds: the
+   composition supplies no `quarantineCandidates`, so DE-05's sweep still has no producer. The text
+   above is kept as it was measured.
 4. **DE-12 (Critical) — the submit-time generation deny still cannot refuse in production; its
    "no writer" and "nothing submits `service_reconcile`" premises have since fallen.**
    ★ **Amended 2026-09-10 — re-measured at `a5d27555b`. Two of this item's original premises are
