@@ -84,11 +84,11 @@ refusal can never be the session-vs-batch identity check (DEP-016's own lesson, 
 |---|---|---|
 | `events` | **401 `unauthorized`** on the real fenced ingest | A's own worker's identical upload: **200 `accepted`** |
 | `read` | A's `job_events` under **B's** scope on the non-owner `aoa_app` pool with RLS: **0 rows** | the same read under A's own scope: **1 row** |
-| `lease` | B renews A's live lease at `/worker-control/leases/:id/renew`: **4xx with a code** (a DENIAL, not merely a non-success — a 5xx or a transport failure would fail this case) | A's own renew of the same lease: **200** |
-| `cancel` | the PRODUCTION `requestCancellation` under B's Organization and Company against A's job: A's attempt **untouched** | the same service on a throwaway A job: **cancelled** |
+| `lease` | B renews A's live lease at `/worker-control/leases/:id/renew`: **409 `stale_fence`**, pinned | A's own renew of the same lease: **200 `renewed`** |
+| `cancel` | the PRODUCTION `requestCancellation` under B's Organization and Company against A's job: the service returns **`not_found`** and A's attempt is **untouched** | the same service on a throwaway A job: **`queued`**, with a real cancel command |
 | `secrets` | B resolves A's handle at the fenced route: **`denied`**; and A's `job_secret_handles` row under B's scope: **0 rows** | A's own scope: **1 row**. ★ Bounded claim — see below |
-| `staged_inputs` | B requests a transfer grant on A's attempt: **409 `stale_fence`** | A's own grant: **`upload_granted`** |
-| `outputs` | B commits an artifact onto A's attempt: **denied** | A's own commit: **`committed`** |
+| `staged_inputs` | B requests a transfer grant on A's attempt: **409 `stale_fence`**, pinned | A's own grant: **200 `upload_granted`** |
+| `outputs` | B commits an artifact onto A's attempt: **409 `stale_fence`**, pinned | A's own commit: **200 `committed`** |
 | `cost_rows` | B's `companyId` through the production `costService`: **0 of A's charges** | A's own: the journey's real charge, **> 0 cents** |
 | `tool_calls` | B's `companyId` with A's run id through the production `createDistributedToolSurfaceUseResolver`: **`deny`** | the SAME resolver on A's own local run under A's own Company: **`admit`** |
 
@@ -220,11 +220,26 @@ directions, the DEP-016 env-probe shape).
   are other tickets' growth.
 - **Regression on the shared harness:** `tests/d1/m1-spine.test.mjs` **6/6**,
   `tests/d1/e6f-09-lease-faults.test.mjs` + `tests/d1/e6f-14-orphan-sweep.test.mjs` **4/4**, all on
-  the same stack after every harness edit. ★ One intermediate `m1-spine` run — taken immediately
-  after a fault-matrix run on the SAME live stack — failed one case; the re-run on a quiesced stack
-  was 6/6. Recorded because it is the reason the merge train gives each profile its **own** stack
-  and tears it down: the two profiles share a database and a tenant set, and the matrix deliberately
-  cancels and reaps.
+  the same stack after every harness edit — so none of the 12 additive helpers or the two touched
+  ones broke a neighbour.
+
+★ **THE TWO PROFILES MUST NOT SHARE A LIVE STACK, and the exact reason is now measured** (it was
+first seen as "one intermediate run failed", which was too vague to act on). Running `m1-spine`
+immediately AFTER a fault-matrix run on the same database reds exactly one case with:
+
+```
+rollback:command_wrong_reason: the cancel command on attempt <id>'s active lease
+carries ["m1-fault-matrix-leased"], not distributed_execution_rollback
+```
+
+The cause is not a defect in either profile. The fault matrix's `d1.cancel.leased_attempt` case
+leaves a LEASED attempt in `cancel_requested` carrying a cancel command with **its own** reason;
+`m1-spine`'s rollback rehearsal then takes a pre-drain CENSUS of every non-terminal attempt of the
+three Organizations — deliberately, since DEP-016's own Codex round established that judging only
+the seeded pair lets a skipped branch pass — sees that attempt, and correctly refuses a cancel
+command that does not carry the drain's reason. **In the merge train this cannot arise:** each
+profile is its own job, brings its own stack up and tears it down with `down -v`. Recorded here so
+nobody later "fixes" the spine's census to ignore foreign reasons, which would delete a real check.
 
 ## 6. Deviations from the task section, measured
 
@@ -271,3 +286,73 @@ allocated.
 
 To be recorded, by job with its executed count, in an addendum once the PR's run on the reviewed
 revision completes. This section is not rewritten.
+
+## 9. The merge with the program tip, and the Codex round (2026-09-23)
+
+Merged `origin/docs/replatform-program` at `499ec4d1c` (which brought `CLI-011`'s keyed output
+probe and `DEP-017`) into this branch — a merge, not a rebase, so the reviewed revisions stay
+ancestors.
+
+- **One conflict**, in `docs/architecture/distributed-execution-threat-controls.json`: my
+  line re-points against theirs. Their side was taken, and mine were re-applied onto the merged
+  file by SYMBOL — `pr.yml:1151→1163` (`pnpm exec vitest run --shard`, 14 entries), `:781→793`
+  (`image-admission.test.mjs`), `:1632→1644` (`check-distributed-execution-foundation.mjs`), and
+  `guard-inventory.json:201→209` (`verify-image-admission.mjs`). `check-register-citation-integrity`
+  is PASS: **397 enforced citations**.
+- **The merge touched nothing in `docker/`, `tests/d1/` or `d1-merge-train.yml`**
+  (`git diff --stat` over those paths is empty) and nothing in `server/src` or `packages/db`; its
+  only code effect is in `packages/worker-daemon` (DEP-017's env probe and CLI-011's keyed probe
+  test). **Even so the whole lane was re-measured on the merged tree** rather than argued from
+  that — see below.
+- `scripts/test-inventory.json`: the `scripts` pin recomputed on the combined tree (70 → 71).
+
+### 9a. Codex findings, verified at source and fixed
+
+Both were **P1, both were right**, and both were the same underlying defect: a fault that was
+*observable* but not *load-bearing*.
+
+| Finding | Verified | Fix |
+|---|---|---|
+| **P1** — *"Route the timeout injection through the production worker path."* The case handed the ingest a constant `status: "failed"`, so a regression that reported a timeout as a success would still have left it green | **True.** Read at source: the terminal payload was a literal | The payload is now **DERIVED** from the provider's report by `terminalPayloadFor`, and the case grew an **anti-vacuity arm**: the SAME derivation, the SAME code path, with a provider that did NOT time out, must land `succeeded`. Live: failed arm `timedOut: true` → attempt **`failed`**; control arm `timedOut: false` → attempt **`succeeded`**. ★ The remainder of Codex's ask — have the DEPLOYED worker produce the terminal — is **not available on this lane and is not claimed**: `AOA_WORKER_DISPATCH_ENABLED` is declared ABSENT for both D1 workers (`scripts/lib/d1-dispatch-declared.mjs`, enforced by `check-d1-dispatch-declared`), so there is no worker-executed path here at all. That half is `d2m.provider_failure.e2b_create_refused`, already declared and keyed |
+| **P1** — *"Drive the link-cut case through the severed proxy."* The case cut `worker-to-control-plane`, proved it severed, and then did everything else over the DIRECT `control-plane:3100` base the harness helpers default to | **True, and the sharper finding of the two.** The cut was observable and **inert**: nothing under test traversed it, so the case could have passed with no worker request interrupted | Every worker request in the case now goes through the Toxiproxy LISTEN address a real worker uses (`toxiproxy:13100`), and `injectionFired` is derived from a REAL request succeeding before the cut, **failing during it**, and succeeding after the restore. `ack()` gained an optional `base` (additive; the default is unchanged). Live: poll **200 `no_work`** → **request failed** → **200 `no_work`**, and the reconnected worker's late ack through the same proxied path is **409 `attempt_terminal`**. Only the reap still goes direct, deliberately: it is the OPERATOR's path, and routing it through the cut would merely prevent the reclaim the case exists to observe |
+
+**A third strengthening, self-found while checking Codex's work.** The `lease`, `staged_inputs`,
+`outputs` and `cancel` denials asserted only "not a success", which would equally accept a
+`malformed` — a PROTOCOL refusal that never reaches the tenant boundary — or a 500, which proves no
+enforcement at all. That is exactly the trap this file's orphan case fell into on its first live
+run. The three worker-control surfaces now reuse DEP-016's pinned `EXPECTED_FOREIGN_ACK_STATUS` /
+`EXPECTED_FOREIGN_ACK_CODE` (**409 `stale_fence`**, measured), and the cancel surface requires the
+production service's own **`not_found`** outcome as well as the untouched row.
+
+### 9b. Re-measured on the merged tree, with the fixes
+
+Images rebuilt from the merged tree (`docker/images/build.sh`; `CONTROL-PLANE_REVISION` =
+`2aa3855aa137f31a27c6bb2054482266cd465ebc`, confirmed on the running container's
+`org.opencontainers.image.revision` label):
+
+| Run | Result |
+|---|---|
+| The matrix | `tests 20, pass 20, fail 0`; checker: **25/25 required cases fired and classified**, 1 pending, profile `INCOMPLETE` |
+| **Suppressed-injection positive control** | `pass 10 / fail 10`, with **9 × `evidence:injection_did_not_fire`** |
+| The matrix again | `tests 20, pass 20, fail 0` — so the control was the suppression, not a broken stack |
+
+Everything in §3, §3a, §3b, §3c and §3d holds on this tree, with the two rows above strengthened as
+§9a describes.
+
+## 10. CI evidence
+
+**Run `35833804804`, head `2aa3855aa137f31a27c6bb2054482266cd465ebc` (the merge): `ci-required`
+PASS, all 16 checks `success`** — `changes`, `policy`, `lint`, `migrations`,
+`distributed-contract`, `browser`, `brand-check`, both `worker-protocol-contract-bytes` lanes,
+`e2e`, `e2e-pgvector` and `verify (1..4)`.
+
+- `policy` job **`107092717578`**, step *Campaign fault matrix declaration (DEP-018)*:
+  `scripts/check-campaign-fault-matrix.mjs` printed *"3 gate profile(s) and 71 case(s) (25
+  required, 46 pending)"*, and `scripts/check-campaign-fault-matrix.test.mjs` ran
+  **24 tests, 24 pass, 0 fail** — a non-zero executed count, on Linux.
+- **Still not run: the `m1-fault-matrix` job itself.** It lives in `d1-merge-train.yml`, which
+  fires on push to `main` / `docs/replatform-program` and on the merge queue — not on pull
+  requests. Its first execution will be the merge of this PR. The live half is evidenced here by
+  local runs against a real D1 stack (§3, §9b), and the lane's own verdict is owed.
+- A later addendum records `ci-required` on the FINAL head, which carries the two Codex P1 fixes
+  (§9a). This section is not rewritten.

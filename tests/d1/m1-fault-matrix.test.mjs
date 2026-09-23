@@ -70,7 +70,7 @@ import {
   setProxyEnabled,
   setToxiproxyToxic,
   removeToxiproxyToxic,
-  probeProxyReachable,
+  TOXIPROXY_LISTEN,
   expireLeaseDeadlines,
   reapOrganization,
   attemptObjectKey,
@@ -906,40 +906,76 @@ test("fault-matrix: cancelling a LEASED attempt requests cancellation and fences
 
 // ═══ 6. provider failure ═════════════════════════════════════════════════════
 
-test("fault-matrix: a provider execute that exceeds its deadline lands as a classified FAILED terminal", { skip: SKIP }, () => {
-  const [A] = M1_SPINE_TENANTS.enabled;
-  const live = bringUpLeasedAttempt(A);
-  // THE INJECTION: `deadlineMs: 0` makes the reference provider report `timedOut` and the terminal
-  // state `expired` (fake-driver.ts `execute`). The worker forwards what the provider reported.
-  const executed = SUPPRESS_INJECTION
-    ? runReferenceProvider("provider-fail")
-    : runReferenceProvider("provider-fail", { deadlineMs: 0 });
-  const timedOut = executed.result.timedOut === true && executed.result.terminalState === "expired";
+/**
+ * The worker's mapping from a provider result to a terminal event, written ONCE and used by both
+ * arms below. ★ Added after a Codex P1 on PR #573: the first version handed the ingest a constant
+ * `status: "failed"`, so a regression that reported a timeout as a success would have left the case
+ * green — the ingest was being TOLD the answer. The payload is now DERIVED from what the provider
+ * reported, and the success arm below is the control that shows the derivation can produce the
+ * other answer.
+ */
+function terminalPayloadFor(providerResult) {
+  const timedOut = providerResult?.timedOut === true || providerResult?.terminalState === "expired";
+  return timedOut
+    ? { status: "failed", exitCode: null, errorCode: "provider_timeout", errorMessage: "the provider reported a deadline overrun" }
+    : { status: "succeeded", exitCode: 0, errorCode: null, errorMessage: null };
+}
 
+/** Run a leased attempt of `tenant` to a terminal DERIVED from the provider's own report, and
+ * return what the control plane then holds. */
+function runToTerminal(tenant, label, executeArgs) {
+  const live = bringUpLeasedAttempt(tenant);
+  const executed = runReferenceProvider(label, executeArgs);
+  const payload = terminalPayloadFor(executed.result);
   const events = [
-    makeEvent(live.ids, A, live.offer, { eventType: "attempt_started", seq: 1, payload: { sandboxId: executed.resourceId } }),
-    makeEvent(live.ids, A, live.offer, {
-      eventType: "terminal", seq: 2,
-      payload: { status: "failed", exitCode: null, errorCode: "provider_timeout", errorMessage: "reference provider reported timedOut" },
-    }),
+    makeEvent(live.ids, tenant, live.offer, { eventType: "attempt_started", seq: 1, payload: { sandboxId: executed.resourceId } }),
+    makeEvent(live.ids, tenant, live.offer, { eventType: "terminal", seq: 2, payload }),
   ];
-  const digested = step(computeEventDigests({ events }), "provider-failure digests");
+  const digested = step(computeEventDigests({ events }), `${label} digests`);
   const uploaded = step(uploadEvents({
     session: live.session, deviceKey: live.deviceKey,
-    batch: { ...batchIdentity(live.ids, A, live.offer), events: digested.events },
-  }), "provider-failure events");
-  assert.equal(uploaded.status, 200, `provider-failure upload: ${truncate(uploaded.body)}`);
+    batch: { ...batchIdentity(live.ids, tenant, live.offer), events: digested.events },
+  }), `${label} events`);
+  assert.equal(uploaded.status, 200, `${label} upload: ${truncate(uploaded.body)}`);
+  const state = step(queryJobAttemptsAndCommands({ jobIds: [live.ids.jobId] }), `${label} state`);
+  return {
+    providerResult: executed.result,
+    payload,
+    attemptStatus: state.attempts.find((a) => a.attemptId === live.ids.attemptId)?.status ?? null,
+    attempts: state.attempts,
+  };
+}
 
-  const state = step(queryJobAttemptsAndCommands({ jobIds: [live.ids.jobId] }), "provider-failure state");
-  const status = state.attempts.find((a) => a.attemptId === live.ids.attemptId)?.status ?? null;
+test("fault-matrix: a provider execute that exceeds its deadline lands as a classified FAILED terminal", { skip: SKIP }, () => {
+  const [A] = M1_SPINE_TENANTS.enabled;
+
+  // THE INJECTION: `deadlineMs: 0` makes the reference provider report `timedOut` and the terminal
+  // state `expired` (`fake-driver.ts` `execute`: `const timedOut = args.deadlineMs === 0`).
+  const failed = runToTerminal(A, "provider-fail", SUPPRESS_INJECTION ? undefined : { deadlineMs: 0 });
+  const timedOut = failed.providerResult.timedOut === true && failed.providerResult.terminalState === "expired";
+
+  // ★ THE ANTI-VACUITY CONTROL, through the SAME mapping and the SAME code path: a provider that
+  // did NOT time out must land `succeeded`. Without it, "the attempt is failed" would be equally
+  // explained by a harness that always says failed — which is exactly what the first version did.
+  const succeeded = runToTerminal(A, "provider-ok");
 
   record("d1.provider.execute_deadline_exceeded", {
     injectionFired: timedOut,
-    observedClassification: status === "failed" ? "attempt_terminal_failed_and_classified" : `attempt_${String(status)}`,
-    detail: { providerResult: executed.result, attemptStatus: status, attempts: state.attempts },
+    observedClassification: failed.attemptStatus === "failed" && succeeded.attemptStatus === "succeeded"
+      ? "attempt_terminal_failed_and_classified"
+      : `failed_arm_${String(failed.attemptStatus)}_control_arm_${String(succeeded.attemptStatus)}`,
+    detail: {
+      failedArm: { providerResult: failed.providerResult, terminalPayload: failed.payload, attemptStatus: failed.attemptStatus },
+      controlArm: { providerResult: succeeded.providerResult, terminalPayload: succeeded.payload, attemptStatus: succeeded.attemptStatus },
+      note: "the terminal payload is DERIVED from the provider's report by terminalPayloadFor, not hard-coded; the control arm shows the derivation can produce the other answer. The DEPLOYED worker's own mapping is not exercised here -- the D1 workers do not dispatch -- and is d2m.provider_failure.e2b_create_refused's, on the keyed lane.",
+    },
   });
-  assert.equal(timedOut, true, `the provider must report timedOut — the injection: ${truncate(executed.result)}`);
-  assert.equal(status, "failed", `the attempt must terminate FAILED: ${truncate(state.attempts)}`);
+  assert.equal(timedOut, true, `the provider must report timedOut — the injection: ${truncate(failed.providerResult)}`);
+  assert.equal(
+    succeeded.attemptStatus, "succeeded",
+    `the control arm must land SUCCEEDED through the same mapping, else "failed" is the harness's constant: ${truncate(succeeded)}`,
+  );
+  assert.equal(failed.attemptStatus, "failed", `the timed-out attempt must terminate FAILED: ${truncate(failed.attempts)}`);
 });
 
 // ═══ 7. the object store: a truncating toxic, and the orphan sweep ══════════
@@ -1081,26 +1117,51 @@ test("fault-matrix: a fence lost mid-flight makes the commit refuse and the orph
 
 // ═══ 8. the link cut and the reaper ══════════════════════════════════════════
 
-test("fault-matrix: cutting worker-to-control-plane reclaims the lease and refuses the late ack", { skip: SKIP }, () => {
+test("fault-matrix: cutting worker-to-control-plane severs real worker traffic, the lease is reclaimed, and the late ack is refused", { skip: SKIP }, () => {
+  // ★ REWRITTEN after a Codex P1 on PR #573, and the finding was right. The first version cut the
+  // proxy, PROVED it severed with `probeProxyReachable`, and then did everything else over the
+  // DIRECT `control-plane:3100` base the harness helpers default to — so the case could have
+  // passed with no worker request interrupted at all. The cut was observable and INERT, which is
+  // this programme's own failure class wearing a fault-injection costume.
+  //
+  // Now every worker request in the case goes through the Toxiproxy LISTEN address a real worker
+  // uses (`TOXIPROXY_LISTEN["worker-to-control-plane"]`, `toxiproxy:13100`), and the verdict is
+  // derived from a REAL request failing during the cut and succeeding before and after it. Only
+  // the reap still reaches the control plane directly — deliberately, as e6f-09 does: it is the
+  // OPERATOR's path, not the worker's, and routing it through the cut would merely prevent the
+  // reclaim this case exists to observe.
   const [A] = M1_SPINE_TENANTS.enabled;
+  const proxiedBase = `http://${TOXIPROXY_LISTEN["worker-to-control-plane"]}`;
   const live = bringUpLeasedAttempt(A, { doAck: false });
   let cut = false;
-  let cutProbe = null;
-  let restoreProbe = null;
+  let pollBeforeCut = null;
+  let pollDuringCut = null;
+  let pollAfterRestore = null;
   try {
+    // (1) POSITIVE CONTROL, before the fault: a real worker request THROUGH the proxied path
+    //     reaches the control plane. Without this, "it failed while cut" would be equally
+    //     explained by a path that never worked.
+    pollBeforeCut = poll({
+      url: `${proxiedBase}/api/worker-control/poll`, session: live.session,
+      workerId: live.ids.workerId, targetId: live.ids.targetId, deviceKey: live.deviceKey,
+    }).result;
+
     if (!SUPPRESS_INJECTION) {
       const disabled = step(setProxyEnabled({ proxy: "worker-to-control-plane", enabled: false }), "cut link");
       assert.equal(disabled.ok, true, `the link cut must succeed: ${truncate(disabled.body)}`);
       cut = true;
-      // OBSERVABLE: a probe THROUGH the listen port is refused — the link is genuinely severed.
-      cutProbe = step(probeProxyReachable({ proxy: "worker-to-control-plane" }), "cut probe");
+      // (2) THE INJECTION, observed on the thing under test: the SAME worker request now FAILS.
+      pollDuringCut = poll({
+        url: `${proxiedBase}/api/worker-control/poll`, session: live.session,
+        workerId: live.ids.workerId, targetId: live.ids.targetId, deviceKey: live.deviceKey,
+      }).result;
     }
 
-    // The worker never delivered its ack: back-date ONLY ack_deadline (the offered case).
+    // The worker cannot deliver its ack while cut: back-date ONLY ack_deadline (the offered case;
+    // expires_at stays future so ack_deadline < expires_at holds), then reap.
     const expired = step(expireLeaseDeadlines({ leaseId: live.offer.leaseId, ackDeadlineIntervalSec: 2 }), "back-date ack");
     assert.equal(expired.ok, true, `back-date: ${truncate(expired)}`);
     assert.equal(expired.updated, 1, `exactly one lease back-dated: ${truncate(expired)}`);
-    // The reap reaches control-plane:3100 DIRECTLY, so the cut never blocks it.
     step(reapOrganization({ organizationId: A.organizationId }), "reap");
     const converged = waitFor(
       () => step(queryJobAttemptsAndCommands({ jobIds: [live.ids.jobId] }), "converge"),
@@ -1112,32 +1173,50 @@ test("fault-matrix: cutting worker-to-control-plane reclaims the lease and refus
       const restored = step(setProxyEnabled({ proxy: "worker-to-control-plane", enabled: true }), "restore link");
       assert.equal(restored.ok, true, `the link must be restored: ${truncate(restored.body)}`);
       cut = false;
-      restoreProbe = step(probeProxyReachable({ proxy: "worker-to-control-plane" }), "restore probe");
+      // (3) The cut is observable in BOTH directions: the same request works again.
+      pollAfterRestore = poll({
+        url: `${proxiedBase}/api/worker-control/poll`, session: live.session,
+        workerId: live.ids.workerId, targetId: live.ids.targetId, deviceKey: live.deviceKey,
+      }).result;
     }
 
+    // (4) The reconnected worker's belated ack — sent through the SAME proxied path a real worker
+    //     uses — is refused on the revoked fence. The reclaim stands; nothing is overwritten.
     const lateAck = step(ack({
+      base: proxiedBase,
       session: live.session, workerId: live.ids.workerId, jobId: live.ids.jobId,
       attempt: live.offer.job.attempt, leaseId: live.offer.leaseId, fenceToken: live.offer.fenceToken,
       deviceKey: live.deviceKey,
     }), "late ack");
-    const lateAckRefused = lateAck.status !== 200;
+    const lateAckRefused = lateAck.status !== 200 && typeof lateAck.body?.code === "string";
 
+    // The injection FIRED iff a REAL worker request was interrupted: it worked before the cut,
+    // failed during it, and worked again after the restore.
+    const reached = (r) => Boolean(r) && typeof r.status === "number" && r.status > 0;
     const injectionFired = SUPPRESS_INJECTION
       ? false
-      : cutProbe?.reachable === false && restoreProbe?.reachable === true;
+      : reached(pollBeforeCut) && !reached(pollDuringCut) && reached(pollAfterRestore);
+
     record("d1.fault.link_cut.worker_to_control_plane", {
       injectionFired,
       observedClassification: converged.ok && lateAckRefused ? "lease_reclaimed_and_late_ack_refused" : "not_reclaimed",
       detail: {
-        cutProbe, restoreProbe,
+        proxiedBase,
+        pollBeforeCut: pollBeforeCut ? { status: pollBeforeCut.status, outcome: pollBeforeCut.body?.outcome ?? null } : null,
+        pollDuringCut: pollDuringCut ?? null,
+        pollAfterRestore: pollAfterRestore ? { status: pollAfterRestore.status, outcome: pollAfterRestore.body?.outcome ?? null } : null,
         leases: converged.last?.leases ?? null,
         attempts: converged.last?.attempts ?? null,
         lateAck: { status: lateAck.status, code: lateAck.body?.code ?? null },
       },
     });
-    assert.equal(injectionFired, true, `the cut must be OBSERVED severed and restored: cut=${truncate(cutProbe)} restore=${truncate(restoreProbe)}`);
+    assert.equal(
+      injectionFired, true,
+      "a REAL worker request through the proxied path must succeed before the cut, FAIL during it, and succeed after the restore: " +
+        `before=${truncate(pollBeforeCut?.status)} during=${truncate(pollDuringCut)} after=${truncate(pollAfterRestore?.status)}`,
+    );
     assert.equal(converged.ok, true, `the lease must be reclaimed: ${truncate(converged.last?.leases)}`);
-    assert.equal(lateAckRefused, true, `the disconnected worker's late ack must be refused: ${truncate(lateAck.body)}`);
+    assert.equal(lateAckRefused, true, `the reconnected worker's late ack must be DENIED with a code: ${truncate(lateAck.body)}`);
   } finally {
     if (cut) {
       const r = setProxyEnabled({ proxy: "worker-to-control-plane", enabled: true });

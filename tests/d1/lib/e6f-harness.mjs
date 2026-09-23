@@ -506,8 +506,14 @@ report({ status: res.status, body: safeJson(text) });
 
 /** Acknowledge a lease. The ack URL carries the leaseId (route asserts
  * body.leaseId === :leaseId). Returns { status, body } (leaseAckOperationResponseV1). */
-export function ack({ session, workerId, jobId, attempt, leaseId, fenceToken, deviceKey }) {
-  const url = WORKER_CONTROL.ack(leaseId);
+/** `base` routes the ack at a DIFFERENT control-plane base URL -- in particular the Toxiproxy
+ * LISTEN address a real worker uses (`TOXIPROXY_LISTEN["worker-to-control-plane"]`), so a test can
+ * drive worker traffic THROUGH a severable link instead of past it. Additive: the default is the
+ * direct base this function has always used, so no existing caller changes. The device proof signs
+ * `new URL(url).pathname` only, and `AOA_ALLOWED_HOSTNAMES` already admits `toxiproxy`, so the
+ * proxied request is byte-identical at the auth layer. (DEP-018, from a Codex P1 on PR #573.) */
+export function ack({ session, workerId, jobId, attempt, leaseId, fenceToken, deviceKey, base }) {
+  const url = base ? workerControlFor(base).ack(leaseId) : WORKER_CONTROL.ack(leaseId);
   const params = { url, session, workerId, jobId, attempt, leaseId, fenceToken, privateKeyPem: deviceKey.privateKeyPem, publicKeyDer: deviceKey.publicKeyDer };
   const script = `
 ${DEVICE_PROOF_SNIPPET}
