@@ -773,7 +773,8 @@ Ticket shipment or an earlier mechanism run cannot substitute for items 2–9. P
 > harness the gates need became `DEP-016`, `DEP-017` and `DEP-018`. The twelve-row table above is the
 > set.*
 >
-> **`M1b` required result set:** `CLI-010`, **`CLI-011`**, `CLI-012`, `CLI-013`, `CLI-014`, `CLI-015`, `CLI-016`, `DAT-009-3c`, `DAT-009-3d`, `DAT-009-3e`, **and the emit build** (❌ **TO FILE** once `CLI-011` rules; it has no id until then).
+> **`M1b` required result set:** `CLI-010`, **`CLI-011`**, `CLI-012`, `CLI-013`, `CLI-014`, `CLI-015`, `CLI-016`, **`CLI-017`** (the emit build), `DAT-009-3c`, `DAT-009-3d`, `DAT-009-3e`.
+> ★ *Updated 2026-09-23 (ruling **F7**, recorded as `E7-D11` in `epics/E7-coding-e2b/decisions.md` under founder delegation F2). **Superseded text:** "`CLI-010`, **`CLI-011`**, `CLI-012`, `CLI-013`, `CLI-014`, `CLI-015`, `CLI-016`, `DAT-009-3c`, `DAT-009-3d`, `DAT-009-3e`, **and the emit build** (❌ **TO FILE** once `CLI-011` rules; it has no id until then)." The ruling filed it: `CLI-017` now has a graph node in `program-design.md` (E7 section) and a task section in the E7 implementation plan, so the enumeration — which is the mechanically checkable artefact — names an id instead of a description.*
 > ★ *Corrected 2026-09-21 (Codex, PR #526):* the emit build was missing from this set. Without it every listed result can land without the chosen emit mechanism ever being built, and then `CLI-012`'s real-run acceptance and the useful-capability gate cannot be met. So `M1b`'s Step 0 files it right after the `CLI-011` ruling, and its result is a prerequisite of `CLI-012`'s real-run acceptance and of `CLI-015`.
 > ★★★ **RENUMBERED 2026-09-21 (M0 unit 4, founder decisions D1 + D5) — the ids changed, the
 > set did not.** *Superseded text: `CLI-008-F1a`, `CLI-008-F1b`, `CLI-008-F3`, `CLI-008-F4`,

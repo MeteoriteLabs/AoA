@@ -1113,6 +1113,10 @@ evidence.
 - **Test:** Not a build ticket; the evidence is the decision record and the pin census it cites.
 - ★ **The emit-half BUILD has no id yet, deliberately.** It is filed **after** this ruling, because
   what it builds depends on which mechanism is chosen. Filing it earlier would pre-empt the ruling.
+- ★ *Updated 2026-09-23: the ruling is taken (`epics/E7-coding-e2b/decisions.md`, `E7-D11`, ruling F7
+  under founder delegation F2) and the emit build is filed as **`CLI-017`**, whose node is at the end
+  of this E7 section. The sentence above is kept as written, because it records why the id did not
+  exist until now.*
 
 #### CLI-012 — Unit F link 3, the worker-side consumer (M)
 
@@ -1180,7 +1184,11 @@ evidence.
 
 #### CLI-015 — Unit F link 6, the judge (M)
 
-- **Depends on:** CLI-011, CLI-012.
+- **Depends on:** CLI-011, CLI-012, CLI-017.
+- ★ *Corrected 2026-09-23 (ruling F7, `E7-D11`):* the `CLI-017` edge is added. The Codex correction
+  below says the emit-build prerequisite *"cannot be written in the machine-readable line above until
+  the ticket has an id"*; ruling F7 filed that ticket as `CLI-017`, so the edge is now expressible and
+  the prose fallback is discharged. **Superseded text:** *"**Depends on:** CLI-011, CLI-012."*
 - ★ *Corrected 2026-09-21 (M1 Step 0, S0-4):* the edge read `CLI-011` only, while the E7
   implementation plan's `CLI-015` task depends on "`CLI-011`'s **ruling** and `CLI-012`". The
   `CLI-012` edge is added.
@@ -1227,6 +1235,39 @@ evidence.
 - ★ **Currency is enforced at USE — MCP authorization and redemption — not at mint.**
   `mintRunJwtHandleForPlacement` takes no lease or clock input, so an arming ticket cannot add a
   mint-time check; the observable is denial at use.
+
+#### CLI-017 — Unit F link 2, the EMIT build: tell the agent where to write, and refuse secrets on the way out (S–M)
+
+- **Depends on:** CLI-011.
+- **Filed 2026-09-23 by ruling F7 (`epics/E7-coding-e2b/decisions.md`, `E7-D11`), which is the ticket
+  the `CLI-011` node reserves: *"The emit-half BUILD has no id yet, deliberately. It is filed after
+  this ruling, because what it builds depends on which mechanism is chosen."* The mechanism ruled is
+  **option 2, a conventional output root** `R = /home/user/aoa-output`; the placement is **SD-1b**, a
+  `claude_local`-only directive at the distributed caller.
+- **Outcome:** a distributed `claude_local` run is told, in its own task markdown, to write every
+  deliverable under `R`; `R` has **one** source of truth shared by the server-side directive and the
+  worker-side `outputRoot` (SD-4); and `E2bSandboxProvider.exportArtifact` refuses bytes carrying any
+  secret-classified value of the run's own `env`, with a classification (SD-5, ruled REQUIRED before
+  `M1b`'s campaign because the probe measured `noncePresent=true`).
+- **Acceptance:** (1) **PC-12** — a pin at the SD-1b site asserts the **exact** directive reaches the
+  agent, and deleting the directive reds it. This is not optional: the review's pin census recorded
+  SD-1b's "moves no pin" as *"a search result, not a proof"*, so an unpinned directive can be deleted
+  silently. (2) **PC-11** — a planted canary env value written into `R/x` makes the export refuse with
+  a classification, and a provider without the check exports it. (3) The two copies of `R` cannot
+  drift (a failing equality check, or one imported constant). (4) `codex_local` is untouched and a
+  codex run enumerates an empty `R`.
+- **Test:** a server-side unit pin at the heartbeat call site (`server/src/services/heartbeat.ts`, the
+  canary block that passes `currentTaskMarkdown` into `buildTaskRunBatchWorkload`), a provider unit
+  for the refusal plus its no-check mutant, and the SD-4 drift check.
+- ★ **Its real-run acceptance pairs with `CLI-012`.** A real run produces a file under `R` only once
+  this directive ships, and this directive is only observable once `CLI-012` enumerates `R` — so
+  neither ticket's real-run half is provable alone, and neither may claim the other's evidence.
+- ★ **Non-goals:** the enumeration port, the producer, the `kind` (all `CLI-012`); the announcement
+  (`CLI-013`); the projection (`CLI-014`); the counter (`CLI-015`); option 1b's stdout declaration,
+  which `E7-D11` records as a post-`M1b` refinement and does not build; any `codex_local` change
+  (`E7-D04`).
+- ★ **It must not redirect or pipe the claude process's stdout** — that would silently remove
+  `WRK-018`'s usage parse (review §7.1, and the `E7-D06` amendment above it).
 
 ### E8 — Browser automation
 

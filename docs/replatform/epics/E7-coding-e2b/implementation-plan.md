@@ -638,8 +638,24 @@ a redirected `sh -c` through `RealE2bTransport.runCommand` and reads it back byt
    `WRK-018` channel priced as an input).
 2. **The probe:** the `files.read` probe the review designs (its §10), dispatched only inside the F8
    envelope on a named candidate.
-3. **The ruling:** founder ruling **F7**, recorded as an entry in `decisions.md` (this epic).
+3. **The ruling — DONE:** founder ruling **F7**, recorded as **`E7-D11`** in `decisions.md` (this
+   epic) on 2026-09-23, under founder delegation F2. It rules **option 2, a conventional output root**
+   `/home/user/aoa-output`, placement **SD-1b**, **SD-5 required**, option 1b deferred, `A-O2-8`
+   accepted as a named residual — decided on the P-011 probe run
+   [`35833717162`](https://github.com/MeteoriteLabs/AoA/actions/runs/35833717162) (job `probe`,
+   `success`, head `499ec4d1c3c3aab7324dcf0ca98ea34872fe18a0`, record `disposition: measured`). The
+   ruling files the emit build as **`CLI-017`**.
 4. **The result:** `tickets/CLI-011-result.md`, written after the ruling.
+   ★★★ **NOT YET WRITTEN, and it is not a simple write.** Creating that filename makes
+   `findCompletedTicketIds` (`scripts/check-finding-ownership.mjs`, `/^([A-Z]+-\d+).*-result\.md$/`)
+   treat **`CLI-011` as shipped**, and `CLI-011` **owns the still-open `E7-F026`** — so
+   `check-finding-ownership` reports `owner_ticket_already_complete` **and** `successor_missing` for
+   `E7-F026`. Measured 2026-09-23 by positive control: with a stub
+   `tickets/CLI-011-result.md` present, the guard prints both problems; with it absent, the full guard
+   set is green. **Resolving it is a decision, not a formality** — either declare `ownerStillOpen`
+   plus a `successor` for `E7-F026` in `scripts/finding-ownership.json` (which asserts who inherits
+   that residual), or dispose of `E7-F026` on the record. Neither is implied by ruling F7, and the
+   session that filed `CLI-017` deliberately did not guess.
 
 **No source files.** The review is the decision request; no separate `DECISION-REQUEST-…` file is
 written, and where this task (Observability) and plan step T3 say "decision request" they mean the
@@ -1137,9 +1153,14 @@ back. The distributed flag remains the outer off-switch.
 
 ### `CLI-015` — the judge: clause 6 and the four scanner findings (M, ≤3 agent-days, M1b)
 
-**Depends on:** `CLI-011`'s **ruling** and `CLI-012`. **This ticket may not be assigned
-before the ruling**, because round 3 proved that changing the predicate without knowing what
-supplies the output converts a forgeable gate into an unpassable one.
+**Depends on:** `CLI-011`'s **ruling**, `CLI-012`, and **`CLI-017`** (the emit build). **This ticket
+may not be assigned before the ruling**, because round 3 proved that changing the predicate without
+knowing what supplies the output converts a forgeable gate into an unpassable one.
+★ *Amended 2026-09-23 (ruling F7, `decisions.md` `E7-D11`): the ruling is taken, and the emit build it
+files is `CLI-017`, which this line now names. **Superseded text:** "`CLI-011`'s **ruling** and
+`CLI-012`." The ruling itself changes nothing this ticket counts — it counts through arm 2's existing
+predicate (SD-3, P-A unchanged) — so this stays a text/attribution fix (`E7-F016`), not a predicate
+change.*
 
 **Current state, measured:** `E7ProducedOutputCounts` is two numbers
 (`server/src/services/e7-distributed-run-verifier.ts:130-133`). Clause 6 is the module's **only**
@@ -1362,6 +1383,150 @@ negative controls and this task did not; the task now carries them, as the M1 pl
 `feat(server): arm the distributed tool surface per Organization via the rollout policy`.
 Maps H-04, H-05. ★ *Superseded commit title (S0-8, ruling F10): "`feat(server): arm the distributed
 tool surface for the named internal Organization`".*
+
+---
+
+### `CLI-017` — the EMIT build: the output-root directive (SD-1b), one source of truth for `R`, and the export secret refusal (SD-5) (S–M, ≤2 agent-days +0.5–1 for SD-5, M1b)
+
+**Depends on:** **ruling F7**, recorded as `E7-D11` in this epic's `decisions.md` — already satisfied.
+Its graph edge is `CLI-011` (`program-design.md`, `#### CLI-017`). **Blocks:** `CLI-012`'s real-run
+acceptance and `CLI-015`.
+
+**Filed 2026-09-23 by ruling F7** (`decisions.md`, `E7-D11`, decided under founder delegation F2).
+This is the ticket the `CLI-011` task and graph node deliberately left unnamed — *"the emit-half BUILD
+has no id yet … it is filed after this ruling, because what it builds depends on which mechanism is
+chosen."* The mechanism ruled is **option 2, a conventional output root**; the placement is **SD-1b**.
+
+**Current state, measured at `499ec4d1c`:**
+
+- **Nothing tells the agent where to write.** `buildSandboxInvocation`
+  (`server/src/services/task-run-sandbox-invocation.ts`) stages three flat files under
+  `STAGED_INPUT_DIR = "/home/user"` and emits a claude script whose tail is
+  `exec "$0" --print - --dangerously-skip-permissions --output-format stream-json --verbose … < "$1"`.
+  There is no cwd change and no output-location directive anywhere in it.
+- **The caller-side seam exists and is unpinned.** `server/src/services/heartbeat.ts`'s canary block
+  passes `currentTaskMarkdown` (and `instructions`, and `aoaMcpConfig`) into
+  `buildTaskRunBatchWorkload`. The `CLI-011` review's §6 pin census found **no test asserting the
+  staged prompt bytes at that call site** — which is why acceptance 1 below exists.
+- **`R` has no constant.** Verified at source: **no production `aoa-output` literal exists** in
+  `server/src/`, `packages/worker-daemon/src/` or `packages/sandbox-e2b-provider/src/`. The path
+  appears only in the probe apparatus (`scripts/lib/cli-011-output-probe.mjs`, which production code
+  must not import) and, already, as a **test fixture path** in two worker-daemon suites —
+  `dispatch-runtime-export-composition.test.ts` and `supervisor-export-artifacts.test.ts` both use
+  `/home/user/aoa-output/…`. Those fixtures anticipate the root; they do not define it, and this
+  ticket must not make them the source of truth.
+- **`exportArtifact` inspects size and hash only.** `E2bSandboxProvider.exportArtifact`
+  (`packages/sandbox-e2b-provider/src/e2b-provider.ts`) reads bytes through `#readArtifactBytes`,
+  re-hashes and refuses a mismatch. **It never looks at content**, and the run's env reaches the same
+  provider as `envVars: spec.env` at `create` — so the provider is the only component holding both
+  the bytes and the secret values (review §3.5).
+- **The probe measured the hazard as real:** run `35833717162`, arm `S-P7`, verdict
+  `nonce-exported-in-file-bytes`, decision-table row **R4** fired on `noncePresent=true`.
+
+**Outcome:**
+
+1. **SD-1b — the directive.** A `claude_local`-only directive, appended at the **distributed caller**
+   (the `heartbeat.ts` canary block, to the task markdown it passes into
+   `buildTaskRunBatchWorkload`), telling the agent to write every deliverable file under `R` and to
+   create `R` if it does not exist. `codex_local` is untouched (`E7-D04`), and a non-distributed run
+   is unchanged.
+2. **SD-2 / SD-4 — one `R`, provably.** `R = /home/user/aoa-output`, as a named constant, with the
+   server-side directive and the worker-side `outputRoot` (`CLI-012`'s
+   `createExportRequestProducer` input) provably equal.
+   ★ **The "one shared constant" route is not available**, verified at source: the only
+   `@armyofagents/*` package both `server/package.json` and `packages/worker-daemon/package.json`
+   depend on is `@armyofagents/worker-protocol`, which is **frozen** (`E7-D07`). So SD-4 is
+   implemented as the review's second form — **two constants plus an equality check that runs in the
+   `policy` job** — modelled on the probe pack's own `default-template-mismatch` assertion
+   (`scripts/lib/cli-011-output-probe.mjs`). A new `scripts/check-*.mjs` must be declared in
+   `scripts/guard-inventory.json` (`check-guard-inventory.mjs`) and wired into `pr.yml`'s `policy`
+   job, or it is a check that nothing runs.
+3. **SD-5 — the export secret refusal.** `E2bSandboxProvider.exportArtifact` refuses bytes carrying
+   any **secret-classified** value of the run's own `env`, with a classified refusal, **before** the
+   PUT. Ruled **REQUIRED before `M1b`'s campaign** by `E7-D11` §3 on the probe's R4.
+
+**Acceptance (each row names the mutant that must red it):**
+
+| # | acceptance | positive control / mutant |
+|---|---|---|
+| 1 | **PC-12 — the directive reaches the agent.** A pin at the SD-1b site asserts the **exact** directive text in the staged prompt bytes for a distributed `claude_local` run | **delete the directive → red.** This row is not optional: the review recorded SD-1b's "moves no pin" as *"a search result, not a proof … an unpinned directive can be deleted silently"* |
+| 2 | **PC-11 — a secret does not reach the store.** A planted canary env value written into `R/x` makes `exportArtifact` **REFUSE with a classification** | **a provider without the check exports it** — run the same case against the pre-change path and see the bytes exported |
+| 3 | **`R` cannot drift.** The server-side and worker-side constants are equal, checked in `policy` | **change one constant → the check reds** (and it is declared in `guard-inventory.json`, so it demonstrably runs) |
+| 4 | **`codex_local` is untouched** and a `codex` run's `R` stays absent | **the codex shape pins (census rows 4 and 7) stay green unedited**; a mutant that appends the directive for codex reds them |
+| 5 | **Cross-tenant (F10).** Two Organizations dispatching concurrently each get the directive in their own run's prompt, and neither run's directive, root or refusal reads the other's state | swap the Organization on the second run's context → the assertion on the first run's prompt must not move; `R` is a per-sandbox path (review `A-O2-12`) |
+
+**Ticket non-goals:** the enumeration port, the producer, the `kind` decision (`E7-D08`) and the
+per-file failure policy — **all `CLI-012`'s**; the announcement (`CLI-013`); the projection
+(`CLI-014`); the counter or its text (`CLI-015`); **option 1b's stdout declaration**, which `E7-D11`
+records as feasible (probe row **R11**) and defers to a post-`M1b` refinement; any `codex_local`
+change (`E7-D04`); a workspace patch (`E7-D05`); any frozen-protocol edit (`E7-D07`).
+
+★★★ **IT MUST NOT REDIRECT OR PIPE THE CLAUDE PROCESS'S STDOUT.** A redirect or `tee` removes
+`WRK-018`'s usage parse (and so `JOB-016`/`E3-F037`) silently, breaks census pin 3, and a POSIX `sh`
+pipe loses `exec`'s exit code because it has no `pipefail` (review §7.1). The probe's `S-P4` arm also
+measured that an unwritable redirect target fails **before** the command runs
+(`commandRan=false`, `failedClosed=true`) — so a redirect route would not merely lose output, it
+would prevent the agent from starting.
+
+**Files:** modify `server/src/services/heartbeat.ts` (append the directive in the canary block, gated
+on `claude_local` **and** on the run targeting a sandbox); create the server-side `R` constant
+(alongside `STAGED_INPUT_DIR` in `server/src/services/task-run-sandbox-invocation.ts`, which is
+already the home of the sandbox path vocabulary — **note that editing this file auto-fires
+`keyed-e2b-unit-d.yml` on merge to `docs/replatform-program`, review §3.7; if that spend is not
+wanted, put the constant in a new server module instead and say so in the result**); create the
+server-side pin test for PC-12; modify
+`packages/sandbox-e2b-provider/src/e2b-provider.ts` (`exportArtifact`'s refusal) and its unit test;
+create the worker-side `R` constant where `CLI-012` composes `outputRoot`; create
+`scripts/check-<name>.mjs` for the SD-4 equality check plus its `scripts/lib/__tests__` positive
+control; modify `scripts/guard-inventory.json` and `.github/workflows/pr.yml` (`policy` job); append
+`tickets/CLI-017-result.md`.
+
+**Interfaces:** no new port operation, no route, no schema, no wire change. The directive is prompt
+text; `R` is a constant; the refusal is internal to `exportArtifact`.
+
+**Failure behavior:** the directive is **additive text** — if it cannot be appended the run proceeds
+without it and produces no output, which under-claims (`E7-D11` §5, `A-O2-8`) rather than
+mis-attributing. ★ **Stated behaviour change:** under SD-1b the directive counts against
+`MAX_STAGED_FILE_BYTES` (`1_048_576`, `server/src/services/task-run-batch-workload.ts`), so a task
+within roughly 200 bytes of that ceiling which built before is now refused — a refusal, never a
+truncation. The SD-5 refusal is **per file** and classified; it refuses that file's export and does
+**not** fail the attempt (`E5-D07`, best-effort outward), and the refusal names no path, byte or
+content.
+
+**Migration/compatibility / rollback:** additive and behind the default-OFF distributed flag. Rollback
+is removing the directive append — the staged prompt returns byte-identical — and the SD-5 refusal is
+independent of it.
+
+**Observability:** the refusal surfaces through `emitOp`'s closed labels with a classification only.
+**No path, byte, grant URL, env-var name or file content in any log line or metric label**, and never
+the canary value itself.
+
+**RED → GREEN:**
+
+- RED: a distributed `claude_local` run's staged prompt contains the exact directive; deleting the
+  append reds it (PC-12).
+- RED: a `codex_local` run's staged prompt does **not** contain it, and the codex shape pins are
+  unedited.
+- RED: `exportArtifact` on bytes containing a planted canary env value refuses with a classification;
+  the same bytes without the canary export (PC-11 plus its negative half).
+- RED: the two `R` constants disagree → the `policy` check reds; agreeing → green.
+- RED: two Organizations, concurrent — each run's prompt carries its own directive and neither reads
+  the other's (F10).
+- GREEN: all of the above, plus server and `sandbox-e2b-provider` typecheck and build, the full guard
+  set, and the Linux `verify` shard's executed test count recorded (non-zero).
+
+**Real-run acceptance — it PAIRS WITH `CLI-012`, and neither may claim the other's evidence.** A real
+run produces a file under `R` only once this directive ships, and the directive is only observable
+once `CLI-012` enumerates `R` and commits what it finds. So the keyed real-run half is **one joint
+case** recorded in both results: a distributed run whose agent writes under `R`, one `committed`
+`job_artifacts` row for that file, and the SD-5 refusal exercised on a planted canary in the same
+lane. Until that case runs, `CLI-017` is proven against unit pins and `CLI-012` against a fixture
+sandbox, and **both results must say so**. ★ Keyed dispatch here is not authorized by this task: it
+needs a named F8 entry and a planning-session instruction.
+
+**Evidence / commit:** `tickets/CLI-017-result.md`; one commit
+`feat(server): direct distributed claude runs to the conventional output root, and refuse exported secrets`.
+Maps H-04, H-05.
 
 ---
 
@@ -1655,6 +1820,12 @@ authorize implementation.
   that field gates **which tenant gets the surface**, not currency, so the rule above stands: currency
   is still enforced at use. Verify also the two-Organization case (tool-enabled tenant admitted, the
   other denied).
+- [ ] **T10 (P1, S–M)** — `CLI-017`: the emit build, **filed 2026-09-23 by ruling F7** (`E7-D11`).
+  ★ **It is sequenced BEFORE T7**, because `CLI-015` now depends on it (`program-design.md`,
+  `#### CLI-015`); it is numbered T10 rather than renumbered in, so no existing checkbox id moves.
+  Verify: the PC-12 directive pin reds when the append is deleted; the PC-11 export refusal reds when
+  the check is removed; the SD-4 equality check is declared in `scripts/guard-inventory.json` and runs
+  in `policy`; the codex shape pins are unedited; **no stdout redirect or pipe**.
 - [ ] **T9 (P2, S)** — `E7-1-JOURNEY-ARM`: promote the clause once E6 ships both preconditions.
   Verify: the positive control fired on a **controlled checker fixture** (not on the boot — ★ the
   checker counts references and cannot see a deployment); promotion carried by shipped-boot

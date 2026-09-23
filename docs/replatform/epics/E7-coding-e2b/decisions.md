@@ -9,9 +9,11 @@ decision it takes, with its reason, in the E-epic `decisions.md`; this epic had 
 recorded here yet. ★ *Superseded 2026-09-21 by the first entry, `E7-D09` below; the sentence above is
 kept as written when the shell was created.*
 
-**Expected entries, not recorded:** the `CLI-011` output-mechanism ruling (**F7**, still open), and
-the `CLI-013` event-contiguity decision. The shared decisions `E7-D01`…`E7-D07` remain where they are,
-in the implementation plan's §0. Until an entry lands, nothing in this file binds anything.
+**Expected entries, not recorded:** the `CLI-013` event-contiguity decision. The shared decisions
+`E7-D01`…`E7-D07` remain where they are, in the implementation plan's §0. Until an entry lands,
+nothing in this file binds anything.
+★ *Corrected 2026-09-23 (ruling F7 recorded as `E7-D11` below). Superseded text: "the `CLI-011`
+output-mechanism ruling (**F7**, still open), and the `CLI-013` event-contiguity decision."*
 
 ★ `E7-D08` is **reserved**, not recorded: the implementation plan's `CLI-012` task assigns that id to
 the `kind` decision (`implementation-plan.md`, `### CLI-012`), so the first entry here takes `E7-D09`.
@@ -231,3 +233,188 @@ binary back and leaves the flag set.
   **already-dispatched** runs at their next `/mcp` call once the changed configuration is in the
   process's environment, not only new dispatches. The run-JWT's TTL
   (≤48h) no longer bounds how long a disarmed tenant keeps its tools.
+
+---
+
+## E7-D11 — ruling F7: output leaves the sandbox by a CONVENTIONAL OUTPUT ROOT (`/home/user/aoa-output`), the agent learns it from a caller-side directive (SD-1b), and the provider refuses exported bytes carrying the run's own secrets (SD-5)
+
+**Date (UTC):** 2026-09-23
+**Status:** `locked` — **ruling F7, decided under founder delegation F2**
+(`docs/replatform/qa/2026-09-21-m1-execution-plan.md` §2, F2: the founder delegates every M1 decision
+to the planning session, which records each with its reason). QA independence still holds: a distinct
+reviewer approves the tickets this ruling produces, not the session that decided it.
+**Owner role:** planning session (decision owner, under F2)
+**Decided on:** `tickets/CLI-011-review.md` (the design review, measured at `ba534b16b`) and the
+**P-011 probe run** — workflow `Keyed E2B — CLI-011 P-011 output probe`, run
+[`35833717162`](https://github.com/MeteoriteLabs/AoA/actions/runs/35833717162), job `probe`,
+conclusion `success`, head `499ec4d1c3c3aab7324dcf0ca98ea34872fe18a0`, durable record artifact
+`cli-011-output-probe-record` (`cli-011-output-probe-record.json`, schema
+`aoa.cli-011.output-probe-record/1`, template `aoa-base` resolved `explicit`, `armsMode: all`,
+`outputRoot: /home/user/aoa-output`). The record's `disposition` is **`measured`** — *"every arm
+observed and every control held"* — and its three controls all report `held: true`: **PC-1** (a
+planted file in `R` is reported present), **PC-2** (with `R = /home/user` the staged paths are found
+under `R`), and **C-census** (the census sees a planted write under `R` and in cwd).
+**Affected tickets:** `CLI-017` (filed by this ruling — the emit build), `CLI-012` (consumes the root
+and the per-file failure policy), `CLI-015` (the judge, which waits on F7), `CLI-011` (the review that
+this ruling is taken on)
+
+### Context
+
+`CLI-011`'s review compared four candidate output mechanisms and recommended **option 2, a
+conventional output root**, at *"medium (≈60–65%)"* confidence, with the confidence stated as medium
+because **two load-bearing facts were unmeasured**: what the claude CLI itself writes inside the
+sandbox, and whether the agent writes its deliverable where it is told. The review designed the
+P-011 probe (its §10) to measure exactly those, and it did not dispatch it. The probe has now run.
+Ruling F7 is taken on that measurement, with the review's §10.5 decision table applied as written.
+
+### Decision
+
+#### 1. Mechanism — **option 2, a conventional output ROOT.** `R = /home/user/aoa-output`.
+
+A run's deliverable is a regular file the agent writes under `R`; the producer enumerates `R` and
+turns each file into an export request. This is the mechanism ruled in.
+
+**Reason, by measurement.** The review's §9.1 named `A-O2-3` — *"the claude CLI writes session files
+under `R`, so a run in which the model never acted produces a file"* — as **the decisive attack**, and
+recorded it `UNRESOLVED`. The probe's `A-neg` arm ran the **unmodified production claude literal**
+with a prompt instructing the model not to create, modify or delete any file, and the record's
+decision-table row **R6** fired: *"A-neg: nothing under R or cwd"* → *"6.7 holds for option 2"*, on
+`filesUnderRoot=0 removedUnderRoot=0 filesCwdOther=[] cwdMutations=[]`, with the CLI's own home state
+**reported and explicitly not counted** (5 paths, all under the record's declared
+`classification.cliHomeStatePrefixes`, i.e. `/home/user/.claude/` and its siblings — never under `R`).
+Row **R5** (*"A-neg finds files under R"* → SD-1a refuted / option 2 refuted) did **not** fire.
+**So a no-op run cannot produce a counted file: A-O2-3 is refuted by measurement, not by argument.**
+
+And the counted signal is reachable when the model does act: row **R7** fired — *"A-dir writes
+R/hello.txt; A-cwd writes R/hello.txt"* on `A-dir=true A-cwd=true`, with `helloElsewhere=[]` and
+`otherFilesUnderRoot=[]` on both arms, and `rootCreatedDuringArm=true` (the agent creates `R` itself
+when it is missing). Rows R8, R9 and R10 — the single-placement and no-compliant-placement readings —
+did not fire.
+
+#### 2. Placement — **SD-1b, the caller-side directive.**
+
+The agent learns `R` from a `claude_local`-only directive appended at the **distributed caller**
+(`server/src/services/heartbeat.ts`, the canary block that passes `currentTaskMarkdown` into
+`buildTaskRunBatchWorkload`), **not** from a cwd prefix in the invocation script literal and **not**
+from a builder-side prompt append.
+
+**Reason.** The review's §6 pin census, re-measured at HEAD, records that SD-1b **moves none** of the
+16 pins, where SD-1a's cwd prefix **moves pins 1 and 2** (`workloadBytes` 326 / `submissionHeadroomBytes`
+65_210 in `cli-008-unit-b-byte-source.integration.test.ts`) and additionally auto-fires the keyed
+`keyed-e2b-unit-d.yml` lane on merge, because that lane's `paths` include
+`server/src/services/task-run-sandbox-invocation.ts` (review §3.7). SD-1c (the builder prompt-append)
+moves 5–6 `E7-F026` assertions and is ruled out. The probe makes the choice free: R7 shows **both**
+placements comply, so §10.5's *"both placements are viable; choose by pin cost: SD-1b recommended"*
+applies exactly.
+
+★ **The review's own caveat on that "none" is carried into this ruling and binds the build.** §6
+states it in terms: *"SD-1b's 'none' is a search result, not a proof. No test asserts the staged
+prompt bytes at the heartbeat call site … The emit build therefore owes a new pin at that site,
+because an unpinned directive can be deleted silently."* Accordingly: **`CLI-017` MUST carry `PC-12`** —
+a pin at the SD-1 site asserting the **exact** directive reaches the agent, whose positive control is
+that **deleting the directive reds it**. A `CLI-017` without PC-12 does not satisfy this ruling.
+
+★ **Stated behaviour change, carried from the review's SD-1.** Under SD-1b the directive is part of
+the staged prompt, so `MAX_STAGED_FILE_BYTES` (1_048_576, `server/src/services/task-run-batch-workload.ts`)
+now includes it: a task within roughly 200 bytes of that ceiling which built before will be refused.
+
+#### 3. **SD-5 is RULED IN, and is REQUIRED before `M1b`'s campaign.**
+
+`E2bSandboxProvider.exportArtifact` (`packages/sandbox-e2b-provider/src/e2b-provider.ts`) refuses
+bytes that carry any secret-classified value of the run's own `env`, with a classification on the
+refusal. It is not optional and not deferred.
+
+**Reason, by measurement.** The review recorded `A-O2-5` (secret exfiltration into a durable store)
+as *"survives with constraint only if SD-5 is ruled in"*, and §10.5 made the probe decide it: *"S-P7
+nonce present → SD-5 moves from 'recommended' to 'required before `M1b`'s campaign'"*. Row **R4**
+fired on `noncePresent=true`; the `S-P7` arm's own verdict reads `nonce-exported-in-file-bytes`. So an
+environment value **can** land in a file under `R` and be read back out of the sandbox, and without a
+provider-side refusal a tenant secret written into `R` reaches a durable store — which is what
+Decision #104's *"must not hit a durable store"* forbids. The provider is the only component holding
+both the bytes and the env values (review §3.5).
+
+**Acceptance (this is `CLI-017`'s, and it is the review's PC-11 verbatim in substance):** a planted
+canary env value written into `R/x` makes the export **REFUSE with a classification**, and **a
+provider without the check exports it** — the positive control. A check without that mutation row is
+not a check.
+
+#### 4. **Option 1b (the agent declaration) is FEASIBLE, and is recorded as a post-`M1b` refinement.**
+
+Row **R11** fired: `declaration={"present":true,"declared":"hello.txt","resolved":"/home/user/aoa-output/hello.txt","relative":true,"matchesWritten":true,"matchesRequested":true}` — the final frame
+carried a correct, relative declaration matching both the file written and the file requested. §10.5
+reads that as *"option 1b is feasible; recorded for a post-M1b refinement"*. **It is not built now.**
+It buys selection, not counting, and the probe found nothing to select from: `otherFilesUnderRoot=[]`
+on every model arm, so `R` did not fill with scratch files. Adopting it later needs a `WRK-018`-channel
+consumer, final-`result`-frame-only parsing (review `A-O1-2`) and paths-only validation (6.8), and it
+would be a further ruling, not an implied licence from this one.
+
+#### 5. **`A-O2-8` is an ACCEPTED NAMED RESIDUAL.**
+
+`A-O2-8` is *"the agent writes the deliverable elsewhere"* — a false negative. It is accepted, not
+closed. **It under-claims, which is the safe direction** for a precision counter: a run whose
+deliverable is invisible reports zero produced outputs, which is honest about what was counted and
+never fabricates a produced output. The probe measured `helloElsewhere=[]` on all three model arms,
+so it is not observed at the single-sample level, but one sample is an existence proof and not a
+rate, and this ruling does not convert it into one.
+
+#### 6. **`R2` confirms `CLI-010`'s files-only recursion requirement**, which is already built and merged.
+
+Row **R2** fired — *"S-P2 shows directory entries at default depth"* → *"confirms §3.3; `CLI-010` must
+implement files-only recursion"* — on `defaultDepthDirs=["/home/user/aoa-output/sub"]`, with
+`defaultDepthReachesNested=false` and `deepReachesNested=true`. That is the real SDK behaviour
+`E7-D09` was decided on, now confirmed against a live sandbox rather than against the installed
+package's source. **No new work follows from it:** `E7-D09` widened `CLI-010` to exactly this
+contract, `CLI-010-result.md` is `complete`, and the enforcer (`filesOnlyFromListing`,
+`packages/sandbox-e2b-provider/src/list-dir-contract.ts`, bounded by `E2B_LIST_DIR_MAX_ENTRIES` /
+`E2B_LIST_DIR_MAX_DEPTH` in `transport.ts`) is merged. The probe's `transportListDir` observation on
+the same arm returned `["/home/user/aoa-output/a.txt", "/home/user/aoa-output/sub/b.txt"]` — files
+only, recursive, absolute.
+
+### What this ruling does NOT decide
+
+- **The `+1 day` lstat contingency does not fire.** §10.5's row *"S-P5: list does not expose
+  `symlinkTarget`/`type`, and read follows links"* (**R3**) did **not** fire: the record reports
+  `listExposesLink=true` **and** `readFollowsLink=true`, so the SDK's own listing metadata is
+  sufficient for `CLI-012` to refuse a symlink, and no per-entry `lstat` path is needed. The refusal
+  itself is still required (`A-O2-4`), because `readFollowsLink=true` means an unrefused link exports
+  its target.
+- **SD-2, SD-3, SD-4, SD-6, SD-7 and SD-8 stand as the review states them** and are not re-argued
+  here. SD-8 is already enacted as the dated amendment to `E7-D06` above.
+- **The `kind` (`E7-D08`) stays `CLI-012`'s**, per the review's SD-3: the judge counts through arm 2
+  (predicate **P-A**, unchanged), so the kind does not decide what the judge counts.
+- **Nothing about codex.** `E7-D04` binds; the probe ran no codex arm, and the codex literal is
+  untouched.
+- **Option 3 (a workspace patch) stays out of `M1b`** (`E7-D05`), and the fifth option stays
+  SUPERSEDED (review §2).
+
+### Alternatives considered
+
+- **SD-1a, the cwd prefix in the script literal.** Rejected on cost, not on compliance: R7 shows it
+  complies (`A-cwd` wrote `R/hello.txt`, `initCwd=/home/user/aoa-output`), but it moves pins 1 and 2
+  and auto-fires a keyed E2B lane on merge. It stays the recorded fallback if a later measurement
+  refutes SD-1b.
+- **SD-1c, the builder prompt-append.** Rejected: it moves the `E7-F026` staged-byte pins for no gain
+  over SD-1b, and `E7-F026` exists precisely because that option's cost was understated once already.
+- **Option 1b now, instead of option 2.** Rejected: it is option 2 plus a model-authored selection
+  list, it loses output on a run that dies before its `result` frame, and the probe found nothing to
+  select.
+- **Option 4, the captured transcript.** Rejected as a sole mechanism, structurally: an
+  authentication-failed CLI still emits frames (review §3.8), so it fails proposed constraint 6.7 —
+  the counted signal must need a **model action**, not merely a CLI run.
+- **Outcome (iii), "neither is reachable".** Not taken. Its three triggers (R5, R10, R3-with-no-
+  provider-side-means) all failed to fire, and row **R12** — *"any arm inconclusive … not a
+  measurement"* — did not fire either.
+
+### Consequences
+
+- **`CLI-017` is filed by this ruling** — the emit build: the SD-1b directive plus `PC-12`; the `R`
+  constant plus SD-4's single-source check; and SD-5's refusal plus `PC-11`. Its graph node is in
+  `program-design.md` (E7 section) and its task section is in this epic's `implementation-plan.md`.
+- **`scope-triage.md`'s `M1b` required result set** now names `CLI-017` where it named *"the emit
+  build"* with no id.
+- **`CLI-012`'s real-run acceptance pairs with `CLI-017`**: a real run produces a file under `R` only
+  once the directive ships, so neither ticket's real-run half is provable alone.
+- **`CLI-015` is unblocked.** Its dependency on F7 is satisfied; it counts through arm 2 unchanged
+  (SD-3), which keeps its change a text/attribution fix (`E7-F016`) rather than a predicate change.
+- **The review's §13 record corrections are not enacted by this ruling.** They remain the planning
+  session's, and this entry neither adopts nor closes them.
