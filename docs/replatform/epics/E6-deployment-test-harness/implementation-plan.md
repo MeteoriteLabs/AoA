@@ -1352,9 +1352,14 @@ blockers, and flags it for a D1 topology ticket. This is that ticket.
 → terminal — on the reference provider, keylessly, with the harness reduced to DISPATCHING (seeding
 the job) and ASSERTING. Three units.
 
+★ *All three units are BUILT and the journey was proven on a live D1 stack (`DEP-019-result.md` §3:
+9/9, the deployed worker's own workerId on every event and lease, one 81-cent cost row, the DEP-017
+probe reporting `absent`). The unit split is kept because it is how the work is reviewed, not
+because any part of it is outstanding.*
+
 ---
 
-#### Unit A — the reference provider EXECUTES *(built)*
+#### Unit A — the reference provider EXECUTES
 
 `packages/sandbox-fake-provider` gains deterministic command execution:
 
