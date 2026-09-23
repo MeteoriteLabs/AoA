@@ -486,10 +486,53 @@ upload, failing the job on a match.
 both the override comment and §9; the collector's actual reach (container logs, job events, a
 SCHEMA-ONLY `pg_dump`) is recorded there as a property of what the services log rather than as a
 control.
+### 13.6 — P2: the not-found error does not reach the gate as the CANONICAL class
+
+*Codex, `packages/sandbox-fake-provider/src/per-op-provider.ts:141`.* **Verified at source: true.**
+`gateOwnedOp` converts a vanished sandbox with `if (err instanceof SandboxNotFoundError) throw new
+ResourceNotAvailableError()` (`packages/adapter-manager/src/owned-op-gate.ts:176`), and that class is
+imported from `@armyofagents/worker-daemon` (`owned-op-gate.ts:44`). This package throws a
+PACKAGE-LOCAL class of the same `name` but a different identity, so `instanceof` is false: the error
+skips the uniform conversion and escapes the modelled-error fence as a generic wire failure instead
+of "already gone". That is the idempotent-cleanup path on the new gated fake-provider lane.
+
+Blast radius, measured: `destroy` and `reconcileCleanup` do not throw at all (they are idempotent
+no-ops by design), so this reaches `inspect`, `execute`, `cancel` and `kill` on a sandbox that has
+already vanished.
+
+**Proposed fix:** inject the canonical constructor at the boundary, the same no-second-copy pattern
+already used for the probe-script digest and the metadata URL —
+`createFakeSandboxProviderPort({ notFound: () => new SandboxNotFoundError() })`, with the D1 entry
+taking `SandboxNotFoundError` from the wire tree's own `@armyofagents/worker-daemon`. The package
+keeps its local class for in-process callers and never imports worker-daemon.
+
+### 13.7 — P2: `duplicate` mode does not reach the worker-driven attempt
+
+*Codex, `tests/d1/m1-spine.test.mjs:431`.* **Verified: true, and it is the same family as 13.1 —
+which is why it matters.** `workloadArgs` is `["--aoa-fake-usage=suppressed"]` only for `suppressed`;
+under `duplicate` the worker-driven case gets `[]`, so only the harness attempts append the second
+usage event. The lane's duplicate step accepts any `[m1-spine:usage]` failure, so it could pass
+entirely on the harness assertion even if the worker-driven cardinality arm were removed.
+
+**Why it is not a one-line fix, and why it is the session's call.** The provider cannot produce it:
+the worker emits AT MOST ONE usage event, because `createUsageObserver` derives it from the FINAL
+stream-json result line, so a transcript carrying two result lines still yields one event. The `> 1`
+direction on the worker path is a property of the EVENT UPLOAD, not of the provider — and the only
+harness route to a second event on that attempt is a foreign-worker upload, which the fenced ingest
+correctly denies (§3a proves that denial). So the options are:
+(a) inject the second event server-side in the seed, which asserts the ingest rather than the worker;
+(b) narrow the lane's duplicate step to the HARNESS arm explicitly, and record that the
+    worker-driven cardinality arm is exercised by the SUPPRESSED control (0 ≠ 1) and by the green
+    run (exactly 1) rather than by the `> 1` direction; or
+(c) give the worker a way to emit a duplicate, which is a daemon change and out of this ticket.
+**My recommendation is (b)** — it is the only one that does not make the control assert something
+other than what its name says.
+
 ### What a reviewer should take from this section
 
 Findings 13.2 and 13.5 are the `records-disagreeing-with-code` class, and they were in MY records.
-13.1 is a check that does not evaluate the thing its ticket is named for. All three are the failure
+13.1 — and 13.7, which is its unfixed twin — is a check that does not evaluate the thing its ticket
+is named for. All three are the failure
 classes this programme names first, and all three were found by review rather than by me — which is
 the argument for the self-audit in `M1-BUILD-RULES.md` §A being run before the first push, not after.
 
