@@ -2638,7 +2638,10 @@ try {
   const rows = await sql\`SELECT a.job_id AS "jobId", a.id AS "attemptId", a.organization_id AS "organizationId",
       a.company_id AS "companyId", a.status, a.placement_disposition AS "disposition",
       (SELECT count(*)::int FROM leases l WHERE l.organization_id = a.organization_id AND l.job_id = a.job_id
-         AND l.status NOT IN ('released', 'expired', 'revoked')) AS "activeLeases"
+         AND l.attempt_id = a.id AND l.status NOT IN ('released', 'expired', 'revoked')) AS "activeLeases",
+      (SELECT l.id FROM leases l WHERE l.organization_id = a.organization_id AND l.job_id = a.job_id
+         AND l.attempt_id = a.id AND l.status NOT IN ('released', 'expired', 'revoked')
+         ORDER BY l.created_at DESC LIMIT 1) AS "activeLeaseId"
     FROM job_attempts a
     WHERE a.organization_id = ANY(\${P.organizationIds}::uuid[])
       AND a.status NOT IN ('succeeded', 'failed', 'cancelled', 'expired')

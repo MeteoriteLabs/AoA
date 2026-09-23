@@ -594,14 +594,14 @@ function goodRehearsal(overrides = {}) {
     terminalJobIds: ["c0000000-0000-4000-8000-00000000000c"],
     preDrainCandidates: [
       ...drainableJobs.map((job) => ({ ...job, activeLeases: 0, disposition: "selected" })),
-      { jobId: "d0000000-0000-4000-8000-00000000000d", attemptId: "d1000000-0000-4000-8000-00000000000d", organizationId: A.organizationId, companyId: A.companyId, activeLeases: 1, disposition: "selected" },
+      { jobId: "d0000000-0000-4000-8000-00000000000d", attemptId: "d1000000-0000-4000-8000-00000000000d", organizationId: A.organizationId, companyId: A.companyId, activeLeases: 1, activeLeaseId: "f1000000-0000-4000-8000-00000000000f", disposition: "selected" },
     ],
     attempts: [
       ...drainableJobs.map((job) => ({ attemptId: job.attemptId, jobId: job.jobId, status: "cancelled" })),
       { attemptId: "d1000000-0000-4000-8000-00000000000d", jobId: "d0000000-0000-4000-8000-00000000000d", status: "cancel_requested" },
       { attemptId: "c1000000-0000-4000-8000-00000000000c", jobId: "c0000000-0000-4000-8000-00000000000c", status: "succeeded" },
     ],
-    commands: [{ jobId: "d0000000-0000-4000-8000-00000000000d", attemptId: "d1000000-0000-4000-8000-00000000000d", commandKind: "cancel", reason: DRAIN_REASON }],
+    commands: [{ jobId: "d0000000-0000-4000-8000-00000000000d", attemptId: "d1000000-0000-4000-8000-00000000000d", leaseId: "f1000000-0000-4000-8000-00000000000f", commandKind: "cancel", reason: DRAIN_REASON }],
     ...overrides,
   };
 }
@@ -652,13 +652,16 @@ test("the two branches differ, and each is pinned: unleased -> cancelled, leased
     "a leased attempt jumping straight to cancelled skips its lease holder");
   const noCommand = goodRehearsal({ commands: [] });
   assert.ok(evaluateRollbackRehearsal(noCommand).map((x) => x.code).includes("rollback:leased_candidate_no_command"));
-  const wrongReason = goodRehearsal({ commands: [{ jobId: "d0000000-0000-4000-8000-00000000000d", attemptId: "d1000000-0000-4000-8000-00000000000d", commandKind: "cancel", reason: "something_else" }] });
-  const staleCommand = goodRehearsal({ commands: [{ jobId: "d0000000-0000-4000-8000-00000000000d", attemptId: "99999999-0000-4000-8000-000000000099", commandKind: "cancel", reason: DRAIN_REASON }] });
+  const wrongReason = goodRehearsal({ commands: [{ jobId: "d0000000-0000-4000-8000-00000000000d", attemptId: "d1000000-0000-4000-8000-00000000000d", leaseId: "f1000000-0000-4000-8000-00000000000f", commandKind: "cancel", reason: "something_else" }] });
+  const staleLease = goodRehearsal({ commands: [{ jobId: "d0000000-0000-4000-8000-00000000000d", attemptId: "d1000000-0000-4000-8000-00000000000d", leaseId: "09090909-0000-4000-8000-000000000009", commandKind: "cancel", reason: DRAIN_REASON }] });
+  assert.ok(evaluateRollbackRehearsal(staleLease).map((x) => x.code).includes("rollback:command_wrong_lease"),
+    "a command on a PREVIOUS lease of the same attempt must not satisfy the current holder");
+  const staleCommand = goodRehearsal({ commands: [{ jobId: "d0000000-0000-4000-8000-00000000000d", attemptId: "99999999-0000-4000-8000-000000000099", leaseId: "f1000000-0000-4000-8000-00000000000f", commandKind: "cancel", reason: DRAIN_REASON }] });
   assert.ok(evaluateRollbackRehearsal(staleCommand).map((x) => x.code).includes("rollback:leased_candidate_no_command"),
     "a command of ANOTHER attempt of the same job must not satisfy this one");
   assert.ok(evaluateRollbackRehearsal(wrongReason).map((x) => x.code).includes("rollback:command_wrong_reason"));
   const strayCommand = goodRehearsal();
-  strayCommand.commands = [...strayCommand.commands, { jobId: strayCommand.drainableJobs[0].jobId, attemptId: strayCommand.drainableJobs[0].attemptId, commandKind: "cancel", reason: DRAIN_REASON }];
+  strayCommand.commands = [...strayCommand.commands, { jobId: strayCommand.drainableJobs[0].jobId, attemptId: strayCommand.drainableJobs[0].attemptId, leaseId: null, commandKind: "cancel", reason: DRAIN_REASON }];
   assert.ok(evaluateRollbackRehearsal(strayCommand).map((x) => x.code).includes("rollback:unleased_candidate_has_command"));
 });
 

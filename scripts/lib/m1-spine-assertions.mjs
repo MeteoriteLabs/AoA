@@ -703,10 +703,10 @@ export const DRAIN_REASON = "distributed_execution_rollback";
  * @param {string[]} o.terminalJobIds  jobs that were already terminal when the drain ran
  * @param {Array<{attemptId:string, jobId:string, status:string}>} o.attempts  every probed attempt's
  *        state AFTER the drain, PER ATTEMPT
- * @param {Array<{attemptId:string, jobId:string, organizationId:string, companyId:string, activeLeases:number, disposition:string|null}>} o.preDrainCandidates
+ * @param {Array<{attemptId:string, jobId:string, organizationId:string, companyId:string, activeLeases:number, activeLeaseId:string|null, disposition:string|null}>} o.preDrainCandidates
  *        every NON-TERMINAL attempt of the profile's Organizations, taken BEFORE the drain ran
- * @param {Array<{jobId:string, commandKind:string, reason:string|null}>} o.commands  the control
- *        commands those jobs carry after the drain
+ * @param {Array<{jobId:string, attemptId:string, leaseId:string|null, commandKind:string, reason:string|null}>} o.commands
+ *        the control commands those jobs carry after the drain
  */
 export function evaluateRollbackRehearsal(o) {
   const out = [];
@@ -760,6 +760,16 @@ export function evaluateRollbackRehearsal(o) {
       out.push(violation(
         "rollback:leased_candidate_no_command",
         `the LEASED attempt ${candidate.attemptId} of job ${candidate.jobId} has no cancel command of its own — nothing tells its lease holder to stop`,
+      ));
+    }
+    // ★ And it must target the CURRENT lease (Codex P2, PR #566): an attempt can be re-leased after
+    // its previous lease is released, and a correctly-reasoned command on the OLD lease would leave
+    // the current holder untold while the status still reads `cancel_requested`.
+    if (leased && candidate.activeLeaseId && cancels.length > 0 &&
+        !cancels.some((c) => c.leaseId === candidate.activeLeaseId)) {
+      out.push(violation(
+        "rollback:command_wrong_lease",
+        `the cancel command(s) for attempt ${candidate.attemptId} target ${JSON.stringify(cancels.map((c) => c.leaseId))}, not its ACTIVE lease ${candidate.activeLeaseId}`,
       ));
     }
     if (leased && cancels.length > 0 && cancels.every((c) => c.reason !== DRAIN_REASON)) {
