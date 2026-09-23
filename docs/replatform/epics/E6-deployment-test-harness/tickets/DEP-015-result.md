@@ -729,6 +729,18 @@ check that nothing runs).
 returns the workflow with `id: 363339172`, `state: active` — where §8 measured a **404** before the
 merge. The registration blocker §8 names is therefore discharged, and the §8 dispatch command is live.
 
-**Still pending, unchanged by this addendum:** acceptance item 1 — the keyed run on a named candidate,
-inside the F8 envelope, which is the planning session's to dispatch. No keyed or keyless dispatch of
-`m1-shipped-boot.yml` has occurred; run `35598343418` is a registration push, not a journey.
+**Scope of this addendum: §8 only. `DEP-015`'s acceptance is UNCHANGED and remains fully MET.**
+★ *Corrected before merge, 2026-09-23, on an accepted Codex P2: this paragraph first read "**Still
+pending, unchanged by this addendum:** acceptance item 1 — the keyed run … No keyed or keyless
+dispatch of `m1-shipped-boot.yml` has occurred". **That was false and is withdrawn.** It was written
+from §1 and §8 without reading forward, and it would have rewound a `complete` record to its
+pre-dispatch state — telling a reader that a finished, keyed, paid run still had to be scheduled.*
+Read at source: §10 records the keyless rehearsal `35600507289` (job `106335219133`, 28 steps,
+`success`), §9 and §11 record the two failed keyed attempts, and **§12 records acceptance item 1 as
+MET on keyed run `35619555883`** (job `106398898162`, 30 steps, `success`), which the second
+independent reviewer verified against artifact `10649025333` before flipping `Status` to `complete`.
+
+**What is genuinely still outstanding is another ticket's item, not this one's:** §13's
+usage-cardinality assertion (`WRK-018` acceptance 1(a), merged in PR #567) has not yet been carried
+by a keyed run. §13 says so itself, and the reviewer's closing note above pins the same distinction.
+Nothing in this addendum changes that either way.
