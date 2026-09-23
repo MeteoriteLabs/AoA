@@ -438,7 +438,9 @@ export function createLineRedactor() {
     if (text.startsWith(MASK_DIRECTIVE_PREFIX)) return text;
     const stripped = text.replace(/\s+/g, "");
     const joined = carry + stripped;
-    carry = stripped.slice(-JOIN_CARRY_CHARS);
+    // ★ The tail of JOINED, not of this line (Codex P1, PR #574): at an 8-character wrap the
+    // 21-character prefix spans three lines, and a window of one line never sees it whole.
+    carry = joined.slice(-JOIN_CARRY_CHARS);
     if (insidePemBlock) {
       if (PEM_END.test(text)) insidePemBlock = false;
       return redacted("pem_block");
@@ -456,8 +458,10 @@ export function createLineRedactor() {
     // published normally: ordinary output resumes at the first ordinary line.
     if (insideDerBlock) {
       const trimmed = text.trim();
-      // The WHOLE line, not its stripped form: a line with spaces in it is prose, not a wrap.
-      if (trimmed.length >= 8 && BASE64_CONTINUATION.test(trimmed)) return redacted("der_block");
+      // The WHOLE line, not its stripped form: a line with spaces in it is prose, not a wrap. No
+      // LENGTH floor (Codex P2, PR #574): a 64-character body wrapped at 12 ends in a 4-character
+      // line, and that line is key bytes like any other.
+      if (trimmed !== "" && BASE64_CONTINUATION.test(trimmed)) return redacted("der_block");
       insideDerBlock = false;
     }
     const ownHit = KEY_MATERIAL_MARKERS.find(({ pattern }) => pattern.test(text));
@@ -545,7 +549,7 @@ export function scanForKeyMaterial(files, { skipMaskDirectives = true } = {}) {
       }
       const stripped = line.replace(/\s+/g, "");
       const joined = carry + stripped;
-      carry = stripped.slice(-JOIN_CARRY_CHARS);
+      carry = joined.slice(-JOIN_CARRY_CHARS);  // ACCUMULATES: a prefix may span any number of lines.
       for (const { marker, pattern } of KEY_MATERIAL_MARKERS) {
         if (pattern.test(line)) {
           findings.push({ file: file.name, marker, line: i + 1 });

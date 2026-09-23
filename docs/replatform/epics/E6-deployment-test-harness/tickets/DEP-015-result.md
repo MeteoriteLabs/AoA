@@ -850,5 +850,18 @@ They are recorded because each would have made the control worse than none:
     matched marker, so the very next line matched it again and ordinary output was redacted as a
     phantom key. The carry is now cleared on every hit, in the redactor and in the scan. Three
     more mutations (the latch, the joined arm's latch, the carry clear) each red a test.
+16. **The wrap can be narrower than the prefix, and its last line shorter than any floor.** Two
+    residual holes in items 13 and 15, both found by the reviewer:
+
+    - the joined window kept only the PREVIOUS line, so at an 8-character wrap the 21-character
+      prefix spans three lines and was never seen whole. The carry is now the tail of the JOINED
+      text, so it accumulates and a prefix may span any number of lines, on both surfaces.
+    - the latch required a continuation line of 8 characters or more, but a 64-character body
+      wrapped at 12 ends in a 4-character line — key bytes like any other. Inside a latched block
+      there is now no length floor at all; only prose (a line with whitespace in it) ends it.
+
+    Three more mutations (either carry, the restored floor) each red a test, and the controls are
+    the two wraps themselves: 8 characters across three lines, and a real 64-character export's
+    4-character tail.
 **Status unchanged.** This is a control added after the fact to a run that was already clean; it
 neither re-opens nor re-decides §12's keyed acceptance.

@@ -932,3 +932,30 @@ test("the DER latch does not swallow ordinary output, and a PEM hit does not ope
   assert.match(pem('-----BEGIN PUBLIC KEY-----MCowBQYD-----END PUBLIC KEY-----'), /pem_block/);
   assert.equal(pem('plainword'), 'plainword', 'a closed single-line PEM opens no DER block');
 });
+
+test("POSITIVE CONTROL: an 8-char wrap spans the prefix over THREE lines and is still caught (Codex P1)", () => {
+  // The prefix is 21 characters; at width 8 no single line, and no two adjacent lines, hold it.
+  const key = 'MC4CAQAwBQYDK2VwBCIEIG' + 'HhSeedBytes'.repeat(5);
+  const wrapped = key.match(/.{1,8}/g);
+  const redact = createLineRedactor();
+  const published = wrapped.map(redact);
+  // Line 3 is where the prefix COMPLETES; from there nothing may be published.
+  for (let i = 2; i < wrapped.length; i += 1) {
+    assert.match(published[i], /\[REDACTED: key material /, `line ${i + 1} (${published[i]}) published raw`);
+  }
+  // The scan sees it too, and reports it at the completing line.
+  const { findings } = scanForKeyMaterial([{ name: 'job-log.txt', text: wrapped.join('\n') }], { skipMaskDirectives: false });
+  assert.ok(findings.length >= 1, 'the scan must find a prefix spread over three lines');
+  assert.equal(findings[0].marker, 'ed25519_pkcs8_der');
+  assert.equal(findings[0].wrapped, true);
+});
+
+test("POSITIVE CONTROL: the FINAL short continuation of a wrap is redacted too (Codex P2)", () => {
+  // A real Node PKCS#8 export is 64 base64 characters; at width 12 the last line is 4 characters.
+  const key = 'MC4CAQAwBQYDK2VwBCIEIG' + 'A'.repeat(42);
+  assert.equal(key.length, 64);
+  const wrapped = key.match(/.{1,12}/g);
+  assert.equal(wrapped.at(-1).length, 4, 'the tail must be shorter than any length floor');
+  const published = wrapped.map(createLineRedactor());
+  assert.match(published.at(-1), /\[REDACTED: key material \(der_block\)/);
+});
