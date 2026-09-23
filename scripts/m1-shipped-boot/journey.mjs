@@ -966,13 +966,17 @@ function leakScan(state) {
   // after the last filter ran, or the filter died before it could leave its marker. Either way the
   // Actions-log coverage this scan claims was never had, so IN CI it fails closed. Outside CI (a
   // by-hand phase run) there is no tee, and an absent log is simply nothing to scan.
-  if (process.env.GITHUB_ACTIONS === "true" && !existsSync(jobLogPath(state))) {
-    rmSync(dir, { recursive: true, force: true });
-    fail(
-      "leak scan: the job log is ABSENT although the run got past prepare; the Actions-log surface " +
-        "was never captured and cannot be judged clean, so the evidence was deleted",
-    );
-  }
+  // ★ PRECEDENCE: the refusal is DEFERRED, never short-circuiting (PR #574, after it red four of
+  // this lane's own phase tests IN CI ONLY). Both outcomes delete the bundle, so ordering changes
+  // nothing about what is published — it changes only what the operator is TOLD. "I cannot judge
+  // the log" and "a named secret is sitting in the evidence" are different verdicts, and only the
+  // second says ROTATE THIS NOW. Refusing first would swallow a finding the scan already has in
+  // hand. So the scans below always run, findings are always named, and the absent log is reported
+  // alongside them: a refusal to judge never suppresses a finding.
+  const jobLogAbsent = process.env.GITHUB_ACTIONS === "true" && !existsSync(jobLogPath(state));
+  const absentLogError =
+    "leak scan: the job log is ABSENT although the run got past prepare; the Actions-log surface " +
+    "was never captured and cannot be judged clean, so the evidence was deleted";
   const rawLog = existsSync(jobLogPath(state)) ? readFileSync(jobLogPath(state), "latin1") : null;
   // ★ INTACTNESS (Codex P1, PR #574). A filter killed outright — OOM, SIGKILL, an uncaught throw —
   // fails its own phase through `pipefail` but leaves no `capture-failed` marker, and the NEXT
@@ -1017,12 +1021,18 @@ function leakScan(state) {
   if (findings.length > 0 || keyMaterial.length > 0) {
     for (const f of findings) console.error(`::error::DEP-015 leak scan: ${f.surface} file '${f.file}' contains job secret '${f.secret}' (${f.form} form)`);
     for (const f of keyMaterial) console.error(`::error::DEP-015 leak scan: ${f.surface} file '${f.file}' line ${f.line} carries key material (${f.marker})`);
+    if (jobLogAbsent) console.error(`::error::DEP-015 ${absentLogError}`);
     rmSync(dir, { recursive: true, force: true });
     rmSync(jobLogPath(state), { force: true });
     fail(
       `leak scan: ${findings.length} secret occurrence(s) + ${keyMaterial.length} key-material occurrence(s) across the evidence and the job log; ` +
-        `both were deleted and nothing will be uploaded`,
+        `both were deleted and nothing will be uploaded` +
+        (jobLogAbsent ? "; the job log was ABSENT as well, so that surface was never judged" : ""),
     );
+  }
+  if (jobLogAbsent) {
+    rmSync(dir, { recursive: true, force: true });
+    fail(absentLogError);
   }
   console.log(
     `leak-scan: ${files.length} evidence file(s) + ${logSurface.length} job-log file(s) scanned for ` +

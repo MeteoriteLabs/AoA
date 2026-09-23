@@ -968,5 +968,54 @@ They are recorded because each would have made the control worse than none:
     publishes is header and not seed; a directive carrying the whole prefix latches at once; and an
     ordinary masked secret opens no block. Two mutations (the latch, the carry) each red, and the
     marker joins the gate, verified absent from `44b6c94a5`.
+27. **The absent-log arm red four of this file's OWN tests, IN CI ONLY — and the fix is a
+    PRECEDENCE ruling, not a fixture patch.** Item 22 keyed its refusal on `GITHUB_ACTIONS`, and
+    Actions sets that variable for the TEST process too. Four pre-existing phase cases build an
+    evidence-only fixture (no `job-log.txt`), so in Actions every one of them tripped the
+    absent-log arm before reaching the behaviour it means to prove, while every local run stayed
+    green. Measured at source on `2f213ea97`: `GITHUB_ACTIONS=true node --test
+    scripts/lib/__tests__/m1-shipped-boot.test.mjs` → `fail 4`; the same command without the
+    variable → `fail 0`. The four are the planted-canary phase control, the clean-evidence
+    baseline, the no-job-log case, and the P2 mask-directive-in-evidence control. The
+    planted-canary control received the absent-log refusal in place of its finding — i.e. **a
+    refusal to judge was swallowing a finding the scan already had in hand.**
+
+    **Ruling (question 1, precedence).** The absent-log refusal is now DEFERRED, never
+    short-circuiting (`leakScan` in `scripts/m1-shipped-boot/journey.mjs`: `jobLogAbsent` /
+    `absentLogError` are computed, the scans run, and the refusal fails at the end). Both outcomes
+    delete the bundle, so the order cannot change what is PUBLISHED — it changes only what the
+    operator is TOLD. "I cannot judge the log surface" and "a named secret is sitting in an
+    evidence file" are different verdicts, and only the second says ROTATE THIS NOW. A refusal
+    first loses that signal for no gain, so findings are always named and the absent log is
+    reported ALONGSIDE them (both `::error::` lines, one combined summary). The reverse order is
+    never acceptable.
+
+    **Finding (question 2, vacuity).** *"with no job log at all, the evidence scan still runs (no
+    silent skip)"* was not vacuous, but its PREMISE had been inverted by item 22: the property it
+    names holds only OUTSIDE CI, because inside CI an absent log is now a refusal by design. It is
+    retitled to say so (`leak scan (phase): OUTSIDE CI, …`) and pinned to a non-CI environment
+    explicitly. Its CI counterpart already exists and was never in doubt — *"POSITIVE CONTROL: an
+    ABSENT job log fails the scan IN CI, and is merely nothing to scan outside it"* asserts both
+    arms of the same switch. So this was a record/fixture defect, not a product defect: the
+    product arm is correct and stays.
+
+    **Fixtures say which environment they assert.** `leakScanIn(out, { ci })` sets or deletes
+    `GITHUB_ACTIONS` explicitly for every phase case; none of them inherits the runner's. The
+    lesson for this lane: a control keyed on an environment variable the runner also sets must be
+    exercised BOTH ways locally — `GITHUB_ACTIONS=true node --test …` — or local green means
+    nothing.
+
+    **Controls.** Two new cases pin the ruling: a planted canary with an ABSENT log IN CI is still
+    named by file and secret AND reports the absent log, never printing the value, bundle deleted;
+    and — the positive control the fixture change owes — a planted canary with a job log PRESENT
+    IN CI still reds, with the absent-log line asserted NOT to appear. GREEN after the change:
+    93/93 with `GITHUB_ACTIONS=true` and 93/93 without it. Three mutations, each reverted:
+    restoring the short-circuit reds the PRECEDENCE case only; deleting the deferred refusal reds
+    the item-22 absent-log control only; blinding `scanEvidenceForSecrets` over the evidence
+    surface reds all three canary controls.
+
+    **Status of this addendum:** `gate_review`. Only a DISTINCT reviewer may set `complete`; §12's
+    keyed acceptance is neither re-opened nor re-decided, and the `Status` line at the top of this
+    record — set by attempt 2's distinct reviewer — is left exactly as written.
 **Status unchanged.** This is a control added after the fact to a run that was already clean; it
 neither re-opens nor re-decides §12's keyed acceptance.

@@ -297,12 +297,24 @@ test("leak scan: values shorter than 8 characters are not scanned (they would ma
 // the file and the secret, never prints the value, and deletes the bundle so nothing is uploaded.
 const journey = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "m1-shipped-boot", "journey.mjs");
 
+/**
+ * The leak scan has CI-ONLY arms (an absent or truncated job log fails closed), so every phase
+ * case must SAY which environment it asserts instead of inheriting the runner's. Inheriting it
+ * made four of these cases pass locally and red in Actions (PR #574).
+ */
+function leakScanIn(out, { ci = false } = {}) {
+  const env = { ...process.env };
+  if (ci) env.GITHUB_ACTIONS = "true";
+  else delete env.GITHUB_ACTIONS;
+  return spawnSync(process.execPath, [journey, "leak-scan", "--out", out], { encoding: "utf8", env });
+}
+
 function runLeakScan(evidenceText) {
   const out = mkdtempSync(path.join(tmpdir(), "m1-leak-"));
   mkdirSync(path.join(out, "evidence", "nested"), { recursive: true });
   writeFileSync(path.join(out, "evidence", "nested", "logs-worker.txt"), evidenceText);
   writeFileSync(path.join(out, "state.json"), JSON.stringify({ out, redact: Object.values(SECRETS), secrets: SECRETS }));
-  const res = spawnSync(process.execPath, [journey, "leak-scan", "--out", out], { encoding: "utf8" });
+  const res = leakScanIn(out);
   const evidenceSurvived = existsSync(path.join(out, "evidence"));
   rmSync(out, { recursive: true, force: true });
   return { res, evidenceSurvived };
@@ -587,7 +599,7 @@ function runLeakScanOverLog(logText, extraSecrets = {}) {
   writeFileSync(path.join(out, "job-log.txt"), logText);
   const secrets = { ...SECRETS, ...extraSecrets };
   writeFileSync(path.join(out, "state.json"), JSON.stringify({ out, redact: Object.values(secrets), secrets }));
-  const res = spawnSync(process.execPath, [journey, "leak-scan", "--out", out], { encoding: "utf8" });
+  const res = leakScanIn(out);
   const survived = { evidence: existsSync(path.join(out, "evidence")), log: existsSync(path.join(out, "job-log.txt")) };
   rmSync(out, { recursive: true, force: true });
   return { res, survived };
@@ -626,15 +638,53 @@ test("leak scan (phase): a clean job log passes, is counted, and both surfaces s
   assert.deepEqual(survived, { evidence: true, log: true });
 });
 
-test("leak scan (phase): with no job log at all, the evidence scan still runs (no silent skip)", () => {
+test("leak scan (phase): OUTSIDE CI, with no job log at all, the evidence scan still runs (no silent skip)", () => {
   const out = mkdtempSync(path.join(tmpdir(), "m1-logscan-none-"));
   mkdirSync(path.join(out, "evidence"), { recursive: true });
   writeFileSync(path.join(out, "evidence", "logs.txt"), "clean\n");
   writeFileSync(path.join(out, "state.json"), JSON.stringify({ out, redact: Object.values(SECRETS), secrets: SECRETS }));
-  const res = spawnSync(process.execPath, [journey, "leak-scan", "--out", out], { encoding: "utf8" });
+  const res = leakScanIn(out);
   rmSync(out, { recursive: true, force: true });
   assert.equal(res.status, 0, res.stdout + res.stderr);
   assert.match(res.stdout, /0 job-log file\(s\) scanned/);
+});
+
+// === PRECEDENCE: a refusal to judge never swallows a finding (PR #574) =======================
+// Both the absent-log refusal and a planted canary delete the bundle, so ordering cannot change
+// what is published -- only what the operator is TOLD. "rotate this secret" must survive "I could
+// not judge the log". These two pin that decision, and the second is the positive control that the
+// canary scan still reds with a job log PRESENT.
+
+test("PRECEDENCE: a planted canary is still named IN CI when the job log is ABSENT, and both are reported", () => {
+  const out = mkdtempSync(path.join(tmpdir(), "m1-prec-"));
+  mkdirSync(path.join(out, "evidence", "nested"), { recursive: true });
+  writeFileSync(path.join(out, "evidence", "nested", "logs-worker.txt"), `leaked ${SECRETS.AOA_M1_TRUTH_SHARED_SECRET}\n`);
+  writeFileSync(path.join(out, "state.json"), JSON.stringify({ out, redact: Object.values(SECRETS), secrets: SECRETS }));
+  const res = leakScanIn(out, { ci: true });  // ...and NO job-log.txt
+  const gone = !existsSync(path.join(out, "evidence"));
+  rmSync(out, { recursive: true, force: true });
+  const all = `${res.stdout}${res.stderr}`;
+  assert.equal(res.status, 1, all);
+  assert.match(all, /evidence file 'nested\/logs-worker\.txt' contains job secret 'AOA_M1_TRUTH_SHARED_SECRET'/);
+  assert.match(all, /job log is ABSENT/);
+  assert.ok(!all.includes(SECRETS.AOA_M1_TRUTH_SHARED_SECRET), "the value itself is never printed");
+  assert.ok(gone, "the bundle is deleted either way");
+});
+
+test("POSITIVE CONTROL: with a job log PRESENT in CI, a planted canary still reds and the absent-log line does NOT appear", () => {
+  const out = mkdtempSync(path.join(tmpdir(), "m1-prec-log-"));
+  mkdirSync(path.join(out, "evidence", "nested"), { recursive: true });
+  writeFileSync(path.join(out, "evidence", "nested", "logs-worker.txt"), `leaked ${SECRETS.AOA_M1_TRUTH_SHARED_SECRET}\n`);
+  writeFileSync(path.join(out, "job-log.txt"), "[log-filter] opened 00000000-0000-4000-8000-000000000001\nclean\n[log-filter] closed 00000000-0000-4000-8000-000000000001\n");
+  writeFileSync(path.join(out, "state.json"), JSON.stringify({ out, redact: Object.values(SECRETS), secrets: SECRETS }));
+  const res = leakScanIn(out, { ci: true });
+  const gone = !existsSync(path.join(out, "evidence"));
+  rmSync(out, { recursive: true, force: true });
+  const all = `${res.stdout}${res.stderr}`;
+  assert.equal(res.status, 1, all);
+  assert.match(all, /evidence file 'nested\/logs-worker\.txt' contains job secret 'AOA_M1_TRUTH_SHARED_SECRET'/);
+  assert.ok(!/job log is ABSENT/.test(all), "the log WAS present; the refusal must not fire");
+  assert.ok(gone);
 });
 
 // The two registrations the control depends on, asserted against the driver's source: a masking
@@ -755,7 +805,7 @@ test("POSITIVE CONTROL (P2): an unregistered key on an ::add-mask:: line in EVID
   mkdirSync(path.join(out, "evidence"), { recursive: true });
   writeFileSync(path.join(out, "evidence", "verifier-a.txt"), `${MASK_DIRECTIVE_PREFIX}${PRIVATE_PEM.split("\n")[1]}\n`);
   writeFileSync(path.join(out, "state.json"), JSON.stringify({ out, redact: Object.values(SECRETS), secrets: SECRETS }));
-  const res = spawnSync(process.execPath, [journey, "leak-scan", "--out", out], { encoding: "utf8" });
+  const res = leakScanIn(out);
   rmSync(out, { recursive: true, force: true });
   assert.equal(res.status, 1, res.stdout + res.stderr);
   assert.match(`${res.stdout}${res.stderr}`, /evidence file 'verifier-a\.txt' line 1 carries key material \(ed25519_pkcs8_der\)/);
@@ -881,7 +931,7 @@ test("POSITIVE CONTROL: a failed capture leaves a DURABLE marker, and the leak s
   writeFileSync(path.join(out, 'job-log.txt'), 'a truncated but clean-looking log\n');
   writeFileSync(path.join(out, 'job-log.txt.capture-failed'), 'append: ENOSPC\n');
   writeFileSync(path.join(out, 'state.json'), JSON.stringify({ out, redact: [], secrets: {} }));
-  const res = spawnSync(process.execPath, [journey, 'leak-scan', '--out', out], { encoding: 'utf8' });
+  const res = leakScanIn(out);
   const gone = !existsSync(path.join(out, 'evidence'));
   rmSync(out, { recursive: true, force: true });
   assert.equal(res.status, 1, res.stdout + res.stderr);
