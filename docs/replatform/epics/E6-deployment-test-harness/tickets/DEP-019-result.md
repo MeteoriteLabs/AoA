@@ -443,7 +443,18 @@ name is irrelevant to "the child cannot see the host's environment at all".
 
 Guard 9 now reports nothing missing, and guards 1–8 find nothing in any surface this ticket adds.
 
-**`ci-required`: PASS.** Most recently on `a60fcdc62`, run `35851079291`, job `ci-required` =
+**`ci-required`: PASS on the FINAL head `a3f68e9c8`**, run `35858398954` — the tree carrying the
+`DEP-018` merge, both ruled rounds of fixes and the cross-ticket repair (§11d).
+
+★ One intermediate run (`35856117196`, head `19ad584a3`) failed `verify (1)` on
+`distributed-execution-db-startup.integration.test.ts` — *"server startup timed out before health or
+exit"*, with `Requested port is busy; using next free port` in its own log. It is a boot-timing
+flake and not a regression, and the evidence is that **this branch changes no `server/src` file at
+all** (`git diff origin/docs/replatform-program...HEAD -- server/src` is empty), so that test's
+subject is untouched by this PR. It was re-run rather than fixed, and the head moved on before the
+re-run finished; the verdict above is on the later head.
+
+Earlier passes, kept as recorded: on `a60fcdc62`, run `35851079291`, job `ci-required` =
 `success` — the head carrying all four ruled fixes plus the §13.6/13.7 handover. Earlier, and
 recorded as written: PASS on `75eb25f9b`, run `35844283361` (job `107132960224`), all
 sixteen checks green — `changes`, `policy`, `lint`, `migrations`, `distributed-contract`, `browser`,
