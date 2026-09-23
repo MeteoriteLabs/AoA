@@ -772,5 +772,15 @@ They are recorded because each would have made the control worse than none:
    pipefail, so a phase failing into a successful `tee` would report success. The job now declares
    `defaults: run: shell: bash`, and the shape guard requires it.
 
+5. **An older candidate would have been judged by its own pre-control driver.** Checkout replaces
+   the workspace with the candidate, so a candidate that predates these controls would tee phase
+   output into the new job log and then report clean with the evidence-only scanner that never
+   reads it — green, with the control absent. The "Bind the run to the candidate" step now REFUSES
+   a candidate whose own `journey.mjs` / `m1-shipped-boot.mjs` lacks the four control markers
+   (`CONTROL_PLANE_PUBLIC_KEY_PEM`, `maskDirectivesFor`, `stripMaskDirectives`,
+   `KEY_MATERIAL_MARKERS`), each with an error that names what is missing. The shape guard requires
+   each gate line, and a second test asserts those markers are present in THIS tree — a gate that
+   refused every candidate, including the one it ships with, would be the same defect one level up.
+
 **Status unchanged.** This is a control added after the fact to a run that was already clean; it
 neither re-opens nor re-decides §12's keyed acceptance.

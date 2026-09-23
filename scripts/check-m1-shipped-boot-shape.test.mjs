@@ -14,7 +14,12 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { evaluateShippedBootWorkflowShape, jobDispatchGates, SHIPPED_BOOT_WORKFLOW } from "./lib/m1-shipped-boot-shape.mjs";
+import {
+  evaluateShippedBootWorkflowShape,
+  jobDispatchGates,
+  CANDIDATE_CONTROL_MARKERS,
+  SHIPPED_BOOT_WORKFLOW,
+} from "./lib/m1-shipped-boot-shape.mjs";
 import { parseYaml } from "./lib/yaml-lite.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -239,4 +244,23 @@ test("REJECT: the job-log directory not created before the first tee (Codex P1)"
 test("REJECT: no explicit `shell: bash`, so a teed pipeline would run without pipefail (Codex P1)", () => {
   const text = mutate(real(), "    defaults:\n", "    x-defaults:\n");
   assert.ok(anyMatch(violationsOf(text), /must declare .*shell: bash.* pipefail/), violationsOf(text).join("\n"));
+});
+
+test("REJECT: the candidate-controls gate removed — an older candidate would run its own pre-control driver (Codex P1)", () => {
+  for (const [file, marker] of CANDIDATE_CONTROL_MARKERS) {
+    const line = real().split(/\r?\n/).find((l) => l.includes(`grep -q "${marker}" ${file}`));
+    assert.ok(line, `the workflow must gate on ${marker}`);
+    const text = mutate(real(), `${line}\n`, "");
+    assert.ok(
+      anyMatch(violationsOf(text), new RegExp(`lacks '${marker}'`)),
+      `${marker}:\n${violationsOf(text).join("\n")}`,
+    );
+  }
+});
+
+test("the candidate-controls gate names files that EXIST and markers that are present here (non-vacuous)", () => {
+  for (const [file, marker] of CANDIDATE_CONTROL_MARKERS) {
+    const text = readFileSync(path.join(repoRoot, file), "utf8");
+    assert.ok(text.includes(marker), `${file} must carry ${marker}, or the gate would refuse this very tree`);
+  }
 });

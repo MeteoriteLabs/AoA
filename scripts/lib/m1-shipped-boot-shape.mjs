@@ -31,6 +31,15 @@ export const TEED_PHASES = [
   "boot-workers", "await-workers", "reconcile", "probe-presign", "dispatch", "collect",
 ];
 
+/** The markers the CANDIDATE's own copy of the lane must carry, or its run would be judged by a
+ * driver that predates these controls (Codex P1, PR #574). */
+export const CANDIDATE_CONTROL_MARKERS = [
+  ["scripts/m1-shipped-boot/journey.mjs", "CONTROL_PLANE_PUBLIC_KEY_PEM"],
+  ["scripts/m1-shipped-boot/journey.mjs", "maskDirectivesFor"],
+  ["scripts/m1-shipped-boot/journey.mjs", "stripMaskDirectives"],
+  ["scripts/lib/m1-shipped-boot.mjs", "KEY_MATERIAL_MARKERS"],
+];
+
 export const EVIDENCE_UPLOAD_PATH = "${{ env.M1_OUT }}/evidence/";
 /** E6-D001: the one branch the registration-only push may name. */
 export const REGISTRATION_BRANCH = "docs/replatform-program";
@@ -228,6 +237,14 @@ export function evaluateShippedBootWorkflowShape(text) {
       v.push(`phase '${phase}' does not tee its output into the job-log surface the leak scan reads`);
     }
   }
+  // The candidate must carry the controls it is judged by: checkout replaces the workspace, so an
+  // older candidate would run its own pre-control driver and report clean (Codex P1, PR #574).
+  for (const [file, marker] of CANDIDATE_CONTROL_MARKERS) {
+    if (!src.includes(`grep -q "${marker}" ${file}`)) {
+      v.push(`the lane must refuse a candidate whose ${file} lacks '${marker}' — it would run its own pre-control driver and report clean`);
+    }
+  }
+
   // The directory the job log lives in must be created BEFORE the first teed step, and it must
   // be created by a step that runs earlier than the one whose pipeline opens the file.
   const mkdirAt = src.indexOf('mkdir -p "${RUNNER_TEMP}/m1-shipped-boot"');

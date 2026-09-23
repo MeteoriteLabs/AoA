@@ -135,6 +135,15 @@ jobs:
                    docker/images/build.sh docker/images/admit.sh docker/adapter-manager/Dockerfile; do
             test -f "$f" || { echo "::error::the candidate has no $f (it predates DEP-015/DEP-014)"; exit 1; }
           done
+          # ★ THE CANDIDATE MUST CARRY THE CONTROLS IT WILL BE JUDGED BY (Codex P1, PR #574).
+          # Checkout replaces the workspace with the candidate, so an OLDER candidate would run its
+          # OWN driver: it would tee phase output into the new job log and then report clean with
+          # the evidence-only scanner that never reads it — defeating the control while looking
+          # green. These greps are the "predates the controls" gate; each names what is missing.
+          grep -q "CONTROL_PLANE_PUBLIC_KEY_PEM" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: it does not register the public half of the keypair (missing CONTROL_PLANE_PUBLIC_KEY_PEM in scripts/m1-shipped-boot/journey.mjs)"; exit 1; }
+          grep -q "maskDirectivesFor" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its driver does not mask registered secrets in the Actions log (missing maskDirectivesFor in scripts/m1-shipped-boot/journey.mjs)"; exit 1; }
+          grep -q "stripMaskDirectives" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its leak scan does not read the job-log surface (missing stripMaskDirectives in scripts/m1-shipped-boot/journey.mjs)"; exit 1; }
+          grep -q "KEY_MATERIAL_MARKERS" scripts/lib/m1-shipped-boot.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: it cannot scan for key material by shape (missing KEY_MATERIAL_MARKERS in scripts/lib/m1-shipped-boot.mjs)"; exit 1; }
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
