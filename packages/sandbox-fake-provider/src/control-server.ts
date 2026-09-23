@@ -3,7 +3,7 @@
 //
 // Control channel:
 //   POST /script       { providerId, fixtureId? | fixture?, failureInjection?,
-//                        includeAllCheckpoints? }  → 200 {ok,fixtureId} | 400
+//                        includeAllCheckpoints?, usageMode? }  → 200 {ok,fixtureId} | 400
 //   POST /reset        → 200 {ok:true}
 //   GET  /invocations?providerId=  → 200 [ ledger entries ]
 // Driver channel (addressed by providerId):
@@ -104,6 +104,8 @@ export function createControlServer(provider: FakeSandboxProvider, options: Cont
           loadFixture: (id) => loadFixtureFromDir(fixturesDir, id),
           failureInjection: (body.failureInjection ?? null) as never,
           includeAllCheckpoints: body.includeAllCheckpoints === true,
+          // DEP-016 — `canned` | `suppressed`; the driver refuses any other value.
+          usageMode: body.usageMode === undefined ? undefined : (body.usageMode as never),
         });
         send(res, 200, { ok: true, fixtureId: fixture.id });
       } catch (err) {

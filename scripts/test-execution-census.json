@@ -310,6 +310,11 @@
       "workflow": "pr.yml",
       "step": "Staging manifest config contract (DEP-006) + shipped CI boot lane (DEP-015)"
     },
+    "scripts/lib/__tests__/m1-spine-assertions.test.mjs": {
+      "status": "runs",
+      "workflow": "pr.yml",
+      "step": "m1-spine profile verdict self-test (DEP-016)"
+    },
     "scripts/lib/__tests__/register-id-uniqueness.test.mjs": {
       "status": "runs",
       "workflow": "pr.yml",
@@ -372,6 +377,91 @@
     "scripts/verify-e3-perf-01-handoff.test.mjs": {
       "status": "unrun",
       "reason": "Self-test for scripts/verify-e3-perf-01-handoff.mjs, which guard-inventory.json already declares dormant for the same reason: a one-off E3 PERF-01 handoff verifier retained as the record of how that handoff was verified. TO WIRE: only if that handoff is ever re-run."
+    },
+    "tests/d1/container-enrol.test.mjs": {
+      "status": "runs",
+      "workflow": "d1-merge-train.yml",
+      "step": "Run the E6F campaign (live)"
+    },
+    "tests/d1/e6f-01-lease-races.test.mjs": {
+      "status": "runs",
+      "workflow": "d1-merge-train.yml",
+      "step": "Run the E6F campaign (live)"
+    },
+    "tests/d1/e6f-03-networked-smoke.test.mjs": {
+      "status": "runs",
+      "workflow": "d1-merge-train.yml",
+      "step": "Run the E6F campaign (live)"
+    },
+    "tests/d1/e6f-04-tenancy.test.mjs": {
+      "status": "runs",
+      "workflow": "d1-merge-train.yml",
+      "step": "Run the E6F campaign (live)"
+    },
+    "tests/d1/e6f-05-live-minio.test.mjs": {
+      "status": "runs",
+      "workflow": "d1-merge-train.yml",
+      "step": "Run the E6F campaign (live)"
+    },
+    "tests/d1/e6f-08-egress-isolation.test.mjs": {
+      "status": "runs",
+      "workflow": "d1-merge-train.yml",
+      "step": "Run the E6F campaign (live)"
+    },
+    "tests/d1/e6f-08-stale-fence.test.mjs": {
+      "status": "runs",
+      "workflow": "d1-merge-train.yml",
+      "step": "Run the E6F campaign (live)"
+    },
+    "tests/d1/e6f-09-lease-faults.test.mjs": {
+      "status": "runs",
+      "workflow": "d1-merge-train.yml",
+      "step": "Run the E6F campaign (live)"
+    },
+    "tests/d1/e6f-10-telemetry.test.mjs": {
+      "status": "runs",
+      "workflow": "d1-merge-train.yml",
+      "step": "Run the E6F campaign (live)"
+    },
+    "tests/d1/e6f-11-two-replica.test.mjs": {
+      "status": "runs",
+      "workflow": "d1-merge-train.yml",
+      "step": "Run the E6F campaign (live)"
+    },
+    "tests/d1/e6f-12-staging-render.test.mjs": {
+      "status": "runs",
+      "workflow": "d1-merge-train.yml",
+      "step": "Run the E6F campaign (live)"
+    },
+    "tests/d1/e6f-13-realtime-fanout.test.mjs": {
+      "status": "runs",
+      "workflow": "d1-merge-train.yml",
+      "step": "Run the E6F campaign (live)"
+    },
+    "tests/d1/e6f-14-orphan-sweep.test.mjs": {
+      "status": "runs",
+      "workflow": "d1-merge-train.yml",
+      "step": "Run the E6F campaign (live)"
+    },
+    "tests/d1/evidence-retention.test.mjs": {
+      "status": "runs",
+      "workflow": "pr.yml",
+      "step": "m1-spine profile verdict self-test (DEP-016)"
+    },
+    "tests/d1/fake-provider-job.test.mjs": {
+      "status": "runs",
+      "workflow": "d1-merge-train.yml",
+      "step": "Run the E6F campaign (live)"
+    },
+    "tests/d1/m1-spine.test.mjs": {
+      "status": "runs",
+      "workflow": "d1-merge-train.yml",
+      "step": "Run the m1-spine profile (live)"
+    },
+    "tests/d1/network-denial.test.mjs": {
+      "status": "runs",
+      "workflow": "d1-merge-train.yml",
+      "step": "Run the E6F campaign (live)"
     }
   }
 }
