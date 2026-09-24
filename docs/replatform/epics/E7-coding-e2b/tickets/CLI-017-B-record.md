@@ -7,7 +7,23 @@
 **Graph node:** `program-design.md #### CLI-017`
 **Implementer:** `M1b CLI-017 build agent (Claude Opus 5)`
 **Start SHA:** `9ad5666df6` (program tip at start; rebased onto `6b468773f1` when the base moved)
-**Reviewed revision (implementation commit):** `6441fa9b63e73a1537484db7f227d830876d5ef8`
+**Reviewed revision (implementation commit):** `2aaeb1169b` (pre-merge branch head) / squash commit
+**`d9b25579d`** on `docs/replatform-program`.
+★ **Re-pointed 2026-09-24** by the M1 planning session, on the `changes_requested` of the
+independent review in PR #595. *Superseded citation, kept as written:*
+`6441fa9b63e73a1537484db7f227d830876d5ef8` - which was a genuine ancestor of the PR head but
+**predated rounds 1-3 of this slice's own product code** (`codec.ts`,
+`op-failure-classification.ts`, `server.ts`, `exportFailureReasonCode`, the M-B14 behavioural
+arm), so it cited a revision the code had moved past - the record-rot defect this program
+keeps paying for.
+
+★★★ **Why a squash commit is named too.** The review protocol asks for a revision that is an
+**ancestor of HEAD**, and squash-merging discards branch commits: `2aaeb1169b` is **not** an
+ancestor of the program branch, and neither is `6441fa9b63`. Post-merge the citation is therefore
+validated by **blob identity**, not ancestry. Verified:
+`packages/adapter-manager/src/op-failure-classification.ts` is
+`4e79e482845ce8b2c617db504afd8a6888f40051` at **both** `2aaeb1169b` and the tip. The general
+defect is filed as **`E0-F022`**.
 ★ *Re-pointed 2026-09-24 after the branch was rebased onto `6a3882f39` (the base moved twice during this ticket). The pre-rebase id was `91d56619a7392491bf443837dcc126b938c1a03e`, which is no longer an ancestor of the PR head — a reviewed revision that is not an ancestor is the record-rot failure this programme keeps paying for, so the id is re-pointed rather than left to read as authoritative. The tree of this commit is unchanged by the rebase; only its parent moved.*
 **Ruling:** `decisions.md` `E7-D11` §3 (ruling F7, under founder delegation F2) — SD-5 is **REQUIRED
 before `M1b`'s campaign**, not optional and not deferred
