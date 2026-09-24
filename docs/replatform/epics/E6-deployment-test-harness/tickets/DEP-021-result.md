@@ -691,7 +691,8 @@ Per-step conclusions are read from the jobs API and never from the run conclusio
 | 2 | **`35956091950`** | **ARM 1, the graceful negative control, PASSED IN FULL** — `inFlight: true`, `restartStatus: 0`, `startedAtChanged: true`, `reportedStoreEmpty: true`. So the control half is proven live. ★ ARM 2 then failed with its job still `attemptStatus: "pending"`, `events: []`, `leaseWorkerIds: []` after 45 polls — **not a broken worker but a BUSY one**: ARM 1 abandons an attempt mid-run and this worker runs ONE job at a time, so until that attempt terminalises the restarted daemon has no slot. ARM 2's wait had silently assumed otherwise |
 | 3 | **`35957846155`** | ARM 1 passed in full AGAIN, and the new slot precondition timed out: `settledAttemptStatus: "running"` after 200 s, with `attempt_started` and the env-probe log event present. ★ **An interrupted run is RE-LEASED and RE-RUN, so its window is paid TWICE.** Waiting longer is the fragile fix; the CONTROL's window only has to outlive `attempt_started` long enough for the restart to land (~10 s), so `RECONCILE_CONTROL_WINDOW_MS` is 30 s while the injection keeps 90 s |
 | 4 | **`35960080927`** | **the slot precondition went GREEN** — `settledAttemptStatus: "succeeded"`, `slotFree: true` — and the injection arm's job was STILL never leased in 150 s, on an IDLE worker that had just finished another job of the same tenant. ★ The only difference between the two jobs is WHEN THEY WERE PLACED: a placement carries the target's `registered_profile_hash` and provider `digest`, the control arm's job was placed before any restart, and the injection arm's used a target captured at the top of the case and TWO restarts stale. `DEP-020` cycle 2 recorded the same family from the other side. The target is now re-read PER SEED, and what was read is recorded so a cycle that still fails is distinguishable without a second run |
-| 5 | *see the table above* | the per-seed target re-read |
+| 5 | **`35962071988`** | **The staleness theory is FALSIFIED, exactly as predicted.** Both recorded `placement` blocks are IDENTICAL — `generation: 1`, same worker, same `profileHash`, same `providerDigest`. A restart with a persisted identity does NOT bump the generation; the `refreshSelfHello` reading holds and the per-seed re-read is correct hygiene but **not** the cure. ARM 1 passed in full for the third time; ARM 2 still never leased |
+| 6 | **`35964102214`** | **THE PROBE, and it is CONCLUSIVE.** `failing: []` — all ELEVEN eligibility conjuncts hold (`attemptPending`, `dispositionSelected`, `modeActive`, `leaseEligible`, `jobQueued`, `availableNow`, `targetEnabled`, `generationMatches`, `profileHashMatches`, `providerConstraintMatches`, `noRejectionCertificate`), with `certificates: []`, `capacity: {cap: null, held: 0}` and `capacityClaimState: "unclaimed"`. **The attempt was FULLY ELIGIBLE and was simply never offered.** The widening is what made that answerable: `workers[0].seenRecently: FALSE`, `lastSeenAt` 06:39:06 — *older than the job's own `availableAt` of 06:39:09* and ~2.5 min stale at probe time. **The worker was not polling.** `worker-b`'s container log names the cause at two boots (06:39:07, 06:42:57): *"already enrolled; skipping control-plane enrollment"* → *"worker session terminal: operator re-enrollment required (fresh enrollment code needed)"* (`enroll_unauthorized`, HTTP 401) → *"session terminal at boot; running idle"* → *"no live session for this device; re-enrol THIS device (its session lapsed past the enrolment code-route boundary — WRK-010 §3.2)"* |
 
 ★ **Each cycle cost ONE cycle and not three because every case records every conjunct of its
 injection separately.** Cycle 1's retained bundle answered *"which half did not happen"* — the
@@ -713,6 +714,44 @@ that the worker would be free (it is not, while an abandoned attempt holds the s
 abandoned attempt would end (it is re-run first); and that a placement stays valid across a restart
 (it does not). Each cycle converted one assumption into an assertion, which is why the case now
 fails LOUDLY and specifically rather than timing out.
+
+### 9.2 ★★★ The measured blocker, and what it is NOT
+
+**The case's remaining half is blocked, and the blocker is measured rather than inferred.**
+
+**What is proven.** The injection arm's attempt satisfied **every** condition the control plane places
+on a lease candidate — all eleven conjuncts, no rejection certificate, no capacity pressure. It was
+never offered because **the deployed worker had no live session and was running idle**: it never beat
+(`seenRecently: false`, `last_seen_at` predating the job's own creation) and therefore never polled.
+The daemon's own log states the mechanism: it skips enrolment because it is already enrolled, its
+session refresh is answered **401** on the enrol route (`enroll_unauthorized`), and it declares the
+session terminal at boot — *"its session lapsed past the enrolment code-route boundary — WRK-010
+§3.2"*. The D1 lane's enrolment ticket is **one-time and already consumed**, so nothing on the lane
+can supply the fresh code the daemon asks for.
+
+**What this is NOT, stated because each would be a convenient misreading.**
+
+- **NOT a product defect.** The daemon is doing what `WRK-010 §3.2` documents, and it says so in the
+  log in plain words. A worker whose session lapses past that boundary is *designed* to run idle and
+  wait for an operator. Filing that as a finding would be inflating a documented decision, which is
+  the opposite error to the one this ticket kept making.
+- **NOT `E3-F041`.** The generation matched (`generationMatches: true`); this is a session failure,
+  not a placement one. §5b.1 already refuses that conflation and cycle 6 confirms it independently.
+- **NOT "structural on this lane"**, and this is the important one. The blocker is **my case's
+  TWO-INTERRUPTION DESIGN**: it restarts the worker for the control arm and then kills it for the
+  injection arm, and the lane's worker cannot re-establish a session for the second one. **A
+  single-interruption design is untried and might well fire.** Declaring this case structurally
+  unavailable would therefore be a FALSE excuse of exactly the kind the `M1a` QA owner graded
+  `SPINE-MATRIX-3`, and it is not claimed.
+
+**What is unseparated, and honestly so.** Precisely when the session lapsed relative to the control
+arm's completion — and therefore whether one interruption survives where two do not — is **not
+measured**. It is one cycle away, and this ticket did not spend it.
+
+**The control half is proven four times over.** ARM 1 — a graceful restart reporting
+`lease_candidate_store_empty` and adding no fence line, on a run observed in flight — passed in
+cycles 2, 3, 4 and 5. What is unproven is only the kill arm.
+
 
 ---
 
