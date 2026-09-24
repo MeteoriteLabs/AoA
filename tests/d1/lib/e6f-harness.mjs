@@ -2105,7 +2105,8 @@ try {
       placement_lease_eligible AS "leaseEligible", placement_owner AS "owner",
       placement_target_id AS "targetId", placement_target_class AS "targetClass",
       placement_target_scope AS "targetScope", placement_target_generation AS "generation",
-      placement_profile_hash AS "profileHash", placement_provider_constraint_hash AS "providerConstraintHash"
+      placement_profile_hash AS "profileHash", placement_provider_constraint_hash AS "providerConstraintHash",
+      organization_id AS "organizationId", capacity_claim_state AS "capacityClaimState"
     FROM job_attempts WHERE job_id = \${P.jobId} ORDER BY attempt_number DESC LIMIT 1\`;
   const [j] = await sql\`SELECT status, workload_type AS "workloadType",
       to_char(available_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "availableAt",
@@ -2120,6 +2121,25 @@ try {
     ? await sql\`SELECT worker_id AS "workerId", eligibility_version AS "eligibilityVersion",
         placement_target_generation AS "generation"
       FROM worker_lease_rejections WHERE job_id = \${P.jobId} AND attempt_id = \${a.id}\`
+    : [];
+  // ★ SO AN EMPTY \`failing\` LIST IS INTERPRETABLE. If every conjunct holds, the attempt WAS
+  // eligible and the question moves to whether the worker was polling and whether Organization
+  // admission had room -- two things the candidate predicate does not express. Without these the
+  // probe would answer "nothing is wrong", which is the least useful possible answer.
+  const workers = a
+    ? await sql\`SELECT id, status,
+        to_char(last_seen_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "lastSeenAt",
+        (last_seen_at > clock_timestamp() - interval '60 seconds') AS "seenRecently"
+      FROM workers WHERE execution_target_id = \${a.targetId} AND revoked_at IS NULL\`
+    : [];
+  // The org-capacity half. \`countHeldAttemptsForOrg\` counts 'held' with NO status filter, which is
+  // the pin E3-F041 and the revocation fanout's own comment both describe -- so a terminal-but-held
+  // attempt can starve admission while every eligibility conjunct still reads clean.
+  const capacity = a
+    ? await sql\`SELECT
+        (SELECT concurrency_cap FROM organizations WHERE id = \${a.organizationId ?? null}) AS "cap",
+        (SELECT count(*)::int FROM job_attempts
+           WHERE organization_id = \${a.organizationId ?? null} AND capacity_claim_state = 'held') AS "held"\`
     : [];
   // The per-conjunct verdict. Each entry is TRUE when that conjunct is satisfied, so the FALSE
   // ones are the answer. Computed here rather than in the test so the retained bundle carries it.
@@ -2137,7 +2157,7 @@ try {
     noRejectionCertificate: certificates.length === 0,
   } : null;
   const failing = conjuncts ? Object.keys(conjuncts).filter((k) => conjuncts[k] !== true) : null;
-  report({ ok: Boolean(a && j && t), attempt: a ?? null, job: j ?? null, target: t ?? null, certificates, conjuncts, failing });
+  report({ ok: Boolean(a && j && t), attempt: a ?? null, job: j ?? null, target: t ?? null, certificates, workers, capacity: capacity[0] ?? null, conjuncts, failing });
 } catch (error) {
   report({ ok: false, error: String(error && error.message ? error.message : error) });
 } finally {
