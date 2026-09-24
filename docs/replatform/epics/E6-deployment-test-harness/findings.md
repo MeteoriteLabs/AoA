@@ -1499,9 +1499,17 @@ depends on a third party's decision to keep serving an image*, and it is now fix
 `docker/d1/minio.Dockerfile` + `.github/workflows/d1-image-mirror.yml` MIRROR the image into this
 organisation's own GHCR, and `docker-compose.d1.yml` pins
 `ghcr.io/meteoritelabs/aoa-d1-minio` **BY DIGEST** — because a tag we own is still a tag. The mirror
-takes the real MinIO server binary from a build that is public and re-homes it on Debian, so the
-compose service is byte-for-byte unchanged: root (for the `/root/.minio/certs` DAT-002 slice-7
-bind), `curl` (for the healthcheck), ENTRYPOINT the binary (for the existing `command:`). The
+BUILDS MinIO from upstream source at `RELEASE.2025-09-07T16-13-09Z`, the release the lane was
+already pinned to, and runs it on Debian, so the compose service is byte-for-byte unchanged: root
+(for the `/root/.minio/certs` DAT-002 slice-7 bind), `curl` (for the healthcheck), ENTRYPOINT the
+binary (for the existing `command:`).
+
+★ **It builds from source rather than re-homing a public third-party BUILD, and that was measured,
+not preferred.** The first cut did re-home one; every such build is `:latest`-only, so it carried
+`RELEASE.2026-09-22T19-25-18Z`, and run `36022608037` brought the stack up and then failed `E6F-05`
+and `E6F-14` with `400 AccessDenied: There were headers present in the request which were not
+signed` on the presigned PUT. A newer MinIO is stricter about presigning, so **the version is not a
+free variable** — the upstream source tag is public even though every built image of it is gone. The
 sibling third-party refs were swept and are all still anonymously pullable
 (`pgvector/pgvector:pg18`, `ghcr.io/shopify/toxiproxy:2.9.0`, `node:lts-trixie-slim` — 200 each);
 the outage class is MinIO-only.

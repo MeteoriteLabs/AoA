@@ -86,19 +86,32 @@ policy with another's and bought nine days; repeating that shape is how this cos
 
 ## 4. What the mirror actually is
 
-`docker/d1/minio.Dockerfile` lifts `/usr/bin/minio` from `cgr.dev/chainguard/minio` (a public build
-of the upstream `minio/minio` project) and re-homes it on `debian:trixie-slim`. **Both images are
-pinned by digest**, and the source is overridable by a build arg, because Chainguard's free tier
-serves `:latest` only and garbage-collects older digests — a refresh whose pinned source digest has
-aged out is the expected reason to need the override.
+★ **Read §7 before §4 if you are re-cutting this.** The mirror had TWO implementations. The first
+copied the binary out of a public third-party image; it brought the stack up and then failed the
+presign tests, and it is NOT what is pinned. This section describes the one that is.
 
-The re-homing exists so that **nothing in the compose service had to be softened**:
+`docker/d1/minio.Dockerfile` **builds MinIO from upstream source** and runs it on
+`debian:trixie-slim`:
 
-| the compose service assumes | Chainguard's image | after re-homing |
+- a `--platform=$BUILDPLATFORM` Go builder stage (`GO_IMAGE`, digest-pinned) clones
+  `github.com/minio/minio` at `MINIO_VERSION` (`RELEASE.2025-09-07T16-13-09Z`), and **fails closed**
+  unless the checkout is `MINIO_SOURCE_COMMIT` — the 40-hex commit the tag PEELS to;
+- it builds `CGO_ENABLED=0` with `GOOS`/`GOARCH` from `TARGETOS`/`TARGETARCH`, so arm64 is a native
+  cross-compile rather than a QEMU build, and with upstream's release `ldflags`, so the binary
+  reports its real version rather than `DEVELOPMENT.GOGET`;
+- the runtime stage (`BASE_IMAGE`, digest-pinned) adds `curl` + `ca-certificates`, copies the binary
+  to `/usr/bin/minio`, and sets `USER root` and `ENTRYPOINT ["/usr/bin/minio"]`.
+
+There is **no source-IMAGE override**: `MINIO_VERSION` and `MINIO_SOURCE_COMMIT` are the overrides,
+they must be given together, and the mirror lane refuses a half-specified pair.
+
+The Debian runtime stage exists so that **nothing in the compose service had to be softened**:
+
+| the compose service assumes | a stock distroless/non-root MinIO image | this image |
 |---|---|---|
-| runs as root, so `/root/.minio/certs` (the DAT-002 slice-7 `:ro` bind) is readable | `USER 65532` | root |
+| runs as root, so `/root/.minio/certs` (the DAT-002 slice-7 `:ro` bind) is readable | non-root uid cannot read that mount | root |
 | ships `curl`, which the healthcheck shells out to | distroless — no curl | `curl` + `ca-certificates` |
-| `ENTRYPOINT` is the server, so `command: ["server","/data",…]` works | already the binary | unchanged |
+| `ENTRYPOINT` is the server, so `command: ["server","/data",…]` works | varies | the binary |
 
 `docker-compose.d1.yml`'s `minio` service — `command`, `environment`, `healthcheck`, `volumes`,
 `networks` — is **byte-for-byte unchanged**. The only edited line is `image:`.
@@ -111,20 +124,37 @@ is what the lane resolves, so a re-cut mirror cannot silently change what the ga
 Docker was available locally, so the drop-in claim was measured rather than dispatched:
 
 ```
-docker build -f docker/d1/minio.Dockerfile -t aoa-d1-minio:local .
+docker build -f docker/d1/minio.Dockerfile -t aoa-d1-minio:src .
 docker run -d -e MINIO_ROOT_USER=aoa-d1 -e MINIO_ROOT_PASSWORD=aoa-d1-secret \
   -v .../docker/d1/certs:/root/.minio/certs:ro \
-  aoa-d1-minio:local server /data --console-address :9001
+  aoa-d1-minio:src server /data --console-address :9001
 ```
 
-- logs: `Version: RELEASE.2026-09-22T19-25-18Z (go1.27.1 linux/amd64)`
+**On the SOURCE-BUILT image — the implementation that is pinned:**
+
+- logs: `Version: RELEASE.2025-09-07T16-13-09Z (go1.25.14 linux/amd64)` — the release the lane was
+  pinned to, self-reported by the binary rather than asserted by this document
 - logs: `API: https://172.17.0.2:9000  https://127.0.0.1:9000` — **TLS auto-enabled from the
   committed harness certs**, which is what `DAT-002` slice-7's strictly-`https` grant `url` requires
 - the **exact** healthcheck command from the compose service,
   `curl -fsSk https://127.0.0.1:9000/minio/health/live`, run inside the container: **200**
+- `docker buildx build --platform linux/amd64,linux/arm64` succeeds, and the amd64 image out of that
+  multi-arch build reproduces all three results above
 
-Repeated against the **published digest** (§6) after the mirror was cut, not only against the local
-build: same three results.
+**The fail-closed commit arm got a positive control here for free.** The first pin was
+`01ce918d…` — what `git ls-remote refs/tags/<tag>` prints, which is the ANNOTATED TAG OBJECT, not
+the commit. The build refused:
+
+```
+minio source commit mismatch: got 07c3a429…, expected 01ce918d…
+```
+
+★ **The same local probe was run on the FIRST, rejected implementation** (the third-party-derived
+one), and it passed: `API: https://127.0.0.1:9000`, healthcheck 200 — on
+`Version: RELEASE.2026-09-22T19-25-18Z`. **That is the honest limit of this local probe**, and it is
+why the acceptance is the D1 campaign and not this section: a healthcheck cannot see a presign
+incompatibility. Recorded rather than dropped, because a probe that cannot distinguish two
+implementations should not be quoted as if it validated one.
 
 ## 6. The mirror lane, and the registration wall
 
@@ -222,8 +252,9 @@ today widens the bring-up blast radius for no gain. Their digests are recorded a
 is mechanical. **Filed with an honest owner rather than left silent:** see §10.
 
 **And my own diff is in the class (E.1(a)).** `docker/d1/minio.Dockerfile` pins BOTH its `FROM`s by
-digest — the Chainguard source and the Debian base — because a mirror built from a moving tag would
-reproduce the very defect it exists to fix. Checked; it does not.
+digest — the Go builder and the Debian runtime base — and pins its MinIO source by the COMMIT the
+release tag peels to, because a mirror built from a moving tag or a moving base would reproduce the
+very defect it exists to fix. Checked; it does not.
 
 ## 9. Evidence
 
