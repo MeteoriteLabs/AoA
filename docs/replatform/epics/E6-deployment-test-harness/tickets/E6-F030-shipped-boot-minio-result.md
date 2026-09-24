@@ -8,6 +8,14 @@
 **PR:** #604 (base `docs/replatform-program`)
 **Reviewed revision:** `845ffb4c9f7d7cd9722c88667209ec6b28679348`
 
+> **On the revisions, stated as a claim that can be checked.** `845ffb4c9` is the revision every
+> piece of live evidence in §5 and §6 was produced on — run `36047740323` was dispatched from it, and
+> the local guard and mutation runs were made on it. The commits after it are this record, the
+> `findings.md` closure and the `scripts/finding-ownership.json` key deletion. `git diff --name-only
+> 845ffb4c9..HEAD` therefore contains **no workflow, Dockerfile, compose file, script or test** — the
+> code surface the evidence speaks about is byte-identical. Saying so without checking would be the
+> records-disagreeing-with-code defect this programme keeps paying for, so the claim is the diff.
+
 > `Status` is `gate_review` and may be set to `complete` only by a DISTINCT reviewer, never by this
 > author.
 
