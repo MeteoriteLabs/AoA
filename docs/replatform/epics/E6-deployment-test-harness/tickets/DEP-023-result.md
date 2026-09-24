@@ -152,10 +152,55 @@ That is `E4-F019` itself, kept executable so §6's closure cannot go stale unnot
 
 ### 5.2 The proving run
 
-**NOT OBTAINED IN THIS SESSION, and the reason is measured, not asserted.** Eight consecutive
-dispatches could not bring the stack up because an external registry (`quay.io`) refused the `minio`
-image. They are listed above rather than summarised away: *"we retried until it passed"* and *"the
-lane could not start"* are different facts, and only the second is true here.
+**OBTAINED: run `36038155900` — the case FIRED and PASSED.** `d1-merge-train` / `m1-fault-matrix`,
+on `claude/m1-e5c5-redaction` after merging the program base for `#603`'s MinIO mirror pin
+(`ghcr.io/meteoritelabs/aoa-d1-minio@sha256:187391a6…`), which is what unblocked the nine earlier
+dispatches. Every step of the job concluded `success`.
+
+| Step | Executed | Result |
+|---|---|---|
+| Static preflight (declaration + its reds + compose invariants) | `tests 32 / pass 32 / fail 0` | pass |
+| **Run the M1-D1-SPINE fault matrix (live)** | `tests 25 / pass 25 / fail 0` | pass — including `✔ fault-matrix: a planted credential canary is SCRUBBED from both streams, and the scrubber's own marker is observed there (60.6s)` |
+| The matrix's own verdict over the retained bundle | — | pass |
+| POSITIVE CONTROL — every injection suppressed | — | **red, as required**, and the step's own two greps for `[fault-matrix:evidence]` and `injection_did_not_fire` both matched |
+
+★ **What the green verdict step entails, stated rather than assumed.** `evaluateFaultMatrixEvidence`
+reds a `redaction` case unless the row carries `injectionFired: true`, the declared
+`expectedClassification`, `redactedOnAllStreams: true`, `scrubberMarkerObservedOnStream.<stream> ===
+true` for **every** declared stream, and `streamBytesObserved.<stream> > 0` for every declared
+stream. The verdict step passed over the retained bundle, so all of those held on `events` AND
+`logs`: the planted canary absent from tenant A's event stream, the worker container log and tenant
+B's whole event stream, and the scrubber's own `REDACTION_MARKER` present **on a line that also
+carries the probe tag** on both declared streams, over non-empty streams. Clause 5 has a floor on
+this lane.
+
+#### 5.2.2 One of my own predictions was WRONG, and it is corrected rather than quietly dropped
+
+This record predicted that under suppression the case would report `injectionFired: false`. **It does
+not.** Measured in the same run's control arm, the suppressed pass produces:
+
+```
+evidence:case_not_run: case d1.redaction.planted_canary_scrubbed is declared `required`
+  but the bundle carries no evidence for it
+```
+
+— i.e. the case throws on one of its **non-vacuity guards before reaching `record()`**, so no row
+exists at all. The requirement the brief sets is still met, and by a strictly stronger mechanism: the
+case **cannot pass** in the suppressed arm, because the evaluator refuses a `required` case with no
+row just as it refuses one whose injection did not fire. What is NOT true is the shape I predicted,
+and the lane's `injection_did_not_fire` grep matches on the OTHER twenty cases rather than on this
+one.
+
+**Owed refinement, filed rather than fixed here:** move the three non-vacuity guards after
+`record()` so the suppressed arm files an explicit `injectionFired: false` row for this case too.
+That is a reordering with no effect on the passing arm, but verifying it costs another full lane
+dispatch, and spending one to change a red into a differently-shaped red — while the green above is
+the deliverable — is not the trade to make at this point. Recorded here so the next reader sees a
+known, bounded gap rather than a claim that does not match the log.
+
+**The eight earlier dispatches are kept below** rather than summarised away: *"we retried until it
+passed"* and *"the lane could not start"* are different facts, and for those eight only the second
+was true.
 
 ### 5.2.1 Why the case is nonetheless left `required`
 
@@ -318,7 +363,9 @@ files. No other register touched.
 
 ## 9. What is outstanding
 
-1. **The proving D1 run (§5.2) — the one thing this ticket owes.** `d1-merge-train` /
+1. ~~**The proving D1 run**~~ — **DONE: run `36038155900`, §5.2.** One refinement remains, scoped in
+   §5.2.2: the suppressed arm reds as `case_not_run` rather than `injection_did_not_fire`.
+   *(Superseded text, kept verbatim:)* **The proving D1 run (§5.2) — the one thing this ticket owes.** `d1-merge-train` /
    `m1-fault-matrix` could not bring its stack up in EIGHT consecutive attempts over ~2h because
    `quay.io` refused the `minio` pull. Re-dispatch it on this branch (`gh workflow run
    d1-merge-train.yml --ref claude/m1-e5c5-redaction -f lanes=m1-fault-matrix`) and record BOTH
