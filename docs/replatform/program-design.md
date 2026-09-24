@@ -1312,6 +1312,39 @@ evidence.
 - ★ **It must not redirect or pipe the claude process's stdout** — that would silently remove
   `WRK-018`'s usage parse (review §7.1, and the `E7-D06` amendment above it).
 
+#### CLI-018 — the founder-reachable artifact: make a distributed run's committed bytes retrievable (M)
+
+- **Depends on:** `JOB-017` (shipped — the in-transaction projection seam this rides).
+- **Filed 2026-09-24 by the M1 planning session** under founder delegation **F2**, on the measurement
+  recorded as `E7-F047` (HIGH), which this node's ticket **owns**. Its contract is the E7
+  implementation plan's `### CLI-018`.
+- **Outcome:** a founder looking at a task can **retrieve the bytes** of an artifact a distributed run
+  produced. Today they cannot by **any** founder-available route — seven were measured, negatives
+  included (`E7-F047`): `routes/task-outputs.ts` has no content/download/bytes/stream handler at all;
+  `OutputRefTabBody` renders *"No preview is available for this output."*; `routes/artifacts.ts`,
+  `routes/assets.ts`, `server/src/mcp/` and `ui/src` carry **zero** `jobArtifacts` references; and the
+  only route that reads `job_artifacts`, `POST /worker-control/artifact-transfer-grants`, is a
+  **worker credential surface** a board session cannot satisfy.
+- ★★★ **TWO OPTIONS, AND THIS TICKET CHOOSES NEITHER.** **(a) materialize** the committed
+  `job_artifacts` row into the product `artifacts`/`artifact_versions` (and, if the viewer path needs
+  it, `assets`) tables, so the existing routes and viewer work unchanged; **(b) a founder-facing read
+  route** that mints a download grant for a **board** actor, reusing `createArtifactTransferGrantService`.
+  The choice is a later ruling. It is not deferred for tidiness: **(b) changes who can reach
+  tenant-scoped bytes**, and that analysis has not been done.
+- **Acceptance:** an **end-to-end** arm — a founder-available route returns the bytes of an artifact a
+  distributed run produced, which is `M1b` exit criterion 4 itself — with a **positive control** proving
+  it reds when the route is removed; and, per ruling **F10**, a **cross-tenant denial** case with a
+  same-tenant positive control. Option (b) additionally requires its **authorization analysis** as a
+  **precondition**, not an afterthought.
+- ★ **The capability is BUILT; the caller is missing.** `createArtifactTransferGrantService`'s
+  `operation === "download"` branch is already recorded as *"fence-independent, but tenant-scoped +
+  object"*-checked and binds `expectedAttemptObjectPrefix` against the committed key. This is a
+  **wiring-and-authorization** gap, not an unbuilt mechanism — which is why (b) is on the table at all.
+- ★ **Non-goals:** the display **path**/filename (`E7-F046`, descoped for `M1` by `E7-D13` (b) and
+  needing its own protocol or object-key-convention decision); any `packages/worker-protocol` wire
+  change (everything needed is already durable on the committed row); re-opening `E7-D13`; **ruling
+  between (a) and (b)**.
+
 ### E8 — Browser automation
 
 #### BRW-001 — Browser-session job and policy extensions (M)

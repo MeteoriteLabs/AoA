@@ -686,6 +686,32 @@ The first milestone passes only when one exact candidate has:
 2. a fresh `M1-D1-SPINE` partial-gate campaign on the declared one-control-plane/one-worker topology;
 3. a fresh `M1-D2-CODING` partial-gate campaign covering the included journey, hostile tenant/credential cases, cancellation, output/artifact integrity, and every terminal cleanup path;
 4. useful-agent capability evidence: the sandboxed adapter can use the approved tools/workspace and return attributable reviewable output; a mechanism-only run with `capabilityProven=false` cannot satisfy this criterion;
+   ★★★ **UNMET AT `c6107c760c`, blocker `E7-F047` (HIGH) — recorded 2026-09-24 by the M1 planning
+   session under founder delegation F2.** A distributed agent's artifact is durable in object storage
+   and **unreachable by ANY founder-available route** — not merely absent from one surface. Seven
+   routes were checked, **negatives included**, because a negative audit is only as good as the set it
+   enumerates: (1) `server/src/routes/task-outputs.ts` has `GET /issues/:issueId/outputs`,
+   `GET /task-outputs/:id`, one `POST` and one `PATCH`, and **no content/download/bytes/stream handler
+   at all**; (2) `OutputRefTabBody` (`ui/src/components/viewers/refBodies.tsx`) dispatches
+   `artifactId` → `assetId` → `url`, all null, rendering *"No preview is available for this output."*;
+   (3) `server/src/routes/artifacts.ts` has **zero** `jobArtifacts` references and no `artifacts` row
+   is ever created, so it has nothing to return; (4) `server/src/routes/assets.ts` — zero references,
+   no asset minted; (5) `server/src/mcp/` — zero references, and the MCP artifacts resource reads the
+   **product** table, so an MCP client is in the UI's position; (6) `server/src/routes/worker-control.ts`
+   is the **only** route reading `job_artifacts`, and its download path
+   (`POST /worker-control/artifact-transfer-grants` → `createArtifactTransferGrantService`) requires an
+   `authorization` header **and** device-proof headers **and** a signed raw body — **a founder/board
+   session cannot satisfy it**, it is a worker credential surface; (7) `ui/src` — zero references to a
+   transfer grant, a job artifact, or any download path for one. ★ The projected `task_outputs`
+   metadata carries `jobArtifactId`, `artifactIdentifier`, `artifactKind`, `versionNumber` and
+   `eventId` and **not `objectKey`**, so a founder cannot even learn the storage key. ★★★ The fix is a
+   **wiring-and-authorization gap, not an unbuilt mechanism**: the download grant already exists and
+   works (`createArtifactTransferGrantService`'s `operation === "download"` branch is recorded as
+   *"fence-independent, but tenant-scoped + object"*-checked), and what is missing is a founder-facing
+   **caller** with appropriate authorization. Ticketed as **`CLI-018`**
+   (`epics/E7-coding-e2b/implementation-plan.md` `### CLI-018`), which carries **two options and no
+   choice between them** — that ruling is owed. **`M1b` does not pass on this criterion until
+   `CLI-018` lands.**
 5. explicit observation of the dormant-egress residual and credential-taxonomy checks, without an egress-enforcement claim;
 6. zero unresolved milestone-blocking findings and a recorded rollback rehearsal for the enabled path;
 7. a committed passing **E5 audit attempt for that exact candidate** — `a2` for `M1a`, and `a3` or later for `M1b` — consuming that milestone's campaign records and retaining every full-gate non-certification. ★★★ *Corrected eleventh round: this said “a2 audit” while being allocated to **both** milestones, and `M1b` freezes a different candidate. An audit attests one exact revision exactly as a gate record does, so `M1b` reusing `a2` would point its criterion-7 evidence at the older tree — the defect the gate-record rule already forbids. A correction or changed candidate creates a new attempt linked by `Supersedes`, never an edit.*;
@@ -781,7 +807,8 @@ Ticket shipment or an earlier mechanism run cannot substitute for items 2–9. P
 > harness the gates need became `DEP-016`, `DEP-017` and `DEP-018`. The twelve-row table above is the
 > set.*
 >
-> **`M1b` required result set:** `CLI-010`, **`CLI-011`**, `CLI-012`, `CLI-013`, `CLI-014`, `CLI-015`, `CLI-016`, **`CLI-017`** (the emit build — its aggregate result, which is written only after BOTH slice records `CLI-017-A-record.md` and `CLI-017-B-record.md` are approved), `DAT-009-3c`, `DAT-009-3d`, `DAT-009-3e`.
+> **`M1b` required result set:** `CLI-010`, **`CLI-011`**, `CLI-012`, `CLI-013`, `CLI-014`, `CLI-015`, `CLI-016`, **`CLI-017`** (the emit build — its aggregate result, which is written only after BOTH slice records `CLI-017-A-record.md` and `CLI-017-B-record.md` are approved), **`CLI-018`**, `DAT-009-3c`, `DAT-009-3d`, `DAT-009-3e`.
+> ★★★ *`CLI-018` added 2026-09-24 (M1 planning session, founder delegation **F2**), on the `E7-F047` measurement annotated against exit criterion 4 above. **Superseded text:** the same list without `CLI-018`.* Without it every other listed result can land while the bytes an agent produced are **unreachable by any founder-available route** — the criterion failing in its own words, on a receipt rather than a deliverable. This enumeration is the **mechanically checkable artefact**: a coverage check reads the list, not the prose.
 > ★★★ **AND ONE REQUIRED ITEM THAT IS NOT A TICKET: the `S-P0` template-empty evidence.** *Added 2026-09-23 (ruling **F7**, `epics/E7-coding-e2b/decisions.md` `E7-D11`, *Conditions on the ruling*; Codex P1, PR #575).* Before `M1b`'s campaign runs, the output root `/home/user/aoa-output` must be **proven empty on the template the campaign actually uses** by the `S-P0` arm, **and a no-op run must be shown to write nothing under it** by the `A-neg` arm — ★ **that re-run is authorized under founder ruling F8 by ruling F7, once, before the campaign, and is the campaign's to fire with `-f arms=a-neg-only` (the one-model-turn value ruling F7 added, so the authorization and the dispatchable options match); no build agent may dispatch it.** Both are **re-run on every template change or rebuild, and on any bump of the pinned CLI version** (`e2b/e2b.Dockerfile` now pins `@anthropic-ai/claude-code@2.1.251`, the version `A-neg` was measured against), with the results committed under `epics/E7-coding-e2b/tickets/` beside `CLI-011-probe-record.json` (a verdict that lives only in a job log is lost — `E7-F025`). **`M1b` does not pass without both.** ★ `S-P0` alone is insufficient: it proves the root is empty *before execution* and says nothing about whether the CLI writes there, which is the R6 result the whole ruling rests on.
 > **Owner: the `M1b` gate owner**, because it is an **operator/deployment** act and no ticket can discharge it — `CLI-017` cannot, and `CLI-012` cannot tell a template-owned file from an agent-written one. The probe proves the root empty on **`aoa-base` and nothing else**, and the committed record says so in terms; the production template is an unpinned operator input under three uncoordinated variable names, which is **`E7-F022`** — **re-derived to HIGH by this ruling**, on that finding's own standing instruction. Without this line the campaign could complete every mechanically enumerated result while counting template-owned files under `R` as agent output.
 > ★ *Updated 2026-09-23 (ruling **F7**, recorded as `E7-D11` in `epics/E7-coding-e2b/decisions.md` under founder delegation F2). **Superseded text:** "`CLI-010`, **`CLI-011`**, `CLI-012`, `CLI-013`, `CLI-014`, `CLI-015`, `CLI-016`, `DAT-009-3c`, `DAT-009-3d`, `DAT-009-3e`, **and the emit build** (❌ **TO FILE** once `CLI-011` rules; it has no id until then)." The ruling filed it: `CLI-017` now has a graph node in `program-design.md` (E7 section) and a task section in the E7 implementation plan, so the enumeration — which is the mechanically checkable artefact — names an id instead of a description.*
@@ -818,7 +845,7 @@ Ticket shipment or an earlier mechanism run cannot substitute for items 2–9. P
 > either required set either way.*
 > | 2 — fresh `M1-D1-SPINE` campaign | ✅ | ✅ | |
 > | 3 — fresh real-E2B campaign | ✅ **`M1a-D2-MECHANISM`** | ✅ **`M1-D2-CODING`** | two gates, two QA records, two `Result` fields. One campaign run may produce both, but a QA record has ONE normative `Result`, so the mechanism verdict needed its own gate — see above. |
-> | **4 — useful-agent capability evidence** | ✖ | ✅ | **The split lives here.** `M1a` is satisfied by a record reporting `capabilityProven=false`; `M1b` is not, and the bar is unchanged. |
+> | **4 — useful-agent capability evidence** | ✖ | ✅ | **The split lives here.** `M1a` is satisfied by a record reporting `capabilityProven=false`; `M1b` is not, and the bar is unchanged. ★★★ *2026-09-24: measured **UNMET** at `c6107c760c` with **`E7-F047`** (HIGH) as its named blocker — unreachable by **any** founder-available route, seven routes checked with negatives. Ticketed as **`CLI-018`**; see the annotation on criterion 4 above.* |
 > | 5 — dormant-egress residual observed | ✅ | ✅ | |
 > | 6 — zero blocking findings + **recorded rollback rehearsal** | ✅ | ✅ | **D-9:** the rehearsal USES the `MIG-009` drain, so `E10-1-drain` must be wired — not a manual runbook. |
 > | 7 — committed passing E5 audit **for that milestone's candidate** | ✅ **`a2`** | ✅ **`a3` or later** | ★★★ *Corrected twelfth round: both cells said `a2`. This table is the **executable allocation** of the nine criteria, so leaving it unchanged authorised an `M1b` handoff whose audit attests the older `M1a` revision — exactly what criterion 7 and the recovery procedure had already been corrected to forbid. `M1b` freezes a different candidate; an audit attests one exact revision, and a later attempt links by `Supersedes`.* |
