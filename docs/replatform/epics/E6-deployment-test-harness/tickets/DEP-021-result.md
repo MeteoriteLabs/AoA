@@ -589,13 +589,21 @@ Per-step conclusions are read from the jobs API and never from the run conclusio
 
 | Cycle | Run | What it found |
 |---|---|---|
-| 1 | **`35954159711`** | **`d1.provider.worker_terminal_mapping` PASSED on its first live attempt** — `injectionFired: true`, `observedClassification: "worker_maps_provider_timeout_to_failed_terminal"` (the declared string, exactly), `positiveControlPassed: true`, 120.6 s. ★ And the reconcile case failed with the finding in §3.2: a GRACEFUL restart prunes the candidate, so the stop must be a SIGKILL — and the graceful arm becomes the case's own negative control. Every other case on the profile stayed green (23 tests, 1 failing), so the finding is localised to this case and not a lane regression |
-| 2 | *see the table above* | the two-arm case on the KILL mechanism |
+| 1 | **`35954159711`** | **`d1.provider.worker_terminal_mapping` PASSED on its first live attempt** — `injectionFired: true`, `observedClassification: "worker_maps_provider_timeout_to_failed_terminal"` (the declared string, exactly), `positiveControlPassed: true`, 120.6 s. ★ And the reconcile case failed with the finding in §3.2: a GRACEFUL restart PRUNES the candidate, so the stop must be a SIGKILL — and the graceful arm becomes the case's own negative control. Every other case on the profile stayed green (23 tests, 1 failing), so the finding is localised to this case and is not a lane regression |
+| 2 | **`35956091950`** | **ARM 1, the graceful negative control, PASSED IN FULL** — `inFlight: true`, `restartStatus: 0`, `startedAtChanged: true`, `reportedStoreEmpty: true`. So the control half is proven live. ★ ARM 2 then failed with its job still `attemptStatus: "pending"`, `events: []`, `leaseWorkerIds: []` after 45 polls — **not a broken worker but a BUSY one**: ARM 1 abandons an attempt mid-run and this worker runs ONE job at a time, so until that attempt terminalises the restarted daemon has no slot. ARM 2's wait had silently assumed otherwise |
+| 3 | **`35957846155`** | the slot is freed between the arms (waiting on ARM 1's job to terminalise, which also proves the restarted daemon resumed polling), and the fence line is attributed by occurrence COUNT rather than presence, because both arms write to the same container log |
 
-★ **Cycle 1's diagnostics are why it cost one cycle and not three.** The case records every conjunct
-of its injection separately, so the retained bundle answered *"which half did not happen"* without a
-second run: the injection had fired in full and the reconciler had simply found nothing. A case that
-recorded only a pass/fail boolean would have needed a run per hypothesis.
+★ **Each cycle cost ONE cycle and not three because every case records every conjunct of its
+injection separately.** Cycle 1's retained bundle answered *"which half did not happen"* — the
+injection had fired in full and the reconciler had simply found nothing — and cycle 2's answered
+*"the kill arm never got a lease"*, each without a second run to narrow it. A case recording only a
+pass/fail boolean would have needed a run per hypothesis. That is the practical argument for the
+per-conjunct `detail` block, recorded here rather than left as style.
+
+★ **And each failure was promoted rather than patched around.** Cycle 1's graceful restart became
+the case's same-mechanism negative control; cycle 2's scheduling discovery became an explicit
+slot-free precondition with its own assertion. Neither is a workaround: both are statements about
+the system that the case now proves.
 
 ---
 
