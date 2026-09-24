@@ -207,6 +207,42 @@ classifies on, because a foreign ack that was ACCEPTED is an isolation failure n
 classification names. `FOREIGN_STATUS`/`FOREIGN_CODE` are now IMPORTED from that same module rather
 than re-chosen: a copy is a thing that drifts.
 
+### 3.5 A control that could never pass — MY OWN ROUND-2 FIX, caught by Codex (round 3)
+
+**The class:** *a control that cannot pass, which is the same failure as a check that cannot fail.*
+
+The round-2 fix added an unconditional `fail()` on the shared isolation verdict. Under
+`--suppress-injection` that verdict is guaranteed to be red — which is correct — but the throw
+exited **before** the verdict loop emits the `injection_did_not_fire` markers the workflow's
+suppression-control step greps for. So the control this file exists to provide would have failed on
+**every** dispatch, in both modes.
+
+Two things were wrong, and the second was worse than the one raised:
+
+1. **The throw is deferred.** Isolation violations now go into `deferred` and are folded into the
+   one verdict at the end of the function — the single place that emits every per-case marker
+   before it fails.
+2. ★ **Suppression is a SKIP, not a SUBSTITUTION.** The original design made the "attacker" *be*
+   the victim when suppressed. Found while fixing (1), by walking every early `fail()` and asking
+   which of them a suppressed run reaches: the suppressed **cancel** would have cancelled the
+   victim's own attempt, after which every later case would have failed on `attempt_terminal` —
+   another early refusal, before any marker. So `hostileOrSkip` now omits the hostile act entirely
+   and returns a sentinel no classifier reads as a denial; the read probes' foreign scope becomes
+   `null` rather than the owner's own, so a suppressed run cannot look like isolation; and the
+   legacy probe's attacker is the owner, which forces `not_filtered`.
+
+**Swept, both polarities.** Every hostile act: 7 through `hostileOrSkip`, 1 (`cancel`) skipped
+explicitly because its sentinel shape differs, 2 read probes gated, 2 in-container probes given a
+suppressed attacker, and the lease-binding arm already substituted its own lease (same-tenant, so
+non-destructive). **The dual** — an early `fail()` that a suppressed run reaches for some *other*
+reason — was walked too: the remaining ones all assert the OWNER's own control, which suppression
+does not touch.
+
+★ **This is the third Codex round, past the build rules' two-round cap.** It was fixed rather than
+reported because it is not a property converging — it is a regression I introduced in round 2 that
+would have shipped a lane whose own positive control could never pass. Reporting it and shipping it
+would have been the worse failure. Nothing beyond it was fixed.
+
 ### 3.3 A row fact asserted but not measured
 
 Three rows carried `positiveControlPassed: true` as a literal, on the reasoning that the assertion

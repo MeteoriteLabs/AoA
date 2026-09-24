@@ -226,13 +226,31 @@ export async function runCrossTenantCases({ tenants, ownerSql, suppressInjection
 
   const victim = bringUp(A);
   const attacker = bringUp(B);
-  // ★ THE SUPPRESSED ARM IS THE VICTIM ITSELF. With the injection suppressed, every hostile call
-  // below is made by the owner, so it SUCCEEDS, the classifier records `not_denied`, and
-  // `injectionFired` is false — which is what the lane's control requires it to be.
-  const hostile = suppressInjection ? victim : attacker;
-  const foreignOrg = suppressInjection ? A.organizationId : B.organizationId;
-  const foreignCompany = suppressInjection ? A.companyId : B.companyId;
+  const hostile = attacker;
   const injected = !suppressInjection;
+
+  // ★★★ HOW SUPPRESSION WORKS, and why it is a SKIP rather than a SUBSTITUTION (Codex P1 on
+  // PR #600, round 3 — the finding was right, and the defect was one I introduced in round 2).
+  //
+  // The first design made the "attacker" BE the victim when suppressed. That is destructive: the
+  // suppressed cancel would have cancelled the victim's own attempt, and every later case would
+  // then have failed on `attempt_terminal` — an early refusal, BEFORE the verdict loop emits the
+  // `injection_did_not_fire` markers the workflow's control step greps for. The control this file
+  // exists to provide could never have passed. *A control that cannot pass is the same class as a
+  // check that cannot fail.*
+  //
+  // So suppression SKIPS the hostile act. `hostileOrSkip` returns a sentinel that no classifier
+  // reads as a denial, the fixture is left untouched, every case still records and classifies, and
+  // every row carries `injectionFired: false`. The phase then reds in the ONE place that emits the
+  // markers first: the verdict at the end.
+  const SKIPPED = Object.freeze({ status: 0, body: null, suppressed: true });
+  const hostileOrSkip = (fn, label) => (injected ? step(fn(), label) : SKIPPED);
+  // The read probes' foreign scope, likewise: `null` is not `0`, so no classifier reads it as a
+  // denial, and nothing is queried under a scope that would make a suppressed run look clean.
+  const foreignOrg = injected ? B.organizationId : null;
+  /** Violations of the SHARED isolation verdict, deferred to the final verdict so the markers are
+   * emitted before anything throws. */
+  const deferred = [];
   detail.fixture = {
     victimJobId: victim.ids.jobId, attackerJobId: attacker.ids.jobId,
     victimWorkerId: victim.ids.workerId, attackerWorkerId: attacker.ids.workerId,
@@ -292,21 +310,25 @@ export async function runCrossTenantCases({ tenants, ownerSql, suppressInjection
     eventType: "usage", seq: 2,
     payload: { inputTokens: 999_999, outputTokens: 999_999, cachedInputTokens: 0, runtimeMillis: 1 },
   })];
-  const hostileDigested = step(H.computeEventDigests({ events: hostileEvents }), "hostile digests");
-  const hostileUpload = step(H.uploadEvents({
-    session: hostile.session, deviceKey: hostile.deviceKey,
-    batch: { ...batchIdentity(hostileIds, A, victim.offer), events: hostileDigested.events },
-  }), "hostile upload");
+  const hostileUpload = hostileOrSkip(() => {
+    const hostileDigested = step(H.computeEventDigests({ events: hostileEvents }), "hostile digests");
+    return H.uploadEvents({
+      session: hostile.session, deviceKey: hostile.deviceKey,
+      batch: { ...batchIdentity(hostileIds, A, victim.offer), events: hostileDigested.events },
+    });
+  }, "hostile upload");
 
   // HOSTILE ACK of A's lease by B's worker — the second half of the same surface, and one the
   // event-upload arm alone does not reach.
-  const hostileAck = step(H.ack({
+  const hostileAck = hostileOrSkip(() => H.ack({
     session: hostile.session, workerId: hostile.ids.workerId, jobId: victim.ids.jobId,
     attempt: victim.offer.job.attempt, leaseId: victim.offer.leaseId, fenceToken: victim.offer.fenceToken,
     deviceKey: hostile.deviceKey,
   }), "hostile ack");
 
-  const foreignRead = step(H.queryJobEventsAsApp({ jobId: victim.ids.jobId, scopeOrganizationId: foreignOrg }), "foreign read");
+  const foreignRead = injected
+    ? step(H.queryJobEventsAsApp({ jobId: victim.ids.jobId, scopeOrganizationId: foreignOrg }), "foreign read")
+    : { ok: true, total: null, suppressed: true };
   const ownRead = step(H.queryJobEventsAsApp({ jobId: victim.ids.jobId, scopeOrganizationId: A.organizationId }), "own read");
   if (!(ownRead.total > 0)) {
     fail(`the owner's own tenant scope must SEE its own events, else a zero foreign count proves nothing: ${truncate(ownRead)}`);
@@ -370,10 +392,10 @@ export async function runCrossTenantCases({ tenants, ownerSql, suppressInjection
   // The FULL verdict is asserted, not only the two codes the row above classifies on: a foreign
   // ACK that was accepted, or a cost row minted by the hostile batch, are isolation failures that
   // no `cross.events` classification names.
-  if (isolationViolations.length > 0) {
-    fail(`cross-tenant isolation violations:
-${formatIsolationViolations(isolationViolations)}`);
-  }
+  // DEFERRED, never thrown here (Codex P1, round 3): the verdict at the end of this function is the
+  // ONE place that emits the per-case markers before it fails, and the workflow's suppression
+  // control greps for them.
+  if (injected && isolationViolations.length > 0) deferred.push(...isolationViolations);
 
   // ── 3. lease renew ─────────────────────────────────────────────────────────
   const ownRenew = step(H.leaseRenew({
@@ -384,7 +406,7 @@ ${formatIsolationViolations(isolationViolations)}`);
   if (!(ownRenew.status === 200 && ownRenew.body?.outcome === "renewed")) {
     fail(`the owner's own renew must be RENEWED, else the denial proves nothing: ${truncate(ownRenew.body)}`);
   }
-  const hostileRenew = step(H.leaseRenew({
+  const hostileRenew = hostileOrSkip(() => H.leaseRenew({
     session: hostile.session, workerId: hostile.ids.workerId, jobId: victim.ids.jobId,
     attempt: victim.offer.job.attempt, leaseId: victim.offer.leaseId, fenceToken: victim.offer.fenceToken,
     deviceKey: hostile.deviceKey,
@@ -403,12 +425,14 @@ ${formatIsolationViolations(isolationViolations)}`);
   // The hostile call goes through the PRODUCTION reconciliation service under the attacker's
   // Organization and Company against the victim's job. The control uses a THROWAWAY job of A's
   // own — never the victim's, whose live lease the later cases still need.
-  const hostileCancel = step(H.requestCancellationInContainer({
-    organizationId: suppressInjection ? A.organizationId : B.organizationId,
-    companyId: foreignCompany,
-    jobId: victim.ids.jobId,
-    reason: "d2m-cross-tenant-hostile",
-  }), "hostile cancel");
+  // ★ THE DESTRUCTIVE ONE. Suppressed, this must NOT run at all: performed by the owner it would
+  // cancel the victim's own attempt, and every later case would then fail on `attempt_terminal`.
+  const hostileCancel = injected
+    ? step(H.requestCancellationInContainer({
+      organizationId: B.organizationId, companyId: B.companyId, jobId: victim.ids.jobId,
+      reason: "d2m-cross-tenant-hostile",
+    }), "hostile cancel")
+    : { ok: null, outcome: null, suppressed: true };
   const sacrifice = bringUp(A, { doAck: false });
   const ownCancel = step(H.requestCancellationInContainer({
     organizationId: A.organizationId, companyId: A.companyId, jobId: sacrifice.ids.jobId,
@@ -457,12 +481,14 @@ ${formatIsolationViolations(isolationViolations)}`);
     attempt: victim.offer.job.attempt, leaseId: victim.offer.leaseId, fenceToken: victim.offer.fenceToken,
     handleId: secretHandleId, deviceKey: victim.deviceKey,
   }), "own resolve");
-  const hostileResolve = step(H.resolveExecutionSecretHttp({
+  const hostileResolve = hostileOrSkip(() => H.resolveExecutionSecretHttp({
     session: hostile.session, workerId: hostile.ids.workerId, jobId: victim.ids.jobId,
     attempt: victim.offer.job.attempt, leaseId: victim.offer.leaseId, fenceToken: victim.offer.fenceToken,
     handleId: secretHandleId, deviceKey: hostile.deviceKey,
   }), "hostile resolve");
-  const foreignHandleRows = step(H.queryScopedRowsAsApp({ table: "job_secret_handles", jobId: victim.ids.jobId, scopeOrganizationId: foreignOrg }), "foreign handle read");
+  const foreignHandleRows = injected
+    ? step(H.queryScopedRowsAsApp({ table: "job_secret_handles", jobId: victim.ids.jobId, scopeOrganizationId: foreignOrg }), "foreign handle read")
+    : { ok: true, total: null, suppressed: true };
   const ownHandleRows = step(H.queryScopedRowsAsApp({ table: "job_secret_handles", jobId: victim.ids.jobId, scopeOrganizationId: A.organizationId }), "own handle read");
   const ownResolved = ownResolve.status === 200 && ownResolve.body?.outcome === "resolved";
   if (!ownResolved) {
@@ -496,7 +522,7 @@ ${formatIsolationViolations(isolationViolations)}`);
   };
 
   // HOSTILE FIRST on the grant: it is a MINT, and the owner's must be the one that stands.
-  const hostileGrant = step(H.artifactTransferGrant({
+  const hostileGrant = hostileOrSkip(() => H.artifactTransferGrant({
     session: hostile.session, operation: "upload", ...victimFence, workerId: hostile.ids.workerId,
     artifactId, expectedObjectKey: objectKey, expectedSha256: sha256Hex, maxBytes: bodyBytes.length,
     deviceKey: hostile.deviceKey,
@@ -520,7 +546,7 @@ ${formatIsolationViolations(isolationViolations)}`);
     // layer, which never reaches the fence or the tenant check.
     createdAt: new Date().toISOString(),
   };
-  const hostileCommit = step(H.artifactCommit({
+  const hostileCommit = hostileOrSkip(() => H.artifactCommit({
     session: hostile.session, ...victimFence, workerId: hostile.ids.workerId, manifest, deviceKey: hostile.deviceKey,
   }), "hostile commit");
   const ownCommit = step(H.artifactCommit({
@@ -546,7 +572,7 @@ ${formatIsolationViolations(isolationViolations)}`);
   //
   // THE TWIN, fixed in the same PR rather than left standing: `d1.tenant.cross.staged_inputs`
   // certified the same surface the same one-sided way (`tests/d1/m1-fault-matrix.test.mjs`).
-  const hostileDownload = step(H.artifactTransferGrant({
+  const hostileDownload = hostileOrSkip(() => H.artifactTransferGrant({
     session: hostile.session, operation: "download", ...victimFence, workerId: hostile.ids.workerId,
     artifactId, expectedObjectKey: objectKey, expectedSha256: sha256Hex, maxBytes: bodyBytes.length,
     deviceKey: hostile.deviceKey,
@@ -579,7 +605,12 @@ ${formatIsolationViolations(isolationViolations)}`);
       organizationId: A.organizationId, companyId: A.companyId, agentId: A.agentId,
       issueId: victim.ids.issueId, jobId: victim.ids.jobId, credentialId: randomUUID(),
     },
-    attacker: { organizationId: foreignOrg, companyId: foreignCompany },
+    // Suppressed, the "attacker" IS the owner, so every foreign read returns the owner's rows and
+    // the case classifies `not_filtered` — never `filtered`, which is what a suppressed run must
+    // not be able to claim.
+    attacker: injected
+      ? { organizationId: B.organizationId, companyId: B.companyId }
+      : { organizationId: A.organizationId, companyId: A.companyId },
   }), "legacy tables");
   if (legacy.ok !== true) fail(`legacy-table probe: ${truncate(legacy)}`);
   detail.legacyTables = legacy.tables;
@@ -614,7 +645,7 @@ ${formatIsolationViolations(isolationViolations)}`);
   }), "seed tool-surface runs");
   if (seededRuns.ok !== true) fail(`tool-surface run seed: ${truncate(seededRuns)}`);
   const toolProbe = step(H.probeToolSurfaceAtUse({
-    victim: { companyId: A.companyId }, attacker: { companyId: foreignCompany },
+    victim: { companyId: A.companyId }, attacker: { companyId: injected ? B.companyId : A.companyId },
     localRunId, distributedRunId,
   }), "tool surface");
   if (toolProbe.ok !== true) fail(`tool-surface probe: ${truncate(toolProbe)}`);
@@ -693,10 +724,13 @@ ${formatIsolationViolations(isolationViolations)}`);
   for (const r of unfired) log(`${CROSS_TENANT_EVIDENCE_MARKER} injection_did_not_fire case=${r.case}`);
   for (const r of notDenied) log(`${CROSS_TENANT_EVIDENCE_MARKER} not_denied case=${r.case}`);
   for (const r of noControl) log(`${CROSS_TENANT_EVIDENCE_MARKER} positive_control_failed case=${r.case}`);
-  if (unfired.length > 0 || notDenied.length > 0 || noControl.length > 0) {
+  for (const v of deferred) log(`${CROSS_TENANT_EVIDENCE_MARKER} ${v.code} ${v.message}`);
+  if (unfired.length > 0 || notDenied.length > 0 || noControl.length > 0 || deferred.length > 0) {
     fail(
       `the cross-tenant phase refuses its own observations: ` +
-      `${unfired.length} injection(s) did not fire, ${notDenied.length} not denied, ${noControl.length} without a positive control`,
+      `${unfired.length} injection(s) did not fire, ${notDenied.length} not denied, ` +
+      `${noControl.length} without a positive control, ${deferred.length} shared-verdict violation(s)` +
+      (deferred.length > 0 ? `\n${formatIsolationViolations(deferred)}` : ""),
     );
   }
   log(`cross-tenant: ${rows.length} case(s) driven, every injection fired, every same-tenant control passed`);
