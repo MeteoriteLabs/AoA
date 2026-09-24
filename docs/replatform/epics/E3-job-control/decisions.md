@@ -585,3 +585,46 @@ operator-initiated rather than tenant- or attacker-reachable, which is why it is
 **Not relitigated by this decision:** the equality pin itself stays. Nothing here authorises relaxing
 `placement_target_generation`, `placement_profile_hash` or `placement_provider_constraint_hash` at any
 candidate site.
+
+
+### ★★★ AMENDMENT, 2026-09-24 — the MECHANISM half is corrected; the CHOICE half stands
+
+**Raised by Codex on PR #594 and verified at source before acting. The correction is real and it
+matters, because this decision is locked and its mechanism as first written would have been
+actively harmful.**
+
+The decision above says the invalidation route *"reuses machinery that already exists"* and that the
+fix is *"enqueue a convergence record from `advanceTargetGeneration` … and let the existing fanout
+re-place or terminalise the affected attempts."* **Enqueueing an `execution_target_revocations`
+record is NOT a safe mechanism**, for two measured reasons:
+
+1. **It would REVOKE the target.** `execution-target-revocation-fanout.ts` calls
+   `ensureExecutionTargetCutoff`, which calls `bumpExecutionTargetGeneration`
+   (`server/src/services/execution-targets.ts`). That helper sets
+   `deviceGeneration: sql\`… + 1\`` **and `status: "disabled"`** in the same update. So enqueueing a
+   revocation record for a successful device ROTATION would bump the generation a SECOND time and
+   **disable the target** — converting a rotation into a revocation, which is precisely the outcome
+   the fix exists to avoid.
+2. **It CANCELS rather than re-places.** The fanout's Phase-1b terminalises stranded attempts to
+   `cancelled`. That is correct for a revoked target, where the work cannot run anywhere on it. For
+   a rotation the target is still serving, so cancelling is a heavier remedy than the defect
+   warrants; re-placement onto the current generation is the outcome an operator would expect.
+
+**What the decision now requires instead.** A path that is NOT the revocation record: either a
+**distinct convergence record kind** for a generation advance, or a **branch in the existing fanout
+that skips `ensureExecutionTargetCutoff` entirely** while still doing the two things that made the
+fanout the right precedent — converging old-generation attempts and **releasing the pinned
+Organization capacity slot**. Whether those attempts should be re-placed or terminalised on a
+rotation is part of the owning ticket's design, and the second binding condition (the capacity leak
+is part of the fix) applies to it unchanged.
+
+**What is NOT changed.** The choice stands: explicit invalidation, and the generation **floor is
+still refused** for the reason originally given. Both binding conditions stand. The equality pin is
+still not relitigated.
+
+★ **How this was got wrong, recorded because it is the same error as the rest of this ticket.** The
+"reuse the existing fanout" mechanism was reasoned from the fanout's own Phase-1b COMMENT — which
+does describe exactly the right outcome — without measuring what `ensureExecutionTargetCutoff`
+actually does when invoked. **The chain, not the link**, for the fourth time in this ticket, and this
+time inside a recommendation handed up for ratification. It is the strongest argument yet that a
+mechanism named in a decision must be measured end to end before it is locked, not only motivated.

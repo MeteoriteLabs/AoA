@@ -2445,7 +2445,7 @@ defect is availability-only. **Two binding conditions carried by that decision:*
 CONDITIONAL ON LIVE CONFIRMATION -- no fix may be built until the defect is reproduced by re-enrolling
 a bound worker while one of its jobs sits `pending` and placed, with the reproduction recorded HERE
 first; and (2) the invalidation MUST also release the pinned Organization capacity slot, so the owning
-ticket cannot close on half the defect. Read the decision for the full reasoning.
+ticket cannot close on half the defect. Read the decision for the full reasoning. ★ **AMENDED the same day**: enqueueing an `execution_target_revocations` record is NOT the mechanism — the fanout calls `ensureExecutionTargetCutoff`, whose `bumpExecutionTargetGeneration` also sets `status: "disabled"`, so it would convert a rotation into a REVOCATION, and it cancels rather than re-places. A distinct record kind, or a fanout branch that skips the cutoff, is required. The CHOICE (invalidation, not a floor) and both conditions are unchanged.
 
 The two candidates, as filed, and why they are not equivalent:
 

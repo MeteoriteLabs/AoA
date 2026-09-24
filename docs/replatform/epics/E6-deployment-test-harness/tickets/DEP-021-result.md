@@ -798,6 +798,58 @@ on this lane is what confirms it, and this ticket did not spend an eighth cycle 
 
 ---
 
+## 12. The Codex review, and what it changed
+
+**One review, requested once** (SPEED RULE B), on head `6afd7bfc8`. **Five findings; four real and
+fixed, one obsolete at HEAD.** Each was verified at source before being acted on, and none was
+accepted on the review's word.
+
+| # | Finding | Disposition |
+|---|---|---|
+| P1 | *"Correlate the fence evidence within one log record"* — whole-log substring checks do not prove the message, reason and lease id belong to the SAME startup-reconcile record | **OBSOLETE at HEAD, and its insight PRESERVED.** It was raised against commit `08042ee8`'s two-arm case, which no longer exists: the case is now a blocker proof that claims no fence at all. **But the point is right and survives the case's future** — whoever re-declares this `required` when the lane can drive it must correlate within ONE parsed record, because a restart processing several candidates could otherwise certify this lease from an unrelated line, and the global sibling-arm checks could reject a valid fence because a DIFFERENT candidate was dead. Recorded here rather than lost with the code it pointed at |
+| P2 | **CommonJS**: the inbound scan admits `.js`/`.cjs` but `extractModuleSpecifiers` is ESM-only | **REAL, fixed.** Measured: it returns `[]` for `require("@armyofagents/sandbox-fake-provider")`. The OUTBOUND arm already treats the `require(` bridge as an escape, so the inbound arm was weaker than its own sibling. New `extractRequireSpecifiers` on `tokenizeSource`, not a regex, so comment and string decoys cannot trip it |
+| P2 | **Symlinks**: the walker skipped them silently | **REAL, fixed.** Its own comment claimed the outbound arm's stricter posture while the code skipped — a policy described but not implemented. Now a violation, matching outbound |
+| P2 | **The decision's mechanism would REVOKE the target** | **REAL, and the most consequential (§12.1)** |
+| P2 | The ownership `reason` still said the floor-vs-invalidation choice was open | **REAL, fixed.** I wrote it before the ruling and did not revisit it — records disagreeing with records. It now states the ruling, the amendment, and that `unowned` means *no implementation ticket exists*, not *the remedy is undecided* |
+
+### 12.1 ★★★ The finding that corrected a LOCKED decision
+
+`E3-D-GEN-INVALIDATION` said the fix *"reuses machinery that already exists"* — enqueue a
+convergence record and let the existing fanout converge the attempts. **Verified at source, that
+mechanism is unsafe:** `execution-target-revocation-fanout.ts` calls `ensureExecutionTargetCutoff`,
+whose `bumpExecutionTargetGeneration` sets `deviceGeneration + 1` **and `status: "disabled"`** in one
+update. Enqueueing a revocation record for a successful device ROTATION would bump the generation a
+second time and **disable the target** — converting a rotation into a revocation, the exact outcome
+the fix exists to avoid. The fanout also **cancels** rather than re-places.
+
+The decision is **amended, not rewritten**: the CHOICE (invalidation over a floor) and both binding
+conditions stand; the MECHANISM now requires a distinct convergence record kind, or a fanout branch
+that skips the cutoff while converging old-generation attempts and releasing the pinned capacity.
+
+★ **How I got it wrong is the ticket's own error, a fourth time.** The mechanism was reasoned from
+the fanout's Phase-1b COMMENT — which does describe the right outcome — without measuring what
+`ensureExecutionTargetCutoff` does when invoked. **The chain, not the link.** This time it was inside
+a recommendation handed up for ratification, which is the strongest argument in this ticket that a
+mechanism named in a decision must be measured end to end before it is locked, not merely motivated.
+
+### 12.2 ★ A latent bug I caught in my own fix, and a process note
+
+The symlink fix's first version pushed onto the CALLER's `policyErrors`, which is not in scope inside
+the walker: it would have thrown `ReferenceError` on the one path it was written for, and the guard
+still reported `PASS` because the branch was never taken. **An untaken branch is not a control.**
+`listPackageSources` now owns its array, and the fixture EXECUTES the branch through an injected
+`readdir` — this host cannot create symlinks without elevation, and the injection runs on every
+platform rather than only where symlinks are permitted.
+
+★ **Process note, recorded because it cost real work twice.** `git checkout -- <path>` to revert a
+mutation destroys UNCOMMITTED work on that path. It ate the `--aoa-fake-delay` implementation once
+and both of these guard fixes once. The rule is simple and I stated it after the first time and then
+violated it anyway: **commit before mutating, every time.** The mutation table below was produced
+after committing.
+
+
+---
+
 ## 11. What this ticket does NOT do
 
 1. **It does not add `--aoa-fake-echo-env`**, and §5 is the measured reason rather than a preference.
