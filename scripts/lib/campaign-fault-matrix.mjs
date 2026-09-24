@@ -493,7 +493,7 @@ export function evaluateFaultMatrixEvidence(matrix, bundle) {
     }
     // CLAUSE 5 — BOTH arms are required on the row, and they are separate facts: the seeded run
     // must be observed CLEAN on every declared stream, AND the scrubber's own replacement marker
-    // must be observed ON those streams. Either alone proves nothing — a clean stream with no
+    // must be observed ON EACH of those streams. Either alone proves nothing — a clean stream with no
     // marker may be a run that emitted the value nowhere, and a marker with a canary still present
     // is a partial scrub.
     //
@@ -512,16 +512,30 @@ export function evaluateFaultMatrixEvidence(matrix, bundle) {
       if (row.redactedOnAllStreams !== true) {
         v("evidence:redaction_not_clean", `case ${id}: redactedOnAllStreams=${JSON.stringify(row.redactedOnAllStreams ?? null)} — the planted canary was NOT scrubbed from every declared stream`);
       }
-      if (row.scrubberMarkerObserved !== true) {
-        v("evidence:redaction_marker_not_observed", `case ${id}: scrubberMarkerObserved=${JSON.stringify(row.scrubberMarkerObserved ?? null)} — the scrubber's own replacement marker was NOT observed on the run's streams, so the clean arm above is not shown to be its work (a probe that cannot go red is not a probe)`);
-      }
-      // Non-vacuity, as its own row fact: a scan over ZERO bytes is "clean" and proves nothing.
+      // PER STREAM, NOT A SCALAR (Codex P2 on PR #593, and the finding was right). A single
+      // `scrubberMarkerObserved: true` would let a row pass on having seen the marker on ONE
+      // declared stream while the other never demonstrates the scrubber acting at all -- which
+      // contradicts the declaration, whose `streams` list exists precisely because a scrubbed
+      // event stream beside an unscrubbed log stream is still a leak. So the marker is recorded and
+      // checked per declared stream, the same shape `streamBytesObserved` already used.
+      const markerByStream = isPlainObject(row.scrubberMarkerObservedOnStream) ? row.scrubberMarkerObservedOnStream : null;
       const observed = isPlainObject(row.streamBytesObserved) ? row.streamBytesObserved : null;
-      for (const stream of (Array.isArray(rc?.streams) ? rc.streams.map(String) : [])) {
+      const declaredStreams = Array.isArray(rc?.streams) ? rc.streams.map(String) : [];
+      for (const stream of declaredStreams) {
+        if (markerByStream?.[stream] !== true) {
+          v("evidence:redaction_marker_not_observed", `case ${id}: scrubberMarkerObservedOnStream.${stream}=${JSON.stringify(markerByStream?.[stream] ?? null)} -- the scrubber's own replacement marker was NOT observed on the ${stream} stream, so that stream's clean arm is not shown to be its work (a probe that cannot go red is not a probe)`);
+        }
+        // Non-vacuity, as its own row fact: a scan over ZERO bytes is "clean" and proves nothing.
         const bytes = observed ? observed[stream] : undefined;
         if (!(typeof bytes === "number" && bytes > 0)) {
-          v("evidence:redaction_stream_vacuous", `case ${id}: streamBytesObserved.${stream}=${JSON.stringify(bytes ?? null)} — a scan over an empty stream is vacuously clean`);
+          v("evidence:redaction_stream_vacuous", `case ${id}: streamBytesObserved.${stream}=${JSON.stringify(bytes ?? null)} -- a scan over an empty stream is vacuously clean`);
         }
+      }
+      // A redaction case that declared NO streams would make every per-stream check above vacuous.
+      // The declaration half already reds that, but a bundle is judged against whatever declaration
+      // it was given, so the evidence half refuses it rather than trusting a check it cannot see.
+      if (declaredStreams.length === 0) {
+        v("evidence:redaction_no_declared_streams", `case ${id}: the declaration names no streams, so every per-stream check above evaluated nothing`);
       }
     }
     const t = isPlainObject(c.tenantCase) ? c.tenantCase : null;

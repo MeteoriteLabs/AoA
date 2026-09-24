@@ -439,9 +439,11 @@ check that evaluates nothing.**
 | 14 | redaction row `redactedOnAllStreams: false` | `evidence:redaction_not_clean` | red |
 | 15 | **redaction row `scrubberMarkerObserved: false`** — the control's own control | `evidence:redaction_marker_not_observed` | red |
 | 16 | `streamBytesObserved.<stream>` = 0, absent, or the whole object absent | `evidence:redaction_stream_vacuous` | red, all five |
+| 18 | **the marker observed on ONE declared stream only** (`{events: true}` against a two-stream declaration), each stream individually `false`, each individually absent, the map empty, the map absent | `evidence:redaction_marker_not_observed` | red, all six |
+| 19 | a redaction case declaring **no** `streams` at all, on the evidence side | `evidence:redaction_no_declared_streams` | red |
 | 17 | **drift the harness's mirrored `REDACTION_MARKER`** away from the daemon's literal | *"the harness's mirrored REDACTION_MARKER has drifted from the worker daemon's"* | red — **mutated, measured, reverted** |
 
-Row 15 is the one that matters most: it is the arm that stops a run which emitted the value nowhere
+Rows 18-19 come from the Codex review and are described in §12. Row 15 is the one that matters most: it is the arm that stops a run which emitted the value nowhere
 from reporting a clean scrub. Row 16 is its non-vacuity twin. Row 17 protects a mirrored constant that
 decides a gate case — the harness mirrors `REDACTION_MARKER` rather than importing it (it runs from
 source against built images), so a pure-node test in `policy` pins the two together and also asserts
@@ -522,3 +524,44 @@ All four are on this PR's branch; the last two are on the reviewed revision
 6. **The remaining nineteen `M1a-D2-MECHANISM` cases are not closed** — §2, §10.
 7. **Clauses 1, 3 and 6 remain undeclared**, each a build gap with its reason and owner recorded in
    §6 rather than left silent.
+
+---
+
+## 12. The Codex review, and what it changed
+
+**One review, on head `5a6eb013ba`** (SPEED RULE B: fix everything known first, then request once).
+Codex's inline comments are split across two reviewed commits, and the distinction matters:
+
+**Four P1s, all against the cycle-1 commit `1a6499e34a` — every one already fixed before the review
+landed**, and each is exactly the defect the corresponding live cycle found (§7.3). Verified at source
+at HEAD, not assumed:
+
+| Codex P1 | Where it stands at HEAD |
+|---|---|
+| *"Pass lease and interval parameters to the expiry helper"* | fixed in cycle 2 — the call now passes `leaseId` + both intervals |
+| *"Query the actual job-events columns"* | fixed in cycle 2 — `event` (jsonb), ordered by `sequence` |
+| *"Emit the control marker through an observable output channel"* | **this is the blocker itself**, and the review's reasoning matches the measurement independently: the provider interprets only `--aoa-fake-*` flags and emits a fixed transcript. Resolved in cycle 5 by declaring the D1 case `pending` with that as its proven reason (§3.2) |
+| *"Preserve the redaction facts in the recorded evidence row"* | **NOT already fixed — a real latent defect, and fixed now.** See below |
+
+**Two findings that stand at HEAD, both fixed:**
+
+1. **P1 — `record()` silently discarded the redaction row facts.** The helper copied a fixed set of
+   fields, so `redactedOnAllStreams`, the per-stream marker map and `streamBytesObserved` would have
+   been dropped on the way into the bundle, and `evaluateFaultMatrixEvidence` would then have refused
+   the case **for facts the case measured and passed**. No case files them today (the D1 case is
+   `pending`), so it is latent — but the first case that needs it is the **keyed** one, and
+   discovering this there costs an E2B run. Threaded now, ahead of that case.
+
+2. **P2 — `scrubberMarkerObserved` was a scalar.** A single boolean let a row pass on having seen the
+   marker on ONE declared stream while the other never demonstrated the scrubber acting — which
+   contradicts the declaration, whose `streams` list exists precisely because a scrubbed event stream
+   beside an unscrubbed log stream is still a leak. It is now
+   `scrubberMarkerObservedOnStream`, checked **per declared stream**, the same shape
+   `streamBytesObserved` already used. Six new reds (row 18), plus a refusal when a redaction case
+   declares no streams at all (row 19) — because the evidence half is judged against whatever
+   declaration it was handed and must not trust a declaration-side check it cannot see.
+
+**Both are the same class**, which is worth naming: *the evidence contract was weaker than the
+declaration claimed.* One dropped facts it was given; the other accepted one stream where two were
+declared. That class is now closed at both sites, with reds for each.
+

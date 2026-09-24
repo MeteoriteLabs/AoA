@@ -300,7 +300,7 @@ function completeBundle(profile) {
         ...(c.family === "redaction"
           ? {
             redactedOnAllStreams: true,
-            scrubberMarkerObserved: true,
+            scrubberMarkerObservedOnStream: Object.fromEntries(c.redactionCase.streams.map((k) => [k, true])),
             streamBytesObserved: Object.fromEntries(c.redactionCase.streams.map((k) => [k, 1024])),
           }
           : {}),
@@ -500,7 +500,13 @@ test("DEP-018 evidence: a redaction row reds when the canary was not scrubbed, w
   // ★ THE CONTROL'S OWN CONTROL. A seeded run reported clean while the scrubber's marker was NOT
   // observed is the vacuous arm the E5 audit named: nothing shows the clean stream is the
   // scrubber's work rather than a run that emitted the value nowhere.
-  assert.ok(has(row((r) => { r.scrubberMarkerObserved = false; }), "evidence:redaction_marker_not_observed"));
+  // PER STREAM (Codex P2): the marker on ONE stream must NOT satisfy a two-stream declaration.
+  for (const stream of REQUIRED_REDACTION_STREAMS) {
+    assert.ok(has(row((r) => { r.scrubberMarkerObservedOnStream[stream] = false; }), "evidence:redaction_marker_not_observed"), `${stream} false`);
+    assert.ok(has(row((r) => { delete r.scrubberMarkerObservedOnStream[stream]; }), "evidence:redaction_marker_not_observed"), `${stream} absent`);
+  }
+  assert.ok(has(row((r) => { r.scrubberMarkerObservedOnStream = {}; }), "evidence:redaction_marker_not_observed"));
+  assert.ok(has(row((r) => { delete r.scrubberMarkerObservedOnStream; }), "evidence:redaction_marker_not_observed"));
   for (const stream of REQUIRED_REDACTION_STREAMS) {
     assert.ok(has(row((r) => { r.streamBytesObserved[stream] = 0; }), "evidence:redaction_stream_vacuous"), stream);
     assert.ok(has(row((r) => { delete r.streamBytesObserved[stream]; }), "evidence:redaction_stream_vacuous"), `${stream} absent`);

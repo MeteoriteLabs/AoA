@@ -173,10 +173,21 @@ const bundle = {
 
 /** Record ONE declared case's evidence row. `observedClassification` is what the campaign
  * compares with the declaration; `detail` is kept beside the bundle for the reader. */
-function record(caseId, { injectionFired, observedClassification, positiveControlPassed, antiVacuityObservedForeignRow, detail }) {
+function record(caseId, { injectionFired, observedClassification, positiveControlPassed, antiVacuityObservedForeignRow, redactedOnAllStreams, scrubberMarkerObservedOnStream, streamBytesObserved, detail }) {
   const row = { case: caseId, injectionFired: injectionFired === true, observedClassification: observedClassification ?? null };
   if (positiveControlPassed !== undefined) row.positiveControlPassed = positiveControlPassed === true;
   if (antiVacuityObservedForeignRow !== undefined) row.antiVacuityObservedForeignRow = antiVacuityObservedForeignRow === true;
+  // ★ THE REDACTION ROW FACTS (Codex P1 on PR #593, and the finding was right even though no case
+  // currently files them). This helper copied a FIXED set of fields and silently dropped anything
+  // else, so a redaction case that passed `redactedOnAllStreams` / the per-stream marker map /
+  // `streamBytesObserved` would have had them discarded on the way into the bundle — and
+  // `evaluateFaultMatrixEvidence` would then have refused the case for facts the case DID measure
+  // and DID pass. That is the "a check that nothing runs" class inverted: a check that reds on
+  // evidence it was handed and threw away. Threaded now, ahead of the case that needs it, because
+  // the case that needs it first is the KEYED one and discovering this there costs an E2B run.
+  if (redactedOnAllStreams !== undefined) row.redactedOnAllStreams = redactedOnAllStreams === true;
+  if (scrubberMarkerObservedOnStream !== undefined) row.scrubberMarkerObservedOnStream = scrubberMarkerObservedOnStream;
+  if (streamBytesObserved !== undefined) row.streamBytesObserved = streamBytesObserved;
   bundle.cases.push(row);
   if (detail !== undefined) bundle.detail[caseId] = detail;
   return row;
