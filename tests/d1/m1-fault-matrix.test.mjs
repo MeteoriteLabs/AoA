@@ -108,6 +108,7 @@ import {
   // DEP-021 — the two cases DEP-020 routed away, built keylessly here.
   querySpineWorkerDriven,
   queryLeaseExpiries,
+  queryOfferEligibility,
   killComposeService,
   startComposeService,
 } from "./lib/e6f-harness.mjs";
@@ -2131,10 +2132,20 @@ function parkRunInFlight(tenant, label, { attempts = 75, windowMs = RECONCILE_WI
   );
   const leases = step(queryLeaseExpiries({ jobId: ids.jobId }), `${label} lease before`);
   const lease = (leases.leases ?? [])[0] ?? null;
+  // ★ SELF-DIAGNOSING ON THE FAILING PATH ONLY. Cycles 2, 3 and 4 each spent a full live
+  // campaign narrowing ONE symptom -- a freshly seeded attempt the worker never leases -- because
+  // the case could report only `inFlight: false` and left the reader to rank hypotheses. When the
+  // park fails, the control plane's OWN eligibility predicate is read conjunct by conjunct and the
+  // failing ones are recorded, so the next reader is handed the cause instead of a hypothesis. It
+  // is not read on the passing path: a probe that runs when nothing is wrong is pure cost.
+  const eligibility = inFlight.ok
+    ? null
+    : step(queryOfferEligibility({ jobId: ids.jobId }), `${label} offer eligibility`);
   return {
     ids,
     inFlight,
     lease,
+    eligibility,
     placement: {
       workerId: deployed.workerId ?? null,
       workerCount: deployed.workerCount ?? null,
@@ -2303,6 +2314,8 @@ test("fault-matrix: a worker KILLED mid-run FENCES its own prior lease on restar
         reportedStoreEmpty: gracefulReportedEmpty,
         addedNoFenceLine: gracefulAddedNoFence,
         placement: graceful?.placement ?? null,
+        notOfferedBecause: graceful?.eligibility?.failing ?? null,
+        eligibility: graceful?.eligibility ?? null,
         polls: gracefulSaw.polls,
       },
       slot: {
@@ -2315,6 +2328,8 @@ test("fault-matrix: a worker KILLED mid-run FENCES its own prior lease on restar
         controlWindowMs: RECONCILE_CONTROL_WINDOW_MS,
         inFlight: { ok: killed?.inFlight.ok ?? null, polls: killed?.inFlight.polls ?? null },
         placement: killed?.placement ?? null,
+        notOfferedBecause: killed?.eligibility?.failing ?? null,
+        eligibility: killed?.eligibility ?? null,
         leaseId: killLeaseId,
         leaseStatusBefore: killed?.lease?.status ?? null,
         leaseLiveBefore: killed?.lease?.live ?? null,
@@ -2352,7 +2367,12 @@ test("fault-matrix: a worker KILLED mid-run FENCES its own prior lease on restar
 
   if (!SUPPRESS_INJECTION) {
     // Arm 1 first: without it the fence below is attributable only to "a restart", not to a death.
-    assert.equal(graceful?.inFlight.ok, true, `the graceful arm's run must be IN FLIGHT — that is what proves a candidate row EXISTED at stop time, so its absence afterwards is a prune and not a never-written row: ${truncate(graceful?.inFlight.last)}`);
+    assert.equal(
+      graceful?.inFlight.ok,
+      true,
+      `the graceful arm's run must be IN FLIGHT — that is what proves a candidate row EXISTED at stop time, so its absence afterwards is a prune and not a never-written row. `
+        + `Failing eligibility conjuncts: ${JSON.stringify(graceful?.eligibility?.failing ?? null)} -- ${truncate(graceful?.inFlight.last)}`,
+    );
     assert.equal(gracefulRestarted.ok, true, `the graceful restart must succeed: exit status ${gracefulRestarted.status}`);
     assert.equal(gracefulCameBack.ok, true, `worker-b must come back from the graceful restart: ${truncate(gracefulCameBack.last)}`);
     assert.equal(
@@ -2373,7 +2393,13 @@ test("fault-matrix: a worker KILLED mid-run FENCES its own prior lease on restar
       `the graceful arm's abandoned attempt must terminalise before the kill arm is seeded — this worker runs ONE job at a time, the abandoned attempt is RE-LEASED and RE-RUN (cycle 3 saw it still "running" after 200 s), and cycle 2 failed with the kill arm's job still "pending" behind it: ${truncate(gracefulSettled)}`,
     );
 
-    assert.equal(killed?.inFlight.ok, true, `the killed arm's run must be IN FLIGHT, else nothing is interrupted: ${truncate(killed?.inFlight.last)}`);
+    assert.equal(
+      killed?.inFlight.ok,
+      true,
+      `the killed arm's run must be IN FLIGHT, else nothing is interrupted. Failing eligibility conjuncts: `
+        + `${JSON.stringify(killed?.eligibility?.failing ?? null)} (an empty list means the attempt WAS eligible and the worker simply did not poll in time) `
+        + `-- ${truncate(killed?.inFlight.last)}`,
+    );
     assert.equal(killed?.leaseWasLive, true, `the lease must be live at kill time, else the probe has no live candidate: ${truncate(killed?.lease)}`);
     assert.equal(hardKilled.ok, true, `worker-b must be KILLED — a graceful stop prunes the candidate and is the control, not the injection: exit status ${hardKilled.status}`);
     assert.equal(started.ok, true, `worker-b must be started again after the kill: exit status ${started.status}`);

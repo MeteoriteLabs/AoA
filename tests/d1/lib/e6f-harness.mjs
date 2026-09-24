@@ -2068,6 +2068,86 @@ try {
 }
 
 /**
+ * DEP-021 — why an attempt was NOT offered to the deployed worker, read from the control plane's
+ * own eligibility predicate rather than guessed at.
+ *
+ * ★★★ WHY THIS EXISTS. Cycles 2, 3 and 4 each spent a live campaign narrowing one symptom — a
+ * freshly seeded attempt that the worker never leases — because the case could only report
+ * `inFlight: false` and leave the reader to rank hypotheses. This reads the actual predicate
+ * (`job-control.ts`, the lease-candidate query) FIELD BY FIELD and says which conjunct fails:
+ *
+ *   job_attempts.status = 'pending'            placement_disposition = 'selected'
+ *   placement_mode = 'active'                  placement_lease_eligible = true
+ *   placement_owner / target_id / target_class / target_scope
+ *   placement_target_generation  = the target's CURRENT device_generation
+ *   placement_profile_hash       = the target's CURRENT registered_profile_hash
+ *   placement_provider_constraint_hash = the target's CURRENT provider digest
+ *   jobs.status = 'queued'                     jobs.available_at <= now
+ *   and NO worker_lease_rejections certificate for this attempt + worker
+ *
+ * ★ THE GENERATION CONJUNCT IS AN EQUALITY, NOT A FLOOR (`eq(jobAttempts.placementTargetGeneration,
+ * input.targetGeneration)`), and `advanceTargetGeneration` bumps `device_generation` by one on a
+ * re-enrolment of an already-bound worker (`server/src/services/worker-enrollment.ts`). So an
+ * attempt placed before a restart that re-enrolled is PERMANENTLY invisible to that worker — never
+ * offered, never expired, with no error anywhere. That is the shape this helper exists to name.
+ *
+ * Nothing secret is read: statuses, hashes, generations and timestamps.
+ */
+export function queryOfferEligibility({ jobId }) {
+  const params = { jobId };
+  const script = `
+import postgres from "postgres";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  const [a] = await sql\`SELECT id, status, placement_disposition AS "disposition", placement_mode AS "mode",
+      placement_lease_eligible AS "leaseEligible", placement_owner AS "owner",
+      placement_target_id AS "targetId", placement_target_class AS "targetClass",
+      placement_target_scope AS "targetScope", placement_target_generation AS "generation",
+      placement_profile_hash AS "profileHash", placement_provider_constraint_hash AS "providerConstraintHash"
+    FROM job_attempts WHERE job_id = \${P.jobId} ORDER BY attempt_number DESC LIMIT 1\`;
+  const [j] = await sql\`SELECT status, workload_type AS "workloadType",
+      to_char(available_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "availableAt",
+      (available_at <= statement_timestamp()) AS "availableNow"
+    FROM jobs WHERE id = \${P.jobId}\`;
+  const [t] = a
+    ? await sql\`SELECT device_generation AS "generation", registered_profile_hash AS "profileHash",
+        provider_constraint_profile->>'digest' AS "providerDigest", status
+      FROM execution_targets WHERE id = \${a.targetId}\`
+    : [null];
+  const certificates = a
+    ? await sql\`SELECT worker_id AS "workerId", eligibility_version AS "eligibilityVersion",
+        placement_target_generation AS "generation"
+      FROM worker_lease_rejections WHERE job_id = \${P.jobId} AND attempt_id = \${a.id}\`
+    : [];
+  // The per-conjunct verdict. Each entry is TRUE when that conjunct is satisfied, so the FALSE
+  // ones are the answer. Computed here rather than in the test so the retained bundle carries it.
+  const conjuncts = a && j && t ? {
+    attemptPending: a.status === "pending",
+    dispositionSelected: a.disposition === "selected",
+    modeActive: a.mode === "active",
+    leaseEligible: a.leaseEligible === true,
+    jobQueued: j.status === "queued",
+    availableNow: j.availableNow === true,
+    targetEnabled: t.status !== "disabled",
+    generationMatches: String(a.generation) === String(t.generation),
+    profileHashMatches: String(a.profileHash) === String(t.profileHash),
+    providerConstraintMatches: String(a.providerConstraintHash) === String(t.providerDigest),
+    noRejectionCertificate: certificates.length === 0,
+  } : null;
+  const failing = conjuncts ? Object.keys(conjuncts).filter((k) => conjuncts[k] !== true) : null;
+  report({ ok: Boolean(a && j && t), attempt: a ?? null, job: j ?? null, target: t ?? null, certificates, conjuncts, failing });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script);
+}
+
+/**
  * DEP-021 — the DURABLE half of `d1.reconcile.worker_startup_lease_probe`.
  *
  * `queryLeaseFaultState` returns each lease's `id` + `status` and nothing else, so it cannot see
