@@ -298,16 +298,20 @@ counts):
 
 | Class | Count | Meaning |
 |---|---|---|
-| **(a) genuinely complete but pre-discipline** | **42** | asserts completion with concrete, still-checkable evidence and disclaims nothing. *A claim about code that can still be checked.* |
+| **(a) genuinely complete but pre-discipline** | **44** ★ | asserts completion with concrete, still-checkable evidence and disclaims nothing. *A claim about code that can still be checked.* |
 | **(b) genuinely incomplete / self-disclaiming** | **46** | the record itself says partial, inert, unwired, shadow-only, blocked, "stays OPEN", "not an end-to-end cutover" |
-| **(c) unknowable without re-measurement** | **11** ★ | asserts something but pins no verifiable anchor, or its evidence is an expiring CI artifact or a transient environment. *No longer verifiable from the record.* |
+| **(c) unknowable without re-measurement** | **10** ★ | asserts something but **pins no verifiable anchor** — see §2.2, where the second cause I first listed for this class turned out to be empty. *No longer verifiable from the record.* |
 
-Per epic — (a) / (b) / (c): E3 7/4/0 · E4 3/8/0 · E5 4/7/5 · E6 3/4/3 · E7 5/7/1 ·
-E8 **9/1/1** ★ · E9 3/5/0 · E10-desktop 3/4/0 · E10-mig-realtime 1/4/1 · E11 5/2/0.
+Per epic — (a) / (b) / (c): E3 7/4/0 · E4 3/8/0 · E5 4/7/5 · E6 3/4/3 ·
+**E7 6/7/0** ★ · E8 **9/1/1** ★ · E9 3/5/0 · E10-desktop 3/4/0 · E10-mig-realtime 1/4/1 · E11 5/2/0.
 
-★ *Corrected 2026-09-24 (Codex P2, third round): `W10B-egress-enforcement` moved (c)→(a) on its
-preserved §15 measurement — see §2.2's expiring-evidence bullet. **Superseded text:** the totals
-**42 / 46 / 12** and E8 **8/1/2**.*
+★★★ *Corrected twice on 2026-09-24 (Codex P2, third and fourth rounds). `W10B-egress-enforcement`
+moved (c)→(a) on its preserved §15 measurement, and then **`W7U1-output-probe` moved (c)→(a) on the
+same rule** — see §2.2's expiring-evidence bullet. **Superseded text:** the totals **42 / 46 / 12**
+with E7 5/7/1 and E8 8/1/2; then **43 / 46 / 11**. `BRW-003d-5` keeps E8's single (c). ★ The second correction is the one
+worth reading: I stated the rule that reclassified `W10B` and **did not apply it to the record
+sitting beside it in the same bullet**. A rule announced and not swept is a rule that corrects one
+row.*
 
 ★★★ **The headline is that (b) is the largest class, and it is good news.** 46 of the 100 records
 are *honest about being incomplete* — `SVC-003a`: "**SVC-003 stays OPEN**"; `DAT-007`:
@@ -329,8 +333,9 @@ the register now reads `wired`).
   with no landed SHA; `MIG-008` carries a `complete` status with no test, count, run or landed SHA.
 - **own gate never cited:** `DEP-012-unit-a`, `-b1`, `-b2` each say "SHIPPED, **CI pending**", and
   no follow-up run id ever appears.
-- **expiring or transient evidence:** `W7U1-output-probe` and `W10B-egress-enforcement` rest on
-  dispatched runs that measure a live E2B/provider network tier — not re-derivable from code.
+- ~~**expiring or transient evidence**~~ — **THIS CAUSE IS EMPTY: both records it named are class
+  (a).** Original text: *"`W7U1-output-probe` and `W10B-egress-enforcement` rest on dispatched runs
+  that measure a live E2B/provider network tier — not re-derivable from code."*
   ★★★ **Their artifacts are NOT gone, and §3.2 said they were.** *Corrected 2026-09-24 (Codex P2,
   second round), verified at source: both runs started **2026-09-07** (`34087197668`, `34085130892`)
   — **17 days before this measurement**, against 90-day retention, so both are retrievable until
@@ -353,6 +358,19 @@ the register now reads `wired`).
   `unverifiable`. ★ I read §14's `UNRUN` and stopped; §15 was the section that superseded it. That
   is the same error as reading `MIG-009-drain-result.md` and not `MIG-009-wiring-result.md` — twice
   in one document, **a frozen earlier section misread as the record's final word**.
+  ★★★ **AND `W7U1` GOES THE SAME WAY — I STATED THE RULE AND DID NOT SWEEP IT.** *Corrected
+  2026-09-24 (Codex P2, fourth round), verified at source.* `W7U1-output-probe-result.md` preserves
+  its run (`34087197668`, **conclusion `success`**), commit `1c447fa8a`, template `aoa-base`, run
+  nonce, disposition *`measured`, exit 0*, and **a per-probe verdict table** — and says why, in a
+  block quote at the top: *"This document exists because the artefact does not outlive the record"*,
+  citing `E7-F025` and the runbook instruction to copy the record in. That is the **same
+  discipline** that reclassified `W10B`, stated more explicitly, in a file I had already read. So
+  `W7U1` is class **(a)**, class (c)'s expiring-evidence cause is **empty**, and the December
+  retrieval deadline I invented in §3.2 **does not exist**. Census: **44 / 46 / 10** — 44+46+10 = 100, checked.
+  ★ The sequence is worth recording: I asserted the artifacts were gone; was corrected; derived the
+  right rule from the correction; applied it to one of the two records that correction named; and
+  left the other. **Each round I fixed the instance and not the class** — which is the failure the
+  whole of §3.1 is written against.
   `BRW-003d-5` says *"End SHA: see the `feat(BRW-003d-5)` commit"* and does not identify it.
 
 ★ Recorded uncertainty: E3's (a) records all rest on **local Windows embedded-PG** runs and defer
@@ -528,26 +546,58 @@ why it is not merely the fallback:
 - it is one reviewed artefact rather than 88 edits across ten epics, so a distinct reviewer can
   actually read it.
 
-The judgements are transcription, not new assessment — §2.2 found that (a) and (b) records already
-state their own status. ★ Where an index entry disagrees with its record, **the record wins and the
-index cites it**; the index is a machine-readable view of the ledger, never a second source of truth.
+★★★ **BUT IT IS NOT ALL TRANSCRIPTION, AND FOR CLASS (a) SAYING SO WOULD HAVE BYPASSED THE
+APPROVAL RULE.** *Corrected 2026-09-24 (Codex P1, fourth round), verified at source.* **Superseded
+text:** *"The judgements are transcription, not new assessment — §2.2 found that (a) and (b)
+records already state their own status."* For class (b) that holds: the record disclaims itself, and
+an index entry recording `partial` **narrows** a claim, which needs no approval. **Class (a) is the
+opposite** — its entry would **lift** an id into the completed set, and its only completion signal
+is historical prose. Two authorities forbid promoting on that alone:
 
-**Job C — the 11 records in class (c). 1 ticket, ~1 agent-day, and it is a filing job.**
+- `qa-handoff-recovery.md` §2: *"Never silently treat prose statuses such as `LANDED`, `SHIPPED`,
+  `DONE` … as canonical ticket approval. Adoption requires an independent review that maps the old
+  blob to current acceptance clauses and records every uncovered delta."*
+- `artifact-policy.md` §*Status and evidence rules*: only *"an `approved` latest disposition with
+  all focused acceptance commands passing changes the result status to `complete`"*, and
+  *"implementation-agent self-certification cannot set `complete`"*.
+
+★ **The consequence is the exact inversion of the exposure this proposal opens with.** §2.3 is
+about a guard inferring completion nobody asserted; an unreviewed class-(a) index entry would make
+`findCompletedTicketIds` **suppress finding ownership for a ticket that was never canonically
+approved** — the same false-complete, minted by the fix instead of the bug, and now with a reviewed
+artefact's authority behind it.
+
+**So Job B splits by direction.** A (b) entry is transcription and lands with the index. **An (a)
+entry may not lift an id until an independent adoption review has run for that ticket** — which is
+per-ticket work, not a sweep, and is the real reason the 42-record class is not cheap. Until its
+review exists, an (a) id stays **not complete** in the index, which is the fail-closed direction
+Job A already defaults to. ★ *This does not re-cost Job B as written: the index and its (b) entries
+are still ~2 agent-days. What it removes is the assumption that the (a) entries come free with
+them.*
+
+★ Where an index entry disagrees with its record, **the record wins and the index cites it**; the
+index is a machine-readable view of the ledger, never a second source of truth.
+
+**Job C — the 10 records in class (c). 1 ticket, ~1 agent-day, and it is a filing job.**
 Do **not** re-measure them. Mark each `unverifiable` with its named cause (§2.2's three causes) and,
 where the claim still matters to a milestone, file the re-measurement as its own ticket against that
 milestone.
 
-★★★ **With ONE part that is urgent rather than filing, and I had it backwards.** *Corrected
-2026-09-24 (Codex P2, second round).* **Superseded text:** *"Two of the twelve
-(`W7U1-output-probe`, `W10B-egress-enforcement`) rest on 90-day artifacts that are already gone;
-pretending otherwise is the more expensive option."* Both runs are dated **2026-09-07** and the
-retention window **runs to about 2026-12-06** (§2.2). So the cheap action is the opposite of the one
-I proposed: **pull the remaining artifact into the repo now**, while it exists, rather than filing
-it as lost. ★ *Further corrected (third round): `W10B` needs nothing — its §15 already preserves the
-measurement in the record, which is exactly the discipline being proposed, and it leaves **`W7U1`
-alone** on this deadline.* That is hours, not a ticket, and it expires. ★ Writing off recoverable evidence on an
-unchecked assumption is the same error as claiming evidence that was never taken — and it is the
-one I was least likely to catch, because it only looks conservative.
+★★★ **THERE IS NO DEADLINE AND NO URGENT PART. Both records already do the right thing.**
+*Corrected across Codex P2's second, third and fourth rounds.* **Superseded text, in order:**
+(i) *"Two of the twelve (`W7U1-output-probe`, `W10B-egress-enforcement`) rest on 90-day artifacts
+that are already gone; pretending otherwise is the more expensive option."* — false; both runs are
+dated 2026-09-07. (ii) Then: *"the cheap action is the opposite … **pull the remaining artifact into
+the repo now**, while it exists … That is hours, not a ticket, and it expires"*, with `W10B`
+excused and `W7U1` left alone on the deadline — also false. **Both records already copy their
+measurement in**, `W7U1` under an explicit `E7-F025` instruction, which is exactly the discipline
+this proposal exists to spread. Nothing needs retrieving and nothing expires; Job C covers 10
+records, neither of them these.
+
+★ **The retracted reasoning stays visible, because it is the useful part.** Writing off recoverable
+evidence on an unchecked assumption is the same error as claiming evidence that was never taken, and
+it is the one I was least likely to catch, **because it only looks conservative**. It survived two
+correction rounds for that reason.
 
 **Total: 3 tickets, ~4–5 agent-days**, plus the unbudgeted tail of answering Job A's reds. ★ *Was
 "8 tickets, ~5 agent-days" before the Job B rewrite above: six of the eight were the per-epic
@@ -624,3 +674,8 @@ Stated explicitly, because a negative audit is only as good as the set it enumer
     same promotion of a bounded search into an exhaustive claim. Where §1 says a symbol has "zero
     importers" or "exactly three call sites", those were measured; where it says "the only", treat
     it as "the only one I found".
+13. **The cost of the class-(a) adoption reviews.** §3.2's Job B now requires an independent
+    adoption review before any class-(a) id may be lifted, and adoption review is per ticket. I did
+    not size it, and it is the largest uncosted item in this proposal — plausibly larger than all
+    three jobs combined. The ~4–5 agent-days covers the guard, the index and its class-(b) entries;
+    it does **not** cover reviewing 44 historical completion claims.
