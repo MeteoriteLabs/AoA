@@ -335,6 +335,7 @@ function Invoke-NativeGate([string]$Label, [scriptblock]$Command) {
 | `CLI-014` | `$env:AOA_RUN_WIN_INTEGRATION='1'; Invoke-NativeGate 'F5' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/canary-run-projector.test.ts src/__tests__/canary-terminal-projection.test.ts src/__tests__/canary-output-projection.integration.test.ts }; Invoke-NativeGate 'gate clause wiring' { node scripts/check-gate-clause-wiring.mjs }; Invoke-NativeGate 'server typecheck' { pnpm --filter @armyofagents/server typecheck }; Invoke-NativeGate 'server build' { pnpm --filter @armyofagents/server build }` |
 | `CLI-015` | `Invoke-NativeGate 'F6' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/e7-distributed-run-verifier.test.ts src/__tests__/e7-distributed-run-verifier-store.test.ts src/__tests__/e7-verifier-capability-fixture.test.ts }; Invoke-NativeGate 'server typecheck' { pnpm --filter @armyofagents/server typecheck }; Invoke-NativeGate 'server build' { pnpm --filter @armyofagents/server build }` |
 | `CLI-016` | `$env:AOA_RUN_WIN_INTEGRATION='1'; Invoke-NativeGate 'C5' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/task-run-batch-workload.test.ts src/__tests__/mcp-run-currency-gate.test.ts src/__tests__/distributed-tool-surface-arming.integration.test.ts --reporter=verbose }; Invoke-NativeGate 'server typecheck' { pnpm --filter @armyofagents/server typecheck }; Invoke-NativeGate 'server build' { pnpm --filter @armyofagents/server build }` ★ *Corrected 2026-09-21 (M1 Step 0, S0-4):* the environment variable only helps if the new integration test **honours** it — `describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")`. With a bare `win32` skip (the `distributed-run-currency.integration.test.ts` shape) this command runs zero tests and exits 0. Record the **executed-test count**, and take the formal evidence from a Linux `verify` shard; the keyed +/- controls are a separate F8 dispatch. |
+| `CLI-018` | `$env:AOA_RUN_WIN_INTEGRATION='1'; Invoke-NativeGate 'CLI-018' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/canary-output-projection.integration.test.ts src/__tests__/distributed-artifact-retrieval.integration.test.ts --reporter=verbose }; Invoke-NativeGate 'finding ownership' { node scripts/check-finding-ownership.mjs }; Invoke-NativeGate 'server typecheck' { pnpm --filter @armyofagents/server typecheck }; Invoke-NativeGate 'server build' { pnpm --filter @armyofagents/server build }` ★ *Added 2026-09-24 with the ticket.* The integration test must honour `AOA_RUN_WIN_INTEGRATION`; with a bare `win32` skip this runs zero tests and exits 0. Record the executed-test count and take the formal evidence from a Linux `verify` shard. |
 | `E7-1-JOURNEY-ARM` | `Invoke-NativeGate 'gate clause wiring' { node scripts/check-gate-clause-wiring.mjs }; Invoke-NativeGate 'cp/am keypair' { pnpm verify:cp-am-keypair }; Invoke-NativeGate 'E7-1 verifier' { pnpm verify:e7-1-distributed-run }` |
 
 Test filenames not already on disk are **new files this plan authorizes**; the RED is the genuine
@@ -1616,6 +1617,10 @@ note), reproduced one level down.
   that `CLI-017` shipped, which is exactly what the regex reads.
 - **Do not rename the slices to independent ticket ids.** `CLI-018`/`CLI-019` would give two graph
   nodes for one outcome and lose the "both required" edge that `CLI-015` depends on.
+  ★ *Note added 2026-09-24: those two ids were **hypothetical** when this was written, and `CLI-018`
+  has since been minted for a different ticket — the founder-reachable artifact (`### CLI-018`, owning
+  `E7-F047`). The instruction is unchanged and the ids above keep their original wording; read them as
+  the numbers this sentence refused to use, not as a reference to that ticket.*
 
 **Depends on:** **ruling F7**, recorded as `E7-D11` in this epic's `decisions.md` — already satisfied.
 Its graph edge is `CLI-011` (`program-design.md`, `#### CLI-017`). **Blocks:** `CLI-012`'s real-run
@@ -1826,6 +1831,154 @@ its existence is the only signal that `CLI-017` shipped. Maps H-04, H-05.
 
 ---
 
+### `CLI-018` — the founder-reachable artifact: make a distributed run's committed bytes retrievable (M, ≤3 agent-days, M1b)
+
+**Depends on:** `JOB-017` (shipped — `projectAcceptedOutputCore` / `applyAcceptedOutputEvent`, the
+in-transaction projection this rides). **Blocks:** `M1b` **exit criterion 4**.
+**Owns:** `E7-F047` (HIGH).
+
+**Filed 2026-09-24 by the M1 planning session** under founder delegation **F2**, on a measurement
+already made and verified at source at `c6107c760c`. Ticket pointer: `tickets/CLI-018-design.md`.
+
+★★★ **THIS TASK DELIBERATELY DOES NOT CHOOSE BETWEEN ITS TWO OPTIONS.** Both are specified below;
+the choice is **a later ruling**, and a build agent that picks one without it has exceeded the
+ticket. That is not tidiness: option (b) changes **who can reach tenant-scoped bytes**, and the
+analysis that would decide it **has not been done**.
+
+**Current state, measured at `c6107c760c` — unreachable by ANY founder-available route.** Seven
+routes were checked, **negatives included**, because a negative audit is only as good as the set it
+enumerates:
+
+| # | Route | Measured |
+|---|---|---|
+| 1 | `server/src/routes/task-outputs.ts` | `GET /issues/:issueId/outputs` (+ its `/task-outputs` alias), `GET /task-outputs/:id`, one `POST`, one `PATCH /task-outputs/:id`. **No content, download, bytes or stream handler exists at all**; zero `jobArtifacts` references. |
+| 2 | `OutputRefTabBody` (`ui/src/components/viewers/refBodies.tsx`) | dispatches `output.artifactId` → `output.assetId` → `output.url`; all null → `OutputDetailCard`, *"No preview is available for this output."* |
+| 3 | `server/src/routes/artifacts.ts` | **zero** `jobArtifacts` references — and no `artifacts` row is ever created, since `applyAcceptedOutputEvent` leaves `artifactId` null, so these routes have nothing to return. |
+| 4 | `server/src/routes/assets.ts` | **zero** `jobArtifacts` references; no asset row is minted. |
+| 5 | `server/src/mcp/` | **zero** `jobArtifacts` references. The MCP artifacts resource reads the **product** table, so an MCP client is in the UI's position — this is not a UI-only gap. |
+| 6 | `server/src/routes/worker-control.ts` | the **only** route reading `job_artifacts`. Its download path — `POST /worker-control/artifact-transfer-grants` → `createArtifactTransferGrantService` — requires an `authorization` header **and** `deviceProofHeaders(req)` **and** a signed raw body. **A founder/board session cannot satisfy it.** It is a **worker credential surface**. |
+| 7 | `ui/src` | **zero** references to a transfer grant, a job artifact, or any download path for one. |
+
+★ **A founder cannot even learn the storage key.** The projected `task_outputs` metadata
+(`applyAcceptedOutputEvent`) carries `jobArtifactId`, `artifactIdentifier`, `artifactKind`,
+`versionNumber` and `eventId` — and **not `objectKey`**.
+
+★★★ **The nuance that shapes the fix: the download grant is ALREADY BUILT AND WORKS.**
+`createArtifactTransferGrantService`'s `operation === "download"` branch is recorded in its own source
+as *"fence-independent, but tenant-scoped + object"*-checked, and binds `expectedAttemptObjectPrefix`
+against the committed key before granting. So the capability to mint a founder-usable URL **exists**;
+what is missing is any founder-facing **caller with appropriate authorization**. This is a
+**wiring-and-authorization gap, not an unbuilt mechanism** — which is exactly why option (b) is on
+the table, and exactly why its authorization analysis is a precondition.
+
+#### Option (a) — materialize into the product tables
+
+Promote the committed `job_artifacts` row into a product `artifacts` row plus an `artifact_versions`
+row (and, if the viewer path needs bytes rather than a link, an `assets` row), and set
+`artifactId`/`artifactVersionId` on the projected `task_outputs` row. **Existing routes and
+`OutputRefTabBody` then work unchanged** — the dispatch enters `ArtifactTabBody`.
+
+Constraints, each already measured on `E7-F047`:
+
+- **Idempotency is not optional.** The seam re-drives pending receipts (`redrivePendingProjection`),
+  so a second pass must find the existing product artifact rather than mint a second version.
+- **`artifacts` is company-scoped with no `organizationId` and no RLS** (`E2-D03`, LOCKED), so the
+  tenant check is the **caller's**, exactly as `projectAcceptedOutputCore` already does it.
+- **`artifacts.createdById` is `NOT NULL`** and a worker has no user. What identity a machine-authored
+  product artifact carries is a **real question**, not a cast.
+- Artifact versions are **immutable** (project rule 7), so re-projection must never rewrite one.
+
+#### Option (b) — a founder-facing read route that mints a download grant
+
+A board-authenticated read route that resolves the `task_outputs` row's `jobArtifactId` to its
+committed `job_artifacts` row and mints a **download** grant through the existing machinery, returning
+a bounded, tenant-scoped URL. No product-table row is created; the viewer gains an `output.url` path
+or a dedicated download control.
+
+★★★ **ITS AUTHORIZATION ANALYSIS IS A PRECONDITION OF THE OPTION, NOT AN AFTERTHOUGHT, AND IT HAS NOT
+BEEN DONE.** The grant path is today a **worker credential surface** — `authorization` header, device
+proof, signed raw body. Exposing it to a **board actor** changes who can reach tenant-scoped bytes.
+The analysis must answer, at source and in writing, before any code:
+
+1. Which **actor sources** may call it (`board`, `mcp`, `agent` — `server/src/mcp/server.ts`'s three),
+   and what each is denied. An external MCP key is not a founder.
+2. What **RBAC** decides it (`founder` / `team_lead` / `team_member`, department-scoped), and whether a
+   `team_member` may retrieve bytes their task shows.
+3. How the **company↔Organization** boundary is checked, given `artifacts`/`task_outputs` are
+   company-scoped while `job_artifacts` is Organization-scoped — the two scopes are not the same key.
+4. Whether the minted grant's **bound and TTL** are appropriate for a human-held URL, and whether the
+   URL leaks the object key or tenant identity to anywhere it is logged.
+5. Whether admitting a board actor **weakens the worker-credential refusals** that share the service
+   (a new caller path must not become a bypass for the device-proof arm).
+
+**Files (option-independent):** `server/src/services/job-accepted-output-projection.ts` (option (a)'s
+promotion site) **or** `server/src/routes/task-outputs.ts` (option (b)'s read route);
+`server/src/services/job-output-bridge.ts` (the transaction the promotion would join);
+`ui/src/components/viewers/refBodies.tsx` (the dispatch that must reach a content branch);
+`docs/replatform/epics/E7-coding-e2b/findings.md` + `scripts/finding-ownership.json` (close `E7-F047`
+in the **same commit** as the code that earns it); new tests named under **Acceptance**.
+
+**Interfaces:** option (a) adds **no** new interface — it fills existing `task_outputs` columns.
+Option (a) may need a decision recorded for `artifacts.createdById`'s machine identity, which is an
+interface-level choice about the product model. Option (b) adds **one** founder-facing read route and
+a board-authorized call path into `createArtifactTransferGrantService`; that call path is the
+interface the authorization analysis is about. **Neither option changes
+`packages/worker-protocol`** — everything needed (`objectKey`, `sha256`, `sizeBytes`, `contentType`,
+`kind`, `versionNumber`) is already durable on the committed `job_artifacts` row, so **no frozen-v1
+fixture re-mint and no `protocolVersion` change**.
+
+**Failure behavior:** **fail closed**. An output with no committed `job_artifacts` row, a row whose
+tenant does not match the caller's, or a grant refusal, returns the **same coarse** not-found /
+forbidden as a wrong-tenant request — **no oracle** distinguishing "exists elsewhere" from "does not
+exist", which is the shape `createArtifactTransferGrantService` already uses. A projection or grant
+throw propagates and denies; nothing degrades to an unauthenticated or unscoped read. Under option (a)
+a re-drive that finds an existing product artifact is a **no-op**, never a second version.
+
+**Acceptance:**
+
+1. ★★★ **END-TO-END, and it is exit criterion 4 itself:** a **founder-available route** returns the
+   **bytes** of an artifact a **distributed run** produced. Not a receipt, not a row, not a metadata
+   block — the bytes, byte-identical to what the sandbox exported (`sha256` from the committed row).
+2. **Positive control for row 1:** removing the route (option (b)) or the promotion (option (a)) makes
+   that arm **red**. A test that passes against the defect proves nothing, and *asserting a
+   `task_outputs` row exists passes **today***.
+3. **Anti-vacuity:** the arm asserts the **viewer's dispatch reaches a content branch** — under (a),
+   `output.artifactId` is non-null and `OutputRefTabBody` enters `ArtifactTabBody`; under (b), the
+   download path is exercised — never merely that a row or a field is present.
+4. ★ **Cross-tenant denial (ruling F10):** a second Organization's committed row is **not** reachable
+   from the first Organization's task — not promoted onto it under (a), not granted under (b) — with a
+   **same-tenant positive control** in the same test proving the denial is not vacuous.
+5. **Idempotency (option (a)):** a second projection pass over the same receipt yields **one** product
+   artifact and **one** version, proven by re-driving `redrivePendingProjection`.
+6. **Option (b) only:** the **authorization analysis** above is committed as a written record before
+   the route exists, and each of its five questions is answered at source. A route landing without it
+   is a ticket violation, not a review comment.
+7. `E7-F047` is closed in `findings.md` **and** its key deleted from `scripts/finding-ownership.json`
+   in the **same commit** as the change that earns it.
+
+**Focused verify command:**
+
+```
+$env:AOA_RUN_WIN_INTEGRATION='1'; Invoke-NativeGate 'CLI-018' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/canary-output-projection.integration.test.ts src/__tests__/distributed-artifact-retrieval.integration.test.ts --reporter=verbose }; Invoke-NativeGate 'finding ownership' { node scripts/check-finding-ownership.mjs }; Invoke-NativeGate 'server typecheck' { pnpm --filter @armyofagents/server typecheck }; Invoke-NativeGate 'server build' { pnpm --filter @armyofagents/server build }
+```
+
+★ The new integration test **must** use
+`describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")`, the
+form the rest of `server/src/__tests__` uses. With a bare `win32` skip this command runs **zero** tests
+and exits 0. Record the **executed-test count** and take the formal evidence from a Linux `verify`
+shard.
+
+**Non-goals:** the display **path**/filename — that is `E7-F046`, descoped for `M1` by `E7-D13` (b),
+needing its own protocol or object-key-convention decision, and fixing this does not fix it; any
+`packages/worker-protocol` wire widening; re-opening `E7-D13`; `codex_local`; **and ruling between (a)
+and (b)** — the ticket presents both.
+
+**Evidence / commit:** `tickets/CLI-018-result.md` (written by the build, **not** by this filing — a
+`-result.md` is what `findCompletedTicketIds` reads as "shipped"); one commit, titled for the option
+the ruling chooses. Maps **exit criterion 4**.
+
+---
+
 ### `E7-1-JOURNEY-ARM` — promote the coding-journey clause when its two preconditions ship (S, ≤1 agent-day, M1a)
 
 **Depends on:** **E6** — **`DEP-014`** (the adapter-manager image built, signed and admitted in CI)
@@ -1957,7 +2110,7 @@ content, secret, or session byte.
 | H-08 supply chain | No new runtime dependency; the daemon boundary checker stays green. |
 | H-10 evidence integrity | Append-only ticket results; the unit-F design is amended by appended note, never by deletion. |
 | Exit criterion 3 (**`M1a-D2-MECHANISM`**) | `E7-1-JOURNEY-ARM`, with `capabilityProven=false` explicitly acceptable. ★ *Corrected 2026-09-20 (third round): this row said “`M1-D2-CODING`, mechanism verdict”. There is no mechanism half of `M1-D2-CODING` — a QA record has ONE normative `Result`, which is why the companion change made the mechanism verdict its own gate. Recording this ticket under `M1-D2-CODING` would either falsely pass the capability gate or leave `M1a` unpassable.* |
-| **Exit criterion 4 (useful capability — `M1b` only)** | **`CLI-011` + `CLI-017` (both slices) + `CLI-012` + `CLI-013` + `CLI-014` + `CLI-015`, plus E5's `DAT-009-3c/3d`** — **and the `S-P0` (root empty) PLUS `A-neg` (a no-op run writes nothing under it) evidence for the template the campaign actually runs on** (`E7-D11`, *Conditions on the ruling*; `E7-F022`, HIGH). ★ The `A-neg` re-run is **authorized under F8** by ruling F7, once, before the campaign. This is the only criterion the split moves. ★ *Updated 2026-09-23 (ruling F7, `E7-D11`; Codex P2+P1, PR #575). **Superseded text:** "**`CLI-011` + `CLI-012` + `CLI-013` + `CLI-014` + `CLI-015`, plus E5's `DAT-009-3c/3d`.** This is the only criterion the split moves, and `CLI-011` is the one link with no design."* `CLI-011` now has its ruling, and the emit build it files is `CLI-017`; without it a run writes nothing under `R`, so every other row can pass with zero produced output. **The template row is an OPERATOR evidence edge, not a ticket** — nothing in the ticket set can discharge it, and a campaign that skips it can count template-owned files as agent output. |
+| **Exit criterion 4 (useful capability — `M1b` only)** | **`CLI-011` + `CLI-017` (both slices) + `CLI-012` + `CLI-013` + `CLI-014` + `CLI-015` + `CLI-018`, plus E5's `DAT-009-3c/3d`** — **and the `S-P0` (root empty) PLUS `A-neg` (a no-op run writes nothing under it) evidence for the template the campaign actually runs on** (`E7-D11`, *Conditions on the ruling*; `E7-F022`, HIGH). ★ The `A-neg` re-run is **authorized under F8** by ruling F7, once, before the campaign. This is the only criterion the split moves. ★ *Updated 2026-09-23 (ruling F7, `E7-D11`; Codex P2+P1, PR #575). **Superseded text:** "**`CLI-011` + `CLI-012` + `CLI-013` + `CLI-014` + `CLI-015`, plus E5's `DAT-009-3c/3d`.** This is the only criterion the split moves, and `CLI-011` is the one link with no design."* `CLI-011` now has its ruling, and the emit build it files is `CLI-017`; without it a run writes nothing under `R`, so every other row can pass with zero produced output. ★★★ **`CLI-018` added 2026-09-24** (M1 planning session, F2), on the `E7-F047` measurement: without it every other row can pass while the produced bytes are **unreachable by any founder-available route**, which is the criterion's own words failing. *Superseded text: the list above without `CLI-018`.* **The template row is an OPERATOR evidence edge, not a ticket** — nothing in the ticket set can discharge it, and a campaign that skips it can count template-owned files as agent output. |
 | Exit criterion 6 (rollback rehearsal) | `CLI-016`'s config-only disablement is part of the rehearsal. |
 
 **What no ticket here satisfies:** the E7 **epic** exit gate. `M1-D1-SPINE`, `M1a-D2-MECHANISM` and

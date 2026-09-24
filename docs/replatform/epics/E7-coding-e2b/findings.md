@@ -4730,7 +4730,7 @@ listing reported, end to end.
 
 ## E7-F047 — a distributed run's committed bytes are NOT retrievable from the founder-facing task: the projected `task_outputs` row leaves `artifactId`, `artifactVersionId`, `assetId` and `url` all null, so the viewer renders "No preview is available"
 
-**Status:** open · **Owner:** `unowned` · **Severity:** HIGH
+**Status:** open · **Owner:** `CLI-018` · **Severity:** HIGH
 
 **Filed** 2026-09-24, from Codex P1 on PR #596, **verified at source before filing** (not accepted on
 the reviewer's word). It is filed against a claim this very PR was making: `E7-D13`'s reason said
@@ -4770,13 +4770,51 @@ capability, and needs **no** wire change at all: everything it requires
 the committed `job_artifacts` row. Fixing `E7-F046` would not fix this; fixing this would not fix
 `E7-F046`.
 
-**Why `unowned`.** The work is the materialization residue that `CLI-014`'s task section named
-(*"promoting a `job_artifacts` row into a product `artifacts` row"*), but `E7-D13` (a) closes
-`CLI-014`'s projection half as delivered by `JOB-017` and leaves this residue explicitly unruled, so
-`CLI-014` is not its owner. `JOB-017` is shipped; `CLI-012` and `DAT-009` own the export and commit
-path, not the product-artifact model; `CLI-015` is the judge. Naming any of them would be the
-invented ownership this manifest exists to prevent. **It needs a ticket, and that is a scheduling
-decision above this finding.**
+**Owner: `CLI-018`, filed 2026-09-24 by the M1 planning session** under founder delegation **F2**,
+recorded in `../../epic-regrooming/scope-triage.md` against `M1b` exit criterion 4 and added to
+`M1b`'s required result set. Its contract is `implementation-plan.md` `### CLI-018`; its graph node is
+`docs/replatform/program-design.md` `#### CLI-018`. The ticket deliberately carries **two options and
+no choice between them** — (a) materialize into the product `artifacts`/`assets` tables, (b) a
+founder-facing read route minting a download grant for a board actor — because the choice needs a
+ruling this finding cannot make.
+
+★ **PRIOR REASON, retained verbatim — do not read it as current.** *Superseded text: "**Why
+`unowned`.** The work is the materialization residue that `CLI-014`'s task section named (*"promoting
+a `job_artifacts` row into a product `artifacts` row"*), but `E7-D13` (a) closes `CLI-014`'s
+projection half as delivered by `JOB-017` and leaves this residue explicitly unruled, so `CLI-014` is
+not its owner. `JOB-017` is shipped; `CLI-012` and `DAT-009` own the export and commit path, not the
+product-artifact model; `CLI-015` is the judge. Naming any of them would be the invented ownership
+this manifest exists to prevent. **It needs a ticket, and that is a scheduling decision above this
+finding.**"* Every sentence of it still holds about the five tickets it names; what changed is that
+the scheduling decision it defers to has now been taken, so the residue has an owner of its own
+rather than an invented one.
+
+★★★ **The measurement widened when the ticket was filed: the bytes are unreachable by ANY
+founder-available route, not merely absent from the viewer's dispatch.** Seven routes were checked at
+`c6107c760c`, negatives included, and the enumeration is the evidence — a negative audit is only as
+good as the set it walked.
+
+| # | Route | Measured |
+|---|---|---|
+| 1 | `server/src/routes/task-outputs.ts` | `GET /issues/:issueId/outputs` (+ the `/task-outputs` alias), `GET /task-outputs/:id`, one `POST`, one `PATCH /task-outputs/:id`. **No content, download, bytes or stream handler exists at all**, and zero references to `jobArtifacts`. |
+| 2 | `OutputRefTabBody` (`ui/src/components/viewers/refBodies.tsx`) | dispatches `output.artifactId` → `output.assetId` → `output.url`; all null → `OutputDetailCard`, *"No preview is available for this output."* |
+| 3 | `server/src/routes/artifacts.ts` | **zero** references to `jobArtifacts`; and no `artifacts` row is ever created for a distributed output (`applyAcceptedOutputEvent` leaves `artifactId` null), so these routes have nothing to return. |
+| 4 | `server/src/routes/assets.ts` | **zero** references to `jobArtifacts`; no asset row is minted. |
+| 5 | `server/src/mcp/` | **zero** references to `jobArtifacts`. The MCP artifacts resource reads the product table, so an MCP client is in the UI's position. |
+| 6 | `server/src/routes/worker-control.ts` | the **only** route reading `job_artifacts`. Its download path — `POST /worker-control/artifact-transfer-grants` → `createArtifactTransferGrantService` — requires an `authorization` header **and** `deviceProofHeaders(req)` **and** a signed raw body. **A founder/board session cannot satisfy it**: it is a worker credential surface. |
+| 7 | `ui/src` | **zero** references to a transfer grant, a job artifact, or any download path for one. |
+
+★ **A founder cannot even learn the storage key.** The projected metadata block
+(`applyAcceptedOutputEvent`) carries `jobArtifactId`, `artifactIdentifier`, `artifactKind`,
+`versionNumber` and `eventId` — and **not `objectKey`**.
+
+★★★ **And the nuance that shapes the fix: the download capability is BUILT.** The grant service
+already records the download operation as *"fence-independent, but tenant-scoped + object"*-checked
+(`createArtifactTransferGrantService`, the `operation === "download"` branch), binding
+`expectedAttemptObjectPrefix` and the committed key. So minting a founder-usable URL is not an
+unbuilt mechanism; what is missing is any founder-facing **caller** with appropriate authorization.
+This is a **wiring-and-authorization gap**, and that is why option (b) is on the table at all — and
+why its authorization analysis is a precondition rather than an afterthought.
 
 **What would close it.** Promote the committed `job_artifacts` row into a product `artifacts` row
 plus an `artifact_versions` row, **idempotently** under retry and re-projection, inside the
