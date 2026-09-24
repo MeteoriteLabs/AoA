@@ -1,0 +1,93 @@
+name: D1 Image Mirror
+
+# E6-F021 (2026-09-24 amendment) — mirror the D1 harness's third-party MinIO image
+# into THIS organisation's GHCR, so the lane stops depending on a third party's
+# registry policy. It has now broken the lane twice from two different registries:
+# Docker Hub deleted `minio/minio` (2026-09-15/2026-09-17), and `quay.io/minio/minio`
+# — the repair that replaced it — closed to anonymous pulls by 2026-09-24. Nine D1
+# dispatches over ~2.5 hours died at *Bring up the D1 stack* before a single test ran.
+#
+# This lane is the PUBLISH path and the REFRESH story for `docker/d1/minio.Dockerfile`.
+# It is dispatch-only: it is not a gate, it spends no E2B money, and it is expected to
+# run roughly never — only when the mirrored MinIO needs re-cutting.
+#
+# AFTER RUNNING IT: take the index digest this prints and pin it into the
+# `AOA_D1_MINIO_IMAGE` default in `docker-compose.d1.yml`. Pinning by DIGEST rather
+# than by tag is the point — a tag we control is still a tag, and a moved tag would
+# silently change what the gate lane brings up.
+
+on:
+  workflow_dispatch:
+    inputs:
+      minio_source_image:
+        description: >-
+          Source image to lift the MinIO server binary from. Leave empty to use the
+          digest pinned in docker/d1/minio.Dockerfile. Chainguard's free tier serves
+          `:latest` only and garbage-collects older digests, so a refresh whose pinned
+          source digest has aged out overrides this with `cgr.dev/chainguard/minio:latest`.
+        required: false
+        default: ""
+        type: string
+      tag:
+        description: Tag to publish alongside the digest (the digest is what gets pinned).
+        required: false
+        default: "d1"
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Compute the target repository
+        id: target
+        run: |
+          set -euo pipefail
+          # GHCR repositories must be lowercase; `github.repository_owner` is not.
+          owner="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          echo "repo=ghcr.io/${owner}/aoa-d1-minio" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push the mirrored MinIO image
+        id: push
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: docker/d1/minio.Dockerfile
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          build-args: |
+            ${{ inputs.minio_source_image != '' && format('MINIO_SOURCE_IMAGE={0}', inputs.minio_source_image) || '' }}
+          tags: ${{ steps.target.outputs.repo }}:${{ inputs.tag }}
+
+      - name: Print the digest to pin
+        run: |
+          set -euo pipefail
+          echo "Pushed: ${{ steps.target.outputs.repo }}:${{ inputs.tag }}"
+          echo "Digest: ${{ steps.push.outputs.digest }}"
+          {
+            echo "### D1 MinIO mirror"
+            echo ""
+            echo 'Pin this into `AOA_D1_MINIO_IMAGE`'"'"'s default in `docker-compose.d1.yml`:"
+            echo ""
+            echo '```'
+            echo "${{ steps.target.outputs.repo }}@${{ steps.push.outputs.digest }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

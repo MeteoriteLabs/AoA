@@ -205,6 +205,13 @@
       "watch": "not-watched",
       "reason": "The lane RUNS only on `workflow_dispatch` (DEP-015, founder ruling F3), with a REQUIRED human-supplied `candidate` and a keyed mode that spends inside the F8 envelope. Its `push` trigger is REGISTRATION-ONLY (E6-D001): paths = the workflow file itself and every job is gated `if: github.event_name == 'workflow_dispatch'`, so a push-created run executes zero steps and concludes with every job `skipped`. Watching that stream would read a green that tested nothing; no commit owes the lane a real run and there is no cadence it is late for. Its verdict is consumed by the campaign that dispatches it (the M1a-D2-MECHANISM record, E7-1-JOURNEY-ARM).",
       "wouldTakeToWatch": "A declared campaign cadence (then a `cadence` entry). Never widen the registration push's paths to make it watchable — scripts/check-m1-shipped-boot-shape.mjs reds that, because a coverage verdict on a skipped job is a check that nothing runs."
+    },
+    "d1-image-mirror.yml@*": {
+      "workflow": "d1-image-mirror.yml",
+      "branch": null,
+      "watch": "not-watched",
+      "reason": "The lane's ONLY trigger is `workflow_dispatch` (no `push`, not even a registration one), so there is no branch stream to key `coverage` on and no cron to key `cadence` on. It is a PUBLISH path, not a verdict: it rebuilds docker/d1/minio.Dockerfile and pushes the D1 MinIO mirror to ghcr.io/<owner>/aoa-d1-minio, and it is expected to run roughly never -- only when that mirror needs re-cutting (E6-F021, 2026-09-24 amendment). Nothing is owed a run by it and it can never be late. What actually consumes its output is `d1-merge-train.yml@docs/replatform-program`, the chartered stream: the digest this lane prints is pinned into AOA_D1_MINIO_IMAGE's default in docker-compose.d1.yml, so a mirror that did not publish red-lines the D1 bring-up loudly, in the stream that is already watched.",
+      "wouldTakeToWatch": "Nothing should. Watching a dispatch-only publish path would require either the third mode `llm-evals.yml@*` names (one keyed on something other than a branch or a cron) or a registration push whose runs execute zero steps -- and `m1-shipped-boot.yml@docs/replatform-program` records why reading a verdict off skipped jobs is a check that nothing runs. If this mirror ever gains a refresh cadence, add a `cadence` entry then, keyed to its cron."
     }
   }
 }
