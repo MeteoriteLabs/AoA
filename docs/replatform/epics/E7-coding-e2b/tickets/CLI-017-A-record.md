@@ -7,7 +7,8 @@
 **Graph node:** `program-design.md #### CLI-017`
 **Implementer:** `M1b CLI-017 build agent (Claude Opus 5)`
 **Start SHA:** `9ad5666df6` (program tip at start; rebased onto `6b468773f1` when the base moved)
-**Reviewed revision (implementation commit):** `b790d1f7f2e2d01137e775f119412212d4d1fb2f`
+**Reviewed revision (implementation commit):** `147d5454c9161e7b401064e232100299b334a6e9`
+★ *Re-pointed 2026-09-24 after the branch was rebased onto `6a3882f39` (the base moved twice during this ticket). The pre-rebase id was `b790d1f7f2e2d01137e775f119412212d4d1fb2f`, which is no longer an ancestor of the PR head — a reviewed revision that is not an ancestor is the record-rot failure this programme keeps paying for, so the id is re-pointed rather than left to read as authoritative. The tree of this commit is unchanged by the rebase; only its parent moved.*
 **Ruling:** `decisions.md` `E7-D11` (ruling F7, decided under founder delegation F2)
 **Acceptance rows carried:** **1, 3, 4** and the **directive half of 5**
 

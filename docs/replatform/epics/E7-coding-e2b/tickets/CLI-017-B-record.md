@@ -7,7 +7,8 @@
 **Graph node:** `program-design.md #### CLI-017`
 **Implementer:** `M1b CLI-017 build agent (Claude Opus 5)`
 **Start SHA:** `9ad5666df6` (program tip at start; rebased onto `6b468773f1` when the base moved)
-**Reviewed revision (implementation commit):** `91d56619a7392491bf443837dcc126b938c1a03e`
+**Reviewed revision (implementation commit):** `6441fa9b63e73a1537484db7f227d830876d5ef8`
+★ *Re-pointed 2026-09-24 after the branch was rebased onto `6a3882f39` (the base moved twice during this ticket). The pre-rebase id was `91d56619a7392491bf443837dcc126b938c1a03e`, which is no longer an ancestor of the PR head — a reviewed revision that is not an ancestor is the record-rot failure this programme keeps paying for, so the id is re-pointed rather than left to read as authoritative. The tree of this commit is unchanged by the rebase; only its parent moved.*
 **Ruling:** `decisions.md` `E7-D11` §3 (ruling F7, under founder delegation F2) — SD-5 is **REQUIRED
 before `M1b`'s campaign**, not optional and not deferred
 **Acceptance rows carried:** **2, 6, 6b, 7, 8** and the **export half of 5**
