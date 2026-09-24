@@ -2065,11 +2065,22 @@ construction.
 | 2 | the repo-scoped GHCR package is not anonymously pullable, and the documented local path had no `docker login` prerequisite | **CI authenticates** (`packages: read` + a login step in all three jobs) |
 | 3 | `docker/d1/.env.example` set `AOA_D1_MINIO_IMAGE=minio/minio:latest` — the image Docker Hub DELETED — and an env value **overrides** the Compose default, so a local operator resolved the dead image no matter what `docker-compose.d1.yml` said | **CI never reads `.env.example`**; it writes `docker/d1/.env` itself, and it never writes `AOA_D1_MINIO_IMAGE` at all |
 
-All three were repaired in PR #603. They are filed as one finding because they are one defect.
+| 4 | the documented bring-up command omits `--env-file docker/d1/.env`, so the copied env file is **never loaded** and Compose falls back to the unrunnable `:d1-local-unbuilt` control-plane/worker defaults | **CI does not use that file.** `d1-merge-train.yml` writes the digests to `$GITHUB_ENV` — process environment variables, which Compose reads directly. It *also* writes `docker/d1/.env`, and **nothing ever passes that file to Compose**, so the file CI writes is dead weight and the flag CI never needed was never noticed missing |
 
-### A fourth instance, of the METHOD rather than the environment
+Instances 1–3 were repaired in PR #603; instance 4 is a one-flag README correction in the same PR.
+They are filed as one finding because they are one defect.
 
-The three above are defects the *lanes* cannot see. This one is a defect in the **sweep that was
+★★ **Instance 4 is the strongest evidence for this finding, and it is worth being blunt about why.**
+It is not a regression this programme introduced — it is **pre-existing**, and it means the documented
+local bring-up has **never worked** for the admitted digests, independently of MinIO. Compose
+auto-loads only `.env` in the PROJECT directory, which is the repository root, because that is where
+`docker-compose.d1.yml` lives. The correct idiom already exists one directory away
+(`docker/campaign/docker-compose.campaign.yml:11` documents `--env-file docker/campaign/.env.campaign`).
+So the defect is not obscure, and nobody was wrong about Compose — **nobody ever ran the command.**
+
+### A fifth instance, of the METHOD rather than the environment
+
+The four above are defects the *lanes* cannot see. This one is a defect in the **sweep that was
 supposed to find them**, and it is recorded here because it has the identical signature: a clean
 result about a set that was never examined.
 

@@ -151,7 +151,18 @@ service declares a **non-empty** `AOA_FAKE_PROVIDER_CTL_ALLOW` equal to
   tests/d1/fake-provider-job.test.mjs` with `AOA_D1_LIVE=1` (skips cleanly without
   Docker). Bring-up: `cp docker/d1/.env.example docker/d1/.env` (set the admitted
   digests — `AOA_D1_CONTROL_PLANE_IMAGE` and `AOA_D1_WORKER_IMAGE`; the file no longer
-  carries a MinIO override, see below) → `docker compose -f docker-compose.d1.yml up`.
+  carries a MinIO override, see below) →
+  `docker compose --env-file docker/d1/.env -f docker-compose.d1.yml up`.
+
+  ★ **`--env-file` is load-bearing and was missing** (`E6-F029`, instance 5). Compose
+  auto-loads only `.env` in the PROJECT directory — the repository root, since that is
+  where `docker-compose.d1.yml` lives — so `docker/d1/.env` is **not** picked up
+  implicitly, and without the flag the copied file is ignored and Compose falls back to
+  the unrunnable `:d1-local-unbuilt` defaults. The sibling harness already documents the
+  correct idiom (`docker/campaign/docker-compose.campaign.yml:11`). CI never needed it:
+  `d1-merge-train.yml` writes the digests to `$GITHUB_ENV` as process environment
+  variables, which Compose reads directly — it writes `docker/d1/.env` too, but nothing
+  ever passes that file to Compose.
 
 ### Prerequisite for a local bring-up: authenticate to GHCR (E6-F021)
 
