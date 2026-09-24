@@ -8,13 +8,34 @@
 **PR:** #603 (base `docs/replatform-program`)
 **Reviewed revision:** `c0ffdb9fa25a7a9f2f413045f14c89eec8551d39`
 
-> **On the revisions, stated precisely.** `c0ffdb9fa` is the revision the FINAL live lane evidence in
-> §7/§9 was produced on (run `36027175548`, both `Bring up the D1 stack` and `Run the E6F campaign
-> (live)` green, 47/47 + 9/9). The only commit after it is the one that writes THIS paragraph and the
+> **On the revisions, stated precisely — and RE-STATED, because the first version of this note went
+> stale the moment the §10.1 ruling landed.** `c0ffdb9fa` is the revision the FINAL live lane evidence
+> in §7/§9 was produced on (run `36027175548`, both `Bring up the D1 stack` and `Run the E6F campaign
+> (live)` green, 47/47 + 9/9).
+>
+> This note previously read: *"The only commit after it is the one that writes THIS paragraph and the
 > `36027175548` rows into this record — documentation only, touching no workflow, no Dockerfile, no
-> compose file and no test. Saying the evidence rests on a code-bearing later commit would be exactly
-> the records-disagreeing-with-code defect this programme keeps paying for, and saying it rests on a
-> docs-only delta when it did not would be the same defect mirrored.
+> compose file and no test."* **That is no longer true**, and it is kept here rather than edited away.
+> `git diff --name-only c0ffdb9fa..HEAD` is, in full:
+>
+> ```
+> docker/d1/.env.example
+> docker/d1/README.md
+> docs/replatform/epics/E6-deployment-test-harness/findings.md
+> docs/replatform/epics/E6-deployment-test-harness/tickets/E6-F021-mirror-result.md
+> scripts/finding-ownership.json
+> ```
+>
+> **Why the citation still holds, stated as a claim that can be checked rather than asserted.** No
+> workflow, Dockerfile, compose file or test is in that list. The one entry that is neither prose nor
+> a register is `docker/d1/.env.example` — and the lane **never reads it**: `d1-merge-train.yml`
+> writes `docker/d1/.env` itself and never writes `AOA_D1_MINIO_IMAGE` at all. That is not a
+> convenient argument, it is the content of `E6-F029`, and it cuts both ways: the same property that
+> makes this deletion unable to affect run `36027175548` is the property that let the stale value
+> survive three green runs.
+>
+> Saying the evidence rests on a docs-only delta when a `docker/**` file moved would be exactly the
+> records-disagreeing-with-code defect this programme keeps paying for.
 
 > `Status` is `gate_review` and may be set to `complete` only by a DISTINCT reviewer, never by this
 > author.
