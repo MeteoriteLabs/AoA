@@ -2998,6 +2998,48 @@ export function composeServiceRuntime(service) {
   return { ok: Boolean(startedAt), containerId, startedAt: startedAt ?? null, running: running === "true", health: health ?? null };
 }
 
+/**
+ * DEP-021 — stop one compose service UNGRACEFULLY, and start it again.
+ *
+ * ★★★ WHY A HARD KILL IS THE INJECTION AND A RESTART IS NOT. Measured live on run
+ * `35954159711`: `restartComposeService("worker-b")` mid-run left the restarted daemon logging
+ * *"startup-reconcile: the lease-candidate store is empty; this daemon held no lease when it last
+ * stopped"* (`lease_candidate_store_empty`), and it was RIGHT to. `docker compose restart` sends
+ * SIGTERM first; the daemon drains, the in-flight handoff settles, and `trackHandoff`'s `finally`
+ * calls `recordCandidate("remove", offer)` (`packages/worker-daemon/src/poll/poll-loop.ts`) — so a
+ * cleanly-stopped daemon deliberately leaves NO candidate. The WRK-013 store exists for a daemon
+ * that DIED holding a lease, which is exactly what `d1.reconcile.worker_startup_lease_probe`
+ * declares (`worker.daemon.restart_with_live_lease`).
+ *
+ * So the graceful restart is not a broken injection — it is a NEGATIVE CONTROL, and the case uses
+ * it as one.
+ *
+ * `worker-b` declares no `restart:` policy in `docker-compose.d1.yml`, so a killed container stays
+ * stopped until `startComposeService` starts it. `start` (unlike `up`) never recreates, so the
+ * container keeps the config the spine override gave it.
+ */
+export function killComposeService(service, { signal = "KILL", timeout = 120_000 } = {}) {
+  const res = spawnSync(
+    "docker",
+    ["compose", "-f", COMPOSE_FILE, "kill", "-s", signal, service],
+    { encoding: "utf8", timeout },
+  );
+  // Only the exit STATUS is returned, never the streams: `docker compose` is not the dexec
+  // chokepoint and has no `secrets` scrubber, while this lane puts a per-run secrets master key
+  // into the environment compose reads.
+  return { ok: res.status === 0, status: res.status };
+}
+
+/** Start one already-created compose service. Pairs with {@link killComposeService}. */
+export function startComposeService(service, { timeout = 300_000 } = {}) {
+  const res = spawnSync(
+    "docker",
+    ["compose", "-f", COMPOSE_FILE, "start", service],
+    { encoding: "utf8", timeout },
+  );
+  return { ok: res.status === 0, status: res.status };
+}
+
 /** Restart one compose service. The restart is the injection; `composeServiceRuntime().startedAt`
  * before/after is the observation. */
 export function restartComposeService(service, { timeout = 300_000 } = {}) {

@@ -178,7 +178,40 @@ startup reconciler to FENCE its own prior lease.
 The window is `RECONCILE_WINDOW_MS = 90_000` — inside both budgets, and far longer than a
 `docker compose restart --timeout 30` of a node daemon.
 
-### 3.2 ★ The observable is ATTRIBUTED, not merely present
+### 3.2 ★★★ The finding that cycle 1 produced: the stop must be a KILL, and the restart becomes the control
+
+**Cycle 1 (`35954159711`) failed this case, and the failure was the most useful thing in the
+ticket.** Every conjunct of the injection held — `inFlight.ok: true` on the FIRST poll,
+`liveBefore: true`, `restart.requested: true`, `startedAtChanged: true`, `bytesBefore: 3575`,
+`bytesAfter: 7034` — and **none of the three arms appeared**, with `expiryMovedForward: false`. So
+the probe never ran, and the reason was in the worker's own log, by name:
+
+```
+startup-reconcile: the lease-candidate store is empty; this daemon held no lease when it last stopped
+```
+with `reason: lease_candidate_store_empty`.
+
+**The store was configured, open and readable — and correctly EMPTY.** `docker compose restart`
+sends SIGTERM first; the daemon drains, the in-flight handoff settles, and `trackHandoff`'s
+`finally` calls `recordCandidate("remove", offer)` (`packages/worker-daemon/src/poll/poll-loop.ts`).
+**A cleanly stopped daemon deliberately leaves no candidate.** The WRK-013 store exists for a daemon
+that **DIED** holding a lease — which is what the case declares
+(`worker.daemon.restart_with_live_lease`) and what `restartComposeService` cannot produce.
+
+So the injection is a **SIGKILL**, not a restart: new harness primitives `killComposeService`
+(`docker compose kill -s KILL`) and `startComposeService` (`worker-b` declares no `restart:` policy,
+and `start` never recreates, so the container keeps the spine override's config).
+
+★ **And the failed attempt is not discarded — it is promoted to the case's own control.** The
+graceful restart is now **ARM 1, a SAME-MECHANISM NEGATIVE CONTROL**: the identical in-flight run,
+the identical service, a stop that is *not* a death, which must report
+`lease_candidate_store_empty` and produce **no** fence line. That is strictly stronger than the
+before/after reading it supplements: a before/after pair alone cannot distinguish *"the fence line
+is caused by the daemon dying with the lease"* from *"the fence line is caused by a restart having
+happened"*. The pair can. Cycle 1 bought that control, and the declaration's `observedBy` now names
+four attribution arms rather than three.
+
+### 3.3 ★ The observable is ATTRIBUTED, not merely present
 
 The fence line is written at `dispatch-runtime.ts:597-601`:
 
@@ -189,12 +222,12 @@ startup-reconcile: lease FENCED (F5) — the probe's renewal was its last; the c
 with `reason: LEASE_CANDIDATE_REASONS.fenced` (`lease_candidate_fenced`). It is one of a **three-way
 branch**; its siblings are `candidate pruned` (`ended`) and `nothing renewed` (`unreachable`).
 
-The case reads `worker-b`'s container log **BEFORE and AFTER** the restart and requires four things
-together:
+Beyond ARM 1, the case reads `worker-b`'s container log **BEFORE and AFTER** the kill and requires:
 
-1. the fence line is **ABSENT** before — without this, a line from any earlier boot satisfies the
-   case, which is a control passing on state it did not cause;
-2. **PRESENT** after;
+1. the fence line is **ABSENT** before the kill — taken AFTER arm 1, so it also records that a
+   restart produced none. Without it, a line from any earlier boot satisfies the case, which is a
+   control passing on state it did not cause;
+2. **PRESENT** after the kill;
 3. it carries **THIS run's lease id**;
 4. **NEITHER sibling arm** names this lease — which is what distinguishes `fenced` from `dead` and
    from `unreachable`.
@@ -204,7 +237,7 @@ machine-readable half. Both are matched as **ASCII substrings** — the real lin
 and a typographic apostrophe, and a literal with either would make a live assertion depend on the
 driver file's encoding.
 
-### 3.3 The durable arm, and its honest limit
+### 3.4 The durable arm, and its honest limit
 
 New harness helper `queryLeaseExpiries` (`tests/d1/lib/e6f-harness.mjs`). `queryLeaseFaultState`
 returns `id` + `status` only, so it cannot see a RENEWAL: a renewed lease and an untouched one are
@@ -212,13 +245,13 @@ both `active`. `renewLease` (`packages/db/src/repositories/tenant/job-control.ts
 **`leases.expires_at`** and nothing else — *"extended by `renewLease` and by nothing else"* — and the
 probe is exactly one `lease_renew`.
 
-★ **Its limit is stated rather than glossed:** the pre-restart renewal loop was moving the same
+★ **Its limit is stated rather than glossed:** the pre-kill renewal loop was moving the same
 column, so **movement alone is not attributable to the probe**. It is recorded as corroboration; the
 log line is what attributes it. What the expiry *does* prove on its own is that the lease was still
 LIVE after the restart — i.e. the probe's `live` arm was the reachable one and the case is not
 silently passing through a dead-lease prune.
 
-### 3.4 Placement
+### 3.5 Placement
 
 Both new cases are **LAST** in the driver. The file's header records that order is load-bearing over
 ONE shared stack, and `DEP-020` cycle 2 learned it the expensive way. A `worker-b` restart is the
@@ -552,10 +585,17 @@ Per-step conclusions are read from the jobs API and never from the run conclusio
 | `pr.yml` / `policy` → boundary + fault-matrix declaration | *see §9.1* | — | `check-sandbox-fake-provider-boundary.mjs` + **63** unit tests; `check-campaign-fault-matrix.mjs` + **32** unit tests |
 | `pr.yml` / `ci-required` | *see §9.1* | — | aggregator over the gate suite |
 
-### 9.1 The live cycles
+### 9.1 The live cycles, because each one found something real
 
-*(Each cycle recorded with what it found, in the `DEP-020` idiom — a cycle that found nothing is
-still recorded, so the reader can see how many were spent.)*
+| Cycle | Run | What it found |
+|---|---|---|
+| 1 | **`35954159711`** | **`d1.provider.worker_terminal_mapping` PASSED on its first live attempt** — `injectionFired: true`, `observedClassification: "worker_maps_provider_timeout_to_failed_terminal"` (the declared string, exactly), `positiveControlPassed: true`, 120.6 s. ★ And the reconcile case failed with the finding in §3.2: a GRACEFUL restart prunes the candidate, so the stop must be a SIGKILL — and the graceful arm becomes the case's own negative control. Every other case on the profile stayed green (23 tests, 1 failing), so the finding is localised to this case and not a lane regression |
+| 2 | *see the table above* | the two-arm case on the KILL mechanism |
+
+★ **Cycle 1's diagnostics are why it cost one cycle and not three.** The case records every conjunct
+of its injection separately, so the retained bundle answered *"which half did not happen"* without a
+second run: the injection had fired in full and the reconciler had simply found nothing. A case that
+recorded only a pass/fail boolean would have needed a run per hypothesis.
 
 ---
 
