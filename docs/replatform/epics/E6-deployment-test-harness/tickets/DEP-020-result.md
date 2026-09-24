@@ -569,3 +569,33 @@ at HEAD, not assumed:
 declaration claimed.* One dropped facts it was given; the other accepted one stream where two were
 declared. That class is now closed at both sites, with reds for each.
 
+### 12.1 Round two, on head `7d81f0568` — two more P1s, both real, both fixed
+
+This is the **second and final** Codex round under the two-round cap.
+
+1. **P1 — a candidate that predates DEP-020 would spend before failing.** The fault-matrix step is
+   **mode**-gated, not **candidate**-gated, and checkout replaces the workspace with the candidate —
+   so an older candidate would reach it with no `fault-matrix` phase and a declaration whose three
+   cases are still `pending`. It would fail *loudly*, but only after the images were built, the stack
+   booted and the **keyed** journey had already spent E2B and model tokens. Two greps are added to the
+   lane's existing *"the candidate must carry the controls it will be judged by"* block — the phase
+   in the driver, and `REQUIRED_CREDENTIAL_REFUSAL_KINDS` in the verdicts — so it is rejected in the
+   bind step instead. Cheap, in pattern, and it protects spend rather than correctness.
+
+2. **P1 — the reap was not part of the injection.** `injectionFired` required only the back-date's
+   non-zero row count and merely *recorded* the reap. But the back-date alone does not end a lease —
+   the reaper is what converts an overdue lease to a terminal one, which this file's own
+   `docker/d1/campaign.env` E6F-14 note records. A reaper answering 404 or 500 would have left
+   `injectionFired: true` with the lease still live; the case would then have reded on its
+   classification, which is fail-closed but **blames the wrong half and tells the reader nothing**.
+   Now `reapOrganization`'s `status` is required 2xx — checked as a status, not as the object's
+   existence, because `assert.ok(reaped)` would be vacuously true for any object — and the injection
+   carries its **own** assertion ahead of the outcome's.
+
+**Both were verified at source before being acted on**, and neither was accepted on the review's
+word. ★ The second is the more interesting: it is the same *vacuous-control* family this ticket kept
+finding in its own work — an injection claiming to have fired on evidence that did not cover half of
+it.
+
+**Round two closes the cap.** No third round was attempted.
+

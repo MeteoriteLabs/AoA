@@ -1003,10 +1003,20 @@ test("fault-matrix: redemption AFTER the lease ends is refused — with a live-l
   const expired = SUPPRESS_INJECTION
     ? { ok: false, updated: 0 }
     : step(expireLeaseDeadlines({ leaseId: owner.offer.leaseId, ackDeadlineIntervalSec: 2, expiresAtIntervalSec: 1 }), "expire deadlines");
-  const reaped = SUPPRESS_INJECTION ? { ok: false } : step(reapOrganization({ organizationId: A.organizationId }), "reap");
-  // The injection FIRED only if a row actually moved. `assert.ok(expired)` would be vacuously true
-  // for any object — the same E6F-14 lesson, in the same file.
-  const injectionFired = SUPPRESS_INJECTION ? false : (expired.ok === true && Number(expired.updated) > 0);
+  const reaped = SUPPRESS_INJECTION ? { status: 0 } : step(reapOrganization({ organizationId: A.organizationId }), "reap");
+  // ★ THE INJECTION IS BOTH HALVES, AND BOTH MUST BE OBSERVED (Codex P1, PR #593 — the finding was
+  // right). The back-date alone does not end a lease; the REAPER is what converts an overdue lease to
+  // a terminal one. An earlier version required only the back-date's row count and merely RECORDED
+  // the reap, so a reaper endpoint answering 404 or 500 would have left `injectionFired: true` while
+  // the lease was still live — the case would then have reded on its classification, which is
+  // fail-closed but blames the wrong half and tells the reader nothing. `reapOrganization` reports
+  // `{status, body}`, so the status is checked, not the object's existence: `assert.ok(reaped)` would
+  // be vacuously true for any object, which is the same E6F-14 lesson this file already records
+  // against `expireLeaseDeadlines`.
+  const reapAccepted = typeof reaped.status === "number" && reaped.status >= 200 && reaped.status < 300;
+  const injectionFired = SUPPRESS_INJECTION
+    ? false
+    : (expired.ok === true && Number(expired.updated) > 0 && reapAccepted);
 
   const after = resolveAs(owner, ...fence, injectedHandle, "post-expiry resolve");
   const afterReason = after.body?.reason ?? null;
@@ -1027,11 +1037,17 @@ test("fault-matrix: redemption AFTER the lease ends is refused — with a live-l
       controlDurableDenialReasons: controlDenials.ok ? controlDenials.reasons : { error: controlDenials.error ?? null },
       afterExpiry: responseFacts(after),
       expiredRows: expired.updated ?? null,
-      reaped: reaped.ok === true,
+      reapStatus: reaped.status ?? null,
+      reapAccepted,
       durableDenialReasons: denials.ok ? denials.reasons : { error: denials.error ?? null },
     },
   });
   assert.equal(controlResolved, true, `the live-lease control must RESOLVE, else the refusal below proves nothing: ${truncate(responseFacts(control))} durable=${truncate(controlDenials.ok ? controlDenials.reasons : controlDenials.error)}`);
+  // The injection's OWN assertion, ahead of the outcome's: if the reap was not accepted, the lease
+  // never ended and whatever the resolve answered is about something else.
+  if (!SUPPRESS_INJECTION) {
+    assert.equal(reapAccepted, true, `the reaper must ACCEPT the reap, else the lease never ended and the refusal below is about something else: status=${reaped.status ?? null}`);
+  }
   assert.equal(refusedAtFence, true, `after the lease ended the redemption must be refused at the FENCE (not the catch-all): ${truncate(responseFacts(after))}`);
 });
 
