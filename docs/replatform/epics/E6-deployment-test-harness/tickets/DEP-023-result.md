@@ -132,6 +132,7 @@ reds are recorded here rather than silently fixed.
 | **M1** — `redactString`'s substitution removed | "carries the SCRUBBED line to both halves"; "scrubs a secret that equals a STRUCTURAL token" |
 | **M2** — the transport-boundary scrubber removed from `createWorkerLogger` | "scrubs a secret that equals a STRUCTURAL token"; "scrubs a digit run occurring inside the epoch `time`" |
 | **M3** — `scrubOutputText`'s fail-closed residual refusal removed | "★ POSITIVE CONTROL — BOTH arms flip"; "REFUSES a record it cannot scrub" |
+| **M4** — the echo's refusals moved back INSIDE the `onStdout !== undefined` guard (the Codex round-2 defect, re-introduced) | "FAILS CLOSED when the caller supplies NO stdout channel" |
 
 A **standing positive control** ships in the file: *"WITHOUT the transport scrubber the structural
 token IS emitted verbatim"* drives the unwrapped production logger and asserts `"msg"` is present.
@@ -170,6 +171,13 @@ this run's probe line never arrived. Both arms now require ONE LINE carrying BOT
 the marker, which only this surface produces. The event stream is already per-job and is checked the
 same way, so the two arms cannot drift apart.
 
+**The marker is CORRELATED to this run's probe line.** ★ Codex's third P2 on PR #602, also right:
+`composeServiceLogs` returns the WHOLE worker container log — every run the stack has done — so a
+bare `includes(REDACTION_MARKER)` would let an unrelated earlier scrub satisfy the log arm while
+this run's probe line never arrived. Both arms now require ONE LINE carrying BOTH the probe tag and
+the marker, which only this surface produces. The event stream is already per-job and is checked the
+same way, so the two arms cannot drift apart.
+
 **The suppressed arm.** With `AOA_M1_FAULT_MATRIX_SUPPRESS_INJECTION=1` the echo flag is withheld;
 everything else runs and the case still records. `injectionFired` is decided by the **marker** — the
 scrubber's own substitution — not by the harness's intent, so the suppressed run reports
@@ -178,7 +186,7 @@ therefore cannot pass vacuously.
 
 ---
 
-## 6. `E4-F019` — closed, and the class swept
+## 6. `E4-F019` — HALF closed, the overclaim reverted, and the class swept
 
 **The class, in one sentence:** *a scrubber that runs above a layer that afterwards adds its own
 keys or bytes to the record.*
@@ -209,20 +217,52 @@ finding alone), and the two `createRunOutputCapture` sites. None is in the class
 instance this ticket would have shipped had it not fixed the sink first, and it is named here rather
 than discovered in review.
 
-`E4-F019` moves to `resolved` in `findings.md` and its `scripts/finding-ownership.json` key is
-deleted **in the same commit** (E.2 rule 5).
+### 6.0 Codex round 2: one more P2, also real
+
+`--aoa-fake-echo-env`'s two refusals sat INSIDE the `if (onStdout !== undefined)` guard, so a caller
+that requested an echo while supplying no stdout channel got a SUCCESS for a plant that never
+happened — a silently vacuous control, and against the fail-closed contract every other scripting
+flag on that module holds. Both refusals now run before the channel guard, with a no-channel refusal
+of their own; `M4` in §4's table is its positive control. That is the second and last Codex round
+this ticket takes (SPEED RULE C).
+
+### 6.1 The closure claim was an OVERCLAIM, and is reverted
+
+This section first said `E4-F019` moved to `resolved`, and the manifest key was deleted. **Codex
+found that wrong on PR #602 and it is right, verified at source before acceptance:** the canary array
+is per-lease and `lease-renewal.ts` releases it when the run settles, so
+`RunCanaryCoordinator.snapshot()` is EMPTY between runs, and a later heartbeat line again serializes
+a structural-token secret verbatim.
+
+So the finding stays **open**, its manifest key is restored with an amendment, and `findings.md`
+gains a section saying exactly what is closed (the in-run window, proven by mutation) and what is not
+(every line written outside a live lease). The exposure is narrower than when filed — it no longer
+holds "on EVERY worker log line" — and narrower is not closed. Closing the rest needs either route 1,
+or a needle source that OUTLIVES a lease, which is a retention decision about secret material and
+not a repair this ticket may take.
+
+★ **The safety argument in §3.2 is unaffected, and that is why it was worth checking.** The probe line
+is written inside `observeRun`, before the terminal and before the release, so it is always inside
+the covered window. What the brief required was that the collision class not be reachable **through
+this surface**; that holds, and is proven. What it did not require — and what this ticket briefly and
+wrongly claimed — was that the finding be closed outright.
 
 ---
 
 ## 7. What this ticket did NOT do, and why
 
-- **`d2m.redaction.planted_canary_scrubbed` stays `pending`.** The same product code serves it, and
-  its `pendingReason` is superseded in place to say so — the blocker is no longer structural and no
-  longer a decision. But flipping it to `required` requires a **keyed** run showing it fired, and
-  this session is forbidden from dispatching one (M1-AGENT-RULES hard limits; ruling F8 owns the
-  keyed envelope). Flipping it on the strength of the D1 twin would be declaring coverage nobody
-  measured — the failure class this matrix exists to stop. `pendingKind` therefore moves
-  `structural → keyed` and the owner is re-pointed from F2 (discharged) to F8.
+- **`d2m.redaction.planted_canary_scrubbed` stays `pending`, and `pendingKind` stays `structural`.**
+  The first draft moved it to `keyed`, reasoning that only a keyed run was missing. ★ Codex found
+  that wrong on PR #602 and it is right, verified at source: **three** things are missing on that
+  lane, not one. (1) `AOA_WORKER_RUN_OUTPUT_PROBE` is set in exactly ONE place in the repo — the D1
+  override — so the shipped-boot worker does not forward the line at all; (2) the only producer of a
+  tagged line is the reference provider's `--aoa-fake-echo-env`, which the real E2B lane does not
+  run, so nothing plants the leak there; (3) the driver itself. Spending the keyed envelope before
+  (1) and (2) are wired would burn it to learn `no_scrubber_marker_observed`. The product code is
+  lane-agnostic and serves the case once those are in place, so the blocker is now BUILD-shaped
+  rather than a decision about F2 — which is the part that did move. The owner is the planning
+  session, for the keyed envelope **and** for whether the shipped-boot lane should carry a
+  diagnostic surface at all, which is not a build agent's call.
 - **No new output mechanism.** WRK-018 1(c) and the open **F7** ruling are untouched: the surface
   forwards only lines a workload explicitly tagged, one of them, truncated, and only under a flag no
   production manifest sets.

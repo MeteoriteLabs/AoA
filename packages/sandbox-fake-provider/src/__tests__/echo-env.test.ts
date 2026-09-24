@@ -60,6 +60,25 @@ describe("--aoa-fake-echo-env (DEP-023)", () => {
     );
   });
 
+  it("FAILS CLOSED when the caller supplies NO stdout channel (Codex P2, PR #602)", () => {
+    // The channel is the echo's ONLY delivery. Validating inside a `if (onStdout !== undefined)`
+    // guard would skip both this refusal and the missing-variable one, and the provider would
+    // return a SUCCESS for a plant that never happened — a silently vacuous control.
+    expect(() =>
+      executeScriptedCommand(
+        { sandboxId: "sbx-1", command: "claude", args: ["--aoa-fake-echo-env=ANTHROPIC_API_KEY"], env: { ANTHROPIC_API_KEY: "v" } },
+        { deadlineMs: 60_000, providerOpId: "op-1" },
+      ),
+    ).toThrow(ScriptedCommandError);
+    // …and a no-channel caller WITHOUT the flag is still perfectly valid, unchanged.
+    expect(
+      executeScriptedCommand(
+        { sandboxId: "sbx-1", command: "claude", args: [], env: {} },
+        { deadlineMs: 60_000, providerOpId: "op-1" },
+      ).exitCode,
+    ).toBe(0);
+  });
+
   it("refuses a malformed, repeated or valueless flag", () => {
     expect(() => parseScriptedCommand(["--aoa-fake-echo-env"])).toThrow(ScriptedCommandError);
     expect(() => parseScriptedCommand(["--aoa-fake-echo-env="])).toThrow(ScriptedCommandError);

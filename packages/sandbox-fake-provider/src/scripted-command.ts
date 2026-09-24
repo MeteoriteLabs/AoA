@@ -411,25 +411,36 @@ function finishScriptedCommand(
   stderrRef: string,
 ): ScriptedExecuteResult {
   const onStdout = input.onStdout;
-  if (onStdout !== undefined) {
-    // DEP-023 — the echo goes FIRST, never last: `parseClaudeStreamJsonUsage` reads the FINAL
-    // non-empty line and nothing else, so an echo written last would displace the result line and
-    // silently suppress the run's usage.
-    if (plan.echoEnvName !== undefined) {
-      const value = input.env[plan.echoEnvName];
-      // FAIL CLOSED, like every other scripting flag: a named variable that is not in the sandbox
-      // env means the plant did not happen, and a silently-skipped echo would make the clause-5
-      // case pass on a stream that never carried the value — exactly the vacuous pass it exists to
-      // prevent.
-      if (typeof value !== "string" || value.length === 0) {
-        throw new ScriptedCommandError(
-          `${SCRIPT_FLAG_PREFIX}echo-env=${plan.echoEnvName} names an environment variable the sandbox does not carry; ` +
-            "this provider will not report an echo it did not perform",
-        );
-      }
-      onStdout(`${RUN_OUTPUT_PROBE_TAG} ${plan.echoEnvName}=${value}
-`);
+  // DEP-023 — the echo is validated OUTSIDE the channel guard, deliberately (Codex P2, PR #602).
+  // Inside it, a caller that supplies no `onStdout` would skip the lookup AND the refusal, and the
+  // provider would return a success for a plant that never happened — a silently vacuous control,
+  // which is exactly what every other scripting flag on this module fails closed to prevent. Two
+  // refusals, in the order a reader needs them:
+  if (plan.echoEnvName !== undefined) {
+    // (a) NO CHANNEL, NO ECHO. The stdout channel is the echo's only delivery; asking for an echo
+    // a caller cannot receive is a scripting error, not a no-op.
+    if (onStdout === undefined) {
+      throw new ScriptedCommandError(
+        `${SCRIPT_FLAG_PREFIX}echo-env=${plan.echoEnvName} needs the stdout stream channel; ` +
+          "this provider will not accept an echo request it has nowhere to deliver",
+      );
     }
+    // (b) NO VALUE, NO ECHO. A named variable that is not in the sandbox env means the plant did
+    // not happen, and a silently-skipped echo would make the clause-5 case pass over a stream that
+    // never carried the value.
+    const value = input.env[plan.echoEnvName];
+    if (typeof value !== "string" || value.length === 0) {
+      throw new ScriptedCommandError(
+        `${SCRIPT_FLAG_PREFIX}echo-env=${plan.echoEnvName} names an environment variable the sandbox does not carry; ` +
+          "this provider will not report an echo it did not perform",
+      );
+    }
+    // FIRST, never last: `parseClaudeStreamJsonUsage` reads the FINAL non-empty line and nothing
+    // else, so an echo written last would displace the result line and suppress the run's usage.
+    onStdout(`${RUN_OUTPUT_PROBE_TAG} ${plan.echoEnvName}=${value}
+`);
+  }
+  if (onStdout !== undefined) {
     for (const chunk of buildScriptedStdoutChunks(plan, options.usage)) onStdout(chunk);
   }
 
