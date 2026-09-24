@@ -141,7 +141,33 @@ That is `E4-F019` itself, kept executable so §6's closure cannot go stale unnot
 
 ## 5. The live D1 run, and the suppressed-injection red
 
-_(filled in below from run `35996740740`, `d1-merge-train` / `m1-fault-matrix`, on this branch)_
+### 5.1 The runs, including the two that taught something and the four that did not
+
+| Run | Outcome | What it measured |
+|---|---|---|
+| `35996740740` | **RED**, and usefully | The case as first written ran over BOTH enabled tenants. Tenant A executed; **tenant B's attempt stayed `pending` forever with no events**, and the case red on its own non-vacuity guard — the guard working, not a flake. Cause, read at source afterwards: the DEPLOYED worker's execution target is **Organization-dedicated to tenant A** (`docker/d1/m1-spine-worker.profile.json`, `organizationId …000a`), which is exactly the isolation `queryForeignPlacementOnDeployedTarget` asserts elsewhere in this same matrix. A per-tenant EXECUTION arm is **impossible on this lane by construction**. A falsified hypothesis is a finding (E.3.4), and the F10 arm was rebuilt around the measurement rather than retried |
+| `35999792282` | **RED** | The rebuilt case reached its new cross-tenant query, which failed to parse in the container: the generated script carried a REAL newline inside a JS string literal instead of an escaped one. Two characters, 25 minutes. ★ The sibling `queryJobEventPayloadText` had it right; the copy did not — and the lesson taken is not "be careful" but a CHECK: the harness function's template is now rendered locally with a stubbed `dexecModule` and put through `node --check`, which reproduces the old red and passes the new text. That check cost two minutes and would have saved the cycle (E.3.1) |
+| `36002080815`, `36003245112`, `36005199683`, `36006434045` | **RED, infrastructure** | `quay.io` returned 502 then 401 on the `minio` image pull, at the compose bring-up, before any test ran. Not this branch's code and not within this ticket's control |
+
+### 5.2 The proving run
+
+_(pending — see §9. The four consecutive `quay.io` failures are recorded above rather than
+summarised away, because "we retried until it passed" and "the lane could not start" are different
+facts and only one of them is true here.)_
+
+### 5.3 What the case asserts
+
+**F10 — MULTI-TENANT, in the shape this lane admits.** The same-tenant positive control is tenant
+A's own event stream carrying the scrubber's marker; the cross-tenant arm is tenant A's planted
+canary being ABSENT from tenant B's **whole** event stream (`queryOrganizationEventText`), asserted
+over a NON-EMPTY stream so it cannot be vacuously clean. The Organization-dedication that forces
+this shape is **asserted inside the case**, so the narrowing cannot silently stop being true.
+
+**The suppressed arm.** With `AOA_M1_FAULT_MATRIX_SUPPRESS_INJECTION=1` the echo flag is withheld;
+everything else runs and the case still records. `injectionFired` is decided by the **marker** — the
+scrubber's own substitution — not by the harness's intent, so the suppressed run reports
+`injectionFired: false` and the lane's existing grep for `injection_did_not_fire` sees it. The case
+therefore cannot pass vacuously.
 
 **F10 — MULTI-TENANT.** The case plants a **per-tenant** canary for **both** enabled Organizations,
 asserts each tenant's own event stream clean-and-marked (the same-tenant positive control), and
@@ -212,4 +238,32 @@ deleted **in the same commit** (E.2 rule 5).
 
 ## 8. Register deltas (two-sided, against the merge ref)
 
-_(filled in below: `origin/docs/replatform-program` key set vs HEAD, ADDED and DROPPED)_
+Taken against the FETCHED merge ref (`origin/docs/replatform-program`), not the worktree copy, and
+applied as a **delta** — the base's bytes with one key removed — never a whole-file rewrite (E.2):
+
+```
+ADDED  : []
+DROPPED: ['E4-F019']
+CHANGED: []
+base 100 keys, head 99
+```
+
+`scripts/check-finding-ownership.mjs` was run **between** the key deletion and the `findings.md`
+flip, and it went RED (*"E4-F019 (MEDIUM): open, but no entry in the manifest"*) — the two-sided
+control for the closure, rather than only the green at the end.
+
+`docs/architecture/distributed-execution-threat-controls.json`: four `deliveryEvidence` citations
+(`DE-05`, `DE-10` ×2, `DE-25`) drifted by the lines this ticket inserted into
+`packages/worker-daemon/src/index.ts` and `bin/worker-daemon.ts`, and were **re-pointed by symbol**,
+not by guessing. `scripts/test-inventory.json` pins bumped by `--write` for the two added test
+files. No other register touched.
+
+---
+
+## 9. What is outstanding
+
+1. **The proving D1 run (§5.2).** `d1-merge-train` / `m1-fault-matrix` could not bring its stack up
+   in four consecutive attempts because `quay.io` was refusing the `minio` pull. The lane must be
+   re-dispatched on this branch and BOTH of its arms recorded here — the profile run and the
+   suppressed-injection control — before a reviewer treats the flip to `required` as evidenced.
+2. **`d2m.redaction.planted_canary_scrubbed`** (§7) — one keyed run, F8's to dispatch.
