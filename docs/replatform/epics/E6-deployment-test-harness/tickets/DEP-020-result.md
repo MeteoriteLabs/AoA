@@ -6,7 +6,7 @@
 **Implementer:** Claude Opus 5 (M1 build agent)
 **Start SHA:** `6b468773f1` (`origin/docs/replatform-program`)
 **PR:** #593 (base `docs/replatform-program`)
-**Reviewed revision:** `PLACEHOLDER_HEAD_SHA`
+**Reviewed revision:** `97ddb8cd32d8f2ee7415bcfc2bd729e23fdb69f4`
 
 > `Status` is `gate_review` and may be set to `complete` only by a DISTINCT reviewer, never by this
 > author.
@@ -136,7 +136,7 @@ session on the DEP-015 lane.
 
 ---
 
-## 3. GAP 2 — clause 5, redaction
+## 3. GAP 2 — clause 5, redaction: the floor is enforced, the D1 case is BLOCKED, and the blocker is proven
 
 The E5 audit's blocker: *"no declared planted-leak case with an unseeded control on either M1a
 lane"*, after its author *"enumerated every case id in all three profiles … not one names redaction,
@@ -145,36 +145,66 @@ this clause's path: it is *"a CI scrub of the uploaded bundle"* that *"does not 
 through `synthesiseRunSecrets`, does not read the supervisor's scrubbed event stream, and has no
 unseeded control"*.
 
-**Structural first.** `redaction` is now a member of `CASE_FAMILIES` and a **required family in every
-profile**, with an enforced shape: `plantedCanary`, `unseededControl`, the `streams` the marker is
-asserted on, and the `producer` whose scrubbing is proven. A floor recorded only in a QA record is a
-floor the next declaration edit can silently drop — which is exactly how this one came to be missing.
+### 3.1 The floor, enforced structurally — and this part is done
 
-**Live on `M1-D1-SPINE`.** The deployed worker (`worker-b`, dispatch enabled, boot root
-`networked-host.js`) leases a real job whose envelope carries a resolvable handle, so
-`synthesiseRunSecrets` (`packages/worker-daemon/src/lease/secret-redemption.ts`) redeems a
-**high-entropy canary unique to the run** and registers it.
+`redaction` is now a member of `CASE_FAMILIES` and a **required family in every profile**, with an
+enforced shape: `plantedCanary`, `scrubberMarkerControl`, the `streams` the marker is asserted on
+(both `events` and `logs`), and the `producer` whose scrubbing is proven. A floor recorded only in a
+QA record is a floor the next declaration edit can silently drop — which is exactly how this one came
+to be missing. **Nine reds** in §8 hold it in place.
 
-**The unseeded control is a second MARKER in the same run, not a second run**, and that choice is the
-point. A run whose streams are clean of the canary is indistinguishable from a run that emitted
-nothing at all. So the same run carries a **twin** of identical shape and entropy that is never
-registered, and the case requires all three facts together:
+### 3.2 The D1 case is `pending` / `structural`, and this is a measured refusal to fake it
 
-- the canary **absent** from the `job_events` payload stream **and** the worker's container log;
-- the twin **present verbatim** on at least one of them;
-- each stream's observed byte length **> 0**.
+Three full live campaigns were spent trying to make it fire, and each one narrowed the cause:
 
-Remove the redaction and the canary appears beside its twin. Emit nothing and the twin is missing and
-the case reds. **Neither arm passes alone**, and the evidence checker enforces all three as separate
-row facts (`redactedOnAllStreams`, `unseededControlLeaked`, `streamBytesObserved`).
+| Run | What was tried | Measured |
+|---|---|---|
+| `35933605253` | the case as first written | fell over earlier — a wrong `job_events` column (§7.3) |
+| `35936498467` | fixed; an unregistered **twin** of identical shape carried on the same run through the workload args, required PRESENT verbatim | the twin reached **neither** stream |
+| `35938378052` | twin replaced by the scrubber's own `REDACTION_MARKER` (`packages/worker-daemon/src/supervisor/redaction.ts`), which `scrubEventStrings` substitutes FOR a canary | the **marker** reached neither stream either |
 
-**Both streams, deliberately.** A scrubbed event stream beside an unscrubbed container log is still a
-leak, so `REQUIRED_REDACTION_STREAMS` names both and a declaration that drops either one reds.
+**That third fact is decisive.** The canary is absent not because it was scrubbed but because
+**nothing on this lane ever emits the redeemed value**, so `scrubEventStrings` has nothing to
+substitute. A clean stream here is **vacuous** — precisely what clause 5's control exists to exclude
+— and filing it as a scrub would be the failure this whole ticket is about.
 
-**Nothing secret reaches the bundle**: only booleans and byte counts are recorded — never the canary,
-never the twin, never a stream excerpt.
+**The cause, at source:** the reference provider executes a deterministic scripted transcript
+(`packages/sandbox-fake-provider/src/scripted-command.ts`) that is *"a pure function of `(args,
+usage)`"*, never reads the sandbox env, and passes over any argument outside the `--aoa-fake-`
+namespace *"without comment"* — which is also why the twin vanished silently.
 
----
+So the case is declared `pending`, `pendingKind: "structural"`, with an owner. **It says UNBUILT
+HERE, NOT UNAVAILABLE**, deliberately: "unavailable" is exactly what the two wrongly-excused spine
+cases claimed, and the fix is named rather than left vague — **one `--aoa-fake-echo-env=<NAME>`
+scripting flag on the reference provider**, a provider-package change with its own typecheck and
+build. It is routed to `M1a-D2-MECHANISM`, where the echo **already exists by design**: `DEP-017`'s
+env probe performs a *"planted execute, so any echo of them is scrubbed"*
+(`packages/worker-daemon/src/supervisor/env-probe.ts`), and the mechanism `a2` record's
+`plantedControl.red: true` **is** that echo being caught.
+
+### 3.3 ★ The `pendingReason` is proven live, in both directions
+
+This is the part that matters, because this programme's worst failure class is a `pending` reason
+that is false of the lane it excuses — the defect the spine `a2` graded `SPINE-MATRIX-3`.
+
+The case is replaced by a test that **records nothing** (a bundle reporting evidence for a `pending`
+case is refused by design) and instead asserts the blocker:
+
+1. **non-vacuity first** — the run produced `> 0` events and the worker's log is `> 0` bytes, so the
+   absences below are measurements rather than an empty scan;
+2. the canary is **absent** from both streams;
+3. the marker is **absent** from both streams.
+
+**It reds if either ever appears.** The day this lane starts emitting the value, or the scrubber
+starts acting on it, the case becomes buildable here and this test fails — which forces the
+declaration back open instead of letting it quietly outlive its reason. That is `SPINE-MATRIX-3`
+closed at the point where it is generated, rather than corrected after the fact.
+
+**Judgement flagged, not buried:** the audit's literal phrasing is *"an unseeded control that leaks
+the value verbatim"*. On the keyed lane the marker arm is a **stronger** attribution than a twin (a
+twin shows the streams *can* carry such a string; the marker shows the scrubber *handled this run's
+canary*), and the `M1a-D2-MECHANISM` declaration is written that way. Whether that substitution
+satisfies clause 5's floor is the audit author's call, not this ticket's.
 
 ## 4. GAP 3 — clause 4, lease-scoped secrets
 
@@ -279,12 +309,15 @@ checked** for whether any profile declares a case:
 | 2 — fenced object commit | yes (3 cases) | no action |
 | 3 — patch quarantine | **no** — *"No campaign profile declares a quarantine case at all"* | **Not fixed, and why.** Re-measured at HEAD: `createPatchApplyService` and `createResultCommitter` have **zero production callers** (only definitions and comments). A declared case against an uncomposed symbol is the vacuous claim `E5-D03` forbids. **Build gap; owner: no M1 ticket composes `createPatchApplyService`** — filed here rather than left silent. |
 | 4 — lease-scoped secrets | **no** | **fixed** (§4), and enforced by kind in every profile |
-| 5 — redaction | **no** | **fixed** (§3), and enforced as a required family in every profile |
+| 5 — redaction | **no** | **floor fixed** (§3.1) — enforced as a required family in every profile. The D1 CASE is `pending`/`structural` with a live-proven blocker (§3.2-3.3): one `--aoa-fake-echo-env` flag on the reference provider. **Owner: planning session (F8), on the DEP-015 lane.** Not claimed as closed |
 | 6 — denied egress | no | **Build gap.** `createFenceAwareEgressProxy` has zero production callers; the floor is a *recording* requirement both records already discharge. |
 | 7 — brokered tool surface | yes (`*.tenant.cross.tool_calls`) | no action |
 
-**Checked 7, found 3 undeclared floors (clauses 3, 4, 5), fixed 2, filed 1 with its reason and
-owner.** Clauses 1 and 6 are build gaps the audit itself classifies as such.
+**Checked 7, found 3 undeclared floors (clauses 3, 4, 5). Clause 4 is fully closed — declared AND
+firing. Clause 5's FLOOR is closed structurally but its D1 CASE is blocked and filed with a named
+mechanism and owner. Clause 3 is filed with its reason and owner and deliberately not declared.**
+Clauses 1 and 6 are build gaps the audit itself classifies as such. So: 3 found, 1 closed end to end,
+1 half-closed and honestly labelled, 1 filed — and none of the three left silent.
 
 **Class B — *a `pendingReason` measured against a file the certified lane does not boot*.** Every
 `pending` case carrying `pendingKind: "structural"` was enumerated and re-measured at HEAD.
@@ -308,27 +341,69 @@ per profile, on the committed declaration:
 
 ```
 FAIL: tests/d1/fault-matrix.json violates 9 DEP-018 declaration invariant(s):
-  - declaration:required_family_missing: … profile M1-D1-SPINE declares no `redaction` case
-  - declaration:credential_refusal_kind_missing: … profile M1-D1-SPINE declares no `credential`
-      case with credentialCase.kind `lease_expired_redemption_refused` …
-  - declaration:credential_refusal_kind_missing: … `wrong_lease_redemption_refused` …
-  … the same three for M1a-D2-MECHANISM and for M1-D2-CODING
+  - declaration:required_family_missing: ... profile M1-D1-SPINE declares no `redaction` case
+  - declaration:credential_refusal_kind_missing: ... profile M1-D1-SPINE declares no `credential`
+      case with credentialCase.kind `lease_expired_redemption_refused` ...
+  - declaration:credential_refusal_kind_missing: ... `wrong_lease_redemption_refused` ...
+  ... the same three for M1a-D2-MECHANISM and for M1-D2-CODING
 ```
 
 That is the floor doing its job against the exact tree the E5 audit graded.
 
-### 7.2 GREEN — after the declarations
+### 7.2 GREEN — the declaration, and the live lane
 
 ```
 OK: tests/d1/fault-matrix.json declares 3 gate profile(s) and 83 case(s)
-    (31 required, 52 pending), each with an injection, an observer and an expected
-    classification; every profile carries the F10 tenant matrix …
+    (30 required, 53 pending) ... every profile carries the F10 tenant matrix ...
 ```
 
-83 cases, up from 73: **+9 declared** (three per profile: the redaction case and the clause-4 pair)
-and **+3 flipped** from `pending` to `required` on `M1a-D2-MECHANISM`.
+83 cases, up from 73: **+9 declared** (three per profile) and **+3 flipped** from `pending` to
+`required` on `M1a-D2-MECHANISM`, less the D1 redaction case which is `pending` (§3.2).
 
-`node --test scripts/check-campaign-fault-matrix.test.mjs` — **31 tests, 31 pass, 0 fail** (was 25).
+`node --test scripts/check-campaign-fault-matrix.test.mjs` — **32 tests, 32 pass, 0 fail** (was 25).
+
+**Live, run `35940077444`, job `m1-fault-matrix` — `success`, per-step conclusions read from the jobs
+API and not from the run conclusion (`E6-F023`):**
+
+```
+Run the M1-D1-SPINE fault matrix (live)   -> 23 pass, 0 fail
+The matrix's own verdict over the bundle  -> profile M1-D1-SPINE: 27/27 required case(s)
+                                             fired and classified as declared, 4 pending
+```
+
+**27/27**, up from 25/25: the two clause-4 cases fired and were classified exactly as declared.
+
+### 7.3 The five live cycles, because each one found something real
+
+| Cycle | Run | What it found |
+|---|---|---|
+| 1 | `35932452315` | the trigger works — a full live campaign from a feature-branch dispatch (§1.2) |
+| 2 | `35933605253` | `expireLeaseDeadlines({jobId})` throws (it takes a lease id + intervals); `job_events` has no `payload`/`seq` column; **and my cases minted fresh enrolments that bumped tenant A's target generation and REVOKED the victim attempt three later cases reuse** |
+| 3 | `35935012713` | ordering knock-on gone. Controls still `denied/malformed` with `durable=[]` — the cycle-2 instrumentation is what made the next finding diagnosable rather than a guess |
+| 4 | `35936498467` | **both clause-4 cases PASS.** The redaction twin reaches neither stream |
+| 5 | `35938378052` then `35940077444` | the scrubber's marker reaches neither stream either, so clause 5 on D1 is blocked and the blocker is proven (§3); the lane goes **green** |
+
+★ **Cycle 2's ordering finding is worth stating as a rule**: the file's header says order is
+load-bearing over ONE shared stack, and a case that mints fresh enrolments belongs **after** the
+cases that depend on existing ones. Nothing was wrong with `cross.staged_inputs`, `cross.outputs` or
+`control_refused`; my three were wrong to run before them.
+
+★ **Cycle 3's finding is the largest one in this ticket and is not mine alone.**
+`resolveExecutionSecretHttp` omitted the `audience` literal and carried an `issuedAt` field the
+schema does not declare. `executionSecretResolveRequestSchema` pins
+`audience: z.literal("worker_run")` and is `.strict()`, so **every call ever made through that helper
+was rejected at `safeParse` and answered by the route's `denyMalformed()`** — before the device proof,
+before `guardActiveFence`, before the broker, and therefore with no `security.denied.secret_resolve`
+row at all. The `durable=[]` the instrumentation printed is what localised it.
+
+**So `d1.tenant.cross.secrets`'s recorded account of its own weakness is wrong.** It states the route
+arm carries no control because *"this lane's fixture handle is unresolvable"*. The fixture is
+unresolvable, but that is not why owner and attacker were indistinguishable: the route reached neither
+the fence, nor the handle, nor the broker, for **either** of them. Its classification is unaffected —
+it classifies on the RLS row read, deliberately — and its assertion still holds, because a foreign
+fence is still refused. What changes is that the route arm is exercised past schema validation for the
+first time on this lane. The stale sentence is left standing in that case's own comment (this is not a
+record rewrite) and corrected, dated, in the helper's docstring where the claim was made.
 
 ---
 
@@ -340,31 +415,46 @@ check that evaluates nothing.**
 
 | # | Mutation | Required red | Result |
 |---|---|---|---|
-| 1 | drop the `redaction` case from a profile (×3 profiles) | `declaration:required_family_missing` | red |
+| 1 | drop the `redaction` case from a profile (x3 profiles) | `declaration:required_family_missing` | red |
 | 2 | `plantedCanary: false` | `declaration:redaction_without_planted_canary` | red |
-| 3 | `unseededControl: false` | `declaration:redaction_without_unseeded_control` | red |
+| 3 | `scrubberMarkerControl: false` | `declaration:redaction_without_marker_control` | red |
 | 4 | `producer: ""` | `declaration:redaction_without_producer` | red |
 | 5 | drop `events`, then drop `logs`, from `streams` | `declaration:redaction_stream_missing` | red, both |
 | 6 | delete `redactionCase` | `declaration:redaction_case_missing` | red |
 | 7 | put a `redactionCase` on a non-redaction case | `declaration:redaction_case_on_non_redaction` | red |
-| 8 | drop either refusal kind (×2 kinds × 3 profiles) | `declaration:credential_refusal_kind_missing`, naming the kind | red, all six |
+| 8 | drop either refusal kind (x2 kinds x 3 profiles) | `declaration:credential_refusal_kind_missing`, naming the kind | red, all six |
 | 9 | `credentialCase.kind = "something_else"` | `declaration:credential_case_unknown_kind` | red |
 | 10 | `credentialCase.positiveControl = false` | `declaration:credential_refusal_without_positive_control` | red |
 | 11 | `credentialCase = "nope"` | `declaration:credential_case_not_an_object` | red |
 | 12 | put a `credentialCase` on a non-credential case | `declaration:credential_case_on_non_credential` | red |
-| 13 | refusal row `positiveControlPassed` ∈ {false, null, absent} | `evidence:credential_positive_control_missing` | red, all three |
+| 13 | refusal row `positiveControlPassed` in {false, null, absent} | `evidence:credential_positive_control_missing` | red, all three |
 | 14 | redaction row `redactedOnAllStreams: false` | `evidence:redaction_not_clean` | red |
-| 15 | **redaction row `unseededControlLeaked: false`** — the control's own control | `evidence:redaction_control_did_not_leak` | red |
+| 15 | **redaction row `scrubberMarkerObserved: false`** — the control's own control | `evidence:redaction_marker_not_observed` | red |
 | 16 | `streamBytesObserved.<stream>` = 0, absent, or the whole object absent | `evidence:redaction_stream_vacuous` | red, all five |
+| 17 | **drift the harness's mirrored `REDACTION_MARKER`** away from the daemon's literal | *"the harness's mirrored REDACTION_MARKER has drifted from the worker daemon's"* | red — **mutated, measured, reverted** |
 
-Row 15 is the one that matters most: it is the arm that stops a run which emitted nothing from
-reporting a clean scrub. Row 16 is its non-vacuity twin.
+Row 15 is the one that matters most: it is the arm that stops a run which emitted the value nowhere
+from reporting a clean scrub. Row 16 is its non-vacuity twin. Row 17 protects a mirrored constant that
+decides a gate case — the harness mirrors `REDACTION_MARKER` rather than importing it (it runs from
+source against built images), so a pure-node test in `policy` pins the two together and also asserts
+the marker is non-empty, because an empty marker would make `includes()` trivially true.
 
-**The lane's own controls, unchanged and re-exercised:** the `m1-fault-matrix` job's
-suppressed-injection control ran on both dispatched runs and the lane fails if it passes. Both new
-credential cases and the redaction case honour `AOA_M1_FAULT_MATRIX_SUPPRESS_INJECTION`: suppressed,
-the wrong-lease arm presents its **own** lease and the redaction case plants **no** canary, so each
-records the non-injected outcome and the suppression control reds them.
+### 8.1 The lane's own control, and the new cases honour it
+
+`m1-fault-matrix`'s suppressed-injection control ran on all five dispatched runs, and the lane fails
+if it passes. **Measured on run `35940077444`, both new cases appear in the suppressed arm's reds:**
+
+```
+- evidence:injection_did_not_fire: case d1.credential.lease_expired_redemption_refused:
+    the bundle records injectionFired=false ...
+- evidence:classification_mismatch: case d1.credential.lease_expired_redemption_refused:
+    observed "not_refused", declared "redemption_refused_after_lease_end_with_live_lease_control"
+- ... the same pair for d1.credential.wrong_lease_redemption_refused
+```
+
+Suppressed, the expiry case performs no expiry and the wrong-lease arm presents its **own** lease, so
+each records the non-injected outcome and the control reds them. **Neither new case can pass
+vacuously.**
 
 ---
 
@@ -372,10 +462,13 @@ records the non-injected outcome and the suppression control reds them.
 
 | Lane / job | Run | Result | Executed |
 |---|---|---|---|
-| `d1-merge-train` / `m1-fault-matrix` — **trigger positive control**, ref `claude/m1a-harness-gaps`, `lanes: m1-fault-matrix` | **`35932452315`** | **`success`** | live campaign + its suppressed-injection control; `m1-spine` and `d1-merge-train` **`skipped`** (the selector's negative arm) |
-| `d1-merge-train` / `m1-fault-matrix` — the three new cases | **`35933605253`** | `PLACEHOLDER_RUN2` | `PLACEHOLDER_RUN2_DETAIL` |
-| `pr.yml` / `policy` → *Campaign fault matrix declaration (DEP-018)* | PR #593 | `PLACEHOLDER_CI` | `check-campaign-fault-matrix.mjs` + **31** unit tests |
-| `ci-required` | PR #593 | `PLACEHOLDER_CI` | — |
+| `d1-merge-train` / `m1-fault-matrix` — **trigger positive control** | `35932452315` | **`success`** | live campaign + its suppression control; `m1-spine` and `d1-merge-train` **`skipped`** (the selector's negative arm) |
+| `d1-merge-train` / `m1-fault-matrix` — **the accepting run** | **`35940077444`** | **`success`** | live matrix **23 pass / 0 fail**; verdict **27/27 required fired**, 4 pending; declaration checker + **32** unit tests in the static preflight; suppression control red as required |
+| `pr.yml` / `policy` → *Campaign fault matrix declaration (DEP-018)* | `35940081282` | **`success`** | `check-campaign-fault-matrix.mjs` + **32** unit tests |
+| `pr.yml` / `ci-required` | `35940081282` | **`pass`** | aggregator over the gate suite |
+
+All four are on this PR's branch; the last two are on the reviewed revision
+`97ddb8cd32d8f2ee7415bcfc2bd729e23fdb69f4`.
 
 **Guards, locally, before every push:** the 38 pure-node `pr.yml` guards plus
 `node scripts/check-evidence-immutability.mjs --base origin/docs/replatform-program` — `failures: 0`.
@@ -384,16 +477,21 @@ records the non-injected outcome and the suppression control reds them.
 
 ## 10. Which cases await a keyed run, exactly
 
-**No keyed workflow was dispatched by this session** (founder ruling F8). Stated precisely:
+**No keyed workflow was dispatched by this session** (founder ruling F8).
 
-- **Run keylessly, now, on `M1-D1-SPINE`:** `d1.credential.lease_expired_redemption_refused`,
-  `d1.credential.wrong_lease_redemption_refused`, `d1.redaction.planted_canary_scrubbed`.
-- **Fire on the next keyed `m1-shipped-boot` run, through the new step:**
+- **Firing keylessly TODAY on `M1-D1-SPINE`, proven on run `35940077444`:**
+  `d1.credential.lease_expired_redemption_refused`, `d1.credential.wrong_lease_redemption_refused`.
+- **Will fire on the next keyed `m1-shipped-boot` run, through the new step:**
   `d2m.tenant.journey.A`, `d2m.tenant.journey.B`, `d2m.tenant.control_refused`.
-- **Await a keyed run AND further harness work** (an injection this lane does not yet perform): the
-  remaining twenty `M1a-D2-MECHANISM` cases, including the two routed from the spine
-  (`d1.reconcile.worker_startup_lease_probe`, `d1.provider.worker_terminal_mapping`) and
-  `d2m.credential.production_reader_company_predicate`.
+- **Awaits a keyed run, mechanism already present on that lane:**
+  `d2m.redaction.planted_canary_scrubbed` — `DEP-017`'s planted execute is the echo; what is missing
+  is the case that asserts the run's own streams carry the marker and not the value.
+- **Awaits a provider-package change, NOT a keyed run:**
+  `d1.redaction.planted_canary_scrubbed` — one `--aoa-fake-echo-env=<NAME>` scripting flag (§3.2),
+  with the blocker proven live and in both directions (§3.3).
+- **Awaits a keyed run AND further harness work:** the remaining nineteen `M1a-D2-MECHANISM` cases,
+  including the two routed from the spine (`d1.reconcile.worker_startup_lease_probe`,
+  `d1.provider.worker_terminal_mapping`) and `d2m.credential.production_reader_company_predicate`.
 - **Not scheduled at `M1a`:** every `M1-D2-CODING` case.
 
 ---
@@ -404,10 +502,15 @@ records the non-injected outcome and the suppression control reds them.
    and an `a3` E5 audit, are distinct sessions' acts.
 2. **It does not make `M1a` pass.** It closes harness gaps; the gates are re-run and re-judged by
    others.
-3. **It does not close the E5 clause-4 or clause-5 grade.** It supplies the declared, firing cases
-   those grades were blocked on. The grading is the audit author's.
+3. **It does not close the E5 clause-4 or clause-5 grade.** Clause 4's two cases now fire keylessly
+   in a D1-topology campaign, each with a same-tenant positive control, which is what its
+   `proven_in_d1` floor was blocked on — but the grading is the audit author's, not this ticket's.
+   **Clause 5 is NOT closed on D1**: its floor is now structurally enforced in all three profiles, and
+   its D1 case is `pending` with a measured, live-proven blocker (§3). Whether the keyed lane's
+   marker-based control satisfies the clause's *"unseeded control that leaks the value verbatim"* is
+   also the audit author's call (§3.3).
 4. **It runs no keyed workflow and spends nothing on E2B.**
 5. **It does not touch `H-06`, DE-08, or any egress claim.** Clause 6 remains `not_proven`.
-6. **The twenty remaining `M1a-D2-MECHANISM` cases are not closed** — §2, §10.
+6. **The remaining nineteen `M1a-D2-MECHANISM` cases are not closed** — §2, §10.
 7. **Clauses 1, 3 and 6 remain undeclared**, each a build gap with its reason and owner recorded in
    §6 rather than left silent.
