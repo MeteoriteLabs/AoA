@@ -2496,4 +2496,10 @@ the `d2m.tenant.cross.cost_rows` row's `positiveControlPassed` is weaker in `key
 **Deliberately NOT fixed here, with the reason** (`E` rule 4): a sound fix reads the agent's total
 before the case's own upload and asserts the delta, which changes the arm's shape and its recorded
 evidence fields. Doing that inside a probe PR whose purpose is to establish `E6-F031`'s cause would
-mix a measured diagnosis with an unrelated control redesign. Owner is `DEP-022`, which owns the arm.
+mix a measured diagnosis with an unrelated control redesign.
+
+★ **Ownership: `unowned`, as the header and `scripts/finding-ownership.json` both state.** `DEP-022`
+authored the `cost_events` arm, but it is only at `gate_review`, so it is not a shipped ticket that
+could be named a successor, and no other ticket has been groomed for this. Naming it here anyway would
+route a triager to a ticket the ownership register deliberately rejects — an invented owner is the
+`E4-F013` failure. It owns the ARM; it does not own this finding.
