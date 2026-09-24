@@ -424,9 +424,19 @@ whose own `DAT-007-result.md` reads `**Status:** PARTIAL … BLOCKED`. So a body
 valid completion token and marks the parent complete anyway — the slice's honest token is what mints
 the parent's false one. The same shape covers `SVC-003a`/`SVC-003b`, `SVC-005a`, `SVC-007a`/`SVC-007b`
 and `BRW-003a`…`BRW-003d-5`: **every one of §2.3's six ids is minted by a slice file, not by the
-parent's.** The remedy has to **aggregate every `<ID>*-result.md` for an id** and mark the ticket
-complete only when they all agree, which §3.2's Job A now says. Requiring a token per file would have
-left the exposure exactly where it is while reporting that it was closed.
+parent's.** The remedy has to **aggregate every `<ID>*-result.md` for an id**, and mark the ticket
+complete only on an **approved disposition** covering them — fail-closed when they disagree and no
+reviewed supersession entry resolves it. The full rule, with both of its failure directions, is
+§3.2's Job A. Requiring a token per file would have left the exposure exactly where it is while
+reporting that it was closed.
+
+★ *Corrected 2026-09-24 (Codex P1, sixth round). **Superseded text:** "… and mark the ticket
+complete only when **they all agree**, which §3.2's Job A now says." Job A stopped saying that two
+rounds ago — unanimity is permanently false for `MIG-009`, whose frozen `unwired` result can never
+be updated — but this earlier sentence kept issuing the withdrawn instruction, and it is the one a
+reader meets FIRST. ★ An instruction corrected only at its second occurrence is not corrected; and
+this is the fifth round in which the finding was a stale statement of mine rather than a wrong
+measurement, which is itself the strongest evidence for §3.1's P1.*
 
 ★★★ And note which way the exposure runs: it is **not** caused by the 100 missing status tokens. It
 would survive all 100 being fixed, because the guard never reads the body. Fixing the tokens and
