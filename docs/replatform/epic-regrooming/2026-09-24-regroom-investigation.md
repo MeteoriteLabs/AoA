@@ -210,16 +210,28 @@ frame exists and simply omits the field the clause reads.
 
 ### 2.1 Totals, measured at `3966a01f9f`
 
-179 `*-result.md` files under `docs/replatform/epics/*/tickets/`.
+**177** `*-result.md` files under `docs/replatform/epics/*/tickets/`.
 
 | Bucket | Count | How measured |
 |---|---|---|
-| machine-readable `**Status:** \`complete\`` or `\`gate_review\`` | **79** | `grep -E '^\*\*Status:\*\* \`(complete\|gate_review)\`'` |
-| a `**Status:**` field, but **prose** (`✅ complete`, `COMPLETE — CI GREEN`, `SHIPPED`, `PARTIAL`) | **64** | has `**Status**`, fails the pattern |
-| **no `**Status:**` field at all** | **36** | |
+| machine-readable `**Status:** \`complete\`` or `\`gate_review\`` | **77** | `grep -E '^\*\*Status:\*\* \`(complete\|gate_review)\`'` |
+| a line-anchored `**Status:**` field, but **prose** (`✅ complete`, `COMPLETE — CI GREEN`, `SHIPPED`, `PARTIAL`) | **46** | `grep -E '^\*\*Status:\*\*'`, fails the pattern above |
+| **no line-anchored `**Status:**` field at all** | **54** | |
 
-*(The brief cites 177/77; I measure 179/79 at this tip. The two-file delta is the M1a work that
-landed since — the population moved, not the method.)*
+★ *Corrected 2026-09-24 (Codex P2, PR #601), verified at source. **Superseded text:** "179 …
+**79** … **64** … **36**", with a parenthetical claiming the two-file delta was M1a work that had
+landed since. **That was wrong in both halves.** The two extra files are
+`epics/E3-job-control/prerequisites/{E1-frozen-checker-correction,E2-serving-role-correction}-result.md`
+— outside the declared `tickets/` scope, not newer — and my prose/no-status split used an
+unanchored `**Status` match, which counts the word appearing anywhere in a file, including inside a
+clause table. Both corrected figures are reproduced above.*
+
+★ **The split is measure-dependent and the counts here are not robust; the 100 is.** An unanchored
+match gives 70/30 and a line-anchored `^**Status` without the colon gives 52/48, against 46/54 for
+the strict form used above. **The number that matters — 100 records carrying no machine-readable
+status — is identical under all three measures**, and so is the per-epic distribution below, which
+is why the classification in §2.2 is unaffected by this correction. Both excluded prerequisites
+files carry a machine-readable status, so the classified set is exactly the same 100 files.
 
 Per-epic, non-machine-readable: `E3` 11 · `E4` 11 · `E5` 16 · `E6` 10 · `E7` 13 ·
 `E8` 11 · `E9` 8 · `E10-desktop` 7 · `E10-desktop-migration-realtime` 6 · `E11` 7 = **100**.
@@ -308,6 +320,17 @@ records the two cases where this was caught by hand (`MIG-010` and `CLI-008`, wh
 to write a file**. A guard whose correct outcome depends on an author's restraint is not enforcing
 anything.
 
+★★★ **AND THE COLLAPSE IS PER-TICKET, NOT PER-FILE — so "make the guard read the body" DOES NOT FIX
+IT.** *Added 2026-09-24 (Codex P1, PR #601), verified at source.* `DAT-007-S3-result.md` already
+carries an exact machine-readable `**Status:** \`complete\``. The regex collapses it to `DAT-007`,
+whose own `DAT-007-result.md` reads `**Status:** PARTIAL … BLOCKED`. So a body-reading guard finds a
+valid completion token and marks the parent complete anyway — the slice's honest token is what mints
+the parent's false one. The same shape covers `SVC-003a`/`SVC-003b`, `SVC-005a`, `SVC-007a`/`SVC-007b`
+and `BRW-003a`…`BRW-003d-5`: **every one of §2.3's six ids is minted by a slice file, not by the
+parent's.** The remedy has to **aggregate every `<ID>*-result.md` for an id** and mark the ticket
+complete only when they all agree, which §3.2's Job A now says. Requiring a token per file would have
+left the exposure exactly where it is while reporting that it was closed.
+
 ★★★ And note which way the exposure runs: it is **not** caused by the 100 missing status tokens. It
 would survive all 100 being fixed, because the guard never reads the body. Fixing the tokens and
 fixing this are two different jobs, and conflating them would leave the real one undone.
@@ -345,23 +368,49 @@ campaign-day argument if left. Restating a clause against the substrate is not l
 The cheapest route is **not** to re-measure 100 records. It is three separable jobs, in this order,
 because each is cheap only if the one before it landed.
 
-**Job A — make the guard read the body (the exposure, §2.3). 1 ticket, ~1 agent-day.**
-Change `findCompletedTicketIds` to require a machine-readable completion token in the file, not a
-filename match. Positive control: assert it goes red when `SVC-005a-result.md`'s `stays OPEN` is
-respected — i.e. that `SVC-005` stops reading complete. This must land **first**: doing it after
-Job B would silently re-mint the same false completions through the new tokens.
+**Job A — make completion an AGGREGATE over a ticket's result files, not a filename match. 1 ticket,
+~1–2 agent-days.**
+Change `findCompletedTicketIds` so an id counts as complete only when **every** `<ID>*-result.md`
+on disk asserts completion and none disclaims. Reading the body is necessary and, per the correction
+in §2.3, **not sufficient**: `DAT-007-S3-result.md` supplies a valid `complete` token for a parent
+whose own record says `PARTIAL`, so a per-file rule closes nothing.
+
+Positive control, and it must be this one: assert the guard goes red for `DAT-007` **while
+`DAT-007-S3-result.md` still carries its honest `complete`**. A control that only exercises a
+missing token would pass against the per-file rule too, and so would not distinguish the fix from
+the thing it replaces.
+
+This must land **first**: after Job B, the same false completions would be re-minted through the new
+tokens.
 
 ★ It will red the register on the ids in §2.3. That is the finding, not a regression, and each red
 is a real ownership question someone has to answer. **Budget for the answers, not just the change.**
 
-**Job B — backfill the status token for the 88 records in classes (a) and (b). 1 ticket per epic ×
-5 late epics + 1 sweep ticket = 6 tickets, ~3 agent-days.**
-This is mechanical *because* §2.2 found that (a) and (b) records already state their assessment —
-the work is transcribing an existing human judgement into a readable token, not making a new one.
-Classes: `complete` for (a); a new value (`partial`, or `incomplete` with the existing disclaimer
-quoted) for (b). ★ **These records are not immutable** — the immutability rule covers `qa/` and
-`handoffs/`, not `tickets/*-result.md` — but the *disclaiming sentence must be preserved verbatim*;
-the token is added beside it, never in place of it.
+**Job B — an out-of-band ticket-status index, because the records themselves may not be edited.
+1 ticket, ~2 agent-days.**
+
+★★★ *Rewritten 2026-09-24 (Codex P1, PR #601), verified at source. **Superseded text:** a per-epic
+backfill of the token into the 88 class-(a) and class-(b) records, asserting that "these records are
+not immutable — the immutability rule covers `qa/` and `handoffs/`, not `tickets/*-result.md`".
+**That was half right and the wrong half was load-bearing.** `check-evidence-immutability.mjs` does
+exclude `tickets/` — its own comment says so — but `artifact-policy.md` freezes a ticket result by
+**policy** the moment its status becomes `complete`: "Once status becomes `complete`, the file is
+frozen; a later correction creates a finding and a new ticket/result rather than rewriting approved
+evidence." Every class-(a) record asserts completion in prose. So the proposal would have directed
+an agent to edit 42 frozen records, and the guard's silence would have let it.*
+
+So the status is recorded **beside** the records, never inside them: one reviewed index keyed by
+ticket id, which Job A's aggregate reads. It has three further advantages over the backfill, which is
+why it is not merely the fallback:
+
+- it is **per ticket**, which is the grain Job A needs and the grain a filename cannot express;
+- it **cannot rewrite approved evidence**, so it is available without a gate-owner ruling; and
+- it is one reviewed artefact rather than 88 edits across ten epics, so a distinct reviewer can
+  actually read it.
+
+The judgements are transcription, not new assessment — §2.2 found that (a) and (b) records already
+state their own status. ★ Where an index entry disagrees with its record, **the record wins and the
+index cites it**; the index is a machine-readable view of the ledger, never a second source of truth.
 
 **Job C — the 12 records in class (c). 1 ticket, ~1 agent-day, and it is a filing job.**
 Do **not** re-measure them. Mark each `unverifiable` with its named cause (§2.2's three causes) and,
@@ -369,7 +418,10 @@ where the claim still matters to a milestone, file the re-measurement as its own
 milestone. Two of the twelve (`W7U1-output-probe`, `W10B-egress-enforcement`) rest on 90-day
 artifacts that are already gone; pretending otherwise is the more expensive option.
 
-**Total: 8 tickets, ~5 agent-days**, plus the unbudgeted tail of answering Job A's reds. Compare
+**Total: 3 tickets, ~4–5 agent-days**, plus the unbudgeted tail of answering Job A's reds. ★ *Was
+"8 tickets, ~5 agent-days" before the Job B rewrite above: six of the eight were the per-epic
+backfill tickets, which the index replaces with one. The day count barely moves — the saving is in
+review surface and in not editing frozen evidence, not in effort.* Compare
 with doing it inside M3, where the same work arrives as gate-blocking discoveries on a frozen
 candidate — which is what happened four times inside M1a alone.
 
@@ -424,3 +476,11 @@ Stated explicitly, because a negative audit is only as good as the set it enumer
    which §2.2 supports but does not prove, and they explicitly exclude the tail of answering Job A's
    register reds — which I could not size without knowing how many of the six ids need a successor
    rather than a re-point.
+9. **How many ids beyond §2.3's six are minted by a slice file.** The per-ticket collapse corrected
+   in §2.3 was measured on the six ids I had already flagged; I did not sweep all 124 for the same
+   pattern. Job A's aggregate is written to be sound regardless, but **the size of its red set is
+   unmeasured and is probably larger than six.**
+10. **Whether Job B's index is an acceptable artefact to the gate owner.** It records status outside
+    the record, which no current policy contemplates in either direction. `artifact-policy.md`
+    forbids rewriting a frozen result; it says nothing about a derived index citing one. I read that
+    as permitted, and it is a reading, not a rule I found written down.
