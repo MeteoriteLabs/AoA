@@ -2041,46 +2041,65 @@ commit by the owner.
 **Filed:** 2026-09-24 by the class sweep.
 ---
 
-## E6-F029 — the D1 harness has a documented HUMAN path that no lane exercises, and three defects lived there at once
+## E6-F029 — a documented path that was never executed: the D1 harness's local bring-up, and the four defects that lived in it
 
 **Status:** open
 **Severity:** MEDIUM (operator-facing; no gate rests on it, and that is precisely the problem)
 **Owner:** `unowned`
 **Filed:** 2026-09-24, by the `E6-F021` re-repair, ruled by the planning session. Measured at
-`d7218601c3c5f3a07328d56dbfec5891caeaaf1c`.
+`077873bdd4f1bb0f2cbf1baa602a28017b4cc446`.
+
+### ★★★ The headline: nobody ever ran the command
+
+`docker/d1/README.md`'s *Verification* section documented a local bring-up —
+`cp docker/d1/.env.example docker/d1/.env`, then `docker compose -f docker-compose.d1.yml up`.
+**That command could never have worked**, for a reason that has nothing to do with this programme's
+MinIO outage:
+
+- Docker Compose auto-loads only `.env` in the **project directory** — the repository root, because
+  that is where `docker-compose.d1.yml` lives. **`docker/d1/.env` was therefore never read**, and
+  Compose fell back to the unrunnable `:d1-local-unbuilt` control-plane and worker defaults.
+- `d1-merge-train.yml` writes the digests to **`$GITHUB_ENV`** — process environment variables, which
+  Compose reads directly — so **CI never needed the flag.**
+- It *also* writes `docker/d1/.env`, and **nothing ever passes that file to Compose.** CI's copy is
+  **dead weight that looks exactly like the operator's copy working.**
+- And the correct idiom sits **one directory away**: `docker/campaign/docker-compose.campaign.yml:11`
+  documents `--env-file docker/campaign/.env.campaign`.
+
+So this was **not a misunderstanding of Compose.** Nobody was wrong about anything. **Nobody ran the
+command.**
+
+★ That is the general lesson, and it is sharper than *"CI is amd64"*: the other defects below are a
+path **CI cannot take**; this one is a path **nobody ever took at all**. It generalises to every
+README in this programme — a documented command is an untested assertion until something executes it,
+and prose degrades silently because nothing reds when it stops being true.
+
+★★ **Dead weight that resembles a working artefact is what made it invisible.** A `docker/d1/.env`
+exists after a CI run. It has plausible contents. Nothing reads it. Anyone checking "does CI produce
+the env file the README describes?" would have answered yes.
 
 ### The class
 
-**A path only a human takes, which no lane exercises.** `docker/d1/README.md`'s *Verification*
-section documents a local bring-up — `cp docker/d1/.env.example docker/d1/.env` →
-`docker compose -f docker-compose.d1.yml up`. Nothing runs that path. `d1-merge-train.yml` brings the
-same stack up by a **different** route, so the two have drifted, and the drift is invisible by
+**A path only a human takes, which no lane exercises.** `d1-merge-train.yml` brings the same stack up
+by a **different** route from the documented one, so the two drift, and the drift is invisible by
 construction.
 
-### Three instances, found in one PR, each invisible to CI for a STRUCTURAL reason
+### Four instances, found in one PR, each invisible for a STRUCTURAL reason
 
 | # | defect | why no lane could see it |
 |---|---|---|
+| **4** | **the documented bring-up command omits `--env-file docker/d1/.env`, so the copied env file is never loaded and Compose falls back to the unrunnable `:d1-local-unbuilt` defaults** | **the documented path was never executed by anything.** CI does not use that file: it writes the digests to `$GITHUB_ENV`, and the `docker/d1/.env` it also writes is passed to nothing |
 | 1 | the mirrored MinIO image was published `linux/amd64` only, while the image it replaced served a multi-arch manifest list | **CI is amd64** |
 | 2 | the repo-scoped GHCR package is not anonymously pullable, and the documented local path had no `docker login` prerequisite | **CI authenticates** (`packages: read` + a login step in all three jobs) |
-| 3 | `docker/d1/.env.example` set `AOA_D1_MINIO_IMAGE=minio/minio:latest` — the image Docker Hub DELETED — and an env value **overrides** the Compose default, so a local operator resolved the dead image no matter what `docker-compose.d1.yml` said | **CI never reads `.env.example`**; it writes `docker/d1/.env` itself, and it never writes `AOA_D1_MINIO_IMAGE` at all |
+| 3 | `docker/d1/.env.example` set `AOA_D1_MINIO_IMAGE=minio/minio:latest` — the image Docker Hub DELETED — and an env value **overrides** the Compose default, so a local operator resolved the dead image no matter what `docker-compose.d1.yml` said | **CI never reads `.env.example`**; it writes `docker/d1/.env` itself, and never writes `AOA_D1_MINIO_IMAGE` at all |
 
-| 4 | the documented bring-up command omits `--env-file docker/d1/.env`, so the copied env file is **never loaded** and Compose falls back to the unrunnable `:d1-local-unbuilt` control-plane/worker defaults | **CI does not use that file.** `d1-merge-train.yml` writes the digests to `$GITHUB_ENV` — process environment variables, which Compose reads directly. It *also* writes `docker/d1/.env`, and **nothing ever passes that file to Compose**, so the file CI writes is dead weight and the flag CI never needed was never noticed missing |
-
-Instances 1–3 were repaired in PR #603; instance 4 is a one-flag README correction in the same PR.
-They are filed as one finding because they are one defect.
-
-★★ **Instance 4 is the strongest evidence for this finding, and it is worth being blunt about why.**
-It is not a regression this programme introduced — it is **pre-existing**, and it means the documented
-local bring-up has **never worked** for the admitted digests, independently of MinIO. Compose
-auto-loads only `.env` in the PROJECT directory, which is the repository root, because that is where
-`docker-compose.d1.yml` lives. The correct idiom already exists one directory away
-(`docker/campaign/docker-compose.campaign.yml:11` documents `--env-file docker/campaign/.env.campaign`).
-So the defect is not obscure, and nobody was wrong about Compose — **nobody ever ran the command.**
+Instance 4 is **pre-existing** and is listed first because it is the strongest evidence and the most
+general lesson. All four were repaired in PR #603 — 1–3 as part of the `E6-F021` repair, 4 as a
+one-flag README correction. They are filed as one finding because they are one defect.
 
 ### A fifth instance, of the METHOD rather than the environment
 
-The four above are defects the *lanes* cannot see. This one is a defect in the **sweep that was
+The four above are defects nothing executes or the lanes cannot see. This one is a defect in the **sweep that was
 supposed to find them**, and it is recorded here because it has the identical signature: a clean
 result about a set that was never examined.
 
@@ -2132,10 +2151,22 @@ seventeen workflow sites write control-plane / worker / fake-provider and never 
 Either of these closes it; the first is stronger.
 
 1. **Exercise the documented path.** A job that performs the README's own steps —
-   `cp docker/d1/.env.example docker/d1/.env`, then `docker compose up` — rather than the lane's
-   bespoke bring-up. This is the only thing that can catch the class rather than its current members;
-   it would have caught all three. Its cost is a second bring-up, and it must NOT be allowed to
-   become a copy of the lane's route, or it stops testing the human path and the finding regenerates.
+   `cp docker/d1/.env.example docker/d1/.env`, then the documented `docker compose …` line verbatim —
+   rather than the lane's bespoke bring-up. This is the only thing that can catch the class rather
+   than its current members; it would have caught **all four**. Its cost is a second bring-up, and it
+   must NOT be allowed to become a copy of the lane's route, or it stops testing the human path and
+   the finding regenerates.
+1b. **Or, cheaper and static: check that a README's documented commands are the commands the lane
+   actually runs.** Extract the fenced/inline commands from a lane's README and require each to
+   appear in, or be reconciled against, that lane's workflow. This is what would have caught
+   instance 4 without a second bring-up — the README said
+   `docker compose -f docker-compose.d1.yml up` and the lane ran something else, and no artefact
+   recorded the disagreement.
+1c. **And the dead-weight rule, which is the shape that hid it: any `.env` (or similar) a lane
+   WRITES must either be passed to something or deleted.** `d1-merge-train.yml` writes
+   `docker/d1/.env` and passes it to nothing. A file that exists, has plausible contents and is read
+   by nobody is indistinguishable from one that works, and that resemblance is what made instance 4
+   survive. Cheap, pure-node, and it generalises past this lane.
 2. **At minimum, a static agreement check**: every `AOA_D1_*_IMAGE` in `docker/d1/.env.example` must
    either match the corresponding `docker-compose.d1.yml` default or be absent. Cheap, pure-node,
    runnable in `policy`. It catches #3 and nothing else — it is blind to #1 and #2, which are
