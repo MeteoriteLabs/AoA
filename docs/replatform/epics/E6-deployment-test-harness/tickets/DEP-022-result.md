@@ -89,7 +89,7 @@ phase **before** the denial is classified. Ruling F10's requirement, and this la
 | `cross.lease` | B's session + device key + worker id renew A's live lease | A's own renew returns `renewed` |
 | `cross.read` | `job_events` read under B's tenant GUC on the non-owner `aoa_app` pool | the same read under A's scope returns rows |
 | `cross.cancel` | the PRODUCTION reconciliation service under B's org/company against A's job | the same service cancels A's own throwaway job |
-| `cross.events` | B's worker uploads onto A's fence (A's org, company, job, lease, fence; B's worker id) | A's own batch is `accepted` |
+| `cross.events` | B's worker uploads onto A's fence, and ACKs A's lease (A's org, company, job, lease, fence; B's worker id) | A's own batch is `accepted`; the shared `evaluateCrossTenantIsolation` verdict decides (see §3.4) |
 | `cross.secrets` | B's worker redeems A's handle | **A's own redemption RESOLVES** — see below |
 | `cross.staged_inputs` | B's worker requests a DOWNLOAD grant on A's committed artifact (see §3.3) | A's own download grant is `download_granted` |
 | `cross.outputs` | B's worker commits onto A's attempt | A's own commit is `committed` |
@@ -186,6 +186,26 @@ The upload pair is kept as a recorded second observation, never as the control.
 twin left behind is worse than the original: the next reader sees a fixed neighbour and assumes the
 family is handled. Both cases now assert the same download pair, and the D1 one is proven on the
 lane's own live `m1-fault-matrix` job.
+
+### 3.4 A second predicate for an injection that already had one — RAISED BY CODEX (round 2)
+
+**The class:** *a driver that restates a shared verdict instead of calling it, so the two drift.*
+
+`d2m.tenant.cross.events` classified on `status !== 200 || ack !== "accepted"`. Under that
+predicate a 500, a transport-shaped failure or a malformed 200 all read as a DENIAL while proving
+no enforcement whatever — and `evaluateCrossTenantIsolation`
+(`scripts/lib/m1-spine-assertions.mjs`) already carries a comment about exactly that trap, from its
+own Codex P2 on PR #566.
+
+Fixed by **deleting the second predicate**: the driver now builds DEP-016's own observation shape
+and calls `evaluateCrossTenantIsolation`, so both lanes share one verdict. That pins the upload
+refusal AND the ack refusal to their exact status+code, requires the owner's own upload to be
+accepted, requires the foreign scope to read zero and the owner's to read more, and requires the
+hostile batch to have minted no usage event and no cost row. The driver also performs the hostile
+ACK the first version never made, and asserts the FULL verdict — not only the two codes the row
+classifies on, because a foreign ack that was ACCEPTED is an isolation failure no `cross.events`
+classification names. `FOREIGN_STATUS`/`FOREIGN_CODE` are now IMPORTED from that same module rather
+than re-chosen: a copy is a thing that drifts.
 
 ### 3.3 A row fact asserted but not measured
 

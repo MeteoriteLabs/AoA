@@ -49,6 +49,13 @@
 
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 
+import {
+  EXPECTED_FOREIGN_ACK_CODE,
+  EXPECTED_FOREIGN_ACK_STATUS,
+  evaluateCrossTenantIsolation,
+  formatViolations as formatIsolationViolations,
+} from "../lib/m1-spine-assertions.mjs";
+
 /** Rows whose injection never fired print this so the lane's suppression control can prove the
  * red came from the injection and not from a bring-up failure. */
 export const CROSS_TENANT_EVIDENCE_MARKER = "[cross-tenant:evidence]";
@@ -60,9 +67,10 @@ const AGENT_MODEL = "claude-sonnet-4-6";
 
 /** The refusal a foreign worker gets on the fenced worker-control surface. Pinned rather than
  * "anything non-200": a `malformed` is a PROTOCOL refusal that never reaches the tenant boundary,
- * and a 500 proves no enforcement whatever. Mirrored from `scripts/lib/m1-spine-assertions.mjs`. */
-const FOREIGN_STATUS = 409;
-const FOREIGN_CODE = "stale_fence";
+ * and a 500 proves no enforcement whatever. IMPORTED from `scripts/lib/m1-spine-assertions.mjs`,
+ * not re-chosen — a copy is a thing that drifts. */
+const FOREIGN_STATUS = EXPECTED_FOREIGN_ACK_STATUS;
+const FOREIGN_CODE = EXPECTED_FOREIGN_ACK_CODE;
 
 class CrossTenantError extends Error {}
 
@@ -274,6 +282,8 @@ export async function runCrossTenantCases({ tenants, ownerSql, suppressInjection
     fail(`the owner's own event upload must be ACCEPTED, else every denial below is indistinguishable from a broken ingest: ${truncate(ownUpload.body)}`);
   }
 
+  const before = step(H.querySpineAttempt({ organizationId: A.organizationId, jobId: victim.ids.jobId }), "rows before");
+
   // HOSTILE: the attacker's session and device key, the ATTACKER's worker id with the VICTIM's
   // Organization, Company, job, lease and fence — so a refusal cannot be the session-vs-batch
   // identity check (the DEP-016 lesson).
@@ -288,24 +298,82 @@ export async function runCrossTenantCases({ tenants, ownerSql, suppressInjection
     batch: { ...batchIdentity(hostileIds, A, victim.offer), events: hostileDigested.events },
   }), "hostile upload");
 
+  // HOSTILE ACK of A's lease by B's worker — the second half of the same surface, and one the
+  // event-upload arm alone does not reach.
+  const hostileAck = step(H.ack({
+    session: hostile.session, workerId: hostile.ids.workerId, jobId: victim.ids.jobId,
+    attempt: victim.offer.job.attempt, leaseId: victim.offer.leaseId, fenceToken: victim.offer.fenceToken,
+    deviceKey: hostile.deviceKey,
+  }), "hostile ack");
+
   const foreignRead = step(H.queryJobEventsAsApp({ jobId: victim.ids.jobId, scopeOrganizationId: foreignOrg }), "foreign read");
   const ownRead = step(H.queryJobEventsAsApp({ jobId: victim.ids.jobId, scopeOrganizationId: A.organizationId }), "own read");
   if (!(ownRead.total > 0)) {
     fail(`the owner's own tenant scope must SEE its own events, else a zero foreign count proves nothing: ${truncate(ownRead)}`);
   }
+  const afterRows = step(H.querySpineAttempt({ organizationId: A.organizationId, jobId: victim.ids.jobId }), "rows after");
 
-  const hostileEventDenied = hostileUpload.status !== 200 || hostileUpload.body?.ack?.status !== "accepted";
+  // ★★★ THE VERDICT IS DEP-016's OWN, REUSED RATHER THAN RESTATED (Codex P1 on PR #600, round 2,
+  // and the finding was right). The first version classified this case on
+  // `status !== 200 || ack !== "accepted"` — under which a 500, a transport-shaped failure or a
+  // malformed 200 all read as a DENIAL while proving no enforcement whatever. That is the exact
+  // trap `evaluateCrossTenantIsolation` already carries a comment about, from its own Codex P2 on
+  // PR #566. A second predicate for the same injection is a thing that drifts from the first, so
+  // there is now only one: `scripts/lib/m1-spine-assertions.mjs`, shared by both lanes. It pins the
+  // upload refusal AND the ack refusal to their exact status+code, requires the owner's own upload
+  // to be accepted, requires the foreign scope to read zero and the owner's to read more, and
+  // requires the hostile batch to have minted no usage event and no cost row.
+  const observation = {
+    hostileEventUpload: {
+      status: hostileUpload.status,
+      ackStatus: hostileUpload.body?.ack?.status ?? null,
+      code: hostileUpload.body?.code ?? null,
+    },
+    ownEventUpload: {
+      status: ownUpload.status,
+      ackStatus: ownUpload.body?.ack?.status ?? null,
+      code: ownUpload.body?.code ?? null,
+    },
+    hostileAck: { status: hostileAck.status, outcome: hostileAck.body?.outcome ?? null, code: hostileAck.body?.code ?? null },
+    foreignScopeEventCount: foreignRead.total,
+    ownScopeEventCount: ownRead.total,
+    costRowsBeforeHostile: before.costRows.length,
+    costRowsAfterHostile: afterRows.costRows.length,
+    usageEventsBeforeHostile: before.usageEvents.length,
+    usageEventsAfterHostile: afterRows.usageEvents.length,
+  };
+  const isolationViolations = evaluateCrossTenantIsolation(observation);
+
   record("d2m.tenant.cross.events", {
     injectionFired: injected && typeof hostileUpload.status === "number" && hostileUpload.status !== 0,
-    observedClassification: hostileEventDenied ? "denied_with_same_tenant_positive_control" : "not_denied",
+    observedClassification: isolationViolations.some((v) => v.code.startsWith("isolation:foreign_event") || v.code === "isolation:own_event_denied")
+      ? "not_denied" : "denied_with_same_tenant_positive_control",
     positiveControlPassed: ownUpload.status === 200 && ownUpload.body?.ack?.status === "accepted",
-  }, { hostile: responseFacts(hostileUpload), hostileAckStatus: hostileUpload.body?.ack?.status ?? null, own: responseFacts(ownUpload) });
+  }, {
+    hostileUpload: observation.hostileEventUpload,
+    ownUpload: observation.ownEventUpload,
+    hostileAck: observation.hostileAck,
+    expectedForeignRefusal: { status: FOREIGN_STATUS, code: FOREIGN_CODE },
+    usageEventsBeforeHostile: observation.usageEventsBeforeHostile,
+    usageEventsAfterHostile: observation.usageEventsAfterHostile,
+    costRowsBeforeHostile: observation.costRowsBeforeHostile,
+    costRowsAfterHostile: observation.costRowsAfterHostile,
+    violations: isolationViolations,
+  });
 
   record("d2m.tenant.cross.read", {
     injectionFired: injected && foreignRead.ok !== false && typeof foreignRead.total === "number",
     observedClassification: foreignRead.total === 0 ? "denied_with_same_tenant_positive_control" : "not_denied",
     positiveControlPassed: ownRead.total > 0,
   }, { foreignScopeEventCount: foreignRead.total, ownScopeEventCount: ownRead.total, foreignScopeOrganizationId: foreignOrg });
+
+  // The FULL verdict is asserted, not only the two codes the row above classifies on: a foreign
+  // ACK that was accepted, or a cost row minted by the hostile batch, are isolation failures that
+  // no `cross.events` classification names.
+  if (isolationViolations.length > 0) {
+    fail(`cross-tenant isolation violations:
+${formatIsolationViolations(isolationViolations)}`);
+  }
 
   // ── 3. lease renew ─────────────────────────────────────────────────────────
   const ownRenew = step(H.leaseRenew({
