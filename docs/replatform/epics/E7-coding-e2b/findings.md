@@ -4628,3 +4628,74 @@ any of them would be invented ownership.
 committed file IS announced (non-vacuity — assert the announcement exists and names that artifact,
 not merely that the run survived) and that the hung file is not. A test asserting only that the
 window reports `timed_out` passes against the defect verbatim.
+
+---
+
+## E7-F046 — a committed export artifact's relative path is durable NOWHERE on the control plane, so `CLI-014`'s `detectedFiles` outcome is unsatisfiable without a frozen-v1 widening
+
+**Status:** open · **Owner:** `CLI-014` · **Severity:** MEDIUM
+
+**Filed** 2026-09-24 by `CLI-014`'s owed design step (`tickets/CLI-014-design.md`), measured at
+`eb8458bb3538c99ee5cb54b6872202c5f268dd74`. MEDIUM because it blocks a chartered ticket's headline
+Outcome and leaves a founder-visible product gap (a committed artifact the founder cannot identify
+by name), while weakening no guarantee and admitting no attacker: everything below is a deliberate
+`.strict()` refusal working as designed.
+
+**What it is.** `CLI-014`'s Outcome is that *"`detectedFiles` is folded from the `artifact_prepared`
+events rather than hard-coded"*, and its design item 1 requires *"a durable relative path, scoped by
+tenant, job, attempt and status"* whose *"provenance must be durable at commit time, not
+reconstructed at projection time"*. The task section already knows the announcement carries no path.
+**It also is not durable at commit time, and this is the measurement the task section does not
+have:** the path is dropped at every boundary between the sandbox listing and the `job_artifacts`
+row, and no column, payload or object key preserves it.
+
+**Verified at source.**
+
+- `createExportRequestProducer` (`packages/worker-daemon/src/lease/export-request-producer.ts`)
+  produces `ArtifactExportRequest.path` — the absolute in-sandbox path under the ruled output root.
+- `exportArtifactId` (`packages/worker-daemon/src/lease/artifact-export.ts`) derives the artifact
+  identity as `deterministicUuid("artifact-export:<jobId>:<attempt>:<path>")`. That is a **one-way**
+  digest: the identity is stable under retry, which is its purpose, and the path is unrecoverable
+  from it.
+- The object key is the attempt prefix plus that same `artifactId` (same file) — the digest again.
+- The commit manifest is `artifactManifestV1Schema`
+  (`packages/worker-protocol/src/artifacts.ts`): `.strict()`, with
+  `protocolVersion, organizationId, companyId, jobId, attempt, artifactId, kind, sensitivity,
+  retention, objectKey, sizeBytes, sha256, contentType, createdAt`. **There is no path field, and
+  `.strict()` refuses one.**
+- `jobArtifacts` (`packages/db/src/schema/job_artifacts.ts`) has `identifier` (the opaque digest id),
+  `objectKey`, `sha256`, `sizeBytes`, `contentType`, `kind`, `versionNumber`, `attempt`, `status` and
+  the DAT-003/DAT-006/DAT-009 dispositions. **No path column.**
+- `announcementsFor` (`packages/worker-daemon/src/supervisor/supervisor.ts`) is the one place that
+  still holds both halves — it joins `exported` back to the requests **by `ref.path`** — and emits
+  `artifactPreparedPayloadV1Schema.parse({ artifactId: ref.artifactId, kind })`. The path is in
+  scope, in a local `Map`, and deliberately not sent.
+
+**Why it cannot be worked around at the projector.** `detectedFiles` is
+`ReadonlyArray<{ path: string; type?: string }>` (`server/src/services/canary-run-projector.ts`) and
+`formatRunSummary` (`server/src/services/run-summary.ts`) renders those `path` values into the
+founder-visible run-summary comment. `foldAttemptEvidence`'s hard-coded `detectedFiles: []`
+(`server/src/services/canary-terminal-projection.ts`) is annotated with this exact reason. Any
+value the projector could put there — the `artifactId`, the object key, a `kind`-derived label — is
+**a path the sandbox never reported**, rendered to the founder in a file-list position, which
+`CLI-014`'s own design item 4 forbids in those words.
+
+**Why `CLI-014` owns it but cannot close it.** The two fixes both widen a frozen v1 schema:
+(1) carry the relative path on `artifactPreparedPayloadV1Schema`, or (2) carry it on
+`artifactManifestV1Schema` and add a `job_artifacts` column. Either re-mints the hash-pinned frozen
+consumer fixture (`check:frozen-worker-protocol-v1`, which pins the whole
+`packages/worker-protocol/src` tree at a recorded source sha), and (2) also contradicts `CLI-014`'s
+own *"additive; no schema change"* migration note. The commit path is `CLI-012`/`DAT-009`'s, and
+`E7-D11` (ruling F7) declined to move the protocol axis. So the disposition is a **ruling**, not a
+build: descope `detectedFiles` and keep the materialization residue, widen the wire, or close
+`CLI-014` as delivered-by-`JOB-017` and re-file the residue. `tickets/CLI-014-design.md` lays the
+three out and rules none.
+
+**What would close it.** Whichever of the three the ruling picks, plus — for the widening arm — a
+leak review of the new field, because the path is tenant-authored: `ArtifactExportFailedError`'s
+outcome channel is path-free *on purpose* (*"only the stage and the path are reported"*, and only
+`stage` plus the normalised `reason` cross into the outcome), and `E7-D11`'s Observability clause
+permits only *"the declared relative path"* — which is precisely the value that does not exist
+today. A test asserting merely that `detectedFiles` is non-empty passes against a fabricated path
+and proves nothing; the arm that matters asserts the rendered entry equals the path the sandbox
+listing reported, end to end.
