@@ -35,6 +35,7 @@ source**, and closes it.
 | `d1.reconcile.worker_startup_lease_probe` fires | **DONE** (§3), `pending` → `required` |
 | `d1.provider.worker_terminal_mapping` fires | **DONE** (§4), `pending` → `required` — and it needed NO new mechanism |
 | `--aoa-fake-echo-env` | **DELIBERATELY NOT ADDED** (§5) — the brief's premise for it is false at `HEAD`, measured at source |
+| ★ `E3-F041` — a HIGH **production** defect, found because the case could not fire | **FILED and RULED** (§5b). Explicitly NOT the cause of this ticket's own failures |
 | Clause 5's D1 redaction case → `required` | **NOT DONE, and it cannot be** (§5). Its `pendingReason` named a remedy that does not work; that reason is superseded in place, dated, and the blocker is re-pointed at the ruling that owns it |
 
 ---
@@ -359,6 +360,103 @@ superseded by this measurement. **That record is not edited by this ticket** —
 ★ The live two-directional blocker proof (the test *"THE CLAUSE-5 BLOCKER, measured live"*) is
 **unchanged** and still reds the day either the value or the marker appears, so the corrected
 declaration cannot outlive its reason either.
+
+---
+
+## 5b. ★★★ `E3-F041` — a PRODUCTION defect, found because the case could not fire
+
+**The most valuable thing this ticket produced was not the harness.** While measuring why an
+injection attempt was never offered, the lease-candidate predicate turned out to contain a silent,
+permanent production stall. It is filed as **`E3-F041` (HIGH)** and ruled on as
+**`E3-D-GEN-INVALIDATION`**, both independent of this ticket's test case.
+
+**The chain, all at source.**
+
+| # | Fact | Where |
+|---|---|---|
+| 1 | The lease-candidate predicate pins the generation by **EQUALITY** against the polling worker's current target generation, at each of its four candidate/claim sites | `packages/db/src/repositories/tenant/job-control.ts`, `eq(jobAttempts.placementTargetGeneration, input.targetGeneration)` |
+| 2 | Re-enrolment of an **already-bound** worker bumps that generation and leaves the target **ACTIVE** | `server/src/services/worker-enrollment.ts` → `advanceTargetGeneration`, which increments under `ne(executionTargets.status, "disabled")` |
+| 3 | **Nothing converges the attempts left behind.** The only convergence path is driven solely off `execution_target_revocations` rows, inserted at exactly one site — the explicit operator revocation path | `server/src/services/execution-target-revocation-fanout.ts` (`inArray(executionTargetRevocations.status, ["pending","converging"])`); `revokeExecutionTarget`, `server/src/services/execution-targets.ts` |
+
+So after a device rotation every `pending` attempt already placed for that target carries generation
+`G` while the worker polls as `G+1`, and can never be a candidate again.
+
+**What an operator observes: nothing.** The job does not run — and does not fail, time out, retry or
+get re-placed, with no log line on any path. Plus a pinned Organization capacity slot whenever the
+stranded attempt was `held`, so the blast radius is the tenant's whole admission, not one job.
+
+★ **The strongest evidence is the codebase arguing this against itself.** The revocation fanout's own
+Phase-1b comment records that a generation-pinned successor *"can never lease"*, that
+`guardActiveFence`'s `target_revoked` *"never fires"*, that `countHeldAttemptsForOrg` *"pins an org
+slot forever"*, and that *"nothing else reaps a lease-less nonterminal attempt."* Revocation was given
+a fanout for exactly that reason; re-enrolment advances the same column on a live target and was given
+none. **An omission, not a design.**
+
+### 5b.1 ★ It is NOT the cause of this ticket's failures, and the two are kept apart deliberately
+
+A worker RESTART with a persisted device identity does **not** re-enrol: the boot path takes the
+`refreshSelfHello` branch (`packages/worker-daemon/src/bin/worker-daemon.ts`, `if (current !== null)`)
+and `server/src/services/worker-hello-refresh.ts` reads `principal.targetGeneration` without advancing
+it. So none of this ticket's restarts bumped the generation.
+
+**Stated because the temptation runs the other way:** a finding this good would be a convenient
+explanation for a case that will not fire, and letting it serve as one would be the same
+false-excuse defect the `M1a` QA owner caught at `SPINE-MATRIX-3`. Why the injection arm's attempt is
+never offered remains **OPEN** in §9.1, and `E3-F041` says so in its own text as well as here.
+
+### 5b.2 ★★★ Three inference errors on ONE fact, and what they cost
+
+This fact was got wrong **twice in opposite directions** before it was measured:
+
+| Attempt | What I checked | What I concluded | Verdict |
+|---|---|---|---|
+| 1 | which FUNCTIONS bump `device_generation` | a restart does not bump it | right, by luck |
+| 2 | that ENROLMENT bumps it | a restart does bump it, so cycle 5's fix is the cure | **wrong** — never checked whether boot enrols |
+| 3 | the BOOT BRANCH + the refresh service | a restart does NOT bump it | measured, and final |
+
+Attempt 2 was reported to the coordinator as a correction of attempt 1. **A correction is as suspect
+as the thing it corrects**: reversing a position is not evidence of convergence, and the reversal
+here was reasoning, not measurement. The lesson is sharper than *"measure before dispatching"* —
+**measure the whole CHAIN, not the link you happened to open.** Cycles 3 and 5 were both dispatched
+on a link rather than a chain, which is what made them cost wall-clock without a prediction worth
+having.
+
+### 5b.3 The ruling, and its two binding conditions
+
+`E3-D-GEN-INVALIDATION` (founder delegation F2, 2026-09-24) chooses **explicit invalidation enqueued
+from `advanceTargetGeneration`** and **refuses the generation floor** — a floor would let a
+pre-rotation placement lease onto a rotated device, trading a CORRECTNESS guarantee for an
+AVAILABILITY one when the defect is availability-only.
+
+1. **Conditional on live confirmation.** No fix may be built against an unobserved defect. The
+   reproduction — re-enrol a bound worker while one of its jobs sits `pending` and placed; assert the
+   attempt is never offered, never terminalises, and nothing is logged — must be recorded in
+   `E3-F041` before the owning ticket starts. **This ticket did not run it**, because its own failures
+   are not this defect and manufacturing a re-enrolment was outside its brief.
+2. **The capacity leak is part of the fix.** The invalidation must also release the pinned
+   Organization slot; the owning ticket may not close on half the defect.
+
+The equality pin itself is explicitly **not** relitigated.
+
+### 5b.4 ★ Register hygiene, and rule E.2 catching its own class
+
+Filing this touched two shared registers, and the E.2 delta assertion earned its keep immediately.
+Writing `scripts/finding-ownership.json` from the **fetched base** — which E.2 step 2 prescribes —
+would have imported **`E0-F022`**, a key another branch added while this one worked and whose
+*finding* is not in this tree; `check-finding-ownership` reds on exactly that mismatch. The file
+written is therefore **this tree's copy plus exactly `E3-F041`**, asserted key by key (96 → 97, one
+added, none dropped, none mutated). **Flagged for the merge: the base carries `E0-F022` and this
+branch does not, and BOTH keys must survive** — `E0-F021` records the merge-time half of this class.
+
+★ Measured in passing and recorded rather than silently widened: `EPIC_DECISION_HEADING`
+(`scripts/lib/register-id-uniqueness.mjs`) is `/^#{2,4}\s+([A-Z][A-Z0-9]*-D\d+)(?=\s|$)/`, which
+requires `-D<digits>`. E3's `decisions.md` uses MNEMONIC ids (`E3-D-ACC`, `E3-D-AUDIT-SET`,
+`E3-D-OUTPUT-MAP`, `E3-D-TERMINAL-WINNER`), so **none of E3's epic-decision ids is scanned for
+uniqueness** — the four that existed before this ticket included. `E3-D-GEN-INVALIDATION` follows the
+register's own convention rather than breaking it unilaterally. **Not filed as a finding**, and the
+reason is stated rather than left implicit: it is a docs-register gap with no runtime effect and no
+observed collision, and filing it would be inflating a naming-convention mismatch into a defect.
+Reconciling the two conventions is a register-custodian act, not this ticket's.
 
 ---
 
