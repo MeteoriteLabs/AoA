@@ -169,6 +169,40 @@ Recorded by the reviewer against the PR head. Local, at the reviewed revision:
 `@armyofagents/provider-capability` dists are not built in this environment; the set is unchanged by
 this slice.
 
+
+## CI on the final head — `verify (1)` is RED on a DIAGNOSED harness port collision, not on this diff
+
+**Measured, not assumed.** All four `verify` shards, `e2e`, `policy`, `migrations`, `lint`,
+`browser`, `distributed-contract`, `brand-check` and **`ci-required`** were **pass** on
+`e610a5a72` — the last head carrying code. The only delta to `87005e7b0` is a single Markdown file
+in `docs/replatform/`, yet `verify (1)` then failed **twice**, and on a DIFFERENT test of the same
+file each time (`distributed-execution-db-startup.integration.test.ts`).
+
+**The cause, read out of the captured child output rather than guessed.** The server **boots
+successfully** — the banner prints, `Auth ready`, `Migrations already applied` — and reports:
+
+```
+Server          58991 (requested 58990)
+API             http://127.0.0.1:58991/api (health: http://127.0.0.1:58991/api/health)
+```
+
+It fell back a port because 58990 was taken. The harness's readiness probe polls
+`http://127.0.0.1:${httpPort}/api/health` — the **requested** port (verified at source in the
+`startServer` helper of that file) — so it can never succeed, and the 30-second race resolves to
+`timeout`. Whichever case happens to draw a colliding port is the one that fails, which is exactly
+the "different test each run" pattern.
+
+**Why it is not this diff:** the server booted, so no module-level regression from the `heartbeat.ts`
+import is involved; a boot break would fail every server suite, and 662 of 663 test files pass. The
+base branch's own `verify (1)` is **success** on the same shard.
+
+**Not fixed here, deliberately.** It is a pre-existing port-allocation race in a harness file this
+ticket does not own, and this PR is already at `M1-BUILD-RULES.md` §C's two-round cap. Reported to
+the planning session with the diagnosis above; the fix is to have the probe read the server's actual
+bound port (the banner already reports it) or to allocate the port with the
+`allocateEmbeddedPgPort`-style helper the other integration suites use rather than assuming a
+requested port is free.
+
 ---
 
 ## Review
