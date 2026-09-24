@@ -107,7 +107,7 @@ services:
     # humans and the digest is what this lane resolves, so a re-cut mirror cannot silently
     # change what the gate brings up. To refresh: dispatch d1-image-mirror.yml, then
     # replace the digest here with the one it prints.
-    image: ${AOA_D1_MINIO_IMAGE:-ghcr.io/meteoritelabs/aoa-d1-minio@sha256:407cbf7543a0018031a1319c5aefafe7edb0bdca351c3bd3b58cfa5153eec5db}
+    image: ${AOA_D1_MINIO_IMAGE:-ghcr.io/meteoritelabs/aoa-d1-minio@sha256:187391a664f95607f5d787e89442df6535ab410bbc7910d2350189183ab92246}
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
       MINIO_ROOT_USER: "aoa-d1"

@@ -6,7 +6,7 @@
 **Implementer:** Claude Opus 5 (M1 build agent)
 **Start SHA:** `3966a01f9f` (`origin/docs/replatform-program`)
 **PR:** #603 (base `docs/replatform-program`)
-**Reviewed revision:** see §9.
+**Reviewed revision:** `FINALSHA`
 
 > `Status` is `gate_review` and may be set to `complete` only by a DISTINCT reviewer, never by this
 > author.
@@ -160,7 +160,27 @@ and a `docker login ghcr.io` step in **all three** jobs that bring the stack up 
 
 ## 7. The acceptance run
 
-*(§9)*
+The brief's acceptance was *"a run that brings the stack up — a green bring-up past the point where
+the nine failures died."* That was met, and then exceeded: the **whole lane** is green.
+
+**Hypothesis before the second dispatch, with both predictions.** *The presign failure in
+`36022608037` was caused by the MinIO VERSION, not by the re-homing; restoring
+`RELEASE.2025-09-07T16-13-09Z` makes E6F-05 and E6F-14 pass.* If right, the campaign goes green. If
+wrong, the presigned PUT still returns `400 … headers … not signed` — which would have said the
+version was a red herring and something about the image's own construction (the root user, the
+static build, the missing upstream entrypoint) was at fault, and would have sent me to compare the
+two builds' request handling rather than their versions.
+
+**Measured: right.**
+
+| run | head | image | *Bring up the D1 stack* | *Run the E6F campaign (live)* |
+|---|---|---|---|---|
+| `36022608037` | `7b133079aa` | Chainguard-derived, MinIO `RELEASE.2026-09-22T19-25-18Z` | **success** | **failure** — E6F-05, E6F-14 |
+| **`36025567413`** | `bb2835a98d` | source-built, MinIO `RELEASE.2025-09-07T16-13-09Z` | **success** | **success** |
+
+★ **The first run is kept in this record on purpose.** It is the one that satisfies the brief's
+literal acceptance, and it is also the one that falsified "any MinIO will do" — a cycle that KILLS a
+line of reasoning is worth recording, not quietly replacing with the cycle that worked.
 
 ## 8. The class sweep (E / E.1)
 
@@ -192,7 +212,109 @@ reproduce the very defect it exists to fix. Checked; it does not.
 
 ## 9. Evidence
 
-*(filled from the acceptance run; see §7)*
+**Acceptance — run `36025567413`, job `d1-merge-train`, conclusion `success`** (head
+`bb2835a98d27d32f8fe60db338625e4e189196c1`). Cited by job and step, not by run conclusion alone,
+because `E6-F023` records that a run conclusion can be blind to its jobs:
+
+| step | conclusion |
+|---|---|
+| Login to GitHub Container Registry (D1 MinIO mirror) | success |
+| Least-privilege assertions on the BUILT images (DEP-001 / WRK-009) | success |
+| **Bring up the D1 stack** | **success** |
+| **Run the E6F campaign (live)** | **success** |
+| Collect distributed evidence (on failure) | skipped (nothing failed) |
+| Tear down the D1 stack | success |
+
+**Executed counts, non-zero** (a campaign that ran nothing would report the same green):
+**47 pass / 0 fail / 0 skipped** and **9 pass / 0 fail / 0 skipped**. The two tests that the wrong
+MinIO version broke are individually green:
+
+```
+✔ E6F-05 … live MinIO: grant(upload) -> PUT -> commit -> grant(download) -> GET round-trip
+✔ E6F-05 … live MinIO: toxiproxy-truncated upload never commits (fail-closed on hash/size)
+✔ E6F-14 … live orphan sweep: fence lost mid-flight -> commit refuses -> the object is DELETED
+```
+
+**RED, recorded rather than smoothed over** — run `36022608037`, same job, *Run the E6F campaign
+(live)* `failure`, `fail 2`:
+
+```
+✖ E6F-05 … AssertionError: presigned PUT must succeed (200/204); got 400:
+  <Error><Code>AccessDenied</Code>
+  <Message>There were headers present in the request which were not signed</Message>…
+✖ E6F-14 … AssertionError: presigned PUT must succeed; got 400: …
+```
+
+**Mirror lane runs.**
+
+| run | event | conclusion | what it proves |
+|---|---|---|---|
+| `36022093784` | push | `skipped`, zero steps | the registration push cannot publish — positive control |
+| `36022154408` | dispatch | `failure` | build + push `success`; the step-summary step exited 2 on a quoting bug, fixed |
+| `36025048514` | dispatch | `success` | first source-built cut, `sha256:407cbf75…` (amd64) |
+| **`36026285594`** | dispatch | **`success`** | **`sha256:187391a6…`, the pinned INDEX** |
+
+The pinned digest was verified to be a real two-platform index, not a single-arch manifest wearing
+an index's name — `mediaType: application/vnd.oci.image.index.v1+json`, with
+`linux/amd64` → `sha256:5db57326…` and `linux/arm64` → `sha256:d89f975e…`.
+
+**Local, before any dispatch:** §5. **Guard set:** the full pure-node set from M1-AGENT-RULES plus
+`check-evidence-immutability --base origin/docs/replatform-program`, run with the changes STAGED
+(so newly-added files are visible to the tracked-file walks) — `failures: 0` before every push.
+`node --test scripts/check-d1-compose.test.mjs` 60/60;
+`node --test docker/images/__tests__/image-pipeline.test.mjs` 13/13.
+
+**Register delta, asserted two-sided against the MERGE REF** (`origin/docs/replatform-program`),
+not against the worktree's own copy — `scripts/workflow-verdict-manifest.json`:
+
+```
+base 26 streams, head 27
+ADDED  : ['d1-image-mirror.yml@*']
+DROPPED: []
+```
+
+Applied as a text-level delta on the base's copy, never by rewriting the file whole.
+
+### 9.1 Guard narrowed, with its control
+
+`docker/images/__tests__/image-pipeline.test.mjs`'s *"no provider credential in the lane"* assertion
+was `!/E2B_API_KEY|secrets\./`, which is **broader than its own name**: it banned every `secrets.`
+reference, including the run's own automatic `GITHUB_TOKEN`, which is not a provider credential and
+cannot reach a provider. It went red on the GHCR login.
+
+It is narrowed **to its stated intent, by allowlist**, and deliberately NOT dodged — writing
+`github.token` to slip past the regex would have left a check that no longer says what it means.
+`laneSecretRefs()` must equal exactly `["GITHUB_TOKEN"]`, so every other `secrets.X` still reds.
+
+| mutant | result |
+|---|---|
+| an E2B key via `secrets` | red |
+| a bare `E2B_API_KEY`, not via `secrets` | red |
+| a model key added alongside the GHCR login | red |
+| a plausibly-innocent extra `secrets.REGISTRY_PASSWORD` | red |
+
+Non-vacuity is asserted first: the real lane genuinely references the token, so the allowlist arm is
+exercised rather than satisfied by an empty set.
+
+### 9.2 Codex
+
+Two findings, both real, both verified at source before fixing, **both the same class**: *CI logs in
+and CI is amd64, so the LOCAL operator path regressed silently.* Fixed together in `24912e59d`.
+
+1. **arm64.** The withdrawn upstream image served a multi-arch manifest LIST, so amd64-only was a
+   silent narrowing. Now `linux/amd64` + `linux/arm64`, pinned by the index digest, cross-compiled
+   NATIVELY (`--platform=$BUILDPLATFORM` + `GOOS`/`GOARCH`), with QEMU used only for the runtime
+   stage's `apt-get`.
+2. **GHCR auth for a local bring-up.** `docker/d1/README.md`'s *Verification* section gains the
+   prerequisite, the `read:packages` scope, the `AOA_D1_MINIO_IMAGE` escape hatch, the architecture
+   note and the re-cut procedure. The package was **not** made anonymously readable — that needs an
+   org admin and `GITHUB_TOKEN` cannot set it, so it is a founder decision, not a build agent's.
+
+Fixing these also caught an invented pin of my own: `setup-qemu-action` was written as
+`c7c53464… # v4.0.0`, which is neither — that sha is `v3.7.0`. Corrected to
+`99012661954931238ded8c8b007157a8430204e1 # v4.4.0`, read from the tags API. Recorded because an
+action pinned to a sha that does not match its comment is precisely the record-rot this programme
+keeps paying for, and I introduced it.
 
 ## 10. Follow-ups, owned
 
