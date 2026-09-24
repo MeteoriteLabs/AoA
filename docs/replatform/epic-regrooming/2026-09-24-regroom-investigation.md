@@ -321,12 +321,12 @@ UNWIRED"; `MIG-005-006-007-shadow`: "SHADOW ONLY". **These are not a discipline 
 the discipline working, recorded in a format no guard can read.** The missing thing is a token, not
 an assessment.
 
-**Which are still checkable:** all 42 in (a) and all 46 in (b) are claims about code. (b)'s claims
+**Which are still checkable:** all **44** in (a) and all 46 in (b) are claims about code. (b)'s claims
 are the *easier* kind — "this is unwired" is falsifiable in one grep, and several are already stale
 in the true direction (`MIG-009-drain`'s `unwired` was superseded by `MIG-009-wiring-result.md` and
 the register now reads `wired`).
 
-**Which are no longer verifiable:** the 12 in (c), and they fall into three named causes —
+**Which are no longer verifiable:** the **10** in (c), and they fall into **two** surviving named causes — the third, "expiring or transient evidence", is retracted below and is empty —
 
 - **no anchor at all:** `DAT-003`, `DAT-004` ("COMPLETE … all local gates green") name no SHA, no
   run and **no test file**; `DAT-009-slice-1`, `DAT-010`, `TRACK-001` give only a *design* Start SHA
@@ -533,7 +533,7 @@ exclude `tickets/` — its own comment says so — but `artifact-policy.md` free
 **policy** the moment its status becomes `complete`: "Once status becomes `complete`, the file is
 frozen; a later correction creates a finding and a new ticket/result rather than rewriting approved
 evidence." Every class-(a) record asserts completion in prose. So the proposal would have directed
-an agent to edit 42 frozen records, and the guard's silence would have let it.*
+an agent to edit **44** frozen records, and the guard's silence would have let it.*
 
 So the status is recorded **beside** the records, never inside them: one reviewed index keyed by
 ticket id, which Job A's aggregate reads. It has three further advantages over the backfill, which is
@@ -569,17 +569,39 @@ artefact's authority behind it.
 
 **So Job B splits by direction.** A (b) entry is transcription and lands with the index. **An (a)
 entry may not lift an id until an independent adoption review has run for that ticket** — which is
-per-ticket work, not a sweep, and is the real reason the 42-record class is not cheap. Until its
+per-ticket work, not a sweep, and is the real reason the **44**-record class is not cheap. Until its
 review exists, an (a) id stays **not complete** in the index, which is the fail-closed direction
 Job A already defaults to. ★ *This does not re-cost Job B as written: the index and its (b) entries
 are still ~2 agent-days. What it removes is the assumption that the (a) entries come free with
 them.*
 
-★ Where an index entry disagrees with its record, **the record wins and the index cites it**; the
-index is a machine-readable view of the ledger, never a second source of truth.
+★★★ **PRECEDENCE, and my first statement of it CANCELLED the review requirement I had just
+added.** *Corrected 2026-09-24 (Codex P1, fifth round).* **Superseded text:** *"Where an index entry
+disagrees with its record, **the record wins and the index cites it**; the index is a
+machine-readable view of the ledger, never a second source of truth."* For an unreviewed class-(a)
+ticket the index must say **not complete** while the record's prose says `COMPLETE` — that
+disagreement is the **normal** state, not an error — so "the record wins" lifts the id immediately
+and lets `findCompletedTicketIds` suppress ownership **before** the adoption review it is waiting
+for. It would also override a review that **found uncovered deltas**, which is the one outcome the
+review exists to produce.
+
+**The authority is the approved adoption or supersession disposition, not the raw prose.** Precisely:
+
+- an id is complete only when an **approved** disposition says so — an adoption review for a
+  class-(a) ticket, or the reviewed supersession entry for a ticket whose later result completes an
+  earlier partial one (§Job A);
+- **absent an approved disposition the id is not complete**, whatever any record's prose asserts.
+  Prose is evidence for a review, never a substitute for one (`qa-handoff-recovery.md` §2);
+- the index still **cites** the records rather than restating them, and it may not record a status
+  no disposition supports — so it remains a view of the ledger and never a second source of truth.
+
+★ The superseded sentence was written to prevent the index drifting from the ledger, which is a real
+risk; it just encoded "the ledger" as *whatever a file says* rather than *what a reviewer approved*.
+Those coincide only where the discipline was already applied, which is the 77 records this whole
+section is about **not** being.
 
 **Job C — the 10 records in class (c). 1 ticket, ~1 agent-day, and it is a filing job.**
-Do **not** re-measure them. Mark each `unverifiable` with its named cause (§2.2's three causes) and,
+Do **not** re-measure them. Mark each `unverifiable` with its named cause (§2.2's two surviving causes) and,
 where the claim still matters to a milestone, file the re-measurement as its own ticket against that
 milestone.
 
@@ -629,7 +651,7 @@ than inventing one.
 
 Stated explicitly, because a negative audit is only as good as the set it enumerates.
 
-1. **Whether the (a)-class records are actually true.** I classified 42 records as *checkable*
+1. **Whether the (a)-class records are actually true.** I classified **44** records as *checkable*
    claims about code. I did **not** check them. "Still checkable" is a property of the record, not a
    verdict on the code, and nothing here should be read as revalidating them.
 2. **RTF-05.** Both halves exist and are separately exercised; I found no harness exercising the
