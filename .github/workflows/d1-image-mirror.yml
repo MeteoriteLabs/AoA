@@ -15,6 +15,17 @@ name: D1 Image Mirror
 # `AOA_D1_MINIO_IMAGE` default in `docker-compose.d1.yml`. Pinning by DIGEST rather
 # than by tag is the point — a tag we control is still a tag, and a moved tag would
 # silently change what the gate lane brings up.
+#
+# ★ TRIGGERS — the E6-D001 registration pattern, exactly as `m1-shipped-boot.yml`
+# documents it. GitHub will not dispatch a workflow that is not on the default branch
+# until it has run once: the first attempt here returned
+# `HTTP 404: workflow d1-image-mirror.yml not found on the default branch`, which is
+# the measured failing prediction that produced this block. So the file carries a
+# REGISTRATION-ONLY push trigger whose `paths:` is THIS FILE ONLY (no code change can
+# ever fire it), and the single job is gated
+# `if: github.event_name == 'workflow_dispatch'`, so a push-created run executes ZERO
+# steps, pushes nothing and touches no registry. `claude/**` is in `branches:` because
+# a build agent registers the lane on its own branch before the pin lands.
 
 on:
   workflow_dispatch:
@@ -34,12 +45,23 @@ on:
         default: "d1"
         type: string
 
+  push:
+    branches:
+      - docs/replatform-program
+      - "claude/**"
+    paths:
+      - ".github/workflows/d1-image-mirror.yml"
+
 permissions:
   contents: read
   packages: write
 
 jobs:
   mirror:
+    # Registration-only pushes must execute ZERO steps: a push-created run that
+    # published would make an unreviewed workflow edit a publish, and a run that
+    # "succeeded" without building anything is a check that nothing runs.
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
