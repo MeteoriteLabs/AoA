@@ -719,14 +719,17 @@ test("fault-matrix: cross-tenant staged inputs + outputs — denied, with same-t
   // Pinned, for the same reason as the lease surface above.
   const grantDenied = hostileGrant.status === EXPECTED_FOREIGN_ACK_STATUS && hostileGrant.body?.code === EXPECTED_FOREIGN_ACK_CODE;
   const grantControl = ownGrant.body?.outcome === "upload_granted";
-  record("d1.tenant.cross.staged_inputs", {
-    injectionFired: typeof hostileGrant.status === "number" && hostileGrant.status !== 0,
-    observedClassification: grantDenied ? "denied_with_same_tenant_positive_control" : "not_denied",
-    positiveControlPassed: grantControl,
-    detail: { hostile: responseFacts(hostileGrant), own: responseFacts(ownGrant) },
-  });
   assert.equal(grantControl, true, `the owner's own grant must succeed: ${truncate(responseFacts(ownGrant))}`);
   assert.equal(grantDenied, true, `a foreign worker's transfer grant must be denied ${EXPECTED_FOREIGN_ACK_STATUS} ${EXPECTED_FOREIGN_ACK_CODE}: ${truncate(responseFacts(hostileGrant))}`);
+  // ★ THE ROW IS RECORDED BELOW, AFTER THE COMMIT, and it classifies on the DOWNLOAD pair.
+  // THE CLASS (Codex P1 on PR #600, DEP-022, and the finding was right): *a surface certified
+  // through ONE operation of a route that has TWO, each with its own tenant-scoped lookup.* The
+  // upload arm is a fence check over a key PREFIX; production staged-input resolution
+  // (`packages/worker-daemon/src/__tests__/staged-input-resolver.test.ts`) asks for a `download`
+  // grant on an ALREADY-COMMITTED artifact, and that branch has its own tenant-scoped
+  // `repos.jobArtifacts.findCommitted` and the tree's ONLY production `presignGet` call site
+  // (`server/src/services/artifact-transfer-grant.ts`). A regression in either would have left
+  // this case green. The upload pair stays, as a recorded second observation.
 
   // ── outputs: the artifact-commit surface ──
   const put = step(putPresignedBytes({ url: ownGrant.body.grant.url, bodyBase64: bodyBytes.toString("base64") }), "put bytes");
@@ -758,6 +761,34 @@ test("fault-matrix: cross-tenant staged inputs + outputs — denied, with same-t
   });
   assert.equal(commitControl, true, `the owner's own commit must succeed: ${truncate(ownCommit.body)}`);
   assert.equal(commitDenied, true, `a foreign worker's commit must be denied ${EXPECTED_FOREIGN_ACK_STATUS} ${EXPECTED_FOREIGN_ACK_CODE}: ${truncate(hostileCommit.body)}`);
+
+  // ── staged_inputs: the DOWNLOAD grant, on the now-COMMITTED artifact ──
+  // See the comment above the upload arm. This is the branch production takes, and it is the one
+  // this case classifies on.
+  const hostileDownload = step(artifactTransferGrant({
+    session: attacker.session, operation: "download", ...victimFence, workerId: attacker.ids.workerId,
+    artifactId, expectedObjectKey: objectKey, expectedSha256: sha256Hex, maxBytes: bodyBytes.length,
+    deviceKey: attacker.deviceKey,
+  }), "hostile download grant");
+  const ownDownload = step(artifactTransferGrant({
+    session: victim.session, operation: "download", ...victimFence,
+    artifactId, expectedObjectKey: objectKey, expectedSha256: sha256Hex, maxBytes: bodyBytes.length,
+    deviceKey: victim.deviceKey,
+  }), "own download grant");
+  const downloadControl = ownDownload.body?.outcome === "download_granted";
+  const downloadDenied = hostileDownload.status === EXPECTED_FOREIGN_ACK_STATUS && hostileDownload.body?.code === EXPECTED_FOREIGN_ACK_CODE;
+  record("d1.tenant.cross.staged_inputs", {
+    injectionFired: typeof hostileDownload.status === "number" && hostileDownload.status !== 0,
+    observedClassification: downloadDenied ? "denied_with_same_tenant_positive_control" : "not_denied",
+    positiveControlPassed: downloadControl,
+    detail: {
+      hostileDownload: responseFacts(hostileDownload), ownDownload: responseFacts(ownDownload),
+      uploadArmRecordedNotClassified: { hostile: responseFacts(hostileGrant), own: responseFacts(ownGrant) },
+      note: "CLASSIFIED on the DOWNLOAD pair, over the committed artifact: that is the branch production staged-input resolution takes, and it carries its own tenant-scoped findCommitted and the tree's only presignGet. The upload pair is a second observation, not the control.",
+    },
+  });
+  assert.equal(downloadControl, true, `the owner's own DOWNLOAD grant on its own committed artifact must succeed, else the foreign refusal proves nothing: ${truncate(responseFacts(ownDownload))}`);
+  assert.equal(downloadDenied, true, `a foreign worker's DOWNLOAD grant must be denied ${EXPECTED_FOREIGN_ACK_STATUS} ${EXPECTED_FOREIGN_ACK_CODE}: ${truncate(responseFacts(hostileDownload))}`);
 });
 
 // ═══ 3. acceptance 5 — the four legacy tables (granted, NO RLS) ══════════════

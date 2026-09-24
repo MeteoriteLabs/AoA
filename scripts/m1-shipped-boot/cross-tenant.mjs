@@ -441,13 +441,6 @@ export async function runCrossTenantCases({ tenants, ownerSql, suppressInjection
   if (ownGrant.body?.outcome !== "upload_granted") {
     fail(`the owner's own transfer grant must succeed: ${truncate(responseFacts(ownGrant))}`);
   }
-  record("d2m.tenant.cross.staged_inputs", {
-    injectionFired: injected && typeof hostileGrant.status === "number" && hostileGrant.status !== 0,
-    observedClassification: hostileGrant.status === FOREIGN_STATUS && hostileGrant.body?.code === FOREIGN_CODE
-      ? "denied_with_same_tenant_positive_control" : "not_denied",
-    positiveControlPassed: ownGrant.body?.outcome === "upload_granted",
-  }, { hostile: responseFacts(hostileGrant), own: responseFacts(ownGrant) });
-
   const put = step(H.putPresignedBytes({ url: ownGrant.body.grant.url, bodyBase64: bodyBytes.toString("base64") }), "put bytes");
   if (!(put.status === 200 || put.status === 204)) fail(`presigned PUT: ${put.status} ${truncate(put.body)}`);
   const manifest = {
@@ -472,6 +465,42 @@ export async function runCrossTenantCases({ tenants, ownerSql, suppressInjection
       ? "denied_with_same_tenant_positive_control" : "not_denied",
     positiveControlPassed: ownCommit.body?.outcome === "committed",
   }, { hostile: responseFacts(hostileCommit), own: responseFacts(ownCommit) });
+
+  // ── staged_inputs: the DOWNLOAD grant, on the now-COMMITTED artifact ───────
+  // ★ THE CLASS (Codex P1 on PR #600, and the finding was right): *a surface certified through ONE
+  // operation of a route that has TWO, each with its own tenant-scoped lookup.* The upload arm
+  // above is a fence check over a key PREFIX; production staged-input resolution asks for a
+  // `download` grant on an ALREADY-COMMITTED artifact, and that branch has its own tenant-scoped
+  // `repos.jobArtifacts.findCommitted` and the tree's ONLY production `presignGet` call site
+  // (`server/src/services/artifact-transfer-grant.ts`). A regression in EITHER would have left this
+  // newly-required case green. So the classified arm is the download pair, on the artifact the
+  // commit above just made real; the upload pair is kept as a recorded second observation.
+  //
+  // THE TWIN, fixed in the same PR rather than left standing: `d1.tenant.cross.staged_inputs`
+  // certified the same surface the same one-sided way (`tests/d1/m1-fault-matrix.test.mjs`).
+  const hostileDownload = step(H.artifactTransferGrant({
+    session: hostile.session, operation: "download", ...victimFence, workerId: hostile.ids.workerId,
+    artifactId, expectedObjectKey: objectKey, expectedSha256: sha256Hex, maxBytes: bodyBytes.length,
+    deviceKey: hostile.deviceKey,
+  }), "hostile download grant");
+  const ownDownload = step(H.artifactTransferGrant({
+    session: victim.session, operation: "download", ...victimFence,
+    artifactId, expectedObjectKey: objectKey, expectedSha256: sha256Hex, maxBytes: bodyBytes.length,
+    deviceKey: victim.deviceKey,
+  }), "own download grant");
+  if (ownDownload.body?.outcome !== "download_granted") {
+    fail(`the owner's own DOWNLOAD grant on its own committed artifact must succeed, else the foreign refusal proves nothing: ${truncate(responseFacts(ownDownload))}`);
+  }
+  record("d2m.tenant.cross.staged_inputs", {
+    injectionFired: injected && typeof hostileDownload.status === "number" && hostileDownload.status !== 0,
+    observedClassification: hostileDownload.status === FOREIGN_STATUS && hostileDownload.body?.code === FOREIGN_CODE
+      ? "denied_with_same_tenant_positive_control" : "not_denied",
+    positiveControlPassed: ownDownload.body?.outcome === "download_granted",
+  }, {
+    hostileDownload: responseFacts(hostileDownload), ownDownload: responseFacts(ownDownload),
+    uploadArmRecordedNotClassified: { hostile: responseFacts(hostileGrant), own: responseFacts(ownGrant) },
+    note: "CLASSIFIED on the DOWNLOAD pair, over the committed artifact, because that is the branch production staged-input resolution takes and it carries its own tenant-scoped findCommitted and the tree's only presignGet. The upload pair is a second observation, not the control.",
+  });
 
   // ── 7. cost rows, and the four legacy no-RLS tables ────────────────────────
   // ONE probe, three arms per table: the owner's own read through the PRODUCTION reader, the

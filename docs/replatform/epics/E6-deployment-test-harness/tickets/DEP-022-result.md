@@ -91,7 +91,7 @@ phase **before** the denial is classified. Ruling F10's requirement, and this la
 | `cross.cancel` | the PRODUCTION reconciliation service under B's org/company against A's job | the same service cancels A's own throwaway job |
 | `cross.events` | B's worker uploads onto A's fence (A's org, company, job, lease, fence; B's worker id) | A's own batch is `accepted` |
 | `cross.secrets` | B's worker redeems A's handle | **A's own redemption RESOLVES** — see below |
-| `cross.staged_inputs` | B's worker mints a transfer grant on A's attempt | A's own grant is `upload_granted` |
+| `cross.staged_inputs` | B's worker requests a DOWNLOAD grant on A's committed artifact (see §3.3) | A's own download grant is `download_granted` |
 | `cross.outputs` | B's worker commits onto A's attempt | A's own commit is `committed` |
 | `cross.cost_rows` | B's companyId reads A's charges through `costService.byAgent` | A's own read returns a NON-ZERO charge |
 | `cross.tool_calls` | A's LOCAL run id under B's companyId | the SAME run under A's own companyId is `admit` |
@@ -164,6 +164,28 @@ fields, in both lanes' drivers). Only the resolve had a value no caller reads.
 **THE DUAL (E.1b), searched and reported although it found nothing:** a SUCCESS path recording the
 same stream. Every `record(…)` detail in the new driver carries narrowed facts only — counts, ids
 and `responseFacts` — never a body or a raw stream.
+
+### 3.3 One operation of a two-operation route — RAISED BY CODEX, and its D1 twin fixed with it
+
+**The class:** *a surface certified through ONE operation of a route that has TWO, each with its own
+tenant-scoped lookup.*
+
+`d2m.tenant.cross.staged_inputs` originally classified on an **upload** grant — a fence check over
+a key PREFIX. Production staged-input resolution asks for a **download** grant on an
+ALREADY-COMMITTED artifact, and that branch has its own tenant-scoped
+`repos.jobArtifacts.findCommitted` and, verified at source, **the tree's only production
+`presignGet` call site** (`server/src/services/artifact-transfer-grant.ts`). A regression in either
+would have left a newly-`required` case green.
+
+Fixed by classifying on a **download pair over the artifact the outputs case has just committed** —
+free, because the fixture already commits one — with the owner's `download_granted` asserted first.
+The upload pair is kept as a recorded second observation, never as the control.
+
+★ **The twin was fixed in the same PR, not filed.** `d1.tenant.cross.staged_inputs`
+(`tests/d1/m1-fault-matrix.test.mjs`) certified the same surface the same one-sided way. A known
+twin left behind is worse than the original: the next reader sees a fixed neighbour and assumes the
+family is handled. Both cases now assert the same download pair, and the D1 one is proven on the
+lane's own live `m1-fault-matrix` job.
 
 ### 3.3 A row fact asserted but not measured
 
