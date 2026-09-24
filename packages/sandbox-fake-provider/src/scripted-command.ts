@@ -64,12 +64,35 @@ export interface ScriptedCommandPlan {
    * `signal: "SIGKILL"`, `timedOut: true` — the shape `E2bSandboxProvider.execute` returns on
    * an exhausted budget. Default `false`. */
   readonly timedOut: boolean;
+  /**
+   * How long `execute` stays IN FLIGHT before it writes its transcript, in milliseconds.
+   * Default `0` — no wait, and the sync entry point stays usable.
+   *
+   * ★ WHY A DELAY IS A CONTROL AND NOT A CONVENIENCE. `M1-D1-SPINE`'s
+   * `d1.reconcile.worker_startup_lease_probe` needs a worker restarted WHILE it holds a live
+   * lease over an in-flight run, so that the restarted worker's startup probe meets a REAL
+   * lease offer it can decode and refuse as fenced. A provider whose `execute` returns
+   * immediately gives the harness no window to restart anything: the run is terminal before
+   * the restart lands, the offer is gone, and the probe has nothing to refuse. This flag is
+   * that window, and it is the reason the case can fire at all.
+   */
+  readonly delayMs: number;
 }
+
+/**
+ * The upper bound on `--aoa-fake-delay`. A scripted wait is a BOUNDED wait: an unbounded one
+ * would let a single job envelope park a provider worker for as long as it liked, and the
+ * supervisor's own `withDeadline` race would then be the only thing that ended it — a bound
+ * enforced by the wrong half. Ten minutes is far above any D1 restart window (seconds) and far
+ * below any plausible accident.
+ */
+export const SCRIPTED_COMMAND_MAX_DELAY_MS = 600_000;
 
 export const DEFAULT_SCRIPTED_COMMAND_PLAN: ScriptedCommandPlan = Object.freeze({
   usageMode: "canned",
   exitCode: 0,
   timedOut: false,
+  delayMs: 0,
 });
 
 function parseFlagValue(flag: string, raw: string | undefined): string {
@@ -87,6 +110,7 @@ function parseFlagValue(flag: string, raw: string | undefined): string {
  *   `--aoa-fake-usage=canned|suppressed`
  *   `--aoa-fake-exit=<non-negative safe integer>`
  *   `--aoa-fake-timeout`            (no value; the exhausted-budget verdict)
+ *   `--aoa-fake-delay=<0..SCRIPTED_COMMAND_MAX_DELAY_MS>`  (the in-flight window)
  *
  * Every other `--aoa-fake-*` argument throws, as does a repeated flag (a repeat means two
  * callers disagree about the script and the last one would silently win).
@@ -95,6 +119,7 @@ export function parseScriptedCommand(args: readonly string[]): ScriptedCommandPl
   let usageMode: FakeProviderUsageMode | undefined;
   let exitCode: number | undefined;
   let timedOut: boolean | undefined;
+  let delayMs: number | undefined;
 
   for (const arg of args) {
     if (!arg.startsWith(SCRIPT_FLAG_PREFIX)) continue;
@@ -128,6 +153,21 @@ export function parseScriptedCommand(args: readonly string[]): ScriptedCommandPl
         timedOut = true;
         break;
       }
+      case `${SCRIPT_FLAG_PREFIX}delay`: {
+        if (delayMs !== undefined) throw new ScriptedCommandError(`${flag} appears more than once`);
+        const value = parseFlagValue(flag, rawValue);
+        const parsed = Number(value);
+        if (!Number.isSafeInteger(parsed) || parsed < 0) {
+          throw new ScriptedCommandError(`${flag} must be a non-negative safe integer, got ${JSON.stringify(value)}`);
+        }
+        if (parsed > SCRIPTED_COMMAND_MAX_DELAY_MS) {
+          throw new ScriptedCommandError(
+            `${flag} must be at most ${SCRIPTED_COMMAND_MAX_DELAY_MS} ms, got ${JSON.stringify(value)}`,
+          );
+        }
+        delayMs = parsed;
+        break;
+      }
       default:
         throw new ScriptedCommandError(`unrecognised scripting flag ${JSON.stringify(flag)}`);
     }
@@ -137,6 +177,7 @@ export function parseScriptedCommand(args: readonly string[]): ScriptedCommandPl
     usageMode: usageMode ?? DEFAULT_SCRIPTED_COMMAND_PLAN.usageMode,
     exitCode: exitCode ?? DEFAULT_SCRIPTED_COMMAND_PLAN.exitCode,
     timedOut: timedOut ?? DEFAULT_SCRIPTED_COMMAND_PLAN.timedOut,
+    delayMs: delayMs ?? DEFAULT_SCRIPTED_COMMAND_PLAN.delayMs,
   };
 }
 
@@ -238,43 +279,61 @@ export interface ScriptedExecuteOptions {
    * `fetch`es `argv[2]`, so pinning the script alone still lets a job choose the address.
    */
   readonly allowedProbeMetadataUrl?: string;
+  /**
+   * The wait `--aoa-fake-delay` is performed with, injected so a test pins it instead of
+   * sleeping. Default: a real (unref'd) `setTimeout`. Only ever consulted by
+   * {@link executeScriptedCommandAsync}.
+   */
+  readonly sleep?: (ms: number) => Promise<void>;
 }
 
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    // A scripted wait must never be the reason a process refuses to exit: the run's verdict is
+    // owned by the caller's own deadline race, not by this timer.
+    if (typeof timer === "object" && timer !== null && "unref" in timer) {
+      (timer as { unref: () => void }).unref();
+    }
+  });
+}
+
+/** What the pre-plan stages decided: either the whole verdict (budget short-circuit, probe), or
+ * the plan the transcript stages still have to run. */
+type ScriptedPrelude =
+  | { readonly kind: "result"; readonly result: ScriptedExecuteResult }
+  | { readonly kind: "plan"; readonly plan: ScriptedCommandPlan };
+
 /**
- * Run a scripted command deterministically.
- *
- * Order is deliberate and mirrors the real provider:
- *   1. the zero/negative-budget short-circuit, before any output;
- *   2. the scripted plan is parsed (a bad script THROWS — no output, no result);
- *   3. the transcript is streamed chunk by chunk to `onStdout`, if a channel was given;
- *   4. the verdict is returned.
- *
- * ★ The transcript is written EVEN under `--aoa-fake-timeout`, after step 1's short-circuit
- * does not apply: a run that produced output and then exceeded its own command budget is a
- * real shape, and keeping it separate from "the budget was already gone" is what makes the two
- * timeout paths distinguishable. Nothing here logs, persists or forwards a chunk; the channel
- * is the only consumer, as the port requires.
+ * Stages 1-2 of `execute`, shared by the sync and async entry points so neither can drift from
+ * the other on the order that matters: the exhausted-budget short-circuit, then the probe
+ * classification, then the scripting flags.
  */
-export function executeScriptedCommand(
+function scriptedPrelude(
   input: ScriptedExecuteInput,
   options: ScriptedExecuteOptions,
-): ScriptedExecuteResult {
-  const stdoutRef = `ref:stdout:${input.sandboxId}`;
-  const stderrRef = `ref:stderr:${input.sandboxId}`;
+  stdoutRef: string,
+  stderrRef: string,
+): ScriptedPrelude {
   if (options.deadlineMs <= 0) {
     return {
-      providerOpId: options.providerOpId,
-      exitCode: null,
-      signal: "SIGKILL",
-      timedOut: true,
-      stdoutRef,
-      stderrRef,
+      kind: "result",
+      result: {
+        providerOpId: options.providerOpId,
+        exitCode: null,
+        signal: "SIGKILL",
+        timedOut: true,
+        stdoutRef,
+        stderrRef,
+      },
     };
   }
 
   // DEP-019 — the DEP-017 probe is EXECUTED, never scripted. Classified BEFORE the scripting
   // flags are read: the probe's argv is the daemon's, and a `--aoa-fake-*` look-alike inside it
-  // must not be able to steer the fake.
+  // must not be able to steer the fake. ★ That ordering is also what keeps `--aoa-fake-delay`
+  // off the probe: the probe has its own deadline, and a scripted wait inside it would delay a
+  // control the daemon times independently.
   const invocation = classifyShellInvocation(input.command, input.args, input.env, {
     allowedScriptDigests: options.allowedProbeScriptDigests,
     allowedMetadataUrl: options.allowedProbeMetadataUrl,
@@ -291,16 +350,29 @@ export function executeScriptedCommand(
     // `stderrRef`, and the probe's own no-node marker is a stderr contract of the daemon's.
     input.onStdout?.(ran.stdout);
     return {
-      providerOpId: options.providerOpId,
-      exitCode: ran.exitCode,
-      signal: ran.signal,
-      timedOut: false,
-      stdoutRef,
-      stderrRef,
+      kind: "result",
+      result: {
+        providerOpId: options.providerOpId,
+        exitCode: ran.exitCode,
+        signal: ran.signal,
+        timedOut: false,
+        stdoutRef,
+        stderrRef,
+      },
     };
   }
 
-  const plan = parseScriptedCommand(input.args);
+  return { kind: "plan", plan: parseScriptedCommand(input.args) };
+}
+
+/** Stages 3-4: the transcript, then the verdict. Pure once the plan is known. */
+function finishScriptedCommand(
+  input: ScriptedExecuteInput,
+  options: ScriptedExecuteOptions,
+  plan: ScriptedCommandPlan,
+  stdoutRef: string,
+  stderrRef: string,
+): ScriptedExecuteResult {
   const onStdout = input.onStdout;
   if (onStdout !== undefined) {
     for (const chunk of buildScriptedStdoutChunks(plan, options.usage)) onStdout(chunk);
@@ -324,4 +396,75 @@ export function executeScriptedCommand(
     stdoutRef,
     stderrRef,
   };
+}
+
+/**
+ * Run a scripted command deterministically, SYNCHRONOUSLY.
+ *
+ * Order is deliberate and mirrors the real provider:
+ *   1. the zero/negative-budget short-circuit, before any output;
+ *   2. the DEP-017 probe classification (executed, never scripted);
+ *   3. the scripted plan is parsed (a bad script THROWS — no output, no result);
+ *   4. the transcript is streamed chunk by chunk to `onStdout`, if a channel was given;
+ *   5. the verdict is returned.
+ *
+ * ★ The transcript is written EVEN under `--aoa-fake-timeout`, after step 1's short-circuit
+ * does not apply: a run that produced output and then exceeded its own command budget is a
+ * real shape, and keeping it separate from "the budget was already gone" is what makes the two
+ * timeout paths distinguishable. Nothing here logs, persists or forwards a chunk; the channel
+ * is the only consumer, as the port requires.
+ *
+ * ★★★ A NON-ZERO `--aoa-fake-delay` IS REFUSED HERE, NOT IGNORED. A synchronous function
+ * cannot wait, and the flag's whole purpose is the in-flight window a restart lands inside — so
+ * silently returning at once would hand the caller a run that looks scripted-to-wait and did
+ * not. That is exactly the FAIL-CLOSED shape this module's header demands of every scripting
+ * flag: a silently-dropped flag makes every positive control built on it vacuous. Callers that
+ * may see the flag use {@link executeScriptedCommandAsync}; `createFakeSandboxProviderPort` does.
+ */
+export function executeScriptedCommand(
+  input: ScriptedExecuteInput,
+  options: ScriptedExecuteOptions,
+): ScriptedExecuteResult {
+  const stdoutRef = `ref:stdout:${input.sandboxId}`;
+  const stderrRef = `ref:stderr:${input.sandboxId}`;
+  const prelude = scriptedPrelude(input, options, stdoutRef, stderrRef);
+  if (prelude.kind === "result") return prelude.result;
+  if (prelude.plan.delayMs > 0) {
+    throw new ScriptedCommandError(
+      `${SCRIPT_FLAG_PREFIX}delay=${prelude.plan.delayMs} needs the asynchronous entry point; ` +
+        "executeScriptedCommand cannot wait and will not silently drop the delay",
+    );
+  }
+  return finishScriptedCommand(input, options, prelude.plan, stdoutRef, stderrRef);
+}
+
+/**
+ * Run a scripted command deterministically, honouring `--aoa-fake-delay`.
+ *
+ * Identical to {@link executeScriptedCommand} in every stage and in their order, with ONE
+ * addition: between the plan and the transcript it waits `plan.delayMs`.
+ *
+ * ★ THE WAIT IS BEFORE THE TRANSCRIPT, DELIBERATELY. The window the D1 reconcile case restarts
+ * a worker inside is a window in which the run is still in flight and the worker still holds
+ * its lease — so nothing may have been written yet. Waiting AFTER the transcript would leave a
+ * run whose usage had already been streamed, which a restarted worker's probe could not
+ * distinguish from a finished one.
+ *
+ * ★ IT DOES NOT POLICE ITS OWN DEADLINE, and that is the correct half. `options.deadlineMs` is
+ * the op budget the CALLER races (`withDeadline` in the supervisor, and the adapter-manager's
+ * own op deadline); a delay that outlasts it must surface as the caller's `execute_timeout`,
+ * which is a real provider-overrun shape. A second deadline here would invent a verdict the
+ * port has no field for and would hide the overrun a case may want to observe. The flag's own
+ * bound is `SCRIPTED_COMMAND_MAX_DELAY_MS`, enforced at parse time.
+ */
+export async function executeScriptedCommandAsync(
+  input: ScriptedExecuteInput,
+  options: ScriptedExecuteOptions,
+): Promise<ScriptedExecuteResult> {
+  const stdoutRef = `ref:stdout:${input.sandboxId}`;
+  const stderrRef = `ref:stderr:${input.sandboxId}`;
+  const prelude = scriptedPrelude(input, options, stdoutRef, stderrRef);
+  if (prelude.kind === "result") return prelude.result;
+  if (prelude.plan.delayMs > 0) await (options.sleep ?? defaultSleep)(prelude.plan.delayMs);
+  return finishScriptedCommand(input, options, prelude.plan, stdoutRef, stderrRef);
 }

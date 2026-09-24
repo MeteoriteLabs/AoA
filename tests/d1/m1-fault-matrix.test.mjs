@@ -105,6 +105,12 @@ import {
   REDACTION_MARKER,
   queryDeployedWorker,
   SPINE_DEPLOYED_TARGET_ID,
+  // DEP-021 — the two cases DEP-020 routed away, built keylessly here.
+  querySpineWorkerDriven,
+  queryLeaseExpiries,
+  queryOfferEligibility,
+  killComposeService,
+  startComposeService,
 } from "./lib/e6f-harness.mjs";
 import {
   M1_SPINE_TENANTS,
@@ -1683,7 +1689,12 @@ test("fault-matrix: restarting the control plane leaves the durable lease state 
 
   if (!SUPPRESS_INJECTION) {
     const restarted = restartComposeService("control-plane");
-    assert.equal(restarted.ok, true, `restart: ${truncate(restarted.stderr)}`);
+    // DEP-021 self-audit, family 1 — the STATUS, never the STREAMS. `docker compose` is not the
+    // dexec chokepoint and has no `secrets` scrubber on its path, while the lane generates a
+    // per-run secrets master key and control-plane keypair into the environment compose reads.
+    // A compose error that echoed a rendered value would land in a PUBLIC CI job log. The exit
+    // status is the diagnostic that matters; compose's own output is already in the step output.
+    assert.equal(restarted.ok, true, `restart: exit status ${restarted.status}`);
   }
 
   const healthy = waitFor(
@@ -1843,6 +1854,395 @@ test("fault-matrix: cutting control-plane-to-postgres severs the stack's own dat
       if (!r?.result?.ok) console.error(`m1-fault-matrix: FAILED to restore control-plane-to-postgres: ${JSON.stringify(r?.result ?? r)}`);
     }
   }
+});
+
+// ═══ 9b. DEP-021 — the two cases DEP-020 routed away, built here instead ═════
+//
+// `DEP-020` re-measured both of these and found the reason that excused them FALSE of the lane
+// that boots the override — the failure the `M1-D1-SPINE` `a2` record graded `SPINE-MATRIX-3`. It
+// corrected each `pendingReason` to say UNBUILT rather than unavailable and routed both to
+// `M1a-D2-MECHANISM`. This ticket builds them HERE, keylessly, so neither needs a keyed run and
+// neither is a declared case that nothing runs.
+//
+// ★ THEY ARE LAST IN THE FILE, DELIBERATELY. The file's header records that order is load-bearing
+// over ONE shared stack, and `DEP-020` cycle 2 learned the same lesson the expensive way: a case
+// that disturbs shared state belongs AFTER the cases that depend on it. The first of these two
+// RESTARTS `worker-b`, which is the most disruptive injection on the lane, and it leaves a
+// deliberately-parked run in flight. Nothing may depend on the deployed worker after it.
+
+/**
+ * Seed and start ONE worker-driven run on the deployed worker, returning its ids.
+ *
+ * ★ THE ARGS ARE THE INJECTION. `seedSpineWorkerDrivenJob`'s `workloadArgs` become the tenant
+ * command's `args`, which reach `executeScriptedCommand` inside the reference provider
+ * (`packages/sandbox-fake-provider/src/scripted-command.ts`) — the DEPLOYED worker's own provider
+ * wire, not a harness `/invoke`. That is what makes both cases below statements about the worker.
+ */
+function startWorkerDrivenRun(tenant, deployed, workloadArgs, label) {
+  const ids = {
+    jobId: randomUUID(),
+    attemptId: randomUUID(),
+    issueId: randomUUID(),
+    runId: randomUUID(),
+    handleId: randomUUID(),
+  };
+  const seeded = step(
+    seedSpineWorkerDrivenJob({ tenant, ...ids, target: deployed.target, workloadArgs }),
+    `${label} worker-driven seed`,
+  );
+  assert.equal(seeded.ok, true, `${label} job seed: ${truncate(seeded)}`);
+  return ids;
+}
+
+// ---------------------------------------------------------------------------
+// d1.provider.worker_terminal_mapping
+// ---------------------------------------------------------------------------
+//
+// ★ WHAT MAKES THIS DISTINCT FROM `d1.provider.execute_deadline_exceeded`, which is the whole
+// reason it is its own case. That one derives its terminal payload with `terminalPayloadFor`,
+// HARNESS code, and its own comment says so: it proves the INGEST's classification of a
+// provider-derived terminal and explicitly not the worker's mapping. This one never builds a
+// payload at all. The DEPLOYED worker's supervisor does, at `supervisor.ts` §4:
+//
+//     const status = exec.exitCode === 0 && !exec.timedOut ? "succeeded" : "failed";
+//     const errorCode = exec.timedOut ? "exec_timeout" : exec.signal !== null ? "exec_signalled" : null;
+//     const errorMessage = exec.signal !== null ? `signal:${exec.signal}` : null;
+//
+// ★ AND THE TWO MAPPERS DISAGREE ON THE CODE, which is what makes the distinction MEASURABLE
+// rather than merely asserted: `terminalPayloadFor` emits `provider_timeout`, the worker emits
+// `exec_timeout` plus `signal:SIGKILL`. So this case can only pass on a terminal the WORKER wrote.
+// If a future refactor made the harness the author of this terminal, the code would change and
+// this case would red.
+//
+// THE INJECTION is `--aoa-fake-timeout`, which the reference provider has carried since DEP-019:
+// `execute` returns `{exitCode: null, signal: "SIGKILL", timedOut: true}` — the shape
+// `E2bSandboxProvider.execute` returns on an exhausted command budget. No new flag was needed
+// here, and `DEP-020`'s routing of this case to a keyed lane was therefore one measurement short.
+//
+// THE POSITIVE CONTROL is the identical journey with NO flag, through the SAME mapper: it must
+// land `succeeded` / `exitCode: 0` / `errorCode: null`. Without it, "failed" would be equally
+// explained by a worker that fails everything — the defect `d1.provider.execute_deadline_exceeded`
+// had in its own first version.
+
+test("fault-matrix: the DEPLOYED worker maps a provider deadline overrun to its own classified FAILED terminal", { skip: SKIP }, () => {
+  const [A] = M1_SPINE_TENANTS.enabled;
+  const deployed = step(queryDeployedWorker({}), "deployed worker");
+  assert.equal(deployed.ok, true, `deployed worker probe: ${truncate(deployed)}`);
+  assert.ok(deployed.workerId, "this case needs the DEPLOYED worker — it is the worker's own mapper under test");
+
+  // Suppressed, the flag is withheld: the run succeeds, no timeout is mapped, and the case
+  // records the non-injected outcome so the lane's suppressed arm reds it.
+  const injectedArgs = SUPPRESS_INJECTION ? [] : ["--aoa-fake-timeout"];
+  const timedOutIds = startWorkerDrivenRun(A, deployed, injectedArgs, "worker-timeout");
+  const timedOutRun = step(awaitSpineWorkerDrivenTerminal({ jobId: timedOutIds.jobId }), "worker-timeout terminal");
+
+  // The control runs AFTER, and on its own job, so the two never share an attempt.
+  const controlIds = startWorkerDrivenRun(A, deployed, [], "worker-timeout-control");
+  const controlRun = step(awaitSpineWorkerDrivenTerminal({ jobId: controlIds.jobId }), "worker-timeout-control terminal");
+
+  const injectedTerminal = (timedOutRun.terminal ?? [])[0] ?? null;
+  const controlTerminal = (controlRun.terminal ?? [])[0] ?? null;
+
+  // ★ NON-VACUITY FIRST: both arms must have produced a terminal event at all. A case that
+  // compared two absent terminals would "pass" on `null === null`.
+  const bothTerminated = injectedTerminal !== null && controlTerminal !== null;
+
+  // The worker's mapper, asserted field by field. `exec_timeout` is the code the WORKER writes;
+  // `provider_timeout` is the harness's. `timedOut` wins over `signal` in that ternary, so a
+  // SIGKILLed timeout reports `exec_timeout` and carries the signal in `errorMessage`.
+  const mappedByWorker =
+    timedOutRun.attemptStatus === "failed" &&
+    injectedTerminal?.status === "failed" &&
+    injectedTerminal?.errorCode === "exec_timeout" &&
+    injectedTerminal?.exitCode === null;
+  const controlMapped =
+    controlRun.attemptStatus === "succeeded" &&
+    controlTerminal?.status === "succeeded" &&
+    controlTerminal?.errorCode === null &&
+    controlTerminal?.exitCode === 0;
+
+  record("d1.provider.worker_terminal_mapping", {
+    injectionFired: !SUPPRESS_INJECTION && bothTerminated && injectedTerminal?.errorCode === "exec_timeout",
+    observedClassification:
+      mappedByWorker && controlMapped
+        ? "worker_maps_provider_timeout_to_failed_terminal"
+        : `injected_${String(injectedTerminal?.status)}_${String(injectedTerminal?.errorCode)}_control_${String(controlTerminal?.status)}_${String(controlTerminal?.errorCode)}`,
+    positiveControlPassed: controlMapped,
+    detail: {
+      injected: {
+        jobId: timedOutIds.jobId,
+        args: injectedArgs,
+        attemptStatus: timedOutRun.attemptStatus,
+        terminal: injectedTerminal,
+        leaseWorkerIds: timedOutRun.leaseWorkerIds ?? [],
+      },
+      control: {
+        jobId: controlIds.jobId,
+        attemptStatus: controlRun.attemptStatus,
+        terminal: controlTerminal,
+        leaseWorkerIds: controlRun.leaseWorkerIds ?? [],
+      },
+      note:
+        "the terminal payload is written by the DEPLOYED worker's supervisor (supervisor.ts section 4), never by terminalPayloadFor: the worker's code for a provider deadline overrun is exec_timeout, the harness's is provider_timeout, so this case cannot pass on a harness-authored terminal.",
+    },
+  });
+
+  assert.equal(bothTerminated, true, `both arms must reach a terminal event, else nothing below is a measurement: injected=${truncate(timedOutRun)} control=${truncate(controlRun)}`);
+  assert.equal(
+    controlMapped,
+    true,
+    `the control arm must land SUCCEEDED/exit 0/no errorCode through the SAME worker mapper, else "failed" is a worker that fails everything: ${truncate(controlRun)}`,
+  );
+  if (!SUPPRESS_INJECTION) {
+    assert.equal(
+      mappedByWorker,
+      true,
+      `the deployed worker must map the provider's timeout to failed/exec_timeout/exitCode null: ${truncate(timedOutRun)}`,
+    );
+  }
+});
+
+// ---------------------------------------------------------------------------
+// d1.reconcile.worker_startup_lease_probe
+// ---------------------------------------------------------------------------
+//
+// THE CASE. Restart the deployed worker WHILE it holds a live lease over an in-flight run, and
+// require its WRK-013 startup reconciler to FENCE its own prior lease — probe it once and stand
+// down — rather than resume it or prune it as dead.
+//
+// ★★★ WHY THIS NEEDED A PROVIDER CHANGE, and why nothing cheaper works. A harness cannot mint the
+// candidate: `SqliteLeaseCandidateStore.listEntries`
+// (`packages/worker-daemon/src/lease/lease-candidate-store.ts`) requires each row to `safeParse`
+// against `leaseOfferV1Schema` AND to decode to the lease id and Organization its own row is
+// keyed by — *"otherwise one lease could be probed under another's identity"*. A harness-minted
+// offer therefore belongs to a HARNESS worker, and `worker-b`'s probe of it is answered
+// `rejected` → `dead` (`livenessOf`, `startup-reconcile.ts`), which takes the `candidate pruned`
+// arm and never reaches the fenced one. The only real route is restarting `worker-b` mid-run, and
+// before DEP-021 the reference provider had no way to be mid-anything: its `execute` returned a
+// deterministic transcript immediately. `--aoa-fake-delay` is that window, and this case is the
+// reason it exists.
+//
+// ★ EVERY PRECONDITION IS VERIFIED AT SOURCE, because a case that cannot fire is worse than an
+// absent one:
+//   - dispatch is ON for worker-b            `docker/d1/m1-spine.override.yml:137`
+//   - the candidate store is CONFIGURED       `config.ts` leaseCandidatePath defaults from
+//     AOA_WORKER_EVENT_OUTBOX_PATH (`/worker/event-outbox.db`), which sits on the PERSISTENT
+//     volume `d1-spine-worker-state`, so the row survives the restart
+//   - the logger is COMPOSED                  `bootstrapWorkerDaemon` builds it and passes it to
+//     `composeDispatchRuntime`, which is where the fence line is written
+//   - the run's budget outlasts the restart   op deadline = 240 s
+//     (`RUN_OP_DEADLINE_CEILING_MS`), lease duration = 300 s (`job-leasing.ts`)
+//
+// ★ THE OBSERVABLE IS ATTRIBUTED, not merely present. The worker's log is read BEFORE and AFTER
+// the restart and the fence line must be ABSENT then PRESENT. Without the "before" reading, a
+// line from any earlier boot would satisfy the case — a control that passes on state it did not
+// cause. The logged `leaseId` must also be THIS run's, and the two SIBLING arms of the same
+// three-way branch (`candidate pruned` / `nothing renewed`) must NOT name this lease, which is
+// what distinguishes `fenced` from `dead` and from `unreachable`.
+//
+// ★ THE DURABLE ARM, and its honest limit. The probe is exactly one `lease_renew`, and
+// `renewLease` extends `leases.expires_at` and nothing else. So the expiry MOVES — but the
+// pre-restart renewal loop was moving it too, so movement ALONE is not attributable to the probe.
+// It is recorded as corroboration and the log line is what attributes it; what the expiry does
+// prove on its own is that the lease was still LIVE after the restart, i.e. the probe's `live`
+// arm was the reachable one and the case is not silently passing through a dead-lease prune.
+
+/** The three arms of the startup reconciler's own three-way branch
+ * (`dispatch-runtime.ts`, the `probe.state` switch). ASCII substrings only: the real lines carry
+ * an em-dash and a typographic apostrophe, and a literal with either is a needless way to make a
+ * live assertion depend on this file's encoding. */
+const STARTUP_RECONCILE_ARMS = Object.freeze({
+  fenced: "startup-reconcile: lease FENCED (F5)",
+  ended: "startup-reconcile: lease already ended at the control plane",
+  unreachable: "startup-reconcile: lease probe could not complete",
+});
+/** `LEASE_CANDIDATE_REASONS.fenced` (`lease-candidate-store.ts`), mirrored as the structured
+ * field the same line carries beside the message. Both are asserted: the message could be
+ * reworded, the reason token is the machine-readable half. */
+const LEASE_CANDIDATE_FENCED_REASON = "lease_candidate_fenced";
+/** `LEASE_CANDIDATE_REASONS.empty` — what a CLEANLY stopped daemon reports, and the negative
+ * control's own observable. */
+const LEASE_CANDIDATE_EMPTY_REASON = "lease_candidate_store_empty";
+
+/** The INJECTION's in-flight window, in ms. Comfortably inside the 240 s op deadline
+ * (`RUN_OP_DEADLINE_CEILING_MS`) and the 300 s lease, and far longer than a kill + start + the
+ * container coming back (~30 s). */
+const RECONCILE_WINDOW_MS = 90_000;
+
+/** Occurrences of `needle` in `text`. ★ COUNTED, not merely tested for presence: this case has TWO
+ * arms against the SAME log, so "the line is there" cannot separate them. A count taken before and
+ * after each arm attributes each new line to the arm that produced it, and stays correct however
+ * many earlier boots the retained tail happens to include. */
+function countIn(text, needle) {
+  if (typeof text !== "string" || text === "" || needle === "") return 0;
+  let n = 0;
+  let i = text.indexOf(needle);
+  while (i !== -1) {
+    n += 1;
+    i = text.indexOf(needle, i + needle.length);
+  }
+  return n;
+}
+
+/**
+ * Park one worker-driven run in flight and return what is needed to interrupt it.
+ *
+ * ★★★ THE DEPLOYED TARGET IS RE-READ AT EVERY SEED, and cycle 4 is why. A placement carries
+ * the target's `registered_profile_hash` and provider `digest` (`seedSpineWorkerDrivenJob`), and
+ * this case restarts the worker twice before the injection arm is seeded. Cycle 4
+ * (`35960080927`) got the slot precondition GREEN — `settledAttemptStatus: "succeeded"` — and the
+ * injection arm's job was STILL never leased in 150 s, on an idle worker that had just finished
+ * another job of the same tenant. The difference between the two jobs is WHEN THEY WERE PLACED:
+ * the control arm's was placed before any restart, the injection arm's with a target captured at
+ * the top of the case and two restarts stale. `DEP-020` cycle 2 recorded the same family from the
+ * other side, where fresh enrolments bumped a target's generation and revoked attempts that later
+ * cases reused. So the target is read HERE, per seed, never captured once and carried across a
+ * restart — and what was read is recorded, so a cycle that still fails can be told apart from this
+ * one without a second run.
+ */
+function parkRunInFlight(tenant, label, { attempts = 75, windowMs = RECONCILE_WINDOW_MS } = {}) {
+  const deployed = step(queryDeployedWorker({}), `${label} deployed worker (re-read)`);
+  assert.equal(deployed.ok, true, `${label}: the deployed target must be readable at seed time: ${truncate(deployed)}`);
+  const ids = startWorkerDrivenRun(tenant, deployed, [`--aoa-fake-delay=${windowMs}`], label);
+  const inFlight = waitFor(
+    () => step(querySpineWorkerDriven({ jobId: ids.jobId }), `${label} in-flight probe`),
+    (o) =>
+      o.ok === true &&
+      (o.leaseWorkerIds?.length ?? 0) > 0 &&
+      (o.events ?? []).some((e) => e.eventType === "attempt_started"),
+    { attempts, everyMs: 2000 },
+  );
+  const leases = step(queryLeaseExpiries({ jobId: ids.jobId }), `${label} lease before`);
+  const lease = (leases.leases ?? [])[0] ?? null;
+  // ★ SELF-DIAGNOSING ON THE FAILING PATH ONLY. Cycles 2, 3 and 4 each spent a full live
+  // campaign narrowing ONE symptom -- a freshly seeded attempt the worker never leases -- because
+  // the case could report only `inFlight: false` and left the reader to rank hypotheses. When the
+  // park fails, the control plane's OWN eligibility predicate is read conjunct by conjunct and the
+  // failing ones are recorded, so the next reader is handed the cause instead of a hypothesis. It
+  // is not read on the passing path: a probe that runs when nothing is wrong is pure cost.
+  const eligibility = inFlight.ok
+    ? null
+    : step(queryOfferEligibility({ jobId: ids.jobId }), `${label} offer eligibility`);
+  return {
+    ids,
+    inFlight,
+    lease,
+    eligibility,
+    placement: {
+      workerId: deployed.workerId ?? null,
+      workerCount: deployed.workerCount ?? null,
+      profileHash: deployed.target?.profileHash ?? null,
+      providerDigest: deployed.target?.providerDigest ?? null,
+      generation: deployed.target?.generation ?? null,
+    },
+    // ★ IN FLIGHT IS THE NON-VACUITY FOR BOTH ARMS, and for a reason worth stating: the candidate
+    // is written BEFORE the ACK (`poll-loop.ts`, "WRITE BEFORE ACK"), and the ACK precedes
+    // `attempt_started`. So a run observed started is a run whose candidate row EXISTS. Without
+    // that, the graceful arm's `lease_candidate_store_empty` would be vacuous — empty because
+    // nothing was ever written, not because a clean stop pruned it.
+    leaseWasLive: lease !== null && lease.live === true && lease.status === "active",
+  };
+}
+
+/** The daemon's own words when it comes back without a session (`WRK-010 §3.2`). ASCII
+ * substrings only, for the same encoding reason as the reconciler arms above. */
+const SESSION_TERMINAL_MARKERS = Object.freeze({
+  message: "worker session terminal: operator re-enrollment required",
+  idle: "session terminal at boot; running idle",
+  reason: "enroll_unauthorized",
+});
+
+test("fault-matrix: THE RECONCILE BLOCKER, measured live — a KILLED worker comes back without a session, so its startup reconciler never runs", { skip: SKIP }, () => {
+  // ★★★ THIS TEST IS NOT THE RECONCILE CASE. It is the live PROOF of that case's `pendingReason`,
+  // and it exists for the reason `DEP-020` built the clause-5 blocker the same way: this
+  // programme's worst failure class is a `pending` reason that is false of the lane it excuses —
+  // the defect the `M1-D1-SPINE` `a2` record graded `SPINE-MATRIX-3`. It therefore `record()`s
+  // NOTHING: `d1.reconcile.worker_startup_lease_probe` is declared `pending`, and
+  // `evaluateFaultMatrixEvidence` REFUSES a bundle that reports a row for a pending case.
+  //
+  // WHAT WAS TRIED, over seven live campaigns on this branch:
+  //   35954159711  a GRACEFUL restart — the candidate is PRUNED by the clean drain, correctly.
+  //   35956091950  slot: the abandoned attempt holds the worker; 35957846155 it is RE-RUN.
+  //   35960080927  slot free, and the injection arm's job STILL never leased.
+  //   35962071988  the placement-staleness theory FALSIFIED — identical generations at both seeds.
+  //   35964102214  THE PROBE: `failing: []`, all ELEVEN eligibility conjuncts hold, and
+  //                `workers[0].seenRecently: false` — the attempt was eligible and the worker was
+  //                not polling.
+  //   35966651671  the SINGLE-INTERRUPTION redesign: the attempt WAS leased (poll 1) and the
+  //                injection DID fire — and still no reconciler arm appeared.
+  //
+  // WHAT THAT MEASURES. On the last run the worker's log carries two boots: the lane's own
+  // (`startup: running startup-reconcile` … `dispatch COMPOSED … leasing through the poll loop`)
+  // and the post-kill one, which reads *"already enrolled; skipping control-plane enrollment"* →
+  // *"worker session terminal: operator re-enrollment required (fresh enrollment code needed)"*
+  // (`enroll_unauthorized`, HTTP 401) → *"session terminal at boot; running idle"* → *"its session
+  // lapsed past the enrolment code-route boundary — WRK-010 §3.2"*.
+  //
+  // ★ AND THAT IS WHY THE CASE CANNOT FIRE HERE, precisely: the startup reconciler runs INSIDE
+  // `composeDispatchRuntime`, and composition is only reached on the branch where a session was
+  // established. A worker that comes back WITHOUT one never composes dispatch, so it never runs the
+  // reconciler at all — no arm is logged and no `lease_renew` fires. The lane's enrolment ticket is
+  // ONE-TIME and already consumed, so nothing here can supply the fresh code the daemon asks for.
+  //
+  // ★ IT IS THE LANE, NOT THE PRODUCT. The daemon does exactly what `WRK-010 §3.2` documents and
+  // says so in plain words. This is not filed as a defect, and calling it one would be inflating a
+  // documented decision.
+  const [A] = M1_SPINE_TENANTS.enabled;
+  const deployed = step(queryDeployedWorker({}), "blocker: deployed worker");
+  assert.equal(deployed.ok, true, `deployed worker probe: ${truncate(deployed)}`);
+
+  const logsStart = composeServiceLogs("worker-b");
+  const fenceAtStart = countIn(logsStart.text, STARTUP_RECONCILE_ARMS.fenced);
+
+  // A run parked in flight, so a candidate row EXISTS when the worker dies. Without this the
+  // absence of a reconciler arm would be vacuous — nothing to reconcile.
+  const killed = parkRunInFlight(A, "reconcile-blocker");
+  const runtimeBefore = composeServiceRuntime("worker-b");
+  const hardKilled = killComposeService("worker-b", { signal: "KILL" });
+  const started = hardKilled.ok === true ? startComposeService("worker-b") : { ok: false, status: null };
+  const cameBack = waitFor(
+    () => composeServiceRuntime("worker-b"),
+    (r) => r.ok === true && r.running === true && r.startedAt !== runtimeBefore.startedAt,
+    { attempts: 60, everyMs: 2000 },
+  );
+
+  // Wait for the post-kill boot to say what it does, either way: the session-terminal marker, OR a
+  // reconciler arm if the blocker has lifted.
+  const settled = waitFor(
+    () => composeServiceLogs("worker-b"),
+    (l) =>
+      l.ok === true &&
+      (l.text.includes(SESSION_TERMINAL_MARKERS.message) ||
+        countIn(l.text, STARTUP_RECONCILE_ARMS.fenced) > fenceAtStart),
+    { attempts: 45, everyMs: 2000 },
+  );
+  const logsAfter = settled.last ?? composeServiceLogs("worker-b");
+  const sessionTerminal = logsAfter?.ok === true && logsAfter.text.includes(SESSION_TERMINAL_MARKERS.message);
+  const ranIdle = logsAfter?.ok === true && logsAfter.text.includes(SESSION_TERMINAL_MARKERS.idle);
+  const reasonSeen = logsAfter?.ok === true && logsAfter.text.includes(SESSION_TERMINAL_MARKERS.reason);
+  const fenceAfter = countIn(logsAfter?.text, STARTUP_RECONCILE_ARMS.fenced);
+
+  // ★ NON-VACUITY FIRST, on every conjunct the blocker rests on.
+  assert.equal(killed.inFlight.ok, true, `the run must be IN FLIGHT, or there is no candidate to reconcile and the absence below proves nothing: ${truncate(killed.inFlight.last)}`);
+  assert.equal(killed.leaseWasLive, true, `the lease must be live at kill time: ${truncate(killed.lease)}`);
+  assert.equal(hardKilled.ok, true, `worker-b must be KILLED: exit status ${hardKilled.status}`);
+  assert.equal(started.ok, true, `worker-b must be started again: exit status ${started.status}`);
+  assert.equal(cameBack.ok, true, `worker-b must come back on a NEW container start: ${truncate(cameBack.last)}`);
+  assert.equal(logsAfter?.ok, true, "the worker log must be readable after the kill");
+  assert.ok((logsAfter?.bytes ?? 0) > 0, "the worker log is empty after the kill, so nothing below is a measurement");
+
+  // THE BLOCKER, asserted in BOTH directions so the declaration cannot outlive its reason.
+  assert.equal(
+    sessionTerminal && ranIdle && reasonSeen,
+    true,
+    `the killed worker must come back SESSION-TERMINAL and idle (${SESSION_TERMINAL_MARKERS.reason}); if it now re-establishes a session, this lane can drive the reconcile case and d1.reconcile.worker_startup_lease_probe's pending declaration is STALE: `
+      + `terminal=${sessionTerminal} idle=${ranIdle} reason=${reasonSeen}`,
+  );
+  assert.equal(
+    fenceAfter,
+    fenceAtStart,
+    `a startup-reconcile FENCE arm APPEARED after a kill (count ${fenceAtStart} -> ${fenceAfter}): the reconciler ran, so the blocker has LIFTED and d1.reconcile.worker_startup_lease_probe must be re-declared \`required\` and built`,
+  );
 });
 
 // ═══ 10. the matrix's own verdict ════════════════════════════════════════════

@@ -29,7 +29,7 @@
 import { randomUUID } from "node:crypto";
 
 import { UnsupportedProviderOperation, type FakeProviderUsageV1 } from "./fake-driver.js";
-import { executeScriptedCommand, type ScriptedExecuteResult } from "./scripted-command.js";
+import { executeScriptedCommandAsync, type ScriptedExecuteResult } from "./scripted-command.js";
 import type { NodeEvalRunner } from "./node-eval.js";
 
 /** Mirrors `ResourceLabels` (worker-daemon `supervisor/provider.ts`). */
@@ -184,6 +184,9 @@ export interface FakeSandboxProviderPortOptions {
   readonly notFound?: () => Error;
   /** Injectable id source, so a test can pin every id. Default: `randomUUID`. */
   readonly newId?: () => string;
+  /** The wait `--aoa-fake-delay` is performed with, so a test pins it instead of sleeping.
+   * Default: a real (unref'd) `setTimeout`. The D1 host never passes it. */
+  readonly sleep?: (ms: number) => Promise<void>;
 }
 
 /**
@@ -270,16 +273,19 @@ export function createFakeSandboxProviderPort(options: FakeSandboxProviderPortOp
     async execute(input: PortExecuteInput, ctx: PortOpContext): Promise<ScriptedExecuteResult> {
       const record = mustGet(input.sandboxId);
       record.executed += 1;
-      return Promise.resolve(
-        executeScriptedCommand(input, {
-          deadlineMs: ctx.deadlineMs,
-          providerOpId: opId("execute"),
-          usage: options.usage,
-          runNodeEval: options.runNodeEval,
-          allowedProbeScriptDigests: options.allowedProbeScriptDigests,
-          allowedProbeMetadataUrl: options.allowedProbeMetadataUrl,
-        }),
-      );
+      // ★ THE ASYNC ENTRY POINT, deliberately. `--aoa-fake-delay` is the in-flight window the
+      // D1 reconcile case restarts a worker inside, and the synchronous entry point REFUSES a
+      // non-zero delay rather than dropping it. This op is already `async` for the reason its
+      // own header records, so awaiting the scripted wait costs the port nothing.
+      return executeScriptedCommandAsync(input, {
+        deadlineMs: ctx.deadlineMs,
+        providerOpId: opId("execute"),
+        usage: options.usage,
+        runNodeEval: options.runNodeEval,
+        allowedProbeScriptDigests: options.allowedProbeScriptDigests,
+        allowedProbeMetadataUrl: options.allowedProbeMetadataUrl,
+        ...(options.sleep ? { sleep: options.sleep } : {}),
+      });
     },
 
     async cancel(sandboxId: string): Promise<PortStopResult> {

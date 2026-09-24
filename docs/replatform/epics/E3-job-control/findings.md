@@ -2388,3 +2388,92 @@ Either way, add a test that creates a target through the route without it, ratif
 must fail today and pass after the fix. Correct runbook §7(a) in the same change.
 
 **Blocks gate:** no. Every M1 lane that creates targets now sets the field explicitly.
+
+## E3-F041 - a device re-enrolment bumps the target generation and every already-placed attempt becomes permanently unleasable, silently
+
+**Status:** open
+**Severity:** HIGH. The trigger is a supported, ordinary operator action (device rotation / re-enrolment), the effect is PERMANENT and has NO signal of any kind -- the job never runs and never fails, nothing is logged, no error is raised, no retry or expiry fires -- and it additionally pins an Organization capacity slot when the stranded attempt was `held`. It is availability-only (no confidentiality or integrity impact) and needs an operator-initiated re-enrolment rather than being tenant- or attacker-reachable, which is why it is not CRITICAL.
+**Filed:** 2026-09-24 by `DEP-021` (E6 `tickets/DEP-021-result.md`), found while measuring why a harness attempt was never offered.
+
+**What.** Three facts compose into a silent, permanent stall.
+
+1. **The lease-candidate predicate pins the generation by EQUALITY.** The candidate query in
+   `packages/db/src/repositories/tenant/job-control.ts` requires
+   `eq(jobAttempts.placementTargetGeneration, input.targetGeneration)` against the POLLING worker's
+   current target generation, alongside equalities on `placement_profile_hash` and
+   `placement_provider_constraint_hash`. The same equality appears at each of the four candidate /
+   claim sites in that file.
+2. **Re-enrolment of an already-bound worker BUMPS that generation, and leaves the target ACTIVE.**
+   `server/src/services/worker-enrollment.ts` calls `authority.advanceTargetGeneration(...)` on the
+   branch where `boundWorker.id === request.hello.workerId` (device rotation), unless
+   `sharedPlatformProfile`. `advanceTargetGeneration`
+   (`packages/db/src/repositories/tenant/worker-enrollment.ts`) increments
+   `execution_targets.device_generation` with `ne(executionTargets.status, "disabled")` -- i.e. it
+   advances a target that remains enabled and keeps serving.
+3. **Nothing converges the attempts left behind.** The ONLY convergence path,
+   `server/src/services/execution-target-revocation-fanout.ts`, is driven exclusively off
+   `execution_target_revocations` rows (`.where(inArray(executionTargetRevocations.status,
+   ["pending", "converging"]))`), and those rows are inserted at exactly ONE site:
+   `revokeExecutionTarget` (`server/src/services/execution-targets.ts`), the explicit operator
+   REVOCATION path. A re-enrolment inserts none, so the fanout never sees it.
+
+So after a device rotation, every `pending` attempt already placed for that target carries
+generation G while the worker now polls as G+1. It can never be a candidate again.
+
+**What an operator observes: nothing.** The job does not run. It also does not fail, time out, retry
+or get re-placed, and no log line is written on any path -- the attempt is simply never selected. The
+only visible symptom is a queue that stops draining.
+
+**The codebase already names this exact outcome -- for the case it DOES handle.** The revocation
+fanout's own Phase-1b comment describes the identical shape and says why it had to be converged:
+
+> *"That successor can never lease (offerLease pins the stored generation; the resolver returns null
+> for the bumped/disabled target), so guardActiveFence's `target_revoked` never fires, and
+> countHeldAttemptsForOrg -- which counts `held` with NO status filter -- pins an org slot forever.
+> Nothing else reaps a lease-less nonterminal attempt."*
+
+That is the argument for this finding, written by the system about itself. The revocation path got a
+fanout; the re-enrolment path, which advances the same column on a target that stays active, did not.
+The "pins an org slot forever" half applies here too whenever the stranded attempt was
+`capacityClaimState: 'held'`, so the blast radius is not limited to the stuck job: it degrades the
+whole Organization's admission.
+
+**RULED: `E3-D-GEN-INVALIDATION` (2026-09-24, founder delegation F2).** Explicit invalidation
+enqueued from `advanceTargetGeneration`; the generation FLOOR is **refused**, because it would trade a
+correctness guarantee (work runs on the device it was placed for) for an availability one, and this
+defect is availability-only. **Two binding conditions carried by that decision:** (1) it is
+CONDITIONAL ON LIVE CONFIRMATION -- no fix may be built until the defect is reproduced by re-enrolling
+a bound worker while one of its jobs sits `pending` and placed, with the reproduction recorded HERE
+first; and (2) the invalidation MUST also release the pinned Organization capacity slot, so the owning
+ticket cannot close on half the defect. Read the decision for the full reasoning. ★ **AMENDED the same day**: enqueueing an `execution_target_revocations` record is NOT the mechanism — the fanout calls `ensureExecutionTargetCutoff`, whose `bumpExecutionTargetGeneration` also sets `status: "disabled"`, so it would convert a rotation into a REVOCATION, and it cancels rather than re-places. A distinct record kind, or a fanout branch that skips the cutoff, is required. The CHOICE (invalidation, not a floor) and both conditions are unchanged.
+
+The two candidates, as filed, and why they are not equivalent:
+
+- **A floor rather than an equality** (`>=`, or "generation at or after placement"). Cheapest, but it
+  would let an attempt placed under an OLDER device generation lease onto a ROTATED device -- which
+  may be precisely what the generation pin exists to prevent. Choosing this means deciding that a
+  rotation does not invalidate prior placements, which is a security-relevant statement about device
+  identity, not a query tweak.
+- **An explicit invalidation on ANY generation advance**: enqueue a convergence record from
+  `advanceTargetGeneration` itself rather than only from `revokeExecutionTarget`, and let the
+  existing fanout re-place or terminalise the affected attempts. This reuses machinery that already
+  exists and already handles the capacity-slot release, and it keeps the generation pin intact.
+
+The second was chosen: see `E3-D-GEN-INVALIDATION` in this epic's `decisions.md`.
+
+**Honest limits of this measurement.** This is a SOURCE-level measurement -- the predicate, the bump
+site, and the ABSENCE of any convergence trigger for it -- and it has **not been observed live**. What
+would confirm it: re-enrol an already-bound worker while one of its jobs sits `pending` and placed,
+then assert the attempt is never offered, never terminalises, and that nothing is logged. **That
+reproduction is a GATING CONDITION of `E3-D-GEN-INVALIDATION`** -- the ruling does not authorise a
+fix until it is recorded here. `DEP-021` did not run that, because
+its own test failures turned out NOT to be this defect (see below) and manufacturing a re-enrolment
+was outside its brief.
+
+**It is NOT the cause of `DEP-021`'s harness failures, and the two must not be conflated.** A worker
+RESTART with a persisted device identity does not re-enrol: the boot path takes the
+`refreshSelfHello` branch (`packages/worker-daemon/src/bin/worker-daemon.ts`, `if (current !== null)`),
+and `server/src/services/worker-hello-refresh.ts` reads `principal.targetGeneration` without
+advancing it. So `DEP-021`'s restarts did not bump the generation, and the reason its injection-arm
+attempt was never offered is still open there. This finding was reached while chasing that, and is
+independent of it.

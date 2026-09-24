@@ -527,3 +527,122 @@ ways:
 
 No duplicate summary writer is created: the JOB-017 registrations write no `issue_comments` row and
 no `task_terminal` receipt. The real-ingest test asserts both.
+
+
+## E3-D-GEN-INVALIDATION — a target-generation advance INVALIDATES the attempts placed under the old one; the candidate predicate keeps its equality
+
+**Status:** `accepted`, **decided under founder delegation F2**, 2026-09-24, on `E3-F041` as filed by
+`DEP-021` (E6 `tickets/DEP-021-result.md` §5b).
+
+**The question.** `E3-F041` measures that the lease-candidate predicate pins
+`placement_target_generation` by EQUALITY against the polling worker's current target generation
+(`packages/db/src/repositories/tenant/job-control.ts`, at each of its four candidate/claim sites),
+that `advanceTargetGeneration` bumps `execution_targets.device_generation` on re-enrolment of an
+already-bound worker while the target stays ACTIVE
+(`server/src/services/worker-enrollment.ts`), and that the only convergence path
+(`server/src/services/execution-target-revocation-fanout.ts`) is driven solely off
+`execution_target_revocations` rows, which only `revokeExecutionTarget` inserts. So a device rotation
+strands every already-placed `pending` attempt permanently and silently. Two fixes were offered: relax
+the predicate to a FLOOR, or INVALIDATE the affected attempts on any generation advance.
+
+**Decision: explicit invalidation, enqueued from `advanceTargetGeneration`. The floor is REFUSED.**
+
+**Why the floor is refused.** It would let an attempt placed under an OLDER device generation lease
+onto a ROTATED device — plausibly the precise property the equality pin exists to enforce. That trades
+a CORRECTNESS guarantee (work runs on the device it was placed for) for an AVAILABILITY one, and the
+defect is availability-only. Fixing a silent stall by weakening the guarantee that work runs where it
+was placed is the wrong direction, and a weakened guarantee is very hard to restore later.
+
+**Why invalidation is right.** It reuses machinery that already exists and already does the harder
+half: the revocation fanout terminalises stranded lease-less attempts AND releases the held
+Organization capacity slot with the same helper its lease pass uses. It keeps the generation pin
+intact. And the codebase argues for it against itself — the fanout's own Phase-1b comment records that
+a generation-pinned successor *"can never lease"*, that `guardActiveFence`'s `target_revoked`
+*"never fires"*, that `countHeldAttemptsForOrg` *"pins an org slot forever"*, and that *"nothing else
+reaps a lease-less nonterminal attempt."* Revocation was given a fanout for exactly this reason;
+re-enrolment advances the same column on a live target and was given none. **That is an omission, not
+a design**, and the fix is to make re-enrolment converge the way revocation already does.
+
+### Two binding conditions on this ruling
+
+1. **CONDITIONAL ON LIVE CONFIRMATION. No fix may be built against an unobserved defect.** `E3-F041`
+   is a SOURCE-level measurement — the predicate, the bump site, and the absence of any convergence
+   trigger — and has not been reproduced. Before the fix is implemented the defect must be observed:
+   **re-enrol an already-bound worker while one of its jobs sits `pending` and placed, then assert the
+   attempt is never offered, never terminalises, and that nothing is logged.** That reproduction is
+   recorded in `E3-F041` before the owning ticket starts. A plausible chain is not a licence to change
+   placement authority.
+2. **THE CAPACITY LEAK IS PART OF THE FIX, NOT A FOLLOW-UP.** Whatever invalidates the attempt MUST
+   also release the pinned Organization capacity slot. An invalidation that cures the stall and leaves
+   `countHeldAttemptsForOrg` pinning a slot has fixed half the defect, and the owning ticket may not
+   close on that half. The revocation fanout's existing release helper is the precedent and the
+   expected mechanism.
+
+**Severity is unchanged at HIGH** and the calibration in `E3-F041` stands: an ordinary supported
+trigger, a permanent and silent effect, plus a capacity leak — but availability-only and
+operator-initiated rather than tenant- or attacker-reachable, which is why it is not CRITICAL.
+
+**Not relitigated by this decision:** the equality pin itself stays. Nothing here authorises relaxing
+`placement_target_generation`, `placement_profile_hash` or `placement_provider_constraint_hash` at any
+candidate site.
+
+
+### ★★★ AMENDMENT, 2026-09-24 — the MECHANISM half is corrected; the CHOICE half stands
+
+**Raised by Codex on PR #594 and verified at source before acting. The correction is real and it
+matters, because this decision is locked and its mechanism as first written would have been
+actively harmful.**
+
+The decision above says the invalidation route *"reuses machinery that already exists"* and that the
+fix is *"enqueue a convergence record from `advanceTargetGeneration` … and let the existing fanout
+re-place or terminalise the affected attempts."* **Enqueueing an `execution_target_revocations`
+record is NOT a safe mechanism**, for two measured reasons:
+
+1. **It would REVOKE the target.** `execution-target-revocation-fanout.ts` calls
+   `ensureExecutionTargetCutoff`, which calls `bumpExecutionTargetGeneration`
+   (`server/src/services/execution-targets.ts`). That helper sets
+   `deviceGeneration: sql\`… + 1\`` **and `status: "disabled"`** in the same update. So enqueueing a
+   revocation record for a successful device ROTATION would bump the generation a SECOND time and
+   **disable the target** — converting a rotation into a revocation, which is precisely the outcome
+   the fix exists to avoid.
+2. **It CANCELS rather than re-places, and says so as a NON-GOAL.** The fanout's own header
+   (`execution-target-revocation-fanout.ts`) states it *"never re-homes or re-places work — the
+   placement is pinned to the revoked target and fallback beyond the immutable placement policy is a
+   non-goal, so revoked work is cancelled, not re-woken."* That is correct for a REVOKED target,
+   where the work cannot run anywhere on it. For a ROTATION the target is still serving, so
+   cancelling is a heavier remedy than the defect warrants and re-placement onto the current
+   generation is what an operator would expect.
+
+   ★ **And the same header names the half that DOES transfer:** it *"marks matching old-generation
+   leases `revoked`, releases their capacity claim, and requests attempt cancellation."* So the
+   capacity-release machinery — the second binding condition — genuinely exists and is reusable. It
+   is the RE-PLACEMENT half that the file declares out of scope. An owning ticket taking the
+   fanout-branch route therefore has to either accept cancellation semantics for a rotation or add
+   re-placement against a stated non-goal; an owning ticket taking the distinct-record route inherits
+   neither constraint but builds the capacity release itself. **Both routes stay open** — which is
+   correct, because choosing between them needs exactly the end-to-end measurement this amendment
+   exists to prove is required, and that belongs to the ticket that builds it.
+
+**What the decision now requires instead.** A path that is NOT the revocation record: either a
+**distinct convergence record kind** for a generation advance, or a **branch in the existing fanout
+that skips `ensureExecutionTargetCutoff` entirely** while still doing the two things that made the
+fanout the right precedent — converging old-generation attempts and **releasing the pinned
+Organization capacity slot**. Whether those attempts should be re-placed or terminalised on a
+rotation is part of the owning ticket's design, and the second binding condition (the capacity leak
+is part of the fix) applies to it unchanged.
+
+**What is NOT changed.** The choice stands: explicit invalidation, and the generation **floor is
+still refused** for the reason originally given. Both binding conditions stand. The equality pin is
+still not relitigated.
+
+★ **How this was got wrong, recorded factually rather than apportioned.** The mechanism was
+PROPOSED in `E3-F041`'s "shape of the fix" and RATIFIED here, and **neither step measured it end to
+end**. It was reasoned from the fanout's own comments — which do describe exactly the right outcome —
+without measuring what `ensureExecutionTargetCutoff` actually does when invoked. **The chain, not the
+link**, at both the proposing and the ratifying end.
+
+★★★ **THE RULE THIS PRODUCED, and it is the most useful thing in this decision:** *a mechanism named
+in a decision must be measured end to end BEFORE the decision locks.* A decision is harder to correct
+than a commit — it is cited, inherited and built against — so the measurement bar for a decision is
+**higher** than for code, not lower. **"Reuses X" is a claim about X's behaviour** and must be
+verified like any other claim. This amendment exists because that was not done.
