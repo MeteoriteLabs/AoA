@@ -1,16 +1,18 @@
 # CLI-014 — the projector: the owed design, and the two contradictions it found
 
-**Status:** `design-recorded, build BLOCKED` — no code written. Measured 2026-09-24 at
+**Status:** `design-recorded, RULED` — see **`E7-D13`** (`../decisions.md`). Measured 2026-09-24 at
 `eb8458bb3538c99ee5cb54b6872202c5f268dd74` (`origin/docs/replatform-program`).
 **Epic:** E7 · **Plan task (the contract):** `../implementation-plan.md` `### CLI-014`
-**Depends on:** `CLI-013` (shipped) · **Owns:** `E7-F046`
+**Depends on:** `CLI-013` (shipped) · **Filed:** `E7-F046` (re-pointed off this ticket by `E7-D13`)
 **Milestone:** `M1b`
 
 The task section says this ticket is **"NOT ASSIGNABLE AS BUILD UNTIL ITS CONTRACT IS DESIGNED"**
 and names four design items. Doing that design measured two things at HEAD that the task section
 contradicts. Under the M1 build rule *"if the task section and the code disagree, the CODE is the
-truth: STOP and report it"*, this file records the measurement and stops. **It rules nothing** — the
-remaining choice is a frozen-protocol change, which is above this ticket.
+truth: STOP and report it"*, this file records the measurement and stopped before writing code.
+★ *At filing it read "**It rules nothing** — the remaining choice is a frozen-protocol change, which
+is above this ticket." That was correct then; the planning session has since taken the ruling, and
+it is recorded as **`E7-D13`** and summarised below.*
 
 ## Contradiction A — the owed design was already chosen and BUILT, by `JOB-017`
 
@@ -87,7 +89,29 @@ pins the whole `packages/worker-protocol/src` tree at a recorded source sha). Th
 to `CLI-012`/`DAT-009`, not to a projector. A protocol widening is also the one axis ruling **F7**
 (`../decisions.md`, `E7-D11`) declined to move.
 
-## The admissible dispositions, unruled
+## THE RULING — `E7-D13`, taken 2026-09-24
+
+The planning session verified both contradictions independently at source (including the trap that
+`artifactManifestV1Schema`'s `path:` at the `superRefine` is a Zod **issue** path, not a data field)
+and ruled:
+
+- **(a) the same-batch projection is CLOSED AS DELIVERED BY `JOB-017`** — disposition (c) below.
+  The framing this ticket's task section quotes is the wiring entry's **PRIOR** reason, so no later
+  reader should re-open it.
+- **(b) `detectedFiles.path` is DESCOPED for M1. Do not widen the wire** — disposition (a) below.
+  `M1b`'s criterion is *"an agent's output reaches the founder"*, which `{artifactId, kind}` plus
+  retrievable bytes satisfies; **a displayed filename is fidelity, not capability**, and is not
+  worth changing a frozen protocol leaf for inside a milestone.
+- **(c) OMIT, NEVER INVENT** — the honesty constraint, pinned by
+  `server/src/__tests__/cli-014-output-path-omission.test.ts` with its positive controls and
+  mutations (`tickets/CLI-014-result.md`).
+- **(d) `E7-F046` stays OPEN**, re-pointed off `CLI-014` to the post-M1 protocol question.
+
+The **materialization residue** (disposition (a)'s second half — `job_artifacts` → a product
+`artifacts` row so `task_outputs.artifactId` resolves) is **not ruled**; it is independent of the
+path question and remains available as separate work.
+
+## The admissible dispositions, as put to the ruling
 
 - **(a) Descope `detectedFiles`.** Keep the CLI-014 residue as **materialization only**:
   `job_artifacts` → an `artifacts` row plus `artifact_versions`, idempotent, written inside the
@@ -102,11 +126,21 @@ to `CLI-012`/`DAT-009`, not to a projector. A protocol widening is also the one 
 - **(c) Close `CLI-014`** as delivered-by-`JOB-017` and re-file the materialization residue as its
   own ticket.
 
-**A ruling is owed before `CLI-014` is assignable.** Nothing here chooses.
+★ **Ruled 2026-09-24 by `E7-D13`: (b) for the path half — descope, do not widen — and (c) for the
+projection half — closed as delivered by `JOB-017`.** The sentence this replaces read *"A ruling is
+owed before `CLI-014` is assignable. Nothing here chooses."*, which was true when written.
 
-## What was NOT done
+## What was and was NOT done
 
-No code, no test, no register edit, no `-result.md` (a `-result.md` would make
-`check-finding-ownership` treat `CLI-014` as completed, and `E7-F046` would then be owned by
-nothing). No keyed E2B workflow was dispatched; none is needed for either contradiction — both are
-static measurements of source.
+**Done:** this design record; `E7-D13` (`../decisions.md`); `E7-F046`; and the ruling's honesty pin,
+`server/src/__tests__/cli-014-output-path-omission.test.ts` — four assertions, three mutations,
+tabled in `CLI-014-result.md`.
+
+**Not done:** no projector change, no materialization, no wire widening. ★ *At filing this section
+read "No code, no test, no register edit, no `-result.md`", which was accurate for the pre-ruling
+commit: a `-result.md` would then have made `check-finding-ownership` treat `CLI-014` as completed
+and leave `E7-F046` owned by nothing. `E7-D13` (d) re-points `E7-F046` off this ticket, which
+dissolves that constraint, so the result record is now written.*
+
+No keyed E2B workflow was dispatched, and none is needed: both contradictions are static
+measurements of source, and every arm of the pin is a pure fold or a frozen-schema parse.

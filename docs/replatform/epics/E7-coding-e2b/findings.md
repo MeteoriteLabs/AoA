@@ -4633,7 +4633,9 @@ window reports `timed_out` passes against the defect verbatim.
 
 ## E7-F046 — a committed export artifact's relative path is durable NOWHERE on the control plane, so `CLI-014`'s `detectedFiles` outcome is unsatisfiable without a frozen-v1 widening
 
-**Status:** open · **Owner:** `CLI-014` · **Severity:** MEDIUM
+**Status:** open · **Owner:** `unowned` — re-pointed off `CLI-014` by `E7-D13` (d) · **Severity:** MEDIUM
+
+★ *Owner line at filing: `CLI-014`. `E7-D13` descoped `detectedFiles.path` for M1 and closed `CLI-014`'s projection half as delivered by `JOB-017`, so this finding is no longer that ticket's. It is `unowned` rather than re-pointed at a named ticket because the post-M1 protocol question has none yet, and an invented owner is what this manifest exists to prevent.*
 
 **Filed** 2026-09-24 by `CLI-014`'s owed design step (`tickets/CLI-014-design.md`), measured at
 `eb8458bb3538c99ee5cb54b6872202c5f268dd74`. MEDIUM because it blocks a chartered ticket's headline
@@ -4691,7 +4693,16 @@ build: descope `detectedFiles` and keep the materialization residue, widen the w
 `CLI-014` as delivered-by-`JOB-017` and re-file the residue. `tickets/CLI-014-design.md` lays the
 three out and rules none.
 
-**What would close it.** Whichever of the three the ruling picks, plus — for the widening arm — a
+**What would close it.** ★ *Ruled 2026-09-24 by `E7-D13`: disposition (b) — descope
+`detectedFiles.path` for M1, do NOT widen the wire, because `M1b`'s criterion is "an agent's output
+reaches the founder" and a displayed filename is fidelity, not capability. The descope is made
+honest by `E7-D13` (c), OMIT NEVER INVENT, pinned by
+`server/src/__tests__/cli-014-output-path-omission.test.ts`. This finding therefore stays OPEN as
+the post-M1 **protocol** question: resolving it means widening a frozen v1 schema, which is a
+protocol decision above any ticket and needs its own compatibility analysis — never a side effect
+of adding a display field.* The original text follows.
+
+Whichever of the three the ruling picks, plus — for the widening arm — a
 leak review of the new field, because the path is tenant-authored: `ArtifactExportFailedError`'s
 outcome channel is path-free *on purpose* (*"only the stage and the path are reported"*, and only
 `stage` plus the normalised `reason` cross into the outcome), and `E7-D11`'s Observability clause
