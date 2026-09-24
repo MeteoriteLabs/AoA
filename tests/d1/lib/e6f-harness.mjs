@@ -3794,6 +3794,14 @@ try {
  * against built images and must not take a build-time dependency on the worker package. */
 export const REDACTION_MARKER = "«redacted»";
 
+/** DEP-023 — the line prefix the worker's run-output redaction probe forwards under, mirrored from
+ * `RUN_OUTPUT_PROBE_TAG` (`packages/worker-daemon/src/supervisor/run-output-probe.ts`) for the same
+ * reason `REDACTION_MARKER` is: this harness runs from source against BUILT images and must not take
+ * a build-time dependency on the worker package. Clause 5's case requires the marker to appear on a
+ * line that ALSO carries this tag, so an unrelated earlier scrub on the shared container log cannot
+ * satisfy the log arm. */
+export const RUN_OUTPUT_PROBE_TAG = "AOA-RUN-OUTPUT-PROBE";
+
 /** One compose service's container log, from the HOST docker daemon — the LOG half of clause 5's
  * two streams. Returned as raw text plus its byte length, because a scan over an empty stream is
  * vacuously clean and the case has to be able to say the stream was non-empty. */

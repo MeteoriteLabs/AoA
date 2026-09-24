@@ -663,13 +663,13 @@ verdict changed** — `wiredCount` 9, dormant 11, exit 0 in both states.
 
 ## E4-F019 — Canary redaction has no defence when a redeemed secret collides with a STRUCTURAL token: the logger itself emits `msg`/`time`/`level` below every caller-side scrubber
 
-**Status:** resolved
+**Status:** open (HALF closed — see "How half of it was closed")
 **Severity:** MEDIUM (a known-secret can reach a worker log line verbatim; bounded by how improbable
 such a secret is, unbounded in the sense that nothing DETECTS it)
 **Filed:** 2026-09-23 (WRK-018 1(b), M1a), measured at `daf4396ba` on `claude/m1-wrk-018-usage-log`.
-**Resolved:** 2026-09-24 by `DEP-023` (`tickets/../E6-deployment-test-harness/tickets/DEP-023-result.md`),
-via **closure route 2 below** — see "How it was closed".
-**Owner:** was `unowned`; the manifest key is deleted in the resolving commit.
+**Partly closed:** 2026-09-24 by `DEP-023`
+(`../E6-deployment-test-harness/tickets/DEP-023-result.md`) — the in-run window only.
+**Owner:** `unowned` — see `scripts/finding-ownership.json`.
 **NOT introduced by WRK-018, and NOT blocking M1a** — see "Scope" below.
 
 **What.** The worker's redaction model scrubs per-run canaries out of everything a CALLER hands the
@@ -708,7 +708,13 @@ token. That is improbable in practice (provider API keys are long and prefixed) 
 `PROVIDER_AUTH_ENV_TARGETS`, but it is NOT detected: no guard, test or runtime check would notice,
 and the H-04 posture this programme states is zero-tolerance rather than probabilistic.
 
-**How it was closed (DEP-023, 2026-09-24).** Route 2, built:
+**How HALF of it was closed (DEP-023, 2026-09-24), and why the rest is still open.**
+
+★★★ This section first said "How it was closed" and this finding first said `resolved`. That was an
+OVERCLAIM, caught by Codex on PR #602 and verified at source before being accepted; it is reverted
+here rather than left standing, because a false claim of enforcement is worse than a missing check.
+
+**What IS closed — the in-run window.** Route 2, built:
 `createRedactingDestination` (`packages/worker-daemon/src/logging/redacting-destination.ts`) wraps
 the pino destination and scrubs the FULLY-SERIALIZED record with the run's live canaries — after the
 sink has added `msg`/`time`/`level`, which is the layer no caller could reach. It is wired at the
@@ -725,6 +731,21 @@ the production logger with a canary equal to each of `msg`/`time`/`level` and wi
 a pinned epoch `time`, and a standing positive control in the same file shows the UNWRAPPED logger
 still emitting `"msg"` — so this closure cannot go stale unnoticed. The measurement in this finding
 is unchanged and is NOT rewritten; what changed is the code.
+
+**What is NOT closed — every log line written outside a live lease.** The canary array is PER-LEASE
+and `lease-renewal.ts` releases it when the run settles (`deps.canaryCoordinator?.release(...)`), so
+`RunCanaryCoordinator.snapshot()` is empty between runs. A heartbeat or startup line written then
+again serializes the literal structural token with no redaction. The exposure is therefore NARROWER
+than when filed — it no longer holds "on EVERY worker log line", but on every line outside a run —
+and it is not gone. Closing the remainder needs either route 1 (constrain what may be redeemed), or
+a needle source that OUTLIVES a lease, which is a retention decision about secret material rather
+than a repair: keeping redeemed values in process memory after the run that needed them has ended is
+the opposite of what `run-canaries.ts` was built to guarantee.
+
+**What this means for DEP-023's own surface, measured:** nothing. The probe line is written inside
+`observeRun`, before the terminal and before the release, so it is always inside the covered window
+— which is why the `E4-F019` class is not reachable through that surface even though the finding
+stays open.
 
 **Two closure routes, ONE now taken (route 2 — see above):**
 1. **Constrain what may be redeemed as a secret** — reject a resolved value that is shorter than

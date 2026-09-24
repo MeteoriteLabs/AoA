@@ -104,6 +104,7 @@ import {
   queryOrganizationEventText,
   awaitSpineWorkerDrivenTerminal,
   REDACTION_MARKER,
+  RUN_OUTPUT_PROBE_TAG,
   queryDeployedWorker,
   SPINE_DEPLOYED_TARGET_ID,
   // DEP-021 — the two cases DEP-020 routed away, built keylessly here.
@@ -1268,8 +1269,17 @@ test("fault-matrix: a planted credential canary is SCRUBBED from both streams, a
   assert.ok((logs.bytes ?? 0) > 0, "the worker container log is empty, so nothing below is a measurement");
   assert.ok((foreign.bytes ?? 0) > 0, "the OTHER tenant's event stream is empty, so its cross-tenant clean arm is vacuous");
 
-  const markerOnEvents = events.text.includes(REDACTION_MARKER);
-  const markerOnLogs = logs.text.includes(REDACTION_MARKER);
+  // ★ THE MARKER IS CORRELATED TO THIS RUN'S PROBE LINE, not merely present somewhere on the stream
+  // (Codex P2 on PR #602, and the finding was right). `composeServiceLogs` returns the WHOLE worker
+  // container log — every run the stack has done — so a bare `includes(REDACTION_MARKER)` would let
+  // an unrelated earlier scrub satisfy the log arm while THIS run's probe line never arrived. The
+  // arm therefore requires ONE LINE carrying BOTH the probe tag and the marker, which only this
+  // surface produces. The event stream is already per-job, but it is checked the same way so the
+  // two arms cannot drift apart.
+  const markedProbeLine = (text) =>
+    text.split(/\r?\n/).some((line) => line.includes(RUN_OUTPUT_PROBE_TAG) && line.includes(REDACTION_MARKER));
+  const markerOnEvents = markedProbeLine(events.text);
+  const markerOnLogs = markedProbeLine(logs.text);
   const ownEventsClean = !events.text.includes(canary);
   const logsClean = !logs.text.includes(canary);
   const crossTenantClean = !foreign.text.includes(canary);

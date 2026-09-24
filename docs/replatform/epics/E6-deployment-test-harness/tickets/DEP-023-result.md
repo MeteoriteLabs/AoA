@@ -163,21 +163,18 @@ canary being ABSENT from tenant B's **whole** event stream (`queryOrganizationEv
 over a NON-EMPTY stream so it cannot be vacuously clean. The Organization-dedication that forces
 this shape is **asserted inside the case**, so the narrowing cannot silently stop being true.
 
+**The marker is CORRELATED to this run's probe line.** ★ Codex's third P2 on PR #602, also right:
+`composeServiceLogs` returns the WHOLE worker container log — every run the stack has done — so a
+bare `includes(REDACTION_MARKER)` would let an unrelated earlier scrub satisfy the log arm while
+this run's probe line never arrived. Both arms now require ONE LINE carrying BOTH the probe tag and
+the marker, which only this surface produces. The event stream is already per-job and is checked the
+same way, so the two arms cannot drift apart.
+
 **The suppressed arm.** With `AOA_M1_FAULT_MATRIX_SUPPRESS_INJECTION=1` the echo flag is withheld;
 everything else runs and the case still records. `injectionFired` is decided by the **marker** — the
 scrubber's own substitution — not by the harness's intent, so the suppressed run reports
 `injectionFired: false` and the lane's existing grep for `injection_did_not_fire` sees it. The case
 therefore cannot pass vacuously.
-
-**F10 — MULTI-TENANT.** The case plants a **per-tenant** canary for **both** enabled Organizations,
-asserts each tenant's own event stream clean-and-marked (the same-tenant positive control), and
-requires each tenant's canary **absent from the other tenant's** event stream. One tenant proving it
-would be a single-Organization claim, which ruling F10 forbids.
-
-**The suppressed arm.** With `AOA_M1_FAULT_MATRIX_SUPPRESS_INJECTION=1` the echo flag is withheld;
-everything else runs and the case still records. `injectionFired` is decided by the **marker**, not
-by the harness's intent, so the suppressed run reports `injectionFired: false` and the lane's
-existing grep for `injection_did_not_fire` sees it. The case therefore cannot pass vacuously.
 
 ---
 
