@@ -151,12 +151,24 @@ let baseUrl: string;
 /** The server's clock: a fixed base a test can move, PLUS the real time that has elapsed since the
  * server started. The real-time term matters: the gate measures a queued request's remaining budget
  * after it acquires the mutex, and a frozen clock could not express that wait at all. */
+let opFailures: { op: string; errorClass: string; cause: string }[] = [];
 let clockNow = NOW;
 let clockRealStart = Date.now();
 const serverNow = (): number => clockNow + (Date.now() - clockRealStart);
 
 async function startServer(
-  opts: { gated?: boolean; exportMode?: "grant_upload" | "none"; uploadOrigins?: readonly string[] | null } = {},
+  opts: {
+    gated?: boolean;
+    exportMode?: "grant_upload" | "none";
+    uploadOrigins?: readonly string[] | null;
+    // CLI-017-B (Codex P2, PR #592) — drive the SD-5 refusal over the REAL transport path.
+    scanExportBytes?: (input: {
+      bytes: Uint8Array;
+      sandboxId: string;
+      secrets: readonly string[];
+      signal: AbortSignal;
+    }) => void;
+  } = {},
 ): Promise<void> {
   const gated = opts.gated ?? true;
   transport = new RecordingMockTransport();
@@ -173,12 +185,16 @@ async function startServer(
     }
     uploads.push({ objectKey: g.objectKey, bytes: Uint8Array.from(bytes) });
   };
+  // CLI-017-B (Codex P2, PR #592) — the scanner is injectable so the SD-5 refusal can be driven
+  // over the REAL transport path, not just against the provider directly. Defaults to clean, so
+  // every pre-existing case in this file is unchanged.
+  const scanExportBytes = opts.scanExportBytes ?? CLEAN_SCAN;
   const base =
     opts.exportMode === "none"
       ? new (class extends E2bSandboxProvider {
           override readonly artifactExportMode = "none" as const;
-        })({ transport, performUploadGrant, scanExportBytes: CLEAN_SCAN })
-      : new E2bSandboxProvider({ transport, performUploadGrant, scanExportBytes: CLEAN_SCAN });
+        })({ transport, performUploadGrant, scanExportBytes })
+      : new E2bSandboxProvider({ transport, performUploadGrant, scanExportBytes });
   // Records the ctx.deadlineMs the ROUTE hands the provider's exportArtifact.
   const provider = new Proxy(base, {
     get(target, prop) {
@@ -199,11 +215,17 @@ async function startServer(
     },
   });
   const artifactUploadOrigins = opts.uploadOrigins === null ? undefined : (opts.uploadOrigins ?? [STORE_ORIGIN]);
+  // CLI-017-B round 3 — capture what the AM's OWN operator log receives. The modelled arm used to
+  // return before `classifyOpFailure` ran, so a secret refusal was logged nowhere at all.
+  opFailures = [];
   server = createProviderServer({
     provider,
     controlPlanePublicKey: gated ? controlPlane.publicKey : undefined,
     now: serverNow,
     artifactUploadOrigins,
+    onOpFailure: (c) => {
+      opFailures.push({ op: c.op, errorClass: c.errorClass, cause: c.cause });
+    },
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -711,5 +733,108 @@ describe("DAT-009-3e — digest/export over the networked wire (gated owned ops)
       operation: "export_artifact",
     });
     expect(uploads).toHaveLength(0);
+  });
+});
+
+
+// ---------------------------------------------------------------------------------------
+// CLI-017-B, round 1 (Codex P2, PR #592) — THE SD-5 REFUSAL, DRIVEN OVER THE REAL TRANSPORT.
+//
+// The codec round-trip is proven in provider-wire's own suite. This is the other half Codex asked
+// for: the refusal raised inside `E2bSandboxProvider.exportArtifact`, carried through the
+// adapter-manager's HTTP error boundary, and read back by `NetworkedProviderDriver` — the exact
+// path production takes. Unmodelled, that boundary substituted a generic `WireProtocolError` and
+// the worker could not tell a file that carried a credential from a store it could not reach.
+// ---------------------------------------------------------------------------------------
+describe("CLI-017-B — an SD-5 refusal keeps its class across the adapter-manager hop", () => {
+  it("a scanner that REFUSES surfaces as SandboxExportScannerRefusedError, and nothing is uploaded", async () => {
+    await startServer({
+      scanExportBytes: () => {
+        throw new Error("export secret scan: refused");
+      },
+    });
+    const sandboxId = await sandboxWithOutput(ORG_A);
+    const outcome = await driverFor(ORG_A)
+      .exportArtifact(sandboxId, OUT_PATH, grant(ORG_A), ctx("e-refused"))
+      .catch((e: unknown) => e);
+
+    // THE STORE FIRST, as everywhere in this ticket: the bytes are what matter.
+    expect(uploads).toEqual([]);
+    // ...and the classification survived the hop. NOT the degraded generic.
+    expect((outcome as Error).name).toBe("SandboxExportScannerRefusedError");
+    expect(outcome).not.toBeInstanceOf(WireProtocolError);
+  });
+
+  it("POSITIVE CONTROL - with a CLEAN scanner the same export succeeds over the same hop", async () => {
+    // Without this the arm above would pass for a transport that failed every export.
+    await startServer({});
+    const sandboxId = await sandboxWithOutput(ORG_A);
+    const exported = await driverFor(ORG_A).exportArtifact(sandboxId, OUT_PATH, grant(ORG_A), ctx("e-clean"));
+    expect(exported).toEqual({ objectKey: grant(ORG_A).objectKey });
+    expect(uploads.map((u) => u.objectKey)).toEqual([grant(ORG_A).objectKey]);
+  });
+});
+
+
+// ---------------------------------------------------------------------------------------
+// CLI-017-B, round 3 (Codex round 2 on PR #592, ruled by the planning session) — THE MODELLED
+// ARM IS STILL CLASSIFIED AND LOGGED.
+//
+// Round 1 added the three SD-5 refusals to `isModelledWireError` so their CLASS would survive the
+// hop. Correct, and it had a side effect invisible in the diff: the early return then fired for
+// exactly those errors, so `classifyOpFailure`'s new refusal branches became unreachable on the
+// production path. A reader sees classification code and assumes classification happens, while the
+// operator log holds nothing for the one failure class they most need to tell apart. A FALSE CLAIM
+// OF ENFORCEMENT IS WORSE THAN A MISSING CHECK.
+// ---------------------------------------------------------------------------------------
+describe("CLI-017-B — an SD-5 refusal is CLASSIFIED and LOGGED, and still crosses with its class", () => {
+  it("the AM logs op=export_artifact cause=export_secret_refused, AND the driver still gets the class", async () => {
+    await startServer({
+      scanExportBytes: () => {
+        throw new Error("export secret scan: refused");
+      },
+    });
+    const sandboxId = await sandboxWithOutput(ORG_A);
+    const outcome = await driverFor(ORG_A)
+      .exportArtifact(sandboxId, OUT_PATH, grant(ORG_A), ctx("e-classified"))
+      .catch((e: unknown) => e);
+
+    expect(uploads).toEqual([]);
+    // THE NEW HALF: the adapter-manager's own operator log names a cause.
+    expect(opFailures).toEqual([
+      { op: "export_artifact", errorClass: "SandboxExportScannerRefusedError", cause: "export_secret_refused" },
+    ]);
+    // AND the round-1 property is UNCHANGED: the response is still the coded envelope, so the
+    // driver reconstructs the authoritative class rather than a generic WireProtocolError.
+    expect((outcome as Error).name).toBe("SandboxExportScannerRefusedError");
+    expect(outcome).not.toBeInstanceOf(WireProtocolError);
+  });
+
+  it("POSITIVE CONTROL - a clean export logs NOTHING, so the log is not written on success", async () => {
+    // Without this the arm above would pass for a server that logged a failure on every request.
+    await startServer({});
+    const sandboxId = await sandboxWithOutput(ORG_A);
+    await driverFor(ORG_A).exportArtifact(sandboxId, OUT_PATH, grant(ORG_A), ctx("e-ok"));
+    expect(opFailures).toEqual([]);
+  });
+
+  it("an UNMODELLED failure on the same op is still classified and still distinguishable", async () => {
+    // The pre-existing behaviour must be untouched by the reordering: an unmodelled error is
+    // logged AND collapsed to WireProtocolError on the wire.
+    await startServer({
+      scanExportBytes: () => {
+        throw Object.assign(new Error("fetch failed"), { name: "TypeError" });
+      },
+    });
+    const sandboxId = await sandboxWithOutput(ORG_A);
+    const outcome = await driverFor(ORG_A)
+      .exportArtifact(sandboxId, OUT_PATH, grant(ORG_A), ctx("e-unmodelled"))
+      .catch((e: unknown) => e);
+    expect(uploads).toEqual([]);
+    // The provider converts any scanner throw into its own refusal class, so this still reads as a
+    // refusal - which is correct and is the point: the SCANNER's own error never rides out.
+    expect(opFailures).toHaveLength(1);
+    expect(opFailures[0]!.op).toBe("export_artifact");
+    expect((outcome as Error).message).not.toContain("fetch failed");
   });
 });

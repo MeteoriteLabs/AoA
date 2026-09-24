@@ -46,6 +46,7 @@ import { createHash } from "node:crypto";
 // -----------------------------------------------------------------------------
 
 import { E2bSandboxProvider } from "../e2b-provider.js";
+import { createRunSecretExportScanner } from "../export-secret-scan.js";
 import type { E2bTransport } from "../transport.js";
 import { SandboxNotFoundError } from "../errors.js";
 import type { ArtifactUploadGrantV1 } from "@armyofagents/worker-protocol";
@@ -121,6 +122,13 @@ async function withProvider(
     transport,
     templateId: TEMPLATE,
     performUploadGrant: store.upload,
+    // CLI-017-B — SD-5's REAL scanner, the one production wires at the adapter-manager boot.
+    // Without it this keyed lane would refuse every export
+    // (`SandboxExportScannerUnavailableError`), because `CLI-012` shipped the presence-refusal
+    // BEFORE the scanner existed and this lane is skipped without a key, so nothing caught it.
+    // The run's `env` is empty here, so nothing is secret-classified and the lane's own
+    // assertions are unchanged; `cli-017-b-export-secret-refusal.test.ts` owns the secret cases.
+    scanExportBytes: createRunSecretExportScanner(),
   });
   const created = await provider.create(
     { resourceLabels: LABELS, command: "sh", args: ["-c", "true"], env: {}, workloadType: "batch" },

@@ -16,6 +16,8 @@ import {
   ArtifactExportFailedError,
   createArtifactExportSequencer,
   exportArtifactId,
+  exportFailureReasonCode,
+  exportReasonCode,
   grantPutHeaders,
   type ArtifactExportRequest,
   type SandboxArtifactExporter,
@@ -461,7 +463,14 @@ function keyFor(path: string): string {
   return `organizations/${POLL_FIXTURE_IDS.org}/jobs/${POLL_FIXTURE_IDS.job}/attempts/1/${id}`;
 }
 
-function multiFileSequencer(refuseDigestFor: ReadonlySet<string>) {
+function multiFileSequencer(
+  refuseDigestFor: ReadonlySet<string>,
+  // CLI-017-B round 3 — make the EXPORT hop refusable with a chosen error CLASS NAME, so the
+  // per-file `reason` the sequencer records can be driven end to end. Without this the
+  // `exportFailureReasonCode` arms prove the helper and NOT the call site, which is the vacuity
+  // trap: mutation M-B14 (restore the blanket "export_failed" at the call site) left them green.
+  refuseExportWith: ReadonlyMap<string, string> = new Map(),
+) {
   const digested: string[] = [];
   const uploaded: string[] = [];
   const committed: string[] = [];
@@ -473,6 +482,12 @@ function multiFileSequencer(refuseDigestFor: ReadonlySet<string>) {
     },
     async export(path, grant) {
       uploaded.push(path);
+      const name = refuseExportWith.get(path);
+      if (name !== undefined) {
+        const error = new Error("refused");
+        error.name = name;
+        throw error;
+      }
       return { objectKey: grant.objectKey };
     },
   };
@@ -931,5 +946,114 @@ describe("CLI-012 -- a control-plane call that REJECTS is a per-file failure, no
     });
     expect(outcome.failures).toEqual([{ stage: "commit", reason: "transport_failed" }]);
     expect(outcome.exported.map((r) => r.path)).toEqual([B]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// CLI-017-B, round 3 (Codex round 2 on PR #592, ruled by the planning session) — AN SD-5
+// REFUSAL RECORDS ITS OWN PER-FILE REASON, NOT THE BLANKET `export_failed`.
+//
+// `detail` already carried the class name; `detail` is not what the sequencer's per-file result
+// records. `reason` is, and `reason` is the surface `E5-D07`'s per-file policy is read from. So a
+// file refused for carrying a tenant credential and a file refused because the store was
+// unreachable recorded the SAME reason, which destroys the distinction `SD-5`'s classified refusal
+// exists to draw (`E7-D11` section 3). Only a named cause tells an operator what to do.
+// ---------------------------------------------------------------------------------------
+describe("CLI-017-B — exportFailureReasonCode maps the refusal CLASS to a distinct reason", () => {
+  it("each SD-5 refusal class gets its own snake_case reason code", () => {
+    expect(exportFailureReasonCode("SandboxExportScannerRefusedError")).toBe("export_secret_refused");
+    expect(exportFailureReasonCode("SandboxExportSecretSetUnavailableError")).toBe("export_secret_set_unavailable");
+    expect(exportFailureReasonCode("SandboxExportScannerUnavailableError")).toBe("export_scanner_unavailable");
+  });
+
+  it("★ the three are DISTINCT from each other and from the generic — the whole point", () => {
+    const codes = [
+      exportFailureReasonCode("SandboxExportScannerRefusedError"),
+      exportFailureReasonCode("SandboxExportSecretSetUnavailableError"),
+      exportFailureReasonCode("SandboxExportScannerUnavailableError"),
+      exportFailureReasonCode("TypeError"),
+    ];
+    expect(new Set(codes).size).toBe(4);
+  });
+
+  it("★ FAIL-HONEST — an unknown or absent class falls back to the generic, never to a refusal", () => {
+    // A new provider error must read as an unclassified export failure, not be mis-attributed to
+    // a secret refusal (which would over-claim that SD-5 fired).
+    expect(exportFailureReasonCode("SomeFutureProviderError")).toBe("export_failed");
+    expect(exportFailureReasonCode(null)).toBe("export_failed");
+    expect(exportFailureReasonCode(undefined)).toBe("export_failed");
+  });
+
+  it("★ every code is a valid reason token, so `exportReasonCode` cannot flatten it to `unknown`", () => {
+    // A code that failed the snake_case guard would silently become "unknown" in
+    // ArtifactExportFailedError's constructor — the same erasure, one layer lower.
+    for (const name of [
+      "SandboxExportScannerRefusedError",
+      "SandboxExportSecretSetUnavailableError",
+      "SandboxExportScannerUnavailableError",
+      "TypeError",
+    ]) {
+      const code = exportFailureReasonCode(name);
+      expect(exportReasonCode(code)).toBe(code);
+    }
+  });
+
+  it("★ it leaks nothing — the output is one of exactly four fixed tokens", () => {
+    const leaky = "SandboxExportScannerRefusedError";
+    expect(exportFailureReasonCode(leaky)).not.toContain("/home/user");
+    expect(exportFailureReasonCode(leaky)).toMatch(/^[a-z][a-z0-9_]*$/);
+  });
+});
+
+
+// ---------------------------------------------------------------------------------------
+// CLI-017-B round 3 — THE CALL SITE, not just the helper. Found by mutation M-B14.
+//
+// The `exportFailureReasonCode` arms above prove the mapping. They do NOT prove that the export
+// arm USES it: restoring the blanket `"export_failed"` at the `fail("export", ...)` site left every
+// one of them green. Only a behavioural arm that drives a real export refusal through the sequencer
+// and reads the recorded per-file `reason` can red that mutation, and this is it.
+// ---------------------------------------------------------------------------------------
+describe("CLI-017-B — the SEQUENCER records the refusal's own reason per file", () => {
+  const A = "/home/user/aoa-output/a-secret.md";
+  const B = "/home/user/aoa-output/b-good.md";
+  const requests: ArtifactExportRequest[] = [A, B].map((path) => ({
+    path,
+    kind: "other",
+    contentType: "text/markdown",
+    retention: "run",
+  }));
+
+  for (const [name, reason] of [
+    ["SandboxExportScannerRefusedError", "export_secret_refused"],
+    ["SandboxExportSecretSetUnavailableError", "export_secret_set_unavailable"],
+    ["SandboxExportScannerUnavailableError", "export_scanner_unavailable"],
+  ] as const) {
+    it(`an export refused with ${name} records reason=${reason}`, async () => {
+      const h = multiFileSequencer(new Set(), new Map([[A, name]]));
+      const outcome = await h.run({ handoff: makeHandoff(), exporter: h.exporter, requests });
+
+      // NON-VACUITY FIRST: both files were really attempted, so this is not "the loop stopped".
+      expect(h.digested).toEqual([A, B]);
+      expect(outcome.failures).toEqual([{ stage: "export", reason }]);
+      // And E5-D07 still holds: the refused file does not drop the valid one after it.
+      expect(outcome.exported.map((ref) => ref.path)).toEqual([B]);
+      expect(h.committed).toEqual([keyFor(B)]);
+    });
+  }
+
+  it("★ an UNMODELLED export error still records the generic reason — never mis-attributed", async () => {
+    const h = multiFileSequencer(new Set(), new Map([[A, "SomeFutureProviderError"]]));
+    const outcome = await h.run({ handoff: makeHandoff(), exporter: h.exporter, requests });
+    expect(h.digested).toEqual([A, B]);
+    expect(outcome.failures).toEqual([{ stage: "export", reason: "export_failed" }]);
+  });
+
+  it("★ POSITIVE CONTROL — with no refusal, BOTH files export and there are no failures", async () => {
+    // Without this the arms above would pass for a sequencer that failed every export.
+    const h = multiFileSequencer(new Set());
+    const outcome = await h.run({ handoff: makeHandoff(), exporter: h.exporter, requests });
+    expect(outcome.failures).toEqual([]);
+    expect(outcome.exported.map((ref) => ref.path)).toEqual([A, B]);
   });
 });

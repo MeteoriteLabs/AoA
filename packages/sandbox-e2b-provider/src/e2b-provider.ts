@@ -72,9 +72,12 @@ import type {
 import { grantPutHeaders } from "@armyofagents/worker-daemon";
 
 import { METADATA_KEYS } from "./directives.js";
+import { classifyRunSecrets } from "./export-secret-scan.js";
+import type { ExportBytesScanner } from "./export-secret-scan.js";
 import {
   ProcessLaunchNotAcknowledged,
   SandboxEgressDeniedError,
+  SandboxExportSecretSetUnavailableError,
   SandboxExportScannerRefusedError,
   SandboxExportScannerUnavailableError,
   SandboxNotFoundError,
@@ -156,8 +159,18 @@ export interface E2bSandboxProviderOptions {
    * then every export refuses, which is the intended state.
    *
    * ★ IT IS HANDED THE BYTES, NOT THE PATH. It is the last party to see them before they leave.
+   *
+   * ★★★ CLI-017-B — THE SIGNATURE IS NOW `ExportScanInput`, AND THE WIDENING IS THIS SLICE'S TO
+   * MAKE. `E7-D11` §3 records at source that a content check on `exportArtifact` alone CANNOT
+   * deliver SD-5: `create` forwards `spec.env` to the transport as `envVars` and keeps only
+   * `{sandboxId, resourceLabels}`, while `exportArtifact(sandboxId, path, grant, ctx)` receives no
+   * env at all. So the provider now holds a SANDBOX-SCOPED secret registry (`#runSecrets` below)
+   * and hands this scanner THIS sandbox's secret set — never a global one and never another
+   * sandbox's (founder ruling F10). The `signal` field closes `E7-F040`, which recorded this seam
+   * as the one bounded-operation site carrying no abort signal and left the decision to whoever
+   * supplied the implementation.
    */
-  readonly scanExportBytes?: (bytes: Uint8Array, sandboxId: string) => void | Promise<void>;
+  readonly scanExportBytes?: ExportBytesScanner;
 }
 
 /** The default redemption: a plain GET against the presigned url with the grant's headers. */
@@ -352,7 +365,7 @@ export class E2bSandboxProvider implements SandboxProvider {
    * default that cleared everything would be the bypass this whole control exists to refuse.
    * `exportArtifact` refuses while it is not a function.
    */
-  readonly #scanExportBytes: ((bytes: Uint8Array, sandboxId: string) => void | Promise<void>) | undefined;
+  readonly #scanExportBytes: ExportBytesScanner | undefined;
   readonly advertisedOperations: ReadonlySet<ProviderOperation>;
   readonly checkpointMode: CheckpointMode;
   readonly healthMode: HealthMode;
@@ -404,6 +417,41 @@ export class E2bSandboxProvider implements SandboxProvider {
   /** Idempotency ledger: a stable create key → the recorded resource. A replayed
    * key returns the SAME sandbox and never provisions a second one. */
   readonly #idempotency = new Map<string, { sandboxId: string; resourceLabels: ResourceLabels }>();
+  /**
+   * CLI-017-B — THE SANDBOX-SCOPED SECRET REGISTRY. SD-5's handoff, and the whole reason
+   * this slice is not "add a content check to `exportArtifact`".
+   *
+   * `E7-D11` section 3, verified at source: `create` forwards `spec.env` to the transport as
+   * `envVars` and retains only `{sandboxId, resourceLabels}` in `#idempotency` — deliberately, per
+   * `[Cred-1]` (DEP-012 slices 4+5), because a copy in durable E2B metadata would leave the tenant
+   * model-provider key AT REST in a shared-account store, which Decision #104 forbids. And
+   * `exportArtifact(sandboxId, path, grant, ctx)` takes no env. So the two halves SD-5 needs — the
+   * bytes and the run's own secret values — meet nowhere today. This map is where they meet.
+   *
+   * THE LIFECYCLE, in full, because every arm of it is an acceptance row:
+   *
+   *   - POPULATED at `create`, from `spec.env`, keyed by `sandboxId`, IN PROCESS MEMORY ONLY.
+   *     Never in E2B metadata, never in `inspect`/`list`, never in a log line, never in a thrown
+   *     message, never in durable storage (row 7).
+   *   - PURGED on `destroy` and `reconcileCleanup` — both route through `#reclaim`, so a
+   *     terminated run leaves no secret set behind.
+   *   - PURGED INDEPENDENTLY on a provider-local expiry BOUND TO THE SANDBOX'S OWN TTL (row 6b).
+   *     `create` installs an E2B TTL and the sandbox can end on that TTL with NEITHER cleanup
+   *     method ever being called on this provider instance, so a map purged only on explicit
+   *     cleanup would hold the run's credentials in memory indefinitely after the sandbox was
+   *     gone. Explicit cleanup cancels the timer (no double purge, no leaked timer), and the timer
+   *     is identity-guarded so a re-registered sandbox cannot be purged by its predecessor's timer
+   *     firing late (no resurrected entry, and no purge of a live successor).
+   *   - ABSENT means REFUSED (row 6). See `SandboxExportSecretSetUnavailableError`.
+   *
+   * VALUES ONLY. `classifyRunSecrets` drops the env KEY NAMES on the way in: row 7 asks for the
+   * set to be absent from every log line and thrown message, and a set that carried the names
+   * would name the tenant's variables even in a dump that withheld their values.
+   */
+  readonly #runSecrets = new Map<
+    string,
+    { readonly values: readonly string[]; timer: ReturnType<typeof setTimeout> }
+  >();
   /**
    * SVC-008a — the SAME mechanism as `#idempotency` above, for the launch.
    *
@@ -475,6 +523,68 @@ export class E2bSandboxProvider implements SandboxProvider {
     return ctx.deadlineMs > 0 ? ctx.deadlineMs : this.#defaultTtlMs;
   }
 
+  /**
+   * CLI-017-B — register (or RE-register) this sandbox's secret set, with a TTL-bound expiry.
+   *
+   * RE-REGISTRATION REPLACES, IT DOES NOT ACCUMULATE. A create that reaches here twice for the
+   * same `sandboxId` cancels the old timer before installing the new one, so no timer is leaked
+   * and the entry's lifetime is the LATEST sandbox TTL rather than the earliest.
+   *
+   * THE TIMER IS IDENTITY-GUARDED, AND ITS MUTANT DOES **NOT** RED — SAID PLAINLY RATHER THAN
+   * CLAIMED AS A PROOF. It purges only if the entry it is still holding is the one it was created
+   * for, which would matter if a stale timer could outlive a re-registration of the SAME
+   * `sandboxId`. It cannot: this method's first statement is `#purgeRunSecrets`, which
+   * `clearTimeout`s the predecessor before the successor is installed. Mutating the guard to a
+   * bare `delete(sandboxId)` therefore leaves every test green (mutation `M-B3`, recorded in
+   * `CLI-017-B-record.md` as an UNREACHABLE mutant with this reason). It is kept as redundant
+   * defence against a future reordering — if anyone ever registers before purging, the guard is
+   * what stops a late timer deleting a LIVE successor's set, and a live sandbox whose set has
+   * silently vanished refuses every export (row 6): a self-inflicted outage that looks exactly
+   * like the security control working. Recorded as defence in depth, NOT as a proven control.
+   *
+   * `unref` WHERE AVAILABLE. The registry must never be the reason a process will not exit.
+   */
+  #registerRunSecrets(
+    sandboxId: string,
+    env: Readonly<Record<string, string>> | undefined,
+    ttlMs: number,
+  ): void {
+    this.#purgeRunSecrets(sandboxId);
+    const entry: { readonly values: readonly string[]; timer: ReturnType<typeof setTimeout> } = {
+      values: classifyRunSecrets(env),
+      // Replaced immediately below; assigned first so the closure can compare identities.
+      timer: undefined as unknown as ReturnType<typeof setTimeout>,
+    };
+    entry.timer = setTimeout(() => {
+      if (this.#runSecrets.get(sandboxId) === entry) this.#runSecrets.delete(sandboxId);
+    }, ttlMs);
+    (entry.timer as unknown as { unref?: () => void }).unref?.();
+    this.#runSecrets.set(sandboxId, entry);
+  }
+
+  /**
+   * CLI-017-B — drop this sandbox's secret set and its timer. IDEMPOTENT: purging an absent entry
+   * is a no-op, so `destroy` followed by `reconcileCleanup` (the converging cleanup authority's
+   * normal shape) does not double-purge or throw.
+   */
+  #purgeRunSecrets(sandboxId: string): void {
+    const existing = this.#runSecrets.get(sandboxId);
+    if (!existing) return;
+    clearTimeout(existing.timer);
+    this.#runSecrets.delete(sandboxId);
+  }
+
+  /**
+   * TEST-ONLY OBSERVABILITY, and it reports PRESENCE, never CONTENT.
+   *
+   * Row 6b has to distinguish "the entry expired" from "the entry is still there", and row 7
+   * requires the values never to leave this object. A count satisfies the first without weakening
+   * the second: nothing here can return, log or serialise a secret.
+   */
+  registeredSecretSetCount(): number {
+    return this.#runSecrets.size;
+  }
+
   async create(spec: CreateSandboxSpec, ctx: ProviderOpContext): Promise<CreateResult> {
     const key = ctx.idempotencyKey;
     if (key) {
@@ -507,7 +617,13 @@ export class E2bSandboxProvider implements SandboxProvider {
       envVars: spec.env,
     });
     // Every sandbox gets an enforced TTL (idempotent belt-and-suspenders).
-    await this.#transport.setTimeout(sandboxId, this.#ttl(ctx));
+    const ttlMs = this.#ttl(ctx);
+    await this.#transport.setTimeout(sandboxId, ttlMs);
+    // SD-5's HANDOFF, POPULATED HERE AND NOWHERE ELSE. This is the only point in the provider's
+    // life that sees both a `sandboxId` and the run's `env`; `exportArtifact` sees neither the env
+    // nor a way to ask for it. The expiry is bound to the SAME `ttlMs` the sandbox itself was just
+    // given, so the set cannot outlive what it describes.
+    this.#registerRunSecrets(sandboxId, spec.env, ttlMs);
     if (key) this.#idempotency.set(key, { sandboxId, resourceLabels: spec.resourceLabels });
     return { sandboxId, providerOpId: this.#nextOpId("create"), resourceLabels: spec.resourceLabels };
   }
@@ -623,6 +739,14 @@ export class E2bSandboxProvider implements SandboxProvider {
    * never thrown — so the cleanup convergence can retry it idempotently. An
    * already-gone sandbox is a converged success (idempotent). */
   async #reclaim(op: ProviderOperation, sandboxId: string): Promise<CleanupResult> {
+    // CLI-017-B — PURGE FIRST, AND UNCONDITIONALLY. Both `destroy` and `reconcileCleanup` route
+    // through here, and both are called precisely because this sandbox is finished with. It is
+    // deliberately BEFORE the terminate rather than after it: a transport failure below returns a
+    // REPORTED `failed` (never a throw) and the cleanup authority retries, so a purge placed after
+    // the call would leave the run's credentials in memory for every retry cycle of a sandbox that
+    // may already be gone. Purging early cannot lose anything — an export for a sandbox being torn
+    // down must refuse anyway (row 6), which is the fail-closed direction.
+    this.#purgeRunSecrets(sandboxId);
     try {
       await this.#transport.terminate(sandboxId);
       return { providerOpId: this.#nextOpId(op), cleanupStatus: "success" };
@@ -877,6 +1001,18 @@ export class E2bSandboxProvider implements SandboxProvider {
     // is not a control. A missing OR non-callable scanner is a refusal, never a bypass.
     const scan = this.#scanExportBytes;
     if (typeof scan !== "function") throw new SandboxExportScannerUnavailableError();
+    // CLI-017-B, SD-5's FAIL-CLOSED ARM (acceptance row 6) — AND IT IS BEFORE THE READ, for the
+    // same reason the scanner-presence refusal above is. The registry is process memory, so after
+    // an adapter-manager restart it is EMPTY while sandboxes created by the previous process are
+    // still alive and still exportable. Letting those through unscanned would make the whole of
+    // SD-5 bypassable by restarting a process. An absent set is a refusal.
+    //
+    // IT IS LOOKED UP PER `sandboxId`, WHICH IS WHAT MAKES ROW 5 A PROPERTY (founder ruling F10).
+    // Organization A's secret set is never consulted for Organization B's export, because there is
+    // no global set to consult — only this map, keyed by the sandbox each run owns exclusively
+    // (the sandbox is per-run and single-tenant; review `A-O2-12`).
+    const registered = this.#runSecrets.get(sandboxId);
+    if (!registered) throw new SandboxExportSecretSetUnavailableError();
     // DAT-009-3e (Codex P1, PR #557) — the upload is BOUNDED by the op's budget. An exhausted
     // budget uploads nothing; otherwise the PUT is aborted at `ctx.deadlineMs`, and the call
     // settles then even if an injected uploader ignores the signal.
@@ -905,7 +1041,7 @@ export class E2bSandboxProvider implements SandboxProvider {
     // ★ The scanner's own error is NOT chained or interpolated — it has seen the file's bytes.
     try {
       await boundedBySignal(
-        Promise.resolve(scan(bytes, sandboxId)),
+        Promise.resolve(scan({ bytes, sandboxId, secrets: registered.values, signal })),
         signal,
         "artifact export secret scan timed out",
       );

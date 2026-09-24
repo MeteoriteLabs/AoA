@@ -29,6 +29,17 @@ export const FAILURE_CAUSES = [
   "fetch_failed",
   "digest_mismatch",
   "size_exceeded",
+  // CLI-017-B (E7-D11 section 3) — the SD-5 export refusals, as their OWN causes.
+  //
+  // They are derived from the error CLASS NAME, never from message text, and each names only
+  // which control refused: never the path, the byte offset, the env key, the matched value or
+  // the grant. Without them every secret refusal reported `cause=unclassified` and an operator
+  // could not tell a file that carried a credential from a store the adapter-manager could not
+  // reach — which makes E5-D07's per-file, best-effort-outward policy unreadable at the only
+  // place it is observed.
+  "export_secret_refused",
+  "export_scanner_unavailable",
+  "export_secret_set_unavailable",
   "unclassified",
 ] as const;
 export type FailureCause = (typeof FAILURE_CAUSES)[number];
@@ -43,6 +54,11 @@ export const KNOWN_OPS: ReadonlySet<string> = new Set([
   "inspect",
   "list",
   "stage_files",
+  // CLI-017-B — the artifact ops. BOTH, not just the one Codex named: `digest_artifact` reads the
+  // sandbox through the same `#readArtifactBytes` and was equally unknown, so a failure there
+  // reported `op=other` too. Swept as a pair rather than fixed as the one instance.
+  "digest_artifact",
+  "export_artifact",
 ]);
 
 export const KNOWN_ERROR_CLASSES: ReadonlySet<string> = new Set([
@@ -55,6 +71,10 @@ export const KNOWN_ERROR_CLASSES: ReadonlySet<string> = new Set([
   "DOMException",
   "SandboxError",
   "CommandExitError",
+  // CLI-017-B — the SD-5 refusal classes, so `errorClass` is the real one rather than "other".
+  "SandboxExportScannerUnavailableError",
+  "SandboxExportScannerRefusedError",
+  "SandboxExportSecretSetUnavailableError",
   "NotFoundError",
   "AuthenticationError",
   "RateLimitError",
@@ -147,7 +167,18 @@ export function classifyOpFailure(op: string, err: unknown): OpFailureClassifica
   const httpStatus = status !== null && status >= 100 && status <= 599 ? status : null;
 
   let cause: FailureCause = "unclassified";
-  if (code !== null && DNS_CODES.includes(code)) cause = "dns";
+  // CLI-017-B — the SD-5 refusals are decided FIRST and from the class NAME, never from message
+  // text. First, because a refusal is a verdict about the bytes and must not be overwritten by an
+  // incidental code or status further down the chain; from the name, because these classes'
+  // messages are fixed vocabulary and matching them by pattern would couple the classifier to
+  // wording that the wire is free to truncate.
+  const refusalNames = links
+    .map((link) => field(link, "name"))
+    .filter((n): n is string => typeof n === "string");
+  if (refusalNames.includes("SandboxExportScannerRefusedError")) cause = "export_secret_refused";
+  else if (refusalNames.includes("SandboxExportSecretSetUnavailableError")) cause = "export_secret_set_unavailable";
+  else if (refusalNames.includes("SandboxExportScannerUnavailableError")) cause = "export_scanner_unavailable";
+  else if (code !== null && DNS_CODES.includes(code)) cause = "dns";
   else if (code !== null && TLS_CODES.includes(code)) cause = "tls";
   else if (code !== null && TIMEOUT_CODES.includes(code)) cause = "timeout";
   else if (code !== null && CONNECT_CODES.includes(code)) cause = "connect";

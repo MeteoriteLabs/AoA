@@ -3,6 +3,19 @@
 export { E2bSandboxProvider, DEFAULT_ADVERTISED_OPTIONAL_OPS } from "./e2b-provider.js";
 export type { E2bSandboxProviderOptions } from "./e2b-provider.js";
 
+// CLI-017-B (SD-5) — the export secret scanner the provider REFUSES without, and the
+// classification it is built on. The composition root (`adapter-manager`) injects the scanner;
+// nothing defaults it, because a default would be the bypass this control exists to refuse.
+export {
+  createRunSecretExportScanner,
+  classifyRunSecrets,
+  isSecretClassified,
+  MIN_SCANNED_SECRET_LENGTH,
+  SECRET_ENV_KEY_PATTERN,
+  SECRET_ENV_VALUE_PATTERNS,
+} from "./export-secret-scan.js";
+export type { ExportBytesScanner, ExportScanInput } from "./export-secret-scan.js";
+
 // The E6-F008 bridge: any per-op SandboxProvider → the neutral invoke-driver.
 export { perOpToInvokeDriver } from "./per-op-adapter.js";
 export type { PerOpToInvokeDriverOptions } from "./per-op-adapter.js";
@@ -60,6 +73,7 @@ export {
   SandboxRecordIndeterminateError,
   SandboxExportScannerUnavailableError,
   SandboxExportScannerRefusedError,
+  SandboxExportSecretSetUnavailableError,
 } from "./errors.js";
 
 // The reserved fault/canary directive key names. Exported so a cross-package conformance

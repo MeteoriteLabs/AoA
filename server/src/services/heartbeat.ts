@@ -169,6 +169,7 @@ import {
 } from "./run-execution-owner.js";
 import { buildCutoverSelectionEvent } from "./cutover-selection-audit.js";
 import { buildTaskRunBatchWorkload } from "./task-run-batch-workload.js";
+import { applySandboxOutputRootDirective } from "./sandbox-output-root.js";
 import { resolveTaskRunInstructionsBundle } from "./task-run-instructions-bundle.js";
 import { SANDBOX_INVOCATION_BINARY_ARG_INDEX } from "./task-run-sandbox-invocation.js";
 import {
@@ -5332,7 +5333,26 @@ export function heartbeatService(
               adapterType: agent.adapterType,
               runtimeCommandSpec,
               adapterConfig: runScopedConfig,
-              currentTaskMarkdown: context.currentTaskMarkdown,
+              // ── CLI-017-A — SD-1b, the OUTPUT-ROOT DIRECTIVE (ruling F7, `E7-D11` §2). ──
+              // Nothing told the agent where to write, so a distributed run produced no
+              // collectable output at all: `CLI-012`'s producer enumerates `R =
+              // /home/user/aoa-output` and a run that never writes there yields zero export
+              // requests. This is the append, placed HERE — at the distributed caller — and not
+              // in the invocation-script literal (SD-1a moves census pins 1 and 2 and auto-fires
+              // a keyed E2B lane) and not in the workload builder (SD-1c moves 5–6 `E7-F026`
+              // staged-byte pins).
+              //
+              // ★ It is a FUNCTION CALL, not an inline concatenation, because `E7-D11` makes
+              // PC-12 a condition of the ruling: this exact expression is pinned by
+              // `cli-017-output-root-directive.test.ts`, so the append cannot be deleted
+              // silently. Both gates live inside it — `claude_local` only (`E7-D04` excludes
+              // codex) and sandbox-targeted only (`R` exists only inside a sandbox, so a
+              // non-distributed run stays byte-identical).
+              currentTaskMarkdown: applySandboxOutputRootDirective({
+                adapterType: agent.adapterType,
+                runTargetsSandbox,
+                currentTaskMarkdown: context.currentTaskMarkdown,
+              }),
               instructions: canaryInstructions.configured ? canaryInstructions.content : null,
               aoaMcpConfig,
             })

@@ -290,7 +290,14 @@ describe("Blocker A — the canary seam pushes a real workload", () => {
   it("builds the workload from the run's own adapter + command spec + task markdown", () => {
     const build = HEARTBEAT_SRC.findIndex((l) => l.includes("buildTaskRunBatchWorkload({"));
     expect(build, "expected the seam to call buildTaskRunBatchWorkload").toBeGreaterThan(-1);
-    const call = HEARTBEAT_SRC.slice(build, build + 8).join(" ");
+    // CLI-017-A widened this window from 8 lines to 40. The seam's argument object is unchanged
+    // in SUBSTANCE — it still passes the run's own task markdown — but SD-1b (`E7-D11` section 2)
+    // now routes it through `applySandboxOutputRootDirective`, whose call and its comment sit
+    // inside the object. The pin's claim ("the workload is built from the run's own adapter,
+    // command spec and task markdown") is asserted unchanged below; only the slice length moved,
+    // and the directive is pinned separately and exactly by PC-12
+    // (`cli-017-output-root-directive.test.ts`).
+    const call = HEARTBEAT_SRC.slice(build, build + 40).join(" ");
     // NEVER `agent.adapterType` as the command — that is the shadow comparator's bug.
     expect(call).toContain("runtimeCommandSpec");
     expect(call).toContain("context.currentTaskMarkdown");

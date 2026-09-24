@@ -4299,7 +4299,39 @@ route is **not obviously** a breach. **Measure it if the route is taken; do not 
 
 ## E7-F040 — the SD-5 export scanner is the one bounded-operation seam that carries no abort signal, and whether that matters is `CLI-017-B`'s to decide
 
-**Status:** open · **Owner:** `CLI-017-B` · **Severity:** LOW
+**Status:** resolved (2026-09-24, `CLI-017-B`) · **Owner:** `CLI-017-B` · **Severity:** LOW
+
+**Resolved by TAKING THE SIGNAL, which is the FIX arm of the two this entry left open — not the
+"closes as not-applicable" arm.** The entry said the owner owes one of two answers: widen the seam
+if the scanner does remote or IO-bound work, or close it as not-applicable if it stays a pure
+in-process literal scan. `CLI-017-B`'s scanner IS a pure in-process literal scan, so the
+not-applicable arm was available — and it was **not** taken. The signal costs one field, it removes
+the class from this surface permanently, and it means a later scanner that does remote or streaming
+work inherits cancellation instead of re-filing this finding. Choosing the cheaper-to-justify arm
+would have left a known seam for a successor to rediscover.
+
+**What shipped** (`packages/sandbox-e2b-provider/src/export-secret-scan.ts`,
+`packages/sandbox-e2b-provider/src/e2b-provider.ts`): the seam's signature is now
+`ExportScanInput { bytes, sandboxId, secrets, signal }` — `CLI-012` correctly recorded that the
+signature belonged to whoever supplied the implementation, and this is that ticket exercising it.
+`signal` is threaded from `exportArtifact`'s own `AbortSignal.timeout(ctx.deadlineMs)`, the same
+signal that bounds the read and the upload.
+
+**Proven with `CLI-012`'s own proof shape, not a timing-only test.** In
+`packages/sandbox-e2b-provider/src/__tests__/cli-017-b-export-secret-refusal.test.ts`, the
+`E7-F040` describe block asserts the scanner **RECEIVED** a non-`undefined` `AbortSignal`
+(`expect(received).toBeInstanceOf(AbortSignal)`) **AND** that it **FIRED**
+(`expect(fired).toBe(true)`), with nothing stored — plus the **in-deadline unaborted twin**, a scan
+that finishes inside the budget and sees `signal.aborted === false` while its bytes export. Without
+that twin the first arm would pass for a seam that handed over an already-aborted signal.
+**Mutation `M-B9`** (pass `undefined` for `signal`) reds it.
+
+**Closed by:** `tickets/CLI-017-B-record.md` §9. The `scripts/finding-ownership.json` key is
+deleted in the same commit as this flip, per the register rule.
+
+**The text below is preserved verbatim as filed.**
+
+**Status at filing:** open · **Owner:** `CLI-017-B` · **Severity:** LOW
 
 **What was measured.** `CLI-012`'s round-5 sweep checked every `boundedBySignal` site in
 `E2bSandboxProvider` (5) and every SDK call reachable beneath one, for the class *"the deadline
@@ -4390,6 +4422,68 @@ prevent. Recorded as unowned **on the record** so the next ticket touching
 **Filed:** 2026-09-23. Raised by Codex on PR #576 (round 6) against `CLI-012`'s own round-5 fix,
 verified at source, and **filed rather than fixed** by the planning session's standing ruling that
 after the round-5 push anything further on `#576` becomes a named finding rather than another fix.
+
+## E7-F045 — the distributed-execution startup suite probes the REQUESTED port while the server binds the next free one, so a port collision reads as a boot timeout
+
+**Status:** open · **Owner:** `unowned` · **Severity:** LOW
+
+**What it is.** `server/src/__tests__/distributed-execution-db-startup.integration.test.ts`'s
+`startServer` helper picks an `httpPort`, passes it to the child as `PORT`, and then polls
+`http://127.0.0.1:${httpPort}/api/health` until a 30-second race resolves. **The server does not
+promise to bind the port it was asked for.** On a collision it binds the next free one and says so
+in its own banner. When that happens the probe polls a port nothing is listening on, can never
+succeed, and the race resolves to `timeout` — reported as
+`server startup timed out before health or exit`, which reads as a boot failure when the boot in
+fact succeeded.
+
+**Measured, not inferred.** PR #592, run `35937450228`, job `verify (1)`, twice. The captured child
+output in the failure message contains the full successful banner — `Auth ready`,
+`Migrations already applied` — and these two lines:
+
+```
+Server          58991 (requested 58990)
+API             http://127.0.0.1:58991/api (health: http://127.0.0.1:58991/api/health)
+```
+
+**58990 was requested; 58991 was bound.** The banner even prints the correct health URL, so the
+information the probe needs is already on stdout.
+
+**Why it is worth a finding rather than a retry.** It presents as a flake but it is deterministic
+given a collision, and it is **misattributing**: a reader sees a startup timeout on a PR that
+touched server code and reasonably suspects the diff. On PR #592 it failed on a **different test of
+the same file on each run**, which is the signature of "whichever case draws the colliding port" and
+not of a code defect — but deriving that took reading the captured banner. The next person should
+find this entry instead of re-deriving it. Two further facts pin it: all four `verify` shards were
+**pass** on the immediately prior head `e610a5a72` with **identical** code (the only delta was one
+Markdown file), and the base branch's own `verify (1)` is `success` on the same shard.
+
+**Why LOW.** No production code is involved and no guarantee is weakened — the suite's assertions
+are sound and it passes when it gets its port. The damage is CI trust and reviewer time: a red shard
+whose cause is not the diff.
+
+**Why `unowned`, honestly.** It is a harness defect in a file no chartered ticket owns.
+`CLI-017`/`CLI-017-B` touched neither this file nor the startup gate it exercises, and naming it
+here would be the invented ownership `check-finding-ownership` exists to prevent. `DAT-007`, which
+built the startup gate the suite tests, is shipped. Recorded **on the record** so the next ticket
+touching this suite inherits it visibly.
+
+**What would close it.** Either (a) have the probe read the server's **actual** bound port rather
+than the requested one — the banner already reports it, so the helper can parse it out of the
+captured stdout it is already accumulating, which also removes the assumption that a requested port
+is free; or (b) allocate the port with the `allocateEmbeddedPgPort`-style helper the other
+integration suites in this tree already use, and fail loudly if the child reports a different one.
+**(a) is preferred**: it is correct even when a collision happens, whereas (b) only makes a
+collision rarer. Either way, add a positive control that a deliberately pre-bound requested port
+still boots and is still detected — otherwise the fix is unproven against the very case that
+produced it.
+
+**Blocks gate:** no.
+
+★ *Re-minted from `E7-F043` to `E7-F045` on 2026-09-24 before merge: the original id was computed from a worktree that was two commits behind the base, and `CLI-013` (PR #589) had already taken `E7-F043` and `E7-F044`. `check-register-id-uniqueness` caught the collision in the `policy` job on the merge ref. No record outside this ticket had cited the old id.*
+
+**Filed:** 2026-09-24 by `CLI-017-B`, diagnosed from the captured child output on PR #592 rather
+than retried away, and filed **unowned** on the planning session's ruling that a real harness defect
+gets a diagnosis on the record instead of a re-run.
 
 ## E7-F042 — the supervisor's `withDeadline` bounds the SUPERVISOR, and two of its dependency seams take no signal at all, so a raced-out redemption or staged-input resolve keeps running
 
