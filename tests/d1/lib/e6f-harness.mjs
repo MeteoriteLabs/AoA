@@ -2067,6 +2067,47 @@ try {
   return dexecModule("control-plane", script);
 }
 
+/**
+ * DEP-021 — the DURABLE half of `d1.reconcile.worker_startup_lease_probe`.
+ *
+ * `queryLeaseFaultState` returns each lease's `id` + `status` and nothing else, so it cannot see
+ * a RENEWAL: a renewed lease and an untouched one are both `active`. `renewLease`
+ * (`packages/db/src/repositories/tenant/job-control.ts`) extends **`leases.expires_at`** and
+ * nothing else — *"extended by `renewLease` and by nothing else"* — so the expiry is the one
+ * column that moves when the startup reconciler's probe fires, and the probe is exactly one
+ * `lease_renew`.
+ *
+ * ★ READ AS ISO STRINGS, and `updated_at` beside it. A millisecond comparison across two dexec
+ * round trips needs a monotone server-side value, so both columns come from the row rather than
+ * from any harness clock; `now` is the SAME transaction's `clock_timestamp()`, which is what
+ * makes "the expiry is still in the future" a measurement rather than a guess about skew.
+ *
+ * Nothing secret is read: lease ids, a status, two timestamps.
+ */
+export function queryLeaseExpiries({ jobId }) {
+  const params = { jobId };
+  const script = `
+import postgres from "postgres";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  const leases = await sql\`SELECT id, status, worker_id AS "workerId",
+      to_char(expires_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "expiresAt",
+      to_char(updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "updatedAt",
+      (expires_at > clock_timestamp()) AS "live",
+      to_char(clock_timestamp(), 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "now"
+    FROM leases WHERE job_id = \${P.jobId} ORDER BY created_at, id\`;
+  report({ ok: true, leases });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script);
+}
+
 /** DEP-009 â€” race the SHARED Organization-capacity claim across concurrent contenders to
  * prove the advisory lock serializes count-then-claim so the cap is never exceeded. Uses the
  * EXACT authority admitAttemptCapacity composes into submitJobWithinTenant: one

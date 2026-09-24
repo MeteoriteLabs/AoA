@@ -105,6 +105,9 @@ import {
   REDACTION_MARKER,
   queryDeployedWorker,
   SPINE_DEPLOYED_TARGET_ID,
+  // DEP-021 — the two cases DEP-020 routed away, built keylessly here.
+  querySpineWorkerDriven,
+  queryLeaseExpiries,
 } from "./lib/e6f-harness.mjs";
 import {
   M1_SPINE_TENANTS,
@@ -1842,6 +1845,370 @@ test("fault-matrix: cutting control-plane-to-postgres severs the stack's own dat
       const r = setProxyEnabled({ proxy: "control-plane-to-postgres", enabled: true });
       if (!r?.result?.ok) console.error(`m1-fault-matrix: FAILED to restore control-plane-to-postgres: ${JSON.stringify(r?.result ?? r)}`);
     }
+  }
+});
+
+// ═══ 9b. DEP-021 — the two cases DEP-020 routed away, built here instead ═════
+//
+// `DEP-020` re-measured both of these and found the reason that excused them FALSE of the lane
+// that boots the override — the failure the `M1-D1-SPINE` `a2` record graded `SPINE-MATRIX-3`. It
+// corrected each `pendingReason` to say UNBUILT rather than unavailable and routed both to
+// `M1a-D2-MECHANISM`. This ticket builds them HERE, keylessly, so neither needs a keyed run and
+// neither is a declared case that nothing runs.
+//
+// ★ THEY ARE LAST IN THE FILE, DELIBERATELY. The file's header records that order is load-bearing
+// over ONE shared stack, and `DEP-020` cycle 2 learned the same lesson the expensive way: a case
+// that disturbs shared state belongs AFTER the cases that depend on it. The first of these two
+// RESTARTS `worker-b`, which is the most disruptive injection on the lane, and it leaves a
+// deliberately-parked run in flight. Nothing may depend on the deployed worker after it.
+
+/**
+ * Seed and start ONE worker-driven run on the deployed worker, returning its ids.
+ *
+ * ★ THE ARGS ARE THE INJECTION. `seedSpineWorkerDrivenJob`'s `workloadArgs` become the tenant
+ * command's `args`, which reach `executeScriptedCommand` inside the reference provider
+ * (`packages/sandbox-fake-provider/src/scripted-command.ts`) — the DEPLOYED worker's own provider
+ * wire, not a harness `/invoke`. That is what makes both cases below statements about the worker.
+ */
+function startWorkerDrivenRun(tenant, deployed, workloadArgs, label) {
+  const ids = {
+    jobId: randomUUID(),
+    attemptId: randomUUID(),
+    issueId: randomUUID(),
+    runId: randomUUID(),
+    handleId: randomUUID(),
+  };
+  const seeded = step(
+    seedSpineWorkerDrivenJob({ tenant, ...ids, target: deployed.target, workloadArgs }),
+    `${label} worker-driven seed`,
+  );
+  assert.equal(seeded.ok, true, `${label} job seed: ${truncate(seeded)}`);
+  return ids;
+}
+
+// ---------------------------------------------------------------------------
+// d1.provider.worker_terminal_mapping
+// ---------------------------------------------------------------------------
+//
+// ★ WHAT MAKES THIS DISTINCT FROM `d1.provider.execute_deadline_exceeded`, which is the whole
+// reason it is its own case. That one derives its terminal payload with `terminalPayloadFor`,
+// HARNESS code, and its own comment says so: it proves the INGEST's classification of a
+// provider-derived terminal and explicitly not the worker's mapping. This one never builds a
+// payload at all. The DEPLOYED worker's supervisor does, at `supervisor.ts` §4:
+//
+//     const status = exec.exitCode === 0 && !exec.timedOut ? "succeeded" : "failed";
+//     const errorCode = exec.timedOut ? "exec_timeout" : exec.signal !== null ? "exec_signalled" : null;
+//     const errorMessage = exec.signal !== null ? `signal:${exec.signal}` : null;
+//
+// ★ AND THE TWO MAPPERS DISAGREE ON THE CODE, which is what makes the distinction MEASURABLE
+// rather than merely asserted: `terminalPayloadFor` emits `provider_timeout`, the worker emits
+// `exec_timeout` plus `signal:SIGKILL`. So this case can only pass on a terminal the WORKER wrote.
+// If a future refactor made the harness the author of this terminal, the code would change and
+// this case would red.
+//
+// THE INJECTION is `--aoa-fake-timeout`, which the reference provider has carried since DEP-019:
+// `execute` returns `{exitCode: null, signal: "SIGKILL", timedOut: true}` — the shape
+// `E2bSandboxProvider.execute` returns on an exhausted command budget. No new flag was needed
+// here, and `DEP-020`'s routing of this case to a keyed lane was therefore one measurement short.
+//
+// THE POSITIVE CONTROL is the identical journey with NO flag, through the SAME mapper: it must
+// land `succeeded` / `exitCode: 0` / `errorCode: null`. Without it, "failed" would be equally
+// explained by a worker that fails everything — the defect `d1.provider.execute_deadline_exceeded`
+// had in its own first version.
+
+test("fault-matrix: the DEPLOYED worker maps a provider deadline overrun to its own classified FAILED terminal", { skip: SKIP }, () => {
+  const [A] = M1_SPINE_TENANTS.enabled;
+  const deployed = step(queryDeployedWorker({}), "deployed worker");
+  assert.equal(deployed.ok, true, `deployed worker probe: ${truncate(deployed)}`);
+  assert.ok(deployed.workerId, "this case needs the DEPLOYED worker — it is the worker's own mapper under test");
+
+  // Suppressed, the flag is withheld: the run succeeds, no timeout is mapped, and the case
+  // records the non-injected outcome so the lane's suppressed arm reds it.
+  const injectedArgs = SUPPRESS_INJECTION ? [] : ["--aoa-fake-timeout"];
+  const timedOutIds = startWorkerDrivenRun(A, deployed, injectedArgs, "worker-timeout");
+  const timedOutRun = step(awaitSpineWorkerDrivenTerminal({ jobId: timedOutIds.jobId }), "worker-timeout terminal");
+
+  // The control runs AFTER, and on its own job, so the two never share an attempt.
+  const controlIds = startWorkerDrivenRun(A, deployed, [], "worker-timeout-control");
+  const controlRun = step(awaitSpineWorkerDrivenTerminal({ jobId: controlIds.jobId }), "worker-timeout-control terminal");
+
+  const injectedTerminal = (timedOutRun.terminal ?? [])[0] ?? null;
+  const controlTerminal = (controlRun.terminal ?? [])[0] ?? null;
+
+  // ★ NON-VACUITY FIRST: both arms must have produced a terminal event at all. A case that
+  // compared two absent terminals would "pass" on `null === null`.
+  const bothTerminated = injectedTerminal !== null && controlTerminal !== null;
+
+  // The worker's mapper, asserted field by field. `exec_timeout` is the code the WORKER writes;
+  // `provider_timeout` is the harness's. `timedOut` wins over `signal` in that ternary, so a
+  // SIGKILLed timeout reports `exec_timeout` and carries the signal in `errorMessage`.
+  const mappedByWorker =
+    timedOutRun.attemptStatus === "failed" &&
+    injectedTerminal?.status === "failed" &&
+    injectedTerminal?.errorCode === "exec_timeout" &&
+    injectedTerminal?.exitCode === null;
+  const controlMapped =
+    controlRun.attemptStatus === "succeeded" &&
+    controlTerminal?.status === "succeeded" &&
+    controlTerminal?.errorCode === null &&
+    controlTerminal?.exitCode === 0;
+
+  record("d1.provider.worker_terminal_mapping", {
+    injectionFired: !SUPPRESS_INJECTION && bothTerminated && injectedTerminal?.errorCode === "exec_timeout",
+    observedClassification:
+      mappedByWorker && controlMapped
+        ? "worker_maps_provider_timeout_to_failed_terminal"
+        : `injected_${String(injectedTerminal?.status)}_${String(injectedTerminal?.errorCode)}_control_${String(controlTerminal?.status)}_${String(controlTerminal?.errorCode)}`,
+    positiveControlPassed: controlMapped,
+    detail: {
+      injected: {
+        jobId: timedOutIds.jobId,
+        args: injectedArgs,
+        attemptStatus: timedOutRun.attemptStatus,
+        terminal: injectedTerminal,
+        leaseWorkerIds: timedOutRun.leaseWorkerIds ?? [],
+      },
+      control: {
+        jobId: controlIds.jobId,
+        attemptStatus: controlRun.attemptStatus,
+        terminal: controlTerminal,
+        leaseWorkerIds: controlRun.leaseWorkerIds ?? [],
+      },
+      note:
+        "the terminal payload is written by the DEPLOYED worker's supervisor (supervisor.ts section 4), never by terminalPayloadFor: the worker's code for a provider deadline overrun is exec_timeout, the harness's is provider_timeout, so this case cannot pass on a harness-authored terminal.",
+    },
+  });
+
+  assert.equal(bothTerminated, true, `both arms must reach a terminal event, else nothing below is a measurement: injected=${truncate(timedOutRun)} control=${truncate(controlRun)}`);
+  assert.equal(
+    controlMapped,
+    true,
+    `the control arm must land SUCCEEDED/exit 0/no errorCode through the SAME worker mapper, else "failed" is a worker that fails everything: ${truncate(controlRun)}`,
+  );
+  if (!SUPPRESS_INJECTION) {
+    assert.equal(
+      mappedByWorker,
+      true,
+      `the deployed worker must map the provider's timeout to failed/exec_timeout/exitCode null: ${truncate(timedOutRun)}`,
+    );
+  }
+});
+
+// ---------------------------------------------------------------------------
+// d1.reconcile.worker_startup_lease_probe
+// ---------------------------------------------------------------------------
+//
+// THE CASE. Restart the deployed worker WHILE it holds a live lease over an in-flight run, and
+// require its WRK-013 startup reconciler to FENCE its own prior lease — probe it once and stand
+// down — rather than resume it or prune it as dead.
+//
+// ★★★ WHY THIS NEEDED A PROVIDER CHANGE, and why nothing cheaper works. A harness cannot mint the
+// candidate: `SqliteLeaseCandidateStore.listEntries`
+// (`packages/worker-daemon/src/lease/lease-candidate-store.ts`) requires each row to `safeParse`
+// against `leaseOfferV1Schema` AND to decode to the lease id and Organization its own row is
+// keyed by — *"otherwise one lease could be probed under another's identity"*. A harness-minted
+// offer therefore belongs to a HARNESS worker, and `worker-b`'s probe of it is answered
+// `rejected` → `dead` (`livenessOf`, `startup-reconcile.ts`), which takes the `candidate pruned`
+// arm and never reaches the fenced one. The only real route is restarting `worker-b` mid-run, and
+// before DEP-021 the reference provider had no way to be mid-anything: its `execute` returned a
+// deterministic transcript immediately. `--aoa-fake-delay` is that window, and this case is the
+// reason it exists.
+//
+// ★ EVERY PRECONDITION IS VERIFIED AT SOURCE, because a case that cannot fire is worse than an
+// absent one:
+//   - dispatch is ON for worker-b            `docker/d1/m1-spine.override.yml:137`
+//   - the candidate store is CONFIGURED       `config.ts` leaseCandidatePath defaults from
+//     AOA_WORKER_EVENT_OUTBOX_PATH (`/worker/event-outbox.db`), which sits on the PERSISTENT
+//     volume `d1-spine-worker-state`, so the row survives the restart
+//   - the logger is COMPOSED                  `bootstrapWorkerDaemon` builds it and passes it to
+//     `composeDispatchRuntime`, which is where the fence line is written
+//   - the run's budget outlasts the restart   op deadline = 240 s
+//     (`RUN_OP_DEADLINE_CEILING_MS`), lease duration = 300 s (`job-leasing.ts`)
+//
+// ★ THE OBSERVABLE IS ATTRIBUTED, not merely present. The worker's log is read BEFORE and AFTER
+// the restart and the fence line must be ABSENT then PRESENT. Without the "before" reading, a
+// line from any earlier boot would satisfy the case — a control that passes on state it did not
+// cause. The logged `leaseId` must also be THIS run's, and the two SIBLING arms of the same
+// three-way branch (`candidate pruned` / `nothing renewed`) must NOT name this lease, which is
+// what distinguishes `fenced` from `dead` and from `unreachable`.
+//
+// ★ THE DURABLE ARM, and its honest limit. The probe is exactly one `lease_renew`, and
+// `renewLease` extends `leases.expires_at` and nothing else. So the expiry MOVES — but the
+// pre-restart renewal loop was moving it too, so movement ALONE is not attributable to the probe.
+// It is recorded as corroboration and the log line is what attributes it; what the expiry does
+// prove on its own is that the lease was still LIVE after the restart, i.e. the probe's `live`
+// arm was the reachable one and the case is not silently passing through a dead-lease prune.
+
+/** The three arms of the startup reconciler's own three-way branch
+ * (`dispatch-runtime.ts`, the `probe.state` switch). ASCII substrings only: the real lines carry
+ * an em-dash and a typographic apostrophe, and a literal with either is a needless way to make a
+ * live assertion depend on this file's encoding. */
+const STARTUP_RECONCILE_ARMS = Object.freeze({
+  fenced: "startup-reconcile: lease FENCED (F5)",
+  ended: "startup-reconcile: lease already ended at the control plane",
+  unreachable: "startup-reconcile: lease probe could not complete",
+});
+/** `LEASE_CANDIDATE_REASONS.fenced` (`lease-candidate-store.ts`), mirrored as the structured
+ * field the same line carries beside the message. Both are asserted: the message could be
+ * reworded, the reason token is the machine-readable half. */
+const LEASE_CANDIDATE_FENCED_REASON = "lease_candidate_fenced";
+
+/** The in-flight window, in ms. Comfortably inside the 240 s op deadline and the 300 s lease,
+ * and far longer than a `docker compose restart --timeout 30` of a node daemon. */
+const RECONCILE_WINDOW_MS = 90_000;
+
+test("fault-matrix: restarting the deployed worker mid-run makes its startup reconciler FENCE its own prior lease", { skip: SKIP }, () => {
+  const [A] = M1_SPINE_TENANTS.enabled;
+  const deployed = step(queryDeployedWorker({}), "deployed worker");
+  assert.equal(deployed.ok, true, `deployed worker probe: ${truncate(deployed)}`);
+  assert.ok(deployed.workerId, "this case needs the DEPLOYED worker — it is that worker's reconciler under test");
+
+  // Suppressed, NO delay is scripted: the run finishes at once, there is nothing in flight, and no
+  // restart is performed — so the case records the non-injected outcome and the lane's suppressed
+  // arm reds it on `injection_did_not_fire`.
+  const windowMs = SUPPRESS_INJECTION ? 0 : RECONCILE_WINDOW_MS;
+  const ids = startWorkerDrivenRun(
+    A,
+    deployed,
+    windowMs > 0 ? [`--aoa-fake-delay=${windowMs}`] : [],
+    "reconcile-window",
+  );
+
+  // 1. WAIT FOR THE RUN TO BE IN FLIGHT. The signal is the worker's own `attempt_started` event
+  //    plus a lease row for the job: both are facts the DEPLOYED worker caused, and neither
+  //    depends on a status vocabulary this harness would have to guess at.
+  const inFlight = waitFor(
+    () => step(querySpineWorkerDriven({ jobId: ids.jobId }), "reconcile in-flight probe"),
+    (o) =>
+      o.ok === true &&
+      (o.leaseWorkerIds?.length ?? 0) > 0 &&
+      (o.events ?? []).some((e) => e.eventType === "attempt_started"),
+    { attempts: 45, everyMs: 2000 },
+  );
+  const leasesBefore = step(queryLeaseExpiries({ jobId: ids.jobId }), "lease expiry before restart");
+  const leaseBefore = (leasesBefore.leases ?? [])[0] ?? null;
+  const logsBefore = composeServiceLogs("worker-b");
+
+  // ★ THE ATTRIBUTION CONTROL, taken BEFORE anything is injected: the fence line must not already
+  //   be in the log, or its later presence proves nothing about this restart.
+  const fencedBefore = logsBefore.ok === true && logsBefore.text.includes(STARTUP_RECONCILE_ARMS.fenced);
+
+  // 2. THE INJECTION: restart the worker while it still holds the lease.
+  const runtimeBefore = composeServiceRuntime("worker-b");
+  const restarted = SUPPRESS_INJECTION
+    ? { ok: false, status: null, stderr: "injection suppressed" }
+    : restartComposeService("worker-b");
+  const cameBack = SUPPRESS_INJECTION
+    ? { ok: false, last: runtimeBefore, polls: 0 }
+    : waitFor(
+      () => composeServiceRuntime("worker-b"),
+      (r) => r.ok === true && r.running === true && r.startedAt !== runtimeBefore.startedAt,
+      { attempts: 60, everyMs: 2000 },
+    );
+
+  // The injection FIRED iff the run was in flight AND the lease was live AND the container really
+  // came back on a NEW start. Each conjunct is its own measurement — `restarted.ok` alone would be
+  // true for a restart of an already-finished run, which injects nothing.
+  const leaseWasLive = leaseBefore !== null && leaseBefore.live === true && leaseBefore.status === "active";
+  const injectionFired =
+    !SUPPRESS_INJECTION &&
+    inFlight.ok === true &&
+    leaseWasLive &&
+    restarted.ok === true &&
+    cameBack.ok === true;
+
+  // 3. THE OBSERVATION. Give the restarted daemon time to run its startup reconciler, which
+  //    happens before its first poll (`worker-daemon.ts`: the probe IS a `lease_renew`, so it runs
+  //    after the first heartbeat and before the poll loop starts).
+  const fenceSeen = waitFor(
+    () => composeServiceLogs("worker-b"),
+    (l) =>
+      l.ok === true &&
+      l.text.includes(STARTUP_RECONCILE_ARMS.fenced) &&
+      l.text.includes(LEASE_CANDIDATE_FENCED_REASON) &&
+      (leaseBefore === null || l.text.includes(leaseBefore.id)),
+    { attempts: 45, everyMs: 2000 },
+  );
+  const logsAfter = fenceSeen.last;
+  const leasesAfter = step(queryLeaseExpiries({ jobId: ids.jobId }), "lease expiry after restart");
+  const leaseAfter = (leasesAfter.leases ?? []).find((l) => l.id === leaseBefore?.id) ?? null;
+
+  // The fenced ARM, not merely the fenced WORD: the line, its structured reason, this run's lease
+  // id, and neither sibling arm naming this lease.
+  const fencedAfter = logsAfter?.ok === true && logsAfter.text.includes(STARTUP_RECONCILE_ARMS.fenced);
+  const reasonSeen = logsAfter?.ok === true && logsAfter.text.includes(LEASE_CANDIDATE_FENCED_REASON);
+  const leaseIdSeen = logsAfter?.ok === true && leaseBefore !== null && logsAfter.text.includes(leaseBefore.id);
+  const prunedArmSeen = logsAfter?.ok === true && logsAfter.text.includes(STARTUP_RECONCILE_ARMS.ended);
+  const unreachableArmSeen = logsAfter?.ok === true && logsAfter.text.includes(STARTUP_RECONCILE_ARMS.unreachable);
+
+  const expiryMovedForward =
+    leaseBefore !== null &&
+    leaseAfter !== null &&
+    Date.parse(leaseAfter.expiresAt) > Date.parse(leaseBefore.expiresAt);
+
+  const fencedItsOwnLease = !fencedBefore && fencedAfter && reasonSeen && leaseIdSeen && !prunedArmSeen && !unreachableArmSeen;
+
+  record("d1.reconcile.worker_startup_lease_probe", {
+    injectionFired,
+    observedClassification: fencedItsOwnLease
+      ? "startup_reconciler_fences_its_own_prior_lease"
+      : `fenced_before_${fencedBefore}_after_${fencedAfter}_reason_${reasonSeen}_leaseId_${leaseIdSeen}_pruned_${prunedArmSeen}_unreachable_${unreachableArmSeen}`,
+    // The positive control is the BEFORE reading: the fence line was absent until this restart.
+    positiveControlPassed: fencedBefore === false,
+    detail: {
+      jobId: ids.jobId,
+      windowMs,
+      inFlight: { ok: inFlight.ok, polls: inFlight.polls, leaseWorkerIds: inFlight.last?.leaseWorkerIds ?? [] },
+      lease: {
+        id: leaseBefore?.id ?? null,
+        statusBefore: leaseBefore?.status ?? null,
+        liveBefore: leaseBefore?.live ?? null,
+        statusAfter: leaseAfter?.status ?? null,
+        liveAfter: leaseAfter?.live ?? null,
+        expiryMovedForward,
+      },
+      restart: {
+        requested: restarted.ok,
+        status: restarted.status ?? null,
+        startedAtChanged: cameBack.ok,
+        polls: cameBack.polls,
+      },
+      log: {
+        okBefore: logsBefore.ok ?? null,
+        bytesBefore: logsBefore.bytes ?? null,
+        okAfter: logsAfter?.ok ?? null,
+        bytesAfter: logsAfter?.bytes ?? null,
+        fencedBefore,
+        fencedAfter,
+        reasonSeen,
+        leaseIdSeen,
+        prunedArmSeen,
+        unreachableArmSeen,
+        polls: fenceSeen.polls,
+      },
+      note:
+        "the fence line is attributed by being ABSENT before the restart and PRESENT after it, by carrying this run's lease id, and by neither sibling arm of the same three-way branch naming this lease. The expiry movement is corroboration only: the pre-restart renewal loop moves it too.",
+    },
+  });
+
+  // ★ NON-VACUITY: the log must have been readable and non-empty on BOTH sides, or every
+  //   `includes()` above is a measurement of nothing.
+  assert.equal(logsBefore.ok, true, `the worker log must be readable before the restart: status=${logsBefore.status}`);
+  assert.ok((logsBefore.bytes ?? 0) > 0, "the worker log is empty before the restart, so the absence below is not a measurement");
+  assert.equal(fencedBefore, false, "the fence line was ALREADY in the worker log before this restart, so its later presence would not be attributable to this case");
+
+  if (!SUPPRESS_INJECTION) {
+    assert.equal(inFlight.ok, true, `the run must be IN FLIGHT before the restart, else nothing is interrupted: ${truncate(inFlight.last)}`);
+    assert.equal(leaseWasLive, true, `the lease must be live at restart time, else the probe has no live candidate: ${truncate(leaseBefore)}`);
+    assert.equal(restarted.ok, true, `the worker-b restart must succeed — it IS the injection: status=${restarted.status} ${truncate(restarted.stderr, 1000)}`);
+    assert.equal(cameBack.ok, true, `worker-b must come back on a NEW container start: ${truncate(cameBack.last)}`);
+    assert.ok((logsAfter?.bytes ?? 0) > 0, "the worker log is empty after the restart, so the fence assertion is not a measurement");
+    assert.equal(
+      fencedItsOwnLease,
+      true,
+      `the restarted daemon must FENCE its own prior lease (line + reason ${LEASE_CANDIDATE_FENCED_REASON} + this lease id, and neither sibling arm): ` +
+        `fencedAfter=${fencedAfter} reason=${reasonSeen} leaseId=${leaseIdSeen} pruned=${prunedArmSeen} unreachable=${unreachableArmSeen}`,
+    );
   }
 });
 
